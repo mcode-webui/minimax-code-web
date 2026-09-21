@@ -1,4 +1,5 @@
 name: Source verification
+# activated on fork: 2026-09-22 — pushing a workflow edit registers workflows on forked repos
 on:
   push:
     branches: [main]
