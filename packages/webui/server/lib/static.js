@@ -30,8 +30,10 @@ export function serveStatic(pathname, res) {
         ? "application/javascript; charset=utf-8"
         : ext === ".css"
           ? "text/css; charset=utf-8"
-          : ext === ".json"
-            ? "application/json; charset=utf-8"
+          : ext === ".html"
+            ? "text/html; charset=utf-8" // v2.3: auth-gate.html (index.html goes through serveIndex)
+            : ext === ".json"
+              ? "application/json; charset=utf-8"
             : ext === ".png"
               ? "image/png"
               : ext === ".svg"

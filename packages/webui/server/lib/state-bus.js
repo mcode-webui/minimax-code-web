@@ -165,6 +165,22 @@ export const SSE_HEADERS = {
   "X-Accel-Buffering": "no",
 };
 
+// v2.3: the sessions list in a snapshot is sidebar metadata only — the
+//   frontend never reads session.chat from state.sessions (the chat area
+//   hydrates from state.chat / the switch response). Shipping every
+//   session's full chat array on EVERY push was the main payload cost of
+//   long thinking turns. Strip it; loadSessions is now mtime-memoized.
+function sessionsListForSnapshot() {
+  return loadSessions().map((s) => ({
+    id: s.id,
+    title: s.title,
+    mcodeSessionId: s.mcodeSessionId,
+    workspace: s.workspace,
+    createdAt: s.createdAt,
+    updatedAt: s.updatedAt,
+  }));
+}
+
 // pushStateFor: 推 state 给指定 cid（或 '__broadcast__' 推给所有）
 //   opts.lanBroadcast: 当前 LAN 广播状态（从 settings.js 注入）
 //   opts.mcodeSessions: 已过滤的 mcode sessions 数组（从 acp-client.js 注入）
@@ -251,7 +267,7 @@ export function pushStateFor(cid, opts = {}) {
           : mcodeSessionsSnapshotFields(cws);
       const snapshot = {
         ...ccs,
-        sessions: loadSessions(),
+        sessions: sessionsListForSnapshot(),
         ...fields,
         availableCommands: cachedCmds,
         onlineCount: sseByCid.size,
@@ -293,7 +309,7 @@ export function pushStateFor(cid, opts = {}) {
   // v0.5.bv: 同步带 mcodeSessions（cache 命中，0 cost；cache miss 才 await）
   const snapshot = {
     ...cs,
-    sessions: loadSessions(),
+    sessions: sessionsListForSnapshot(),
     ...fields,
     availableCommands: cachedCmds,
     onlineCount: sseByCid.size,

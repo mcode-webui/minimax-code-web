@@ -74,6 +74,15 @@ function reportCorruptedSessionsDb(st, err) {
 // v0.5.bx-5: 剥 UTF-8 BOM — 之前直接 JSON.parse 在 ﻿ 上抛 syntax error，try/catch 静默吞掉返 []
 //   结果：所有 session 查找都查不到，delete/switch 都 404 "session not found"（用户报"删除不掉对话"）
 // v2 hardening: parse 失败/根非数组不再静默 — 隔离副本 + 可行动错误（见文件头 §3）
+// v2.3: memoize by (mtimeMs, size). pushStateFor calls loadSessions on EVERY
+//   snapshot (per SSE push, up to 60Hz), and switch/persist paths read too —
+//   re-reading + JSON.parsing a multi-MB store that often made long-turn
+//   streaming and session switching visibly janky. Corrupt files are never
+//   cached (each attempt re-parses so recovery is immediate), external
+//   writers invalidate via mtime/size, saveSessions primes the cache.
+let _sessionsCache = null; // { mtimeMs, size, data }
+export function _resetSessionsCacheForTests() { _sessionsCache = null; }
+
 export function loadSessions() {
   if (!existsSync(SESSIONS_DB)) return [];
   let st;
@@ -81,6 +90,9 @@ export function loadSessions() {
     st = statSync(SESSIONS_DB);
   } catch {
     return [];
+  }
+  if (_sessionsCache && _sessionsCache.mtimeMs === st.mtimeMs && _sessionsCache.size === st.size) {
+    return _sessionsCache.data;
   }
   let raw;
   try {
@@ -101,6 +113,7 @@ export function loadSessions() {
     reportCorruptedSessionsDb(st, new Error("root value is not a JSON array"));
     return [];
   }
+  _sessionsCache = { mtimeMs: st.mtimeMs, size: st.size, data: parsed };
   return parsed;
 }
 
@@ -126,7 +139,12 @@ export function saveSessions(s) {
   }
   // 主文件已换代 — 损坏备忘失效（新文件若再损坏属新状态，重新隔离）
   _corruptionMemo = null;
+  try {
+    const st2 = statSync(SESSIONS_DB);
+    _sessionsCache = { mtimeMs: st2.mtimeMs, size: st2.size, data: s };
+  } catch {}
 }
+
 
 // 重置所有 context 字段（不只是 tokens/used；percent/spent/tps 之前漏了导致切完仍显示旧的 %）
 // v2 (2026-09-20 webui-manual-audit): ALSO reset the two "a run is in

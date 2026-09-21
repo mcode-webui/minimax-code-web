@@ -2588,6 +2588,9 @@ export function renderMessage(msg, ctx) {
     cursorHtml = '<span class="msg-cursor">▍</span>'
   }
   // v0.5.af: 思考内容 — 紧凑内联 toggle，无 avatar 无双层标题
+  // v2.3: 思维链按转义文本渲染（不再走 marked.parse）——超长思考回合里
+  //   每次 delta 都对整块做 markdown 解析会钉死主线程（界面"思考中"但不再更新）。
+  //   思维块本就是折叠的推理过程展示，文本保真足够。
   if (msg.role === 'thinking') {
     const isStreaming = !!cursorHtml
     const lineCount = body.split('\n').filter(l => l.trim()).length
@@ -2597,7 +2600,7 @@ export function renderMessage(msg, ctx) {
         <span class="msg-thinking-toggle">▸</span>
         <span>${t('section_thinking') || '思考'}</span>${lineHint}
       </summary>
-      <div class="msg-thinking">${parseMarkdown(body)}${cursorHtml}</div>
+      <div class="msg-thinking">${escapeHtml(body)}${cursorHtml}</div>
     </details>`
   }
   // v0.5.bs: assistant 消息的 avatar 改成 brand logo 图（user/system 仍是字母）
