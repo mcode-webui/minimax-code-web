@@ -1,3 +1,7 @@
+// v2.2 (in-product): ES module — imports the shared i18n lookup; still
+// exposes window.FsPicker for native-fs.js (script tag is type="module").
+import { t } from './i18n.js'
+
 /**
  * fs-picker.js — 原生风格目录选择对话框
  * 
@@ -81,7 +85,7 @@
   // 主类 FsPicker
   // ============================================================
 
-  class FsPicker {
+class FsPicker {
     constructor(options = {}) {
       this.options = options;
       // 默认起始位置：documents（后端映射到 XDG Documents，中文系统为 ~/文档）
@@ -130,17 +134,17 @@
       this._overlay = document.createElement('div');
       this._overlay.className = 'fs-picker-overlay';
       this._overlay.innerHTML = `
-        <div class="fs-picker-dialog" role="dialog" aria-label="选择目录">
+        <div class="fs-picker-dialog" role="dialog" aria-label="${t('fs_picker_dialog_title')}">
           <!-- Toolbar -->
           <div class="fs-picker-toolbar">
             <div class="fs-picker-breadcrumb">
-              <button class="fs-btn-icon" title="用户目录" data-action="home">
+              <button class="fs-btn-icon" title="${t('fs_picker_home')}" data-action="home">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
               </button>
-              <button class="fs-btn-icon" title="根目录" data-action="root">
+              <button class="fs-btn-icon" title="${t('fs_picker_root')}" data-action="root">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
               </button>
-              <button class="fs-btn-icon" title="新建文件夹" data-action="mkdir">
+              <button class="fs-btn-icon" title="${t('fs_picker_mkdir')}" data-action="mkdir">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/><line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/></svg>
               </button>
               <div class="fs-picker-sep"></div>
@@ -149,16 +153,16 @@
               </div>
             </div>
             <div class="fs-picker-toolbar-right">
-              <button class="fs-btn" data-action="cancel">取消</button>
-              <button class="fs-btn" data-action="confirm" disabled>确定</button>
-              <button class="fs-btn fs-btn-primary" data-action="pick-current">选择当前目录</button>
+              <button class="fs-btn" data-action="cancel">${t('fs_picker_cancel')}</button>
+              <button class="fs-btn" data-action="confirm" disabled>${t('fs_picker_confirm')}</button>
+              <button class="fs-btn fs-btn-primary" data-action="pick-current">${t('fs_picker_pick_current')}</button>
             </div>
           </div>
 
           <!-- Filter -->
           <div class="fs-picker-filter-wrap">
-            <input class="fs-picker-filter" type="text" placeholder="过滤…（支持 glob，如 *.txt）" spellcheck="false" autocomplete="off" />
-            <button class="fs-btn-icon fs-picker-filter-clear" title="清除过滤" data-action="clear-filter" style="display:none">
+            <input class="fs-picker-filter" type="text" placeholder="${t('fs_picker_filter_placeholder')}" spellcheck="false" autocomplete="off" />
+            <button class="fs-btn-icon fs-picker-filter-clear" title="${t('fs_picker_clear_filter')}" data-action="clear-filter" style="display:none">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
             </button>
           </div>
@@ -166,18 +170,18 @@
           <!-- Column headers -->
           <div class="fs-picker-headers">
             <div class="fs-col fs-col-check"></div>
-            <div class="fs-col fs-col-name">名称</div>
-            <div class="fs-col fs-col-size">大小</div>
-            <div class="fs-col fs-col-mtime">修改时间</div>
-            <div class="fs-col fs-col-mode">权限</div>
+            <div class="fs-col fs-col-name">${t('fs_picker_col_name')}</div>
+            <div class="fs-col fs-col-size">${t('fs_picker_col_size')}</div>
+            <div class="fs-col fs-col-mtime">${t('fs_picker_col_mtime')}</div>
+            <div class="fs-col fs-col-mode">${t('fs_picker_col_mode')}</div>
           </div>
 
           <!-- File list -->
           <div class="fs-picker-list" role="listbox" aria-multiselectable="true">
             <div class="fs-picker-loading" style="display:none">
-              <span class="fs-spinner"></span> 加载中…
+              <span class="fs-spinner"></span> ${t('fs_picker_loading')}
             </div>
-            <div class="fs-picker-empty" style="display:none">该目录为空</div>
+            <div class="fs-picker-empty" style="display:none">${t('fs_picker_empty')}</div>
             <div class="fs-picker-error" style="display:none"></div>
             <!-- entries injected by _renderEntries -->
           </div>
@@ -362,7 +366,7 @@
         this._updateStatus();
         this._renderEntries();
       } catch (err) {
-        this._showError('加载目录失败: ' + (err.message || err));
+        this._showError(t('fs_picker_load_failed') + ': ' + (err.message || err));
         this.entries = [];
         this._renderEntries();
       } finally {
@@ -399,7 +403,7 @@
     }
 
     async _mkdir() {
-      const name = prompt('输入文件夹名称：');
+      const name = prompt(t('fs_picker_mkdir_prompt'));
       if (!name || !name.trim()) return;
       const parent = this.currentPath;
       const url = '/api/fs/mkdir';
@@ -411,12 +415,12 @@
           body: JSON.stringify({ path: joinPath(parent, name.trim()) }),
         });
       } catch (err) {
-        alert('创建文件夹失败: ' + err.message);
+        alert(t('fs_picker_mkdir_failed') + ': ' + err.message);
         return;
       }
       const json = await resp.json().catch(() => ({}));
       if (json.error) {
-        alert('创建失败: ' + json.error);
+        alert(t('fs_picker_create_failed') + ': ' + json.error);
         return;
       }
       // 刷新当前目录
@@ -446,7 +450,7 @@
       }
 
       if (!items.length) {
-        this._emptyEl.textContent = this.filterText ? '没有匹配的结果' : '该目录为空';
+        this._emptyEl.textContent = this.filterText ? t('fs_picker_no_match') : t('fs_picker_empty');
         this._emptyEl.style.display = 'block';
         return;
       }
@@ -480,7 +484,7 @@
       // Checkbox
       const check = document.createElement('div');
       check.className = 'fs-col fs-col-check';
-      check.innerHTML = `<input type="checkbox" class="fs-entry-check" ${isSelected ? 'checked' : ''} aria-label="选择 ${entry.name}" />`;
+      check.innerHTML = `<input type="checkbox" class="fs-entry-check" ${isSelected ? 'checked' : ''} aria-label="${t('fs_picker_select')} ${entry.name}" />`;
       row.appendChild(check);
 
       // Icon + Name
@@ -614,7 +618,7 @@
       if (n === 0) {
         this._statusEl.textContent = '';
       } else {
-        this._statusEl.textContent = `已选择 ${n} 项`;
+        this._statusEl.textContent = t('fs_picker_selected').replace('{n}', String(n));
       }
     }
 

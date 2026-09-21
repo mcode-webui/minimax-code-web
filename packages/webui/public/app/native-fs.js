@@ -12,9 +12,11 @@
  * @param {object} [options]
  * @param {string} [options.defaultPath] 初始目录（支持 ~ 开头），缺省为用户主目录
  */
+import { t } from './i18n.js'
+
 export async function pickDirectory(options = {}) {
   if (typeof window.FsPicker !== 'function') {
-    const msg = 'fs-picker 组件未加载（检查 index.html 是否引入 app/fs-picker.js）'
+    const msg = t('fs_picker_not_loaded')
     console.error('[native-fs]', msg)
     return { ok: false, reason: 'error', error: msg }
   }
