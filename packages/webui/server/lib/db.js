@@ -176,6 +176,16 @@ export function _getBetterSqlite3Candidates({ mcodeCmd = MCODE_CMD, home = homed
       "better-sqlite3",
     ),
   );
+  // v2.3 (in-product): monorepo layouts. In this repository better-sqlite3 is
+  //   a workspace devDependency at the repo root's node_modules — both when
+  //   the webui runs from source (packages/webui/server/lib → 3 up) and from
+  //   the built runtime copied into dist/webui (server/lib → 4 up). Without
+  //   these tiers a clean environment (no ~/.minimax-code install) resolves
+  //   nothing and the session-switch transcript backfill degrades to the
+  //   "no history" placeholder.
+  const here = dirname(fileURLToPath(import.meta.url));
+  candidates.push(join(here, "..", "..", "..", "node_modules", "better-sqlite3"));
+  candidates.push(join(here, "..", "..", "..", "..", "node_modules", "better-sqlite3"));
   return candidates;
 }
 
@@ -342,7 +352,7 @@ function _schemaError(table, e) {
 
 export function deleteMcodeSessionFromDb(
   sid,
-  { MCODE_RUNTIME_DB, dryRun = false } = {},
+  { MCODE_RUNTIME_DB, dryRun = false, getDb } = {},
 ) {
   if (!/^mvs_[a-f0-9]{32}$/.test(sid))
     return { ok: false, reason: "not_mcode_sid" };
@@ -353,7 +363,11 @@ export function deleteMcodeSessionFromDb(
   // documents the expected order: `mcode_db_not_found` must win.
   if (!MCODE_RUNTIME_DB || !existsSync(MCODE_RUNTIME_DB))
     return { ok: false, reason: "mcode_db_not_found" };
-  const Db = getMcodeBetterSqlite3();
+  // v2.3: getDb seam — tests inject () => null to exercise the
+  //   not-loaded gate deterministically, independent of which resolver
+  //   tiers happen to load on the host (the monorepo tier always does in
+  //   this repository).
+  const Db = getDb ? getDb() : getMcodeBetterSqlite3();
   if (!Db) return { ok: false, reason: "better_sqlite3_not_loaded" };
 
   // dry-run path: open readonly, count rows per table, do NOT modify.
