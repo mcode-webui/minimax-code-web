@@ -256,9 +256,12 @@ node /absolute/path/to/minimax-code/dist/cli.js
 驱动 TUI 的同一引擎也可以驱动浏览器前端：
 
 ```bash
-mcode webui                 # http://127.0.0.1:8080（默认只绑定回环地址）
+mcode-web                   # http://127.0.0.1:8080（默认只绑定回环地址）
+mcode web                   # 等价写法 —— `web` 与 `webui` 均可
 mcode webui --port 8123     # 自定义端口，启动后打印访问地址
 ```
+
+源码构建目录下使用 `pnpm mcode-web`。
 
 Web UI 通过 SSE 流式输出对话，渲染工具调用与权限确认，管理会话与工作区（含模态目录选择器，接口限制在允许的工作区根内），模型选择器常显当前模型，并在 `/trajectory/` 挂载只读的会话**轨迹工作室**。默认仅绑定回环地址；局域网暴露需显式开启并通过令牌鉴权。详见 [packages/webui](packages/webui/README.md) 与 [docs/webui.md](docs/webui.md)。
 

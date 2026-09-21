@@ -2851,6 +2851,7 @@
     "packages/tui/src/cli/mcode-tools-environment.ts",
     "packages/tui/src/cli/mcode-tools-launchers/mcode-tools",
     "packages/tui/src/cli/mcode-tools-launchers/mcode-tools.cmd",
+    "packages/tui/src/cli/mcode-web-entry.ts",
     "packages/tui/src/cli/network-proxy.ts",
     "packages/tui/src/cli/plugin-command.ts",
     "packages/tui/src/cli/program.ts",

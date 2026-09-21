@@ -81,6 +81,7 @@ const result = await build({
     cli: "packages/tui/src/index.ts",
     "image-preview-worker": "packages/tui/src/host/image-preview-worker.ts",
     'mcode-tools': 'packages/tui/src/cli/mcode-tools-entry.ts',
+    'mcode-web': 'packages/tui/src/cli/mcode-web-entry.ts',
     'matrix-mcp-stdio': 'packages/agent-tools/src/desktop/matrix-mcp-stdio.ts',
   },
   external: cliExternalModules,
