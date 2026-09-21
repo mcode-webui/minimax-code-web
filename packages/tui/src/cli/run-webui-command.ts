@@ -87,11 +87,22 @@ export function resolveTuiWebuiLayout(
     );
   }
 
-  // Only a JS entry can be re-spawned by the webui under plain `node`.
+  // Only a JS entry can be re-spawned by the webui under plain `node` — and it
+  // must be an entry that understands subcommands, because the webui spawns
+  // `<self> acp` for chat sessions. A dedicated launcher entry such as
+  // dist/mcode-web.js rejects the positional 'acp' and exits 1, killing every
+  // conversation at startup — hand the sibling cli.js to the webui instead.
   let cliEntry: string | undefined;
-  if (entry && /\.(js|mjs)$/iu.test(entry) && existsSync(entry)) cliEntry = entry;
-  else {
-    // tsx-style dev launch (a .ts entry): fall back to the built bundle.
+  if (entry && /\.(js|mjs)$/iu.test(entry) && existsSync(entry)) {
+    if (/cli\.c?js$/iu.test(entry)) cliEntry = entry;
+    else {
+      const sibling = join(dirname(entry), 'cli.js');
+      if (existsSync(sibling)) cliEntry = sibling;
+    }
+  }
+  if (!cliEntry) {
+    // Launcher entry without a sibling CLI, or a tsx-style dev launch
+    // (a .ts entry): fall back to the built bundle.
     const built = join(moduleDirectory, '..', '..', '..', 'dist', 'cli.js');
     if (existsSync(built)) cliEntry = built;
   }
