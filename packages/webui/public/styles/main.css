@@ -1704,6 +1704,9 @@ body.is-remote .btn-lan-toggle { display: none; }
   font-size: 12px;
   color: var(--text-secondary);
   font-style: italic;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 .msg-thinking-label { color: var(--accent); font-weight: 600; font-style: normal; }
 

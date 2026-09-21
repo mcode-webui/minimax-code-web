@@ -78,7 +78,16 @@ const ROUTES = [
   {
     method: "GET",
     match: (p) => p === "/" || p === "/index.html",
-    handler: (_req, res) => {
+    handler: (req, res) => {
+      // v2.3 (in-product): non-local request without a valid token gets the
+      //   self-service token gate page instead of the app shell — previously
+      //   the shell loaded and then every /api/* call failed 401 with no
+      //   guidance (the picker surfaced it as "加载目录失败: 401").
+      //   Local requests and token-authenticated requests are unaffected
+      //   (isRequestAuthorized already returns true for both).
+      if (!isRequestAuthorized(req)) {
+        if (serveStatic("auth-gate.html", res) !== false) return true;
+      }
       if (serveIndex(res) === false) {
         res.writeHead(404);
         res.end("not found");
