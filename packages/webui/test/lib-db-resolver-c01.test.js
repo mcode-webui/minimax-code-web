@@ -365,10 +365,12 @@ describe("db.js — C01 built-in fallback ordering", () => {
         home: "/Users/example",
       });
       const last = list[list.length - 1];
-      const segs = last.split(/[\\/]/).slice(-5);
+      // v2.3: the tail is now the monorepo layouts (source, then dist/webui
+      //   last); the legacy @minimax-ai/code dev layout sits before them.
+      const segs = last.split(/[\\/]/).slice(-2);
       assert.deepEqual(
         segs,
-        ["node_modules", "@minimax-ai", "code", "node_modules", "better-sqlite3"],
+        ["node_modules", "better-sqlite3"],
         `dev layout must end in better-sqlite3 path; got ${last}`,
       );
     } finally {
@@ -500,6 +502,7 @@ describe("db.js — D01 deleteMcodeSessionFromDb pre-flight gates", () => {
     try {
       const r = db.deleteMcodeSessionFromDb("mvs_abcdef0123456789abcdef0123456789", {
         MCODE_RUNTIME_DB: realDbPath,
+        getDb: () => null,
       });
       assert.deepEqual(r, { ok: false, reason: "better_sqlite3_not_loaded" });
     } finally {
@@ -518,6 +521,7 @@ describe("db.js — D01 deleteMcodeSessionFromDb pre-flight gates", () => {
       const r = db.deleteMcodeSessionFromDb("mvs_abcdef0123456789abcdef0123456789", {
         MCODE_RUNTIME_DB: realDbPath,
         dryRun: true,
+        getDb: () => null,
       });
       assert.deepEqual(r, { ok: false, reason: "better_sqlite3_not_loaded" });
     } finally {

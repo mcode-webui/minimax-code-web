@@ -57,13 +57,21 @@ describe("db.js — better-sqlite3 resolver candidates (v1.0.1 round 4)", () => 
     delete process.env.MCODE_BETTER_SQLITE3;
     const candidates = _getBetterSqlite3Candidates();
     assert.ok(candidates.length >= 1, "must have at least the dev layout fallback");
+    // v2.3: the tail is now the monorepo layouts (source + dist/webui), each
+    //   ending in node_modules/better-sqlite3; the legacy @minimax-ai/code
+    //   dev layout sits just before them.
     const last = candidates[candidates.length - 1];
-    // Compare path segments (not string) to be cross-platform (`\` vs `/`).
-    const lastSegments = last.split(/[\\/]/).slice(-5);
+    const lastSegments = last.split(/[\\/]/).slice(-2);
     assert.deepEqual(
       lastSegments,
-      ["node_modules", "@minimax-ai", "code", "node_modules", "better-sqlite3"],
-      `dev layout fallback should end with the better-sqlite3 path, got segments: ${lastSegments.join("/")}`,
+      ["node_modules", "better-sqlite3"],
+      `last candidate should be the dist/webui monorepo layout, got segments: ${lastSegments.join("/")}`,
+    );
+    const prevSegments = candidates[candidates.length - 2].split(/[\\/]/).slice(-2);
+    assert.deepEqual(
+      prevSegments,
+      ["node_modules", "better-sqlite3"],
+      "second-to-last candidate should be the source-tree monorepo layout",
     );
   });
 
@@ -71,12 +79,17 @@ describe("db.js — better-sqlite3 resolver candidates (v1.0.1 round 4)", () => 
     process.env.MCODE_BETTER_SQLITE3 = "/env/override";
     const candidates = _getBetterSqlite3Candidates();
     assert.equal(candidates[0], "/env/override", "env must be first");
-    const last = candidates[candidates.length - 1];
-    const lastSegments = last.split(/[\\/]/).slice(-5);
+    // v2.3: the legacy @minimax-ai/code dev layout is present, followed by
+    //   the two monorepo layouts (source + dist/webui) as the tail.
+    const legacy = candidates.find((c) =>
+      c.split(/[\\/]/).slice(-5).join("/") ===
+      "node_modules/@minimax-ai/code/node_modules/better-sqlite3");
+    assert.ok(legacy, "dev layout fallback must still be present");
+    const lastSegments = candidates[candidates.length - 1].split(/[\\/]/).slice(-2);
     assert.deepEqual(
       lastSegments,
-      ["node_modules", "@minimax-ai", "code", "node_modules", "better-sqlite3"],
-      "dev layout fallback must still be present as the last resort",
+      ["node_modules", "better-sqlite3"],
+      "monorepo dist/webui layout is the last resort",
     );
   });
 
@@ -191,13 +204,18 @@ describe("db.js — better-sqlite3 resolver candidates (v1.0.1 round 4)", () => 
     // substring test misses them on win32 (2 !== 0 in the fork-preview
     // run). Same semantics: every remaining candidate must be a
     // layout-shaped better-sqlite3 path, nothing MCODE_CMD-derived.
-    const BSQLITE3_TAIL = [
-      "node_modules", "@minimax-ai", "code", "node_modules", "better-sqlite3",
+    // v2.3: two tail shapes are builtin — the legacy @minimax-ai/code
+    //   layout and the monorepo layouts (…/node_modules/better-sqlite3).
+    const TAILS = [
+      ["node_modules", "@minimax-ai", "code", "node_modules", "better-sqlite3"],
+      ["node_modules", "better-sqlite3"],
     ];
     const endsWithSqlite3Tail = (c) => {
       const segs = c.split(/[\\/]/);
-      const off = segs.length - BSQLITE3_TAIL.length;
-      return off >= 0 && BSQLITE3_TAIL.every((s, i) => segs[off + i] === s);
+      return TAILS.some((tail) => {
+        const off = segs.length - tail.length;
+        return off >= 0 && tail.every((s, i) => segs[off + i] === s);
+      });
     };
     const cmdDerived = candidates.filter(
       (c) => !c.startsWith("/explicit/") && !endsWithSqlite3Tail(c),
