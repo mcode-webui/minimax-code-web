@@ -15,7 +15,7 @@
 
 import { test, describe, before, after } from "node:test";
 import { strict as assert } from "node:assert";
-import { join, dirname } from "node:path";
+import { join, dirname, sep } from "node:path";
 import {
     mkdtempSync,
     mkdirSync,
@@ -118,13 +118,31 @@ describe("db.js — better-sqlite3 resolver candidates (v1.0.1 round 4)", () => 
       found,
       `expected at least one candidate starting with ${expectedPrefix} (MCODE_CMD="${MCODE_CMD}"), got: ${JSON.stringify(candidates)}`,
     );
-    // And it must NOT start with `dirname(MCODE_CMD) + ".."` — that was
-    // the round 4 bug, where the candidate went one level too high.
-    const buggyPrefix = join(dirname(MCODE_CMD), "..");
-    const buggyFound = candidates.some((c) => c.startsWith(buggyPrefix));
+    // (v2.2 fix: the previous "round-4 buggy prefix" check computed
+    // `dirname(MCODE_CMD)/..` and asserted no candidate starts with it —
+    // but join() normalizes `dirname/../lib/...` (the legitimate npm-style
+    // candidate) to exactly that prefix, so the test could only pass where
+    // MCODE_CMD stayed the "mcode" placeholder and the whole test skipped.
+    // Prefix geometry cannot distinguish the round-4 form after path
+    // normalization; assert the positive property instead — both round-6
+    // candidate shapes must be present verbatim, anchored at the binary's
+    // directory, never at the executable file itself.)
+    const flatLayout = join(
+      dirname(MCODE_CMD),
+      "node_modules", "@minimax-ai", "code", "node_modules", "better-sqlite3",
+    );
+    const npmLayout = join(
+      dirname(MCODE_CMD), "..", "lib",
+      "node_modules", "@minimax-ai", "code", "node_modules", "better-sqlite3",
+    );
+    assert.ok(
+      candidates.includes(flatLayout) && candidates.includes(npmLayout),
+      `expected both round-6 candidate shapes (${flatLayout}, ${npmLayout}), got: ${JSON.stringify(candidates)}`,
+    );
     assert.equal(
-      buggyFound, false,
-      `candidates must not use the round-4 buggy prefix ${buggyPrefix}`,
+      candidates.some((c) => c.startsWith(MCODE_CMD + sep)),
+      false,
+      `candidates must not nest under the executable file path ${MCODE_CMD}`,
     );
   });
 

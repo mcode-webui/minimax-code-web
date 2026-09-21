@@ -54,6 +54,8 @@ import * as exportRoute from "./routes/export.js";
 import * as chatRoute from "./routes/chat.js";
 import * as usageRoute from "./routes/usage.js";
 import * as workspaceRoute from "./routes/workspace.js";
+// v2.2 (feat-workspace-lhl sync): fs picker endpoints
+import * as fsRoute from "./routes/fs.js";
 import * as settingsRoute from "./routes/settings.js";
 import * as uploadRoute from "./routes/upload.js";
 import * as modelRoute from "./routes/model.js";
@@ -246,6 +248,42 @@ const ROUTES = [
     method: "GET",
     match: (p) => p === "/api/workspace/browse",
     handler: workspaceRoute.handleWorkspaceBrowse,
+  },
+  // v1.2 (feat-workspace-lhl): 工作区→会话树 + 文件夹名解析候选
+  {
+    method: "GET",
+    match: (p) => p === "/api/workspace/tree",
+    handler: workspaceRoute.handleWorkspaceTree,
+  },
+  {
+    method: "GET",
+    match: (p) => p === "/api/workspace/resolve",
+    handler: workspaceRoute.handleWorkspaceResolve,
+  },
+  // v2 (feat-workspace-lhl): recent list + native OS picker
+  {
+    method: "GET",
+    match: (p) => p === "/api/workspace/recent",
+    handler: workspaceRoute.handleWorkspaceRecent,
+  },
+  {
+    method: "POST",
+    match: (p) => p === "/api/workspace/pick",
+    handler: workspaceRoute.handleWorkspacePick,
+  },
+
+  // v4.0 (feat-workspace-lhl): 文件系统 API（原生风格目录选择器）
+  //   v2.2 (in-product): read/mkdir 经 lib/workspace.js assertWorkspacePath
+  //   做 containment 校验，与 browseWorkspace 同边界。
+  {
+    method: "GET",
+    match: (p) => p === "/api/fs/read",
+    handler: fsRoute.handleFsRead,
+  },
+  {
+    method: "POST",
+    match: (p) => p === "/api/fs/mkdir",
+    handler: fsRoute.handleFsMkdir,
   },
 
   // Settings

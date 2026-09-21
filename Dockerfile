@@ -25,6 +25,12 @@ RUN npm install -g pnpm@9.12.0
 COPY . .
 RUN pnpm install --no-frozen-lockfile && pnpm build
 
+# Clean-environment entrypoint: seeds ~/.minimax/config.yaml from
+# MINIMAX_CN_API_KEY / MINIMAX_API_KEY (see docker/entrypoint.sh).
+COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+
 # Inside a container the browser cannot be opened and the host is a non-local
 # client, so bind all interfaces (token auth still applies to non-local
 # requests) and never try to open a browser.

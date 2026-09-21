@@ -8,47 +8,47 @@
 #                                            #   pnpm install && pnpm build
 #                                            #   node dist/cli.js webui --host 0.0.0.0 --no-open
 #
-# Both services reuse the host's MiniMax Code credentials (~/.minimax) and the
-# webui's own state (~/.mcode-webui) via bind mounts, and run as the host user
-# (uid/gid 1000 by default — override with WEBUI_UID/WEBUI_GID) so files the
-# container writes keep your ownership.
+# Clean environment by design: NO host home directories are mounted. The
+# MiniMax API key comes from the environment and is seeded into a fresh
+# in-container ~/.minimax/config.yaml by docker/entrypoint.sh — every
+# collaborator tests with their own key and a factory-fresh state, so host
+# models/tools/sessions never leak in (and container state never leaks out).
+#
+#   MINIMAX_CN_API_KEY=...  docker compose up webui     # region cn
+#   MINIMAX_API_KEY=...     docker compose up webui     # region global
 #
 # The token is fixed for dev convenience (WEBUI_TOKEN). The host browser is a
 # non-local client from the container's point of view, so every URL needs
-# ?token=… or an Authorization header; unset WEBUI_TOKEN to use the generated
-# token flow instead (read it from the mounted ~/.mcode-webui/settings.json).
+# ?token=… or an Authorization header.
 
 services:
   webui:
     build: .
     image: mcode-webui:dev
     init: true
-    user: "${WEBUI_UID:-1000}:${WEBUI_GID:-1000}"
     environment:
-      HOME: /home/node
       TOKEN: ${WEBUI_TOKEN:-dev-token}
       PORT: ${WEBUI_PORT:-18080}
+      MINIMAX_CN_API_KEY: ${MINIMAX_CN_API_KEY:-}
+      MINIMAX_API_KEY: ${MINIMAX_API_KEY:-}
+      MAVIS_REGION: ${MAVIS_REGION:-}
     ports:
       - "${WEBUI_PORT:-18080}:${WEBUI_PORT:-18080}"
-    volumes:
-      - ${HOME}/.minimax:/home/node/.minimax
-      - ${HOME}/.mcode-webui:/home/node/.mcode-webui
     restart: unless-stopped
 
   dev:
     image: mcode-webui:dev
     init: true
-    user: "${WEBUI_UID:-1000}:${WEBUI_GID:-1000}"
     working_dir: /repo
     environment:
-      HOME: /home/node
       PORT: ${WEBUI_PORT:-18080}
       # Keep package-manager state inside the container, off the bind mounts.
       XDG_DATA_HOME: /tmp/xdg
       PNPM_HOME: /tmp/pnpm
+      MINIMAX_CN_API_KEY: ${MINIMAX_CN_API_KEY:-}
+      MINIMAX_API_KEY: ${MINIMAX_API_KEY:-}
+      MAVIS_REGION: ${MAVIS_REGION:-}
     command: sleep infinity
     volumes:
       - .:/repo
-      - ${HOME}/.minimax:/home/node/.minimax
-      - ${HOME}/.mcode-webui:/home/node/.mcode-webui
     profiles: ["dev"]

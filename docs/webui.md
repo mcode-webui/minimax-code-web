@@ -31,23 +31,28 @@ node dist/cli.js webui --port 8123             # keep the installed one free
 
 ### Docker
 
-For isolated testing of the branch (or when you do not want to build locally),
-use the repository's Docker setup:
+The repository's Docker setup runs the branch in a **clean environment**: no
+host home directories are mounted, so host models/tools/sessions never leak in
+(and container state never leaks out). Model credentials come from the
+environment — each collaborator tests with their own key:
 
 ```bash
-docker compose up webui        # build image, run the Web UI
+MINIMAX_CN_API_KEY=...  docker compose up webui   # MiniMax cn region
+MINIMAX_API_KEY=...     docker compose up webui   # MiniMax global region
 # open http://localhost:18080/?token=dev-token
-docker compose down
+docker compose down                                # reset to factory state
 ```
 
-The container reuses the host's `~/.minimax` credentials and `~/.mcode-webui`
-state through bind mounts, runs as the host user (`WEBUI_UID`/`WEBUI_GID`,
-default 1000) so written files keep your ownership, and exposes the port via
-`WEBUI_PORT` (default 18080) with the dev token `WEBUI_TOKEN` (default
-`dev-token`). Because the host browser is a non-local client from the
-container's perspective, every URL carries `?token=…`.
+`docker/entrypoint.sh` seeds a fresh in-container `~/.minimax/config.yaml`
+(`minimaxModelSource: minimax_api_key` + the key + `minimax_api/MiniMax-M3`
+as the default model); `MAVIS_REGION` is derived from which variable you set
+and can be overridden explicitly. Because the host browser is a non-local
+client from the container's perspective, every URL carries `?token=…`
+(`WEBUI_TOKEN`, default `dev-token`); the port is `WEBUI_PORT` (default
+18080). A container without either key variable starts fine but chat has no
+model credentials until one is provided.
 
-For interactive development over the mounted source:
+For interactive development over the mounted source (same env-key flow):
 
 ```bash
 docker compose run --rm -p 18080:18080 dev

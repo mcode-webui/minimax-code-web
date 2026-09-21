@@ -111,6 +111,21 @@ Trajectory 视图的能力，落到一个 MCode Agent Plugin 上".
     engine detection prefers the repo-built `dist/cli.js` and injected self
     entry; the ACP client's POSIX spawn no longer ignores the resolved engine
     path.
+- **2026-09-21 (later)** — Wzdhehe's workspace-picker wave on the standalone
+  mirror (26 commits on `feat-workspace-lhl` branches: modal directory picker
+  `fs-picker`, workspace tree / recent / resolve endpoints, model-selector
+  button showing the current model) was synced into `packages/webui`. The
+  standalone tree descends from the v1 line, so the sync was a **merge, not a
+  copy**: the v2 workspace containment (allowed roots) was preserved and
+  extended onto the new surface — `/api/fs/read` and `/api/fs/mkdir` sit
+  behind the same allowed-roots boundary as `browseWorkspace` (the
+  standalone's `safePath` only blocked `..`), and `mkdir` validates its
+  parent directory because the target does not exist yet. The abandoned
+  Electron-dialog and browser-fs-access experiments from the wave were not
+  carried over. The Docker dev environment was also redesigned to a clean
+  container: no host home mounts, with the MiniMax API key provided per
+  collaborator via `MINIMAX_CN_API_KEY` / `MINIMAX_API_KEY` and seeded into a
+  fresh in-container config by `docker/entrypoint.sh`.
 
 ## 4. Artifact map
 

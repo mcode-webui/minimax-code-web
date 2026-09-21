@@ -260,7 +260,7 @@ mcode webui                 # http://127.0.0.1:8080 (loopback by default)
 mcode webui --port 8123     # custom port, prints the URL
 ```
 
-The Web UI streams chat over SSE, renders tool calls and permission prompts, manages sessions and workspaces, shows quota usage, and mounts a read-only session **trajectory studio** at `/trajectory/`. It binds loopback by default; LAN exposure is explicit opt-in and token-gated. See [packages/webui](packages/webui/README.md) and [docs/webui.md](docs/webui.md).
+The Web UI streams chat over SSE, renders tool calls and permission prompts, manages sessions and workspaces (with a modal directory picker over `/api/fs/*`, confined to allowed workspace roots), shows the current model in the selector, and mounts a read-only session **trajectory studio** at `/trajectory/`. It binds loopback by default; LAN exposure is explicit opt-in and token-gated. See [packages/webui](packages/webui/README.md) and [docs/webui.md](docs/webui.md).
 
 The Web UI originated as the community **mcode-webui** plugin and was migrated into this repository as a first-class package — the people and history behind it are recorded in [co-builders.md](co-builders.md).
 

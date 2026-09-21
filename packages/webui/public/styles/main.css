@@ -314,6 +314,7 @@ a.chip-lan-link .icon {
 }
 
 /* v0.5.al: workspace picker popover（fixed 定位，跟随 chip-workspace） */
+/* v2.1 (feat-workspace-lhl): 美化样式 */
 .workspace-picker {
   position: fixed;
   width: 360px;
@@ -323,12 +324,24 @@ a.chip-lan-link .icon {
   overflow-y: auto;
   background: var(--bg-elevated, #fff);
   border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 14px;
-  box-shadow: 0 8px 32px rgba(0,0,0,0.18);
+  border-radius: 14px;
+  padding: 16px;
+  box-shadow: 0 12px 40px rgba(0,0,0,0.22), 0 4px 12px rgba(0,0,0,0.1);
   z-index: 200;
+  animation: picker-enter 0.18s ease-out;
 }
-.workspace-picker-title { font-size: 13px; font-weight: 600; margin-bottom: 8px; color: var(--text); }
+
+@keyframes picker-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+.workspace-picker-title { font-size: 15px; font-weight: 600; margin-bottom: 14px; color: var(--text); letter-spacing: -0.01em; }
 .workspace-picker-current {
   font-size: 11px; color: var(--text-tertiary); margin-bottom: 10px;
   padding: 6px 8px; background: var(--bg-input, var(--bg)); border-radius: 6px;
@@ -345,13 +358,36 @@ a.chip-lan-link .icon {
   display: flex; gap: 6px; margin-top: 10px;
 }
 .btn-workspace-action {
-  flex: 1; padding: 6px 8px; background: transparent; border: 1px solid var(--border);
-  border-radius: 6px; color: var(--text-secondary); font-size: 12px; cursor: pointer;
-  transition: background 0.15s, border-color 0.15s, color 0.15s;
+  flex: 1; padding: 10px 14px; background: transparent; border: 1px solid var(--border);
+  border-radius: 10px; color: var(--text-secondary); font-size: 13px; cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s, transform 0.1s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-weight: 500;
 }
-.btn-workspace-action:hover { background: var(--bg-hover, rgba(0,0,0,0.04)); border-color: var(--accent); color: var(--text); }
-.btn-workspace-action.primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
-.btn-workspace-action.primary:hover { background: var(--accent-hover, #ffffff); }
+.btn-workspace-action:hover {
+  background: var(--bg-hover);
+  border-color: var(--accent);
+  color: var(--text);
+}
+.btn-workspace-action:active {
+  transform: scale(0.98);
+}
+.btn-workspace-action.primary {
+  background: var(--accent);
+  color: var(--on-accent);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+.btn-workspace-action.primary:hover {
+  background: var(--accent-hover);
+}
+.btn-workspace-action svg {
+  width: 16px;
+  height: 16px;
+}
 .workspace-picker-sync {
   display: flex; align-items: center; gap: 6px; margin-top: 10px;
   font-size: 11px; color: var(--text-tertiary); cursor: pointer;
@@ -368,6 +404,162 @@ a.chip-lan-link .icon {
 }
 .workspace-picker-recent:hover { background: var(--bg-hover, rgba(0,0,0,0.04)); color: var(--text); }
 .workspace-picker-hint { font-size: 11px; color: var(--text-tertiary); margin-top: 10px; }
+
+/* v2 (feat-workspace-lhl): 搜索 + recent 列表 + 原生 picker */
+/* v2.1 美化样式 */
+.ws-picker-search-wrap {
+  position: relative;
+  margin-bottom: 12px;
+}
+.ws-picker-search-icon {
+  position: absolute;
+  left: 11px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 16px;
+  height: 16px;
+  color: var(--text-tertiary);
+  pointer-events: none;
+}
+.ws-picker-search {
+  width: 100%;
+  padding: 10px 12px 10px 36px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-input, var(--bg));
+  color: var(--text);
+  font-size: 14px;
+  box-sizing: border-box;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.ws-picker-search:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-bg);
+}
+.ws-picker-search::placeholder { color: var(--text-tertiary); }
+
+.ws-picker-recent-list {
+  max-height: 240px;
+  overflow-y: auto;
+  border: 1px solid var(--border-light);
+  border-radius: 10px;
+  background: var(--bg);
+  margin-bottom: 12px;
+}
+
+/* 自定义滚动条 */
+.ws-picker-recent-list::-webkit-scrollbar {
+  width: 5px;
+}
+.ws-picker-recent-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+.ws-picker-recent-list::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+.ws-picker-recent-list::-webkit-scrollbar-thumb:hover {
+  background: var(--text-tertiary);
+}
+
+.ws-picker-recent-loading,
+.ws-picker-recent-empty {
+  padding: 20px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-tertiary);
+}
+.ws-picker-recent-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text);
+  transition: background 0.12s;
+  border-bottom: 1px solid var(--border-light);
+}
+.ws-picker-recent-item:last-child { border-bottom: none; }
+.ws-picker-recent-item:hover { background: var(--bg-hover); }
+.ws-picker-recent-item.active {
+  background: var(--accent-bg);
+  color: var(--accent-text);
+  font-weight: 500;
+}
+
+.ws-picker-recent-icon {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+  opacity: 0.6;
+}
+.ws-picker-recent-item:hover .ws-picker-recent-icon,
+.ws-picker-recent-item.active .ws-picker-recent-icon {
+  color: var(--accent);
+  opacity: 1;
+}
+
+.ws-picker-recent-info {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.ws-picker-recent-name {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.ws-picker-recent-path {
+  display: block;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: 2px;
+}
+.ws-picker-recent-count {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-light);
+  border-radius: 10px;
+  padding: 2px 8px;
+  flex-shrink: 0;
+}
+.ws-picker-divider {
+  height: 1px;
+  background: var(--border-light);
+  margin: 10px 0;
+}
+
+.ws-picker-actions-row {
+  display: flex;
+  gap: 8px;
+}
+
+.ws-picker-actions-row .btn-workspace-action {
+  flex: 1;
+  justify-content: center;
+}
+  background: var(--border);
+  margin: 6px 0;
+}
+.ws-picker-recent-loading,
+.ws-picker-recent-empty {
+  padding: 16px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
 
 /* v0.5.at: chip-lan — 跟其他 btn-menu 同结构，仅 WiFi 图标按状态着色（文字 / 箭头保持正常色） */
 .btn-lan-toggle .chip-lan-icon {
@@ -3453,3 +3645,173 @@ button.chip-alerts .icon { width: 14px; height: 14px; display: block; }
   font-size: 11px;
   color: var(--text-tertiary);
 }
+
+/* ============================================================
+   v1.2 (feat-workspace-lhl): 工作区零弹窗选择 + quick picker
+   ============================================================ */
+
+/* Switch Workspace 弹层 */
+.workspace-picker-input {
+  width: 100%;
+  margin-top: 8px;
+  padding: 7px 10px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: inherit;
+  box-sizing: border-box;
+}
+
+.workspace-picker-actions-row {
+  margin-top: 10px;
+  display: flex;
+  gap: 8px;
+}
+
+.workspace-picker-actions-row.split {
+  justify-content: space-between;
+}
+
+.btn-workspace-action {
+  flex: 1;
+  padding: 8px 12px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.btn-workspace-action:hover {
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
+}
+
+/* 零弹窗候选确认区 */
+.ws-native-candidates {
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.ws-native-candidates-title {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  margin-bottom: 8px;
+}
+
+.ws-native-cand-btn {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  padding: 8px 10px;
+  margin-bottom: 6px;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  text-align: left;
+  gap: 2px;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.ws-native-cand-btn:last-child { margin-bottom: 0; }
+
+.ws-native-cand-btn:hover {
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
+}
+
+.ws-native-cand-name {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.ws-native-cand-path {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  word-break: break-all;
+}
+
+/* Quick picker 下拉（welcome 页 chip 锚定） */
+#ws-quick-list {
+  position: absolute;
+  z-index: 1000;
+  min-width: 260px;
+  max-width: 380px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  padding: 6px 0;
+  overflow: hidden;
+}
+
+.ws-quick-loading,
+.ws-quick-empty {
+  padding: 16px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-tertiary);
+}
+
+.ws-quick-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 14px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-primary);
+  gap: 8px;
+  transition: background 0.12s;
+}
+
+.ws-quick-item:hover { background: var(--bg-hover); }
+
+.ws-quick-item.active {
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.ws-quick-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ws-quick-count {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  background: var(--bg-base);
+  border: 1px solid var(--border-light);
+  border-radius: 10px;
+  padding: 1px 7px;
+  flex-shrink: 0;
+}
+
+.ws-quick-add {
+  padding: 9px 14px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--primary);
+  border-top: 1px solid var(--border-light);
+  margin-top: 4px;
+  transition: background 0.12s;
+}
+
+.ws-quick-add:hover { background: color-mix(in srgb, var(--primary) 10%, transparent); }
