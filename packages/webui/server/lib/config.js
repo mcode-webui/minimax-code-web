@@ -145,6 +145,13 @@ export const SQLITE3_BIN =
 //   - MCODE_WEBUI_RATE_LIMIT      : steady-state allowance per 60s (default 60)
 //   - MCODE_WEBUI_RATE_LIMIT_BURST: hard ceiling within one window (default 100)
 // Token holders get a 2x multiplier on both (see server/lib/rate-limit.js).
+// v2.3: chat 空闲看门狗 — acp/exec 流事件每到一个就续命，静默超过该窗口才判超时。
+//   之前是固定 90s 墙钟：长思考/多工具回合被拦腰掐断（"prompt did not return
+//   in 90s"）。默认 120s 静默；MCODE_WEBUI_PROMPT_IDLE_TIMEOUT 秒可调（正数生效）。
+export const PROMPT_IDLE_TIMEOUT_MS = (() => {
+  const s = Number(process.env.MCODE_WEBUI_PROMPT_IDLE_TIMEOUT);
+  return Number.isFinite(s) && s > 0 ? Math.round(s * 1000) : 120000;
+})();
 export const RATE_LIMIT_PER_MIN = Number(process.env.MCODE_WEBUI_RATE_LIMIT || 60);
 export const RATE_LIMIT_BURST = Number(process.env.MCODE_WEBUI_RATE_LIMIT_BURST || 100);
 

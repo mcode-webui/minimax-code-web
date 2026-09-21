@@ -10,7 +10,10 @@ import {
   DEFAULT_TIMEOUT,
   DEFAULT_MAX_STEPS,
   DEFAULT_MODEL,
+  PROMPT_IDLE_TIMEOUT_MS,
 } from "./config.js";
+import { createIdleWatchdog } from "./idle-watchdog.js";
+import { pushAlert } from "./alerts.js";
 import { streamUpdateLine } from "./sessions.js";
 import { setActiveChild, clearActiveChild, pushStateFor } from "./state-bus.js";
 
@@ -289,21 +292,38 @@ export function collectExecResult(childPromise) {
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", () => {}); // swallow; usage stats can land here
 
-    const safetyTimeout = setTimeout(() => {
-      if (r.status === "unknown") {
-        r.status = "timeout";
-        r.error = { message: "mcode exec did not produce exec.result in 90s" };
-        try {
-          child.kill();
-        } catch {}
-        finalize();
-      }
-    }, 90000);
+    // v2.3: idle watchdog (see mcode-acp.js) — stream lines refresh
+    //   cs.running.lastDeltaAt; only a silent stream trips this.
+    const idleSeconds = Math.round(PROMPT_IDLE_TIMEOUT_MS / 1000);
+    const safetyTimeout = createIdleWatchdog({
+      idleMs: PROMPT_IDLE_TIMEOUT_MS,
+      activityAt: () => cs.running.lastDeltaAt || t0,
+      onTimeout: () => {
+        if (r.status === "unknown") {
+          r.status = "timeout";
+          r.error = {
+            message: `mcode exec stream inactive for ${idleSeconds}s (no output)`,
+          };
+          pushAlert({
+            level: "warn",
+            msg: `[mcode-exec.timeout] stream inactive for ${idleSeconds}s`,
+            src: "mcode-exec",
+            cid: cid || null,
+            sessionId: sid || null,
+            data: { phase: "stream" },
+          });
+          try {
+            child.kill("SIGTERM");
+          } catch {}
+          finalize();
+        }
+      },
+    });
 
     function finalize() {
       if (r._finalized) return;
       r._finalized = true;
-      clearTimeout(safetyTimeout);
+      safetyTimeout.stop();
       const dt = Date.now() - t0;
       r.durationMs = r.durationMs || dt;
       if (r._stopped) r.status = "stopped";
