@@ -2,7 +2,8 @@
 // mcode acp protocol streaming — streamAcpPrompt + runMcodeAcp.
 
 import { McodeAcpClient } from "../../acp.mjs";
-import { DEFAULT_WORKSPACE, DEFAULT_MODEL } from "./config.js";
+import { DEFAULT_WORKSPACE, DEFAULT_MODEL, PROMPT_IDLE_TIMEOUT_MS } from "./config.js";
+import { createIdleWatchdog } from "./idle-watchdog.js";
 import { streamUpdateLine } from "./sessions.js";
 import {
   setActiveChild,
@@ -121,31 +122,42 @@ function streamAcpPrompt(client, sid, content, label, cs, cid) {
     cs.context.thinkingStatus = "Running";
     setActiveChild(cid, client);
     pushStateFor(cid);
-    const safetyTimeout = setTimeout(() => {
-      if (r.status === "unknown") {
-        r.status = "timeout";
-        r.error = { message: "mcode acp prompt did not return in 90s" };
-        // v2.0 (lease B02): §AP5 — surface silent hangs on the
-        // anomaly channel as a `warn` (less severe than a crash
-        // but still actionable).
-        pushAlert({
-          level: "warn",
-          msg: `[mcode-acp.timeout] prompt did not return in 90s`,
-          src: "mcode-acp",
-          cid: cid || null,
-          sessionId: sid || null,
-          data: { phase: "stream" },
-        });
-        try {
-          client.stop();
-        } catch {}
-        finalize();
-      }
-    }, 90000);
+    // v2.3: idle watchdog — every stream event (thought/message/tool_call/
+    //   tool_update/usage/other) refreshes cs.running.lastDeltaAt, so a long
+    //   but healthy turn never trips this; only a silent stream does.
+    //   (Was a fixed 90s wall-clock timer that killed long thinking turns.)
+    const idleSeconds = Math.round(PROMPT_IDLE_TIMEOUT_MS / 1000);
+    const safetyTimeout = createIdleWatchdog({
+      idleMs: PROMPT_IDLE_TIMEOUT_MS,
+      activityAt: () => cs.running.lastDeltaAt || t0,
+      onTimeout: () => {
+        if (r.status === "unknown") {
+          r.status = "timeout";
+          r.error = {
+            message: `mcode acp prompt inactive for ${idleSeconds}s (no stream events)`,
+          };
+          // v2.0 (lease B02): §AP5 — surface silent hangs on the
+          // anomaly channel as a `warn` (less severe than a crash
+          // but still actionable).
+          pushAlert({
+            level: "warn",
+            msg: `[mcode-acp.timeout] prompt inactive for ${idleSeconds}s`,
+            src: "mcode-acp",
+            cid: cid || null,
+            sessionId: sid || null,
+            data: { phase: "stream" },
+          });
+          try {
+            client.stop();
+          } catch {}
+          finalize();
+        }
+      },
+    });
     function finalize() {
       if (r._finalized) return;
       r._finalized = true;
-      clearTimeout(safetyTimeout);
+      safetyTimeout.stop();
       r.durationMs = r.durationMs || Date.now() - t0;
       clearActiveChild(cid);
       cs.running = {

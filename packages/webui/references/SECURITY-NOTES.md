@@ -347,6 +347,7 @@ byte is rejected the moment it is seen, not after the body is read:
 | Total request body | 50 MiB | `MCODE_WEBUI_UPLOAD_MAX_REQUEST` | `UPLOAD_REQ_TOO_LARGE` |
 | Single file | 25 MiB | `MCODE_WEBUI_UPLOAD_MAX_FILE` | `UPLOAD_FILE_TOO_LARGE` |
 | Upload-directory quota | 200 MiB | `MCODE_WEBUI_UPLOAD_QUOTA` | `UPLOAD_QUOTA_EXCEEDED` |
+| Chat idle watchdog | 120 s of stream silence | `MCODE_WEBUI_PROMPT_IDLE_TIMEOUT` (seconds) | `mcode acp/exec … inactive` (warn alert + turn timeout) |
 
 - Over-limit requests get **413** with `{ok: false, error, code}` — the
   message names the limit and the env knob that raises it — plus
