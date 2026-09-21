@@ -228,7 +228,8 @@ git clone https://github.com/MiniMax-AI/minimax-code.git
 cd minimax-code
 pnpm install --frozen-lockfile
 pnpm build
-pnpm mcode
+pnpm mcode          # terminal UI
+pnpm mcode-web      # Web UI (also: pnpm mcode web / pnpm mcode webui)
 ```
 
 The first build requires an internet connection. Dependencies and the integrity-checked `mcode-tools` bundle come from public npm. See the [source installation guide](docs/installation.md) for pnpm setup, system dependencies, and updates.
@@ -256,9 +257,12 @@ For now, code and documentation pull requests are accepted only from repository 
 The same engine that powers the TUI also drives a browser frontend:
 
 ```bash
-mcode webui                 # http://127.0.0.1:8080 (loopback by default)
+mcode-web                   # http://127.0.0.1:8080 (loopback by default)
+mcode web                   # same thing — `web` and `webui` both work
 mcode webui --port 8123     # custom port, prints the URL
 ```
+
+From a source checkout use `pnpm mcode-web`.
 
 The Web UI streams chat over SSE, renders tool calls and permission prompts, manages sessions and workspaces (with a modal directory picker over `/api/fs/*`, confined to allowed workspace roots), shows the current model in the selector, and mounts a read-only session **trajectory studio** at `/trajectory/`. It binds loopback by default; LAN exposure is explicit opt-in and token-gated. See [packages/webui](packages/webui/README.md) and [docs/webui.md](docs/webui.md).
 

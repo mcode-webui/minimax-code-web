@@ -5,9 +5,11 @@ The Web UI (`packages/webui`) is the browser frontend for MiniMax Code. It uses 
 ## Launch
 
 ```bash
-mcode webui                   # http://127.0.0.1:8080
+mcode-web                     # http://127.0.0.1:8080
+mcode web                     # equivalent — `web` and `webui` both resolve
 mcode webui --port 8123 --host 127.0.0.1
 mcode webui --token "$(openssl rand -hex 16)" --host 0.0.0.0   # LAN, token-gated
+pnpm mcode-web                # from a source checkout (built)
 node packages/webui/server.js # direct, from a checkout
 ```
 

@@ -128,6 +128,8 @@ export function createTuiProgram(options: CreateTuiProgramOptions): Command {
 
   program
     .command('webui')
+    // `web` reads as the Web UI, not as a TUI prompt — accept both spellings.
+    .alias('web')
     .description('Start the MiniMax Code Web UI (browser frontend driven by the same engine)')
     .option('--port <number>', 'HTTP port (default 8080)', parsePort)
     .option('--host <address>', 'bind address (default 127.0.0.1; LAN exposure is opt-in)')
