@@ -8,8 +8,13 @@ import { join, resolve, extname, basename } from 'node:path'
 import { homedir } from 'node:os'
 
 // 知名目录解析（对标 File System Access API 的 startIn）：
-// 优先读 XDG user-dirs 配置（中文系统是 ~/文档 而非 ~/Documents），
-// 回退 ~/Documents 等英文目录，最后回退主目录。
+//   linux:   读 XDG user-dirs 配置（中文系统是 ~/文档 而非 ~/Documents），
+//            回退 ~/Documents 等英文目录，最后回退主目录
+//   darwin:  ~/Documents 等系统默认目录（存在即用），回退主目录
+//   win32:   先探 OneDrive 重定向（~/OneDrive/Documents，中文 Windows 常见），
+//            再 ~/Documents（磁盘上始终是英文名，资源管理器显示才本地化），
+//            回退主目录
+// 兜底顺序保证任何平台都返回一个存在的目录（picker 永不因目录缺失而 404）。
 const XDG_DIRS = {
   documents: 'XDG_DOCUMENTS_DIR',
   desktop: 'XDG_DESKTOP_DIR',
@@ -23,16 +28,26 @@ function wellKnownDir(name) {
   const xdgKey = XDG_DIRS[name]
   if (!xdgKey) return null
   const home = homedir()
-  try {
-    const cfg = readFileSync(join(home, '.config', 'user-dirs.dirs'), 'utf8')
-    const m = cfg.match(new RegExp(`^${xdgKey}=["']?([^"'\n]+)["']?`, 'm'))
-    if (m) {
-      const p = m[1].replace('$HOME', home)
-      if (existsSync(p)) return p
-    }
-  } catch {}
-  const fallback = join(home, name[0].toUpperCase() + name.slice(1))
-  return existsSync(fallback) ? fallback : home
+  const capitalized = name[0].toUpperCase() + name.slice(1)
+  if (process.platform === 'linux') {
+    try {
+      const cfg = readFileSync(join(home, '.config', 'user-dirs.dirs'), 'utf8')
+      const m = cfg.match(new RegExp(`^${xdgKey}=["']?([^"'\n]+)["']?`, 'm'))
+      if (m) {
+        const p = m[1].replace('$HOME', home)
+        if (existsSync(p)) return p
+      }
+    } catch {}
+  }
+  const candidates = []
+  if (process.platform === 'win32') {
+    candidates.push(join(home, 'OneDrive', capitalized))
+  }
+  candidates.push(join(home, capitalized))
+  for (const c of candidates) {
+    if (existsSync(c)) return c
+  }
+  return home
 }
 
 // 路径解析：~ / ~/xxx 展开主目录；documents 等关键字映射知名目录；其余原样

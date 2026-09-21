@@ -37,6 +37,23 @@ ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 ENV HOST=0.0.0.0
 EXPOSE 18080
 
+# Realistic non-root user home: the fs-picker's well-known directory keywords
+# (documents/downloads/…) and XDG resolution expect the standard user
+# directories to exist. Replaces the base image's `node` user (already uid
+# 1000) with `user` so the name matches the /home/user layout; uid/gid 1000
+# matches the default first user on most hosts — and the ownership of a
+# bind-mounted checkout in the dev profile.
+RUN userdel --remove node \
+  && useradd --create-home --uid 1000 --user-group --shell /bin/bash user \
+  && mkdir -p /home/user/Desktop /home/user/Documents /home/user/Downloads \
+             /home/user/Pictures /home/user/Music /home/user/Videos \
+             /home/user/projects /home/user/.config \
+  && printf 'XDG_DESKTOP_DIR="$HOME/Desktop"\nXDG_DOCUMENTS_DIR="$HOME/Documents"\nXDG_DOWNLOAD_DIR="$HOME/Downloads"\nXDG_PICTURES_DIR="$HOME/Pictures"\nXDG_MUSIC_DIR="$HOME/Music"\nXDG_VIDEOS_DIR="$HOME/Videos"\n' \
+     > /home/user/.config/user-dirs.dirs \
+  && chown -R user:user /home/user
+ENV HOME=/home/user
+USER user
+
 HEALTHCHECK --interval=5s --timeout=3s --start-period=15s --retries=5 \
   CMD curl -fsS "http://127.0.0.1:${PORT:-18080}/api/health" >/dev/null || exit 1
 

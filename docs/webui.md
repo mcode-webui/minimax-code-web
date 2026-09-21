@@ -43,7 +43,7 @@ MINIMAX_API_KEY=...     docker compose up webui   # MiniMax global region
 docker compose down                                # reset to factory state
 ```
 
-`docker/entrypoint.sh` seeds a fresh in-container `~/.minimax/config.yaml`
+The image runs as a non-root `user` (uid 1000) with a realistic home at `/home/user` (Desktop/Documents/Downloads/Pictures/Music/Videos/projects + XDG config), so the directory picker's well-known-folder keywords behave as on a desktop. `docker/entrypoint.sh` seeds a fresh in-container `~/.minimax/config.yaml`
 (`minimaxModelSource: minimax_api_key` + the key + `minimax_api/MiniMax-M3`
 as the default model); `MAVIS_REGION` is derived from which variable you set
 and can be overridden explicitly. Because the host browser is a non-local
