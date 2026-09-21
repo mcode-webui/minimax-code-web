@@ -3,7 +3,7 @@
 // GET  /api/fs/read?path=xxx&showHidden=0  读取目录
 // POST /api/fs/mkdir                       创建目录 { path }
 
-import { readDirectory, createDirectory } from '../lib/fs-util.js'
+import { readDirectory, createDirectory, resolveTarget } from '../lib/fs-util.js'
 import { assertWorkspacePath, assertWorkspaceParentPath, expandTilde } from '../lib/workspace.js'
 
 // v2.2 (in-product): containment 门 — 目录浏览/创建与 browseWorkspace 同边界，
@@ -11,12 +11,15 @@ import { assertWorkspacePath, assertWorkspaceParentPath, expandTilde } from '../
 //   可整体替换）内的路径。'~' 前缀先展开再校验。独立仓版本的 safePath 只挡
 //   '..'，在产品包里收紧为允许根边界。
 function safePath(rawPath) {
-  const gate = assertWorkspacePath(expandTilde(rawPath))
+  // v2.2: resolveTarget first — the picker's default start is the
+  //   'documents' keyword (XDG dir → ~/Documents → home fallback); gating
+  //   the raw keyword would resolve it cwd-relative and ENOENT.
+  const gate = assertWorkspacePath(resolveTarget(expandTilde(rawPath)))
   return gate.ok ? gate.path : null
 }
 
 function gateError(res, rawPath) {
-  const gate = assertWorkspacePath(expandTilde(rawPath))
+  const gate = assertWorkspacePath(resolveTarget(expandTilde(rawPath)))
   res.writeHead(403, { 'Content-Type': 'application/json' })
   res.end(JSON.stringify({ ok: false, error: gate.ok ? 'invalid path' : gate.error }))
 }
@@ -57,7 +60,7 @@ export function handleFsMkdir(req, res) {
     }
 
     // mkdir 的目标尚不存在 — 校验父目录在允许根内（v2.2）
-    const gate = assertWorkspaceParentPath(expandTilde(data.path))
+    const gate = assertWorkspaceParentPath(resolveTarget(expandTilde(data.path)))
     if (!gate.ok) {
       res.writeHead(403, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ ok: false, error: gate.error }))

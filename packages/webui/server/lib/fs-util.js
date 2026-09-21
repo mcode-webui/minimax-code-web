@@ -36,7 +36,10 @@ function wellKnownDir(name) {
 }
 
 // 路径解析：~ / ~/xxx 展开主目录；documents 等关键字映射知名目录；其余原样
-function resolveTarget(p) {
+// v2.2 (in-product): exported — the containment gate in routes/fs.js must
+//   resolve the same way the picker client does (keywords like 'documents'),
+//   otherwise 'documents' resolves cwd-relative and ENOENTs.
+export function resolveTarget(p) {
   if (!p || p === '~') return homedir()
   if (p.startsWith('~/')) return join(homedir(), p.slice(2))
   const known = wellKnownDir(p)
