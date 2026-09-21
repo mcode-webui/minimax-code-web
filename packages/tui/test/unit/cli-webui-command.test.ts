@@ -34,6 +34,20 @@ describe('resolveTuiWebuiLayout', () => {
     expect(layout.cliEntry).toBe(entry);
   });
 
+  it('resolves a launcher entry (mcode-web.js) to its sibling cli.js', () => {
+    // The webui spawns `<self> acp`; only the main CLI understands the
+    // subcommand, so a dedicated launcher entry must hand over cli.js —
+    // otherwise every chat session dies with exit 1 at startup.
+    const root = mkdtempSync(path.join(tmpdir(), 'webui-layout-'));
+    makeWebuiTree(root);
+    const launcher = path.join(root, 'mcode-web.js');
+    const cli = path.join(root, 'cli.js');
+    writeFileSync(launcher, '// launcher\n');
+    writeFileSync(cli, '// cli\n');
+    const layout = resolveTuiWebuiLayout(launcher, {} as NodeJS.ProcessEnv, root);
+    expect(layout.cliEntry).toBe(cli);
+  });
+
   it('rejects a TS entry as the self CLI reference', () => {
     const root = mkdtempSync(path.join(tmpdir(), 'webui-layout-'));
     makeWebuiTree(root);
