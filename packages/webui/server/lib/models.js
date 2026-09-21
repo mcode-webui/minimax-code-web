@@ -2,7 +2,7 @@
 // Builtin model extraction from mcode cli.js bundle + context limit lookup.
 
 import { join, dirname } from "node:path";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { MCODE_CMD, PACKAGE_ROOT } from "./config.js";
 
 // v0.5.bj: 启动时从 mcode 的 cli.js bundle 里提取 hardcoded 的 MiniMax-M* 模型列表
@@ -35,12 +35,35 @@ export function getBuiltinModelsFromMcode() {
       CACHED_BUILTIN_MODELS = [];
       return [];
     }
-    const content = readFileSync(cliEntry, "utf-8");
-    // 匹配 MiniMax-M* 形式（带或不带 -highspeed 等后缀）
+    // v2.2 (in-product): the build code-splits — the entry dist/cli.js no
+    //   longer contains the model catalog; it lives in sibling chunks/*.js.
+    //   Scan the entry plus every chunk (bounded) and merge hits.
     const re = /MiniMax-M[0-9][a-z0-9.-]*/g;
     const found = new Set();
-    let m;
-    while ((m = re.exec(content)) !== null) found.add(m[0]);
+    const collect = (content) => {
+      let m;
+      while ((m = re.exec(content)) !== null) found.add(m[0]);
+    };
+    collect(readFileSync(cliEntry, "utf-8"));
+    const chunksDir = join(dirname(cliEntry), "chunks");
+    let budget = 48 * 1024 * 1024; // 扫描上限，防异常巨大的构建产物
+    if (existsSync(chunksDir)) {
+      for (const name of readdirSync(chunksDir)) {
+        if (!name.endsWith(".js")) continue;
+        const p = join(chunksDir, name);
+        let stat;
+        try {
+          stat = statSync(p);
+        } catch {
+          continue;
+        }
+        if (stat.size > budget) continue;
+        budget -= stat.size;
+        try {
+          collect(readFileSync(p, "utf-8"));
+        } catch {}
+      }
+    }
     CACHED_BUILTIN_MODELS = [...found].sort().reverse(); // M3 排前
     console.log(
       "[models] extracted from cli.js:",
