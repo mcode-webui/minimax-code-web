@@ -1,9 +1,9 @@
 # Development and testing environment for the Web UI.
 #
 #   docker compose up webui                  # run the branch's built Web UI
-#   → http://localhost:8080/?token=dev-token
+#   → http://localhost:18080/?token=dev-token
 #
-#   docker compose run --rm -p 8080:8080 dev # interactive dev shell over the
+#   docker compose run --rm -p 18080:18080 dev # interactive dev shell over the
 #                                            # mounted source; then inside:
 #                                            #   pnpm install && pnpm build
 #                                            #   node dist/cli.js webui --host 0.0.0.0 --no-open
@@ -27,9 +27,9 @@ services:
     environment:
       HOME: /home/node
       TOKEN: ${WEBUI_TOKEN:-dev-token}
-      PORT: ${WEBUI_PORT:-8080}
+      PORT: ${WEBUI_PORT:-18080}
     ports:
-      - "${WEBUI_PORT:-8080}:${WEBUI_PORT:-8080}"
+      - "${WEBUI_PORT:-18080}:${WEBUI_PORT:-18080}"
     volumes:
       - ${HOME}/.minimax:/home/node/.minimax
       - ${HOME}/.mcode-webui:/home/node/.mcode-webui
@@ -42,6 +42,7 @@ services:
     working_dir: /repo
     environment:
       HOME: /home/node
+      PORT: ${WEBUI_PORT:-18080}
       # Keep package-manager state inside the container, off the bind mounts.
       XDG_DATA_HOME: /tmp/xdg
       PNPM_HOME: /tmp/pnpm

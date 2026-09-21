@@ -29,9 +29,9 @@ RUN pnpm install --no-frozen-lockfile && pnpm build
 # client, so bind all interfaces (token auth still applies to non-local
 # requests) and never try to open a browser.
 ENV HOST=0.0.0.0
-EXPOSE 8080
+EXPOSE 18080
 
 HEALTHCHECK --interval=5s --timeout=3s --start-period=15s --retries=5 \
-  CMD curl -fsS "http://127.0.0.1:${PORT:-8080}/api/health" >/dev/null || exit 1
+  CMD curl -fsS "http://127.0.0.1:${PORT:-18080}/api/health" >/dev/null || exit 1
 
 CMD ["node", "dist/cli.js", "webui", "--no-open"]

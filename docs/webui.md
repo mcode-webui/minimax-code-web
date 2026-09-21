@@ -36,24 +36,24 @@ use the repository's Docker setup:
 
 ```bash
 docker compose up webui        # build image, run the Web UI
-# open http://localhost:8080/?token=dev-token
+# open http://localhost:18080/?token=dev-token
 docker compose down
 ```
 
 The container reuses the host's `~/.minimax` credentials and `~/.mcode-webui`
 state through bind mounts, runs as the host user (`WEBUI_UID`/`WEBUI_GID`,
 default 1000) so written files keep your ownership, and exposes the port via
-`WEBUI_PORT` (default 8080) with the dev token `WEBUI_TOKEN` (default
+`WEBUI_PORT` (default 18080) with the dev token `WEBUI_TOKEN` (default
 `dev-token`). Because the host browser is a non-local client from the
 container's perspective, every URL carries `?token=…`.
 
 For interactive development over the mounted source:
 
 ```bash
-docker compose run --rm -p 8080:8080 dev
+docker compose run --rm -p 18080:18080 dev
 # inside the container:
 pnpm install --no-frozen-lockfile && pnpm build
-node dist/cli.js webui --host 0.0.0.0 --no-open
+node dist/cli.js webui --host 0.0.0.0 --no-open   # PORT defaults to 18080
 ```
 
 ## Security posture
