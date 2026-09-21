@@ -370,9 +370,23 @@
       }
     }
 
+    // v2.2 (in-product): token-auth for non-loopback deployments (Docker/LAN).
+    //   The standalone repo only ever served loopback, where local requests
+    //   bypass auth — raw fetch() worked. Behind a token-gated deployment the
+    //   same calls 401. Read the token the same way state.js persists it
+    //   (URL ?token= on entry, then localStorage['webui_token']); never log it.
+    static _authHeaders() {
+      try {
+        const t = localStorage.getItem('webui_token')
+        return t ? { Authorization: 'Bearer ' + t } : {}
+      } catch {
+        return {}
+      }
+    }
+
     async _readDir(path) {
       const url = `/api/fs/read?path=${encodeURIComponent(path)}&t=${Date.now()}`;
-      const resp = await fetch(url);
+      const resp = await fetch(url, { headers: FsPicker._authHeaders() });
       if (!resp.ok) {
         const txt = await resp.text().catch(() => '');
         throw new Error(`${resp.status} ${resp.statusText}${txt ? ': ' + txt : ''}`);
@@ -393,7 +407,7 @@
       try {
         resp = await fetch(url, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...FsPicker._authHeaders() },
           body: JSON.stringify({ path: joinPath(parent, name.trim()) }),
         });
       } catch (err) {
