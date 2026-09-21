@@ -60,10 +60,12 @@ Trajectory 视图的能力，落到一个 MCode Agent Plugin 上".
   modacker's macOS test round exposed the db-path resolver blocker.
 - **2026-08-27** — **[PR #23]** (modacker) *“Add plugin: mcode-webui (round 5
   — supersedes #16)”*: reused Wzdhehe's nine commits plus one fix commit;
-  “本地测试 391/393 pass · 0 fail”. Superseded #16 (closed).
+  “本地测试 391/393 pass · 0 fail”. Closed unmerged on 2026-09-17 once the
+  v2 line superseded the round-based flow; #16 itself remains open as the
+  historical anchor of the v1 submission.
 - **2026-09-04** — **[PR #31]** (modacker) *“round 8 — CORS tightening +
-  cross-origin token-leak fix”*; merged into the standalone mirror as PR #6
-  (merged by Hahaha).
+  cross-origin token-leak fix”* (closed unmerged 2026-09-17); the fix itself
+  was merged into the standalone mirror as PR #6 (merged by Hahaha).
 - **2026-09-12** — **v1.1.0**: mcode 0.3 / 0.4 / 0.4.2 ACP compat layer, live
   queue panel, ACP model picker, cross-workspace session search; four ACP
   surface probe rounds documented; layout consolidated to a single root tree.
