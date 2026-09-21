@@ -33,6 +33,7 @@ This file is the memory of that journey.
 | **weekbin** | Author of **mcode-trajectory-studio** ([PR #56]): the read-only session-trajectory inspector (7 MCP tools + studio panel) over the runtime SQLite projection, including its redaction and containment design. |
 | **hetaoBackend** | Author of the earlier `minimax-code-trajectory` plugin (v0.2.0) in the same registry — the lineage PR #56's design document starts from, and a reviewer cc'd through the webui PR rounds. |
 | **Ronny** (MiniMax Code official team) | Relayed the official direction that moved the Web UI from plugin to product surface (see §1). |
+| **liuhailong** (GitHub: **fengzhi09**) | Founder of the mcode-webui community org and initiator of this migration. Replicated the official repository into [mcode-webui/minimax-code-web](https://github.com/mcode-webui/minimax-code-web), carried the official direction into an actionable architecture (tui/mcode as engine, webui as frontend, not a plugin), and directed and authored the in-product migration commits on `feat/webui-integration` — working with an AI coding agent (DeepSeek Harness) executing under their direction and review. |
 | **MiniMax-AI / MiniMax Code team** | Upstream authors of the engine this repository forks: the TUI, headless CLI, ACP server, and the plugin registry the webui grew up in. |
 | **mcode-webui org** ([team](https://github.com/orgs/mcode-webui/teams/mcode-webui)) | The community organization under which this fork lives and the Web UI is co-developed. |
 
@@ -89,9 +90,12 @@ Trajectory 视图的能力，落到一个 MCode Agent Plugin 上".
 
 ### In-product migration (this repository)
 
-- **2026-09-21** — Following the official direction, the community fork
+- **2026-09-21** — Following the official direction, **liuhailong**
+  (fengzhi09) established the community fork
   [mcode-webui/minimax-code-web](https://github.com/mcode-webui/minimax-code-web)
-  migrated the plugin into the product on branch `feat/webui-integration`:
+  and drove the plugin's migration into the product on branch
+  `feat/webui-integration` (migration authored under their direction and
+  review, with an AI coding agent executing):
 
   - `plugins/Wzdhehe/mcode-webui` → **`packages/webui`** (`@mavis/webui`), with
     `plugin.json`'s manifest folded into `package.json` under
