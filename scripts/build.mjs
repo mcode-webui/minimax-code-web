@@ -117,6 +117,13 @@ for (const name of ["configs", "native"])
   cpSync(path.join(root, "packages/tui", name), path.join(outdir, name), {
     recursive: true,
   });
+// Web UI runtime (packages/webui → dist/webui): the server is plain ESM
+// JavaScript executed by `mcode webui` as a child process — no bundling.
+// Tests, checks, docs, and package tooling stay out of the runtime layout.
+for (const name of ["server.js", "acp.mjs", "server", "public"])
+  cpSync(path.join(root, "packages/webui", name), path.join(outdir, "webui", name), {
+    recursive: true,
+  });
 for (const name of ["seccomp", "srt-win", "java-proxy-agent"]) {
   cpSync(
     path.join(root, "third_party/sandbox-runtime/vendor", name),

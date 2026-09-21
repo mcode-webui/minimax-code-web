@@ -55,6 +55,8 @@ const steps = [
   { name: "test:status-contract", script: "test:status-contract" },
   { name: "test:smoke", script: "test:smoke" },
   { name: "test:byok", script: "test:byok" },
+  // Web UI package (packages/webui): node:test suite incl. trajectory studio.
+  { name: "test:webui", script: "test:webui" },
   // The permission facade uses POSIX process and filesystem semantics.
   {
     name: "test:policy",

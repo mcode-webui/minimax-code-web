@@ -42,6 +42,10 @@ export function suiteInventoryViolations(files, suites) {
   for (const file of files) {
     if (
       file.startsWith("packages/") &&
+      // packages/webui is a plain node:test package: its suite runs under its
+      // own gate (pnpm test:webui), not under Vitest — same policy as the
+      // repository-level node:test gates.
+      !file.startsWith("packages/webui/") &&
       /\.(?:test|spec)\.[cm]?[jt]sx?$/u.test(file) &&
       !registered.has(file)
     )

@@ -12,6 +12,7 @@ import { tuiErrorDiagnostic } from '../user-facing-failure.js';
 import { configureTuiNetworkProxy } from './network-proxy.js';
 import { consumeLoginRestartHandoff } from '../tui/login-restart-handoff.js';
 import type { McodeTelemetryCliAction } from './telemetry-command.js';
+import type { TuiWebuiCliOptions } from './run-webui-command.js';
 
 const OUTPUT_DRAIN_TIMEOUT_MS = 250;
 const MINIMAX_CODE_PROCESS_TITLE = 'minimax-code';
@@ -51,6 +52,7 @@ export interface RunTuiCliDependencies {
     version: string,
   ) => Promise<void>;
   readonly runAcp?: (version: string, lane?: string) => Promise<void>;
+  readonly runWebui?: (options: TuiWebuiCliOptions) => Promise<void>;
   readonly runLogin?: (
     region?: MavisRegion,
     openBrowser?: boolean,
@@ -138,6 +140,11 @@ export async function runTuiCli(dependencies: RunTuiCliDependencies = {}): Promi
       runAcp: async (lane) => {
         const runAcp = dependencies.runAcp ?? defaultRunAcp;
         await runAcp(MINIMAX_CODE_VERSION, lane);
+        completedCommandExitMode = 'natural';
+      },
+      runWebui: async (options) => {
+        const runWebui = dependencies.runWebui ?? defaultRunWebui;
+        await runWebui(options);
         completedCommandExitMode = 'natural';
       },
       runLogin: async (region, openBrowser, lane) => {
@@ -263,6 +270,11 @@ async function defaultRunExec(
 async function defaultRunAcp(version: string, lane?: string): Promise<void> {
   const { runTuiAcpCommand } = await import('./run-acp-command.js');
   await runTuiAcpCommand(version, {}, lane);
+}
+
+async function defaultRunWebui(options: TuiWebuiCliOptions): Promise<void> {
+  const { runTuiWebuiCommand } = await import('./run-webui-command.js');
+  await runTuiWebuiCommand(options);
 }
 
 async function defaultRunLogin(

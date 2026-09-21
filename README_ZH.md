@@ -251,6 +251,19 @@ node /absolute/path/to/minimax-code/dist/cli.js
 
 目前仅接受仓库协作者提交代码和文档 Pull Request。如果你不是协作者，但有想法或方案，欢迎先通过 [Issue](https://github.com/MiniMax-AI/minimax-code/issues/new/choose) 讨论。请在报告中移除密钥、账号信息和私人项目内容。
 
+## Web UI（网页版）
+
+驱动 TUI 的同一引擎也可以驱动浏览器前端：
+
+```bash
+mcode webui                 # http://127.0.0.1:8080（默认只绑定回环地址）
+mcode webui --port 8123     # 自定义端口，启动后打印访问地址
+```
+
+Web UI 通过 SSE 流式输出对话，渲染工具调用与权限确认，管理会话与工作区，展示配额用量，并在 `/trajectory/` 挂载只读的会话**轨迹工作室**。默认仅绑定回环地址；局域网暴露需显式开启并通过令牌鉴权。详见 [packages/webui](packages/webui/README.md) 与 [docs/webui.md](docs/webui.md)。
+
+Web UI 源自社区的 **mcode-webui** 插件，现已作为一等公民包迁入本仓库——其人员与历史脉络记录于 [co-builders.md](co-builders.md)。
+
 ## 桌面版与问题反馈
 
 <a href="https://agent.minimaxi.com/download" title="下载 MiniMax Code">
