@@ -13,6 +13,49 @@ node packages/webui/server.js # direct, from a checkout
 
 The command resolves the webui package (installed `dist/webui/` or source `packages/webui/`), spawns the server as a child process, and points it back at the running CLI through `MCODE_WEBUI_SELF_ENTRY`. The webui then spawns `node <cli> acp` per active browser tab.
 
+## Running a development build
+
+The development Web UI runs alongside an installed official mcode without
+conflicts: the dev webui always spawns the checkout's own `dist/cli.js` as its
+engine (detection order: `MCODE_CMD` > `MCODE_WEBUI_SELF_ENTRY` > repo
+`dist/cli.js` > `~/.minimax-code` > PATH), and it shares the host's
+`~/.minimax` sessions and `~/.mcode-webui` state.
+
+From a checkout of this repository:
+
+```bash
+corepack pnpm install && corepack pnpm build   # once, and after engine changes
+node dist/cli.js webui                         # dev Web UI on 127.0.0.1:8080
+node dist/cli.js webui --port 8123             # keep the installed one free
+```
+
+### Docker
+
+For isolated testing of the branch (or when you do not want to build locally),
+use the repository's Docker setup:
+
+```bash
+docker compose up webui        # build image, run the Web UI
+# open http://localhost:8080/?token=dev-token
+docker compose down
+```
+
+The container reuses the host's `~/.minimax` credentials and `~/.mcode-webui`
+state through bind mounts, runs as the host user (`WEBUI_UID`/`WEBUI_GID`,
+default 1000) so written files keep your ownership, and exposes the port via
+`WEBUI_PORT` (default 8080) with the dev token `WEBUI_TOKEN` (default
+`dev-token`). Because the host browser is a non-local client from the
+container's perspective, every URL carries `?token=…`.
+
+For interactive development over the mounted source:
+
+```bash
+docker compose run --rm -p 8080:8080 dev
+# inside the container:
+pnpm install --no-frozen-lockfile && pnpm build
+node dist/cli.js webui --host 0.0.0.0 --no-open
+```
+
 ## Security posture
 
 - Loopback bind by default; LAN exposure requires `--host`/`HOST` env or the persisted `lanBind` setting.
