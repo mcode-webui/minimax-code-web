@@ -106,9 +106,46 @@ export const clients = new Map(); // cid -> clientState
 export const sseByCid = new Map(); // cid -> SSE response
 export const activeChildByCid = new Map(); // cid -> child process
 
+// v2.3 (in-product): a fresh client (page reload, new tab) must resume the
+//   conversation it was in. Before this, a fresh per-cid state always started
+//   empty (sessionId: null), so the next send created a NEW webui session and
+//   a NEW mcode session — one logical conversation split into many sidebar
+//   records every reload. Instead, bind the fresh client to the most recent
+//   session in its workspace (sessions.json is the persisted store; the
+//   "+" new-session flow still wins because it creates the newest record).
+function restoreLatestSession(cs) {
+  try {
+    const all = loadSessions();
+    if (!Array.isArray(all) || all.length === 0) return;
+    const ws = (cs.workspace && cs.workspace.dir) || "";
+    const candidates = all
+      .filter((s) => {
+        if (!s) return false;
+        // Legacy records (pre-v2.3) have no workspace field — they belong to
+        // the default workspace by construction (single-workspace era).
+        const sw = s.workspace || "";
+        return sw === ws || (!sw && ws === DEFAULT_WORKSPACE);
+      })
+      .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+    const latest = candidates[0];
+    if (!latest || !latest.id) return;
+    cs.sessionId = latest.id;
+    cs.mcodeSessionId = latest.mcodeSessionId || null;
+    cs.sessionTitle = latest.title || "Untitled";
+    cs.chat = Array.isArray(latest.chat) ? [...latest.chat] : [];
+  } catch (e) {
+    // Never let a corrupted store block client creation — fresh empty state.
+    console.warn(`[state-bus] restoreLatestSession failed: ${e.message}`);
+  }
+}
+
 export function getClient(cid) {
   if (!cid) cid = "default";
-  if (!clients.has(cid)) clients.set(cid, makeClientState());
+  if (!clients.has(cid)) {
+    const cs = makeClientState();
+    restoreLatestSession(cs);
+    clients.set(cid, cs);
+  }
   return clients.get(cid);
 }
 

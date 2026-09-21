@@ -93,6 +93,22 @@ export async function runMcodeAcp(content, opts = {}) {
   }
 }
 
+// v2.3: 无正文回合的说明行（null = 正常回合，不用提示）。
+//   max_tokens/length：思考耗尽输出预算；其它 stopReason：模型未产出正文。
+//   用 "! " 前缀渲染为 system 提示块（见 render.js parseChatLines）。
+export function buildEmptyTurnNote(stopReason, answer) {
+  if (typeof answer === "string" && answer.trim()) return null;
+  const reason = stopReason || "end_turn";
+  const why =
+    reason === "max_tokens" || reason === "length"
+      ? "思考占满了输出预算"
+      : "模型未产出正文";
+  return (
+    `! 回合结束但未生成回复（stopReason=${reason}：${why}）。` +
+    `发送「继续」即可让它产出结果。/ Turn ended with no reply — send “继续” to continue.`
+  );
+}
+
 // 类似 collectExecResult，但事件源是 acp client 的 prompt callback
 // v0.5.ai: per-cid — cs/cs.cid
 function streamAcpPrompt(client, sid, content, label, cs, cid) {
@@ -539,6 +555,10 @@ function streamAcpPrompt(client, sid, content, label, cs, cid) {
         // v0.5.bx: 捕获 mcode 返的 usage（totalTokens/inputTokens/outputTokens/thoughtTokens）
         if (result.usage) r.usage = result.usage;
         r.status = "succeeded";
+        // v2.3: 思考链超长回合（思维耗尽输出预算）以无正文结束 — 界面上
+        //   表现为"思考戛然而止"。落一条 system 提示行说明结局与续法。
+        const note = buildEmptyTurnNote(r.stopReason, r.answer);
+        if (note) cs.chat = [...(cs.chat || []), note];
         finalize();
       })
       .catch((e) => {

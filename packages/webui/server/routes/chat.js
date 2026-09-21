@@ -111,6 +111,9 @@ export async function handleSend(req, res, ctx) {
       createdAt: Date.now(),
       updatedAt: Date.now(),
       chat: cs.chat || [],
+      // v2.3: 记 workspace — 刷新恢复（state-bus.restoreLatestSession）按工作区
+      //   过滤，没写 workspace 的记录永远无法被恢复（刷新后白屏成新会话）。
+      workspace: (cs.workspace && cs.workspace.dir) || null,
     };
     all.unshift(item);
     saveSessions(all);
