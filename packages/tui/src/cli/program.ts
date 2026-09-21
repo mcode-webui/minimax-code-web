@@ -19,6 +19,7 @@ import {
 import type { McodePluginCliRequest, McodePluginMarketplace } from '../plugin/contract.js';
 import { resolveTuiManagedBackendLane } from './environment.js';
 import type { McodeTelemetryCliAction } from './telemetry-command.js';
+import type { TuiWebuiCliOptions } from './run-webui-command.js';
 
 export type { TuiInteractiveLaunchRequest } from './contract.js';
 
@@ -38,6 +39,7 @@ export interface CreateTuiProgramOptions {
     lane?: string,
   ) => Promise<void>;
   runAcp?: (lane?: string) => Promise<void>;
+  runWebui?: (options: TuiWebuiCliOptions, lane?: string) => Promise<void>;
   runLogin: (region?: MavisRegion, openBrowser?: boolean, lane?: string) => Promise<void>;
   runLogout: (region?: MavisRegion) => Promise<void>;
   runUpdate: () => Promise<void>;
@@ -122,6 +124,20 @@ export function createTuiProgram(options: CreateTuiProgramOptions): Command {
       activeLane
         ? options.runLogin(commandOptions.region, commandOptions.browser !== false, activeLane)
         : options.runLogin(commandOptions.region, commandOptions.browser !== false),
+    );
+
+  program
+    .command('webui')
+    .description('Start the MiniMax Code Web UI (browser frontend driven by the same engine)')
+    .option('--port <number>', 'HTTP port (default 8080)', parsePort)
+    .option('--host <address>', 'bind address (default 127.0.0.1; LAN exposure is opt-in)')
+    .option('--token <value>', 'auth token required for non-local requests')
+    .option('--no-open', 'print the URL without opening a browser')
+    .allowExcessArguments(false)
+    .action((commandOptions: { port?: number; host?: string; token?: string; open?: boolean }) =>
+      activeLane
+        ? requireWebuiRunner(options)({ ...commandOptions }, activeLane)
+        : requireWebuiRunner(options)({ ...commandOptions }),
     );
 
   program
@@ -420,6 +436,11 @@ function requireAcpRunner(options: CreateTuiProgramOptions) {
   return options.runAcp;
 }
 
+function requireWebuiRunner(options: CreateTuiProgramOptions) {
+  if (!options.runWebui) throw new Error('Web UI is unavailable.');
+  return options.runWebui;
+}
+
 function requireTelemetryRunner(options: CreateTuiProgramOptions) {
   if (!options.runTelemetry) throw new Error('Telemetry inspection is unavailable.');
   return options.runTelemetry;
@@ -431,4 +452,12 @@ function parsePositiveSafeInteger(value: string): number {
     throw new InvalidArgumentError('expected a positive safe integer');
   }
   return number;
+}
+
+function parsePort(value: string): number {
+  const port = Number(value);
+  if (!Number.isSafeInteger(port) || port < 0 || port > 65535) {
+    throw new InvalidArgumentError('expected a port between 0 and 65535');
+  }
+  return port;
 }

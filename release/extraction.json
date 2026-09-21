@@ -28,6 +28,7 @@
     "packages/protocol",
     "packages/shared",
     "packages/tui",
+    "packages/webui",
     "third_party/pi-mono/packages/agent",
     "third_party/pi-mono/packages/ai",
     "third_party/pi-mono/packages/coding-agent",

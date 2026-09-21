@@ -10,6 +10,7 @@
 - [Real TUI demo](demo.md): a 20-second replay, still image, and reproduction steps.
 - [Status line configuration](../packages/tui/docs/status-line-config.md): the default status line and optional machine-readable mode.
 - [Capabilities and service boundaries](tui-capabilities.md): accounts, tools, plugins, sandboxing, and network behavior.
+- [Web UI](webui.md): the browser frontend — launch, security posture, trajectory studio, and its community origin ([co-builders](../co-builders.md)).
 - [TUI usage telemetry](telemetry.md): opt-in settings, sent fields, destinations, and retention boundary.
 
 ## Contribute
