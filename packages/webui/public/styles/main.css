@@ -834,10 +834,42 @@ body.is-remote .btn-lan-toggle { display: none; }
   padding: 2px 6px;
   border-radius: 4px;
   cursor: pointer;
-  margin-left: auto;
+  margin-left: 0; /* qa: 右对齐交给 .session-rename（两按钮成组） */
 }
 .session-item:hover .session-delete { display: inline-block; }
 .session-item .session-delete:hover { background: var(--danger); color: white; }
+/* qa (session-workspace-crud): 重命名按钮 — 与删除按钮同款 hover 显隐，
+   置于删除左侧；margin-left:auto 把整组推到行尾 */
+.session-item .session-rename {
+  display: none;
+  border: none;
+  background: transparent;
+  color: var(--text-tertiary);
+  font-size: 13px;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  margin-left: auto;
+}
+.session-item:hover .session-rename { display: inline-block; }
+.session-item .session-rename:hover { background: var(--bg-active); color: var(--text-primary); }
+/* qa: 行内重命名 input — 替换 .session-name 的内容位 */
+.session-item.renaming .session-name { flex: 1; min-width: 0; }
+.session-item.renaming .session-rename,
+.session-item.renaming .session-delete { display: none; }
+.session-rename-input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--accent);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  outline: none;
+}
 /* 二次确认条：覆盖在 item 上 */
 .session-item.confirming { background: var(--bg-active); }
 .session-item .session-confirm {

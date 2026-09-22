@@ -169,6 +169,14 @@ const ROUTES = [
     match: (p) => p === "/api/sessions/switch",
     handler: sessionsRoute.handleSwitchSession,
   },
+  // qa (session-workspace-crud): CRUD "改" — 重命名会话（titleCustom 语义见
+  //   routes/sessions.js#handleRenameSession）。POST 精确匹配，不与下面
+  //   DELETE catch-all（method-gated）冲突，位置随 switch 走。
+  {
+    method: "POST",
+    match: (p) => p === "/api/sessions/rename",
+    handler: sessionsRoute.handleRenameSession,
+  },
   // v2.0 (lease C06): GET /api/sessions/:id/export?format=md|json[&download=true]
   //   Registers before the DELETE match so a future change to that
   //   catch-all doesn't accidentally swallow GETs for /export. The

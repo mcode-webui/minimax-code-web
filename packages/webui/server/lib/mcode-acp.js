@@ -4,7 +4,7 @@
 import { McodeAcpClient } from "../../acp.mjs";
 import { DEFAULT_WORKSPACE, DEFAULT_MODEL, PROMPT_IDLE_TIMEOUT_MS } from "./config.js";
 import { createIdleWatchdog } from "./idle-watchdog.js";
-import { streamUpdateLine } from "./sessions.js";
+import { streamUpdateLine, bindDraftToMcodeSid } from "./sessions.js";
 import {
   setActiveChild,
   clearActiveChild,
@@ -66,6 +66,17 @@ export async function runMcodeAcp(content, opts = {}) {
     if (!sid) {
       const r = await client.newSession(workspace);
       sid = r.sessionId;
+    }
+    // qa (两条记录): 草稿→引擎身份的绑定在 session 创建时立即执行，不再
+    //   等到 finalize。之前长任务全程草稿是 uuid 孤儿 —— sidebar 同时显示
+    //   uuid 草稿和 mvs_ 引擎条目两条；此时点 mvs_ 条目会走 new_from_mcode
+    //   建壳，把同一对话永久分裂成两条记录（审计日志实锤）。幂等。
+    if (sid) {
+      try {
+        bindDraftToMcodeSid(cs, sid);
+      } catch (e) {
+        console.warn(`[webui] bindDraftToMcodeSid: ${e.message}`);
+      }
     }
     return await streamAcpPrompt(client, sid, content, label, cs, cid);
   } catch (e) {
@@ -292,6 +303,23 @@ function streamAcpPrompt(client, sid, content, label, cs, cid) {
         const finalSid = r.sessionId;
         getMcodeSessionTitle(finalSid)
           .then((title) => {
+            // qa (两条记录): mcodeSessionId 绑定与 title 查询解耦 —— 之前
+            //   `if (!title) return` 提前退出会连绑定一起跳过，titleCustom
+            //   守卫也曾把绑定一并挡住（该守卫只应保护标题本身）。绑定
+            //   无条件写入。
+            if (cs.sessionId) {
+              try {
+                const all = loadSessions();
+                const item = all.find((s) => s.id === cs.sessionId);
+                if (item && item.mcodeSessionId !== finalSid) {
+                  item.mcodeSessionId = finalSid;
+                  item.updatedAt = Date.now();
+                  saveSessions(all);
+                }
+              } catch (e) {
+                console.warn(`[bx] save mcodeSid failed: ${e.message}`);
+              }
+            }
             if (!title) return;
             // 只在用户没改过（仍是默认标题）时更新
             const isDefault =
@@ -300,19 +328,22 @@ function streamAcpPrompt(client, sid, content, label, cs, cid) {
               cs.sessionTitle === "Untitled";
             if (isDefault && cs.mcodeSessionId === finalSid) {
               cs.sessionTitle = title;
-              // 同步到 webui session db（写 mcodeSessionId + title，让 sidebar 能 1:1 找回来）
+              // 同步到 webui session db（写 title，让 sidebar 能 1:1 找回来）
               if (cs.sessionId) {
                 try {
                   const all = loadSessions();
                   const item = all.find((s) => s.id === cs.sessionId);
-                  if (item) {
+                  // qa (session-workspace-crud): titleCustom 是用户显式改名
+                  //   (POST /api/sessions/rename) 的留痕 — 自动标题永不覆盖
+                  //   用户标题。isDefault 的 cs 侧判定之外再守一道 item 侧，
+                  //   封住"改名发生在 title RPC 在途时"的竞态窗口。
+                  if (item && !item.titleCustom) {
                     item.title = title;
-                    item.mcodeSessionId = finalSid;
                     item.updatedAt = Date.now();
                     saveSessions(all);
                   }
                 } catch (e) {
-                  console.warn(`[bx] save title/mcodeSid failed: ${e.message}`);
+                  console.warn(`[bx] save title failed: ${e.message}`);
                 }
               }
               pushStateFor(cid);

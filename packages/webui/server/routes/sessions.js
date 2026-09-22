@@ -1,5 +1,6 @@
 // webui/server/routes/sessions.js
 // GET/POST /api/sessions, POST /api/sessions/switch, DELETE /api/sessions/:id,
+// POST /api/sessions/rename (CRUD "改" — user-set title, titleCustom),
 // GET /api/acp-sessions, GET /api/acp-session-title,
 // GET /api/sessions/search (Lease C05 — cross-workspace fuzzy match)
 // (v0.5.bx-33: 删 POST /api/sessions/cleanup-orphans — Wzdhehe 不要这个 UI,API 一起删)
@@ -33,6 +34,13 @@ import { authorize } from "../lib/authorize.js";
 import { pushAlert } from "../lib/alerts.js";
 // B01: append session lifecycle events to the hash chain.
 import { append as _eventsAppend } from "../lib/events.js";
+// Session-create workspace gate: body.workspace is user input and used to be
+// trusted verbatim — no existence check, no containment check, no resolve —
+// which made POST /api/sessions a side door around the workspace picker's
+// containment gate (handleWorkspaceChange / browseWorkspace / fs routes all
+// funnel through lib/workspace.js). Reuse assertWorkspacePath so every
+// workspace write lands on the same boundary.
+import { assertWorkspacePath } from "../lib/workspace.js";
 
 // _auditFail — shared failure sink for audit writes (fail-closed,
 // 2026-09-20 rigor fix). events.js#append THROWS on write failure; a
@@ -120,10 +128,24 @@ function _lookupCachedMcodeTitle(mcodeSessionId, ws) {
 }
 
 // GET /api/sessions — list
+// qa (session-workspace-crud): 响应瘦身为 sidebar 元数据 — 与 docs/API.md
+//   声明的形状（id/title/workspace/mcodeSessionId/updatedAt）对齐。之前把
+//   每个 session 的完整 chat 数组一并回给 GET，与 v2.3 快照瘦身的结论相悖；
+//   前端唯一消费点（refreshSessions → renderSessions）只读元数据，会话内
+//   容走 switch 响应 / export 端点。titleCustom 供前端 merge 判定改名优先。
 export function handleListSessions(_req, res) {
   const all = loadSessions();
+  const sessions = all.map((s) => ({
+    id: s.id,
+    title: s.title,
+    mcodeSessionId: s.mcodeSessionId,
+    workspace: s.workspace,
+    createdAt: s.createdAt,
+    updatedAt: s.updatedAt,
+    titleCustom: s.titleCustom === true ? true : undefined,
+  }));
   res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-  return res.end(JSON.stringify({ ok: true, sessions: all }));
+  return res.end(JSON.stringify({ ok: true, sessions }));
 }
 
 // POST /api/sessions — new (accepts body.workspace)
@@ -135,9 +157,24 @@ export async function handleNewSession(req, res, ctx) {
   const id = randomUUID();
   // v0.5.ar: 记录 session 所属工作区
   // v0.5.bl: DEFAULT_WORKSPACE 可能是 null — fallback 到空串
+  // qa (session-workspace-crud): body.workspace is user input. When it is
+  // explicitly provided it must clear the SAME containment gate as
+  // POST /api/workspace before it is stored or copied into cs.workspace —
+  // previously it was trusted verbatim (raw, possibly relative, possibly
+  // anywhere on disk), a side door around the workspace picker boundary.
+  // The cs fallback path is untouched: cs.workspace.dir was gated when it
+  // was set, so re-gating it here would only add churn.
   const rawWs =
     payload.workspace || (cs && cs.workspace && cs.workspace.dir) || "";
-  const sessionWs = (rawWs || "").trim();
+  let sessionWs = (rawWs || "").trim();
+  if (payload.workspace && sessionWs) {
+    const gate = assertWorkspacePath(sessionWs);
+    if (!gate.ok) {
+      res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
+      return res.end(JSON.stringify({ ok: false, error: gate.error }));
+    }
+    sessionWs = gate.path; // stored resolved, same as handleWorkspaceChange
+  }
   const item = {
     id,
     title: "New session",
@@ -371,6 +408,115 @@ export async function handleSwitchSession(req, res, ctx) {
         mcodeSessionId: cs.mcodeSessionId,
         title: cs.sessionTitle,
         chat: cs.chat,
+      },
+    }),
+  );
+}
+
+// POST /api/sessions/rename — 重命名 session（CRUD 的"改"）
+// body: { id, title }
+//   id     — webui uuid 或 mvs_xxx（与 DELETE /api/sessions/:id 同解析规则）
+//   title  — 新标题；trim 后非空，≤ 200 字符
+// 语义（保证 mcode 自动标题不会覆盖用户改名）:
+//   - 记录上打 titleCustom: true。mcode-acp.js 的自动标题回写只在
+//     isDefault（标题为空/"New session"/"Untitled"）时落库，switch 的占位
+//     修补只碰 "Mcode session"，因此 titleCustom 的标题天然不会被覆盖——
+//     这里显式留痕，供 mcode-acp / 前端 merge 判定"用户标题优先"。
+//   - 前端 sidebar 的 mcode 条目（mvs_）显示的是 mcode 引擎标题，webui 壳
+//     记录被去重隐藏；titleCustom 后前端 merge 改用壳记录标题（render.js）。
+//   - 纯 mcode 会话（mvs_ 且无 webui 壳）允许改名：经 ensureOverlayForMcodeSid
+//     建壳承接标题（单一身份原则，与 switch 路径同源）。
+// 审计（B01）: session.rename 事件记录 from → to，fail-closed。
+// 授权（B03）: 不进 authorize 闸门 — 改名非破坏性、可逆，与 session.create
+//   同级；销毁性动作（delete/cleanup）才弹确认。
+export async function handleRenameSession(req, res, ctx) {
+  const cs = ctx.cs;
+  const cid = ctx.cid;
+  const payload = await readJson(req);
+  const id = (payload.id || "").trim();
+  const title = typeof payload.title === "string" ? payload.title.trim() : "";
+  if (!id) {
+    res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
+    return res.end(JSON.stringify({ ok: false, error: "id required" }));
+  }
+  if (!title) {
+    res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
+    return res.end(JSON.stringify({ ok: false, error: "title required" }));
+  }
+  if (title.length > 200) {
+    res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
+    return res.end(
+      JSON.stringify({ ok: false, error: "title too long (max 200)" }),
+    );
+  }
+  const all = loadSessions();
+  let idx = all.findIndex((s) => s.id === id);
+  let matchKind = idx >= 0 ? "webuiId" : null;
+  if (idx < 0) {
+    idx = all.findIndex((s) => s.mcodeSessionId === id);
+    if (idx >= 0) matchKind = "mcodeSessionId";
+  }
+  let item;
+  if (idx < 0) {
+    // 纯 mcode 会话（sidebar 的 mvs_ 条目还没有 webui 壳）→ 建壳承接改名。
+    // 其余 id 不硬造记录：404，让调用方知道 id 写错了。
+    if (/^mvs_[a-f0-9]{32}$/.test(id)) {
+      item = ensureOverlayForMcodeSid(all, id, {
+        workspace: (cs && cs.workspace && cs.workspace.dir) || "",
+      });
+      matchKind = "orphan_mcode";
+    } else {
+      res.writeHead(404, { "Content-Type": "application/json; charset=utf-8" });
+      return res.end(JSON.stringify({ ok: false, error: "session not found" }));
+    }
+  } else {
+    item = all[idx];
+  }
+  const from = item.title || "";
+  item.title = title;
+  item.titleCustom = true;
+  item.updatedAt = Date.now();
+  saveSessions(all);
+  // 所有把该会话当"当前会话"的 client 同步 sessionTitle（多 tab 一致）。
+  let touchedCids = [];
+  for (const [c, ccs] of clients) {
+    if (
+      ccs.sessionId === item.id ||
+      (item.mcodeSessionId && ccs.mcodeSessionId === item.mcodeSessionId)
+    ) {
+      ccs.sessionTitle = title;
+      touchedCids.push(c);
+    }
+  }
+  if (touchedCids.length === 0) touchedCids = [cid];
+  for (const c of touchedCids) pushStateFor(c);
+  try {
+    _eventsAppend("session.rename", {
+      target: item.id,
+      cid,
+      actor: "user",
+      payload: {
+        matchKind,
+        from,
+        to: title,
+        mcodeSessionId: item.mcodeSessionId || "",
+      },
+    });
+  } catch (e) {
+    return _auditFail(res, e, "session.rename");
+  }
+  console.log(
+    `[rename] cid=${cid} OK match=${matchKind} id=${item.id.substring(0, 8)}… "${from}" → "${title}"`,
+  );
+  res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+  return res.end(
+    JSON.stringify({
+      ok: true,
+      session: {
+        id: item.id,
+        mcodeSessionId: item.mcodeSessionId || null,
+        title: item.title,
+        titleCustom: true,
       },
     }),
   );

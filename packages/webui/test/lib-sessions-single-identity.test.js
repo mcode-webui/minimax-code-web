@@ -116,4 +116,32 @@ describe("v2.4 single base session — overlay helpers", () => {
     assert.equal(sessions.sessionKeyOf({ id: "draft" }), "draft");
     assert.equal(sessions.sessionKeyOf(null), null);
   });
+
+  test("bindDraftToMcodeSid: binds + promotes at session/new time (one record from the start)", () => {
+    writeStore([{ id: "draft-uuid", title: "New session", workspace: "/w", chat: ["› hi"], updatedAt: 9, createdAt: 8 }]);
+    const cs = { sessionId: "draft-uuid", mcodeSessionId: null };
+    assert.equal(sessions.bindDraftToMcodeSid(cs, SID), true);
+    assert.equal(cs.mcodeSessionId, SID, "binding recorded on cs");
+    assert.equal(cs.sessionId, SID, "draft promoted to the engine identity immediately");
+    const store = readStore();
+    assert.equal(store.length, 1, "one record from the start — no uuid/mvs duplicate");
+    assert.equal(store[0].id, SID);
+    assert.equal(store[0].mcodeSessionId, SID);
+    assert.deepEqual(store[0].chat, ["› hi"]);
+  });
+
+  test("bindDraftToMcodeSid: idempotent on re-bind (finalize is a no-op)", () => {
+    writeStore([{ id: "draft-uuid", title: "New session", workspace: "/w", chat: ["› x"], updatedAt: 5, createdAt: 4 }]);
+    const cs = { sessionId: "draft-uuid", mcodeSessionId: null };
+    assert.equal(sessions.bindDraftToMcodeSid(cs, SID), true, "first bind promotes the draft");
+    assert.equal(sessions.bindDraftToMcodeSid(cs, SID), false, "already keyed by the engine identity");
+    assert.equal(readStore().length, 1, "re-bind never duplicates the record");
+    assert.equal(readStore()[0].id, SID);
+  });
+
+  test("bindDraftToMcodeSid: guards empty sid / missing cs", () => {
+    assert.equal(sessions.bindDraftToMcodeSid(null, SID), false);
+    assert.equal(sessions.bindDraftToMcodeSid({ sessionId: "x" }, ""), false);
+    assert.equal(sessions.bindDraftToMcodeSid({ sessionId: "x" }, null), false);
+  });
 });

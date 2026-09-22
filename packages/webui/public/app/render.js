@@ -502,6 +502,14 @@ export function renderSessions() {
   // 合并：mcode sessions (按 cwd 过滤) + webui 自己的 sessions (还没跟 mcode 关联的)
   const mcodeSessions = Array.isArray(state?.mcodeSessions) ? state.mcodeSessions : []
   const webuiSessions = Array.isArray(state?.sessions) ? state.sessions : []
+  // qa (session-workspace-crud): 用户显式改名（POST /api/sessions/rename →
+  //   titleCustom）优先于 mcode 自动标题。mcode 条目 merge 时被展示的是
+  //   ms.title，webui 壳记录被去重隐藏 — 不打补丁的话改名在 sidebar 上被
+  //   mcode 标题盖掉。按 mcodeSessionId 建自定义标题索引。
+  const customTitles = new Map()
+  for (const ws of webuiSessions) {
+    if (ws.titleCustom && ws.title) customTitles.set(ws.mcodeSessionId || ws.id, ws.title)
+  }
   // 用 webui session 的 mcodeSessionId 字段去重：mcode 有但 webui 也有的就归 mcode
   const webuiWithMcode = new Set()
   const merged = []
@@ -510,7 +518,7 @@ export function renderSessions() {
     merged.push({
       id: ms.sessionId,           // mcode session id (mvs_xxx)
       kind: 'mcode',
-      title: ms.title || '(untitled)',
+      title: customTitles.get(ms.sessionId) || ms.title || '(untitled)',
       workspace: ms.cwd || '',
       updatedAt: ms.updatedAt || 0,
     })
@@ -657,6 +665,9 @@ export function renderSessions() {
       //   之前 v0.5.bv 写死不显示是因为 webui 没能力删 mcode session; 现在能了
       //   删 mcode session 走 server DELETE → SQL 删 mcode db (8 张表事务), 不依赖 mcode TUI
       const deleteBtn = `<button class="session-delete" data-id="${escapeHtml(s.id)}" title="${t('session_delete')}">×</button>`
+      // qa (session-workspace-crud): CRUD "改" — 重命名按钮（✎），点击后
+      //   标题位换行内 input（见 startRename）。mvs_ 与 webui id 同权。
+      const renameBtn = `<button class="session-rename" data-id="${escapeHtml(s.id)}" title="${t('session_rename')}">✎</button>`
       // Lease C05: cross-workspace search results get a small
       //   "[ws-short]" prefix on the title row so the user can see
       //   which workspace each match came from. Only the rows whose
@@ -671,6 +682,7 @@ export function renderSessions() {
           <div class="session-name">${c05Prefix}${short}</div>
           <div class="session-id">${idLabel}</div>
         </div>
+        ${renameBtn}
         ${deleteBtn}
       </div>`
     }).join('')
@@ -710,8 +722,21 @@ export function renderSessions() {
   list.querySelectorAll('.session-item').forEach(el => {
     el.addEventListener('click', (e) => {
       if (e.target.closest('.session-delete') || e.target.closest('.session-confirm')) return
+      // qa (session-workspace-crud): 重命名按钮 / 行内 input 不触发切换
+      if (e.target.closest('.session-rename') || e.target.closest('.session-rename-input')) return
       const id = el.getAttribute('data-id')
       switchSession(id)
+    })
+  })
+  // qa (session-workspace-crud): 重命名按钮 — 标题位换行内 input，Enter/失焦
+  //   提交，Esc 取消。构造走 DOM API（value 只进 .value / textContent，零
+  //   HTML 解析），与 session-confirm 同款防 XSS 姿势（render-static.test.js）。
+  list.querySelectorAll('.session-rename').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation()
+      const item = btn.closest('.session-item')
+      if (!item || item.classList.contains('renaming')) return
+      startRename(item)
     })
   })
   // 删除按钮：第一次点显示二次确认，第二次点确认按钮才真删
@@ -765,6 +790,89 @@ export function cancelConfirm(item) {
   item.classList.remove('confirming')
   const bar = item.querySelector('.session-confirm')
   if (bar) bar.remove()
+}
+
+// qa (session-workspace-crud): CRUD "改" — 行内重命名。
+//   标题位（.session-name）换成 <input>，Enter/失焦提交，Esc 取消。
+//   DOM 构造替代 innerHTML 拼串：标题是用户数据，只进 input.value /
+//   textContent，零 HTML 解析（同 session-confirm 的防 XSS 姿势，
+//   render-static.test.js 有回归断言）。
+export function startRename(item) {
+  if (!item) return
+  const id = item.getAttribute('data-id')
+  const nameEl = item.querySelector('.session-name')
+  if (!id || !nameEl) return
+  const fullTitle = item.getAttribute('title') || nameEl.textContent.trim()
+  item.classList.add('renaming')
+  const input = document.createElement('input')
+  input.type = 'text'
+  input.className = 'session-rename-input'
+  input.maxLength = 200
+  input.value = fullTitle
+  nameEl.textContent = ''
+  nameEl.appendChild(input)
+  input.focus()
+  input.select()
+  let done = false
+  const finish = async (commit) => {
+    if (done) return
+    done = true
+    const next = input.value.trim()
+    item.classList.remove('renaming')
+    if (commit && next && next !== fullTitle) {
+      await renameSession(id, next)
+    } else {
+      renderSessions() // 还原标题位（input 移除）
+    }
+  }
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      e.stopPropagation()
+      finish(true)
+    } else if (e.key === 'Escape') {
+      e.preventDefault()
+      e.stopPropagation()
+      finish(false)
+    }
+  })
+  input.addEventListener('blur', () => finish(true))
+  input.addEventListener('click', (e) => e.stopPropagation())
+}
+
+export async function renameSession(sessionId, title) {
+  if (!sessionId || !title) return
+  try {
+    const r = await fetch('/api/sessions/rename' + API_SUFFIX, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...HEADERS },
+      body: JSON.stringify({ id: sessionId, title }),
+    })
+    const data = await r.json().catch(() => ({}))
+    if (r.ok && data.ok) {
+      // 本地先改（SSE 推送随后覆盖为权威值），webui 条目与 mcode 条目同权
+      for (const s of (state.sessions || [])) {
+        if (s.id === sessionId || s.mcodeSessionId === sessionId) {
+          s.title = title
+          s.titleCustom = true
+        }
+      }
+      for (const ms of (state.mcodeSessions || [])) {
+        if (ms.sessionId === sessionId) ms.title = title
+      }
+      const activeId = state.mcodeSessionId || state.sessionId
+      if (activeId === sessionId) state.sessionTitle = title
+      showToast(t('session_rename_ok') || '✓ renamed')
+      renderSessions()
+    } else {
+      console.error('renameSession failed', r.status, data)
+      showToast((t('session_rename_fail') || 'rename failed') + ': ' + (data.error || r.status))
+      renderSessions()
+    }
+  } catch (e) {
+    console.error('renameSession', e)
+    renderSessions()
+  }
 }
 
 export async function deleteSession(sessionId) {
