@@ -430,12 +430,26 @@ const _lastPushedByCid = new Map();
 const _lastPushedResByCid = new Map();
 
 function _writeNow(cid, payloadStr, res) {
+    // qa (OOM hardening): 写入前做背压/死套接字判断。状态推送是全量快照，
+    //   被丢弃的一帧会被下一帧取代 —— 积压时丢弃是安全的；之前无背压
+    //   res.write 在慢客户端上让 Node socket 写缓冲无界增长（长任务的
+    //   高频全量快照可堆到 GB 级）。注意：跳过时不写 diff 缓存，同一
+    //   payload 在套接字排空后重推仍会真正落线。
+    if (!res || res.writableEnded || res.destroyed) return;
+    if (res.writableNeedDrain) return;
     _lastWriteTsByCid.set(cid, Date.now());
     _lastPushedByCid.set(cid, payloadStr);
     _lastPushedResByCid.set(cid, res);
     try {
         res.write(`data: ${payloadStr}\n\n`);
     } catch {}
+}
+
+// Test-only: inspect the res reference retained for fresh-client
+// detection. Used by checks/lib-state-bus.check.mjs to verify
+// endSseClient drops dead response objects (OOM hardening).
+export function peekLastPushedRes(cid) {
+    return _lastPushedResByCid.get(cid);
 }
 
 function _schedulePush(cid, payloadStr, res) {
@@ -663,6 +677,9 @@ export function endSseClient(cid, res) {
   _pendingByCid.delete(cid);
   _lastWriteTsByCid.delete(cid);
   _lastPushedByCid.delete(cid);
+  // qa (OOM hardening): 释放死 res 引用 —— 之前 _lastPushedResByCid 永不
+  // 清理，每个断开的 SSE 响应（连同其 socket 写缓冲）被进程终身持有。
+  _lastPushedResByCid.delete(cid);
 }
 
 // v1.0.1: broadcastTokenRotated — push a named SSE event so all

@@ -49,6 +49,18 @@ landed on the development branch but are not yet cut into a release.
   同一闸门：越界 400、不创建会话记录、`cs.workspace` 不动。
 - 自动标题竞态窗口：mcode 回合结束回写标题时，`titleCustom` 记录（用户已改名）
   不再被覆盖 —— 之前只判定 cs 侧默认标题，改名发生在 title RPC 在途时仍会被盖掉。
+- **同一对话在侧栏出现两条记录**（一条 `mvs_` 引擎条目 + 一条 uuid 草稿）：
+  草稿→引擎身份的绑定此前只在回合 finalize 执行，长任务全程孤儿；期间点
+  侧栏 `mvs_` 条目会走 `new_from_mcode` 建壳，永久分裂成两条。现在
+  `session/new` 拿到 sid 即 `bindDraftToMcodeSid` 立即绑定 + 晋升（幂等），
+  finalize 的 `mcodeSessionId` 回写也不再被 `titleCustom` 守卫或 title 查询
+  失败连带跳过（绑定与标题解耦）。
+- **node 堆 OOM（4GB，长任务运行约 15 分钟后崩溃）**：三处累积一起修 ——
+  `acp.mjs` `prompt()` 把每个 session/update（含截图工具的 base64 rawOutput）
+  累积进无消费者 `result.events`（直接删除）；SSE `_writeNow` 零背压把全量
+  状态快照无界压进 socket 写缓冲（写入前做背压/死套接字守卫，积压即丢帧、
+  下一帧取代且不写 diff 缓存）；死连接的 `_lastPushedResByCid` 引用永不清理
+  （`endSseClient` 现在释放）。
 
 ## v2.0.0 — 2026-09-20 (工业化重写，同步自 MiniMax-Code-Plugins PR #55 @ 7b4aae8)
 

@@ -378,3 +378,55 @@ describe("pushOnlineCount + broadcast — same diff gate", () => {
             "client b receives 1 wire frame (diff gate)");
     });
 });
+
+// ============================================================
+// qa (OOM hardening): write backpressure + dead-socket guard
+// ============================================================
+describe("_writeNow — backpressure / dead-socket guard", () => {
+    test("skips the write when the socket is backed up (writableNeedDrain)", async () => {
+        const cid = "cid-bp-1";
+        const res = fakeSse();
+        res.writableNeedDrain = true;
+        clients.set(cid, makeClientState());
+        sseByCid.set(cid, res);
+        pushStateFor(cid, { mcodeSessions: [{ id: "x" }] });
+        assert.equal(res.writes.length, 0, "backed-up socket gets no frame");
+        // skip must NOT update the diff cache — after the socket drains,
+        // re-pushing the same payload must actually reach the wire
+        res.writableNeedDrain = false;
+        pushStateFor(cid, { mcodeSessions: [{ id: "x" }] });
+        assert.equal(res.writes.length, 1,
+            "same payload delivered once the socket drains");
+    });
+
+    test("skips writes to destroyed / ended responses", () => {
+        const destroyed = fakeSse();
+        destroyed.destroyed = true;
+        clients.set("cid-bp-2a", makeClientState());
+        sseByCid.set("cid-bp-2a", destroyed);
+        pushStateFor("cid-bp-2a", { mcodeSessions: [] });
+        assert.equal(destroyed.writes.length, 0, "destroyed res receives nothing");
+
+        const ended = fakeSse();
+        ended.writableEnded = true;
+        clients.set("cid-bp-2b", makeClientState());
+        sseByCid.set("cid-bp-2b", ended);
+        pushStateFor("cid-bp-2b", { mcodeSessions: [] });
+        assert.equal(ended.writes.length, 0, "ended res receives nothing");
+    });
+
+    test("endSseClient drops the dead res reference (no retention)", async () => {
+        const cid = "cid-bp-3";
+        const res = fakeSse();
+        clients.set(cid, makeClientState());
+        setSseClient(cid, res);
+        pushStateFor(cid, { mcodeSessions: [] });
+        assert.equal(res.writes.length, 1);
+        const mod = await import(absPath("lib/state-bus.js"));
+        assert.equal(mod.peekLastPushedRes(cid), res,
+            "res reference cached while connected");
+        endSseClient(cid, res);
+        assert.equal(mod.peekLastPushedRes(cid), undefined,
+            "endSseClient drops the res reference (dead socket not retained)");
+    });
+});

@@ -153,6 +153,19 @@ export function promoteDraftToMcodeSid(cs) {
   return true;
 }
 
+/**
+ * 回合开始（session/new 拿到 sid）就绑定引擎身份，而不是等到 finalize：
+ * cs.mcodeSessionId = sid，然后立即晋升草稿。之前绑定被推迟到回合结束，
+ * 长任务期间草稿一直是 uuid 孤儿 —— sidebar 同时显示 uuid 草稿和 mvs_
+ * 引擎条目两条记录；此时用户点 mvs_ 条目会走 new_from_mcode 建壳，把
+ * 同一对话永久分裂成两条。幂等：finalize 的二次调用是 no-op。
+ */
+export function bindDraftToMcodeSid(cs, sid) {
+  if (!cs || !sid) return false;
+  cs.mcodeSessionId = sid;
+  return promoteDraftToMcodeSid(cs);
+}
+
 // v2.3: memoize by (mtimeMs, size). pushStateFor calls loadSessions on EVERY
 //   snapshot (per SSE push, up to 60Hz), and switch/persist paths read too —
 //   re-reading + JSON.parsing a multi-MB store that often made long-turn

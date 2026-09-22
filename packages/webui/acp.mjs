@@ -224,9 +224,12 @@ export class McodeAcpClient extends EventEmitter {
   async prompt(sessionId, text, onChunk) {
     // 先清理之前 listener，避免多个 prompt 串
     return await new Promise((resolve, reject) => {
-      const result = { thinking: '', answer: '', messageIds: new Set(), stopReason: null, events: [] }
+      // qa (OOM hardening): 不再累积 result.events — 每个 session/update
+      //   （含截图工具的 base64 rawOutput）都被 push 进数组且无任何消费者，
+      //   自迭代长任务把堆撑到 GB 级直到 heap OOM。thinking/answer 累积
+      //   保留（finalize 有消费者）。
+      const result = { thinking: '', answer: '', messageIds: new Set(), stopReason: null }
       const onUpdate = (u) => {
-        result.events.push(u)
         if (u.sessionUpdate === 'agent_thought_chunk' && u.content?.type === 'text') {
           result.thinking += u.content.text
           if (u.messageId) result.messageIds.add(u.messageId)
