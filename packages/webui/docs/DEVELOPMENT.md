@@ -1,5 +1,7 @@
 # Development
 
+**English** | [简体中文](DEVELOPMENT.zh-CN.md)
+
 > How to work on this codebase. Audience: someone who has the repo
 > cloned and wants to add a feature, fix a bug, or understand the
 > codebase well enough to review PRs.

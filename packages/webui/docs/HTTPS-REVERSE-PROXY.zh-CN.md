@@ -1,69 +1,69 @@
-# HTTPS and reverse proxy
+# HTTPS 与反向代理
 
-**English** | [简体中文](HTTPS-REVERSE-PROXY.zh-CN.md)
+> 简体中文 | [English](HTTPS-REVERSE-PROXY.md)
 
-> **Why this doc exists.** The webui binds plain HTTP (Node `http.createServer`).
-> TLS termination is delegated to a reverse proxy in front of it. This page
-> collects three ready-to-copy configs (nginx, caddy, Traefik 2) plus the SSE
-> foot-guns that bite people who don't know to look for them.
+> **本文档存在的理由。** webui 绑定的是纯 HTTP（Node `http.createServer`）。
+> TLS 终端被委托给位于它前面的反向代理。本页收集了
+> 三份可直接复制的配置（nginx、caddy、Traefik 2），外加那些
+> 不知道要留意就会被坑到的 SSE 陷阱。
 
-## Table of contents
+## 目录
 
-| # | Section |
+| # | 章节 |
 |---|---|
-| 1 | [Why a reverse proxy](#1-why-a-reverse-proxy) |
-| 2 | [How the webui and the proxy share auth](#2-how-the-webui-and-the-proxy-share-auth) |
-| 3 | [Common pitfalls — Server-Sent Events (SSE)](#3-common-pitfalls--server-sent-events-sse) |
+| 1 | [为什么需要反向代理](#1-为什么需要反向代理) |
+| 2 | [webui 与代理如何共享认证](#2-webui-与代理如何共享认证) |
+| 3 | [常见陷阱 —— Server-Sent Events (SSE)](#3-常见陷阱--server-sent-events-sse) |
 | 4 | [nginx](#4-nginx) |
 | 5 | [caddy](#5-caddy) |
 | 6 | [Traefik 2](#6-traefik-2) |
-| 7 | [Verification checklist](#7-verification-checklist) |
-| 8 | [Troubleshooting](#8-troubleshooting) |
+| 7 | [验证清单](#7-验证清单) |
+| 8 | [排查](#8-排查) |
 
-## 1. Why a reverse proxy
+## 1. 为什么需要反向代理
 
-| Capability | Status | Why |
+| 能力 | 状态 | 原因 |
 |---|---|---|
-| Built-in HTTPS server | ❌ | Node's `https.createServer` needs cert + key files; ops would have to be re-implemented for cert rotation, SNI, OCSP stapling, ALPN. The Node stdlib also lacks ACME. We deliberately don't ship a TLS stack. |
-| Reverse-proxy-friendly | ✅ | The webui serves the full HTTP API on `PORT` (default 8080). 🔒 v2 (PR #55 review point 2): the default bind is now loopback `127.0.0.1` — for a same-host proxy that is exactly right (proxy → `127.0.0.1:8080`). If the proxy lives on another host, opt into a wider bind explicitly: `HOST=0.0.0.0` env or the persisted `lanBind` setting (`POST /api/settings {lanBind: true}`). nginx / caddy / Traefik in front is the recommended deployment shape. |
-| mTLS (client certs) | ❌ | Same as HTTPS — not in scope; configure mTLS at the proxy layer. |
-| Rate limiting | ✅ | Per-`{IP,token}` fixed-window limiter (see [`server/lib/rate-limit.js`](../server/lib/rate-limit.js)). Token holders get 2x. Loopback bypasses entirely. |
+| 内置 HTTPS 服务器 | ❌ | Node 的 `https.createServer` 需要证书 + 私钥文件；证书轮换、SNI、OCSP stapling、ALPN 等运维工作都得重新实现。Node 标准库还缺少 ACME。我们刻意不附带 TLS 栈。 |
+| 对反向代理友好 | ✅ | webui 在 `PORT`（默认 8080）上提供完整的 HTTP API。🔒 v2（PR #55 评审意见第 2 点）：默认绑定现在是回环 `127.0.0.1` —— 对于同主机代理来说这正好合适（proxy → `127.0.0.1:8080`）。如果代理在另一台主机上，请显式选择更宽的绑定：`HOST=0.0.0.0` 环境变量，或持久化的 `lanBind` 设置（`POST /api/settings {lanBind: true}`）。在前面架 nginx / caddy / Traefik 是推荐的部署形态。 |
+| mTLS（客户端证书） | ❌ | 与 HTTPS 相同 —— 不在范围内；请在代理层配置 mTLS。 |
+| 速率限制 | ✅ | 按 `{IP,token}` 的固定窗口限流器（见 [`server/lib/rate-limit.js`](../server/lib/rate-limit.js)）。令牌持有者获得 2 倍配额。回环完全绕过。 |
 
-**When you don't need a proxy.** The webui is also designed to run local-only:
-`HOST=127.0.0.1` (the v2 default) + `MCODE_WEBUI_RATE_LIMIT` defaults
-are safe on loopback.
+**什么时候不需要代理。** webui 也被设计为可以纯本地运行：
+`HOST=127.0.0.1`（v2 默认值）+ `MCODE_WEBUI_RATE_LIMIT` 默认值
+在回环上是安全的。
 
-## 2. How the webui and the proxy share auth
+## 2. webui 与代理如何共享认证
 
-The webui accepts two token carriers (see [`server/lib/auth.js`](../server/lib/auth.js)):
+webui 接受两种令牌载体（见 [`server/lib/auth.js`](../server/lib/auth.js)）：
 
-| Carrier | Use case |
+| 载体 | 使用场景 |
 |---|---|
-| `Authorization: Bearer <token>` | Browser `fetch`, programmatic clients. Preferred — never touches URL bar / referer / history. |
-| `?token=<token>` query string | Browser `EventSource` (SSE). The `EventSource` API cannot set custom headers, so the only way to authenticate an SSE connection from the browser is via the URL. |
+| `Authorization: Bearer <token>` | 浏览器 `fetch`、程序化客户端。首选 —— 永远不会接触 URL 栏 / referer / 历史记录。 |
+| `?token=<token>` 查询字符串 | 浏览器 `EventSource`（SSE）。`EventSource` API 无法设置自定义请求头，所以从浏览器认证 SSE 连接的唯一方式就是走 URL。 |
 
-**Recommendation for proxy configs below**: set `MCODE_WEBUI_TOKEN=<random>` on the webui process, and either:
+**对下面代理配置的建议**：在 webui 进程上设置 `MCODE_WEBUI_TOKEN=<random>`，然后任选其一：
 
-- (preferred) have the proxy rewrite the `Authorization` header to the webui's expected value (`proxy_set_header Authorization "Bearer <token>"`), OR
-- pass `?token=<token>` straight through (the EventSource will see it).
+- （首选）让代理把 `Authorization` 请求头改写为 webui 期望的值（`proxy_set_header Authorization "Bearer <token>"`），或者
+- 直接透传 `?token=<token>`（EventSource 会看到它）。
 
-**Don't log the token.** Both nginx and caddy default to logging the request line including the query string; if you put `?token=` in the URL, that lands in the access log. Either:
-- strip the `token=` query param at the proxy (`proxy_set_header Authorization "Bearer $arg_token"`), OR
-- set `access_log off` for the SSE / API location.
+**不要把令牌写进日志。** nginx 和 caddy 默认都会记录包含查询字符串的请求行；如果你把 `?token=` 放进 URL，它就会落进访问日志。要么：
+- 在代理处剥离 `token=` 查询参数（`proxy_set_header Authorization "Bearer $arg_token"`），要么
+- 对 SSE / API location 设置 `access_log off`。
 
-### 2.1 Browser origins behind a proxy — the `trustedOrigins` allowlist (v2)
+### 2.1 代理之后的浏览器源 —— `trustedOrigins` 允许清单（v2）
 
-🔒 v2 (PR #55 review point 1) replaced the old wildcard CORS with
-**trusted-origin reflection**, and added a browser **Origin/CSRF gate**:
-any mutating request (`POST` / `DELETE`) whose `Origin` header is
-present but untrusted is rejected 403 *before* every other gate.
+🔒 v2（PR #55 评审意见第 1 点）用**受信源反射**取代了旧的
+通配符 CORS，并新增了浏览器 **Origin/CSRF 门禁**：
+任何带有 `Origin` 请求头但该源不受信的变更请求
+（`POST` / `DELETE`）都会在所有其他门禁之前被拒绝 403。
 
-Behind a reverse proxy the browser's `Origin` is your **external**
-origin — `https://webui.example.com` — not the webui's own
-`http://127.0.0.1:8080`. The webui only trusts its own serving origins
-(loopback + LAN address while LAN sharing is on) plus an explicit
-allowlist, so **you must register the external origin** or the SPA's
-own authenticated `POST`s will 403 and cross-origin reads will fail:
+在反向代理之后，浏览器的 `Origin` 是你的**外部**
+源 —— `https://webui.example.com` —— 而不是 webui 自己的
+`http://127.0.0.1:8080`。webui 只信任自己的服务源
+（回环 + 局域网共享开启时的局域网地址）加上显式的
+允许清单，所以**你必须注册外部源**，否则 SPA 自己的
+已认证 `POST` 会 403，跨源读取也会失败：
 
 ```bash
 # one-time, against the local webui (adjust scheme/host/port):
@@ -73,46 +73,44 @@ curl -X POST http://127.0.0.1:8080/api/settings \
   -d '{"trustedOrigins": ["https://webui.example.com"]}'
 ```
 
-Rules (fail-closed, whole batch): `http`/`https` origin serialization
-only (`scheme://host[:port]`, no path/query/userinfo), at most 16
-entries of 1..200 chars; an invalid batch is rejected 400 unchanged.
-The list is persisted in `~/.mcode-webui/settings.json` and returned by
-`GET /api/settings`. Details:
-[SECURITY-NOTES — CORS](../references/SECURITY-NOTES.md#cors--cross-origin-resource-sharing).
+规则（失败即关闭，整批处理）：仅接受 `http`/`https` 源序列化
+（`scheme://host[:port]`，不含路径/查询/userinfo），最多 16
+个条目，每个 1..200 字符；无效批次整体被拒绝 400，不做任何更改。
+该清单持久化在 `~/.mcode-webui/settings.json` 中，并由
+`GET /api/settings` 返回。详情：
+[SECURITY-NOTES — CORS](../references/SECURITY-NOTES.md#cors--cross-origin-resource-sharing)。
 
-Proxy checklist for origins:
+面向源的代理清单：
 
-- **Forward the `Origin` header untouched.** nginx / caddy / Traefik
-  all pass it through by default — do NOT strip it, and do NOT rewrite
-  it to something else (the webui reflects and gates on the verbatim
-  value).
-- **Use the exact browser-visible origin**, scheme + host + port. If
-  you serve the SPA on `https://webui.example.com` (default port),
-  the entry is `https://webui.example.com` — no trailing slash, no
-  path. An `http://` origin behind an `https://` page will never be
-  sent by the browser, so don't list it.
-- The webui sends `Vary: Origin` on every response; proxies must not
-  strip `Vary` either, or a cached CORS response could be reused for a
-  different origin.
-- Programmatic clients that send no `Origin` (curl, MCP, CLI) are
-  unaffected by the gate — they keep working through the proxy as
-  before.
+- **原样转发 `Origin` 请求头。** nginx / caddy / Traefik
+  默认都会透传它 —— 不要剥离它，也不要把它改写成别的值
+  （webui 反射并按原样值进行门禁判断）。
+- **使用浏览器可见的确切源**，即 scheme + host + port。如果
+  你在 `https://webui.example.com`（默认端口）上提供 SPA，
+  条目就是 `https://webui.example.com` —— 不带尾部斜杠，
+  不带路径。`http://` 源在 `https://` 页面下永远不会被
+  浏览器发送，所以不要列出它。
+- webui 在每个响应上都发送 `Vary: Origin`；代理也不能
+  剥离 `Vary`，否则缓存的 CORS 响应可能被复用到
+  不同的源上。
+- 不发送 `Origin` 的程序化客户端（curl、MCP、CLI）不受
+  该门禁影响 —— 它们照常通过代理工作。
 
-## 3. Common pitfalls — Server-Sent Events (SSE)
+## 3. 常见陷阱 —— Server-Sent Events (SSE)
 
-SSE long connections (`/api/events`, `/api/alerts`) are the #1 source of "my proxy works for everything except the live feed" bug reports. The trap is buffering: reverse proxies default to **buffering upstream responses** to send them in one TCP write, which kills any stream that depends on incremental flushing.
+SSE 长连接（`/api/events`、`/api/alerts`）是"我的代理除了实时推送之外一切正常"类 bug 报告的头号来源。陷阱在于缓冲：反向代理默认会**缓冲上游响应**以便在一次 TCP 写入中发送，这会杀死任何依赖增量刷新的流。
 
-| Pitfall | Symptom | Fix |
+| 陷阱 | 症状 | 修复 |
 |---|---|---|
-| **Response buffering** | Events appear in batches every 30+ seconds instead of as they happen | `proxy_buffering off;` (nginx) / `flush_interval -1` or `buffer` not set (caddy) / `flushInterval: "100ms"` (Traefik 2 file provider) |
-| **HTTP/1.0 downstream** | Some proxies default to HTTP/1.0 for upstream; SSE needs 1.1 for chunked transfer | `proxy_http_version 1.1;` (nginx) / `versions h1 h2` (Traefik 2.4+ default) |
-| **Connection: close header injected by proxy** | EventSource closes every few minutes | `proxy_set_header Connection "";` (nginx) / default in caddy / default in Traefik 2 |
-| **Read timeout shorter than event gap** | If the proxy's idle timeout < event gap, it kills the SSE | `proxy_read_timeout 1h;` (nginx) / `timeouts { read 1h }` (Traefik 2) |
-| **`/api/health` throttled** | Liveness probe gets 429 under load | Exempt `/api/health` at the proxy level too (most do — but some rate-limiting middlewares don't) |
+| **响应缓冲** | 事件每隔 30 秒以上成批出现，而不是即时出现 | `proxy_buffering off;`（nginx）/ `flush_interval -1` 或不设置 `buffer`（caddy）/ `flushInterval: "100ms"`（Traefik 2 file provider） |
+| **下游使用 HTTP/1.0** | 某些代理对上游默认使用 HTTP/1.0；SSE 需要 1.1 的分块传输 | `proxy_http_version 1.1;`（nginx）/ `versions h1 h2`（Traefik 2.4+ 默认） |
+| **代理注入 Connection: close 头** | EventSource 每隔几分钟就关闭 | `proxy_set_header Connection "";`（nginx）/ caddy 默认即可 / Traefik 2 默认即可 |
+| **读取超时短于事件间隔** | 如果代理的空闲超时 < 事件间隔，它会杀掉 SSE | `proxy_read_timeout 1h;`（nginx）/ `timeouts { read 1h }`（Traefik 2） |
+| **`/api/health` 被限流** | 存活探针在负载下收到 429 | 也在代理层豁免 `/api/health`（大多数代理如此 —— 但某些限流中间件不会） |
 
 ## 4. nginx
 
-Tested against nginx 1.24.x. Replace every `example.com`, `/path/to/`, and `127.0.0.1:8080` with your values.
+已针对 nginx 1.24.x 测试。把所有 `example.com`、`/path/to/` 和 `127.0.0.1:8080` 替换为你自己的值。
 
 ```nginx
 # /etc/nginx/sites-available/mcode-webui.conf
@@ -209,9 +207,9 @@ server {
 
 ## 5. caddy
 
-Tested against caddy 2.7.x. Caddy auto-requests Let's Encrypt certs if you
-omit the `tls` block, but this example keeps the cert explicit so reviewers
-can drop in their own.
+已针对 caddy 2.7.x 测试。如果省略 `tls` 块，Caddy 会自动申请
+Let's Encrypt 证书，但本示例保留了显式证书，方便审阅者
+替换成自己的证书。
 
 ```caddyfile
 # /etc/caddy/Caddyfile
@@ -299,8 +297,8 @@ webui.example.com {
 
 ## 6. Traefik 2
 
-Tested against Traefik 2.10.x with the **file provider**. Docker users:
-translate the labels 1-for-1 from the file-provider fields below.
+已针对 Traefik 2.10.x 的 **file provider** 测试。Docker 用户：
+把下面这些 file-provider 字段一对一地翻译成 labels。
 
 ```yaml
 # traefik/dynamic/mcode-webui.yml  (loaded by the file provider)
@@ -393,9 +391,9 @@ http:
         #       flushInterval: "100ms"
 ```
 
-## 7. Verification checklist
+## 7. 验证清单
 
-After deploying, run through this from the **client** machine:
+部署完成后，从**客户端**机器上逐项运行：
 
 ```bash
 # Replace webui.example.com with your hostname.
@@ -436,24 +434,24 @@ curl -s -i -X POST "https://${HOST}/api/settings" \
 # Expect: HTTP/2 403  {"ok":false,"error":"cross-origin request rejected"}
 ```
 
-## 8. Troubleshooting
+## 8. 排查
 
-| Symptom | Likely cause | Fix |
+| 症状 | 可能的根因 | 修复 |
 |---|---|---|
-| Browser `POST`/`DELETE` returns 403 `cross-origin request rejected` | v2 Origin/CSRF gate: the external origin is not in `trustedOrigins` | `POST /api/settings {"trustedOrigins": ["https://webui.example.com"]}` — exact browser-visible origin, no trailing slash (§2.1). Check the proxy isn't rewriting/stripping the `Origin` header |
-| Browser can't read API responses (CORS errors in console) but curl works | External origin not allowlisted — untrusted origins get zero `Access-Control-*` headers by design | Same fix: register the origin in `trustedOrigins` (§2.1) |
-| `curl` returns 301 to HTTPS but the browser shows cert error | You're testing the redirect, not the TLS handshake | Test directly: `curl -v https://webui.example.com/api/health` |
-| SSE events arrive in bursts every 30s | Proxy is buffering | See §3 — set `proxy_buffering off` (nginx) / add the `buffering` plugin (Traefik 2.4) / check Caddy version |
-| SSE disconnects after a few minutes | Proxy idle timeout | Bump `proxy_read_timeout` / `read_timeout` / `forwardingTimeouts.idleConnTimeout` to 1h |
-| `?token=` appears in nginx access log | Default nginx logs include query string | Either strip at proxy (recommended) or `access_log off` for the SSE location |
-| 401 even with token | Token lost during header rewrite | Check your `proxy_set_header Authorization` line; verify the webui process has `MCODE_WEBUI_TOKEN` matching |
-| Rate limit (429) on the health endpoint | Misconfigured middleware also throttling | `/api/health` is already exempted at the webui layer (router.js Gate 4). If your proxy middleware still throttles, exempt `/api/health` there too |
-| 502 from nginx after webui restart | Upstream down during restart | `proxy_next_upstream` + retry; or just reload nginx after the webui is back up |
+| 浏览器 `POST`/`DELETE` 返回 403 `cross-origin request rejected` | v2 Origin/CSRF 门禁：外部源不在 `trustedOrigins` 中 | `POST /api/settings {"trustedOrigins": ["https://webui.example.com"]}` —— 使用浏览器可见的确切源，不带尾部斜杠（§2.1）。检查代理没有改写/剥离 `Origin` 请求头 |
+| 浏览器无法读取 API 响应（控制台出现 CORS 报错）但 curl 正常 | 外部源未列入允许清单 —— 不受信源按设计得不到任何 `Access-Control-*` 头 | 同样的修复：在 `trustedOrigins` 中注册该源（§2.1） |
+| `curl` 返回 301 跳转 HTTPS 但浏览器显示证书错误 | 你测试的是重定向，而不是 TLS 握手 | 直接测试：`curl -v https://webui.example.com/api/health` |
+| SSE 事件每隔 30 秒成批到达 | 代理在缓冲 | 见 §3 —— 设置 `proxy_buffering off`（nginx）/ 添加 `buffering` 插件（Traefik 2.4）/ 检查 Caddy 版本 |
+| SSE 几分钟后断开 | 代理空闲超时 | 把 `proxy_read_timeout` / `read_timeout` / `forwardingTimeouts.idleConnTimeout` 调大到 1h |
+| `?token=` 出现在 nginx 访问日志中 | nginx 默认日志包含查询字符串 | 要么在代理处剥离（推荐），要么对 SSE location 设置 `access_log off` |
+| 即使带令牌也返回 401 | 令牌在请求头改写中丢失 | 检查你的 `proxy_set_header Authorization` 行；验证 webui 进程的 `MCODE_WEBUI_TOKEN` 与之匹配 |
+| 健康端点被限流（429） | 配置错误的中间件也在限流 | `/api/health` 已在 webui 层被豁免（router.js Gate 4）。如果你的代理中间件仍在限流，也在那里豁免 `/api/health` |
+| webui 重启后 nginx 返回 502 | 重启期间上游不可用 | `proxy_next_upstream` + 重试；或者等 webui 恢复后直接 reload nginx |
 
 ---
 
-See also:
+另见：
 
-- [`docs/CAPABILITIES.md` §11 Network & access control](CAPABILITIES.md#11-network--access-control) — operational overview
-- [`server/lib/rate-limit.js`](../server/lib/rate-limit.js) — algorithm details
-- [`server/lib/auth.js`](../server/lib/auth.js) — token validation contract
+- [`docs/CAPABILITIES.md` §11 Network & access control](CAPABILITIES.md#11-network--access-control) —— 运维概览
+- [`server/lib/rate-limit.js`](../server/lib/rate-limit.js) —— 算法细节
+- [`server/lib/auth.js`](../server/lib/auth.js) —— 令牌校验契约

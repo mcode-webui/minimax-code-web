@@ -1,5 +1,7 @@
 # HTTP API reference
 
+**English** | [简体中文](API.zh-CN.md)
+
 > Complete enumeration of every endpoint. REST is JSON unless noted; the
 > only SSE endpoint is `/api/events`.
 
