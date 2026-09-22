@@ -25,7 +25,7 @@
 | Capability | Status | Why |
 |---|---|---|
 | Built-in HTTPS server | ❌ | Node's `https.createServer` needs cert + key files; ops would have to be re-implemented for cert rotation, SNI, OCSP stapling, ALPN. The Node stdlib also lacks ACME. We deliberately don't ship a TLS stack. |
-| Reverse-proxy-friendly | ✅ | The webui serves the full HTTP API on `PORT` (default 8080). 🔒 v2 (PR #55 review point 2): the default bind is now loopback `127.0.0.1` — for a same-host proxy that is exactly right (proxy → `127.0.0.1:8080`). If the proxy lives on another host, opt into a wider bind explicitly: `HOST=0.0.0.0` env or the persisted `lanBind` setting (`POST /api/settings {lanBind: true}`). nginx / caddy / Traefik in front is the recommended deployment shape. |
+| Reverse-proxy-friendly | ✅ | The webui serves the full HTTP API on `PORT` (default 18090). 🔒 v2 (PR #55 review point 2): the default bind is now loopback `127.0.0.1` — for a same-host proxy that is exactly right (proxy → `127.0.0.1:18090`). If the proxy lives on another host, opt into a wider bind explicitly: `HOST=0.0.0.0` env or the persisted `lanBind` setting (`POST /api/settings {lanBind: true}`). nginx / caddy / Traefik in front is the recommended deployment shape. |
 | mTLS (client certs) | ❌ | Same as HTTPS — not in scope; configure mTLS at the proxy layer. |
 | Rate limiting | ✅ | Per-`{IP,token}` fixed-window limiter (see [`server/lib/rate-limit.js`](../server/lib/rate-limit.js)). Token holders get 2x. Loopback bypasses entirely. |
 
@@ -60,14 +60,14 @@ present but untrusted is rejected 403 *before* every other gate.
 
 Behind a reverse proxy the browser's `Origin` is your **external**
 origin — `https://webui.example.com` — not the webui's own
-`http://127.0.0.1:8080`. The webui only trusts its own serving origins
+`http://127.0.0.1:18090`. The webui only trusts its own serving origins
 (loopback + LAN address while LAN sharing is on) plus an explicit
 allowlist, so **you must register the external origin** or the SPA's
 own authenticated `POST`s will 403 and cross-origin reads will fail:
 
 ```bash
 # one-time, against the local webui (adjust scheme/host/port):
-curl -X POST http://127.0.0.1:8080/api/settings \
+curl -X POST http://127.0.0.1:18090/api/settings \
   -H 'Content-Type: application/json' \
   -H "Authorization: Bearer <your-token>" \
   -d '{"trustedOrigins": ["https://webui.example.com"]}'
@@ -112,17 +112,17 @@ SSE long connections (`/api/events`, `/api/alerts`) are the #1 source of "my pro
 
 ## 4. nginx
 
-Tested against nginx 1.24.x. Replace every `example.com`, `/path/to/`, and `127.0.0.1:8080` with your values.
+Tested against nginx 1.24.x. Replace every `example.com`, `/path/to/`, and `127.0.0.1:18090` with your values.
 
 ```nginx
 # /etc/nginx/sites-available/mcode-webui.conf
-# Upstream: the webui binds 127.0.0.1:8080 by default (v2 loopback
+# Upstream: the webui binds 127.0.0.1:18090 by default (v2 loopback
 # default) — ideal for a same-host proxy. If the proxy runs on another
 # host, widen the bind explicitly on the webui process (HOST=0.0.0.0
 # env, or POST /api/settings {lanBind: true}). Remember to register
 # the external origin in trustedOrigins — see §2.1.
 upstream mcode_webui_upstream {
-    server 127.0.0.1:8080;
+    server 127.0.0.1:18090;
     keepalive 32;
 }
 
@@ -235,7 +235,7 @@ webui.example.com {
     }
 
     # ----- Reverse proxy base config -----
-    reverse_proxy http://127.0.0.1:8080 {
+    reverse_proxy http://127.0.0.1:18090 {
         # SSE: keep the upstream connection open. Caddy's default is
         # 30s; bump to 1h to match the webui's keepalive.
         transport http {
@@ -269,7 +269,7 @@ webui.example.com {
         path /api/events /api/alerts
     }
     handle @sse_paths {
-        reverse_proxy http://127.0.0.1:8080 {
+        reverse_proxy http://127.0.0.1:18090 {
             transport http {
                 read_timeout 1h
                 # SSE: do NOT buffer. Caddy 2.7+ default is fine.
@@ -287,12 +287,12 @@ webui.example.com {
     # /api/health is exempted from the webui's rate limiter (router.js
     # Gate 4), so orchestrators won't trip on it.
     handle /api/health {
-        reverse_proxy http://127.0.0.1:8080
+        reverse_proxy http://127.0.0.1:18090
     }
 
     # ----- Catch-all for SPA + remaining API -----
     handle {
-        reverse_proxy http://127.0.0.1:8080
+        reverse_proxy http://127.0.0.1:18090
     }
 }
 ```
@@ -336,7 +336,7 @@ http:
     mcode-webui:
       loadBalancer:
         servers:
-          - url: "http://127.0.0.1:8080"
+          - url: "http://127.0.0.1:18090"
         # SSE: keep the connection alive longer than Traefik's 30s default.
         # Traefik's `serversTransport` controls this.
         serversTransport: mcode-webui-transport

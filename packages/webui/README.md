@@ -20,7 +20,7 @@ repository root for the full people & history record.
 
 ```bash
 # From a built checkout (or an installed mcode CLI):
-mcode webui                     # http://127.0.0.1:8080
+mcode webui                     # http://127.0.0.1:18090
 mcode webui --port 8123 --host 127.0.0.1
 
 # Direct launch (development):
@@ -37,7 +37,7 @@ Recommended on non-loopback networks:
 ```bash
 export TOKEN="$(openssl rand -hex 16)"
 mcode webui --host 0.0.0.0
-# open http://<lan-ip>:8080/?token=$TOKEN
+# open http://<lan-ip>:18090/?token=$TOKEN
 ```
 
 ## What's in the box

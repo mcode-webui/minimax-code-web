@@ -10,7 +10,9 @@ import { parseArgs } from 'node:util';
 import { runTuiWebuiCommand } from './run-webui-command.js';
 
 const usage = `Usage: mcode-web [--port <number>] [--host <address>] [--token <value>] [--no-open]
-Starts the MiniMax Code Web UI (same as 'mcode webui' / 'mcode web').`;
+Starts the MiniMax Code Web UI (same as 'mcode webui' / 'mcode web').
+Without --port the server starts on 18090 and moves to the next free port when
+18090 is taken; an explicit --port is pinned and never moves.`;
 
 let values: ReturnType<typeof parseArgs<{ port: string; host: string; token: string; open: boolean; 'no-open': boolean }>>['values'];
 try {

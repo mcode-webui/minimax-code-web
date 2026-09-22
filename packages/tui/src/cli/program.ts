@@ -131,7 +131,9 @@ export function createTuiProgram(options: CreateTuiProgramOptions): Command {
     // `web` reads as the Web UI, not as a TUI prompt — accept both spellings.
     .alias('web')
     .description('Start the MiniMax Code Web UI (browser frontend driven by the same engine)')
-    .option('--port <number>', 'HTTP port (default 8080)', parsePort)
+    // An explicit --port is pinned: the webui binds it or exits, because
+    // docker port publishing and healthchecks address the configured value.
+    .option('--port <number>', 'HTTP port (default 18090, which moves to the next free port when taken)', parsePort)
     .option('--host <address>', 'bind address (default 127.0.0.1; LAN exposure is opt-in)')
     .option('--token <value>', 'auth token required for non-local requests')
     .option('--no-open', 'print the URL without opening a browser')

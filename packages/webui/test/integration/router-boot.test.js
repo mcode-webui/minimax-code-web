@@ -2,7 +2,7 @@
 // D02 lease: end-to-end router boot test.
 //
 // Spawn the real server.js on a random high port (avoids collision with
-// any real webui / dev server on 8080). Talk to it with node:http and
+// any real webui / dev server on 18090). Talk to it with node:http and
 // hit each documented route from server/router.js. Each route has at
 // least one happy path + one error path. The mcode subprocess is NOT
 // exercised here — the routes we hit (health / state / alerts /
@@ -36,7 +36,7 @@ import { decideNextAuthorization } from "../_setup.js";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const serverJsPath = join(__dirname, "..", "..", "server.js");
 
-// Port-pick: 19500..19600 — outside the dev range (8080), outside the
+// Port-pick: 19500..19600 — outside the dev range (18090), outside the
 // C08 helper range (18080/18081), outside privileged (<1024). Even on
 // busy machines this range is usually free; if it isn't, the test
 // fails loudly with EADDRINUSE which is the right signal.

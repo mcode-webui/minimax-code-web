@@ -19,7 +19,7 @@
 // `/api/settings` is exempted from (2) so users can flip the LAN switch
 // back on from a remote device.
 
-import { PORT } from "./lib/config.js";
+import { getServingPort } from "./lib/config.js";
 import {
   isLocalRequest,
   buildTrustedOrigins,
@@ -423,7 +423,7 @@ export async function handleRequest(req, res) {
   //   no CORS headers — they never needed them; zero regression.
   const originHeader = normalizeOriginHeader(req.headers.origin);
   const trustedOrigins = buildTrustedOrigins({
-    port: PORT,
+    port: getServingPort(),
     lanBroadcast: getLanBroadcast(),
     extra: getTrustedOrigins(),
   });

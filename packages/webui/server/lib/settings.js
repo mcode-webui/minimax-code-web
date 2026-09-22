@@ -15,7 +15,7 @@ import { homedir } from "node:os";
 import { join, dirname, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 
-import { PORT, HOST } from "./config.js";
+import { getServingPort, HOST } from "./config.js";
 import { LAN_IP, isLoopbackHost } from "./lan.js";
 import { MCODE_CMD, DEFAULT_WORKSPACE, DEFAULT_MODEL } from "./config.js";
 
@@ -874,7 +874,7 @@ export function rotateToken() {
 //   switching. Per user feedback: a user on a Chinese host might be
 //   browsing in English (or vice versa); they want both visible at once.
 //   Dynamic PORT (was hardcoded 7890 which broke when PORT was changed
-//   to 8080 default).
+//   to 18090 default).
 // -----------------------------------------------------------------------
 
 // Single bilingual HTML — both languages always visible. Each block is
@@ -920,7 +920,7 @@ export function rejectLan(res, pathname, remoteIp, _acceptLanguage) {
   const isApi = pathname.startsWith("/api/");
   const isSettings = pathname === "/api/settings"; // 让用户能远程切回
   if (isSettings) return false;
-  const localUrl = `http://127.0.0.1:${PORT}/`;
+  const localUrl = `http://127.0.0.1:${getServingPort()}/`;
   if (isApi) {
     res.writeHead(403, { "Content-Type": "application/json; charset=utf-8" });
     res.end(JSON.stringify(LAN_REJECT_JSON));
@@ -959,7 +959,7 @@ export function getSettingsSnapshot(availableInterfaces = null) {
   // d.lanUrlWithToken || d.lanUrl). A fresh token-bearing URL can be
   // minted again only via token rotation (resetToken), which returns
   // the new token exactly once and resets tokenAcknowledged.
-  const baseUrl = `http://${LAN_IP}:${PORT}`;
+  const baseUrl = `http://${LAN_IP}:${getServingPort()}`;
   const shareToken = _effectiveShareToken();
   const lanUrlWithToken = shareToken
     ? `${baseUrl}/?token=${encodeURIComponent(shareToken)}`
@@ -978,7 +978,7 @@ export function getSettingsSnapshot(availableInterfaces = null) {
   const lanExposed = !isLoopbackHost(bindHost);
   const bindRestartPending = !envHost && bindHost !== HOST;
   const lanExposureNotice = lanExposed
-    ? `LAN exposure ON: webui binds ${bindHost}:${PORT} and is reachable from the network. / 局域网暴露已开启：webui 监听 ${bindHost}:${PORT}，网络内设备均可访问。`
+    ? `LAN exposure ON: webui binds ${bindHost}:${getServingPort()} and is reachable from the network. / 局域网暴露已开启：webui 监听 ${bindHost}:${getServingPort()}，网络内设备均可访问。`
     : bindRestartPending
       ? `Bind change pending restart: next boot binds ${bindHost}. / 绑定变更待重启：下次启动监听 ${bindHost}。`
       : "";
@@ -1010,14 +1010,14 @@ export function getSettingsSnapshot(availableInterfaces = null) {
     hasTokenPlanKey: !!getTokenPlanApiKey(),
     tokenPlanApiKeySource: getTokenPlanApiKeySource(),
     tokenPlanApiKeyFilePath: getTokenPlanApiKeyFilePath(),
-    port: PORT,
+    port: getServingPort(),
     host: HOST,
     lanIp: LAN_IP,
     lanUrl: baseUrl,
     // v2 security fix (PR #55 review point 1): only present while
     // !tokenAcknowledged (first-run bootstrap). Omitted after ack.
     ...(includeToken ? { lanUrlWithToken } : {}),
-    localUrl: `http://127.0.0.1:${PORT}`,
+    localUrl: `http://127.0.0.1:${getServingPort()}`,
     // v2 security fix (PR #55 review point 2): explicit exposure
     // disclosure surfaced whenever LAN sharing is (or is about to be)
     // in effect.

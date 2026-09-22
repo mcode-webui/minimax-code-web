@@ -25,7 +25,7 @@
 | 能力 | 状态 | 原因 |
 |---|---|---|
 | 内置 HTTPS 服务器 | ❌ | Node 的 `https.createServer` 需要证书 + 私钥文件；证书轮换、SNI、OCSP stapling、ALPN 等运维工作都得重新实现。Node 标准库还缺少 ACME。我们刻意不附带 TLS 栈。 |
-| 对反向代理友好 | ✅ | webui 在 `PORT`（默认 8080）上提供完整的 HTTP API。🔒 v2（PR #55 评审意见第 2 点）：默认绑定现在是回环 `127.0.0.1` —— 对于同主机代理来说这正好合适（proxy → `127.0.0.1:8080`）。如果代理在另一台主机上，请显式选择更宽的绑定：`HOST=0.0.0.0` 环境变量，或持久化的 `lanBind` 设置（`POST /api/settings {lanBind: true}`）。在前面架 nginx / caddy / Traefik 是推荐的部署形态。 |
+| 对反向代理友好 | ✅ | webui 在 `PORT`（默认 18090）上提供完整的 HTTP API。🔒 v2（PR #55 评审意见第 2 点）：默认绑定现在是回环 `127.0.0.1` —— 对于同主机代理来说这正好合适（proxy → `127.0.0.1:18090`）。如果代理在另一台主机上，请显式选择更宽的绑定：`HOST=0.0.0.0` 环境变量，或持久化的 `lanBind` 设置（`POST /api/settings {lanBind: true}`）。在前面架 nginx / caddy / Traefik 是推荐的部署形态。 |
 | mTLS（客户端证书） | ❌ | 与 HTTPS 相同 —— 不在范围内；请在代理层配置 mTLS。 |
 | 速率限制 | ✅ | 按 `{IP,token}` 的固定窗口限流器（见 [`server/lib/rate-limit.js`](../server/lib/rate-limit.js)）。令牌持有者获得 2 倍配额。回环完全绕过。 |
 
@@ -60,14 +60,14 @@ webui 接受两种令牌载体（见 [`server/lib/auth.js`](../server/lib/auth.j
 
 在反向代理之后，浏览器的 `Origin` 是你的**外部**
 源 —— `https://webui.example.com` —— 而不是 webui 自己的
-`http://127.0.0.1:8080`。webui 只信任自己的服务源
+`http://127.0.0.1:18090`。webui 只信任自己的服务源
 （回环 + 局域网共享开启时的局域网地址）加上显式的
 允许清单，所以**你必须注册外部源**，否则 SPA 自己的
 已认证 `POST` 会 403，跨源读取也会失败：
 
 ```bash
 # one-time, against the local webui (adjust scheme/host/port):
-curl -X POST http://127.0.0.1:8080/api/settings \
+curl -X POST http://127.0.0.1:18090/api/settings \
   -H 'Content-Type: application/json' \
   -H "Authorization: Bearer <your-token>" \
   -d '{"trustedOrigins": ["https://webui.example.com"]}'
@@ -110,17 +110,17 @@ SSE 长连接（`/api/events`、`/api/alerts`）是"我的代理除了实时推�
 
 ## 4. nginx
 
-已针对 nginx 1.24.x 测试。把所有 `example.com`、`/path/to/` 和 `127.0.0.1:8080` 替换为你自己的值。
+已针对 nginx 1.24.x 测试。把所有 `example.com`、`/path/to/` 和 `127.0.0.1:18090` 替换为你自己的值。
 
 ```nginx
 # /etc/nginx/sites-available/mcode-webui.conf
-# Upstream: the webui binds 127.0.0.1:8080 by default (v2 loopback
+# Upstream: the webui binds 127.0.0.1:18090 by default (v2 loopback
 # default) — ideal for a same-host proxy. If the proxy runs on another
 # host, widen the bind explicitly on the webui process (HOST=0.0.0.0
 # env, or POST /api/settings {lanBind: true}). Remember to register
 # the external origin in trustedOrigins — see §2.1.
 upstream mcode_webui_upstream {
-    server 127.0.0.1:8080;
+    server 127.0.0.1:18090;
     keepalive 32;
 }
 
@@ -233,7 +233,7 @@ webui.example.com {
     }
 
     # ----- Reverse proxy base config -----
-    reverse_proxy http://127.0.0.1:8080 {
+    reverse_proxy http://127.0.0.1:18090 {
         # SSE: keep the upstream connection open. Caddy's default is
         # 30s; bump to 1h to match the webui's keepalive.
         transport http {
@@ -267,7 +267,7 @@ webui.example.com {
         path /api/events /api/alerts
     }
     handle @sse_paths {
-        reverse_proxy http://127.0.0.1:8080 {
+        reverse_proxy http://127.0.0.1:18090 {
             transport http {
                 read_timeout 1h
                 # SSE: do NOT buffer. Caddy 2.7+ default is fine.
@@ -285,12 +285,12 @@ webui.example.com {
     # /api/health is exempted from the webui's rate limiter (router.js
     # Gate 4), so orchestrators won't trip on it.
     handle /api/health {
-        reverse_proxy http://127.0.0.1:8080
+        reverse_proxy http://127.0.0.1:18090
     }
 
     # ----- Catch-all for SPA + remaining API -----
     handle {
-        reverse_proxy http://127.0.0.1:8080
+        reverse_proxy http://127.0.0.1:18090
     }
 }
 ```
@@ -334,7 +334,7 @@ http:
     mcode-webui:
       loadBalancer:
         servers:
-          - url: "http://127.0.0.1:8080"
+          - url: "http://127.0.0.1:18090"
         # SSE: keep the connection alive longer than Traefik's 30s default.
         # Traefik's `serversTransport` controls this.
         serversTransport: mcode-webui-transport

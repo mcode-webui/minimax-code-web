@@ -7,7 +7,7 @@ Web UI（`packages/webui`）是 MiniMax Code 的浏览器前端。它使用与 T
 ## 启动
 
 ```bash
-mcode-web                     # http://127.0.0.1:8080
+mcode-web                     # http://127.0.0.1:18090
 mcode web                     # equivalent — `web` and `webui` both resolve
 mcode webui --port 8123 --host 127.0.0.1
 mcode webui --token "$(openssl rand -hex 16)" --host 0.0.0.0   # LAN, token-gated
@@ -16,6 +16,8 @@ node packages/webui/server.js # direct, from a checkout
 ```
 
 该命令解析 webui 包（已安装的 `dist/webui/` 或源码 `packages/webui/`），把服务器作为子进程启动，并通过 `MCODE_WEBUI_SELF_ENTRY` 将其指回正在运行的 CLI。然后 webui 会为每个活动的浏览器标签页生成一个 `node <cli> acp`。
+
+不传 `--port` 时服务器从 18090 启动，若 18090 被占用就换下一个空闲端口，并打印实际绑定的地址 —— 启动器打开的就是这个地址。显式指定的 `--port`（或 `PORT`）会被钉住：不会自动后移，端口被占用时以 EADDRINUSE 退出。
 
 ## 运行开发构建
 
@@ -29,7 +31,7 @@ node packages/webui/server.js # direct, from a checkout
 
 ```bash
 corepack pnpm install && corepack pnpm build   # once, and after engine changes
-node dist/cli.js webui                         # dev Web UI on 127.0.0.1:8080
+node dist/cli.js webui                         # dev Web UI on 127.0.0.1:18090
 node dist/cli.js webui --port 8123             # keep the installed one free
 ```
 

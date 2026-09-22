@@ -20,7 +20,7 @@
 ```powershell
 cd ~/.minimax-code/webui
 node server.js
-# → http://127.0.0.1:8080
+# → http://127.0.0.1:18090
 ```
 
 如果想要调试会话（详细 SSE、无缓存、可注入事件）：
@@ -146,7 +146,7 @@ webui 会在连接时获取它。
 ## 在没有 mcode 的情况下测试
 
 1. 在 `node server.js` 之前设置 `$env:DEBUG_INJECT = '1'`。
-2. 打开 `http://127.0.0.1:8080/?debug=1`（或者直接查看右侧
+2. 打开 `http://127.0.0.1:18090/?debug=1`（或者直接查看右侧
    面板——调试面板始终可见）。
 3. 在浏览器控制台中：
    ```js
@@ -187,9 +187,17 @@ mcode 侧的会话存储是 SQLite：
 2. 增大 N。（当前值：见 script 标签上方的注释。）
 
 ### 修改默认端口
-```powershell
-$env:PORT = 8080
+18090 只是默认值，不是被钉住的值：它被占用时服务器会往后找下一个空闲
+端口，并打印实际绑定的端口。设置 `PORT`（或给 `mcode-web` 传 `--port`）
+则是把端口钉住 —— 被占用的钉住端口会以 EADDRINUSE 退出而不是自动后移，
+这样 docker 端口发布和健康检查仍然按配置值寻址。
+
+```bash
+# 默认端口：18090，被占用时换下一个空闲端口
 node server.js
+
+# 钉在 7891 —— 不会移动
+PORT=7891 node server.js
 ```
 
 ### 启用局域网共享
@@ -215,7 +223,7 @@ webui 会在下一次发送时启动一个新的子进程。
 `/api/settings` 端点在设计上豁免局域网守卫。
 从局域网上的任何机器，即使 `lanBroadcast: false`：
 ```bash
-curl -X POST http://192.168.1.50:8080/api/settings \
+curl -X POST http://192.168.1.50:18090/api/settings \
   -H 'Content-Type: application/json' \
   -d '{"lanBroadcast": true}'
 ```
