@@ -192,9 +192,9 @@ sequenceDiagram
         B->>B: assistant message (markdown)
     end
     E-->>A: prompt result {stopReason, usage}
-    M->>M: finalize (usage accounting; empty-answer note if no message)
+    M->>M: finalize (usage accounting, empty-answer note if no message)
     M->>S: pushStateFor + persistCurrentChat → sessions.json
-    B->>B: running:{active:false}; context % / tokens update
+    B->>B: running:{active:false}, context % / tokens update
 ```
 
 Interactive surfaces and engine-side modules — who owns what:
@@ -229,7 +229,7 @@ sequenceDiagram
     B->>C: POST /api/send {isAskAnswer:true, content: answer}
     C->>E: forward as prompt (continue same session)
     E-->>M: stream resumes (thought/message/tool events)
-    B->>B: modal closes; chat continues
+    B->>B: modal closes, chat continues
 ```
 
 
