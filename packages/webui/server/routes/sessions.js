@@ -5,7 +5,13 @@
 // (v0.5.bx-33: 删 POST /api/sessions/cleanup-orphans — Wzdhehe 不要这个 UI,API 一起删)
 
 import { randomUUID } from "node:crypto";
-import { loadSessions, saveSessions, resetContext } from "../lib/sessions.js";
+import {
+  loadSessions,
+  saveSessions,
+  resetContext,
+  ensureOverlayForMcodeSid,
+  findOverlayForMcodeSid,
+} from "../lib/sessions.js";
 import { deleteMcodeSessionFromDb } from "../lib/db.js";
 import {
   getMcodeSessionTitle,
@@ -221,19 +227,16 @@ export async function handleSwitchSession(req, res, ctx) {
       if (!title) {
         title = (await getMcodeSessionTitle(id)) || "Mcode session";
       }
-      target = {
-        id: randomUUID(),
-        mcodeSessionId: id,
-        title,
-        workspace: ws,
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-        chat: [],
-      };
-      all.unshift(target);
+      // v2.4 单一基础会话：叠加记录 id === mcode 会话 id，幂等创建。
+      //   旧模型给每个 mvs_ 切换造一条 uuid 壳记录——同一对话出现两条身份，
+      //   是侧栏混乱（untitled 多一条）的直接根源。现在重复切换永远命中
+      //   同一条记录。
+      const existed = findOverlayForMcodeSid(all, id);
+      target = ensureOverlayForMcodeSid(all, id, { title, workspace: ws });
+      target.updatedAt = Date.now();
       saveSessions(all);
       console.log(
-        `[switch] cid=${cid} created new webui session ${target.id.substring(0, 8)}… for mcode ${id.substring(0, 12)}… title="${title}" titleSource=${titleSource}`,
+        `[switch] cid=${cid} ${existed ? "reused" : "created"} overlay ${target.id.substring(0, 12)}… (id=mcode sid) title="${title}" titleSource=${titleSource}`,
       );
     } else {
       console.log(

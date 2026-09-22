@@ -4,7 +4,7 @@
 # (docker compose up webui) and provide a full interactive dev environment
 # (docker compose run dev). It is NOT a production deployment image: it keeps
 # build tooling on purpose and expects the operator's token/credential mounts.
-FROM node:24-bookworm-slim
+FROM node:24.19-bookworm-slim
 
 # git      — workspace annotations (trajectory studio) and agent tools
 # sqlite3  — the webui's sqlite CLI fallback path

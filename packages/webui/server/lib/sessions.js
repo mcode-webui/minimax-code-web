@@ -74,6 +74,85 @@ function reportCorruptedSessionsDb(st, err) {
 // v0.5.bx-5: 剥 UTF-8 BOM — 之前直接 JSON.parse 在 ﻿ 上抛 syntax error，try/catch 静默吞掉返 []
 //   结果：所有 session 查找都查不到，delete/switch 都 404 "session not found"（用户报"删除不掉对话"）
 // v2 hardening: parse 失败/根非数组不再静默 — 隔离副本 + 可行动错误（见文件头 §3）
+// -----------------------------------------------------------------------
+// v2.4: 单一基础会话模型（single base session）。
+//   一次对话 = 一个身份：mcode 会话 id（mvs_…）。webui 存储是叠加层
+//   （overlay）——按 mcodeSessionId 键控，承载 title/workspace/chat 快照，
+//   绝不制造第二身份。新记录 id 直接等于 mcodeSessionId；草稿（尚未发过
+//   消息的 "+" 会话）保留 uuid，首轮发送后由 promoteDraftToMcodeSid 晋升。
+//   旧数据（uuid id + mcodeSessionId 的壳记录）无需迁移：所有查找先按
+//   mcodeSessionId 命中，uuid 只是历史遗留的显示键。
+
+/** 会话的权威键：有 mcode 绑定用 mcodeSessionId，草稿退回自身 id。 */
+export function sessionKeyOf(s) {
+  return (s && (s.mcodeSessionId || s.id)) || null;
+}
+
+/** 按 mcode 会话 id 找叠加记录（兼容旧 uuid 壳记录）。 */
+export function findOverlayForMcodeSid(all, sid) {
+  if (!Array.isArray(all) || !sid) return null;
+  return all.find((s) => s && s.mcodeSessionId === sid) || null;
+}
+
+/**
+ * 幂等获取/创建某 mcode 会话的叠加记录。新记录 id === mcodeSessionId
+ * （单一身份），重复调用永远返回同一条——切换不再产生重复壳。
+ */
+export function ensureOverlayForMcodeSid(all, sid, { title, workspace } = {}) {
+  let rec = findOverlayForMcodeSid(all, sid);
+  if (rec) {
+    // 标题仍是占位符时用新解析到的真标题修补（cache-only，无 ACP 代价）
+    if (title && rec.title === "Mcode session") rec.title = title;
+    return rec;
+  }
+  rec = {
+    id: sid,
+    mcodeSessionId: sid,
+    title: title || "Mcode session",
+    workspace: workspace || "",
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    chat: [],
+  };
+  all.unshift(rec);
+  return rec;
+}
+
+/**
+ * 首轮 acp 回合绑定 mcode 会话后，把草稿记录（uuid id、无绑定）晋升为
+ * 引擎身份：id 改写为 mcodeSessionId。若该 mcode 会话已有叠加记录
+ * （例如用户此前切换过它），则把草稿的 chat 合并进既有记录并删除草稿，
+ * 保证一个 mcode 会话最多一条记录。cs.sessionId 同步为最终记录 id。
+ */
+export function promoteDraftToMcodeSid(cs) {
+  if (!cs || !cs.mcodeSessionId || !cs.sessionId) return false;
+  if (cs.sessionId === cs.mcodeSessionId) return false;
+  const all = loadSessions();
+  const draft = all.find((s) => s && s.id === cs.sessionId && !s.mcodeSessionId);
+  const existing = findOverlayForMcodeSid(all, cs.mcodeSessionId);
+  if (existing) {
+    const draftChat = Array.isArray(draft && draft.chat) ? draft.chat : [];
+    if (draftChat.length > 0) {
+      existing.chat = [...(existing.chat || []), ...draftChat];
+    }
+    existing.updatedAt = Date.now();
+    if (draft) {
+      const idx = all.indexOf(draft);
+      if (idx >= 0) all.splice(idx, 1);
+    }
+    saveSessions(all);
+    cs.sessionId = existing.id;
+    return true;
+  }
+  if (!draft) return false;
+  draft.id = cs.mcodeSessionId;
+  draft.mcodeSessionId = cs.mcodeSessionId;
+  draft.updatedAt = Date.now();
+  saveSessions(all);
+  cs.sessionId = draft.id;
+  return true;
+}
+
 // v2.3: memoize by (mtimeMs, size). pushStateFor calls loadSessions on EVERY
 //   snapshot (per SSE push, up to 60Hz), and switch/persist paths read too —
 //   re-reading + JSON.parsing a multi-MB store that often made long-turn
