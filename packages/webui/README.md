@@ -50,7 +50,7 @@ mcode webui --host 0.0.0.0
 | `public/` | Static frontend SPA |
 | `server/trajectory/` | Session trajectory studio (read-only SQLite inspection) |
 | `references/SECURITY-NOTES.md` | **Canonical security disclosure** (read before exposing beyond loopback) |
-| `docs/` | ARCHITECTURE, API, CAPABILITIES, DEVELOPMENT, TROUBLESHOOTING, CHANGELOG |
+| `docs/` | ARCHITECTURE, API, CAPABILITIES, DESIGN, DESKTOP-ARCHITECTURE, DEVELOPMENT, TROUBLESHOOTING, CHANGELOG |
 | `test/` | `node:test` suites |
 | `checks/` | mocked unit checks (`t.mock.module`; need the module-mocks flag) |
 | `scripts/` | docs-alignment checker, SBOM generator, test-db fixture builder |
@@ -123,6 +123,8 @@ degrades to sequential scans.
 ## Documentation
 
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — runtime topology, request lifecycle, module contracts
+- [`docs/DESKTOP-ARCHITECTURE.md`](docs/DESKTOP-ARCHITECTURE.md) — measured desktop and TUI architecture reference
+- [`docs/DESIGN.md`](docs/DESIGN.md) — design system of record (tokens, theme protocol, layout) and the desktop alignment contract
 - [`docs/API.md`](docs/API.md) — HTTP/SSE surface
 - [`docs/CAPABILITIES.md`](docs/CAPABILITIES.md) — capability deep-dive
 - [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) — dev workflow, tests

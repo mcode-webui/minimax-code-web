@@ -1,7 +1,7 @@
 # MCode Trajectory Studio — 设计文档
 
 > **Scope note.** This file shares a name with, but not a subject with, the
-> repository-root [DESIGN.md](../../../../DESIGN.md). That document is the design
+> [`docs/DESIGN.md`](../../docs/DESIGN.md). That document is the design
 > system of record for the webui (tokens, typography, theme protocol, layout) and
 > does not describe Trajectory Studio. Neither document absorbs the other.
 >

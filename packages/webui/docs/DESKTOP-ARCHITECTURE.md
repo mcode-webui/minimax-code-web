@@ -7,7 +7,7 @@
 >
 > **Not in scope.** The Web UI's own runtime topology — server bootstrap, router, request
 > lifecycle, module contracts, `clientState.state`, the SSE event schema, and failure
-> modes — is documented in [`packages/webui/docs/ARCHITECTURE.md`](packages/webui/docs/ARCHITECTURE.md).
+> modes — is documented in [`ARCHITECTURE.md`](ARCHITECTURE.md).
 > That document is the single source of truth for how the Web UI is built; this one does not
 > restate it. See [§6](#6-what-the-web-ui-inherits-and-what-it-does-not) for the boundary.
 >
