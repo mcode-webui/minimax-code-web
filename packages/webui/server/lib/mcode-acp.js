@@ -305,7 +305,11 @@ function streamAcpPrompt(client, sid, content, label, cs, cid) {
                 try {
                   const all = loadSessions();
                   const item = all.find((s) => s.id === cs.sessionId);
-                  if (item) {
+                  // qa (session-workspace-crud): titleCustom 是用户显式改名
+                  //   (POST /api/sessions/rename) 的留痕 — 自动标题永不覆盖
+                  //   用户标题。isDefault 的 cs 侧判定之外再守一道 item 侧，
+                  //   封住"改名发生在 title RPC 在途时"的竞态窗口。
+                  if (item && !item.titleCustom) {
                     item.title = title;
                     item.mcodeSessionId = finalSid;
                     item.updatedAt = Date.now();

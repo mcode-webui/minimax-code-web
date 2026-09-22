@@ -164,3 +164,94 @@ describe("handleWorkspaceBrowse — /api/workspace/browse GET", () => {
     assert.ok(Array.isArray(body.roots));
   });
 });
+
+// ============================================================
+// qa (session-workspace-crud): 项目目录选择 route 层 — tree / resolve / recent
+// ============================================================
+
+const { registerSessionsStore } = await import("../test/_setup.js");
+
+function fakeGet(url) {
+  const stream = Readable.from([Buffer.from("")]);
+  stream.url = url;
+  stream.method = "GET";
+  stream.headers = { host: "localhost" };
+  return stream;
+}
+
+describe("handleWorkspaceTree — 工作区→会话树", () => {
+  test("groups sessions by workspace, current pinned first, empty current still listed", () => {
+    registerSessionsStore({
+      initial: [
+        { id: "s1", workspace: "/ws/old", title: "a", createdAt: 1, updatedAt: 10 },
+        { id: "s2", workspace: "/ws/old", title: "b", createdAt: 2, updatedAt: 30 },
+        { id: "s3", workspace: "/ws/other", title: "c", createdAt: 3, updatedAt: 20 },
+        { id: "s4", workspace: "", title: "no-ws", createdAt: 4, updatedAt: 40 },
+      ],
+    });
+    const cs = fakeCs("/ws/current-with-no-sessions");
+    const res = fakeRes();
+    wsRoute.handleWorkspaceTree(fakeGet("/api/workspace/tree"), res, { cs, cid: "cid-1" });
+    assert.equal(res._status, 200);
+    const body = JSON.parse(res._body);
+    assert.equal(body.ok, true);
+    assert.equal(body.current, "/ws/current-with-no-sessions");
+    assert.ok(body.tmpDir, "tmpDir provided for 'no workspace' button");
+    // current first even with zero sessions; then others by lastActiveAt desc
+    assert.equal(body.workspaces[0].current, true);
+    assert.equal(body.workspaces[0].sessionCount, 0);
+    const names = body.workspaces.map((w) => w.dir);
+    assert.ok(names.includes("/ws/old") && names.includes("/ws/other"));
+    assert.ok(!names.includes(""), "workspace-less sessions not grouped");
+    const old = body.workspaces.find((w) => w.dir === "/ws/old");
+    assert.equal(old.sessionCount, 2);
+    assert.deepEqual(old.sessions.map((s) => s.id), ["s2", "s1"], "sessions sorted by updatedAt desc");
+    assert.equal(old.sessions[0].title, "b");
+  });
+});
+
+describe("handleWorkspaceResolve — 文件夹名 → 候选", () => {
+  test("invalid name → 400 with ok:false", () => {
+    const res = fakeRes();
+    wsRoute.handleWorkspaceResolve(fakeGet("/api/workspace/resolve?name=a%2Fb"), res, {});
+    assert.equal(res._status, 400);
+    const body = JSON.parse(res._body);
+    assert.equal(body.ok, false);
+  });
+
+  test("valid name → 200 with candidates array (may be empty)", () => {
+    const res = fakeRes();
+    wsRoute.handleWorkspaceResolve(fakeGet("/api/workspace/resolve?name=some-unique-name-xyz"), res, {});
+    assert.equal(res._status, 200);
+    const body = JSON.parse(res._body);
+    assert.equal(body.ok, true);
+    assert.ok(Array.isArray(body.candidates));
+  });
+});
+
+describe("handleWorkspaceRecent — 最近工作区", () => {
+  test("returns aggregated items + tmpDir, honors search & limit", () => {
+    registerSessionsStore({
+      initial: [
+        { id: "r1", workspace: "/ws/alpha", createdAt: 1, updatedAt: 100 },
+        { id: "r2", workspace: "/ws/alpha", createdAt: 2, updatedAt: 300 },
+        { id: "r3", workspace: "/ws/beta", createdAt: 3, updatedAt: 200 },
+      ],
+    });
+    const res = fakeRes();
+    wsRoute.handleWorkspaceRecent(fakeGet("/api/workspace/recent?limit=1"), res, {});
+    assert.equal(res._status, 200);
+    const body = JSON.parse(res._body);
+    assert.equal(body.ok, true);
+    assert.equal(body.items.length, 1, "limit honored");
+    assert.equal(body.items[0].dir, "/ws/alpha", "most recent first");
+    assert.equal(body.items[0].sessionCount, 2);
+    assert.ok(body.tmpDir, "tmpDir attached");
+
+    const res2 = fakeRes();
+    wsRoute.handleWorkspaceRecent(fakeGet("/api/workspace/recent?search=beta"), res2, {});
+    const body2 = JSON.parse(res2._body);
+    assert.equal(body2.items.length, 1);
+    assert.equal(body2.items[0].dir, "/ws/beta", "search filter honored");
+  });
+});

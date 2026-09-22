@@ -11,6 +11,18 @@ landed on the development branch but are not yet cut into a release.
 
 ## Unreleased
 
+### Added
+
+- **会话重命名（增删改查的"改"）**：`POST /api/sessions/rename` + sidebar 行内
+  重命名（✎ 按钮，Enter/失焦提交、Esc 取消）。标题以用户为准（`titleCustom`
+  标记），mcode 自动标题生成永不覆盖；sidebar 的 mcode 条目 merge 时用户改名
+  优先于 mcode 标题。裸 `mvs_` 会话（无 webui 壳）改名时自动建壳承接。
+  非破坏性操作不走 `authorize()` 弹窗，但照常写 `session.rename` 审计事件。
+- 项目目录选择补齐测试面：`/api/workspace/tree`（工作区→会话树）、
+  `/api/workspace/resolve`（文件夹名→候选）、`/api/workspace/recent`（最近
+  工作区）route 层，以及 `resolveWorkspaceCandidates` / `getRecentWorkspaces` /
+  `expandTilde` / `assertWorkspaceParentPath` 库层用例。
+
 ### Changed
 
 - **默认端口 8080 → 18090**。8080 在桌面机与开发机上被各类服务占用得太频繁。
@@ -22,6 +34,21 @@ landed on the development branch but are not yet cut into a release.
 - CORS origin 信任集、`/api/health`、state 快照与 LAN 分享 URL 改为按**实际监听
   端口**（`getServingPort()`）计算。否则回退之后的浏览器 origin 会被自身的 CSRF
   网关拒绝，分享 URL 也会指向没有服务在听的端口。
+- `GET /api/sessions` 响应瘦身为 sidebar 元数据（去掉每会话完整 `chat` 数组），
+  与 docs/API.md 声明的形状对齐；state 快照的两处漏改路径（权威 mcodeSessions
+  推送、`pushOnlineCount`）同样改用瘦身投影 —— 之前每次推送仍携带全量会话正文。
+- `server-startup.test.js` 端口改为内核动态分配（`bind(0)`），不再写死
+  18080/18081/18082 —— 开发机上恰好有真实 webui 在跑时，这些用例会因
+  EADDRINUSE 失败，而其意图是首启 token 行为而非绑定特定端口。
+
+### Fixed
+
+- **`POST /api/sessions` 的工作区绕道**：`body.workspace` 是用户输入，此前
+  原样落库并写入 `cs.workspace`（不校验存在性、不走 containment、不 resolve），
+  等于绕过 `POST /api/workspace` 的允许根围栏。现在复用 `assertWorkspacePath`
+  同一闸门：越界 400、不创建会话记录、`cs.workspace` 不动。
+- 自动标题竞态窗口：mcode 回合结束回写标题时，`titleCustom` 记录（用户已改名）
+  不再被覆盖 —— 之前只判定 cs 侧默认标题，改名发生在 title RPC 在途时仍会被盖掉。
 
 ## v2.0.0 — 2026-09-20 (工业化重写，同步自 MiniMax-Code-Plugins PR #55 @ 7b4aae8)
 

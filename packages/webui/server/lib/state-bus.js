@@ -178,6 +178,9 @@ function sessionsListForSnapshot() {
     workspace: s.workspace,
     createdAt: s.createdAt,
     updatedAt: s.updatedAt,
+    // qa (session-workspace-crud): titleCustom 随快照下发 — 前端 sidebar 对
+    //   mcode 条目 merge 时靠它判定"用户改名优先于 mcode 自动标题"。
+    titleCustom: s.titleCustom === true ? true : undefined,
   }));
 }
 
@@ -202,7 +205,10 @@ function ensureMcodeSessionsFetchedAndPush(workspace) {
           [];
       const snapshot = {
         ...ccs,
-        sessions: loadSessions(),
+        // qa (session-workspace-crud): 复用瘦身投影 — 这条权威推送路径原来
+        //   直接 loadSessions()，把每个 session 的完整 chat 数组推进 SSE，
+        //   是 v2.3 修掉的主负载；两处（本处 + pushOnlineCount）漏改。
+        sessions: sessionsListForSnapshot(),
         mcodeSessions: cached,
         mcodeSessionsPending: false,
         availableCommands: getCachedMcodeCommands(),
@@ -557,7 +563,9 @@ export function pushOnlineCount(lanBroadcast) {
     const cs = clients.get(c) || makeClientState();
     const snapshot = {
       ...cs,
-      sessions: loadSessions(),
+      // qa (session-workspace-crud): 同上 — 复用瘦身投影，别把 chat 数组
+      //   随 onlineCount 广播出去。
+      sessions: sessionsListForSnapshot(),
       ...mcodeSessionsSnapshotFields((cs.workspace && cs.workspace.dir) || ""),
       availableCommands: cachedCmds,
       onlineCount: sseByCid.size,

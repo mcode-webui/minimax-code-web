@@ -164,6 +164,10 @@ Create a new webui session. Optionally tied to a workspace.
 { "workspace": "C:\\path\\to\\project" }
 ```
 
+When `workspace` is provided it must clear the same containment gate as
+`POST /api/workspace` (existing directory inside an allowed root, symlinks
+resolved) — 400 otherwise, and no session record is created.
+
 **Response 200** `{ok: true, id: "uuid"}`
 
 ### `POST /api/sessions/switch`
@@ -177,6 +181,31 @@ re-attaches to the mcode session.
 ```
 
 **Response 200** `{ok: true}`
+
+### `POST /api/sessions/rename`
+
+Rename a session (CRUD "update"). `id` accepts a webui uuid, an `mvs_…`
+mcode session id, or a bare `mvs_…` with no webui wrapper yet (an overlay
+record is created to carry the title). The title is user-authoritative: the
+record is flagged `titleCustom: true` and mcode's automatic title generation
+never overwrites it afterwards.
+
+Not gated by the `authorize()` modal — renaming is non-destructive and
+reversible (same class as `session.create`); a `session.rename` audit event
+(`from` → `to`) is appended to the hash chain either way.
+
+**Request**
+```json
+{ "id": "uuid", "title": "my renamed session" }
+```
+
+**Response 200**
+```json
+{ "ok": true, "session": { "id": "uuid", "mcodeSessionId": "mvs_…", "title": "my renamed session", "titleCustom": true } }
+```
+
+**Errors** — 400 missing `id` / blank `title` / `title` over 200 chars;
+404 unknown non-`mvs_` id.
 
 ### `POST /api/sessions/cleanup-orphans`
 

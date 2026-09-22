@@ -12,7 +12,7 @@
 // mcode acp client spawn via getMcodeSessionsForWorkspace on cache miss,
 // which hangs the test indefinitely.
 
-import { test, describe, before } from "node:test";
+import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { tmpdir, homedir } from "node:os";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
@@ -246,6 +246,118 @@ describe("browseWorkspace — MAX 500 truncation", () => {
       assert.equal(r.skipped, 10, "should report 10 skipped");
     } finally {
       rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+// ============================================================
+// qa (session-workspace-crud): 项目目录选择 — resolve/recent/expandTilde
+//   （tree 的 route 层覆盖在 routes-workspace.check.mjs）
+// ============================================================
+
+const { registerSessionsStore } = await import("../test/_setup.js");
+
+describe("resolveWorkspaceCandidates — 零弹窗目录名 → 绝对路径候选", () => {
+  let home;
+  before(() => {
+    home = mkdtempSync(join(tmpdir(), "webui-resolve-home-"));
+    mkdirSync(join(home, "myproj"));
+    mkdirSync(join(home, "projects", "myproj"), { recursive: true });
+    mkdirSync(join(home, "other"));
+  });
+  after(() => {
+    try { rmSync(home, { recursive: true, force: true }); } catch {}
+  });
+
+  test("finds both the home-sub and home-deep match, deduped", () => {
+    const r = ws.resolveWorkspaceCandidates("myproj", { home, platform: "linux", user: "nobody" });
+    assert.equal(r.ok, true);
+    const paths = r.candidates.map((c) => c.path);
+    assert.ok(paths.includes(join(home, "myproj")), "home-sub hit");
+    assert.ok(paths.includes(join(home, "projects", "myproj")), "home-deep hit (COMMON_PROJECT_PARENTS)");
+    assert.equal(new Set(paths).size, paths.length, "no duplicates");
+  });
+
+  test("no match → ok with empty candidates (client falls back to browse)", () => {
+    const r = ws.resolveWorkspaceCandidates("definitely-not-here-xyz", { home, platform: "linux", user: "nobody" });
+    assert.equal(r.ok, true);
+    assert.equal(r.candidates.length, 0);
+  });
+
+  test("rejects names with path separators / dot segments (injection guard)", () => {
+    for (const bad of ["", ".", "..", "a/b", "a\\b", "x".repeat(256)]) {
+      const r = ws.resolveWorkspaceCandidates(bad, { home, platform: "linux" });
+      assert.equal(r.ok, false, `should reject: ${JSON.stringify(bad)}`);
+      assert.equal(r.candidates.length, 0);
+    }
+  });
+});
+
+describe("getRecentWorkspaces — 最近工作区（sessions store 聚合）", () => {
+  before(() => {
+    registerSessionsStore({
+      initial: [
+        { id: "s1", workspace: "/ws/alpha", createdAt: 1, updatedAt: 100 },
+        { id: "s2", workspace: "/ws/alpha", createdAt: 2, updatedAt: 300 },
+        { id: "s3", workspace: "/ws/Beta", createdAt: 3, updatedAt: 200 },
+        { id: "s4", workspace: "", createdAt: 4, updatedAt: 400 }, // 无工作区不分组
+        { id: "s5", workspace: "/ws/gamma", createdAt: 5, updatedAt: 50 },
+      ],
+    });
+  });
+
+  test("groups by workspace, sorted by lastActiveAt desc, sessionCount correct", () => {
+    const r = ws.getRecentWorkspaces({});
+    assert.equal(r.ok, true);
+    assert.equal(r.items.length, 3, "empty-workspace session excluded");
+    assert.deepEqual(
+      r.items.map((it) => it.dir),
+      ["/ws/alpha", "/ws/Beta", "/ws/gamma"],
+    );
+    assert.equal(r.items[0].sessionCount, 2);
+    assert.equal(r.items[0].lastActiveAt, 300, "max updatedAt wins");
+    assert.equal(r.items[0].name, "alpha", "basename derived");
+  });
+
+  test("search matches path or basename, case-insensitive", () => {
+    const r = ws.getRecentWorkspaces({ search: "BETA" });
+    assert.equal(r.items.length, 1);
+    assert.equal(r.items[0].dir, "/ws/Beta");
+    const byName = ws.getRecentWorkspaces({ search: "gamma" });
+    assert.equal(byName.items.length, 1);
+  });
+
+  test("limit clamps: default 5, hard max 20", () => {
+    assert.equal(ws.getRecentWorkspaces({}).limit, 5);
+    assert.equal(ws.getRecentWorkspaces({ limit: 100 }).limit, 20);
+  });
+});
+
+describe("expandTilde — 手动输入路径展开", () => {
+  test("~ alone → home; ~/x and ~\\x → home-joined; other strings untouched", () => {
+    assert.equal(ws.expandTilde("~"), homedir());
+    assert.equal(ws.expandTilde("~/proj"), join(homedir(), "proj"));
+    assert.equal(ws.expandTilde("~\\proj"), join(homedir(), "proj"));
+    assert.equal(ws.expandTilde("/abs/path"), "/abs/path");
+    assert.equal(ws.expandTilde("~user/x"), "~user/x", "~user 语法不支持，原样返回");
+    assert.equal(ws.expandTilde(42), 42, "non-string passthrough");
+  });
+});
+
+describe("assertWorkspaceParentPath — mkdir 落点围栏", () => {
+  test("parent inside roots → ok; parent outside → rejected", () => {
+    const root = mkdtempSync(join(tmpdir(), "webui-parent-root-"));
+    const out = mkdtempSync(join(tmpdir(), "webui-parent-out-"));
+    process.env.MCODE_WEBUI_WORKSPACE_ROOTS = root;
+    try {
+      const ok = ws.assertWorkspaceParentPath(join(root, "newdir"));
+      assert.equal(ok.ok, true);
+      const bad = ws.assertWorkspaceParentPath(join(out, "newdir"));
+      assert.equal(bad.ok, false, "outside roots must be rejected");
+    } finally {
+      delete process.env.MCODE_WEBUI_WORKSPACE_ROOTS;
+      try { rmSync(root, { recursive: true, force: true }); } catch {}
+      try { rmSync(out, { recursive: true, force: true }); } catch {}
     }
   });
 });

@@ -163,6 +163,10 @@ webui 会以指数退避方式处理重连。
 { "workspace": "C:\\path\\to\\project" }
 ```
 
+传 `workspace` 时必须通过与 `POST /api/workspace` 相同的围栏校验
+（目录存在、落在允许根内、软链解析后不越界）—— 否则返回 400，
+且不创建任何会话记录。
+
 **响应 200** `{ok: true, id: "uuid"}`
 
 ### `POST /api/sessions/switch`
@@ -176,6 +180,30 @@ webui 会以指数退避方式处理重连。
 ```
 
 **响应 200** `{ok: true}`
+
+### `POST /api/sessions/rename`
+
+重命名会话（增删改查中的"改"）。`id` 接受 webui uuid、`mvs_…` 形式的
+mcode 会话 id，或尚无 webui 壳记录的裸 `mvs_…`（会自动建壳承接标题）。
+标题以用户为准：记录会打上 `titleCustom: true` 标记，mcode 的自动标题
+生成此后永不覆盖它。
+
+不走 `authorize()` 弹窗闸门 —— 改名非破坏性且可逆（与 `session.create`
+同级）；无论结果如何都会向哈希链追加 `session.rename` 审计事件
+（`from` → `to`）。
+
+**请求体**
+```json
+{ "id": "uuid", "title": "我的新标题" }
+```
+
+**响应 200**
+```json
+{ "ok": true, "session": { "id": "uuid", "mcodeSessionId": "mvs_…", "title": "我的新标题", "titleCustom": true } }
+```
+
+**错误** —— 400：缺 `id` / `title` 为空 / `title` 超过 200 字符；
+404：id 不存在且不是 `mvs_` 形式。
 
 ### `POST /api/sessions/cleanup-orphans`
 

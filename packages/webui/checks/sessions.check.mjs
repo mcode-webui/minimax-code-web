@@ -7,11 +7,11 @@
 // session is browsing, not sending, so lastUsedWorkspace is only
 // written by handleSend.
 
-import { test, describe, before, beforeEach, after } from "node:test";
+import { test, describe, before, beforeEach, afterEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -106,6 +106,7 @@ function fakeRes() {
 
 let handleSwitchSession, handleNewSession;
 let handleDeleteSession, handleListSessions, handleAcpSessions, handleAcpSessionTitle;
+let handleRenameSession;
 let makeClientState, clients;
 let initialSessions;
 
@@ -128,6 +129,7 @@ before(async (t) => {
   handleListSessions = mod.handleListSessions;
   handleAcpSessions = mod.handleAcpSessions;
   handleAcpSessionTitle = mod.handleAcpSessionTitle;
+  handleRenameSession = mod.handleRenameSession;
   // Load db.js for the new dryRun tests (Batch D, mcode-plugin-guide red-lines §1)
   const dbMod = await import(absPath("lib/db.js"));
   deleteMcodeSessionFromDb = dbMod.deleteMcodeSessionFromDb;
@@ -685,5 +687,247 @@ describe("handleDeleteSession — v1.0 anti-resurrection", () => {
     assert.deepEqual(cs2.chat, []);
     assert.equal(cs3.sessionId, "webui-B", "unrelated client untouched");
     assert.deepEqual(cs3.chat, ["keep"]);
+  });
+});
+
+// ============================================================
+// qa (session-workspace-crud): CRUD "改" — handleRenameSession
+// ============================================================
+
+describe("handleRenameSession — CRUD rename (改)", () => {
+  test("renames by webui id, sets titleCustom, syncs live clients", async () => {
+    const cid = "cid-1";
+    const cs = makeClientState();
+    cs.sessionId = "webui-A";
+    cs.sessionTitle = "A on ws-A";
+    cs.workspace = { dir: "/ws-A", branch: null, tree: null };
+    clients.set(cid, cs);
+    // another tab viewing the same session must sync too
+    const cs2 = makeClientState();
+    cs2.sessionId = "webui-A";
+    cs2.sessionTitle = "A on ws-A";
+    clients.set("cid-2", cs2);
+    // unrelated tab must NOT sync
+    const cs3 = makeClientState();
+    cs3.sessionId = "webui-B";
+    cs3.sessionTitle = "B on ws-B";
+    clients.set("cid-3", cs3);
+
+    const res = fakeRes();
+    await handleRenameSession(
+      fakeReq({ id: "webui-A", title: "  renamed title  " }),
+      res,
+      { cs, cid, pathname: "" },
+    );
+    assert.equal(res._status, 200);
+    const body = JSON.parse(res._body);
+    assert.equal(body.ok, true);
+    assert.equal(body.session.title, "renamed title", "title is trimmed");
+    assert.equal(body.session.titleCustom, true);
+
+    const store = getSessionsStore();
+    const rec = store.find((s) => s.id === "webui-A");
+    assert.equal(rec.title, "renamed title");
+    assert.equal(rec.titleCustom, true, "user rename must be marked titleCustom");
+    assert.ok(rec.updatedAt > 1, "updatedAt bumped");
+
+    assert.equal(cs.sessionTitle, "renamed title", "caller's sessionTitle synced");
+    assert.equal(cs2.sessionTitle, "renamed title", "other tab on same session synced");
+    assert.equal(cs3.sessionTitle, "B on ws-B", "unrelated tab untouched");
+  });
+
+  test("renames by mcodeSessionId (mvs_ wrapper record)", async () => {
+    const MVS = "mvs_" + "a".repeat(32);
+    registerSessionsStore({
+      initial: [
+        {
+          id: "wrap-1",
+          mcodeSessionId: MVS,
+          title: "Mcode session",
+          workspace: "/ws-A",
+          createdAt: 1,
+          updatedAt: 1,
+          chat: [],
+        },
+      ],
+    });
+    const cs = makeClientState();
+    cs.mcodeSessionId = MVS;
+    clients.set("cid-1", cs);
+
+    const res = fakeRes();
+    await handleRenameSession(
+      fakeReq({ id: MVS, title: "by mcode sid" }),
+      res,
+      { cs, cid: "cid-1", pathname: "" },
+    );
+    assert.equal(res._status, 200);
+    const rec = getSessionsStore().find((s) => s.mcodeSessionId === MVS);
+    assert.equal(rec.title, "by mcode sid");
+    assert.equal(rec.titleCustom, true);
+    assert.equal(cs.sessionTitle, "by mcode sid");
+  });
+
+  test("renames a bare mvs_ (no webui wrapper) by creating the overlay", async () => {
+    const MVS = "mvs_" + "b".repeat(32);
+    registerSessionsStore({ initial: [] });
+    const cs = makeClientState();
+    cs.workspace = { dir: "/ws-A", branch: null, tree: null };
+    clients.set("cid-1", cs);
+
+    const res = fakeRes();
+    await handleRenameSession(
+      fakeReq({ id: MVS, title: "orphan renamed" }),
+      res,
+      { cs, cid: "cid-1", pathname: "" },
+    );
+    assert.equal(res._status, 200);
+    const store = getSessionsStore();
+    const rec = store.find((s) => s.mcodeSessionId === MVS);
+    assert.ok(rec, "overlay record created for bare mvs_");
+    assert.equal(rec.title, "orphan renamed");
+    assert.equal(rec.titleCustom, true);
+  });
+
+  test("validation: missing id → 400", async () => {
+    const res = fakeRes();
+    await handleRenameSession(fakeReq({ title: "x" }), res, {
+      cs: makeClientState(),
+      cid: "cid-1",
+      pathname: "",
+    });
+    assert.equal(res._status, 400);
+    assert.match(JSON.parse(res._body).error, /id required/);
+  });
+
+  test("validation: blank title → 400", async () => {
+    const res = fakeRes();
+    await handleRenameSession(fakeReq({ id: "webui-A", title: "   " }), res, {
+      cs: makeClientState(),
+      cid: "cid-1",
+      pathname: "",
+    });
+    assert.equal(res._status, 400);
+    assert.match(JSON.parse(res._body).error, /title required/);
+  });
+
+  test("validation: title over 200 chars → 400", async () => {
+    const res = fakeRes();
+    await handleRenameSession(
+      fakeReq({ id: "webui-A", title: "x".repeat(201) }),
+      res,
+      { cs: makeClientState(), cid: "cid-1", pathname: "" },
+    );
+    assert.equal(res._status, 400);
+    assert.match(JSON.parse(res._body).error, /too long/);
+  });
+
+  test("unknown non-mvs id → 404 (no phantom records)", async () => {
+    registerSessionsStore({ initial: [] });
+    const res = fakeRes();
+    await handleRenameSession(
+      fakeReq({ id: "nonexistent-uuid", title: "x" }),
+      res,
+      { cs: makeClientState(), cid: "cid-1", pathname: "" },
+    );
+    assert.equal(res._status, 404);
+    assert.equal(getSessionsStore().length, 0, "store untouched");
+  });
+
+  test("titleCustom survives repeated renames (user title is authoritative)", async () => {
+    // 直接钉住不变量：titleCustom 记录的标题字段是"用户所有"，自动标题
+    // 路径（mcode-acp.js 的 !item.titleCustom 守卫）不允许覆盖它。这里用
+    // 库层语义等价断言 — 连续两次 rename，值始终以最后一次用户输入为准。
+    const MVS = "mvs_" + "c".repeat(32);
+    registerSessionsStore({ initial: [] });
+    const cs = makeClientState();
+    cs.workspace = { dir: "/ws-A", branch: null, tree: null };
+    clients.set("cid-1", cs);
+    for (const title of ["first custom", "second custom"]) {
+      const res = fakeRes();
+      await handleRenameSession(fakeReq({ id: MVS, title }), res, {
+        cs,
+        cid: "cid-1",
+        pathname: "",
+      });
+      assert.equal(res._status, 200);
+    }
+    const rec = getSessionsStore().find((s) => s.mcodeSessionId === MVS);
+    assert.equal(rec.title, "second custom");
+    assert.equal(rec.titleCustom, true);
+  });
+});
+
+// ============================================================
+// qa (session-workspace-crud): POST /api/sessions workspace gate
+//   body.workspace 是用户输入 — 必须过 assertWorkspacePath（与
+//   POST /api/workspace 同围栏），不再原样落库 / 写入 cs.workspace。
+// ============================================================
+
+describe("handleNewSession — workspace containment gate", () => {
+  let root;
+  let inside;
+  let outside;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "webui-ws-gate-"));
+    inside = join(root, "proj");
+    mkdirSync(inside, { recursive: true });
+    outside = mkdtempSync(join(tmpdir(), "webui-ws-out-"));
+    process.env.MCODE_WEBUI_WORKSPACE_ROOTS = root;
+  });
+  afterEach(() => {
+    delete process.env.MCODE_WEBUI_WORKSPACE_ROOTS;
+    try { rmSync(root, { recursive: true, force: true }); } catch {}
+    try { rmSync(outside, { recursive: true, force: true }); } catch {}
+  });
+
+  test("workspace inside the allowed roots → 200 and stored resolved", async () => {
+    const cs = makeClientState();
+    cs.workspace = { dir: null, branch: null, tree: null };
+    clients.set("cid-1", cs);
+    const res = fakeRes();
+    await handleNewSession(fakeReq({ workspace: inside }), res, {
+      cs,
+      cid: "cid-1",
+      pathname: "",
+    });
+    assert.equal(res._status, 200);
+    const body = JSON.parse(res._body);
+    assert.equal(body.ok, true);
+    assert.equal(body.session.workspace, inside, "workspace stored");
+    assert.equal(cs.workspace.dir, inside, "cs.workspace switched");
+  });
+
+  test("workspace OUTSIDE the allowed roots → 400, nothing created", async () => {
+    const before = getSessionsStore().length;
+    const cs = makeClientState();
+    cs.workspace = { dir: null, branch: null, tree: null };
+    clients.set("cid-1", cs);
+    const res = fakeRes();
+    await handleNewSession(fakeReq({ workspace: outside }), res, {
+      cs,
+      cid: "cid-1",
+      pathname: "",
+    });
+    assert.equal(res._status, 400);
+    const body = JSON.parse(res._body);
+    assert.equal(body.ok, false);
+    assert.match(body.error, /越界|不在任何允许根/, "containment error surfaced");
+    assert.equal(getSessionsStore().length, before, "no session record created");
+    assert.equal(cs.workspace.dir, null, "cs.workspace untouched");
+    assert.ok(!cs.sessionId, "no session assigned");
+  });
+
+  test("no body.workspace → legacy path unchanged (uses cs.workspace)", async () => {
+    const cs = makeClientState();
+    cs.workspace = { dir: "/legacy-ws", branch: null, tree: null };
+    clients.set("cid-1", cs);
+    const res = fakeRes();
+    await handleNewSession(fakeReq({}), res, { cs, cid: "cid-1", pathname: "" });
+    assert.equal(res._status, 200);
+    const body = JSON.parse(res._body);
+    assert.equal(body.session.workspace, "/legacy-ws");
+    assert.ok(cs.sessionId, "session created");
   });
 });

@@ -26,30 +26,45 @@ import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createServer } from "node:net";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const serverJsPath = join(__dirname, "..", "server.js");
+
+// qa (session-workspace-crud): 端口动态分配。之前 18080/18081/18082 写死，
+//   开发机上恰好跑着真实 webui（常态）时 C08 直接 EADDRINUSE 挂掉 — 而这些
+//   用例的意图是"首启 token 行为 / bootstrap 无 ESM 错误"，不是"绑定某端口"。
+//   PORT 显式配置即 pinned（server/lib/port.js 不回退），所以测试自己保证
+//   端口空闲：bind(0) 向内核要 ephemeral 端口，拿到即释放再交给子进程。
+function getFreePort() {
+  return new Promise((resolve, reject) => {
+    const srv = createServer();
+    srv.unref();
+    srv.on("error", reject);
+    srv.listen(0, "127.0.0.1", () => {
+      const { port } = srv.address();
+      srv.close(() => resolve(port));
+    });
+  });
+}
 
 // C08 helper: spawn server.js with a fresh settings.json path so
 // init() takes the "first run" branch (generate + persist + printToken).
 // Waits up to 2s for startup, returns { stdout, stderr, ok }.
 //
-// Uses PORT=18080 + 18081 to avoid colliding with the default 18090
-// (which is often already taken on dev machines running a real webui
-// or another test's lingering process). The port stays in the kernel
-// "high enough" range to avoid root-privileged port surprises.
+// Port: dynamic ephemeral (getFreePort) — the intent is first-run token
+// behavior, not a specific port; a hard-coded port collides with any real
+// webui running on the same machine and fails for unrelated reasons.
 async function _spawnFirstRun({ tokenStdout, port } = {}) {
   const tmpDir = mkdtempSync(join(tmpdir(), "mcode-webui-c08-"));
   const settingsPath = join(tmpDir, "settings.json");
   // Defensive: file must NOT pre-exist. mkdtempSync creates the dir
   // only; we never write settings.json here, init() does that.
   assert.equal(existsSync(settingsPath), false, "fresh tmpDir should have no settings.json");
-  // Two tests run sequentially so pick distinct ports to avoid the
-  // TIME_WAIT race that hits even after SIGTERM. Picked in the
-  // high (root-safe) range. If a port is also busy on this machine
-  // the test will fail loudly with EADDRINUSE — that's the desired
-  // signal, not a silent skip.
-  const usePort = port || 18080;
+  // Each call asks the kernel for its own free port (sequential tests, but
+  // TIME_WAIT from a previous SIGTERM'd sibling is possible — a fresh
+  // ephemeral port sidesteps it entirely).
+  const usePort = port || (await getFreePort());
   const env = {
     ...process.env,
     TOKEN: "",
@@ -116,15 +131,16 @@ test("server.js bootstrap does not throw ESM load-time error", async () => {
   //   holds it — common on shared CI runners and any machine that has
   //   another webui instance running. The test's intent is "server.js
   //   imports succeed and the process reaches 'listening on'", not
-  //   "listens on 18090 specifically". 18082 keeps the high-port
-  //   convention used by the C08 sub-tests (18080 / 18081) so a single
-  //   operator can see the pattern at a glance.
+  //   "listens on 18090 specifically". The port is now a dynamic
+  //   ephemeral one (see getFreePort) so a real webui on the same
+  //   machine can never make this test fail for unrelated reasons.
+  const bootPort = await getFreePort();
   const proc = spawn("node", [serverJsPath], {
     stdio: ["ignore", "pipe", "pipe"],
     cwd: join(__dirname, ".."),
     env: {
       ...process.env,
-      PORT: "18082",
+      PORT: String(bootPort),
       TOKEN: "",
       // Redirect upload dir away from MCODE_ROOT — otherwise server.js
       // mkdirSync(UPLOAD_DIR, {recursive: true}) creates a stray
@@ -184,7 +200,6 @@ test("server.js bootstrap does not throw ESM load-time error", async () => {
 test("C08: first-run does not print 14-line ASCII token box to stdout", async () => {
   const { stdout, stderr, ok, failReason, persistedToken } = await _spawnFirstRun({
     tokenStdout: undefined, // default: TOKEN_STDOUT=0 (silent)
-    port: 18080,
   });
   assert.ok(ok, failReason);
   // No stderr errors
@@ -224,7 +239,6 @@ test("C08: first-run does not print 14-line ASCII token box to stdout", async ()
 test("C08: first-run with TOKEN_STDOUT=1 prints single neutral line + NO raw token", async () => {
   const { stdout, stderr, ok, failReason, persistedToken } = await _spawnFirstRun({
     tokenStdout: "1",
-    port: 18081,
   });
   assert.ok(ok, failReason);
   // Should print exactly the neutral line.
