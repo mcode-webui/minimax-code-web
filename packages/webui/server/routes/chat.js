@@ -8,6 +8,7 @@ import {
   loadSessions,
   saveSessions,
   persistCurrentChat,
+  promoteDraftToMcodeSid,
 } from "../lib/sessions.js";
 import { pushStateFor, pushAlert, getActiveChild } from "../lib/state-bus.js";
 // 2026-09-20 rigor fix (G1 bypass finding): import the lib/slash.js shell,
@@ -217,6 +218,16 @@ export async function handleSend(req, res, ctx) {
     //   has already run inside runMcodeAcp/collectExecResult and put
     //   cs into exactly this idle shape.
     resetThinkingClaim(cs);
+  }
+  // v2.4 单一基础会话：回合绑定了 mcode 会话（cs.mcodeSessionId 由 acp
+  //   finalize 写入）后，把草稿记录晋升为引擎身份（id → mvs_…），或并入
+  //   该 mcode 会话既有的叠加记录——保证一次对话在存储里只有一条记录。
+  if (cs.mcodeSessionId) {
+    try {
+      promoteDraftToMcodeSid(cs);
+    } catch (e) {
+      console.warn(`[chat] promoteDraftToMcodeSid failed: ${e.message}`);
+    }
   }
   persistCurrentChat(cs);
   pushStateFor(cid);

@@ -236,12 +236,17 @@ sequenceDiagram
 
 ## 2.2 Session management flow
 
-Two stores cooperate. The **webui store** (`sessions.json`, the recent-
-sessions list) holds one record per webui session: `id` (uuid),
-`mcodeSessionId` (bound `mvs_…`), `title`, `workspace`, `chat[]`. The
-**mcode runtime store** (`~/.minimax/v2/sqlite/runtime-state.sqlite`)
-holds the engine's own sessions; the webui reads it for the sidebar and
-for transcript backfill.
+**One conversation = one identity**: the mcode session (`mvs_…`) IS the
+session. The **webui store** (`sessions.json`) is an *overlay* keyed by
+`mcodeSessionId` — it carries `title`, `workspace`, and a `chat[]`
+snapshot for fast hydration, never a second session identity. New
+overlay records use `id === mcodeSessionId`; drafts ("+" sessions that
+have not sent yet) keep a uuid until the first turn promotes them
+(`promoteDraftToMcodeSid`). Legacy uuid-keyed wrapper records still
+resolve (every lookup matches `mcodeSessionId` first). The **mcode
+runtime store** (`~/.minimax/v2/sqlite/runtime-state.sqlite`) is the
+authoritative session list; the webui reads it for the sidebar and for
+transcript backfill.
 
 ```mermaid
 flowchart TD
@@ -257,8 +262,8 @@ flowchart TD
         C["chat.js: create webui record<br/>(uuid + workspace + chat)"]
         D["acp session/new → bind mcodeSessionId (mvs_…)"]
         E["getClient → restoreLatestSession:<br/>most-recent record in workspace<br/>(legacy no-workspace = default)"]
-        F{"clicked id is mvs_…<br/>and no record?"}
-        G["switch: create wrapper record<br/>(uuid + mcodeSessionId + title)"]
+        F{"clicked id is mvs_…?"}
+        G["switch: find-or-create overlay<br/>(id = mvs_…, idempotent)"]
         H["transcript backfill from<br/>runtime SQLite (≤400 lines / ≤200KB)"]
         I["bind cs: sessionId / mcodeSessionId / chat<br/>→ pushStateFor (SSE)"]
     end
@@ -304,9 +309,12 @@ Lifecycle notes:
 - **Same conversation, one record**: a fresh client resumes the latest
   session instead of forking (§2.2 fix history), and continuing a chat
   reuses the bound `mcodeSessionId` — no new engine session per message.
-- The wrapper for an `mvs_…` click is **persisted** (title from the
-  cache-first lookup, falling back to the ACP title probe), so repeated
-  switching does not create duplicate records.
+- **Single identity (v2.4)**: switching to an `mvs_…` session resolves
+  to exactly one overlay record — `ensureOverlayForMcodeSid` creates it
+  with `id === mvs_…` on first contact and reuses it on every later
+  switch. A first send promotes its draft to the same engine identity
+  (merging into a pre-existing overlay when one exists). One
+  conversation can therefore never appear as two records.
 
 
 ## 3. Module contracts

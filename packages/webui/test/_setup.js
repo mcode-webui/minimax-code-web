@@ -274,6 +274,54 @@ export async function setupMocks(t, overrides = {}) {
         }
       },
       persistCurrentChat: () => {},
+      // v2.4: single-identity helpers — the mock keeps the in-memory store
+      // shape so promotion/overlay logic is testable through handlers too.
+      promoteDraftToMcodeSid: (cs) => {
+        if (!cs || !cs.mcodeSessionId || !cs.sessionId) return false;
+        if (cs.sessionId === cs.mcodeSessionId) return false;
+        const draft = _sessionsStore.find(
+          (r) => r && r.id === cs.sessionId && !r.mcodeSessionId,
+        );
+        const existing = _sessionsStore.find(
+          (r) => r && r.mcodeSessionId === cs.mcodeSessionId,
+        );
+        if (existing) {
+          if (draft && Array.isArray(draft.chat) && draft.chat.length) {
+            existing.chat = [...(existing.chat || []), ...draft.chat];
+          }
+          existing.updatedAt = Date.now();
+          if (draft) _sessionsStore.splice(_sessionsStore.indexOf(draft), 1);
+          cs.sessionId = existing.id;
+          return true;
+        }
+        if (!draft) return false;
+        draft.id = cs.mcodeSessionId;
+        draft.mcodeSessionId = cs.mcodeSessionId;
+        draft.updatedAt = Date.now();
+        cs.sessionId = draft.id;
+        return true;
+      },
+      ensureOverlayForMcodeSid: (all, sid, { title, workspace } = {}) => {
+        let rec = all.find((r) => r && r.mcodeSessionId === sid);
+        if (rec) {
+          if (title && rec.title === "Mcode session") rec.title = title;
+          return rec;
+        }
+        rec = {
+          id: sid,
+          mcodeSessionId: sid,
+          title: title || "Mcode session",
+          workspace: workspace || "",
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          chat: [],
+        };
+        all.unshift(rec);
+        return rec;
+      },
+      findOverlayForMcodeSid: (all, sid) =>
+        all.find((r) => r && r.mcodeSessionId === sid) || null,
+      sessionKeyOf: (r) => (r && (r.mcodeSessionId || r.id)) || null,
       streamUpdateLine: (chat, prefix, text) => {
         if (Array.isArray(chat)) chat.push(prefix + text);
         return text;

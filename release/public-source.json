@@ -3497,6 +3497,7 @@
     "packages/webui/test/lib-rate-limit-edge.test.js",
     "packages/webui/test/lib-rate-limit.test.js",
     "packages/webui/test/lib-sessions-persist.test.js",
+    "packages/webui/test/lib-sessions-single-identity.test.js",
     "packages/webui/test/lib-settings.test.js",
     "packages/webui/test/lib-state-bus-restore.test.js",
     "packages/webui/test/lib-static.test.js",

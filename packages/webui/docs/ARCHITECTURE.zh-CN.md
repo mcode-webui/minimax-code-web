@@ -236,12 +236,14 @@ sequenceDiagram
 
 ## 2.2 会话管理流程
 
-两个存储协同工作。**webui 存储**（`sessions.json`，最近
-会话列表）为每个 webui 会话保存一条记录：`id`（uuid）、
-`mcodeSessionId`（绑定的 `mvs_…`）、`title`、`workspace`、`chat[]`。
-**mcode 运行时存储**（`~/.minimax/v2/sqlite/runtime-state.sqlite`）
-保存引擎自己的会话；webui 读取它用于侧栏
-以及正文回填。
+**一次对话 = 一个身份**：mcode 会话（`mvs_…`）即会话本身。**webui 存储**
+（`sessions.json`）是按 `mcodeSessionId` 键控的*叠加层*——承载 `title`、
+`workspace` 与 `chat[]` 快照（用于快速加载），绝不制造第二身份。新的
+叠加记录 `id === mcodeSessionId`；草稿（还没发过消息的 "+" 会话）保留
+uuid，首轮回合后由 `promoteDraftToMcodeSid` 晋升。旧的 uuid 壳记录依然
+可解析（所有查找先按 `mcodeSessionId` 命中）。**mcode 运行时存储**
+（`~/.minimax/v2/sqlite/runtime-state.sqlite`）是权威会话列表；webui
+读取它用于侧栏与正文回填。
 
 ```mermaid
 flowchart TD
@@ -258,7 +260,7 @@ flowchart TD
         D["acp session/new → 绑定 mcodeSessionId（mvs_…）"]
         E["getClient → restoreLatestSession：<br/>工作区中最近的记录<br/>（遗留的无工作区记录 = 默认）"]
         F{"点击的 id 是 mvs_…<br/>且没有记录？"}
-        G["切换：创建壳会话记录<br/>（uuid + mcodeSessionId + title）"]
+        G["切换：查找或创建叠加记录<br/>（id = mvs_…，幂等）"]
         H["从运行时 SQLite 进行<br/>正文回填（≤400 行 / ≤200KB）"]
         I["绑定 cs：sessionId / mcodeSessionId / chat<br/>→ pushStateFor（SSE）"]
     end
@@ -305,9 +307,10 @@ flowchart TD
   会话而不是分叉（§2.2 修复历史），继续聊天
   会复用已绑定的 `mcodeSessionId`——不会为每条消息
   新建引擎会话。
-- 点击 `mvs_…` 时创建的壳会话记录会被**持久化**（标题来自
-  缓存优先的查找，回退到 ACP 标题探测），因此重复
-  切换不会创建重复记录。
+- **单一身份（v2.4）**：切换到 `mvs_…` 会话只会解析到**同一条**叠加
+  记录——`ensureOverlayForMcodeSid` 首次接触时以 `id === mvs_…` 创建，
+  此后每次切换复用它。首轮发送把草稿晋升为同一引擎身份（已有叠加记
+  录时并入）。因此一次对话绝不可能以两条记录出现。
 
 
 ## 3. 模块契约
