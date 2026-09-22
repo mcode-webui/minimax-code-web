@@ -1,5 +1,7 @@
 # Capabilities
 
+**English** | [简体中文](CAPABILITIES.zh-CN.md)
+
 > Source of truth for what this webui can and cannot do. Every row has
 > a status (✅ works · ⚠ partial · ❌ blocked), a why, and where to
 > look in the code.

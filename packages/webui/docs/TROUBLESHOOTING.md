@@ -1,5 +1,7 @@
 # Troubleshooting
 
+**English** | [简体中文](TROUBLESHOOTING.zh-CN.md)
+
 > Common failures and how to fix them. Organized by symptom. Every
 > entry has the error message you might see, the root cause, and the
 > verified fix.

@@ -1,5 +1,7 @@
 # MiniMax Code Web UI
 
+**English** | [简体中文](README.zh-CN.md)
+
 > **Browser frontend for the MiniMax Code agent runtime.**
 > Streams `mcode acp` / `mcode exec` sessions over HTTP/SSE. Zero npm
 > dependencies; runs on Node 22.19+.

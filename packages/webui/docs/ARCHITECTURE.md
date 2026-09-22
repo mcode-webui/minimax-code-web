@@ -1,5 +1,7 @@
 # Architecture
 
+**English** | [简体中文](ARCHITECTURE.zh-CN.md)
+
 > Companion to [README.md](../README.md). This document is for people
 > modifying the webui or integrating with it. It describes the runtime
 > topology, the module boundaries, the request lifecycle, and the SSE

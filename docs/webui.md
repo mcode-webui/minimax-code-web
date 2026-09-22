@@ -1,5 +1,7 @@
 # Web UI
 
+**English** | [简体中文](webui.zh-CN.md)
+
 The Web UI (`packages/webui`) is the browser frontend for MiniMax Code. It uses the same engine as the TUI — the CLI's ACP server (`mcode acp`, JSON-RPC 2.0 over stdio) — so terminal, browser, and desktop clients run against one runtime. It is not a plugin: it ships inside the repository and is launched by the CLI.
 
 ## Launch
