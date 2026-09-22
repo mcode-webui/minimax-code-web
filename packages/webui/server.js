@@ -21,7 +21,8 @@
 import http from 'node:http'
 import { existsSync, mkdirSync } from 'node:fs'
 
-import { installGlobalErrorHandlers, MCODE_CMD, UPLOAD_DIR, WEBUI_DATA_DIR, PORT, HOST, DEFAULT_MODEL, DEFAULT_WORKSPACE, SESSIONS_DB, TOKEN_STDOUT } from './server/lib/config.js'
+import { installGlobalErrorHandlers, MCODE_CMD, UPLOAD_DIR, WEBUI_DATA_DIR, PORT, PORT_PINNED, setServingPort, HOST, DEFAULT_MODEL, DEFAULT_WORKSPACE, SESSIONS_DB, TOKEN_STDOUT } from './server/lib/config.js'
+import { listenWithPortFallback, MAX_PORT_ATTEMPTS } from './server/lib/port.js'
 import { LAN_IP } from './server/lib/lan.js'
 import { handleRequest } from './server/router.js'
 import { runStartupCleanup } from './server/cleanup.js'
@@ -78,15 +79,40 @@ initSettings({
 setAuthTokenEnabled(getTokenEnabled())
 
 const server = http.createServer(handleRequest)
-server.listen(PORT, HOST, () => {
-  console.log(`[webui] listening on http://${HOST}:${PORT}`)
-  console.log(`[webui] LAN url: http://${LAN_IP}:${PORT}`)
-  console.log(`[webui] mcode cmd: ${MCODE_CMD}`)
-  console.log(`[webui] default model: ${DEFAULT_MODEL}`)
-  console.log(`[webui] default workspace: ${DEFAULT_WORKSPACE}`)
-  console.log(`[webui] uploads: ${UPLOAD_DIR}`)
-  console.log(`[webui] sessions: ${SESSIONS_DB}`)
-  console.log(`[webui] settings: ${getPersistPath()}`)
+
+// 端口回退 (见 server/lib/port.js): 默认端口被占用时向后找空闲端口, 显式 PORT
+//   不回退。日志里的端口必须是实际绑定值 —— 启动器 (mcode-web / mcode webui) 正是
+//   从 "listening on" 这一行取要打开的 URL, 而 origin 信任集 / share URL 按
+//   setServingPort() 记录的端口计算。
+listenWithPortFallback(server, {
+  port: PORT,
+  host: HOST,
+  pinned: PORT_PINNED,
+  onListening: (boundPort) => {
+    setServingPort(boundPort)
+    console.log(`[webui] listening on http://${HOST}:${boundPort}`)
+    console.log(`[webui] LAN url: http://${LAN_IP}:${boundPort}`)
+    console.log(`[webui] mcode cmd: ${MCODE_CMD}`)
+    console.log(`[webui] default model: ${DEFAULT_MODEL}`)
+    console.log(`[webui] default workspace: ${DEFAULT_WORKSPACE}`)
+    console.log(`[webui] uploads: ${UPLOAD_DIR}`)
+    console.log(`[webui] sessions: ${SESSIONS_DB}`)
+    console.log(`[webui] settings: ${getPersistPath()}`)
+  },
+  // 监听失败必须显式退出: uncaughtException 处理器只记录不退出, 之前端口被占用
+  //   时会留下一个"没在监听"的活进程。端口被显式指定时给出可操作的提示。
+  onUnavailable: (error) => {
+    const reason = (error && (error.code || error.message)) || String(error)
+    console.error(`[webui] cannot listen on ${HOST}:${PORT} — ${reason}`)
+    if (error && error.code === 'EADDRINUSE') {
+      console.error(
+        PORT_PINNED
+          ? `[webui] port ${PORT} is taken and was pinned (PORT / --port), so no fallback was attempted. Free it, or pass another value.`
+          : `[webui] ports ${PORT}-${PORT + MAX_PORT_ATTEMPTS - 1} are all taken. Free one, or pass --port <number>.`,
+      )
+    }
+    process.exit(1)
+  },
 })
 
 process.on('SIGINT', () => {

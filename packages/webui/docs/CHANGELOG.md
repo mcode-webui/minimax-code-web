@@ -9,6 +9,20 @@ This project follows [Keep a Changelog](https://keepachangelog.com/).
 The `## Unreleased` section at the top tracks changes that have
 landed on the development branch but are not yet cut into a release.
 
+## Unreleased
+
+### Changed
+
+- **默认端口 8080 → 18090**。8080 在桌面机与开发机上被各类服务占用得太频繁。
+  显式设置的 `PORT`（或 `mcode-web --port`）仍按精确值处理，不受此影响。
+- **默认端口被占用时自动回退**到下一个空闲端口（最多尝试 20 个），并打印实际绑定
+  的端口 —— 启动器（`mcode-web` / `mcode webui`）打开的就是这个地址。此前端口被
+  占用会以 EADDRINUSE 退出；又因为全局 `uncaughtException` 处理器只记录不退出，
+  进程还可能停在“活着但没有在监听”的状态。
+- CORS origin 信任集、`/api/health`、state 快照与 LAN 分享 URL 改为按**实际监听
+  端口**（`getServingPort()`）计算。否则回退之后的浏览器 origin 会被自身的 CSRF
+  网关拒绝，分享 URL 也会指向没有服务在听的端口。
+
 ## v2.0.0 — 2026-09-20 (工业化重写，同步自 MiniMax-Code-Plugins PR #55 @ 7b4aae8)
 
 v1.x 单体 `server.js` 的工业化重写。本轮同步包含 PR #55 全量 26 提交，

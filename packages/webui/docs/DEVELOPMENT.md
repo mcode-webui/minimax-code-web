@@ -20,7 +20,7 @@ Zero npm install. Clone, run:
 ```powershell
 cd ~/.minimax-code/webui
 node server.js
-# → http://127.0.0.1:8080
+# → http://127.0.0.1:18090
 ```
 
 If you want a debug session (verbose SSE, no cache, injectable events):
@@ -145,7 +145,7 @@ command; the webui picks it up on connect.
 ## Testing without mcode
 
 1. Set `$env:DEBUG_INJECT = '1'` before `node server.js`.
-2. Open `http://127.0.0.1:8080/?debug=1` (or just check the right
+2. Open `http://127.0.0.1:18090/?debug=1` (or just check the right
    panel — the debug panel is always visible).
 3. In the browser console:
    ```js
@@ -186,9 +186,18 @@ After changing `public/app/main.js`:
 2. Bump N. (Current value: see the comment above the script tag.)
 
 ### Change the default port
-```powershell
-$env:PORT = 8080
+18090 is a default, not a pinned value: when it is taken the server walks
+forward to the next free port and logs the one it bound. Setting `PORT` (or
+passing `--port` to `mcode-web`) pins the port instead — a taken pinned port
+exits with EADDRINUSE rather than moving, so docker port publishing and
+healthchecks keep addressing the configured value.
+
+```bash
+# default port: 18090, or the next free port when 18090 is taken
 node server.js
+
+# pinned to 7891 — never moves
+PORT=7891 node server.js
 ```
 
 ### Enable LAN sharing
@@ -214,7 +223,7 @@ The webui will spawn a fresh one on the next send.
 The `/api/settings` endpoint is exempt from the LAN guard by design.
 From any machine on the LAN, even with `lanBroadcast: false`:
 ```bash
-curl -X POST http://192.168.1.50:8080/api/settings \
+curl -X POST http://192.168.1.50:18090/api/settings \
   -H 'Content-Type: application/json' \
   -d '{"lanBroadcast": true}'
 ```

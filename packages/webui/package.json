@@ -23,7 +23,7 @@
     "node": ">=22.19 <23 || >=24.2 <27"
   },
   "mcodeWebui": {
-    "defaultPort": 8080,
+    "defaultPort": 18090,
     "dataDir": "~/.mcode-webui",
     "history": "Originally the mcode-webui plugin by Wzdhehe et al.; see co-builders.md at the repository root.",
     "capabilities": [
@@ -69,7 +69,7 @@
       },
       {
         "name": "lan-sharing",
-        "description": "Binds loopback `127.0.0.1:8080` by default; LAN exposure is an explicit opt-in — the `HOST` env var or the persisted `lanBind` setting (`POST /api/settings {lanBind: true}`, effective on restart). A runtime toggle (`POST /api/settings {lanBroadcast: false}`) additionally closes the LAN gate with a bilingual 403 page. The settings snapshot discloses the live exposure via `lanExposed` / `bindRestartPending` / `lanExposureNotice`."
+        "description": "Binds loopback `127.0.0.1:18090` by default; LAN exposure is an explicit opt-in — the `HOST` env var or the persisted `lanBind` setting (`POST /api/settings {lanBind: true}`, effective on restart). A runtime toggle (`POST /api/settings {lanBroadcast: false}`) additionally closes the LAN gate with a bilingual 403 page. The settings snapshot discloses the live exposure via `lanExposed` / `bindRestartPending` / `lanExposureNotice`."
       },
       {
         "name": "token-auth",

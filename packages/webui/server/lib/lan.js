@@ -34,7 +34,7 @@ export function isLocalRequest(req) {
 // as "local", which feeds the token bypass in auth.js. That is correct
 // for socket identity — curl on 127.0.0.1 is the operator — but it
 // must NEVER double as a browser-origin exemption: a page on
-// evil.com targeting http://127.0.0.1:8080 also arrives from a
+// evil.com targeting http://127.0.0.1:18090 also arrives from a
 // loopback socket. The functions below give router.js a separate,
 // Origin-header-based trust set so the two dimensions stay distinct:
 //   - socket identity (isLocalRequest) → token bypass

@@ -54,7 +54,7 @@
 
 | Surface | Default | Override | Notes |
 |---------|---------|----------|-------|
-| HTTP bind | `127.0.0.1:8080` | `HOST` / `PORT` env; persisted `lanBind` setting | v2 security hardening (PR #55 review point 2): the socket bind is loopback unless the operator explicitly opts into LAN exposure. Resolution order: env `HOST` (trimmed, non-empty) > `lanBind === true` → `0.0.0.0` > `127.0.0.1` (see `server/lib/config.js#resolveBindHost`). Existing deployments with an explicit `HOST` keep their bind unchanged. |
+| HTTP bind | `127.0.0.1:18090` | `HOST` / `PORT` env; persisted `lanBind` setting | v2 security hardening (PR #55 review point 2): the socket bind is loopback unless the operator explicitly opts into LAN exposure. Resolution order: env `HOST` (trimmed, non-empty) > `lanBind === true` → `0.0.0.0` > `127.0.0.1` (see `server/lib/config.js#resolveBindHost`). Existing deployments with an explicit `HOST` keep their bind unchanged. |
 | LAN exposure opt-in | off | `POST /api/settings {lanBind: true}` (persisted; binds `0.0.0.0` on the next boot) or `HOST` env | The settings snapshot discloses the real exposure surface: `lanBind`, `bindHost` (what the next boot resolves to), `lanExposed`, `bindRestartPending`, and a bilingual `lanExposureNotice` string. |
 | LAN broadcast toggle | `true` (UI) | `/api/settings` POST `{lanBroadcast: false}` | Server returns 403 with a friendly page when off and request is non-local. Toggle is **runtime**; resets to default on restart. |
 | Browser origin boundary | trusted-origin reflection only | `trustedOrigins` setting (§ CORS) | Mutating requests (`POST` / `DELETE`) carrying an untrusted `Origin` header are 403'd before every other gate, **including the loopback exemption**. Origin-less clients (curl, MCP, CLI) are unaffected. |
@@ -97,7 +97,7 @@ The webui only forwards stdin / parses stdout / renders the SSE stream.
   way to configure the auth token is the `TOKEN` environment variable.
 
 ### 2.3 Token in URL query string
-- Browser opens `http://<host>:8080/?token=<TOKEN>` and the webui
+- Browser opens `http://<host>:18090/?token=<TOKEN>` and the webui
   auto-injects the token into every `fetch` / `EventSource` call as
   `?token=` AND as `Authorization: Bearer`.
 - **Risk**: query string ends up in browser history, server access logs

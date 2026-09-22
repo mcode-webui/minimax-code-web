@@ -34,7 +34,7 @@ const serverJsPath = join(__dirname, "..", "server.js");
 // init() takes the "first run" branch (generate + persist + printToken).
 // Waits up to 2s for startup, returns { stdout, stderr, ok }.
 //
-// Uses PORT=18080 + 18081 to avoid colliding with the default 8080
+// Uses PORT=18080 + 18081 to avoid colliding with the default 18090
 // (which is often already taken on dev machines running a real webui
 // or another test's lingering process). The port stays in the kernel
 // "high enough" range to avoid root-privileged port surprises.
@@ -112,11 +112,11 @@ async function _spawnFirstRun({ tokenStdout, port } = {}) {
 
 test("server.js bootstrap does not throw ESM load-time error", async () => {
   // G03: pin to a high port so the bootstrap test doesn't conflict with
-  //   port 8080 (default in config.js) when some other process already
+  //   port 18090 (default in config.js) when some other process already
   //   holds it — common on shared CI runners and any machine that has
   //   another webui instance running. The test's intent is "server.js
   //   imports succeed and the process reaches 'listening on'", not
-  //   "listens on 8080 specifically". 18082 keeps the high-port
+  //   "listens on 18090 specifically". 18082 keeps the high-port
   //   convention used by the C08 sub-tests (18080 / 18081) so a single
   //   operator can see the pattern at a glance.
   const proc = spawn("node", [serverJsPath], {

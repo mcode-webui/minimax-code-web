@@ -10,7 +10,7 @@ All non-API routes return static files (`server.js` → `serveStatic` /
 
 ## Conventions
 
-- **Base URL**: `http://127.0.0.1:8080` (or LAN IP if enabled)
+- **Base URL**: `http://127.0.0.1:18090` (or LAN IP if enabled)
 - **Path prefix**: `/api/`
 - **Content-Type**: `application/json; charset=utf-8` for both request and response
 - **Auth header**: if `TOKEN` env is set, every request must include either
@@ -36,7 +36,7 @@ Returns server status. No auth required, no CID required.
 ```json
 {
   "ok": true,
-  "port": 8080,
+  "port": 18090,
   "defaultModel": "minimax_api/MiniMax-M3",
   "defaultWorkspace": "C:\\Users\\you\\.minimax-code\\webui",
   "mcodeCmd": "C:\\Users\\you\\.minimax-code\\mcode.cmd",
@@ -341,12 +341,12 @@ state changes (see [ARCHITECTURE.md §5 SSE state push](./ARCHITECTURE.md#5-sse-
 {
   "ok": true,
   "lanBroadcast": true,
-  "port": 8080,
+  "port": 18090,
   "host": "127.0.0.1",
   "lanIp": "192.168.1.50",
-  "lanUrl": "http://192.168.1.50:8080",
-  "lanUrlWithToken": "http://192.168.1.50:8080/?token=…",  // 🔒 v2 — FIRST-RUN BOOTSTRAP ONLY: present while tokenAcknowledged=false, omitted entirely after ack (UI falls back to lanUrl); re-issued once per rotation
-  "localUrl": "http://127.0.0.1:8080",
+  "lanUrl": "http://192.168.1.50:18090",
+  "lanUrlWithToken": "http://192.168.1.50:18090/?token=…",  // 🔒 v2 — FIRST-RUN BOOTSTRAP ONLY: present while tokenAcknowledged=false, omitted entirely after ack (UI falls back to lanUrl); re-issued once per rotation
+  "localUrl": "http://127.0.0.1:18090",
   "lanBind": false,                // 🔒 v2 — persisted LAN-bind opt-in; true binds 0.0.0.0 on next boot (env HOST still wins)
   "bindHost": "127.0.0.1",         // 🔒 v2 — what the NEXT boot resolves to (env HOST > lanBind > loopback)
   "lanExposed": false,             // 🔒 v2 — effective bind is not loopback

@@ -47,7 +47,7 @@ HTML 元素；或者 `cache-bust?v=N` 查询参数已过期，
    找到元素 ID，然后要么在 `index.html` 中恢复它，
    要么移除对应的 JS 引用。
 
-## `Failed to load resource: net::ERR_CONNECTION_REFUSED` 指向 `127.0.0.1:8080`
+## `Failed to load resource: net::ERR_CONNECTION_REFUSED` 指向 `127.0.0.1:18090`
 
 **症状**：开发者工具显示 SSE 或 `/api/state` 请求失败，
 提示 "connection refused"。UI 显示 "init fail" 或卡在
@@ -56,7 +56,7 @@ HTML 元素；或者 `cache-bust?v=N` 查询参数已过期，
 **根因**：服务器没有运行，或者运行在不同的端口上。
 
 **修复**：
-1. 检查服务器是否在运行：`curl http://127.0.0.1:8080/api/health`
+1. 检查服务器是否在运行：`curl http://127.0.0.1:18090/api/health`
    应返回 JSON。
 2. 如果没有运行，启动它：`cd webui; node server.js`。
 3. 如果运行在不同端口，设置 `$env:PORT = <port>` 并重启。
@@ -81,7 +81,7 @@ webui 的会话列表中。
 `GET /api/acp-sessions` 查询 mcode sqlite。
 
 **修复**：
-1. 检查 `curl 'http://127.0.0.1:8080/api/acp-sessions?cid=<your-cid>'`
+1. 检查 `curl 'http://127.0.0.1:18090/api/acp-sessions?cid=<your-cid>'`
    —— 应返回会话列表。
 2. 如果为空，说明 mcode 数据库为空或路径不对。
    检查 `$env:USERPROFILE\.minimax\v2\sqlite\runtime-state.sqlite`
@@ -204,7 +204,7 @@ SIGTERM，但子进程需要一点时间才会退出，而进行中的
 `state.permissions` 中。webui 从 SSE `state` 事件中读取它。
 
 **修复**：
-1. 检查 `curl 'http://127.0.0.1:8080/api/state?cid=<cid>' | jq .permissions`
+1. 检查 `curl 'http://127.0.0.1:18090/api/state?cid=<cid>' | jq .permissions`
 2. 如果为空，说明 mcode 还没有上报当前权限模式。
    发送任意消息 —— 下一个 SSE 事件就会包含它。
 3. 如果 webui 显示错误的值，那是因为 mcode 0.1.5 的
@@ -223,20 +223,28 @@ SIGTERM，但子进程需要一点时间才会退出，而进行中的
 main.js 的响应 —— 它应该包含版本注释
 "v0.5.bx-NN"。
 
-## 服务器无法启动："EADDRINUSE :::8080"
+## 服务器无法启动："cannot listen on 127.0.0.1:18090 — EADDRINUSE"
 
-**症状**：`node server.js` 以 EADDRINUSE 退出。
+**症状**：`node server.js` 打印
+`[webui] cannot listen on 127.0.0.1:18090 — EADDRINUSE` 并以 1 退出。
 
-**根因**：另一个进程已经在监听 8080 端口。
-通常是没有清理干净的旧 webui 进程。
+**根因**：端口被"钉住"了 —— 设置了 `PORT`，或传了 `mcode-web --port`
+—— 而另一个进程已经在监听该端口。通常是没有清理干净的旧 webui 进程。
+
+被钉住的端口不会自动后移：docker 端口发布、容器健康检查以及部署脚本
+都按配置值寻址，无法发现回退。**默认**端口（未做任何配置）的行为不同
+—— 它会往后找下一个空闲端口，并打印
+`[webui] port 18090 is already in use — trying 18091`。
 
 **修复**：
 1. 找到冲突的进程：
    ```powershell
-   Get-NetTCPConnection -State Listen -LocalPort 8080
+   Get-NetTCPConnection -State Listen -LocalPort 18090
    ```
 2. 杀掉它：`Stop-Process -Id <PID> -Force`
 3. 或者使用不同的端口：`$env:PORT = 7891; node server.js`
+4. 或者不再钉住端口：取消 `PORT`，并且运行 `mcode-web` 时不带
+   `--port`，由服务器自己取下一个空闲端口。
 
 ## 令牌认证：401 Unauthorized
 
@@ -246,13 +254,13 @@ main.js 的响应 —— 它应该包含版本注释
 发送它。或者令牌不匹配。
 
 **修复**：
-1. 检查 `curl http://127.0.0.1:8080/api/health` —— 不带认证
+1. 检查 `curl http://127.0.0.1:18090/api/health` —— 不带认证
    应该也能工作（health 是豁免的）。
 2. 检查 webui 使用的 URL：应该附加了 `?token=…`，
    或者请求应带有 `Authorization: Bearer …`。
 3. webui 会从 URL 查询字符串自动注入令牌。请确保你打开的
-   是 `http://127.0.0.1:8080/?token=…`，而不是
-   `http://127.0.0.1:8080/`。
+   是 `http://127.0.0.1:18090/?token=…`，而不是
+   `http://127.0.0.1:18090/`。
 
 ## 服务器启动了但没有生成 mcode 子进程
 

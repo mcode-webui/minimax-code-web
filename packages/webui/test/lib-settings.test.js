@@ -57,6 +57,8 @@ after(async () => {
 });
 
 const settings = await import(absPath("lib/settings.js"));
+// The port the server would serve on: the config default, or PORT when set.
+const config = await import(absPath("lib/config.js"));
 
 // Build a minimal fake res that captures writeHead/end
 function fakeRes() {
@@ -145,11 +147,13 @@ describe("settings — rejectLan", () => {
     assert.match(res._body, /192\.168\.1\.100/); // remote IP
   });
 
-  test("HTML page uses dynamic PORT (not hardcoded 7890)", () => {
+  test("HTML page uses the serving port (not a hardcoded 7890)", () => {
     settings.setLanBroadcast(false);
     const res = fakeRes();
     settings.rejectLan(res, "/some/page", "10.0.0.1");
-    assert.match(res._body, /127\.0\.0\.1:8080/);
+    // Assert against the port this process would serve on, so changing the
+    // default port cannot leave this pinned to a stale literal.
+    assert.match(res._body, new RegExp(`127\\.0\\.0\\.1:${config.getServingPort()}`));
     assert.doesNotMatch(res._body, /7890/);
   });
 

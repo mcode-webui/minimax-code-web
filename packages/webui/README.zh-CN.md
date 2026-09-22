@@ -20,7 +20,7 @@ PR #56 的轨迹工作室），并作为 `packages/webui` 迁移入产品。完�
 
 ```bash
 # 从已构建的检出（或已安装的 mcode CLI）：
-mcode webui                     # http://127.0.0.1:8080
+mcode webui                     # http://127.0.0.1:18090
 mcode webui --port 8123 --host 127.0.0.1
 
 # 直接启动（开发）：
@@ -37,7 +37,7 @@ node packages/webui/server.js
 ```bash
 export TOKEN="$(openssl rand -hex 16)"
 mcode webui --host 0.0.0.0
-# 打开 http://<lan-ip>:8080/?token=$TOKEN
+# 打开 http://<lan-ip>:18090/?token=$TOKEN
 ```
 
 ## 目录内容

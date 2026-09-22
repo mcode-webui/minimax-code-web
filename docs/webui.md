@@ -7,7 +7,7 @@ The Web UI (`packages/webui`) is the browser frontend for MiniMax Code. It uses 
 ## Launch
 
 ```bash
-mcode-web                     # http://127.0.0.1:8080
+mcode-web                     # http://127.0.0.1:18090
 mcode web                     # equivalent — `web` and `webui` both resolve
 mcode webui --port 8123 --host 127.0.0.1
 mcode webui --token "$(openssl rand -hex 16)" --host 0.0.0.0   # LAN, token-gated
@@ -16,6 +16,8 @@ node packages/webui/server.js # direct, from a checkout
 ```
 
 The command resolves the webui package (installed `dist/webui/` or source `packages/webui/`), spawns the server as a child process, and points it back at the running CLI through `MCODE_WEBUI_SELF_ENTRY`. The webui then spawns `node <cli> acp` per active browser tab.
+
+Without `--port` the server starts on 18090 and moves to the next free port when 18090 is taken, logging the URL it bound — the launcher opens that one. An explicit `--port` (or `PORT`) is pinned: it never moves, so a taken port exits with EADDRINUSE instead.
 
 ## Running a development build
 
@@ -29,7 +31,7 @@ From a checkout of this repository:
 
 ```bash
 corepack pnpm install && corepack pnpm build   # once, and after engine changes
-node dist/cli.js webui                         # dev Web UI on 127.0.0.1:8080
+node dist/cli.js webui                         # dev Web UI on 127.0.0.1:18090
 node dist/cli.js webui --port 8123             # keep the installed one free
 ```
 

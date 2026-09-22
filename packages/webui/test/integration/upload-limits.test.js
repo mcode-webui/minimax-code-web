@@ -31,7 +31,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const serverJsPath = join(__dirname, "..", "..", "server.js");
 
 function pickPort() {
-  // 19700..19799 — outside the dev range (8080) and the ranges other
+  // 19700..19799 — outside the dev range (18090) and the ranges other
   // integration files pick (18080/181, 19500..19600).
   return 19700 + Math.floor(Math.random() * 100);
 }

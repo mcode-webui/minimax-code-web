@@ -2,7 +2,7 @@
 // GET /api/health — basic service info.
 
 import {
-  PORT,
+  getServingPort,
   MAX_CONCURRENT,
   MCODE_CMD,
   DEFAULT_MODEL,
@@ -14,7 +14,7 @@ export function handleHealth(_req, res) {
   return res.end(
     JSON.stringify({
       ok: true,
-      port: PORT,
+      port: getServingPort(),
       defaultModel: DEFAULT_MODEL,
       defaultWorkspace: DEFAULT_WORKSPACE,
       mcodeCmd: MCODE_CMD,

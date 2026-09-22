@@ -7,6 +7,8 @@ import { homedir } from "node:os";
 import { existsSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 
+import { isPortPinned } from "./port.js";
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // __dirname here = packages/webui/server/lib/. The webui package root is 2 levels up.
 // In-product layout (mcode-webui migration): the webui ships inside the MiniMax Code
@@ -55,10 +57,31 @@ export const MCODE_CMD = (() => {
   if (existsSync(homeLayout)) return homeLayout;
   return "mcode"; // PATH fallback
 })();
-// v0.5.bx-38: 默认端口 8080 — 之前 7890 太常被 desktop / mavis 桌面端占, 端口冲突频繁
-//   8080 是常见 HTTP alt, 也跟 web UI 语义对得上 (web = 80, 8080 = alt)
-//   仍可被 process.env.PORT 覆盖 (比如临时用 7890 跑测试)
-export const PORT = Number(process.env.PORT) || 8080;
+// 默认端口历史: 7890 (最初) → 8080 (v0.5.bx-38, "web alt" 语义清晰, 但 8080 被
+//   desktop / mavis 桌面端以及各类开发服务器占用得太频繁) → 18090 (当前)。高位
+//   端口在桌面/开发机上冲突概率低得多, 也和容器默认端口 (docker-compose 的
+//   WEBUI_PORT=18080) 同属高位段, 不再跟常见 HTTP 服务抢。
+//   仍可被 process.env.PORT 覆盖 (比如临时用 7890 跑测试)。
+//
+// 端口回退: 默认端口只是默认值, 不再是承诺 — 它被占用时服务器会往后找下一个
+//   空闲端口 (见 server/lib/port.js)。显式配置的端口 (PORT>0, 或启动器的 --port)
+//   仍按精确值处理: docker 端口发布 / 容器健康检查 / webui 集成测试都按配置值
+//   寻址, 无法发现回退。
+export const PORT = Number(process.env.PORT) || 18090;
+// 显式指定端口时禁止回退。未设置 / 空 / 0 / 非数值都视为"未指定", 走默认端口
+// 并允许回退 —— 与上面的 `Number(...) || 18090` 判定保持一致 (isPortPinned 是
+// 这条规则的唯一实现, 见 server/lib/port.js)。
+export const PORT_PINNED = isPortPinned(process.env.PORT);
+// 实际对外提供服务的端口。默认端口回退之后它不再等于 PORT, 所以请求期消费者
+// (CORS origin 信任集、health/state/share URL、LAN 提示文案) 必须调用
+// getServingPort(), 不能在 import 期把 PORT 快照成常量。
+let servingPort = PORT;
+export function getServingPort() {
+  return servingPort;
+}
+export function setServingPort(port) {
+  if (Number.isInteger(port) && port > 0) servingPort = port;
+}
 // v2 security fix (PR #55 review point 2): default bind is now loopback.
 //   v0.5.ao 默认 0.0.0.0（"浏览器/手机/局域网访问是主场景"），但本服务是
 //   高权限面（agent / filesystem / session 控制），网络可达必须是运营者
