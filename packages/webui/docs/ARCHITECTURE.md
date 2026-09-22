@@ -232,6 +232,80 @@ sequenceDiagram
     B->>B: modal closes, chat continues
 ```
 
+## 2.2 Session management flow
+
+Two stores cooperate. The **webui store** (`sessions.json`, the recent-
+sessions list) holds one record per webui session: `id` (uuid),
+`mcodeSessionId` (bound `mvs_…`), `title`, `workspace`, `chat[]`. The
+**mcode runtime store** (`~/.minimax/v2/sqlite/runtime-state.sqlite`)
+holds the engine's own sessions; the webui reads it for the sidebar and
+for transcript backfill.
+
+```mermaid
+flowchart TD
+    subgraph ENTRY["Entry points"]
+        A1["First send in a<br/>fresh client"]
+        A2["'+ New session' button"]
+        A3["Sidebar click"]
+        A4["Page reload / new tab"]
+    end
+
+    subgraph SERVER["server (per-cid clientState)"]
+        B{"cs.sessionId<br/>set?"}
+        C["chat.js: create webui record<br/>(uuid + workspace + chat)"]
+        D["acp session/new → bind mcodeSessionId (mvs_…)"]
+        E["getClient → restoreLatestSession:<br/>most-recent record in workspace<br/>(legacy no-workspace = default)"]
+        F{"clicked id is mvs_…<br/>and no record?"}
+        G["switch: create wrapper record<br/>(uuid + mcodeSessionId + title)"]
+        H["transcript backfill from<br/>runtime SQLite (≤400 lines / ≤200KB)"]
+        I["bind cs: sessionId / mcodeSessionId / chat<br/>→ pushStateFor (SSE)"]
+    end
+
+    subgraph STORES["stores"]
+        J[("sessions.json<br/>webui store")]
+        K[("runtime-state.sqlite<br/>mcode engine sessions")]
+    end
+
+    subgraph SIDEBAR["sidebar (renderSessions)"]
+        L["merge: mcode sessions (workspace-filtered)<br/>+ webui records, dedupe by mcodeSessionId<br/>kinds: mcode / webui-mcode / webui"]
+    end
+
+    A1 --> B
+    B -- "no" --> C --> D --> I
+    A2 --> B
+    B -- "no (explicit new)" --> C
+    A3 --> F
+    F -- "no" --> I
+    F -- "yes" --> G --> H --> I
+    A4 --> E --> I
+    C -.writes.-> J
+    D -.writes.-> K
+    E -.reads.-> J
+    G -.writes.-> J
+    H -.reads.-> K
+    J --> L
+    K --> L
+    I --> L
+```
+
+Lifecycle notes:
+
+- **Delete** (`DELETE /api/sessions/:id`) removes the webui record AND
+  cross-deletes the linked `mvs_…` rows from the runtime SQLite
+  (`deleteMcodeSessionFromDb`, `?dryRun=true` to preview). Deleting the
+  mcode record drops it from both lists in one transaction.
+- **Startup cleanup** prunes records that are empty AND default-titled
+  AND older than 24h — the "+"-then-never-typed leftovers.
+- **Search** (`GET /api/sessions/search`) fuzzy-matches titles across
+  workspaces; matches render with a `[ws-short]` prefix and switching
+  into them rides the same switch path above.
+- **Same conversation, one record**: a fresh client resumes the latest
+  session instead of forking (§2.2 fix history), and continuing a chat
+  reuses the bound `mcodeSessionId` — no new engine session per message.
+- The wrapper for an `mvs_…` click is **persisted** (title from the
+  cache-first lookup, falling back to the ACP title probe), so repeated
+  switching does not create duplicate records.
+
 
 ## 3. Module contracts
 
