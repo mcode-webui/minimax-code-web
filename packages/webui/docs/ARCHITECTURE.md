@@ -117,6 +117,122 @@ Key invariants:
   state on the server.** Everything else is read-only. This is why
   `state-bus.js` is the size it is — it's the single chokepoint.
 
+## 2.1 Conversation sequence — prompt → stream → render
+
+How one user turn travels end to end, and where each engine surface
+(AGENTS.md, thinking, tool calls, MCP tools, skills) is invoked and
+rendered. Names are the real code symbols.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as User
+    participant B as Browser SPA<br/>(public/app: events/render/state)
+    participant R as server/router.js<br/>(gate chain)
+    participant C as routes/chat.js<br/>handleSend
+    participant S as lib/state-bus.js<br/>(per-cid clientState)
+    participant A as acp.mjs<br/>McodeAcpClient
+    participant E as mcode acp subprocess<br/>(engine: agent-runtime)
+
+    U->>B: type prompt + Enter<br/>(or slash command / answer modal)
+    B->>R: POST /api/send {content, cid, token}
+    Note over R: CORS → Origin/CSRF → LAN → token → rate-limit → read-only
+    R->>C: dispatch handleSend(req,res,ctx)
+    C->>S: getClient(cid) — per-cid clientState<br/>(fresh client resumes latest workspace session)
+    alt first message of a session
+        C->>C: create webui session record (id, workspace)<br/>sessions.json
+    end
+    C->>S: cs.chat += "› {prompt}" + pushStateFor + persist
+    C->>A: new McodeAcpClient → spawn engine subprocess
+    A->>E: initialize (JSON-RPC over stdio)
+    E-->>A: capabilities + available_commands_update<br/>(slash/skill catalog → sidebar hints)
+    alt cs.mcodeSessionId set
+        A->>E: session/load {sessionId} (resume)
+    else
+        A->>E: session/new {cwd: workspace}
+    end
+    E->>E: assemble system prompt:<br/>AGENTS.md (system-reminder module),<br/>skills, permission presets
+    A->>E: session/prompt {prompt}
+    E->>E: model call (provider / minimax_api key)
+    C-->>B: 200 {ok:true}  (ack only — everything else is SSE)
+```
+
+The stream that follows — every engine event becomes a chat line, every
+chat mutation becomes an SSE state snapshot:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant E as mcode acp engine
+    participant A as acp.mjs (prompt callbacks)
+    participant M as lib/mcode-acp.js<br/>streamAcpPrompt
+    participant S as state-bus.js<br/>pushStateFor
+    participant B as Browser render.js<br/>parseChatLines → renderMessage
+
+    loop per model chunk
+        E-->>A: session/update agent_thought_chunk
+        A->>M: {kind:'thought', text}
+        M->>M: streamUpdateLine(cs.chat, "▲", text)
+        M->>S: pushStateFor(cid)  (60Hz coalesced)
+        S-->>B: SSE {type:'state', chat:[...], running:{active:true,tps}}
+        B->>B: thinking block (escaped text, collapsible)
+    end
+    loop per tool call (incl. MCP tools & skill-spawned tools)
+        E-->>A: session/update tool_call {title, rawInput}
+        A->>M: {kind:'tool_call'}
+        M->>M: cs.chat += "→ toolName  {input}" (index by toolCallId)
+        E-->>A: session/update tool_call_update {status, rawOutput, locations}
+        M->>M: insert "  [status]" + output lines + "  @ file" after the call
+        M->>S: pushStateFor
+        B->>B: tool block: auto-collapse on completion,<br/>arguments preview, file chips
+    end
+    loop per answer chunk
+        E-->>A: session/update agent_message_chunk
+        M->>M: streamUpdateLine(cs.chat, "●", text)
+        B->>B: assistant message (markdown)
+    end
+    E-->>A: prompt result {stopReason, usage}
+    M->>M: finalize (usage accounting; empty-answer note if no message)
+    M->>S: pushStateFor + persistCurrentChat → sessions.json
+    B->>B: running:{active:false}; context % / tokens update
+```
+
+Interactive surfaces and engine-side modules — who owns what:
+
+| Surface | Engine side (mcode) | Wire | Web UI render |
+|---|---|---|---|
+| **AGENTS.md** | `agent-modules/system-reminder` injects it into the system prompt at session start (project instructions, project memory) | invisible in chat; visible in the trajectory studio (`/trajectory/`, session events) | nothing special — it shapes model behavior |
+| **Thinking (思维链)** | model emits `agent_thought_chunk` | `kind:'thought'` → `▲` line | collapsible thinking block (escaped text) |
+| **Builtin tools** (Bash/Read/Write/Edit/…) | agent-runtime executes with permission presets | `tool_call` / `tool_call_update` → `→ name` + indented output lines | tool block, auto-collapse, file chips |
+| **MCP tools** | engine spawns configured MCP servers (`mcp.json`); calls surface as `mcp__server__tool` | same tool_call wire | same tool block (server·tool naming) |
+| **Skills** | `/skill` or prompt triggers `agent-modules/skills` → injected as system-reminder content | slash catalog from `available_commands_update`; invocation = normal prompt turn | slash hint UI; skill output = ordinary thought/message/tool stream |
+| **ask_user tool** | engine emits `ask_user` tool call | chat line `→ ask_user {json}` | modal with options/multi-select/Other; answer → `POST /api/send {isAskAnswer:true}` |
+| **Permission prompts** | engine requests approval for a tool call | permission events → modal (ask/auto/full) | answer forwarded on the send path |
+| **Plan mode** | `Plan:`-prefixed prompt → structured plan event | plan-review modal | agree / skip / add context → forwarded |
+| **Trajectory studio** | reads runtime SQLite projection (read-only) | `/api/trajectory/*` | `/trajectory/` panel (turns, tokens, compaction, subagents) |
+
+Round-trip for interactive prompts (ask_user / permission / plan):
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant E as Engine
+    participant M as mcode-acp.js
+    participant S as state-bus
+    participant B as Browser (modal)
+    participant C as routes/chat.js
+
+    E-->>M: ask_user tool_call / permission request / plan event
+    M->>S: cs.chat += structured line + pushStateFor
+    B->>B: open modal (ask_user options / permission ask-auto-full / plan review)
+    U->>B: choose + submit
+    B->>C: POST /api/send {isAskAnswer:true, content: answer}
+    C->>E: forward as prompt (continue same session)
+    E-->>M: stream resumes (thought/message/tool events)
+    B->>B: modal closes; chat continues
+```
+
+
 ## 3. Module contracts
 
 Each `server/lib/*.js` file exports a small set of named functions. No
