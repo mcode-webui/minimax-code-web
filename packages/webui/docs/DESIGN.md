@@ -13,8 +13,9 @@
 > subject: the Trajectory Studio plugin's design (data sources, MCP vs Mini App, panel
 > revisions). It shares a file name, not a subject. Neither document should absorb the other.
 >
-> **Companion.** [`ARCHITECTURE.md`](ARCHITECTURE.md) covers the measured desktop and TUI
-> architecture, and the boundary between this alignment work and the Web UI's own runtime.
+> **Companion.** [`DESKTOP-ARCHITECTURE.md`](DESKTOP-ARCHITECTURE.md) covers the measured
+> desktop and TUI architecture, and the boundary between this alignment work and the Web UI's
+> own runtime.
 
 ## 1. Evidence
 
@@ -28,7 +29,7 @@ Every value below was read from the desktop artifact.
 | Syntax theme | the 35 `--code-theme-*` tokens in the same stylesheet |
 | TUI palette | `packages/tui/src/tui/theme/palettes.ts`, `contracts.ts`, `syntax.ts` |
 
-Extraction is read-only; see `ARCHITECTURE.md` §1 for the asar header format and the reader
+Extraction is read-only; see `DESKTOP-ARCHITECTURE.md` §1 for the asar header format and the reader
 snippet. Current Web UI values in §12 come from
 `packages/webui/public/styles/main.css`.
 
@@ -892,7 +893,7 @@ else is a value refinement that keeps the layout intact.
 
 - The theme mechanism: `data-theme` on `:root`, the `prefers-color-scheme` fallback, and
   `localStorage["webui-theme"]` stay as they are (§7.5).
-- The zero-dependency constraint: this is plain CSS and DOM. See `ARCHITECTURE.md` §5.1.
+- The zero-dependency constraint: this is plain CSS and DOM. See `DESKTOP-ARCHITECTURE.md` §5.1.
 - Layout structure and component markup. This is a token and value change.
 
 ## 13. Acceptance checklist
