@@ -1,5 +1,10 @@
 # MCode Trajectory Studio — 设计文档
 
+> **Scope note.** This file shares a name with, but not a subject with, the
+> repository-root [DESIGN.md](../../../../DESIGN.md). That document is the design
+> system of record for the webui (tokens, typography, theme protocol, layout) and
+> does not describe Trajectory Studio. Neither document absorbs the other.
+>
 > 目标：把 dsh（DeepSeek Harness）Web 端 Trajectory 视图的能力，落到一个 MCode Agent Plugin 上，
 > 用于查看 mcode 自身的会话轨迹（轮次 / 时长 / 调用入参 / 结果 / token / 压缩 / 子代理）。
 >

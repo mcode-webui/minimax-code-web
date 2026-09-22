@@ -6,6 +6,12 @@
 > modifying the webui or integrating with it. It describes the runtime
 > topology, the module boundaries, the request lifecycle, and the SSE
 > payload contract.
+>
+> **Scope boundary.** This document is the single source of truth for how the
+> webui is built. The repository-root [ARCHITECTURE.md](../../../ARCHITECTURE.md)
+> covers a different subject: the measured architecture of the desktop client and
+> the TUI, and the desktop-facing alignment contract. It deliberately does not
+> restate the topology, modules, or payload schemas documented here.
 
 ## 1. High-level topology
 
