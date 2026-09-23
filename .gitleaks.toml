@@ -74,3 +74,25 @@ condition = "AND"
 paths = ['''(^|/)packages/local-runtime/test/unit/error-reporting-privacy\.test\.ts$''']
 regexTarget = "match"
 regexes = ['''^SECRET = 'SYNTHETIC_PRIVATE_4cd7'$''']
+
+[[rules.allowlists]]
+description = "Redaction regression fixture asserting api_key values are scrubbed, including historical commits"
+condition = "AND"
+paths = ['''(^|/)packages/webui/test/trajectory/store\.test\.mjs$''']
+regexTarget = "match"
+regexes = ['''^api_key=abcdef123456'$''']
+
+[[rules.allowlists]]
+description = "RFC 6455 sample WebSocket key (the sample nonce) in the documented handshake example, not a credential"
+condition = "AND"
+paths = ['''(^|/)packages/webui/docs/HTTPS-REVERSE-PROXY(\.zh-CN)?\.md$''']
+regexTarget = "match"
+regexes = ['''Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==''']
+
+[[rules.allowlists]]
+description = "RFC 6455 sample WebSocket key (the sample nonce) constant in the handshake test, not a credential"
+condition = "AND"
+paths = ['''(^|/)packages/webui/test/lib-ws-server\.test\.js$''']
+regexTarget = "match"
+regexes = ['''CLIENT_KEY = "dGhlIHNhbXBsZSBub25jZQ=="''']
+
