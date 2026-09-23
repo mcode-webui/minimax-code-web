@@ -50,8 +50,16 @@ function mkdirReq(path) {
 
 describe("fs routes — workspace containment (v2.2)", () => {
   test("read of a directory outside the allowed roots is 403 with actionable error", async () => {
+    // The path must EXIST for the route to reach the containment check
+    // (it lstats first, so a missing path fails with "cannot resolve"
+    // before the 403). /etc is that witness on POSIX; SystemRoot on
+    // Windows — in both cases a directory outside the homedir/tmpdir
+    // roots this route allows.
+    const outsideRoot = process.platform === "win32"
+      ? (process.env.SystemRoot || "C:\\Windows")
+      : "/etc";
     const res = fakeRes();
-    fsRoute.handleFsRead(readReq("/etc"), res);
+    fsRoute.handleFsRead(readReq(outsideRoot), res);
     assert.equal(res.status, 403);
     const parsed = JSON.parse(res.body);
     assert.equal(parsed.ok, false);

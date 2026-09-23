@@ -15,7 +15,7 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { homedir } from "node:os";
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const absPath = (rel) => pathToFileURL(join(import.meta.dirname, "..", "..", "server", rel)).href;
@@ -33,7 +33,9 @@ describe("config — constants", () => {
   test("WEBUI_DATA_DIR is an absolute path string", () => {
     assert.equal(typeof cfg.WEBUI_DATA_DIR, "string");
     assert.ok(cfg.WEBUI_DATA_DIR.length > 0, "WEBUI_DATA_DIR should be a non-empty path");
-    assert.ok(cfg.WEBUI_DATA_DIR.startsWith("/"), `WEBUI_DATA_DIR should be absolute: ${cfg.WEBUI_DATA_DIR}`);
+    // isAbsolute, not startsWith("/"): an absolute Windows path starts
+    // with a drive letter ("C:\…"), not a slash.
+    assert.ok(isAbsolute(cfg.WEBUI_DATA_DIR), `WEBUI_DATA_DIR should be absolute: ${cfg.WEBUI_DATA_DIR}`);
   });
 
   test("MCODE_CMD is a string path (may not exist if mcode not installed)", () => {
