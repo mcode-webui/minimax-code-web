@@ -15,6 +15,7 @@ import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { randomBytes } from "node:crypto";
 
+import { getMcodeServerInfo } from "./acp-client.js";
 import { getServingPort, HOST } from "./config.js";
 import { LAN_IP, isLoopbackHost } from "./lan.js";
 import { MCODE_CMD, DEFAULT_WORKSPACE, DEFAULT_MODEL } from "./config.js";
@@ -746,6 +747,9 @@ export function getSettingsSnapshot(availableInterfaces = null) {
   // it yet. After acknowledgment we omit the value to reduce the
   // window in which it lives in memory + over the wire.
   const includeToken = !tokenAcknowledged;
+  // The engine's installed version, from its ACP `initialize` reply. Read once:
+  // /api/state and /api/settings are both polled.
+  const agentInfo = getMcodeServerInfo();
   // v2 security fix (PR #55 review point 1): lanUrlWithToken is a
   // first-run bootstrap surface ONLY. It used to be returned on every
   // GET /api/settings for the top-bar share chip — a long-lived
@@ -803,7 +807,9 @@ export function getSettingsSnapshot(availableInterfaces = null) {
     bindRestartPending,
     lanExposureNotice,
     mcodeCmd: MCODE_CMD,
-    mcodeVersion: "0.1.2",
+    // A pinned constant here reported the version webui was written against
+    // instead of the one running. `unknown` until a client attaches.
+    mcodeVersion: (agentInfo && agentInfo.version) || "unknown",
     defaultWorkspace: DEFAULT_WORKSPACE,
     defaultModel: DEFAULT_MODEL,
   };
