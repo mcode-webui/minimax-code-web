@@ -16,6 +16,14 @@
 import { existsSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { MAVIS_DB_PATH, SQLITE3_BIN } from "./config.js";
+// webui-2026-09-25: import the pure helper directly from ./context-percent.js
+//   instead of ./sessions.js. mavis-usage is a usage/quota reader with no
+//   relationship to the on-disk session store, so depending on sessions.js
+//   just to borrow a pure (used, limit) → percent function pulled the
+//   session-store mock surface into every test that exercises usage paths
+//   (a missing export cancelled the whole suite at module-instantiation time).
+//   The pure module has no mocks to mirror and no state to stub.
+import { computeContextPercent } from "./context-percent.js";
 
 // G03: node:sqlite capability cache. Dynamic import may throw on Node <22.5.
 //   Tri-state: `undefined` (not yet probed), `false` (probed, unavailable),
@@ -315,9 +323,7 @@ export async function applyMavisUsageToCs(
     const realLimit = getMcodeModelLimit(modelName);
     if (realLimit) cs.context.limit = realLimit;
   }
-  cs.context.percent = cs.context.limit
-    ? Math.round((newTokens / cs.context.limit) * 100)
-    : 0;
+  cs.context.percent = computeContextPercent(newTokens, cs.context.limit);
   cs.context.estimated = false; // 真值
   cs.context.usageSource = "mavis-db"; // 标记数据源
   cs.usage.sessionInput = mavisUsage.totalInput;

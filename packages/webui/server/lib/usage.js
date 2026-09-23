@@ -63,7 +63,7 @@ async function fetchTokenPlanRemains(apiKey) {
 // { ok: false, error }. No side effects beyond the cs.usage
 // mutation, so tests can assert on the populated fields directly.
 //
-// Exported so test/usage.test.js can drive it with a fixed JSON
+// Exported so test/lib/usage.check.mjs can drive it with a fixed JSON
 // fixture (the real API response captured on 2026-08-28).
 export function parseTokenPlanResponse(data, cs) {
   // base_resp is the standard platform wrapper. status_code !== 0
@@ -99,8 +99,8 @@ export function parseTokenPlanResponse(data, cs) {
   //   data?.current_interval_remaining_percent
   // which is always undefined, so the popover always showed "—".
   // The fix is to pick the "general" entry (or the first one)
-  // and read from that, mirroring what getGeneralQuota() in
-  // public/app/state.js does client-side.
+  // and read from that, mirroring the client's own general-quota read so the
+  // sidebar and the usage panel never disagree.
   const modelEntry = Array.isArray(data?.model_remains)
     ? (data.model_remains.find((m) => m && m.model_name === "general")
       || data.model_remains[0]

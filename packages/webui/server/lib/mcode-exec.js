@@ -14,7 +14,8 @@ import {
 } from "./config.js";
 import { createIdleWatchdog } from "./idle-watchdog.js";
 import { pushAlert } from "./alerts.js";
-import { streamUpdateLine } from "./sessions.js";
+import { streamUpdateLine } from "./chat-line.js";
+import { computeContextPercent } from "./sessions.js";
 import { setActiveChild, clearActiveChild, pushStateFor } from "./state-bus.js";
 
 // ============================================================
@@ -326,6 +327,20 @@ export function collectExecResult(childPromise) {
       safetyTimeout.stop();
       const dt = Date.now() - t0;
       r.durationMs = r.durationMs || dt;
+      // v2.4 (SPEC §B 尾项 — turn_process.processed_duration):
+      //   mirror the mcode-acp.js path: append a `§§ processed_duration=Nms`
+      //   marker so the webui renderer can attach it to the matching assistant
+      //   turn. See mcode-acp.js for the marker grammar rationale.
+      if (
+        typeof r.durationMs === "number" &&
+        r.durationMs > 0 &&
+        Array.isArray(cs.chat)
+      ) {
+        cs.chat = [
+          ...cs.chat,
+          `§§ processed_duration=${Math.round(r.durationMs)}ms`,
+        ];
+      }
       if (r._stopped) r.status = "stopped";
       clearActiveChild(cid);
       cs.running = {
@@ -344,9 +359,10 @@ export function collectExecResult(childPromise) {
         cs.context.tokens =
           (cs.context.tokens || 0) + (r.usage.totalTokens || 0);
         cs.context.used = cs.context.tokens;
-        cs.context.percent = cs.context.limit
-          ? Math.round((cs.context.tokens / cs.context.limit) * 100)
-          : 0;
+        cs.context.percent = computeContextPercent(
+          cs.context.tokens,
+          cs.context.limit,
+        );
         cs.context.estimated = false; // mcode 0.1.5+ 返真实值
         cs.context.lastUsageAt = Date.now();
         cs.usage.sessionInput =
@@ -371,9 +387,10 @@ export function collectExecResult(childPromise) {
         cs.context.tokens = (cs.context.tokens || 0) + estTotal;
         cs.context.used = cs.context.tokens;
         cs.context.estimated = true; // 标记是估算的 (mcode 0.1.4 限制)
-        cs.context.percent = cs.context.limit
-          ? Math.round((cs.context.tokens / cs.context.limit) * 100)
-          : 0;
+        cs.context.percent = computeContextPercent(
+          cs.context.tokens,
+          cs.context.limit,
+        );
         cs.context.lastUsageAt = Date.now();
         cs.usage.sessionInput = (cs.usage.sessionInput || 0) + estInTokens;
         cs.usage.sessionOutput = (cs.usage.sessionOutput || 0) + estOutTokens;

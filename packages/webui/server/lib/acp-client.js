@@ -5,11 +5,10 @@
 
 import { McodeAcpClient } from "../../acp.mjs";
 import { DEFAULT_WORKSPACE, MCODE_RUNTIME_DB } from "./config.js";
-import { syncActiveCapabilities } from "./capability.js";
-import { deleteMcodeSessionFromDb } from "./db.js";
+import { deleteMcodeSessionFromDb } from "./mcode-session-delete.js";
 
 // v0.5.bu: 拉 mcode 真实 session 列表（mcode acp session/list 协议）
-// 数据源：mcode TUI 自己的 session 存储（不是 webui 的 .webui-sessions.json）
+// 数据源：mcode TUI 自己的 session 存储（不是 webui 的 sessions.json）
 // 按 cwd 过滤（mcode 每个 session 都有 cwd 字段，匹配 cs.workspace.dir 才显示）
 let mcodeSessionsCache = { ws: null, sessions: [], fetchedAt: 0 };
 

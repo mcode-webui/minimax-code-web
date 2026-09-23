@@ -11,7 +11,7 @@
 //     this module changes zero export behavior.
 //
 //   messagesToChatLines(messages, opts) — the INVERSE of the webui chat line
-//     grammar (export.js#_parseChatLines / public/app/render.js#parseChatLines
+//     grammar (export.js#_parseChatLines
 //     parse lines→messages; we map messages→lines). Only shapes both parsers
 //     round-trip confidently are emitted; anything ambiguous is skipped, not
 //     invented (see _AMBIGUOUS_INDENT_RE).
@@ -22,7 +22,7 @@
 
 import { existsSync } from "node:fs";
 import { MCODE_RUNTIME_DB } from "./config.js";
-import { getMcodeBetterSqlite3 } from "./db.js";
+import { getMcodeBetterSqlite3 } from "./sqlite-resolver.js";
 
 // ============================================================
 // Probe candidates — the mcode schema is unstable, try a handful
@@ -233,7 +233,7 @@ export function readMcodeTranscript(mcodeSid, opts = {}) {
 // messagesToChatLines — the INVERSE of the webui chat-line grammar.
 //
 // Line grammar emitted (must stay parseable by BOTH
-// export.js#_parseChatLines and public/app/render.js#parseChatLines):
+// export.js#_parseChatLines):
 //   user       "› " + text        (newlines collapsed to spaces — the live
 //                                 writer chat.js:50 keeps raw newlines, but
 //                                 both parsers read ONE array element = ONE
@@ -272,6 +272,30 @@ function _oneLine(s) {
   return String(s == null ? "" : s).replace(/\r?\n+/g, " ").trim();
 }
 
+// Prose keeps its line structure.
+//
+// The grammar is line-oriented and the frontend parser re-joins consecutive
+// same-role lines with "\n" (see `decodeTranscript`'s pushText), so emitting one
+// entry per source line round-trips the original text: markdown tables, lists,
+// headings and paragraph breaks all survive.
+//
+// Every message used to go through `_oneLine()`, which replaces newlines with
+// spaces (mirroring the live writer at routes/chat.js:122). That is what made a
+// markdown table render as a raw `| --- |` line and left each message as one
+// dense block — by the time `marked` saw the text there were no newlines left to
+// parse.
+//
+// A blank source line becomes a bare prefix (`"● "`), which the parser matches as
+// an empty line inside the same block rather than as a new block or a stray
+// glyph.
+function _proseLines(prefix, value) {
+  const text = String(value == null ? "" : value).replace(/\r\n?/g, "\n");
+  if (!text.trim()) return [];
+  return text.split("\n").map((line) =>
+    line.trim() === "" ? `${prefix} ` : `${prefix} ${line.replace(/\s+$/, "")}`,
+  );
+}
+
 // Byte length in UTF-8 (ASCII fast path — the common case for JSON args).
 function _bytes(s) {
   return /[^\x00-\x7F]/.test(s) ? Buffer.byteLength(s, "utf8") : s.length;
@@ -295,22 +319,18 @@ function _messageToLines(m) {
   const content = typeof m.content === "string" ? m.content : "";
 
   if (role === "user") {
-    const t = _oneLine(content);
-    if (t) out.push(`› ${t}`);
+    for (const line of _proseLines("›", content)) out.push(line);
     return out;
   }
   if (role === "system") {
-    const t = _oneLine(content);
-    if (t) out.push(`○ ${t}`);
+    for (const line of _proseLines("○", content)) out.push(line);
     return out;
   }
   if (role !== "assistant") return out; // unknown role → skip
 
   // thinking first (live stream order: ▲ accumulates, then ● finalizes)
-  const think = _oneLine(m.thinking);
-  if (think) out.push(`▲ ${think}`);
-  const answer = _oneLine(content);
-  if (answer) out.push(`● ${answer}`);
+  for (const line of _proseLines("▲", m.thinking)) out.push(line);
+  for (const line of _proseLines("●", content)) out.push(line);
 
   if (Array.isArray(m.tool_calls)) {
     for (const tc of m.tool_calls) {

@@ -4,7 +4,8 @@
 import { McodeAcpClient } from "../../acp.mjs";
 import { DEFAULT_WORKSPACE, DEFAULT_MODEL, PROMPT_IDLE_TIMEOUT_MS } from "./config.js";
 import { createIdleWatchdog } from "./idle-watchdog.js";
-import { streamUpdateLine, bindDraftToMcodeSid } from "./sessions.js";
+import { streamUpdateLine } from "./chat-line.js";
+import { bindDraftToMcodeSid, computeContextPercent } from "./sessions.js";
 import {
   setActiveChild,
   clearActiveChild,
@@ -13,6 +14,7 @@ import {
   getCidsByMcodeSession,
 } from "./state-bus.js";
 import { applyMavisUsageToCs } from "./mavis-usage.js";
+import { mcodePermissionToWebui } from "./mcode-rpc.js";
 import {
   getMcodeSessionTitle,
   invalidateMcodeSessionsCache,
@@ -21,11 +23,11 @@ import {
 import { getMcodeModelLimit } from "./models.js";
 import { loadSessions, saveSessions } from "./sessions.js";
 
-// v0.5.ah: 走 mcode acp 协议 — 替代 mcode exec 的流式
-// v0.5.ai: per-cid — opts.cs/cs.cid
-// v0.5.al: 读 cs.workspace.dir（per-cid 可改）— 没有时 fallback DEFAULT_WORKSPACE
-// v0.5.bx-19: 如果 webui 端 permission 不是 'Full access', mcode acp 协议层没暴露 permission push,
-//   fallback 到 mcode exec (支持 --permission ask/full/auto/off 标志)
+// runMcodeAcp / streamAcpPrompt — mcode acp protocol streaming.
+//
+// If cs.permissions is set to anything other than "Full access", the
+// acp protocol layer does not expose permission push — fall back to
+// mcode-exec (which honours --permission ask/full/auto/off).
 export async function runMcodeAcp(content, opts = {}) {
   const label = opts.label || "prompt";
   const existingSid = opts.sessionId || null;
@@ -33,7 +35,6 @@ export async function runMcodeAcp(content, opts = {}) {
   const cid = opts.cid;
   const workspace =
     (cs && cs.workspace && cs.workspace.dir) || DEFAULT_WORKSPACE;
-  // v0.5.bx-19: 非 full permission fallback 到 exec (acp 协议不支持 permission push)
   if (cs && cs.permissions && cs.permissions !== "Full access") {
     const modelToUse = (cs.model && cs.model.name) || DEFAULT_MODEL;
     // Note: collectExecResult is imported lazily to avoid circular import
@@ -53,9 +54,10 @@ export async function runMcodeAcp(content, opts = {}) {
   let sid = existingSid;
   try {
     await client.start();
+    let control = null;
     if (sid) {
       try {
-        await client.loadSession(sid, workspace);
+        control = await client.loadSession(sid, workspace);
       } catch (e) {
         console.warn(
           `[webui] acp session/load ${sid} failed: ${e.message}; creating new`,
@@ -66,6 +68,13 @@ export async function runMcodeAcp(content, opts = {}) {
     if (!sid) {
       const r = await client.newSession(workspace);
       sid = r.sessionId;
+      control = r;
+    }
+    // The session's config options are the engine's answer to "which models and
+    // permission modes may this session use, and which are active". Routes read
+    // them instead of guessing from mcode's build output.
+    if (control && Array.isArray(control.configOptions)) {
+      cs.configOptions = control.configOptions;
     }
     // qa (两条记录): 草稿→引擎身份的绑定在 session 创建时立即执行，不再
     //   等到 finalize。之前长任务全程草稿是 uuid 孤儿 —— sidebar 同时显示
@@ -104,9 +113,12 @@ export async function runMcodeAcp(content, opts = {}) {
   }
 }
 
-// v2.3: 无正文回合的说明行（null = 正常回合，不用提示）。
-//   max_tokens/length：思考耗尽输出预算；其它 stopReason：模型未产出正文。
-//   用 "! " 前缀渲染为 system 提示块（见 render.js parseChatLines）。
+// buildEmptyTurnNote — explanatory line for turns that ended without
+// producing answer text. Returns null for normal turns; returns a
+// "! …" prefixed system-note string for max_tokens/length (thinking
+// exhausted the output budget) or other stopReason values (model did
+// not produce output). The "!" prefix is rendered as a system note
+// block by parseChatLines.
 export function buildEmptyTurnNote(stopReason, answer) {
   if (typeof answer === "string" && answer.trim()) return null;
   const reason = stopReason || "end_turn";
@@ -120,8 +132,9 @@ export function buildEmptyTurnNote(stopReason, answer) {
   );
 }
 
-// 类似 collectExecResult，但事件源是 acp client 的 prompt callback
-// v0.5.ai: per-cid — cs/cs.cid
+// streamAcpPrompt — like collectExecResult, but the event source is
+// the acp client's prompt callback rather than a child-process stdout
+// stream.
 function streamAcpPrompt(client, sid, content, label, cs, cid) {
   return new Promise((resolve) => {
     const r = {
@@ -149,10 +162,10 @@ function streamAcpPrompt(client, sid, content, label, cs, cid) {
     cs.context.thinkingStatus = "Running";
     setActiveChild(cid, client);
     pushStateFor(cid);
-    // v2.3: idle watchdog — every stream event (thought/message/tool_call/
-    //   tool_update/usage/other) refreshes cs.running.lastDeltaAt, so a long
-    //   but healthy turn never trips this; only a silent stream does.
-    //   (Was a fixed 90s wall-clock timer that killed long thinking turns.)
+    // Idle watchdog — every stream event (thought / message / tool_call /
+    // tool_update / usage / other) refreshes cs.running.lastDeltaAt,
+    // so a long but healthy turn never trips this; only a silent
+    // stream does.
     const idleSeconds = Math.round(PROMPT_IDLE_TIMEOUT_MS / 1000);
     const safetyTimeout = createIdleWatchdog({
       idleMs: PROMPT_IDLE_TIMEOUT_MS,
@@ -163,9 +176,8 @@ function streamAcpPrompt(client, sid, content, label, cs, cid) {
           r.error = {
             message: `mcode acp prompt inactive for ${idleSeconds}s (no stream events)`,
           };
-          // v2.0 (lease B02): §AP5 — surface silent hangs on the
-          // anomaly channel as a `warn` (less severe than a crash
-          // but still actionable).
+          // Surface silent hangs on the anomaly channel as a `warn`
+          // (less severe than a crash but still actionable).
           pushAlert({
             level: "warn",
             msg: `[mcode-acp.timeout] prompt inactive for ${idleSeconds}s`,
@@ -186,6 +198,23 @@ function streamAcpPrompt(client, sid, content, label, cs, cid) {
       r._finalized = true;
       safetyTimeout.stop();
       r.durationMs = r.durationMs || Date.now() - t0;
+      // v2.4 (SPEC §B 尾项 — turn_process.processed_duration):
+      //   append a `§§ processed_duration=Nms` marker to the transcript so the
+      //   webui renderer can attach it to the matching assistant turn and show
+      //   the upstream `turn_process_disclosure` collapse bar. The marker is
+      //   stripped by `decodeTranscript` before markdown rendering, so it stays
+      //   invisible in the chat body. Only the latest turn carries this field
+      //   upstream (no per-turn history replay), and we mirror that scope here.
+      if (
+        typeof r.durationMs === "number" &&
+        r.durationMs > 0 &&
+        Array.isArray(cs.chat)
+      ) {
+        cs.chat = [
+          ...cs.chat,
+          `§§ processed_duration=${Math.round(r.durationMs)}ms`,
+        ];
+      }
       clearActiveChild(cid);
       cs.running = {
         active: false,
@@ -199,8 +228,9 @@ function streamAcpPrompt(client, sid, content, label, cs, cid) {
       };
       cs.context.thinkingStatus = "Idle";
       cs.context.tps = 0;
-      // v0.5.bx: 去掉流式光标 ▍（streamUpdateLine 边推边加，finalize 必须清）
-      // 否则 thinking 块/answer 块会被永久 mark 为 streaming，对话结束还闪
+      // Strip the streaming cursor ▍ from every line — streamUpdateLine
+      // adds it on every push, finalize must clear it or the thinking
+      // / answer lines stay marked as streaming forever.
       if (Array.isArray(cs.chat)) {
         cs.chat = cs.chat.map((line) =>
           typeof line === "string" && line.endsWith(" ▍")
@@ -212,9 +242,10 @@ function streamAcpPrompt(client, sid, content, label, cs, cid) {
         cs.context.tokens =
           (cs.context.tokens || 0) + (r.usage.totalTokens || 0);
         cs.context.used = cs.context.tokens;
-        cs.context.percent = cs.context.limit
-          ? Math.round((cs.context.tokens / cs.context.limit) * 100)
-          : 0;
+        cs.context.percent = computeContextPercent(
+          cs.context.tokens,
+          cs.context.limit,
+        );
         cs.context.lastUsageAt = Date.now();
         cs.usage.sessionInput =
           (cs.usage.sessionInput || 0) + (r.usage.inputTokens || 0);
@@ -223,7 +254,9 @@ function streamAcpPrompt(client, sid, content, label, cs, cid) {
         cs.usage.sessionTotal = cs.usage.sessionInput + cs.usage.sessionOutput;
         cs.context.estimated = false; // mcode 0.1.5+ 真实值
       } else if (r.answer || r.thinking) {
-        // v0.5.bx-9: mcode 0.1.4 acp 不返 usage / 不发 usage_update, 用 thinking + answer 长度粗略估算 token
+        // Fallback when mcode 0.1.4 acp doesn't return usage / doesn't fire
+        // usage_update: estimate from thinking + answer length (~3 chars
+        // per token) plus the last user-message length.
         const outText = (r.thinking || "") + (r.answer || "");
         const estOutTokens = Math.ceil(outText.length / 3);
         const lastUserLine = [...(cs.chat || [])]
@@ -235,9 +268,10 @@ function streamAcpPrompt(client, sid, content, label, cs, cid) {
         cs.context.tokens = (cs.context.tokens || 0) + estTotal;
         cs.context.used = cs.context.tokens;
         cs.context.estimated = true;
-        cs.context.percent = cs.context.limit
-          ? Math.round((cs.context.tokens / cs.context.limit) * 100)
-          : 0;
+        cs.context.percent = computeContextPercent(
+          cs.context.tokens,
+          cs.context.limit,
+        );
         cs.context.lastUsageAt = Date.now();
         cs.usage.sessionInput = (cs.usage.sessionInput || 0) + estInTokens;
         cs.usage.sessionOutput = (cs.usage.sessionOutput || 0) + estOutTokens;
@@ -248,18 +282,18 @@ function streamAcpPrompt(client, sid, content, label, cs, cid) {
           );
         }
       }
-      // v0.5.bx-7: debug — 看 mcode 0.1.4 实际给的 usage 数据
+      // Debug — see the actual usage payload mcode returned.
       if (process.env.MCODE_USAGE_DEBUG) {
         console.log(
           `[finalize.usage] cid=${cid} r.usage=${JSON.stringify(r.usage)} r.answerLen=${(r.answer || "").length} r.thinkingLen=${(r.thinking || "").length}`,
         );
       }
       if (r.sessionId) cs.mcodeSessionId = r.sessionId;
-      // v0.5.bx-10: fire-and-forget 从 mavis db 拿真值覆盖估算
-      //   mavis hook 在 mcode acp 完成后会写 local_runtime_token_usage row
-      //   等 400ms 让 mavis 落盘, 然后查 db 拿真值
-      //   如果 mavis db 没有数据 (rows=0), 保留估算 + 标 estimated=true
-      //   如果有真值, 用真值覆盖 (estimated=false)
+      // Fire-and-forget — the mavis hook writes a
+      // local_runtime_token_usage row after acp completes. Wait ~400ms
+      // for it to land, then query the db for the real numbers.
+      // No rows → keep the estimate (estimated=true). Has rows →
+      // overwrite (estimated=false).
       if (r.sessionId) {
         const mavisSid = r.sessionId;
         setTimeout(() => {
@@ -403,8 +437,9 @@ function streamAcpPrompt(client, sid, content, label, cs, cid) {
             cs.context.limit = u.size;
           }
           if (cs.context.limit) {
-            cs.context.percent = Math.round(
-              (cs.context.used / cs.context.limit) * 100,
+            cs.context.percent = computeContextPercent(
+              cs.context.used,
+              cs.context.limit,
             );
           }
         } else if (c.kind === "thought" && typeof c.text === "string") {
@@ -531,29 +566,17 @@ function streamAcpPrompt(client, sid, content, label, cs, cid) {
             `[goal.update] cid=${cid} active=${cs.goal.active} status=${cs.goal.status}`,
           );
         } else if (c.kind === "config_option_update" && c.update) {
-          // v0.5.by: mcode acp 0.1.5 推的 config 变化事件
-          // 典型场景: 别的客户端改了 permissionMode / model, webui 同步本地 cs
+          // The engine sends the WHOLE option list here (agent.ts emits
+          // `{sessionUpdate:'config_option_update', configOptions:[...]}`), so
+          // replace rather than merge. Another client changing the model or the
+          // permission mode is how we learn about it.
           const u = c.update;
-          if (u && u.key === "permissionMode") {
-            // 反向映射 mcode value → webui label
-            const label =
-              u.value === "bypassPermissions"
-                ? "Full access"
-                : u.value === "auto"
-                  ? "Auto"
-                  : u.value === "read"
-                    ? "Read"
-                    : u.value === "off"
-                      ? "Off"
-                      : "Ask";
-            cs.permissions = label;
-            console.log(
-              `[config.option] cid=${cid} permissionMode=${u.value} → label=${label}`,
-            );
-          } else if (u && u.key) {
-            console.log(
-              `[config.option] cid=${cid} ${u.key}=${JSON.stringify(u.value).slice(0, 80)}`,
-            );
+          if (Array.isArray(u && u.configOptions)) {
+            cs.configOptions = u.configOptions;
+            const mode = u.configOptions.find((o) => o && o.id === "permissionMode");
+            if (mode && mode.currentValue) {
+              cs.permissions = mcodePermissionToWebui(mode.currentValue);
+            }
           }
         } else if (c.kind === "session_info_update" && c.update) {
           // v0.5.by: mcode acp 0.1.5 推的 session info 变化
