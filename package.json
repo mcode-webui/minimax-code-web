@@ -1,6 +1,6 @@
 {
   "name": "minimax-code",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "private": true,
   "type": "module",
   "description": "Standalone MiniMax Code TUI with managed accounts, BYOK models, cloud tools, plugins and ACP.",
@@ -27,6 +27,7 @@
     "test:status-contract": "node scripts/run-vitest-suite.mjs status-contract",
     "check:source": "node scripts/source-inventory.mjs",
     "test:capabilities": "node scripts/run-vitest-suite.mjs capability",
+    "test:windows": "node scripts/run-vitest-suite.mjs windows",
     "test:artifact": "node --test test/public-artifact.test.mjs",
     "test:release-tools": "node --test test/source-sync.test.mjs"
   },
