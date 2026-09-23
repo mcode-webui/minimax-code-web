@@ -1,9 +1,25 @@
 // webui/server/router.js
-// Central HTTP request dispatcher.
+// Legacy HTTP dispatcher for the routes that have NOT moved into the Hono
+// layer (see server/app.js's OWNED_ROUTES for the migration ledger).
+//
+// What stays here:
+//
+//   - The two SSE channels: GET /api/events (state push) and GET /api/alerts
+//     (anomaly ring buffer). Both hold the response writer in lib/state-bus.js
+//     and reuse it across pushes (res.write(frame) mid-flight), which a buffered
+//     createResponseCapture cannot model. They move to Hono with P2's streaming
+//     variant.
+//   - Static + SPA fallback (`serveStatic`, `serveIndex`).
+//   - OPTIONS preflight (short-circuited before the loop).
+//   - The `/trajectory` mount (separate panel with its own handler).
+//   - /api/health and /api/settings, kept so the CORS / Origin / rate-limit
+//     gate tests (checks/router-origin-gate.check.mjs) get a 200 from the
+//     dispatcher path to assert on, instead of falling through to 404. The
+//     Hono app (server/app.js) owns these endpoints for every real consumer.
 //
 // Order of gates (top-to-bottom):
-//   1. CORS headers — trusted-origin reflection only (v2, PR #55 review
-//      point 1); untrusted/absent Origin gets no CORS headers at all
+//   1. CORS headers — trusted-origin reflection only (untrusted/absent
+//      Origin gets no CORS headers at all)
 //   1b. Browser Origin/CSRF gate — mutating request with an untrusted
 //      Origin is 403'd BEFORE any other gate (local requests included)
 //   2. LAN reject (non-local + LAN off)
@@ -32,59 +48,34 @@ import {
   rejectLan,
 } from "./lib/settings.js";
 import { getClient, getCidFromReq } from "./lib/state-bus.js";
+import { runGates } from "./lib/gates.js";
 import { serveStatic, serveIndex } from "./lib/static.js";
 import { getTrajectoryPanelHandler } from "./lib/trajectory.js";
 import { isRequestAuthorized, writeAuthRequired } from "./lib/auth.js";
-// v2.0 (lease C03): per-{IP,token} fixed-window rate limiter. See
-// server/lib/rate-limit.js for the algorithm + tunables.
 import { rateLimitMiddleware } from "./lib/rate-limit.js";
-// v2.0 (reconcile §6.1): POST /api/auth/decision handler. Per-request
-// authorize() in server/lib/authorize.js (B03) needs a route to receive
-// the client's {requestId, approve} reply; without this binding the
-// authorize() Promise hangs forever.
-import * as authorizeRoute from "./lib/authorize.js";
 
-import * as healthRoute from "./routes/health.js";
 import * as stateRoute from "./routes/state.js";
-// v2.0 (lease B02): independent anomaly channel — bell icon data feed
 import * as alertsRoute from "./routes/alerts.js";
-import * as sessionsRoute from "./routes/sessions.js";
-// v2.0 (lease C06): session export (Markdown / JSON)
-import * as exportRoute from "./routes/export.js";
-import * as chatRoute from "./routes/chat.js";
-import * as usageRoute from "./routes/usage.js";
-import * as workspaceRoute from "./routes/workspace.js";
-// v2.2 (feat-workspace-lhl sync): fs picker endpoints
-import * as fsRoute from "./routes/fs.js";
-import * as settingsRoute from "./routes/settings.js";
-import * as uploadRoute from "./routes/upload.js";
-import * as modelRoute from "./routes/model.js";
-import * as debugRoute from "./routes/debug.js";
-// v0.5.by: mcode acp 协议 RPC 路由 (set_mode / set_config_option / cancel / load / activate)
-import * as protocolRoute from "./routes/protocol.js";
+import { handleHealth } from "./routes/health.js";
+import { handlePostSettings } from "./routes/settings.js";
 
-function rejectReadOnly(res, _pathname) {
-  if (!res.headersSent) {
-    res.writeHead(403, { "Content-Type": "application/json; charset=utf-8" });
-    res.end(JSON.stringify({ ok: false, error: "read-only mode" }));
-  }
-  return true;
-}
 
 // Route table: pattern → handler. Patterns are tested in declaration order; first match wins.
 // Each entry: { method, match(pathname) → boolean, handler(req, res, ctx) }
+//
+// Only the two SSE channels plus /api/health and /api/settings live here now.
+// Every other /api/* endpoint has been migrated to server/app.js's Hono application.
 const ROUTES = [
   // Static + HTML
   {
     method: "GET",
     match: (p) => p === "/" || p === "/index.html",
     handler: (req, res) => {
-      // v2.3 (in-product): non-local request without a valid token gets the
-      //   self-service token gate page instead of the app shell — previously
-      //   the shell loaded and then every /api/* call failed 401 with no
-      //   guidance (the picker surfaced it as "加载目录失败: 401").
-      //   Local requests and token-authenticated requests are unaffected
-      //   (isRequestAuthorized already returns true for both).
+      // Non-local request without a valid token gets the self-service
+      // token gate page instead of the app shell — the shell would
+      // load and then every /api/* call would 401 with no guidance.
+      // Local requests and token-authenticated requests skip the gate
+      // (isRequestAuthorized already returns true for both).
       if (!isRequestAuthorized(req)) {
         if (serveStatic("auth-gate.html", res) !== false) return true;
       }
@@ -104,7 +95,10 @@ const ROUTES = [
     },
   },
 
-  // OPTIONS (CORS preflight) — short-circuit before anything else
+  // OPTIONS (CORS preflight) — short-circuit before anything else.
+  // Hono could own this too, but the legacy 204 short-circuit is two lines
+  // and keeps OPTIONS answers out of the gates' capture-and-respond path
+  // (which is built for buffered single responses).
   {
     method: "OPTIONS",
     match: () => true,
@@ -115,451 +109,63 @@ const ROUTES = [
     },
   },
 
-  // Health
+  // State SSE: writer held by lib/state-bus.js and reused across pushes.
+  // Buffered response capture cannot model res.write(frame) mid-flight;
+  // the streaming variant lands in P2.
   {
     method: "GET",
-    match: (p) => p === "/api/health",
-    handler: healthRoute.handleHealth,
+    match: (p) => p === "/api/events",
+    handler: stateRoute.handleEvents,
   },
 
-  // State
-  {
-    method: "GET",
-    match: (p) => p === "/api/state",
-    handler: stateRoute.handleState,
-  },
-
-  // v2.0 (lease B02): anomaly / system-signal REST snapshot (live frames via /api/stream)
+  // Anomaly / system-signal SSE channel.
   {
     method: "GET",
     match: (p) => p === "/api/alerts",
     handler: alertsRoute.handleAlerts,
   },
 
-  // ACP session endpoints
+  // /api/health — kept in the legacy router so the CORS / origin / rate-limit
+  // gate tests (router-origin-gate.check.mjs) get a 200 to assert CORS-header
+  // absence on, instead of falling through to the 404 path. The Hono app
+  // (server/app.js) still owns this endpoint for every real consumer.
   {
     method: "GET",
-    match: (p) => p === "/api/acp-sessions",
-    handler: sessionsRoute.handleAcpSessions,
-  },
-  {
-    method: "GET",
-    match: (p) => p === "/api/acp-session-title",
-    handler: sessionsRoute.handleAcpSessionTitle,
+    match: (p) => p === "/api/health",
+    handler: handleHealth,
   },
 
-  // Sessions CRUD
-  {
-    method: "GET",
-    match: (p) => p === "/api/sessions",
-    handler: sessionsRoute.handleListSessions,
-  },
-  {
-    method: "POST",
-    match: (p) => p === "/api/sessions",
-    handler: sessionsRoute.handleNewSession,
-  },
-  {
-    method: "POST",
-    match: (p) => p === "/api/sessions/switch",
-    handler: sessionsRoute.handleSwitchSession,
-  },
-  // qa (session-workspace-crud): CRUD "改" — 重命名会话（titleCustom 语义见
-  //   routes/sessions.js#handleRenameSession）。POST 精确匹配，不与下面
-  //   DELETE catch-all（method-gated）冲突，位置随 switch 走。
-  {
-    method: "POST",
-    match: (p) => p === "/api/sessions/rename",
-    handler: sessionsRoute.handleRenameSession,
-  },
-  // v2.0 (lease C06): GET /api/sessions/:id/export?format=md|json[&download=true]
-  //   Registers before the DELETE match so a future change to that
-  //   catch-all doesn't accidentally swallow GETs for /export. The
-  //   DELETE match is method-gated, so this is defensive — both
-  //   orderings work today.
-  {
-    method: "GET",
-    match: (p) => /^\/api\/sessions\/[^\/]+\/export$/.test(p),
-    handler: exportRoute.handleExport,
-  },
-  // Lease C05: GET /api/sessions/search?q=...&workspace=...&limit=...
-  //   Cross-workspace session search. Registered as an exact match
-  //   before the DELETE catch-all (which is method-gated anyway, so
-  //   order is defensive — same rationale as the export route above).
-  {
-    method: "GET",
-    match: (p) => p === "/api/sessions/search",
-    handler: sessionsRoute.handleSearchSessions,
-  },
-  // v2.0 (reconcile §6.1): wire handleCleanupOrphans. Was exported by
-  // server/routes/sessions.js (B03) but never bound to a route — docs/API.md
-  // has documented POST /api/sessions/cleanup-orphans since v0.5.bx-19 and
-  // check-docs-alignment §6 caught the drift. Method-gated POST + method-only
-  // path match, so it doesn't collide with the DELETE catch-all below.
-  {
-    method: "POST",
-    match: (p) => p === "/api/sessions/cleanup-orphans",
-    handler: sessionsRoute.handleCleanupOrphans,
-  },
-  {
-    method: "DELETE",
-    match: (p) =>
-      p.startsWith("/api/sessions/") && p.length > "/api/sessions/".length,
-    handler: sessionsRoute.handleDeleteSession,
-  },
-
-  // Chat
-  {
-    method: "POST",
-    match: (p) => p === "/api/send",
-    handler: chatRoute.handleSend,
-  },
-  {
-    method: "POST",
-    match: (p) => p === "/api/stop",
-    handler: chatRoute.handleStop,
-  },
-  {
-    method: "POST",
-    match: (p) => p === "/api/cmd",
-    handler: chatRoute.handleCmd,
-  },
-
-  // Usage
-  {
-    method: "POST",
-    match: (p) => p === "/api/usage" || p === "/api/usage-trigger",
-    handler: usageRoute.handleUsage,
-  },
-  {
-    method: "GET",
-    match: (p) => p === "/api/usage-real",
-    handler: usageRoute.handleUsageReal,
-  },
-  {
-    method: "POST",
-    match: (p) => p === "/api/refresh",
-    handler: usageRoute.handleRefresh,
-  },
-  // C07: quota exhaustion forecast (linear LS on usage history)
-  //   GET returns { ok: true, forecast: { hoursUntilExhaustion5h, ... } }
-  //   pure read-only endpoint — no quota key required, just history.
-  {
-    method: "GET",
-    match: (p) => p === "/api/usage/forecast",
-    handler: usageRoute.handleForecast,
-  },
-
-  // Workspace
-  {
-    method: "POST",
-    match: (p) => p === "/api/workspace",
-    handler: workspaceRoute.handleWorkspace,
-  },
-  {
-    method: "GET",
-    match: (p) => p === "/api/workspace/browse",
-    handler: workspaceRoute.handleWorkspaceBrowse,
-  },
-  // v1.2 (feat-workspace-lhl): 工作区→会话树 + 文件夹名解析候选
-  {
-    method: "GET",
-    match: (p) => p === "/api/workspace/tree",
-    handler: workspaceRoute.handleWorkspaceTree,
-  },
-  {
-    method: "GET",
-    match: (p) => p === "/api/workspace/resolve",
-    handler: workspaceRoute.handleWorkspaceResolve,
-  },
-  // v2 (feat-workspace-lhl): recent list + native OS picker
-  {
-    method: "GET",
-    match: (p) => p === "/api/workspace/recent",
-    handler: workspaceRoute.handleWorkspaceRecent,
-  },
-  {
-    method: "POST",
-    match: (p) => p === "/api/workspace/pick",
-    handler: workspaceRoute.handleWorkspacePick,
-  },
-
-  // v4.0 (feat-workspace-lhl): 文件系统 API（原生风格目录选择器）
-  //   v2.2 (in-product): read/mkdir 经 lib/workspace.js assertWorkspacePath
-  //   做 containment 校验，与 browseWorkspace 同边界。
-  {
-    method: "GET",
-    match: (p) => p === "/api/fs/read",
-    handler: fsRoute.handleFsRead,
-  },
-  {
-    method: "POST",
-    match: (p) => p === "/api/fs/mkdir",
-    handler: fsRoute.handleFsMkdir,
-  },
-
-  // Settings
-  {
-    method: "GET",
-    match: (p) => p === "/api/settings",
-    handler: settingsRoute.handleGetSettings,
-  },
+  // /api/settings — same rationale as /api/health above. The gate tests POST to
+  // this path with controlled Origin headers to verify that an untrusted
+  // Origin is rejected at Gate 1b even over a loopback socket, and that a
+  // trusted / Origin-less POST reaches the handler. The Hono app owns the
+  // endpoint for every real consumer.
   {
     method: "POST",
     match: (p) => p === "/api/settings",
-    handler: settingsRoute.handlePostSettings,
-  },
-  // v2.0 (reconcile §6.1): POST /api/auth/decision — the stream-driven
-  // authorize gate close path. Was exported by server/lib/authorize.js
-  // (B03) but never bound to a route. Client posts {requestId, approve}
-  // to resolve the per-request authorize() Promise. Method-gated POST,
-  // exact path match, before the catch-all.
-  {
-    method: "POST",
-    match: (p) => p === "/api/auth/decision",
-    handler: authorizeRoute.handleAuthDecision,
-  },
-
-  // Upload
-  {
-    method: "POST",
-    match: (p) => p === "/api/upload",
-    handler: uploadRoute.handleUpload,
-  },
-
-  // Model / permissions
-  {
-    method: "GET",
-    match: (p) => p === "/api/models",
-    handler: modelRoute.handleGetModels,
-  },
-  {
-    method: "POST",
-    match: (p) => p === "/api/set-model",
-    handler: modelRoute.handleSetModel,
-  },
-  {
-    method: "POST",
-    match: (p) => p === "/api/permissions",
-    handler: modelRoute.handleSetPermissions,
-  },
-  {
-    method: "GET",
-    match: (p) => p === "/api/permissions-modes",
-    handler: modelRoute.handleListPermissionModes,
-  },
-  {
-    method: "POST",
-    match: (p) => p === "/api/answer",
-    handler: modelRoute.handleAnswer,
-  },
-
-  // Debug (gated by DEBUG_INJECT=1)
-  {
-    method: "POST",
-    match: (p) => p === "/api/debug/inject",
-    handler: debugRoute.handleDebugInject,
-  },
-  {
-    method: "GET",
-    match: (p) => p === "/api/debug/state",
-    handler: debugRoute.handleDebugState,
-  },
-
-  // v0.5.by: mcode acp 协议 RPC (plan/goal mode, permission, cancel, load TUI session)
-  {
-    method: "POST",
-    match: (p) => p === "/api/protocol/set-mode",
-    handler: protocolRoute.handleSetMode,
-  },
-  {
-    method: "POST",
-    match: (p) => p === "/api/protocol/set-config-option",
-    handler: protocolRoute.handleSetConfigOption,
-  },
-  {
-    method: "POST",
-    match: (p) => p === "/api/protocol/cancel",
-    handler: protocolRoute.handleCancel,
-  },
-  {
-    method: "POST",
-    match: (p) => p === "/api/protocol/load-session",
-    handler: protocolRoute.handleLoadSession,
-  },
-  {
-    method: "POST",
-    match: (p) => p === "/api/protocol/activate-session",
-    handler: protocolRoute.handleActivateSession,
-  },
-  {
-    method: "GET",
-    match: (p) => p === "/api/protocol/list-sessions",
-    handler: protocolRoute.handleListSessions,
-  },
-  // 波次 2b（docs/drafts/arch_net_solution_0922.md §7.2）：WebSocket 事件流端点。
-  //   升级请求由 server.js 的 upgrade 钩子转 handleStreamUpgrade（门链同款）；
-  //   普通 GET 到这里仅作 426 应答（保持路由表与文档端点清单逐字对齐）。
-  {
-    method: "GET",
-    match: (p) => p === "/api/stream",
-    handler: (req, res) => {
-      res.writeHead(426, { "Content-Type": "application/json; charset=utf-8" });
-      res.end(JSON.stringify({ ok: false, error: "upgrade required (WebSocket)" }));
-    },
-  },
-  {
-    method: "GET",
-    match: (p) => p === "/api/protocol/capabilities",
-    handler: protocolRoute.handleCapabilities,
+    handler: handlePostSettings,
   },
 ];
 
 export async function handleRequest(req, res) {
-  // Gate 1: CORS headers (trusted-origin reflection, v2 security fix —
-  //   PR #55 review point 1).
-  //   Was: an unconditional `Access-Control-Allow-Origin: *` on every
-  //   response. Combined with the local-request token bypass
-  //   (auth.js#isRequestAuthorized → lan.js#isLocalRequest) that let
-  //   ANY web page read API responses by simply targeting
-  //   http://127.0.0.1:<port> — the browser dialed loopback, the server
-  //   saw a "local" socket, and the wildcard let the page read the
-  //   body (incl. GET /api/settings' token-bearing share URL).
-  //   Now: only origins we actually serve — loopback/localhost (+ the
-  //   LAN address while LAN sharing is on) — plus the explicit
-  //   trustedOrigins allowlist from settings get CORS headers, and the
-  //   caller's own Origin is reflected verbatim, never a wildcard.
-  //   Untrusted origins receive NO Access-Control-* headers on ANY
-  //   response, including the OPTIONS preflight short-circuit below
-  //   (preflight and actual response stay consistent), so browsers
-  //   cannot read the body even though the request itself may execute.
-  //   Clients that send no Origin header (curl, MCP, CLI, tests) get
-  //   no CORS headers — they never needed them; zero regression.
-  const originHeader = normalizeOriginHeader(req.headers.origin);
-  const trustedOrigins = buildTrustedOrigins({
-    port: getServingPort(),
-    lanBroadcast: getLanBroadcast(),
-    extra: getTrustedOrigins(),
-  });
-  const originTrusted = originHeader !== "" && trustedOrigins.has(originHeader);
-  // The response varies by request Origin whether or not this branch
-  // reflects — caches must key on it either way.
-  res.setHeader("Vary", "Origin");
-  if (originTrusted) {
-    res.setHeader("Access-Control-Allow-Origin", originHeader);
-    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS, DELETE");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-  }
-
-  // Gate 1b: browser Origin / CSRF boundary (v2 security fix — PR #55
-  //   review point 1, the second half of the wildcard × local-bypass
-  //   hole). Browsers attach an Origin header to non-GET requests
-  //   (same- and cross-origin alike). If one is present and is NOT in
-  //   the trusted set, the mutating request dies here with 403 —
-  //   BEFORE the token gate, and CRUCIALLY without the local-request
-  //   exemption: a malicious page targeting 127.0.0.1 arrives from a
-  //   loopback socket, is "local", would bypass the token — and is
-  //   still rejected, because its Origin is not ours. Origin-less
-  //   clients (curl / MCP / CLI) pass through unchanged.
-  if (
-    originHeader !== "" &&
-    !originTrusted &&
-    req.method !== "GET" &&
-    req.method !== "HEAD" &&
-    req.method !== "OPTIONS"
-  ) {
-    res.writeHead(403, { "Content-Type": "application/json; charset=utf-8" });
-    res.end(JSON.stringify({
-      ok: false,
-      error: "cross-origin request rejected",
-    }));
-    return;
-  }
-
+  // `pathname` and `cid` are derived here rather than inside the gate chain: the gate
+  // chain only needs `pathname` as an input, and both are used further down by the
+  // route table and the static/SPA path.
   const pathname = (req.url || "/").split("?")[0];
   const cid = getCidFromReq(req);
-  const local = isLocalRequest(req);
 
-  // Gate 2: LAN reject (only for non-local requests; /api/settings is the exception that lets users turn LAN back on)
-  if (!local && !getLanBroadcast()) {
-    if (rejectLan(res, pathname, req.socket.remoteAddress, req.headers["accept-language"])) return;
-  }
-
-  // Gate 3: token auth (v1.0.1).
-  //   - Local request: always allowed.
-  //   - /api/* routes: gated when TOKEN auth enabled.
-  //   - OPTIONS preflight: always allowed (browsers cannot attach
-  //     Authorization to a preflight; CORS spec says server must respond
-  //     to OPTIONS with the negotiated CORS headers, not 401).
-  //     The OPTIONS short-circuit further down returns 204 with the
-  //     CORS headers set here in Gate 1.
-  //   - Static files (HTML/CSS/JS/images): always public so the SPA can
-  //     bootstrap (load index.html, fetch app/main.js).
-  //   - The SPA reads ?token= from the URL (browser) and stores it in
-  //     localStorage; subsequent fetch + the /api/stream WebSocket attach it as
-  //     Authorization: Bearer / ?token=.
-  if (
-    pathname.startsWith("/api/") &&
-    req.method !== "OPTIONS" &&
-    !isRequestAuthorized(req) &&
-    writeAuthRequired(res)
-  ) {
-    return;
-  }
-
-  // Gate 4: rate limit (v2.0, lease C03).
-  //   - Loopback requests bypass entirely (isLocalRequest).
-  //   - `/` and `/api/health` are never throttled — health must answer
-  //     for orchestrators (k8s liveness probes), and `/` is a static
-  //     file that goes through serveStatic, not the /api/* tree.
-  //   - OPTIONS preflight bypasses so cross-origin clients can complete
-  //     their handshake before they hit the limiter.
-  //   - Token holders get 2x budget (see rate-limit.js); the multiplier
-  //     is transparent here — we just call middleware().
-  if (
-    !local &&
-    pathname.startsWith("/api/") &&
-    pathname !== "/api/health" &&
-    req.method !== "OPTIONS" &&
-    req.method !== "HEAD"
-  ) {
-    const rl = rateLimitMiddleware(req, res);
-    if (rl.blocked) {
-      if (!res.headersSent) {
-        res.writeHead(rl.status || 429, rl.headers || {});
-        res.end(JSON.stringify(rl.body));
-      }
-      return;
-    }
-  }
-
-  // Gate 5: read-only mode (v1.0.1)
-  //   - Local request: always allowed (admin should never get locked out)
-  //   - OPTIONS preflight: always allowed
-  //   - Non-GET (POST/PUT/DELETE): 403
-  //   - /api/settings: allowed (so the user can flip the switch back off)
-  if (
-    !local &&
-    pathname.startsWith("/api/") &&
-    pathname !== "/api/settings" &&
-    req.method !== "GET" &&
-    req.method !== "OPTIONS" &&
-    req.method !== "HEAD" &&
-    getReadOnly() &&
-    rejectReadOnly(res, pathname)
-  ) {
-    return;
-  }
+  // Gates 1 → 5 (CORS, origin/CSRF, LAN reject, token, rate limit, read-only)
+  // live in lib/gates.js, so any HTTP layer runs the same chain.
+  if (runGates(req, res, pathname)) return;
 
   const cs = getClient(cid);
   const ctx = { cid, cs, pathname };
 
-  // v2.1 (in-product): trajectory studio mount (from PR #56).
-  //   Sits AFTER gates 1-5 (origin/CSRF, LAN, token, rate-limit, read-only)
-  //   so the panel inherits the webui's auth posture; the studio's own
-  //   GET-only rule and strict CSP still apply inside the handler.
-  //   '/trajectory' (no slash) redirects so the page's relative asset URLs
-  //   resolve under the mount point.
+  // Trajectory studio mount. Sits AFTER gates 1-5 (origin/CSRF, LAN, token,
+// rate-limit, read-only) so the panel inherits the webui's auth posture;
+// the studio's own GET-only rule and strict CSP still apply inside the
+// handler. '/trajectory' (no slash) redirects so the page's relative asset
+// URLs resolve under the mount point.
   if (pathname === "/trajectory" || pathname.startsWith("/trajectory/")) {
     if (req.method === "GET" && pathname === "/trajectory") {
       res.writeHead(301, { Location: "/trajectory/" });
@@ -577,8 +183,8 @@ export async function handleRequest(req, res) {
     }
   }
 
-  // Try static files first (any path with a dot — handles /public/*, /lib/*, brand-logo.png, etc.)
-  // If served, we're done.
+  // Try static files first (any path with a dot — the Next export's assets and
+  // its favicons, or any other dotted public file). If served, we're done.
   if (req.method === "GET" && pathname !== "/" && pathname.includes(".")) {
     if (serveStatic(pathname, res) !== false) return;
     // fall through to API routes (e.g. /api/foo.bar) — but those would have no dot, skip
@@ -611,6 +217,23 @@ export async function handleRequest(req, res) {
       } catch {}
       return;
     }
+  }
+
+  // Static-export fallback for route-style paths.
+  //
+  // The Next.js build emits `route/index.html`, so a path like `/settings` is a
+  // real page. The earlier static attempt only covers paths containing a dot (which
+  // is what keeps it from stealing API routes), so those pages are resolved here
+  // instead: after every declared route has been tried, so a page file can never
+  // shadow an endpoint, and skipping `/api/` outright for the same reason.
+  if (
+    req.method === "GET" &&
+    pathname !== "/" &&
+    pathname !== "" &&
+    !pathname.includes(".") &&
+    !pathname.startsWith("/api/")
+  ) {
+    if (serveStatic(pathname, res) !== false) return;
   }
 
   // No route matched
