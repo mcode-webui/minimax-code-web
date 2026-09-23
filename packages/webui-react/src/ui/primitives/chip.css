@@ -1,0 +1,61 @@
+/* Chip —— 小圆角状态胶囊（1:1 对齐 main.css 的 .chip） */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  background: var(--bg-hover);
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.chip[hidden] {
+  display: none;
+}
+.chip-icon {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+.chip-icon svg {
+  width: 12px;
+  height: 12px;
+  display: block;
+}
+.chip-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chip-value {
+  font-variant-numeric: tabular-nums;
+}
+.chip--button {
+  cursor: pointer;
+  font: inherit;
+  transition: background-color 0.15s, border-color 0.15s, color 0.15s;
+}
+.chip--button:hover {
+  background: var(--bg-active);
+  color: var(--text);
+}
+.chip--on {
+  color: var(--status-on);
+}
+.chip--warn {
+  color: var(--warning);
+}
+.chip--danger {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: var(--on-accent);
+  font-weight: 600;
+  letter-spacing: 0.3px;
+}
+.chip--danger.chip--button:hover {
+  background: var(--danger);
+  border-color: var(--danger);
+  opacity: 0.9;
+}

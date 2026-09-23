@@ -1,0 +1,364 @@
+/* blocks/blocks.css —— 消息结构化块共用样式（text/thinking/tool/plan/ask/error） */
+/* 视觉基准 packages/webui/public/styles/main.css 的 .msg-* / .plan-block / .ask-block 段。 */
+/* 铁律：只使用 styles/tokens.css 的 CSS 变量，禁止硬编码颜色。 */
+
+/* ── 通用：折叠头 ─────────────────────────────────────────────── */
+.blk-collapsible {
+  margin: 4px 0 4px 12px;
+  font-size: 12.5px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  overflow: hidden;
+}
+.blk-collapsible > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 6px 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  user-select: none;
+  transition: background 0.12s;
+}
+.blk-collapsible > summary:hover { background: var(--bg-hover); }
+.blk-collapsible > summary::-webkit-details-marker { display: none; }
+.blk-collapsible > summary::marker { content: ''; }
+.blk-caret {
+  display: inline-block;
+  font-size: 9px;
+  width: 10px;
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+  transition: transform 0.15s;
+}
+.blk-collapsible[open] > summary .blk-caret { transform: rotate(90deg); color: var(--accent); }
+
+/* ── text：Markdown 文本块 ────────────────────────────────────── */
+.blk-text {
+  font-size: 14px;
+  line-height: 1.65;
+  word-wrap: break-word;
+}
+.blk-text--plain { white-space: pre-wrap; overflow-wrap: anywhere; }
+.blk-text p { margin: 6px 0; }
+.blk-text p:first-child { margin-top: 0; }
+.blk-text p:last-child { margin-bottom: 0; }
+.blk-text h1, .blk-text h2, .blk-text h3 { margin: 12px 0 6px; font-weight: 600; }
+.blk-text h1 { font-size: 18px; }
+.blk-text h2 { font-size: 16px; }
+.blk-text h3 { font-size: 14px; }
+.blk-text ul, .blk-text ol { margin: 6px 0; padding-left: 22px; }
+.blk-text li { margin: 2px 0; }
+.blk-text code {
+  background: var(--bg-hover);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+}
+.blk-code {
+  background: var(--bg-sidebar);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  margin: 8px 0;
+  overflow-x: auto;
+  font-size: 12.5px;
+}
+.blk-code code { background: none; padding: 0; font-family: var(--font-mono); }
+.blk-text blockquote {
+  border-left: 3px solid var(--border);
+  padding-left: 12px;
+  color: var(--text-secondary);
+  margin: 6px 0;
+}
+.blk-text a { color: var(--accent); }
+.blk-text hr { border: none; border-top: 1px solid var(--border); margin: 12px 0; }
+
+/* ── thinking：思考块（等宽、灰底、可折叠）─────────────────────── */
+.blk-thinking { color: var(--text-secondary); font-style: italic; }
+.blk-thinking-label { color: var(--accent); font-weight: 600; font-style: normal; }
+.blk-thinking-count {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--text-tertiary);
+  font-style: normal;
+  opacity: 0.7;
+}
+.blk-thinking-body {
+  margin: 0;
+  padding: 8px 12px 10px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-sidebar);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+/* ── tool-call / tool-result ──────────────────────────────────── */
+.blk-tool-name {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  color: var(--text);
+  font-size: 12.5px;
+}
+.blk-tool-summary {
+  color: var(--text-tertiary);
+  font-size: 11.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 40%;
+}
+.blk-tool-status {
+  margin-left: auto;
+  font-size: 10.5px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  font-family: var(--font-mono);
+  text-transform: lowercase;
+  letter-spacing: 0.3px;
+  flex-shrink: 0;
+}
+.blk-tool-status--running { background: color-mix(in srgb, var(--accent) 20%, transparent); color: var(--accent); }
+.blk-tool-status--done { background: color-mix(in srgb, var(--success) 20%, transparent); color: var(--success); }
+.blk-tool-status--error { background: color-mix(in srgb, var(--danger) 20%, transparent); color: var(--danger); }
+.blk-tool-body {
+  padding: 6px 10px 10px 10px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-hover);
+}
+.blk-tool-section { margin-bottom: 6px; }
+.blk-tool-section:last-child { margin-bottom: 0; }
+.blk-tool-label {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-tertiary);
+  margin-bottom: 4px;
+}
+.blk-tool-pre {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--bg);
+  padding: 6px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 240px;
+  overflow-y: auto;
+}
+.blk-tool-error {
+  font-size: 11.5px;
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  padding: 6px 8px;
+  border-radius: 4px;
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
+  font-family: var(--font-mono);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* ── plan：计划块 ─────────────────────────────────────────────── */
+.blk-plan {
+  margin: 4px 0 10px 0;
+  padding: 14px 16px;
+  background: var(--bg-sidebar);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+}
+.blk-plan-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--accent-text);
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+.blk-plan-title { font-size: 15px; }
+.blk-plan-status {
+  margin-left: auto;
+  font-size: 10.5px;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-family: var(--font-mono);
+}
+.blk-plan-status--pending { background: var(--bg-hover); color: var(--text-tertiary); }
+.blk-plan-status--agreed { background: color-mix(in srgb, var(--success) 20%, transparent); color: var(--success); }
+.blk-plan-status--skipped { background: var(--bg-active); color: var(--text-secondary); }
+.blk-plan-steps {
+  margin: 0;
+  padding-left: 22px;
+  color: var(--text);
+}
+.blk-plan-step { margin: 3px 0; line-height: 1.5; }
+
+/* ── ask-user：提问块 ─────────────────────────────────────────── */
+.blk-ask {
+  margin: 10px 0;
+  padding: 12px 14px;
+  background: var(--bg-sidebar);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+}
+.blk-ask-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  color: var(--accent);
+  margin-bottom: 8px;
+}
+.blk-ask-multi { margin-left: auto; font-size: 11px; color: var(--text-tertiary); font-weight: normal; }
+.blk-ask-question { color: var(--text); margin-bottom: 10px; font-size: 14px; font-weight: 500; }
+.blk-ask-options {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--border-light);
+  border-bottom: 1px solid var(--border-light);
+}
+.blk-ask-opt {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: none;
+  border-bottom: 1px solid var(--border-light);
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+  transition: background 0.08s;
+  width: 100%;
+}
+.blk-ask-opt:last-child { border-bottom: none; }
+.blk-ask-opt:hover:not(:disabled) { background: var(--bg-hover); }
+.blk-ask-opt:disabled { opacity: 0.45; cursor: default; }
+.blk-ask-opt--selected {
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg-hover));
+  color: var(--accent);
+  font-weight: 500;
+}
+.blk-ask-opt-box {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  background: var(--bg-sidebar);
+  color: var(--text-tertiary);
+  font-size: 10.5px;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+}
+.blk-ask-opt--selected .blk-ask-opt-box {
+  background: var(--accent);
+  color: var(--on-accent);
+  border-color: var(--accent);
+}
+.blk-ask-opt-label { flex: 1; }
+.blk-ask-opt-desc {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-top: 2px;
+  line-height: 1.4;
+}
+.blk-ask-actions { display: flex; gap: 8px; margin-top: 10px; }
+.blk-ask-confirm {
+  padding: 6px 16px;
+  background: var(--accent);
+  color: var(--on-accent);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  font-size: 12.5px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.blk-ask-confirm:disabled { opacity: 0.45; cursor: default; }
+.blk-ask-answered {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 6px 0 2px;
+  padding: 4px 10px;
+  background: var(--bg-sidebar);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  align-self: flex-start;
+}
+.blk-ask-answered-mark { color: var(--success); font-weight: 700; }
+
+/* ── error：错误块 ────────────────────────────────────────────── */
+.blk-error {
+  margin: 8px 0;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
+  border-left: 3px solid var(--danger);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+}
+.blk-error-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--danger);
+  margin-bottom: 4px;
+}
+.blk-error-text {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--danger);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* ── 未知 kind 兜底（JSON）────────────────────────────────────── */
+.blk-json {
+  margin: 6px 0;
+  padding: 8px 10px;
+  background: var(--bg-sidebar);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+}
+.blk-json-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-tertiary);
+  margin-bottom: 4px;
+}
+.blk-json-pre {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 240px;
+  overflow-y: auto;
+}

@@ -1,0 +1,31 @@
+/* GoalPanel —— 右栏 GOAL 段内容（1:1 对齐 main.css 的 .goal-content / .goal-status-badge） */
+.goal-content {
+  font-size: 13px;
+  line-height: 1.5;
+}
+.goal-status-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  background: var(--accent-bg);
+  color: var(--accent-text);
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  margin-right: 6px;
+}
+.goal-status-badge--complete {
+  background: color-mix(in srgb, var(--success) 15%, transparent);
+  color: var(--success);
+}
+.goal-status-badge--paused {
+  background: var(--bg-active);
+  color: var(--text-secondary);
+}
+.goal-status-badge--blocked {
+  background: color-mix(in srgb, var(--danger) 15%, transparent);
+  color: var(--danger);
+}
+.goal-text {
+  color: var(--text);
+  overflow-wrap: anywhere;
+}

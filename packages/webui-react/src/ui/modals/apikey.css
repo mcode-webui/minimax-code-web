@@ -1,0 +1,156 @@
+/* ui/modals/apikey.css —— Subscription Key 配置弹窗（只用 styles/tokens.css 的变量） */
+/* 对齐 vanilla .modal-card-* 系列 */
+
+.apikey-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.apikey-modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+:root[data-theme='dark'] .apikey-modal-backdrop {
+  background: color-mix(in srgb, var(--on-accent) 55%, transparent);
+}
+
+.apikey-modal-card {
+  position: relative;
+  background: var(--bg-elevated);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: var(--shadow-lg);
+  min-width: 360px;
+  max-width: 480px;
+  width: 90%;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.apikey-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.apikey-modal-title {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.apikey-modal-close {
+  background: transparent;
+  border: 0;
+  color: var(--text-secondary);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+  font-family: inherit;
+}
+
+.apikey-modal-close:hover { color: var(--text); }
+
+.apikey-modal-body {
+  padding: 12px 16px;
+}
+
+.apikey-status {
+  font-size: 12px;
+  margin-bottom: 10px;
+  word-break: break-all;
+}
+
+.apikey-status.configured { color: var(--success); }
+.apikey-status.not-configured { color: var(--danger); }
+
+.apikey-label {
+  display: block;
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+}
+
+.apikey-input {
+  width: 100%;
+  background: var(--bg-input);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  box-sizing: border-box;
+}
+
+.apikey-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-bg);
+}
+
+.apikey-input::placeholder { color: var(--text-tertiary); }
+
+/* 密钥输入框视觉上呈密码点，但保持 type=text（避免浏览器把整页当凭证表单） */
+.apikey-input.secret-input {
+  letter-spacing: 2px;
+  -webkit-text-security: disc;
+}
+
+.apikey-help {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  margin-top: 4px;
+  line-height: 1.4;
+}
+
+.apikey-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+}
+
+.apikey-btn {
+  background: var(--bg-elevated);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 5px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.apikey-btn:hover { background: var(--bg-hover); }
+
+.apikey-btn-primary {
+  background: var(--accent);
+  color: var(--on-accent);
+  border-color: var(--accent);
+}
+
+.apikey-btn-primary:hover { background: var(--accent-hover); }
+
+.apikey-btn-danger {
+  color: var(--danger);
+  border-color: var(--danger);
+  margin-right: auto; /* 靠左 */
+}
+
+.apikey-btn-danger:hover {
+  background: var(--danger);
+  color: var(--on-accent);
+}

@@ -1,0 +1,39 @@
+/* KeyValueRow —— 左标签右值一行（1:1 对齐 main.css 的 .kv-row） */
+.kv-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 0;
+  font-size: 12px;
+  gap: 8px;
+}
+.kv-row[hidden] {
+  display: none;
+}
+.kv-label {
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+.kv-value-wrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  min-width: 0;
+}
+.kv-value {
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  text-align: right;
+  word-break: break-all;
+}
+.kv-value--muted {
+  color: var(--text-tertiary);
+}
+.kv-extra {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}

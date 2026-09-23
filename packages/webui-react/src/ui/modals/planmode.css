@@ -1,0 +1,155 @@
+/* ui/modals/planmode.css —— “Use Plan mode?” 弹窗（只用 styles/tokens.css 的变量） */
+
+.planmode-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  animation: planmode-fade-in 0.15s ease-out;
+}
+
+@keyframes planmode-fade-in { from { opacity: 0; } to { opacity: 1; } }
+
+.planmode-modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+:root[data-theme='dark'] .planmode-modal-backdrop {
+  background: color-mix(in srgb, var(--on-accent) 55%, transparent);
+}
+
+.planmode-modal-card {
+  position: relative;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow-lg);
+  width: 100%;
+  max-width: 480px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: planmode-card-in 0.18s ease-out;
+}
+
+@keyframes planmode-card-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.planmode-modal-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border-light);
+}
+
+.planmode-modal-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--accent);
+  flex: 1;
+  font-family: var(--font-mono);
+}
+
+.planmode-modal-close {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  color: var(--text-tertiary);
+  transition: all 0.1s;
+}
+
+.planmode-modal-close:hover { background: var(--bg-hover); color: var(--text); }
+
+.planmode-modal-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 18px;
+}
+
+.planmode-desc {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin: 0 0 14px;
+}
+
+.planmode-options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.planmode-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+  transition: all 0.1s;
+  font: inherit;
+  color: inherit;
+  box-sizing: border-box;
+}
+
+.planmode-option:hover { background: var(--bg-hover); border-color: var(--text-tertiary); }
+
+/* 选项序号圆标（1/2） */
+.planmode-option-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  font-weight: 700;
+  font-size: 11px;
+  color: var(--accent);
+  text-align: center;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.planmode-option-text { flex: 1; }
+.planmode-option-label { display: block; font-size: 13px; font-weight: 600; }
+
+.planmode-option-desc {
+  display: block;
+  font-size: 11.5px;
+  color: var(--text-tertiary);
+  margin-top: 2px;
+}
+
+.planmode-modal-footer {
+  padding: 12px 18px;
+  border-top: 1px solid var(--border-light);
+  font-size: 11px;
+  color: var(--text-tertiary);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.planmode-modal-footer kbd {
+  background: var(--bg-hover);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0 4px;
+  font-family: inherit;
+  font-size: 10px;
+}

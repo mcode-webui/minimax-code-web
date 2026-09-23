@@ -1,0 +1,67 @@
+/* sessions/list.css —— 左栏会话列表（分组折叠） */
+/* 视觉基准：public/styles/main.css 的 .sessions-* / .workspace-group-* / .session-title-empty。 */
+/* 铁律：只用 styles/tokens.css 的 CSS 变量。 */
+
+.sessions-list {
+  display: flex;
+  flex-direction: column;
+}
+.sessions-empty {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  padding: 12px 8px;
+  text-align: center;
+  font-style: italic;
+}
+
+/* 工作区分组 */
+.workspace-group { margin: 2px 0; }
+.workspace-group-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  user-select: none;
+  border-radius: 4px;
+  transition: background 0.1s;
+}
+.workspace-group-header:hover { background: var(--bg-hover); color: var(--text); }
+.workspace-group-chevron {
+  display: inline-block;
+  width: 10px;
+  font-size: 9px;
+  color: var(--text-tertiary);
+  transition: transform 0.15s;
+  flex-shrink: 0;
+}
+.workspace-group--collapsed .workspace-group-chevron { transform: rotate(-90deg); }
+.workspace-group-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workspace-group-count {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  font-weight: 500;
+}
+.workspace-group-items {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 2px 0 4px 22px; /* 缩进，对齐分组图标 */
+}
+.workspace-group--collapsed .workspace-group-items { display: none; }
+.workspace-group-empty {
+  padding: 6px 8px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  font-style: italic;
+}

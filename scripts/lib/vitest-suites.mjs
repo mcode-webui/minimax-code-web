@@ -43,7 +43,12 @@ export function suiteInventoryViolations(files, suites) {
     if (
       file.startsWith("packages/") &&
       // packages/webui is a plain node:test package: its suite runs under its
-      // own gate (pnpm test:webui), not under Vitest — same policy as the
+      // own gate (pnpm test:webui), not under Vitest. packages/webui-react is the
+      // same policy for a different reason: it ships its own vitest.config.ts
+      // (jsdom + testing-library setup) and runs under pnpm test:webui-react, so
+      // its DOM tests cannot run in this node-environment runner.
+      !file.startsWith("packages/webui-react/") &&
+      // same policy as the
       // repository-level node:test gates.
       !file.startsWith("packages/webui/") &&
       /\.(?:test|spec)\.[cm]?[jt]sx?$/u.test(file) &&

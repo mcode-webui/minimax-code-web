@@ -29,6 +29,7 @@
     "packages/shared",
     "packages/tui",
     "packages/webui",
+    "packages/webui-react",
     "third_party/pi-mono/packages/agent",
     "third_party/pi-mono/packages/ai",
     "third_party/pi-mono/packages/coding-agent",

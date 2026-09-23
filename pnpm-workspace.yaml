@@ -27,6 +27,7 @@ packages:
   - "packages/agent-modules/system-reminder"
   - "packages/tui"
   - "packages/webui"
+  - "packages/webui-react"
   - third_party/sandbox-runtime
   - packages/oauth-core
   - packages/oauth-lease-protocol

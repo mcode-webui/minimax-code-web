@@ -1,0 +1,33 @@
+/* sessions/search.css —— 会话搜索框（放大镜 + 受控输入） */
+/* 视觉基准：public/styles/main.css 的 .search-box / .search-icon / .search-input。 */
+/* 铁律：只用 styles/tokens.css 的 CSS 变量。 */
+
+.search-box {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  transition: border-color 0.1s;
+}
+.search-box:focus-within { border-color: var(--accent); }
+.search-icon {
+  width: 14px;
+  height: 14px;
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+}
+.search-input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+  padding: 0;
+}
+.search-input::placeholder { color: var(--text-tertiary); }

@@ -1,0 +1,96 @@
+/* ui/composer/slash.css —— 斜杠命令浮层样式（只用 styles/tokens.css 的变量） */
+/* 1:1 对齐 vanilla styles/main.css 的 .slash-overlay 系列 */
+
+.slash-overlay {
+  position: fixed;
+  left: 50%;
+  bottom: 100px;
+  transform: translateX(-50%);
+  width: 560px;
+  max-width: calc(100vw - 32px);
+  max-height: 400px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow-lg);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  z-index: 100;
+  animation: slash-slide-up 0.15s ease-out;
+}
+
+@keyframes slash-slide-up {
+  from { opacity: 0; transform: translate(-50%, 8px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+
+.slash-input {
+  padding: 10px 14px;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+  color: var(--text);
+  background: transparent;
+  border-radius: 0;
+  font-family: inherit;
+}
+
+.slash-input::placeholder { color: var(--text-tertiary); }
+
+.slash-results {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px;
+}
+
+.slash-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.slash-item:hover, .slash-item.active { background: var(--bg-hover); }
+.slash-item.active { background: var(--accent-bg); color: var(--accent-text); }
+
+.slash-item-cmd {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  color: var(--text);
+  flex-shrink: 0;
+  min-width: 110px;
+}
+
+.slash-item.active .slash-item-cmd { color: var(--accent-text); }
+
+.slash-item-desc { color: var(--text-secondary); flex: 1; }
+.slash-item.active .slash-item-desc { color: var(--accent-text); }
+
+.slash-item.empty {
+  color: var(--text-tertiary);
+  justify-content: center;
+  padding: 20px;
+  cursor: default;
+}
+
+.slash-section-label {
+  padding: 4px 10px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  background: var(--bg-sidebar);
+}
+
+/* 技能条目：⚡ 前缀 + 斜体（对应 vanilla .slash-skill） */
+.slash-skill-wrap .slash-item { font-style: italic; }
+
+.slash-skill-wrap .slash-item-cmd::before {
+  content: '⚡';
+  margin-right: 4px;
+}

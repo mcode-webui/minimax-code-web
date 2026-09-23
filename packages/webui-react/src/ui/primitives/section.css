@@ -1,0 +1,41 @@
+/* SectionCard —— 带小标题的分段容器（1:1 对齐 main.css 的 .right-section） */
+.section-card {
+  margin-bottom: 16px;
+  padding: 12px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.section-card[hidden] {
+  display: none;
+}
+.section-card:last-child {
+  margin-bottom: 0;
+}
+.section-card-title {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-tertiary);
+  margin-bottom: 8px;
+}
+.section-card-title-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.section-card-extra {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 4px;
+  flex-shrink: 0;
+}
+.section-card-body {
+  font-size: 13px;
+  line-height: 1.5;
+}

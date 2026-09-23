@@ -1,0 +1,33 @@
+/* chat/empty.css —— 欢迎空态（品牌 logo + 提示语） */
+/* 视觉基准：public/styles/main.css 的 .chat-empty / .chat-empty-logo / .chat-empty-subtitle。 */
+/* 铁律：只用 styles/tokens.css 的 CSS 变量。 */
+
+.chat-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 55%;
+  padding: 60px 24px 20px;
+  text-align: center;
+  max-width: 800px;
+  margin: 0 auto;
+}
+.chat-empty-logo {
+  width: 110px;
+  height: 110px;
+  border-radius: 22px;
+  margin-bottom: 28px;
+  object-fit: contain;
+}
+.chat-empty-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 8px;
+}
+.chat-empty-subtitle {
+  font-size: 17px;
+  color: var(--text-secondary);
+  font-weight: 500;
+}

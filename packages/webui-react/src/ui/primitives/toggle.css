@@ -1,0 +1,46 @@
+/* ToggleSwitch —— 滑动开关（1:1 对齐 main.css 的 .lan-card-toggle） */
+.toggle {
+  position: relative;
+  display: inline-block;
+  width: 36px;
+  height: 20px;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+.toggle[hidden] {
+  display: none;
+}
+.toggle-input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+  position: absolute;
+}
+.toggle-slider {
+  position: absolute;
+  cursor: pointer;
+  inset: 0;
+  background: var(--border);
+  border-radius: 20px;
+  transition: background 0.2s;
+}
+.toggle-slider::before {
+  content: '';
+  position: absolute;
+  height: 14px;
+  width: 14px;
+  left: 3px;
+  bottom: 3px;
+  background: var(--bg-elevated);
+  border-radius: 50%;
+  transition: transform 0.2s;
+}
+.toggle-input:checked + .toggle-slider {
+  background: var(--status-on);
+}
+.toggle-input:checked + .toggle-slider::before {
+  transform: translateX(16px);
+}
+.toggle-input:focus + .toggle-slider {
+  box-shadow: 0 0 0 2px var(--accent-bg);
+}

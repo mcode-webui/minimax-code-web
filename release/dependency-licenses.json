@@ -10,6 +10,14 @@
       "homepage": "https://github.com/agentclientprotocol/typescript-sdk#readme"
     },
     {
+      "name": "@ant-design/icons",
+      "versions": [
+        "5.6.1"
+      ],
+      "license": "MIT",
+      "homepage": "https://github.com/ant-design/ant-design-icons/tree/master#readme"
+    },
+    {
       "name": "@anthropic-ai/sdk",
       "versions": [
         "0.91.1"
@@ -620,6 +628,38 @@
       "homepage": "https://standardschema.dev"
     },
     {
+      "name": "@testing-library/dom",
+      "versions": [
+        "10.4.2"
+      ],
+      "license": "MIT",
+      "homepage": "https://github.com/testing-library/dom-testing-library#readme"
+    },
+    {
+      "name": "@testing-library/jest-dom",
+      "versions": [
+        "6.10.0"
+      ],
+      "license": "MIT",
+      "homepage": "https://github.com/testing-library/jest-dom#readme"
+    },
+    {
+      "name": "@testing-library/react",
+      "versions": [
+        "16.3.3"
+      ],
+      "license": "MIT",
+      "homepage": "https://github.com/testing-library/react-testing-library#readme"
+    },
+    {
+      "name": "@testing-library/user-event",
+      "versions": [
+        "14.6.7"
+      ],
+      "license": "MIT",
+      "homepage": "https://github.com/testing-library/user-event#readme"
+    },
+    {
       "name": "@types/chai",
       "versions": [
         "5.2.3"
@@ -725,6 +765,22 @@
       "homepage": "https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/proper-lockfile"
     },
     {
+      "name": "@types/react",
+      "versions": [
+        "18.3.31"
+      ],
+      "license": "MIT",
+      "homepage": "https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/react"
+    },
+    {
+      "name": "@types/react-dom",
+      "versions": [
+        "18.3.7"
+      ],
+      "license": "MIT",
+      "homepage": "https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/react-dom"
+    },
+    {
       "name": "@types/readable-stream",
       "versions": [
         "4.0.24"
@@ -772,6 +828,14 @@
       ],
       "license": "Apache-2.0",
       "homepage": "https://www.typescriptlang.org/"
+    },
+    {
+      "name": "@vitejs/plugin-react",
+      "versions": [
+        "5.2.0"
+      ],
+      "license": "MIT",
+      "homepage": "https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#readme"
     },
     {
       "name": "@vitest/coverage-v8",
@@ -957,6 +1021,14 @@
       ],
       "license": "MIT",
       "homepage": "https://github.com/chalk/ansi-styles#readme"
+    },
+    {
+      "name": "antd",
+      "versions": [
+        "5.29.3"
+      ],
+      "license": "MIT",
+      "homepage": "https://ant.design"
     },
     {
       "name": "any-promise",
@@ -2288,6 +2360,14 @@
       "homepage": "https://github.com/kucherenko/jscpd#readme"
     },
     {
+      "name": "jsdom",
+      "versions": [
+        "25.0.1"
+      ],
+      "license": "MIT",
+      "homepage": "https://github.com/jsdom/jsdom#readme"
+    },
+    {
       "name": "json-bigint",
       "versions": [
         "1.0.0"
@@ -3061,6 +3141,22 @@
       ],
       "license": "(BSD-2-Clause OR MIT OR Apache-2.0)",
       "homepage": "https://github.com/dominictarr/rc#readme"
+    },
+    {
+      "name": "react",
+      "versions": [
+        "18.3.1"
+      ],
+      "license": "MIT",
+      "homepage": "https://reactjs.org/"
+    },
+    {
+      "name": "react-dom",
+      "versions": [
+        "18.3.1"
+      ],
+      "license": "MIT",
+      "homepage": "https://reactjs.org/"
     },
     {
       "name": "readable-stream",

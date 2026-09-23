@@ -1,0 +1,122 @@
+/* ui/composer/composer.css —— 输入区总装样式（只用 styles/tokens.css 的变量） */
+/* 1:1 对齐 vanilla styles/main.css 的 .input-area / .input-box / .input-toolbar / .btn-send */
+
+.composer {
+  border-top: 1px solid var(--border);
+  background: var(--bg-elevated);
+  padding: 16px 24px 20px;
+}
+
+.composer-inner {
+  max-width: 1200px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.composer-box {
+  position: relative;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 12px 14px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.composer-box:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-bg);
+}
+
+.composer-textarea {
+  width: 100%;
+  min-height: 48px;
+  max-height: 240px;
+  background: transparent;
+  border: none;
+  resize: none;
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--text);
+  padding: 6px 4px;
+  font-family: inherit;
+}
+
+.composer-textarea::placeholder { color: var(--text-tertiary); }
+.composer-textarea:disabled { color: var(--text-tertiary); cursor: not-allowed; }
+
+.composer-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 4px 0;
+}
+
+.composer-btn-tool {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  transition: all 0.1s;
+}
+
+.composer-btn-tool:hover { background: var(--bg-hover); color: var(--text); }
+.composer-btn-tool:disabled { opacity: 0.5; cursor: not-allowed; }
+.composer-btn-tool .icon { width: 14px; height: 14px; }
+.composer-btn-tool .mode-icon { width: 14px; height: 14px; margin-right: 2px; }
+.composer-mode-label { white-space: nowrap; margin-left: 4px; }
+.composer-model-label { white-space: nowrap; max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
+
+.composer-spacer { flex: 1; }
+
+.composer-send {
+  width: 32px;
+  height: 32px;
+  background: var(--accent);
+  color: var(--on-accent);
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  transition: background 0.1s;
+}
+
+.composer-send:hover { background: var(--accent-hover); }
+.composer-send:disabled { background: var(--text-tertiary); cursor: not-allowed; }
+.composer-send .icon { width: 16px; height: 16px; }
+.composer-send .icon-stop { display: none; }
+.composer-send.is-stop { background: var(--danger); }
+.composer-send.is-stop:hover { filter: brightness(0.9); }
+.composer-send.is-stop .icon-send { display: none; }
+.composer-send.is-stop .icon-stop { display: block; }
+
+.composer-workspace-row {
+  display: flex;
+  justify-content: flex-start;
+  align-items: center;
+  margin-top: 10px;
+  padding: 0 4px;
+  position: relative;
+}
+
+.composer-hint {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  padding: 6px 8px 0;
+}
+
+.composer-hint kbd {
+  background: var(--bg-hover);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0 4px;
+  font-family: inherit;
+  font-size: 10px;
+  color: var(--text-secondary);
+}
+
+@media (max-width: 700px) {
+  .composer-mode-label { display: none; }
+  .composer-btn-mode { padding: 5px; }
+}
