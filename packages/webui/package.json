@@ -83,6 +83,7 @@
     "endpoints": {
       "health": "GET /api/health",
       "events": "GET /api/events (SSE)",
+      "stream": "GET /api/stream (WebSocket event stream, MCODE_WEBUI_TRANSPORT=ws)",
       "state": "GET /api/state",
       "sessions": "GET|POST|DELETE /api/sessions[/:id|/switch]",
       "chat": "POST /api/send|stop|cmd",

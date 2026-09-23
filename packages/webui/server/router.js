@@ -402,6 +402,17 @@ const ROUTES = [
     match: (p) => p === "/api/protocol/list-sessions",
     handler: protocolRoute.handleListSessions,
   },
+  // 波次 2b（docs/drafts/arch_net_solution_0922.md §7.2）：WebSocket 事件流端点。
+  //   升级请求由 server.js 的 upgrade 钩子转 handleStreamUpgrade（门链同款）；
+  //   普通 GET 到这里仅作 426 应答（保持路由表与文档端点清单逐字对齐）。
+  {
+    method: "GET",
+    match: (p) => p === "/api/stream",
+    handler: (req, res) => {
+      res.writeHead(426, { "Content-Type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify({ ok: false, error: "upgrade required (WebSocket)" }));
+    },
+  },
   {
     method: "GET",
     match: (p) => p === "/api/protocol/capabilities",

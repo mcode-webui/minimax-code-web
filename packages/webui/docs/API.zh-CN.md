@@ -59,6 +59,10 @@
 { "ok": true, "version": "0.1.3", "running": {"active": false}, … }
 ```
 
+### `GET /api/stream`
+
+WebSocket 事件流端点（技术方案 `docs/drafts/arch_net_solution_0922.md` §7.2）。升级门链（origin / LAN / token）与 `GET /api/events` 相同；默认 `MCODE_WEBUI_TRANSPORT=sse` 时拒绝升级（404），设为 `ws` 时接受 RFC 6455 握手。服务端 → 客户端帧为 WS text JSON：`hello`（`{v:1, type:"hello", payload:{resumeSupported, latestSeq, heartbeatMs, ringCapacity}}`）、带 `seq`/`ts` 的 `state.snapshot` 与 `control` 事件帧、`error` 帧。客户端 → 服务端仅接受 JSON text 帧（`resume`/`ping`/`pong`/`close`），二进制帧以 1002 关闭。断线恢复：`{v:1, type:"resume", payload:{lastSeq}}` 按 seq 严格递增重放缓冲事件；环形缓冲欠载时以最近 `state.snapshot` 为基线。心跳为 WS ping 控制帧（默认 30 秒，连续 2 次无 pong 以 1001 关闭）；入站帧令牌桶配额为稳态 20 帧/秒、突发 40，超出以 1013 关闭。发行版 SPA 不使用本端点。
+
 ### `GET /api/events`
 
 此 CID 的服务端推送事件（Server-Sent Events）流。连接会无限期保持

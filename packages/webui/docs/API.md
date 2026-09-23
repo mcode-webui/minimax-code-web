@@ -59,6 +59,10 @@ Returns the current `state` object for this CID. See
 { "ok": true, "version": "0.1.3", "running": {"active": false}, … }
 ```
 
+### `GET /api/stream`
+
+WebSocket event stream endpoint (design doc `docs/drafts/arch_net_solution_0922.md` §7.2). The upgrade passes the same gate chain (origin / LAN / token) as `GET /api/events`; with the default `MCODE_WEBUI_TRANSPORT=sse` the upgrade is refused (404), and with `ws` an RFC 6455 handshake is accepted. Server-to-client frames are WS text JSON: `hello` (`{v:1, type:"hello", payload:{resumeSupported, latestSeq, heartbeatMs, ringCapacity}}`), `state.snapshot` and `control` event frames carrying `seq`/`ts`, and `error` frames. The client may send only JSON text frames (`resume`/`ping`/`pong`/`close`); binary frames close the connection with 1002. Resume: `{v:1, type:"resume", payload:{lastSeq}}` replays buffered events in strictly increasing `seq` order; when the ring buffer has underrun, the most recent `state.snapshot` is sent as the baseline. Heartbeats are WS ping control frames (default 30s; two missed pongs close with 1001). The inbound token-bucket quota is 20 frames/s sustained with a burst of 40; exceeding it closes with 1013. The shipped SPA does not use this endpoint.
+
 ### `GET /api/events`
 
 Server-Sent Events stream for this CID. The connection stays open

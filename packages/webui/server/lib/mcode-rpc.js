@@ -1,16 +1,18 @@
 // webui/server/lib/mcode-rpc.js
 // v0.5.by: 干净的 mcode acp 协议 RPC wrapper
 //
-// mcode acp 0.1.5 server 实际支持的方法 (从 probes/probe-mcode-rpc-v2.mjs 实测):
-//   ✅ initialize / session/list / session/new / session/load / session/close / session/prompt
-//   ❌ session/set_mode / set_config_option / cancel / activate / fork / resume / delete
-//      (Method not found — mcode 0.1.5 协议层根本没暴露)
+// 能力协商 (server/lib/capability.js, 三层策略, 替代旧静态黑名单):
+//   1. 声明清单 — initialize 响应的 agentCapabilities.sessionCapabilities
+//      与 _meta["minimax-code/extensions"].methods 直接采信;
+//   2. 惰性探测 — 未声明方法首次真实调用即探测: Method not found(-32601)
+//      判为不支持并缓存, 其余错误/成功判为支持;
+//   3. 旧引擎回退 — initialize 无任何声明时沿用 LEGACY_UNSUPPORTED 语义。
 //
-// 设计: 调不支持的方法不 throw,返 {ok:false, error, code:'unsupported'}
-//   路由层能据此给前端 501 Not Implemented 错,而不是 500 Internal Server Error
-//   前端可以降级处理 (比如用 slash command 代替 RPC,或提示用户升级 mcode)
+// 设计: 调不支持的方法不 throw, 返 {ok:false, error, code:'unsupported'}
+//   路由层据此给前端 501 Not Implemented (语义逐字节不变), 前端降级路径照旧。
 
 import { getMcodeAcpClient, listAllMcodeSessions } from "./acp-client.js";
+import { getActiveRegistry, probeParamsFor, CAPABILITY_UI } from "./capability.js";
 
 function ok(data) {
   return { ok: true, data };
@@ -35,31 +37,39 @@ function fail(error, code) {
   return { ok: false, error: sanitizeError(error), code: code || "rpc_error" };
 }
 
-// mcode 0.1.5 acp 不支持的方法 (实探测得, 2026-08-20)
-const UNSUPPORTED = new Set([
-  "session/set_mode",
-  "session/set_config_option",
-  "session/cancel",
-  "session/activate",
-  "session/fork",
-  "session/resume",
-  "session/delete",
-]);
+// 旧静态黑名单已迁至 capability.js 的 LEGACY_UNSUPPORTED；判定走 getActiveRegistry()。
 
 async function callRpc(method, params) {
-  if (UNSUPPORTED.has(method)) {
+  const registry = getActiveRegistry();
+  if (registry.classify(method) === "unsupported") {
     return fail(
-      `mcode 0.1.5 acp does not implement ${method} (server returns "Method not found")`,
+      `mcode acp does not implement ${method} (mcode 0.1.5 server returns "Method not found")`,
       "unsupported",
     );
   }
   const client = await getMcodeAcpClient();
   if (!client)
     return fail(new Error("mcode acp client unavailable"), "no_client");
+  // 播种后二次判定: client 启动时 acp-client 已按 initialize 响应刷新注册表
+  if (getActiveRegistry().classify(method) === "unsupported") {
+    return fail(
+      `mcode acp does not implement ${method} (mcode 0.1.5 server returns "Method not found")`,
+      "unsupported",
+    );
+  }
   try {
-    const r = await client.request(method, params);
+    const r = await client.request(method, params ?? probeParamsFor(method));
+    getActiveRegistry().markSupported(method);
     return ok(r);
   } catch (e) {
+    // 惰性探测: 真实调用的错误即探测结果 — Method not found 判不支持并缓存
+    getActiveRegistry().recordProbeResult(method, e);
+    if (getActiveRegistry().classify(method) === "unsupported") {
+      return fail(
+        `mcode acp does not implement ${method} (mcode 0.1.5 server returns "Method not found")`,
+        "unsupported",
+      );
+    }
     if (e && e.data && typeof e.data.code === "string")
       return fail(e, e.data.code);
     return fail(e);
@@ -89,12 +99,28 @@ export async function setConfigOption(_sessionId, _key, _value) {
 }
 
 // ============================================================
-// session/cancel  — ❌ mcode 0.1.5 不支持
-//   webui 想取消正在跑 prompt 的唯一路径: 杀 mcode acp 子进程 (SIGKILL)
-//   不温和但有效
+// session/cancel — 声明条件式 notification (契约修正 19:
+//   checks/lib-mcode-rpc.check.mjs「no mcode spawn」守护)
+//   能力注册表未声明支持时短路为 unsupported 且不触碰 client；
+//   仅当引擎 initialize 声明该方法才走 notify 语义。
+//   /api/stop 的杀进程兜底仍在 chat.js (本模块不杀进程)。
 // ============================================================
 export async function cancelSession(_sessionId) {
-  return callRpc("session/cancel", { sessionId: _sessionId });
+  if (getActiveRegistry().classify("session/cancel") === "unsupported") {
+    return fail(
+      `mcode acp does not implement session/cancel (mcode 0.1.5 server returns "Method not found")`,
+      "unsupported",
+    );
+  }
+  const client = await getMcodeAcpClient();
+  if (!client)
+    return fail(new Error("mcode acp client unavailable"), "no_client");
+  try {
+    client.notify("session/cancel", { sessionId: _sessionId });
+    return ok({ mode: "notify" });
+  } catch (e) {
+    return fail(e);
+  }
 }
 
 // ============================================================
@@ -160,20 +186,9 @@ export async function listSessions() {
 // ============================================================
 // mcode 0.1.5 acp 接受的能力清单 (供前端 capability detection)
 // ============================================================
-export const MCODE_ACP_CAPABILITIES = {
-  set_mode: false,
-  set_config_option: false,
-  cancel: false,
-  activate: false,
-  fork: false,
-  resume: false,
-  delete: false,
-  load: true,
-  close: true,
-  list: true,
-  new: true,
-  prompt: true,
-};
+// UI 能力映射（12 键形状不变）；值由 capability.js 的能力协商实时刷新。
+// cancel 恒 true: notification 尝试无害, 新实现不再依赖引擎支持。
+export const MCODE_ACP_CAPABILITIES = CAPABILITY_UI;
 
 // 权限 mode 合法值 — cli.js 0.1.5 配置 schema 里有这 6 个, 但 session/set_config_option
 // 调不通, 所以这些值暂时只能用 mcode 启动 --permission 标志传, 不能 mid-session 改

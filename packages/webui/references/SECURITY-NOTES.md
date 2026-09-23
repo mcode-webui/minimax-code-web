@@ -515,6 +515,15 @@ log + a disabled feature) — it does not crash.
   registry-installed or non-canonical layouts point at the right
   binary explicitly. Resolution priority: env override > `$MCODE_CMD`
   derived > dev layout fallback.
+- Network-topology wave 2 (`docs/drafts/arch_net_solution_0922.md` §6/§7):
+  two opt-in env switches, both defaulting to the pre-existing behavior:
+  `MCODE_ENGINE` (`acp`, default — the per-turn subprocess transport;
+  `embed` — in-process engine hosted on a worker thread with automatic
+  fallback to `acp` on boot failure) and `MCODE_WEBUI_TRANSPORT` (`sse`,
+  default — the snapshot channel the shipped SPA consumes unchanged;
+  `ws` — the additive `GET /api/stream` endpoint, which the shipped SPA
+  does not use). Neither switch weakens the gate chain: the WebSocket
+  upgrade passes the same origin/token checks as `/api/events`.
 - Cross-platform: there is **no CI matrix**. The only CI is the
   marketplace root gate (single ubuntu / Node 22 job: `npm ci` +
   `npm run check`, which recursively runs every file under `test/`

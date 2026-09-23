@@ -5,6 +5,7 @@
 
 import { McodeAcpClient } from "../../acp.mjs";
 import { DEFAULT_WORKSPACE, MCODE_RUNTIME_DB } from "./config.js";
+import { syncActiveCapabilities } from "./capability.js";
 import { deleteMcodeSessionFromDb } from "./db.js";
 
 // v0.5.bu: 拉 mcode 真实 session 列表（mcode acp session/list 协议）
@@ -26,6 +27,8 @@ export async function getMcodeAcpClient() {
     try {
       await client.start();
       _mcodeAcpSingleton = client;
+      // 播种运行时能力注册表（声明清单/惰性探测/旧引擎回退，见 capability.js）
+      syncActiveCapabilities(client.capabilities);
       console.log(`[acp] singleton client started pid=${client.pid || "?"}`);
       return client;
     } catch (e) {

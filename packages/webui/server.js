@@ -25,6 +25,7 @@ import { installGlobalErrorHandlers, MCODE_CMD, UPLOAD_DIR, WEBUI_DATA_DIR, PORT
 import { listenWithPortFallback, MAX_PORT_ATTEMPTS } from './server/lib/port.js'
 import { LAN_IP } from './server/lib/lan.js'
 import { handleRequest } from './server/router.js'
+import { handleStreamUpgrade } from './server/lib/ws-server.js'
 import { runStartupCleanup } from './server/cleanup.js'
 import { shutdownMcodeAcpSingleton } from './server/lib/acp-client.js'
 import { init as initSettings, getPersistPath, getTokenEnabled } from './server/lib/settings.js'
@@ -79,6 +80,16 @@ initSettings({
 setAuthTokenEnabled(getTokenEnabled())
 
 const server = http.createServer(handleRequest)
+
+// 波次 2b（docs/drafts/arch_net_solution_0922.md §7.2）：WebSocket 事件流升级钩子。
+//   门链（origin/LAN/token）在 handleStreamUpgrade 内与 /api/events 同款执行；
+//   默认 MCODE_WEBUI_TRANSPORT=sse 时该端点拒绝升级，发行版 SPA 不受影响。
+//   其余升级路径一律拒绝（无升级监听时 Node 本就关套接字，行为等价）。
+server.on("upgrade", (req, socket, head) => {
+  const pathname = (req.url || "/").split("?")[0]
+  if (pathname === "/api/stream") handleStreamUpgrade(req, socket, head)
+  else socket.destroy()
+})
 
 // 端口回退 (见 server/lib/port.js): 默认端口被占用时向后找空闲端口, 显式 PORT
 //   不回退。日志里的端口必须是实际绑定值 —— 启动器 (mcode-web / mcode webui) 正是
