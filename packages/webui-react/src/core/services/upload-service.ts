@@ -8,8 +8,14 @@
 import type { HttpPort, UploadServicePort } from '../../contracts/ports';
 import type { Attachment } from '../../contracts/domain';
 
-export interface UploadServiceDeps {
+/** upload-service 用到的端口窄视图（持有器视图）。 */
+export interface UploadPorts {
   http: HttpPort;
+}
+
+export interface UploadServiceDeps {
+  /** 端口持有器：字段每次用时现读 —— 热替换后立即生效，不在构造期捕获实例。 */
+  ports: UploadPorts;
 }
 
 interface UploadResponse {
@@ -29,13 +35,13 @@ function makeId(): string {
 }
 
 export function createUploadService(deps: UploadServiceDeps): UploadServicePort {
-  const { http } = deps;
+  const ports = deps.ports;
 
   return {
     async upload(file: File | Blob, name: string): Promise<Attachment> {
       const id = makeId();
       try {
-        const res = (await http.upload('/api/upload', file, name)) as UploadResponse;
+        const res = (await ports.http.upload('/api/upload', file, name)) as UploadResponse;
         return {
           id,
           name: typeof res.name === 'string' && res.name ? res.name : name,

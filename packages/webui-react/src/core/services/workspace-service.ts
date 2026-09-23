@@ -8,9 +8,15 @@
 import type { HttpPort, KeyValueStorePort, WorkspaceServicePort } from '../../contracts/ports';
 import type { WorkspaceEntry, WorkspaceInfo } from '../../contracts/domain';
 
-export interface WorkspaceServiceDeps {
+/** workspace-service 用到的端口窄视图（持有器视图）。 */
+export interface WorkspacePorts {
   http: HttpPort;
   kv: KeyValueStorePort;
+}
+
+export interface WorkspaceServiceDeps {
+  /** 端口持有器：字段每次用时现读 —— 热替换后立即生效，不在构造期捕获实例。 */
+  ports: WorkspacePorts;
 }
 
 /** 比端口更宽：补齐 /api/workspace 的 action:'useTui'。 */
@@ -42,12 +48,12 @@ function toInfo(raw: unknown): WorkspaceInfo {
 }
 
 export function createWorkspaceService(deps: WorkspaceServiceDeps): WorkspaceService {
-  const { http, kv } = deps;
+  const ports = deps.ports;
   let current: WorkspaceInfo | null = null;
 
   function recentsRead(): WorkspaceEntry[] {
     try {
-      const raw = kv.get(RECENTS_KEY);
+      const raw = ports.kv.get(RECENTS_KEY);
       if (!raw) return [];
       const arr: unknown = JSON.parse(raw);
       if (!Array.isArray(arr)) return [];
@@ -69,14 +75,14 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): WorkspaceSer
 
   function recentsWrite(list: WorkspaceEntry[]): void {
     try {
-      kv.set(RECENTS_KEY, JSON.stringify(list.slice(0, RECENTS_MAX)));
+      ports.kv.set(RECENTS_KEY, JSON.stringify(list.slice(0, RECENTS_MAX)));
     } catch {
       // 持久化失败不影响内存态
     }
   }
 
   async function postWorkspace(body: Record<string, unknown>): Promise<WorkspaceInfo> {
-    const res = await http.post('/api/workspace', body);
+    const res = await ports.http.post('/api/workspace', body);
     current = toInfo(res);
     return current;
   }
@@ -104,7 +110,7 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): WorkspaceSer
 
     async browse(path?: string): Promise<WorkspaceEntry[]> {
       const query = path ? '?path=' + encodeURIComponent(path) : '';
-      const res = await http.get<{ children?: unknown }>('/api/workspace/browse' + query);
+      const res = await ports.http.get<{ children?: unknown }>('/api/workspace/browse' + query);
       const out: WorkspaceEntry[] = [];
       if (Array.isArray(res.children)) {
         for (const raw of res.children) {

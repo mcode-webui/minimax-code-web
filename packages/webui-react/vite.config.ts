@@ -13,6 +13,25 @@ export default defineConfig({
     outDir: '../webui/public/react',
     emptyOutDir: true,
     sourcemap: true,
+    // 拆包优化：antd 体积大且更新节奏与业务代码不同，单独成 chunk 便于长期缓存；
+    // react 运行时同理。业务代码变更时这两个 chunk 的哈希不变，用户无需重新下载。
+    rollupOptions: {
+      output: {
+        // 按路径分组而不是按包名：包名写法会被 hoisting 影响，产出空 chunk。
+        manualChunks(id: string) {
+          if (!id.includes('node_modules')) return undefined;
+          if (
+            /node_modules\/(antd|@ant-design|@rc-component|rc-[^/]+)/.test(id)
+          ) {
+            return 'antd-vendor';
+          }
+          if (/node_modules\/(react|react-dom|scheduler)(\/|$)/.test(id)) {
+            return 'react-vendor';
+          }
+          return undefined;
+        },
+      },
+    },
   },
   server: {
     port: 5180,

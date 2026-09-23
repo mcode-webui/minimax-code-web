@@ -20,7 +20,6 @@
 import type {
   AlertItem,
   Attachment,
-  ChatMessage,
   ContextUsage,
   ModelSelection,
   PendingAuth,
@@ -47,6 +46,12 @@ export interface AppSnapshot {
   activeSessionId: SessionId | null;
   sessions: SessionSummary[];
   groups: SessionGroup[];
+  /** 按 searchQuery 过滤后的分组（列表渲染用这个，不要用 groups）。 */
+  filteredGroups: SessionGroup[];
+  /** 当前会话的输入草稿 —— 按 SessionId 隔离，切会话各自保留。 */
+  draft: string;
+  /** 当前会话的 ask-user 勾选态（blockId -> 选中的 optionId 列表），按会话隔离。 */
+  askSelections: Record<string, string[]>;
   /** 当前会话的隔离切片；无会话时为 null。 */
   slice: SessionSlice | null;
   providers: ProviderOption[];
@@ -76,9 +81,15 @@ export interface AppActions {
   deleteSession(id: SessionId): Promise<void>;
   refreshSessions(): Promise<void>;
   // 对话
-  send(content: string): Promise<void>;
+  /** 发送文本；无参则发当前会话草稿。以 '/' 开头会自动路由到 sendCommand。 */
+  send(content?: string): Promise<void>;
   stop(): Promise<void>;
   sendCommand(cmd: string): Promise<void>;
+  /** 写当前会话草稿（按 SessionId 隔离，互不覆盖）。 */
+  setDraft(text: string): void;
+  // ask-user 块的受控交互
+  sendAskOptionToggle(blockId: string, optionId: string): void;
+  sendAskConfirm(blockId: string, optionIds: string[]): void;
   // 模型三段式（本次新增能力）
   setProvider(provider: string): Promise<void>;
   setModel(modelId: string): Promise<void>;
@@ -117,7 +128,14 @@ export interface AppController {
 
 export function createAppController(reg: Registry): AppController {
   const listeners = new Set<() => void>();
-  const notify = () => { for (const l of listeners) l(); };
+  // 快照记忆化 —— 这是 useSyncExternalStore 的硬性要求：状态未变时必须返回
+  // **同一个引用**。若每次 snapshot() 都新建对象，React 会认为状态一直在变，
+  // 触发「Maximum update depth exceeded」无限重渲染（React #185）。
+  let cachedSnapshot: AppSnapshot | null = null;
+  const notify = () => {
+    cachedSnapshot = null; // 先作废缓存，再通知订阅者重取
+    for (const l of listeners) l();
+  };
 
   // ── 纯 UI 状态（不进服务端） ────────────────────────────────────────────
   let ready = false;
@@ -136,17 +154,37 @@ export function createAppController(reg: Registry): AppController {
   let rightOpen = false;
   let searchQuery = '';
   let collapsedGroups: string[] = [];
+  // 会话隔离的输入草稿：切会话各自保留，绝不共享同一份缓冲。
+  const drafts = new Map<SessionId, string>();
+  // ask-user 选项的勾选态，同样按会话隔离。
+  const askSelections = new Map<SessionId, Record<string, string[]>>();
 
   const activeSlice = (): SessionSlice | null =>
     activeSessionId ? reg.sessions.slice(activeSessionId) : null;
 
+  /** 按搜索词过滤：命中标题或工作区路径即保留；空词不过滤。纯派生，无 IO。 */
+  function filtered(list: SessionSummary[], query: string): SessionSummary[] {
+    const q = query.trim().toLowerCase();
+    if (q === '') return list;
+    return list.filter(
+      (s) =>
+        s.title.toLowerCase().includes(q) ||
+        (s.workspace ?? '').toLowerCase().includes(q),
+    );
+  }
+
   function snapshot(): AppSnapshot {
+    if (cachedSnapshot) return cachedSnapshot;
     const slice = activeSlice();
-    return {
+    const groups = groupSessionsByWorkspace(sessions);
+    const built: AppSnapshot = {
       ready,
       activeSessionId,
       sessions,
-      groups: groupSessionsByWorkspace(sessions),
+      groups,
+      filteredGroups: groupSessionsByWorkspace(filtered(sessions, searchQuery)),
+      draft: activeSessionId ? (drafts.get(activeSessionId) ?? '') : '',
+      askSelections: activeSessionId ? (askSelections.get(activeSessionId) ?? {}) : {},
       slice,
       providers,
       models,
@@ -166,6 +204,8 @@ export function createAppController(reg: Registry): AppController {
       searchQuery,
       collapsedGroups,
     };
+    cachedSnapshot = built;
+    return built;
   }
 
   // ── 订阅所有会话切片 + 各服务，统一通知 ────────────────────────────────
@@ -229,21 +269,53 @@ export function createAppController(reg: Registry): AppController {
       notify();
     },
 
+    setDraft(text) {
+      if (!activeSessionId) return;
+      // 每个会话一份草稿 —— 切走再切回，输入内容原样还在。
+      drafts.set(activeSessionId, text);
+      notify();
+    },
+
+    sendAskOptionToggle(blockId, optionId) {
+      const id = activeSessionId;
+      if (!id) return;
+      const perBlock = askSelections.get(id) ?? {};
+      const cur = perBlock[blockId] ?? [];
+      perBlock[blockId] = cur.includes(optionId)
+        ? cur.filter((x) => x !== optionId)
+        : [...cur, optionId];
+      askSelections.set(id, perBlock);
+      notify();
+    },
+
+    sendAskConfirm(blockId, optionIds) {
+      const id = activeSessionId;
+      if (!id) return;
+      const perBlock = askSelections.get(id) ?? {};
+      perBlock[blockId] = optionIds;
+      askSelections.set(id, perBlock);
+      notify();
+    },
+
     async send(content) {
       const id = activeSessionId;
       if (!id) return;
+      // 斜杠命令与普通消息分流：'/' 开头走 /api/cmd，否则走 /api/send。
+      const text = (content ?? drafts.get(id) ?? '').trim();
+      if (text === '') return;
+      drafts.delete(id);
+      if (text.startsWith('/')) {
+        await reg.chat.command(id, text);
+        notify();
+        return;
+      }
       const slice = reg.sessions.slice(id);
       const refs = slice.attachments.filter((a) => a.status === 'done').map((a) => '@' + a.path);
-      const msg: ChatMessage = {
-        id: 'u-' + reg.clock.now(),
-        role: 'user',
-        ts: reg.clock.now(),
-        blocks: [{ id: 'b-' + reg.clock.now(), kind: 'text', text: content, markdown: false }],
-      };
-      reg.sessions.slice(id).messages.push(msg);
-      reg.sessions.slice(id).attachments = [];
+      // 用户消息的回显统一归 chat-service（它会 append 一条并置 inflightId）。
+      // 控制器这里再 push 一条会导致用户消息渲染两遍。
+      slice.attachments = [];
       notify();
-      await reg.chat.send(id, content, refs);
+      await reg.chat.send(id, text, refs);
     },
     async stop() {
       if (activeSessionId) await reg.chat.stop(activeSessionId);

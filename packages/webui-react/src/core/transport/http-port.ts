@@ -22,8 +22,14 @@ export interface HttpIdentity {
 /** 带身份操作的 HttpPort。 */
 export type AuthedHttpPort = HttpPort & HttpIdentity;
 
-export interface HttpPortDeps {
+/** http 用到的端口窄视图（持有器视图）。 */
+export interface HttpPorts {
   kv: KeyValueStorePort;
+}
+
+export interface HttpPortDeps {
+  /** 端口持有器：kv 每次用时现读 —— 热替换后立即生效，不在构造期捕获实例。 */
+  ports: HttpPorts;
 }
 
 /** 携带 HTTP 状态码的失败，调用方可按 status 精确分支（例如 404 = 已在别处决定）。 */
@@ -98,24 +104,24 @@ function createCid(): string {
 }
 
 export function createHttpPort(deps: HttpPortDeps): AuthedHttpPort {
-  const { kv } = deps;
+  const ports = deps.ports;
 
   // ── token 引导：URL ?token= 优先 → kv 兜底；随即抹掉地址栏 ────────────────
   let token = '';
   const urlToken = readUrlToken();
   if (urlToken) {
     token = urlToken;
-    kv.set(WEBUI_TOKEN_KEY, urlToken);
+    ports.kv.set(WEBUI_TOKEN_KEY, urlToken);
   } else {
-    token = kv.get(WEBUI_TOKEN_KEY) ?? '';
+    token = ports.kv.get(WEBUI_TOKEN_KEY) ?? '';
   }
   stripTokenFromUrl();
 
   // ── cid 引导：每浏览器一个稳定 client id，随所有请求上行 ───────────────────
-  let cid = kv.get(WEBUI_CID_KEY) ?? '';
+  let cid = ports.kv.get(WEBUI_CID_KEY) ?? '';
   if (!cid) {
     cid = createCid();
-    kv.set(WEBUI_CID_KEY, cid);
+    ports.kv.set(WEBUI_CID_KEY, cid);
   }
 
   function toUrl(path: string): string {
@@ -181,8 +187,8 @@ export function createHttpPort(deps: HttpPortDeps): AuthedHttpPort {
     },
     setToken(next: string): void {
       token = typeof next === 'string' ? next : '';
-      if (token) kv.set(WEBUI_TOKEN_KEY, token);
-      else kv.remove(WEBUI_TOKEN_KEY);
+      if (token) ports.kv.set(WEBUI_TOKEN_KEY, token);
+      else ports.kv.remove(WEBUI_TOKEN_KEY);
     },
     getToken: (): string => token,
     cid: (): string => cid,

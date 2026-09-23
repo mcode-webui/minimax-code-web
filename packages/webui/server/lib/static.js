@@ -22,7 +22,13 @@ export function serveStatic(pathname, res) {
     res.writeHead(403);
     return res.end("forbidden");
   }
-  const filePath = join(PUBLIC_DIR, safe);
+  let filePath = join(PUBLIC_DIR, safe);
+  // v2.4: 目录回落到 index.html —— /react/ 之前 404（只认文件不认目录），
+  // 用户必须手敲 /react/index.html 才能看到 React 版。
+  if (existsSync(filePath) && statSync(filePath).isDirectory()) {
+    const idx = join(filePath, "index.html");
+    if (existsSync(idx) && statSync(idx).isFile()) filePath = idx;
+  }
   if (existsSync(filePath) && statSync(filePath).isFile()) {
     const ext = extname(filePath).toLowerCase();
     const mime =

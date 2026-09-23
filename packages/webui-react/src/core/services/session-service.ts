@@ -18,11 +18,17 @@ import type {
 import type { ModelSelection, SessionId, SessionSlice, SessionSummary, ThinkingEffort } from '../../contracts/domain';
 import { THINKING_EFFORTS, emptySessionSlice } from '../../contracts/domain';
 
-export interface SessionServiceDeps {
+/** session-service 用到的端口窄视图（持有器视图）。 */
+export interface SessionPorts {
   http: HttpPort;
   /** 预留接缝：流式帧 -> 切片的翻译层将来挂在 features，这里不解析帧。 */
   stream: StreamPort;
   kv: KeyValueStorePort;
+}
+
+export interface SessionServiceDeps {
+  /** 端口持有器：字段每次用时现读 —— 热替换后立即生效，不在构造期捕获实例。 */
+  ports: SessionPorts;
   /** 每会话切片的默认模型选择（默认 minimax_api / medium）。 */
   defaultSelection?: ModelSelection;
 }
@@ -64,14 +70,14 @@ function isEffort(v: unknown): v is ThinkingEffort {
 }
 
 export function createSessionService(deps: SessionServiceDeps): SessionService {
-  const { http, kv } = deps;
+  const ports = deps.ports;
   const fallback: ModelSelection = deps.defaultSelection ?? DEFAULT_MODEL_SELECTION;
   /** 会话隔离的核心结构：每个 sessionId 一份独立 store，互不共享。 */
   const slices = new Map<SessionId, Store<SessionSlice>>();
 
   function loadSelection(id: SessionId): ModelSelection {
     try {
-      const raw = kv.get(selKey(id));
+      const raw = ports.kv.get(selKey(id));
       if (!raw) return { ...fallback };
       const o = JSON.parse(raw) as unknown;
       if (typeof o === 'object' && o !== null) {
@@ -88,16 +94,36 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
 
   function persistSelection(id: SessionId, sel: ModelSelection): void {
     try {
-      kv.set(selKey(id), JSON.stringify(sel));
+      ports.kv.set(selKey(id), JSON.stringify(sel));
     } catch {
       // 持久化失败不影响内存态
     }
   }
 
+  /**
+   * 新建会话切片 —— 逐字段新建，任何字段都不与别的切片（或模块常量）共享引用。
+   * 即便 emptySessionSlice 的默认值将来改成常量复用，这里也逐个复制：
+   * messages / todos / attachments 数组与 selection / context / goal 对象
+   * 都不得跨会话共享（#2 会话隔离的结构保证）。
+   */
+  function freshSlice(id: SessionId): SessionSlice {
+    const base = emptySessionSlice(id, loadSelection(id));
+    return {
+      ...base,
+      selection: { ...base.selection },
+      messages: [...base.messages],
+      todos: [...base.todos],
+      attachments: [...base.attachments],
+      context: base.context ? { ...base.context } : null,
+      goal: base.goal ? { ...base.goal } : null,
+      inflightId: null,
+    };
+  }
+
   function storeFor(id: SessionId): Store<SessionSlice> {
     let s = slices.get(id);
     if (!s) {
-      s = createStore<SessionSlice>(emptySessionSlice(id, loadSelection(id)));
+      s = createStore<SessionSlice>(freshSlice(id));
       slices.set(id, s);
     }
     return s;
@@ -113,7 +139,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
 
   return {
     async list(): Promise<SessionSummary[]> {
-      const res = await http.get<{ sessions?: unknown[] }>('/api/sessions');
+      const res = await ports.http.get<{ sessions?: unknown[] }>('/api/sessions');
       const rows = Array.isArray(res.sessions) ? res.sessions : [];
       const out: SessionSummary[] = [];
       for (const row of rows) {
@@ -128,7 +154,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
 
     async create(workspace?: string | null): Promise<SessionId> {
       const body = workspace != null ? { workspace } : {};
-      const res = await http.post<{ id?: unknown }>('/api/sessions', body);
+      const res = await ports.http.post<{ id?: unknown }>('/api/sessions', body);
       const id = typeof res.id === 'string' ? res.id : '';
       if (!id) throw new Error('session create: missing id in response');
       update(id, {
@@ -145,12 +171,12 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     },
 
     async switchTo(id: SessionId): Promise<void> {
-      await http.post('/api/sessions/switch', { id });
+      await ports.http.post('/api/sessions/switch', { id });
       // 会话隔离：切换只通知服务端，本地任何切片都不清空、不重建。
     },
 
     async rename(id: SessionId, title: string): Promise<void> {
-      await http.post('/api/sessions/rename', { id, title });
+      await ports.http.post('/api/sessions/rename', { id, title });
       const s = slices.get(id);
       if (s) {
         const prev = s.get();
@@ -163,10 +189,10 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     },
 
     async remove(id: SessionId): Promise<void> {
-      await http.del('/api/sessions/' + encodeURIComponent(id));
+      await ports.http.del('/api/sessions/' + encodeURIComponent(id));
       slices.delete(id); // 只丢这一份切片，其它会话原样保留
       try {
-        kv.remove(selKey(id));
+        ports.kv.remove(selKey(id));
       } catch {
         // 忽略
       }

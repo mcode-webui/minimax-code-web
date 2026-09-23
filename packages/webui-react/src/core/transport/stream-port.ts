@@ -16,11 +16,17 @@ import { PROTOCOL_VERSION, isServerFrame } from '../../contracts/protocol';
 import type { AuthedHttpPort } from './http-port';
 import { WEBUI_CID_KEY, WEBUI_TOKEN_KEY } from './http-port';
 
-export interface StreamPortDeps {
+/** stream 用到的端口窄视图（持有器视图）。 */
+export interface StreamPorts {
   /** 取实时 token / cid（token 可能被 auth.token_rotated 轮换过，必须现读）。 */
   http: AuthedHttpPort;
   /** 兜底身份源（http 未注入身份时从 kv 读）。 */
   kv: KeyValueStorePort;
+}
+
+export interface StreamPortDeps {
+  /** 端口持有器：字段每次用时现读 —— 热替换后立即生效，不在构造期捕获实例。 */
+  ports: StreamPorts;
 }
 
 const RECONNECT_MS = 3000;
@@ -45,8 +51,8 @@ export function createStreamPort(deps: StreamPortDeps): StreamPort {
     const loc = typeof location !== 'undefined' ? location : null;
     const scheme = loc && loc.protocol === 'https:' ? 'wss' : 'ws';
     const host = loc ? loc.host : '127.0.0.1:18090';
-    const token = deps.http.getToken() || deps.kv.get(WEBUI_TOKEN_KEY) || '';
-    const cid = deps.http.cid() || deps.kv.get(WEBUI_CID_KEY) || '';
+    const token = deps.ports.http.getToken() || deps.ports.kv.get(WEBUI_TOKEN_KEY) || '';
+    const cid = deps.ports.http.cid() || deps.ports.kv.get(WEBUI_CID_KEY) || '';
     const parts: string[] = [];
     if (token) parts.push('token=' + encodeURIComponent(token));
     if (cid) parts.push('cid=' + encodeURIComponent(cid));

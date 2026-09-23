@@ -11,9 +11,15 @@ import type { SettingsServicePort, StreamPort } from '../../contracts/ports';
 import type { WireSettings } from '../../contracts/protocol';
 import type { AuthedHttpPort } from '../transport/http-port';
 
-export interface SettingsServiceDeps {
+/** settings-service 用到的端口窄视图（持有器视图）。 */
+export interface SettingsPorts {
   http: AuthedHttpPort;
   stream: StreamPort;
+}
+
+export interface SettingsServiceDeps {
+  /** 端口持有器：字段每次用时现读 —— 热替换后立即生效，不在构造期捕获实例。 */
+  ports: SettingsPorts;
 }
 
 /** 可写字段白名单：其余字段只读透传。 */
@@ -44,7 +50,7 @@ function readControl(raw: unknown): { name: string; data: string } | null {
 }
 
 export function createSettingsService(deps: SettingsServiceDeps): SettingsServicePort {
-  const { http, stream } = deps;
+  const ports = deps.ports;
   let cache: WireSettings | null = null;
 
   function mergeIntoCache(patch: Record<string, unknown>): WireSettings {
@@ -58,7 +64,7 @@ export function createSettingsService(deps: SettingsServiceDeps): SettingsServic
   }
 
   // token 轮换：服务端广播 auth.token_rotated，本地身份必须立刻跟上
-  stream.onFrame((raw) => {
+  ports.stream.onFrame((raw) => {
     const ctrl = readControl(raw);
     if (!ctrl || ctrl.name !== 'auth.token_rotated') return;
     let next = '';
@@ -74,12 +80,12 @@ export function createSettingsService(deps: SettingsServiceDeps): SettingsServic
     } catch {
       if (ctrl.data.trim()) next = ctrl.data.trim();
     }
-    if (next) http.setToken(next);
+    if (next) ports.http.setToken(next);
   });
 
   return {
     async get(): Promise<WireSettings> {
-      const res = await http.get<Record<string, unknown>>('/api/settings');
+      const res = await ports.http.get<Record<string, unknown>>('/api/settings');
       return mergeIntoCache({ ...res });
     },
 
@@ -89,20 +95,20 @@ export function createSettingsService(deps: SettingsServiceDeps): SettingsServic
         const v = (patch as Record<string, unknown>)[key];
         if (v !== undefined) body[key] = v;
       }
-      const res = await http.post<Record<string, unknown>>('/api/settings', body);
+      const res = await ports.http.post<Record<string, unknown>>('/api/settings', body);
       return mergeIntoCache({ ...body, ...res });
     },
 
     async resetToken(): Promise<{ token: string }> {
-      const res = await http.post<Record<string, unknown>>('/api/settings', { resetToken: true });
+      const res = await ports.http.post<Record<string, unknown>>('/api/settings', { resetToken: true });
       const token = typeof res['currentToken'] === 'string' ? res['currentToken'] : '';
-      if (token) http.setToken(token); // 新 token 立即生效（含 WS 重连地址）
+      if (token) ports.http.setToken(token); // 新 token 立即生效（含 WS 重连地址）
       mergeIntoCache({ ...res });
       return { token };
     },
 
     async acknowledgeToken(): Promise<void> {
-      const res = await http.post<Record<string, unknown>>('/api/settings', { acknowledgeToken: true });
+      const res = await ports.http.post<Record<string, unknown>>('/api/settings', { acknowledgeToken: true });
       mergeIntoCache({ ...res });
     },
   };

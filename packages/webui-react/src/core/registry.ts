@@ -16,7 +16,10 @@ import { createDefaultRegistry } from './defaults';
 
 /** 用默认实现 + 覆盖项装配一套端口。纯函数，不写全局。 */
 export function createRegistry(overrides: RegistryOverrides = {}): Registry {
-  return { ...createDefaultRegistry(), ...overrides };
+  // 必须用 Object.assign 回填到同一个对象，而不是 spread 出新对象：
+  // core 各 service 持有的是这个 registry 对象本身（ports holder），
+  // 换成新对象会让 replacePort/overrides 作用在拷贝上，service 内部看不到新端口。
+  return Object.assign(createDefaultRegistry(), overrides);
 }
 
 // 进程内单例 —— 仅供 React 组装根与非 React 代码取用。
@@ -32,9 +35,16 @@ export function setRegistry(next: Registry): void {
   current = next;
 }
 
-/** 热插拔单个端口：换供应商 / 换传输 / 换状态库，其余模块无感。 */
+/**
+ * 热插拔单个端口：换供应商 / 换传输 / 换状态库，其余模块无感。
+ *
+ * 【关键】必须**原地改**而不是换新对象 —— 调用方（例如 app-controller）可能在
+ * 模块级就持有了 registry 引用；若这里返回新对象，那些持有者会继续用旧端口，
+ * "热插拔"就变成假的。
+ */
 export function replacePort<K extends keyof Registry>(key: K, impl: Registry[K]): void {
-  current = { ...getRegistry(), [key]: impl };
+  const live = getRegistry() as unknown as Record<string, unknown>;
+  live[key as string] = impl;
 }
 
 /** 测试用：丢弃单例，下次 getRegistry() 重新装配。 */

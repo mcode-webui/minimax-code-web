@@ -11,9 +11,15 @@ import type { AlertItem } from '../../contracts/domain';
 import type { WireAlert } from '../../contracts/protocol';
 import { normalizeWireAlert } from '../../contracts/protocol';
 
-export interface AlertsServiceDeps {
+/** alerts-service 用到的端口窄视图（持有器视图）。 */
+export interface AlertsPorts {
   http: HttpPort;
   stream: StreamPort;
+}
+
+export interface AlertsServiceDeps {
+  /** 端口持有器：字段每次用时现读 —— 热替换后立即生效，不在构造期捕获实例。 */
+  ports: AlertsPorts;
 }
 
 function asRecord(v: unknown): Record<string, unknown> | null {
@@ -45,7 +51,7 @@ function toItem(wire: WireAlert): AlertItem | null {
 }
 
 export function createAlertsService(deps: AlertsServiceDeps): AlertsServicePort {
-  const { http, stream } = deps;
+  const ports = deps.ports;
   /** 到达顺序即环形缓冲顺序（最旧在前）；Map.set 已存在 id 时保持原位置。 */
   const byId = new Map<string, AlertItem>();
   const readIds = new Set<string>();
@@ -81,7 +87,7 @@ export function createAlertsService(deps: AlertsServiceDeps): AlertsServicePort 
     emit();
   }
 
-  stream.onFrame((raw) => {
+  ports.stream.onFrame((raw) => {
     const ctrl = readControl(raw);
     if (!ctrl) return;
     if (ctrl.name === 'alerts.append' || ctrl.name === 'alerts.update') {
@@ -91,7 +97,7 @@ export function createAlertsService(deps: AlertsServiceDeps): AlertsServicePort 
 
   return {
     async snapshot(): Promise<AlertItem[]> {
-      const res = await http.get<{ alerts?: unknown }>('/api/alerts');
+      const res = await ports.http.get<{ alerts?: unknown }>('/api/alerts');
       const rows = Array.isArray(res.alerts) ? res.alerts : [];
       for (const row of rows) {
         merge(toItem(normalizeWireAlert(row)));

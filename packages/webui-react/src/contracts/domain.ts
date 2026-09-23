@@ -173,8 +173,16 @@ export interface SessionSlice {
   summary: SessionSummary | null;
   messages: ChatMessage[];
   /**
-   * 当前正在流式接收的**首个未定稿消息**的 id（通常是占位 assistant 消息）。
-   * null 表示该会话空闲。仅描述本会话，绝不跨会话共享。
+   * 正在流式接收的 **assistant 占位消息** 的 id。
+   *
+   * 语义约束（务必遵守）：
+   *   - 只能指向 assistant 侧的未定稿消息；**绝不**指向用户消息 ——
+   *     用户消息一发出去即已定稿。
+   *   - 由流式翻译层在创建 assistant 占位块时置入，在定稿/停止时清空。
+   *   - null 表示该会话无未定稿输出。
+   *   - 仅描述本会话，绝不跨会话共享。
+   *
+   * 判断「会话是否在跑」请用 {@link SessionSlice.running}，不要用 inflightId。
    */
   inflightId: string | null;
   running: boolean;

@@ -97,7 +97,10 @@ const ROUTES = [
   },
   {
     method: "GET",
-    match: (p) => !!p && p !== "/" && p.includes("."),
+    // v2.4: 原判据是「路径含扩展名点号」，导致目录型入口 /react/（无点号）
+    // 根本不进这条路由、直接 404 —— React 版只能手敲 /react/index.html 才能打开。
+    // 放宽为「有点号」或「以斜杠结尾（目录入口）」，目录由 serveStatic 回落到 index.html。
+    match: (p) => !!p && p !== "/" && (p.includes(".") || p.endsWith("/")),
     handler: (_req, res, _ctx, pathname) => {
       if (serveStatic(pathname, res) !== false) return true;
       return false; // not handled — fall through

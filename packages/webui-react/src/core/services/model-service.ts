@@ -20,11 +20,17 @@ import { THINKING_EFFORTS, splitModelId } from '../../contracts/domain';
 import type { KeyValueStorePort } from '../../contracts/ports';
 import type { SessionService } from './session-service';
 
-export interface ModelServiceDeps {
+/** model-service 用到的端口窄视图（持有器视图）。 */
+export interface ModelPorts {
   http: HttpPort;
   sessions: SessionService;
-  /** 自定义供应商的持久化（defaults.ts 若未传则退化为内存，重启即失）。 */
+  /** 自定义供应商的持久化（持有器未提供则退化为内存，重启即失）。 */
   kv?: KeyValueStorePort;
+}
+
+export interface ModelServiceDeps {
+  /** 端口持有器：字段每次用时现读 —— 热替换后立即生效，不在构造期捕获实例。 */
+  ports: ModelPorts;
 }
 
 /** 比端口更宽：自定义供应商的管理留给设置面板。 */
@@ -47,18 +53,22 @@ function asRecord(v: unknown): Record<string, unknown> | null {
 }
 
 export function createModelService(deps: ModelServiceDeps): ModelService {
-  const { http, sessions } = deps;
+  const ports = deps.ports;
   // 无 kv 注入时降级为进程内存储（自定义供应商不跨 reload）
   const memoryKv = new Map<string, string>();
-  const kv: KeyValueStorePort = deps.kv ?? {
+  const memoryKvPort: KeyValueStorePort = {
     get: (k) => memoryKv.get(k) ?? null,
     set: (k, v) => void memoryKv.set(k, v),
     remove: (k) => void memoryKv.delete(k),
   };
+  /** kv 用时现读 —— 持有器上被热替换后立即生效。 */
+  function kv(): KeyValueStorePort {
+    return ports.kv ?? memoryKvPort;
+  }
 
   function readCustomProviders(): ProviderOption[] {
     try {
-      const raw = kv.get(CUSTOM_PROVIDERS_KEY);
+      const raw = kv().get(CUSTOM_PROVIDERS_KEY);
       if (!raw) return [];
       const arr: unknown = JSON.parse(raw);
       if (!Array.isArray(arr)) return [];
@@ -80,14 +90,14 @@ export function createModelService(deps: ModelServiceDeps): ModelService {
 
   function writeCustomProviders(list: ProviderOption[]): void {
     try {
-      kv.set(CUSTOM_PROVIDERS_KEY, JSON.stringify(list));
+      kv().set(CUSTOM_PROVIDERS_KEY, JSON.stringify(list));
     } catch {
       // 持久化失败不影响内存态
     }
   }
 
   async function fetchCatalog(): Promise<Catalog> {
-    const res = await http.get<{ models?: unknown; current?: unknown; hint?: unknown }>('/api/models');
+    const res = await ports.http.get<{ models?: unknown; current?: unknown; hint?: unknown }>('/api/models');
     const models: ModelOption[] = [];
     if (Array.isArray(res.models)) {
       for (const raw of res.models) {
@@ -108,10 +118,10 @@ export function createModelService(deps: ModelServiceDeps): ModelService {
 
     // 目录带回的 current 补齐「还没选过模型」的会话切片（不覆盖已有选择）
     if (current) {
-      for (const id of sessions.ids()) {
-        const s = sessions.slice(id);
+      for (const id of ports.sessions.ids()) {
+        const s = ports.sessions.slice(id);
         if (!s.selection.model) {
-          sessions.update(id, {
+          ports.sessions.update(id, {
             selection: { ...s.selection, model: current, provider: splitModelId(current, s.selection.provider) },
           });
         }
@@ -140,40 +150,40 @@ export function createModelService(deps: ModelServiceDeps): ModelService {
     },
 
     current(sessionId: SessionId): ModelSelection {
-      return sessions.slice(sessionId).selection;
+      return ports.sessions.slice(sessionId).selection;
     },
 
     async setProvider(sessionId: SessionId, provider: string): Promise<ModelSelection> {
-      const sel = sessions.slice(sessionId).selection;
+      const sel = ports.sessions.slice(sessionId).selection;
       const list = await this.models(provider);
       // 回落到该供应商第一个模型；该供应商暂无模型时保留原模型（仍发 set-model 保契约）
       const modelId = list[0]?.id ?? sel.model;
-      await http.post('/api/set-model', { model: modelId });
+      await ports.http.post('/api/set-model', { model: modelId });
       const next: ModelSelection = { ...sel, provider, model: modelId };
-      sessions.update(sessionId, { selection: next });
+      ports.sessions.update(sessionId, { selection: next });
       return next;
     },
 
     async setModel(sessionId: SessionId, modelId: string): Promise<ModelSelection> {
-      const sel = sessions.slice(sessionId).selection;
-      await http.post('/api/set-model', { model: modelId });
+      const sel = ports.sessions.slice(sessionId).selection;
+      await ports.http.post('/api/set-model', { model: modelId });
       const next: ModelSelection = {
         ...sel,
         model: modelId,
         provider: splitModelId(modelId, sel.provider),
       };
-      sessions.update(sessionId, { selection: next });
+      ports.sessions.update(sessionId, { selection: next });
       return next;
     },
 
     async setThinking(sessionId: SessionId, effort: ThinkingEffort): Promise<ModelSelection> {
       const safe: ThinkingEffort = (THINKING_EFFORTS as readonly string[]).includes(effort) ? effort : 'medium';
-      const sel = sessions.slice(sessionId).selection;
+      const sel = ports.sessions.slice(sessionId).selection;
       // thinking 是本地契约字段：先落切片，服务端未实现也保留 set-model 调用
       const next: ModelSelection = { ...sel, thinking: safe };
-      sessions.update(sessionId, { selection: next });
+      ports.sessions.update(sessionId, { selection: next });
       try {
-        await http.post('/api/set-model', { model: next.model });
+        await ports.http.post('/api/set-model', { model: next.model });
       } catch {
         // 服务端暂不感知 thinking —— 不阻塞本地选择
       }

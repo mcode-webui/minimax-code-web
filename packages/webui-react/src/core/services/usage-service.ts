@@ -9,8 +9,14 @@
 import type { HttpPort, UsageServicePort } from '../../contracts/ports';
 import type { ContextUsage, SessionId, UsageInfo } from '../../contracts/domain';
 
-export interface UsageServiceDeps {
+/** usage-service 用到的端口窄视图（持有器视图）。 */
+export interface UsagePorts {
   http: HttpPort;
+}
+
+export interface UsageServiceDeps {
+  /** 端口持有器：字段每次用时现读 —— 热替换后立即生效，不在构造期捕获实例。 */
+  ports: UsagePorts;
 }
 
 function asRecord(v: unknown): Record<string, unknown> | null {
@@ -33,11 +39,13 @@ function weeklyPercent(v: unknown): number | null {
 }
 
 export function createUsageService(deps: UsageServiceDeps): UsageServicePort {
-  const { http } = deps;
+  const ports = deps.ports;
 
   return {
     async quota(): Promise<UsageInfo> {
-      const res = asRecord(await http.get('/api/usage')) ?? {};
+      // 走 POST：服务端 router 只给 /api/usage 注册了 POST 处理器（handleUsage），
+      // GET 会 404。POST 语义是「触发拉取并返回缓存值」，正是这里要的。
+      const res = asRecord(await ports.http.post('/api/usage', {})) ?? {};
       return {
         fiveHourPercent: num(res['fiveHourPercent'] ?? res['remaining']),
         weeklyPercent: weeklyPercent(res['weeklyPercent'] ?? res['weekly']),
@@ -48,12 +56,12 @@ export function createUsageService(deps: UsageServiceDeps): UsageServicePort {
     },
 
     async refresh(): Promise<void> {
-      await http.post('/api/refresh', {});
+      await ports.http.post('/api/refresh', {});
     },
 
     async context(_sessionId: SessionId): Promise<ContextUsage | null> {
       // usage-real 按 cid（运行时）统计，暂不区分 sessionId；签名保留会话语义
-      const res = asRecord(await http.get('/api/usage-real')) ?? {};
+      const res = asRecord(await ports.http.get('/api/usage-real')) ?? {};
       const used = num(res['lastTurnContextTokens']);
       const limit = num(res['contextLimit']);
       if (used === null && limit === null) return null;

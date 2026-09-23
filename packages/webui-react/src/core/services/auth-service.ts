@@ -11,9 +11,15 @@ import type { AuthServicePort, HttpPort, StreamPort } from '../../contracts/port
 import type { PendingAuth } from '../../contracts/domain';
 import { HttpError } from '../transport/http-port';
 
-export interface AuthServiceDeps {
+/** auth-service 用到的端口窄视图（持有器视图）。 */
+export interface AuthPorts {
   http: HttpPort;
   stream: StreamPort;
+}
+
+export interface AuthServiceDeps {
+  /** 端口持有器：字段每次用时现读 —— 热替换后立即生效，不在构造期捕获实例。 */
+  ports: AuthPorts;
 }
 
 function asRecord(v: unknown): Record<string, unknown> | null {
@@ -31,15 +37,24 @@ function readControl(raw: unknown): { name: string; data: string } | null {
   return { name, data };
 }
 
-/** 404 = 该请求已在别处被决定（或已过期被服务端丢弃）。 */
+/**
+ * 404 = 该请求已在别处被决定（或已过期被服务端丢弃）。
+ * 鸭子类型兜底：HttpPort 实现也可以抛普通 Error —— 只要带 status=404（数字或
+ * 字符串）、code 写明 404 / not_found，或消息里写明 404 / not found，都识别为已决定。
+ */
 function isNotFound(e: unknown): boolean {
   if (e instanceof HttpError) return e.status === 404;
-  if (typeof e === 'object' && e !== null && (e as { status?: unknown }).status === 404) return true;
-  return e instanceof Error && /\b404\b/.test(e.message);
+  const o = asRecord(e);
+  if (o) {
+    if (o['status'] === 404 || o['status'] === '404') return true;
+    const code = o['code'];
+    if (typeof code === 'string' && /\b404\b|not[_ -]?found/i.test(code)) return true;
+  }
+  return e instanceof Error && /\b404\b|not found/i.test(e.message);
 }
 
 export function createAuthService(deps: AuthServiceDeps): AuthServicePort {
-  const { http, stream } = deps;
+  const ports = deps.ports;
   /** 按 requestId 去重的待确认队列（到达序）。 */
   const queue = new Map<string, PendingAuth>();
   const listeners = new Set<() => void>();
@@ -90,7 +105,7 @@ export function createAuthService(deps: AuthServiceDeps): AuthServicePort {
     if (typeof requestId === 'string' && queue.delete(requestId)) emit();
   }
 
-  stream.onFrame((raw) => {
+  ports.stream.onFrame((raw) => {
     const ctrl = readControl(raw);
     if (!ctrl) return;
     if (ctrl.name === 'needs_authorization') enqueue(ctrl.data);
@@ -104,7 +119,7 @@ export function createAuthService(deps: AuthServiceDeps): AuthServicePort {
 
     async decide(requestId: string, approve: boolean): Promise<void> {
       try {
-        await http.post('/api/auth/decision', { requestId, approve: approve === true });
+        await ports.http.post('/api/auth/decision', { requestId, approve: approve === true });
       } catch (e) {
         if (!isNotFound(e)) throw e; // 其它失败保留队列项，便于重试
       }
