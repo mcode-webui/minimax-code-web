@@ -46,6 +46,7 @@ import { getRequestListener } from "@hono/node-server";
 import { runGates } from "./lib/gates.js";
 import { getCidFromReq, getClient } from "./lib/state-bus.js";
 
+import * as accountRoute from "./routes/account.js";
 import * as healthRoute from "./routes/health.js";
 import * as stateRoute from "./routes/state.js";
 import * as sessionsRoute from "./routes/sessions.js";
@@ -76,6 +77,8 @@ import * as authorizeRoute from "./lib/authorize.js";
 export const OWNED_ROUTES = new Set([
   // Health.
   "GET /api/health",
+  // Account card: display name, plan tier and quota, fetched on demand.
+  "GET /api/account",
   // State snapshot — replaces the legacy `GET /api/state`. The companion SSE
   // channel (`GET /api/events`) is not migrated yet (see header comment).
   "GET /api/state",
@@ -312,6 +315,10 @@ export function createHonoApp() {
   });
 
   // ----- Health -----
+  app.get("/api/account", (c) =>
+    invokeHandler(c, c.get(CAPTURE_KEY), accountRoute.handleGetAccount),
+  );
+
   app.get("/api/health", (c) =>
     invokeHandler(c, c.get(CAPTURE_KEY), healthRoute.handleHealth),
   );

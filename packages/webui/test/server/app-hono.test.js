@@ -41,6 +41,7 @@ describe("app.js — migration ledger", () => {
     // any future hand-edit that reorders entries still proves the set is correct.
     assert.deepEqual([...OWNED_ROUTES], [
       "GET /api/health",
+      "GET /api/account",
       "GET /api/state",
       "GET /api/sessions",
       "POST /api/sessions",

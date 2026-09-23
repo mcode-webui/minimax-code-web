@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import * as acp from '@agentclientprotocol/sdk';
 
-import type { TuiSession } from '../runtime/port.js';
+import type { TuiAccountStatus, TuiSession } from '../runtime/port.js';
 import type { TuiAcpRuntime } from './runtime.js';
 
 export const TUI_ACP_EXTENSION_VERSION = 1;
@@ -26,6 +26,7 @@ export const TUI_ACP_EXTENSION_METHODS = [
   ...TUI_ACP_GOAL_METHODS,
   'mcode/session/delegation/get',
   'mcode/session/delegation/stop',
+  'mcode/account/status',
 ] as const;
 
 export const TUI_ACP_EXTENSION_NOTIFICATIONS = [
@@ -51,6 +52,47 @@ export function tuiAcpExtensionCapabilities(runtime: Pick<TuiAcpRuntime, 'isGoal
       : TUI_ACP_EXTENSION_NOTIFICATIONS.filter(
           (notification) => notification !== 'mcode/session/goal_update',
         ),
+  };
+}
+
+/**
+ * Account status for ACP clients — display fields and quota figures only.
+ *
+ * An allow-list projection, not a spread of `TuiAccountStatus`. The payload
+ * crosses a process boundary and a client is expected to relay it to a browser,
+ * so a field added to the runtime type later must not arrive here by default.
+ *
+ * Nothing here reads a credential: no access/refresh token, no subscription key
+ * and no provider API key — those are not fields of `TuiAccountStatus` at all,
+ * and `managedTokenPresent` is a boolean, not the token. `identity.email` is
+ * omitted deliberately: the UI needs a display name, and carrying an unused PII
+ * field over the wire is a leak waiting for a logging accident.
+ */
+function projectAccountStatus(account: TuiAccountStatus): Record<string, unknown> {
+  return {
+    status: account.status,
+    ...(account.authMode === undefined ? {} : { authMode: account.authMode }),
+    ...(account.modelSource === undefined ? {} : { modelSource: account.modelSource }),
+    ...(account.defaultModel === undefined ? {} : { defaultModel: account.defaultModel }),
+    ...(account.managedTokenPresent === undefined
+      ? {}
+      : { managedTokenPresent: account.managedTokenPresent }),
+    ...(account.identity?.name === undefined ? {} : { identity: { name: account.identity.name } }),
+    ...(account.tokenPlanQuotaState === undefined
+      ? {}
+      : { tokenPlanQuotaState: account.tokenPlanQuotaState }),
+    ...(account.tokenPlanSummary === undefined
+      ? {}
+      : { tokenPlan: { ...account.tokenPlanSummary } }),
+    ...(account.tokenPlanQuota === undefined
+      ? {}
+      : {
+          quota: {
+            fiveHour: account.tokenPlanQuota.fiveHour,
+            weekly: account.tokenPlanQuota.weekly,
+          },
+        }),
+    warnings: [...account.warnings],
   };
 }
 
@@ -91,6 +133,12 @@ export function registerTuiAcpExtensions(options: RegisterTuiAcpExtensionsOption
   );
   options.app.onRequest('mcode/session/activate', parseSessionRequest, ({ params, client }) =>
     activateSession(params.sessionId, client),
+  );
+
+  options.app.onRequest('mcode/account/status', parseOptionalSessionRequest, async ({ params }) =>
+    projectAccountStatus(
+      await options.runtime.getAccountStatus(params.sessionId, { includeMembership: true }),
+    ),
   );
 
   options.app.onRequest('mcode/session/steer', parseTextRequest, async ({ params }) => {
@@ -261,6 +309,18 @@ function requireSession(
   const session = resolveSession(sessionId);
   if (!session) throw acp.RequestError.resourceNotFound(sessionId);
   return session;
+}
+
+/**
+ * `mcode/account/status` answers before a session exists (the client's account
+ * card is visible then too), so its session id is optional.
+ */
+function parseOptionalSessionRequest(value: unknown): { sessionId?: string } {
+  if (value === undefined || value === null) return {};
+  const record = requireRecord(value);
+  const sessionId = record.sessionId;
+  if (sessionId === undefined || sessionId === null || sessionId === '') return {};
+  return { sessionId: requireText(sessionId, 'sessionId') };
 }
 
 function parseSessionRequest(value: unknown): { sessionId: string } {
