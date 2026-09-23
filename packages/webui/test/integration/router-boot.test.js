@@ -229,7 +229,6 @@ test("router-boot: GET /api/state returns client state snapshot", async () => {
     assert.equal(Array.isArray(res.json.chat), true, "chat is an array");
     assert.equal(typeof res.json.readOnly, "boolean", "readOnly flag present");
     assert.equal(typeof res.json.tokenEnabled, "boolean", "tokenEnabled flag present");
-    assert.equal(typeof res.json.quotaEnabled, "boolean", "quotaEnabled flag present");
 });
 
 test("router-boot: POST /api/state returns 404 (route is GET-only)", async () => {

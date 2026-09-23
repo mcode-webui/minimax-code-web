@@ -13,15 +13,10 @@ import {
 import {
   getCurrentToken,
   getLanBroadcast,
-  getQuotaEnabled,
   getReadOnly,
   getTokenAcknowledged,
   getTokenEnabled,
-  getTokenPlanApiKey,
-  getTokenPlanApiKeyFilePath,
-  getTokenPlanApiKeySource,
   getTokenRotatedAt,
-  maskTokenPlanKey,
 } from "./settings.js";
 import { emitEvent, getSubscribedCids } from "./event-bus.js";
 import { pushAlert, subscribeAlerts } from "./alerts.js";
@@ -72,11 +67,12 @@ export function makeClientState() {
     },
     usage: {
       plan: null,
-      expires: null,
-      credits: null,
+      planExpiresAtMs: null,
+      creditBalance: null,
       fiveHourPercent: null,
       fiveHourReset: null,
       weekly: null,
+      weeklyReset: null,
       sessionInput: 0,
       sessionOutput: 0,
       sessionTotal: 0,
@@ -237,20 +233,6 @@ function ensureMcodeSessionsFetchedAndPush(workspace) {
         currentToken: getTokenAcknowledged() ? "" : getCurrentToken(),
         tokenAcknowledged: getTokenAcknowledged(),
         tokenRotatedAt: getTokenRotatedAt(),
-        // Token Plan feature fields. These MUST be in the snapshot —
-        // they are clobbered by the SSE replace-state pattern
-        // (state = JSON.parse(ev.data)), and without including them
-        // the next push after a /api/settings mutation hides the
-        // usage button again. The masked key never includes the
-        // full Subscription Key, only "sk-cp-...XXXX".
-        quotaEnabled: getQuotaEnabled(),
-        hasTokenPlanKey: getTokenPlanApiKey().length > 0,
-        tokenPlanApiKeyMasked: maskTokenPlanKey(),
-        // External key source surface. Webui uses this to hide the
-        // "delete" button when the key is managed by env / file
-        // (the operator would have to remove it there, not in the UI).
-        tokenPlanApiKeySource: getTokenPlanApiKeySource(),
-        tokenPlanApiKeyFilePath: getTokenPlanApiKeyFilePath(),
       };
       // Routed through the 60Hz coalescer — multiple authoritative
       // pushes within STATE_PUSH_THROTTLE_MS collapse to one write
@@ -297,16 +279,6 @@ export function pushStateFor(cid, opts = {}) {
         currentToken: getTokenAcknowledged() ? "" : getCurrentToken(),
         tokenAcknowledged: getTokenAcknowledged(),
         tokenRotatedAt: getTokenRotatedAt(),
-        // Token Plan feature fields — see ensureMcodeSessionsFetchedAndPush
-        // above for the rationale. This broadcast path fires after
-        // /api/settings mutations; any push without these clobbers
-        // state.quotaEnabled and re-hides the button.
-        quotaEnabled: getQuotaEnabled(),
-        hasTokenPlanKey: getTokenPlanApiKey().length > 0,
-        tokenPlanApiKeyMasked: maskTokenPlanKey(),
-        // External key source surface — see the per-cid branch below.
-        tokenPlanApiKeySource: getTokenPlanApiKeySource(),
-        tokenPlanApiKeyFilePath: getTokenPlanApiKeyFilePath(),
       };
       // Coalesced write — N broadcasts within the throttle window
       // collapse to ONE write per cid (last call's snapshot wins).
@@ -337,16 +309,6 @@ export function pushStateFor(cid, opts = {}) {
     currentToken: getTokenAcknowledged() ? "" : getCurrentToken(),
     tokenAcknowledged: getTokenAcknowledged(),
     tokenRotatedAt: getTokenRotatedAt(),
-    // Token Plan feature fields — see ensureMcodeSessionsFetchedAndPush
-    // above for rationale. Without these the per-cid SSE push also
-    // clobbers the local `state.quotaEnabled` and the usage button
-    // hides itself right after the user toggles it on.
-    quotaEnabled: getQuotaEnabled(),
-    hasTokenPlanKey: getTokenPlanApiKey().length > 0,
-    tokenPlanApiKeyMasked: maskTokenPlanKey(),
-    // External key source surface — see the broadcast branch above.
-    tokenPlanApiKeySource: getTokenPlanApiKeySource(),
-    tokenPlanApiKeyFilePath: getTokenPlanApiKeyFilePath(),
   };
   const payload = JSON.stringify(snapshot);
   const res = sseByCid.get(cid);
@@ -507,16 +469,6 @@ export function pushOnlineCount(lanBroadcast) {
       currentToken: getTokenAcknowledged() ? "" : getCurrentToken(),
       tokenAcknowledged: getTokenAcknowledged(),
       tokenRotatedAt: getTokenRotatedAt(),
-      // Token Plan feature fields — see pushStateFor above for rationale.
-      // pushOnlineCount fires on every SSE client connect/disconnect,
-      // so without these the next push after a tab opens would also
-      // clobber quotaEnabled.
-      quotaEnabled: getQuotaEnabled(),
-      hasTokenPlanKey: getTokenPlanApiKey().length > 0,
-      tokenPlanApiKeyMasked: maskTokenPlanKey(),
-      // External key source surface — see the broadcast branch above.
-      tokenPlanApiKeySource: getTokenPlanApiKeySource(),
-      tokenPlanApiKeyFilePath: getTokenPlanApiKeyFilePath(),
     };
     // Coalesced write — multiple pushOnlineCount() calls within the
     // throttle window collapse to ONE write per cid.

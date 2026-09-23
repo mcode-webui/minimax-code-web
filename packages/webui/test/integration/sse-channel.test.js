@@ -253,7 +253,6 @@ describe("sse-channel: /api/events", () => {
         assert.ok(snap.workspace, "workspace present in snapshot");
         assert.ok(snap.model, "model present in snapshot");
         assert.equal(typeof snap.tokenEnabled, "boolean", "tokenEnabled flag present");
-        assert.equal(typeof snap.quotaEnabled, "boolean", "quotaEnabled flag present");
     });
 
     test("auth.token_rotated SSE event fires on token reset", async () => {
@@ -303,22 +302,6 @@ describe("sse-channel: /api/events", () => {
         assert.match(String(rotated.data), /^[a-f0-9]{16,}$/);
     });
 
-    test("state snapshot includes Token Plan fields (qotaEnabled / hasTokenPlanKey)", async () => {
-        // Confirms the v2026-08-28 modacker fields flow through the SSE
-        // channel. Without these the webui's popover would have no data.
-        const res = await openSse({
-            port: server.port,
-            path: "/api/events?cid=test-cid-plan",
-            ms: 400,
-        });
-        const frames = parseSse(res.body);
-        const snap = frames[0].data;
-        assert.ok(snap, "snapshot received");
-        assert.equal(typeof snap.quotaEnabled, "boolean");
-        assert.equal(typeof snap.hasTokenPlanKey, "boolean");
-        assert.equal(typeof snap.tokenPlanApiKeyMasked, "string");
-        assert.equal(typeof snap.tokenPlanApiKeySource, "string");
-    });
 });
 
 // -----------------------------------------------------------------------

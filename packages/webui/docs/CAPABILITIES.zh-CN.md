@@ -136,7 +136,7 @@ CI 会对上述每一个名称是否出现在本文档中进行断言
 | 缓存读取比率 | ✅ | 从 acp `cache_read_input_tokens` 解析 |
 | tok/s（当前流速度） | ✅ | 基于 `delta` 事件在滚动 2 秒窗口内计算 |
 | `mavis` 运行时数据库每轮上下文（最近一轮） | ✅ | `server/lib/mavis-usage.js` 读取 `local_runtime_token_usage` |
-| 解析 `mmx quota show` | ✅ | `server/lib/usage.js` 包装该 CLI；每 2 分钟刷新一次（静默）并支持手动点击刷新 |
+| Token Plan 配额（5 小时 + 每周） | ✅ | 由引擎读取并通过 ACP 的 `mcode/account/status` 上报；`server/lib/usage.js` 做投影映射，`webapp/components/shell.tsx` 渲染弹层。webui 自己不再保存 Subscription Key |
 | 距重置时间（5 小时 + 每周） | ✅ | Next shell 渲染双语倒计时（"n小时m分" / "n天m小时"） |
 | 预测配额耗尽时间 | ✅ | `GET /api/usage/forecast` 返回基于滚动 5 小时/每周重置差值的线性 + 稳健（huber）外推（v2.0.0，lease C07）。`server/lib/quota-forecast.js` + `test/lib/quota-forecast.test.js`。UI 显示倒计时。 |
 

@@ -326,13 +326,6 @@ export interface SettingsSnapshot {
   currentToken?: string;
   tokenAcknowledged?: boolean;
   tokenRotatedAt?: number;
-  // Token Plan (套餐用量). `tokenPlanApiKey` is write-only: the snapshot returns a
-  // masked form plus a source label, never the key itself.
-  quotaEnabled?: boolean;
-  hasTokenPlanKey?: boolean;
-  tokenPlanApiKeyMasked?: string;
-  tokenPlanApiKeySource?: string;
-  tokenPlanApiKeyFilePath?: string;
 }
 
 export const getSettings = () => request<SettingsSnapshot>("/api/settings");
@@ -350,9 +343,16 @@ export const postSettings = (patch: Record<string, unknown>) =>
 
 // --- usage ------------------------------------------------------------------
 
+/**
+ * The plan-quota payload, served from the engine over ACP. `remaining` /
+ * `weeklyRemaining` are percentages and are present only when the engine
+ * reported a figure, so an `ok: true` body without them means "no gauge to
+ * draw", not 0%. `resetAt` / `weeklyResetAt` are unix seconds.
+ */
 export interface QuotaSnapshot {
   ok: boolean;
   remaining?: number;
+  weeklyRemaining?: number;
   resetAt?: number;
   weeklyResetAt?: number;
   fetchedAt?: number;

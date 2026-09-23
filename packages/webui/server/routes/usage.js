@@ -2,6 +2,11 @@
 // POST /api/usage, POST /api/usage-trigger, GET /api/usage-real,
 // POST /api/refresh, GET /api/usage/forecast
 //
+// Two different questions live here:
+//   - plan quota (5h / weekly) — the engine owns the credential, so webui asks
+//     it over ACP via lib/usage.js;
+//   - per-turn context — the mavis runtime db, via lib/mavis-usage.js.
+//
 // C07 patch: appended recordSnapshotFromCs(ctx.cs) after runUsageQuery
 // so each /api/usage call appends one NDJSON line to
 // ~/.mcode-webui/usage-history.ndjson for the quota forecast. Also
@@ -26,10 +31,12 @@ import {
 } from "../lib/quota-forecast.js";
 
 // POST /api/usage & /api/usage-trigger
+//
+// The answer is the quota figures runUsageQuery just fetched. It used to be a
+// bare {ok:true} written before the fetch — the popover reads this response
+// body, so it never saw a `remaining` even when the fetch succeeded.
 export async function handleUsage(_req, res, ctx) {
-  res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-  res.end(JSON.stringify({ ok: true }));
-  await runUsageQuery(ctx.cs, ctx.cid);
+  const payload = await runUsageQuery(ctx.cs, ctx.cid);
   // C07: best-effort append one snapshot row to usage-history. The
   //   forecast is best-effort — failure here must not break the
   //   response. recordSnapshotFromCs returns false silently on error.
@@ -38,6 +45,8 @@ export async function handleUsage(_req, res, ctx) {
   } catch {
     /* swallow — see comment above */
   }
+  res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+  res.end(JSON.stringify(payload));
 }
 
 // POST /api/refresh — noop (we already push state on demand)

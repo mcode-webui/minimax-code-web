@@ -1,174 +1,277 @@
 // webui/test/lib/usage.check.mjs
-// Unit tests for server/lib/usage.js — parseTokenPlanResponse
-// (v2026-08-28 modacker).
+// Unit tests for server/lib/usage.js.
 //
-// parseTokenPlanResponse must read percentage fields from the
-// `model_name === "general"` entry inside model_remains[] (or
-// [0] as a fallback), not from the top level. The fixture below
-// is a verbatim capture of the real API response, so any future
-// shape change trips the "values still come out as expected"
-// assertions.
+// The quota figures come from the engine's `mcode/account/status` ACP
+// projection (packages/tui/src/acp/extensions.ts), so what is under test is
+// "engine projection → cs.usage → popover payload". ENGINE_QUOTA_FIXTURE is a
+// verbatim capture of that projection from a live engine, so a change to its
+// shape fails here instead of silently emptying the popover.
 
 import { test, describe, before, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import {
   setupMocks,
   absPath,
-  registerAcpMock,
+  registerRpcMock,
   registerSessionsStore,
 } from "../helpers/_setup.js";
 
-let parseTokenPlanResponse;
-let makeClientState;
-let getTokenPlanApiKey;
-let getQuotaEnabled;
-let pushStateFor;
-let clients;
+let applyAccountQuota, quotaSnapshot, runUsageQuery;
+let makeClientState, pushStateFor, clients, sseByCid;
 
 before(async (t) => {
   await setupMocks(t);
   const usageMod = await import(absPath("lib/usage.js"));
-  parseTokenPlanResponse = usageMod.parseTokenPlanResponse;
-  // We don't run runUsageQuery here (that needs a real fetch); we
-  // only exercise the pure parser. But we need makeClientState for
-  // the cs fixture.
+  applyAccountQuota = usageMod.applyAccountQuota;
+  quotaSnapshot = usageMod.quotaSnapshot;
+  runUsageQuery = usageMod.runUsageQuery;
   const sbMod = await import(absPath("lib/state-bus.js"));
   makeClientState = sbMod.makeClientState;
-  clients = sbMod.clients;
-  // settings mock — re-imported in usage.js
-  const settingsMod = await import(absPath("lib/settings.js"));
-  getTokenPlanApiKey = settingsMod.getTokenPlanApiKey;
-  getQuotaEnabled = settingsMod.getQuotaEnabled;
   pushStateFor = sbMod.pushStateFor;
+  clients = sbMod.clients;
+  sseByCid = sbMod.sseByCid;
 });
 
-beforeEach(async () => {
-  // We don't run runUsageQuery (which has network side effects),
-  // so we don't need a real event-stream subscriber registered. But
-  // if a test ever switches to runUsageQuery, leave this here for
-  // the day.
+beforeEach(() => {
+  clients.clear();
+  sseByCid.clear();
+  registerSessionsStore({ initial: [] });
+  registerRpcMock({ getAccountStatus: async () => ({ ok: false, code: "no_client" }) });
 });
 
-// Real Token Plan API response captured 2026-08-28 via:
-//   curl -H "Authorization: Bearer <user_key>" \
-//        https://www.minimaxi.com/v1/token_plan/remains
-// The numbers were 100% remaining because the user hadn't used
-// any quota in the current window (cool-down). The point is the
-// SHAPE — the parser needs to read from model_remains[0] (the
-// "general" entry), not the top level.
-const REAL_API_FIXTURE = {
-  model_remains: [
-    {
-      start_time: 1787846400000,
-      end_time: 1787864400000,
-      remains_time: 9847188,
-      current_interval_total_count: 0,
-      current_interval_usage_count: 0,
-      model_name: "general",
-      current_weekly_total_count: 0,
-      current_weekly_usage_count: 0,
-      weekly_start_time: 1787500800000,
-      weekly_end_time: 1788105600000,
-      weekly_remains_time: 251047188,
-      current_interval_status: 1,
-      current_interval_remaining_percent: 100,
-      // v2026-08-28 modacker: field ends with `percent`, not `pct`.
-      //   The first version of the parser read `current_weekly_remaining_pct`
-      //   and silently got undefined. This fixture pins the real wire shape.
-      current_weekly_remaining_percent: 100,
-    },
-  ],
+function fakeSse() {
+  const writes = [];
+  return { writes, write: (chunk) => writes.push(chunk) };
+}
+
+// `mcode/account/status` as a live engine answered it. The engine omits
+// `identity.email` on purpose (see projectAccountStatus) and omits
+// `tokenPlanQuota.video` when the account has no video quota.
+const ENGINE_QUOTA_FIXTURE = {
+  status: "ready",
+  authMode: "api-key",
+  modelSource: "byok",
+  managedTokenPresent: true,
+  identity: { name: "MiniMax802592" },
+  tokenPlanQuotaState: "available",
+  tokenPlan: {
+    tier: "Ultra Plan",
+    expiresAtMs: 1814140800000,
+    creditBalance: "18509.925",
+  },
+  quota: {
+    fiveHour: { remainingPercent: 99, resetAtMs: 1790164800000, unlimited: false },
+    weekly: { remainingPercent: 86, resetAtMs: 1790524800000, unlimited: false },
+  },
+  warnings: [],
 };
 
-describe("parseTokenPlanResponse — 真实 API 响应 (model_remains[0] 路径)", () => {
-  test("general model 字段被正确提取, 不再是 null", () => {
+describe("applyAccountQuota — 引擎投影映射到 cs.usage", () => {
+  test("真实引擎载荷: plan / 5h / weekly / 重置时间都被提取", () => {
     const cs = { usage: {} };
-    const result = parseTokenPlanResponse(REAL_API_FIXTURE, cs);
-    assert.equal(result.ok, true);
-    assert.equal(cs.usage.fiveHourPercent, 100,
-      "回归: 之前读 top-level data.current_interval_remaining_percent 总是 undefined → 前端显示 '—'");
-    assert.equal(cs.usage.weekly, "100%");
+    applyAccountQuota(ENGINE_QUOTA_FIXTURE, cs);
+    assert.equal(cs.usage.plan, "Ultra Plan");
+    assert.equal(cs.usage.fiveHourPercent, 99);
+    assert.equal(cs.usage.weekly, "86%");
+    assert.equal(cs.usage.hidden, false);
   });
 
-  test("end_time (ms) 转为 seconds 给 fiveHourReset", () => {
+  test("resetAtMs (ms) 转为 unix 秒给 fiveHourReset / weeklyReset", () => {
     const cs = { usage: {} };
-    parseTokenPlanResponse(REAL_API_FIXTURE, cs);
-    assert.equal(cs.usage.fiveHourReset, 1787864400,
-      "fiveHourReset 是 unix 秒 (前端 nextFiveHourReset 期望), 不是 ms");
+    applyAccountQuota(ENGINE_QUOTA_FIXTURE, cs);
+    assert.equal(cs.usage.fiveHourReset, 1790164800);
+    assert.equal(cs.usage.weeklyReset, 1790524800);
   });
 
-  test("非 general model 入口(只有 video 类), 也能 fallback 到 model_remains[0]", () => {
-    const fixtureNoGeneral = {
-      model_remains: [
-        {
-          model_name: "video",
-          current_interval_remaining_percent: 42.5,
-          current_weekly_remaining_percent: 60.0,
-          end_time: 1787864400000,
+  test("plan 附属字段保留引擎的类型 (不做二次解释)", () => {
+    const cs = { usage: {} };
+    applyAccountQuota(ENGINE_QUOTA_FIXTURE, cs);
+    assert.equal(cs.usage.planExpiresAtMs, 1814140800000);
+    // creditBalance 是引擎给的字符串, 不 parseFloat 成数字
+    assert.equal(cs.usage.creditBalance, "18509.925");
+  });
+
+  test("unlimited 窗口不留数字 (跟引擎 chrome.ts quotaAlertWindow 一致)", () => {
+    const cs = { usage: {} };
+    applyAccountQuota(
+      {
+        tokenPlanQuotaState: "available",
+        quota: {
+          fiveHour: { unlimited: true, remainingPercent: 100, resetAtMs: 1790164800000 },
+          weekly: { unlimited: false, remainingPercent: 86, resetAtMs: 1790524800000 },
         },
-      ],
-    };
-    const cs = { usage: {} };
-    const r = parseTokenPlanResponse(fixtureNoGeneral, cs);
-    assert.equal(r.ok, true);
-    assert.equal(cs.usage.fiveHourPercent, 42.5,
-      "没 general 入口时, fallback 到 [0] — 而不是返回 null 让前端空着");
-    assert.equal(cs.usage.weekly, "60%");
-  });
-
-  test("缺字段时返回 null, 不抛错", () => {
-    const cs = { usage: {} };
-    const r = parseTokenPlanResponse({ model_remains: [{}] }, cs);
-    assert.equal(r.ok, true);
-    assert.equal(cs.usage.fiveHourPercent, null);
-    assert.equal(cs.usage.weekly, null);
-    assert.equal(cs.usage.fiveHourReset, null);
-  });
-
-  test("base_resp.status_code !== 0 → 返回 ok:false + error, 不污染 cs", () => {
-    const cs = { usage: {} };
-    const r = parseTokenPlanResponse(
-      { base_resp: { status_code: 1004, status_msg: "login fail: ..." } },
+      },
       cs,
     );
-    assert.equal(r.ok, false);
-    assert.match(r.error, /login fail/);
-    assert.equal(cs.usage.fiveHourPercent, undefined,
-      "出错时不写 partial 状态, 调用方根据 r.ok 决定写 error / hidden 字段");
+    assert.equal(cs.usage.fiveHourPercent, null, "unlimited 窗口没有 '剩余百分比' 可言");
+    // reset 仍然是真的: 窗口本身存在, 只是不限额
+    assert.equal(cs.usage.fiveHourReset, 1790164800);
+    assert.equal(cs.usage.weekly, "86%");
   });
 
-  test("model_remains 不是数组时, 不崩, 字段都是 null", () => {
+  test("remainingPercent 缺失 / 非有限数 → null, 不抛", () => {
     const cs = { usage: {} };
-    const r = parseTokenPlanResponse({ model_remains: "garbage" }, cs);
-    assert.equal(r.ok, true);
+    applyAccountQuota(
+      {
+        tokenPlanQuotaState: "available",
+        quota: {
+          fiveHour: { unlimited: false },
+          weekly: { unlimited: false, remainingPercent: Number.NaN },
+        },
+      },
+      cs,
+    );
     assert.equal(cs.usage.fiveHourPercent, null);
     assert.equal(cs.usage.weekly, null);
+  });
+
+  test("tokenPlanQuotaState !== 'available' → hidden, 数字为 null", () => {
+    for (const state of ["not-subscribed", "unavailable"]) {
+      const cs = { usage: {} };
+      applyAccountQuota({ tokenPlanQuotaState: state }, cs);
+      assert.equal(cs.usage.hidden, true, `${state} 不应被当作有 quota 读数`);
+      assert.equal(cs.usage.fiveHourPercent, null);
+      assert.equal(cs.usage.weekly, null);
+      assert.equal(cs.usage.plan, null);
+    }
+  });
+
+  test("空载荷 / null → 全 null + hidden, 不抛", () => {
+    for (const payload of [null, undefined, {}, { quota: "garbage" }]) {
+      const cs = { usage: {} };
+      applyAccountQuota(payload, cs);
+      assert.equal(cs.usage.plan, null);
+      assert.equal(cs.usage.planExpiresAtMs, null);
+      assert.equal(cs.usage.creditBalance, null);
+      assert.equal(cs.usage.fiveHourPercent, null);
+      assert.equal(cs.usage.fiveHourReset, null);
+      assert.equal(cs.usage.weekly, null);
+      assert.equal(cs.usage.weeklyReset, null);
+      assert.equal(cs.usage.hidden, true);
+    }
+  });
+
+  test("creditBalance 非字符串 → null (不从对象强行取值)", () => {
+    const cs = { usage: {} };
+    applyAccountQuota(
+      { tokenPlanQuotaState: "available", tokenPlan: { creditBalance: 42 } },
+      cs,
+    );
+    assert.equal(cs.usage.creditBalance, null);
+  });
+
+  test("回归: 不清零 session* 字段 (老 parser 每次调用都把会话累计量清零)", () => {
+    const cs = {
+      usage: {
+        sessionInput: 1200,
+        sessionOutput: 340,
+        sessionTotal: 1540,
+      },
+    };
+    applyAccountQuota(ENGINE_QUOTA_FIXTURE, cs);
+    // session* 属于聊天流程 (mcode-acp.js 按轮累加), 本模块不拥有它们
+    assert.equal(cs.usage.sessionInput, 1200);
+    assert.equal(cs.usage.sessionOutput, 340);
+    assert.equal(cs.usage.sessionTotal, 1540);
   });
 });
 
-describe("parseTokenPlanResponse — 历史假象 (老 parser bug)", () => {
-  // v0.5.ap 之前版本的 parser 期望字段在顶层, 即
-  //   data.current_interval_remaining_percent / data.weekly_remaining_pct
-  // 它实际从不被使用, 总是 null。 这里是保险测试, 确保我们新 parser
-  // 不会"读顶层" (即使 API 加了顶层字段作为冗余也不会被误用)。
-  test("顶层 current_interval_remaining_percent 不被使用 (即使 API 同时返了它)", () => {
-    const fixture = {
-      // 顶层字段 (假 — 真实 API 不返)
-      current_interval_remaining_percent: 99,
-      current_weekly_remaining_percent: 99,
-      // 真实 API 返的嵌套字段
-      model_remains: [{
-        model_name: "general",
-        current_interval_remaining_percent: 50,
-        current_weekly_remaining_percent: 60,
-        end_time: 1787864400000,
-      }],
-    };
+describe("quotaSnapshot — 悬浮卡读的响应体形状", () => {
+  test("有读数时带 remaining / resetAt / weeklyResetAt / weeklyRemaining", () => {
     const cs = { usage: {} };
-    parseTokenPlanResponse(fixture, cs);
-    // 必须从嵌套读, 不是从顶层
-    assert.equal(cs.usage.fiveHourPercent, 50,
-      "若读顶层 (99), 用户看到的 5h 跟 weekly 不一致就出现幻象");
-    assert.equal(cs.usage.weekly, "60%");
+    applyAccountQuota(ENGINE_QUOTA_FIXTURE, cs);
+    cs.usage.fetchedAt = 1790000000000;
+    const snap = quotaSnapshot(cs);
+    assert.equal(snap.ok, true);
+    assert.equal(snap.source, "acp");
+    assert.equal(snap.remaining, 99);
+    assert.equal(snap.resetAt, 1790164800);
+    assert.equal(snap.weeklyResetAt, 1790524800);
+    assert.equal(snap.weeklyRemaining, 86);
+    assert.equal(snap.fetchedAt, 1790000000000);
+  });
+
+  test("无读数时省略数字键 (前端据此显示 unavailable, 而不是 0%)", () => {
+    const cs = { usage: {} };
+    applyAccountQuota({ tokenPlanQuotaState: "not-subscribed" }, cs);
+    const snap = quotaSnapshot(cs);
+    assert.equal(snap.ok, true);
+    assert.equal("remaining" in snap, false, "0% 和 '没有读数' 必须可区分");
+    assert.equal("resetAt" in snap, false);
+    assert.equal("weeklyResetAt" in snap, false);
+    assert.equal("weeklyRemaining" in snap, false);
+  });
+});
+
+describe("runUsageQuery — 数据源是引擎的 ACP 扩展方法", () => {
+  test("成功: 返回悬浮卡载荷 + 填充 cs.usage + SSE 推送带上新值", async () => {
+    registerRpcMock({
+      getAccountStatus: async () => ({ ok: true, data: ENGINE_QUOTA_FIXTURE }),
+    });
+    const cid = "usage-1";
+    clients.set(cid, makeClientState());
+    sseByCid.set(cid, fakeSse());
+
+    const payload = await runUsageQuery(clients.get(cid), cid);
+
+    assert.equal(payload.ok, true);
+    assert.equal(payload.remaining, 99);
+    const pushed = JSON.parse(sseByCid.get(cid).writes[0].slice(6));
+    assert.equal(pushed.usage.fiveHourPercent, 99);
+    assert.equal(pushed.usage.weekly, "86%");
+    assert.equal(pushed.usage.plan, "Ultra Plan");
+    assert.equal(pushed.usage.error, null);
+  });
+
+  test("会话 id 透传给引擎 (引擎按会话读 token plan)", async () => {
+    const seen = [];
+    registerRpcMock({
+      getAccountStatus: async (sid) => {
+        seen.push(sid);
+        return { ok: true, data: ENGINE_QUOTA_FIXTURE };
+      },
+    });
+    const cid = "usage-2";
+    clients.set(cid, makeClientState());
+    sseByCid.set(cid, fakeSse());
+    const cs = clients.get(cid);
+    cs.mcodeSessionId = "sess-abc";
+    await runUsageQuery(cs, cid);
+    assert.deepEqual(seen, ["sess-abc"]);
+  });
+
+  test("没有会话时也发起请求 (账号卡片/悬浮卡在会话存在前就可见)", async () => {
+    const seen = [];
+    registerRpcMock({
+      getAccountStatus: async (sid) => {
+        seen.push(sid);
+        return { ok: true, data: ENGINE_QUOTA_FIXTURE };
+      },
+    });
+    const cid = "usage-3";
+    clients.set(cid, makeClientState());
+    sseByCid.set(cid, fakeSse());
+    await runUsageQuery(clients.get(cid), cid);
+    // makeClientState() 的 mcodeSessionId 是 null; mcode-rpc 对 falsy 值会发
+    // 空 params, 所以线上不会出现 "sessionId: null"
+    assert.deepEqual(seen, [null]);
+  });
+
+  test("RPC 失败: 返回 ok:false + error, 不抛, 状态仍被推送", async () => {
+    registerRpcMock({
+      getAccountStatus: async () => ({ ok: false, error: "no_client", code: "no_client" }),
+    });
+    const cid = "usage-4";
+    clients.set(cid, makeClientState());
+    sseByCid.set(cid, fakeSse());
+
+    const payload = await runUsageQuery(clients.get(cid), cid);
+
+    assert.equal(payload.ok, false);
+    assert.equal(payload.error, "no_client");
+    assert.equal(payload.source, "acp");
+    const pushed = JSON.parse(sseByCid.get(cid).writes[0].slice(6));
+    assert.equal(pushed.usage.error, "no_client");
+    assert.equal(pushed.usage.hidden, true, "失败时不留半真的读数给预测历史");
   });
 });

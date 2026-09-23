@@ -15,16 +15,13 @@ import {
   getTokenEnabled,
   getTokenRotatedAt,
   getTrustedOrigins,
-  getQuotaEnabled,
   rotateToken,
   sanitizeTrustedOrigins,
   setLanBroadcast,
   setLanBind,
-  setQuotaEnabled,
   setReadOnly,
   setTokenAcknowledged,
   setTokenEnabled,
-  setTokenPlanApiKey,
   setTrustedOrigins,
 } from "../lib/settings.js";
 import { setTokenAuthEnabled } from "../lib/auth.js";
@@ -268,53 +265,11 @@ export async function handlePostSettings(req, res, ctx) {
     changed = true;
   }
 
-  // v2026-08-28 modacker: Token Plan (套餐用量) feature.
-  // - `quotaEnabled` (bool): master switch
-  // - `tokenPlanApiKey` (string): Subscription Key from platform,
-  //   stored in plain text in settings.json (same trust model as
-  //   currentToken). Empty string clears it.
-  if (
-    typeof payload.quotaEnabled === "boolean" &&
-    payload.quotaEnabled !== getQuotaEnabled()
-  ) {
-    const stop = _guard("settings.update.quotaEnabled", () =>
-      setQuotaEnabled(payload.quotaEnabled),
-    );
-    if (stop === null) return undefined;
-    changed = true;
-  }
-  if (typeof payload.tokenPlanApiKey === "string") {
-    const trimmed = payload.tokenPlanApiKey.trim();
-    // Only write if the value actually changed (avoids unnecessary
-    // disk writes on every settings save).
-    if (trimmed.length > 0) {
-      const stop = _guard("settings.update.tokenPlanApiKey", () =>
-        setTokenPlanApiKey(trimmed),
-      );
-      if (stop === null) return undefined;
-      changed = true;
-    } else {
-      // Explicit clear via the key field (alternative to disabling
-      // via quotaEnabled, which also clears).
-      // Read-modify-write to keep the path simple; we don't track
-      // the masked value, so we always clear if the field is empty.
-      const stop = _guard("settings.update.tokenPlanApiKey", () =>
-        setTokenPlanApiKey(""),
-      );
-      if (stop === null) return undefined;
-      changed = true;
-    }
-  }
-
   // Push the new state so all connected clients see the toggle change.
   // Cheap (a few hundred bytes JSON per client).
   if (changed) {
     try { pushStateFor("__broadcast__"); } catch {}
   }
-  // Note: if the client just toggled Token Plan, they'll also need a
-  // /api/usage call to re-evaluate cs.usage.hidden. The frontend
-  // handles that as part of saving the settings card.
-
   const snap = getSettingsSnapshot();
   res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
   return res.end(JSON.stringify({ ...snap, changed, tokenRotated }));

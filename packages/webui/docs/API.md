@@ -577,26 +577,34 @@ Respond to an active permission / plan / ask_user prompt.
 
 ### `POST /api/usage` and `POST /api/usage-trigger`
 
-Fetch the current `mmx quota show` snapshot. `POST /api/usage-trigger`
-also triggers a fresh fetch from the CLI; `POST /api/usage` returns the
-cached value if recent.
+Read the Token Plan quota for the account. Both routes dispatch through
+`usageRoute.handleUsage`.
 
-(An older revision of this entry advertised `GET /api/usage`, but the
-endpoint was never wired up — both routes dispatch through
-`usageRoute.handleUsage`, which is POST-only and uses the request body
-to choose between a fresh fetch and the cached snapshot. The doc heading
-was tightened to match the code so `scripts/check-docs-alignment.mjs`
-keeps agreeing with the router.)
+The figures come from the engine. mcode holds the account credential and reports
+the plan tier plus each window's remaining percentage through the ACP extension
+method `mcode/account/status`; webui keeps no Subscription Key of its own (see
+`server/lib/usage.js`).
+
+`remaining` and `weeklyRemaining` are percentages, and both appear only when the
+engine reported a figure — a body without them means "no gauge to draw", not 0%.
+`resetAt` and `weeklyResetAt` are unix seconds. `ok: false` with `error` means the
+engine could not be asked (no ACP client, or the method failed); the HTTP status
+stays 200 because the request itself succeeded.
+
+(An older revision of this entry advertised `GET /api/usage`. That route was
+never wired up, and the heading now names the two POSTs the router actually
+registers, so `scripts/check-docs-alignment.mjs` keeps agreeing with it.)
 
 **Response 200**
 ```json
 {
   "ok": true,
-  "remaining": 91,
-  "resetAt": 1234567890,
-  "weeklyResetAt": 1234567890,
-  "fetchedAt": 1234567890,
-  "source": "mmx"
+  "source": "acp",
+  "remaining": 99,
+  "weeklyRemaining": 86,
+  "resetAt": 1790164800,
+  "weeklyResetAt": 1790524800,
+  "fetchedAt": 1790000000000
 }
 ```
 
@@ -622,8 +630,9 @@ source of truth for "已用 N / 占比 N%" in the right panel.
 
 ### `POST /api/refresh`
 
-Re-fetch quota + per-turn context. The webui calls this when the user
-clicks the "刷新" button in the usage popover.
+Push the caller's current state to its SSE clients. The usage popover's refresh
+button calls this and then `POST /api/usage`, which is what actually re-reads the
+quota from the engine.
 
 **Response 200** `{ok: true}`
 

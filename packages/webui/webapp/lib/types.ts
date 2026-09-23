@@ -52,19 +52,27 @@ export interface ContextPlanRow {
   value?: string;
 }
 
+/**
+ * Plan-level quota, refreshed from the engine over ACP (`server/lib/usage.js`).
+ * `fiveHourPercent` / `weekly` are the remaining figures, `*Reset` are the
+ * window's next reset as unix seconds, and `hidden` is the engine's own verdict
+ * that it has no quota reading — a not-subscribed or unreachable account.
+ */
 export interface UsageState {
   plan: string | null;
-  expires: string | null;
-  credits: number | null;
+  planExpiresAtMs: number | null;
+  creditBalance: string | null;
   fiveHourPercent: number | null;
-  fiveHourReset: string | null;
-  weekly: unknown;
+  fiveHourReset: number | null;
+  weekly: string | null;
+  weeklyReset: number | null;
   sessionInput: number;
   sessionOutput: number;
   sessionTotal: number;
   raw: unknown;
   fetchedAt: number | null;
   error: string | null;
+  hidden?: boolean;
 }
 
 export interface GoalState {
@@ -152,8 +160,6 @@ export interface WebuiState {
   onlineCount?: number;
   lanBroadcast: boolean;
   readOnly: boolean;
-  /** Whether a Token Plan subscription key is configured. */
-  hasTokenPlanKey?: boolean;
   tokenEnabled: boolean;
   [key: string]: unknown;
 }

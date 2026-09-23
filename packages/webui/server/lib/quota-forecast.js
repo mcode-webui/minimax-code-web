@@ -343,7 +343,8 @@ export function recordSnapshotFromCs(cs) {
     fiveHourResetAt:
       typeof u.fiveHourReset === "number" ? u.fiveHourReset : null,
     weeklyRemaining,
-    weeklyResetAt: null, // not currently exposed by the parser
+    weeklyResetAt:
+      typeof u.weeklyReset === "number" ? u.weeklyReset : null,
   });
 }
 

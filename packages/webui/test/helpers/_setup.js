@@ -95,23 +95,6 @@ let _tokenEnabled = true;
 let _currentToken = "";
 let _tokenRotatedAt = 0;
 let _tokenAcknowledged = false;
-// v2026-08-28 modacker: Token Plan (套餐用量) feature — mock state
-//   mirrors the real settings.js vars so pushStateFor can read them
-//   without each test having to re-stub. Default false/empty matches
-//   a clean disk. Tests that exercise the quota fields should call
-//   setQuotaEnabled / setTokenPlanApiKey before the SUT snapshot.
-// v2026-08-28 modacker (A+C): external key sources — env / file.
-//   _envTokenPlanKey and _fileTokenPlanKey shadow _tokenPlanApiKey
-//   in getTokenPlanApiKey() (priority env > file > settings). Tests
-//   can call setEnvTokenPlanKey / setFileTokenPlanKey to verify the
-//   priority chain and the snapshot's `tokenPlanApiKeySource` field.
-let _quotaEnabled = false;
-let _tokenPlanApiKey = "";
-let _envTokenPlanKey = "";
-let _fileTokenPlanKey = "";
-let _fileTokenPlanPath = "";
-let _externalKeySource = "";
-
 // Per-test direct handles (for tests that need to read state after the SUT)
 export const acpMock = _acpMock;
 
@@ -131,6 +114,11 @@ const _rpcMock = {
   activateSession: async () => ({ ok: true, data: {} }),
   loadSession: async () => ({ ok: false, code: "unsupported" }),
   listSessions: async () => [],
+  // `mcode/account/status` feeds both the account card and the usage popover
+  // (server/lib/usage.js). The default is the clean-disk answer: no engine
+  // attached, so both render their empty state. Tests that exercise either
+  // surface call registerRpcMock({ getAccountStatus }) with a payload.
+  getAccountStatus: async () => ({ ok: false, code: "no_client" }),
   mcodePermissionToWebui: () => "Full access",
   webuiPermissionToMcode: () => "bypassPermissions",
   PERMISSION_MODES: ["default", "bypassPermissions", "auto", "off"],
@@ -169,33 +157,6 @@ export function setTokenEnabled(v) { _tokenEnabled = !!v }
 export function setCurrentToken(v) { _currentToken = String(v || "") }
 export function setTokenRotatedAt(v) { _tokenRotatedAt = Number(v) || 0 }
 export function setTokenAcknowledged(v) { _tokenAcknowledged = !!v }
-// v2026-08-28 modacker: Token Plan mock mutators
-//   setQuotaEnabled(false) 镜像 real settings.js: 同步清 key
-//   (server/lib/settings.js:380-388 — "Disabling also clears the
-//   key (don't keep credentials around if the user explicitly
-//   turned the feature off)"). 任何改这俩 mock 的地方都应保持
-//   这个不变量, 否则 pushStateFor 的 snapshot 会跟真实实现分叉。
-//   同时 (A+C): setEnvTokenPlanKey / setFileTokenPlanKey 模拟外部
-//   源 — 任意一个设了之后, getTokenPlanApiKey() 优先返回它,
-//   _externalKeySource 反映最高优先级源。setQuotaEnabled(false)
-//   只清 settings.json 路径, 不动 env/file — 同真实实现。
-export function setQuotaEnabled(v) {
-  _quotaEnabled = !!v
-  if (!_quotaEnabled) _tokenPlanApiKey = ""
-}
-export function setTokenPlanApiKey(v) { _tokenPlanApiKey = String(v || "") }
-export function setEnvTokenPlanKey(v) {
-  _envTokenPlanKey = String(v || "")
-  _externalKeySource = _envTokenPlanKey ? "env" : (_fileTokenPlanKey ? "file" : "")
-}
-export function setFileTokenPlanKey(v, p) {
-  _fileTokenPlanKey = String(v || "")
-  _fileTokenPlanPath = p || ""
-  if (!_envTokenPlanKey) {
-    _externalKeySource = _fileTokenPlanKey ? "file" : ""
-  }
-}
-
 /**
  * Register all built-in + webui module mocks on the test context.
  * Must run before any SUT dynamic import in the same test file.
@@ -376,30 +337,6 @@ export async function setupMocks(t, overrides = {}) {
   if (overrides.currentToken !== undefined) _currentToken = String(overrides.currentToken || "");
   if (overrides.tokenRotatedAt !== undefined) _tokenRotatedAt = Number(overrides.tokenRotatedAt) || 0;
   if (overrides.tokenAcknowledged !== undefined) _tokenAcknowledged = !!overrides.tokenAcknowledged;
-  // v2026-08-28 modacker: Token Plan overrides. Default false/empty
-  //   mirrors a clean-disk settings.json (quotaEnabled defaults to
-  //   false in defaultState()).
-  if (overrides.quotaEnabled !== undefined) _quotaEnabled = !!overrides.quotaEnabled;
-  if (overrides.tokenPlanApiKey !== undefined) _tokenPlanApiKey = String(overrides.tokenPlanApiKey || "");
-  // maskTokenPlanKey mirrors the real helper: "sk-cp-...XXXX" or "".
-  // Reuse the same length-slice rule so a test that asserts on the
-  // masked shape matches the real implementation byte-for-byte.
-  // v2026-08-28 modacker (A+C): the real implementation now goes
-  //   through getTokenPlanApiKey() so the masked value reflects
-  //   the priority chain. The mock must do the same — without
-  //   this, a test that setEnvTokenPlanKey would still see the
-  //   settings.json mask in the snapshot.
-  const _effectiveTokenPlanKey = () => {
-    if (_envTokenPlanKey) return _envTokenPlanKey
-    if (_fileTokenPlanKey) return _fileTokenPlanKey
-    return _tokenPlanApiKey
-  }
-  const _maskTokenPlanKey = () => {
-    const k = _effectiveTokenPlanKey()
-    if (!k) return "";
-    if (k.length <= 4) return "****";
-    return "sk-cp-..." + k.slice(-4);
-  };
   t.mock.module(absPath("lib/settings.js"), {
     namedExports: {
       getLanBroadcast: () => _lanBroadcast,
@@ -409,36 +346,11 @@ export async function setupMocks(t, overrides = {}) {
       getTokenRotatedAt: () => _tokenRotatedAt,
       getTokenAcknowledged: () => _tokenAcknowledged,
       getAllowedInterfaces: () => [], // stub — feature removed in v1.0.1 cleanup
-      // v2026-08-28 modacker: Token Plan feature — state-bus.js
-      //   imports these to populate the snapshot. The real
-      //   settings.js implements them in lines 302-318.
-      // v2026-08-28 modacker (A+C): the mock's getTokenPlanApiKey
-      //   mirrors the real priority chain (env > file > settings).
-      //   Without this, tests asserting on `hasTokenPlanKey` /
-      //   `tokenPlanApiKeySource` would see only the settings.json
-      //   path even when an env/file key is "set" via the mutators
-      //   above.
-      getQuotaEnabled: () => _quotaEnabled,
-      getTokenPlanApiKey: () => {
-        if (_envTokenPlanKey) return _envTokenPlanKey
-        if (_fileTokenPlanKey) return _fileTokenPlanKey
-        return _tokenPlanApiKey
-      },
-      getTokenPlanApiKeySource: () => {
-        if (_externalKeySource) return _externalKeySource
-        return _tokenPlanApiKey ? "settings" : ""
-      },
-      getTokenPlanApiKeyFilePath: () => _fileTokenPlanPath,
-      maskTokenPlanKey: () => _maskTokenPlanKey(),
       // no-op setters (tests should use the imperative setters above)
       setLanBroadcast: (v) => { _lanBroadcast = !!v },
       setReadOnly: (v) => { _readOnly = !!v },
       setTokenEnabled: (v) => { _tokenEnabled = !!v },
       setTokenAcknowledged: (v) => { _tokenAcknowledged = !!v },
-      // v2026-08-28 modacker: Token Plan setters (mutate mock state
-      //   like the real ones do).
-      setQuotaEnabled: (v) => { _quotaEnabled = !!v; if (!_quotaEnabled) _tokenPlanApiKey = "" },
-      setTokenPlanApiKey: (k) => { _tokenPlanApiKey = typeof k === "string" ? k : "" },
       setAllowedInterfaces: (_v) => { /* no-op — feature removed */ },
       rotateToken: () => {
         const t = "testtoken" + Math.random().toString(16).slice(2, 30);
@@ -458,23 +370,6 @@ export async function setupMocks(t, overrides = {}) {
         tokenAcknowledged: _tokenAcknowledged,
         currentToken: _tokenAcknowledged ? "" : _currentToken,
         tokenRotatedAt: _tokenRotatedAt,
-        // v2026-08-28 modacker: Token Plan fields in the snapshot —
-        //   the real getSettingsSnapshot includes these on lines
-        //   534-536. Without them the webui's popover (which reads
-        //   `hasTokenPlanKey` / `tokenPlanApiKeyMasked`) would have
-        //   no data even when the feature is on.
-        quotaEnabled: _quotaEnabled,
-        tokenPlanApiKeyMasked: _maskTokenPlanKey(),
-        // v2026-08-28 modacker (A+C): hasTokenPlanKey is computed
-        //   from the priority-chain getter, not the raw var, so a
-        //   test that only setEnvTokenPlanKey still sees
-        //   hasTokenPlanKey === true. tokenPlanApiKeySource +
-        //   tokenPlanApiKeyFilePath are new in (A+C) and let tests
-        //   assert the source is correctly reported in the SSE
-        //   snapshot.
-        hasTokenPlanKey: (_envTokenPlanKey || _fileTokenPlanKey || _tokenPlanApiKey).length > 0,
-        tokenPlanApiKeySource: _envTokenPlanKey ? "env" : (_fileTokenPlanKey ? "file" : (_tokenPlanApiKey ? "settings" : "")),
-        tokenPlanApiKeyFilePath: _fileTokenPlanPath,
         port: 8080, host: "0.0.0.0", lanIp: "127.0.0.1",
         lanUrl: "http://127.0.0.1:8080", localUrl: "http://127.0.0.1:8080",
         mcodeCmd: "mcode", mcodeVersion: "0.1.2",
@@ -535,6 +430,7 @@ export async function setupMocks(t, overrides = {}) {
       activateSession: (...a) => _rpcMock.activateSession(...a),
       loadSession: (...a) => _rpcMock.loadSession(...a),
       listSessions: (...a) => _rpcMock.listSessions(...a),
+      getAccountStatus: (...a) => _rpcMock.getAccountStatus(...a),
       // v0.5.bx 系列 patch: routes/model.js 也 import 这俩
       mcodePermissionToWebui: (...a) => _rpcMock.mcodePermissionToWebui(...a),
       webuiPermissionToMcode: (...a) => _rpcMock.webuiPermissionToMcode(...a),

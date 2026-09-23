@@ -22,9 +22,27 @@ landed on the development branch but are not yet cut into a release.
   `/api/workspace/resolve`（文件夹名→候选）、`/api/workspace/recent`（最近
   工作区）route 层，以及 `resolveWorkspaceCandidates` / `getRecentWorkspaces` /
   `expandTilde` / `assertWorkspaceParentPath` 库层用例。
+- **`GET /api/account`**：账号展示名、套餐档位与配额读数。数据来自引擎新增的
+  ACP 扩展方法 `mcode/account/status`——白名单投影（`packages/tui/src/acp/
+  extensions.ts` 的 `projectAccountStatus`），有意省略 `identity.email`。按需获取，
+  不进 SSE 快照、不写日志；失败是软失败，卡片渲染空态而不是编一个名字或套餐。
+  侧栏账号区不再有任何硬编码身份。
 
 ### Changed
 
+- **套餐用量改问引擎，webui 不再保存 Subscription Key**。配额链路原先由 webui 让
+  用户填 Token Plan API Key 直连 MiniMax 配额接口，但凭据本来就在 mcode 手里
+  （`server/lib/usage.js` 的注释自己写明"只有 mcode 持有凭据"），而且 key 以明文存
+  在 `settings.json` 里。现在 `POST /api/usage` 改为调用引擎的 ACP 扩展方法
+  `mcode/account/status` 并映射其投影；`quotaEnabled` / `tokenPlanApiKey` 两个
+  设置项、`MCODE_WEBUI_TOKEN_PLAN_KEY` / `MCODE_WEBUI_TOKEN_PLAN_KEY_FILE` 两个
+  环境变量、以及"套餐用量"开关与 key 输入框整体移除。`buildPersistBody()` 是
+  显式白名单，启动时若在 `settings.json` 里发现这两个已废弃字段会重写文件把它们
+  抹掉——不留明文凭据给一个已经不再读它的功能。
+- **`POST /api/usage` 先等数据再作答**。此前先 `res.end({ok:true})` 再异步补
+  `cs.usage`，而用量悬浮卡读的是响应体的 `remaining`，所以即使配额取到了也永远
+  显示"暂无数据"。现在响应体就是刚取到的配额快照（`source: "acp"`）。取值失败时
+  `ok:false` + `error`，HTTP 仍是 200。
 - **默认端口 8080 → 18090**。8080 在桌面机与开发机上被各类服务占用得太频繁。
   显式设置的 `PORT`（或 `mcode-web --port`）仍按精确值处理，不受此影响。
 - **默认端口被占用时自动回退**到下一个空闲端口（最多尝试 20 个），并打印实际绑定

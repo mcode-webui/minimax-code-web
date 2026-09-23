@@ -136,7 +136,7 @@ single index that satisfies the check.
 | Cache read ratio | ✅ | parsed from acp `cache_read_input_tokens` |
 | tok/s (current stream speed) | ✅ | computed over a rolling 2-second window from `delta` events |
 | `mavis` runtime db per-turn context (last turn) | ✅ | `server/lib/mavis-usage.js` reads `local_runtime_token_usage` |
-| `mmx quota show` parsed | ✅ | `server/lib/usage.js` wraps the CLI; refreshes every 2 minutes (silent) and on manual click |
+| Token Plan quota (5h + weekly) | ✅ | the engine reads it and reports it over ACP as `mcode/account/status`; `server/lib/usage.js` maps the projection, `webapp/components/shell.tsx` renders the popover. webui stores no Subscription Key of its own |
 | Time-until-reset (5-hour + weekly) | ✅ | the Next shell renders the bilingual countdown ("n小时m分" / "n天m小时") |
 | Forecast exhaustion time | ✅ | `GET /api/usage/forecast` returns linear + robust (huber) extrapolation from rolling 5h/weekly reset deltas (v2.0.0, lease C07). `server/lib/quota-forecast.js` + `test/lib/quota-forecast.test.js`. UI displays a countdown. |
 

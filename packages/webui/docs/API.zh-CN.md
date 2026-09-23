@@ -570,21 +570,32 @@ mcode TUI 进行模型配置。
 
 ## 用量
 
-### `GET /api/usage` 与 `POST /api/usage` 与 `POST /api/usage-trigger`
+### `POST /api/usage` 与 `POST /api/usage-trigger`
 
-获取当前的 `mmx quota show` 快照。`POST /api/usage-trigger`
-还会从 CLI 触发一次全新的抓取。`GET /api/usage` 与
-`POST /api/usage` 在缓存较新时返回缓存值。
+读取账号的 Token Plan 配额。两个路由都分发到 `usageRoute.handleUsage`。
+
+数字来自引擎：账号凭据由 mcode 持有，它通过 ACP 扩展方法
+`mcode/account/status` 上报套餐档位与各窗口的剩余百分比；webui 自己不再保存
+Subscription Key（见 `server/lib/usage.js`）。
+
+`remaining` 与 `weeklyRemaining` 是百分比，且只在引擎确实给出读数时出现 ——
+响应体里没有这两个字段表示"没有仪表盘可画"，而不是 0%。`resetAt` 与
+`weeklyResetAt` 是 unix 秒。`ok: false` 加 `error` 表示问不到引擎（没有 ACP
+客户端，或方法失败）；HTTP 状态仍是 200，因为请求本身成功了。
+
+（本条目早期版本曾写有 `GET /api/usage`，该路由从未接线；标题现在只列路由表里
+真实注册的两个 POST。）
 
 **响应 200**
 ```json
 {
   "ok": true,
-  "remaining": 91,
-  "resetAt": 1234567890,
-  "weeklyResetAt": 1234567890,
-  "fetchedAt": 1234567890,
-  "source": "mmx"
+  "source": "acp",
+  "remaining": 99,
+  "weeklyRemaining": 86,
+  "resetAt": 1790164800,
+  "weeklyResetAt": 1790524800,
+  "fetchedAt": 1790000000000
 }
 ```
 
@@ -610,8 +621,8 @@ mcode TUI 进行模型配置。
 
 ### `POST /api/refresh`
 
-重新抓取配额 + 每轮上下文。webui 在用户点击用量弹层中的
-"刷新"按钮时调用此端点。
+把调用方当前的状态推给它自己的 SSE 客户端。用量弹层的刷新按钮会先调用它，随后
+再调 `POST /api/usage` —— 真正重新从引擎读取配额的是后者。
 
 **响应 200** `{ok: true}`
 

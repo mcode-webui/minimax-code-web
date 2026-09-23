@@ -130,11 +130,6 @@ before(async (t) => {
       getTokenRotatedAt: () => 0,
       getTokenAcknowledged: () => false,
       getAllowedInterfaces: () => [],
-      getQuotaEnabled: () => false,
-      getTokenPlanApiKey: () => "",
-      getTokenPlanApiKeySource: () => "",
-      getTokenPlanApiKeyFilePath: () => "",
-      maskTokenPlanKey: () => "",
     },
   });
 
