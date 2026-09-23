@@ -33,6 +33,11 @@ const en = {
 
   "chat.empty": "Start a conversation",
   "chat.thinking": "Thinking",
+  "chat.status.running": "Running",
+  "chat.tps": "tok/s",
+  "session.status.error": "Ended with an error",
+  "session.status.aborted": "Stopped",
+  "session.status.interrupted": "Interrupted",
   // Loading-state copy for the active turn. Upstream surfaces four phase
   // labels (working / planning / wiring / checking) keyed off the engine's
   // stage; the server only ships "thinkingStatus" today, but adding the
@@ -274,6 +279,11 @@ const zh: Record<MessageKey, string> = {
 
   "chat.empty": "开始一段对话",
   "chat.thinking": "思考中",
+  "chat.status.running": "运行中",
+  "chat.tps": "tok/s",
+  "session.status.error": "以错误结束",
+  "session.status.aborted": "已停止",
+  "session.status.interrupted": "已中断",
   "chat.thinkingStatus.working": "正在干活",
   "chat.thinkingStatus.planning": "正在规划",
   "chat.thinkingStatus.wiring": "正在串线信息",

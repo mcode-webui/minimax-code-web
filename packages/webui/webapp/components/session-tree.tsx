@@ -45,6 +45,9 @@ const UNTITLED: MessageKey = "sidebar.untitled";
 export function SessionTree({ t }: { t: (key: MessageKey) => string }) {
   const { state } = useSessionContext();
   const activeId = state?.mcodeSessionId ?? null;
+  // Live, from the SSE snapshot — unlike `session.status` in the payload below,
+  // which the server reads from the engine's database through a 15s cache.
+  const running = state?.running?.active ?? false;
   const [payload, setPayload] = useState<api.SessionTreePayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [openProjects, setOpenProjects] = useState<string[]>([]);
@@ -52,9 +55,9 @@ export function SessionTree({ t }: { t: (key: MessageKey) => string }) {
   const [openSessions, setOpenSessions] = useState<string[]>([]);
   const [revealed, setRevealed] = useState<Record<string, number>>({});
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (force = false) => {
     try {
-      const next = await api.getSessionTree();
+      const next = await api.getSessionTree(force);
       setPayload(next.ok ? next : null);
       setError(next.ok ? null : next.reason ?? "unavailable");
     } catch (cause) {
@@ -68,6 +71,20 @@ export function SessionTree({ t }: { t: (key: MessageKey) => string }) {
   useEffect(() => {
     void refresh();
   }, [refresh, activeId]);
+
+  // A run starting or ending is when the engine rewrites the per-session `status`
+  // this list paints, and the payload is served from that 15s cache — so this
+  // transition forces a re-read instead of waiting the cache out. Without it a
+  // running session looked idle, and a finished one kept shimmering.
+  // Skipped on mount: the effect above already fetches.
+  const sawRun = useRef(false);
+  useEffect(() => {
+    if (!sawRun.current) {
+      sawRun.current = true;
+      return;
+    }
+    void refresh(true);
+  }, [refresh, running]);
 
   // Open the active session's chain on first sight so "where am I" is answered
   // without a click. Cheap to re-run: the three updates are no-ops once open.
@@ -482,6 +499,22 @@ function DirectoryNode({
  * of overlaying it is what keeps a long title readable up to the last
  * character.
  */
+/**
+ * How a session that stopped on something other than success reads in the list.
+ *
+ * The engine writes `aborted`, `interrupted` and `error` into the session row,
+ * and every one of them rendered exactly like `idle` — a session that died on an
+ * error was indistinguishable from one that was simply quiet. Only states that
+ * mean "this did not finish cleanly" get a mark; `idle` and `completed` stay
+ * plain, and `started` is the marquee. The label is the tooltip, so the mark is
+ * never the only carrier of the meaning.
+ */
+const SESSION_STATE_MARK: Record<string, { dot: string; label: MessageKey }> = {
+  error: { dot: "bg-bg_status_error", label: "session.status.error" },
+  aborted: { dot: "bg-bg_status_warning", label: "session.status.aborted" },
+  interrupted: { dot: "bg-bg_status_warning", label: "session.status.interrupted" },
+};
+
 function SessionNode({
   session,
   activeId,
@@ -497,7 +530,14 @@ function SessionNode({
   onChanged: () => void;
   t: (key: MessageKey) => string;
 }) {
+  const { state } = useSessionContext();
   const active = session.id === activeId;
+  // The engine status is the source for every row, but the active session's is
+  // also on the wire live: `running.active` arrives over SSE the moment a turn
+  // starts. Reading it here is what makes the marquee immediate rather than up
+  // to a cache lifetime late.
+  const liveRunning = active && (state?.running?.active ?? false);
+  const stateMark = SESSION_STATE_MARK[session.status];
   const hasChildren = session.children.length > 0;
   const onOpen = useCallback(() => {
     void runAction(t("sidebar.openSession"), api.switchSession(session.id)).then(onChanged);
@@ -604,8 +644,20 @@ function SessionNode({
                   className="desktop-text-ui-body min-w-0 flex-1 rounded-[4px] border border-border_accent bg-bg_grouped_secondary px-1.5 py-px text-sm leading-5 text-text_default_primary outline-none"
                 />
               ) : (
-                <RunningTitle title={title} running={session.status === "started"} />
+                <RunningTitle
+                  title={title}
+                  running={session.status === "started" || liveRunning}
+                />
               )}
+              {stateMark ? (
+                <span
+                  data-testid="sidebar-session-status"
+                  role="img"
+                  aria-label={t(stateMark.label)}
+                  title={t(stateMark.label)}
+                  className={`ml-1.5 size-1.5 flex-shrink-0 rounded-full ${stateMark.dot}`}
+                />
+              ) : null}
               {hasChildren ? (
                 /* Child count clamps at 99+ so the row never grows with the number. */
                 <span className="desktop-text-ui-assist flex h-5 min-w-5 flex-shrink-0 items-center justify-center rounded-full bg-bg_grouped_tertiary px-1 text-xs leading-4 text-text_default_secondary">

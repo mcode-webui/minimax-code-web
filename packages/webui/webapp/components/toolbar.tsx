@@ -1,6 +1,6 @@
 "use client";
 
-import { useSessionContext } from "@/lib/store";
+import { useSessionContext, useTicker } from "@/lib/store";
 import type { MessageKey } from "@/lib/i18n";
 import { Icon } from "./icons";
 
@@ -42,6 +42,16 @@ interface ToolbarProps {
 
 export function ConversationToolbar({ t, onOpenWorkspace, onOpenFiles, activePanel = null }: ToolbarProps) {
   const { state } = useSessionContext();
+  // `running` is the live half of the session's state: the server sets it when a
+  // turn starts and clears it when the turn ends, and it arrives over SSE. The
+  // transcript has its own indicator, but that one is only visible when the
+  // transcript is scrolled to it — this bar is always on screen, which is what
+  // answers "is it still working?" without hunting for it.
+  const running = state?.running.active ?? false;
+  const startedAt = state?.running.startedAt ?? null;
+  const now = useTicker(1000);
+  const elapsed = running && startedAt ? formatElapsed(now - startedAt) : null;
+  const tps = state?.context.tps ?? 0;
 
   return (
     <div className="flex h-[56px] flex-shrink-0 items-center pl-2">
@@ -58,6 +68,25 @@ export function ConversationToolbar({ t, onOpenWorkspace, onOpenFiles, activePan
           <span className="max-w-[420px] truncate">{state?.sessionTitle || t("sidebar.untitled")}</span>
           <Icon name="chevronDown" size={14} />
         </button>
+        {running ? (
+          <span
+            data-testid="toolbar-session-status"
+            className="flex flex-shrink-0 items-center gap-2 text-caption-small-strong text-text_default_tertiary"
+          >
+            <span className="mavis-loading">
+              <span className="mavis-dot mavis-dot-a" />
+              <span className="mavis-dot mavis-dot-b" />
+              <span className="mavis-dot mavis-dot-c" />
+            </span>
+            <span>{t("chat.status.running")}</span>
+            {elapsed ? <span className="tabular-nums">{elapsed}</span> : null}
+            {tps > 0 ? (
+              <span className="tabular-nums">
+                {Math.round(tps)} {t("chat.tps")}
+              </span>
+            ) : null}
+          </span>
+        ) : null}
       </div>
 
       {/* Panel launchers — the right extension area's tab list. Upstream pins
@@ -148,3 +177,11 @@ function ToolbarButton({
  * the shell reads it alongside the other toolbar-derived state.
  */
 export { useAlertCount } from "@/lib/alerts";
+
+/** `m:ss` for a turn in flight — long enough to stay readable, never a date. */
+function formatElapsed(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
