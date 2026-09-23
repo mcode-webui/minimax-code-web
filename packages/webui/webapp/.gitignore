@@ -1,0 +1,13 @@
+# Next.js build outputs. Neither directory is ever published from the
+# source tree:
+#   - `.next/` is the dev/build cache (HMR state, swc-loader caches, the
+#     incremental `tsbuildinfo`); `pnpm run webui:dev` and `pnpm run webui:build`
+#     both produce it.
+#   - `out/` is the `next export` static site that `scripts/build.mjs`
+#     copies into `dist/webui/webapp/out/` for the bundled runtime to serve.
+# Both patterns are name-specific on purpose. `public/` is deliberately
+# NOT listed here: the gate page (`auth-gate.html`) is about to become a
+# committed source file under `webapp/public/` that Next copies into the
+# export, and a wildcard or `public/` entry would silently drop it.
+.next/
+out/

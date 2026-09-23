@@ -1,0 +1,1000 @@
+/* Desktop typography preset — the cascade the Electron client applies.
+ *
+ * Upstream does NOT ship this in a stylesheet. The renderer resolves a typography
+ * preset in JavaScript (`resolveDesktopTypographyPreset`) and writes ~40 CSS custom
+ * properties onto <html> as inline style, then gates a set of stylesheet rules on
+ * `mavis-desktop-typography-enabled` (plus `mavis-platform-electron`) to consume them.
+ *
+ * We replicate that contract instead of approximating it:
+ *   1. the preset block below emits the same custom properties for the `standard`
+ *      size preset (14px UI base / 12px code) that upstream computes,
+ *   2. the rules after it are copied verbatim from the official stylesheet,
+ *   3. app/layout.tsx puts both gate classes on <html>.
+ *
+ * Emitting the properties is what makes the copied rules resolve: they reference
+ * `var(--mavis-type-ui-body-font-size)`, `var(--mavis-markdown-body-size)` and
+ * friends without fallbacks in most cases.
+ *
+ * `standard` is the preset the desktop client defaults to
+ * (`DEFAULT_PRESET = { uiFontWeight: "theme", density: "comfortable", … }` with no
+ * stored size override). Other presets would only change the block below.
+ *
+ * 120 rules follow. Do not edit the "copied" half by hand — regenerate the whole file with
+ * `scripts/desktop-typography.mjs`. Provenance: see webapp/README.md.
+ */
+
+/* ---------------------------------------------------------------------------
+ * 1. Preset emission — computed values for the "standard" preset.
+ *
+ *    uiBaseFontSize 14 → ui scale; codeFontSize 12 → code scale.
+ *    Derived exactly as upstream does:
+ *      ui/assist  12  / 16     / 430      chat/body  14 / 22.75 / 430
+ *      ui/small   13  / 18.57  / 430      markdown   h1 6u .. h6, u = bodySize/4 = 3.5
+ *      ui/body    14  / 21     / 430      table      cell 13 / 22.75, header 13 / 14
+ *      ui/large   16  / 24.89  / 430      code       block 12 / 20, diff 12 / 21.6
+ * ------------------------------------------------------------------------- */
+:root.mavis-desktop-typography-enabled {
+  --mavis-letter-spacing-normal: 0px;
+
+  /* Font-weight ladder. Every weight above reads `var(--mavis-font-weight-*, <n>)`,
+   * so a product-level override can retune without touching the rules. */
+  --mavis-font-weight-normal: 400;
+  --mavis-font-weight-default: var(--mavis-body-font-weight, 430);
+  --mavis-font-weight-medium: var(--mavis-label-font-weight, 500);
+  --mavis-font-weight-semibold: var(--mavis-heading-font-weight, 600);
+  --mavis-font-weight-bold: var(--mavis-bold-font-weight, 700);
+
+  /* UI scale. */
+  --mavis-ui-font-size: 14px;
+  --mavis-ui-assist-size: 12px;
+  --mavis-ui-assist-line-height: 16px;
+  --mavis-ui-small-size: 13px;
+  --mavis-ui-small-line-height: 18.57px;
+  --mavis-ui-body-size: 14px;
+  --mavis-ui-body-line-height: 21px;
+  --mavis-ui-large-size: 16px;
+  --mavis-ui-large-line-height: 24.89px;
+
+  /* Tailwind-compatible aliases of the same scale. */
+  --mavis-text-xs: 12px;
+  --mavis-text-xs-line-height: 16px;
+  --mavis-text-sm: 13px;
+  --mavis-text-sm-line-height: 18.57px;
+  --mavis-text-base: 14px;
+  --mavis-text-base-line-height: 21px;
+  --mavis-text-lg: 16px;
+  --mavis-text-lg-line-height: 24.89px;
+  --mavis-body-size: 14px;
+  --mavis-body-line-height: 21px;
+  --mavis-body-small-size: 13px;
+  --mavis-body-small-line-height: 18.57px;
+  --mavis-caption-size: 12px;
+  --mavis-caption-line-height: 16px;
+  --mavis-caption-small-size: 12px;
+  --mavis-caption-small-line-height: 16px;
+
+  /* Markdown headings, derived from the spacing unit below. */
+  --mavis-heading1-size: 21px;
+  --mavis-heading1-line-height: 28px;
+  --mavis-heading2-size: 17.5px;
+  --mavis-heading2-line-height: 24.5px;
+  --mavis-heading3-size: 15.75px;
+  --mavis-heading3-line-height: 24.5px;
+  --mavis-heading-sm: 15.75px;
+  --mavis-heading-md: 17.5px;
+  --mavis-heading-lg: 21px;
+
+  /* Chat body — the transcript's reading size. */
+  --mavis-chat-body-size: 14px;
+  --mavis-chat-body-line-height: 22.75px;
+
+  /* Markdown. spacingUnit = bodySize / 4 = 3.5, and every gap is a multiple. */
+  --mavis-markdown-spacing-unit: 3.5px;
+  --mavis-markdown-space-1: 3.5px;
+  --mavis-markdown-space-2: 7px;
+  --mavis-markdown-space-3: 10.5px;
+  --mavis-markdown-space-4: 14px;
+  --mavis-markdown-space-5: 17.5px;
+  --mavis-markdown-space-6: 21px;
+  --mavis-markdown-space-7: 24.5px;
+  --mavis-markdown-body-size: 14px;
+  --mavis-markdown-body-line-height: 22.75px;
+  --mavis-markdown-h1-size: 21px;
+  --mavis-markdown-h1-line-height: 28px;
+  --mavis-markdown-h2-size: 17.5px;
+  --mavis-markdown-h2-line-height: 24.5px;
+  --mavis-markdown-h3-size: 15.75px;
+  --mavis-markdown-h3-line-height: 24.5px;
+  --mavis-markdown-h4-size: 14px;
+  --mavis-markdown-h4-line-height: 21px;
+  --mavis-markdown-h5-size: 14px;
+  --mavis-markdown-h5-line-height: 22.75px;
+  --mavis-markdown-h6-size: 14px;
+  --mavis-markdown-h6-line-height: 22.75px;
+  --mavis-markdown-table-header-size: 13px;
+  --mavis-markdown-table-header-line-height: 14px;
+  --mavis-markdown-table-cell-size: 13px;
+  --mavis-markdown-table-cell-line-height: 22.75px;
+
+  /* Dialogs. */
+  --mavis-dialog-title-size: 20px;
+  --mavis-dialog-title-line-height: 28px;
+  --mavis-dialog-title-letter-spacing: -0.36px;
+  --mavis-remote-goal-size: 16px;
+
+  /* Code. */
+  --mavis-inline-code-font-size: 0.92em;
+  --mavis-code-font-size: 12px;
+  --mavis-code-line-height: 20px;
+  --mavis-code-block-font-size: 12px;
+  --mavis-code-block-line-height: 20px;
+  --mavis-code-compact-font-size: 12px;
+  --mavis-diff-font-size: 12px;
+  --mavis-diff-line-height: 21.6px;
+  --mavis-terminal-font-size: 12px;
+  --mavis-terminal-line-height: 1.2;
+
+  /* Per-role shorthands (`cP()` upstream) — the `.desktop-text-*` utilities read these. */
+  --mavis-type-brand-slogan-font-size: 28px;
+  --mavis-type-brand-slogan-line-height: 35px;
+  --mavis-type-brand-slogan-font-weight: var(--mavis-font-weight-semibold, 600);
+  --mavis-type-brand-slogan-letter-spacing: 0px;
+  --mavis-type-composer-disclaimer-font-size: 10px;
+  --mavis-type-composer-disclaimer-line-height: 14px;
+  --mavis-type-composer-disclaimer-font-weight: var(--mavis-font-weight-default, 430);
+  --mavis-type-composer-disclaimer-letter-spacing: 0px;
+  --mavis-type-ui-assist-font-size: 12px;
+  --mavis-type-ui-assist-line-height: 16px;
+  --mavis-type-ui-assist-font-weight: var(--mavis-font-weight-default, 430);
+  --mavis-type-ui-assist-letter-spacing: 0px;
+  --mavis-type-ui-assist-strong-font-size: 12px;
+  --mavis-type-ui-assist-strong-line-height: 16px;
+  --mavis-type-ui-assist-strong-font-weight: var(--mavis-font-weight-medium, 500);
+  --mavis-type-ui-assist-strong-letter-spacing: 0px;
+  --mavis-type-ui-small-font-size: 13px;
+  --mavis-type-ui-small-line-height: 18.57px;
+  --mavis-type-ui-small-font-weight: var(--mavis-font-weight-default, 430);
+  --mavis-type-ui-small-letter-spacing: 0px;
+  --mavis-type-ui-small-strong-font-size: 13px;
+  --mavis-type-ui-small-strong-line-height: 18.57px;
+  --mavis-type-ui-small-strong-font-weight: var(--mavis-font-weight-medium, 500);
+  --mavis-type-ui-small-strong-letter-spacing: 0px;
+  --mavis-type-ui-body-font-size: 14px;
+  --mavis-type-ui-body-line-height: 21px;
+  --mavis-type-ui-body-font-weight: var(--mavis-font-weight-default, 430);
+  --mavis-type-ui-body-letter-spacing: 0px;
+  --mavis-type-ui-body-strong-font-size: 14px;
+  --mavis-type-ui-body-strong-line-height: 21px;
+  --mavis-type-ui-body-strong-font-weight: var(--mavis-font-weight-medium, 500);
+  --mavis-type-ui-body-strong-letter-spacing: 0px;
+  --mavis-type-ui-large-font-size: 16px;
+  --mavis-type-ui-large-line-height: 24.89px;
+  --mavis-type-ui-large-font-weight: var(--mavis-font-weight-default, 430);
+  --mavis-type-ui-large-letter-spacing: 0px;
+  --mavis-type-ui-large-strong-font-size: 16px;
+  --mavis-type-ui-large-strong-line-height: 24.89px;
+  --mavis-type-ui-large-strong-font-weight: var(--mavis-font-weight-medium, 500);
+  --mavis-type-ui-large-strong-letter-spacing: 0px;
+  --mavis-type-chat-body-font-size: 14px;
+  --mavis-type-chat-body-line-height: 22.75px;
+  --mavis-type-chat-body-font-weight: var(--mavis-font-weight-default, 430);
+  --mavis-type-chat-body-letter-spacing: 0px;
+  --mavis-type-chat-body-strong-font-size: 14px;
+  --mavis-type-chat-body-strong-line-height: 22.75px;
+  --mavis-type-chat-body-strong-font-weight: var(--mavis-font-weight-semibold, 600);
+  --mavis-type-chat-body-strong-letter-spacing: 0px;
+  --mavis-type-markdown-body-font-size: 14px;
+  --mavis-type-markdown-body-line-height: 22.75px;
+  --mavis-type-markdown-body-font-weight: var(--mavis-font-weight-default, 430);
+  --mavis-type-markdown-body-letter-spacing: 0px;
+  --mavis-type-markdown-h1-font-size: 21px;
+  --mavis-type-markdown-h1-line-height: 28px;
+  --mavis-type-markdown-h2-font-size: 17.5px;
+  --mavis-type-markdown-h2-line-height: 24.5px;
+  --mavis-type-markdown-h3-font-size: 15.75px;
+  --mavis-type-markdown-h3-line-height: 24.5px;
+  --mavis-type-markdown-h4-font-size: 14px;
+  --mavis-type-markdown-h4-line-height: 21px;
+  --mavis-type-markdown-h5-font-size: 14px;
+  --mavis-type-markdown-h5-line-height: 22.75px;
+  --mavis-type-markdown-h6-font-size: 14px;
+  --mavis-type-markdown-h6-line-height: 22.75px;
+  --mavis-type-markdown-h1-font-weight: var(--mavis-font-weight-semibold, 600);
+  --mavis-type-markdown-h2-font-weight: var(--mavis-font-weight-semibold, 600);
+  --mavis-type-markdown-h3-font-weight: var(--mavis-font-weight-semibold, 600);
+  --mavis-type-markdown-h4-font-weight: var(--mavis-font-weight-semibold, 600);
+  --mavis-type-markdown-h5-font-weight: var(--mavis-font-weight-semibold, 600);
+  --mavis-type-markdown-h6-font-weight: var(--mavis-font-weight-semibold, 600);
+  --mavis-type-markdown-h1-letter-spacing: 0px;
+  --mavis-type-markdown-h2-letter-spacing: 0px;
+  --mavis-type-markdown-h3-letter-spacing: 0px;
+  --mavis-type-markdown-h4-letter-spacing: 0px;
+  --mavis-type-markdown-h5-letter-spacing: 0px;
+  --mavis-type-markdown-h6-letter-spacing: 0px;
+  --mavis-type-markdown-body-letter-spacing: 0px;
+  --mavis-type-markdown-table-header-font-size: 13px;
+  --mavis-type-markdown-table-header-line-height: 14px;
+  --mavis-type-markdown-table-header-font-weight: var(--mavis-font-weight-semibold, 600);
+  --mavis-type-markdown-table-header-letter-spacing: 0px;
+  --mavis-type-markdown-table-cell-font-size: 13px;
+  --mavis-type-markdown-table-cell-line-height: 22.75px;
+  --mavis-type-markdown-table-cell-font-weight: var(--mavis-font-weight-default, 430);
+  --mavis-type-markdown-table-cell-letter-spacing: 0px;
+  --mavis-type-dialog-medium-font-size: 20px;
+  --mavis-type-dialog-medium-line-height: 28px;
+  --mavis-type-dialog-medium-font-weight: var(--mavis-font-weight-medium, 500);
+  --mavis-type-dialog-medium-letter-spacing: -0.36px;
+  --mavis-type-dialog-semibold-font-size: 20px;
+  --mavis-type-dialog-semibold-line-height: 28px;
+  --mavis-type-dialog-semibold-font-weight: var(--mavis-font-weight-semibold, 600);
+  --mavis-type-dialog-semibold-letter-spacing: -0.36px;
+  --mavis-type-code-block-font-size: 12px;
+  --mavis-type-code-block-line-height: 20px;
+  --mavis-type-code-block-font-weight: var(--mavis-code-font-weight, 400);
+  --mavis-type-code-block-letter-spacing: 0px;
+  --mavis-type-code-diff-font-size: 12px;
+  --mavis-type-code-diff-line-height: 21.6px;
+  --mavis-type-code-diff-font-weight: var(--mavis-code-font-weight, 400);
+  --mavis-type-code-diff-letter-spacing: 0px;
+  --mavis-type-code-terminal-font-size: 12px;
+  --mavis-type-code-terminal-line-height: 14.4px;
+  --mavis-type-code-terminal-font-weight: var(--mavis-code-font-weight, 400);
+  --mavis-type-code-terminal-letter-spacing: 0px;
+}
+
+/* Integer font-size/line-height ramp upstream also emits: `--mavis-font-size-N`
+ * resolves to N rounded through the ui scale, and several markdown rules fall back
+ * to `var(--mavis-font-size-14, 14px)`. Only the 8..64 range is ever referenced. */
+:root.mavis-desktop-typography-enabled {
+
+  --mavis-font-size-8: 8px;
+  --mavis-line-height-8: 8px;
+  --mavis-font-size-9: 9px;
+  --mavis-line-height-9: 9px;
+  --mavis-font-size-10: 10px;
+  --mavis-line-height-10: 10px;
+  --mavis-font-size-11: 11px;
+  --mavis-line-height-11: 11px;
+  --mavis-font-size-12: 12px;
+  --mavis-line-height-12: 12px;
+  --mavis-font-size-13: 13px;
+  --mavis-line-height-13: 13px;
+  --mavis-font-size-14: 14px;
+  --mavis-line-height-14: 14px;
+  --mavis-font-size-15: 15px;
+  --mavis-line-height-15: 15px;
+  --mavis-font-size-16: 16px;
+  --mavis-line-height-16: 16px;
+  --mavis-font-size-17: 17px;
+  --mavis-line-height-17: 17px;
+  --mavis-font-size-18: 18px;
+  --mavis-line-height-18: 18px;
+  --mavis-font-size-19: 19px;
+  --mavis-line-height-19: 19px;
+  --mavis-font-size-20: 20px;
+  --mavis-line-height-20: 20px;
+  --mavis-font-size-21: 21px;
+  --mavis-line-height-21: 21px;
+  --mavis-font-size-22: 22px;
+  --mavis-line-height-22: 22px;
+  --mavis-font-size-23: 23px;
+  --mavis-line-height-23: 23px;
+  --mavis-font-size-24: 24px;
+  --mavis-line-height-24: 24px;
+  --mavis-font-size-25: 25px;
+  --mavis-line-height-25: 25px;
+  --mavis-font-size-26: 26px;
+  --mavis-line-height-26: 26px;
+  --mavis-font-size-27: 27px;
+  --mavis-line-height-27: 27px;
+  --mavis-font-size-28: 28px;
+  --mavis-line-height-28: 28px;
+  --mavis-font-size-29: 29px;
+  --mavis-line-height-29: 29px;
+  --mavis-font-size-30: 30px;
+  --mavis-line-height-30: 30px;
+  --mavis-font-size-31: 31px;
+  --mavis-line-height-31: 31px;
+  --mavis-font-size-32: 32px;
+  --mavis-line-height-32: 32px;
+  --mavis-font-size-33: 33px;
+  --mavis-line-height-33: 33px;
+  --mavis-font-size-34: 34px;
+  --mavis-line-height-34: 34px;
+  --mavis-font-size-35: 35px;
+  --mavis-line-height-35: 35px;
+  --mavis-font-size-36: 36px;
+  --mavis-line-height-36: 36px;
+  --mavis-font-size-37: 37px;
+  --mavis-line-height-37: 37px;
+  --mavis-font-size-38: 38px;
+  --mavis-line-height-38: 38px;
+  --mavis-font-size-39: 39px;
+  --mavis-line-height-39: 39px;
+  --mavis-font-size-40: 40px;
+  --mavis-line-height-40: 40px;
+  --mavis-font-size-41: 41px;
+  --mavis-line-height-41: 41px;
+  --mavis-font-size-42: 42px;
+  --mavis-line-height-42: 42px;
+  --mavis-font-size-43: 43px;
+  --mavis-line-height-43: 43px;
+  --mavis-font-size-44: 44px;
+  --mavis-line-height-44: 44px;
+  --mavis-font-size-45: 45px;
+  --mavis-line-height-45: 45px;
+  --mavis-font-size-46: 46px;
+  --mavis-line-height-46: 46px;
+  --mavis-font-size-47: 47px;
+  --mavis-line-height-47: 47px;
+  --mavis-font-size-48: 48px;
+  --mavis-line-height-48: 48px;
+  --mavis-font-size-49: 49px;
+  --mavis-line-height-49: 49px;
+  --mavis-font-size-50: 50px;
+  --mavis-line-height-50: 50px;
+  --mavis-font-size-51: 51px;
+  --mavis-line-height-51: 51px;
+  --mavis-font-size-52: 52px;
+  --mavis-line-height-52: 52px;
+  --mavis-font-size-53: 53px;
+  --mavis-line-height-53: 53px;
+  --mavis-font-size-54: 54px;
+  --mavis-line-height-54: 54px;
+  --mavis-font-size-55: 55px;
+  --mavis-line-height-55: 55px;
+  --mavis-font-size-56: 56px;
+  --mavis-line-height-56: 56px;
+  --mavis-font-size-57: 57px;
+  --mavis-line-height-57: 57px;
+  --mavis-font-size-58: 58px;
+  --mavis-line-height-58: 58px;
+  --mavis-font-size-59: 59px;
+  --mavis-line-height-59: 59px;
+  --mavis-font-size-60: 60px;
+  --mavis-line-height-60: 60px;
+  --mavis-font-size-61: 61px;
+  --mavis-line-height-61: 61px;
+  --mavis-font-size-62: 62px;
+  --mavis-line-height-62: 62px;
+  --mavis-font-size-63: 63px;
+  --mavis-line-height-63: 63px;
+  --mavis-font-size-64: 64px;
+  --mavis-line-height-64: 64px;
+}
+
+/* ---------------------------------------------------------------------------
+ * 2. Rules copied verbatim from the official stylesheet.
+ *
+ *    Selected by the single predicate "does the selector mention
+ *    `mavis-desktop-typography-enabled`", which is exactly the set upstream turns
+ *    on when the typography preset is active. Nothing here was retyped or
+ *    reordered; only the surrounding whitespace between rules was normalised.
+ * ------------------------------------------------------------------------- */
+
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-button {
+  font-weight:var(--mavis-label-font-weight,inherit);
+  transition:background-color .3s,border-radius .16s ease,min-height .16s ease
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-input,:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-input input,:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-textarea,:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-textarea textarea,:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-textarea textarea[data-desktop-text-role=ui-body],:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-textarea textarea[data-desktop-text-role=ui-body] textarea,:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-textarea textarea[data-desktop-text-role=ui-body] textarea::placeholder,:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-textarea textarea[data-desktop-text-role=ui-body]::placeholder,:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-textarea-no-border,:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-textarea-no-border textarea,:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-textarea-no-border textarea[data-desktop-text-role=ui-body],:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-textarea-no-border textarea[data-desktop-text-role=ui-body] textarea,:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-textarea-no-border textarea[data-desktop-text-role=ui-body] textarea::placeholder,:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-textarea-no-border textarea[data-desktop-text-role=ui-body]::placeholder,:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-textarea-no-border[data-desktop-text-role=ui-body],:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-textarea-no-border[data-desktop-text-role=ui-body] textarea,:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-textarea-no-border[data-desktop-text-role=ui-body] textarea::placeholder,:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-textarea-no-border[data-desktop-text-role=ui-body]::placeholder,:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-textarea[data-desktop-text-role=ui-body],:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-textarea[data-desktop-text-role=ui-body] textarea,:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-textarea[data-desktop-text-role=ui-body] textarea::placeholder,:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-textarea[data-desktop-text-role=ui-body]::placeholder {
+  font-size:var(--mavis-type-ui-body-font-size)!important;
+  line-height:var(--mavis-type-ui-body-line-height)!important;
+  font-weight:var(--mavis-type-ui-body-font-weight)!important;
+  letter-spacing:var(--mavis-type-ui-body-letter-spacing)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-textarea textarea[data-desktop-text-role=chat-body],:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-textarea textarea[data-desktop-text-role=chat-body] textarea,:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-textarea textarea[data-desktop-text-role=chat-body] textarea::placeholder,:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-textarea textarea[data-desktop-text-role=chat-body]::placeholder,:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-textarea-no-border textarea[data-desktop-text-role=chat-body],:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-textarea-no-border textarea[data-desktop-text-role=chat-body] textarea,:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-textarea-no-border textarea[data-desktop-text-role=chat-body] textarea::placeholder,:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-textarea-no-border textarea[data-desktop-text-role=chat-body]::placeholder,:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-textarea-no-border[data-desktop-text-role=chat-body],:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-textarea-no-border[data-desktop-text-role=chat-body] textarea,:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-textarea-no-border[data-desktop-text-role=chat-body] textarea::placeholder,:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-textarea-no-border[data-desktop-text-role=chat-body]::placeholder,:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-textarea[data-desktop-text-role=chat-body],:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-textarea[data-desktop-text-role=chat-body] textarea,:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-textarea[data-desktop-text-role=chat-body] textarea::placeholder,:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-textarea[data-desktop-text-role=chat-body]::placeholder {
+  font-size:var(--mavis-type-chat-body-font-size)!important;
+  line-height:var(--mavis-type-chat-body-line-height)!important;
+  font-weight:var(--mavis-type-chat-body-font-weight)!important;
+  letter-spacing:var(--mavis-type-chat-body-letter-spacing)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-textarea textarea[data-desktop-text-role=code-block],:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-textarea textarea[data-desktop-text-role=code-block] textarea,:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-textarea textarea[data-desktop-text-role=code-block] textarea::placeholder,:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-textarea textarea[data-desktop-text-role=code-block]::placeholder,:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-textarea-no-border textarea[data-desktop-text-role=code-block],:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-textarea-no-border textarea[data-desktop-text-role=code-block] textarea,:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-textarea-no-border textarea[data-desktop-text-role=code-block] textarea::placeholder,:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-textarea-no-border textarea[data-desktop-text-role=code-block]::placeholder,:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-textarea-no-border[data-desktop-text-role=code-block],:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-textarea-no-border[data-desktop-text-role=code-block] textarea,:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-textarea-no-border[data-desktop-text-role=code-block] textarea::placeholder,:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-textarea-no-border[data-desktop-text-role=code-block]::placeholder,:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-textarea[data-desktop-text-role=code-block],:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-textarea[data-desktop-text-role=code-block] textarea,:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-textarea[data-desktop-text-role=code-block] textarea::placeholder,:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-textarea[data-desktop-text-role=code-block]::placeholder {
+  font-size:var(--mavis-type-code-block-font-size)!important;
+  line-height:var(--mavis-type-code-block-line-height)!important;
+  font-weight:var(--mavis-type-code-block-font-weight)!important;
+  letter-spacing:var(--mavis-type-code-block-letter-spacing)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-textarea.mavis-personalization-editor {
+  border-radius:calc(var(--mavis-radius-surface, 12px) + 4px)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .two-column-modal .mavis-settings-electron-back,:root.mavis-platform-electron.mavis-desktop-typography-enabled .two-column-modal .menu-label {
+  font-size:var(--mavis-type-ui-body-font-size)!important;
+  line-height:var(--mavis-type-ui-body-line-height)!important;
+  font-weight:var(--mavis-type-ui-body-font-weight)!important;
+  letter-spacing:var(--mavis-type-ui-body-letter-spacing)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .two-column-modal .sidebar-title {
+  font-size:var(--mavis-type-ui-small-font-size)!important;
+  line-height:var(--mavis-type-ui-small-line-height)!important;
+  font-weight:var(--mavis-type-ui-small-font-weight)!important;
+  letter-spacing:var(--mavis-type-ui-small-letter-spacing)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .two-column-modal .content-title {
+  font-size:var(--mavis-type-ui-large-strong-font-size)!important;
+  line-height:var(--mavis-type-ui-large-strong-line-height)!important;
+  font-weight:var(--mavis-type-ui-large-strong-font-weight)!important;
+  letter-spacing:var(--mavis-type-ui-large-strong-letter-spacing)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .two-column-modal.mavis-settings-modal-electron .two-column-sidebar {
+  --mavis-font-weight-ui-normal:var(--mavis-font-weight-normal);
+  --mavis-font-weight-default:var(--mavis-font-weight-normal);
+  --mavis-font-weight-medium:var(--mavis-font-weight-normal);
+  --mavis-font-weight-semibold:var(--mavis-font-weight-normal);
+  --mavis-font-weight-bold:var(--mavis-font-weight-normal);
+  --mavis-type-ui-assist-font-weight:var(--mavis-font-weight-normal);
+  --mavis-type-ui-assist-strong-font-weight:var(--mavis-font-weight-normal);
+  --mavis-type-ui-small-font-weight:var(--mavis-font-weight-normal);
+  --mavis-type-ui-small-strong-font-weight:var(--mavis-font-weight-normal);
+  --mavis-type-ui-body-font-weight:var(--mavis-font-weight-normal);
+  --mavis-type-ui-body-strong-font-weight:var(--mavis-font-weight-normal);
+  --mavis-type-ui-large-font-weight:var(--mavis-font-weight-normal);
+  --mavis-type-ui-large-strong-font-weight:var(--mavis-font-weight-normal)
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-confirm-modal-desktop-title {
+  font-size:var(--mavis-dialog-title-size,20px)!important;
+  font-weight:var(--mavis-font-weight-medium,500)!important;
+  line-height:var(--mavis-dialog-title-line-height,28px)!important;
+  letter-spacing:var(--mavis-dialog-title-letter-spacing,-.36px)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-confirm-modal-compact .mavis-confirm-modal-compact-title {
+  font-weight:var(--mavis-font-weight-semibold,600)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-checkbox {
+  font-size:var(--mavis-type-ui-body-font-size)!important;
+  line-height:var(--mavis-type-ui-body-line-height)!important;
+  font-weight:var(--mavis-type-ui-body-font-weight)!important;
+  letter-spacing:var(--mavis-type-ui-body-letter-spacing)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-select {
+  font-size:var(--mavis-type-ui-body-font-size)!important;
+  line-height:var(--mavis-type-ui-body-line-height)!important;
+  font-weight:var(--mavis-type-ui-body-font-weight)!important;
+  letter-spacing:var(--mavis-type-ui-body-letter-spacing)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown {
+  --md-font-size-body:var(--mavis-markdown-body-size,14px);
+  --md-line-height-body:var(--mavis-markdown-body-line-height,22.75px);
+  --md-letter-spacing-body:0;
+  --md-font-size-h1:var(--mavis-markdown-h1-size,21px);
+  --md-line-height-h1:var(--mavis-markdown-h1-line-height,28px);
+  --md-letter-spacing-h1:0;
+  --md-font-size-h2:var(--mavis-markdown-h2-size,17.5px);
+  --md-line-height-h2:var(--mavis-markdown-h2-line-height,24.5px);
+  --md-letter-spacing-h2:0;
+  --md-font-size-h3:var(--mavis-markdown-h3-size,15.75px);
+  --md-line-height-h3:var(--mavis-markdown-h3-line-height,24.5px);
+  --md-letter-spacing-h3:0;
+  --md-font-size-small:var(--mavis-markdown-table-cell-size,13px);
+  --md-line-height-small:var(--mavis-markdown-table-cell-line-height,22.75px);
+  --md-font-weight-heading:var(--mavis-font-weight-semibold,600);
+  --md-font-weight-strong:var(--mavis-font-weight-semibold,600);
+  --md-font-size-code:var(--mavis-code-block-font-size,12px);
+  --md-line-height-code:var(--mavis-code-line-height,20px);
+  --md-chat-blockquote-indent:var(--mavis-markdown-space-6,21px);
+  --md-padding-list-item-bottom:0px;
+  font-size:var(--md-font-size-body)!important;
+  font-weight:var(--mavis-font-weight-default,430)!important;
+  line-height:var(--md-line-height-body)!important;
+  letter-spacing:0!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown summary {
+  font-weight:var(--mavis-font-weight-default,430)
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown>:is(ul,ol)+p {
+  margin-block-start:calc(var(--mavis-markdown-space-2, 7px) - var(--md-block-gap))!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown .mavis-markdown-blocks>:is(ul,ol)+p {
+  margin-block-start:var(--mavis-markdown-space-2,7px)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown .mavis-chat-markdown-flow,:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown.mavis-chat-markdown-flow {
+  display:grid;
+  grid-template-columns:minmax(0,1fr);
+  row-gap:0
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown .mavis-chat-markdown-flow>*,:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown.mavis-chat-markdown-flow>* {
+  min-width:0;
+  margin-block-start:0!important;
+  margin-block-end:0!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown .mavis-chat-markdown-flow>*+*,:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown.mavis-chat-markdown-flow>*+* {
+  margin-block-start:var(--mavis-markdown-space-4,14px)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown .mavis-chat-markdown-flow>:is(h1,h2,h3,h4,h5,h6),:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown.mavis-chat-markdown-flow>:is(h1,h2,h3,h4,h5,h6) {
+  padding-block-start:0!important;
+  border-top:none!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown .mavis-chat-markdown-flow>:is(ul,ol)+:is(ul,ol),:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown .mavis-chat-markdown-flow>p+:is(ul,ol),:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown.mavis-chat-markdown-flow>:is(ul,ol)+:is(ul,ol),:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown.mavis-chat-markdown-flow>p+:is(ul,ol) {
+  margin-block-start:var(--mavis-markdown-space-1,3.5px)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown .mavis-chat-markdown-flow>:is(ul,ol)+*,:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown.mavis-chat-markdown-flow>:is(ul,ol)+* {
+  margin-block-start:var(--mavis-markdown-space-4,14px)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown .mavis-chat-markdown-flow>:is(ul,ol)+p,:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown .mavis-chat-markdown-flow>blockquote+*,:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown.mavis-chat-markdown-flow>:is(ul,ol)+p,:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown.mavis-chat-markdown-flow>blockquote+* {
+  margin-block-start:var(--mavis-markdown-space-2,7px)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown .mavis-chat-markdown-flow>:is(.markdown-table-shell,.table-out-box,table)+*,:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown.mavis-chat-markdown-flow>:is(.markdown-table-shell,.table-out-box,table)+* {
+  margin-block-start:var(--mavis-markdown-space-6,21px)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown .mavis-chat-markdown-flow>hr,:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown.mavis-chat-markdown-flow>hr {
+  margin-block:var(--mavis-markdown-space-7,24.5px)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown .mavis-chat-markdown-flow>hr+*,:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown.mavis-chat-markdown-flow>hr+* {
+  margin-block-start:0!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown h1 {
+  font-size:var(--mavis-markdown-h1-size)!important;
+  line-height:var(--mavis-markdown-h1-line-height)!important;
+  font-weight:var(--mavis-font-weight-semibold)!important;
+  letter-spacing:0!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown h2 {
+  font-size:var(--mavis-markdown-h2-size)!important;
+  line-height:var(--mavis-markdown-h2-line-height)!important;
+  font-weight:var(--mavis-font-weight-semibold)!important;
+  letter-spacing:0!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown.matrix-markdown--shifted h2 {
+  font-size:var(--mavis-markdown-h1-size)!important;
+  line-height:var(--mavis-markdown-h1-line-height)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown h3 {
+  font-size:var(--mavis-markdown-h3-size)!important;
+  line-height:var(--mavis-markdown-h3-line-height)!important;
+  font-weight:var(--mavis-font-weight-semibold)!important;
+  letter-spacing:0!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown.matrix-markdown--shifted h3 {
+  font-size:var(--mavis-markdown-h2-size)!important;
+  line-height:var(--mavis-markdown-h2-line-height)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown h4 {
+  font-size:var(--mavis-markdown-h4-size)!important;
+  line-height:var(--mavis-markdown-h4-line-height)!important;
+  font-weight:var(--mavis-font-weight-semibold)!important;
+  letter-spacing:0!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown.matrix-markdown--shifted h4 {
+  font-size:var(--mavis-markdown-h3-size)!important;
+  line-height:var(--mavis-markdown-h3-line-height)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown h5 {
+  font-size:var(--mavis-markdown-h5-size)!important;
+  line-height:var(--mavis-markdown-h5-line-height)!important;
+  font-weight:var(--mavis-font-weight-semibold)!important;
+  letter-spacing:0!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown.matrix-markdown--shifted h5 {
+  font-size:var(--mavis-markdown-h4-size)!important;
+  line-height:var(--mavis-markdown-h4-line-height)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown h6 {
+  font-size:var(--mavis-markdown-h6-size)!important;
+  line-height:var(--mavis-markdown-h6-line-height)!important;
+  font-weight:var(--mavis-font-weight-semibold)!important;
+  letter-spacing:0!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown.matrix-markdown--shifted h6 {
+  font-size:var(--mavis-markdown-h5-size)!important;
+  line-height:var(--mavis-markdown-h5-line-height)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown :is(h1,h2,h3,h4,h5,h6) :is(strong,b) {
+  font-weight:var(--mavis-font-weight-semibold,600)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown b,:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown strong {
+  font-weight:var(--mavis-font-weight-semibold)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown ol ol,:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown ol ul,:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown ul ol,:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown ul ul {
+  font-size:var(--md-font-size-body)
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown ol li,:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown ul li {
+  line-height:var(--md-line-height-body)
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown .markdown-custom-ol-item {
+  margin-block:0!important;
+  line-height:var(--md-line-height-body)
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown .markdown-custom-ol-content>:is(p,.markdown-list-paragraph),:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown li>p {
+  margin-block:0
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown .markdown-custom-ol-content>:is(p,.markdown-list-paragraph)+:is(p,.markdown-list-paragraph),:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown li>p+p {
+  margin-block-start:var(--mavis-markdown-space-4,14px)
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown li ol,:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown li ul,:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown ol,:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown ul {
+  margin-inline-start:24px
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown ol.markdown-custom-ol {
+  margin-inline-start:calc(1em - 8px)
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown .markdown-custom-ol-item>span:first-child {
+  font-feature-settings:"tnum";
+  font-variant-numeric:tabular-nums
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown blockquote {
+  gap:var(--mavis-markdown-space-2,7px);
+  padding:var(--mavis-markdown-space-2,7px) 0 var(--mavis-markdown-space-2,7px) var(--md-chat-blockquote-indent)
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown blockquote:before {
+  top:var(--mavis-markdown-space-2,7px);
+  bottom:var(--mavis-markdown-space-2,7px)
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown .code-block-wrapper .code-block-box .code-block>pre,:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown .codeblock-shell .codeblock-pre {
+  padding-block:var(--mavis-markdown-space-5,17.5px)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown table {
+  font-size:var(--mavis-markdown-table-cell-size,13px);
+  font-weight:var(--mavis-font-weight-default,430);
+  line-height:var(--mavis-markdown-table-cell-line-height,22.75px)
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown table th,:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown table thead {
+  font-size:var(--mavis-markdown-table-header-size,13px);
+  font-weight:var(--mavis-font-weight-semibold,600);
+  line-height:var(--mavis-markdown-table-header-line-height,14px)
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown table th {
+  padding-block:var(--mavis-markdown-space-2,7px)
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown table td {
+  padding-block:calc(var(--mavis-markdown-spacing-unit, 3.5px)*2.5)
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown .resource-reference {
+  font-size:inherit;
+  font-weight:inherit;
+  line-height:inherit;
+  letter-spacing:inherit
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .message-container-user-text {
+  font-size:var(--mavis-chat-body-size,14px)!important;
+  font-weight:var(--mavis-font-weight-default,430)!important;
+  line-height:var(--mavis-chat-body-line-height,22.75px)!important;
+  letter-spacing:0!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .text-activity-body-small {
+  font-size:var(--mavis-ui-small-size)!important;
+  font-weight:var(--mavis-font-weight-default)!important;
+  line-height:var(--mavis-ui-small-line-height)!important;
+  letter-spacing:0!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .text-activity-body-small .tool-resource-reference {
+  font-size:inherit!important;
+  font-weight:inherit!important;
+  line-height:inherit!important;
+  letter-spacing:inherit!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .text-activity-detail {
+  --md-line-height-body:var(--mavis-markdown-body-line-height);
+  --md-font-weight-heading:var(--mavis-font-weight-semibold);
+  --md-font-weight-strong:var(--mavis-font-weight-semibold);
+  font-size:var(--mavis-markdown-body-size)!important;
+  font-weight:var(--mavis-font-weight-default)!important;
+  line-height:var(--mavis-markdown-body-line-height)!important;
+  letter-spacing:0!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown :is(.inline-code,.inline-code-plain) {
+  font-size:var(--mavis-inline-code-font-size);
+  line-height:inherit;
+  font-weight:var(--mavis-font-weight-normal);
+  letter-spacing:inherit
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown .markdown-color-preview>.inline-code {
+  line-height:normal
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-button.website-delivery-action {
+  font-size:var(--mavis-type-ui-small-strong-font-size)!important;
+  line-height:var(--mavis-type-ui-small-strong-line-height)!important;
+  font-weight:var(--mavis-type-ui-small-strong-font-weight)!important;
+  letter-spacing:var(--mavis-type-ui-small-strong-letter-spacing)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .desktop-inline-code {
+  font-size:var(--mavis-inline-code-font-size)!important;
+  line-height:inherit!important;
+  font-weight:var(--mavis-font-weight-normal)!important;
+  letter-spacing:inherit!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .desktop-text-brand-slogan {
+  font-size:var(--mavis-type-brand-slogan-font-size)!important;
+  line-height:var(--mavis-type-brand-slogan-line-height)!important;
+  font-weight:var(--mavis-type-brand-slogan-font-weight)!important;
+  letter-spacing:var(--mavis-type-brand-slogan-letter-spacing)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .desktop-text-composer-disclaimer {
+  font-size:var(--mavis-type-composer-disclaimer-font-size)!important;
+  line-height:var(--mavis-type-composer-disclaimer-line-height)!important;
+  font-weight:var(--mavis-type-composer-disclaimer-font-weight)!important;
+  letter-spacing:var(--mavis-type-composer-disclaimer-letter-spacing)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .desktop-text-ui-assist {
+  font-size:var(--mavis-type-ui-assist-font-size)!important;
+  line-height:var(--mavis-type-ui-assist-line-height)!important;
+  font-weight:var(--mavis-type-ui-assist-font-weight)!important;
+  letter-spacing:var(--mavis-type-ui-assist-letter-spacing)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .desktop-text-ui-assist-strong {
+  font-size:var(--mavis-type-ui-assist-strong-font-size)!important;
+  line-height:var(--mavis-type-ui-assist-strong-line-height)!important;
+  font-weight:var(--mavis-type-ui-assist-strong-font-weight)!important;
+  letter-spacing:var(--mavis-type-ui-assist-strong-letter-spacing)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .desktop-text-ui-small {
+  font-size:var(--mavis-type-ui-small-font-size)!important;
+  line-height:var(--mavis-type-ui-small-line-height)!important;
+  font-weight:var(--mavis-type-ui-small-font-weight)!important;
+  letter-spacing:var(--mavis-type-ui-small-letter-spacing)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .desktop-text-ui-small-strong {
+  font-size:var(--mavis-type-ui-small-strong-font-size)!important;
+  line-height:var(--mavis-type-ui-small-strong-line-height)!important;
+  font-weight:var(--mavis-type-ui-small-strong-font-weight)!important;
+  letter-spacing:var(--mavis-type-ui-small-strong-letter-spacing)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .desktop-text-ui-body {
+  font-size:var(--mavis-type-ui-body-font-size)!important;
+  line-height:var(--mavis-type-ui-body-line-height)!important;
+  font-weight:var(--mavis-type-ui-body-font-weight)!important;
+  letter-spacing:var(--mavis-type-ui-body-letter-spacing)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .desktop-text-ui-body-strong {
+  font-size:var(--mavis-type-ui-body-strong-font-size)!important;
+  line-height:var(--mavis-type-ui-body-strong-line-height)!important;
+  font-weight:var(--mavis-type-ui-body-strong-font-weight)!important;
+  letter-spacing:var(--mavis-type-ui-body-strong-letter-spacing)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .desktop-text-ui-large {
+  font-size:var(--mavis-type-ui-large-font-size)!important;
+  line-height:var(--mavis-type-ui-large-line-height)!important;
+  font-weight:var(--mavis-type-ui-large-font-weight)!important;
+  letter-spacing:var(--mavis-type-ui-large-letter-spacing)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .desktop-text-ui-large-strong {
+  font-size:var(--mavis-type-ui-large-strong-font-size)!important;
+  line-height:var(--mavis-type-ui-large-strong-line-height)!important;
+  font-weight:var(--mavis-type-ui-large-strong-font-weight)!important;
+  letter-spacing:var(--mavis-type-ui-large-strong-letter-spacing)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .desktop-text-chat-body {
+  font-size:var(--mavis-type-chat-body-font-size)!important;
+  line-height:var(--mavis-type-chat-body-line-height)!important;
+  font-weight:var(--mavis-type-chat-body-font-weight)!important;
+  letter-spacing:var(--mavis-type-chat-body-letter-spacing)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .desktop-text-chat-body-strong {
+  font-size:var(--mavis-type-chat-body-strong-font-size)!important;
+  line-height:var(--mavis-type-chat-body-strong-line-height)!important;
+  font-weight:var(--mavis-type-chat-body-strong-font-weight)!important;
+  letter-spacing:var(--mavis-type-chat-body-strong-letter-spacing)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .desktop-text-markdown-body {
+  font-size:var(--mavis-type-markdown-body-font-size)!important;
+  line-height:var(--mavis-type-markdown-body-line-height)!important;
+  font-weight:var(--mavis-type-markdown-body-font-weight)!important;
+  letter-spacing:var(--mavis-type-markdown-body-letter-spacing)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .desktop-text-markdown-h1 {
+  font-size:var(--mavis-type-markdown-h1-font-size)!important;
+  line-height:var(--mavis-type-markdown-h1-line-height)!important;
+  font-weight:var(--mavis-type-markdown-h1-font-weight)!important;
+  letter-spacing:var(--mavis-type-markdown-h1-letter-spacing)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .desktop-text-markdown-h2 {
+  font-size:var(--mavis-type-markdown-h2-font-size)!important;
+  line-height:var(--mavis-type-markdown-h2-line-height)!important;
+  font-weight:var(--mavis-type-markdown-h2-font-weight)!important;
+  letter-spacing:var(--mavis-type-markdown-h2-letter-spacing)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .desktop-text-markdown-h3 {
+  font-size:var(--mavis-type-markdown-h3-font-size)!important;
+  line-height:var(--mavis-type-markdown-h3-line-height)!important;
+  font-weight:var(--mavis-type-markdown-h3-font-weight)!important;
+  letter-spacing:var(--mavis-type-markdown-h3-letter-spacing)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .desktop-text-markdown-h4 {
+  font-size:var(--mavis-type-markdown-h4-font-size)!important;
+  line-height:var(--mavis-type-markdown-h4-line-height)!important;
+  font-weight:var(--mavis-type-markdown-h4-font-weight)!important;
+  letter-spacing:var(--mavis-type-markdown-h4-letter-spacing)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .desktop-text-markdown-h5 {
+  font-size:var(--mavis-type-markdown-h5-font-size)!important;
+  line-height:var(--mavis-type-markdown-h5-line-height)!important;
+  font-weight:var(--mavis-type-markdown-h5-font-weight)!important;
+  letter-spacing:var(--mavis-type-markdown-h5-letter-spacing)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .desktop-text-markdown-h6 {
+  font-size:var(--mavis-type-markdown-h6-font-size)!important;
+  line-height:var(--mavis-type-markdown-h6-line-height)!important;
+  font-weight:var(--mavis-type-markdown-h6-font-weight)!important;
+  letter-spacing:var(--mavis-type-markdown-h6-letter-spacing)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .desktop-text-markdown-table-header {
+  font-size:var(--mavis-type-markdown-table-header-font-size)!important;
+  line-height:var(--mavis-type-markdown-table-header-line-height)!important;
+  font-weight:var(--mavis-type-markdown-table-header-font-weight)!important;
+  letter-spacing:var(--mavis-type-markdown-table-header-letter-spacing)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .desktop-text-markdown-table-cell {
+  font-size:var(--mavis-type-markdown-table-cell-font-size)!important;
+  line-height:var(--mavis-type-markdown-table-cell-line-height)!important;
+  font-weight:var(--mavis-type-markdown-table-cell-font-weight)!important;
+  letter-spacing:var(--mavis-type-markdown-table-cell-letter-spacing)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .desktop-text-dialog-medium {
+  font-size:var(--mavis-type-dialog-medium-font-size)!important;
+  line-height:var(--mavis-type-dialog-medium-line-height)!important;
+  font-weight:var(--mavis-type-dialog-medium-font-weight)!important;
+  letter-spacing:var(--mavis-type-dialog-medium-letter-spacing)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .desktop-text-dialog-semibold {
+  font-size:var(--mavis-type-dialog-semibold-font-size)!important;
+  line-height:var(--mavis-type-dialog-semibold-line-height)!important;
+  font-weight:var(--mavis-type-dialog-semibold-font-weight)!important;
+  letter-spacing:var(--mavis-type-dialog-semibold-letter-spacing)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .desktop-text-code-block {
+  font-size:var(--mavis-type-code-block-font-size)!important;
+  line-height:var(--mavis-type-code-block-line-height)!important;
+  font-weight:var(--mavis-type-code-block-font-weight)!important;
+  letter-spacing:var(--mavis-type-code-block-letter-spacing)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .desktop-text-code-diff {
+  font-size:var(--mavis-type-code-diff-font-size)!important;
+  line-height:var(--mavis-type-code-diff-line-height)!important;
+  font-weight:var(--mavis-type-code-diff-font-weight)!important;
+  letter-spacing:var(--mavis-type-code-diff-letter-spacing)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .desktop-text-code-terminal {
+  font-size:var(--mavis-type-code-terminal-font-size)!important;
+  line-height:var(--mavis-type-code-terminal-line-height)!important;
+  font-weight:var(--mavis-type-code-terminal-font-weight)!important;
+  letter-spacing:var(--mavis-type-code-terminal-letter-spacing)!important
+}
+@media (max-width:768px) {
+  :root.mavis-platform-electron.mavis-desktop-typography-enabled .text-heading1 {
+    line-height:1.125!important
+  }
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .text-dialog-title-medium {
+  font-weight:var(--mavis-font-weight-medium,500)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .text-dialog-title-medium,:root.mavis-platform-electron.mavis-desktop-typography-enabled .text-dialog-title-semibold {
+  font-size:var(--mavis-dialog-title-size,20px)!important;
+  line-height:var(--mavis-dialog-title-line-height,28px)!important;
+  letter-spacing:var(--mavis-dialog-title-letter-spacing,-.36px)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .text-dialog-title-semibold {
+  font-weight:var(--mavis-font-weight-semibold,600)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-settings-modal-electron .two-column-content .mavis-settings-control {
+  font-size:var(--mavis-type-ui-small-font-size)!important;
+  line-height:var(--mavis-type-ui-small-line-height)!important;
+  font-weight:var(--mavis-type-ui-small-font-weight)!important;
+  letter-spacing:var(--mavis-type-ui-small-letter-spacing)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .website-alias-domain-suffix {
+  font-size:var(--mavis-type-ui-body-font-size)!important;
+  line-height:var(--mavis-type-ui-body-line-height)!important;
+  font-weight:var(--mavis-type-ui-body-font-weight)!important;
+  letter-spacing:var(--mavis-type-ui-body-letter-spacing)!important
+}
+:where(:root.mavis-platform-electron.mavis-desktop-typography-enabled) :where([role=menu],[role=dialog],[role=tooltip]),:where(:root.mavis-platform-electron.mavis-desktop-typography-enabled) body :is(button,input,textarea,select) {
+  font-family:var(--mcode-font-family-ui)
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled textarea[data-desktop-text-role=code-block] {
+  font-family:var(--mcode-font-family-code)
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled body {
+  font-size:var(--mavis-ui-body-size);
+  line-height:var(--mavis-ui-body-line-height);
+  font-weight:var(--mavis-font-weight-default,430);
+  letter-spacing:var(--mavis-letter-spacing-normal)
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .permission-mode-trigger-label {
+  font-weight:var(--mavis-font-weight-normal,400)
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled span.memory-policy-description {
+  font-size:var(--mavis-type-ui-small-font-size)!important;
+  line-height:var(--mavis-type-ui-small-line-height)!important;
+  font-weight:var(--mavis-type-ui-small-font-weight)!important;
+  letter-spacing:var(--mavis-type-ui-small-letter-spacing)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-personalization-setting-row {
+  height:auto!important;
+  min-height:3.5rem!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .message-container-chat-content .codeblock-shell {
+  --text-code-size:var(--mavis-code-block-font-size,12px);
+  --text-code-line-height:var(--mavis-code-line-height,20px);
+  --codeblock-blank-line-height:var(--mavis-code-line-height,20px)
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .message-container-chat-content .codeblock-shell .codeblock-pre,:root.mavis-platform-electron.mavis-desktop-typography-enabled .message-container-chat-content .codeblock-shell .codeblock-pre code {
+  font-weight:var(--mavis-font-weight-normal,400)
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .plugin-app-credential-input.mavis-input {
+  font-size:var(--mavis-type-ui-body-font-size)!important;
+  line-height:var(--mavis-type-ui-body-line-height)!important;
+  font-weight:var(--mavis-type-ui-body-font-weight)!important;
+  letter-spacing:var(--mavis-type-ui-body-letter-spacing)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .plugin-app-credential-submit.mavis-button {
+  font-size:var(--mavis-type-ui-body-strong-font-size)!important;
+  line-height:var(--mavis-type-ui-body-strong-line-height)!important;
+  font-weight:var(--mavis-type-ui-body-strong-font-weight)!important;
+  letter-spacing:var(--mavis-type-ui-body-strong-letter-spacing)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .mcp-editor-code.mavis-input,:root.mavis-platform-electron.mavis-desktop-typography-enabled .mcp-editor-code.mavis-textarea {
+  font-size:var(--mavis-type-code-block-font-size)!important;
+  line-height:var(--mavis-type-code-block-line-height)!important;
+  font-weight:var(--mavis-type-code-block-font-weight)!important;
+  letter-spacing:var(--mavis-type-code-block-letter-spacing)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-time-picker input {
+  font-size:var(--mavis-type-ui-body-font-size)!important;
+  line-height:var(--mavis-type-ui-body-line-height)!important;
+  font-weight:var(--mavis-type-ui-body-font-weight)!important;
+  letter-spacing:var(--mavis-type-ui-body-letter-spacing)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .rich-text-editor {
+  font-size:var(--mavis-type-chat-body-font-size)!important;
+  line-height:var(--mavis-type-chat-body-line-height)!important;
+  font-weight:var(--mavis-type-chat-body-font-weight)!important;
+  letter-spacing:var(--mavis-type-chat-body-letter-spacing)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .rich-text-editor a.rich-text-link-chip {
+  font-size:var(--mavis-type-ui-body-font-size)!important;
+  line-height:var(--mavis-type-ui-body-line-height)!important;
+  font-weight:var(--mavis-type-ui-body-font-weight)!important;
+  letter-spacing:var(--mavis-type-ui-body-letter-spacing)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .rich-text-link-popover-button {
+  font-size:var(--mavis-type-ui-small-strong-font-size)!important;
+  line-height:var(--mavis-type-ui-small-strong-line-height)!important;
+  font-weight:var(--mavis-type-ui-small-strong-font-weight)!important;
+  letter-spacing:var(--mavis-type-ui-small-strong-letter-spacing)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .rich-text-link-popover-input {
+  font-size:var(--mavis-type-ui-body-font-size)!important;
+  line-height:var(--mavis-type-ui-body-line-height)!important;
+  font-weight:var(--mavis-type-ui-body-font-weight)!important;
+  letter-spacing:var(--mavis-type-ui-body-letter-spacing)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .rich-text-file-reference-chip {
+  font-size:var(--mavis-type-ui-body-font-size)!important;
+  line-height:var(--mavis-type-ui-body-line-height)!important;
+  font-weight:var(--mavis-type-ui-body-font-weight)!important;
+  letter-spacing:var(--mavis-type-ui-body-letter-spacing)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .rich-text-skill-command-chip {
+  font-size:var(--mavis-type-ui-body-font-size)!important;
+  line-height:var(--mavis-type-ui-body-line-height)!important;
+  font-weight:var(--mavis-type-ui-body-font-weight)!important;
+  letter-spacing:var(--mavis-type-ui-body-letter-spacing)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .rich-text-connector-reference-chip,:root.mavis-platform-electron.mavis-desktop-typography-enabled .rich-text-plugin-reference-chip {
+  font-size:var(--mavis-type-ui-body-font-size)!important;
+  line-height:var(--mavis-type-ui-body-line-height)!important;
+  font-weight:var(--mavis-type-ui-body-font-weight)!important;
+  letter-spacing:var(--mavis-type-ui-body-letter-spacing)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .rich-text-skill-reference-chip {
+  font-size:var(--mavis-type-ui-body-font-size)!important;
+  line-height:var(--mavis-type-ui-body-line-height)!important;
+  font-weight:var(--mavis-type-ui-body-font-weight)!important;
+  letter-spacing:var(--mavis-type-ui-body-letter-spacing)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .rich-text-deployed-website-reference-chip {
+  font-size:var(--mavis-type-ui-body-font-size)!important;
+  line-height:var(--mavis-type-ui-body-line-height)!important;
+  font-weight:var(--mavis-type-ui-body-font-weight)!important;
+  letter-spacing:var(--mavis-type-ui-body-letter-spacing)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .rich-text-connector-reference-chip {
+  font-size:var(--mavis-type-ui-body-font-size)!important;
+  line-height:var(--mavis-type-ui-body-line-height)!important;
+  font-weight:var(--mavis-type-ui-body-font-weight)!important;
+  letter-spacing:var(--mavis-type-ui-body-letter-spacing)!important
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .rich-text-deployed-website-reference-chip,:root.mavis-platform-electron.mavis-desktop-typography-enabled .rich-text-editor a.rich-text-link-chip,:root.mavis-platform-electron.mavis-desktop-typography-enabled .rich-text-file-reference-chip {
+  height:auto;
+  min-height:24px
+}
+:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-tool-detail-header,:root.mavis-platform-electron.mavis-desktop-typography-enabled .mavis-tool-detail-section-label {
+  font-family:var(--mcode-font-family-ui)
+}
