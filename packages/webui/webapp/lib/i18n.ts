@@ -45,6 +45,7 @@ const en = {
 
   "composer.send": "Send",
   "composer.hint": "Enter to send, Shift+Enter for a new line",
+  "composer.sending": "Sending…",
   /* Context-window meter beside the composer. The panel only shows what the
      engine actually reports; the desktop also breaks the window down by category,
      which this server does not publish (see components/context-meter.tsx). */
@@ -288,6 +289,7 @@ const zh: Record<MessageKey, string> = {
 
   "composer.send": "发送",
   "composer.hint": "Enter 发送，Shift+Enter 换行",
+  "composer.sending": "正在发送…",
   /* 输入框旁的上下文窗口指示器。面板只显示引擎真实上报的数据；桌面端还有按类别
      的占用明细, 本服务端没有该数据 (见 components/context-meter.tsx)。 */
   "context.show": "显示上下文窗口用量",

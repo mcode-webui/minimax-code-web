@@ -19,17 +19,34 @@ export interface ApiResult<T> {
 
 async function request<T>(
   path: string,
-  init?: RequestInit & { json?: unknown },
+  init?: RequestInit & { json?: unknown; timeoutMs?: number },
 ): Promise<T> {
-  const { json, ...rest } = init ?? {};
-  const response = await fetch(withClientQuery(path), {
-    ...rest,
-    headers: {
-      ...(json === undefined ? {} : { "Content-Type": "application/json" }),
-      ...rest.headers,
-    },
-    body: json === undefined ? rest.body : JSON.stringify(json),
-  });
+  const { json, timeoutMs, ...rest } = init ?? {};
+  // Only the callers that pass `timeoutMs` get a deadline. A hung request
+  // otherwise never settles, and the composer keeps its `sending` flag set
+  // forever — the text stays in the box and Enter silently stops working.
+  const controller = timeoutMs === undefined ? null : new AbortController();
+  const timer =
+    controller === null ? null : setTimeout(() => controller.abort(), timeoutMs);
+  let response: Response;
+  try {
+    response = await fetch(withClientQuery(path), {
+      ...rest,
+      ...(controller === null ? {} : { signal: controller.signal }),
+      headers: {
+        ...(json === undefined ? {} : { "Content-Type": "application/json" }),
+        ...rest.headers,
+      },
+      body: json === undefined ? rest.body : JSON.stringify(json),
+    });
+  } catch (cause) {
+    if (controller?.signal.aborted) {
+      throw new Error(`no response within ${timeoutMs}ms`);
+    }
+    throw cause;
+  } finally {
+    if (timer !== null) clearTimeout(timer);
+  }
 
   const text = await response.text();
   let payload: unknown = null;
@@ -71,14 +88,27 @@ export interface SendPayload {
   isAskAnswer?: boolean;
 }
 
+// Both send endpoints answer with an ack *before* the engine runs (see
+// routes/chat.js#handleSend), so a reply slower than this means the request is
+// not going to arrive at all.
+const SEND_ACK_TIMEOUT_MS = 30_000;
+
 export const sendMessage = (payload: SendPayload) =>
-  request<{ ok: boolean }>("/api/send", { method: "POST", json: payload });
+  request<{ ok: boolean }>("/api/send", {
+    method: "POST",
+    json: payload,
+    timeoutMs: SEND_ACK_TIMEOUT_MS,
+  });
 
 export const stopRun = () => request<{ ok: boolean }>("/api/stop", { method: "POST", json: {} });
 
 /** Raw slash command (e.g. `/compact`), forwarded to mcode. */
 export const sendCommand = (cmd: string) =>
-  request<{ ok: boolean }>("/api/cmd", { method: "POST", json: { cmd } });
+  request<{ ok: boolean }>("/api/cmd", {
+    method: "POST",
+    json: { cmd },
+    timeoutMs: SEND_ACK_TIMEOUT_MS,
+  });
 
 // --- sessions ---------------------------------------------------------------
 
@@ -368,7 +398,16 @@ export interface TurnUsage {
   ts?: number;
 }
 
-export const getQuota = () => request<QuotaSnapshot>("/api/usage");
+/**
+ * The plan quota.
+ *
+ * POST, not GET: the route asks the engine over ACP and answers with the figures
+ * it just read, and it appends those figures to the forecast history. A GET was
+ * never registered, so this call used to 404 and the popover showed its error
+ * line no matter what the engine reported.
+ */
+export const getQuota = () =>
+  request<QuotaSnapshot>("/api/usage", { method: "POST", json: {} });
 export const getTurnUsage = () => request<TurnUsage>("/api/usage-real");
 /** Re-fetch quota + per-turn context (the "refresh" affordance). */
 export const refreshUsage = () => request<{ ok: boolean }>("/api/refresh", { method: "POST", json: {} });

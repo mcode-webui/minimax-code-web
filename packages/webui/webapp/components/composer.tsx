@@ -159,6 +159,24 @@ export function Composer({ t, inline = false }: { t: (key: MessageKey) => string
         .slice(0, 8);
   const slashOpen = slashWord !== null && slashMatches.length > 0;
 
+  /**
+   * The chip's text.
+   *
+   * `state.model.name` is the engine's encoded selection (the `value` of its
+   * `select` config option), while a catalogue entry carries a separate display
+   * `name`. Reading the value straight into the chip made it read
+   * `deepseek-v4.1-flash` while the menu listed `DeepSeek V4.1 Flash` — two
+   * names for one model. Resolve through the catalogue so both surfaces name
+   * the same thing, and fall back to the value only when the engine lists no
+   * entry for it.
+   */
+  const currentModelLabel = useMemo(() => {
+    const value = state?.model?.name ?? "";
+    const known = models.find((model) => model.id === value);
+    if (known) return modelDisplayName(known.label);
+    return modelDisplayName(value) || t("composer.model");
+  }, [models, state?.model?.name, t]);
+
   const submit = useCallback(async () => {
     const content = value.trim();
     if ((!content && attachments.length === 0) || readOnly || sending) return;
@@ -334,6 +352,10 @@ export function Composer({ t, inline = false }: { t: (key: MessageKey) => string
                   }
                 }
                 if (event.key === "Enter" && !event.shiftKey) {
+                  // An IME confirms its candidate window with Enter. Submitting
+                  // here would send a half-composed 继续 and cancel the
+                  // composition the user was still choosing from.
+                  if (event.nativeEvent.isComposing || event.keyCode === 229) return;
                   event.preventDefault();
                   void submit();
                 }
@@ -436,7 +458,7 @@ export function Composer({ t, inline = false }: { t: (key: MessageKey) => string
                     className="flex h-8 min-w-0 items-center gap-1 rounded-[10px] pl-2.5 pr-2 text-sm text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_hover"
                   >
                     <span className="max-w-[180px] truncate whitespace-nowrap">
-                      {modelDisplayName(state?.model.name) || t("composer.model")}
+                      {currentModelLabel}
                     </span>
                     <Icon name="chevronDown" size={14} />
                   </button>
@@ -505,7 +527,7 @@ export function Composer({ t, inline = false }: { t: (key: MessageKey) => string
 
         <div className="mt-1 flex items-center justify-between gap-2 px-1">
           <span className="text-caption-small-strong text-text_default_secondary">
-            {t("composer.hint")}
+            {sending ? t("composer.sending") : t("composer.hint")}
           </span>
 
           {error ? (
