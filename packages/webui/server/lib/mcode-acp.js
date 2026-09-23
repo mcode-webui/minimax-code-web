@@ -132,6 +132,96 @@ export function buildEmptyTurnNote(stopReason, answer) {
   );
 }
 
+// applyConfigOptionUpdate — handle the engine's `config_option_update`
+// session event. Replaces `cs.configOptions` wholesale (the engine sends
+// the whole list), propagates `permissionMode.currentValue` through
+// `mcodePermissionToWebui`, and propagates `model.currentValue` into
+// `cs.model.name`. The model field is read with the same
+// `option.currentValue` contract that `routes/model.js#handleGetModels`
+// uses, so the two cannot disagree about which holds the encoded id.
+// When the model option is absent or its currentValue is empty,
+// `cs.model` is left untouched — this branch is only a reflection of the
+// engine's authoritative state.
+export function applyConfigOptionUpdate(cs, update) {
+  const opts =
+    update && Array.isArray(update.configOptions) ? update.configOptions : null;
+  if (!opts) return;
+  cs.configOptions = opts;
+  const mode = opts.find((o) => o && o.id === "permissionMode");
+  if (mode && mode.currentValue) {
+    cs.permissions = mcodePermissionToWebui(mode.currentValue);
+  }
+  const model = opts.find((o) => o && o.id === "model");
+  if (model && model.currentValue) {
+    cs.model = { ...(cs.model || {}), name: model.currentValue };
+  }
+}
+
+// applyToolUpdate — handle a `tool_update` (a.k.a. `tool_call_update`)
+// session event. Writes the indented body (status, output, `@ path`,
+// `! error`) after the matching `→ name` header line so the decoder
+// can attribute every body line back to a tool block. When the prior
+// `tool_call` never arrived — webui attached mid-stream, or this is the
+// first frame seen for the tool — there is no header to insert after;
+// synthesize one so the body has an owner. Without an owner,
+// `decodeTranscript` would otherwise route the body lines into a stray
+// `system` block (the transcript row the user reported as labelled
+// `系统`). The synthesized header is registered in `r.toolIndexById`
+// so subsequent updates for the same `toolCallId` insert after it.
+export function applyToolUpdate(r, cs, update) {
+  const u = update || {};
+  if (!r.toolIndexById) r.toolIndexById = new Map();
+
+  let insertAfter = r.toolIndexById.get(u.toolCallId);
+  if (insertAfter == null) {
+    const name = u.title || u.name || u.toolName || "tool";
+    cs.chat = [...cs.chat, `→ ${name}`];
+    insertAfter = cs.chat.length - 1;
+    r.toolIndexById.set(u.toolCallId, insertAfter);
+  }
+
+  const status = u.status || "completed";
+  const rawOutput = u.rawOutput;
+  const outText =
+    rawOutput && Array.isArray(rawOutput.content)
+      ? rawOutput.content
+          .filter((c) => c.type === "text")
+          .map((c) => c.text)
+          .join("\n")
+      : "";
+
+  const newLines = [];
+  newLines.push(`  [${status}]`);
+  if (outText) {
+    for (const ln of outText.split("\n")) newLines.push("  " + ln);
+  }
+  if (Array.isArray(u.locations) && u.locations.length > 0) {
+    const seen = new Set();
+    for (const loc of u.locations) {
+      const p = loc && loc.path;
+      if (typeof p === "string" && p && !seen.has(p)) {
+        seen.add(p);
+        newLines.push(`  @ ${p}`);
+      }
+    }
+  }
+  if (u.error)
+    newLines.push(
+      `  ! ${typeof u.error === "string" ? u.error : u.error.message || JSON.stringify(u.error)}`,
+    );
+
+  cs.chat = [
+    ...cs.chat.slice(0, insertAfter + 1),
+    ...newLines,
+    ...cs.chat.slice(insertAfter + 1),
+  ];
+  if (r.toolIndexById) {
+    for (const [k, v] of r.toolIndexById) {
+      if (v > insertAfter) r.toolIndexById.set(k, v + newLines.length);
+    }
+  }
+}
+
 // streamAcpPrompt — like collectExecResult, but the event source is
 // the acp client's prompt callback rather than a child-process stdout
 // stream.
@@ -461,57 +551,7 @@ function streamAcpPrompt(client, sid, content, label, cs, cid) {
           if (!r.toolIndexById) r.toolIndexById = new Map();
           r.toolIndexById.set(u.toolCallId, cs.chat.length - 1);
         } else if (c.kind === "tool_update" && c.update) {
-          // v0.5.bs: 工具完成 — 在 `→ toolName` 行后插入输出行（`  text` 缩进标识）
-          // v0.5.bx-6: 0.1.4+ mcode acp 的 tool_call_update 带 locations: [{path: "..."}]
-          //   那些被工具读/写/编辑的本地文件路径 — 显示成 `  @ /path/to/file` 行（@ 前缀方便 client 识别）
-          const u = c.update;
-          const status = u.status || "completed";
-          const rawOutput = u.rawOutput;
-          // 抽 rawOutput.content[].text
-          const outText =
-            rawOutput && Array.isArray(rawOutput.content)
-              ? rawOutput.content
-                  .filter((c) => c.type === "text")
-                  .map((c) => c.text)
-                  .join("\n")
-              : "";
-          const insertAfter =
-            (r.toolIndexById && r.toolIndexById.get(u.toolCallId)) ??
-            cs.chat.length - 1;
-          const newLines = [];
-          // status 行（completed / failed / in_progress）
-          newLines.push(`  [${status}]`);
-          if (outText) {
-            // 多行输出，每行都加 `  ` 前缀，跟在 `→ toolName` 后面读起来整齐
-            for (const ln of outText.split("\n")) newLines.push("  " + ln);
-          }
-          // v0.5.bx-6: tool 涉及的本地文件路径
-          if (Array.isArray(u.locations) && u.locations.length > 0) {
-            const seen = new Set();
-            for (const loc of u.locations) {
-              const p = loc && loc.path;
-              if (typeof p === "string" && p && !seen.has(p)) {
-                seen.add(p);
-                newLines.push(`  @ ${p}`);
-              }
-            }
-          }
-          if (u.error)
-            newLines.push(
-              `  ! ${typeof u.error === "string" ? u.error : u.error.message || JSON.stringify(u.error)}`,
-            );
-          // 插到 → 行后面
-          cs.chat = [
-            ...cs.chat.slice(0, insertAfter + 1),
-            ...newLines,
-            ...cs.chat.slice(insertAfter + 1),
-          ];
-          // 后续 tool 行的 index 都要往后挪 newLines.length
-          if (r.toolIndexById) {
-            for (const [k, v] of r.toolIndexById) {
-              if (v > insertAfter) r.toolIndexById.set(k, v + newLines.length);
-            }
-          }
+          applyToolUpdate(r, cs, c.update);
         } else if (c.kind === "plan_update" && c.update) {
           // plan_update event
           const u = c.update;
@@ -565,18 +605,9 @@ function streamAcpPrompt(client, sid, content, label, cs, cid) {
             `[goal.update] cid=${cid} active=${cs.goal.active} status=${cs.goal.status}`,
           );
         } else if (c.kind === "config_option_update" && c.update) {
-          // The engine sends the WHOLE option list here (agent.ts emits
-          // `{sessionUpdate:'config_option_update', configOptions:[...]}`), so
-          // replace rather than merge. Another client changing the model or the
-          // permission mode is how we learn about it.
-          const u = c.update;
-          if (Array.isArray(u && u.configOptions)) {
-            cs.configOptions = u.configOptions;
-            const mode = u.configOptions.find((o) => o && o.id === "permissionMode");
-            if (mode && mode.currentValue) {
-              cs.permissions = mcodePermissionToWebui(mode.currentValue);
-            }
-          }
+          // Another client changing the model or the permission mode is how
+          // we learn about it; the engine sends the WHOLE option list here.
+          applyConfigOptionUpdate(cs, c.update);
         } else if (c.kind === "session_info_update" && c.update) {
           // Session info change. The shape is undocumented, so log it and leave cs alone.
           const u = c.update;

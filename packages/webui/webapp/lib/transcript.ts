@@ -74,6 +74,14 @@ const THINKING_LINE = /^▲\s+(.*)$/;
  * line `[completed]`, the raw output, and `@ /path` entries for touched files.
  */
 const TOOL_BODY = /^\s{2,}\S/;
+/**
+ * Orphan tool-body protocol shape — `  [status]`, `  @ /path`, `  ! error`
+ * arriving with no preceding `→ name` header. The carver-out in
+ * `decodeTranscript`'s fall-through matches this so a stray status line can
+ * never become a `chat.system` block; arbitrary indented prose (which has
+ * no leading protocol glyph) is not affected.
+ */
+const ORPHAN_TOOL_BODY = /^\s{2,}(?:\[|@|!)/;
 const TOOL_STATUS_LINE = /^\[([a-z_]+)\]$/;
 const TOOL_PATH_LINE = /^@\s*(.+)$/;
 const ASSISTANT_LINE = /^[●•]\s+(.*)$/;
@@ -306,6 +314,22 @@ export function decodeTranscript(lines: readonly TranscriptLine[]): TranscriptBl
     }
 
     // --- anything else is continuation text for the open block, or a system line
+    //
+    // Orphan tool-body protocol lines — `  [completed]` status, `  @ /path`
+    // location, `  ! error` — without a preceding `→ name` header to belong
+    // to cannot be attributed to any tool. They arrive when
+    // `server/lib/mcode-acp.js#applyToolUpdate` writes body lines for a
+    // `toolCallId` whose `tool_call` header never made it (webui attached
+    // mid-stream, or the update was the first frame seen for the tool).
+    // Without an owner they belong in neither a tool block nor a system
+    // block — drop them rather than fabricate a `chat.system` row out of
+    // raw protocol text. Plain indented continuation prose (`  text` without
+    // a protocol prefix) is NOT covered here, so the existing
+    // `"  indented continuation"` continuation contract is preserved.
+    if (ORPHAN_TOOL_BODY.test(line)) {
+      i += 1;
+      continue;
+    }
     if (current) {
       current.text = `${current.text}\n${line}`;
     } else {

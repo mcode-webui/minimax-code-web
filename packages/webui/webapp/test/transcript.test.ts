@@ -209,6 +209,51 @@ describe("decodeTranscript — robustness", () => {
     assert.equal(blocks.length, 1);
     assert.match(blocks[0]?.text ?? "", /indented continuation/);
   });
+
+  // Regression (defect #1, transcript side): orphan tool-body lines — two-space
+  // indented protocol lines with no preceding `→ name` header — were being
+  // misclassified as `system` blocks because the fall-through branch had no
+  // carve-out for the tool-body shape. The transcript shape below is the
+  // exact layout the user saw in their webui: a tool whose `tool_call`
+  // header never arrived, so `applyToolUpdate` appended these lines without
+  // a `→ name` owner.
+  test("orphan tool-body lines do NOT become a system block", () => {
+    const lines = [
+      "  [in_progress]",
+      "  [in_progress]",
+      "  [completed]",
+      "  [completed]",
+      "  @ /home/<user>/.agents/rule.md",
+      "  @ /home/<user>/.agents/rule.md",
+    ];
+    const blocks = decodeTranscript(lines);
+    assert.equal(blocks.length, 0, "orphan tool-body lines must be dropped, not fabricated into a system block");
+    assert.ok(
+      !blocks.some((b) => b.role === "system"),
+      "no transcript row must claim the protocol text",
+    );
+  });
+
+  // Defensive carve-out still drops orphan tool-body lines even after a
+  // preceding speaker block was open — the body lines have no owner and
+  // should not be appended to an unrelated block either.
+  test("orphan tool-body lines after a speaker block are dropped, not appended", () => {
+    const blocks = decodeTranscript([
+      "● answer text",
+      "  [completed]",
+    ]);
+    const assistant = blocks.find((b) => b.role === "assistant");
+    assert.ok(assistant, "the assistant block must still exist");
+    assert.equal(
+      assistant?.text,
+      "answer text",
+      "the orphan tool-body line must not be appended to the assistant block",
+    );
+    assert.ok(
+      !blocks.some((b) => b.role === "system" || b.role === "tool"),
+      "no tool/system block must be fabricated",
+    );
+  });
 });
 
 describe("decodeTranscript — thinking and tool calls", () => {
