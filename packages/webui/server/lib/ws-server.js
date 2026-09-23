@@ -3,11 +3,14 @@
 //
 // 职责：HTTP 升级握手 → 事件总线订阅 → 帧序列推送（seq 连续）+ 断线恢复
 // （环形缓冲重放 / 快照基线回退）+ 心跳 + 入站配额。帧编解码复用 ws-frame.js
-// （RFC 6455 服务端子集），事件源复用 event-bus.js，与 SSE 适配器（sse-adapter.js）
-// 平行消费同一总线 —— 线上行为（REST 形状 / SSE 帧字节）不受影响。
+// （RFC 6455 服务端子集），事件源复用 event-bus.js —— SSE 已按决策 20 移除，
+// 事件总线（event-bus.js）是唯一下行通道，本端点是它唯一的线上出口。
+//
+// 无 transport 开关：本端点始终启用（MCODE_WEBUI_TRANSPORT 已删除）；
+// 发行版 SPA 直接消费本端点（+ REST 快照 GET /api/state、GET /api/alerts）。
 //
 // 协议帧（服务端 → 客户端，WS text，JSON）：
-//   {v:1, type:"hello",   payload:{resumeSupported, latestSeq, heartbeatMs, ringCapacity}}
+//   {v:1, type:"hello",   payload:{resumeSupported, latestSeq, heartbeatMs, ringCapacity, cid}}
 //   {v:1, seq, ts, type:"state.snapshot", payload:<快照>}        // 状态快照
 //   {v:1, seq, ts, type:"control", payload:{name, data}}          // 命名控制事件
 //   {v:1, type:"error",   payload:{code, message}}
@@ -15,9 +18,7 @@
 //   {v:1, type:"resume", payload:{lastSeq}}   // 断线恢复：重放 seq > lastSeq
 //   {v:1, type:"ping"} / {v:1, type:"pong"} / {v:1, type:"close"}
 //
-// 兼容性（决策记录 17）：升级门链与 /api/events 同款（origin / LAN / token）；
-// 默认 MCODE_WEBUI_TRANSPORT=sse 时本端点拒绝升级（旧行为不变的最强形式）；
-// 发行版 SPA 不使用本端点。
+// 升级门链（决策记录 17）：与原 /api/events 同款（origin / LAN / token）。
 
 import {
   computeAcceptKey,
@@ -28,15 +29,17 @@ import {
 } from "./ws-frame.js";
 import { createRingBuffer } from "./ring-buffer.js";
 import { subscribeEvents, getLatestSeq } from "./event-bus.js";
-import { getCidFromReq } from "./state-bus.js";
+import { getCidFromReq, getClient, pushOnlineCount, pushStateFor } from "./state-bus.js";
 import {
   isLocalRequest,
   buildTrustedOrigins,
   normalizeOriginHeader,
 } from "./lan.js";
-import { getServingPort, MCODE_WEBUI_TRANSPORT } from "./config.js";
+import { getServingPort } from "./config.js";
 import { getLanBroadcast, getTrustedOrigins } from "./settings.js";
 import { isRequestAuthorized } from "./auth.js";
+import { applyMavisUsageToCs } from "./mavis-usage.js";
+import { getMcodeModelLimit } from "./models.js";
 
 const DEFAULT_HEARTBEAT_MS = 30_000;
 const MAX_MISSED_PONGS = 2;
@@ -101,12 +104,10 @@ function releaseFeed(cid, feed) {
  * @param {import("node:http").IncomingMessage} req
  * @param {import("node:net").Socket} socket
  * @param {Buffer} head
- * @param {object} [opts] 测试缝：enabled / heartbeatMs / ringCapacity /
+ * @param {object} [opts] 测试缝：heartbeatMs / ringCapacity /
  *   inboundPerSec / inboundBurst / maxFrameBytes
  */
 export function handleStreamUpgrade(req, socket, head, opts = {}) {
-  const enabled =
-    opts.enabled !== undefined ? !!opts.enabled : MCODE_WEBUI_TRANSPORT === "ws";
   const pathname = (req.url || "/").split("?")[0];
   const reject = (status, message) => {
     try {
@@ -119,11 +120,8 @@ export function handleStreamUpgrade(req, socket, head, opts = {}) {
   };
 
   if (pathname !== "/api/stream") return reject(404, "not found");
-  if (!enabled) {
-    return reject(404, "websocket stream disabled (set MCODE_WEBUI_TRANSPORT=ws)");
-  }
 
-  // 门链（与 /api/events 同款）：origin / LAN / token。
+  // 门链（与原 /api/events 同款）：origin / LAN / token。
   //   升级等同于带副作用的请求：有 Origin 必须在信任集内（CSRF 边界）。
   const originHeader = normalizeOriginHeader(req.headers.origin);
   const trustedOrigins = buildTrustedOrigins({
@@ -181,7 +179,11 @@ export function handleStreamUpgrade(req, socket, head, opts = {}) {
   // 清理只解订阅，不主动 destroy —— destroy 会冲掉未刷写的收尾帧
   // （error / close），让 socket.end() 自然收尾、close 事件触发清理。
   const release = () => {
-    if (feed.conns.delete(conn)) releaseFeed(cid, feed);
+    if (feed.conns.delete(conn)) {
+      releaseFeed(cid, feed);
+      // 只在最后一个连接真正离开时广播在线数（close + error 双触发只算一次）
+      pushOnlineCount(getLanBroadcast());
+    }
     clearInterval(heartbeat);
   };
   socket.on("close", release);
@@ -198,6 +200,25 @@ export function handleStreamUpgrade(req, socket, head, opts = {}) {
       cid,
     },
   });
+
+  // 承接原 handleEvents（/api/events）的两个连接副作用：
+  //   a) 在线数广播 —— 所有已连接客户端同步 onlineCount。
+  pushOnlineCount(getLanBroadcast());
+  //   b) mavis 真值 hydrate（fire-and-forget，与原实现同款）：该 cid 已绑定
+  //      mcodeSessionId 时立刻查 mavis db，有真值就补推一帧快照，没有就保留估算。
+  const cs = getClient(cid);
+  if (cs && cs.mcodeSessionId) {
+    const sid = cs.mcodeSessionId;
+    Promise.resolve().then(() => {
+      applyMavisUsageToCs(cs, sid, { getMcodeModelLimit })
+        .then((applied) => {
+          if (applied) pushStateFor(cid);
+        })
+        .catch(() => {
+          /* swallow — keep estimate */
+        });
+    });
+  }
 
   const heartbeat = setInterval(() => {
     if (missedPongs >= MAX_MISSED_PONGS) {

@@ -1,10 +1,10 @@
 // webui/public/app/state.js — REFACTORING.md batch 4 step 2
 // Owns: config consts (TOKEN/CID/API_SUFFIX/HEADERS), the mutable `state`
 // binding + its 3 rebinding sites (connect/refreshSessions/refreshUsage),
-// SSE connection, panel flags (leftOpen/rightOpen/sidebarReady/
+// the /api/stream WebSocket connection, panel flags (leftOpen/rightOpen/sidebarReady/
 // sessionSearchQuery) with setters, usage quota data + popover surface,
 // v2 per-request authorization queue (needs_authorization /
-// authorization_decided SSE frames + /api/auth/decision POST).
+// authorization_decided control frames + /api/auth/decision POST).
 // NOTE: cycles with render.js/events.js are intentional and safe — imported
 // bindings are only touched inside functions, never at module eval time.
 
@@ -25,7 +25,7 @@ import { SLASH_COMMANDS, SLASH_SKILLS, attachEvents, attachModalEvents, attached
 //   4. 同步写到 localStorage，下次启动继续用
 //
 // 注意: token 不能 log, 不能 echo back, 不能进 URL fragment, 不能进
-// 任何 SSE / API 的 log。SECURITY-NOTES.md §2 完整说明了 trade-off。
+// 任何 stream / API 的 log。SECURITY-NOTES.md §2 完整说明了 trade-off。
 const WEBUI_TOKEN_LS_KEY = 'webui_token'
 
 function readToken() {
@@ -44,7 +44,7 @@ function readToken() {
 }
 
 // URL strip — must run exactly once at module load, before any
-// fetch / EventSource is created (so the address bar is clean and
+// fetch / WebSocket connection is created (so the address bar is clean and
 // the browser never sends the token via Referer to same-origin assets).
 function stripTokenFromUrl() {
   if (!urlParams.has('token')) return
@@ -58,7 +58,7 @@ function stripTokenFromUrl() {
 
 export const urlParams = new URLSearchParams(window.location.search)
 export let TOKEN = readToken()
-stripTokenFromUrl() // must run after readToken(), before any fetch/SSE
+stripTokenFromUrl() // must run after readToken(), before any fetch/WS connect
 export let TOKEN_QUERY = TOKEN ? `?token=${encodeURIComponent(TOKEN)}` : ''
 
 // Back-compat: events.js + render.js still import `tokenParam` from
@@ -68,7 +68,7 @@ export let TOKEN_QUERY = TOKEN ? `?token=${encodeURIComponent(TOKEN)}` : ''
 export const tokenParam = TOKEN_QUERY
 
 // v0.5.ai: A2 per-client — 每个 webui tab 一个 client id (localStorage 持久化)
-// 拼到所有 /api/xxx URL query string，server 端按 cid 路由 SSE + state
+// 拼到所有 /api/xxx URL query string，server 端按 cid 路由 stream + state
 export const CID = (() => {
   let c = localStorage.getItem('webui_cid')
   if (!c) {
@@ -82,14 +82,14 @@ export const CID_QUERY = `cid=${encodeURIComponent(CID)}`
 export let API_SUFFIX = TOKEN_QUERY ? `${TOKEN_QUERY}&${CID_QUERY}` : `?${CID_QUERY}`
 
 // v1.0.1: HEADERS is a live object — its properties are mutated in place
-// when the token rotates (SSE auth.token_rotated event). All callers use
+// when the token rotates (the auth.token_rotated control frame). All callers use
 // the object reference (not a snapshot) so they always read the current
 // Authorization header at fetch time. Tokens are NEVER logged (per
 // SECURITY-NOTES.md §2).
 export const HEADERS = {}
 if (TOKEN) HEADERS['Authorization'] = `Bearer ${TOKEN}`
 
-// setToken — called by the SSE handler when server pushes a new token
+// setToken — called by the stream handler when server pushes a new token
 // (auth.token_rotated). Updates module-level state + localStorage +
 // recomputes the URL query suffix. The next fetch() call automatically
 // picks up the new header (HEADERS is a live binding).
@@ -129,10 +129,10 @@ export let sessionSearchQuery = ''   // v0.5.x: 侧边栏会话搜索词
 // server/lib/authorize.js gates destructive / privacy-sensitive actions
 // (session delete / export / cross-workspace search / cleanup-orphans /
 // /clear / /new / token reset / startup cleanup) behind a fail-closed
-// 5-minute user confirmation. The server pushes `event:
-// needs_authorization` frames — JSON {requestId, action, ctx, expiresAt}
-// — over this same /api/events SSE stream, and broadcasts `event:
-// authorization_decided` {requestId, approved, decidedBy} when the
+// 5-minute user confirmation. The server pushes `needs_authorization`
+// control frames — JSON {requestId, action, ctx, expiresAt}
+// — over this same /api/stream WebSocket, and pushes
+// `authorization_decided` {requestId, approved, decidedBy} when the
 // pending promise resolves (this tab's click, ANOTHER tab's click, or
 // the server-side timeout).
 //
@@ -141,7 +141,7 @@ export let sessionSearchQuery = ''   // v0.5.x: 侧边栏会话搜索词
 // so every gated action hung silently for 5 minutes and then declined
 // ("clicking does nothing").
 //
-// Ownership split: the queue lives here (state.js owns the SSE
+// Ownership split: the queue lives here (state.js owns the WebSocket
 // connection + HEADERS); the modal that displays it lives in render.js
 // (renderAuthModal, following the ask_user modal pattern); the
 // Approve/Deny button wiring lives in events.js (attachModalEvents).
@@ -155,7 +155,7 @@ export function getPendingAuthRequests() {
 }
 
 // Drop one requestId from the queue. Idempotent on purpose — called
-// from BOTH the authorization_decided SSE handler and
+// from BOTH the authorization_decided control-frame handler and
 // submitAuthDecision's local removal, whichever lands first.
 export function _removePendingAuthRequest(requestId) {
   const i = PENDING_AUTH_REQUESTS.findIndex((r) => r.requestId === requestId)
@@ -177,7 +177,7 @@ export async function submitAuthDecision(requestId, approve) {
   })
   // 200 = resolved. 404 = already decided elsewhere (another tab or the
   // server timeout evicted it) — the request is finished either way, so
-  // drop it locally even if the authorization_decided SSE broadcast is
+  // drop it locally even if the authorization_decided control frame is
   // delayed or lost; removal is idempotent. Any other status / a thrown
   // network error is left to the caller (events.js shows the error and
   // re-enables the buttons so the user can retry).
@@ -193,20 +193,23 @@ export async function submitAuthDecision(requestId, approve) {
 // ============================================================
 // server/lib/alerts.js pushes system-level signals — mcode subprocess
 // crash (spawn ENOENT), sqlite failure, token expiry, protocol
-// unsupported… — on the INDEPENDENT /api/alerts SSE channel (routes/
-// alerts.js) instead of polluting chat lines. Lease B02 §AP3: "the
+// unsupported… — on the INDEPENDENT alerts channel: a REST ring
+// snapshot from GET /api/alerts plus alerts.append / alerts.update
+// control frames on /api/stream, instead of polluting chat lines.
+// Lease B02 §AP3: "the
 // bell icon (frontend) shows the alert with the matching id" — but
 // public/ had ZERO wiring, so a failed chat send was invisible (the
-// audit's P1). The store lives HERE (state.js owns SSE + module-level
+// audit's P1). The store lives HERE (state.js owns the stream
+// connection + module-level
 // state that survives the full-state re-renders — same rationale as
 // PENDING_AUTH_REQUESTS above); the DOM surface lives in render.js
 // (renderAlerts) and the click wiring in events.js (attachEvents).
 //
-// Wire contract (routes/alerts.js frames, default `message` events):
-//   data: {"kind":"snapshot","alerts":[…]}   — ring replay on connect
-//   data: {"kind":"append","alert":{…}}      — new alert
-//   data: {"kind":"update","alert":{…}}      — dedup merge (count++/ts)
-//   event: heartbeat                          — named event, not onmessage
+// Wire contract (GET /api/alerts REST + /api/stream control frames):
+//   GET /api/alerts → {"kind":"snapshot","alerts":[…]}  — ring replay,
+//     refetched on every stream hello (replay dedup via _seenAlertIds)
+//   control alerts.append, data={"kind":"append","alert":{…}}   — new alert
+//   control alerts.update, data={"kind":"update","alert":{…}}   — dedup merge
 // Alert shape (lib/alerts.js normalize): {id, ts, level, msg, src,
 // cid, sessionId, data, count} — all of it is UNTRUSTED wire data.
 const ALERTS_MAX = 100 // mirror the server ring size; local cap for the popover
@@ -252,8 +255,8 @@ function _handleAlertFrame(frame) {
   if (frame.kind === 'snapshot' && Array.isArray(frame.alerts)) {
     // Connect / reconnect replay (server ring, oldest → newest).
     // Replace the list wholesale, but only ids never seen before may
-    // bump the unread count — an EventSource auto-reconnect replays
-    // the identical snapshot and must not re-mark everything unread.
+    // bump the unread count — a stream reconnect refetches GET /api/alerts
+    // and replays the identical snapshot; it must not re-mark everything unread.
     let fresh = 0
     const next = []
     for (const raw of frame.alerts) {
@@ -319,146 +322,273 @@ export function clearAlerts() {
 }
 
 // v2 (2026-09-20 webui-manual-audit D1): the alerts SSE connection.
-//   Separate EventSource from the state stream on purpose (lease B02:
-//   anomaly channel is its own chokepoint with its own replay/dedup
-//   semantics). Created once — the browser's native EventSource
-//   auto-reconnect handles drops, and every (re)connect gets a fresh
-//   snapshot frame whose ids dedup against _seenAlertIds.
-export let alertsEs = null
+//   (transport retired with SSE removal.) The anomaly channel stays its
+//   own chokepoint with its own replay/dedup semantics (lease B02), now
+//   carried by the /api/stream WebSocket: live frames arrive as
+//   alerts.append / alerts.update control frames, and the first snapshot
+//   is fetched from GET /api/alerts on every stream hello — its ids
+//   dedup against _seenAlertIds above.
 
 // ============================================================
-// SSE connection
+// WebSocket connection (/api/stream) + REST baselines
 // ============================================================
+// Shared WS protocol (server: server/lib/ws-server.js). Every
+// server→client text frame is JSON {v:1, type, …}:
+//   {v:1,type:"hello",payload:{resumeSupported,latestSeq,heartbeatMs,
+//     ringCapacity,cid}}                — first frame after connect
+//   {v:1,seq,ts,type:"state.snapshot",payload:<state object>}
+//   {v:1,seq,ts,type:"control",payload:{name,data}}  — data is a string
+//   {v:1,type:"error",payload:{code,message}}
+// First connect (no wsLastSeq yet) takes its baseline from REST —
+// GET /api/state (full snapshot) + GET /api/alerts (alert ring). A
+// reconnect that kept its wsLastSeq sends
+// {v:1,type:"resume",payload:{lastSeq}} instead and the server replays
+// the buffered frames in seq order; on ring underrun the server either
+// sends a state.snapshot baseline or error code "resume-underrun"
+// (handled below). Heartbeat is a server-side WS protocol ping every
+// 30s that the browser answers automatically — this client keeps NO
+// heartbeat timer of its own.
 export let es = null
 export let autoRefreshTimer = null
-export function connect() {
-  if (es) { try { es.close() } catch {} }
-  const url = '/api/events' + API_SUFFIX
-  es = new EventSource(url)
 
-  // v1.0.1: named event "auth.token_rotated" — server pushes this when
-  // an operator triggers a token rotation. The body is plain text
-  // (the new token) — we use it to update localStorage + live HEADERS.
-  es.addEventListener('auth.token_rotated', (ev) => {
-    try {
-      const newToken = (ev.data || '').trim()
-      if (!newToken) return
-      setToken(newToken)
-      console.log('[webui] token rotated (SSE); updated HEADERS + localStorage')
-    } catch (e) { console.error('[webui] token rotation handler failed', e) }
-  })
+// Module-level stream state — deliberately survives connect() calls:
+// wsLastSeq is the resume baseline across reconnects (null until the
+// first seq-bearing frame); gotSnapshotSinceOpen is per-connection
+// (reset at the top of connect()) and guards a slow REST baseline from
+// overwriting a fresher WS snapshot.
+let wsLastSeq = null
+let wsHelloLatest = null
+let reconnectTimer = null
+let gotSnapshotSinceOpen = false
 
-  // v2 (2026-09-20 webui-manual-audit): needs_authorization — the
-  // server's authorize() gate is asking this tab to confirm a gated
-  // action. Parse the frame, queue it, and let render.js's
-  // renderAuthModal() display it (one at a time, queue order). Frames
-  // can be replayed on SSE reconnect — dedup by requestId so a replay
-  // never double-queues or resets the displayed request.
-  es.addEventListener('needs_authorization', (ev) => {
-    try {
-      const req = JSON.parse(ev.data || '{}')
-      if (!req || typeof req.requestId !== 'string' || !req.requestId) return
-      if (PENDING_AUTH_REQUESTS.some((r) => r.requestId === req.requestId)) return
-      PENDING_AUTH_REQUESTS.push({
-        requestId: req.requestId,
-        action: typeof req.action === 'string' ? req.action : '',
-        ctx: (req.ctx && typeof req.ctx === 'object') ? req.ctx : {},
-        expiresAt: Number(req.expiresAt) || 0,
-        receivedAt: Date.now(),
-      })
-      renderAuthModal()
-    } catch (e) { console.error('[webui] needs_authorization handler failed', e) }
-  })
+// applySnapshot — the full-state replacement, shared by BOTH baseline
+// sources: a WS state.snapshot frame payload and the GET /api/state
+// REST baseline (both carry the complete state object, so the field
+// preservation below applies unchanged). Body moved verbatim out of the
+// old stream handler; only the input changed from JSON.parse(ev.data)
+// to an already-parsed object.
+function applySnapshot(obj) {
+  try {
+    // v0.5.bx-8: 保留 askUserAnswers (webui-only, server 不存) — 整包快照会覆盖
+    // v1.0: 同理保留 mcodeSessions — pushOnlineCount 等推送点若缺该字段, 整包替换后
+    //   mcodeSessions 变 undefined, 侧栏闪跌; 旧值好过没值
+    // v2026-08-28 modacker: 同理保留 Token Plan (套餐用量) feature fields
+    //   (quotaEnabled / hasTokenPlanKey / tokenPlanApiKeyMasked).
+    //   The server now includes them in the snapshot (state-bus.js),
+    //   but we still preserve them defensively: if any future
+    //   snapshot builder forgets one of these, the user's
+    //   "已开启套餐用量" toggle should not silently revert. State
+    //   class is read directly in renderUsage() to decide btn-usage
+    //   visibility, so losing quotaEnabled on a re-render hides the
+    //   button right after the user opens it.
+    const preserved = state?.askUserAnswers
+    const preservedMcodeSessions = state?.mcodeSessions
+    const preservedQuotaEnabled = state?.quotaEnabled
+    const preservedHasTokenPlanKey = state?.hasTokenPlanKey
+    const preservedTokenPlanApiKeyMasked = state?.tokenPlanApiKeyMasked
+    // v2026-08-28 modacker (A+C): also preserve the source
+    //   ("env" / "file" / "settings") + resolved file path so the
+    //   modal can keep its "delete" button hidden if the operator
+    //   reverts to a fresh snapshot. See state-bus.js.
+    const preservedTokenPlanApiKeySource = state?.tokenPlanApiKeySource
+    const preservedTokenPlanApiKeyFilePath = state?.tokenPlanApiKeyFilePath
+    state = obj
+    if (preserved) state.askUserAnswers = preserved
+    if (state.mcodeSessions === undefined && Array.isArray(preservedMcodeSessions)) {
+      state.mcodeSessions = preservedMcodeSessions
+    }
+    if (state.quotaEnabled === undefined && preservedQuotaEnabled !== undefined) {
+      state.quotaEnabled = preservedQuotaEnabled
+    }
+    if (state.hasTokenPlanKey === undefined && preservedHasTokenPlanKey !== undefined) {
+      state.hasTokenPlanKey = preservedHasTokenPlanKey
+    }
+    if (state.tokenPlanApiKeyMasked === undefined && preservedTokenPlanApiKeyMasked !== undefined) {
+      state.tokenPlanApiKeyMasked = preservedTokenPlanApiKeyMasked
+    }
+    if (state.tokenPlanApiKeySource === undefined && preservedTokenPlanApiKeySource !== undefined) {
+      state.tokenPlanApiKeySource = preservedTokenPlanApiKeySource
+    }
+    if (state.tokenPlanApiKeyFilePath === undefined && preservedTokenPlanApiKeyFilePath !== undefined) {
+      state.tokenPlanApiKeyFilePath = preservedTokenPlanApiKeyFilePath
+    }
+    // v0.5.bx-31 + v1.0: 收到权威 mcodeSessions 推送即 ready。
+    //   旧门控要求 length>0 — 工作区会话被全删后列表合法为空, loading 永不消失;
+    //   现在用 server 的 mcodeSessionsPending 区分占位推送 (cache miss 空数组) 与权威推送
+    if (!sidebarReady && Array.isArray(state.mcodeSessions) && !state.mcodeSessionsPending) {
+      console.log('[webui] sidebar ready: mcodeSessions.length=' + state.mcodeSessions.length)
+      sidebarReady = true
+    }
+    render()
+  } catch (e) { console.error('snapshot apply', e) }
+}
 
-  // v2 (2026-09-20 webui-manual-audit): authorization_decided — a
-  // pending request resolved (this tab's POST, another tab's decision,
-  // or the server's fail-closed 5-min timeout; the server broadcasts
-  // this on EVERY resolution path). Drop it and re-render: the modal
-  // closes when the queue empties, or advances to the next queued
-  // request.
-  es.addEventListener('authorization_decided', (ev) => {
-    try {
-      const d = JSON.parse(ev.data || '{}')
-      if (!d || typeof d.requestId !== 'string' || !d.requestId) return
-      _removePendingAuthRequest(d.requestId)
-      renderAuthModal()
-    } catch (e) { console.error('[webui] authorization_decided handler failed', e) }
-  })
+// _fetchStateBaseline — first-connect REST baseline (GET /api/state,
+// the complete snapshot incl. settings/quota fields). gotSnapshotSinceOpen
+// guards the in-flight race: if a WS state.snapshot lands while this
+// REST call is travelling, drop the (older) REST result rather than
+// overwriting newer state.
+function _fetchStateBaseline() {
+  fetch('/api/state' + API_SUFFIX)
+    .then((r) => r.json())
+    .then((obj) => {
+      if (gotSnapshotSinceOpen) return
+      applySnapshot(obj)
+    })
+    .catch((e) => console.warn('[webui] /api/state baseline failed', e))
+}
 
-  es.onmessage = (ev) => {
-    try {
-      // v0.5.bx-8: 保留 askUserAnswers (webui-only, server 不存) — SSE 推送整 state 会覆盖
-      // v1.0: 同理保留 mcodeSessions — pushOnlineCount 等推送点若缺该字段, 整包替换后
-      //   mcodeSessions 变 undefined, 侧栏闪跌; 旧值好过没值
-      // v2026-08-28 modacker: 同理保留 Token Plan (套餐用量) feature fields
-      //   (quotaEnabled / hasTokenPlanKey / tokenPlanApiKeyMasked).
-      //   The server now includes them in the snapshot (state-bus.js),
-      //   but we still preserve them defensively: if any future
-      //   snapshot builder forgets one of these, the user's
-      //   "已开启套餐用量" toggle should not silently revert. State
-      //   class is read directly in renderUsage() to decide btn-usage
-      //   visibility, so losing quotaEnabled on a re-render hides the
-      //   button right after the user opens it.
-      const preserved = state?.askUserAnswers
-      const preservedMcodeSessions = state?.mcodeSessions
-      const preservedQuotaEnabled = state?.quotaEnabled
-      const preservedHasTokenPlanKey = state?.hasTokenPlanKey
-      const preservedTokenPlanApiKeyMasked = state?.tokenPlanApiKeyMasked
-      // v2026-08-28 modacker (A+C): also preserve the source
-      //   ("env" / "file" / "settings") + resolved file path so the
-      //   modal can keep its "delete" button hidden if the operator
-      //   reverts to a fresh snapshot. See state-bus.js.
-      const preservedTokenPlanApiKeySource = state?.tokenPlanApiKeySource
-      const preservedTokenPlanApiKeyFilePath = state?.tokenPlanApiKeyFilePath
-      state = JSON.parse(ev.data)
-      if (preserved) state.askUserAnswers = preserved
-      if (state.mcodeSessions === undefined && Array.isArray(preservedMcodeSessions)) {
-        state.mcodeSessions = preservedMcodeSessions
-      }
-      if (state.quotaEnabled === undefined && preservedQuotaEnabled !== undefined) {
-        state.quotaEnabled = preservedQuotaEnabled
-      }
-      if (state.hasTokenPlanKey === undefined && preservedHasTokenPlanKey !== undefined) {
-        state.hasTokenPlanKey = preservedHasTokenPlanKey
-      }
-      if (state.tokenPlanApiKeyMasked === undefined && preservedTokenPlanApiKeyMasked !== undefined) {
-        state.tokenPlanApiKeyMasked = preservedTokenPlanApiKeyMasked
-      }
-      if (state.tokenPlanApiKeySource === undefined && preservedTokenPlanApiKeySource !== undefined) {
-        state.tokenPlanApiKeySource = preservedTokenPlanApiKeySource
-      }
-      if (state.tokenPlanApiKeyFilePath === undefined && preservedTokenPlanApiKeyFilePath !== undefined) {
-        state.tokenPlanApiKeyFilePath = preservedTokenPlanApiKeyFilePath
-      }
-      // v0.5.bx-31 + v1.0: 收到权威 mcodeSessions 推送即 ready。
-      //   旧门控要求 length>0 — 工作区会话被全删后列表合法为空, loading 永不消失;
-      //   现在用 server 的 mcodeSessionsPending 区分占位推送 (cache miss 空数组) 与权威推送
-      if (!sidebarReady && Array.isArray(state.mcodeSessions) && !state.mcodeSessionsPending) {
-        console.log('[webui] sidebar ready: mcodeSessions.length=' + state.mcodeSessions.length)
-        sidebarReady = true
-      }
-      render()
-    } catch (e) { console.error('sse parse', e) }
-  }
-  es.onerror = () => { setTimeout(connect, 3000) }
-
-  // v2 (2026-09-20 webui-manual-audit D1): anomaly channel — a SECOND,
-  // independent EventSource (routes/alerts.js), so system-level error
-  // signals (failed chat send, subprocess crash…) reach the bell even
-  // though they never touch the state/chat streams. Frames are default
-  // `message` events; the server's 30s `heartbeat` is a NAMED event so
-  // onmessage never sees it. Created once per page: connect() re-runs
-  // on state-stream errors, and a duplicate alerts connection would
-  // double-count every frame. EventSource auto-reconnect + snapshot
-  // replay + _seenAlertIds dedup make that path safe.
-  if (!alertsEs) {
-    alertsEs = new EventSource('/api/alerts' + API_SUFFIX)
-    alertsEs.onmessage = (ev) => {
+// dispatchControl — routes one /api/stream control frame {name,data}
+// (data is always a string). Bodies moved verbatim from the old
+// state-stream named-event listeners; only the envelope changed (SSE
+// event names → control frames).
+function dispatchControl(name, data) {
+  switch (name) {
+    // v1.0.1: "auth.token_rotated" — server pushes this when an
+    // operator triggers a token rotation. data is plain text (the new
+    // token) — we use it to update localStorage + live HEADERS.
+    case 'auth.token_rotated': {
       try {
-        _handleAlertFrame(JSON.parse(ev.data))
-      } catch (e) { console.error('alerts parse', e) }
+        const newToken = (data || '').trim()
+        if (!newToken) return
+        setToken(newToken)
+        console.log('[webui] token rotated (stream); updated HEADERS + localStorage')
+      } catch (e) { console.error('[webui] token rotation handler failed', e) }
+      return
+    }
+
+    // v2 (2026-09-20 webui-manual-audit): needs_authorization — the
+    // server's authorize() gate is asking this tab to confirm a gated
+    // action. Parse the frame, queue it, and let render.js's
+    // renderAuthModal() display it (one at a time, queue order). Frames
+    // can be replayed on reconnect — dedup by requestId so a replay
+    // never double-queues or resets the displayed request.
+    case 'needs_authorization': {
+      try {
+        const req = JSON.parse(data || '{}')
+        if (!req || typeof req.requestId !== 'string' || !req.requestId) return
+        if (PENDING_AUTH_REQUESTS.some((r) => r.requestId === req.requestId)) return
+        PENDING_AUTH_REQUESTS.push({
+          requestId: req.requestId,
+          action: typeof req.action === 'string' ? req.action : '',
+          ctx: (req.ctx && typeof req.ctx === 'object') ? req.ctx : {},
+          expiresAt: Number(req.expiresAt) || 0,
+          receivedAt: Date.now(),
+        })
+        renderAuthModal()
+      } catch (e) { console.error('[webui] needs_authorization handler failed', e) }
+      return
+    }
+
+    // v2 (2026-09-20 webui-manual-audit): authorization_decided — a
+    // pending request resolved (this tab's POST, another tab's decision,
+    // or the server's fail-closed 5-min timeout; the server pushes this
+    // on EVERY resolution path). Drop it and re-render: the modal
+    // closes when the queue empties, or advances to the next queued
+    // request.
+    case 'authorization_decided': {
+      try {
+        const d = JSON.parse(data || '{}')
+        if (!d || typeof d.requestId !== 'string' || !d.requestId) return
+        _removePendingAuthRequest(d.requestId)
+        renderAuthModal()
+      } catch (e) { console.error('[webui] authorization_decided handler failed', e) }
+      return
+    }
+
+    // Anomaly-channel live frames — same payload shape the old alerts
+    // stream carried; _handleAlertFrame owns normalization + dedup.
+    case 'alerts.append':
+    case 'alerts.update': {
+      try { _handleAlertFrame(JSON.parse(data)) } catch (e) { console.error('alerts parse', e) }
+      return
+    }
+
+    case 'token.first_run':
+    default:
+      // token.first_run has never had a consumer in this SPA (unchanged
+      // from the SSE era); unknown control names are ignored on purpose.
+      return
+  }
+}
+
+export function connect() {
+  // Close any previous socket + drop a pending reconnect timer first,
+  // so a deliberate connect() never races its own onclose retry.
+  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null }
+  if (es) { try { es.close() } catch {} }
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
+  const url = proto + '//' + location.host + '/api/stream' + API_SUFFIX
+  gotSnapshotSinceOpen = false
+  const ws = new WebSocket(url)
+  es = ws
+
+  // onopen deliberately does nothing — everything waits for the server's
+  // hello frame. No client heartbeat: the server pings every 30s and
+  // the browser answers protocol pongs automatically.
+
+  ws.onmessage = (ev) => {
+    let frame
+    try { frame = JSON.parse(ev.data) } catch (e) { console.error('[webui] stream frame parse failed', e); return }
+    if (!frame || typeof frame !== 'object') return
+    const payload = (frame.payload && typeof frame.payload === 'object') ? frame.payload : {}
+    switch (frame.type) {
+      case 'hello': {
+        // Remember the server's latest seq, then establish the baseline:
+        // resume from wsLastSeq when we have one, otherwise pull the
+        // REST state baseline. Either way the alert ring snapshot is a
+        // REST fetch — control frames only carry deltas, never the
+        // ring replay.
+        wsHelloLatest = payload.latestSeq
+        if (wsLastSeq != null) {
+          ws.send(JSON.stringify({ v: 1, type: 'resume', payload: { lastSeq: wsLastSeq } }))
+        } else {
+          _fetchStateBaseline()
+        }
+        fetch('/api/alerts' + API_SUFFIX)
+          .then((r) => r.json())
+          .then((f) => _handleAlertFrame(f))
+          .catch(() => {})
+        return
+      }
+      case 'state.snapshot':
+        wsLastSeq = frame.seq
+        gotSnapshotSinceOpen = true
+        applySnapshot(payload)
+        return
+      case 'control':
+        wsLastSeq = frame.seq
+        dispatchControl(payload.name, payload.data)
+        return
+      case 'error': {
+        if (payload.code === 'resume-underrun') {
+          // The ring buffer could not cover [wsLastSeq, latest]: drop the
+          // stale baseline (fall back to the hello's latestSeq) and take
+          // a fresh REST snapshot unless a WS snapshot already landed
+          // on this connection.
+          wsLastSeq = wsHelloLatest ?? null
+          if (!gotSnapshotSinceOpen) _fetchStateBaseline()
+        } else {
+          console.warn('[webui] stream error frame', payload.code, payload.message)
+        }
+        return
+      }
+      case 'pong':
+        return // no client-side heartbeat exists; ignore a stray pong anyway
+      default:
+        return // unknown frame types are ignored on purpose
     }
   }
+
+  ws.onclose = () => {
+    // A close from a socket connect() already replaced is deliberate —
+    // only a live connection dropping (server shutdown / network loss)
+    // schedules a retry. Same 3s cadence as the old error retry;
+    // connect() clears any outstanding timer on entry.
+    if (es !== ws) return
+    reconnectTimer = setTimeout(connect, 3000)
+  }
+
   // v0.5.ak: user footer 已改为静态 GitHub 链接，不需要 ticker
 
   // 自动 /api/refresh 触发：页面打开 2s + 每 60s 拉一次
@@ -700,14 +830,14 @@ export async function refreshUsage(opts = {}) {
     // 等真实数据到来（fetchedAt 必须 > postTime）才停转 + toast
     // v0.5.bb: deadline 18s > server 端 mmx quota 15s 超时（确保 mmx 跑完后 pushStateFor 的 fetchedAt > postTime）
     const deadline = Date.now() + 18_000
-    let gotSseUpdate = false
+    let gotStreamUpdate = false
     while (Date.now() < deadline) {
       const fetchedAt = state?.usage?.fetchedAt
-      if (typeof fetchedAt === 'number' && fetchedAt > postTime) { gotSseUpdate = true; break }
+      if (typeof fetchedAt === 'number' && fetchedAt > postTime) { gotStreamUpdate = true; break }
       await new Promise((r) => setTimeout(r, 100))
     }
-    if (!gotSseUpdate) {
-      // SSE 没收到（典型场景：init 时 EventSource 还在 CONNECTING）
+    if (!gotStreamUpdate) {
+      // 事件流还没收到（典型场景：init 时 WebSocket 还在 CONNECTING）
       // 兜底轮询 /api/state（每 1.5s 一次直到 deadline）— 避免 mmx 慢的情况下拿不到数据
       const fallbackDeadline = Date.now() + 8_000
       while (Date.now() < fallbackDeadline) {
@@ -716,7 +846,7 @@ export async function refreshUsage(opts = {}) {
           if (r2.ok) {
             state = await r2.json()
             const fa = state?.usage?.fetchedAt
-            if (typeof fa === 'number' && fa > postTime) { gotSseUpdate = true; break }
+            if (typeof fa === 'number' && fa > postTime) { gotStreamUpdate = true; break }
           }
         } catch {}
         await new Promise((r) => setTimeout(r, 1500))

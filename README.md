@@ -266,7 +266,7 @@ From a source checkout use `pnpm mcode-web`. Without `--port` the server starts
 on 18090 and moves to the next free port when 18090 is taken, printing the URL it
 bound; an explicit `--port` is pinned and never moves.
 
-The Web UI streams chat over SSE, renders tool calls and permission prompts, manages sessions and workspaces (with a modal directory picker over `/api/fs/*`, confined to allowed workspace roots), shows the current model in the selector, and mounts a read-only session **trajectory studio** at `/trajectory/`. It binds loopback by default; LAN exposure is explicit opt-in and token-gated. See [packages/webui](packages/webui/README.md) and [docs/webui.md](docs/webui.md).
+The Web UI streams chat over WebSocket, renders tool calls and permission prompts, manages sessions and workspaces (with a modal directory picker over `/api/fs/*`, confined to allowed workspace roots), shows the current model in the selector, and mounts a read-only session **trajectory studio** at `/trajectory/`. It binds loopback by default; LAN exposure is explicit opt-in and token-gated. See [packages/webui](packages/webui/README.md) and [docs/webui.md](docs/webui.md).
 
 The Web UI originated as the community **mcode-webui** plugin and was migrated into this repository as a first-class package — the people and history behind it are recorded in [co-builders.md](co-builders.md).
 

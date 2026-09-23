@@ -8,7 +8,7 @@
 //   1. PERMISSION_PRESETS  — the canonical list of named presets.
 //   2. webuiModeToLabel    — pure: mode string → display label.
 //   3. applyPermissionPreset — cs+cid mutator that routes through
-//                              state-bus.pushStateFor (no direct SSE).
+//                              state-bus.pushStateFor (no direct stream writes).
 
 import { pushStateFor } from "../state-bus.js";
 

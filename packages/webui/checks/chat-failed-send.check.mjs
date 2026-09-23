@@ -44,6 +44,10 @@ import {
   registerSessionsStore,
   registerMcodeAcpMock,
 } from "../test/_setup.js";
+import {
+  subscribeEvents,
+  resetEventBusForTests,
+} from "../server/lib/event-bus.js";
 
 // alerts.js fire-and-forget audit-writes to events.ndjson via the REAL
 // lib/events.js — redirect to a per-file tmp dir so the check never
@@ -89,19 +93,19 @@ let handleStop;
 let sb; // state-bus handle
 let alerts; // real lib/alerts.js (not mocked by _setup.js)
 
-// Capturing SSE fake — pushStateFor writes `data: <json>` frames.
-function makeFakeSse() {
-  return {
-    frames: [],
-    write(s) {
-      this.frames.push(String(s));
-    },
-  };
+// 事件总线捕获（原 fakeSse 模式的等价替换，decision 20 SSE 移除）——
+// pushStateFor 发布 type==="state.snapshot" 事件到订阅 cid。
+function captureCid(cid) {
+  const box = [];
+  const unsub = subscribeEvents(cid, (item) => box.push(item));
+  return { box, unsub };
 }
-function lastStateFrame(sse) {
-  const dataFrames = sse.frames.filter((f) => f.startsWith("data: "));
-  assert.ok(dataFrames.length > 0, "expected at least one state frame");
-  return JSON.parse(dataFrames[dataFrames.length - 1].replace(/^data: /, ""));
+function lastStateFrame(box) {
+  for (let i = box.length - 1; i >= 0; i--) {
+    const e = box[i] && box[i].event;
+    if (e && e.type === "state.snapshot") return e.snapshot;
+  }
+  assert.fail("expected at least one state.snapshot event");
 }
 
 before(async (t) => {
@@ -127,7 +131,7 @@ before(async (t) => {
 
 beforeEach(() => {
   sb.clients.clear();
-  sb.resetCoalesceState();
+  resetEventBusForTests();
   registerSessionsStore({ initial: [] });
   alerts._resetForTests();
 });
@@ -166,8 +170,7 @@ describe("handleSend — failed send (§AP3) resets the thinking claim", () => {
     cs.workspace = { dir: "/ws-X", branch: null, tree: null };
     seedStaleThinkingClaim(cs);
     sb.clients.set(cid, cs);
-    const sse = makeFakeSse();
-    sb.setSseClient(cid, sse);
+    const cap = captureCid(cid);
 
     await handleSend(fakeReq({ content: "hello" }), fakeRes(), { cs, cid });
 
@@ -194,7 +197,7 @@ describe("handleSend — failed send (§AP3) resets the thinking claim", () => {
     assert.equal(hit.cid, cid);
     // 6. The TERMINAL pushed frame (after the reset) is at-rest — this
     //    is the frame the browser renders 思考中 from.
-    const frame = lastStateFrame(sse);
+    const frame = lastStateFrame(cap.box);
     assert.equal(frame.running.active, false);
     assert.equal(frame.context.thinkingStatus, "Idle");
     assert.equal(frame.context.thinkingDuration, null);
@@ -276,8 +279,7 @@ describe("handleStop — zombie run claim", () => {
     cs.mcodeSessionId = null; // skips the gentle-cancel RPC path
     seedStaleThinkingClaim(cs);
     sb.clients.set(cid, cs);
-    const sse = makeFakeSse();
-    sb.setSseClient(cid, sse);
+    const cap = captureCid(cid);
 
     const res = fakeRes();
     await handleStop(null, res, { cs, cid });
@@ -290,7 +292,7 @@ describe("handleStop — zombie run claim", () => {
     assert.equal(cs.context.thinkingStatus, "Idle");
     assert.equal(cs.context.thinkingDuration, null);
     // ...and the at-rest state actually went out on the wire.
-    const frame = lastStateFrame(sse);
+    const frame = lastStateFrame(cap.box);
     assert.equal(frame.running.active, false);
     assert.equal(frame.context.thinkingStatus, "Idle");
   });

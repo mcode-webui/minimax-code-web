@@ -1,5 +1,5 @@
 // webui/server/lib/state-bus.js
-// Per-cid state + SSE channel management.
+// Per-cid state + event stream (WebSocket /api/stream) management.
 
 import { DEFAULT_WORKSPACE, DEFAULT_MODEL } from "./config.js";
 import { isFirstRun } from "./auth.js";
@@ -23,36 +23,12 @@ import {
   getTokenRotatedAt,
   maskTokenPlanKey,
 } from "./settings.js";
-import { emitEvent } from "./event-bus.js";
-import {
-  SSE_HEADERS,
-  STATE_PUSH_THROTTLE_MS,
-  scheduleStatePush,
-  clearCidCoalesce,
-  formatControlFrame,
-  writeControlFrame,
-  resetCoalesceState,
-  flushPendingPushes,
-  peekLastPushed,
-  peekLastWriteTs,
-  peekLastPushedRes,
-} from "./sse-adapter.js";
-
-// SSE_HEADERS / STATE_PUSH_THROTTLE_MS 等线上机制已迁至 sse-adapter.js；
-// 此处再导出以保持既有导入路径（routes/state.js 等）与测试钩子不变。
-export {
-  SSE_HEADERS,
-  STATE_PUSH_THROTTLE_MS,
-  resetCoalesceState,
-  flushPendingPushes,
-  peekLastPushed,
-  peekLastWriteTs,
-  peekLastPushedRes,
-};
+import { emitEvent, getSubscribedCids } from "./event-bus.js";
+import { pushAlert, subscribeAlerts } from "./alerts.js";
 
 // v0.5.ai: A2 per-client 架构
 // 每个 webui tab 一个 client (cid = localStorage webui_cid)
-// 每个 client 独立：state (chat/mcodeSessionId/context/usage/running), activeChild, SSE connection
+// 每个 client 独立：state (chat/mcodeSessionId/context/usage/running), activeChild, /api/stream connection
 // 缺 cid 的请求 fallback 到 'default' client (兼容老 client)
 
 // v2.0 (lease B02): pushAlert re-export — chokepoint-friendly alias.
@@ -62,7 +38,23 @@ export {
 //   state-bus touches per-cid state) extends naturally: only
 //   state-bus touches the alert bus too. alerts.js remains the
 //   pure module; state-bus is the wire.
-export { pushAlert } from "./alerts.js";
+export { pushAlert };
+
+// 告警桥接（决策 20 移除 SSE 后的下行出口）：alerts.js 的每个 frame 在这里
+//   转成 /api/stream 上的命名控制帧（alerts.append / alerts.update），data 为
+//   frame 的 JSON 字符串。幂等：重复调用先退订上一个订阅再接新的。
+let _alertBridgeUnsubscribe = null;
+export function attachAlertBridge() {
+  if (typeof _alertBridgeUnsubscribe === "function") _alertBridgeUnsubscribe();
+  _alertBridgeUnsubscribe = subscribeAlerts((frame) => {
+    const data = JSON.stringify(frame);
+    const name = frame.kind === "update" ? "alerts.update" : "alerts.append";
+    for (const cid of getSubscribedCids()) {
+      emitEvent(cid, { type: "control", name, data });
+    }
+  });
+}
+attachAlertBridge(); // 模块加载即接线（每进程一次）
 
 // v0.5.ai: 每个 webui tab 一个独立 state。
 export function makeClientState() {
@@ -129,7 +121,6 @@ export function makeClientState() {
 }
 
 export const clients = new Map(); // cid -> clientState
-export const sseByCid = new Map(); // cid -> SSE response
 export const activeChildByCid = new Map(); // cid -> child process
 
 // v2.3 (in-product): a fresh client (page reload, new tab) must resume the
@@ -184,8 +175,6 @@ export function getCidFromReq(req) {
   }
 }
 
-// （SSE_HEADERS 定义已迁至 sse-adapter.js，见文件头再导出。）
-
 // v2.3: the sessions list in a snapshot is sidebar metadata only — the
 //   frontend never reads session.chat from state.sessions (the chat area
 //   hydrates from state.chat / the switch response). Shipping every
@@ -208,7 +197,7 @@ function sessionsListForSnapshot() {
 // pushStateFor: 推 state 给指定 cid（或 '__broadcast__' 推给所有）
 //   opts.lanBroadcast: 当前 LAN 广播状态（从 settings.js 注入）
 //   opts.mcodeSessions: 已过滤的 mcode sessions 数组（从 acp-client.js 注入）
-// v0.5.bx-31: cache miss 时 fire-and-forget 拉一次, 拉完自动 push 给所有 SSE 客户端
+// v0.5.bx-31: cache miss 时 fire-and-forget 拉一次, 拉完自动 push 给所有事件流客户端
 // v1.0: 推送带 mcodeSessionsPending 标记 — 占位推送 (cache miss 空数组) 为 true, 权威推送为 false;
 //   fetch 失败也要推终态 (否则 client 侧栏 ready 门控永远等不到权威值, loading 卡死)
 const _mcodeSessionsFetchPending = new Set(); // workspace keys currently being fetched
@@ -216,7 +205,7 @@ function ensureMcodeSessionsFetchedAndPush(workspace) {
   if (_mcodeSessionsFetchPending.has(workspace)) return;
   _mcodeSessionsFetchPending.add(workspace);
   const pushAuthoritative = () => {
-    for (const [c, res] of sseByCid) {
+    for (const c of getSubscribedCids()) {
         const ccs = clients.get(c) || makeClientState();
         const cws = (ccs.workspace && ccs.workspace.dir) || "";
         // v1.0: 权威推送优先 fresh cache, 退而求其次 stale (同 ws 过期列表), 避免空列表闪跌
@@ -227,13 +216,13 @@ function ensureMcodeSessionsFetchedAndPush(workspace) {
       const snapshot = {
         ...ccs,
         // qa (session-workspace-crud): 复用瘦身投影 — 这条权威推送路径原来
-        //   直接 loadSessions()，把每个 session 的完整 chat 数组推进 SSE，
+        //   直接 loadSessions()，把每个 session 的完整 chat 数组推进事件流，
         //   是 v2.3 修掉的主负载；两处（本处 + pushOnlineCount）漏改。
         sessions: sessionsListForSnapshot(),
         mcodeSessions: cached,
         mcodeSessionsPending: false,
         availableCommands: getCachedMcodeCommands(),
-        onlineCount: sseByCid.size,
+        onlineCount: getSubscribedCids().length,
         lanBroadcast: getLanBroadcast(),
         readOnly: getReadOnly(),
         tokenEnabled: getTokenEnabled(),
@@ -243,7 +232,7 @@ function ensureMcodeSessionsFetchedAndPush(workspace) {
         tokenRotatedAt: getTokenRotatedAt(),
         // v2026-08-28 modacker: Token Plan (套餐用量) feature fields.
         //   Previously these were only synced via the one-shot
-        //   /api/settings fetch in loadLanInfo(); the SSE replace-state
+        //   /api/settings fetch in loadLanInfo(); the event-stream replace-state
         //   pattern (state = JSON.parse(ev.data)) then clobbered them
         //   on the next push, so toggling the switch appeared to do
         //   nothing — the usage button stayed hidden. Including them
@@ -260,9 +249,8 @@ function ensureMcodeSessionsFetchedAndPush(workspace) {
         tokenPlanApiKeySource: getTokenPlanApiKeySource(),
         tokenPlanApiKeyFilePath: getTokenPlanApiKeyFilePath(),
       };
-      // 事件总线下行汇聚（WS 适配器订阅面）+ SSE 兼容面直写
+      // 事件总线下行汇聚（/api/stream 订阅面）
       emitEvent(c, { type: "state.snapshot", snapshot });
-      scheduleStatePush(c, JSON.stringify(snapshot), res);
     }
   };
   getMcodeSessionsForWorkspace(workspace)
@@ -285,7 +273,7 @@ export function pushStateFor(cid, opts = {}) {
   const cachedCmds = getCachedMcodeCommands();
 
   if (cid === "__broadcast__") {
-    for (const [c, res] of sseByCid) {
+    for (const c of getSubscribedCids()) {
       const ccs = clients.get(c) || makeClientState();
       const cws = (ccs.workspace && ccs.workspace.dir) || "";
       const fields =
@@ -297,7 +285,7 @@ export function pushStateFor(cid, opts = {}) {
         sessions: sessionsListForSnapshot(),
         ...fields,
         availableCommands: cachedCmds,
-        onlineCount: sseByCid.size,
+        onlineCount: getSubscribedCids().length,
         lanBroadcast,
         readOnly: getReadOnly(),
         tokenEnabled: getTokenEnabled(),
@@ -320,9 +308,8 @@ export function pushStateFor(cid, opts = {}) {
         tokenPlanApiKeySource: getTokenPlanApiKeySource(),
         tokenPlanApiKeyFilePath: getTokenPlanApiKeyFilePath(),
       };
-      // 事件总线下行汇聚 + SSE 兼容面直写（节流合并语义在 sse-adapter）
+      // 事件总线下行汇聚（/api/stream 订阅面）
       emitEvent(c, { type: "state.snapshot", snapshot });
-      scheduleStatePush(c, JSON.stringify(snapshot), res);
     }
     return;
   }
@@ -332,14 +319,14 @@ export function pushStateFor(cid, opts = {}) {
     opts.mcodeSessions !== undefined
       ? { mcodeSessions: opts.mcodeSessions, mcodeSessionsPending: false }
       : mcodeSessionsSnapshotFields((cs.workspace && cs.workspace.dir) || "");
-  // 注入 sessions 列表（来自磁盘 db）— 让 webui 侧边栏 "最近会话" 不被 SSE 推送覆盖
+  // 注入 sessions 列表（来自磁盘 db）— 让 webui 侧边栏 "最近会话" 不被事件流推送覆盖
   // v0.5.bv: 同步带 mcodeSessions（cache 命中，0 cost；cache miss 才 await）
   const snapshot = {
     ...cs,
     sessions: sessionsListForSnapshot(),
     ...fields,
     availableCommands: cachedCmds,
-    onlineCount: sseByCid.size,
+    onlineCount: getSubscribedCids().length,
     lanBroadcast,
     readOnly: getReadOnly(),
     tokenEnabled: getTokenEnabled(),
@@ -348,7 +335,7 @@ export function pushStateFor(cid, opts = {}) {
     tokenRotatedAt: getTokenRotatedAt(),
     // v2026-08-28 modacker: Token Plan (套餐用量) feature fields —
     //   see note on the broadcast-branch snapshot above. Same fields,
-    //   same rationale. Without these the per-cid SSE push also
+    //   same rationale. Without these the per-cid event-stream push also
     //   clobbers the local `state.quotaEnabled` and the usage button
     //   hides itself right after the user toggles it on.
     quotaEnabled: getQuotaEnabled(),
@@ -359,15 +346,12 @@ export function pushStateFor(cid, opts = {}) {
     tokenPlanApiKeySource: getTokenPlanApiKeySource(),
     tokenPlanApiKeyFilePath: getTokenPlanApiKeyFilePath(),
   };
-  const payload = JSON.stringify(snapshot);
-  const res = sseByCid.get(cid);
-  // 事件总线下行汇聚 + SSE 兼容面直写（合并/diff 语义在 sse-adapter）
+  // 事件总线下行汇聚（/api/stream 订阅面）
   emitEvent(cid, { type: "state.snapshot", snapshot });
-  scheduleStatePush(cid, payload, res);
 }
 
-// v1.0: 统一的 mcodeSessions 快照字段构造 — 所有 SSE 推送点必须带这两个字段。
-//   之前 pushOnlineCount / SSE 首推不带, 客户端整包替换 state 后 mcodeSessions 变 undefined,
+// v1.0: 统一的 mcodeSessions 快照字段构造 — 所有事件流推送点必须带这两个字段。
+//   之前 pushOnlineCount / 首推不带, 客户端整包替换 state 后 mcodeSessions 变 undefined,
 //   侧栏随机从 ~36 条闪跌到 ~16 条 (只剩 webui 本地条目), 下次完整推送又弹回。
 //   v1.0 (改): 缓存过期但同 workspace 时推过期列表 (pending=true), 不再推空占位 —
 //   过期值好过空值, 权威值到达前侧栏不闪跌
@@ -386,9 +370,8 @@ export function mcodeSessionsSnapshotFields(workspace) {
 }
 
 // ============================================================
-// SSE 线上机制（节流合并 / 字节 diff / 背压守卫）已迁至 sse-adapter.js；
-// 事件总线（event-bus.js）为新增下行汇聚点。此处仅保留状态构造与
-// 事件发布；测试钩子经文件头再导出保持既有导入路径不变。
+// 下行通道：事件总线（event-bus.js）是唯一下行通道 —— SSE 已按决策 20
+// 移除（sse-adapter.js 删除）。此处仅保留状态构造与事件发布。
 // ============================================================
 
 
@@ -406,10 +389,11 @@ export function mcodeSessionsSnapshotFields(workspace) {
 
 
 
-// v0.5.ak: SSE 客户端数变化时广播（让所有 tab 实时看到 onlineCount）
+// v0.5.ak: 事件流客户端数变化时广播（让所有 tab 实时看到 onlineCount）
 export function pushOnlineCount(lanBroadcast) {
   const cachedCmds = getCachedMcodeCommands();
-  for (const [c, res] of sseByCid) {
+  const subs = getSubscribedCids();
+  for (const c of subs) {
     const cs = clients.get(c) || makeClientState();
     const snapshot = {
       ...cs,
@@ -418,7 +402,7 @@ export function pushOnlineCount(lanBroadcast) {
       sessions: sessionsListForSnapshot(),
       ...mcodeSessionsSnapshotFields((cs.workspace && cs.workspace.dir) || ""),
       availableCommands: cachedCmds,
-      onlineCount: sseByCid.size,
+      onlineCount: subs.length,
       lanBroadcast,
       readOnly: getReadOnly(),
       tokenEnabled: getTokenEnabled(),
@@ -426,7 +410,7 @@ export function pushOnlineCount(lanBroadcast) {
       tokenAcknowledged: getTokenAcknowledged(),
       tokenRotatedAt: getTokenRotatedAt(),
       // v2026-08-28 modacker: Token Plan (套餐用量) feature fields —
-      //   see pushStateFor above. pushOnlineCount fires on every SSE
+      //   see pushStateFor above. pushOnlineCount fires on every stream
       //   client connect/disconnect, so without these the next push
       //   after a tab opens would also clobber quotaEnabled.
       quotaEnabled: getQuotaEnabled(),
@@ -437,9 +421,8 @@ export function pushOnlineCount(lanBroadcast) {
       tokenPlanApiKeySource: getTokenPlanApiKeySource(),
       tokenPlanApiKeyFilePath: getTokenPlanApiKeyFilePath(),
     };
-    // 事件总线下行汇聚 + SSE 兼容面直写
+    // 事件总线下行汇聚（/api/stream 订阅面）
     emitEvent(c, { type: "state.snapshot", snapshot });
-    scheduleStatePush(c, JSON.stringify(snapshot), res);
   }
 }
 
@@ -470,57 +453,29 @@ export function getCidsByMcodeSession(mvsSessionId) {
   return out;
 }
 
-// SSE channel helpers — only state-bus.js should touch sseByCid directly.
-export function getSseClient(cid) {
-  return sseByCid.get(cid) || null;
-}
 
-export function setSseClient(cid, res) {
-  sseByCid.set(cid, res);
-  // v2 (Lease C04): when an SSE client (re)connects, the previous
-  // diff cache + throttle timestamps are stale — the new client
-  // hasn't seen the prior writes, so "diff against last push" is
-  // wrong (would skip the very first push this client should receive).
-  // Reset coalesce state for this cid so the next pushStateFor emits
-  // the full snapshot unconditionally.
-  clearCidCoalesce(cid);
-}
-
-export function endSseClient(cid, res) {
-  // Only clear the map entry if it still points at the same res (avoid races)
-  if (sseByCid.get(cid) === res) sseByCid.delete(cid);
-  // 断连清理：定时器/待写/diff 缓存 + 释放死 res 引用（OOM 加固）
-  clearCidCoalesce(cid, { dropResRef: true });
-}
-
-// v1.0.1: broadcastTokenRotated — push a named SSE event so all
+// v1.0.1: broadcastTokenRotated — push a named control frame so all
 // already-authenticated clients can update their HEADERS + localStorage
 // without waiting for the periodic state push. Body is the new token
 // (raw string, not JSON, to make it obvious in logs / devtools that
 // this is sensitive — never log it).
 //
-// IMPORTANT: the token is sent in cleartext over the SSE channel. The
+// IMPORTANT: the token is sent in cleartext over the event stream. The
 // connection is already authenticated (caller must have presented a
-// valid token to reach the rotation handler), and SSE is in-band
-// with the existing /api/events stream which the client already
-// authorized. So this is no worse than the periodic state push that
-// also includes currentToken in the same channel.
+// valid token to reach the rotation handler), and /api/stream is
+// in-band with the state channel the client already authorized. So this
+// is no worse than the periodic state push that also includes
+// currentToken in the same channel.
 export function broadcastTokenRotated(token) {
   if (!token) return;
-  // SSE custom event format:
-  //   event: <name>\n
-  //   data: <payload>\n
-  //   \n
-  const frame = formatControlFrame("auth.token_rotated", token);
-  for (const [c, res] of sseByCid) {
+  for (const c of getSubscribedCids()) {
     emitEvent(c, { type: "control", name: "auth.token_rotated", data: token });
-    writeControlFrame(res, frame);
   }
 }
 
 // v2 (Lease C08) — pushTokenFirstRun
 //
-// Fires the `token.first_run` SSE event exactly once per process
+// Fires the `token.first_run` control frame exactly once per process
 // lifetime. server.js calls this from inside `initSettings({printToken})`
 // when settings.js has just generated a fresh token (no settings.json
 // on disk + no TOKEN env). The UI listens for this event and pops the
@@ -544,23 +499,21 @@ export function pushTokenFirstRun({ token, persistPath }) {
     persistPath: typeof persistPath === "string" ? persistPath : "",
     ts: Date.now(),
   });
-  const frame = formatControlFrame("token.first_run", payload);
-  for (const [c, res] of sseByCid) {
+  for (const c of getSubscribedCids()) {
     emitEvent(c, { type: "control", name: "token.first_run", data: payload });
-    writeControlFrame(res, frame);
   }
 }
 
 // ============================================================
-// v2 (Lease B03) — Per-request authorization SSE channel
+// v2 (Lease B03) — Per-request authorization channel
 //
 // authorize.js (server/lib/authorize.js) gates destructive actions
 // behind a user-confirmation modal. The frontend listens for
-// `needs_authorization` events on its /api/events stream and pops a
-// confirmation; the user accepts or declines and the server resolves
-// the pending request via POST /api/auth/decision.
+// `needs_authorization` control frames on its /api/stream connection
+// and pops a confirmation; the user accepts or declines and the server
+// resolves the pending request via POST /api/auth/decision.
 //
-// pushAuthRequest — fire a `needs_authorization` SSE frame to the
+// pushAuthRequest — fire a `needs_authorization` control frame to the
 // target cid (or every connected client if cid is empty). Body is the
 // pending request payload {requestId, action, ctx, expiresAt}.
 //
@@ -568,23 +521,18 @@ export function pushTokenFirstRun({ token, persistPath }) {
 // listeners (e.g. devtools, audit dashboards) can mirror the modal
 // state. Body is {requestId, approved, decidedBy}.
 //
-// The SSE channel is the SAME /api/events stream the client already
-// opened — no new connection needed. The frame is a named SSE event
-// so it won't be confused with `state`/`chat`/`delta` payloads.
+// The frame travels on the SAME /api/stream connection the client
+// already opened — no new connection needed. It is a named control
+// frame so it won't be confused with state.snapshot payloads.
 // ============================================================
 
-function _writeAuthFrame(targetCid, frame, event) {
+function _writeAuthFrame(targetCid, event) {
   if (targetCid) {
     emitEvent(targetCid, event);
-    const res = sseByCid.get(targetCid);
-    if (res) writeControlFrame(res, frame);
     return;
   }
   // broadcast (empty / undefined targetCid)
-  for (const [c, res] of sseByCid) {
-    emitEvent(c, event);
-    writeControlFrame(res, frame);
-  }
+  for (const c of getSubscribedCids()) emitEvent(c, event);
 }
 
 export function pushAuthRequest({ requestId, action, ctx, expiresAt }) {
@@ -595,9 +543,8 @@ export function pushAuthRequest({ requestId, action, ctx, expiresAt }) {
     ctx: ctx && typeof ctx === "object" ? ctx : {},
     expiresAt: Number(expiresAt) || 0,
   });
-  const frame = formatControlFrame("needs_authorization", payload);
   const targetCid = ctx && typeof ctx.cid === "string" ? ctx.cid : "";
-  _writeAuthFrame(targetCid, frame, {
+  _writeAuthFrame(targetCid, {
     type: "control",
     name: "needs_authorization",
     data: payload,
@@ -611,9 +558,8 @@ export function pushAuthDecision({ requestId, approved, decidedBy }) {
     approved: !!approved,
     decidedBy: decidedBy ? String(decidedBy).slice(0, 32) : "user",
   });
-  const frame = formatControlFrame("authorization_decided", payload);
   // broadcast — every connected tab should mirror modal close
-  _writeAuthFrame("", frame, {
+  _writeAuthFrame("", {
     type: "control",
     name: "authorization_decided",
     data: payload,

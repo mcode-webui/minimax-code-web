@@ -611,125 +611,275 @@ export async function withDecisions(fn, { approve = true } = {}) {
   }
 }
 
-// -----------------------------------------------------------------------
-// decideNextAuthorization — HTTP-level decision driver for integration
-// tests that spawn the REAL server.js in a child process. Subscribes
-// to the SSE stream, waits for the next `needs_authorization` frame,
-// extracts the requestId, and POSTs /api/auth/decision — the exact
-// wire path the production modal uses.
+// ---------------------------------------------------------------------------
+// openEventStream — minimal WebSocket client for GET /api/stream, shared
+// by decideNextAuthorization() and the integration tests (ws-channel,
+// event-chain). The SSE channel is gone; the live surface is now
+// "WebSocket event stream + REST".
+//
+// Performs the RFC 6455 §1.3 upgrade BY HAND: GET /api/stream?cid=...
+// with Connection: Upgrade / Upgrade: websocket headers and a random
+// 16-byte Sec-WebSocket-Key, then waits for the "HTTP/1.1 101" response
+// (verifying Sec-WebSocket-Accept via the RFC GUID SHA-1 formula).
+//
+// Resolves { frames, send(text), close(), timedOut? }:
+//   - frames: every server TEXT frame accumulated so far, JSON-parsed
+//     ({ raw } for non-JSON text). Server → client frames are NOT masked
+//     (RFC 6455 §5.1), while lib/ws-frame.js#createFrameDecoder is the
+//     client → server direction decoder and rejects unmasked frames with
+//     1002 (verified) — hence the local unmasked header parser below,
+//     shaped like test/lib-ws-server.test.js#parseServerFrames.
+//   - send(text): client → server TEXT frame, masked per RFC 6455 §5.3
+//     (FIN|0x81, mask bit, 4-byte random key, XOR; payload < 126 bytes).
+//   - close(): destroys the socket (idempotent).
+//   - 超时守卫: resolves { timedOut: true } after 2500ms instead of
+//     hanging the suite (timeout-resolve pattern from the old
+//     sse-channel.test.js / test/lib-ws-server.test.js connect()).
+// ---------------------------------------------------------------------------
+export function openEventStream(port, cid) {
+  return new Promise((resolve, reject) => {
+    Promise.all([import("node:net"), import("node:crypto")])
+      .then(([{ default: net }, { randomBytes, createHash }]) => {
+        const frames = [];
+        const st = { header: "", buf: Buffer.alloc(0), handshook: false, socket: null };
+        let settled = false;
+        const key = randomBytes(16).toString("base64");
+        const api = {
+          frames,
+          send(text) {
+            const body = Buffer.from(String(text), "utf8");
+            if (body.length >= 126) throw new Error("openEventStream: frame must stay under 126 bytes");
+            const maskKey = randomBytes(4);
+            const head = Buffer.alloc(6);
+            head[0] = 0x81; // FIN | TEXT
+            head[1] = 0x80 | body.length; // mask bit + 7-bit length
+            maskKey.copy(head, 2);
+            const masked = Buffer.from(body);
+            for (let i = 0; i < masked.length; i++) masked[i] ^= maskKey[i & 3];
+            st.socket.write(Buffer.concat([head, masked]));
+          },
+          close() {
+            try { st.socket.destroy(); } catch {}
+          },
+        };
+        const ingest = (chunk) => {
+          st.buf = Buffer.concat([st.buf, chunk]);
+          parseServerTextFrames(st, frames);
+        };
+        const guard = setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          try { st.socket.destroy(); } catch {}
+          resolve({ ...api, timedOut: true });
+        }, 2500);
+        const done = (err) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(guard);
+          if (err) {
+            try { st.socket.destroy(); } catch {}
+            reject(err);
+          } else {
+            resolve(api);
+          }
+        };
+        st.socket = net.connect(port, "127.0.0.1");
+        st.socket.on("error", (e) => {
+          if (!st.handshook) done(e); // post-handshake teardown noise is ours
+        });
+        st.socket.on("data", (chunk) => {
+          if (!st.handshook) {
+            st.header += chunk.toString("latin1");
+            const idx = st.header.indexOf("\r\n\r\n");
+            if (idx === -1) return;
+            const head = st.header.slice(0, idx);
+            const rest = Buffer.from(st.header.slice(idx + 4), "latin1");
+            if (!/^HTTP\/1\.1 101\b/.test(head)) {
+              done(new Error(`openEventStream: expected 101 upgrade, got: ${head.split("\r\n")[0] || "(empty)"}`));
+              return;
+            }
+            const accept = head.match(/^sec-websocket-accept:\s*(.+)$/im);
+            const expected = createHash("sha1")
+              .update(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11", "utf8")
+              .digest("base64");
+            if (accept && accept[1].trim() !== expected) {
+              done(new Error("openEventStream: bad Sec-WebSocket-Accept"));
+              return;
+            }
+            st.handshook = true;
+            if (rest.length) ingest(rest);
+            done();
+            return;
+          }
+          ingest(chunk);
+        });
+        st.socket.on("connect", () => {
+          st.socket.write(
+            `GET /api/stream${cid ? `?cid=${encodeURIComponent(cid)}` : ""} HTTP/1.1\r\n` +
+              `Host: 127.0.0.1:${port}\r\n` +
+              "Connection: Upgrade\r\n" +
+              "Upgrade: websocket\r\n" +
+              `Sec-WebSocket-Key: ${key}\r\n` +
+              "Sec-WebSocket-Version: 13\r\n" +
+              "\r\n",
+          );
+        });
+      })
+      .catch(reject);
+  });
+}
+
+/**
+ * Incrementally parse server → client frames (unmasked per RFC 6455 §5.1)
+ * and push every TEXT frame's JSON payload onto `out`. Control frames
+ * (ping/pong/close) and binary frames are consumed but not surfaced —
+ * the helpers only care about protocol text frames.
+ */
+function parseServerTextFrames(st, out) {
+  while (st.buf.length >= 2) {
+    const opcode = st.buf[0] & 0x0f;
+    let len = st.buf[1] & 0x7f;
+    let offset = 2;
+    if (len === 126) {
+      if (st.buf.length < 4) return;
+      len = st.buf.readUInt16BE(2);
+      offset = 4;
+    } else if (len === 127) {
+      if (st.buf.length < 10) return;
+      len = Number(st.buf.readBigUInt64BE(2));
+      offset = 10;
+    }
+    const masked = (st.buf[1] & 0x80) !== 0;
+    const maskLen = masked ? 4 : 0;
+    if (st.buf.length < offset + maskLen + len) return;
+    let payload = st.buf.subarray(offset + maskLen, offset + maskLen + len);
+    if (masked) {
+      const mk = st.buf.subarray(offset, offset + 4);
+      const un = Buffer.allocUnsafe(len);
+      for (let i = 0; i < len; i++) un[i] = payload[i] ^ mk[i & 3];
+      payload = un;
+    }
+    st.buf = st.buf.subarray(offset + maskLen + len);
+    if (opcode === 0x1) {
+      const text = payload.toString("utf8");
+      try { out.push(JSON.parse(text)); } catch { out.push({ raw: text }); }
+    }
+    // 0x8 close / 0x9 ping / 0xa pong / 0x2 binary: consumed, not surfaced.
+  }
+}
+
+// ---------------------------------------------------------------------------
+// decideNextAuthorization — decision driver for integration tests that
+// spawn the REAL server.js in a child process. Opens the /api/stream
+// WebSocket (openEventStream above), waits for the control frame
+// `needs_authorization`, extracts the requestId from its JSON-string
+// `data`, and POSTs /api/auth/decision — the exact wire path the
+// production modal uses.
 //
 // Resolves { requestId, decision } where decision is the parsed
 // /api/auth/decision response. Rejects if no auth request arrives
 // within `timeoutMs` (default 3s).
 //
 // IMPORTANT: start this helper BEFORE firing the gated HTTP request
-// and allow a short delay for the SSE subscription to register —
+// and allow a short delay for the WebSocket handshake to register —
 // needs_authorization broadcasts are NOT replayed to late subscribers
-// (the pending-request SSE frame is fire-once).
-// -----------------------------------------------------------------------
+// (the pending-request control frame is fire-once).
+// ---------------------------------------------------------------------------
 export function decideNextAuthorization({ port, approve = true, cid, timeoutMs = 3000 }) {
   return new Promise((resolve, reject) => {
-    import("node:http").then((http) => {
-      // settled:  outer promise has resolved/rejected.
-      // deciding: a needs_authorization frame was seen and the decision
-      //   POST is in flight — from that point, teardown noise from our own
-      //   SSE destroy() must NOT reject the outer promise; the POST's
-      //   outcome is the answer.
-      let settled = false;
-      let deciding = false;
-      let sseReq = null;
-      let postReq = null;
-      // U4 (2026-09-20): settlement guarantee — the bail-out timer now covers
-      // BOTH phases (waiting for the SSE frame AND the decision POST). The
-      // old code cleared it as soon as the frame arrived, so a server that
-      // accepted the POST but never responded left this promise pending
-      // forever with no timeout. On fire, everything is destroyed and the
-      // promise rejects — waiting sides must never depend on the peer (or
-      // incidental event-loop handles) for liveness.
-      const timer = setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        try { if (sseReq) sseReq.destroy(); } catch {}
-        try { if (postReq) postReq.destroy(); } catch {}
-        reject(new Error(
-          `decideNextAuthorization: no completed needs_authorization decision within ${timeoutMs}ms`,
-        ));
-      }, timeoutMs);
-      const settle = (fn, value) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        fn(value);
-      };
-      sseReq = http.request(
-        {
-          method: "GET",
-          host: "127.0.0.1",
-          port,
-          path: "/api/events" + (cid ? `?cid=${encodeURIComponent(cid)}` : ""),
-        },
-        (res) => {
-          let body = "";
-          res.setEncoding("utf8");
-          res.on("data", (chunk) => {
-            if (deciding) return; // POST already dispatched; ignore trailing data
-            body += chunk;
-            // Frames arrive as `event: needs_authorization\ndata: {...}\n\n`.
-            // Scan the accumulated body each chunk — cheap at test scale.
-            const frames = body.split("\n\n");
-            for (const frame of frames) {
-              const evMatch = frame.match(/^event: needs_authorization$/m);
-              if (!evMatch) continue;
-              const dataLine = frame.split("\n").find((l) => l.startsWith("data: "));
-              if (!dataLine) continue;
-              let payload;
-              try { payload = JSON.parse(dataLine.slice("data: ".length)); } catch { continue; }
-              const requestId = payload && payload.requestId;
-              if (!requestId) continue;
-              deciding = true; // decision POST in flight — ignore SSE teardown noise
-              try { sseReq.destroy(); } catch {}
-              const data = JSON.stringify({ requestId, approve });
-              postReq = http.request(
-                {
-                  method: "POST",
-                  host: "127.0.0.1",
-                  port,
-                  path: "/api/auth/decision",
-                  headers: {
-                    "Content-Type": "application/json",
-                    "Content-Length": Buffer.byteLength(data),
+    // settled:  outer promise has resolved/rejected.
+    // deciding: a needs_authorization frame was seen and the decision
+    //   POST is in flight — from that point, teardown noise from our own
+    //   stream close() must NOT reject the outer promise; the POST's
+    //   outcome is the answer.
+    let settled = false;
+    let deciding = false;
+    let stream = null;
+    let poll = null;
+    let postReq = null;
+    // U4 (2026-09-20): settlement guarantee — the bail-out timer covers
+    // BOTH phases (waiting for the control frame AND the decision POST).
+    // The old code cleared it as soon as the frame arrived, so a server
+    // that accepted the POST but never responded left this promise
+    // pending forever with no timeout. On fire, everything is destroyed
+    // and the promise rejects — waiting sides must never depend on the
+    // peer (or incidental event-loop handles) for liveness.
+    const teardown = () => {
+      if (poll) clearInterval(poll);
+      poll = null;
+      try { if (stream) stream.close(); } catch {}
+      try { if (postReq) postReq.destroy(); } catch {}
+    };
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      teardown();
+      reject(new Error(
+        `decideNextAuthorization: no completed needs_authorization decision within ${timeoutMs}ms`,
+      ));
+    }, timeoutMs);
+    const settle = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (poll) clearInterval(poll);
+      poll = null;
+      fn(value);
+    };
+    openEventStream(port, cid || `decider-${Date.now().toString(36)}`)
+      .then((s) => {
+        stream = s;
+        if (settled) { try { s.close(); } catch {} return; }
+        // Frames accumulate in s.frames; scan cheaply at test scale.
+        poll = setInterval(() => {
+          if (deciding || settled) return; // POST in flight / already done
+          for (const f of s.frames) {
+            if (!f || f.type !== "control" || !f.payload) continue;
+            if (f.payload.name !== "needs_authorization") continue;
+            let payload;
+            try { payload = JSON.parse(f.payload.data); } catch { continue; }
+            const requestId = payload && payload.requestId;
+            if (!requestId) continue;
+            deciding = true; // decision POST in flight — ignore stream teardown noise
+            if (poll) clearInterval(poll);
+            poll = null;
+            try { s.close(); } catch {}
+            import("node:http")
+              .then((http) => {
+                const data = JSON.stringify({ requestId, approve });
+                postReq = http.request(
+                  {
+                    method: "POST",
+                    host: "127.0.0.1",
+                    port,
+                    path: "/api/auth/decision",
+                    headers: {
+                      "Content-Type": "application/json",
+                      "Content-Length": Buffer.byteLength(data),
+                    },
                   },
-                },
-                (postRes) => {
-                  const chunks = [];
-                  postRes.on("data", (c) => chunks.push(c));
-                  postRes.on("end", () => {
-                    let decision;
-                    try { decision = JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch {}
-                    settle(resolve, { requestId, decision, status: postRes.statusCode });
-                  });
-                  postRes.on("error", (e) => {
-                    settle(resolve, { requestId, decision: null, status: postRes.statusCode, error: e.message });
-                  });
-                },
-              );
-              postReq.on("error", (e) => settle(reject, e));
-              postReq.write(data);
-              postReq.end();
-              return;
-            }
-          });
-          res.on("error", (e) => {
-            if (settled || deciding) return; // our own destroy()
-            settle(reject, e);
-          });
-        },
-      );
-      sseReq.on("error", (e) => {
-        if (settled || deciding) return; // our own destroy()
-        settle(reject, e);
-      });
-      sseReq.end();
-    }).catch(reject);
+                  (postRes) => {
+                    const chunks = [];
+                    postRes.on("data", (c) => chunks.push(c));
+                    postRes.on("end", () => {
+                      let decision;
+                      try { decision = JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch {}
+                      settle(resolve, { requestId, decision, status: postRes.statusCode });
+                    });
+                    postRes.on("error", (e) => {
+                      settle(resolve, { requestId, decision: null, status: postRes.statusCode, error: e.message });
+                    });
+                  },
+                );
+                postReq.on("error", (e) => settle(reject, e));
+                postReq.write(data);
+                postReq.end();
+              })
+              .catch((e) => settle(reject, e));
+            return;
+          }
+        }, 10);
+      })
+      .catch((e) => settle(reject, e));
   });
 }

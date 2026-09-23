@@ -77,7 +77,7 @@ node dist/cli.js webui --host 0.0.0.0 --no-open   # PORT defaults to 18080
 
 ## 架构
 
-运行时拓扑、请求生命周期和 SSE 契约见 [`packages/webui/docs/ARCHITECTURE.md`](../packages/webui/docs/ARCHITECTURE.md)。简言之：`server.js` 引导一个 HTTP 服务器；`server/router.js` 应用门禁链（CORS → origin/CSRF → LAN → token → rate limit → read-only）并分发到 `server/routes/*`；`server/lib/*` 存放单一职责模块；`acp.mjs` 是生成引擎的 ACP 客户端；`public/` 是 SPA。
+运行时拓扑、请求生命周期和 WebSocket 事件流契约见 [`packages/webui/docs/ARCHITECTURE.md`](../packages/webui/docs/ARCHITECTURE.md)。简言之：`server.js` 引导一个 HTTP 服务器；`server/router.js` 应用门禁链（CORS → origin/CSRF → LAN → token → rate limit → read-only）并分发到 `server/routes/*`；`server/lib/*` 存放单一职责模块；`acp.mjs` 是生成引擎的 ACP 客户端；`public/` 是 SPA。
 
 ## 轨迹工作室
 

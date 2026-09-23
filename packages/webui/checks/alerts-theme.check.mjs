@@ -4,10 +4,12 @@
 //
 //   D1 — anomaly-channel (alerts) surface. server/lib/alerts.js pushes
 //        system signals (failed chat send / spawn ENOENT, sqlite
-//        failure, …) on the INDEPENDENT /api/alerts SSE channel; the
-//        frontend had ZERO surface, so errors were invisible (P1).
-//        Covers: the state.js alerts store driven by fake SSE frames
-//        (snapshot / append / update / replay dedup / malformed), the
+//        failure, …) on the INDEPENDENT alerts channel: the
+//        GET /api/alerts REST ring snapshot plus alerts.append /
+//        alerts.update control frames on /api/stream. The frontend
+//        had ZERO surface, so errors were invisible (P1).
+//        Covers: the state.js alerts store driven by fake stream
+//        frames (snapshot / append / update / replay dedup / malformed), the
 //        badge count + 99+ cap, mark-read-on-open, clear semantics,
 //        and the render.js renderAlerts DOM construction (level class,
 //        msg via textContent, src/session/×count/time meta line).
@@ -104,37 +106,45 @@ const RICH_IDS = [
   "appearance-icon",
 ];
 
-class FakeEventSource {
+// FakeWebSocket — state.js opens ONE /api/stream socket per connect();
+// every server→client frame is a JSON text frame, so tests inject them
+// through sws.onmessage({data: JSON.stringify(frame)}) exactly as the
+// browser would deliver them. close() is silent on purpose: a
+// deliberate close must NOT schedule the 3s reconnect retry.
+class FakeWebSocket {
   constructor(url) {
-    this.url = url;
-    this.listeners = new Map();
+    this.url = String(url);
+    this.onopen = null;
+    this.onmessage = null;
+    this.onclose = null;
     this.closed = false;
+    this.sent = [];
   }
-  addEventListener(name, fn) {
-    if (!this.listeners.has(name)) this.listeners.set(name, []);
-    this.listeners.get(name).push(fn);
-  }
+  send(data) { this.sent.push(data) }
   close() { this.closed = true }
-  fire(name, data) {
-    for (const fn of this.listeners.get(name) || []) fn({ data });
-  }
 }
 
 const _store = new Map();
+const _fetchCalls = [];
 
 function installGlobals() {
+  // connect() reads the bare `location` global (browser semantics):
+  // protocol/host pick the ws:// URL; search/pathname/hash back the
+  // module-load token handling.
+  const loc = { search: "", pathname: "/", hash: "", protocol: "http:", host: "localhost:3000" };
   globalThis.window = {
-    location: { search: "", pathname: "/", hash: "" },
+    location: loc,
     history: { replaceState() {} },
     matchMedia: () => ({ matches: false }), // → default theme "light"
     addEventListener() {},
   };
+  globalThis.location = loc;
   globalThis.localStorage = {
     getItem: (k) => (_store.has(k) ? _store.get(k) : null),
     setItem: (k, v) => _store.set(k, String(v)),
     removeItem: (k) => _store.delete(k),
   };
-  globalThis.EventSource = FakeEventSource;
+  globalThis.WebSocket = FakeWebSocket;
   globalThis.document = {
     documentElement: makeEl("html"),
     body: makeEl("body"),
@@ -151,18 +161,60 @@ function installGlobals() {
       configurable: true, writable: true,
     });
   } catch {}
-  globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ({ ok: true }) });
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    _fetchCalls.push({ url: u });
+    if (u.startsWith("/api/alerts")) {
+      // The hello handler's ring-snapshot fetch: fire() queues the frame
+      // just before it triggers hello; capture it at call time.
+      const snap = _pendingAlertsSnapshot;
+      _pendingAlertsSnapshot = null;
+      return { ok: true, status: 200, json: async () => snap || { kind: "snapshot", alerts: [] } };
+    }
+    return { ok: true, status: 200, json: async () => ({ ok: true }) };
+  };
 }
 
 // ---------- SUT handles ----------
 
-let stateMod, renderMod, eventsMod, i18nMod, aes;
+let stateMod, renderMod, eventsMod, i18nMod, sws;
+
+let _seq = 0;                       // control-frame seq counter
+let _pendingAlertsSnapshot = null;  // consumed by the fake /api/alerts fetch
+
+function pushHello() {
+  // The first server→client frame on /api/stream; its handler fetches
+  // the /api/alerts ring snapshot (and, on a first connect, the
+  // /api/state REST baseline).
+  sws.onmessage({ data: JSON.stringify({
+    v: 1, type: "hello",
+    payload: { resumeSupported: true, latestSeq: 0, heartbeatMs: 30000, ringCapacity: 100, cid: "check" },
+  }) });
+}
+
+// Drain the hello→fetch('/api/alerts')→_handleAlertFrame microtask
+// chain before asserting; callers that fire a snapshot must await it.
+function flush() { return new Promise((r) => setImmediate(r)); }
 
 function fire(frame) {
-  // The alerts channel uses default `message` events (the server's 30s
-  // heartbeat is a NAMED event and never reaches onmessage).
-  assert.ok(aes && typeof aes.onmessage === "function", "alerts EventSource must be connected");
-  aes.onmessage({ data: typeof frame === "string" ? frame : JSON.stringify(frame) });
+  // Live alert frames arrive as /api/stream control frames
+  // (alerts.append / alerts.update). Ring snapshots are the one
+  // exception — production fetches them from GET /api/alerts on every
+  // hello — so route those through the exact same path.
+  assert.ok(sws && typeof sws.onmessage === "function", "state stream WebSocket must be connected");
+  if (frame && typeof frame === "object" && frame.kind === "snapshot") {
+    _pendingAlertsSnapshot = frame;
+    pushHello();
+    return;
+  }
+  // Non-snapshot input degrades to an alerts.append control frame —
+  // malformed strings exercise the same JSON.parse failure path the
+  // production dispatch does.
+  const kind = frame && typeof frame === "object" && frame.kind ? frame.kind : "append";
+  sws.onmessage({ data: JSON.stringify({
+    v: 1, seq: ++_seq, ts: Date.now(), type: "control",
+    payload: { name: `alerts.${kind}`, data: typeof frame === "string" ? frame : JSON.stringify(frame) },
+  }) });
 }
 
 function click(id, target) {
@@ -195,7 +247,9 @@ before(async (t) => {
   } finally {
     t.mock.timers.reset();
   }
-  aes = stateMod.alertsEs;
+  sws = stateMod.es;
+  assert.ok(sws instanceof FakeWebSocket, "connect() must open our fake WebSocket on /api/stream");
+  assert.ok(String(sws.url).includes("/api/stream"), `unexpected state-stream url ${sws.url}`);
 });
 
 beforeEach(() => {
@@ -212,22 +266,26 @@ after(() => {
 });
 
 // ============================================================
-// D1 — state.js alerts store driven by SSE frames
+// D1 — state.js alerts store driven by stream frames
 // ============================================================
 
 describe("D1 alerts channel — connection + queue", () => {
-  test("connect() opens an independent /api/alerts EventSource (token+cid suffix)", () => {
-    assert.ok(aes instanceof FakeEventSource, "alerts must ride its own EventSource");
-    assert.ok(aes.url.startsWith("/api/alerts"), `unexpected url ${aes.url}`);
-    assert.ok(/cid=/.test(aes.url), "cid query must be present (per-client routing)");
-    assert.notEqual(aes, stateMod.es, "must NOT reuse the state-stream EventSource");
+  test("connect() rides /api/stream (token+cid suffix) and fetches /api/alerts on hello", () => {
+    assert.ok(sws instanceof FakeWebSocket, "state stream must be our fake WebSocket");
+    assert.ok(String(sws.url).includes("/api/stream"), `unexpected url ${sws.url}`);
+    assert.ok(/cid=/.test(sws.url), "cid query must be present (per-client routing)");
+    const before = _fetchCalls.filter((c) => c.url.startsWith("/api/alerts")).length;
+    pushHello();
+    const after = _fetchCalls.filter((c) => c.url.startsWith("/api/alerts")).length;
+    assert.equal(after, before + 1, "hello must fetch the /api/alerts ring snapshot (REST)");
   });
 
-  test("snapshot frame replaces the list (newest first) and counts unseen ids as unread", () => {
+  test("snapshot frame replaces the list (newest first) and counts unseen ids as unread", async () => {
     fire({ kind: "snapshot", alerts: [
       { id: "a-old", ts: 1, level: "error", msg: "old failure", src: "chat:send", count: 1 },
       { id: "a-new", ts: 2, level: "warn", msg: "new warning", src: "db", count: 1 },
     ] });
+    await flush();
     const list = stateMod.getAlerts();
     assert.equal(list.length, 2);
     assert.equal(list[0].id, "a-new", "server sends oldest→newest; store must be newest-first");
@@ -240,15 +298,16 @@ describe("D1 alerts channel — connection + queue", () => {
     assert.equal(stateMod.getAlertsUnread(), 1);
     assert.equal(stateMod.getAlerts()[0].id, "b1");
     fire({ kind: "append", alert: { id: "b1", ts: 3, level: "error", msg: "spawn mcode ENOENT", src: "chat:send", count: 1 } });
-    assert.equal(stateMod.getAlertsUnread(), 1, "SSE reconnect replay must not double-count");
+    assert.equal(stateMod.getAlertsUnread(), 1, "stream reconnect replay must not double-count");
     assert.equal(stateMod.getAlerts().length, 1);
   });
 
-  test("snapshot replay after reconnect does not re-inflate the unread count", () => {
+  test("snapshot replay after reconnect does not re-inflate the unread count", async () => {
     fire({ kind: "append", alert: { id: "c1", ts: 4, level: "info", msg: "x", src: "system", count: 1 } });
     fire({ kind: "snapshot", alerts: [
       { id: "c1", ts: 4, level: "info", msg: "x", src: "system", count: 1 },
     ] });
+    await flush();
     assert.equal(stateMod.getAlertsUnread(), 1, "already-seen id → fresh=0");
     assert.equal(stateMod.getAlerts().length, 1, "but the list is still the server truth");
   });
@@ -346,7 +405,7 @@ describe("D1 alerts surface — badge, popover, mark-read, clear", () => {
     assert.equal(body.children[0].textContent, "No alerts"); // en default dictionary
   });
 
-  test("clear empties the list; the badge only returns for genuinely new alerts", () => {
+  test("clear empties the list; the badge only returns for genuinely new alerts", async () => {
     fire({ kind: "append", alert: { id: "i1", ts: 12, level: "info", msg: "x", src: "system", count: 1 } });
     click("btn-alerts"); // open + read
     click("alerts-clear");
@@ -358,6 +417,7 @@ describe("D1 alerts surface — badge, popover, mark-read, clear", () => {
     fire({ kind: "snapshot", alerts: [
       { id: "i1", ts: 12, level: "info", msg: "x", src: "system", count: 1 },
     ] });
+    await flush();
     assert.equal(stateMod.getAlertsUnread(), 0, "cleared id is still 'seen'");
     fire({ kind: "append", alert: { id: "i2", ts: 13, level: "error", msg: "y", src: "chat:send", count: 1 } });
     assert.equal(stateMod.getAlertsUnread(), 1, "a genuinely new alert re-arms the badge");
@@ -519,7 +579,7 @@ describe("static source guards", () => {
       "// v2 (2026-09-20 webui-manual-audit D1): alerts surface — end alerts-surface",
     );
     assert.equal(/\.innerHTML\s*=/.test(block), false,
-      "alert msg/src/sessionId are untrusted SSE wire data (server relays raw subprocess stderr)");
+      "alert msg/src/sessionId are untrusted stream wire data (server relays raw subprocess stderr)");
     assert.match(block, /createElement\(\s*['"]div['"]\s*\)/);
     assert.match(block, /createElement\(\s*['"]span['"]\s*\)/);
     assert.match(block, /\.textContent\s*=/);
@@ -542,10 +602,10 @@ describe("static source guards", () => {
     assert.match(INDEX_SRC, /id="alerts-popover-body"/);
   });
 
-  test("the alerts channel is a SEPARATE EventSource, not the state stream", () => {
-    const block = slice(STATE_SRC, "if (!alertsEs) {", "// v0.5.ak: user footer");
-    assert.ok(block.includes("new EventSource('/api/alerts'"), "must subscribe to /api/alerts");
-    assert.ok(STATE_SRC.includes("const url = '/api/events'"), "state stream unchanged");
+  test("the frontend subscribes to BOTH the /api/alerts snapshot and the /api/stream state endpoint", () => {
+    const block = slice(STATE_SRC, "fetch('/api/alerts'", "// v0.5.ak: user footer");
+    assert.ok(block.includes("fetch('/api/alerts'"), "must subscribe to /api/alerts (REST snapshot)");
+    assert.ok(STATE_SRC.includes("'/api/stream'"), "state stream rides /api/stream");
   });
 
   test("i18n completeness — alerts_* keys exist in BOTH zh and en", () => {

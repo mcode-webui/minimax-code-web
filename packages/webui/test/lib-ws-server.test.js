@@ -1,13 +1,24 @@
 // webui/test/lib-ws-server.test.js
 // GET /api/stream WebSocket 事件流端点：握手 / 事件推送 / 恢复重放 / 快照回退 /
-// 心跳 / 入站配额 / 二进制拒绝 / 开关拒绝。真实回环 TCP + 自研帧解析。
+// 心跳 / 入站配额 / 二进制拒绝。真实回环 TCP + 自研帧解析。
 // 每用例独立 server + 套接字（withStream），杜绝共享状态；connect 超时也
 // 落定（把挂死变成可断言的诊断现场）。
 
-import { describe, it, before } from "node:test";
+import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import net from "node:net";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+// 连接副作用（pushOnlineCount / mavis hydrate）经 state-bus 读会话库；config.js
+//   在 import 期读 MCODE_WEBUI_SESSIONS_DB —— 先隔离到临时目录：测试不碰真实
+//   ~/.mcode-webui/sessions.json，且 getClient 恢复为空（无 mavis hydrate 帧）。
+process.env.MCODE_WEBUI_SESSIONS_DB = join(
+  mkdtempSync(join(tmpdir(), "ws-server-test-")),
+  "sessions.json",
+);
 
 let handleStreamUpgrade, emitEvent, resetEventBusForTests, encodeFrame;
 
@@ -18,6 +29,22 @@ before(async () => {
   ({ handleStreamUpgrade } = await import("../server/lib/ws-server.js"));
   ({ emitEvent, resetEventBusForTests } = await import("../server/lib/event-bus.js"));
   ({ encodeFrame } = await import("../server/lib/ws-frame.js"));
+  // 预热 mcode sessions 缓存：连接时的 pushOnlineCount → mcodeSessionsSnapshotFields
+  //   在 cache miss 时会 fire-and-forget 拉取，完成时补推一帧权威快照 —— 那一帧
+  //   会在用例中途随机落进某条连接，破坏 seq 计数断言。先 await 完成一次，
+  //   之后所有用例命中缓存，帧序列只剩连接时的 onlineCount 快照（确定性 seq 1）。
+  const [{ getMcodeSessionsForWorkspace }, { DEFAULT_WORKSPACE }] = await Promise.all([
+    import("../server/lib/acp-client.js"),
+    import("../server/lib/config.js"),
+  ]);
+  await getMcodeSessionsForWorkspace(DEFAULT_WORKSPACE);
+});
+
+after(async () => {
+  // 预热（以及连接时 cache miss 的补拉）会启动 mcode acp 单例子进程；它常驻会
+  //   挂住测试进程的事件循环，node --test 跑完不退出 —— 收尾关掉。
+  const { shutdownMcodeAcpSingleton } = await import("../server/lib/acp-client.js");
+  shutdownMcodeAcpSingleton();
 });
 
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
@@ -132,7 +159,7 @@ async function withStream(opts, fn) {
 
 describe("GET /api/stream WebSocket 事件流", { concurrency: 1 }, () => {
   it("握手返回 101 + 正确 Accept，随后收到 hello 帧", async () => {
-    await withStream({ enabled: true, heartbeatMs: 60000 }, async (st) => {
+    await withStream({ heartbeatMs: 60000 }, async (st) => {
       assert.equal(st.timedOut, false, "连接超时: header=" + st.header);
       assert.ok(st.header.startsWith("HTTP/1.1 101"), "header=" + st.header);
       assert.ok(st.header.includes("Sec-WebSocket-Accept: " + CLIENT_ACCEPT));
@@ -144,29 +171,31 @@ describe("GET /api/stream WebSocket 事件流", { concurrency: 1 }, () => {
   });
 
   it("事件推送 seq 连续；resume 按序重放未收到的部分", async () => {
-    await withStream({ enabled: true, heartbeatMs: 60000 }, async (st) => {
+    await withStream({ heartbeatMs: 60000 }, async (st) => {
       await waitUntil(() => jsonFrames(st).some((f) => f.type === "hello"), 3000);
       const feedCid = jsonFrames(st).find((f) => f.type === "hello").payload.cid;
+      // 连接副作用：hello 之后服务端广播 onlineCount，先落一帧基线快照（seq 1）。
       emitEvent(feedCid, { type: "control", name: "a" });
       emitEvent(feedCid, { type: "control", name: "b" });
       emitEvent(feedCid, { type: "control", name: "c" });
-      await waitUntil(() => jsonFrames(st).filter((f) => f.seq).length === 3, 3000);
-      assert.deepEqual(jsonFrames(st).filter((f) => f.seq).map((f) => f.seq), [1, 2, 3]);
+      await waitUntil(() => jsonFrames(st).filter((f) => f.seq).length === 4, 3000);
+      assert.deepEqual(jsonFrames(st).filter((f) => f.seq).map((f) => f.seq), [1, 2, 3, 4]);
       st.frames.length = 0;
-      st.socket.write(encodeClientFrame(0x1, JSON.stringify({ v: 1, type: "resume", payload: { lastSeq: 1 } })));
+      st.socket.write(encodeClientFrame(0x1, JSON.stringify({ v: 1, type: "resume", payload: { lastSeq: 2 } })));
       await waitUntil(() => jsonFrames(st).filter((f) => f.seq).length === 2, 3000);
       const replay = jsonFrames(st).filter((f) => f.seq).map((f) => ({ seq: f.seq, name: f.payload.name }));
-      assert.deepEqual(replay, [{ seq: 2, name: "b" }, { seq: 3, name: "c" }]);
+      assert.deepEqual(replay, [{ seq: 3, name: "b" }, { seq: 4, name: "c" }]);
     });
   });
 
   it("环形缓冲欠载 → 以最近快照为基线回退", async () => {
-    await withStream({ enabled: true, heartbeatMs: 60000, ringCapacity: 2 }, async (st) => {
+    await withStream({ heartbeatMs: 60000, ringCapacity: 2 }, async (st) => {
       await waitUntil(() => jsonFrames(st).some((f) => f.type === "hello"), 3000);
       const feedCid = jsonFrames(st).find((f) => f.type === "hello").payload.cid;
+      // 连接基线快照（seq 1）+ 这里的快照（seq 2）+ 4 个 control（seq 3..6）
       emitEvent(feedCid, { type: "state.snapshot", snapshot: { a: 1 } });
       for (let i = 0; i < 4; i++) emitEvent(feedCid, { type: "control", name: "n" + i });
-      await waitUntil(() => jsonFrames(st).filter((f) => f.seq).length === 5, 3000);
+      await waitUntil(() => jsonFrames(st).filter((f) => f.seq).length === 6, 3000);
       st.frames.length = 0;
       st.socket.write(encodeClientFrame(0x1, JSON.stringify({ v: 1, type: "resume", payload: { lastSeq: 0 } })));
       await waitUntil(() => jsonFrames(st).some((f) => f.type === "state.snapshot"), 3000);
@@ -176,13 +205,13 @@ describe("GET /api/stream WebSocket 事件流", { concurrency: 1 }, () => {
   });
 
   it("心跳发送 WS ping 控制帧", async () => {
-    await withStream({ enabled: true, heartbeatMs: 30 }, async (st) => {
+    await withStream({ heartbeatMs: 30 }, async (st) => {
       await waitUntil(() => st.frames.some((f) => f.opcode === 0x9), 1500);
     });
   });
 
   it("入站配额超限 → error 帧 + 1013 关闭", async () => {
-    await withStream({ enabled: true, heartbeatMs: 60000, inboundBurst: 3, inboundPerSec: 1 }, async (st) => {
+    await withStream({ heartbeatMs: 60000, inboundBurst: 3, inboundPerSec: 1 }, async (st) => {
       await waitUntil(() => jsonFrames(st).some((f) => f.type === "hello"), 3000);
       for (let i = 0; i < 6; i++) {
         st.socket.write(encodeClientFrame(0x1, JSON.stringify({ v: 1, type: "ping" })));
@@ -194,17 +223,10 @@ describe("GET /api/stream WebSocket 事件流", { concurrency: 1 }, () => {
   });
 
   it("二进制帧 → 1002 关闭", async () => {
-    await withStream({ enabled: true, heartbeatMs: 60000 }, async (st) => {
+    await withStream({ heartbeatMs: 60000 }, async (st) => {
       st.socket.write(encodeClientFrame(0x2, "\u0001\u0002\u0003"));
       await waitUntil(() => closeCode(st) !== null, 3000);
       assert.equal(closeCode(st), 1002);
-    });
-  });
-
-  it("开关关闭（默认 sse）→ 拒绝升级 404", async () => {
-    await withStream({ enabled: false }, async (st) => {
-      assert.ok(st.header.includes("404"), "header=" + st.header);
-      assert.ok((st.rawBody || "").includes("websocket stream disabled") || st.buf.toString("latin1").includes("websocket stream disabled"));
     });
   });
 });

@@ -280,7 +280,6 @@ const KNOWN_ENV_VARS = new Set([
   "SQLITE3_BIN",
   "DEBUG_INJECT",
   "MCODE_ENGINE",
-  "MCODE_WEBUI_TRANSPORT",
 ]);
 
 console.log(`${TAG.dim("[4/6]")} references/SECURITY-NOTES.md env vars → server/lib/config.js`);

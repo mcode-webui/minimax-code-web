@@ -1,6 +1,7 @@
 // webui/test/lib-alerts.test.js
 // Unit tests for server/lib/alerts.js — pushAlert / dedup / ring
-// buffer / SSE broadcast.
+// buffer / subscriber broadcast (decision 20: sinks are plain
+// callbacks that receive the frame object itself).
 //
 // Why this test exists: lease B02 introduces the independent anomaly
 // channel (front-end bell icon data source). pushAlert is the only
@@ -21,16 +22,6 @@ const absPath = (rel) =>
     pathToFileURL(join(import.meta.dirname, "..", "server", rel)).href;
 
 const alerts = await import(absPath("lib/alerts.js"));
-
-function fakeSse() {
-    const writes = [];
-    return {
-        writes,
-        write(chunk) {
-            writes.push(chunk);
-        },
-    };
-}
 
 describe("pushAlert — basic", () => {
     beforeEach(() => {
@@ -203,67 +194,60 @@ describe("pushAlert — dedup", () => {
     });
 });
 
-describe("pushAlert — SSE broadcast", () => {
+describe("pushAlert — subscriber broadcast (sink callbacks)", () => {
     beforeEach(() => {
         alerts._resetForTests();
     });
 
-    test("subscriber receives an `append` frame on pushAlert", () => {
-        const res = fakeSse();
-        const unsubscribe = alerts.subscribeAlerts(res);
-        alerts.pushAlert({ level: "info", msg: "hi", src: "s", cid: "cid-1" });
-        assert.equal(res.writes.length, 1);
-        const frame = JSON.parse(res.writes[0].slice(6));
-        assert.equal(frame.kind, "append");
-        assert.equal(frame.alert.msg, "hi");
+    test("subscriber sink receives an `append` frame on pushAlert", () => {
+        const got = [];
+        const unsubscribe = alerts.subscribeAlerts((f) => got.push(f));
+        const a = alerts.pushAlert({ level: "info", msg: "hi", src: "s", cid: "cid-1" });
+        assert.equal(got.length, 1);
+        assert.deepEqual(got[0], { kind: "append", alert: a });
         unsubscribe();
     });
 
-    test("multiple subscribers all receive frames", () => {
-        const a = fakeSse();
-        const b = fakeSse();
-        alerts.subscribeAlerts(a);
-        alerts.subscribeAlerts(b);
+    test("multiple subscriber sinks all receive frames", () => {
+        const a = [];
+        const b = [];
+        alerts.subscribeAlerts((f) => a.push(f));
+        alerts.subscribeAlerts((f) => b.push(f));
         alerts.pushAlert({ level: "info", msg: "fan-out", src: "s" });
-        assert.equal(a.writes.length, 1);
-        assert.equal(b.writes.length, 1);
-        assert.equal(a.writes[0], b.writes[0]);
+        assert.equal(a.length, 1);
+        assert.equal(b.length, 1);
+        assert.deepEqual(a[0], b[0]);
     });
 
     test("deduped push sends an `update` frame (not a new entry)", () => {
-        const res = fakeSse();
-        alerts.subscribeAlerts(res);
+        const got = [];
+        alerts.subscribeAlerts((f) => got.push(f));
         alerts.pushAlert({ level: "warn", msg: "dup", src: "s" });
-        alerts.pushAlert({ level: "warn", msg: "dup", src: "s" });
-        assert.equal(res.writes.length, 2);
-        const first = JSON.parse(res.writes[0].slice(6));
-        const second = JSON.parse(res.writes[1].slice(6));
-        assert.equal(first.kind, "append");
-        assert.equal(second.kind, "update");
-        assert.equal(second.alert.count, 2);
+        const b = alerts.pushAlert({ level: "warn", msg: "dup", src: "s" });
+        assert.equal(got.length, 2);
+        assert.equal(got[0].kind, "append");
+        assert.deepEqual(got[1], { kind: "update", alert: b });
+        assert.equal(got[1].alert.count, 2);
     });
 
-    test("unsubscribe stops further writes", () => {
-        const res = fakeSse();
-        const unsub = alerts.subscribeAlerts(res);
+    test("unsubscribe stops further frames", () => {
+        const got = [];
+        const unsub = alerts.subscribeAlerts((f) => got.push(f));
         alerts.pushAlert({ level: "info", msg: "1", src: "s" });
         unsub();
         alerts.pushAlert({ level: "info", msg: "2", src: "s" });
-        assert.equal(res.writes.length, 1);
+        assert.equal(got.length, 1);
         assert.equal(alerts.getSubscriberCount(), 0);
     });
 
-    test("a subscriber that throws on write does not break others", () => {
-        const throwing = {
-            write() {
-                throw new Error("broken pipe");
-            },
-        };
-        const good = fakeSse();
-        alerts.subscribeAlerts(throwing);
-        alerts.subscribeAlerts(good);
+    test("a first sink that throws does not break the second", () => {
+        const got = [];
+        alerts.subscribeAlerts(() => {
+            throw new Error("broken pipe");
+        });
+        alerts.subscribeAlerts((f) => got.push(f));
         alerts.pushAlert({ level: "info", msg: "x", src: "s" });
-        assert.equal(good.writes.length, 1);
+        assert.equal(got.length, 1, "second sink must still receive the frame");
     });
 });
 

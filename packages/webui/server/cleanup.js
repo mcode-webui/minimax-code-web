@@ -13,7 +13,7 @@
 //   1. dryRun: read SESSIONS_DB, compute how many orphans WOULD be
 //      deleted, write one `kind:"cleanup.dry_run"` audit event with
 //      the count + ids, and — if any orphans exist — fire a
-//      `startup.cleanup` authorize request via the SSE channel.
+//      `startup.cleanup` authorize request via the event-stream channel.
 //      The function returns immediately (startup does not block).
 //   2. When the user confirms (via the UI listening on
 //      `needs_authorization`), authorize() resolves with

@@ -1,11 +1,13 @@
 # Web UI 网络层与进程/线程拓扑技术方案（2026-09-23）
 
 > **状态**：技术方案（可实施级）。依据 [arch_net_draft_0922.md](arch_net_draft_0922.md)（提案）展开；方案改动先落盘再改代码，实现偏差归档至 §10 决策记录。
-> **硬约束**：① 前端 SPA 零修改（`packages/webui/public/` 不动，REST 响应形状与 SSE 帧语义逐字节兼容）；② 暂时兼容原有方案（默认旧行为，新路径可开关）；③ 全量 webui 测试套件与 `check-docs-alignment` 为验收门。
+> **硬约束**：① 前端 SPA 零修改（`packages/webui/public/` 不动，REST 响应形状与 SSE 帧语义逐字节兼容）—— superseded by decision 20（发行版 SPA 改为消费 `/api/stream`，前端随之修改）；② 暂时兼容原有方案（默认旧行为，新路径可开关）—— superseded by decision 20（SSE 移除，`/api/stream` 始终启用）；③ 全量 webui 测试套件与 `check-docs-alignment` 为验收门。
 
 ## 1. 前端零修改不变量（golden 等价点）
 
-SPA 依赖的每一种线上行为必须逐字节保持（以 `server/lib/state-bus.js` 实际代码为准）：
+> Superseded by decision 20：发行版 SPA 改为消费 `/api/stream`，SSE 已移除；本节仅作历史基线保留。
+
+SPA 依赖的每一种线上行为曾必须逐字节保持（以 `server/lib/state-bus.js` 实际代码为准）：
 
 | 等价点 | 精确规格 |
 |---|---|
@@ -19,6 +21,8 @@ SPA 依赖的每一种线上行为必须逐字节保持（以 `server/lib/state-
 ## 2. 进程/线程拓扑
 
 ### 2.1 现状
+
+> Superseded by decision 20：下行通道已改为 `GET /api/stream`（WebSocket 事件流）+ REST，SSE ×2 已删除。
 
 ```
 webui 进程（1 主线程）
@@ -35,7 +39,7 @@ webui 进程（1 主线程）
 ```mermaid
 flowchart TD
     subgraph PROC["webui 进程"]
-        MT["主线程：HTTP 服务 + SSE 适配器 + 事件总线 + 传输抽象层 + 门链"]
+        MT["主线程：HTTP 服务 + WS 事件流适配器 + 事件总线 + 传输抽象层 + 门链"]
         WK["引擎宿主 Worker 线程 ×W<br/>local-runtime-v2 应用服务（主 agent 会话）"]
     end
     SC["side-chat headless 子进程 ×N<br/>（mcode exec，每回合一换）"]
@@ -51,7 +55,7 @@ flowchart TD
 
 | 成员 | 职责 | 生命周期 | 崩溃域 | 数量模型 |
 |---|---|---|---|---|
-| 主线程 | 门链、REST、SSE 适配器、事件总线、传输选择 | 进程级 | 进程 | 1 |
+| 主线程 | 门链、REST、WS 事件流适配器、事件总线、传输选择 | 进程级 | 进程 | 1 |
 | 引擎宿主 Worker | 承载主 agent 会话（嵌入模式） | 跟随标签/会话（可重入验证后合并） | 线程（`terminate()`） | W = 活动标签数（保守）→ 1（验证后） |
 | side-chat 子进程 | 轻会话单回合 | 每回合一换 | 进程 | 0..N（并发 ≤4，规划值） |
 | 子 agent 子进程 | 后台/并行任务 | 每任务一个 | 进程 | 0..M（并发 ≤8，规划值） |
@@ -79,15 +83,14 @@ stateDiagram-v2
 
 ```mermaid
 flowchart LR
-    BR["浏览器 SPA<br/>（零修改）"]
+    BR["浏览器 SPA<br/>（消费 /api/stream —— decision 20）"]
     subgraph SV["webui 主线程"]
-        EP["HTTP 端点：REST + GET /api/events（SSE）×2<br/>+ 规划：GET /api/stream（WebSocket）"]
+        EP["HTTP 端点：REST + GET /api/stream<br/>（WebSocket 事件流，decision 20）"]
     end
     WK["引擎宿主 Worker"]
     SC["side-chat 子进程"]
     SUB["子 agent 子进程"]
-    BR -->|"HTTP/1.1：REST（JSON）+ SSE（text/event-stream）"| EP
-    EP -.->|"规划：WebSocket（RFC 6455 子集）"| BR
+    BR -->|"REST（JSON）+ WebSocket（RFC 6455 子集）"| EP
     EP <-->|"MessagePort：结构化克隆"| WK
     EP <-->|"stdio：行分隔 stream-json"| SC
     EP <-->|"stdio：ndjson JSON-RPC 2.0"| SUB
@@ -98,8 +101,7 @@ flowchart LR
 | 链路 | 协议 | A 端（进程/线程） | B 端（进程/线程） |
 |---|---|---|---|
 | REST 控制面 | HTTP/1.1 JSON | 浏览器主线程 | webui 主线程 |
-| SSE 数据面 ×2 | HTTP/1.1 text/event-stream | 浏览器主线程 | webui 主线程 |
-| WebSocket（规划） | RFC 6455 子集 | 浏览器主线程 | webui 主线程 |
+| WebSocket 事件流数据面 | RFC 6455 子集 | 浏览器主线程 | webui 主线程 |
 | 嵌入引擎 RPC | MessagePort 结构化克隆 | webui 主线程 | 引擎宿主 Worker |
 | headless 传输 | stdio 行分隔 stream-json | webui 主线程 | side-chat 子进程 |
 | ACP 传输 | stdio ndjson JSON-RPC 2.0 | webui 主线程 | 子 agent / ACP 兼容子进程 |
@@ -110,11 +112,9 @@ flowchart LR
 flowchart LR
     SRC["pushStateFor / 命名控制推送"]
     BUS["事件总线 event-bus.js<br/>cid 分区，seq 单调递增"]
-    SSEA["SSE 适配器 sse-adapter.js<br/>（现状语义：16ms 合帧 + diff 门）"]
-    WSA["WebSocket 适配器（规划）<br/>事件流 + 环形缓冲区重放"]
+    WSA["WebSocket 适配器（decision 20 起唯一下行适配器）<br/>事件流 + 环形缓冲区重放"]
     SRC --> BUS
-    BUS --> SSEA --> SPA1["SPA（现行消费）"]
-    BUS --> WSA --> SPA2["SPA（规划消费）/ 调试客户端"]
+    BUS --> WSA --> SPA["发行版 SPA / 调试客户端"]
 ```
 
 接口签名（第一阶段载荷 = state 快照 + 控制事件；事件级增量随嵌入传输落地接入）：
@@ -127,7 +127,7 @@ subscribeEvents(cid, sink)       // sink({seq, ts, event}) → unsubscribe()
 pushStateFor(cid, opts)          // 构建快照 → emitEvent（opts.silent 不下发）
 ```
 
-演进路径：阶段一总线承载快照 + 控制事件（SSE 兼容面零变化）；`mcode-embed` 落地后 NormalizedEvent 级增量直接进总线，WebSocket 适配器按 `stream` 字段多路复用（`main`/`side:<id>`/`sub:<id>`），SSE 适配器继续折叠为快照。
+演进路径：阶段一总线承载快照 + 控制事件（~~SSE 兼容面零变化~~ —— superseded by decision 20：SSE 已移除，发行版 SPA 改为消费 WebSocket 适配器）；`mcode-embed` 落地后 NormalizedEvent 级增量直接进总线，WebSocket 适配器按 `stream` 字段多路复用（`main`/`side:<id>`/`sub:<id>`）。
 
 ## 5. 引擎集成层
 
@@ -161,15 +161,15 @@ boot 动态 import 引擎应用服务（`@mavis/local-runtime-v2/cli-service` �
 
 | 子系统 | 现状 | 方案后 | 开关（默认） |
 |---|---|---|---|
-| SPA 静态资源 | 原样 | 原样（零修改） | — |
+| SPA 静态资源 | 原样 | 改为消费 `/api/stream`（decision 20 解除“前端页面不动”约束） | — |
 | REST 形状 | 见 §1 | 逐字节不变 | — |
-| SSE 帧 | 见 §1 | 逐字节不变（SSE 适配器） | — |
+| SSE 帧 | 见 §1 | 已删除（decision 20：SSE 移除） | — |
 | 命名控制事件 | 4 个 | 不变 | — |
 | ACP 线协议 | ndjson JSON-RPC 2.0 | 不变（保留为兼容/子 agent 传输） | — |
 | 会话存储 | runtime-state.sqlite | 不变 | — |
 | 门链 | CORS→Origin→LAN→token→限流→只读 | 不变 | — |
 | 主 agent 引擎传输 | 每标签 ACP 子进程 | 嵌入 Worker（可回退） | `MCODE_ENGINE`（`acp`） |
-| 浏览器下行通道 | SSE | SSE + 规划 WebSocket | `MCODE_WEBUI_TRANSPORT`（`sse`） |
+| 浏览器下行通道 | SSE | WebSocket `/api/stream` + REST（SSE 已移除，decision 20） | 无（开关删除，`/api/stream` 始终启用） |
 
 新开关落地时在 `config.js` 声明 `export const` 并同步 §7 六处对齐面。
 
@@ -190,21 +190,21 @@ boot 动态 import 引擎应用服务（`@mavis/local-runtime-v2/cli-service` �
 
 | 切片 | 必须同改的对齐面 |
 |---|---|
-| WebSocket `/api/stream` 端点 | `router.js` + `package.json`（endpoints，若有 capability 还需 ≥30 字符描述）+ `docs/API.md` 标题 + `README.md`（若提及）+ `config.js` + `SECURITY-NOTES.md` + `KNOWN_ENV_VARS` 集合 |
-| `MCODE_ENGINE` / `MCODE_WEBUI_TRANSPORT` 开关 | `config.js` export const + `SECURITY-NOTES.md` + `KNOWN_ENV_VARS` 集合 |
+| WebSocket `/api/stream` 端点 | `router.js` + `package.json`（endpoints，若有 capability 还需 ≥30 字符描述）+ `docs/API.md` 标题 + `README.md`（若提及）—— decision 20 后无 env 开关（`MCODE_WEBUI_TRANSPORT` 已删除），不再牵动 `config.js` / `SECURITY-NOTES.md` / `KNOWN_ENV_VARS` |
+| `MCODE_ENGINE` 开关 | `config.js` export const + `SECURITY-NOTES.md` + `KNOWN_ENV_VARS` 集合（`MCODE_WEBUI_TRANSPORT` 已随 decision 20 删除，不在对齐面内） |
 | 纯内部模块（事件总线/帧库/能力协商/embed 骨架） | 无对齐面（不新增端点/env） |
 
 ## 8. 实施切片与验收门
 
 | 切片 | 文件 | 测试验收 | 回退 |
 |---|---|---|---|
-| 事件总线 + SSE 适配器 | `event-bus.js`、`sse-adapter.js`、`state-bus.js` | golden 帧等价 + SSE 契约守护 6 测试 | `git revert`（行为不变设计） |
+| 事件总线 + SSE 适配器 | `event-bus.js`、`sse-adapter.js`、`state-bus.js` | golden 帧等价 + SSE 契约守护 6 测试 | `git revert`（行为不变设计；`sse-adapter.js` 已随 decision 20 删除） |
 | 能力协商 | `capability.js`、`mcode-rpc.js` | 声明/探测/回退三层单测 | 静态表回退 |
 | WebSocket 帧库 + 环形缓冲 | `ws-frame.js`、`ring-buffer.js` | RFC 6455 一致性矩阵 | 纯新增，无回退需要 |
 | 引擎宿主 Worker 骨架 | `mcode-embed.js`、`engine-host.worker.js` | RPC 往返 + NormalizedEvent 对齐 | boot-failed → ACP |
-| WebSocket 端点集成 | `ws-server.js`、`router.js` 等 | 协议一致性 + 门链映射 | `MCODE_WEBUI_TRANSPORT=sse` |
+| WebSocket 端点集成 | `ws-server.js`、`router.js` 等 | 协议一致性 + 门链映射 | ~~`MCODE_WEBUI_TRANSPORT=sse`~~（开关已删除，decision 20：`/api/stream` 始终启用） |
 
-全局验收门：① 全量 `pnpm --filter @mavis/webui test` 绿（对照绿基线：契约面 36/36）；② `node scripts/check-docs-alignment.mjs` PASS（6/6）；③ `release/public-source.json` 清单登记（`node scripts/source-inventory.mjs --write` + check:source）；④ `git diff packages/webui/public` 为空（前端零修改证明）。
+全局验收门：① 全量 `pnpm --filter @mavis/webui test` 绿（对照绿基线：契约面 36/36）；② `node scripts/check-docs-alignment.mjs` PASS（6/6）；③ `release/public-source.json` 清单登记（`node scripts/source-inventory.mjs --write` + check:source）；④ `git diff packages/webui/public` 为空（前端零修改证明 —— superseded by decision 20：发行版 SPA 改为消费 `/api/stream`，前端随之修改）。
 
 ## 9. 风险与回退
 
@@ -213,7 +213,7 @@ boot 动态 import 引擎应用服务（`@mavis/local-runtime-v2/cli-service` �
 | RFC 6455 边界缺陷 | 一致性测试门先行；不达标暂缓端点集成（帧库为纯新增无害） |
 | 引擎服务不可重入 | 分层收窄为主会话 × 主会话；验证失败维持 ACP |
 | Worker 环境不兼容引擎 | boot-failed 兜底全量回退 ACP（已可测） |
-| SSE 行为漂移 | golden 等价为合并门；基线 36/36 对照 |
+| SSE 行为漂移 | ~~golden 等价为合并门~~（SSE 已随 decision 20 移除，golden 契约仅存于历史基线） |
 | 对齐门破坏 | §7 矩阵同改纪律 + 每轮 check-docs-alignment 守卫 |
 
 ## 10. 决策记录
@@ -236,7 +236,7 @@ boot 动态 import 引擎应用服务（`@mavis/local-runtime-v2/cli-service` �
 
 7. **STATE_PUSH_THROTTLE_MS 默认值更正**：实测代码默认为 0（节流禁用、每次推送同步写出），此前文档表述的「默认 16ms」来自过时注释。golden 以代码为准：默认行为不变，窗口仅在显式设置 env 时启用。§1 的 16ms 表述按此更正。
 8. **节流判定改为调用期读 env**（`currentThrottleMs()`），导出常量保留为导入期快照仅供内省：既有测试契约「cache-bust 重导入状态模块即可读到新 env」要求行为跟随 env 变化；生产环境 env 进程内恒定，线上行为不变。
-9. **总线并行落点 + SSE 兼容面直写**：`pushStateFor` 与命名控制推送同时 emit 到事件总线（WebSocket 适配器订阅面）并按旧路径直写 SSE。原因：既有测试直接操纵 `sseByCid`（绕过 `setSseClient`），订阅驱动会破坏该契约；影响面：零线上差异，WebSocket 适配器接线时可切换为订阅驱动（届时同步调整测试装配方式）。
+9. **总线并行落点 + SSE 兼容面直写**（superseded by decision 20：SSE 兼容面随 SSE 移除而删除）：`pushStateFor` 与命名控制推送同时 emit 到事件总线（WebSocket 适配器订阅面）并按旧路径直写 SSE。原因：既有测试直接操纵 `sseByCid`（绕过 `setSseClient`），订阅驱动会破坏该契约；影响面：零线上差异，WebSocket 适配器接线时可切换为订阅驱动（届时同步调整测试装配方式）。
 
 ### 2026-09-23 引擎宿主 Worker 切片（成员五报告，偏差 7 条 + 发现 2 条）
 
@@ -253,13 +253,17 @@ boot 动态 import 引擎应用服务（`@mavis/local-runtime-v2/cli-service` �
 
 ### 2026-09-23 WebSocket 事件流端点（GET /api/stream）
 
-17. **协议取舍**：(a) 恢复欠载以「最近 state.snapshot 为基线」近似严格基线（严格版需按需重建快照，留待共享快照构建器提取时精确化）；(b) 馈送按连接引用计数订阅，最后连接断开即退订，无连接期事件不入环形缓冲（恢复时走快照回退）；(c) 心跳/配额/环形容量经参数注入便于测试，生产默认 30 秒 / 稳态 20 帧每秒 + 突发 40 / 4096 条；(d) 普通 GET → 426，升级门链复用 origin / LAN / token 三关（与 /api/events 同款），默认 MCODE_WEBUI_TRANSPORT=sse 时直接拒绝升级；(e) CLOSE_CODE 附加 1008 / 1013（RFC 6455 §7.4.1 保留值，附加常量不影响既有测试）；(f) 解码器按 RFC 6455 §5.3 严格要求客户端帧掩码（未掩码帧以 1002 拒绝，实测确认），服务端帧不掩码；非浏览器客户端须自备掩码编码（RFC 义务，非本实现的宽容/严格选择）。
+17. **协议取舍**：(a) 恢复欠载以「最近 state.snapshot 为基线」近似严格基线（严格版需按需重建快照，留待共享快照构建器提取时精确化）；(b) 馈送按连接引用计数订阅，最后连接断开即退订，无连接期事件不入环形缓冲（恢复时走快照回退）；(c) 心跳/配额/环形容量经参数注入便于测试，生产默认 30 秒 / 稳态 20 帧每秒 + 突发 40 / 4096 条；(d) 普通 GET → 426，升级门链复用 origin / LAN / token 三关（原「与 /api/events 同款」—— superseded by decision 20：`/api/events` 已删除，门链与全部 `/api/*` 相同；原「默认 MCODE_WEBUI_TRANSPORT=sse 时直接拒绝升级」—— superseded by decision 20：开关删除，端点始终启用）；(e) CLOSE_CODE 附加 1008 / 1013（RFC 6455 §7.4.1 保留值，附加常量不影响既有测试）；(f) 解码器按 RFC 6455 §5.3 严格要求客户端帧掩码（未掩码帧以 1002 拒绝，实测确认），服务端帧不掩码；非浏览器客户端须自备掩码编码（RFC 义务，非本实现的宽容/严格选择）。
 
 ### 2026-09-23 WebSocket 端点集成测试（补充决策）
 
 19. **契约修正（推翻 9 号决策两处，守护测试优先）**：(a) 错误消息恢复 "mcode 0.1.5" 溯源（合并措辞：`mcode acp does not implement X (mcode 0.1.5 server returns "Method not found")`，同时满足 checks 的 /mcode 0\.1\.5/ 与能力测试的 /does not implement|Method not found/）；(b) session/cancel 由「恒 supported + notify」改为**声明条件式**——能力注册表未声明支持时短路为 unsupported 且不触碰 client（守护 checks/lib-mcode-rpc.check.mjs 的 no mcode spawn；该派生曾引发种子级联：真实 client 启动后 initialize 重播种注册表，令 set_mode/activate 逃逸黑名单），仅当引擎 initialize 声明该方法才走 notification 语义。前端能力映射 cancel 位随之在旧引擎下为 false。
 
 18. **集成测试的三个实证**：(a) 环形缓冲 `replay()` 返回 `{seq, item}` 包装条目，`frameForItem` 归一化兼容包装/裸条目两种形状；(b) hello 帧携带 `cid` 回显（协议补充，客户端确认身份 + 测试注入对齐）；(c) 测试基建语义：升级套接字脱离 http 连接跟踪后 `server.close()` 回调在超时/异常路径个别不落定，测试清理以 500ms 竞速尽力而为（仅测试基建，不影响生产关闭语义——生产进程由 SIGINT/SIGTERM 钩子收尾）。入站配额按帧计数（TCP 粘包下按数据块计数无意义）。
+
+### 2026-09-23 Downlink transport — remove SSE (decision 20)
+
+20. **Remove SSE; keep only the WebSocket event stream + REST** (user decision, 2026-09-23): (a) the `GET /api/events` endpoint and `sse-adapter.js` are deleted — real-time downstream delivery is `GET /api/stream` (always enabled) plus REST; (b) `GET /api/alerts` becomes a REST snapshot (`{"kind":"snapshot","alerts":[...]}`, ring buffer capped at 100 entries) and live alert traffic moves to `alerts.append` / `alerts.update` control frames on `/api/stream`, with clients de-duplicating by `alert.id`; (c) the `MCODE_WEBUI_TRANSPORT` switch is deleted — `/api/stream` has no sse/ws toggle anymore and its upgrade runs the same origin/LAN/token gate chain as every other `/api/*` route (`MCODE_ENGINE` is unaffected and stays `acp` by default); (d) the shipped SPA switches to consuming `/api/stream` (first-connect baseline via `GET /api/state`, alert snapshot via `GET /api/alerts`), so the frontend changes accordingly and the "前端页面不动 / zero frontend modification" hard constraint is lifted by explicit user confirmation for this change; (e) the statements in decisions 9 and 17 that retained an "SSE compatibility surface" / the sse fallback switch are superseded by this decision.
 
 ## 附：文档集
 

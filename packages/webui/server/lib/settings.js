@@ -798,7 +798,7 @@ export function setQuotaEnabled(v) {
 }
 
 // rotateToken — generate a new token, persist, sync to auth module.
-//   Caller is responsible for broadcasting the new token via SSE.
+//   Caller is responsible for broadcasting the new token over the event stream.
 //   Returns the new token string.
 //
 // v1.0.1: order of operations is critical for crash-safety.

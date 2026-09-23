@@ -35,7 +35,6 @@ let makeClientState;
 let getTokenPlanApiKey;
 let getQuotaEnabled;
 let pushStateFor;
-let sseByCid;
 let clients;
 
 before(async (t) => {
@@ -47,7 +46,6 @@ before(async (t) => {
   // the cs fixture.
   const sbMod = await import(absPath("lib/state-bus.js"));
   makeClientState = sbMod.makeClientState;
-  sseByCid = sbMod.sseByCid;
   clients = sbMod.clients;
   // settings mock — re-imported in usage.js
   const settingsMod = await import(absPath("lib/settings.js"));
@@ -58,8 +56,9 @@ before(async (t) => {
 
 beforeEach(async () => {
   // We don't run runUsageQuery (which has network side effects),
-  // so we don't need a real SSE client registered. But if a test
-  // ever switches to runUsageQuery, leave this here for the day.
+  // so we don't need a real event-stream subscriber registered. But
+  // if a test ever switches to runUsageQuery, leave this here for
+  // the day.
 });
 
 // Real Token Plan API response captured 2026-08-28 via:

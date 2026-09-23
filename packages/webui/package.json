@@ -3,7 +3,7 @@
   "version": "2.0.0",
   "private": true,
   "type": "module",
-  "description": "Browser frontend for MiniMax Code. Serves the web chat UI over HTTP/SSE and drives the mcode engine (ACP over stdio). Migrated from the mcode-webui community plugin (PR #55 of MiniMax-Code-Plugins) into the product as a first-class package.",
+  "description": "Browser frontend for MiniMax Code. Serves the web chat UI over HTTP/WebSocket and drives the mcode engine (ACP over stdio). Migrated from the mcode-webui community plugin (PR #55 of MiniMax-Code-Plugins) into the product as a first-class package.",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -29,7 +29,7 @@
     "capabilities": [
       {
         "name": "chat-streaming",
-        "description": "Streams model output token-by-token from the mcode acp subprocess via Server-Sent Events (`GET /api/events`). Each delta event includes `text` and `isPartial` so the browser can render progressive assistant replies without buffering the full response."
+        "description": "Streams model output token-by-token from the mcode acp subprocess over the WebSocket event stream (`GET /api/stream`). Each delta event includes `text` and `isPartial` so the browser can render progressive assistant replies without buffering the full response."
       },
       {
         "name": "tool-execution",
@@ -82,8 +82,8 @@
     ],
     "endpoints": {
       "health": "GET /api/health",
-      "events": "GET /api/events (SSE)",
-      "stream": "GET /api/stream (WebSocket event stream, MCODE_WEBUI_TRANSPORT=ws)",
+      "alerts": "GET /api/alerts (REST snapshot)",
+      "stream": "GET /api/stream (WebSocket event stream)",
       "state": "GET /api/state",
       "sessions": "GET|POST|DELETE /api/sessions[/:id|/switch]",
       "chat": "POST /api/send|stop|cmd",

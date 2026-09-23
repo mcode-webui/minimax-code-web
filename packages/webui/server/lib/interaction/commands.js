@@ -3,7 +3,7 @@
 // harness-2026-08-28 § 3 ("interaction/commands"). Owns the inline
 // handlers used by /api/send (handleLocalSlash) and /api/cmd
 // (handleCmdCommand); each handler mutates `cs` and routes through
-// state-bus.pushStateFor (no direct SSE writes).
+// state-bus.pushStateFor (no direct stream writes).
 //
 // Why a single file: the dispatcher stays small (one switch) and the
 // bodies are private functions — external callers only need the two

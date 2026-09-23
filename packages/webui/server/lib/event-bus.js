@@ -2,8 +2,8 @@
 // cid 分区的有序事件总线（下行汇聚点）。
 //
 // 职责：接收 state 快照与命名控制事件，按 cid 分配单调递增序列号后
-// 同步扇出给订阅者（未来的 WebSocket 适配器订阅本总线；SSE 兼容面
-// 仍由 sse-adapter 直写，见技术方案 §10 决策记录）。
+// 同步扇出给订阅者（总线是唯一下行通道：WebSocket /api/stream 适配器
+// 订阅本总线；SSE 已按决策 20 移除，见技术方案 §10 决策记录）。
 //
 // 设计约束：零 npm 依赖；同步分发（订阅者回调在 emit 调用栈内执行，
 // 与旧直写路径的时序语义一致）；订阅者异常隔离（单个 sink 抛错不影响
@@ -64,6 +64,11 @@ export function subscribeEvents(cid, sink) {
 export function getLatestSeq(cid) {
   const seq = _seqByCid.get(cid);
   return seq === undefined ? null : seq;
+}
+
+/** 返回当前存在订阅者的 cid 列表（即在线事件流客户端集合）。 */
+export function getSubscribedCids() {
+  return [..._sinksByCid.keys()];
 }
 
 /** 测试钩子：清空全部订阅与序列号。 */

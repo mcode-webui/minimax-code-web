@@ -122,19 +122,14 @@ const ROUTES = [
     handler: healthRoute.handleHealth,
   },
 
-  // State + SSE
-  {
-    method: "GET",
-    match: (p) => p === "/api/events",
-    handler: stateRoute.handleEvents,
-  },
+  // State
   {
     method: "GET",
     match: (p) => p === "/api/state",
     handler: stateRoute.handleState,
   },
 
-  // v2.0 (lease B02): anomaly / system-signal SSE channel
+  // v2.0 (lease B02): anomaly / system-signal REST snapshot (live frames via /api/stream)
   {
     method: "GET",
     match: (p) => p === "/api/alerts",
@@ -314,7 +309,7 @@ const ROUTES = [
     match: (p) => p === "/api/settings",
     handler: settingsRoute.handlePostSettings,
   },
-  // v2.0 (reconcile §6.1): POST /api/auth/decision — the SSE-driven
+  // v2.0 (reconcile §6.1): POST /api/auth/decision — the stream-driven
   // authorize gate close path. Was exported by server/lib/authorize.js
   // (B03) but never bound to a route. Client posts {requestId, approve}
   // to resolve the per-request authorize() Promise. Method-gated POST,
@@ -492,7 +487,7 @@ export async function handleRequest(req, res) {
 
   // Gate 3: token auth (v1.0.1).
   //   - Local request: always allowed.
-  //   - /api/* routes (incl. SSE /api/events): gated when TOKEN auth enabled.
+  //   - /api/* routes: gated when TOKEN auth enabled.
   //   - OPTIONS preflight: always allowed (browsers cannot attach
   //     Authorization to a preflight; CORS spec says server must respond
   //     to OPTIONS with the negotiated CORS headers, not 401).
@@ -501,7 +496,7 @@ export async function handleRequest(req, res) {
   //   - Static files (HTML/CSS/JS/images): always public so the SPA can
   //     bootstrap (load index.html, fetch app/main.js).
   //   - The SPA reads ?token= from the URL (browser) and stores it in
-  //     localStorage; subsequent fetch + EventSource attach it as
+  //     localStorage; subsequent fetch + the /api/stream WebSocket attach it as
   //     Authorization: Bearer / ?token=.
   if (
     pathname.startsWith("/api/") &&
