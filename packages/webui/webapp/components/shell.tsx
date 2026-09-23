@@ -413,16 +413,17 @@ function NavRow({
  *   - Usage — `R.Mcw`; opens a hover Tooltip popover (function `Q`, offset
  *     599872) with the live quota snapshot from `api.getQuota()`. NOT a
  *     panel — upstream is hover Tooltip only.
- *   - Contact us — `R.AkR`; submenu with Discord / Feishu / Twitter /
- *     Email / Security entries (some are conditional on platform features;
- *     webui only renders the entries it can actually back).
- *   - Learn more — `R.Mxk`; submenu with Tools / About / Terms / Privacy /
- *     Open-source.
  *   - Sign out — `R.R0g`; webui has no logout endpoint yet, so the row is
  *     disabled with a tooltip.
  *
  * Rows upstream does not have are not rendered — keeping a webui-invented row
  * next to a real upstream row was what the user flagged as 歪的.
+ *
+ * Upstream's Contact us (`R.AkR`) and Learn more (`R.Mxk`) submenus are not
+ * rendered at all. Their entries point at product pages and a support mailbox
+ * that this distribution does not have, so every row would be a disabled
+ * placeholder; they are deferred until there is a real target, and the command
+ * to add them back is this doc comment plus `userMenu.*` in lib/i18n.ts.
  */
 /** Last path segment of a workspace directory, for display. */
 function workspaceLeaf(dir: string | undefined): string {
@@ -452,7 +453,6 @@ function SidebarFooter({
   alertCount?: number;
 }) {
   const [open, setOpen] = useState(false);
-  const [submenu, setSubmenu] = useState<"contact" | "learn" | null>(null);
   const [usageHover, setUsageHover] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -462,23 +462,17 @@ function SidebarFooter({
     if (!open) return;
     const onDown = (event: MouseEvent) => {
       const target = event.target as Node;
-      // Both flyouts are portalled to document.body, so they live outside
-      // `rootRef` — check them too, or a click inside one closes the menu before
-      // the click lands on its control. The usage popover is the one that bites:
-      // without it the refresh button never ran, because the mousedown closed the
-      // menu and unmounted the button mid-click.
+      // The usage popover is portalled to document.body, so it lives outside
+      // `rootRef` — check it too, or a click inside it closes the menu before the
+      // click lands on its control. Without this the refresh button never ran:
+      // the mousedown closed the menu and unmounted the button mid-click.
       if (rootRef.current?.contains(target)) return;
       if (menuRef.current?.contains(target)) return;
-      if (document.querySelector("[data-testid='sidebar-user-submenu']")?.contains(target)) return;
       if (document.querySelector("[data-testid='sidebar-user-usage-popover']")?.contains(target)) return;
       setOpen(false);
-      setSubmenu(null);
     };
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setOpen(false);
-        setSubmenu(null);
-      }
+      if (event.key === "Escape") setOpen(false);
     };
     document.addEventListener("mousedown", onDown);
     document.addEventListener("keydown", onKey);
@@ -513,7 +507,6 @@ function SidebarFooter({
   /** Run a menu action and close the menu in one step. */
   const pick = (action: () => void) => () => {
     setOpen(false);
-    setSubmenu(null);
     action();
   };
 
@@ -548,39 +541,6 @@ function SidebarFooter({
         isOpen={usageHover}
       />
       <div className="my-2 h-px bg-border_default" role="separator" />
-      {/* A panel is an absolutely-positioned sibling of its trigger here, so
-          putting the hover handlers on the trigger alone closed the submenu in
-          the same tick the pointer crossed toward the panel. One hover
-          container owns the row and its panel; because the panel is a DOM
-          descendant of that container, React keeps the hover alive while the
-          pointer travels, and the panel has to overlap the row by a few pixels
-          so the path between them never leaves the container. */}
-      <div
-        className="relative"
-        onMouseEnter={() => setSubmenu("contact")}
-        onMouseLeave={() => setSubmenu((current) => (current === "contact" ? null : current))}
-      >
-        <SubmenuTrigger
-          icon="contact"
-          label={t("userMenu.contactUs")}
-          isOpen={submenu === "contact"}
-          onActivate={pick(() => setSubmenu(null))}
-        />
-        {submenu === "contact" ? <ContactSubmenu t={t} /> : null}
-      </div>
-      <div
-        className="relative"
-        onMouseEnter={() => setSubmenu("learn")}
-        onMouseLeave={() => setSubmenu((current) => (current === "learn" ? null : current))}
-      >
-        <SubmenuTrigger
-          icon="learnMore"
-          label={t("userMenu.learnMore")}
-          isOpen={submenu === "learn"}
-          onActivate={pick(() => setSubmenu(null))}
-        />
-        {submenu === "learn" ? <LearnMoreSubmenu t={t} /> : null}
-      </div>
       <MenuRow
         icon="logout"
         label={t("userMenu.signOut")}
@@ -934,96 +894,6 @@ function UsagePopover({ t }: { t: (key: MessageKey) => string }) {
       ) : (
         <span className="text-caption-small text-text_default_tertiary">{t("usagePopover.unavailable")}</span>
       )}
-    </div>
-  );
-}
-
-/**
- * A row whose hover opens a submenu rendered to the right of the trigger.
- * Upstream renders Contact us / Learn more as direct menu rows with a
- * trailing chevron — the submenu panel is a separate antd dropdown anchored
- * to the row. webui reproduces that with mouse-enter / mouse-leave on the
- * row plus a position-tracked popover in document.body.
- */
-function SubmenuTrigger({
-  icon,
-  label,
-  isOpen,
-  onActivate,
-}: {
-  icon: Parameters<typeof Icon>[0]["name"];
-  label: string;
-  isOpen: boolean;
-  onActivate: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      role="menuitem"
-      aria-haspopup="menu"
-      aria-expanded={isOpen}
-      data-testid="sidebar-user-submenu-trigger"
-      onClick={onActivate}
-      className="flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left text-sm text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_hover"
-    >
-      <span className="flex size-4 flex-shrink-0 items-center justify-center text-icon_default_secondary">
-        <Icon name={icon} size={16} />
-      </span>
-      <span className="min-w-0 flex-1 truncate">{label}</span>
-      <span className="flex flex-shrink-0 items-center justify-center text-icon_default_tertiary">
-        <Icon name="chevronRight" size={14} />
-      </span>
-    </button>
-  );
-}
-
-function ContactSubmenu({ t }: { t: (key: MessageKey) => string }) {
-  return (
-    <SubmenuPanel>
-      <MenuRow icon="contact" label={t("userMenu.feishu")} disabled title={t("common.unsupported")} />
-      <MenuRow icon="contact" label={t("userMenu.email")} disabled title={t("common.unsupported")} />
-    </SubmenuPanel>
-  );
-}
-
-function LearnMoreSubmenu({ t }: { t: (key: MessageKey) => string }) {
-  return (
-    <SubmenuPanel>
-      <MenuRow icon="learnMore" label={t("userMenu.tools")} disabled title={t("common.unsupported")} />
-      <MenuRow icon="learnMore" label={t("userMenu.about")} disabled title={t("common.unsupported")} />
-      <MenuRow icon="learnMore" label={t("userMenu.terms")} disabled title={t("common.unsupported")} />
-      <MenuRow icon="learnMore" label={t("userMenu.privacy")} disabled title={t("common.unsupported")} />
-      <MenuRow icon="learnMore" label={t("userMenu.opencodeSource")} disabled title={t("common.unsupported")} />
-    </SubmenuPanel>
-  );
-}
-
-/**
- * The flyout every submenu shares.
- *
- * `left-[calc(100%-8px)]` puts it just past the trigger's right edge while
- * overlapping the trigger by 8px, so the pointer never crosses a region that
- * belongs to neither the row nor the panel — see the hover container in
- * AccountMenu. `right-[calc(100%-8px)]`, which this used before, resolves to
- * a position 8px from the *left* edge of the trigger and so laid the panel
- * out past the left edge of the window, where it could not be seen or
- * clicked.
- *
- * Every entry inside is disabled: the reference client's rows point at
- * product pages and a support mailbox, and this distribution has neither —
- * the targets that used to be here were example.com URLs and a
- * support@example.com address, i.e. links that look live and go nowhere. The
- * rows stay listed and report `common.unsupported` until there is a real
- * target to open.
- */
-function SubmenuPanel({ children }: { children: React.ReactNode }) {
-  return (
-    <div
-      role="menu"
-      data-testid="sidebar-user-submenu"
-      className="absolute top-2 left-[calc(100%-8px)] z-[105] min-w-[180px] rounded-[12px] border border-border_default bg-bg_grouped_secondary_elevated p-2 shadow-shadow_default"
-    >
-      {children}
     </div>
   );
 }

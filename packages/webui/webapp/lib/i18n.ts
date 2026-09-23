@@ -110,15 +110,6 @@ const en = {
 
   /* Account menu rows — 1:1 with the upstream account-menu entry set. */
   "userMenu.checkin": "Daily check-in",
-  "userMenu.contactUs": "Contact us",
-  "userMenu.learnMore": "Learn more",
-  "userMenu.feishu": "Feishu",
-  "userMenu.email": "Email",
-  "userMenu.tools": "Tools",
-  "userMenu.about": "About",
-  "userMenu.terms": "Terms of service",
-  "userMenu.privacy": "Privacy policy",
-  "userMenu.opencodeSource": "Third-party licenses",
   "userMenu.signOut": "Sign out",
   /* Account-menu usage popover (hover Tooltip on the `用量` row). Quota data
      comes from `api.getQuota()` (5h-style snapshot: remaining %, resetAt,
@@ -346,15 +337,6 @@ const zh: Record<MessageKey, string> = {
 
   /* 帐号菜单条目 — 与上游 account-menu 1:1 对齐。 */
   "userMenu.checkin": "每日签到",
-  "userMenu.contactUs": "联系我们",
-  "userMenu.learnMore": "了解更多",
-  "userMenu.feishu": "飞书",
-  "userMenu.email": "邮箱",
-  "userMenu.tools": "工具",
-  "userMenu.about": "关于",
-  "userMenu.terms": "服务条款",
-  "userMenu.privacy": "隐私政策",
-  "userMenu.opencodeSource": "开源许可声明",
   "userMenu.signOut": "退出登录",
   /* 帐号菜单的「用量」hover Tooltip popover。配额数据来自 `api.getQuota()`
      （5h 风格快照：remaining %、resetAt、weeklyResetAt）。 */
