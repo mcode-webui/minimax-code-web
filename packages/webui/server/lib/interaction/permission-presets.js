@@ -15,9 +15,7 @@ import { pushStateFor } from "../state-bus.js";
 // Named permission presets (webui-side). Each entry maps to:
 //   id:         the wire-format id accepted by handleSetPermissions
 //   label:      display label shown in the webui UI
-//   mcodeValue: the corresponding mcode session permission mode value
-//               (informational — mcode 0.1.5 acp does not support
-//                mid-session changes; see routes/model.js:99)
+//   mcodeValue: the value sent to session/set_config_option{configId:'permissionMode'}
 export const PERMISSION_PRESETS = [
   { id: "ask",  label: "Ask",         mcodeValue: "default" },
   { id: "auto", label: "Auto",        mcodeValue: "auto" },

@@ -236,12 +236,10 @@ export async function handleSend(req, res, ctx) {
 }
 
 // POST /api/stop — 中断正在跑的 prompt
-// v0.5.by: 优先走 mcode acp session/cancel RPC (温和取消 — 让 mcode 走 finalize),
-//   走不通再 hard kill child process (兜底)
-// 注意: mcode 0.1.5 acp 不支持 session/cancel (probe 实测 "Method not found"),
-//   所以 cancelled 永远是 false, 直接走 hard kill
-// 旧实现: 永远 child.kill() — 太粗暴,会让 mcode acp 进程直接 SIGKILL,
-//   同进程里的 background task 也会被 runtime-shutdown 杀 (子 agent 跑不完的根因之一)
+// Sends the engine's `session/cancel` notification first, so the prompt is aborted
+// and finalize runs. SIGKILL is the fallback for a child that cannot be told to
+// stop at all — killing the process takes its background tasks down with it,
+// which is why the graceful path is tried first.
 export async function handleStop(_req, res, ctx) {
   const cid = ctx.cid;
   const cs = ctx.cs;

@@ -363,7 +363,7 @@ export function collectExecResult(childPromise) {
           cs.context.tokens,
           cs.context.limit,
         );
-        cs.context.estimated = false; // mcode 0.1.5+ 返真实值
+        cs.context.estimated = false;
         cs.context.lastUsageAt = Date.now();
         cs.usage.sessionInput =
           (cs.usage.sessionInput || 0) + (r.usage.inputTokens || 0);
@@ -371,10 +371,11 @@ export function collectExecResult(childPromise) {
           (cs.usage.sessionOutput || 0) + (r.usage.outputTokens || 0);
         cs.usage.sessionTotal = cs.usage.sessionInput + cs.usage.sessionOutput;
       } else if (r.answer || r.thinking) {
-        // v0.5.bx-9: mcode 0.1.4 acp 不返 usage / 不发 usage_update, 用 thinking + answer 长度粗略估算 token
+        // The engine sends no usage and no usage_update: estimate the tokens from the
+        // thinking + answer length instead.
         //   估算系数: ~3 字符/token (中英文混合经验值, GPT tokenizer ~4 字符/token, 中文偏密 ~1.5 字符/token)
         //   注意: input 算 user prompt + 上文, 我们没访问 — 只能估 output (thinking+answer) + 累加 user input
-        //   mcode 0.1.5+ 暴露真值后, r.usage 分支会优先, 估算自动失效
+        //   A real usage value takes the branch above, so this estimate goes unused.
         const outText = (r.thinking || "") + (r.answer || "");
         const estOutTokens = Math.ceil(outText.length / 3);
         // 估算 user input 长度 — 我们能从 cs.chat 知道上一次 user prompt 长度
@@ -386,7 +387,7 @@ export function collectExecResult(childPromise) {
         const estTotal = estOutTokens + estInTokens;
         cs.context.tokens = (cs.context.tokens || 0) + estTotal;
         cs.context.used = cs.context.tokens;
-        cs.context.estimated = true; // 标记是估算的 (mcode 0.1.4 限制)
+        cs.context.estimated = true;
         cs.context.percent = computeContextPercent(
           cs.context.tokens,
           cs.context.limit,
@@ -397,7 +398,7 @@ export function collectExecResult(childPromise) {
         cs.usage.sessionTotal = cs.usage.sessionInput + cs.usage.sessionOutput;
         if (process.env.MCODE_USAGE_DEBUG) {
           console.log(
-            `[usage.estimate] outLen=${outText.length} estOut=${estOutTokens} userLen=${userLen} estIn=${estInTokens} total=${estTotal} (mcode 0.1.4 不返 usage, 用估算)`,
+            `[usage.estimate] outLen=${outText.length} estOut=${estOutTokens} userLen=${userLen} estIn=${estInTokens} total=${estTotal} (no usage reported; estimated)`,
           );
         }
       }
