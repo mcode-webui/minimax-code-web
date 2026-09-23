@@ -128,16 +128,18 @@ export async function handleCancel(req, res, ctx) {
   if (!sessionId)
     return respond(res, 400, { ok: false, error: "sessionId required" });
   const r = await cancelSession(sessionId);
-  // A refusal still counts as "the user asked to cancel". `session/cancel` is a
-  // notification, so it cannot report whether the prompt actually stopped; only
-  // an unreachable client lands here, and that is what the SIGKILL fallback is for.
+  // A refusal means the `session/cancel` notification could not be delivered —
+  // it is a notification (no reply), so we cannot say whether the prompt
+  // actually stopped. This route only sends the notification; the
+  // gentle-then-SIGKILL cascade lives behind POST /api/stop, which the
+  // caller can request explicitly if the kill cascade is what they wanted.
   if (!r.ok) {
     return respond(res, 200, {
       ok: true,
       cancelled: false,
       warning: r.error,
       code: r.code,
-      fallback: "hard_kill",
+      killEndpoint: "/api/stop",
     });
   }
   if (ctx && ctx.cid) pushStateFor(ctx.cid);

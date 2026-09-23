@@ -165,6 +165,41 @@ describe("handleCancel — /api/protocol/cancel", () => {
     assert.equal(body.fallback, undefined, "no SIGKILL hint when the client answered");
   });
 
+  test("200 with cancelled:false + killEndpoint when the notification cannot be delivered", async () => {
+    // Route is a thin notification surface — it must NOT claim a hard kill
+    // it never performs. On a refusal it tells the caller the notification
+    // failed and points them at /api/stop, which is where the actual
+    // gentle-then-SIGKILL cascade lives (chat.js#handleStop).
+    const { registerRpcMock } = await import("../helpers/_setup.js");
+    registerRpcMock({ cancelSession: async () => ({ ok: false, code: "no_client", error: "client offline" }) });
+    try {
+      const res = fakeRes();
+      await protoRoute.handleCancel(
+        fakeReq({ sessionId: "mvs_aaa" }),
+        res,
+        { cs: fakeCs(), cid: "cid-1" },
+      );
+      assert.equal(res._status, 200);
+      const body = JSON.parse(res._body);
+      assert.equal(body.ok, true);
+      assert.equal(body.cancelled, false);
+      assert.equal(body.warning, "client offline");
+      assert.equal(body.code, "no_client");
+      assert.equal(
+        body.fallback,
+        undefined,
+        "must not claim a hard_kill fallback the route never executes",
+      );
+      assert.equal(
+        body.killEndpoint,
+        "/api/stop",
+        "must point the caller at the endpoint that actually carries the kill cascade",
+      );
+    } finally {
+      registerRpcMock({ cancelSession: async () => ({ ok: true, data: { notified: true } }) });
+    }
+  });
+
 });
 
 describe("handleLoadSession — /api/protocol/load-session", () => {

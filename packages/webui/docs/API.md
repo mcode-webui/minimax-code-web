@@ -654,8 +654,10 @@ Calls `session/set_config_option`. **Currently returns 501**.
 
 ### `POST /api/protocol/cancel`
 
-Calls `session/cancel`. **Currently returns 501** (falls back to
-SIGTERM on the subprocess).
+Calls `session/cancel`. This route only sends the notification; on
+failure it responds `200 { ok: true, cancelled: false, warning, code, killEndpoint: "/api/stop" }`.
+The gentle-then-SIGKILL cascade is implemented by
+`POST /api/stop` — call it when a hard kill is what you need.
 
 ### `POST /api/protocol/load-session`
 

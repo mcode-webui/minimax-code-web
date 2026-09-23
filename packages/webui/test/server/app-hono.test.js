@@ -12,6 +12,7 @@ import { strict as assert } from "node:assert";
 import {
   OWNED_ROUTES,
   createHonoApp,
+  createHonoListener,
   createResponseCapture,
   ownsRequest,
 } from "../../server/app.js";
@@ -176,5 +177,52 @@ describe("app.js — Hono route parity with the legacy dispatcher", () => {
     // The response still varies by Origin, so a cache cannot serve the trusted
     // variant to an untrusted caller.
     assert.equal(res.headers.get("vary"), "Origin");
+  });
+});
+
+describe("app.js — createHonoListener exposes the app so bootstrap reuses it for ownsRequest", () => {
+  // Pre-fix: createHonoListener() returned the listener function directly,
+  // and bootstrap.js called ownsRequest(method, pathname) without an app —
+  // so ownsRequest built a fresh Hono app (and walked its routes) on every
+  // served request. Post-fix: bootstrap.js receives the app from the
+  // listener binding and threads it into ownsRequest, so the same router
+  // table is walked for both the dispatch decision and the actual serve.
+  //
+  // The contract that prevents the regression is the return shape of
+  // createHonoListener(): { app, listener }. If someone collapses that
+  // back to a bare function the assertion below fails — bootstrap cannot
+  // pass an app it does not have.
+
+  test("returns { app, listener } where app is a Hono instance", () => {
+    const result = createHonoListener();
+    assert.equal(typeof result, "object", "createHonoListener must return { app, listener }, not a bare function");
+    assert.ok(result.app, "must return the Hono app so bootstrap can pass it to ownsRequest");
+    assert.equal(typeof result.app.request, "function", "app must be a Hono instance");
+    assert.equal(typeof result.listener, "function", "must also return a Node request listener");
+  });
+
+  test("ownsRequest(method, pathname, app) walks the supplied app's router, not a fresh one", () => {
+    // Distinct instance — each call to createHonoApp() produces a new Hono
+    // app with its own routes array (verified by Hono's own behaviour).
+    const { app } = createHonoListener();
+    const marker = "/__owns_request_marker_" + Math.random().toString(36).slice(2) + "__";
+    app.get(marker, () => new Response("ok"));
+    try {
+      // The marker exists on THIS app only. ownsRequest with the app as
+      // the third argument must find it — proves the listener's app is
+      // actually the one ownsRequest will use when bootstrap threads it.
+      assert.equal(ownsRequest("GET", marker, app), true, "ownsRequest must walk the supplied app");
+      // ownsRequest without an app builds a fresh Hono instance internally
+      // and walks ITS (empty, marker-less) routes — so it cannot see the
+      // marker. This is the no-app fallback bootstrap must NOT take.
+      assert.equal(
+        ownsRequest("GET", marker),
+        false,
+        "ownsRequest without an app rebuilds the router — bootstrap must pass the listener's app",
+      );
+    } finally {
+      const idx = app.routes.findIndex((r) => r.path === marker);
+      if (idx >= 0) app.routes.splice(idx, 1);
+    }
   });
 });

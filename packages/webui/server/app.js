@@ -504,7 +504,19 @@ export function createHonoApp() {
   return app;
 }
 
-/** A Node `(req, res)` listener for the routes Hono owns. */
+/**
+ * A Node `(req, res)` listener for the routes Hono owns, paired with the
+ * Hono app instance it was built from.
+ *
+ * The app is returned alongside the listener so the bootstrap can pass
+ * the same instance into `ownsRequest` for the dispatch decision — building
+ * a second app inside `ownsRequest` would walk a separate router table on
+ * every served request (one build for the decision, another for the
+ * actual serve), which is what the `ownsRequest(method, pathname, app)`
+ * third argument exists to avoid.
+ */
 export function createHonoListener() {
-  return getRequestListener(createHonoApp().fetch);
+  const app = createHonoApp();
+  const listener = getRequestListener(app.fetch);
+  return { app, listener };
 }

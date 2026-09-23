@@ -643,8 +643,10 @@ Subscription Key（见 `server/lib/usage.js`）。
 
 ### `POST /api/protocol/cancel`
 
-调用 `session/cancel`。**当前返回 501**（回退为对子进程
-发送 SIGTERM）。
+调用 `session/cancel`。本路由只发送通知；通知失败时返回
+`200 { ok: true, cancelled: false, warning, code, killEndpoint: "/api/stop" }`。
+温和版→SIGKILL 的级联流程由 `POST /api/stop` 实现 —— 需要
+硬杀时请调用它。
 
 ### `POST /api/protocol/load-session`
 

@@ -19,13 +19,8 @@ import { pushStateFor, pushAlert, getActiveChild } from "../lib/state-bus.js";
 import { handleLocalSlash, handleCmdCommand } from "../lib/slash.js";
 import { runMcodeAcp } from "../lib/mcode-acp.js";
 import { collectExecResult, runMcodeExec } from "../lib/mcode-exec.js";
-import {
-  bootEngineHost,
-  isEmbedRunning,
-  runMcodeEmbed,
-} from "../lib/mcode-embed.js";
-import { collectEmbedResult } from "../lib/embed-consumer.js";
-import { DEFAULT_MODEL, MCODE_ENGINE } from "../lib/config.js";
+import { cancelSession } from "../lib/mcode-rpc.js";
+import { DEFAULT_MODEL } from "../lib/config.js";
 
 async function readJson(req) {
   let body = "";
@@ -274,7 +269,6 @@ export async function handleStop(_req, res, ctx) {
   //    active prompt's AbortController; there is no reply, so `ok` means "sent".
   if (cs && cs.mcodeSessionId) {
     try {
-      const { cancelSession } = await import("../lib/mcode-rpc.js");
       const r = await cancelSession(cs.mcodeSessionId);
       if (r.ok) cancelled = true;
       else {

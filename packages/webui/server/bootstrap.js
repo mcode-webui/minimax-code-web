@@ -93,12 +93,18 @@ if (SERVER_IMPL !== 'hono' && SERVER_IMPL !== 'legacy') {
   console.error(`[webui] MCODE_WEBUI_SERVER must be "hono" or "legacy", got "${SERVER_IMPL}"`)
   process.exit(1)
 }
-const honoListener = SERVER_IMPL === 'hono' ? createHonoListener() : null
+// `createHonoListener` returns both the Hono app and the Node listener
+// built from it; the app is threaded into `ownsRequest` so the dispatch
+// decision and the actual serve walk the SAME router table instead of
+// rebuilding one per request.
+const honoBinding = SERVER_IMPL === 'hono' ? createHonoListener() : null
+const honoApp = honoBinding ? honoBinding.app : null
+const honoListener = honoBinding ? honoBinding.listener : null
 
 const server = http.createServer((req, res) => {
-  if (honoListener) {
+  if (honoListener && honoApp) {
     const pathname = (req.url || '/').split('?')[0]
-    if (ownsRequest(req.method || 'GET', pathname)) return honoListener(req, res)
+    if (ownsRequest(req.method || 'GET', pathname, honoApp)) return honoListener(req, res)
   }
   return handleRequest(req, res)
 })
