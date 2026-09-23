@@ -67,6 +67,11 @@ async function spawnServer() {
         // stopServer below, so cleanup stays automatic.
         MCODE_WEBUI_UPLOAD_DIR: join(tmpDir, "uploads"),
         MCODE_WEBUI_SESSIONS_DB: join(tmpDir, "sessions.json"),
+        // The forecast test below asserts `no_history` on a "fresh server".
+        // Without this the route reads the operator's real
+        // ~/.mcode-webui/usage-history.ndjson, so the assertion passes or
+        // fails depending on whether that machine has ever fetched a quota.
+        MCODE_WEBUI_HISTORY_PATH: join(tmpDir, "usage-history.ndjson"),
         TOKEN: "", // explicit empty so auth init is deterministic
         // Disable TOKEN_STDOUT so stdout is clean for assertion.
         MCODE_WEBUI_TOKEN_STDOUT: "0",

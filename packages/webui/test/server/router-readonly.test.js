@@ -14,10 +14,23 @@
 
 import { test, describe, before } from "node:test";
 import { strict as assert } from "node:assert";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 
 const absPath = (rel) => pathToFileURL(join(dirname(fileURLToPath(import.meta.url)), "..", "..", "server", rel)).href;
+
+// These tests drive the real settings module — they assert its own gate logic —
+// so point it at a private directory first. With the default paths,
+// `setReadOnly(true)` below rewrites the operator's
+// ~/.mcode-webui/settings.json, and the audit event it appends lands in the
+// ~/.mcode-webui/events.ndjson a running dev server is also writing, whose
+// read-modify-rename is not safe against two writers. Both paths resolve
+// lazily per call, so setting them before the import is enough.
+const stateDir = mkdtempSync(join(tmpdir(), "mcode-webui-readonly-"));
+process.env.MCODE_WEBUI_SETTINGS_PATH = join(stateDir, "settings.json");
+process.env.MCODE_WEBUI_EVENTS_PATH = join(stateDir, "events.ndjson");
 
 const { setReadOnly, getReadOnly, setAllowedInterfaces } = await import(absPath("lib/settings.js"));
 
