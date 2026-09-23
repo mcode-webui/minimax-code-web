@@ -3426,6 +3426,7 @@
     "packages/webui/server/lib/ws-frame.js",
     "packages/webui/server/lib/ws-server.js",
     "packages/webui/server/router.js",
+    "packages/webui/server/routes/account.js",
     "packages/webui/server/routes/alerts.js",
     "packages/webui/server/routes/chat.js",
     "packages/webui/server/routes/debug.js",
