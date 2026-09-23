@@ -149,6 +149,16 @@ export async function activateSession(sessionId) {
 }
 
 // ============================================================
+// mcode/account/status — the account card's data, an ACP extension method.
+//   The engine returns an allow-list projection (display name, plan tier, quota);
+//   no credential is read on either side. The session id is optional, because the
+//   card is visible before a session exists.
+// ============================================================
+export async function getAccountStatus(sessionId) {
+  return callRpc("mcode/account/status", sessionId ? { sessionId } : {});
+}
+
+// ============================================================
 // session/close — forwarded to the engine
 // ============================================================
 export async function closeSession(sessionId) {
