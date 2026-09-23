@@ -85,15 +85,22 @@ describe("handleGetModels — /api/models", () => {
     assert.equal(body.current, "minimax_api:MiniMax-M3");
   });
 
-  test("before a session exists: empty list, the state's model, and a reason", () => {
-    const ctx = { cs: fakeCs("minimax_api/MiniMax-M3") };
+  test("before a session exists: no catalogue and no claimed current model", () => {
+    // `current` is null rather than webui's DEFAULT_MODEL: the engine has not
+    // named a session model yet, and DEFAULT_MODEL is a different encoding
+    // (`minimax_api/MiniMax-M3`) from the engine's (`m:<provider>:<model>:...`),
+    // so reporting it claimed a model the session was not running.
+    const cs = fakeCs("minimax_api/MiniMax-M3");
+    const ctx = { cs };
     const res = fakeRes();
     modelRoute.handleGetModels(null, res, ctx);
     const body = JSON.parse(res._body);
     assert.equal(body.ok, true);
     assert.deepEqual(body.models, []);
-    assert.equal(body.current, "minimax_api/MiniMax-M3");
+    assert.equal(body.current, null);
     assert.equal(body.reason, "no_session_config");
+    // and it must not write that value back into the state a prompt would use
+    assert.equal(cs.model.name, "minimax_api/MiniMax-M3");
   });
 });
 

@@ -2,7 +2,6 @@
 // GET /api/models, POST /api/set-model, POST /api/permissions, POST /api/answer (legacy)
 
 import { pushStateFor } from "../lib/state-bus.js";
-import { DEFAULT_MODEL } from "../lib/config.js";
 import {
   mcodePermissionToWebui,
   setConfigOption,
@@ -33,7 +32,16 @@ async function readJson(req) {
 // GET /api/models
 // The catalogue is the engine's `model` config option (the same list the TUI's
 // /models shows), which arrives with the session. `value` is the engine's
-// encoded selection, so it round-trips straight back through /api/set-model.
+// encoded selection — `m:<provider>:<model>:v:<variant>` — so it round-trips
+// straight back through /api/set-model.
+//
+// Without that option there is no catalogue and no current model to report, and
+// this used to answer with `DEFAULT_MODEL` (`minimax_api/MiniMax-M3`), which is
+// neither the engine's encoding nor the engine's state: the client rendered it as
+// the active model while the session was running something else entirely. It
+// answers `null` now, and the caller shows a neutral label. Nothing is written
+// back into `cs.model` either — that backfill is what put the invented name into
+// the state a later prompt would use.
 export function handleGetModels(_req, res, ctx) {
   const cs = ctx.cs;
   const option = configOption(cs, "model");
@@ -41,8 +49,7 @@ export function handleGetModels(_req, res, ctx) {
     id: o.value,
     name: o.name,
   }));
-  const current = (option && option.currentValue) || (cs.model && cs.model.name) || DEFAULT_MODEL;
-  if (models.length === 0) cs.model = { ...(cs.model || {}), name: current };
+  const current = (option && option.currentValue) || null;
   res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
   return res.end(
     JSON.stringify({

@@ -172,9 +172,16 @@ export function Composer({ t, inline = false }: { t: (key: MessageKey) => string
    */
   const currentModelLabel = useMemo(() => {
     const value = state?.model?.name ?? "";
+    // No catalogue means the engine has not named a session model yet, so there
+    // is nothing to claim. Rendering the state's default here is how the chip
+    // came to say `MiniMax-M3` while the session ran something else — the
+    // default is webui's own constant, in an encoding the engine does not use.
+    if (models.length === 0) return t("composer.model");
     const known = models.find((model) => model.id === value);
     if (known) return modelDisplayName(known.label);
-    return modelDisplayName(value) || t("composer.model");
+    // A catalogue without this value: show the engine's own string rather than
+    // inventing a label for it.
+    return value || t("composer.model");
   }, [models, state?.model?.name, t]);
 
   const submit = useCallback(async () => {
