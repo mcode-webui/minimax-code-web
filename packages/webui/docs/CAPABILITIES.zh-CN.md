@@ -104,11 +104,11 @@ CI 会对上述每一个名称是否出现在本文档中进行断言
 
 | 功能 | 状态 | 原因 / 位置 |
 |---|---|---|
-| 通过选择器切换工作区 | ✅ | 侧边栏工作区徽标向 `/api/workspace` 发起 POST |
+| 通过选择器切换工作区 | ⚠ | Next 前端没有接线。`POST /api/workspace` 与 `webapp/lib/api.ts#setWorkspace` 都存在，但没有任何组件调用后者。原来位于项目列表上方的侧边栏徽标只是打开工作区面板 —— 与工具栏的「工作区」按钮重复 —— 所以被移除，而不是给同一个房间留第二扇门。 |
 | 可视化目录树浏览器（Windows 盘符根目录） | ✅ | `/api/workspace/browse` 列出子项；Next shell 在 `webapp/components/panels.tsx` 渲染目录树 |
 | 最近使用的工作区（最近 5 个） | ✅ | typed store 的 recents 分片，由工作区变更时填充 |
 | 重新加载时恢复上次的工作区 | ✅ | typed store 把最近的工作区持久化到 `localStorage`，下次加载时回放 |
-| 在一次聊天期间锁定工作区 | ✅ | 一旦开始聊天，工作区徽标即隐藏；新建聊天会重新打开选择器 |
+| 在一次聊天期间锁定工作区 | ❌ | 服务器没有可设置的锁 —— 这一行描述的是已移除徽标自身的隐藏规则，现在没有任何实现 |
 | 按工作区显示 git 状态（分支、是否脏） | ⚠ | 尽力而为；服务器在工作区变更时 shell 执行一次 `git status`。错误被静默吞掉 → 徽标显示 "—"。 |
 | 目录浏览器中的符号链接解析 | ❌ | `fs.readdir(..., {withFileTypes:true})` 将符号链接返回为 `Dirent`；webui 将它们显示为文件。尚无跟随符号链接的选项。 |
 | WSL 路径支持 | ❌ | `/api/workspace/browse` 使用 `path.join`，在 Windows 上能识别 `\\`，但不会转换 WSL 的 `\\wsl$\…` 路径 |

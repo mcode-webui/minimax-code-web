@@ -104,11 +104,11 @@ single index that satisfies the check.
 
 | Feature | Status | Why / where |
 |---|---|---|
-| Switch workspace via picker | ✅ | the sidebar workspace chip POSTs to `/api/workspace` |
+| Switch workspace via picker | ⚠ | not wired in the Next frontend. `POST /api/workspace` and `webapp/lib/api.ts#setWorkspace` both exist, but no component calls the latter. The sidebar chip that used to sit above the project list only opened the workspace panel — duplicating the toolbar's 工作区 button — so it was removed rather than left as a second door to one room. |
 | Visual directory-tree browser (Windows drive roots) | ✅ | `/api/workspace/browse` lists children; the Next shell renders the tree in `webapp/components/panels.tsx` |
 | Recent workspaces (last 5) | ✅ | the typed store's recents slice, populated on workspace change |
 | Restore last workspace on reload | ✅ | the typed store persists the last workspace to `localStorage` and replays it on next load |
-| Lock workspace for the duration of a chat | ✅ | once a chat is started, the workspace chip is hidden; a new chat reopens the picker |
+| Lock workspace for the duration of a chat | ❌ | the server has no lock to set — this described the removed chip's own hiding rule, so nothing implements it now |
 | Per-workspace git status (branch, dirty) | ⚠ | best-effort; the server shells out to `git status` once on workspace change. Errors are silently swallowed → the chip shows "—". |
 | Symlink resolution in the directory browser | ❌ | `fs.readdir(..., {withFileTypes:true})` returns symlinks as `Dirent`; webui shows them as files. No symlink-follow option yet. |
 | WSL path support | ❌ | `/api/workspace/browse` uses `path.join`, which on Windows is `\\`-aware but doesn't translate WSL `\\wsl$\…` paths |

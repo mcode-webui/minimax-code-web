@@ -33,10 +33,12 @@ export default function Page() {
 function App() {
   const { locale, setLocale, t } = useLocale();
   const { state, connected, error } = useSessionContext();
-  // The right extension area opens on 工作区 by default, matching the desktop
-  // client — the panel is part of the default workspace, not something the user
-  // has to summon first.
-  const [panel, setPanel] = useState<PanelKind | null>("workspace");
+  // Starts closed. The reference client opens on 工作区, but its workspace panel
+  // carries real content; this one is mostly placeholders, so opening it by
+  // default in a session that has no history yet puts empty sections and inert
+  // buttons in front of the user before they have asked for anything. The
+  // toolbar and the sidebar's nav rows open a panel on demand.
+  const [panel, setPanel] = useState<PanelKind | null>(null);
   // Settings is a dialog rather than a drawer panel, so it has its own state.
   const [settingsOpen, setSettingsOpen] = useState(false);
   const alertCount = useAlertCount();

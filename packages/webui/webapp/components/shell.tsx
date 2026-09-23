@@ -98,18 +98,23 @@ export function AppShell({ t, children, toolbar, panel, onOpenPanel, onOpenSetti
               affordance floats over the content at the same top offset. */}
 
           <div className="flex min-h-0 flex-1">
-            <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">{children}</div>
+            {/* The AI-content disclaimer lives in the conversation column, not
+                beside the drawer: as a sibling of this row it spanned the full
+                width, so `text-center` centred it across the drawer as well and
+                it read as sitting under the drawer. It stays outside the
+                transcript's scroll container so it does not scroll away with
+                the messages, and it is rendered on the home screen too. */}
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+              {children}
+              <p
+                data-testid="app-disclaimer"
+                className="flex-none px-4 pt-1 pb-2 text-center text-caption-small-strong text-text_default_secondary"
+              >
+                {t("home.disclaimer")}
+              </p>
+            </div>
             {panel}
           </div>
-          {/* AI-content disclaimer. Sits at the bottom of the page permanently
-              rather than under the composer where it would scroll away with the
-              transcript and be absent on the home screen. */}
-          <p
-            data-testid="app-disclaimer"
-            className="flex-none px-4 pt-1 pb-2 text-center text-caption-small-strong text-text_default_secondary"
-          >
-            {t("home.disclaimer")}
-          </p>
         </div>
       </div>
     </div>
@@ -133,8 +138,6 @@ const NAV_ROWS: { key: MessageKey; shortcut?: string }[] = [
   { key: "sidebar.plugins" },
 ];
 
-type SidebarMode = "local" | "cloud";
-
 function Sidebar({
   t,
   onOpenPanel,
@@ -155,7 +158,6 @@ function Sidebar({
 }) {
   const { state } = useSessionContext();
   const [width, setWidth] = useState(SIDEBAR_DEFAULT);
-  const [mode, setMode] = useState<SidebarMode>("local");
   const dragging = useRef(false);
 
   const onBell = useCallback(() => {
@@ -274,80 +276,6 @@ function Sidebar({
               ),
             )}
           </nav>
-
-          {/* Current workspace chip. Upstream's sidebar carries this between
-              the nav rows and the Local/Cloud segmented; clicking it opens
-              the workspace panel for switching. When no workspace is set
-              yet (e.g. right after the first boot, or when the engine has
-              not yet picked one), the chip surfaces a 'Choose folder' hint
-              instead of an empty folder name. */}
-          {collapsed ? null : (
-            <div className="flex-shrink-0 px-2 pb-2">
-              <button
-                type="button"
-                onClick={() => onOpenPanel?.("workspace")}
-                data-testid="sidebar-workspace-chip"
-                className="flex h-8 w-full items-center gap-2 rounded-[8px] border border-border_default bg-bg_default_primary px-2.5 text-left transition-colors hover:bg-bg_interaction_tertiary_hover"
-              >
-                <span className="flex size-4 flex-none items-center justify-center text-icon_default_secondary">
-                  <Icon name="folder" size={14} />
-                </span>
-                <span className="desktop-text-ui-assist min-w-0 flex-1 truncate text-text_default_secondary">
-                  {state?.workspace.dir
-                    ? state.workspace.dir.split("/").filter(Boolean).pop() ?? t("home.chooseFolder")
-                    : t("home.chooseFolder")}
-                </span>
-              </button>
-            </div>
-          )}
-
-          {/* Local / cloud segmented. Upstream places this between the nav
-              rows and the project list, not inside the home composer card —
-              replicating it here. */}
-          <div className={collapsed ? "hidden" : "flex-shrink-0 px-3 pb-3"}>
-            <div
-              role="tablist"
-              aria-label={t("sidebar.localMode")}
-              className="flex h-8 items-center rounded-full border border-border_default bg-bg_default_primary p-0.5 text-caption-small-strong"
-            >
-              {(["local", "cloud"] as SidebarMode[]).map((value) => {
-                const selected = mode === value;
-                const labelKey = value === "local" ? "home.local" : "home.cloud";
-                // 云端 has no server contract in this frontend — mcode's cloud
-                // sessions are not exposed over the webui API. It stays visible
-                // as the second half of the segmented control but cannot be
-                // selected (the user's call: 这个先做成不能点击的，目前还不支持).
-                const unsupported = value === "cloud";
-                return (
-                  <button
-                    key={value}
-                    role="tab"
-                    type="button"
-                    aria-selected={selected}
-                    disabled={unsupported}
-                    title={unsupported ? t("home.cloudUnsupported") : undefined}
-                    onClick={unsupported ? undefined : () => setMode(value)}
-                    className={[
-                      "flex h-7 flex-1 items-center justify-center gap-1 rounded-full px-2 transition-colors",
-                      selected
-                        ? "bg-bg_interaction_tertiary_hover text-text_default_primary"
-                        : "text-text_default_tertiary",
-                      unsupported
-                        ? "cursor-not-allowed opacity-50"
-                        : "hover:text-text_default_primary",
-                    ].join(" ")}
-                  >
-                    {value === "local" ? (
-                      <Icon name="folder" size={13} />
-                    ) : (
-                      <Icon name="browser" size={13} />
-                    )}
-                    <span>{t(labelKey)}</span>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
 
           {/* Stays mounted while the rail is showing so its rows and scroll
               position survive the collapse. */}
@@ -617,34 +545,45 @@ function SidebarFooter({
         isOpen={usageHover}
       />
       <div className="my-2 h-px bg-border_default" role="separator" />
-      <SubmenuTrigger
-        icon="contact"
-        label={t("userMenu.contactUs")}
-        isOpen={submenu === "contact"}
+      {/* A panel is an absolutely-positioned sibling of its trigger here, so
+          putting the hover handlers on the trigger alone closed the submenu in
+          the same tick the pointer crossed toward the panel. One hover
+          container owns the row and its panel; because the panel is a DOM
+          descendant of that container, React keeps the hover alive while the
+          pointer travels, and the panel has to overlap the row by a few pixels
+          so the path between them never leaves the container. */}
+      <div
+        className="relative"
         onMouseEnter={() => setSubmenu("contact")}
         onMouseLeave={() => setSubmenu((current) => (current === "contact" ? null : current))}
-        onActivate={pick(() => setSubmenu(null))}
-      />
-      <SubmenuTrigger
-        icon="learnMore"
-        label={t("userMenu.learnMore")}
-        isOpen={submenu === "learn"}
+      >
+        <SubmenuTrigger
+          icon="contact"
+          label={t("userMenu.contactUs")}
+          isOpen={submenu === "contact"}
+          onActivate={pick(() => setSubmenu(null))}
+        />
+        {submenu === "contact" ? <ContactSubmenu t={t} /> : null}
+      </div>
+      <div
+        className="relative"
         onMouseEnter={() => setSubmenu("learn")}
         onMouseLeave={() => setSubmenu((current) => (current === "learn" ? null : current))}
-        onActivate={pick(() => setSubmenu(null))}
-      />
+      >
+        <SubmenuTrigger
+          icon="learnMore"
+          label={t("userMenu.learnMore")}
+          isOpen={submenu === "learn"}
+          onActivate={pick(() => setSubmenu(null))}
+        />
+        {submenu === "learn" ? <LearnMoreSubmenu t={t} /> : null}
+      </div>
       <MenuRow
         icon="logout"
         label={t("userMenu.signOut")}
         disabled
         title={t("common.unsupported")}
       />
-      {submenu === "contact" ? (
-        <ContactSubmenu t={t} onClose={() => setOpen(false)} />
-      ) : null}
-      {submenu === "learn" ? (
-        <LearnMoreSubmenu t={t} onClose={() => setOpen(false)} />
-      ) : null}
     </div>
   ) : null;
 
@@ -990,15 +929,11 @@ function SubmenuTrigger({
   icon,
   label,
   isOpen,
-  onMouseEnter,
-  onMouseLeave,
   onActivate,
 }: {
   icon: Parameters<typeof Icon>[0]["name"];
   label: string;
   isOpen: boolean;
-  onMouseEnter: () => void;
-  onMouseLeave: () => void;
   onActivate: () => void;
 }) {
   return (
@@ -1009,8 +944,6 @@ function SubmenuTrigger({
       aria-expanded={isOpen}
       data-testid="sidebar-user-submenu-trigger"
       onClick={onActivate}
-      onMouseEnter={onMouseEnter}
-      onMouseLeave={onMouseLeave}
       className="flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left text-sm text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_hover"
     >
       <span className="flex size-4 flex-shrink-0 items-center justify-center text-icon_default_secondary">
@@ -1024,51 +957,53 @@ function SubmenuTrigger({
   );
 }
 
-function ContactSubmenu({
-  t,
-  onClose,
-}: {
-  t: (key: MessageKey) => string;
-  onClose: () => void;
-}) {
-  const open = (url: string) => () => {
-    if (typeof window !== "undefined") window.open(url, "_blank", "noopener,noreferrer");
-    onClose();
-  };
+function ContactSubmenu({ t }: { t: (key: MessageKey) => string }) {
   return (
-    <div
-      role="menu"
-      data-testid="sidebar-user-submenu"
-      className="absolute right-[calc(100%-8px)] top-2 z-[105] min-w-[180px] rounded-[12px] border border-border_default bg-bg_grouped_secondary_elevated p-2 shadow-shadow_default"
-    >
+    <SubmenuPanel>
       <MenuRow icon="contact" label={t("userMenu.feishu")} disabled title={t("common.unsupported")} />
-      <MenuRow icon="contact" label={t("userMenu.email")} onClick={open("mailto:support@example.com")} />
-    </div>
+      <MenuRow icon="contact" label={t("userMenu.email")} disabled title={t("common.unsupported")} />
+    </SubmenuPanel>
   );
 }
 
-function LearnMoreSubmenu({
-  t,
-  onClose,
-}: {
-  t: (key: MessageKey) => string;
-  onClose: () => void;
-}) {
-  const open = (url: string) => () => {
-    if (typeof window !== "undefined") window.open(url, "_blank", "noopener,noreferrer");
-    onClose();
-  };
+function LearnMoreSubmenu({ t }: { t: (key: MessageKey) => string }) {
+  return (
+    <SubmenuPanel>
+      <MenuRow icon="learnMore" label={t("userMenu.tools")} disabled title={t("common.unsupported")} />
+      <MenuRow icon="learnMore" label={t("userMenu.about")} disabled title={t("common.unsupported")} />
+      <MenuRow icon="learnMore" label={t("userMenu.terms")} disabled title={t("common.unsupported")} />
+      <MenuRow icon="learnMore" label={t("userMenu.privacy")} disabled title={t("common.unsupported")} />
+      <MenuRow icon="learnMore" label={t("userMenu.opencodeSource")} disabled title={t("common.unsupported")} />
+    </SubmenuPanel>
+  );
+}
+
+/**
+ * The flyout every submenu shares.
+ *
+ * `left-[calc(100%-8px)]` puts it just past the trigger's right edge while
+ * overlapping the trigger by 8px, so the pointer never crosses a region that
+ * belongs to neither the row nor the panel — see the hover container in
+ * AccountMenu. `right-[calc(100%-8px)]`, which this used before, resolves to
+ * a position 8px from the *left* edge of the trigger and so laid the panel
+ * out past the left edge of the window, where it could not be seen or
+ * clicked.
+ *
+ * Every entry inside is disabled: the reference client's rows point at
+ * product pages and a support mailbox, and this distribution has neither —
+ * the targets that used to be here were example.com URLs and a
+ * support@example.com address, i.e. links that look live and go nowhere. The
+ * rows stay listed and report `common.unsupported` until there is a real
+ * target to open.
+ */
+function SubmenuPanel({ children }: { children: React.ReactNode }) {
   return (
     <div
       role="menu"
       data-testid="sidebar-user-submenu"
-      className="absolute right-[calc(100%-8px)] top-2 z-[105] min-w-[180px] rounded-[12px] border border-border_default bg-bg_grouped_secondary_elevated p-2 shadow-shadow_default"
+      className="absolute top-2 left-[calc(100%-8px)] z-[105] min-w-[180px] rounded-[12px] border border-border_default bg-bg_grouped_secondary_elevated p-2 shadow-shadow_default"
     >
-      <MenuRow icon="learnMore" label={t("userMenu.tools")} onClick={open("https://example.com/tools")} />
-      <MenuRow icon="learnMore" label={t("userMenu.about")} onClick={open("https://example.com/about")} />
-      <MenuRow icon="learnMore" label={t("userMenu.terms")} onClick={open("https://example.com/terms")} />
-      <MenuRow icon="learnMore" label={t("userMenu.privacy")} onClick={open("https://example.com/privacy")} />
-      <MenuRow icon="learnMore" label={t("userMenu.opencodeSource")} onClick={open("https://example.com/licenses")} />
+      {children}
     </div>
   );
 }
