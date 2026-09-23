@@ -1,6 +1,7 @@
 import type { TuiIncidentSink, TuiObservability } from '../observability/index.js';
 import type { McodeAuthPort } from '../auth/application.js';
 import type { TuiRuntime, TuiWorkspaceRoot } from '../runtime/port.js';
+import type { TuiCommandFlow } from '../tui/controller/product/command-flow.js';
 import type {
   TuiAttachment,
   ResolveTuiAttachmentOptions,
@@ -35,6 +36,9 @@ export interface CreateTuiAppOptions extends TuiUpdateOptions {
   terminal?: Terminal;
   tuiMode?: TuiMode;
   persistTuiMode?: (mode: TuiMode) => void;
+  /** Saved theme selection, e.g. `aurora` or `aurora/dark`. */
+  theme?: string;
+  persistTheme?: (theme: string) => void;
   runtimeLogDirectory?: string;
   resolveAttachment?: (
     reference: string,
@@ -103,6 +107,8 @@ export interface TuiApp {
   /** Internal startup chrome shown while the embedded Runtime is initializing. */
   setStartupStatus(status?: string): void;
   submit(input: string): Promise<void>;
+  /** Exposed for integration tests that submit with an explicit seed. */
+  commandFlow: TuiCommandFlow;
   abortTurn(): Promise<boolean>;
   leaveUi(): Promise<void>;
   stop(options?: TuiStopOptions): Promise<void>;

@@ -1,6 +1,9 @@
 {
   "comment": "Vitest suites for the standalone distribution, grouped by the gate that runs them. `vitest.oss.config.mjs` includes every group; `scripts/run-vitest-suite.mjs <group>` runs one. Add a test file here rather than in package.json or the Vitest config.",
   "suites": {
+    "windows": [
+      "test/windows-contract.test.mjs"
+    ],
     "capability": [
       "packages/agent-core/test/unit/bash-subprocess-env.test.ts",
       "packages/agent-core/test/unit/event-bridge/converters.test.ts",
@@ -17,6 +20,7 @@
       "packages/agent-modules/permission/test/unit/permission/bash-policy-regressions.test.ts",
       "packages/agent-modules/permission/test/unit/permission/cloud-classify-client.test.ts",
       "packages/agent-modules/runaway-guard/test/guard.test.ts",
+      "packages/agent-tools/src/desktop/edit-diff-bounds.test.ts",
       "packages/agent-tools/src/shared/replace-all-edit.test.ts",
       "packages/config/test/config-file-permissions.test.ts",
       "packages/config/test/config-update-preservation.test.ts",
@@ -99,6 +103,7 @@
       "packages/tui/test/unit/headless-model-selection.test.ts",
       "packages/tui/test/unit/headless-preparation-cancellation.test.ts",
       "packages/tui/test/unit/headless-runner.test.ts",
+      "packages/tui/test/unit/host-tui-settings.test.ts",
       "packages/tui/test/unit/incident-reporter-privacy.test.ts",
       "packages/tui/test/unit/mcode-tools-integration.test.ts",
       "packages/tui/test/unit/model-effort.test.ts",
@@ -145,6 +150,7 @@
       "packages/tui/test/unit/tui-terminal-image-paste.test.ts",
       "packages/tui/test/unit/tui-terminal-text-paste.test.ts",
       "packages/tui/test/unit/tui-thinking-preview.test.ts",
+      "packages/tui/test/unit/tui-tool-preview-diff-omitted.test.ts",
       "packages/tui/test/unit/tui-transcript-presentation.test.ts",
       "packages/tui/test/unit/tui-transcript-view.test.ts",
       "packages/tui/test/unit/tui-workspace-status-line.test.ts",
@@ -154,10 +160,15 @@
       "packages/tui/test/unit/tui/controller/product/feature-flow.test.ts",
       "packages/tui/test/unit/tui/controller/product/model-state.test.ts",
       "packages/tui/test/unit/tui/controller/projection/visible-presentation.test.ts",
+      "packages/tui/test/unit/tui/controller/run/turn-submission-retainer.test.ts",
       "packages/tui/test/unit/tui/controller/side-session-flow.test.ts",
       "packages/tui/test/unit/tui/features/composer/attachments.test.ts",
       "packages/tui/test/unit/tui/features/settings/hotkeys-picker.test.ts",
       "packages/tui/test/unit/tui/features/settings/status-line-picker.test.ts",
+      "packages/tui/test/unit/tui/features/settings/theme-picker.test.ts",
+      "packages/tui/test/unit/tui/theme/custom-themes.test.ts",
+      "packages/tui/test/unit/tui/theme/palettes.test.ts",
+      "packages/tui/test/unit/tui/theme/runtime.test.ts",
       "packages/tui/test/unit/tui/widgets/editor/editor-behavior.test.ts",
       "packages/tui/test/unit/update-application.test.ts",
       "packages/tui/test/unit/update-service.test.ts",

@@ -174,6 +174,8 @@ export function createTuiApplicationRenderer(options: CreateTuiAppOptions) {
   themeController = new TuiThemeController({
     ui: tui,
     colorLevel: capabilities.colorLevel,
+    ...(options.dataDir ? { dataDir: options.dataDir } : {}),
+    ...(options.theme ? { theme: options.theme } : {}),
     onDetection: (snapshot) => options.observability?.recordTheme?.(snapshot),
   });
 
@@ -423,7 +425,7 @@ export function createTuiApplicationSurface(options: {
   readonly liveRunId: (snapshot?: TuiChatSnapshot) => string | undefined;
   readonly shouldResumeDraftAfterLogin: () => boolean;
   readonly isActive: () => boolean;
-  readonly requestInteractionRender: () => void;
+  readonly requestInteractionRender: (rebuild?: boolean) => void;
   readonly mode: () => TuiMode;
   readonly switchMode: (mode: TuiMode) => boolean;
   readonly chatMode: TuiMode;

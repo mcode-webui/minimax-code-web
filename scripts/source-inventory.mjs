@@ -17,6 +17,21 @@ const skipped = new Set([
   ".turbo",
   ".DS_Store",
 ]);
+// Build outputs that are not named after an entry above. These are listed by
+// repository-relative path rather than by directory name on purpose: `.next` and
+// `out` are generic names, and a name-wide exclusion would silently stop
+// publishing any future source directory that happens to share them. Adding an
+// entry here asserts that the subtree never contains publishable source.
+const skippedTrees = new Set([
+  "packages/webui/webapp/.next", // Next build cache
+  "packages/webui/webapp/out", // Next static export (copied into dist/webui by build.mjs)
+  // Vendor desktop bundle kept for parity research. Listed by repository-
+  // relative path because "desktop-unpacked" is not a generic build-output
+  // name; the bundle is intentionally NOT published, and chunks inside
+  // contain internal hostnames that `internalText` would otherwise flag.
+  // Regained by `packages/webui/desktop-unpacked/extract-asar.sh`.
+  "packages/webui/desktop-unpacked",
+]);
 function filesIn(directory, prefix = "") {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
     if (skipped.has(entry.name) || entry.name.endsWith(".tsbuildinfo"))
@@ -24,9 +39,11 @@ function filesIn(directory, prefix = "") {
     const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
     if (entry.isSymbolicLink())
       throw new Error(`Source symlink requires explicit review: ${relative}`);
-    return entry.isDirectory()
-      ? filesIn(path.join(directory, entry.name), relative)
-      : [relative];
+    if (entry.isDirectory()) {
+      if (skippedTrees.has(relative)) return [];
+      return filesIn(path.join(directory, entry.name), relative);
+    }
+    return [relative];
   });
 }
 const files = filesIn(root).sort();

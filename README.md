@@ -145,7 +145,7 @@ Inside the TUI, use `/sessions` to find previous sessions and `/help` to see all
 | Reference a workspace file or directory | `@` |
 | Toggle Plan Mode | `Shift+Tab` |
 | Switch permission modes | `Alt+M` |
-| Close a panel or interrupt a running task | `Esc` |
+| Close a panel or interrupt a running task; interrupting before the model replies returns the message to the composer | `Esc` |
 
 ## Uninstall
 
@@ -221,11 +221,11 @@ The [small, reproducible project](examples/clamp) is the same task used in the d
 
 ## Build from source
 
-To develop MCode or run this source checkout, you need Git, **Node.js 22.19+ (22.x), 24.2+ (24.x), 25, or 26**, and **pnpm 9.12.0**.
-
+To develop MCode or run this source checkout, you need Git, **Node.js 22.19+ (22.x), 24.2+ (24.x), 25, or 26**, and **pnpm 9.12.0**. On Windows, keep the checkout on a local NTFS volume and outside cloud-synced folders; the preflight command below checks the volume before pnpm creates workspace links.
 ```bash
 git clone https://github.com/MiniMax-AI/minimax-code.git
 cd minimax-code
+node scripts/check-windows-source-location.mjs
 pnpm install --frozen-lockfile
 pnpm build
 pnpm mcode          # terminal UI
