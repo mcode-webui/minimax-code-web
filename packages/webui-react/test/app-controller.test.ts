@@ -5,7 +5,7 @@
  *
  * 全部用 fake Registry，完全离线、可重复。
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createAppController } from '../src/features/app-controller';
 import type { Registry } from '../src/contracts/ports';
 import type { SessionSlice, SessionSummary } from '../src/contracts/domain';
@@ -155,5 +155,87 @@ describe('热插拔', () => {
     // 其余端口仍然是原来那套（未被牵连）
     expect(swappedReg.http).toBe(reg.http);
     expect(swappedReg.sessions).toBe(reg.sessions);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// 集成缺口回归：会话隔离草稿 / 搜索过滤 / 斜杠命令路由
+// ════════════════════════════════════════════════════════════════════════════
+
+describe('会话隔离 · 输入草稿（缺口 #2）', () => {
+  it('两个会话草稿互相隔离、来回切换各自保留；新建会话草稿为空', async () => {
+    const reg = fakeRegistry([
+      { id: 's1', title: 'one', workspace: '/w', mcodeSessionId: null, titleCustom: false, updatedAt: 2 },
+      { id: 's2', title: 'two', workspace: '/w', mcodeSessionId: null, titleCustom: false, updatedAt: 1 },
+    ]);
+    const c = createAppController(reg);
+
+    await c.actions.selectSession('s1');
+    c.actions.setDraft('A 的草稿');
+    await c.actions.selectSession('s2');
+    c.actions.setDraft('B 的草稿');
+
+    // 来回切换：各自保留、互不覆盖
+    await c.actions.selectSession('s1');
+    expect(c.snapshot().draft).toBe('A 的草稿');
+    await c.actions.selectSession('s2');
+    expect(c.snapshot().draft).toBe('B 的草稿');
+    expect(c.snapshot().draft).not.toBe('A 的草稿');
+
+    // 新增会话草稿为空
+    await c.actions.newChat();
+    expect(c.snapshot().draft).toBe('');
+  });
+});
+
+describe('搜索过滤（缺口 #3）', () => {
+  it("setSearchQuery('关键') 只留 title/workspace 命中的会话；清空恢复全部", async () => {
+    const reg = fakeRegistry([
+      { id: 's1', title: '关键讨论', workspace: '/alpha', mcodeSessionId: null, titleCustom: false, updatedAt: 3 },
+      { id: 's2', title: '普通讨论', workspace: '/关键目录', mcodeSessionId: null, titleCustom: false, updatedAt: 2 },
+      { id: 's3', title: '别的', workspace: '/beta', mcodeSessionId: null, titleCustom: false, updatedAt: 1 },
+    ]);
+    const c = createAppController(reg);
+    await c.actions.refreshSessions();
+
+    c.actions.setSearchQuery('关键');
+    const hit = c.snapshot().filteredGroups.flatMap((g) => g.sessions.map((x) => x.id)).sort();
+    expect(hit).toEqual(['s1', 's2']);
+
+    c.actions.setSearchQuery('');
+    const all = c.snapshot().filteredGroups.flatMap((g) => g.sessions.map((x) => x.id)).sort();
+    expect(all).toEqual(['s1', 's2', 's3']);
+  });
+});
+
+describe('斜杠命令路由（缺口 #6）', () => {
+  it("send('/compact') 走 chat.command，不走 chat.send", async () => {
+    const reg = fakeRegistry([
+      { id: 's1', title: 'one', workspace: '/w', mcodeSessionId: null, titleCustom: false, updatedAt: 1 },
+    ]);
+    const send = vi.fn(async (_id: string, _content: string, _refs?: string[]): Promise<void> => { /* noop */ });
+    const command = vi.fn(async (_id: string, _cmd: string): Promise<void> => { /* noop */ });
+    reg.chat = { send, stop: async () => { /* noop */ }, command };
+    const c = createAppController(reg);
+    await c.actions.selectSession('s1');
+
+    await c.actions.send('/compact');
+    expect(command).toHaveBeenCalledWith('s1', '/compact');
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("send('普通文本') 走 chat.send，不走 chat.command", async () => {
+    const reg = fakeRegistry([
+      { id: 's1', title: 'one', workspace: '/w', mcodeSessionId: null, titleCustom: false, updatedAt: 1 },
+    ]);
+    const send = vi.fn(async (_id: string, _content: string, _refs?: string[]): Promise<void> => { /* noop */ });
+    const command = vi.fn(async (_id: string, _cmd: string): Promise<void> => { /* noop */ });
+    reg.chat = { send, stop: async () => { /* noop */ }, command };
+    const c = createAppController(reg);
+    await c.actions.selectSession('s1');
+
+    await c.actions.send('普通文本');
+    expect(send).toHaveBeenCalledWith('s1', '普通文本', expect.any(Array));
+    expect(command).not.toHaveBeenCalled();
   });
 });

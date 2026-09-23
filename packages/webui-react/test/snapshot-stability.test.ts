@@ -15,7 +15,6 @@ import type { Registry } from '../src/contracts/ports';
 function inertRegistry(): Registry {
   const noop = () => {};
   const unsub = () => {};
-  const notImpl = (): never => { throw new Error('not used in this test'); };
   return {
     clock: { now: () => 0 },
     http: { get: async () => ({}), post: async () => ({}), del: async () => ({}), upload: async () => ({}) } as unknown as Registry['http'],
@@ -31,8 +30,6 @@ function inertRegistry(): Registry {
     alerts: { snapshot: async () => [], list: () => [], unread: () => 0, markRead: noop, clear: noop, subscribe: () => unsub },
     auth: { pending: () => [], decide: async () => {}, subscribe: () => unsub },
     upload: { upload: async () => ({ id: 'a', name: 'n', path: '/p', size: 0, status: 'done' as const }) },
-    // 占位：避免未使用告警
-    ...( { _unused: notImpl } as Record<string, never> ),
   } as Registry;
 }
 

@@ -32,7 +32,7 @@ import {
   rejectLan,
 } from "./lib/settings.js";
 import { getClient, getCidFromReq } from "./lib/state-bus.js";
-import { serveStatic, serveIndex } from "./lib/static.js";
+import { serveStatic, serveIndex, serveLegacyIndex } from "./lib/static.js";
 import { getTrajectoryPanelHandler } from "./lib/trajectory.js";
 import { isRequestAuthorized, writeAuthRequired } from "./lib/auth.js";
 // v2.0 (lease C03): per-{IP,token} fixed-window rate limiter. See
@@ -75,6 +75,19 @@ function rejectReadOnly(res, _pathname) {
 // Each entry: { method, match(pathname) → boolean, handler(req, res, ctx) }
 const ROUTES = [
   // Static + HTML
+  {
+    // v2.5: 归档入口 —— 原 vanilla 单页。新版接管根路径后，旧版从这里进入。
+    // 文件本身没搬家（搬家会给下次 source-sync 制造冲突），只是换了路由。
+    method: "GET",
+    match: (p) => p === "/legacy" || p === "/legacy/" || p === "/legacy/index.html",
+    handler: (_req, res) => {
+      if (serveLegacyIndex(res) === false) {
+        res.writeHead(404);
+        res.end("not found");
+      }
+      return true;
+    },
+  },
   {
     method: "GET",
     match: (p) => p === "/" || p === "/index.html",

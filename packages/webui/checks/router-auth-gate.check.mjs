@@ -94,7 +94,13 @@ async function get(path, opts = {}) {
 }
 
 const isGate = (res) => res._body.includes("auth-gate") || res._body.includes("webui_token");
-const isIndex = (res) => res._body.includes("chat-inner");
+// 「到达了某个应用外壳」—— 根路径现在默认是 React 新版（/react/assets/ 前缀的
+// 资源引用），归档的 vanilla 单页在 /legacy/（DOM id chat-inner）。两者都算过关，
+// 因为这组测试要验的是 token 门禁本身，不是外壳长什么样。
+const isIndex =
+  (res) => res._body.includes("chat-inner") || res._body.includes("/react/assets/");
+const isReactShell = (res) => res._body.includes("/react/assets/");
+const isVanillaShell = (res) => res._body.includes("chat-inner");
 
 describe("router — token gate page (v2.3)", () => {
   test("non-local + no token → gate page", async () => {
@@ -123,6 +129,24 @@ describe("router — token gate page (v2.3)", () => {
   test("loopback without token → index (local bypass intact)", async () => {
     const res = await get("/", { remoteAddress: "127.0.0.1", headers: { host: `127.0.0.1:${PORT}` } });
     assert.ok(isIndex(res), "local requests never see the gate");
+  });
+
+  // v2.5: 根路径默认新版，原版归档到 /legacy/（用户决策：
+  // 「原版归档，运行默认是新版」）。这里把切换锁死，防止回退。
+  test("根路径默认是 React 新版外壳", async () => {
+    const res = await get("/", { remoteAddress: "127.0.0.1", headers: { host: `127.0.0.1:${PORT}` } });
+    assert.equal(res._status, 200);
+    assert.ok(isReactShell(res), "/ 必须是 React 新版（构建产物存在时）");
+  });
+
+  test("原版归档在 /legacy/，两个入口都能打开", async () => {
+    const legacy = await get("/legacy/", { remoteAddress: "127.0.0.1", headers: { host: `127.0.0.1:${PORT}` } });
+    assert.equal(legacy._status, 200);
+    assert.ok(isVanillaShell(legacy), "/legacy/ 必须是原版 vanilla 外壳");
+
+    const modern = await get("/", { remoteAddress: "127.0.0.1", headers: { host: `127.0.0.1:${PORT}` } });
+    assert.ok(isReactShell(modern));
+    assert.ok(!isVanillaShell(modern), "/ 不应再是 vanilla 外壳");
   });
 
   test("gate page is self-contained and stores the right localStorage key", async () => {

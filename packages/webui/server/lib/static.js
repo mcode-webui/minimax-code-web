@@ -68,9 +68,30 @@ export function serveStatic(pathname, res) {
   return false;
 }
 
+/**
+ * 默认入口 —— 新版（React + Ant Design）优先。
+ *
+ * v2.5: 根路径 / 由 packages/webui-react 的构建产物接管；原 vanilla 单页
+ * **归档**在 /legacy/（文件不搬家，只改路由 —— 移动/重命名会在下次 source-sync
+ * 制造冲突，见 AGENTS.md）。构建产物缺失时回落到 vanilla，保证 fresh clone
+ * 没跑过 build 也能打开页面。
+ */
 export function serveIndex(res) {
+  const reactPath = join(PUBLIC_DIR, "react", "index.html");
+  if (existsSync(reactPath) && statSync(reactPath).isFile()) {
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    return res.end(readFileSync(reactPath));
+  }
+  return serveLegacyIndex(res);
+}
+
+/**
+ * 归档入口 —— 原 vanilla 单页（index.html + app/ + styles/）。
+ * 资源用的是根绝对路径（/app/*.js、/styles/*.css），所以放在 /legacy/ 下照常工作。
+ */
+export function serveLegacyIndex(res) {
   const htmlPath = join(PUBLIC_DIR, "index.html");
-  if (existsSync(htmlPath)) {
+  if (existsSync(htmlPath) && statSync(htmlPath).isFile()) {
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
     return res.end(readFileSync(htmlPath));
   }
