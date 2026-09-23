@@ -366,7 +366,6 @@ function Sidebar({
             t={t}
             plan={state?.usage?.plan ?? ""}
             workspaceName={workspaceLeaf(state?.workspace?.dir)}
-            hasTokenPlan={state?.hasTokenPlanKey === true}
             onOpenAlerts={onBell}
             onOpenSettings={onOpenSettings}
             alertCount={alertCount}
@@ -473,9 +472,12 @@ function NavRow({
  * The account menu is **1:1 with the upstream `user_menu`** (function `e7`
  * in `page-b7c7b58f4fd0d4c1.js`, offset 627389). It has:
  *
- *   - profileCard at the top — realUserID + copy, workspace name + plan tier,
- *     and an Upgrade / Manage button. This is where the desktop puts the
- *     upgrade action; there is NO `Upgrade` row inside the menu proper.
+ * Upstream also puts a profileCard at the top — realUserID + copy, workspace
+ * name + plan tier, and an Upgrade / Manage button. The webui does not render
+ * it: the id has no source, the workspace name and the plan tier are two
+ * different things that read as one identity when stacked, the account name and
+ * plan already show on the footer row, and a permanently disabled Manage button
+ * is not a feature. Its rows are absent rather than faked.
  *   - Settings — the `R.ewm` settings glyph.
  *   - Daily check-in — `R.OgN`; shown only when signed in. The webui engine
  *     contract for the check-in is not implemented yet, so the row opens a
@@ -505,7 +507,6 @@ function SidebarFooter({
   t,
   plan,
   workspaceName,
-  hasTokenPlan,
   onOpenAlerts,
   onOpenSettings,
   alertCount = 0,
@@ -516,8 +517,6 @@ function SidebarFooter({
   plan: string;
   /** Name of the workspace this session runs in. */
   workspaceName: string;
-  /** Whether a Token Plan subscription key is configured. */
-  hasTokenPlan: boolean;
   onOpenAlerts: () => void;
   /** Rail mode: only the avatar fits, and the menu opens from it. */
   rail?: boolean;
@@ -558,27 +557,33 @@ function SidebarFooter({
     };
   }, [open]);
 
-  // `plan`, `workspaceName` and `hasTokenPlan` arrive as props from the server
-  // snapshot. No account-identity source is wired to the webui yet, so the user
-  // id and the avatar have nothing to show and render their empty state: a card
-  // carrying a plausible-looking id, name and plan is indistinguishable from a
-  // real one, which is worse than an empty field.
-  const realUserId = "";
-  const name = workspaceName;
+  // The account card reads the engine through /api/account rather than the state
+  // snapshot: the snapshot is broadcast to every SSE subscriber, so account data
+  // does not belong in it. Re-fetched when the menu opens, so a login or a plan
+  // change shows up without a reload. The props remain the fallback for the
+  // moment before the first response — they are real snapshot values, not
+  // stand-ins.
+  const [account, setAccount] = useState<api.AccountPayload | null>(null);
+  useEffect(() => {
+    let live = true;
+    void api
+      .getAccount()
+      .then((payload) => {
+        if (live) setAccount(payload);
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [open]);
+  const name = account?.identity?.name || workspaceName;
+  const planTier = account?.tokenPlan?.tier || plan;
 
   /** Run a menu action and close the menu in one step. */
   const pick = (action: () => void) => () => {
     setOpen(false);
     setSubmenu(null);
     action();
-  };
-
-  const copyUserId = async () => {
-    try {
-      await navigator.clipboard.writeText(realUserId);
-    } catch {
-      // Clipboard denied — nothing else to do in the menu.
-    }
   };
 
   /**
@@ -593,14 +598,6 @@ function SidebarFooter({
       data-testid="sidebar-user-menu"
       className="absolute right-1 bottom-[calc(100%+4px)] left-1 z-[100] rounded-[12px] border border-border_default bg-bg_grouped_secondary_elevated p-3 shadow-shadow_default"
     >
-      <ProfileCard
-        realUserId={realUserId}
-        workspaceName={workspaceName}
-        planTier={plan}
-        hasTokenPlan={hasTokenPlan}
-        onCopy={copyUserId}
-        t={t}
-      />
       <div className="my-2 h-px bg-border_default" role="separator" />
       <MenuRow
         icon="settings"
@@ -704,7 +701,7 @@ function SidebarFooter({
             {name}
           </span>
           <span className="max-w-[135px] truncate text-[12px] font-[400] leading-[16px] text-text_default_tertiary">
-            {plan}
+            {planTier}
           </span>
         </div>
 
@@ -800,78 +797,6 @@ function MenuRow({
         </span>
       ) : null}
     </button>
-  );
-}
-
-/**
- * The profileCard lives at the top of the user menu (upstream `e6`, offset
- * 625133). It carries the user ID + a copy affordance, the current workspace
- * name + plan tier, and an Upgrade / Manage button — that button is where
- * upstream puts the Upgrade action, NOT a row inside the menu proper.
- *
- * The card sits outside the menu's row list (it is the `customContent`
- * slot upstream gives the dropdown component), which is why it gets its
- * own block rather than being a `MenuRow`.
- */
-function ProfileCard({
-  realUserId,
-  workspaceName,
-  planTier,
-  hasTokenPlan,
-  onCopy,
-  t,
-}: {
-  realUserId: string;
-  workspaceName: string;
-  planTier: string;
-  hasTokenPlan: boolean;
-  onCopy: () => void;
-  t: (key: MessageKey) => string;
-}) {
-  return (
-    <div
-      data-testid="sidebar-user-profile-card"
-      className="flex w-full flex-col gap-2 pb-2"
-    >
-      {realUserId ? (
-      <button
-        type="button"
-        onClick={onCopy}
-        title={t("userMenu.copyUserId")}
-        className="group/copy flex w-full items-center justify-between gap-1 rounded-md px-1.5 py-1 text-left text-caption-small text-text_default_tertiary transition-colors hover:bg-bg_interaction_tertiary_hover"
-      >
-        <span className="flex min-w-0 items-center gap-1">
-          <Icon name="userId" size={12} />
-          <span className="truncate">{realUserId || t("usagePopover.empty")}</span>
-        </span>
-        <span className="opacity-0 transition-opacity group-hover/copy:opacity-100 text-text_default_tertiary">
-          <Icon name="copy" size={14} />
-        </span>
-      </button>
-      ) : null}
-      <div className="rounded-[10px] bg-bg_default_scrim">
-        <div className="flex items-center justify-between gap-2 px-3 py-2.5">
-          <div className="flex min-w-0 max-w-[135px] flex-col gap-[2px]">
-            <span className="max-w-[135px] truncate text-[15px] leading-[20px] text-text_default_primary">
-              {workspaceName}
-            </span>
-            {planTier ? (
-              <span className="max-w-[135px] truncate text-[12px] leading-[16px] text-text_default_tertiary">
-                {planTier}
-              </span>
-            ) : null}
-          </div>
-          <button
-            type="button"
-            disabled
-            title={t("common.unsupported")}
-            className="h-[30px] flex-shrink-0 cursor-not-allowed rounded-[8px] bg-bg_interaction_primary_default px-3 text-[13px] font-medium leading-[18px] text-text_label_primary_default opacity-60"
-          >
-            {hasTokenPlan ? t("userMenu.manage") : t("userMenu.upgrade")}
-          </button>
-        </div>
-      </div>
-    </div>
   );
 }
 
