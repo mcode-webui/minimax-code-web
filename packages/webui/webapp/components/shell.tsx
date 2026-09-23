@@ -364,6 +364,9 @@ function Sidebar({
 
           <SidebarFooter
             t={t}
+            plan={state?.usage?.plan ?? ""}
+            workspaceName={workspaceLeaf(state?.workspace?.dir)}
+            hasTokenPlan={state?.hasTokenPlanKey === true}
             onOpenAlerts={onBell}
             onOpenSettings={onOpenSettings}
             alertCount={alertCount}
@@ -473,9 +476,6 @@ function NavRow({
  *   - profileCard at the top — realUserID + copy, workspace name + plan tier,
  *     and an Upgrade / Manage button. This is where the desktop puts the
  *     upgrade action; there is NO `Upgrade` row inside the menu proper.
- *   - Switch to classic — the `R.e8` curved-arrow icon, pointing to the
- *     legacy web UI at `/mavis` (no-op stub for now: webui has no legacy
- *     surface).
  *   - Settings — the `R.ewm` settings glyph.
  *   - Daily check-in — `R.OgN`; shown only when signed in. The webui engine
  *     contract for the check-in is not implemented yet, so the row opens a
@@ -494,14 +494,30 @@ function NavRow({
  * Rows upstream does not have are not rendered — keeping a webui-invented row
  * next to a real upstream row was what the user flagged as 歪的.
  */
+/** Last path segment of a workspace directory, for display. */
+function workspaceLeaf(dir: string | undefined): string {
+  if (!dir) return "";
+  const parts = dir.replace(/[\\/]+$/, "").split(/[\\/]/);
+  return parts[parts.length - 1] || dir;
+}
+
 function SidebarFooter({
   t,
+  plan,
+  workspaceName,
+  hasTokenPlan,
   onOpenAlerts,
   onOpenSettings,
   alertCount = 0,
   rail = false,
 }: {
   t: (key: MessageKey) => string;
+  /** Active plan tier as reported by the engine's quota API; empty when unknown. */
+  plan: string;
+  /** Name of the workspace this session runs in. */
+  workspaceName: string;
+  /** Whether a Token Plan subscription key is configured. */
+  hasTokenPlan: boolean;
   onOpenAlerts: () => void;
   /** Rail mode: only the avatar fits, and the menu opens from it. */
   rail?: boolean;
@@ -542,13 +558,13 @@ function SidebarFooter({
     };
   }, [open]);
 
-  const avatar =
-    "https://cdn.hailuoai.com/prod/2026-03-30-17/user/multi_chat_file/7e60e040-3901-4e46-b90b-326a89f89378.png";
-  const name = "weekbin";
-  const plan = "Ultra Plan";
-  const workspaceName = "weekbin-workspace";
-  const realUserId = "wk-12345-abcdef";
-  const hasTokenPlan = true;
+  // `plan`, `workspaceName` and `hasTokenPlan` arrive as props from the server
+  // snapshot. No account-identity source is wired to the webui yet, so the user
+  // id and the avatar have nothing to show and render their empty state: a card
+  // carrying a plausible-looking id, name and plan is indistinguishable from a
+  // real one, which is worse than an empty field.
+  const realUserId = "";
+  const name = workspaceName;
 
   /** Run a menu action and close the menu in one step. */
   const pick = (action: () => void) => () => {
@@ -562,16 +578,6 @@ function SidebarFooter({
       await navigator.clipboard.writeText(realUserId);
     } catch {
       // Clipboard denied — nothing else to do in the menu.
-    }
-  };
-
-  const switchToClassic = () => {
-    // Upstream `R.e8` action — same-origin legacy web UI at /mavis.
-    // webui has no /mavis surface yet, so the link goes to the current
-    // origin's root as a no-op placeholder; this stays visible so the
-    // 1:1 menu shape is preserved.
-    if (typeof window !== "undefined") {
-      window.location.href = "/mavis";
     }
   };
 
@@ -595,18 +601,6 @@ function SidebarFooter({
         onCopy={copyUserId}
         t={t}
       />
-      <button
-        type="button"
-        role="menuitem"
-        data-testid="sidebar-user-switch-to-classic"
-        onClick={pick(switchToClassic)}
-        className="mt-1 flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left text-sm text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_hover"
-      >
-        <span className="flex size-4 flex-shrink-0 items-center justify-center text-icon_default_secondary">
-          <Icon name="switchToClassic" size={16} />
-        </span>
-        <span className="min-w-0 flex-1 truncate">{t("userMenu.switchToClassic")}</span>
-      </button>
       <div className="my-2 h-px bg-border_default" role="separator" />
       <MenuRow
         icon="settings"
@@ -671,23 +665,7 @@ function SidebarFooter({
           className="group/avatar flex size-[52px] cursor-pointer items-center justify-center"
         >
           <span className="flex size-6 items-center justify-center overflow-hidden rounded-full transition-[filter] group-hover/avatar:brightness-110">
-            <img
-              src={avatar}
-              alt=""
-              width={24}
-              height={24}
-              referrerPolicy="no-referrer"
-              crossOrigin="anonymous"
-              className="rounded-full"
-              style={{ width: 24, height: 24, minWidth: 24, minHeight: 24 }}
-              onError={(event) => {
-                const target = event.currentTarget;
-                target.style.display = "none";
-                const fallback = target.nextElementSibling as HTMLElement | null;
-                if (fallback) fallback.style.display = "flex";
-              }}
-            />
-            <span className="hidden size-6 items-center justify-center rounded-full bg-bg_grouped_tertiary text-xs text-text_default_primary">
+            <span className="flex size-6 items-center justify-center rounded-full bg-bg_grouped_tertiary text-xs text-text_default_primary">
               {name.slice(0, 1).toUpperCase()}
             </span>
           </span>
@@ -717,23 +695,7 @@ function SidebarFooter({
         className="m-1 flex h-12 w-[calc(100%-8px)] flex-1 items-center overflow-hidden rounded-[10px] px-2 hover:bg-bg_interaction_tertiary_hover"
       >
         <div className="flex size-7 flex-shrink-0 items-center justify-center overflow-hidden rounded-full border border-border_light">
-          <img
-            src={avatar}
-            alt=""
-            width={28}
-            height={28}
-            referrerPolicy="no-referrer"
-            crossOrigin="anonymous"
-            className="rounded-full"
-            style={{ width: 28, height: 28, minWidth: 28, minHeight: 28 }}
-            onError={(event) => {
-              const target = event.currentTarget;
-              target.style.display = "none";
-              const fallback = target.nextElementSibling as HTMLElement | null;
-              if (fallback) fallback.style.display = "flex";
-            }}
-          />
-          <span className="hidden size-7 items-center justify-center rounded-full bg-bg_grouped_tertiary text-sm font-medium text-text_default_primary">
+          <span className="flex size-7 items-center justify-center rounded-full bg-bg_grouped_tertiary text-sm font-medium text-text_default_primary">
             {name.slice(0, 1).toUpperCase()}
           </span>
         </div>
@@ -871,6 +833,7 @@ function ProfileCard({
       data-testid="sidebar-user-profile-card"
       className="flex w-full flex-col gap-2 pb-2"
     >
+      {realUserId ? (
       <button
         type="button"
         onClick={onCopy}
@@ -885,6 +848,7 @@ function ProfileCard({
           <Icon name="copy" size={14} />
         </span>
       </button>
+      ) : null}
       <div className="rounded-[10px] bg-bg_default_scrim">
         <div className="flex items-center justify-between gap-2 px-3 py-2.5">
           <div className="flex min-w-0 max-w-[135px] flex-col gap-[2px]">

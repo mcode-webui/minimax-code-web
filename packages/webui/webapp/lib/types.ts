@@ -152,6 +152,8 @@ export interface WebuiState {
   onlineCount?: number;
   lanBroadcast: boolean;
   readOnly: boolean;
+  /** Whether a Token Plan subscription key is configured. */
+  hasTokenPlanKey?: boolean;
   tokenEnabled: boolean;
   [key: string]: unknown;
 }
