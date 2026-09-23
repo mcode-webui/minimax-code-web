@@ -108,7 +108,6 @@ const en = {
   "inbox.markAllRead": "Mark all as read",
 
   /* Account menu rows — 1:1 with the upstream account-menu entry set. */
-  "userMenu.switchToClassic": "Switch to classic",
   "userMenu.checkin": "Daily check-in",
   "userMenu.contactUs": "Contact us",
   "userMenu.learnMore": "Learn more",
@@ -349,7 +348,6 @@ const zh: Record<MessageKey, string> = {
   "inbox.markAllRead": "全部已读",
 
   /* 帐号菜单条目 — 与上游 account-menu 1:1 对齐。 */
-  "userMenu.switchToClassic": "切换到经典",
   "userMenu.checkin": "每日签到",
   "userMenu.contactUs": "联系我们",
   "userMenu.learnMore": "了解更多",
