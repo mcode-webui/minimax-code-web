@@ -67,11 +67,15 @@ async function spawnServer() {
         // stopServer below, so cleanup stays automatic.
         MCODE_WEBUI_UPLOAD_DIR: join(tmpDir, "uploads"),
         MCODE_WEBUI_SESSIONS_DB: join(tmpDir, "sessions.json"),
-        // The forecast test below asserts `no_history` on a "fresh server".
-        // Without this the route reads the operator's real
-        // ~/.mcode-webui/usage-history.ndjson, so the assertion passes or
-        // fails depending on whether that machine has ever fetched a quota.
-        MCODE_WEBUI_HISTORY_PATH: join(tmpDir, "usage-history.ndjson"),
+        // Hermetic engine isolation: this suite's premise is "the routes
+        // we hit do not invoke mcode" — but GET /api/state does spawn the
+        // ACP singleton whenever a resolvable engine exists, and on a
+        // host WITH an installed mcode (the Windows .cmd launcher chain)
+        // that first spawn overran the 10s client timeout. Pointing
+        // MCODE_CMD at a nonexistent path reproduces the engine-absent
+        // host this suite was written for; the spawn fails fast and
+        // /api/state falls back to an empty session list.
+        MCODE_CMD: join(tmpDir, "no-such-mcode"),
         TOKEN: "", // explicit empty so auth init is deterministic
         // Disable TOKEN_STDOUT so stdout is clean for assertion.
         MCODE_WEBUI_TOKEN_STDOUT: "0",
