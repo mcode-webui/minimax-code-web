@@ -31,18 +31,18 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import http from "node:http";
-import { decideNextAuthorization } from "../_setup.js";
+import { decideNextAuthorization } from "../helpers/_setup.js";
+import { findFreePort, parseListeningPort } from "../helpers/free-port.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const serverJsPath = join(__dirname, "..", "..", "server.js");
 
-// Port-pick: 19500..19600 — outside the dev range (18090), outside the
-// C08 helper range (18080/18081), outside privileged (<1024). Even on
-// busy machines this range is usually free; if it isn't, the test
-// fails loudly with EADDRINUSE which is the right signal.
-function pickPort() {
-    return 19500 + Math.floor(Math.random() * 100);
-}
+// Port: findFreePort() returns an OS-allocated ephemeral port. The
+// recorded `port` is the value the child logged on its "listening
+// on http://host:port" line, NOT the port we asked for —
+// server/lib/port.js#listenWithPortFallback walks forward on
+// EADDRINUSE, so callers must always read the bound port or they
+// POST to a wrong/stale socket (see test/helpers/free-port.js).
 
 // Spawn server.js with isolated settings + events paths. Returns
 // { proc, port, tmpDir, ready }. `ready` resolves once the server
@@ -51,17 +51,17 @@ async function spawnServer() {
     const tmpDir = mkdtempSync(join(tmpdir(), "mcode-webui-d02-router-"));
     const settingsPath = join(tmpDir, "settings.json");
     const eventsPath = join(tmpDir, "events.ndjson");
-    const port = pickPort();
+    const requestedPort = await findFreePort();
     const env = {
         ...process.env,
-        PORT: String(port),
+        PORT: String(requestedPort),
         HOST: "127.0.0.1", // loopback only — auth gates still bypass for local
         MCODE_WEBUI_SETTINGS_PATH: settingsPath,
         MCODE_WEBUI_EVENTS_PATH: eventsPath,
         // U1 (2026-09-20 rigor fix): redirect upload dir + sessions db
         // away from MCODE_ROOT — server.js mkdirSync(UPLOAD_DIR) at boot
         // and persistCurrentChat's saveSessions would otherwise create
-        // stray .webui-uploads/ + .webui-sessions.json in the plugin
+        // stray .webui-uploads/ + sessions.json in the plugin
         // tree, which breaks marketplace validate.mjs ("invalid Plugin
         // directory"). tmpDir is per-test mkdtemp'd and rmSync'd in
         // stopServer below, so cleanup stays automatic.
@@ -86,25 +86,30 @@ async function spawnServer() {
     proc.stdout.on("data", (d) => (stdout += d.toString()));
     proc.stderr.on("data", (d) => (stderr += d.toString()));
 
+    let boundPort = null;
     const ready = new Promise((resolve, reject) => {
         const onChunk = (chunk) => {
-            if (/listening on/.test(stdout)) {
+            const p = parseListeningPort(stdout);
+            if (p !== null) {
+                boundPort = p;
                 proc.stdout.off("data", onChunk);
+                clearTimeout(timer);
                 resolve();
             }
         };
-        proc.stdout.on("data", onChunk);
-        setTimeout(() => {
+        const timer = setTimeout(() => {
             reject(
                 new Error(
-                    `server.js did not start within 3s on port ${port}\n` +
+                    `server.js did not start within 3s on port ${requestedPort}\n` +
                     `stdout: ${stdout}\nstderr: ${stderr}`,
                 ),
             );
         }, 3000);
+        proc.stdout.on("data", onChunk);
     });
     await ready;
-    return { proc, port, tmpDir, settingsPath, eventsPath, stderr };
+    const port = boundPort !== null ? boundPort : requestedPort;
+    return { proc, port, requestedPort, tmpDir, settingsPath, eventsPath, stderr };
 }
 
 async function stopServer(proc, tmpDir) {
@@ -341,8 +346,9 @@ test("router-boot: GET /api/sessions//export?format=bad returns 400 unsupported 
 // -----------------------------------------------------------------------
 test("router-boot: GET / serves index.html or 404 fallback", async () => {
     const res = await httpRequest({ port: server.port, path: "/" });
-    // The plugin's public/index.html may or may not exist depending on
-    // the install layout. We accept either:
+    // The Next static export (webapp/out/index.html) may or may not exist
+    // depending on the install layout (build may be skipped on a bare
+    // checkout). We accept either:
     //   - 200 with HTML body (index.html present), OR
     //   - 404 with the router's "not found" tail (index.html absent —
     //     serveIndex returns false → router hits the fallback path).

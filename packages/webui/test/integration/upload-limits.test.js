@@ -2,7 +2,7 @@
 // End-to-end coverage for PR #55 review point 3 ("Uploads are
 // unbounded"): the real server.js + router + routes/upload.js +
 // lib/upload.js stack with the three upload limits wired through env
-// knobs. Complements test/lib-upload.test.js (parser unit level) with
+// knobs. Complements test/lib/upload.test.js (parser unit level) with
 // the HTTP wire behavior:
 //
 //   - normal upload → 200, exact bytes on disk, size in the response
@@ -14,9 +14,9 @@
 //     upload dir — including a client that tears the socket mid-upload
 //   - non-multipart content-type still 400 (pre-existing behavior)
 //
-// Server spawn pattern copied from test/integration/router-boot.test.js
-// (isolated settings/events/uploads/sessions paths under a mkdtemp dir,
-// loopback HOST, TOKEN explicit empty).
+// Server spawn pattern matches test/integration/router-boot.test.js:
+// isolated settings/events/uploads/sessions paths under a mkdtemp dir,
+// loopback HOST, TOKEN explicit empty.
 
 import { test } from "node:test";
 import { strict as assert } from "node:assert";
@@ -27,24 +27,27 @@ import { join, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import http from "node:http";
 
+import { findFreePort, parseListeningPort } from "../helpers/free-port.js";
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const serverJsPath = join(__dirname, "..", "..", "server.js");
 
-function pickPort() {
-  // 19700..19799 — outside the dev range (18090) and the ranges other
-  // integration files pick (18080/181, 19500..19600).
-  return 19700 + Math.floor(Math.random() * 100);
-}
-
 // Spawn server.js with isolated state + per-test upload limit env
 // overrides (`limits` maps 1:1 onto the MCODE_WEBUI_UPLOAD_* knobs).
+//
+// Port: findFreePort() allocates a kernel ephemeral port. The
+//   returned `port` is the value the child logged on its "listening
+//   on http://host:port" line, NOT the port we asked for —
+//   server/lib/port.js#listenWithPortFallback walks forward on
+//   EADDRINUSE, so the test must read the actual bound port or it
+//   POSTs to a wrong/stale socket (see test/helpers/free-port.js).
 async function spawnServer(limits = {}) {
   const tmpDir = mkdtempSync(join(tmpdir(), "mcode-webui-upload-e2e-"));
   const uploadDir = join(tmpDir, "uploads");
-  const port = pickPort();
+  const requestedPort = await findFreePort();
   const env = {
     ...process.env,
-    PORT: String(port),
+    PORT: String(requestedPort),
     HOST: "127.0.0.1",
     MCODE_WEBUI_SETTINGS_PATH: join(tmpDir, "settings.json"),
     MCODE_WEBUI_EVENTS_PATH: join(tmpDir, "events.ndjson"),
@@ -65,25 +68,32 @@ async function spawnServer(limits = {}) {
   let stderr = "";
   proc.stdout.on("data", (d) => (stdout += d.toString()));
   proc.stderr.on("data", (d) => (stderr += d.toString()));
+  let boundPort = null;
   await new Promise((resolve, reject) => {
     const onChunk = () => {
-      if (/listening on/.test(stdout)) {
+      const p = parseListeningPort(stdout);
+      if (p !== null) {
+        boundPort = p;
         proc.stdout.off("data", onChunk);
+        clearTimeout(timer);
         resolve();
       }
     };
-    proc.stdout.on("data", onChunk);
-    setTimeout(
+    const timer = setTimeout(
       () =>
         reject(
           new Error(
-            `server.js did not start within 3s on port ${port}\nstdout: ${stdout}\nstderr: ${stderr}`,
+            `server.js did not start within 3s on port ${requestedPort}\nstdout: ${stdout}\nstderr: ${stderr}`,
           ),
         ),
       3000,
     );
+    proc.stdout.on("data", onChunk);
   });
-  return { proc, port, tmpDir, uploadDir };
+  // If the server fell back to a different port (rare — findFreePort
+  // already gave us an ephemeral one), trust the line, not our ask.
+  const port = boundPort !== null ? boundPort : requestedPort;
+  return { proc, port, requestedPort, tmpDir, uploadDir };
 }
 
 async function stopServer(server) {

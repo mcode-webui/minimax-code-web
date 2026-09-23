@@ -1,0 +1,921 @@
+// webui/test/helpers/_setup.js
+// Shared mock infrastructure for unit tests.
+//
+// Usage:
+//   import { test, before } from 'node:test'
+//   import { setupMocks, absPath, registerAcpMock, registerSessionsStore, setLanBroadcast } from './_setup.js'
+//
+//   before(async (t) => {
+//     await setupMocks(t, {
+//       acp: { getMcodeSessionsForWorkspace: async (ws) => [...] },
+//       sessions: { initial: [...] },
+//       mavis: { applyMavisUsageToCs: async (cs) => { ... } },
+//       lanBroadcast: true,
+//     })
+//     // dynamic import SUT after mocks registered
+//     const { foo } = await import(absPath('lib/foo.js'))
+//   })
+//
+// Why this design:
+//   - Node 24's --experimental-test-module-mocks (Node 22.3+) registers
+//     mocks on the test-context's MockTracker. Mocking from a module top
+//     level (outside test/before) does NOT affect later dynamic imports
+//     in the same test file. Mocking inside t.mock.module(...)
+//     works.
+//   - For `node:` builtins, mock.module behavior is patchy on Node 24.14
+//     — node:fs mocks work, but node:child_process.spawn mock
+//     does NOT actually intercept spawn (the mock function body is
+//     visible via toString but never executed). Therefore tests that
+//     need a fake child process should use a real sqlite3 fixture
+//     instead of mocking node:child_process.
+
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { dirname, resolve } from "node:path";
+import { computeContextPercent } from "../../server/lib/context-percent.js";
+
+const TEST_DIR = dirname(fileURLToPath(import.meta.url));
+export const SERVER_DIR = resolve(TEST_DIR, "..", "..", "server");
+// mock.module() on Windows requires file:// URLs for filesystem paths
+export const absPath = (rel) => pathToFileURL(resolve(SERVER_DIR, rel)).href;
+
+// -----------------------------------------------------------------------
+// Mutable mock impls. Tests can pass overrides to setupMocks().
+// -----------------------------------------------------------------------
+const _acpMock = {
+  getCachedMcodeCommands: () => [],
+  getMcodeSessionsForWorkspace: async () => [],
+  getMcodeSessionsCacheSync: () => null,
+  getMcodeSessionTitle: async () => null,
+  deleteMcodeSessionFromDb: () => ({ ok: true }),
+  // v0.5.bx 系列 patch: 补 mcode-rpc.js 需要的 export
+  getMcodeAcpClient: async () => null,
+  listAllMcodeSessions: async () => [],
+  getMcodeServerInfo: () => null,
+  invalidateMcodeSessionsCache: () => {},
+  shutdownMcodeAcpSingleton: () => {},
+  dropMcodeSessionFromCache: () => {}, // v1.0: 删除路由防复活用
+  getMcodeSessionsStaleSync: () => null, // v1.0: 过期缓存读取 (推送防闪跌用)
+  // B04 patch: interaction/commands.js#bodyHelp uses ensureMcodeCommands
+  //   to list /help contents. Default stub returns an empty payload so
+  //   tests that don't care about /help can ignore this; tests that DO
+  //   care (test/lib/interaction/interaction.check.mjs) override via their own
+  //   t.mock.module registration since setupMocks only allows one
+  //   registration per module path per test context.
+  ensureMcodeCommands: async () => ({
+    mcode: [], webui: [], fetchedAt: 0, source: "test-default",
+  }),
+};
+
+let _sessionsStore = [];
+let _saveImpl = (arr) => {
+  _sessionsStore = [...arr];
+};
+
+// v2 (2026-09-20 webui-manual-audit): mutable mcode-acp runner mock.
+//   Same dispatch-through pattern as _acpMock above: mock.module()
+//   throws ERR_INVALID_STATE on a second registration for the same
+//   specifier, and chat.js binds its runMcodeAcp import at first
+//   dynamic import — so a per-test "failed send" (ENOENT-style
+//   {status:"failed", error}) can only be injected by mutating the
+//   impl the registered wrapper dispatches to. Default mirrors the
+//   previous fixed success mock byte-for-byte, so existing suites
+//   see no behavior change.
+const _mcodeAcpMock = {
+  runMcodeAcp: async () => ({
+    status: "succeeded",
+    answer: "mocked",
+    sessionId: null,
+  }),
+  streamAcpPrompt: async () => ({ status: "succeeded", answer: "mocked" }),
+};
+
+let _lanBroadcast = false;
+let _readOnly = false;
+let _tokenEnabled = true;
+let _currentToken = "";
+let _tokenRotatedAt = 0;
+let _tokenAcknowledged = false;
+// v2026-08-28 modacker: Token Plan (套餐用量) feature — mock state
+//   mirrors the real settings.js vars so pushStateFor can read them
+//   without each test having to re-stub. Default false/empty matches
+//   a clean disk. Tests that exercise the quota fields should call
+//   setQuotaEnabled / setTokenPlanApiKey before the SUT snapshot.
+// v2026-08-28 modacker (A+C): external key sources — env / file.
+//   _envTokenPlanKey and _fileTokenPlanKey shadow _tokenPlanApiKey
+//   in getTokenPlanApiKey() (priority env > file > settings). Tests
+//   can call setEnvTokenPlanKey / setFileTokenPlanKey to verify the
+//   priority chain and the snapshot's `tokenPlanApiKeySource` field.
+let _quotaEnabled = false;
+let _tokenPlanApiKey = "";
+let _envTokenPlanKey = "";
+let _fileTokenPlanKey = "";
+let _fileTokenPlanPath = "";
+let _externalKeySource = "";
+
+// Per-test direct handles (for tests that need to read state after the SUT)
+export const acpMock = _acpMock;
+
+// Imperative mutators — tests can use these to override between tests
+// (alternative to passing `overrides` to setupMocks at before() time)
+export function registerAcpMock(overrides) {
+  Object.assign(_acpMock, overrides);
+}
+
+// The mcode-rpc.js mock dispatches through a mutable object for the same reason
+// as _acpMock: namedExports must stay stable references so a later
+// registerRpcMock() takes effect.
+const _rpcMock = {
+  cancelSession: async () => ({ ok: true, data: { notified: true } }),
+  setMode: async () => ({ ok: true, data: { modeId: "plan" } }),
+  setConfigOption: async () => ({ ok: true, data: {} }),
+  activateSession: async () => ({ ok: true, data: {} }),
+  loadSession: async () => ({ ok: false, code: "unsupported" }),
+  listSessions: async () => [],
+  mcodePermissionToWebui: () => "Full access",
+  webuiPermissionToMcode: () => "bypassPermissions",
+  PERMISSION_MODES: ["default", "bypassPermissions", "auto", "off"],
+  MCODE_ACP_CAPABILITIES: {
+    set_mode: true,
+    set_config_option: true,
+    cancel: true,
+    activate: true,
+  },
+};
+export const rpcMock = _rpcMock;
+export function registerRpcMock(overrides) {
+  Object.assign(_rpcMock, overrides);
+}
+// v2 (2026-09-20 webui-manual-audit): imperative mutator for the
+//   mcode-acp runner mock — see the _mcodeAcpMock declaration for why
+//   dispatch-through (rather than a second mock.module) is the only
+//   way to flip runMcodeAcp to a failed result after chat.js has
+//   already been imported.
+export function registerMcodeAcpMock(overrides) {
+  Object.assign(_mcodeAcpMock, overrides);
+}
+export function registerSessionsStore({ initial = [], save } = {}) {
+  _sessionsStore = [...initial];
+  if (save) _saveImpl = save;
+}
+export function getSessionsStore() {
+  return _sessionsStore;
+}
+export const _persist = (arr) => _saveImpl(arr);
+export function setLanBroadcast(v) {
+  _lanBroadcast = !!v;
+}
+export function setReadOnly(v) { _readOnly = !!v }
+export function setTokenEnabled(v) { _tokenEnabled = !!v }
+export function setCurrentToken(v) { _currentToken = String(v || "") }
+export function setTokenRotatedAt(v) { _tokenRotatedAt = Number(v) || 0 }
+export function setTokenAcknowledged(v) { _tokenAcknowledged = !!v }
+// v2026-08-28 modacker: Token Plan mock mutators
+//   setQuotaEnabled(false) 镜像 real settings.js: 同步清 key
+//   (server/lib/settings.js:380-388 — "Disabling also clears the
+//   key (don't keep credentials around if the user explicitly
+//   turned the feature off)"). 任何改这俩 mock 的地方都应保持
+//   这个不变量, 否则 pushStateFor 的 snapshot 会跟真实实现分叉。
+//   同时 (A+C): setEnvTokenPlanKey / setFileTokenPlanKey 模拟外部
+//   源 — 任意一个设了之后, getTokenPlanApiKey() 优先返回它,
+//   _externalKeySource 反映最高优先级源。setQuotaEnabled(false)
+//   只清 settings.json 路径, 不动 env/file — 同真实实现。
+export function setQuotaEnabled(v) {
+  _quotaEnabled = !!v
+  if (!_quotaEnabled) _tokenPlanApiKey = ""
+}
+export function setTokenPlanApiKey(v) { _tokenPlanApiKey = String(v || "") }
+export function setEnvTokenPlanKey(v) {
+  _envTokenPlanKey = String(v || "")
+  _externalKeySource = _envTokenPlanKey ? "env" : (_fileTokenPlanKey ? "file" : "")
+}
+export function setFileTokenPlanKey(v, p) {
+  _fileTokenPlanKey = String(v || "")
+  _fileTokenPlanPath = p || ""
+  if (!_envTokenPlanKey) {
+    _externalKeySource = _fileTokenPlanKey ? "file" : ""
+  }
+}
+
+/**
+ * Register all built-in + webui module mocks on the test context.
+ * Must run before any SUT dynamic import in the same test file.
+ *
+ * @param {TestContext} t  from before((t) => ...)
+ * @param {object} [overrides]
+ *   - acp: partial overrides for the acp-client.js mock (named exports)
+ *   - sessions: { initial, save } for the lib/sessions.js mock
+ *   - mavis: partial overrides for the lib/mavis-usage.js mock
+ *   - mcodeAcp: partial overrides for the lib/mcode-acp.js runner mock
+ *     (runMcodeAcp / streamAcpPrompt) — e.g. a failed-send result
+ *   - lanBroadcast: boolean (default false)
+ */
+export async function setupMocks(t, overrides = {}) {
+  // 1. node:fs — DO NOT mock. mock.module REPLACES the entire builtin
+  //    namespace, so any un-listed export (e.g. readFileSync used by
+  //    config.js's DEFAULT_WORKSPACE IIFE) becomes undefined → SUT
+  //    import hangs. The real existsSync is fine: the fixture DB exists
+  //    and config.js's cwd.json exists too.
+
+  // 2. node:child_process.spawn — DOES NOT WORK as a mock on Node 24.14
+  //    (mock function is registered but never invoked when SUT calls
+  //    spawn — the SUT sees the real spawn). We intentionally do NOT
+  //    register this here. Tests that exercise child-process code paths
+  //    must use real sqlite3 fixture DBs.
+
+  // 3. webui/lib/acp-client.js
+  //    IMPORTANT: namedExports must be stable function references that
+  //    dispatch to the (mutable) _acpMock. We CANNOT spread _acpMock
+  //    here — that would snapshot the functions at setupMocks() time,
+  //    so later registerAcpMock() calls wouldn't take effect. Instead,
+  //    each export is a thin wrapper that looks up the current impl
+  //    in _acpMock at call time.
+  if (overrides.acp) Object.assign(_acpMock, overrides.acp);
+  t.mock.module(absPath("lib/acp-client.js"), {
+    namedExports: {
+      getCachedMcodeCommands: (...a) => _acpMock.getCachedMcodeCommands(...a),
+      getMcodeSessionsForWorkspace: (...a) =>
+        _acpMock.getMcodeSessionsForWorkspace(...a),
+      getMcodeSessionsCacheSync: (...a) =>
+        _acpMock.getMcodeSessionsCacheSync(...a),
+      getMcodeSessionTitle: (...a) => _acpMock.getMcodeSessionTitle(...a),
+      deleteMcodeSessionFromDb: (...a) =>
+        _acpMock.deleteMcodeSessionFromDb(...a),
+      // v0.5.bx 系列 patch: mcode-rpc.js 也 import 这俩
+      getMcodeAcpClient: (...a) => _acpMock.getMcodeAcpClient(...a),
+      listAllMcodeSessions: (...a) => _acpMock.listAllMcodeSessions(...a),
+      getMcodeServerInfo: (...a) => _acpMock.getMcodeServerInfo(...a),
+      invalidateMcodeSessionsCache: (...a) =>
+        _acpMock.invalidateMcodeSessionsCache(...a),
+      shutdownMcodeAcpSingleton: (...a) =>
+        _acpMock.shutdownMcodeAcpSingleton(...a),
+      dropMcodeSessionFromCache: (...a) =>
+        _acpMock.dropMcodeSessionFromCache(...a),
+      getMcodeSessionsStaleSync: (...a) =>
+        _acpMock.getMcodeSessionsStaleSync(...a),
+      // B04 patch: ensureMcodeCommands for interaction/commands.js
+      //   #bodyHelp dispatch (see BORROW-dsh-deepseek-harness-2026-08-28 §3).
+      ensureMcodeCommands: (...a) => _acpMock.ensureMcodeCommands(...a),
+    },
+  });
+
+  // 4. webui/lib/sessions.js (server-side session store)
+  if (overrides.sessions) {
+    _sessionsStore = [...(overrides.sessions.initial || [])];
+    if (overrides.sessions.save) _saveImpl = overrides.sessions.save;
+  }
+  t.mock.module(absPath("lib/sessions.js"), {
+    namedExports: {
+      loadSessions: () => [..._sessionsStore],
+      saveSessions: (arr) => _saveImpl(arr),
+      // webui-2026-09-25 (webui-context-precision): re-export the REAL
+      //   pure function from the new lib/context-percent.js module rather
+      //   than hand-copying the (used/limit → 1-decimal %) math. The mock
+      //   MUST mirror every named export the mocked module's real consumers
+      //   import — if a consumer reaches for an export the mock omits, the
+      //   dynamic import of sessions.js fails closed at module-instantiation
+      //   time and the entire suite gets cancelled
+      //   (see test/lib/mavis-usage.check.mjs:51 and
+      //   test/routes/sessions-search.check.mjs:47 for the previous
+      //   incident). Whenever lib/sessions.js grows a new export that any
+      //   SUT imports, add it here.
+      computeContextPercent,
+      // The real lib/sessions.js exports these too. We provide no-op
+      // defaults so handlers that import them don't blow up. Tests that
+      // care about these can register their own via setupMocks overrides
+      // (we'd need to add similar wrappers — not done yet).
+      // v2 (2026-09-20 webui-manual-audit): mirror the REAL
+      // resetContext claim reset (lib/sessions.js) — it now also drops
+      // cs.running + context.thinkingStatus so a mid-run switch can't
+      // park a permanent 思考中/stop-button claim. Without this parity,
+      // mocked route tests would keep exercising the old "claim
+      // survives the switch" contract and green-light regressions.
+      resetContext: (cs) => {
+        if (cs && cs.context) {
+          cs.context.tokens = 0;
+          cs.context.used = 0;
+          cs.context.percent = 0;
+          cs.context.estimated = true;
+          cs.context.usageSource = null;
+          cs.context.thinkingStatus = "Idle";
+        }
+        if (cs) {
+          cs.running = {
+            active: false,
+            prompt: null,
+            pid: null,
+            startedAt: null,
+            model: null,
+            sessionId: null,
+            lastDeltaAt: null,
+            tps: 0,
+          };
+        }
+      },
+      persistCurrentChat: () => {},
+      // v2.4: single-identity helpers — the mock keeps the in-memory store
+      // shape so promotion/overlay logic is testable through handlers too.
+      promoteDraftToMcodeSid: (cs) => {
+        if (!cs || !cs.mcodeSessionId || !cs.sessionId) return false;
+        if (cs.sessionId === cs.mcodeSessionId) return false;
+        const draft = _sessionsStore.find(
+          (r) => r && r.id === cs.sessionId && !r.mcodeSessionId,
+        );
+        const existing = _sessionsStore.find(
+          (r) => r && r.mcodeSessionId === cs.mcodeSessionId,
+        );
+        if (existing) {
+          if (draft && Array.isArray(draft.chat) && draft.chat.length) {
+            existing.chat = [...(existing.chat || []), ...draft.chat];
+          }
+          existing.updatedAt = Date.now();
+          if (draft) _sessionsStore.splice(_sessionsStore.indexOf(draft), 1);
+          cs.sessionId = existing.id;
+          return true;
+        }
+        if (!draft) return false;
+        draft.id = cs.mcodeSessionId;
+        draft.mcodeSessionId = cs.mcodeSessionId;
+        draft.updatedAt = Date.now();
+        cs.sessionId = draft.id;
+        return true;
+      },
+      ensureOverlayForMcodeSid: (all, sid, { title, workspace } = {}) => {
+        let rec = all.find((r) => r && r.mcodeSessionId === sid);
+        if (rec) {
+          if (title && rec.title === "Mcode session") rec.title = title;
+          return rec;
+        }
+        rec = {
+          id: sid,
+          mcodeSessionId: sid,
+          title: title || "Mcode session",
+          workspace: workspace || "",
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          chat: [],
+        };
+        all.unshift(rec);
+        return rec;
+      },
+      findOverlayForMcodeSid: (all, sid) =>
+        all.find((r) => r && r.mcodeSessionId === sid) || null,
+      sessionKeyOf: (r) => (r && (r.mcodeSessionId || r.id)) || null,
+      streamUpdateLine: (chat, prefix, text) => {
+        if (Array.isArray(chat)) chat.push(prefix + text);
+        return text;
+      },
+      cleanupEmptyDefaultSessions: () => {},
+    },
+  });
+
+  // 5. webui/lib/settings.js
+  if (overrides.lanBroadcast !== undefined)
+    _lanBroadcast = !!overrides.lanBroadcast;
+  if (overrides.readOnly !== undefined) _readOnly = !!overrides.readOnly;
+  if (overrides.tokenEnabled !== undefined) _tokenEnabled = !!overrides.tokenEnabled;
+  if (overrides.currentToken !== undefined) _currentToken = String(overrides.currentToken || "");
+  if (overrides.tokenRotatedAt !== undefined) _tokenRotatedAt = Number(overrides.tokenRotatedAt) || 0;
+  if (overrides.tokenAcknowledged !== undefined) _tokenAcknowledged = !!overrides.tokenAcknowledged;
+  // v2026-08-28 modacker: Token Plan overrides. Default false/empty
+  //   mirrors a clean-disk settings.json (quotaEnabled defaults to
+  //   false in defaultState()).
+  if (overrides.quotaEnabled !== undefined) _quotaEnabled = !!overrides.quotaEnabled;
+  if (overrides.tokenPlanApiKey !== undefined) _tokenPlanApiKey = String(overrides.tokenPlanApiKey || "");
+  // maskTokenPlanKey mirrors the real helper: "sk-cp-...XXXX" or "".
+  // Reuse the same length-slice rule so a test that asserts on the
+  // masked shape matches the real implementation byte-for-byte.
+  // v2026-08-28 modacker (A+C): the real implementation now goes
+  //   through getTokenPlanApiKey() so the masked value reflects
+  //   the priority chain. The mock must do the same — without
+  //   this, a test that setEnvTokenPlanKey would still see the
+  //   settings.json mask in the snapshot.
+  const _effectiveTokenPlanKey = () => {
+    if (_envTokenPlanKey) return _envTokenPlanKey
+    if (_fileTokenPlanKey) return _fileTokenPlanKey
+    return _tokenPlanApiKey
+  }
+  const _maskTokenPlanKey = () => {
+    const k = _effectiveTokenPlanKey()
+    if (!k) return "";
+    if (k.length <= 4) return "****";
+    return "sk-cp-..." + k.slice(-4);
+  };
+  t.mock.module(absPath("lib/settings.js"), {
+    namedExports: {
+      getLanBroadcast: () => _lanBroadcast,
+      getReadOnly: () => _readOnly,
+      getTokenEnabled: () => _tokenEnabled,
+      getCurrentToken: () => _currentToken,
+      getTokenRotatedAt: () => _tokenRotatedAt,
+      getTokenAcknowledged: () => _tokenAcknowledged,
+      getAllowedInterfaces: () => [], // stub — feature removed in v1.0.1 cleanup
+      // v2026-08-28 modacker: Token Plan feature — state-bus.js
+      //   imports these to populate the snapshot. The real
+      //   settings.js implements them in lines 302-318.
+      // v2026-08-28 modacker (A+C): the mock's getTokenPlanApiKey
+      //   mirrors the real priority chain (env > file > settings).
+      //   Without this, tests asserting on `hasTokenPlanKey` /
+      //   `tokenPlanApiKeySource` would see only the settings.json
+      //   path even when an env/file key is "set" via the mutators
+      //   above.
+      getQuotaEnabled: () => _quotaEnabled,
+      getTokenPlanApiKey: () => {
+        if (_envTokenPlanKey) return _envTokenPlanKey
+        if (_fileTokenPlanKey) return _fileTokenPlanKey
+        return _tokenPlanApiKey
+      },
+      getTokenPlanApiKeySource: () => {
+        if (_externalKeySource) return _externalKeySource
+        return _tokenPlanApiKey ? "settings" : ""
+      },
+      getTokenPlanApiKeyFilePath: () => _fileTokenPlanPath,
+      maskTokenPlanKey: () => _maskTokenPlanKey(),
+      // no-op setters (tests should use the imperative setters above)
+      setLanBroadcast: (v) => { _lanBroadcast = !!v },
+      setReadOnly: (v) => { _readOnly = !!v },
+      setTokenEnabled: (v) => { _tokenEnabled = !!v },
+      setTokenAcknowledged: (v) => { _tokenAcknowledged = !!v },
+      // v2026-08-28 modacker: Token Plan setters (mutate mock state
+      //   like the real ones do).
+      setQuotaEnabled: (v) => { _quotaEnabled = !!v; if (!_quotaEnabled) _tokenPlanApiKey = "" },
+      setTokenPlanApiKey: (k) => { _tokenPlanApiKey = typeof k === "string" ? k : "" },
+      setAllowedInterfaces: (_v) => { /* no-op — feature removed */ },
+      rotateToken: () => {
+        const t = "testtoken" + Math.random().toString(16).slice(2, 30);
+        _currentToken = t;
+        _tokenRotatedAt = Date.now();
+        _tokenAcknowledged = false;
+        return t;
+      },
+      init: () => {},
+      generateToken: () => "testtoken" + Math.random().toString(16).slice(2, 30),
+      getPersistPath: () => "/tmp/.mcode-webui/settings.json",
+      getSettingsSnapshot: () => ({
+        ok: true,
+        lanBroadcast: _lanBroadcast,
+        readOnly: _readOnly,
+        tokenEnabled: _tokenEnabled,
+        tokenAcknowledged: _tokenAcknowledged,
+        currentToken: _tokenAcknowledged ? "" : _currentToken,
+        tokenRotatedAt: _tokenRotatedAt,
+        // v2026-08-28 modacker: Token Plan fields in the snapshot —
+        //   the real getSettingsSnapshot includes these on lines
+        //   534-536. Without them the webui's popover (which reads
+        //   `hasTokenPlanKey` / `tokenPlanApiKeyMasked`) would have
+        //   no data even when the feature is on.
+        quotaEnabled: _quotaEnabled,
+        tokenPlanApiKeyMasked: _maskTokenPlanKey(),
+        // v2026-08-28 modacker (A+C): hasTokenPlanKey is computed
+        //   from the priority-chain getter, not the raw var, so a
+        //   test that only setEnvTokenPlanKey still sees
+        //   hasTokenPlanKey === true. tokenPlanApiKeySource +
+        //   tokenPlanApiKeyFilePath are new in (A+C) and let tests
+        //   assert the source is correctly reported in the SSE
+        //   snapshot.
+        hasTokenPlanKey: (_envTokenPlanKey || _fileTokenPlanKey || _tokenPlanApiKey).length > 0,
+        tokenPlanApiKeySource: _envTokenPlanKey ? "env" : (_fileTokenPlanKey ? "file" : (_tokenPlanApiKey ? "settings" : "")),
+        tokenPlanApiKeyFilePath: _fileTokenPlanPath,
+        port: 8080, host: "0.0.0.0", lanIp: "127.0.0.1",
+        lanUrl: "http://127.0.0.1:8080", localUrl: "http://127.0.0.1:8080",
+        mcodeCmd: "mcode", mcodeVersion: "0.1.2",
+        defaultWorkspace: "/tmp", defaultModel: "x",
+      }),
+      rejectLan: () => false,
+    },
+  });
+
+  // 6. webui/lib/mavis-usage.js (heavy: spawns sqlite3)
+  //    NOT mocked by default — test/lib/mavis-usage.check.mjs wants the real
+  //    implementation against the fixture DB. Other tests (chat,
+  //    sessions) that need to mock applyMavisUsageToCs pass
+  //    overrides.mavis and we register the mock only then.
+  if (overrides.mavis) {
+    t.mock.module(absPath("lib/mavis-usage.js"), {
+      namedExports: {
+        getMavisTokenUsage:
+          overrides.mavis.getMavisTokenUsage || (async () => null),
+        getMavisTokenUsageModel:
+          overrides.mavis.getMavisTokenUsageModel || (async () => null),
+        applyMavisUsageToCs:
+          overrides.mavis.applyMavisUsageToCs || (async () => {}),
+        ...overrides.mavis,
+      },
+    });
+  }
+
+  // 7. webui/lib/mcode-{acp,exec,rpc}.js — heavy mcode spawners
+  //    mcode-acp dispatches through the mutable _mcodeAcpMock (see its
+  //    declaration block) so failed-send tests can inject
+  //    {status:"failed"} results via overrides.mcodeAcp or
+  //    registerMcodeAcpMock() without a second mock.module call
+  //    (ERR_INVALID_STATE on re-registration).
+  if (overrides.mcodeAcp) Object.assign(_mcodeAcpMock, overrides.mcodeAcp);
+  t.mock.module(absPath("lib/mcode-acp.js"), {
+    namedExports: {
+      runMcodeAcp: (...a) => _mcodeAcpMock.runMcodeAcp(...a),
+      streamAcpPrompt: (...a) => _mcodeAcpMock.streamAcpPrompt(...a),
+    },
+  });
+  t.mock.module(absPath("lib/mcode-exec.js"), {
+    namedExports: {
+      runMcodeExec: async () => ({
+        status: "succeeded",
+        answer: "mocked",
+        sessionId: null,
+      }),
+      collectExecResult: async (p) => p,
+    },
+  });
+  t.mock.module(absPath("lib/mcode-rpc.js"), {
+    namedExports: {
+      // Thin wrappers, not a spread — see the _rpcMock declaration.
+      cancelSession: (...a) => _rpcMock.cancelSession(...a),
+      setMode: (...a) => _rpcMock.setMode(...a),
+      setConfigOption: (...a) => _rpcMock.setConfigOption(...a),
+      activateSession: (...a) => _rpcMock.activateSession(...a),
+      loadSession: (...a) => _rpcMock.loadSession(...a),
+      listSessions: (...a) => _rpcMock.listSessions(...a),
+      // v0.5.bx 系列 patch: routes/model.js 也 import 这俩
+      mcodePermissionToWebui: (...a) => _rpcMock.mcodePermissionToWebui(...a),
+      webuiPermissionToMcode: (...a) => _rpcMock.webuiPermissionToMcode(...a),
+      PERMISSION_MODES: _rpcMock.PERMISSION_MODES,
+      MCODE_ACP_CAPABILITIES: _rpcMock.MCODE_ACP_CAPABILITIES,
+    },
+  });
+  t.mock.module(absPath("lib/models.js"), {
+    namedExports: {
+      getMcodeModelLimit: async () => ({ context: 512000 }),
+      // v0.5.bx 系列 patch: routes/model.js 也 import 这俩
+    },
+  });
+  t.mock.module(absPath("lib/slash.js"), {
+    namedExports: {
+      handleLocalSlash: async () => ({ handled: false, continueMcode: false }),
+      // routes/chat.js imports this too — a missing named export makes the
+      // SUT import hang (Node 24.14 mock.module pitfall #4)
+      handleCmdCommand: async () => ({ ok: true }),
+      // v0.5.bx 系列 patch: test/lib/slash.check.mjs tests the real matchSlash
+      // — but we still provide a stub for the mocked version
+      matchSlash: (content) => {
+        const m = content.match(/^\/([a-zA-Z][\w-]*)\b\s*(.*)/);
+        if (!m) return null;
+        return { cmd: m[1], rest: m[2] || "" };
+      },
+    },
+  });
+}
+
+// -----------------------------------------------------------------------
+// Decision-injection helper (2026-09-20 webui-rigor-fix).
+//
+// authorize() no longer auto-approves under `node --test`. Tests that
+// call route handlers which await authorize() must drive the REAL
+// path: this helper polls getPendingRequestIds() and resolves each
+// new pending request via _decideForTests(id, approve) — exactly what
+// a user's modal click does through POST /api/auth/decision, minus
+// the HTTP.
+//
+// Properties:
+//   - Touches ZERO production code (getPendingRequestIds /
+//     _decideForTests are authorize.js's existing test surface).
+//   - Does NOT depend on --experimental-test-module-mocks — plain
+//     dynamic import of the real (or, if a test registered one, the
+//     mocked) authorize module. Works in both suite modes.
+//   - Robust to handlers that only reach authorize() after an await
+//     (e.g. body parsing): a short interval polls while fn() runs.
+//
+// Usage:
+//   const res = await withDecisions(
+//     () => handleDeleteSession(fakeReq({}), res, ctx),
+//     { approve: true },
+//   );
+// -----------------------------------------------------------------------
+export async function withDecisions(fn, { approve = true } = {}) {
+  const mod = await import(absPath("lib/authorize.js"));
+  // Defensive: a test may have registered a t.mock.module replacement
+  // for authorize.js that doesn't expose the pending-registry helpers
+  // (e.g. the fixed-decline stub in test/routes/sessions-search.check.mjs).
+  // Such stubs resolve immediately — nothing to drive.
+  if (
+    typeof mod.getPendingRequestIds !== "function" ||
+    typeof mod._decideForTests !== "function"
+  ) {
+    return fn();
+  }
+  // Requests that were already pending when withDecisions started
+  // belong to someone else — only decide requests created by fn().
+  const preExisting = new Set(mod.getPendingRequestIds());
+  const decided = new Set();
+  // Windows event-loop liveness fix (fork preview run 35493902383):
+  //   The poll interval MUST stay REF'd. Mock unit tests drive route
+  //   handlers with zero real IO, so while fn() awaits authorize() this
+  //   interval is the only ref'd handle in the loop. The previous
+  //   unref() let the loop drain on windows-latest before the 2 ms poll
+  //   could call _decideForTests, and node:test reported "Promise
+  //   resolution is still pending but the event loop has already
+  //   resolved" + cancelledByParent for the whole routes-export.check
+  //   .mjs file (POSIX passed only because incidental IO happened to
+  //   hold the loop). Same fix shape as lib-authorize's REF'd watchdog
+  //   (run 35493384574) — liveness only, zero assertion change.
+  const poll = setInterval(() => {
+    for (const id of mod.getPendingRequestIds()) {
+      if (decided.has(id) || preExisting.has(id)) continue;
+      decided.add(id);
+      mod._decideForTests(id, approve);
+    }
+  }, 2);
+  // Safety self-clear: a REF'd interval that outlives a broken test
+  // would hang the whole run — if fn() never settles (pending auth
+  // requests never decided), release the interval and fail fast at 5 s.
+  let bailOut;
+  const bail = setTimeout(() => {
+    clearInterval(poll);
+    bailOut(new Error(
+      "withDecisions: fn() did not settle within 5000ms — pending auth requests were never decided (poll interval released, failing instead of hanging)",
+    ));
+  }, 5000);
+  try {
+    return await Promise.race([
+      fn(),
+      new Promise((_, reject) => {
+        bailOut = reject;
+      }),
+    ]);
+  } finally {
+    clearTimeout(bail);
+    clearInterval(poll);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// openEventStream — minimal WebSocket client for GET /api/stream, shared
+// by decideNextAuthorization() and the integration tests (ws-channel,
+// event-chain). The SSE channel is gone; the live surface is now
+// "WebSocket event stream + REST".
+//
+// Performs the RFC 6455 §1.3 upgrade BY HAND: GET /api/stream?cid=...
+// with Connection: Upgrade / Upgrade: websocket headers and a random
+// 16-byte Sec-WebSocket-Key, then waits for the "HTTP/1.1 101" response
+// (verifying Sec-WebSocket-Accept via the RFC GUID SHA-1 formula).
+//
+// Resolves { frames, send(text), close(), timedOut? }:
+//   - frames: every server TEXT frame accumulated so far, JSON-parsed
+//     ({ raw } for non-JSON text). Server → client frames are NOT masked
+//     (RFC 6455 §5.1), while lib/ws-frame.js#createFrameDecoder is the
+//     client → server direction decoder and rejects unmasked frames with
+//     1002 (verified) — hence the local unmasked header parser below,
+//     shaped like test/lib-ws-server.test.js#parseServerFrames.
+//   - send(text): client → server TEXT frame, masked per RFC 6455 §5.3
+//     (FIN|0x81, mask bit, 4-byte random key, XOR; payload < 126 bytes).
+//   - close(): destroys the socket (idempotent).
+//   - 超时守卫: resolves { timedOut: true } after 2500ms instead of
+//     hanging the suite (timeout-resolve pattern from the old
+//     sse-channel.test.js / test/lib-ws-server.test.js connect()).
+// ---------------------------------------------------------------------------
+export function openEventStream(port, cid) {
+  return new Promise((resolve, reject) => {
+    Promise.all([import("node:net"), import("node:crypto")])
+      .then(([{ default: net }, { randomBytes, createHash }]) => {
+        const frames = [];
+        const st = { header: "", buf: Buffer.alloc(0), handshook: false, socket: null };
+        let settled = false;
+        const key = randomBytes(16).toString("base64");
+        const api = {
+          frames,
+          send(text) {
+            const body = Buffer.from(String(text), "utf8");
+            if (body.length >= 126) throw new Error("openEventStream: frame must stay under 126 bytes");
+            const maskKey = randomBytes(4);
+            const head = Buffer.alloc(6);
+            head[0] = 0x81; // FIN | TEXT
+            head[1] = 0x80 | body.length; // mask bit + 7-bit length
+            maskKey.copy(head, 2);
+            const masked = Buffer.from(body);
+            for (let i = 0; i < masked.length; i++) masked[i] ^= maskKey[i & 3];
+            st.socket.write(Buffer.concat([head, masked]));
+          },
+          close() {
+            try { st.socket.destroy(); } catch {}
+          },
+        };
+        const ingest = (chunk) => {
+          st.buf = Buffer.concat([st.buf, chunk]);
+          parseServerTextFrames(st, frames);
+        };
+        const guard = setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          try { st.socket.destroy(); } catch {}
+          resolve({ ...api, timedOut: true });
+        }, 2500);
+        const done = (err) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(guard);
+          if (err) {
+            try { st.socket.destroy(); } catch {}
+            reject(err);
+          } else {
+            resolve(api);
+          }
+        };
+        st.socket = net.connect(port, "127.0.0.1");
+        st.socket.on("error", (e) => {
+          if (!st.handshook) done(e); // post-handshake teardown noise is ours
+        });
+        st.socket.on("data", (chunk) => {
+          if (!st.handshook) {
+            st.header += chunk.toString("latin1");
+            const idx = st.header.indexOf("\r\n\r\n");
+            if (idx === -1) return;
+            const head = st.header.slice(0, idx);
+            const rest = Buffer.from(st.header.slice(idx + 4), "latin1");
+            if (!/^HTTP\/1\.1 101\b/.test(head)) {
+              done(new Error(`openEventStream: expected 101 upgrade, got: ${head.split("\r\n")[0] || "(empty)"}`));
+              return;
+            }
+            const accept = head.match(/^sec-websocket-accept:\s*(.+)$/im);
+            const expected = createHash("sha1")
+              .update(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11", "utf8")
+              .digest("base64");
+            if (accept && accept[1].trim() !== expected) {
+              done(new Error("openEventStream: bad Sec-WebSocket-Accept"));
+              return;
+            }
+            st.handshook = true;
+            if (rest.length) ingest(rest);
+            done();
+            return;
+          }
+          ingest(chunk);
+        });
+        st.socket.on("connect", () => {
+          st.socket.write(
+            `GET /api/stream${cid ? `?cid=${encodeURIComponent(cid)}` : ""} HTTP/1.1\r\n` +
+              `Host: 127.0.0.1:${port}\r\n` +
+              "Connection: Upgrade\r\n" +
+              "Upgrade: websocket\r\n" +
+              `Sec-WebSocket-Key: ${key}\r\n` +
+              "Sec-WebSocket-Version: 13\r\n" +
+              "\r\n",
+          );
+        });
+      })
+      .catch(reject);
+  });
+}
+
+/**
+ * Incrementally parse server → client frames (unmasked per RFC 6455 §5.1)
+ * and push every TEXT frame's JSON payload onto `out`. Control frames
+ * (ping/pong/close) and binary frames are consumed but not surfaced —
+ * the helpers only care about protocol text frames.
+ */
+function parseServerTextFrames(st, out) {
+  while (st.buf.length >= 2) {
+    const opcode = st.buf[0] & 0x0f;
+    let len = st.buf[1] & 0x7f;
+    let offset = 2;
+    if (len === 126) {
+      if (st.buf.length < 4) return;
+      len = st.buf.readUInt16BE(2);
+      offset = 4;
+    } else if (len === 127) {
+      if (st.buf.length < 10) return;
+      len = Number(st.buf.readBigUInt64BE(2));
+      offset = 10;
+    }
+    const masked = (st.buf[1] & 0x80) !== 0;
+    const maskLen = masked ? 4 : 0;
+    if (st.buf.length < offset + maskLen + len) return;
+    let payload = st.buf.subarray(offset + maskLen, offset + maskLen + len);
+    if (masked) {
+      const mk = st.buf.subarray(offset, offset + 4);
+      const un = Buffer.allocUnsafe(len);
+      for (let i = 0; i < len; i++) un[i] = payload[i] ^ mk[i & 3];
+      payload = un;
+    }
+    st.buf = st.buf.subarray(offset + maskLen + len);
+    if (opcode === 0x1) {
+      const text = payload.toString("utf8");
+      try { out.push(JSON.parse(text)); } catch { out.push({ raw: text }); }
+    }
+    // 0x8 close / 0x9 ping / 0xa pong / 0x2 binary: consumed, not surfaced.
+  }
+}
+
+// ---------------------------------------------------------------------------
+// decideNextAuthorization — decision driver for integration tests that
+// spawn the REAL server.js in a child process. Opens the /api/stream
+// WebSocket (openEventStream above), waits for the control frame
+// `needs_authorization`, extracts the requestId from its JSON-string
+// `data`, and POSTs /api/auth/decision — the exact wire path the
+// production modal uses.
+//
+// Resolves { requestId, decision } where decision is the parsed
+// /api/auth/decision response. Rejects if no auth request arrives
+// within `timeoutMs` (default 3s).
+//
+// IMPORTANT: start this helper BEFORE firing the gated HTTP request
+// and allow a short delay for the WebSocket handshake to register —
+// needs_authorization broadcasts are NOT replayed to late subscribers
+// (the pending-request control frame is fire-once).
+// ---------------------------------------------------------------------------
+export function decideNextAuthorization({ port, approve = true, cid, timeoutMs = 3000 }) {
+  return new Promise((resolve, reject) => {
+    // settled:  outer promise has resolved/rejected.
+    // deciding: a needs_authorization frame was seen and the decision
+    //   POST is in flight — from that point, teardown noise from our own
+    //   stream close() must NOT reject the outer promise; the POST's
+    //   outcome is the answer.
+    let settled = false;
+    let deciding = false;
+    let stream = null;
+    let poll = null;
+    let postReq = null;
+    // U4 (2026-09-20): settlement guarantee — the bail-out timer covers
+    // BOTH phases (waiting for the control frame AND the decision POST).
+    // The old code cleared it as soon as the frame arrived, so a server
+    // that accepted the POST but never responded left this promise
+    // pending forever with no timeout. On fire, everything is destroyed
+    // and the promise rejects — waiting sides must never depend on the
+    // peer (or incidental event-loop handles) for liveness.
+    const teardown = () => {
+      if (poll) clearInterval(poll);
+      poll = null;
+      try { if (stream) stream.close(); } catch {}
+      try { if (postReq) postReq.destroy(); } catch {}
+    };
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      teardown();
+      reject(new Error(
+        `decideNextAuthorization: no completed needs_authorization decision within ${timeoutMs}ms`,
+      ));
+    }, timeoutMs);
+    const settle = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (poll) clearInterval(poll);
+      poll = null;
+      fn(value);
+    };
+    openEventStream(port, cid || `decider-${Date.now().toString(36)}`)
+      .then((s) => {
+        stream = s;
+        if (settled) { try { s.close(); } catch {} return; }
+        // Frames accumulate in s.frames; scan cheaply at test scale.
+        poll = setInterval(() => {
+          if (deciding || settled) return; // POST in flight / already done
+          for (const f of s.frames) {
+            if (!f || f.type !== "control" || !f.payload) continue;
+            if (f.payload.name !== "needs_authorization") continue;
+            let payload;
+            try { payload = JSON.parse(f.payload.data); } catch { continue; }
+            const requestId = payload && payload.requestId;
+            if (!requestId) continue;
+            deciding = true; // decision POST in flight — ignore stream teardown noise
+            if (poll) clearInterval(poll);
+            poll = null;
+            try { s.close(); } catch {}
+            import("node:http")
+              .then((http) => {
+                const data = JSON.stringify({ requestId, approve });
+                postReq = http.request(
+                  {
+                    method: "POST",
+                    host: "127.0.0.1",
+                    port,
+                    path: "/api/auth/decision",
+                    headers: {
+                      "Content-Type": "application/json",
+                      "Content-Length": Buffer.byteLength(data),
+                    },
+                  },
+                  (postRes) => {
+                    const chunks = [];
+                    postRes.on("data", (c) => chunks.push(c));
+                    postRes.on("end", () => {
+                      let decision;
+                      try { decision = JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch {}
+                      settle(resolve, { requestId, decision, status: postRes.statusCode });
+                    });
+                    postRes.on("error", (e) => {
+                      settle(resolve, { requestId, decision: null, status: postRes.statusCode, error: e.message });
+                    });
+                  },
+                );
+                postReq.on("error", (e) => settle(reject, e));
+                postReq.write(data);
+                postReq.end();
+              })
+              .catch((e) => settle(reject, e));
+            return;
+          }
+        }, 10);
+      })
+      .catch((e) => settle(reject, e));
+  });
+}
