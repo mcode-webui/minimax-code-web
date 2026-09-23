@@ -55,7 +55,13 @@ export async function listAllMcodeSessions() {
     return r && Array.isArray(r.sessions) ? r.sessions : [];
   } catch (e) {
     console.warn(`[acp] listAllMcodeSessions failed: ${e.message}`);
-    if (_mcodeAcpSingleton === client) _mcodeAcpSingleton = null;
+    // v2026-09-23: 失败时必须 stop 再弃引用 —— 只置 null 会泄漏 mcode acp 子进程，
+    //   其 stdio 管道撑住调用方事件循环（无登录态环境里 node --test 跑完不退出；
+    //   生产环境 auth 过期时每次失败都泄漏一个子进程）。
+    if (_mcodeAcpSingleton === client) {
+      _mcodeAcpSingleton = null;
+      try { client.stop(); } catch {}
+    }
     return [];
   }
 }
@@ -115,7 +121,11 @@ export async function getMcodeSessionTitle(mcodeSessionId) {
     return hit && hit.title ? hit.title : null;
   } catch (e) {
     console.warn(`[acp] getMcodeSessionTitle failed: ${e.message}`);
-    if (_mcodeAcpSingleton === client) _mcodeAcpSingleton = null;
+    // v2026-09-23: 同 listAllMcodeSessions —— stop 后再弃引用，避免泄漏子进程。
+    if (_mcodeAcpSingleton === client) {
+      _mcodeAcpSingleton = null;
+      try { client.stop(); } catch {}
+    }
     return null;
   }
 }
