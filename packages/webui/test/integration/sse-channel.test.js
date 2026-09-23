@@ -27,14 +27,18 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import http from "node:http";
-import { decideNextAuthorization } from "../_setup.js";
+import { decideNextAuthorization } from "../helpers/_setup.js";
+import { findFreePort, parseListeningPort } from "../helpers/free-port.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const serverJsPath = join(__dirname, "..", "..", "server.js");
 
-function pickPort() {
-    return 19600 + Math.floor(Math.random() * 80);
-}
+// Port: findFreePort() returns an OS-allocated ephemeral port. The
+// recorded `port` is the value the child logged on its "listening
+// on http://host:port" line, NOT the port we asked for —
+// server/lib/port.js#listenWithPortFallback walks forward on
+// EADDRINUSE, so callers must always read the bound port or they
+// POST to a wrong/stale socket (see test/helpers/free-port.js).
 
 // spawnServer returns { proc, port, tmpDir, settingsPath, eventsPath,
 // stderr }. Pass opts.throttleMs to set STATE_PUSH_THROTTLE_MS for
@@ -43,17 +47,16 @@ async function spawnServer(opts = {}) {
     const tmpDir = mkdtempSync(join(tmpdir(), "mcode-webui-d02-sse-"));
     const settingsPath = join(tmpDir, "settings.json");
     const eventsPath = join(tmpDir, "events.ndjson");
-    const port = opts.port || pickPort();
+    const requestedPort = opts.port || await findFreePort();
     const env = {
         ...process.env,
-        PORT: String(port),
+        PORT: String(requestedPort),
         HOST: "127.0.0.1",
         MCODE_WEBUI_SETTINGS_PATH: settingsPath,
         MCODE_WEBUI_EVENTS_PATH: eventsPath,
-        // U1 (2026-09-20 rigor fix): redirect upload dir + sessions db
-        // away from MCODE_ROOT — see router-boot.test.js (stray
-        // .webui-uploads/ breaks marketplace validate.mjs). tmpDir is
-        // per-test mkdtemp'd and rmSync'd in stopServer below.
+        // Redirect upload dir + sessions db away from MCODE_ROOT —
+        // see router-boot.test.js (U1, 2026-09-20 webui-rigor-fix;
+        // stray .webui-uploads/ breaks marketplace validate.mjs).
         MCODE_WEBUI_UPLOAD_DIR: join(tmpDir, "uploads"),
         MCODE_WEBUI_SESSIONS_DB: join(tmpDir, "sessions.json"),
         TOKEN: "",
@@ -75,25 +78,30 @@ async function spawnServer(opts = {}) {
     let stdout = "";
     proc.stdout.on("data", (d) => (stdout += d.toString()));
     proc.stderr.on("data", (d) => (stderr += d.toString()));
+    let boundPort = null;
     const ready = new Promise((resolve, reject) => {
         const onChunk = () => {
-            if (/listening on/.test(stdout)) {
+            const p = parseListeningPort(stdout);
+            if (p !== null) {
+                boundPort = p;
                 proc.stdout.off("data", onChunk);
+                clearTimeout(timer);
                 resolve();
             }
         };
-        proc.stdout.on("data", onChunk);
-        setTimeout(() => {
+        const timer = setTimeout(() => {
             reject(
                 new Error(
-                    `server.js did not start within 3s on port ${port}\n` +
+                    `server.js did not start within 3s on port ${requestedPort}\n` +
                     `stdout: ${stdout}\nstderr: ${stderr}`,
                 ),
             );
         }, 3000);
+        proc.stdout.on("data", onChunk);
     });
     await ready;
-    return { proc, port, tmpDir, settingsPath, eventsPath, stderr };
+    const port = boundPort !== null ? boundPort : requestedPort;
+    return { proc, port, requestedPort, tmpDir, settingsPath, eventsPath, stderr };
 }
 
 async function stopServer(proc, tmpDir) {

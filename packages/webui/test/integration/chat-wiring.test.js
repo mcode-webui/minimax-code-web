@@ -1,10 +1,14 @@
 // webui/test/integration/chat-wiring.test.js
-// Extracted from test/chat.test.js by the 2026-09-20 webui-rigor-fix
-// M1 migration: the mocked unit half moved to checks/chat.check.mjs
-// (needs --experimental-test-module-mocks), while this production
-// wiring gate stays under test/ — it runs the REAL server.js as a
-// child process with zero module mocks, so it is dual-mode and
-// belongs in the flagless marketplace root-gate discovery surface.
+// Production wiring surface gate tests (2026-09-20 webui-rigor-fix W2).
+//
+// routes/chat.js must import the gate-bearing lib/slash.js shell, not
+// the raw interaction/commands.js dispatcher — otherwise the B03
+// authorize("slash.clear") gate and the write-ahead audit are dead
+// code in production. These tests boot the REAL server.js as a child
+// process (no module mocks — works with and without
+// --experimental-test-module-mocks) and drive /clear through the
+// production HTTP wire path, deciding the authorize() gate exactly
+// like the browser modal does.
 
 import { test, describe, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
@@ -14,28 +18,9 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import http from "node:http";
-import { absPath, decideNextAuthorization } from "../_setup.js";
+import { absPath, decideNextAuthorization } from "../helpers/_setup.js";
+import { findFreePort, parseListeningPort } from "../helpers/free-port.js";
 
-// ============================================================
-// 2026-09-20 rigor fix (W2): production wiring surface gate tests.
-//
-// routes/chat.js must import the gate-bearing lib/slash.js shell, not
-// the raw interaction/commands.js dispatcher — otherwise the B03
-// authorize("slash.clear") gate and the write-ahead audit are dead
-// code in production (the G1 bypass finding). The unit tests above
-// exercise handleSend against the _setup.js mock of lib/slash.js, so
-// they cannot see the gate. These tests boot the REAL server.js as a
-// child process (no module mocks — works identically with and without
-// --experimental-test-module-mocks) and drive /clear through the
-// production HTTP wire path, deciding the authorize() gate exactly
-// like the browser modal does (SSE needs_authorization frame + POST
-// /api/auth/decision via the _setup.js decideNextAuthorization
-// helper). Same pattern as test/integration/event-chain.test.js.
-// ============================================================
-
-// Originally test/chat.test.js sat one level up, so the anchor was
-// join(dir, ".."); now that this file lives in test/integration/ the
-// plugin root needs two levels — same as event-chain.test.js.
 const PLUGIN_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const SERVER_JS = join(PLUGIN_ROOT, "server.js");
 const GATE_CID = "cid-w2-gate";
@@ -48,21 +33,26 @@ describe("chat route production wiring — /clear must pass the slash.js gate", 
     // files (nothing touches ~/.mcode-webui), token auth off, and
     // DEBUG_INJECT=1 so tests can seed cs.chat and read it back
     // without a browser.
+    //
+    // Port: findFreePort() returns an OS-allocated ephemeral port;
+    // the recorded `port` is the value the child logged on its
+    // "listening on http://host:port" line, NOT the port we asked
+    // for — server/lib/port.js#listenWithPortFallback walks forward
+    // on EADDRINUSE, and a fallback makes the test POST to a
+    // wrong/stale socket (see test/helpers/free-port.js).
     const tmpDir = mkdtempSync(join(tmpdir(), "mcode-webui-w2-gate-"));
-    const port = 19800 + Math.floor(Math.random() * 80);
+    const requestedPort = await findFreePort();
     const env = {
       ...process.env,
-      PORT: String(port),
+      PORT: String(requestedPort),
       HOST: "127.0.0.1",
       MCODE_WEBUI_SETTINGS_PATH: join(tmpDir, "settings.json"),
       MCODE_WEBUI_EVENTS_PATH: join(tmpDir, "events.ndjson"),
       MCODE_WEBUI_SESSIONS_DB: join(tmpDir, "sessions.json"),
-      // U1 (2026-09-20 rigor fix): redirect upload dir away from
-      // MCODE_ROOT — server.js mkdirSync(UPLOAD_DIR) at boot would
-      // otherwise create a stray .webui-uploads/ in the plugin tree,
-      // which breaks marketplace validate.mjs. Same pattern as the
-      // server-startup.test.js bootstrap env. tmpDir is per-test
-      // mkdtemp'd and rmSync'd in afterEach below.
+      // Redirect upload dir away from MCODE_ROOT — server.js
+      // mkdirSync(UPLOAD_DIR) at boot would otherwise create a
+      // stray .webui-uploads/ in the plugin tree (U1, 2026-09-20
+      // webui-rigor-fix).
       MCODE_WEBUI_UPLOAD_DIR: join(tmpDir, "uploads"),
       TOKEN: "",
       MCODE_WEBUI_TOKEN_STDOUT: "0",
@@ -77,16 +67,19 @@ describe("chat route production wiring — /clear must pass the slash.js gate", 
     let stderr = "";
     proc.stdout.on("data", (d) => (stdout += d.toString()));
     proc.stderr.on("data", (d) => (stderr += d.toString()));
+    let boundPort = null;
     await new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         reject(
           new Error(
-            `server.js did not start within 3s on port ${port}\nstdout: ${stdout}\nstderr: ${stderr}`,
+            `server.js did not start within 3s on port ${requestedPort}\nstdout: ${stdout}\nstderr: ${stderr}`,
           ),
         );
       }, 3000);
       const onChunk = () => {
-        if (/listening on/.test(stdout)) {
+        const p = parseListeningPort(stdout);
+        if (p !== null) {
+          boundPort = p;
           clearTimeout(timer);
           proc.stdout.off("data", onChunk);
           resolve();
@@ -94,9 +87,11 @@ describe("chat route production wiring — /clear must pass the slash.js gate", 
       };
       proc.stdout.on("data", onChunk);
     });
+    const port = boundPort !== null ? boundPort : requestedPort;
     server = {
       proc,
       port,
+      requestedPort,
       tmpDir,
       eventsPath: join(tmpDir, "events.ndjson"),
     };

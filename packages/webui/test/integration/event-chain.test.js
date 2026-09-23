@@ -16,9 +16,8 @@
 //      nothing deleted; short-timeout → fail-closed reject; user
 //      approve → deletion lands AND events.verify() still ok.
 //
-// The child server is spawned WITHOUT --experimental-test-module-mocks:
-// the authorize() test-mode auto-approve was removed in the rigor fix,
-// and integration tests must drive the real decision wire path.
+// The child server is spawned WITHOUT --experimental-test-module-mocks
+// so integration tests must drive the real decision wire path.
 
 import { test, describe } from "node:test";
 import { strict as assert } from "node:assert";
@@ -29,32 +28,34 @@ import { join, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import http from "node:http";
 import { createHash } from "node:crypto";
-import { decideNextAuthorization } from "../_setup.js";
+import { decideNextAuthorization } from "../helpers/_setup.js";
+import { findFreePort, parseListeningPort } from "../helpers/free-port.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const serverJsPath = join(__dirname, "..", "..", "server.js");
 const SERVER_DIR = join(__dirname, "..", "..", "server");
 const absPath = (rel) => pathToFileURL(join(SERVER_DIR, rel)).href;
 
-function pickPort() {
-    return 19700 + Math.floor(Math.random() * 80);
-}
-
+// Port: findFreePort() returns an OS-allocated ephemeral port. The
+//   returned `port` is the value the child logged on its "listening
+//   on http://host:port" line — server/lib/port.js#listenWithPortFallback
+//   walks forward on EADDRINUSE, so callers must always read the
+//   bound port, never the one they requested (see test/helpers/free-
+//   port.js).
 async function spawnServer(opts = {}) {
     const tmpDir = mkdtempSync(join(tmpdir(), "mcode-webui-d02-chain-"));
     const settingsPath = join(tmpDir, "settings.json");
     const eventsPath = join(tmpDir, "events.ndjson");
-    const port = opts.port || pickPort();
+    const requestedPort = opts.port || await findFreePort();
     const env = {
         ...process.env,
-        PORT: String(port),
+        PORT: String(requestedPort),
         HOST: "127.0.0.1",
         MCODE_WEBUI_SETTINGS_PATH: settingsPath,
         MCODE_WEBUI_EVENTS_PATH: eventsPath,
-        // U1 (2026-09-20 rigor fix): redirect upload dir + sessions db
-        // away from MCODE_ROOT — see router-boot.test.js (stray
-        // .webui-uploads/ breaks marketplace validate.mjs). tmpDir is
-        // per-test mkdtemp'd and rmSync'd in stopServer below.
+        // Redirect upload dir + sessions db away from MCODE_ROOT —
+        // see router-boot.test.js (U1, 2026-09-20 webui-rigor-fix;
+        // stray .webui-uploads/ breaks marketplace validate.mjs).
         MCODE_WEBUI_UPLOAD_DIR: join(tmpDir, "uploads"),
         MCODE_WEBUI_SESSIONS_DB: join(tmpDir, "sessions.json"),
         TOKEN: "",
@@ -72,20 +73,28 @@ async function spawnServer(opts = {}) {
     let stdout = "";
     proc.stdout.on("data", (d) => (stdout += d.toString()));
     proc.stderr.on("data", (d) => (stderr += d.toString()));
+    let boundPort = null;
     const ready = new Promise((resolve, reject) => {
         const onChunk = () => {
-            if (/listening on/.test(stdout)) {
+            const p = parseListeningPort(stdout);
+            if (p !== null) {
+                boundPort = p;
                 proc.stdout.off("data", onChunk);
+                clearTimeout(timer);
                 resolve();
             }
         };
-        proc.stdout.on("data", onChunk);
-        setTimeout(() => {
-            reject(new Error(`server.js did not start within 3s on port ${port}\nstdout: ${stdout}\nstderr: ${stderr}`));
+        const timer = setTimeout(() => {
+            reject(new Error(`server.js did not start within 3s on port ${requestedPort}\nstdout: ${stdout}\nstderr: ${stderr}`));
         }, 3000);
+        proc.stdout.on("data", onChunk);
     });
     await ready;
-    return { proc, port, tmpDir, settingsPath, eventsPath };
+    // Prefer the parsed port — it reflects what the server actually
+    // bound. Fall back to the requested value only if the line never
+    // appeared (parseListeningPort would have rejected via timer above).
+    const port = boundPort !== null ? boundPort : requestedPort;
+    return { proc, port, requestedPort, tmpDir, settingsPath, eventsPath };
 }
 
 async function stopServer(proc, tmpDir) {
@@ -282,27 +291,35 @@ describe("event-chain: alerts integration shape", () => {
 
     test("alerts module imports events.js (audit-write shape validation)", async () => {
         // Read the source file directly. The alerts module MUST contain
-        // a dynamic import of ./events.js + a call to append() with
-        // kind `alert.${level}` — that's the B01 + B02 wiring contract.
+        // a static import of { append } from ./events.js + a call to
+        // append() with kind `alert.${level}` — that's the B01 + B02
+        // wiring contract.
+        // alerts.js must statically import append from ./events.js:
+        //   a dynamic `new URL("./events.js", import.meta.url)` form
+        //   fails after esbuild bundles alerts.js (every module shares
+        //   the entry's URL, so the module-relative resolution no
+        //   longer points at server/lib/events.js).
         const { readFileSync: rfs } = await import("node:fs");
         const src = rfs(join(__dirname, "..", "..", "server", "lib", "alerts.js"), "utf8");
-        // alerts.js uses `new URL("./events.js", import.meta.url)` and
-        // then `await import(url.href)` — the source contains BOTH
-        // patterns we need to verify: the URL literal + the dynamic
-        // import call.
+        // alerts.js statically imports append from ./events.js (matches
+        // the same pattern authorize.js uses, see the test below). The
+        // import alias may be `as _eventsAppend`, so match the bare
+        // identifier too.
         assert.match(src, /\.\/events\.js/,
             "alerts.js should reference ./events.js");
-        assert.match(src, /\bimport\(/,
-            "alerts.js should use dynamic import()");
-        assert.match(src, /append\(`alert\.\$\{/,
-            "alerts.js should call append(`alert.${level}`, ...)");
+        assert.match(
+            src,
+            /import\s*\{[^}]*append[^}]*\}\s*from\s*["']\.\/events\.js["']/,
+            "alerts.js should statically import append from ./events.js",
+        );
+        assert.match(src, /\b[A-Za-z_]*Append\(`alert\.\$\{/,
+            "alerts.js should call append(`alert.${level}`, ...) — note: alerts.js renames it to _eventsAppend at import");
     });
 
     test("authorize.js imports events.js statically (B03 + B01 integration)", async () => {
         const { readFileSync: rfs } = await import("node:fs");
         const src = rfs(join(__dirname, "..", "..", "server", "lib", "authorize.js"), "utf8");
-        // 2026-09-20 rigor fix: static import (the dynamic-import dance
-        // hid write failures and corrupted the kind field).
+        // 2026-09-20 rigor fix: static import of append.
         assert.match(src, /\.\/events\.js/,
             "authorize.js should reference ./events.js");
         assert.match(

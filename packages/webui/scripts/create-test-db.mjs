@@ -1,12 +1,5 @@
 #!/usr/bin/env node
 // webui/scripts/create-test-db.mjs
-// (moved out of test/fixtures/ by the 2026-09-20 webui-rigor-fix M1
-// batch: Node's root-gate discovery executes EVERY .js/.mjs under
-// test/ as a test file, so this one-shot generator ran on every
-// gate pass — rewriting the committed fixture DB (a permanent false
-// dirty in git) and crashing with spawnSync ENOENT on any runner
-// without a sqlite3 binary on PATH.)
-//
 // One-shot script: creates a self-contained sqlite3 fixture DB with
 // predictable `local_runtime_token_usage` rows for unit tests.
 //
