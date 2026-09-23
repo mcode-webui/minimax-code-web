@@ -1,0 +1,136 @@
+/* Imported by app/layout.tsx alongside ../styles/tokens.css (token layer first).
+ * Both are global stylesheets, so they must be imported from the root layout. */
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Font families.
+ *
+ * Upstream declares these inline on rules rather than exposing them as custom
+ * properties, so they are not part of tokens.css (which is generated verbatim from
+ * the upstream custom properties). The stacks below are copied value-for-value from
+ * the upstream `font-family` declarations.
+ *
+ * The CJK fallbacks are load-bearing: upstream ships a Chinese locale whose input
+ * area is 36px taller (--chat-input-height-zh) and whose font stack must resolve
+ * PingFang / Yahei before the generic family. */
+:root {
+  --font_family_sans: "HarmonyOS Sans", "Segoe UI", "SF Pro Display", -apple-system,
+    BlinkMacSystemFont, Roboto, Oxygen, Ubuntu, Cantarell, "Open Sans", "Helvetica Neue",
+    sans-serif, "HarmonyOS Sans SC", "PingFang SC", "Hiragino Sans GB", "Microsoft Yahei UI",
+    "Microsoft Yahei";
+  --font_family_code: Hack, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    "HarmonyOS Sans SC", "PingFang SC", monospace;
+}
+
+@layer base {
+  html {
+    /* Upstream applies the theme as a class on <html> and keeps color-scheme in
+     * sync so form controls and scrollbars follow (see app/layout.tsx). */
+    height: 100%;
+  }
+
+  body {
+    min-height: var(--screen);
+    background-color: var(--bg_default_primary);
+    color: var(--text_default_primary);
+    font-family: var(--font_family_sans);
+    /* Upstream's baseline body text: 14px / 22px / -0.1px. */
+    font-size: 14px;
+    line-height: 22px;
+    letter-spacing: -0.1px;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  code,
+  pre,
+  kbd,
+  samp {
+    font-family: var(--font_family_code);
+  }
+
+  /* Ported from upstream: the scrollbar colours come from the theme tokens so
+   * they follow light / dark without a per-theme rule. */
+  .thin-scrollbar {
+    scrollbar-width: thin;
+    scrollbar-color: var(--text_default_quaternary) transparent;
+  }
+}
+
+/* Loading indicator — copied verbatim from the upstream stylesheet that the
+ * desktop renderer loads for its route-level suspense fallback. */
+.mavis-loading {
+  width: 26px;
+  display: flex;
+}
+.mavis-loading .mavis-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: #25272f;
+  animation-duration: 1.8s;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+}
+.mavis-loading .mavis-dot-a {
+  opacity: 0.65;
+  animation-name: mavis-dot-a;
+}
+.mavis-loading .mavis-dot-b {
+  opacity: 0.3;
+  animation-name: mavis-dot-b;
+  margin: 0 4px;
+}
+.mavis-loading .mavis-dot-c {
+  opacity: 1;
+  animation-name: mavis-dot-c;
+}
+@keyframes mavis-dot-a {
+  0% {
+    opacity: 0.65;
+  }
+  33.3% {
+    opacity: 1;
+  }
+  66.6% {
+    opacity: 0.3;
+  }
+  to {
+    opacity: 0.65;
+  }
+}
+@keyframes mavis-dot-b {
+  0% {
+    opacity: 0.3;
+  }
+  33.3% {
+    opacity: 0.65;
+  }
+  66.6% {
+    opacity: 1;
+  }
+  to {
+    opacity: 0.3;
+  }
+}
+@keyframes mavis-dot-c {
+  0% {
+    opacity: 1;
+  }
+  33.3% {
+    opacity: 0.3;
+  }
+  66.6% {
+    opacity: 0.65;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* Code font, from the token layer (upstream's stack, see the note above). */
+.font-family-code {
+  font-family: var(--font_family_code);
+}
