@@ -8,7 +8,9 @@
 
 If the fix here doesn't work, enable the in-page debug log (bottom-right
 of the webui) and check the right panel for SSE events. You can also
-run `node --check public/app/main.js` to verify the file parses.
+rebuild the frontend (`pnpm run webui:build`) and rerun `pnpm --filter
+@mavis/webui webapp:typecheck` to surface any TS error in the new
+App Router code.
 
 ---
 
@@ -32,22 +34,23 @@ connection never opened.
 ## `⚠ webui JS 初始化失败: TypeError: Cannot read properties of null (reading 'addEventListener')`
 
 **Symptoms**: full-page red error block in the browser with this
-message and a stack trace ending in `attachEvents` or `init`.
+message and a stack trace ending in a component or `init` callback.
 
-**Cause**: the `main.js` script is referencing an HTML element that
-was deleted in `index.html`, OR the `cache-bust?v=N` query is out
-of date and the browser is running an old main.js.
+**Cause**: a component is referencing a DOM node that was removed
+(or renamed) in a layout edit, OR a stale `_next/static` chunk is
+loaded from a previous export and the new layout no longer matches it.
 
 **Fix**:
 1. **Hard-reload** the page (Ctrl+Shift+R). This usually fixes it
-   when the issue is stale cache.
-2. If hard-reload doesn't help, check `git log --oneline -5` for
-   recent commits to `public/index.html` and `public/app/main.js`.
-   If main.js was updated but the cache-bust wasn't bumped, bump
-   it (see `docs/DEVELOPMENT.md` § "Bump the cache-bust").
-3. If the issue is a deleted element, the error message includes
-   the line number. Look up the element ID in that line and
-   either restore it in `index.html` or remove the JS reference.
+   when the issue is a stale export cached by an intermediate proxy.
+2. If hard-reload doesn't help, rebuild the export with
+   `pnpm run webui:build` and restart the server so `dist/webui/webapp/out/`
+   reflects the new layout. There is no manual `?v=N` cache-bust
+   any more — the hash on every `_next/static/<hash>/…` URL is the
+   cache buster.
+3. If the issue is a renamed or removed DOM node, the error
+   message includes the file and line. Restore the node, or remove
+   the JS reference at that line.
 
 ## `Failed to load resource: net::ERR_CONNECTION_REFUSED` to `127.0.0.1:18090`
 
@@ -61,7 +64,7 @@ port.
 **Fix**:
 1. Check the server is up: `curl http://127.0.0.1:18090/api/health`
    should return JSON.
-2. If not running, start it: `cd webui; node server.js`.
+2. If not running, start it: `cd packages/webui && node server.js`.
 3. If running on a different port, set `$env:PORT = <port>` and
    restart. Then update the URL in the browser.
 
@@ -122,9 +125,11 @@ or use a different CID, the dismissal is lost.
 
 **Fix**:
 - If the question reappears in the same session: don't clear
-  localStorage. If you really need to, double-click the brand
-  logo in the top-left to clear `presentedKeys` (this is the
-  same as clearing `DISMISSED_QUESTIONS`).
+  localStorage. If you really need to, clear the per-CID
+  presentation state from `localStorage` (the same key the
+  shell uses for `DISMISSED_QUESTIONS`); there is no longer a
+  brand-logo shortcut, since the legacy vanilla-JS UI and the
+  `public/brand-logo.png` image were removed.
 - If the question reappears in a new session: that's by design.
   New session = new state.
 
@@ -135,7 +140,9 @@ functionality.
 
 **Cause**: no favicon is served.
 
-**Fix**: this is cosmetic, ignore it. Or add a `public/favicon.ico`.
+**Fix**: this is cosmetic, ignore it. The Next export ships `favicon_v2.ico`
+and `favicon_v2.png` from `webapp/public/`; the legacy `/favicon.ico` is
+no longer served.
 
 ## SSE connection drops every 30-60 seconds
 
@@ -232,8 +239,11 @@ renamed. If you see this, the webui was loaded from a stale
 cache.
 
 **Fix**: hard-reload. If it persists, check the network tab for
-the main.js response — it should include the version comment
-"v0.5.bx-NN".
+the `/_next/static/chunks/main-app-<hash>.js` (or any chunk under
+`/_next/static/`) response — it should include the webui version
+(`@mavis/webui/package.json`). The Next export content-addresses each
+chunk so a stale one is the symptom of a stale `webapp/out/` rather than
+a missing rebuild.
 
 ## Server won't start: "cannot listen on 127.0.0.1:18090 — EADDRINUSE"
 
@@ -282,8 +292,10 @@ client isn't sending it. Or the token mismatch.
 does nothing.
 
 **Cause**: the mcode binary is not at the expected path. The
-default is `<webui-root>/../../mcode.cmd` (which resolves to
-`%USERPROFILE%\.minimax-code\mcode.cmd`).
+default detection chain (see `server/lib/config.js#MCODE_CMD`) is:
+`$MCODE_CMD` env > `MCODE_WEBUI_SELF_ENTRY` > repo
+`<packages/webui>/../../dist/cli.js` > `~/.minimax-code/mcode.cmd` >
+`PATH` (`mcode`).
 
 **Fix**:
 1. Verify the path: `Test-Path %USERPROFILE%\.minimax-code\mcode.cmd`

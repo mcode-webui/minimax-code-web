@@ -6,8 +6,10 @@
 > 报错信息、根因，以及经过验证的修复方法。
 
 如果这里的修复方法不起作用，请启用页面内调试日志（webui 右下角）
-并查看右侧面板中的 SSE 事件。你也可以运行
-`node --check public/app/main.js` 来验证该文件能否正常解析。
+并查看右侧面板中的 SSE 事件。你也可以重新构建前端
+（`pnpm run webui:build`）并重新跑
+`pnpm --filter @mavis/webui webapp:typecheck`，让 App Router
+代码中的任何 TypeScript 错误暴露出来。
 
 ---
 
@@ -30,22 +32,21 @@
 ## `⚠ webui JS 初始化失败: TypeError: Cannot read properties of null (reading 'addEventListener')`
 
 **症状**：浏览器中出现整页红色报错块，包含此消息，
-堆栈跟踪以 `attachEvents` 或 `init` 结尾。
+堆栈跟踪以某个组件或 `init` 回调结尾。
 
-**根因**：`main.js` 脚本引用了一个在 `index.html` 中已被删除的
-HTML 元素；或者 `cache-bust?v=N` 查询参数已过期，
-浏览器正在运行旧版 main.js。
+**根因**：组件引用了一个在 layout 编辑中已被移除（或重命名）的节点；
+或者浏览器加载了上一次导出的 `_next/static` chunk，而新 layout 已经
+不再对应它。
 
 **修复**：
-1. **强制刷新**页面（Ctrl+Shift+R）。当问题是缓存过期时，
+1. **强制刷新**页面（Ctrl+Shift+R）。当问题是中间代理缓存的旧导出时，
    这通常就能解决。
-2. 如果强制刷新没用，用 `git log --oneline -5` 检查
-   `public/index.html` 和 `public/app/main.js` 最近的提交。
-   如果 main.js 更新了但 cache-bust 没有递增，请递增它
-   （参见 `docs/DEVELOPMENT.md` § "Bump the cache-bust"）。
-3. 如果问题是元素被删除，报错信息中会包含行号。在该行中
-   找到元素 ID，然后要么在 `index.html` 中恢复它，
-   要么移除对应的 JS 引用。
+2. 如果强制刷新没用，用 `pnpm run webui:build` 重新构建导出，
+   并重启服务器，让 `dist/webui/webapp/out/` 反映新的 layout。
+   不再有手动的 `?v=N` 缓存破除——每个 `_next/static/<hash>/…` URL
+   上的哈希本身就是缓存破除。
+3. 如果问题是节点被重命名或移除，报错信息中会包含文件和行号。
+   恢复该节点，或移除该行上对它的引用。
 
 ## `Failed to load resource: net::ERR_CONNECTION_REFUSED` 指向 `127.0.0.1:18090`
 
@@ -58,7 +59,7 @@ HTML 元素；或者 `cache-bust?v=N` 查询参数已过期，
 **修复**：
 1. 检查服务器是否在运行：`curl http://127.0.0.1:18090/api/health`
    应返回 JSON。
-2. 如果没有运行，启动它：`cd webui; node server.js`。
+2. 如果没有运行，启动它：`cd packages/webui && node server.js`。
 3. 如果运行在不同端口，设置 `$env:PORT = <port>` 并重启。
    然后更新浏览器中的 URL。
 
@@ -125,8 +126,9 @@ localStorage 或使用了不同的 CID，关闭记录就会丢失。
 
 **根因**：没有提供 favicon。
 
-**修复**：这只是外观问题，忽略即可。或者添加一个
-`public/favicon.ico`。
+**修复**：这只是外观问题，忽略即可。Next 导出已经从 `webapp/public/`
+提供了 `favicon_v2.ico` 和 `favicon_v2.png`；旧的 `/favicon.ico`
+不再被服务。
 
 ## SSE 连接每 30-60 秒断开一次
 
@@ -220,8 +222,10 @@ SIGTERM，但子进程需要一点时间才会退出，而进行中的
 过期引用。如果你看到这个，说明 webui 是从过期缓存加载的。
 
 **修复**：强制刷新。如果问题持续，检查 network 标签页中
-main.js 的响应 —— 它应该包含版本注释
-"v0.5.bx-NN"。
+`/_next/static/chunks/main-app-<hash>.js`（或 `/_next/static/` 下任意
+chunk）的响应 —— 它应该包含 webui 版本（`@mavis/webui/package.json`）。
+Next 导出对每个 chunk 都做内容寻址，所以 chunk 过期通常意味着
+`webapp/out/` 没跟着重建。
 
 ## 服务器无法启动："cannot listen on 127.0.0.1:18090 — EADDRINUSE"
 
@@ -266,9 +270,10 @@ main.js 的响应 —— 它应该包含版本注释
 
 **症状**：`/api/health` 返回 200，但发送消息没有任何反应。
 
-**根因**：mcode 二进制文件不在预期路径。默认值是
-`<webui-root>/../../mcode.cmd`（解析为
-`%USERPROFILE%\.minimax-code\mcode.cmd`）。
+**根因**：mcode 二进制文件不在预期路径。默认的探测链（见
+`server/lib/config.js#MCODE_CMD`）是：`$MCODE_CMD` 环境变量 >
+`MCODE_WEBUI_SELF_ENTRY` > 仓库中 `<packages/webui>/../../dist/cli.js`
+> `~/.minimax-code/mcode.cmd` > `PATH` 中的 `mcode`。
 
 **修复**：
 1. 验证路径：`Test-Path %USERPROFILE%\.minimax-code\mcode.cmd`

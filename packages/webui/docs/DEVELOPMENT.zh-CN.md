@@ -17,11 +17,17 @@
   需要时手动读取数据库。
 
 零 npm 安装。克隆后运行：
-```powershell
-cd ~/.minimax-code/webui
+```bash
+cd packages/webui
 node server.js
-# → http://127.0.0.1:18090
+# → http://127.0.0.1:18090（或下一个空闲端口，见下文）
 ```
+
+`packages/webui/server.js` 是源码模式下的引导文件：它注册 `tsx`
+加载器和一个把每个 `@mavis/*` 解析到工作区 TypeScript 源码的解析器，
+然后委派给 `server/bootstrap.js`。发布归档运行的是
+`dist/webui/server.js`（`bootstrap.js` 的 esbuild bundle）；两个
+入口共享同一份启动代码。
 
 如果想要调试会话（详细 SSE、无缓存、可注入事件）：
 ```powershell
@@ -31,15 +37,18 @@ node server.js
 
 ## 代码结构（摘自 ARCHITECTURE.md）
 
-- `server.js` — 100 行引导代码。不要在这里添加功能。
+- `server.js` — 仅做引导（注册 workspace 导入解析器，
+  然后委派给 `server/bootstrap.js`）。不要在这里添加功能。
 - `server/router.js` — 声明式路由表。在这里添加你的路由。
 - `server/routes/*.js` — 每个 URL 族一个文件。每个文件导出
   `async function handleXxx(req, res, ctx, pathname)`。
 - `server/lib/*.js` — 纯模块。每个模块只关注一件事。
-- `public/app/main.js` — 单 ES 模块前端。约 4200 行，
-  无构建步骤。
-- `public/styles/main.css` — 单一样式表。
-- `public/index.html` — 仅标记。
+- `webapp/` — Next.js 14（React 18 + Tailwind）前端。App Router
+  在 `webapp/app/`、组件在 `webapp/components/`、非视觉逻辑
+  在 `webapp/lib/`、设计令牌在 `webapp/styles/`，静态导出
+  写入 `webapp/out/`。
+- `public/trajectory/` — 独立轨迹工作室（自带后端、CSP、
+  令牌策略）。由路由器挂载到 `/trajectory/`。
 
 ## 添加新的 HTTP 端点
 
@@ -75,10 +84,10 @@ node server.js
    { method: 'POST', match: (p) => p === '/api/foo', handler: fooRoute.handleFoo },
    ```
 
-3. 如果 webui 要调用它，在 `public/app/main.js` 中添加一个辅助函数：
+3. 如果 webui 要调用它，在 `webapp/lib/api.ts` 中添加一个辅助函数：
 
-   ```js
-   async function apiFoo(payload) {
+   ```ts
+   export async function apiFoo(payload: unknown): Promise<…> {
      const r = await fetch('/api/foo' + API_SUFFIX, {
        method: 'POST',
        headers: { 'Content-Type': 'application/json', ...HEADERS },
@@ -103,23 +112,25 @@ node server.js
 3. 传输层通过 `pushStateFor(cid, …)`（状态快照）或
    `broadcastTokenRotated(token)`（一次性事件）推送事件，
    它们会进入 SSE 通道。
-4. 在 `public/app/main.js` 中，在 `connect()` 的 SSE 消息
-   处理器中处理该事件，并相应更新 `state.foo`。
-5. 如果该事件需要 UI，添加一个 `renderFoo()` 渲染函数，并从
-   `render()` 中调用它。
+4. 在 `webapp/lib/sse.ts` 的 SSE 消息处理器中处理该事件，
+   并更新类型化的 store（`store.foo`）。
+5. 如果该事件需要 UI，添加一个 `renderFoo()` 渲染函数（或接入
+   既有组件），并从页面的渲染路径中调用它。
 
 ## 添加新的 UI 面板
 
-1. 将面板标记添加到 `public/index.html`（放在相关面板附近）。
-2. 向 `I18N.zh` 和 `I18N.en` **两者**都添加 i18n 键（使用一致的
-   前缀：`panel_foo_title`、`panel_foo_empty`）。
-3. 在 `public/app/main.js` 中：
-   - 在 `init()` 中向 `els` DOM 缓存添加一个条目。
-   - 添加一个从 `state` 读取并写入 `els.fooPanel` 的
-     `renderFoo()` 函数。
-   - 从 `render()` 中调用 `renderFoo()`。
-4. 在 `public/styles/main.css` 中，将 CSS 添加在 `.foo-panel`
-   作用域下。
+1. 在 `webapp/components/` 下新增一个面板组件（若是顶层新
+   表面，在 `webapp/app/page.tsx` 注册；若是嵌套在 shell 右侧
+   抽屉里，直接内联进 `webapp/components/shell.tsx`）。
+2. 把 i18n 键加入 `webapp/lib/i18n.ts` 的两张表（使用一致的
+   前缀：`panel.foo.title`、`panel.foo.empty`）。
+3. 在组件内部：
+   - 通过类型化的上下文 hook（`webapp/lib/store.tsx` 的
+     `useSessionContext`）读取 state，并订阅相关分片。
+   - 用从 `webapp/styles/tokens.css` 派生的 Tailwind 类来渲染。
+4. 若组件需要专门的样式，把它们加到
+   `webapp/styles/official-utilities.css`（或在组件内用
+   Tailwind 的 `@apply` 作用域）。
 
 ## 添加斜杠命令（webui 侧）
 
@@ -164,27 +175,29 @@ webui 会在连接时获取它。
 
 ## 数据库检查
 
-webui 侧的会话存储是纯 JSON：
-```powershell
-Get-Content "$env:USERPROFILE\.minimax-code\webui\.webui-sessions.json" | ConvertFrom-Json
+webui 侧的会话存储是 `WEBUI_DATA_DIR`（默认 `~/.mcode-webui`，可由
+`MCODE_WEBUI_DATA_DIR` 覆盖）下的纯 JSON：
+```bash
+cat "$HOME/.mcode-webui/sessions.json" | jq .
 ```
 
-mcode 侧的会话存储是 SQLite：
-```powershell
-& "$env:USERPROFILE\anaconda3\Library\bin\sqlite3.exe" `
-  "$env:USERPROFILE\.minimax\v2\sqlite\runtime-state.sqlite" `
-  ".tables"
-& "$env:USERPROFILE\anaconda3\Library\bin\sqlite3.exe" `
-  "$env:USERPROFILE\.minimax\v2\sqlite\runtime-state.sqlite" `
+mcode 侧的会话存储是运行时数据目录（默认 `~/.minimax`，可由
+`MINIMAX_DATA_DIR` 或 `MAVIS_DATA_DIR` 覆盖；`config.js` 解析优先级）
+下的 SQLite：
+```bash
+sqlite3 "$HOME/.minimax/v2/sqlite/runtime-state.sqlite" ".tables"
+sqlite3 "$HOME/.minimax/v2/sqlite/runtime-state.sqlite" \
   "SELECT id, title, cwd FROM local_runtime_sessions ORDER BY updated_at DESC LIMIT 10"
 ```
 
 ## 常见任务
 
 ### 提升缓存破除版本号（cache-bust）
-修改 `public/app/main.js` 之后：
-1. 编辑 `public/index.html` 中的 `<script src="/app/main.js?v=N">` 行。
-2. 增大 N。（当前值：见 script 标签上方的注释。）
+Next 的静态导出对 `_next/static/<hash>/…` 下的每一个 chunk 都做内容寻址
+（参见 ARCHITECTURE.md §7 的缓存策略），因此运行时从不依赖手动的 `?v=N`
+提升——每次编辑后哈希都会变。旧版 vanilla-JS SPA 的 `?v=N` 查询串缓存破除
+不再适用；前端改动后唯一要做的就是重新构建（`pnpm run webui:build`）并
+重新导出。
 
 ### 修改默认端口
 18090 只是默认值，不是被钉住的值：它被占用时服务器会往后找下一个空闲
@@ -234,30 +247,39 @@ curl -X POST http://192.168.1.50:18090/api/settings \
   - 使用 `import` 而非 `require`。
   - 顶层 `await` 在脚本中可以，在模块中不行——如有需要，
     用 `async function main()` 包起来。
-- **客户端**（`main.js`）：同样的约定。无构建步骤，所以
-  优先使用在常青浏览器中无需 polyfill 即可工作的特性。
+- **客户端**（`webapp/`）：同样的约定。前端是 Next.js 14 /
+  React 18 / Tailwind 的 App Router 工程；新页面和组件放在
+  `webapp/app/`、`webapp/components/`、`webapp/lib/` 下。逐文件
+  的说明见 `webapp/README.md`。
 - **注释**：解释*为什么*，而不是*是什么*。如果代码的行为
   与名字一致，就不需要注释。如果需要变通方案，注释中
-  应引用上游 issue。
-- **i18n**：任何用户可见的字符串都要经过 `t('key')`。
-  在 I18N 表之外，`main.js` 中不允许出现硬编码的
-  中文或英文。
-- **CSS**：主题优先使用 CSS 自定义属性。新组件：在
-  `:root`（浅色）和 `[data-theme=dark]`（深色）中定义变量。
+  应引用上游 issue。webui 已彻底移除旧的 `public/app/*.js`
+  vanilla-JS 前端；不要重新引入。
+- **i18n**：任何用户可见的字符串都要经过类型化的
+  `t(MessageKey)` 查询，定义见 `webapp/lib/i18n.ts`。英文与
+  中文两张表始终保持同步；不要在组件里写死的字符串字面量。
+- **CSS**：Next 导出使用基于 `webapp/styles/tokens.css` 设计
+  令牌的 Tailwind 工具类。用 `<html>` 上的 `data-theme` 属性
+  （`webapp/lib/theme.ts` 的 `applyTheme`）切换浅色与深色
+  令牌表。
 
 ## 代码审阅清单
 
 提交 PR 之前：
 
-- [ ] `node --check server.js` 通过
-- [ ] `node --check public/app/main.js` 通过
-- [ ] 没有新的硬编码用户可见字符串（一切经由 `t(...)`）
+- [ ] `pnpm --filter @mavis/webui test` 通过（服务端单元 + 路由 + 工具）
+- [ ] `pnpm --filter @mavis/webui webapp:typecheck` 通过
+- [ ] `pnpm --filter @mavis/webui check` 通过（文档对齐关）
+- [ ] 没有新的硬编码用户可见字符串（一切经由 `t(MessageKey)`）
 - [ ] 没有直接写入 `clientState.state`（使用 `pushStateFor`）
-- [ ] 如果是新端点，已在 `docs/API.md` 中记录
+- [ ] 如果是新端点，已在 `docs/API.md` 中记录（`check-docs-alignment`
+      会强制要求该路径已在 `server/router.js` 中注册）
 - [ ] 如果是新事件类型，已在 `docs/ARCHITECTURE.md § 5` 中记录
 - [ ] 如果是新 UI 面板，`zh` 和 `en` 的 i18n 键都已存在
-- [ ] 如果修改了 `main.js`，已提升缓存破除版本号
-- [ ] 未经讨论不新增 npm 依赖
+- [ ] 改动前端后已重新构建（`pnpm --filter @mavis/webui webapp:build`）
+      再测试 bundle 形态
+- [ ] 未经讨论不新增 npm 依赖；适用 `docs/ARCHITECTURE.md § 7.1`
+      的分层依赖策略
 
 ## 仓库卫生
 

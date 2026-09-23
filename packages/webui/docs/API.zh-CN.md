@@ -466,7 +466,7 @@ Multipart 文件上传。保存到 `MCODE_WEBUI_UPLOAD_DIR` 并返回
 ```json
 {
   "ok": true,
-  "path": "C:\\…\\.webui-uploads\\screenshot.png",
+  "path": "C:\\…\\.mcode-webui\\uploads\\screenshot.png",
   "name": "screenshot.png",
   "size": 12345
 }
@@ -695,14 +695,23 @@ mcode 子进程的情况下测试 UI。
 
 ### `GET /`
 
-返回 `public/index.html`。
+返回 `webapp/out/index.html`（Next 静态导出的入口）。
+由 `serveIndex` 提供。主 UI **没有** `public/` 回退——旧的
+`/app/*.js`、`/styles/*.css`、`/lib/marked.min.js`、`/brand-logo.png`
+都已经不可访问（vanilla-JS SPA 整体移除；见 `test/lib/static.test.js`）。
 
 ### `GET /<file>`
 
-若 `public/` 中存在该文件则返回之。由 `serveStatic` 提供。
-缓存头：`public, max-age=3600`。HTML/JS/CSS 路径
-内嵌了 `?v=N` 缓存破除查询串；当你希望客户端重新抓取时，
-在 `index.html` 中递增它。
+仅从 `webapp/out/` 返回文件，由 `serveStatic` 提供。`public/trajectory/`
+下的轨迹工作室由它自己的处理器（独立后端、CSP、令牌策略）挂载到
+`/trajectory/`，**不**经过这个静态根。缓存头：
+
+- HTML：`no-cache`（每次重新校验）
+- `_next/static/*`（内容哈希）：`public, max-age=31536000, immutable`
+- 其他：`public, max-age=3600`
+
+不再有手动的 `?v=N` 缓存破除——`_next/static/<hash>/…` 下的每个
+chunk URL 都做内容寻址，rebuild 时自动失效。
 
 ---
 

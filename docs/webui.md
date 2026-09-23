@@ -35,6 +35,39 @@ node dist/cli.js webui                         # dev Web UI on 127.0.0.1:18090
 node dist/cli.js webui --port 8123             # keep the installed one free
 ```
 
+### One-shot dev launcher (frontend + backend, hot reload)
+
+When iterating on the Next.js frontend in `packages/webui/webapp/` you want both
+the Node backend (port 18090, serves `/api/*`) and the Next dev server (port
+18091, with HMR, proxies `/api/*` → 18090) running at once. `pnpm run webui:dev`
+boots both in a single shell, prefixes their output so you can tell which side
+is talking, and tears them down together on Ctrl+C:
+
+```bash
+pnpm run webui:dev        # http://127.0.0.1:18091/  ← open this in the browser
+```
+
+It is a thin wrapper over `node scripts/dev-webui.mjs` with no extra
+dependencies. Stop the official `mcode` runtime first if port 18090 is busy
+(`pkill -f "dist/cli.js webui"`), or pass `--port 28090` to `mcode webui` and
+export `MCODE_WEBUI_ORIGIN=http://127.0.0.1:28090` so the dev proxy targets
+the right backend.
+
+### Day-to-day webui commands (Next-aligned)
+
+| Command                  | What it does                                                                                |
+| ------------------------ | ---------------------------------------------------------------------------------------------------- |
+| `pnpm run webui:dev`      | Start both the backend (`:18090`) and Next dev (`:18091`, HMR) together; Ctrl+C cleans up both. |
+| `pnpm run webui:build`    | `next build` the webapp (`packages/webui/webapp/out/` is the static export).                       |
+| `pnpm run webui:start`    | Serve the already-built webui via `node packages/webui/server.js` on `:18090` (no HMR).          |
+| `pnpm run webui:typecheck`| `tsc --noEmit` over the webapp's TS sources.                                                      |
+| `pnpm run webui:test`     | Run all webui unit tests — backend (`test:webui`) + frontend (`test:webapp`).                     |
+
+`next start` is intentionally omitted: the webui ships as a `next export` static
+build and the backend serves those files directly, so there is no Next server
+runtime to start. ESLint is also not wired into the webapp yet — add it via
+`npx next lint` once a `.eslintrc` is in place.
+
 ### Docker
 
 The repository's Docker setup runs the branch in a **clean environment**: no
@@ -78,7 +111,7 @@ The canonical disclosure is [`packages/webui/references/SECURITY-NOTES.md`](../p
 
 ## Architecture
 
-See [`packages/webui/docs/ARCHITECTURE.md`](../packages/webui/docs/ARCHITECTURE.md) for the runtime topology, request lifecycle, and SSE contract. In short: `server.js` bootstraps an HTTP server; `server/router.js` applies the gate chain (CORS → origin/CSRF → LAN → token → rate limit → read-only) and dispatches to `server/routes/*`; `server/lib/*` holds one-concern modules; `acp.mjs` is the ACP client spawning the engine; `public/` is the SPA.
+See [`packages/webui/docs/ARCHITECTURE.md`](../packages/webui/docs/ARCHITECTURE.md) for the runtime topology, request lifecycle, and SSE contract. In short: `packages/webui/server.js` registers the workspace import resolver and delegates to `server/bootstrap.js`; `server/router.js` applies the gate chain (CORS → origin/CSRF → LAN → token → rate limit → read-only) and dispatches to `server/routes/*`; `server/lib/*` holds one-concern modules; `acp.mjs` is the ACP client spawning the engine; `webapp/out/` (the Next static export) is the UI, with `public/trajectory/` and `public/auth-gate.html` (served from the export root) as the only remaining legacy assets.
 
 ## Trajectory studio
 
@@ -98,7 +131,7 @@ pnpm test:webui                      # same, from the repository root (CI gate)
 node packages/webui/scripts/check-docs-alignment.mjs
 ```
 
-The package has zero npm runtime dependencies and requires Node 22.19+ (the trajectory studio additionally needs `node:sqlite`, floor 22.13).
+The package has three runtime dependencies (`hono` + `@hono/node-server` for the HTTP layer, `@mavis/shared` for the workspace path contract) and requires Node 22.19+ (the trajectory studio additionally needs `node:sqlite`, floor 22.13).
 
 ## Origin
 

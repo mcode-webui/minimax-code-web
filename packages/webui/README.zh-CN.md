@@ -3,8 +3,9 @@
 > 简体中文 | [English](README.md)
 
 > **MiniMax Code 智能体运行时的浏览器前端。**
-> 通过 HTTP/SSE 流式传输 `mcode acp` / `mcode exec` 会话。零 npm
-> 依赖；运行于 Node 22.19+。
+> 通过 HTTP/SSE 流式传输 `mcode acp` / `mcode exec` 会话。三个
+> 运行时依赖（`hono`、`@hono/node-server`、`@mavis/shared`）；
+> 运行于 Node 22.19+。
 
 Web UI 是本仓库的一等组成部分 —— 驱动 TUI（`mcode acp`，基于 stdio 的
 Agent Client Protocol）的同一个引擎同时驱动浏览器前端，与终端 UI
@@ -44,15 +45,15 @@ mcode webui --host 0.0.0.0
 
 | 文件 | 说明 |
 |------|------|
-| `server.js` | HTTP + SSE 服务器引导 |
-| `server/` | 路由器、路由模块与纯函数库（`server/lib/`） |
+| `server.js` | 源码模式入口：注册 workspace 导入解析器后加载服务端。构建产物运行的是 `dist/webui/server.js` 这个 bundle |
+| `server/` | 路由器、路由模块与纯函数库（`server/lib/`）；启动逻辑位于 `server/bootstrap.js` |
 | `acp.mjs` | `mcode acp` JSON-RPC 客户端（通过 stdio 派生引擎） |
-| `public/` | 静态前端 SPA |
+| `webapp/` | UI：Next.js App Router 应用，静态导出到 `webapp/out`，作为唯一的静态根被服务 |
+| `public/` | 仅剩静态资源——轨迹工作室的界面位于 `public/trajectory/` |
 | `server/trajectory/` | 会话轨迹工作室（只读 SQLite 检视） |
 | `references/SECURITY-NOTES.md` | **权威安全披露**（在回环之外暴露前必读） |
 | `docs/` | ARCHITECTURE、API、CAPABILITIES、DEVELOPMENT、TROUBLESHOOTING、CHANGELOG |
-| `test/` | `node:test` 测试套件 |
-| `checks/` | 打桩单元检查（`t.mock.module`；需要 module-mocks 标志） |
+| `test/` | `node:test` 测试套件。目录结构与 `server/` 下的被测模块路径一一对应：`test/lib/<name>.{test.js,check.mjs}` 对应 `server/lib/<name>.js`，`test/routes/<name>.{test.js,check.mjs}` 对应 `server/routes/<name>.js`，`test/server/<name>.{test.js,check.mjs}` 对应顶层 router / app / server bootstrap。`*.check.mjs` 文件因使用 `t.mock.module` 需要 `--experimental-test-module-mocks` 标志；`*.test.js` 不需要。`test/tooling/` 覆盖 `scripts/` 下的脚本。辅助模块（`_setup.js`、`mavis-sources.mjs`）位于 `test/helpers/`。`test/integration/`、`test/matrix/`、`test/trajectory/`、`test/fixtures/` 保持不变。 |
 | `scripts/` | 文档对齐检查器、SBOM 生成器、测试数据库夹具构建器 |
 | `package.json` | 包元数据 + 清单（`mcodeWebui.capabilities`） |
 
@@ -87,7 +88,7 @@ mcode webui --host 0.0.0.0
 | `session-management` | WebUI 会话的列出 / 创建 / 切换 / 删除 |
 | `file-attachments` | 拖拽 / 点击 / 粘贴上传 + `@path` 注入 |
 | `quota-usage` | `mmx quota show` + 每轮上下文窗口显示 |
-| `bilingual-ui` | 通过 `t(key)` 查找表实现 zh-CN / en 语言切换 |
+| `bilingual-ui` | 通过类型化的 `t(MessageKey)` 查找实现 zh-CN / en 语言切换 |
 | `lan-sharing` | 默认回环；局域网暴露需显式选择开启（`HOST` 环境变量 / `lanBind` 设置）+ 运行时开/关切换 |
 | `token-auth` | 非本地请求使用 `?token=` / `Authorization: Bearer` |
 | `mobile-responsive` | <900px 时为抽屉式，<600px 时为单列 |

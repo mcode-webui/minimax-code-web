@@ -17,11 +17,18 @@ Requirements:
   precompiled binary if you need to read the db manually.
 
 Zero npm install. Clone, run:
-```powershell
-cd ~/.minimax-code/webui
+```bash
+cd packages/webui
 node server.js
-# → http://127.0.0.1:18090
+# → http://127.0.0.1:18090 (or the next free port; see below)
 ```
+
+`packages/webui/server.js` is the source-mode bootstrap: it registers
+the `tsx` loader and a resolver that maps every `@mavis/*` specifier to
+the workspace's TypeScript sources, then delegates to
+`server/bootstrap.js`. The shipped archive runs `dist/webui/server.js`
+instead (the esbuild bundle of `bootstrap.js`); both entry points
+share the same startup code.
 
 If you want a debug session (verbose SSE, no cache, injectable events):
 ```powershell
@@ -31,15 +38,18 @@ node server.js
 
 ## Code structure (recap from ARCHITECTURE.md)
 
-- `server.js` — 100 lines of bootstrap. Don't add features here.
+- `server.js` — bootstrap only (registers the workspace import resolver,
+  then delegates to `server/bootstrap.js`). Don't add features here.
 - `server/router.js` — declarative route table. Add your route here.
 - `server/routes/*.js` — one file per URL family. Each exports
   `async function handleXxx(req, res, ctx, pathname)`.
 - `server/lib/*.js` — pure modules. One concern each.
-- `public/app/main.js` — single ES module frontend. ~4200 lines,
-  no build step.
-- `public/styles/main.css` — single stylesheet.
-- `public/index.html` — markup only.
+- `webapp/` — Next.js 14 (React 18 + Tailwind) frontend. App Router
+  under `webapp/app/`, components under `webapp/components/`, non-visual
+  logic under `webapp/lib/`, design tokens under `webapp/styles/`, and
+  the static export written to `webapp/out/`.
+- `public/trajectory/` — standalone Trajectory Studio (its own backend,
+  CSP, token posture). Mounted at `/trajectory/` by the router.
 
 ## Adding a new HTTP endpoint
 
@@ -75,10 +85,10 @@ node server.js
    { method: 'POST', match: (p) => p === '/api/foo', handler: fooRoute.handleFoo },
    ```
 
-3. If the webui calls it, add a helper in `public/app/main.js`:
+3. If the webui calls it, add a helper in `webapp/lib/api.ts`:
 
-   ```js
-   async function apiFoo(payload) {
+   ```ts
+   export async function apiFoo(payload: unknown): Promise<…> {
      const r = await fetch('/api/foo' + API_SUFFIX, {
        method: 'POST',
        headers: { 'Content-Type': 'application/json', ...HEADERS },
@@ -103,22 +113,27 @@ node server.js
 3. The transport layer pushes events via `pushStateFor(cid, …)` (state
    snapshots) or `broadcastTokenRotated(token)` (one-off event) which
    go onto the SSE channel.
-4. In `public/app/main.js`, handle the event in the SSE message
-   handler in `connect()` and update `state.foo` accordingly.
-5. If the event needs UI, add a render function `renderFoo()` and call
-   it from `render()`.
+4. In `webapp/lib/sse.ts`, handle the event in the SSE message handler
+   and update the typed store (`store.foo`).
+5. If the event needs UI, add a render function `renderFoo()` (or wire
+   it into the existing component) and call it from the page's render
+   path.
 
 ## Adding a new UI panel
 
-1. Add the panel markup to `public/index.html` (near related panels).
-2. Add i18n keys to BOTH `I18N.zh` and `I18N.en` (use a consistent
-   prefix: `panel_foo_title`, `panel_foo_empty`).
-3. In `public/app/main.js`:
-   - Add an entry to the `els` DOM cache in `init()`.
-   - Add a `renderFoo()` function that reads from `state` and writes
-     to `els.fooPanel`.
-   - Call `renderFoo()` from `render()`.
-4. Add CSS to `public/styles/main.css` scoped under `.foo-panel`.
+1. Add the panel as a component under `webapp/components/` (and register
+   it in `webapp/app/page.tsx` if it's a new top-level surface, or
+   inline it inside `webapp/components/shell.tsx` if it lives in the
+   shell's right-hand drawer).
+2. Add i18n keys to both `webapp/lib/i18n.ts` tables (use a consistent
+   prefix: `panel.foo.title`, `panel.foo.empty`).
+3. In the component:
+   - Read state via the typed context hook (`useSessionContext` from
+     `webapp/lib/store.tsx`) and subscribe to the relevant slice.
+   - Render with Tailwind classes derived from `webapp/styles/tokens.css`.
+4. If the component needs bespoke styles, add them to
+   `webapp/styles/official-utilities.css` (or scope them in the
+   component via Tailwind's `@apply`).
 
 ## Adding a slash command (webui-side)
 
@@ -163,27 +178,29 @@ up in the bottom-right debug panel.
 
 ## Database inspection
 
-The webui-side session store is plain JSON:
-```powershell
-Get-Content "$env:USERPROFILE\.minimax-code\webui\.webui-sessions.json" | ConvertFrom-Json
+The webui-side session store is plain JSON under `WEBUI_DATA_DIR`
+(default `~/.mcode-webui`, override with `MCODE_WEBUI_DATA_DIR`):
+```bash
+cat "$HOME/.mcode-webui/sessions.json" | jq .
 ```
 
-The mcode-side session store is SQLite:
-```powershell
-& "$env:USERPROFILE\anaconda3\Library\bin\sqlite3.exe" `
-  "$env:USERPROFILE\.minimax\v2\sqlite\runtime-state.sqlite" `
-  ".tables"
-& "$env:USERPROFILE\anaconda3\Library\bin\sqlite3.exe" `
-  "$env:USERPROFILE\.minimax\v2\sqlite\runtime-state.sqlite" `
+The mcode-side session store is SQLite under the runtime data dir
+(default `~/.minimax`, override with `MINIMAX_DATA_DIR` or
+`MAVIS_DATA_DIR`; `config.js` resolves the precedence):
+```bash
+sqlite3 "$HOME/.minimax/v2/sqlite/runtime-state.sqlite" ".tables"
+sqlite3 "$HOME/.minimax/v2/sqlite/runtime-state.sqlite" \
   "SELECT id, title, cwd FROM local_runtime_sessions ORDER BY updated_at DESC LIMIT 10"
 ```
 
 ## Common tasks
 
 ### Bump the cache-bust
-After changing `public/app/main.js`:
-1. Edit `public/index.html` line `<script src="/app/main.js?v=N">`.
-2. Bump N. (Current value: see the comment above the script tag.)
+Next's static export content-addresses every chunk under `_next/static/<hash>/…`
+(§ ARCHITECTURE.md §7 cache policy), so the runtime never depends on a manual
+`?v=N` bump — the hash changes on every edit. The legacy `?v=N` query-string
+cache-bust from the vanilla-JS SPA no longer applies; the only thing to do
+after a frontend change is to rebuild (`pnpm run webui:build`) and re-export.
 
 ### Change the default port
 18090 is a default, not a pinned value: when it is taken the server walks
@@ -234,31 +251,42 @@ curl -X POST http://192.168.1.50:18090/api/settings \
   - Use `import` not `require`.
   - Top-level `await` is fine in scripts, not in modules — wrap in
     `async function main()` if needed.
-- **Client** (`main.js`): same conventions. No build step, so
-  prefer features that work in evergreen browsers without polyfills.
+- **Client** (`webapp/`): same conventions. The frontend is a Next.js
+  14 / React 18 / Tailwind App Router project; new pages and components
+  live under `webapp/app/`, `webapp/components/`, and `webapp/lib/`.
+  See `webapp/README.md` for the file-by-file walk-through.
 - **Comments**: explain *why*, not *what*. If the code does what its
   name says, no comment needed. If a workaround is needed, the
-  comment should reference the upstream issue.
-- **i18n**: any user-visible string goes through `t('key')`. No
-  hard-coded Chinese or English in `main.js` outside the I18N
-  tables.
-- **CSS**: prefer CSS custom properties for theming. New
-  components: define vars in `:root` (light) and `[data-theme=dark]`
-  (dark).
+  comment should reference the upstream issue. The webui removed the
+  legacy `public/app/*.js` vanilla-JS frontend entirely; do not
+  reintroduce it.
+- **i18n**: any user-visible string goes through the typed
+  `t(MessageKey)` lookup in `webapp/lib/i18n.ts`. Both English and
+  Chinese tables are kept in lockstep; never hard-code a literal in
+  a component.
+- **CSS**: the Next export uses Tailwind utility classes against the
+  design tokens in `webapp/styles/tokens.css`. Use `data-theme` on the
+  `<html>` element (`applyTheme` in `webapp/lib/theme.ts`) to toggle
+  between the light and dark token tables.
 
 ## Code review checklist
 
 Before sending a PR:
 
-- [ ] `node --check server.js` passes
-- [ ] `node --check public/app/main.js` passes
-- [ ] No new hard-coded user-visible strings (everything via `t(...)`)
+- [ ] `pnpm --filter @mavis/webui test` passes (server unit + routes + tooling)
+- [ ] `pnpm --filter @mavis/webui webapp:typecheck` passes
+- [ ] `pnpm --filter @mavis/webui check` passes (the docs-alignment gate)
+- [ ] No new hard-coded user-visible strings (everything via `t(MessageKey)`)
 - [ ] No direct writes to `clientState.state` (use `pushStateFor`)
-- [ ] If a new endpoint, documented in `docs/API.md`
+- [ ] If a new endpoint, documented in `docs/API.md` (the
+      `check-docs-alignment` script enforces that the path is registered
+      in `server/router.js`)
 - [ ] If a new event type, documented in `docs/ARCHITECTURE.md § 5`
 - [ ] If a new UI panel, both `zh` and `en` i18n keys present
-- [ ] Cache-bust bumped if `main.js` changed
-- [ ] No new npm deps without discussion
+- [ ] Frontend change rebuilt (`pnpm --filter @mavis/webui webapp:build`)
+      before testing the bundled layout
+- [ ] No new npm deps without discussion; the tiered dependency policy
+      in `docs/ARCHITECTURE.md § 7.1` applies
 
 ## Repository hygiene
 

@@ -31,7 +31,8 @@ Every value below was read from the desktop artifact.
 
 Extraction is read-only; see `DESKTOP-ARCHITECTURE.md` §1 for the asar header format and the reader
 snippet. Current Web UI values in §12 come from
-`packages/webui/public/styles/main.css`.
+`packages/webui/webapp/styles/tokens.css` (the Next-export frontend's
+verbatim copy of the desktop stylesheet).
 
 ## 2. Design principles
 
@@ -531,11 +532,12 @@ keeps the door open for reusing those rules, and it makes the surface explicit i
 
 ### 7.5 What the Web UI already has
 
-`packages/webui/public/styles/main.css` implements its own equivalent: `data-theme="light|dark"`
-on `:root`, a `@media (prefers-color-scheme: dark)` fallback guarded by
-`:root:not([data-theme="light"])`, and `localStorage["webui-theme"]`.
+`packages/webui/webapp/styles/tokens.css` (with `app/layout.tsx` writing the
+attributes) implements the same mechanism: `data-theme="light|dark"` on
+`:root`, a `@media (prefers-color-scheme: dark)` fallback guarded by
+`:root:not([data-theme="light"])`, and `localStorage["theme"]`.
 
-Keep that mechanism. It already solves the flash-of-wrong-theme problem and is dependency-free.
+Keep it. It already solves the flash-of-wrong-theme problem and is dependency-free.
 The migration in §12 changes token **values and names**, not this mechanism. Adding
 `style.colorScheme` alongside `data-theme` is the one behavioural improvement worth making,
 because it fixes native form controls and scrollbars.
@@ -822,9 +824,10 @@ other      update changelog review parent
 
 ## 12. Migrating the Web UI theme to the desktop system
 
-`packages/webui/public/styles/main.css` currently implements a theme it calls **"Ink & Paper"
-v3**: a deliberately monochrome palette — neutral surfaces, a near-black / near-white accent,
-and desaturated semantic colours (`--success` and `--warning` are greys).
+`packages/webui/webapp/styles/tokens.css` (the new frontend) currently
+implements a theme it calls **"Ink & Paper" v3**: a deliberately monochrome
+palette — neutral surfaces, a near-black / near-white accent, and
+desaturated semantic colours (`--success` and `--warning` are greys).
 
 **Under this document's authority rule, that palette is replaced by the desktop's.** The table
 below is the migration: current Web UI token → desktop token → the value to adopt.
@@ -893,8 +896,12 @@ else is a value refinement that keeps the layout intact.
 
 - The theme mechanism: `data-theme` on `:root`, the `prefers-color-scheme` fallback, and
   `localStorage["webui-theme"]` stay as they are (§7.5).
-- The zero-dependency constraint: this is plain CSS and DOM. See `DESKTOP-ARCHITECTURE.md` §5.1.
-- Layout structure and component markup. This is a token and value change.
+- The layout structure and component markup. This is a token and value change.
+- The server is bundled, not dependency-free: `scripts/build.mjs` produces
+  `dist/webui/server.js` from `packages/webui/server/bootstrap.js` and inlines the
+  workspace imports. The frontend is a Next.js static export built at build time
+  (`webapp/`), which changes what the CSS is compiled by — not what it declares.
+  See `ARCHITECTURE.md` §7 for the runtime/build split and the tiered reuse policy.
 
 ## 13. Acceptance checklist
 
