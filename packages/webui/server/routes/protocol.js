@@ -57,7 +57,7 @@ export async function handleSetMode(req, res, ctx) {
     r = { ok: false, error: e.message || String(e), code: "client_throw" };
   }
   if (!r.ok) {
-    // mcode 0.1.5 不支持 set_mode — 返 501, 让前端走降级路径 (用 /plan slash command 代替)
+    // `unsupported` maps to 501 so the frontend can fall back to the slash form.
     const httpCode =
       r.code === "unsupported"
         ? 501
@@ -207,7 +207,7 @@ export async function handleActivateSession(req, res, ctx) {
     return respond(res, 400, { ok: false, error: "sessionId required" });
   const r = await activateSession(sessionId);
   if (!r.ok) {
-    // 与 set-mode / set-config-option 对齐: unsupported → 501 (mcode 0.1.5 不支持)
+    // Same status mapping as set-mode / set-config-option.
     const httpCode =
       r.code === "unsupported"
         ? 501
@@ -256,7 +256,7 @@ export async function handleListSessions(req, res, ctx) {
 export async function handleCapabilities(_req, res) {
   const { MCODE_ACP_CAPABILITIES } = await import("../lib/mcode-rpc.js");
   const { getMcodeServerInfo } = await import("../lib/acp-client.js");
-  // mcode 0.1.5 acp initialize 返 agentInfo: { name, title, version } (实测, 不是 serverInfo)
+  // initialize answers with `agentInfo: { name, title, version }` (not `serverInfo`).
   const agentInfo = getMcodeServerInfo();
   const mcodeVersion = (agentInfo && agentInfo.version) || "unknown";
   return respond(res, 200, {
@@ -266,14 +266,13 @@ export async function handleCapabilities(_req, res) {
     mcodeTitle: (agentInfo && agentInfo.title) || null,
     capabilities: MCODE_ACP_CAPABILITIES,
     notes: {
-      set_mode:
-        'send "/plan <text>" or "/goal <text>" as a regular session/prompt — mcode parses the slash command',
+      set_mode: "Takes a modeId from the session's availableModes.",
       set_config_option:
-        "permission mode is set at mcode startup via --permission flag, not mid-session",
-      cancel: "no graceful cancel in mcode 0.1.5; use child.kill() as fallback",
-      activate:
-        "single-session per acp client; load() a different session to switch",
-      fork: "use listSessions() to find a session, then loadSession() to take over",
+        "With configId 'permissionMode' this changes the mode mid-session.",
+      cancel:
+        "Sent as a notification; /api/stop falls back to SIGKILL only when the client cannot be reached.",
+      activate: "One acp client tracks a single active session.",
+      fork: "Implemented by the engine; no webui route exposes it yet.",
     },
   });
 }

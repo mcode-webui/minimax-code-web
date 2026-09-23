@@ -24,9 +24,9 @@ import { WEBUI_ROOT } from "./layout.js";
 const _webuiRequire = createRequire(import.meta.url);
 
 // Real mcode session deletes must be SQL on the local_runtime_*
-// runtime tables — mcode 0.1.4 acp `session/delete` returns
-// "Method not found" (registered in the protocol layer but not
-// implemented). Lazy init: only require() on first call. Multi-path
+// runtime tables — the engine registers `session/delete` in its
+// protocol layer but implements no handler, so the call returns
+// "Method not found". Lazy init: only require() on first call. Multi-path
 // probe covers non-canonical install layouts (registry, npm-global,
 // monorepo).
 let _McodeBetterSqlite3 = null;

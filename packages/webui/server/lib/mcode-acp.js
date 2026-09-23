@@ -252,9 +252,9 @@ function streamAcpPrompt(client, sid, content, label, cs, cid) {
         cs.usage.sessionOutput =
           (cs.usage.sessionOutput || 0) + (r.usage.outputTokens || 0);
         cs.usage.sessionTotal = cs.usage.sessionInput + cs.usage.sessionOutput;
-        cs.context.estimated = false; // mcode 0.1.5+ 真实值
+        cs.context.estimated = false;
       } else if (r.answer || r.thinking) {
-        // Fallback when mcode 0.1.4 acp doesn't return usage / doesn't fire
+        // Fallback when the engine returns no usage and fires no
         // usage_update: estimate from thinking + answer length (~3 chars
         // per token) plus the last user-message length.
         const outText = (r.thinking || "") + (r.answer || "");
@@ -278,7 +278,7 @@ function streamAcpPrompt(client, sid, content, label, cs, cid) {
         cs.usage.sessionTotal = cs.usage.sessionInput + cs.usage.sessionOutput;
         if (process.env.MCODE_USAGE_DEBUG) {
           console.log(
-            `[usage.estimate.acp] cid=${cid} outLen=${outText.length} estOut=${estOutTokens} userLen=${userLen} estIn=${estInTokens} total=${estTotal} (mcode 0.1.4 不返 usage, 用估算)`,
+            `[usage.estimate.acp] cid=${cid} outLen=${outText.length} estOut=${estOutTokens} userLen=${userLen} estIn=${estInTokens} total=${estTotal} (no usage reported; estimated)`,
           );
         }
       }
@@ -513,7 +513,7 @@ function streamAcpPrompt(client, sid, content, label, cs, cid) {
             }
           }
         } else if (c.kind === "plan_update" && c.update) {
-          // v0.5.bx-9: mcode 0.1.5+ 暴露 plan_update 事件
+          // plan_update event
           const u = c.update;
           cs.plan = {
             active: true,
@@ -553,8 +553,7 @@ function streamAcpPrompt(client, sid, content, label, cs, cid) {
           }
           console.log(`[mode.update] cid=${cid} mode=${mode}`);
         } else if (c.kind === "goal_update" && c.update) {
-          // mcode 0.1.5 acp 协议里 goal_update 实际上不一定发 (cli.js 搜不到此事件 type 字面量)
-          // 但保留 handler — 如果未来 mcode 0.1.6+ 加了, 直接用
+          // The engine does not always emit goal_update; the handler stays for when it does.
           const u = c.update;
           cs.goal = {
             active: !!u.active,
@@ -579,8 +578,7 @@ function streamAcpPrompt(client, sid, content, label, cs, cid) {
             }
           }
         } else if (c.kind === "session_info_update" && c.update) {
-          // v0.5.by: mcode acp 0.1.5 推的 session info 变化
-          // 字段暂未知 (mcode 0.1.5 文档没列), 收到就 log, 不盲改 cs
+          // Session info change. The shape is undocumented, so log it and leave cs alone.
           const u = c.update;
           console.log(
             `[session.info] cid=${cid} keys=${JSON.stringify(Object.keys(u || {})).slice(0, 200)}`,
