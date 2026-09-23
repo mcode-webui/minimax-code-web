@@ -143,6 +143,38 @@ export function _getBetterSqlite3Candidates({ mcodeCmd = MCODE_CMD, home = homed
         "better-sqlite3",
       ),
     );
+    // Windows installer layout: mcode.cmd sits at the install root and
+    // the launcher CALLs releases/<version>/…, picking the version from
+    // the sibling `current` file. Here dirname(mcodeCmd) is that install
+    // ROOT, so neither candidate above reaches the release dir. Derive
+    // the release path from `current` exactly as the launcher does, and
+    // only when it carries a valid release name (same charset the
+    // launcher's findstr enforces) so a stray file cannot inject a path
+    // segment.
+    const currentFile = join(dirname(mcodeCmd), "current");
+    if (existsSync(currentFile)) {
+      try {
+        const release = readFileSync(currentFile, "utf8").trim();
+        if (/^[0-9A-Za-z][0-9A-Za-z._-]*$/.test(release)) {
+          candidates.push(
+            join(
+              dirname(mcodeCmd), "releases", release,
+              "node_modules", "@minimax-ai", "code", "node_modules",
+              "better-sqlite3",
+            ),
+          );
+          candidates.push(
+            join(
+              dirname(mcodeCmd), "releases", release,
+              "node_modules", "better-sqlite3",
+            ),
+          );
+        }
+      } catch {
+        // Unreadable `current` — skip the releases tier; the remaining
+        // tiers still apply.
+      }
+    }
   }
   // Tier 3: user persistent resolver config (~/.mcode-webui/db-resolver.json).
   //   Emitted even when MCODE_CMD is the "mcode" PATH-placeholder, because
@@ -178,6 +210,12 @@ export function _getBetterSqlite3Candidates({ mcodeCmd = MCODE_CMD, home = homed
   // backfill degrades to the "no history" placeholder.
   candidates.push(join(WEBUI_ROOT, "node_modules", "better-sqlite3"));
   candidates.push(join(WEBUI_ROOT, "..", "node_modules", "better-sqlite3"));
+  // Tier 4d: pnpm workspace root — `pnpm install` hoists native devDeps
+  // to the REPOSITORY root's node_modules, which is one level above the
+  // tier-4c "packages/node_modules" probe (a source checkout of this
+  // repository, as opposed to the built runtime copied into dist/webui,
+  // never has packages/node_modules).
+  candidates.push(join(WEBUI_ROOT, "..", "..", "node_modules", "better-sqlite3"));
   return candidates;
 }
 
