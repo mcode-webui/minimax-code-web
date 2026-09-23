@@ -263,10 +263,12 @@ export function buildTree(rows, projectRoots, customTitles = new Map()) {
             children: (directory.children.get(session.id) ?? []).sort(byUpdated),
           })),
         }));
+      // Pill counts the sessions a user started, so it must not grow with each
+      // sub-agent a session spawns. Subagent rows are read so the tree can
+      // render them as children, but the count tracks user intent, not engine
+      // internals.
       const sessionCount = directories.reduce(
-        (total, directory) =>
-          total +
-          directory.sessions.reduce((count, session) => count + 1 + session.children.length, 0),
+        (total, directory) => total + directory.sessions.length,
         0,
       );
       return {

@@ -167,7 +167,121 @@ describe("buildTree — level assembly", () => {
 
   test("sessionCount counts main sessions and their subagents", () => {
     const tree = buildTree(rows, new Map([["/wt/main-5", CTAS_REPO]]));
-    assert.equal(tree[0].sessionCount, 2);
+    assert.equal(tree[0].sessionCount, 1);
+  });
+
+  test("sessionCount tracks user-started conversations, not subagent task rows", () => {
+    // The pill counts the conversations the user actually started, so it must
+    // not grow with each sub-agent a session spawns. Sub-agent rows stay
+    // rendered as children of their parent — only the count changes.
+    const treeRows = [
+      {
+        session_id: "mvs_root_a",
+        title: "Root A",
+        agent_name: "mavis",
+        session_kind: "conversation",
+        session_type: "branch",
+        parent_session_id: null,
+        workspace_dir: "/wt/count",
+        status: "started",
+        updated_at_ms: 500,
+        created_at_ms: 500,
+      },
+      {
+        session_id: "mvs_root_b",
+        title: "Root B",
+        agent_name: "mavis",
+        session_kind: "conversation",
+        session_type: "branch",
+        parent_session_id: null,
+        workspace_dir: "/wt/count",
+        status: "started",
+        updated_at_ms: 400,
+        created_at_ms: 400,
+      },
+      {
+        session_id: "mvs_task_a1",
+        title: "Task A1",
+        agent_name: "verifier",
+        session_kind: "task",
+        session_type: "branch",
+        parent_session_id: "mvs_root_a",
+        workspace_dir: "/wt/count",
+        status: "completed",
+        updated_at_ms: 350,
+        created_at_ms: 350,
+      },
+      {
+        session_id: "mvs_task_a2",
+        title: "Task A2",
+        agent_name: "verifier",
+        session_kind: "task",
+        session_type: "branch",
+        parent_session_id: "mvs_root_a",
+        workspace_dir: "/wt/count",
+        status: "completed",
+        updated_at_ms: 300,
+        created_at_ms: 300,
+      },
+    ];
+    const tree = buildTree(treeRows, new Map([["/wt/count", CTAS_REPO]]));
+    const directory = tree[0].directories[0];
+    const rootA = directory.sessions.find((s) => s.id === "mvs_root_a");
+    assert.deepEqual(
+      rootA.children.map((child) => child.id).sort(),
+      ["mvs_task_a1", "mvs_task_a2"],
+      "subagent task rows still render as children of their parent",
+    );
+    assert.equal(tree[0].sessionCount, 2, "two roots count, subagent children do not");
+  });
+
+  test("a single root with two task children reports sessionCount === 1", () => {
+    // Same invariant in isolation: a directory holding one user-started
+    // session plus two sub-agent task rows renders the children but the pill
+    // stays at one.
+    const treeRows = [
+      {
+        session_id: "mvs_only_root",
+        title: "Only root",
+        agent_name: "mavis",
+        session_kind: "conversation",
+        session_type: "branch",
+        parent_session_id: null,
+        workspace_dir: "/wt/count",
+        status: "started",
+        updated_at_ms: 500,
+        created_at_ms: 500,
+      },
+      {
+        session_id: "mvs_only_task_1",
+        title: "Task 1",
+        agent_name: "verifier",
+        session_kind: "task",
+        session_type: "branch",
+        parent_session_id: "mvs_only_root",
+        workspace_dir: "/wt/count",
+        status: "completed",
+        updated_at_ms: 300,
+        created_at_ms: 300,
+      },
+      {
+        session_id: "mvs_only_task_2",
+        title: "Task 2",
+        agent_name: "verifier",
+        session_kind: "task",
+        session_type: "branch",
+        parent_session_id: "mvs_only_root",
+        workspace_dir: "/wt/count",
+        status: "completed",
+        updated_at_ms: 200,
+        created_at_ms: 200,
+      },
+    ];
+    const tree = buildTree(treeRows, new Map([["/wt/count", CTAS_REPO]]));
+    const directory = tree[0].directories[0];
+    assert.equal(directory.sessions.length, 1);
+    assert.equal(directory.sessions[0].children.length, 2, "children are still rendered");
+    assert.equal(tree[0].sessionCount, 1);
   });
 
   test("projects are ordered by most recent activity", () => {
