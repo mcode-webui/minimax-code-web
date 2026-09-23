@@ -2,7 +2,7 @@
 // Lease C06: GET /api/sessions/:id/export?format=md|json[&download=true]
 //
 // Sources:
-//   - Primary: webui's `.webui-sessions.json` (loadSessions), which stores
+//   - Primary: webui's `sessions.json` (loadSessions), which stores
 //     the in-memory chat as `["› user", "● assistant", "→ tool {input}", …]`
 //     line-prefix strings. We parse these into a structured
 //     `[{role, content, tool_calls?}]` view for export.

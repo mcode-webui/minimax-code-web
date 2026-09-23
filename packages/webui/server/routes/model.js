@@ -1,12 +1,20 @@
 // webui/server/routes/model.js
 // GET /api/models, POST /api/set-model, POST /api/permissions, POST /api/answer (legacy)
 
-import { getBuiltinModelsFromMcode } from "../lib/models.js";
 import { pushStateFor } from "../lib/state-bus.js";
 import { DEFAULT_MODEL } from "../lib/config.js";
-// v0.5.by: mcodePermissionToWebui / PERMISSION_MODES 仅用于 GET /api/permissions-modes 列合法值
-//   (mid-session 修改不可用, 但 list 给前端 dropdown 还是有用的)
-import { mcodePermissionToWebui, PERMISSION_MODES } from "../lib/mcode-rpc.js";
+import {
+  mcodePermissionToWebui,
+  setConfigOption,
+  webuiPermissionToMcode,
+  PERMISSION_MODES,
+} from "../lib/mcode-rpc.js";
+
+/** The engine's `select` config option with this id, or null before a session exists. */
+function configOption(cs, id) {
+  const options = Array.isArray(cs && cs.configOptions) ? cs.configOptions : [];
+  return options.find((o) => o && o.id === id) || null;
+}
 // B04: webuiModeToLabel extracted to the permission-presets seam (per
 // BORROW-dsh-deepseek-harness-2026-08-28 § 3). Same string-mapping
 // behavior as the inline ternary chain that lived here before.
@@ -23,28 +31,28 @@ async function readJson(req) {
 }
 
 // GET /api/models
+// The catalogue is the engine's `model` config option (the same list the TUI's
+// /models shows), which arrives with the session. `value` is the engine's
+// encoded selection, so it round-trips straight back through /api/set-model.
 export function handleGetModels(_req, res, ctx) {
   const cs = ctx.cs;
-  const list = [];
-  const builtins = getBuiltinModelsFromMcode();
-  const currentName = (cs.model && cs.model.name) || "";
-  const currentProvider = currentName.includes("/")
-    ? currentName.split("/")[0]
-    : "minimax_api";
-  for (const m of builtins) {
-    list.push({
-      id: `${currentProvider}/${m}`,
-      label: m,
-      provider: currentProvider,
-    });
-  }
+  const option = configOption(cs, "model");
+  const models = (option && Array.isArray(option.options) ? option.options : []).map((o) => ({
+    id: o.value,
+    name: o.name,
+  }));
+  const current = (option && option.currentValue) || (cs.model && cs.model.name) || DEFAULT_MODEL;
+  if (models.length === 0) cs.model = { ...(cs.model || {}), name: current };
   res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
   return res.end(
     JSON.stringify({
       ok: true,
-      models: list,
-      current: currentName || DEFAULT_MODEL,
-      source: "mcode-cli-bundle",
+      models,
+      current,
+      source: "acp-session-config",
+      // listModels is per-session, so there is nothing to report until the
+      // engine has created one.
+      ...(models.length === 0 ? { reason: "no_session_config" } : {}),
     }),
   );
 }
@@ -61,21 +69,30 @@ export async function handleSetModel(req, res, ctx) {
   }
   cs.model = cs.model || {};
   cs.model.name = modelId;
+  // Switching the engine's model is a session config option; without a session
+  // this only records the choice for the session that is about to be created.
+  const sid = cs.mcodeSessionId;
+  let mcodeSynced = false;
+  let warning = sid ? null : "no mcode session yet — recorded for the next one";
+  if (sid) {
+    const r = await setConfigOption(sid, "model", modelId);
+    mcodeSynced = r.ok;
+    if (!r.ok) warning = r.error;
+  }
   pushStateFor(cid);
   res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
   return res.end(
     JSON.stringify({
       ok: true,
       model: modelId,
-      note: "仅更新本地状态，mcode session 创建时会用此 model",
+      mcodeSynced,
+      ...(warning ? { warning } : {}),
     }),
   );
 }
 
-// POST /api/permissions — v0.5.by 调整: mcode 0.1.5 acp 不支持 session/set_config_option
-//   实测: mcode acp server 返 "Method not found" 给此方法
-//   所以这里只更新本地 cs.permissions (用于 webui UI 显示), 不再尝试 RPC
-//   真要改 mcode 端 permission mode: 重启 mcode 进程 + --permission 标志, 或者等 mcode 升级
+// POST /api/permissions — mid-session permission mode change, through
+//   session/set_config_option{configId:'permissionMode'}.
 // body: { mode: 'ask'|'auto'|'read'|'full' 或 mcode 原值 }
 export async function handleSetPermissions(req, res, ctx) {
   const cs = ctx.cs;
@@ -85,6 +102,15 @@ export async function handleSetPermissions(req, res, ctx) {
   // B04: webuiModeToLabel lives in interaction/permission-presets.js
   // (extracted from this inline ternary chain — same byte-identical output).
   const label = webuiModeToLabel(webuiMode);
+  const mcodeValue = webuiPermissionToMcode(webuiMode);
+  const sid = cs.mcodeSessionId;
+  let mcodeSynced = false;
+  let warning = sid ? null : "no mcode session yet — applies to the next one";
+  if (sid && mcodeValue) {
+    const r = await setConfigOption(sid, "permissionMode", mcodeValue);
+    mcodeSynced = r.ok;
+    if (!r.ok) warning = r.error;
+  }
   cs.permissions = label;
   pushStateFor(cid);
   res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
@@ -92,8 +118,8 @@ export async function handleSetPermissions(req, res, ctx) {
     JSON.stringify({
       ok: true,
       permissions: label,
-      mcodeSynced: false,
-      note: "mcode 0.1.5 acp 不支持 mid-session 改 permissionMode (实测 probe 2026-08-20). 仅更新 webui UI, mcode 实际 mode 不变",
+      mcodeSynced,
+      ...(warning ? { warning } : {}),
     }),
   );
 }

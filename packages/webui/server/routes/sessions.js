@@ -13,7 +13,7 @@ import {
   ensureOverlayForMcodeSid,
   findOverlayForMcodeSid,
 } from "../lib/sessions.js";
-import { deleteMcodeSessionFromDb } from "../lib/db.js";
+import { deleteMcodeSessionFromDb } from "../lib/mcode-session-delete.js";
 import {
   getMcodeSessionTitle,
   getMcodeSessionsForWorkspace,
@@ -22,17 +22,17 @@ import {
   shutdownMcodeAcpSingleton,
   dropMcodeSessionFromCache,
 } from "../lib/acp-client.js";
-// v2 (2026-09-20 webui-manual-audit): switch-path transcript backfill —
-// load mcode session history from the runtime DB so switching to an mvs_
-// session with no webui wrapper shows real chat instead of "No messages yet".
+// Switch-path transcript backfill — load mcode session history from
+// the runtime DB so switching to an mvs_ session with no webui wrapper
+// shows real chat instead of "No messages yet".
 import { loadTranscriptChatLines } from "../lib/transcript.js";
 import { applyMavisUsageToCs } from "../lib/mavis-usage.js";
 import { getMcodeModelLimit } from "../lib/models.js";
 import { pushStateFor, clients } from "../lib/state-bus.js";
 import { MCODE_RUNTIME_DB } from "../lib/config.js";
+import { getSessionTree, invalidateSessionTree } from "../lib/session-tree.js";
 import { authorize } from "../lib/authorize.js";
 import { pushAlert } from "../lib/alerts.js";
-// B01: append session lifecycle events to the hash chain.
 import { append as _eventsAppend } from "../lib/events.js";
 // Session-create workspace gate: body.workspace is user input and used to be
 // trusted verbatim — no existence check, no containment check, no resolve —
@@ -42,11 +42,11 @@ import { append as _eventsAppend } from "../lib/events.js";
 // workspace write lands on the same boundary.
 import { assertWorkspacePath } from "../lib/workspace.js";
 
-// _auditFail — shared failure sink for audit writes (fail-closed,
-// 2026-09-20 rigor fix). events.js#append THROWS on write failure; a
-// governance action must not complete with a missing audit trail, so
-// every route-level append is wrapped and lands here: HTTP 5xx + one
-// alert on the anomaly channel. `what` names the flow for the operator.
+// _auditFail — shared failure sink for audit writes. events.js#append
+// THROWS on write failure; a governance action must not complete with
+// a missing audit trail, so every route-level append is wrapped and
+// lands here: HTTP 5xx + one alert on the anomaly channel. `what`
+// names the flow for the operator.
 function _auditFail(res, e, what) {
   try {
     pushAlert({
@@ -67,12 +67,13 @@ function _auditFail(res, e, what) {
   return undefined;
 }
 
-// v1.0: 防"删了又出现" — webui 常驻的 mcode acp 子进程内存里还持有该 session,
-//   且会把注册表回写 db (删除后 local_runtime_sessions 行被重建 + session/list 仍返回)。
-//   真删前必须: 1) 杀掉常驻子进程 (停掉回写源)  2) 再 SQL 删  3) 从推送缓存只剔除该 sid。
-//   v1.0 (改): 不再整体作废缓存 — 之前 invalidate 后紧跟的推送带空占位 mcodeSessions,
-//   侧栏从 42 条闪跌到 16 条 (只剩 webui 本地条目), 几秒后重拉又回 42, 像"删了又回来"。
-//   现在: 缓存剔除该 sid 后仍视为新鲜, 即时推送带 41 条; TTL 自然过期后新子进程重读 db, 依旧 41。
+// Prevent "deleted session reappears": the long-lived mcode acp child
+// still holds the session in memory and will rewrite the registry row
+// on its next request — so we must (1) kill the child, (2) SQL-delete
+// the rows, (3) drop ONLY the deleted sid from the in-memory cache (not
+// the whole cache — invalidating the whole cache sends an empty
+// placeholder to the sidebar which flashes from 42 → 16 → 42 entries,
+// looking like the delete failed).
 function killMcodeSessionResurrection(mcodeSid) {
   try {
     shutdownMcodeAcpSingleton();
@@ -80,7 +81,6 @@ function killMcodeSessionResurrection(mcodeSid) {
   dropMcodeSessionFromCache(mcodeSid);
 }
 
-// 读 body helper
 async function readJson(req) {
   let body = "";
   for await (const chunk of req) body += chunk;
@@ -91,21 +91,23 @@ async function readJson(req) {
   }
 }
 
-// v2 (2026-09-20 webui-manual-audit): title fast path — resolve an mvs_
-// session's title from the in-memory walked-session cache (the same cache
-// behind GET /api/acp-sessions via getMcodeSessionsForWorkspace) BEFORE
-// ever awaiting getMcodeSessionTitle. The fallback boots the ACP child;
-// with a missing/broken mcode binary that measured ~2.17s end-to-end AND
-// degraded the title to the "Mcode session" placeholder even though the
-// cache already held the real title. Cache getters are sync and spawn
-// nothing, so a hit keeps the switch hot path at zero ACP cost.
+// Title fast path — resolve an mvs_ session's title from the
+// in-memory walked-session cache (the same cache behind
+// GET /api/acp-sessions via getMcodeSessionsForWorkspace) BEFORE
+// awaiting getMcodeSessionTitle. The fallback boots the ACP child; with
+// a missing/broken mcode binary that path measured ~2.17s end-to-end
+// AND degraded the title to the "Mcode session" placeholder even
+// though the cache already held the real title. Cache getters are sync
+// and spawn nothing, so a hit keeps the switch hot path at zero ACP
+// cost.
 //
-// Cross-workspace matching within what the module exposes: the cache holds
-// ONE workspace's list, keyed by ws. We probe the client's current ws with
-// both the fresh (30s TTL) and stale (same-ws, TTL-expired) readers, plus
-// the "" key — getMcodeSessionsForWorkspace("") caches the UNFILTERED list,
-// so a cache walked without a workspace still answers. A miss returns null
-// and the caller falls back to getMcodeSessionTitle (original behavior).
+// Cross-workspace matching within what the module exposes: the cache
+// holds ONE workspace's list, keyed by ws. We probe the client's
+// current ws with both the fresh (30s TTL) and stale (same-ws,
+// TTL-expired) readers, plus the "" key — getMcodeSessionsForWorkspace("")
+// caches the UNFILTERED list, so a cache walked without a workspace
+// still answers. A miss returns null and the caller falls back to
+// getMcodeSessionTitle.
 function _lookupCachedMcodeTitle(mcodeSessionId, ws) {
   if (!mcodeSessionId) return null;
   const keys = [ws || "", ""];
@@ -148,22 +150,18 @@ export function handleListSessions(_req, res) {
   return res.end(JSON.stringify({ ok: true, sessions }));
 }
 
-// POST /api/sessions — new (accepts body.workspace)
+// POST /api/sessions — create a new webui session (accepts body.workspace).
 export async function handleNewSession(req, res, ctx) {
   const cs = ctx.cs;
   const cid = ctx.cid;
   const payload = await readJson(req);
   const all = loadSessions();
   const id = randomUUID();
-  // v0.5.ar: 记录 session 所属工作区
-  // v0.5.bl: DEFAULT_WORKSPACE 可能是 null — fallback 到空串
-  // qa (session-workspace-crud): body.workspace is user input. When it is
-  // explicitly provided it must clear the SAME containment gate as
-  // POST /api/workspace before it is stored or copied into cs.workspace —
-  // previously it was trusted verbatim (raw, possibly relative, possibly
-  // anywhere on disk), a side door around the workspace picker boundary.
-  // The cs fallback path is untouched: cs.workspace.dir was gated when it
-  // was set, so re-gating it here would only add churn.
+  // body.workspace is user input. When it is provided explicitly it must clear
+  // the SAME containment gate as POST /api/workspace before it is stored or
+  // copied into cs.workspace, or it is a side door around the workspace
+  // picker's boundary. The cs fallback path is untouched: cs.workspace.dir was
+  // gated when it was set.
   const rawWs =
     payload.workspace || (cs && cs.workspace && cs.workspace.dir) || "";
   let sessionWs = (rawWs || "").trim();
@@ -185,12 +183,11 @@ export async function handleNewSession(req, res, ctx) {
   };
   all.unshift(item);
   saveSessions(all);
-  // v0.5.ar: 如果指定了不同的工作区，先切 cs.workspace.dir
   if (cs.workspace.dir !== sessionWs) {
     cs.workspace = { dir: sessionWs, branch: null, tree: null };
   }
   cs.sessionId = id;
-  cs.mcodeSessionId = null; // 新建 webui session 同时开新 mcode 上下文
+  cs.mcodeSessionId = null;
   cs.sessionTitle = item.title;
   cs.chat = [];
   cs.usage = {
@@ -200,13 +197,10 @@ export async function handleNewSession(req, res, ctx) {
     sessionTotal: 0,
   };
   resetContext(cs);
-  // B01: session creation is a state-changing action; record it.
-  // We log the webui session id + title + workspace — these are not
-  // sensitive (the id is a randomUUID, title is user-visible). mcode
-  // session id is null at create time so it's omitted from data.
-  // Fail-closed: if the audit write fails we 5xx instead of claiming
-  // success with an unaudited mutation (no rollback — the JSON store
-  // write already happened; the alert carries the mismatch).
+  // session creation is a state-changing action; record it. Fail-closed
+  // on audit write failure: 5xx instead of claiming success with an
+  // unaudited mutation (no rollback — the JSON store write already
+  // happened; the alert carries the mismatch).
   try {
     _eventsAppend("session.create", {
       target: id,
@@ -252,11 +246,11 @@ export async function handleSwitchSession(req, res, ctx) {
   if (!target) {
     const isMcodeSid = /^mvs_[a-f0-9]{32}$/.test(id);
     if (isMcodeSid) {
-      // v2 (2026-09-20 webui-manual-audit): cache-first title — the walked
-      // session cache usually already holds the real title (the sidebar just
-      // rendered it). Only a total cache miss pays the getMcodeSessionTitle
-      // cost, which boots the ACP child (~2.17s measured with a broken
-      // mcode binary) and used to degrade every first switch to the
+      // Cache-first title — the walked session cache usually already
+      // holds the real title (the sidebar just rendered it). Only a
+      // total cache miss pays the getMcodeSessionTitle cost, which
+      // boots the ACP child (~2.17s measured with a broken mcode
+      // binary) and used to degrade every first switch to the
       // "Mcode session" placeholder.
       const ws = (cs.workspace && cs.workspace.dir) || "";
       let title = _lookupCachedMcodeTitle(id, ws);
@@ -264,10 +258,11 @@ export async function handleSwitchSession(req, res, ctx) {
       if (!title) {
         title = (await getMcodeSessionTitle(id)) || "Mcode session";
       }
-      // v2.4 单一基础会话：叠加记录 id === mcode 会话 id，幂等创建。
-      //   旧模型给每个 mvs_ 切换造一条 uuid 壳记录——同一对话出现两条身份，
-      //   是侧栏混乱（untitled 多一条）的直接根源。现在重复切换永远命中
-      //   同一条记录。
+      // Single base session — overlay record id === mcode session id,
+      // idempotent create. Old model gave each mvs_ switch a fresh
+      // uuid wrapper → the same conversation had two identities, the
+      // direct cause of the "extra untitled entry" sidebar confusion.
+      // Repeated switches now hit the same record.
       const existed = findOverlayForMcodeSid(all, id);
       target = ensureOverlayForMcodeSid(all, id, { title, workspace: ws });
       target.updatedAt = Date.now();
@@ -283,11 +278,11 @@ export async function handleSwitchSession(req, res, ctx) {
       return res.end(JSON.stringify({ ok: false, error: "session not found" }));
     }
   } else if (
-    // v2 (2026-09-20 webui-manual-audit): placeholder refresh — wrappers
-    // created by the branch above during the broken-title era carry the
-    // "Mcode session" placeholder forever. If the walked cache now has the
-    // real title, repair the stored wrapper. Cache-only (sync, no ACP
-    // boot): an existing wrapper must never make the hot path slower.
+    // Placeholder refresh — wrappers created during a broken-title
+    // window carry "Mcode session" forever. If the walked cache now
+    // has the real title, repair the stored wrapper. Cache-only (sync,
+    // no ACP boot): an existing wrapper must never make the hot path
+    // slower.
     target.title === "Mcode session" &&
     target.mcodeSessionId &&
     /^mvs_[a-f0-9]{32}$/.test(target.mcodeSessionId)
@@ -305,13 +300,13 @@ export async function handleSwitchSession(req, res, ctx) {
       );
     }
   }
-  // v2 (2026-09-20 webui-manual-audit): transcript backfill — when the
-  // resolved target has NO webui chat yet but IS a real mvs_ session, load
-  // the mcode transcript from the runtime DB (read-only) and map it into
-  // the webui chat-line grammar BEFORE responding, so response session.chat
-  // and cs.chat carry history. Caps inside (last 400 lines / 200KB) keep
-  // the SSE state push bounded; a 1000+-message session must not balloon
-  // it. FAILURE MUST NOT BREAK SWITCHING: any error logs and continues
+  // Transcript backfill — when the resolved target has NO webui chat
+  // yet but IS a real mvs_ session, load the mcode transcript from
+  // the runtime DB (read-only) and map it into the webui chat-line
+  // grammar BEFORE responding, so response session.chat and cs.chat
+  // carry history. Caps inside (last 400 lines / 200KB) keep the SSE
+  // state push bounded; a 1000+-message session must not balloon it.
+  // FAILURE MUST NOT BREAK SWITCHING: any error logs and continues
   // with chat: [] — the switch itself always succeeds.
   if (
     target.mcodeSessionId &&
@@ -343,7 +338,7 @@ export async function handleSwitchSession(req, res, ctx) {
   }
   const prevSid = cs.sessionId;
   cs.sessionId = target.id;
-  cs.mcodeSessionId = target.mcodeSessionId || null; // 切到有 mcodeSessionId 的就绑上
+  cs.mcodeSessionId = target.mcodeSessionId || null;
   cs.sessionTitle = target.title || "Untitled";
   cs.chat = Array.isArray(target.chat) ? target.chat : [];
   cs.usage = {
@@ -352,20 +347,14 @@ export async function handleSwitchSession(req, res, ctx) {
     sessionOutput: 0,
     sessionTotal: 0,
   };
-  // v0.5.bx-31: 切 session 不再同步 cs.workspace.dir (回退 v0.5.ar)
-  //   之前: 切到 b 工作区的 session → cs.workspace.dir 改成 b → sidebar 排序 currentWs=b → b 工作区组永远置顶
-  //   现在: 只写 lastUsedWorkspace 字段,state.workspace.dir 保持不变 (chip-workspace 跟它无关,workspace 切换走专门路径)
-  //   排序: client renderSessions 用 lastUsedWorkspace 作 currentWs,子分类按 updatedAt 排序
-  //
-  // v0.5.bx-32: 切 session 不再写 lastUsedWorkspace
-  //   Wzdhehe 反馈: '点击 c 区任意对话 (不发消息),c 区就自动置顶了,我想的是发消息才置顶'
-  //   切 session 只是浏览,不算'发消息',所以 lastUsedWorkspace 只在 send prompt 时写
-  //   之前的逻辑导致用户点哪个工作区的对话,那个工作区就置顶 — 体验不对
-  //
-  // const targetWs = (target.workspace || '').trim()
-  // cs.lastUsedWorkspace = targetWs || null   // 删: 切 session 不写
+  // Switching session must NOT mutate cs.workspace.dir or
+  // cs.lastUsedWorkspace — both are written only by their own flows
+  // (workspace change / send prompt). Switching is browsing; pinning
+  // the browsed workspace to the top of the sidebar was the
+  // user-reported "click any session in C and C auto-sorts first"
+  // behavior.
   resetContext(cs);
-  // v0.5.bx-10: 切到历史 session 时立即从 mavis db 拉真实 token usage
+  // Sync real token usage from mavis db on switch to a historical session
   if (cs.mcodeSessionId) {
     const switchedSid = cs.mcodeSessionId;
     applyMavisUsageToCs(cs, switchedSid, { getMcodeModelLimit })
@@ -413,22 +402,16 @@ export async function handleSwitchSession(req, res, ctx) {
   );
 }
 
-// POST /api/sessions/rename — 重命名 session（CRUD 的"改"）
+// POST /api/sessions/rename — rename a session (CRUD "update").
 // body: { id, title }
-//   id     — webui uuid 或 mvs_xxx（与 DELETE /api/sessions/:id 同解析规则）
-//   title  — 新标题；trim 后非空，≤ 200 字符
-// 语义（保证 mcode 自动标题不会覆盖用户改名）:
-//   - 记录上打 titleCustom: true。mcode-acp.js 的自动标题回写只在
-//     isDefault（标题为空/"New session"/"Untitled"）时落库，switch 的占位
-//     修补只碰 "Mcode session"，因此 titleCustom 的标题天然不会被覆盖——
-//     这里显式留痕，供 mcode-acp / 前端 merge 判定"用户标题优先"。
-//   - 前端 sidebar 的 mcode 条目（mvs_）显示的是 mcode 引擎标题，webui 壳
-//     记录被去重隐藏；titleCustom 后前端 merge 改用壳记录标题（render.js）。
-//   - 纯 mcode 会话（mvs_ 且无 webui 壳）允许改名：经 ensureOverlayForMcodeSid
-//     建壳承接标题（单一身份原则，与 switch 路径同源）。
-// 审计（B01）: session.rename 事件记录 from → to，fail-closed。
-// 授权（B03）: 不进 authorize 闸门 — 改名非破坏性、可逆，与 session.create
-//   同级；销毁性动作（delete/cleanup）才弹确认。
+//   id    — webui uuid or mvs_xxx (same resolution as DELETE /api/sessions/:id)
+//   title — new title, non-empty after trim, at most 200 chars
+//
+// Flags the record titleCustom: true, which the automatic title write-back
+// treats as user-authoritative. A bare mvs_ id with no webui record gets an
+// overlay record to carry the title (single-identity rule, same as the switch
+// path). Audit: session.rename records from → to, fail-closed. Not behind the
+// authorize() modal — renaming is reversible; only destructive actions prompt.
 export async function handleRenameSession(req, res, ctx) {
   const cs = ctx.cs;
   const cid = ctx.cid;
@@ -477,6 +460,9 @@ export async function handleRenameSession(req, res, ctx) {
   item.titleCustom = true;
   item.updatedAt = Date.now();
   saveSessions(all);
+  // The sidebar tree reads titles from the runtime db, so drop its cache or the
+  // renamed title stays hidden for up to CACHE_TTL_MS.
+  invalidateSessionTree();
   // 所有把该会话当"当前会话"的 client 同步 sessionTitle（多 tab 一致）。
   let touchedCids = [];
   for (const [c, ccs] of clients) {
@@ -522,11 +508,12 @@ export async function handleRenameSession(req, res, ctx) {
   );
 }
 
-// DELETE /api/sessions/:id — 删一个 session
-// v0.5.bx 系列:支持 ?dryRun=true 走预览路径 (mcode-plugin-guide red-lines.md §"写操作/破坏性操作")
-//   dryRun=true 时,函数走 readonly SQL 路径,只统计每个表的行数,不修改任何数据
-//   行为:true 删除路径不变
-//   v2 (B03): real-delete path is async because it awaits authorize()
+// DELETE /api/sessions/:id — delete a session.
+//
+// ?dryRun=true takes the readonly SQL path (counts rows per table,
+// mutates nothing). Real delete passes authorize() and only then
+// touches db / saveSessions / killMcodeSessionResurrection (the gate
+// is the only async hop on the real path).
 export async function handleDeleteSession(req, res, ctx) {
   const cs = ctx.cs;
   const cid = ctx.cid;
@@ -600,10 +587,12 @@ export async function handleDeleteSession(req, res, ctx) {
       return _auditFail(res, e, "session.delete.intent");
     }
   }
-  // v0.5.bx-19: 兜底 — webui session db 找不到, 但 id 是 mvs_xxx → 当孤儿 mcode session 直接 SQL 删
+  // Fallback: id is mvs_xxx but absent from webui session db —
+  // treat it as an orphan mcode session and delete the SQL rows
+  // directly (the webui side has no wrapper to remove).
   if (idx < 0) {
     if (/^mvs_[a-f0-9]{32}$/.test(id)) {
-      if (!dryRun) killMcodeSessionResurrection(id); // 先杀常驻子进程(回写源)再删 db 行
+      if (!dryRun) killMcodeSessionResurrection(id);
       const mcodeDbDel = deleteMcodeSessionFromDb(id, { MCODE_RUNTIME_DB, dryRun });
       console.log(
         `[delete] cid=${cid} ORPHAN mcode session sid=${id.substring(0, 12)}… ok=${mcodeDbDel.ok}` +
@@ -713,11 +702,11 @@ export async function handleDeleteSession(req, res, ctx) {
   const deletedItem = all[idx];
   all.splice(idx, 1);
   saveSessions(all);
-  // v0.5.bx-19: 同步删 mcode 端 session
+  // Mirror the delete on the mcode side when this record has an mcode sid.
   const mcodeSid = deletedItem.mcodeSessionId;
   let mcodeDbDel = null;
   if (mcodeSid) {
-    killMcodeSessionResurrection(mcodeSid); // 先杀常驻子进程(回写源)再删 db 行
+    killMcodeSessionResurrection(mcodeSid);
     mcodeDbDel = deleteMcodeSessionFromDb(mcodeSid, { MCODE_RUNTIME_DB });
     console.log(
       `[delete] cid=${cid} mcode db delete sid=${mcodeSid.substring(0, 12)}… ok=${mcodeDbDel.ok}` +
@@ -726,9 +715,9 @@ export async function handleDeleteSession(req, res, ctx) {
           : ` reason=${mcodeDbDel.reason || "-"} error=${mcodeDbDel.error || "-"}`),
     );
   }
-  // v0.5.bx-5 + v1.0: 当前会话可能是被删的 webui session，也可能是它的 mcode sibling
-  //   v1.0 扩展到所有 client — 其他 tab 把该 session 当"当前会话"时也要清,
-  //   否则那个 tab 的下次交互 (switch/chat) 会为同一 mvs sid 自动重建 webui 条目
+  // Clear active session on every client that pointed at this id (or
+  // its mcode sibling) — otherwise the next interaction in that tab
+  // silently recreates a webui wrapper for the same mvs sid.
   let touchedCids = [];
   for (const [c, ccs] of clients) {
     if (ccs.sessionId === deletedItem.id || ccs.mcodeSessionId === id) {
@@ -789,6 +778,38 @@ export async function handleDeleteSession(req, res, ctx) {
   );
 }
 
+// GET /api/session-tree — the sidebar's Project → directory → session → subagent
+// tree, read from mcode's runtime db (see lib/session-tree.js for the level
+// mapping and for why git, not the db's own per-directory project_id, decides
+// what a project is).
+//
+// `?refresh=1` bypasses the 15s cache. A db that cannot be read is not a client
+// error: `ok:false` + `reason` lets the sidebar fall back to the wrapper list
+// instead of rendering an empty tree.
+export function handleSessionTree(req, res, _ctx) {
+  const url = new URL(req.url, "http://localhost");
+  const force = url.searchParams.get("refresh") === "1";
+  let payload;
+  try {
+    payload = getSessionTree({ force });
+  } catch (cause) {
+    payload = {
+      ok: false,
+      reason: "session_tree_failed",
+      detail: String(cause && cause.message ? cause.message : cause),
+    };
+  }
+  // Always 200: a soft failure (`ok:false` + `reason`, e.g. the runtime db is
+  // missing) is a normal state the sidebar handles, not a transport error. The
+  // client's `request()` helper turns any non-2xx into a thrown `HTTP <status>`,
+  // which would hide the reason.
+  res.writeHead(200, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Cache-Control": "no-store",
+  });
+  return res.end(JSON.stringify(payload));
+}
+
 // GET /api/acp-sessions?cwd=... — mcode acp session/list
 export async function handleAcpSessions(req, res, ctx) {
   const cs = ctx.cs;
@@ -816,9 +837,8 @@ export async function handleAcpSessionTitle(req, res, _ctx) {
 }
 
 // Lease C05: GET /api/sessions/search?q=<text>&workspace=<path>&limit=<n>
-//   Cross-workspace session search. The prior sidebar search
-//   (renderSessions in public/app/render.js) only filtered the
-//   already-loaded list — it could not surface sessions stored under
+//   Cross-workspace session search. The sidebar's client-side search
+//   only filtered the already-loaded list — it could not surface sessions stored under
 //   a different `workspace` field. This endpoint walks the persisted
 //   sessions JSON so typing into the sidebar box can show matches
 //   across all workspaces the user has touched.

@@ -31,24 +31,21 @@ async function readJson(req) {
   }
 }
 
-// v2 (2026-09-20 webui-manual-audit): resetThinkingClaim — drop every
-//   field by which the pushed state can claim "a run is in progress".
-//   The frontend's 思考中 indicator / send→stop button key off
-//   state.running.active, the footer status off
-//   state.context.thinkingStatus, and the chat virtual list marks a
-//   block as still-streaming when its line ends with the ▍ cursor.
-//   The streaming runners reset all of this in their finalize()
-//   (mcode-acp.js / mcode-exec.js), but a failure BEFORE the stream
-//   starts (acp client.start() ENOENT, session/load throw, exec
-//   resolveMcodeSpawn fail-closed) skips finalize entirely — so
-//   whatever claim cs carried into the turn survives every later
-//   pushStateFor and the panel shows 思考中 forever. Idle shape is
-//   byte-mirrored from finalize() + makeClientState() so the reset
-//   path and the normal end-of-turn path stay symmetric.
-//   lastUsageAt is deliberately NOT cleared: it records "when usage
-//   was last observed", not an active-run claim — finalize() keeps it
-//   too, and zeroing it would erase the context panel's freshness
-//   datum for no gain.
+// resetThinkingClaim — drop every field by which the pushed state
+// can claim "a run is in progress". The streaming runners reset all
+// of this in their finalize() (mcode-acp.js / mcode-exec.js), but a
+// failure BEFORE the stream starts (acp client.start() ENOENT,
+// session/load throw, exec resolveMcodeSpawn fail-closed) skips
+// finalize entirely — so whatever claim cs carried into the turn
+// survives every later pushStateFor and the panel shows 思考中
+// forever. Idle shape is byte-mirrored from finalize() +
+// makeClientState() so the reset path and the normal end-of-turn path
+// stay symmetric.
+//
+// lastUsageAt is deliberately NOT cleared: it records "when usage
+// was last observed", not an active-run claim — finalize() keeps it
+// too, and zeroing it would erase the context panel's freshness
+// datum for no gain.
 function resetThinkingClaim(cs) {
   cs.running = {
     active: false,
@@ -85,24 +82,26 @@ export async function handleSend(req, res, ctx) {
     res.writeHead(400, { "Content-Type": "application/json" });
     return res.end(JSON.stringify({ ok: false, error: "content required" }));
   }
-  // v0.5.bx-13: ask_user 弹窗答案 — 不当 user message 加到 chat
+  // ask_user modal answer — don't add to chat as a user message.
   const isAskAnswer = payload.isAskAnswer === true;
   res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
   res.end(JSON.stringify({ ok: true }));
 
-  // v0.5.ai: per-cid — 操作 cs (ask 答案跳过, chat 保持干净)
   if (!isAskAnswer) {
     cs.chat = [...(cs.chat || []), `› ${content}`];
-    // v0.5.bx-32: 真正发消息时记 lastUsedWorkspace — sidebar 排序时该工作区置顶
-    //   之前切 session 也写,用户点 c 区对话 (不发消息) c 区就自动置顶了 — 体验不对
-    //   切 session 不算发消息,所以切 session 时不写 (在 routes/sessions.js handleSwitchSession 已删)
-    //   ask_user 答案不算发消息,也不写
+    // Sending a message bumps lastUsedWorkspace so the sidebar sorts
+    // this workspace's group to the top. Switching session does NOT
+    // (browsing ≠ sending); ask_user answer does NOT (modal ≠
+    // message).
     cs.lastUsedWorkspace = (cs.workspace && cs.workspace.dir) || null;
     pushStateFor(cid);
     persistCurrentChat(cs);
   }
 
-  // v0.5.ak: 发首条消息时如果 cs.sessionId 为空，先建一个 webui session entry
+  // First-message bootstrap: if no webui session id exists yet, create
+  // a fresh one with the current chat snapshot. The webui session id
+  // is a randomUUID, distinct from the mcode session id allocated
+  // inside the run.
   if (!cs.sessionId) {
     const all = loadSessions();
     const id = randomUUID();
@@ -112,8 +111,10 @@ export async function handleSend(req, res, ctx) {
       createdAt: Date.now(),
       updatedAt: Date.now(),
       chat: cs.chat || [],
-      // v2.3: 记 workspace — 刷新恢复（state-bus.restoreLatestSession）按工作区
-      //   过滤，没写 workspace 的记录永远无法被恢复（刷新后白屏成新会话）。
+      // Persist the workspace too — restoreLatestSession filters by
+      // workspace, so a record without one can never be rehydrated
+      // after a reload (the page would render as a fresh empty
+      // session).
       workspace: (cs.workspace && cs.workspace.dir) || null,
     };
     all.unshift(item);
@@ -132,7 +133,8 @@ export async function handleSend(req, res, ctx) {
     }
   }
 
-  // v0.5.ah: 走 mcode acp 协议（默认）— MCODE_USE_ACP=0 切回 mcode exec 逃生
+  // mcode acp is the default transport; MCODE_USE_ACP=0 falls back to
+  // mcode exec (escape hatch if the acp protocol regresses).
   const modelToUse = (cs && cs.model && cs.model.name) || DEFAULT_MODEL;
   console.log(
     `[send] cid=${cid} content=${JSON.stringify(content.slice(0, 80))} model=${modelToUse} sessionId=${cs.mcodeSessionId} workspace=${(cs && cs.workspace && cs.workspace.dir) || "null"}`,
@@ -247,15 +249,15 @@ export async function handleStop(_req, res, ctx) {
   const wasRunning = !!child;
   let cancelled = false;
   let hardKilled = false;
-  // 1. 温和路径: 调 session/cancel RPC
-  //    mcode 0.1.5 不支持 — r.ok=false, code='unsupported'
+  // 1. Gentle path: send the `session/cancel` notification. The engine aborts the
+  //    active prompt's AbortController; there is no reply, so `ok` means "sent".
   if (cs && cs.mcodeSessionId) {
     try {
       const { cancelSession } = await import("../lib/mcode-rpc.js");
       const r = await cancelSession(cs.mcodeSessionId);
       if (r.ok) cancelled = true;
-      else if (r.code !== "unsupported") {
-        // 真错 (不是不支持) — 记下来排查
+      else {
+        // No client to notify — worth a line in the log before the SIGKILL.
         console.warn(
           `[stop] session/cancel failed cid=${cid}: ${r.error} (code=${r.code})`,
         );
@@ -313,7 +315,7 @@ export async function handleStop(_req, res, ctx) {
       hardKilled,
       note: cancelled
         ? "gentle cancel"
-        : "hard kill (mcode 0.1.5 acp 不支持 session/cancel)",
+        : "hard kill (session/cancel could not be delivered)",
     }),
   );
 }

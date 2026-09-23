@@ -128,8 +128,9 @@ export async function handleCancel(req, res, ctx) {
   if (!sessionId)
     return respond(res, 400, { ok: false, error: "sessionId required" });
   const r = await cancelSession(sessionId);
-  // 即便 mcode 返错 (例如 session 已结束 或 unsupported), 也算"用户意图取消"
-  // mcode 0.1.5 不支持 session/cancel — 返 cancelled:false + 提示, 让上层走 hard kill fallback
+  // A refusal still counts as "the user asked to cancel". `session/cancel` is a
+  // notification, so it cannot report whether the prompt actually stopped; only
+  // an unreachable client lands here, and that is what the SIGKILL fallback is for.
   if (!r.ok) {
     return respond(res, 200, {
       ok: true,
