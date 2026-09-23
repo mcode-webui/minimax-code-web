@@ -279,32 +279,55 @@ So there is no transport decision left to make here. What this document adds is 
 | Code syntax theme | desktop `--code-theme-*` | **gap** — the Web UI styles code with its own palette |
 | Status line item semantics, 40 slash commands | TUI `docs/status-line-config.md`, `commands/catalog.ts` | **gap** — command coverage differs |
 
-### 5.1 Constraint: the Web UI is dependency-free
+### 5.1 Constraint: the server runs a build pipeline
 
-`packages/webui/docs/ARCHITECTURE.md` §7 states the Web UI is intentionally dependency-free:
-Node stdlib only, no framework, no build step, `node server.js` to start.
+`packages/webui/docs/ARCHITECTURE.md` §7 records the current policy: the server is
+bundled (`packages/webui/server/bootstrap.js` → `dist/webui/server.js`), and the
+bundle is the only runtime form shipped in the published archive. The
+**running-process constraint** that still holds is narrower than "no dependencies
+at all":
 
-**This document does not propose changing that.** The desktop's stack (Next.js, React, antd,
-Tailwind) is recorded above as *evidence of what the desktop is*, so that alignment decisions
-can be made with the real facts. The alignment work it implies is limited to things that need
-no dependencies:
+- Native modules with platform-bound prebuilds (TUI binaries, sandbox-runtime) are
+  not imported from the server — `mcode-rpc.js` already enforces this for the TUI
+  internals, and the `scripts/check-webui-bundle.mjs` gate enforces it for any
+  future addition.
+- Dev-only packages (`next`, `react`, `tailwindcss` and friends) stay
+  `devDependencies`; the export is static HTML/CSS/JS and the server imports none
+  of them.
 
-- CSS custom properties and a `data-*` attribute protocol (plain CSS and DOM).
-- Token names and values.
-- Layout constants.
-- Command and status-line coverage.
+What changed is the frontend. The Web UI now adopts the desktop's stack — Next.js
+14.2.35, React 18.3.1, Tailwind CSS 3.4.19, TypeScript — in `webapp/`, compiled to a
+static export at build time and served by the same server. The desktop's stack is
+therefore no longer only *evidence of what the desktop is*: it is the model this
+frontend is built on, which is what makes the alignment work mechanical rather
+than approximate:
 
-Adopting a component framework would be a separate architectural decision with its own
-review, and nothing in this document depends on it.
+- the design tokens in `webapp/styles/tokens.css` are copied verbatim from the
+  desktop stylesheet;
+- the class strings in the components are the desktop's own
+  (`bg-bg_grouped_secondary`, `text-caption-small-strong`, `message-container-user-text`);
+- the theme protocol is the desktop's (`light`/`dark` class on `<html>` plus
+  `color-scheme`), applied by the same bootstrap script shape.
+
+The boundary that the running-process constraint protects is intact. See
+`ARCHITECTURE.md` §7 for the tiered server policy and the bundle gate, and
+`webapp/README` notes for the build and dev commands.
+
+Two upstream behaviours are deliberately not reproduced because they need libraries
+outside that boundary, and both are documented where they appear: the composer is a
+`textarea` styled with upstream's `rich-text-editor` class rather than a
+Tiptap/ProseMirror instance, and the dropdowns are hand-rolled against the token
+layer rather than antd. Markdown *is* rendered, using `marked` — a parser the
+workspace already depends on through `packages/tui`, so it adds no new edge.
 
 ## 6. Divergences and risks
 
 | # | Divergence / risk | Impact | Handling |
 | --- | --- | --- | --- |
-| 1 | The Web UI is dependency-free by design; the desktop uses a full framework stack | Any "align the stack" reading is wrong | Keep the alignment to CSS/DOM-level contracts (§5.1) |
+| 1 | The Web UI does not aim to ship the desktop's full framework stack at the server layer; alignment stays at the CSS/DOM contract level | An "align the server stack with the desktop" reading is wrong | Keep the alignment to CSS/DOM-level contracts (§5.1); server-side sharing goes through `@mavis/*` per `ARCHITECTURE.md` §7 |
 | 2 | The desktop renderer runs in Electron with `window.electronAPI`; the browser has no such bridge | 25 desktop APIs have no direct equivalent | Already replaced by HTTP routes and SSE; document the mapping, do not port the bridge |
 | 3 | The desktop and the TUI are separate product lines (`3.0.73-inside.84` vs `0.4.12`) | Feature drift over time | Treat `@mavis/*` as the shared layer; record differences instead of assuming parity |
-| 4 | ACP SDK version (`1.3.0`) is pinned by the TUI | An SDK bump can break the Web UI's shim | Keep the version check; the `UNSUPPORTED` set in `mcode-rpc.js` already handles missing methods |
+| 4 | ACP SDK version (`1.3.0`) is pinned by the TUI; the Web UI's `mcode-rpc.js` carries a hardcoded `UNSUPPORTED` set for methods the current runtime does not implement | An SDK bump or a new runtime method can widen the gap between what the Web UI advertises and what the runtime answers | Known divergence — keep the version check and the `UNSUPPORTED` set in `mcode-rpc.js`; not redesigned here |
 | 5 | The TUI syntax theme is Catppuccin; the desktop has its own `--code-theme-*` | Three surfaces, two code themes | Decide once; see `DESIGN.md` §11 |
 | 6 | TUI dark status colours are lighter (`_300`) than the desktop's (`_500`) | Same semantic, two appearances | Align the Web UI to the desktop; converge the TUI separately |
 | 7 | `pi-tui` ships native modules (darwin/win32 prebuilds) | Anything importing TUI internals is platform-bound | Depend on the ACP protocol only, never on TUI internals |

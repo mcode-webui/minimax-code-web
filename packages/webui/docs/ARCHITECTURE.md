@@ -17,18 +17,20 @@
 
 ```
                               ┌─────────────────────────────────────────────┐
-                              │  Browser (public/)                          │
-                              │   • index.html (markup)                     │
-                              │   • app/main.js (ES module)                 │
-                              │   • styles/main.css                         │
+                              │  Browser (webapp/out, Next static export)   │
+                              │   • index.html + App Router pages           │
+                              │   • _next/static/* (content-hashed)        │
+                              │   • webapp/public/auth-gate.html (LAN gate) │
                               └─────────────────────────────────────────────┘
                                   │ ▲                          │ ▲
                   fetch / JSON   │ │  WebSocket /api/stream    │ │
                                   ▼ │                          ▼ │
    ┌──────────────────────────────────────────────────────────────────────┐
-   │  server.js — bootstrap only (≈ 100 lines)                            │
+   │  server.js (source-mode) — registers @mavis/* → workspace TS resolver│
+   │  server/bootstrap.js — actual startup (delegated to by server.js) │
+   │  dist/webui/server.js — esbuild bundle of bootstrap.js (shipped)  │
    │   • installGlobalErrorHandlers()                                     │
-   │   • preflight: mcode.cmd exists, upload dir writable, etc.            │
+   │   • preflight: mcode binary exists, upload dir writable, etc.       │
    │   • http.createServer(handleRequest)                                 │
    └──────────────────────────────────────────────────────────────────────┘
                                   │
@@ -69,9 +71,11 @@
    ┌──────────────────────────────────────────────────────────────────────┐
    │  server/lib/ — pure modules (one concern each)                      │
    │                                                                      │
-   │  config · lan · models · db · sessions                              │
-   │  state-bus · acp-client · mcode-rpc · mcode-acp · mcode-exec        │
-   │  mavis-usage · usage · settings · upload · workspace · slash        │
+   │  config · layout · lan · models · sqlite-resolver ·                │
+   │  mcode-session-delete · sessions · state-bus · acp-client         │
+   │  mcode-rpc · mcode-acp · mcode-exec · chat-line · context-percent  │
+   │  mavis-usage · usage · settings · upload · workspace · slash ·     │
+   │  static                                                           │
    └──────────────────────────────────────────────────────────────────────┘
                                   │                          ▲
                                   ▼                          │  JSON-RPC over stdio
@@ -135,7 +139,7 @@ rendered. Names are the real code symbols.
 sequenceDiagram
     autonumber
     actor U as User
-    participant B as Browser SPA<br/>(public/app: events/render/state)
+    participant B as Browser (webapp/out)<br/>(Next App Router pages)
     participant R as server/router.js<br/>(gate chain)
     participant C as routes/chat.js<br/>handleSend
     participant S as lib/state-bus.js<br/>(per-cid clientState)
@@ -329,16 +333,24 @@ Each `server/lib/*.js` file exports a small set of named functions. No
 file reaches into another's internals. The notable contracts:
 
 ### `config.js`
-- Exports frozen-ish constants: `MCODE_ROOT`, `MCODE_CMD`, `PORT`, `HOST`,
-  `TOKEN`, `DEFAULT_MODEL`, `DEFAULT_TIMEOUT`, `DEFAULT_MAX_STEPS`,
+- Exports frozen-ish constants: `PACKAGE_ROOT` (alias for `WEBUI_ROOT`),
+  `WEBUI_DATA_DIR`, `MCODE_CMD`, `PORT`, `PORT_PINNED`, `HOST`, `TOKEN`,
+  `TOKEN_STDOUT`, `DEFAULT_MODEL`, `DEFAULT_TIMEOUT`, `DEFAULT_MAX_STEPS`,
   `MAX_CONCURRENT`, `UPLOAD_DIR`, `SESSIONS_DB`, `MCODE_RUNTIME_DB`,
-  `MAVIS_DATA_DIR`, `MAVIS_DB_PATH`, `SQLITE3_BIN`, `DEFAULT_WORKSPACE`.
-- Exports functions: `getPlatformFallbackPaths`, `detectSqlite3Bin`,
-  `detectTuiCwd` (re-export), `installGlobalErrorHandlers`.
+  `MAVIS_DATA_DIR`, `MAVIS_DB_PATH`, `SQLITE3_BIN`, `DEFAULT_WORKSPACE`,
+  `PROMPT_IDLE_TIMEOUT_MS`, `RATE_LIMIT_PER_MIN`, `RATE_LIMIT_BURST`,
+  `MCODE_WEBUI_UPLOAD_DIR`, `MCODE_WEBUI_SETTINGS_PATH`,
+  `MCODE_BETTER_SQLITE3`, `DEBUG_INJECT`.
+- Exports functions: `getServingPort`, `setServingPort`, `resolveBindHost`,
+  `getPlatformFallbackPaths`, `detectSqlite3Bin`, `detectTuiCwd`
+  (re-export), `installGlobalErrorHandlers`.
 - Reads `process.env.*` exactly once at module load. No per-request
-  re-reading.
+  re-reading (port fallback is an exception — `setServingPort` updates
+  the live port after boot).
+- Data-dir precedence: `MINIMAX_DATA_DIR` > `MAVIS_DATA_DIR` > `~/.minimax`
+  (one resolver shared with `MAVIS_DB_PATH`, which is the runtime SQLite).
 - `installGlobalErrorHandlers()` writes uncaught exceptions to
-  `.server.err` so they survive a process restart.
+  `.server.err` under `WEBUI_DATA_DIR` so they survive a process restart.
 
 ### `state-bus.js`
 The chokepoint. Exports:
@@ -549,45 +561,127 @@ baseline (the first-connect baseline comes from `GET /api/state`).
 ## 6. Frontend topology
 
 ```
-public/index.html         (markup only, no inline <script> or <style>)
-public/app/main.js        (single ES module, ~4200 lines)
-public/styles/main.css    (single stylesheet)
-public/lib/marked.min.js  (third-party markdown)
+packages/webui/webapp/                Next.js 14.2.35 app (React 18 + Tailwind)
+├── app/                              App Router: layout.tsx, page.tsx
+├── components/                       shell, chat, composer, toolbar, panels, modals, icons
+├── lib/                              transcript, sse, api, cid, store, markdown, i18n, theme, types
+├── styles/tokens.css                 design tokens (verbatim from desktop)
+├── styles/desktop-typography.css     typography preset cascade
+├── styles/official-utilities.css     copied upstream utility classes
+├── public/                           static assets Next copies into the export
+│   ├── auth-gate.html                LAN token gate (served by the same static root)
+│   ├── favicon_v2.ico                site icon
+│   └── favicon_v2.png                site icon
+└── out/                              next export — served by server/lib/static.js
+
+packages/webui/public/trajectory/     standalone Trajectory Studio (its own backend,
+                                    CSP, token posture) — only legacy subtree left
+                                    under public/; routed at /trajectory/ before any
+                                    static lookup.
 ```
 
-`main.js` is intentionally monolithic. The codebase chose a single
-file over a build step because:
-- No bundler → zero build time, zero source maps, zero config
-- Easier to grep (one file = one search)
-- Cache-bust via `?v=N` query string on `<script src>`
+The frontend is a **Next static export**, not the legacy vanilla-JS SPA. The
+export is rebuilt by `pnpm run webui:build` (which `pnpm build` runs) and
+copied into `dist/webui/webapp/out/` so the bundled runtime serves it from
+the same relative location as a source checkout. There is exactly one
+static root: `server/lib/static.js` reads from `NEXT_EXPORT_DIR` (the Next
+export) only — there is no `PUBLIC_DIR` fallback for the main UI. The
+Trajectory Studio under `public/trajectory/` is mounted at `/trajectory/`
+by the trajectory handler (its own backend / CSP / token posture), not by
+the static root. Internal layout:
 
-Internal structure (top to bottom):
-1. **Config** — env, `CID`, `TOKEN`, `API_SUFFIX`
-2. **I18N tables** — `zh`, `en` objects; `t(key)` lookup; `applyI18n()` walk
-3. **DOM cache** — `els = {...}` populated on `init()`
-4. **Render functions** — `render()`, `renderChat()`, `renderSessions()`, `renderUsage()`, `renderRight()`, `renderGoal()`, `renderTodo()`, `renderContext()`
-5. **State synchronization** — `connect()` (WebSocket event stream), `pushStateFor` mirror
-6. **Event handlers** — `attachEvents()` (delegation + per-element), `attachModalEvents()`
-7. **Action functions** — `send()`, `stopExec()`, `setMode()`, `setModel()`, `submitWorkspaceChange()`, `cancelConfirm()`, `refreshSessions()`, `refreshUsage()`
-8. **Helpers** — `parseChatLines()`, `parseMarkdown()`, `renderMessage()`, `escapeHtml()`
-9. **Init** — try { init(); attachModalEvents() } catch { show red error }
+1. **App Router** — `app/layout.tsx` (theme bootstrap, global styles), `app/page.tsx` (composition)
+2. **Components** — `shell`, `chat`, `chat-virtual-list`, `composer`, `toolbar`, `panels`, `modals`, `inbox`, `session-tree`, `context-meter`, `action-error-banner`, `icons`
+3. **Logic** — `lib/transcript`, `lib/sse`, `lib/api`, `lib/cid`, `lib/store`, `lib/markdown`, `lib/i18n`, `lib/theme`, `lib/types`, `lib/action-errors`, `lib/alerts`, `lib/use-locale`, `lib/workspace-filter`
+4. **Styles** — `styles/tokens.css` (verbatim from desktop), `styles/desktop-typography.css`, `styles/official-utilities.css`; `app/globals.css` is the App Router global stylesheet
+5. **Public** — `public/auth-gate.html` (the LAN token gate, served by the same static root), `public/favicon_v2.ico`, `public/favicon_v2.png`
+6. **Output** — `out/` is the `next export`; the server's static handler serves it as the single root
 
-## 7. Why zero npm dependencies
+## 7. Runtime vs. build dependencies
 
-The webui is intentionally dependency-free. Reasons:
+The server is **bundled, not copied** and is no longer required to be
+dependency-free. `scripts/build.mjs` produces `dist/webui/server.js` from
+`packages/webui/server/bootstrap.js`, reusing the shared workspace-source
+esbuild plugin (the same plugin the `cli` bundle uses); that bundle is
+the only runtime form shipped in the published archive. In a source
+checkout, `packages/webui/server.js` is a small source-mode bootstrap:
+it registers the `tsx` loader and an import resolver that maps every
+`@mavis/*` specifier to the workspace's TypeScript sources, then
+delegates to the same `server/bootstrap.js`. Source runs, tests, and the
+shipped bundle all resolve the same way.
 
-- `mcode.cmd` is already a toolchain that pulls its own deps
-- A webui that needs `npm install` to start is one more thing that can break
-- All required functionality (HTTP server, JSON, multipart parsing) is
-  in Node stdlib; the WebSocket event stream is a hand-written RFC 6455
-  subset, not a dependency
+### 7.1 Tiered dependency policy
 
-The `package.json` exists for the `name`/`version`/`scripts` fields and
-for editor tooling (Node type detection). `npm start` is a one-liner
-that just runs `node server.js`.
+Use the tier that matches the surface you are touching.
 
-If a future change needs a new dep, the rule is: add it, document why,
-keep the dep optional where possible (try/catch + fallback).
+**Tier 1 — must be reused, never re-implemented.** Contracts and pure logic
+that a workspace package already owns. Drift between a copy and its source is
+silent and expensive, so anything in this tier has to be imported by subpath
+from `@mavis/*`:
+
+- data-directory and path contracts (`@mavis/shared` paths, the
+  `~/.mcode-webui` layout)
+- model catalogues and provider presets
+- questionnaire / question schemas and the corresponding ACP method shapes
+- retry / redaction / formatting helpers
+- any contract duplicated elsewhere in the workspace — if two packages would
+  diverge on a field rename, it is Tier 1 by definition.
+
+**Tier 2 — may be owned locally.** Process- and platform-bound surfaces of
+this HTTP server that no other surface shares:
+
+- MIME map, multipart parsing
+- LAN / IP allow-list and CORS handling for this server's listener
+- port-fallback policy, static-asset serving, `/api/*` auth middleware
+- this server's own settings/token state, idle watchdog, upload directory.
+
+These are Web UI-shaped by design; pulling them out would just create a
+second package to version.
+
+**Tier 3 — must not be imported.** Internals of packages that ship native
+modules with platform-bound prebuilds (TUI native binaries, sandbox-runtime).
+The reason is platform reach, not purity: depending on them from a JS bundle
+that runs on every supported Node turns the package into a native-module
+package. Depend on the ACP protocol, not on TUI internals (this is already
+the rule recorded in `DESKTOP-ARCHITECTURE.md` §6 row 7).
+
+### 7.2 The frontend rule, unchanged
+
+New *frontend* libraries are held to the same rule that was correct in the
+previous text: prefer one the workspace already depends on (as `marked` is,
+via `packages/tui`) so the lockfile, the licence inventory and the
+standalone boundary all stay as they are. Tier 1 / Tier 2 / Tier 3 apply to
+the server only.
+
+### 7.3 Enforcement
+
+"Add a dependency and import it" is now a supported, checked path, not a
+forbidden one:
+
+- `pnpm webui:typecheck` covers the frontend TS; `scripts/check-webui-bundle.mjs`
+  inspects the produced bundle and fails on any bare external import that is
+  not declared in `cliExternalModules`. The bundle check is what would have
+  caught `hono` shipping without being declared in the release manifest.
+- `scripts/verify.mjs` runs both gates; a red bundle check is a red `pnpm verify`.
+
+### 7.4 Why the old "dependency-free" rule existed, and why it no longer applies
+
+The old rule was written for the plugin era, when the webui was distributed
+as a directory the user dropped into a `mcode` install: no build pipeline, no
+lockfile, no release archive. In that world, every runtime dependency was
+another thing the user had to install or whose absence could silently break
+the plugin; the safe answer was "no dependencies at all". That reasoning no
+longer holds: the webui is now an in-tree workspace member with a build step,
+its server is produced by `scripts/build.mjs` as `dist/webui/server.js`, and
+the published archive (`scripts/lib/cli-release.mjs` + `releaseManifest`) pins
+every external module. The cost of a hand-copied implementation is now higher
+than the cost of importing a real package, because the copy cannot be checked
+by the build pipeline.
+
+The "no bundling" comment in `scripts/build.mjs` is owned by workstream 1 and
+will be removed when its bundle entry point lands. This document is the
+authority on the policy; treat any source comment that contradicts §7 as
+stale.
 
 ## 8. Failure modes
 
@@ -611,9 +705,9 @@ The pattern (see `docs/DEVELOPMENT.md` for the full walk-through):
    { method: 'POST', match: (p) => p === '/api/foo', handler: fooRoute.handleFoo }
    ```
 4. If the new endpoint mutates state, call `pushStateFor(cid, {...})` from
-   the handler. Never write to the `clientState` fields directly.
-5. If the endpoint is invoked by the webui, add it to the fetch helper
-   in `public/app/main.js` (`API_SUFFIX` is automatically appended).
+   the handler. Never write to `clientState.state` directly.
+5. If the endpoint is invoked by the webui, add it to the fetch helper in
+   `packages/webui/webapp/lib/api.ts` (`API_SUFFIX` is automatically appended).
 
 ## 10. Future directions
 

@@ -3,8 +3,9 @@
 **English** | [简体中文](README.zh-CN.md)
 
 > **Browser frontend for the MiniMax Code agent runtime.**
-> Streams `mcode acp` / `mcode exec` sessions over HTTP/WebSocket. Zero npm
-> dependencies; runs on Node 22.19+.
+> Streams `mcode acp` / `mcode exec` sessions over HTTP/SSE. Three
+> runtime deps (`hono`, `@hono/node-server`, `@mavis/shared`); runs on
+> Node 22.19+.
 
 The Web UI is a first-class part of this repository — the same engine that
 powers the TUI (`mcode acp`, Agent Client Protocol over stdio) drives the
@@ -44,16 +45,16 @@ mcode webui --host 0.0.0.0
 
 | File | What |
 |------|------|
-| `server.js` | HTTP + WebSocket server bootstrap |
-| `server/` | Router, route modules, and pure libs (`server/lib/`) |
+| `server.js` | Source-mode entry: registers the workspace import resolver, then loads the server. The built runtime runs the bundle at `dist/webui/server.js` instead |
+| `server/` | Router, route modules, and pure libs (`server/lib/`); startup lives in `server/bootstrap.js` |
 | `acp.mjs` | `mcode acp` JSON-RPC client (spawns the engine over stdio) |
-| `public/` | Static frontend SPA |
+| `webapp/` | The UI: a Next.js App Router app, static-exported to `webapp/out` and served as the single static root |
+| `public/` | Remaining static assets only — the trajectory studio's UI under `public/trajectory/` |
 | `server/trajectory/` | Session trajectory studio (read-only SQLite inspection) |
 | `references/SECURITY-NOTES.md` | **Canonical security disclosure** (read before exposing beyond loopback) |
 | `docs/` | ARCHITECTURE, API, CAPABILITIES, DESIGN, DESKTOP-ARCHITECTURE, DEVELOPMENT, TROUBLESHOOTING, CHANGELOG |
-| `test/` | `node:test` suites |
-| `checks/` | mocked unit checks (`t.mock.module`; need the module-mocks flag) |
-| `scripts/` | docs-alignment checker, SBOM generator, test-db fixture builder |
+| `test/` | `node:test` suites. The directory mirrors each subject module's path under `server/`: `test/lib/<name>.{test.js,check.mjs}` for `server/lib/<name>.js`, `test/routes/<name>.{test.js,check.mjs}` for `server/routes/<name>.js`, `test/server/<name>.{test.js,check.mjs}` for the top-level router / app / server bootstrap. `*.check.mjs` files need `--experimental-test-module-mocks` because they use `t.mock.module`; `*.test.js` files do not. `test/tooling/` covers scripts under `scripts/`. Helpers (`_setup.js`, `mavis-sources.mjs`) live in `test/helpers/`. `test/integration/`, `test/matrix/`, `test/trajectory/`, and `test/fixtures/` are unchanged. |
+| `scripts/` | docs-alignment checker, SBOM generator, test-db fixture builder, desktop-reference extractor |
 | `package.json` | Package metadata + manifest (`mcodeWebui.capabilities`) |
 
 ## Screenshots
@@ -88,7 +89,7 @@ IDE integrations match on these strings.
 | `session-management` | List / create / switch / delete webui sessions |
 | `file-attachments` | Drag-drop / click / paste upload + `@path` injection |
 | `quota-usage` | `mmx quota show` + per-turn context window display |
-| `bilingual-ui` | zh-CN / en locale toggle via `t(key)` lookup tables |
+| `bilingual-ui` | zh-CN / en locale toggle via typed `t(MessageKey)` lookup |
 | `lan-sharing` | Loopback default; LAN exposure via explicit opt-in (`HOST` env / `lanBind` setting) + runtime on/off toggle |
 | `token-auth` | `?token=` / `Authorization: Bearer` for non-local requests |
 | `mobile-responsive` | Drawer at <900px, single column at <600px |

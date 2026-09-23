@@ -471,7 +471,7 @@ with three limits enforced mid-stream:
 ```json
 {
   "ok": true,
-  "path": "C:\\…\\.webui-uploads\\screenshot.png",
+  "path": "C:\\…\\.mcode-webui\\uploads\\screenshot.png",
   "name": "screenshot.png",
   "size": 12345
 }
@@ -575,11 +575,18 @@ Respond to an active permission / plan / ask_user prompt.
 
 ## Usage
 
-### `GET /api/usage` and `POST /api/usage` and `POST /api/usage-trigger`
+### `POST /api/usage` and `POST /api/usage-trigger`
 
 Fetch the current `mmx quota show` snapshot. `POST /api/usage-trigger`
-also triggers a fresh fetch from the CLI. `GET /api/usage` and
-`POST /api/usage` return the cached value if recent.
+also triggers a fresh fetch from the CLI; `POST /api/usage` returns the
+cached value if recent.
+
+(An older revision of this entry advertised `GET /api/usage`, but the
+endpoint was never wired up — both routes dispatch through
+`usageRoute.handleUsage`, which is POST-only and uses the request body
+to choose between a fresh fetch and the cached snapshot. The doc heading
+was tightened to match the code so `scripts/check-docs-alignment.mjs`
+keeps agreeing with the router.)
 
 **Response 200**
 ```json
@@ -702,14 +709,25 @@ Returns the full per-cid state including internal flags. Same
 
 ### `GET /`
 
-Returns `public/index.html`.
+Returns `webapp/out/index.html` (the Next static export's entry point).
+Served by `serveIndex`. There is no `public/` fallback for the main UI
+— the legacy `/app/*.js`, `/styles/*.css`, `/lib/marked.min.js`, and
+`/brand-logo.png` paths are unreachable (they were removed along with
+the vanilla-JS SPA; see `test/lib/static.test.js`).
 
 ### `GET /<file>`
 
-Returns the file from `public/` if it exists. Served by `serveStatic`.
-Cache headers: `public, max-age=3600`. The HTML/JS/CSS paths
-embed a `?v=N` cache-bust query string; bump it in `index.html` when
-you want clients to refetch.
+Returns the file from `webapp/out/` only. Served by `serveStatic`. The
+Trajectory Studio under `public/trajectory/` is mounted at `/trajectory/`
+by its own handler (separate backend, CSP, token posture) — it is not
+part of this static root. Cache headers:
+
+- HTML: `no-cache` (revalidate every time)
+- `_next/static/*` (content-hashed): `public, max-age=31536000, immutable`
+- everything else: `public, max-age=3600`
+
+There is no manual `?v=N` cache-bust any more — every chunk URL under
+`_next/static/<hash>/…` is content-addressed and self-cancelling on rebuild.
 
 ---
 

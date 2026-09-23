@@ -40,9 +40,10 @@
 - **Reads `~/.minimax/v2/sqlite/runtime-state.sqlite`** (read-only) for
   real token usage. The plugin **never** writes that file.
 - **Writes file uploads to `MCODE_WEBUI_UPLOAD_DIR`** (default
-  `.webui-uploads/` next to the webui), inside a bounded streaming
-  parser with request / file / quota limits (§3.2). No files outside
-  that directory are written.
+  `$WEBUI_DATA_DIR/uploads`, where `WEBUI_DATA_DIR` defaults to
+  `~/.mcode-webui`), inside a bounded streaming parser with request /
+  file / quota limits (§3.2). No files outside that directory are
+  written.
 - **Workspace changes and directory browsing are contained** to allowed
   roots (default: user home + default workspace + system tmp;
   `MCODE_WEBUI_WORKSPACE_ROOTS` replaces the set). See §4.
@@ -329,11 +330,12 @@ already-deleted sid yields `outcome: "already_absent"`, not an error.
 ### 3.2 File upload
 
 `POST /api/upload` writes to `MCODE_WEBUI_UPLOAD_DIR` (default
-`.webui-uploads/` next to the webui). Files are stored with their
-original names plus a uuid prefix to prevent collisions. The directory
-is created on demand; no symlink resolution is performed on the target
-path (so a hostile `MCODE_WEBUI_UPLOAD_DIR=/etc` is the user's problem,
-not the plugin's).
+`$WEBUI_DATA_DIR/uploads`, where `WEBUI_DATA_DIR` defaults to
+`~/.mcode-webui`). Files are stored with their original names plus a
+uuid prefix to prevent collisions. The directory is created on demand;
+no symlink resolution is performed on the target path (so a hostile
+`MCODE_WEBUI_UPLOAD_DIR=/etc` is the user's problem, not the
+plugin's).
 
 **Bounded streaming with three enforced limits (v2 security fix, PR
 #55 review point 3)**: the multipart parser is a streaming state
@@ -396,8 +398,9 @@ crash) leaves the child.
 | Path | Access | Purpose |
 |------|--------|---------|
 | `~/.minimax/v2/sqlite/runtime-state.sqlite` | **read-only** (sqlite3 `-readonly`) | Real token usage for the usage panel. See `server/lib/mavis-usage.js`. |
-| `~/.minimax-code/webui/.webui-sessions.json` | read+write | webui-side session store (atomic write, corruption-explicit — see below). |
-| `~/.minimax-code/webui/.webui-uploads/` | write | File upload target (configurable via `MCODE_WEBUI_UPLOAD_DIR`; bounded by the §3.2 limits). |
+| `~/.mcode-webui/sessions.json` | read+write | webui-side session store (atomic write, corruption-explicit — see below). |
+| `~/.mcode-webui/uploads/` | write | File upload target (configurable via `MCODE_WEBUI_UPLOAD_DIR`; bounded by the §3.2 limits). |
+| `~/.mcode-webui/settings.json` | read+write | Settings + token (see §9). |
 | `<user-selected workspace, within allowed roots>` | read+list | Workspace picker (`/api/workspace/browse`). Reads directory tree only, no execution. Contained — see below. |
 | `~/.minimax/runtime/cwd.json` | read | mcode TUI's last cwd (used as workspace default). Read-only — never written. |
 
@@ -442,15 +445,15 @@ roots**:
 
 ### 4.2 Session-store persistence (v2 hardening, PR #55 review point 5)
 
-The webui-side session store (`.webui-sessions.json`) is written
-atomically and fails loud:
+The webui-side session store (`sessions.json`, under `WEBUI_DATA_DIR`,
+default `~/.mcode-webui`) is written atomically and fails loud:
 
 - **Atomic writes** — save writes a same-directory temp file
-  (`.tmp`) then `rename()`s it into place (same directory → same
-  filesystem → rename is atomic). The main file on disk is always
-  either the complete old content or the complete new content; a crash
-  mid-write can only leave a `.tmp` (cleaned on the next save), never a
-  truncated half-written store.
+  (`sessions.json.tmp`) then `rename()`s it into place (same directory
+  → same filesystem → rename is atomic). The main file on disk is
+  always either the complete old content or the complete new content;
+  a crash mid-write can only leave a `.tmp` (cleaned on the next save),
+  never a truncated half-written store.
 - **Single-writer serialization** — the server is a single Node
   process (no cluster/fork/worker) and all persistence calls are
   synchronous, so two saves cannot interleave at the syscall level.
@@ -496,40 +499,36 @@ log + a disabled feature) — it does not crash.
 
 ## 7. Testing & reproducibility
 
-- `npm test` runs `node --experimental-test-module-mocks --test
-  test/*.test.js checks/*.check.mjs test/integration/*.test.js
-  test/matrix/*.test.js` (mocked suites live outside `test/` so the
-  flagless marketplace root gate never trips on the mock flag — see
-  docs/CI.md "Test layout and suite routing").
-- No lint gate exists: the `lint` script was removed in the
-  2026-09-20 rigor fix (this tree never contained an ESLint or
-  Prettier config; a declared gate that never ran green was deleted
-  along with its unused devDependencies — see docs/CI.md honesty
-  notes).
+- `pnpm --filter @mavis/webui test` runs
+  `node --experimental-test-module-mocks --test test/lib/*.test.js
+  test/lib/*.check.mjs test/lib/*/*.test.js test/lib/*/*.check.mjs
+  test/routes/*.test.js test/routes/*.check.mjs test/server/*.test.js
+  test/server/*.check.mjs test/tooling/*.test.js
+  test/integration/*.test.js test/matrix/*.test.js
+  test/trajectory/*.mjs` (mocked suites are the `.check.mjs` files,
+  which sit beside their `.test.js` counterparts in the same subject
+  directory — see `package.json` `scripts.test`). The webui-local
+  alignment gate is `pnpm --filter @mavis/webui check`, which runs
+  `scripts/check-docs-alignment.mjs` and verifies that every endpoint
+  documented in `docs/API.md` is registered, every capability listed
+  in `package.json` appears in `README.md` and
+  `docs/CAPABILITIES.md`, and every env var named in this file is
+  exported by `server/lib/config.js`.
 - All tests use **temp file fixtures** (`mkdtempSync`). No test writes
   to the user's real `~/.minimax/` or `~/.mcode-webui/` directory unless
   `MCODE_RUNTIME_DB` / `MCODE_WEBUI_SETTINGS_PATH` env is explicitly
   overridden.
 - v1.0.1 round 4: `MCODE_BETTER_SQLITE3` env override added to
-  `server/lib/db.js::getMcodeBetterSqlite3()`. The hard-coded path to
-  mcode's bundled `better-sqlite3` only works in the canonical
-  dev layout (`<mcode-root>/webui/`); the env override lets users on
+  `server/lib/sqlite-resolver.js::getMcodeBetterSqlite3()` (the
+  function was lifted out of the old `server/lib/db.js`, which has
+  since been split into `sqlite-resolver.js` +
+  `mcode-session-delete.js`; the statement below still describes the
+  same behaviour). The hard-coded path to mcode's bundled
+  `better-sqlite3` only works in the canonical dev layout
+  (`<mcode-root>/webui/`); the env override lets users on
   registry-installed or non-canonical layouts point at the right
   binary explicitly. Resolution priority: env override > `$MCODE_CMD`
   derived > dev layout fallback.
-- Network-topology wave 2 (`docs/drafts/arch_net_solution_0922.md` §6/§7):
-  `MCODE_ENGINE` (`acp`, default — the per-turn subprocess transport;
-  `embed` — in-process engine hosted on a worker thread with automatic
-  fallback to `acp` on boot failure). The webui transport switch was
-  removed: `GET /api/stream` is always enabled, and its upgrade executes
-  the same origin/LAN/token gate chain as every other `/api/*` route —
-  see the [Origin / CSRF gate (Gate 1b)](#origin--csrf-gate-gate-1b) and
-  [§1 Network exposure](#1-network-exposure) above.
-- Cross-platform: there is **no CI matrix**. The only CI is the
-  marketplace root gate (single ubuntu / Node 22 job: `npm ci` +
-  `npm run check`, which recursively runs every file under `test/`
-  flagless). Cross-platform verification is a manual local recipe —
-  see docs/CI.md "Local matrix".
 
 ---
 
@@ -600,6 +599,13 @@ When the operator hits "Reset token" in the UI:
 
 ### 9.5 Files added / modified in v1.0.1
 
+> **Note.** The frontend entries that referenced `public/app/*.js`,
+> `public/index.html`, and `public/styles/main.css` were deleted when
+> the legacy vanilla-JS SPA was removed in the bundle-convergence
+> refactor. The settings / token surfaces they described now live in
+> `webapp/components/shell.tsx` and `webapp/lib/store.tsx` (see
+> `docs/ARCHITECTURE.md § 6`).
+
 - **NEW** `server/lib/settings.js` (substantially rewritten) — owns
   persistent settings + token generation + interface lookup.
 - **NEW** `server/lib/auth.js` — adds `setExpectedToken`,
@@ -613,20 +619,20 @@ When the operator hits "Reset token" in the UI:
 - `server/lib/state-bus.js` — adds `broadcastTokenRotated`; state
   snapshots now include `readOnly`, `tokenEnabled`, `currentToken` (when
   not acknowledged), `tokenAcknowledged`, `tokenRotatedAt`.
-- `public/app/state.js` — `HEADERS` is now a live-mutable object;
-  new `setToken()` + `auth.token_rotated` event-stream handler.
-- `public/app/render.js` — `renderLanCardContent(settings)` exported.
-- `public/app/events.js` — `#chip-lan` click toggles the sub-card
-  (was: directly toggled `lanBroadcast`); new handlers for each control
-  inside the card.
-- `public/index.html` — `<div id="lan-card" hidden>` markup; CSS in
-  `public/styles/main.css`.
-- `public/app/i18n.js` — 22 new keys (`lan_card_*`).
-- **NEW** `test/lib-settings.test.js` — persistence + new setters.
-- **NEW** `test/router-readonly.test.js` — read-only gate logic.
-- Extended `test/lib-auth.test.js` (`setExpectedToken`,
-  `setTokenAuthEnabled`), `test/routes-settings.test.js` (new fields,
-  `resetToken`, `acknowledgeToken`), `test/_setup.js` (mock shape).
+- **NEW** `test/lib/settings.test.js` — persistence + new setters
+  (today: `test/lib/settings.test.js`, `test/lib/settings-sec-net.check.mjs`).
+- **NEW** `test/router-readonly.test.js` — read-only gate logic
+  (today: `test/server/router-readonly.test.js`).
+- Extended `test/lib/auth.test.js` (`setExpectedToken`,
+  `setTokenAuthEnabled`), `test/routes/settings.check.mjs` (new fields,
+  `resetToken`, `acknowledgeToken`), `test/helpers/_setup.js`
+  (mock shape).
+
+The same v1.0.1 work on the legacy vanilla-JS frontend is no longer
+shipped. The settings/token surfaces that v1.0.1 added are now
+implemented inside the Next App Router shell (see `webapp/components/shell.tsx`
+for the LAN/read-only/token card and `webapp/lib/store.tsx` for the
+typed store hook that replaced `HEADERS` + `setToken()`).
 
 
 ---

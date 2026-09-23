@@ -54,28 +54,61 @@ function parseJson(rel) {
   }
 }
 
-// Does `path` resolve somewhere in `routerSrc`?
+// Does `path` resolve somewhere in `routerSrc` or `appSrc`?
 //
 // router.js uses two patterns:
 //   1. literal matchers: `match: (p) => p === "/api/foo"`
 //   2. dynamic prefix matchers: `match: (p) => p.startsWith("/api/sessions/") && p.length > ...`
 //
+// server/app.js (the Hono layer) uses `app.get("/api/foo", ...)` /
+// `app.post(...)` / `app.delete(...)` with the path as a string literal
+// in the first argument. The Hono-owned routes live in `OWNED_ROUTES`
+// and are not in router.js's ROUTES table, so a docs endpoint that
+// migrated across must still be findable here.
+//
 // `:id`-style placeholders in the docs (e.g. `/api/sessions/:id`) need
 // to be normalized to their prefix before lookup so that they match
 // the dynamic case.
-function pathMatches(path, routerSrc) {
-  // Literal substring match.
-  if (routerSrc.includes(path)) return true;
+function pathMatches(path, routerSrc, appSrc) {
+  const sources = [routerSrc];
+  if (appSrc) sources.push(appSrc);
+  for (const src of sources) {
+    if (src.includes(path)) return true;
+  }
   // `:id`-style placeholders — strip the parameter and look for a
   // startsWith(prefix + "/") guard. This is what router.js does for
-  // `DELETE /api/sessions/:id`.
+  // `DELETE /api/sessions/:id`. Hono takes the literal `:id` so we
+  // don't need a special case there.
   const colonMatch = path.match(/^(.*)\/:[A-Za-z_][A-Za-z0-9_]*$/);
   if (colonMatch) {
     const prefix = colonMatch[1];
-    if (routerSrc.includes(`p.startsWith("${prefix}/"`)) return true;
-    if (routerSrc.includes(`p.startsWith('${prefix}/'`)) return true;
+    for (const src of sources) {
+      if (src.includes(`p.startsWith("${prefix}/"`)) return true;
+      if (src.includes(`p.startsWith('${prefix}/'`)) return true;
+    }
   }
   return false;
+}
+
+// Is this (method, path) registered somewhere — either the legacy
+// dispatcher (`routerSrc`) or the Hono layer (`appSrc`)?
+//
+// The legacy dispatcher stores routes as `{ method: "GET", match: ... }`
+// entries; the Hono layer wires them as `app.get(path, ...)` calls.
+// Either representation counts as "registered", and the docs only need
+// the path to be reachable by *some* layer.
+function isRegistered(method, path, routerSrc, appSrc) {
+  const routerMethod = new RegExp(`\\bmethod:\\s*["']${method}["']`).test(routerSrc);
+  if (routerMethod && pathMatches(path, routerSrc, null)) return true;
+  if (!appSrc) return false;
+  const verb = method.toLowerCase();
+  const callRegex = new RegExp(`\\bapp\\.${verb}\\(\\s*["']${escapeRegex(path)}["']`);
+  if (callRegex.test(appSrc)) return true;
+  return false;
+}
+
+function escapeRegex(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 const mismatches = [];
@@ -100,6 +133,7 @@ const apiDoc = read("docs/API.md");
 const capabilitiesDoc = read("docs/CAPABILITIES.md");
 const securityDoc = read("references/SECURITY-NOTES.md");
 const routerSrc = read("server/router.js");
+const appSrc = read("server/app.js");
 const configSrc = read("server/lib/config.js");
 
 // -----------------------------------------------------------------------
@@ -153,25 +187,14 @@ if (readmeEndpoints.length === 0) {
 }
 
 for (const { method, path } of readmeEndpoints) {
-  // Escape regex metacharacters in the path string.
-  const escPath = path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const routeRegex = new RegExp(
-    `\\bmethod:\\s*["']${method}["']`, // method on a route entry
-  );
-  // The router also matches by literal `match:` arrow; we look for the
-  // method field as a coarse filter, then for the pathname literal.
-  const methodMatch = routeRegex.test(routerSrc);
-  const pathMatch = pathMatches(path, routerSrc);
+  const ok = isRegistered(method, path, routerSrc, appSrc);
   check(
-    `README endpoint ${method} ${path} is registered in server/router.js`,
-    methodMatch && pathMatch,
+    `README endpoint ${method} ${path} is registered (router or Hono)`,
+    ok,
     [
-      methodMatch
-        ? null
-        : `server/router.js has no route entry with method "${method}"`,
-      pathMatch
-        ? null
-        : `server/router.js has no match for pathname "${path}"`,
+      !ok
+        ? `server/router.js has no route entry with method "${method}" and server/app.js has no app.${method.toLowerCase()}("${path}") call`
+        : null,
     ].filter(Boolean),
   );
 }
@@ -230,21 +253,14 @@ if (headingEndpoints.length === 0) {
 for (const { method, path } of headingEndpoints) {
   // Collapse `?query` for matching — router matchers strip the query.
   const basePath = path.split("?")[0];
-  const hasMethod = new RegExp(
-    `\\bmethod:\\s*["']${method}["']`,
-  ).test(routerSrc);
-  const pathMatch = pathMatches(basePath, routerSrc);
-  const ok = hasMethod && pathMatch;
+  const ok = isRegistered(method, basePath, routerSrc, appSrc);
   check(
-    `docs/API.md endpoint ${method} ${basePath} is registered in server/router.js`,
+    `docs/API.md endpoint ${method} ${basePath} is registered (router or Hono)`,
     ok,
     [
-      hasMethod
-        ? null
-        : `server/router.js has no route entry with method "${method}"`,
-      pathMatch
-        ? null
-        : `server/router.js has no match for pathname "${basePath}"`,
+      !ok
+        ? `server/router.js has no route entry with method "${method}" and server/app.js has no app.${method.toLowerCase()}("${basePath}") call`
+        : null,
     ].filter(Boolean),
   );
 }
@@ -360,41 +376,49 @@ check(
 );
 
 // -----------------------------------------------------------------------
-// Check 6: docs/ANTI-PATTERNS-FIX-PLAN.md §AP11 known drift — assert
+// Check 6: known drift — assert
 //          there is no `cleanup-orphans` endpoint in docs/API.md that
-//          is missing from server/router.js (or vice-versa).
+//          is missing from a registered location (or vice-versa).
 //
 // This is the specific drift the anti-pattern doc calls out; the
 // check makes it mechanical so future PRs can't reintroduce the same
 // bug silently.
+//
+// As of the Hono-layer migration, the endpoint can live in either
+// `server/router.js` (legacy ROUTES table) or `server/app.js`
+// (Hono `OWNED_ROUTES` set). Either side satisfies the anti-pattern.
 // -----------------------------------------------------------------------
 
 console.log(`${TAG.dim("[6/6]")} known drift: cleanup-orphans endpoint consistency`);
 const apiHasCleanup = apiDoc.includes("cleanup-orphans");
+// Legacy: `{ method: "POST", match: ... cleanup-orphans ... }` style.
+// Hono: a literal `"POST /api/sessions/cleanup-orphans"` in OWNED_ROUTES.
 const routerHasCleanup = /method:\s*["'](?:GET|POST|DELETE)["'][^}]*cleanup-orphans/.test(
   routerSrc,
 );
-if (apiHasCleanup && !routerHasCleanup) {
+const honoHasCleanup = /["']POST \/api\/sessions\/cleanup-orphans["']/.test(appSrc);
+const registeredAnywhere = routerHasCleanup || honoHasCleanup;
+if (apiHasCleanup && !registeredAnywhere) {
   check(
     "docs/API.md does NOT document a missing endpoint (cleanup-orphans)",
     false,
     [
-      "docs/API.md mentions POST /api/sessions/cleanup-orphans but server/router.js has no route for it",
+      "docs/API.md mentions POST /api/sessions/cleanup-orphans but no layer registers it (router.js or app.js OWNED_ROUTES)",
       "Either delete the docs/API.md entry or add the route (see docs/ANTI-PATTERNS-FIX-PLAN.md §AP11)",
     ],
   );
-} else if (!apiHasCleanup && routerHasCleanup) {
+} else if (!apiHasCleanup && registeredAnywhere) {
   check(
-    "server/router.js does NOT expose an undocumented endpoint (cleanup-orphans)",
+    "server/router.js / server/app.js do NOT expose an undocumented endpoint (cleanup-orphans)",
     false,
     [
-      "server/router.js has a cleanup-orphans route that is not documented in docs/API.md",
-      "Either remove the route or add the docs/API.md entry",
+      "cleanup-orphans is registered in a layer but not documented in docs/API.md",
+      "Either remove the registration or add the docs/API.md entry",
     ],
   );
 } else {
   check(
-    "cleanup-orphans endpoint is consistent between docs/API.md and server/router.js",
+    "cleanup-orphans endpoint is consistent between docs/API.md and the registered layers",
     true,
     [],
   );
