@@ -51,8 +51,22 @@ const steps = [
   // Compiler inputs are identical across the matrix. One Linux job runs this;
   // all platforms still build and validate native artifacts on their own platform.
   { name: "typecheck", script: "typecheck", fullOnly: true },
+  // packages/webui/webapp is type-checked by `webui:typecheck`; the root
+  // `typecheck` step only covers packages/tui (see tsconfig.standalone.json).
+  // Keeping these as separate gates makes the webapp's TS health visible.
+  { name: "webui:typecheck", script: "webui:typecheck", fullOnly: true },
   { name: "build", script: "build", windows: true },
   { name: "check:standalone", script: "check:standalone", windows: true },
+  // Web UI server bundle check: dist/webui/server.js is now produced by
+  // scripts/build.mjs. The gate exists because `cliExternalModules` + the
+  // release manifest must agree with the bundle's bare specifiers — if a
+  // dependency sneaks into the server source without being declared external,
+  // the published archive ships a runtime that cannot resolve it (this is how
+  // `hono` previously went missing from the archive).
+  {
+    name: "check:webui-bundle",
+    command: ["scripts/check-webui-bundle.mjs"],
+  },
   { name: "test:artifact", script: "test:artifact", windows: true },
   { name: "test:capabilities", script: "test:capabilities" },
   { name: "test:windows", script: "test:windows", platforms: ["win32"], windows: true },
@@ -61,6 +75,11 @@ const steps = [
   { name: "test:byok", script: "test:byok" },
   // Web UI package (packages/webui): node:test suite incl. trajectory studio.
   { name: "test:webui", script: "test:webui" },
+  // Web UI frontend (packages/webui/webapp): node:test over the TypeScript
+  // modules that sit on the ACP bridge boundary (transcript decode, state-stream
+  // frames, client identity, markdown rendering/sanitising). Pure logic only —
+  // layout is verified in the browser, not here.
+  { name: "test:webapp", script: "test:webapp" },
   // The permission facade uses POSIX process and filesystem semantics.
   {
     name: "test:policy",

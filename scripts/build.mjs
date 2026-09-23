@@ -19,6 +19,7 @@ import { TUI_DISABLED_BUILTIN_SKILL_NAMES } from "./lib/builtin-skills.mjs";
 import { copyMcodeToolsArtifact } from './lib/mcode-tools-artifact.mjs';
 import { readExtraction } from "./lib/release-metadata.mjs";
 import { cliBuildVersion, cliExternalModules } from './lib/cli-release.mjs';
+import { createWorkspaceSourcePlugin } from "./lib/workspace-source-plugin.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const metadata = readExtraction(root);
@@ -37,43 +38,9 @@ mkdirSync(outdir, { recursive: true });
 
 // Bundle checked-in workspace sources and resolve npm dependencies from each importer.
 // Native and optional platform integrations keep their installed module locations.
-const sourcePlugin = {
-  name: "standalone-workspace-sources",
-  setup(bundler) {
-    bundler.onResolve({ filter: /^[^./]/ }, ({ path: specifier }) => {
-      const parts = specifier.split("/");
-      const name = specifier.startsWith("@")
-        ? parts.slice(0, 2).join("/")
-        : parts[0];
-      const pkg = packages.get(name);
-      if (!pkg) return undefined;
-      const subpath =
-        specifier === name ? "." : `.${specifier.slice(name.length)}`;
-      const exports = pkg.manifest.exports;
-      const exported =
-        exports?.[subpath] ?? (subpath === "." ? exports : undefined);
-      const target =
-        (typeof exported === "string"
-          ? exported
-          : (exported?.types ?? exported?.import ?? exported?.default)) ??
-        (subpath === "." ? pkg.manifest.types : undefined);
-      if (typeof target !== "string" || !target.startsWith("./"))
-        throw new Error(`Unmapped workspace export: ${specifier}`);
-      const source = target
-        .replace(/^\.\/dist\//, "./src/")
-        .replace(/\.d\.ts$/, ".ts")
-        .replace(/\.js$/, ".ts");
-      const directory = path.join(root, pkg.directory);
-      const resolved = path.resolve(directory, source);
-      if (
-        path.relative(directory, resolved).startsWith("..") ||
-        !existsSync(resolved)
-      )
-        throw new Error(`Missing workspace source: ${specifier}`);
-      return { path: resolved };
-    });
-  },
-};
+// The resolver itself lives in scripts/lib/workspace-source-plugin.mjs so the CLI
+// bundle and the webui server bundle can share the same workspace-specifier rules.
+const sourcePlugin = createWorkspaceSourcePlugin({ root, packages });
 const version = cliBuildVersion(root);
 const result = await build({
   absWorkingDir: root,
@@ -109,6 +76,27 @@ const result = await build({
   },
   logLevel: "info",
 });
+// Web UI server (packages/webui/server/bootstrap.js → dist/webui/server.js):
+// bundled so `hono` and any future `@mavis/*` imports travel with the runtime
+// instead of needing a parallel install. splitting is disabled because the CLI
+// bundle owns the `dist/chunks/` namespace and the webui tree's dynamic imports
+// are either inlined or non-literal. The `server/` subtree (e.g. trajectory
+// pollers) stays as a verbatim copy below — those are intentionally not bundled
+// and are loaded at runtime via dynamic import.
+await build({
+  absWorkingDir: root,
+  entryPoints: ["packages/webui/server/bootstrap.js"],
+  outfile: path.join(outdir, "webui", "server.js"),
+  bundle: true,
+  splitting: false,
+  format: "esm",
+  platform: "node",
+  target: "node22",
+  external: cliExternalModules,
+  plugins: [createWorkspaceSourcePlugin({ root, packages })],
+  metafile: true,
+  logLevel: "info",
+});
 copyLocalRuntimeAssets({
   repositoryRoot: root,
   outputDir: outdir,
@@ -119,13 +107,46 @@ for (const name of ["configs", "native"])
   cpSync(path.join(root, "packages/tui", name), path.join(outdir, name), {
     recursive: true,
   });
-// Web UI runtime (packages/webui → dist/webui): the server is plain ESM
-// JavaScript executed by `mcode webui` as a child process — no bundling.
-// Tests, checks, docs, and package tooling stay out of the runtime layout.
-for (const name of ["server.js", "acp.mjs", "server", "public"])
+// Web UI runtime (packages/webui → dist/webui): the server entry is bundled
+// above; everything else (acp.mjs, the `server/` subtree with its runtime
+// dynamic imports, and public/) is copied verbatim. Tests, checks, docs, and
+// package tooling stay out of the runtime layout.
+//
+// `public/` is copied verbatim because it carries the trajectory studio's
+// unbundled assets (public/trajectory/, served at runtime by
+// server/trajectory/http.mjs via `new URL('../../public/trajectory/', ...)`).
+// The Next export's bundled HTML shell lives at webapp/out (copied below)
+// and is the ONLY root server/lib/static.js serves from.
+for (const name of ["acp.mjs", "server", "public"])
   cpSync(path.join(root, "packages/webui", name), path.join(outdir, "webui", name), {
     recursive: true,
   });
+// Web UI frontend (packages/webui/webapp): a Next.js static export that
+// server/lib/static.js serves ahead of public/. It is built here so a shipped tree
+// contains the frontend, and copied to the path it already occupies in the source
+// tree (webapp/out) so the server resolves it identically from a checkout and from
+// dist/webui — no layout branch in the server.
+const webappDir = path.join(root, "packages/webui", "webapp");
+if (existsSync(path.join(webappDir, "next.config.mjs"))) {
+  const requireWebapp = createRequire(import.meta.url);
+  // Resolve the package root rather than a deep subpath: `next/dist/bin/next` is
+  // not an exported subpath, and this also keeps the invocation portable (a .bin
+  // shim would be next.cmd on Windows).
+  const nextBin = path.join(
+    path.dirname(requireWebapp.resolve("next/package.json")),
+    "dist",
+    "bin",
+    "next",
+  );
+  execFileSync(process.execPath, [nextBin, "build", "webapp"], {
+    cwd: path.join(root, "packages/webui"),
+    stdio: "inherit",
+  });
+  const exportDir = path.join(webappDir, "out");
+  if (!existsSync(path.join(exportDir, "index.html")))
+    throw new Error("webapp build produced no static export at packages/webui/webapp/out");
+  cpSync(exportDir, path.join(outdir, "webui", "webapp", "out"), { recursive: true });
+}
 for (const name of ["seccomp", "srt-win", "java-proxy-agent"]) {
   cpSync(
     path.join(root, "third_party/sandbox-runtime/vendor", name),
