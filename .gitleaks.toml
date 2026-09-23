@@ -74,3 +74,10 @@ condition = "AND"
 paths = ['''(^|/)packages/local-runtime/test/unit/error-reporting-privacy\.test\.ts$''']
 regexTarget = "match"
 regexes = ['''^SECRET = 'SYNTHETIC_PRIVATE_4cd7'$''']
+
+[[rules.allowlists]]
+description = "Redaction regression fixture asserting api_key values are scrubbed, including historical commits"
+condition = "AND"
+paths = ['''(^|/)packages/webui/test/trajectory/store\.test\.mjs$''']
+regexTarget = "match"
+regexes = ['''^api_key=abcdef123456'$''']
