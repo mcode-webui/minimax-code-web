@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import * as api from "@/lib/api";
-import { useSessionContext } from "@/lib/store";
+import { refreshQuota, useSessionContext } from "@/lib/store";
 import type { MessageKey } from "@/lib/i18n";
 import { Icon } from "./icons";
 import { InboxFlyout } from "./inbox";
@@ -462,12 +462,15 @@ function SidebarFooter({
     if (!open) return;
     const onDown = (event: MouseEvent) => {
       const target = event.target as Node;
-      // The submenu panel is portalled to document.body, so it lives outside
-      // `rootRef` — also check it so a click inside the submenu doesn't
-      // close the parent menu before the click lands.
+      // Both flyouts are portalled to document.body, so they live outside
+      // `rootRef` — check them too, or a click inside one closes the menu before
+      // the click lands on its control. The usage popover is the one that bites:
+      // without it the refresh button never ran, because the mousedown closed the
+      // menu and unmounted the button mid-click.
       if (rootRef.current?.contains(target)) return;
       if (menuRef.current?.contains(target)) return;
       if (document.querySelector("[data-testid='sidebar-user-submenu']")?.contains(target)) return;
+      if (document.querySelector("[data-testid='sidebar-user-usage-popover']")?.contains(target)) return;
       setOpen(false);
       setSubmenu(null);
     };
@@ -846,27 +849,16 @@ function UsageMenuRow({
 }
 
 function UsagePopover({ t }: { t: (key: MessageKey) => string }) {
-  const [quota, setQuota] = useState<api.QuotaSnapshot | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const load = useCallback(async (refresh = false) => {
-    setBusy(true);
-    setError(null);
-    try {
-      if (refresh) await api.refreshUsage();
-      const next = await api.getQuota();
-      setQuota(next);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : String(caught));
-    } finally {
-      setBusy(false);
-    }
-  }, []);
+  // The figures live in the store, which polls them on its own timer, so opening
+  // this popover shows the current number instead of starting from empty — and
+  // the manual refresh is an extra read, not the only way to get one.
+  const { quota, quotaBusy, quotaError } = useSessionContext();
+  const error = quotaError;
+  const busy = quotaBusy;
 
   useEffect(() => {
-    void load(false);
-  }, [load]);
+    void refreshQuota();
+  }, []);
 
   // The engine reports two quota windows: one rolling over 5 hours and one
   // weekly. Both are rendered. A single row could only ever describe one of
@@ -893,7 +885,9 @@ function UsagePopover({ t }: { t: (key: MessageKey) => string }) {
         <span className="text-caption-small-strong text-text_default_primary">{t("usagePopover.title")}</span>
         <button
           type="button"
-          onClick={() => void load(true)}
+          // `record` — the user asked for fresh figures, so this reading is also
+          // a forecast sample.
+          onClick={() => void refreshQuota(true)}
           disabled={busy}
           className="flex size-5 items-center justify-center rounded text-text_default_tertiary transition-colors hover:bg-bg_interaction_tertiary_hover disabled:opacity-50"
           title={t("usagePopover.refresh")}

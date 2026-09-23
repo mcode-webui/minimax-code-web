@@ -402,12 +402,17 @@ export interface TurnUsage {
  * The plan quota.
  *
  * POST, not GET: the route asks the engine over ACP and answers with the figures
- * it just read, and it appends those figures to the forecast history. A GET was
- * never registered, so this call used to 404 and the popover showed its error
- * line no matter what the engine reported.
+ * it just read. A GET was never registered, so this call used to 404 and the
+ * popover showed its error line no matter what the engine reported.
+ *
+ * `record` asks the server to also append this reading to the forecast history.
+ * It is false by default — the poll that keeps the popover fresh is a reading,
+ * not a measurement, and a sample every couple of minutes would grow that file
+ * without bound for a forecast that only reads within the weekly window. Pass
+ * true when the user deliberately asks for fresh figures.
  */
-export const getQuota = () =>
-  request<QuotaSnapshot>("/api/usage", { method: "POST", json: {} });
+export const getQuota = (record = false) =>
+  request<QuotaSnapshot>("/api/usage", { method: "POST", json: { record } });
 export const getTurnUsage = () => request<TurnUsage>("/api/usage-real");
 /** Re-fetch quota + per-turn context (the "refresh" affordance). */
 export const refreshUsage = () => request<{ ok: boolean }>("/api/refresh", { method: "POST", json: {} });

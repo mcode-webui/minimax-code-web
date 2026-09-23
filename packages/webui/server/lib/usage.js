@@ -17,6 +17,7 @@
 // accumulates them per turn), so nothing here resets them.
 
 import { getAccountStatus } from "./mcode-rpc.js";
+import { recordSnapshotFromCs } from "./quota-forecast.js";
 import { pushStateFor } from "./state-bus.js";
 
 // A window arrives as `{ remainingPercent?, resetAtMs?, unlimited }`. The
@@ -105,11 +106,21 @@ export function quotaSnapshot(cs, extra = {}) {
  * Returns the popover payload, so a caller that answers over HTTP can use the
  * figures it just fetched instead of a second read.
  *
- * A failure is reported in the payload and left in `cs.usage.error` rather than
- * thrown: the popover shows a "load failed" line, and the route's status stays
- * 200 because the request itself succeeded.
+ * `record` is the difference between reading and measuring. A reading is what a
+ * caller wants on screen; a measurement is a sample for the forecast history,
+ * which is a file that only ever grows. The client polls the reading on a timer
+ * and asks for a measurement only when the user presses refresh, so the history
+ * stays a series of deliberate observations rather than 700 automatic ones a
+ * day. Defaults to true: a caller that says nothing keeps the old behaviour.
+ *
+ * Neither an engine failure nor a history failure is thrown. The first is
+ * reported in the payload and left in `cs.usage.error` (the popover shows a
+ * "load failed" line; the route's status stays 200 because the request itself
+ * succeeded), and the second is best-effort by construction — the forecast
+ * endpoint reports `no_history` when the file is missing or empty.
  */
-export async function runUsageQuery(cs, cid) {
+export async function runUsageQuery(cs, cid, opts = {}) {
+  const { record = true } = opts;
   const r = await getAccountStatus(cs && cs.mcodeSessionId);
   cs.usage.fetchedAt = Date.now();
   if (!r.ok) {
@@ -125,6 +136,13 @@ export async function runUsageQuery(cs, cid) {
   }
   applyAccountQuota(r.data, cs);
   cs.usage.error = null;
+  if (record) {
+    try {
+      recordSnapshotFromCs(cs);
+    } catch {
+      /* best-effort — see the note above */
+    }
+  }
   pushStateFor(cid);
   return quotaSnapshot(cs);
 }

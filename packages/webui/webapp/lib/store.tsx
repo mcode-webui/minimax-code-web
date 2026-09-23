@@ -9,6 +9,7 @@ import {
 } from "react";
 
 import type { AuthorizeRequest, TokenFirstRun, WebuiState } from "./types";
+import * as api from "./api";
 import { withClientQuery } from "./cid";
 import { NAMED_EVENTS, parseSseFrame } from "./sse";
 
@@ -36,6 +37,14 @@ export interface StoreSnapshot {
   authorize: AuthorizeRequest | null;
   /** Present once, on the very first server start, until acknowledged. */
   firstRun: TokenFirstRun | null;
+  /**
+   * Plan quota (5-hour and weekly windows), kept fresh by `startQuotaPolling`
+   * rather than by the SSE snapshot: the snapshot is broadcast to every
+   * subscriber, including over the LAN, so account data does not belong in it.
+   */
+  quota: api.QuotaSnapshot | null;
+  quotaBusy: boolean;
+  quotaError: string | null;
 }
 
 const INITIAL: StoreSnapshot = {
@@ -44,6 +53,9 @@ const INITIAL: StoreSnapshot = {
   error: null,
   authorize: null,
   firstRun: null,
+  quota: null,
+  quotaBusy: false,
+  quotaError: null,
 };
 
 let snapshot: StoreSnapshot = INITIAL;
@@ -121,10 +133,57 @@ export function connect(): () => void {
     };
   }
 
+  // Polling rides on the same long-lived lifetime as the stream.
+  startQuotaPolling();
+
   return () => {
     // Refcount-free teardown: the stream is intentionally long-lived, so a consumer
     // unmounting does not close it. Closing happens on page unload.
   };
+}
+
+/**
+ * Read the quota and put it in the store.
+ *
+ * `record` is passed through to the server (see `api.getQuota`): the poll leaves
+ * it off, so only a deliberate refresh adds a forecast sample.
+ */
+export async function refreshQuota(record = false): Promise<void> {
+  setSnapshot({ quotaBusy: true });
+  try {
+    const next = await api.getQuota(record);
+    setSnapshot({ quota: next, quotaError: null });
+  } catch (cause) {
+    setSnapshot({
+      quotaError: cause instanceof Error ? cause.message : String(cause),
+    });
+  } finally {
+    setSnapshot({ quotaBusy: false });
+  }
+}
+
+// Two minutes. The 5-hour window moves slowly, and this is a POST that asks the
+// engine, so there is nothing to gain from asking more often.
+const QUOTA_POLL_MS = 120_000;
+let quotaTimer: number | null = null;
+
+/**
+ * Poll the quota for as long as the page is open, so the popover has a figure
+ * before it is ever hovered instead of only after a manual refresh.
+ *
+ * Idempotent, like `connect()`: it is called from the same effect. A hidden tab
+ * does not poll — nobody is reading the number — and catches up on the way back
+ * via `visibilitychange`.
+ */
+export function startQuotaPolling(): void {
+  if (typeof window === "undefined" || quotaTimer !== null) return;
+  const tick = () => {
+    if (document.hidden) return;
+    void refreshQuota();
+  };
+  void refreshQuota();
+  quotaTimer = window.setInterval(tick, QUOTA_POLL_MS);
+  document.addEventListener("visibilitychange", tick);
 }
 
 export function dismissFirstRun(): void {

@@ -7,9 +7,10 @@
 //     it over ACP via lib/usage.js;
 //   - per-turn context — the mavis runtime db, via lib/mavis-usage.js.
 //
-// C07 patch: appended recordSnapshotFromCs(ctx.cs) after runUsageQuery
-// so each /api/usage call appends one NDJSON line to
-// ~/.mcode-webui/usage-history.ndjson for the quota forecast. Also
+// C07 patch: each /api/usage call can append one NDJSON line to
+// ~/.mcode-webui/usage-history.ndjson for the quota forecast. That is
+// now decided by lib/usage.js#runUsageQuery's `record` option, so a
+// caller that is only rendering the number does not add a sample. Also
 // added handleForecast which exposes the prediction to the UI.
 
 import { existsSync } from "node:fs";
@@ -24,27 +25,32 @@ import { MAVIS_DB_PATH } from "../lib/config.js";
 // C07: quota exhaustion forecast (linear LS on usage history)
 //   readHistory + forecastExhaustion + recordSnapshotFromCs.
 //   Pure module — no state-bus / settings coupling, just FS + math.
-import {
-  readHistory,
-  forecastExhaustion,
-  recordSnapshotFromCs,
-} from "../lib/quota-forecast.js";
+import { readHistory, forecastExhaustion } from "../lib/quota-forecast.js";
+
+/** The shared body reader — same shape as the other routes'. */
+async function readJson(req) {
+  let body = "";
+  for await (const chunk of req) body += chunk;
+  try {
+    return JSON.parse(body || "{}");
+  } catch {
+    return {};
+  }
+}
 
 // POST /api/usage & /api/usage-trigger
 //
 // The answer is the quota figures runUsageQuery just fetched. It used to be a
 // bare {ok:true} written before the fetch — the popover reads this response
 // body, so it never saw a `remaining` even when the fetch succeeded.
-export async function handleUsage(_req, res, ctx) {
-  const payload = await runUsageQuery(ctx.cs, ctx.cid);
-  // C07: best-effort append one snapshot row to usage-history. The
-  //   forecast is best-effort — failure here must not break the
-  //   response. recordSnapshotFromCs returns false silently on error.
-  try {
-    recordSnapshotFromCs(ctx.cs);
-  } catch {
-    /* swallow — see comment above */
-  }
+export async function handleUsage(req, res, ctx) {
+  // `record: false` reads the quota without adding a sample to the forecast
+  // history; the client's poll uses it. Absent or true means the historical
+  // behaviour, where a read is also a measurement.
+  const body = await readJson(req);
+  const payload = await runUsageQuery(ctx.cs, ctx.cid, {
+    record: body.record !== false,
+  });
   res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
   res.end(JSON.stringify(payload));
 }

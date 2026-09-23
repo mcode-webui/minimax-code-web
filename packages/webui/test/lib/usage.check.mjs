@@ -9,6 +9,9 @@
 
 import { test, describe, before, beforeEach } from "node:test";
 import assert from "node:assert/strict";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   setupMocks,
   absPath,
@@ -18,6 +21,16 @@ import {
 
 let applyAccountQuota, quotaSnapshot, runUsageQuery;
 let makeClientState, pushStateFor, clients, sseByCid;
+
+// `runUsageQuery` records a forecast sample by default and this file calls it
+// several times, so point the history at a private file. Left unset, the suite
+// would append to the operator's own ~/.mcode-webui/usage-history.ndjson. The
+// path is resolved per call, so setting it here covers every test below.
+const HISTORY_PATH = join(
+  mkdtempSync(join(tmpdir(), "mcode-webui-usage-")),
+  "usage-history.ndjson",
+);
+process.env.MCODE_WEBUI_HISTORY_PATH = HISTORY_PATH;
 
 before(async (t) => {
   await setupMocks(t);
@@ -273,5 +286,39 @@ describe("runUsageQuery — 数据源是引擎的 ACP 扩展方法", () => {
     const pushed = JSON.parse(sseByCid.get(cid).writes[0].slice(6));
     assert.equal(pushed.usage.error, "no_client");
     assert.equal(pushed.usage.hidden, true, "失败时不留半真的读数给预测历史");
+  });
+});
+
+describe("runUsageQuery — a reading is not a measurement", () => {
+  const withEngine = () =>
+    registerRpcMock({
+      getAccountStatus: async () => ({ ok: true, data: ENGINE_QUOTA_FIXTURE }),
+    });
+
+  test("records a forecast sample by default (a caller that says nothing)", async () => {
+    // Fresh history for this case.
+    if (existsSync(HISTORY_PATH)) rmSync(HISTORY_PATH);
+    withEngine();
+    const cid = "record-default";
+    clients.set(cid, makeClientState());
+    sseByCid.set(cid, fakeSse());
+    await runUsageQuery(clients.get(cid), cid);
+    assert.ok(existsSync(HISTORY_PATH), "history file written");
+    const lines = readFileSync(HISTORY_PATH, "utf8").trim().split("\n");
+    assert.equal(lines.length, 1);
+    assert.equal(JSON.parse(lines[0]).fiveHourRemaining, 99);
+  });
+
+  test("record: false reads the quota and leaves the history alone", async () => {
+    if (existsSync(HISTORY_PATH)) rmSync(HISTORY_PATH);
+    withEngine();
+    const cid = "record-off";
+    clients.set(cid, makeClientState());
+    sseByCid.set(cid, fakeSse());
+    const payload = await runUsageQuery(clients.get(cid), cid, { record: false });
+    // The figures still come back — this is a read, not a no-op.
+    assert.equal(payload.ok, true);
+    assert.equal(payload.remaining, 99);
+    assert.equal(existsSync(HISTORY_PATH), false, "polling must not grow the history");
   });
 });
