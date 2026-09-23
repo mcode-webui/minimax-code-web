@@ -28,7 +28,7 @@ import { absPath, decideNextAuthorization } from "../_setup.js";
 // child process (no module mocks — works identically with and without
 // --experimental-test-module-mocks) and drive /clear through the
 // production HTTP wire path, deciding the authorize() gate exactly
-// like the browser modal does (SSE needs_authorization frame + POST
+// like the browser modal does (WS needs_authorization control frame + POST
 // /api/auth/decision via the _setup.js decideNextAuthorization
 // helper). Same pattern as test/integration/event-chain.test.js.
 // ============================================================
@@ -229,7 +229,7 @@ describe("chat route production wiring — /clear must pass the slash.js gate", 
   // needs_authorization frame is pushed to the sender's cid only).
   async function clearWithDecision(port, approve, { viaCmd = false } = {}) {
     const decider = decideNextAuthorization({ port, approve, cid: GATE_CID });
-    // Let the decider's SSE subscription register before the gate
+    // Let the decider's WebSocket handshake register before the gate
     // broadcast fires (frames are not replayed to late subscribers).
     await new Promise((r) => setTimeout(r, 150));
     const post = viaCmd

@@ -1,4 +1,4 @@
-// mcode-webui HTTP/SSE server — bootstrap.
+// mcode-webui HTTP/WebSocket event-stream server — bootstrap.
 //
 // All actual logic lives in server/lib/* + server/routes/* + server/router.js.
 // This file only wires up:
@@ -25,6 +25,7 @@ import { installGlobalErrorHandlers, MCODE_CMD, UPLOAD_DIR, WEBUI_DATA_DIR, PORT
 import { listenWithPortFallback, MAX_PORT_ATTEMPTS } from './server/lib/port.js'
 import { LAN_IP } from './server/lib/lan.js'
 import { handleRequest } from './server/router.js'
+import { handleStreamUpgrade } from './server/lib/ws-server.js'
 import { runStartupCleanup } from './server/cleanup.js'
 import { shutdownMcodeAcpSingleton } from './server/lib/acp-client.js'
 import { init as initSettings, getPersistPath, getTokenEnabled } from './server/lib/settings.js'
@@ -49,25 +50,27 @@ runStartupCleanup()
 //   sync auth module). The printToken callback fires ONLY on first-ever
 //   startup (when the token didn't exist on disk). After that, the token
 //   value lives only in the settings file; if the operator rotates via
-//   the settings card, the new value is broadcast over SSE and shown in
-//   the settings card until acknowledged.
+//   the settings card, the new value is broadcast over the WebSocket
+//   event stream (/api/stream) and shown in the settings card until
+//   acknowledged.
 // v2 (Lease C08, ANTI-PATTERNS-FIX-PLAN §AP1): the raw token is NO LONGER
-//   echoed to stdout. Instead we push `token.first_run` over SSE so the
-//   web UI can show the onboarding modal. The raw token never leaves the
-//   controlled channel (SSE → already-authenticated local UI) and never
-//   touches shell history / Docker logs / systemd journal / screen shares.
+//   echoed to stdout. Instead we push `token.first_run` over /api/stream
+//   so the web UI can show the onboarding modal. The raw token never
+//   leaves the controlled channel (/api/stream → already-authenticated
+//   local UI) and never touches shell history / Docker logs / systemd
+//   journal / screen shares.
 //
 //   TOKEN_STDOUT=1 keeps a single NEUTRAL line ("token persisted to: <path>")
-//   for docker / no-UI environments where no SSE client will connect to
-//   receive the modal. The token value itself is NEVER printed.
+//   for docker / no-UI environments where no event-stream client will
+//   connect to receive the modal. The token value itself is NEVER printed.
 let _printedFirstToken = false
 initSettings({
   printToken: (token) => {
     if (_printedFirstToken) return
     _printedFirstToken = true
     const persistPath = getPersistPath()
-    // Push to any connected SSE client (the UI modal lives here).
-    // No-op if sseByCid is empty (e.g. server started headlessly).
+    // Push to any connected /api/stream client (the UI modal lives here).
+    // No-op until a client connects (e.g. server started headlessly).
     pushTokenFirstRun({ token, persistPath })
     if (TOKEN_STDOUT) {
       // docker / no-UI fallback — single neutral line, NEVER raw token.
@@ -79,6 +82,16 @@ initSettings({
 setAuthTokenEnabled(getTokenEnabled())
 
 const server = http.createServer(handleRequest)
+
+// 波次 2b（docs/drafts/arch_net_solution_0922.md §7.2）：WebSocket 事件流升级钩子。
+//   门链（origin/LAN/token）在 handleStreamUpgrade 内与原 /api/events 同款执行；
+//   无 transport 开关，/api/stream 始终启用（发行版 SPA 消费本端点，决策 20）。
+//   其余升级路径一律拒绝（无升级监听时 Node 本就关套接字，行为等价）。
+server.on("upgrade", (req, socket, head) => {
+  const pathname = (req.url || "/").split("?")[0]
+  if (pathname === "/api/stream") handleStreamUpgrade(req, socket, head)
+  else socket.destroy()
+})
 
 // 端口回退 (见 server/lib/port.js): 默认端口被占用时向后找空闲端口, 显式 PORT
 //   不回退。日志里的端口必须是实际绑定值 —— 启动器 (mcode-web / mcode webui) 正是

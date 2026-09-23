@@ -7,14 +7,14 @@
 //   - Local request (isLocalRequest === true) is always allowed (LAN card
 //     switch + first page load without token).
 //   - Non-local request requires a token when TOKEN auth is enabled:
-//       * `?token=<value>` query string (for SSE EventSource — browsers
-//         can't set custom headers on EventSource).
+//       * `?token=<value>` query string (for the /api/stream WebSocket —
+//         browsers can't set custom headers on a WebSocket handshake).
 //       * `Authorization: Bearer <value>` header (for fetch / programmatic
 //         callers; preferred to avoid URL-bar / referer / history leaks).
 //   - Token auth can be turned off (tokenEnabled = false) at runtime via
 //     the settings card; this is the "opt-in" escape hatch.
 //   - Static files (HTML/CSS/JS/images) and OPTIONS preflight are always
-//     public so the SPA can bootstrap; only `/api/*` and SSE are gated.
+//     public so the SPA can bootstrap; only `/api/*` and the `/api/stream` upgrade are gated.
 //
 // v2 security note (PR #55 review point 1): the local bypass below is a
 // SOCKET-identity fact (the connection originated on this machine), not
@@ -69,7 +69,7 @@ function getExpectedToken() {
 }
 
 // Pull a token candidate out of a request. Tries the header first
-// (preferred), then the URL query string (for SSE / EventSource).
+// (preferred), then the URL query string (for the /api/stream upgrade).
 // Returns "" if no token candidate is present. Caps length to defend
 // against unbounded `?token=...` allocations (e.g. 10 MB blob).
 const MAX_TOKEN_LEN = 256;
@@ -81,7 +81,7 @@ function clip(s) {
 }
 
 export function extractToken(req) {
-  // EventSource / fetch with custom headers can use `Authorization: Bearer`.
+  // The /api/stream upgrade and fetch with custom headers use `Authorization: Bearer`.
   const auth = req.headers && req.headers.authorization;
   if (auth) {
     // v2 security fix (PR #55 / CodeQL): the old `^Bearer\s+(.+)$` paired
@@ -92,7 +92,7 @@ export function extractToken(req) {
     const m = /^Bearer[ \t]+(\S.*)$/i.exec(String(auth));
     if (m) return clip(m[1].trim());
   }
-  // URL query fallback (also covers EventSource on browsers that strip
+  // URL query fallback (also covers the /api/stream upgrade and browsers that strip
   // custom headers). Safe-ish because we only use it for equality
   // comparison, never log it.
   try {
@@ -135,7 +135,7 @@ export function isRequestAuthorized(req) {
 }
 
 // Reject with 401. Sends a small JSON body (or a plain string for
-// EventSource which prefers text/event-stream). The response never
+// clients that prefer text/event-stream). The response never
 // echoes the supplied token or the expected token.
 export function writeAuthRequired(res) {
   if (!res.headersSent) {
@@ -172,13 +172,13 @@ export function isAuthEnforced() {
 //   server.js used to print a 14-line ASCII box containing the raw
 //   token to stdout on first-ever boot. That leaked into shell
 //   history / Docker logs / systemd journal / screen shares. The fix
-//   pushes the token via SSE `token.first_run` so the UI can show it
+//   pushes the token via the `token.first_run` event-stream frame so the UI can show it
 //   in a modal instead. Rotation uses `auth.token_rotated` (already in
 //   state-bus.js since v1.0.1).
 //
 // Surface:
 //   - isFirstRun() — true iff this process has NOT yet pushed a
-//     `token.first_run` SSE event in its lifetime. Used by
+//     `token.first_run` event-stream frame in its lifetime. Used by
 //     state-bus.js#pushTokenFirstRun as a re-send guard.
 //   - markFirstRunNotified(token) — flip the in-memory flag. Called
 //     from the HTTP ack handler after the client closes the modal,
@@ -188,7 +188,7 @@ export function isAuthEnforced() {
 //
 // Settings.js owns the persistent `tokenAcknowledged`; auth.js's
 // `_firstRunNotified` is the parallel in-memory mirror used to gate
-// the SSE re-send. The two stay in sync via this helper.
+// the event-stream re-send. The two stay in sync via this helper.
 // ============================================================
 
 let _firstRunNotified = false;

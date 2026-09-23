@@ -23,7 +23,7 @@ node server.js
 # → http://127.0.0.1:18090
 ```
 
-如果想要调试会话（详细 SSE、无缓存、可注入事件）：
+如果想要调试会话（详细事件流日志、无缓存、可注入事件）：
 ```powershell
 $env:DEBUG_INJECT = '1'
 node server.js
@@ -61,7 +61,7 @@ node server.js
 
      // if it mutates state:
      pushStateFor(cid, { /* delta */ })
-     // for one-off SSE messages, see `pushOnlineCount` / `broadcastTokenRotated`
+     // for one-off control events, see `pushOnlineCount` / `broadcastTokenRotated`
 
      return ok(res, { /* response */ })
    }
@@ -89,12 +89,12 @@ node server.js
    ```
 
 4. **不要在路由处理器中直接写入 `clientState.state`**。
-   使用 `pushStateFor(cid, …)`，这样变更会通过 SSE
-   通道广播，客户端才是事实来源。
+   使用 `pushStateFor(cid, …)`，这样变更会通过
+   事件流广播，客户端才是事实来源。
 
-## 添加新的 SSE 事件类型
+## 添加新的事件流事件类型
 
-1. 在 `docs/ARCHITECTURE.md § 5`（SSE 事件模式）中定义事件结构。
+1. 在 `docs/ARCHITECTURE.md § 5`（事件模式）中定义事件结构。
 2. 在传输层（`mcode-acp.js` 或 `mcode-exec.js`）中，将
    原始 mcode 事件翻译为你的规范化事件：
    ```js
@@ -102,8 +102,8 @@ node server.js
    ```
 3. 传输层通过 `pushStateFor(cid, …)`（状态快照）或
    `broadcastTokenRotated(token)`（一次性事件）推送事件，
-   它们会进入 SSE 通道。
-4. 在 `public/app/main.js` 中，在 `connect()` 的 SSE 消息
+   它们会进入 WebSocket 事件流（`/api/stream`）。
+4. 在 `public/app/main.js` 中，在 `connect()` 的事件流消息
    处理器中处理该事件，并相应更新 `state.foo`。
 5. 如果该事件需要 UI，添加一个 `renderFoo()` 渲染函数，并从
    `render()` 中调用它。
@@ -156,8 +156,8 @@ webui 会在连接时获取它。
      body: JSON.stringify({ type: 'delta', text: 'hello from test' })
    })
    ```
-4. 注入的事件会出现在右侧面板和 SSE
-   流中。
+4. 注入的事件会出现在右侧面板和
+   事件流中。
 
 你也可以在控制台调用 `__DBG.log('whatever')`——它会显示
 在右下角的调试面板中。

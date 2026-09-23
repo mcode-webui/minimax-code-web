@@ -5,7 +5,7 @@
 // display. Closes the user-questions seam from BORROW-dsh-deepseek-
 // harness-2026-08-28 § 3.
 //
-// All exports are pure (no SSE, no state-bus writes) — this is the
+// All exports are pure (no direct stream writes, no state-bus writes) — this is the
 // data layer that tool-ask-user.js and the UI both consume.
 
 const QUESTION_KINDS = new Set(["text", "choice", "confirm"]);

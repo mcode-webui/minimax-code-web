@@ -167,7 +167,7 @@ export function bindDraftToMcodeSid(cs, sid) {
 }
 
 // v2.3: memoize by (mtimeMs, size). pushStateFor calls loadSessions on EVERY
-//   snapshot (per SSE push, up to 60Hz), and switch/persist paths read too —
+//   snapshot (per event-stream push, up to 60Hz), and switch/persist paths read too —
 //   re-reading + JSON.parsing a multi-MB store that often made long-turn
 //   streaming and session switching visibly janky. Corrupt files are never
 //   cached (each attempt re-parses so recovery is immediate), external

@@ -3,7 +3,7 @@
 // appended to chat after a command executes. Closes the command-
 // feedback seam from BORROW-dsh-deepseek-harness-2026-08-28 § 3.
 //
-// All writes route through state-bus.pushStateFor (no direct SSE).
+// All writes route through state-bus.pushStateFor (no direct stream writes).
 // Future Borrow 1 (transcript) + Borrow 3 (hook seam) call sites can
 // intercept emitCommandFeedback rather than touching every command
 // body in interaction/commands.js.

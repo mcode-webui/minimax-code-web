@@ -9,7 +9,7 @@
 webui 受三项约束限制：
 1. mcode 0.1.5 acp 通过 JSON-RPC 暴露的能力。
 2. Node `http` / `child_process` API 能做的事。
-3. 浏览器 `EventSource` 与 `fetch` 能做的事。
+3. 浏览器 `WebSocket` 与 `fetch` 能做的事。
 
 超出这三者范围的功能要么是 ❌ 受阻（没有变通办法），要么是
 ⚠ 部分可用（存在变通办法，但有注意事项）。
@@ -177,13 +177,13 @@ CI 会对上述每一个名称是否出现在本文档中进行断言
 | 带开关的局域网共享 | ✅ | 运行时状态存于 `settings.lanBroadcastEnabled`；对非本地 IP 默认关闭 |
 | 局域网关闭时的友好 403 页面 | ✅ | `settings.js` 中的 `LAN_REJECT_HTML` 模板；v1.0.1：单个双语页面（zh + en 上下堆叠），动态 `PORT`（之前硬编码为 `7890`，在 v0.5 默认端口变更后失效） |
 | 令牌认证（`?token=` 或 `Authorization: Bearer`） | ✅ | `server.js` 校验 `req.url` 与 `req.headers.authorization`；一旦设置，每个请求都必须携带令牌 |
-| **令牌认证：默认开启（v1.0.1）** | ✅ | 首次启动且未设置 `TOKEN` 环境变量时自动生成一个 32 位十六进制令牌，持久化到 `~/.mcode-webui/settings.json`（权限 0600，通过 `.tmp` + rename 原子写入）。**v2.0.0（lease C08）**：令牌不再以 14 行 ASCII 方框打印到 stdout；改为向所有已连接标签页广播一个 `token.first_run` SSE 事件，并向 stdout 打印一行中性的 `token persisted to: <path>`（由 `MCODE_WEBUI_TOKEN_STDOUT=1` 门禁控制）。设置卡片会一直显示令牌，直到操作者点击 "我已保存 / I have saved it"。`MCODE_WEBUI_SETTINGS_PATH` 环境变量可覆盖文件位置。`TOKEN` 环境变量仍然优先（逃生通道）。 |
-| **令牌认证：重置 + 实时广播（v1.0.1）** | ✅ | "重置 token" 按钮生成新的 32 位十六进制值，持久化，并广播携带新令牌的 `auth.token_rotated` SSE 事件。每个已连接客户端**就地**更新其 `localStorage` 和当前 `HEADERS.Authorization` 对象——后续 `fetch()` 调用自动使用新令牌，无需重新加载。崩溃安全：先写磁盘，仅在成功后才提交内存状态。 |
-| **令牌认证：确认状态机（v1.0.1）** | ✅ | 点击 "我已保存" 后，服务器记录 `tokenAcknowledged=true`，并在后续的 `GET /api/settings` 响应与 SSE 状态推送中不再包含 `currentToken`。UI 将令牌值/掩码行替换为 `✓ 已保存 — 查看请点"重置" / Saved — click "Reset" to view again` 占位符。重置会触发新一轮轮换。跨重启持久化。 |
+| **令牌认证：默认开启（v1.0.1）** | ✅ | 首次启动且未设置 `TOKEN` 环境变量时自动生成一个 32 位十六进制令牌，持久化到 `~/.mcode-webui/settings.json`（权限 0600，通过 `.tmp` + rename 原子写入）。**v2.0.0（lease C08）**：令牌不再以 14 行 ASCII 方框打印到 stdout；改为通过 WebSocket 事件流（`/api/stream`）向所有已连接标签页广播一个 `token.first_run` 控制事件，并向 stdout 打印一行中性的 `token persisted to: <path>`（由 `MCODE_WEBUI_TOKEN_STDOUT=1` 门禁控制）。设置卡片会一直显示令牌，直到操作者点击 "我已保存 / I have saved it"。`MCODE_WEBUI_SETTINGS_PATH` 环境变量可覆盖文件位置。`TOKEN` 环境变量仍然优先（逃生通道）。 |
+| **令牌认证：重置 + 实时广播（v1.0.1）** | ✅ | "重置 token" 按钮生成新的 32 位十六进制值，持久化，并通过 WebSocket 事件流（`/api/stream`）广播携带新令牌的 `auth.token_rotated` 控制事件。每个已连接客户端**就地**更新其 `localStorage` 和当前 `HEADERS.Authorization` 对象——后续 `fetch()` 调用自动使用新令牌，无需重新加载。崩溃安全：先写磁盘，仅在成功后才提交内存状态。 |
+| **令牌认证：确认状态机（v1.0.1）** | ✅ | 点击 "我已保存" 后，服务器记录 `tokenAcknowledged=true`，并在后续的 `GET /api/settings` 响应与事件流状态快照中不再包含 `currentToken`。UI 将令牌值/掩码行替换为 `✓ 已保存 — 查看请点"重置" / Saved — click "Reset" to view again` 占位符。重置会触发新一轮轮换。跨重启持久化。 |
 | **令牌认证：设置持久化（v1.0.1）** | ✅ | 令牌 + readOnly + tokenEnabled + tokenAcknowledged + tokenRotatedAt + allowedInterfaces（空操作占位）全部持久化到 `~/.mcode-webui/settings.json`。`lanBroadcast` 仍只保存在内存中（有意为之——重启后重新启用局域网，避免管理员把自己锁在门外）。 |
 | 只读模式（v1.0.1） | ✅ | 开启后，非本地的对 `/api/*` 的 `POST` / `DELETE` 返回 `403 {"error": "read-only mode"}`。`GET` / `HEAD` / `OPTIONS` 豁免。本地请求始终豁免。`/api/settings` 豁免（逃生通道）。已持久化。开启时顶栏显示红色脉动的 "只读 / READ ONLY" 徽标。 |
-| 按 cid 划分的 SSE 通道 | ✅ | 每个浏览器标签页一个 EventSource；每个 cid 一个 mcode 子进程 |
-| HTTPS | ⚠ | v2.0.0（lease C03）——HTTPS 本身需要反向代理；已在 `docs/HTTPS-REVERSE-PROXY.md`（387 行，含 nginx / caddy / Traefik 2 配置及 SSE 长连接注意事项）中**完整记录**。webui 无代码改动。 |
+| 按 cid 划分的 WebSocket 事件流 | ✅ | 每个浏览器标签页一个 `GET /api/stream` 连接；每个 cid 一个 mcode 子进程 |
+| HTTPS | ⚠ | v2.0.0（lease C03）——HTTPS 本身需要反向代理；已在 `docs/HTTPS-REVERSE-PROXY.md`（387 行，含 nginx / caddy / Traefik 2 配置及 WebSocket 升级与长连接注意事项）中**完整记录**。webui 无代码改动。 |
 | mTLS / 客户端证书 | ❌ | 同上；文档见 `docs/HTTPS-REVERSE-PROXY.md` |
 | 速率限制 | ✅ | v2.0.0（lease C03）：`server/lib/rate-limit.js`（252 行）——按 IP 的令牌桶，默认 60 次/分钟 + 100 突发容量 + 令牌持有者 2× 倍率。路由器门禁 4 在超限时返回 429。`lib-rate-limit.test.js`（339 行，21 个单元测试）。 |
 
@@ -201,10 +201,10 @@ CI 会对上述每一个名称是否出现在本文档中进行断言
 | 代码热重载 | ❌ | 重启服务器 |
 | 健康检查端点 | ✅ | `GET /api/health` 返回 `{ok:true, port, defaultModel, defaultWorkspace, mcodeCmd, mcodeVersion, maxConcurrent}` |
 | 只追加事件审计日志（events.ndjson） | ✅ | v2.0.0（lease B01）：`server/lib/events.js`（494 行）——NDJSON 追加写入，带 SHA-256 哈希链、单调递增 `seq`、200ms 延迟写入。已接入 7 个写入点：settings.js / sessions.js / upload.js / slash.js / db.js / export.js / alerts.js（动态）。`lib-events.test.js` + `lib-events-hash.test.js`。`~/.mcode-webui/events.ndjson`（可通过 `MCODE_WEBUI_EVENTS_PATH` 覆盖）。 |
-| 独立的异常告警 SSE 通道 | ✅ | v2.0.0（lease B02）：`server/lib/alerts.js`（203 行）+ `GET /api/alerts` SSE + 前端铃铛图标 + 未读计数。3 个级别（info/warn/error），100 条环形缓冲，60 秒去重窗口。`lib-alerts.test.js`（17 个）+ `routes-alerts.test.js`（7 个）。 |
+| 独立的异常告警 REST 快照通道 | ✅ | v2.0.0（lease B02）：`server/lib/alerts.js`（203 行）+ `GET /api/alerts` REST 快照（实时 `alerts.append` / `alerts.update` 控制帧经 `/api/stream` 下发）+ 前端铃铛图标 + 未读计数。3 个级别（info/warn/error），100 条环形缓冲，60 秒去重窗口。`lib-alerts.test.js`（17 个）+ `routes-alerts.test.js`（7 个）。 |
 | 按请求的授权门禁 | ✅ | v2.0.0（lease B03）：`server/lib/authorize.js`（354 行）——`authorize(action, ctx, opts)` Promise，默认 5 分钟超时（失败即拒绝），8 个动作的白名单（`session.delete`、`sessions.cleanup-orphans`、`session.cleanup-all`、`session.export`、`session.search`、`token.reset`、`slash.clear`、`startup.cleanup`）。7 个包装点。`lib-authorize.test.js`（20 个单元测试）。 |
 | SBOM + CVE 门禁（本地；插件无自有 CI） | ✅ | 2026-09-20 修订（webui-rigor-fix）：插件级的 `.github/workflows/ci.yml` 已删除——GitHub 只从仓库根目录读取工作流，因此它从未触发过；唯一的 CI 是 marketplace 根目录的 `validate` 任务（ubuntu / Node 22，`npm ci` → `npm run check`，见 `docs/CI.md`）。SBOM + CVE 作为**本地**门禁运行：`scripts/gen-sbom.mjs` CycloneDX 1.5 + `sbom.cdx.json`（115 个组件）+ `npm audit --omit=dev` + `.cve-ignore.json`；跨 Node/操作系统覆盖是 `docs/CI.md` 中的手动矩阵操作步骤。 |
-| `token.first_run` SSE 事件 | ✅ | v2.0.0（lease C08）：`server/lib/state-bus.js#pushTokenFirstRun` 在首次启动时向所有 `sseByCid` 广播 `{event: "token.first_run", data: {token, persistPath}}`。由 `auth.js#isFirstRun()` + 持久化的 `tokenAcknowledged` 标志防重放。 |
+| `token.first_run` 控制事件 | ✅ | v2.0.0（lease C08）：`server/lib/state-bus.js#pushTokenFirstRun` 在首次启动时通过 WebSocket 事件流（`/api/stream`）向所有已连接标签页下发 `control` 帧（`{type: "control", name: "token.first_run", data: {token, persistPath}}`）。由 `auth.js#isFirstRun()` + 持久化的 `tokenAcknowledged` 标志防重放。 |
 
 ## 13. 要启用 ❌ 行，mcode 需要增加什么
 

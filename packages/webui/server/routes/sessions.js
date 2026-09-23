@@ -310,7 +310,7 @@ export async function handleSwitchSession(req, res, ctx) {
   // the mcode transcript from the runtime DB (read-only) and map it into
   // the webui chat-line grammar BEFORE responding, so response session.chat
   // and cs.chat carry history. Caps inside (last 400 lines / 200KB) keep
-  // the SSE state push bounded; a 1000+-message session must not balloon
+  // the event-stream state push bounded; a 1000+-message session must not balloon
   // it. FAILURE MUST NOT BREAK SWITCHING: any error logs and continues
   // with chat: [] — the switch itself always succeeds.
   if (
@@ -853,7 +853,7 @@ export async function handleAcpSessionTitle(req, res, _ctx) {
 //   gate with authorize("session.search", ctx). The new action name
 //   is appended to AUTHORIZE_ACTIONS in server/lib/authorize.js so
 //   the whitelist check accepts it. In production this pops the same
-//   needs_authorization SSE modal as session.delete / session.export;
+//   needs_authorization modal (event-stream control frame) as session.delete / session.export;
 //   tests drive the decision via test/_setup.js#withDecisions (the
 //   execArgv auto-approve was removed in the 2026-09-20 rigor fix).
 //

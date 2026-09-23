@@ -17,7 +17,7 @@
 // Scope (D02 brief):
 //   GET  /api/health              (happy + 404 path)
 //   GET  /api/state               (happy + wrong method)
-//   GET  /api/alerts              (SSE happy; bad path = wrong method)
+//   GET  /api/alerts              (REST snapshot happy; wrong method)
 //   GET  /api/usage/forecast      (happy + zero-history reason)
 //   GET  /api/sessions/<id>/export (happy md + error 404)
 //   GET  /                        (happy static index)
@@ -216,8 +216,8 @@ test("router-boot: GET /api/state returns client state snapshot", async () => {
     assert.equal(res.status, 200, `expected 200, got ${res.status}. body: ${res.body}`);
     assert.ok(res.json, "response must be JSON");
     // Snapshot fields confirmed in server/routes/state.js#handleState
-    // (lines 117-156). Note: `onlineCount` is only on the SSE push
-    // (state-bus.js line 156), not the /api/state JSON response.
+    // (lines 117-156). Note: `onlineCount` is only on the event-stream
+    // push (state-bus.js), not the /api/state JSON response.
     assert.equal(typeof res.json.version, "string", "version field present");
     assert.ok(res.json.workspace, "workspace field present");
     assert.ok(res.json.model, "model field present");
@@ -237,54 +237,25 @@ test("router-boot: POST /api/state returns 404 (route is GET-only)", async () =>
 });
 
 // -----------------------------------------------------------------------
-// /api/alerts — SSE. We just hit it once and read the first frame
-// (snapshot). For full streaming tests, see sse-channel.test.js. The
-// "error path" here is the wrong-method attempt.
+// /api/alerts — REST snapshot (SSE removed by decision 20; the live
+// alerts.append/alerts.update traffic rides /api/stream — see
+// ws-channel.test.js). The "error path" here is the wrong-method
+// attempt.
 // -----------------------------------------------------------------------
-test("router-boot: GET /api/alerts opens SSE + emits snapshot frame", async () => {
-    const res = await new Promise((resolve, reject) => {
-        const req = http.request(
-            { method: "GET", host: "127.0.0.1", port: server.port, path: "/api/alerts" },
-            (r) => {
-                const chunks = [];
-                r.on("data", (c) => chunks.push(c));
-                const timer = setTimeout(() => {
-                    req.destroy();
-                    resolve({
-                        status: r.statusCode,
-                        headers: r.headers,
-                        body: Buffer.concat(chunks).toString("utf8"),
-                    });
-                }, 200);
-                r.on("end", () => {
-                    clearTimeout(timer);
-                    resolve({
-                        status: r.statusCode,
-                        headers: r.headers,
-                        body: Buffer.concat(chunks).toString("utf8"),
-                    });
-                });
-                r.on("error", (e) => {
-                    clearTimeout(timer);
-                    reject(e);
-                });
-            },
-        );
-        req.on("error", reject);
-        req.end();
-    });
-    assert.equal(res.status, 200, `expected 200 SSE, got ${res.status}`);
-    assert.equal(
-        String(res.headers["content-type"] || "").startsWith("text/event-stream"),
-        true,
-        "Content-Type must be text/event-stream",
+test("router-boot: GET /api/alerts returns REST snapshot (application/json)", async () => {
+    const res = await httpRequest({ port: server.port, path: "/api/alerts" });
+    assert.equal(res.status, 200, `expected 200, got ${res.status}. body: ${res.body}`);
+    assert.ok(
+        String(res.headers["content-type"] || "").includes("application/json"),
+        `Content-Type must be application/json, got ${res.headers["content-type"]}`,
     );
-    // Snapshot frame: data: {"kind":"snapshot","alerts":[]}
-    assert.match(res.body, /data: \{[^]*"kind":\s*"snapshot"/);
-    assert.match(res.body, /"alerts":\s*\[\]/);
+    assert.ok(res.json, "response must parse as JSON");
+    assert.equal(res.json.kind, "snapshot");
+    assert.ok(Array.isArray(res.json.alerts), "body.alerts must be an array");
+    assert.equal(res.json.alerts.length, 0, "fresh server has no alerts");
 });
 
-test("router-boot: POST /api/alerts returns 404 (SSE route is GET-only)", async () => {
+test("router-boot: POST /api/alerts returns 404 (REST route is GET-only)", async () => {
     const res = await httpRequest({
         method: "POST",
         port: server.port,

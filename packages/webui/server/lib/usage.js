@@ -110,7 +110,7 @@ export function parseTokenPlanResponse(data, cs) {
   cs.usage.plan = data?.plan ?? null;
   cs.usage.expires = data?.expires ?? null;
   cs.usage.credits = data?.credits ?? null;
-  // Stash the raw response for debugging — the SSE push of cs
+  // Stash the raw response for debugging — the event-stream push of cs
   // exposes `usage.raw` to the client, and a "查看 raw 响应"
   // affordance in the popover would surface this when the
   // numbers look wrong (e.g., API shape drift). We cap it at

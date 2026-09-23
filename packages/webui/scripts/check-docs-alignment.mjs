@@ -279,6 +279,7 @@ const KNOWN_ENV_VARS = new Set([
   "MAVIS_DATA_DIR",
   "SQLITE3_BIN",
   "DEBUG_INJECT",
+  "MCODE_ENGINE",
 ]);
 
 console.log(`${TAG.dim("[4/6]")} references/SECURITY-NOTES.md env vars → server/lib/config.js`);

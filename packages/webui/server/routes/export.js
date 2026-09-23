@@ -15,7 +15,7 @@
 //   - format validation → 400 { error: "unsupported format" }
 //   - session lookup → 404 { error: "session not found" }
 //   - B03 authorize gate: `session.export` action. UI gets a
-//     `needs_authorization` SSE modal; decline → 403. Tests drive the
+//     `needs_authorization` event-stream modal; decline → 403. Tests drive the
 //     decision via test/_setup.js#withDecisions (no auto-approve —
 //     removed in the 2026-09-20 rigor fix).
 //

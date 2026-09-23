@@ -254,7 +254,7 @@ export function readMcodeTranscript(mcodeSid, opts = {}) {
 //                                 re-encoded — conservative per the audit
 //                                 fix contract: never invent a shape.
 //
-// Caps (switch hot path — the SSE state push carries cs.chat wholesale):
+// Caps (switch hot path — the event-stream state push carries cs.chat wholesale):
 //   keep the LAST maxLines lines, then drop from the front while the total
 //   UTF-8 byte size exceeds maxBytes. A single line that alone exceeds
 //   maxBytes is byte-truncated with an explicit " …[truncated]" marker —

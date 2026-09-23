@@ -78,7 +78,7 @@ The canonical disclosure is [`packages/webui/references/SECURITY-NOTES.md`](../p
 
 ## Architecture
 
-See [`packages/webui/docs/ARCHITECTURE.md`](../packages/webui/docs/ARCHITECTURE.md) for the runtime topology, request lifecycle, and SSE contract. In short: `server.js` bootstraps an HTTP server; `server/router.js` applies the gate chain (CORS → origin/CSRF → LAN → token → rate limit → read-only) and dispatches to `server/routes/*`; `server/lib/*` holds one-concern modules; `acp.mjs` is the ACP client spawning the engine; `public/` is the SPA.
+See [`packages/webui/docs/ARCHITECTURE.md`](../packages/webui/docs/ARCHITECTURE.md) for the runtime topology, request lifecycle, and WebSocket event-stream contract. In short: `server.js` bootstraps an HTTP server; `server/router.js` applies the gate chain (CORS → origin/CSRF → LAN → token → rate limit → read-only) and dispatches to `server/routes/*`; `server/lib/*` holds one-concern modules; `acp.mjs` is the ACP client spawning the engine; `public/` is the SPA.
 
 ## Trajectory studio
 

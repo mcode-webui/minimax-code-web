@@ -3,7 +3,7 @@
 //
 // Design (MATH-skeleton-webui-v2 §1.3 + BORROW-harness-v2 §3):
 //   • `authorize(action, ctx, opts)` blocks on user confirmation; the
-//     UI pops a modal listening for the `needs_authorization` SSE event.
+//     UI pops a modal listening for the `needs_authorization` control frame.
 //     The user accepts or declines; the server resolves the pending
 //     promise via POST /api/auth/decision.
 //
@@ -127,7 +127,7 @@ function _tryWriteEvent(evt) {
   // authorize(action, ctx, opts) → Promise<{approved, decidedBy, decidedAt}>
   //   action: one of AUTHORIZE_ACTIONS (throws on invalid)
   //   ctx:    { cid: string, [any extra context] } — cid is optional;
-  //           empty cid = broadcast to all SSE clients
+  //           empty cid = broadcast to all event-stream clients
   //   opts:   { timeoutMs?: number, metadata?: object, bypass?: boolean }
   //           bypass=true skips the user gate (only for trusted internal
   //           callers — e.g. LAN token rotation triggered by C08 modal
@@ -140,7 +140,7 @@ function _tryWriteEvent(evt) {
   //   exercised the real decision path, and any future flag confusion
   //   in the production flag vector would silently disable the gate.
   //   Tests now drive the REAL path via test/_setup.js#withDecisions
-  //   (in process) or SSE + POST /api/auth/decision (integration).
+  //   (in process) or event-stream + POST /api/auth/decision (integration).
   //
   // Returns:
   //   { approved: true,  decidedBy: 'user',   decidedAt: ms }
@@ -193,7 +193,7 @@ export function authorize(action, ctx = {}, opts = {}) {
           metadata: opts.metadata || null,
         },
       });
-      // Mirror the resolution over SSE so other tabs close the modal
+      // Mirror the resolution over the event stream so other tabs close the modal
       try {
         pushAuthDecision({ requestId, approved: false, decidedBy: "timeout" });
       } catch {}

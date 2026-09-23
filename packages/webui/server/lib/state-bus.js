@@ -1,5 +1,5 @@
 // webui/server/lib/state-bus.js
-// Per-cid state + SSE channel management.
+// Per-cid state + event stream (WebSocket /api/stream) management.
 
 import { DEFAULT_WORKSPACE, DEFAULT_MODEL } from "./config.js";
 import { isFirstRun } from "./auth.js";
@@ -23,10 +23,12 @@ import {
   getTokenRotatedAt,
   maskTokenPlanKey,
 } from "./settings.js";
+import { emitEvent, getSubscribedCids } from "./event-bus.js";
+import { pushAlert, subscribeAlerts } from "./alerts.js";
 
 // v0.5.ai: A2 per-client 架构
 // 每个 webui tab 一个 client (cid = localStorage webui_cid)
-// 每个 client 独立：state (chat/mcodeSessionId/context/usage/running), activeChild, SSE connection
+// 每个 client 独立：state (chat/mcodeSessionId/context/usage/running), activeChild, /api/stream connection
 // 缺 cid 的请求 fallback 到 'default' client (兼容老 client)
 
 // v2.0 (lease B02): pushAlert re-export — chokepoint-friendly alias.
@@ -36,7 +38,23 @@ import {
 //   state-bus touches per-cid state) extends naturally: only
 //   state-bus touches the alert bus too. alerts.js remains the
 //   pure module; state-bus is the wire.
-export { pushAlert } from "./alerts.js";
+export { pushAlert };
+
+// 告警桥接（决策 20 移除 SSE 后的下行出口）：alerts.js 的每个 frame 在这里
+//   转成 /api/stream 上的命名控制帧（alerts.append / alerts.update），data 为
+//   frame 的 JSON 字符串。幂等：重复调用先退订上一个订阅再接新的。
+let _alertBridgeUnsubscribe = null;
+export function attachAlertBridge() {
+  if (typeof _alertBridgeUnsubscribe === "function") _alertBridgeUnsubscribe();
+  _alertBridgeUnsubscribe = subscribeAlerts((frame) => {
+    const data = JSON.stringify(frame);
+    const name = frame.kind === "update" ? "alerts.update" : "alerts.append";
+    for (const cid of getSubscribedCids()) {
+      emitEvent(cid, { type: "control", name, data });
+    }
+  });
+}
+attachAlertBridge(); // 模块加载即接线（每进程一次）
 
 // v0.5.ai: 每个 webui tab 一个独立 state。
 export function makeClientState() {
@@ -103,7 +121,6 @@ export function makeClientState() {
 }
 
 export const clients = new Map(); // cid -> clientState
-export const sseByCid = new Map(); // cid -> SSE response
 export const activeChildByCid = new Map(); // cid -> child process
 
 // v2.3 (in-product): a fresh client (page reload, new tab) must resume the
@@ -158,13 +175,6 @@ export function getCidFromReq(req) {
   }
 }
 
-export const SSE_HEADERS = {
-  "Content-Type": "text/event-stream; charset=utf-8",
-  "Cache-Control": "no-cache, no-transform",
-  Connection: "keep-alive",
-  "X-Accel-Buffering": "no",
-};
-
 // v2.3: the sessions list in a snapshot is sidebar metadata only — the
 //   frontend never reads session.chat from state.sessions (the chat area
 //   hydrates from state.chat / the switch response). Shipping every
@@ -187,7 +197,7 @@ function sessionsListForSnapshot() {
 // pushStateFor: 推 state 给指定 cid（或 '__broadcast__' 推给所有）
 //   opts.lanBroadcast: 当前 LAN 广播状态（从 settings.js 注入）
 //   opts.mcodeSessions: 已过滤的 mcode sessions 数组（从 acp-client.js 注入）
-// v0.5.bx-31: cache miss 时 fire-and-forget 拉一次, 拉完自动 push 给所有 SSE 客户端
+// v0.5.bx-31: cache miss 时 fire-and-forget 拉一次, 拉完自动 push 给所有事件流客户端
 // v1.0: 推送带 mcodeSessionsPending 标记 — 占位推送 (cache miss 空数组) 为 true, 权威推送为 false;
 //   fetch 失败也要推终态 (否则 client 侧栏 ready 门控永远等不到权威值, loading 卡死)
 const _mcodeSessionsFetchPending = new Set(); // workspace keys currently being fetched
@@ -195,7 +205,7 @@ function ensureMcodeSessionsFetchedAndPush(workspace) {
   if (_mcodeSessionsFetchPending.has(workspace)) return;
   _mcodeSessionsFetchPending.add(workspace);
   const pushAuthoritative = () => {
-    for (const [c, res] of sseByCid) {
+    for (const c of getSubscribedCids()) {
         const ccs = clients.get(c) || makeClientState();
         const cws = (ccs.workspace && ccs.workspace.dir) || "";
         // v1.0: 权威推送优先 fresh cache, 退而求其次 stale (同 ws 过期列表), 避免空列表闪跌
@@ -206,13 +216,13 @@ function ensureMcodeSessionsFetchedAndPush(workspace) {
       const snapshot = {
         ...ccs,
         // qa (session-workspace-crud): 复用瘦身投影 — 这条权威推送路径原来
-        //   直接 loadSessions()，把每个 session 的完整 chat 数组推进 SSE，
+        //   直接 loadSessions()，把每个 session 的完整 chat 数组推进事件流，
         //   是 v2.3 修掉的主负载；两处（本处 + pushOnlineCount）漏改。
         sessions: sessionsListForSnapshot(),
         mcodeSessions: cached,
         mcodeSessionsPending: false,
         availableCommands: getCachedMcodeCommands(),
-        onlineCount: sseByCid.size,
+        onlineCount: getSubscribedCids().length,
         lanBroadcast: getLanBroadcast(),
         readOnly: getReadOnly(),
         tokenEnabled: getTokenEnabled(),
@@ -222,7 +232,7 @@ function ensureMcodeSessionsFetchedAndPush(workspace) {
         tokenRotatedAt: getTokenRotatedAt(),
         // v2026-08-28 modacker: Token Plan (套餐用量) feature fields.
         //   Previously these were only synced via the one-shot
-        //   /api/settings fetch in loadLanInfo(); the SSE replace-state
+        //   /api/settings fetch in loadLanInfo(); the event-stream replace-state
         //   pattern (state = JSON.parse(ev.data)) then clobbered them
         //   on the next push, so toggling the switch appeared to do
         //   nothing — the usage button stayed hidden. Including them
@@ -239,9 +249,8 @@ function ensureMcodeSessionsFetchedAndPush(workspace) {
         tokenPlanApiKeySource: getTokenPlanApiKeySource(),
         tokenPlanApiKeyFilePath: getTokenPlanApiKeyFilePath(),
       };
-      // v2 (Lease C04): route through 60Hz coalescer — multiple authoritative
-      // pushes within STATE_PUSH_THROTTLE_MS collapse to one write per cid.
-      _schedulePush(c, JSON.stringify(snapshot), res);
+      // 事件总线下行汇聚（/api/stream 订阅面）
+      emitEvent(c, { type: "state.snapshot", snapshot });
     }
   };
   getMcodeSessionsForWorkspace(workspace)
@@ -264,7 +273,7 @@ export function pushStateFor(cid, opts = {}) {
   const cachedCmds = getCachedMcodeCommands();
 
   if (cid === "__broadcast__") {
-    for (const [c, res] of sseByCid) {
+    for (const c of getSubscribedCids()) {
       const ccs = clients.get(c) || makeClientState();
       const cws = (ccs.workspace && ccs.workspace.dir) || "";
       const fields =
@@ -276,7 +285,7 @@ export function pushStateFor(cid, opts = {}) {
         sessions: sessionsListForSnapshot(),
         ...fields,
         availableCommands: cachedCmds,
-        onlineCount: sseByCid.size,
+        onlineCount: getSubscribedCids().length,
         lanBroadcast,
         readOnly: getReadOnly(),
         tokenEnabled: getTokenEnabled(),
@@ -299,9 +308,8 @@ export function pushStateFor(cid, opts = {}) {
         tokenPlanApiKeySource: getTokenPlanApiKeySource(),
         tokenPlanApiKeyFilePath: getTokenPlanApiKeyFilePath(),
       };
-      // v2 (Lease C04): coalesced write — N broadcasts within the throttle
-      // window collapse to ONE write per cid (last call's snapshot wins).
-      _schedulePush(c, JSON.stringify(snapshot), res);
+      // 事件总线下行汇聚（/api/stream 订阅面）
+      emitEvent(c, { type: "state.snapshot", snapshot });
     }
     return;
   }
@@ -311,14 +319,14 @@ export function pushStateFor(cid, opts = {}) {
     opts.mcodeSessions !== undefined
       ? { mcodeSessions: opts.mcodeSessions, mcodeSessionsPending: false }
       : mcodeSessionsSnapshotFields((cs.workspace && cs.workspace.dir) || "");
-  // 注入 sessions 列表（来自磁盘 db）— 让 webui 侧边栏 "最近会话" 不被 SSE 推送覆盖
+  // 注入 sessions 列表（来自磁盘 db）— 让 webui 侧边栏 "最近会话" 不被事件流推送覆盖
   // v0.5.bv: 同步带 mcodeSessions（cache 命中，0 cost；cache miss 才 await）
   const snapshot = {
     ...cs,
     sessions: sessionsListForSnapshot(),
     ...fields,
     availableCommands: cachedCmds,
-    onlineCount: sseByCid.size,
+    onlineCount: getSubscribedCids().length,
     lanBroadcast,
     readOnly: getReadOnly(),
     tokenEnabled: getTokenEnabled(),
@@ -327,7 +335,7 @@ export function pushStateFor(cid, opts = {}) {
     tokenRotatedAt: getTokenRotatedAt(),
     // v2026-08-28 modacker: Token Plan (套餐用量) feature fields —
     //   see note on the broadcast-branch snapshot above. Same fields,
-    //   same rationale. Without these the per-cid SSE push also
+    //   same rationale. Without these the per-cid event-stream push also
     //   clobbers the local `state.quotaEnabled` and the usage button
     //   hides itself right after the user toggles it on.
     quotaEnabled: getQuotaEnabled(),
@@ -338,17 +346,12 @@ export function pushStateFor(cid, opts = {}) {
     tokenPlanApiKeySource: getTokenPlanApiKeySource(),
     tokenPlanApiKeyFilePath: getTokenPlanApiKeyFilePath(),
   };
-  const payload = JSON.stringify(snapshot);
-  const res = sseByCid.get(cid);
-  // v2 (Lease C04): 60Hz coalescing — multiple pushStateFor() calls for
-  // the same cid within STATE_PUSH_THROTTLE_MS collapse to ONE SSE write.
-  // Diff mode: if the payload is byte-identical to the last write, the
-  // client receives nothing (no full-state replace, no DOM thrash).
-  _schedulePush(cid, payload, res);
+  // 事件总线下行汇聚（/api/stream 订阅面）
+  emitEvent(cid, { type: "state.snapshot", snapshot });
 }
 
-// v1.0: 统一的 mcodeSessions 快照字段构造 — 所有 SSE 推送点必须带这两个字段。
-//   之前 pushOnlineCount / SSE 首推不带, 客户端整包替换 state 后 mcodeSessions 变 undefined,
+// v1.0: 统一的 mcodeSessions 快照字段构造 — 所有事件流推送点必须带这两个字段。
+//   之前 pushOnlineCount / 首推不带, 客户端整包替换 state 后 mcodeSessions 变 undefined,
 //   侧栏随机从 ~36 条闪跌到 ~16 条 (只剩 webui 本地条目), 下次完整推送又弹回。
 //   v1.0 (改): 缓存过期但同 workspace 时推过期列表 (pending=true), 不再推空占位 —
 //   过期值好过空值, 权威值到达前侧栏不闪跌
@@ -367,213 +370,30 @@ export function mcodeSessionsSnapshotFields(workspace) {
 }
 
 // ============================================================
-// v2 (Lease C04) — 60Hz SSE coalescing + diff mode
-//
-// What this adds:
-//   - _schedulePush(cid, payloadStr, res): routes an SSE write through
-//     a per-cid diff gate. The diff gate compares the incoming payload
-//     against the last written payload for this cid (byte-identical
-//     JSON). If identical, the write is suppressed — no full-state
-//     JSON goes out, the client doesn't render() against identical
-//     bytes, no DOM thrash. This is the "diff 模式 — 不复位整个 state"
-//     half of the lease spec.
-//   - 60Hz coalescing: when STATE_PUSH_THROTTLE_MS > 0, the diff gate
-//     is gated by a time window as well. Subsequent pushes within the
-//     window are stored as "pending" — when the window expires, the
-//     LAST pending payload is written (last-call-wins). The first push
-//     in any window writes synchronously (preserves the existing
-//     sync-write contract that callers like runUsageQuery rely on).
-//     The 16ms default targets 60Hz, matching common display refresh
-//     rates so the client render loop never starves.
-//   - STATE_PUSH_THROTTLE_MS env var: configurable throttle window.
-//     Default 16ms per lease spec. Set to 0 to disable the time-based
-//     throttle (every push writes synchronously — useful for tests
-//     that depend on the pre-coalescer contract, and for low-latency
-//     debugging). The diff gate is always active regardless.
-//   - resetCoalesceState() / flushPendingPushes() / peekLastPushed() /
-//     peekLastWriteTs(): test escape hatches.
-//
-// What this does NOT change:
-//   - Named SSE events (auth.token_rotated / token.first_run /
-//     needs_authorization / authorization_decided) keep their
-//     immediate-write path. They're low-frequency and benefit from
-//     minimum latency. Coalescing is only applied to the `state`
-//     stream (the full snapshot replacement path).
-//   - Wire format: client still receives full state, not diffs. The
-//     diff check is purely a "should I emit this byte?" decision; the
-//     payload structure is unchanged. This keeps state.js#connect()
-//     compatible without touching the client.
+// 下行通道：事件总线（event-bus.js）是唯一下行通道 —— SSE 已按决策 20
+// 移除（sse-adapter.js 删除）。此处仅保留状态构造与事件发布。
 // ============================================================
 
-export const STATE_PUSH_THROTTLE_MS = Math.max(
-    0,
-    Number(process.env.STATE_PUSH_THROTTLE_MS) || 0,
-);
 
-// cid -> { payloadStr, res, timer? }
-//   - payloadStr: pending JSON payload (last-call-wins within window)
-//   - res: SSE response object to write to
-//   - timer: setTimeout to flush pending when window expires (absent if
-//            the pending is being flushed right now)
-const _pendingByCid = new Map();
-// cid -> setTimeout handle for the pending flush
-const _flushTimers = new Map();
-// cid -> millisecond timestamp of the last successful write
-const _lastWriteTsByCid = new Map();
-// cid -> JSON string of the last payload that was successfully written
-const _lastPushedByCid = new Map();
-// cid -> res reference of the last successful write. Used to detect
-//   "this cid got a fresh SSE response (re-connect / test reset)"
-//   — when the res changes, we MUST write unconditionally regardless
-//   of throttle/diff state. Tests that do `sseByCid.set(cid, fakeSse())`
-//   directly create a new fakeSse each time, so this naturally resets.
-const _lastPushedResByCid = new Map();
 
-function _writeNow(cid, payloadStr, res) {
-    // qa (OOM hardening): 写入前做背压/死套接字判断。状态推送是全量快照，
-    //   被丢弃的一帧会被下一帧取代 —— 积压时丢弃是安全的；之前无背压
-    //   res.write 在慢客户端上让 Node socket 写缓冲无界增长（长任务的
-    //   高频全量快照可堆到 GB 级）。注意：跳过时不写 diff 缓存，同一
-    //   payload 在套接字排空后重推仍会真正落线。
-    if (!res || res.writableEnded || res.destroyed) return;
-    if (res.writableNeedDrain) return;
-    _lastWriteTsByCid.set(cid, Date.now());
-    _lastPushedByCid.set(cid, payloadStr);
-    _lastPushedResByCid.set(cid, res);
-    try {
-        res.write(`data: ${payloadStr}\n\n`);
-    } catch {}
-}
 
-// Test-only: inspect the res reference retained for fresh-client
-// detection. Used by checks/lib-state-bus.check.mjs to verify
-// endSseClient drops dead response objects (OOM hardening).
-export function peekLastPushedRes(cid) {
-    return _lastPushedResByCid.get(cid);
-}
 
-function _schedulePush(cid, payloadStr, res) {
-    if (!res) return; // no client to write to (cid without SSE)
 
-    // Fresh-client detection: if the cid's stored res differs from
-    // the current res, treat as a brand-new SSE connection. The
-    // previous writes went to a different res (or no res at all if
-    // this is the first connection), so the diff cache must be
-    // discarded — otherwise the new client would silently miss its
-    // very first state. Tests that re-bind a cid's res between cases
-    // hit this branch automatically.
-    const cachedRes = _lastPushedResByCid.get(cid);
-    if (cachedRes !== res) {
-        // Drop any pending push + timer for this cid — they're stale
-        // (would go to the wrong res or never get scheduled right).
-        const oldTimer = _flushTimers.get(cid);
-        if (oldTimer) {
-            try {
-                clearTimeout(oldTimer);
-            } catch {}
-            _flushTimers.delete(cid);
-        }
-        _pendingByCid.delete(cid);
-        _lastWriteTsByCid.delete(cid);
-        _lastPushedByCid.delete(cid);
-        // Write immediately, unconditionally. This restores the
-        // pre-coalescer sync-write contract: after pushStateFor(cid)
-        // returns, the data is on the wire to the (new) client.
-        _writeNow(cid, payloadStr, res);
-        return;
-    }
 
-    // Diff: skip the write if the payload is byte-identical to the
-    // last successful write for this cid. This is the "不复位整个 state"
-    // half of the lease spec — the client doesn't receive a redundant
-    // full-state replace that would force a render() + DOM rebuild.
-    if (_lastPushedByCid.get(cid) === payloadStr) return;
 
-    // Throttle disabled (env = 0) — write synchronously every push.
-    if (STATE_PUSH_THROTTLE_MS <= 0) {
-        _writeNow(cid, payloadStr, res);
-        return;
-    }
 
-    const now = Date.now();
-    const lastTs = _lastWriteTsByCid.get(cid) || 0;
-    const elapsed = now - lastTs;
-    if (elapsed >= STATE_PUSH_THROTTLE_MS) {
-        // Outside throttle window — write immediately (preserves
-        // the original sync-write contract for the first push in any
-        // new window). Calls like runUsageQuery depend on the write
-        // being observable to the client by the time the call returns.
-        _writeNow(cid, payloadStr, res);
-        return;
-    }
-    // Inside throttle window — store as pending. Last call within
-    // the window wins; the timer's flush emits the freshest payload.
-    _pendingByCid.set(cid, { payloadStr, res });
-    if (!_flushTimers.has(cid)) {
-        const delay = STATE_PUSH_THROTTLE_MS - elapsed;
-        const timer = setTimeout(() => _flushPending(cid), delay);
-        if (typeof timer.unref === "function") timer.unref();
-        _flushTimers.set(cid, timer);
-    }
-}
 
-function _flushPending(cid) {
-    _flushTimers.delete(cid);
-    const pending = _pendingByCid.get(cid);
-    if (!pending) return;
-    _pendingByCid.delete(cid);
-    // Re-check diff in case the timer fired late (another write
-    // happened in the meantime and already wrote this payload).
-    if (_lastPushedByCid.get(cid) === pending.payloadStr) return;
-    // Re-check res in case the client disconnected/reconnected.
-    if (_lastPushedResByCid.get(cid) !== pending.res) return;
-    _writeNow(cid, pending.payloadStr, pending.res);
-}
 
-// Test-only: clear pending timers + diff cache + last-write timestamps.
-// Production code never calls this — production throttles stay "live"
-// for the process lifetime. Exported so test/lib-state-bus.test.js can
-// deterministically reset between cases.
-export function resetCoalesceState() {
-    for (const [, timer] of _flushTimers) {
-        try {
-            clearTimeout(timer);
-        } catch {}
-    }
-    _flushTimers.clear();
-    _pendingByCid.clear();
-    _lastWriteTsByCid.clear();
-    _lastPushedByCid.clear();
-    _lastPushedResByCid.clear();
-}
 
-// Test-only: force-flush all pending pushes immediately (without
-// waiting for the throttle window to expire). Returns the number of
-// cids flushed. Used in test/lib-state-bus.test.js to assert "within
-// a coalesce window, exactly N writes went out" without dealing with
-// real timer timing.
-export function flushPendingPushes() {
-    const cids = Array.from(_pendingByCid.keys());
-    for (const cid of cids) _flushPending(cid);
-    return cids.length;
-}
 
-// Test-only: peek at the last-written payload for cid. Used to assert
-// "after coalescing, this cid's wire frame contains this data".
-export function peekLastPushed(cid) {
-    return _lastPushedByCid.get(cid);
-}
 
-// Test-only: peek at the last-write timestamp for cid. Used to assert
-// throttle-window arithmetic.
-export function peekLastWriteTs(cid) {
-    return _lastWriteTsByCid.get(cid);
-}
 
-// v0.5.ak: SSE 客户端数变化时广播（让所有 tab 实时看到 onlineCount）
+
+// v0.5.ak: 事件流客户端数变化时广播（让所有 tab 实时看到 onlineCount）
 export function pushOnlineCount(lanBroadcast) {
   const cachedCmds = getCachedMcodeCommands();
-  for (const [c, res] of sseByCid) {
+  const subs = getSubscribedCids();
+  for (const c of subs) {
     const cs = clients.get(c) || makeClientState();
     const snapshot = {
       ...cs,
@@ -582,7 +402,7 @@ export function pushOnlineCount(lanBroadcast) {
       sessions: sessionsListForSnapshot(),
       ...mcodeSessionsSnapshotFields((cs.workspace && cs.workspace.dir) || ""),
       availableCommands: cachedCmds,
-      onlineCount: sseByCid.size,
+      onlineCount: subs.length,
       lanBroadcast,
       readOnly: getReadOnly(),
       tokenEnabled: getTokenEnabled(),
@@ -590,7 +410,7 @@ export function pushOnlineCount(lanBroadcast) {
       tokenAcknowledged: getTokenAcknowledged(),
       tokenRotatedAt: getTokenRotatedAt(),
       // v2026-08-28 modacker: Token Plan (套餐用量) feature fields —
-      //   see pushStateFor above. pushOnlineCount fires on every SSE
+      //   see pushStateFor above. pushOnlineCount fires on every stream
       //   client connect/disconnect, so without these the next push
       //   after a tab opens would also clobber quotaEnabled.
       quotaEnabled: getQuotaEnabled(),
@@ -601,9 +421,8 @@ export function pushOnlineCount(lanBroadcast) {
       tokenPlanApiKeySource: getTokenPlanApiKeySource(),
       tokenPlanApiKeyFilePath: getTokenPlanApiKeyFilePath(),
     };
-    // v2 (Lease C04): coalesced write — multiple pushOnlineCount() calls
-    // within the throttle window collapse to ONE write per cid.
-    _schedulePush(c, JSON.stringify(snapshot), res);
+    // 事件总线下行汇聚（/api/stream 订阅面）
+    emitEvent(c, { type: "state.snapshot", snapshot });
   }
 }
 
@@ -634,83 +453,29 @@ export function getCidsByMcodeSession(mvsSessionId) {
   return out;
 }
 
-// SSE channel helpers — only state-bus.js should touch sseByCid directly.
-export function getSseClient(cid) {
-  return sseByCid.get(cid) || null;
-}
 
-export function setSseClient(cid, res) {
-  sseByCid.set(cid, res);
-  // v2 (Lease C04): when an SSE client (re)connects, the previous
-  // diff cache + throttle timestamps are stale — the new client
-  // hasn't seen the prior writes, so "diff against last push" is
-  // wrong (would skip the very first push this client should receive).
-  // Reset coalesce state for this cid so the next pushStateFor emits
-  // the full snapshot unconditionally.
-  const timer = _flushTimers.get(cid);
-  if (timer) {
-    try {
-      clearTimeout(timer);
-    } catch {}
-    _flushTimers.delete(cid);
-  }
-  _pendingByCid.delete(cid);
-  _lastWriteTsByCid.delete(cid);
-  _lastPushedByCid.delete(cid);
-}
-
-export function endSseClient(cid, res) {
-  // Only clear the map entry if it still points at the same res (avoid races)
-  if (sseByCid.get(cid) === res) sseByCid.delete(cid);
-  // v2 (Lease C04): drop the coalesce state for this cid too — the
-  // client disconnected, no point in keeping pending pushes around
-  // (they'd flush to a dead res anyway and the `try/catch` would
-  // silently swallow it). Cleanup keeps the map bounded for long-lived
-  // processes that see many transient clients.
-  const timer = _flushTimers.get(cid);
-  if (timer) {
-    try {
-      clearTimeout(timer);
-    } catch {}
-    _flushTimers.delete(cid);
-  }
-  _pendingByCid.delete(cid);
-  _lastWriteTsByCid.delete(cid);
-  _lastPushedByCid.delete(cid);
-  // qa (OOM hardening): 释放死 res 引用 —— 之前 _lastPushedResByCid 永不
-  // 清理，每个断开的 SSE 响应（连同其 socket 写缓冲）被进程终身持有。
-  _lastPushedResByCid.delete(cid);
-}
-
-// v1.0.1: broadcastTokenRotated — push a named SSE event so all
+// v1.0.1: broadcastTokenRotated — push a named control frame so all
 // already-authenticated clients can update their HEADERS + localStorage
 // without waiting for the periodic state push. Body is the new token
 // (raw string, not JSON, to make it obvious in logs / devtools that
 // this is sensitive — never log it).
 //
-// IMPORTANT: the token is sent in cleartext over the SSE channel. The
+// IMPORTANT: the token is sent in cleartext over the event stream. The
 // connection is already authenticated (caller must have presented a
-// valid token to reach the rotation handler), and SSE is in-band
-// with the existing /api/events stream which the client already
-// authorized. So this is no worse than the periodic state push that
-// also includes currentToken in the same channel.
+// valid token to reach the rotation handler), and /api/stream is
+// in-band with the state channel the client already authorized. So this
+// is no worse than the periodic state push that also includes
+// currentToken in the same channel.
 export function broadcastTokenRotated(token) {
   if (!token) return;
-  // SSE custom event format:
-  //   event: <name>\n
-  //   data: <payload>\n
-  //   \n
-  const frame = `event: auth.token_rotated\ndata: ${token}\n\n`;
-  for (const [, res] of sseByCid) {
-    try {
-      res.write(frame);
-    } catch {}
+  for (const c of getSubscribedCids()) {
+    emitEvent(c, { type: "control", name: "auth.token_rotated", data: token });
   }
 }
 
 // v2 (Lease C08) — pushTokenFirstRun
 //
-// Fires the `token.first_run` SSE event exactly once per process
+// Fires the `token.first_run` control frame exactly once per process
 // lifetime. server.js calls this from inside `initSettings({printToken})`
 // when settings.js has just generated a fresh token (no settings.json
 // on disk + no TOKEN env). The UI listens for this event and pops the
@@ -734,24 +499,21 @@ export function pushTokenFirstRun({ token, persistPath }) {
     persistPath: typeof persistPath === "string" ? persistPath : "",
     ts: Date.now(),
   });
-  const frame = `event: token.first_run\ndata: ${payload}\n\n`;
-  for (const [, res] of sseByCid) {
-    try {
-      res.write(frame);
-    } catch {}
+  for (const c of getSubscribedCids()) {
+    emitEvent(c, { type: "control", name: "token.first_run", data: payload });
   }
 }
 
 // ============================================================
-// v2 (Lease B03) — Per-request authorization SSE channel
+// v2 (Lease B03) — Per-request authorization channel
 //
 // authorize.js (server/lib/authorize.js) gates destructive actions
 // behind a user-confirmation modal. The frontend listens for
-// `needs_authorization` events on its /api/events stream and pops a
-// confirmation; the user accepts or declines and the server resolves
-// the pending request via POST /api/auth/decision.
+// `needs_authorization` control frames on its /api/stream connection
+// and pops a confirmation; the user accepts or declines and the server
+// resolves the pending request via POST /api/auth/decision.
 //
-// pushAuthRequest — fire a `needs_authorization` SSE frame to the
+// pushAuthRequest — fire a `needs_authorization` control frame to the
 // target cid (or every connected client if cid is empty). Body is the
 // pending request payload {requestId, action, ctx, expiresAt}.
 //
@@ -759,27 +521,18 @@ export function pushTokenFirstRun({ token, persistPath }) {
 // listeners (e.g. devtools, audit dashboards) can mirror the modal
 // state. Body is {requestId, approved, decidedBy}.
 //
-// The SSE channel is the SAME /api/events stream the client already
-// opened — no new connection needed. The frame is a named SSE event
-// so it won't be confused with `state`/`chat`/`delta` payloads.
+// The frame travels on the SAME /api/stream connection the client
+// already opened — no new connection needed. It is a named control
+// frame so it won't be confused with state.snapshot payloads.
 // ============================================================
 
-function _writeAuthFrame(targetCid, frame) {
+function _writeAuthFrame(targetCid, event) {
   if (targetCid) {
-    const res = sseByCid.get(targetCid);
-    if (res) {
-      try {
-        res.write(frame);
-      } catch {}
-    }
+    emitEvent(targetCid, event);
     return;
   }
   // broadcast (empty / undefined targetCid)
-  for (const [, res] of sseByCid) {
-    try {
-      res.write(frame);
-    } catch {}
-  }
+  for (const c of getSubscribedCids()) emitEvent(c, event);
 }
 
 export function pushAuthRequest({ requestId, action, ctx, expiresAt }) {
@@ -790,9 +543,12 @@ export function pushAuthRequest({ requestId, action, ctx, expiresAt }) {
     ctx: ctx && typeof ctx === "object" ? ctx : {},
     expiresAt: Number(expiresAt) || 0,
   });
-  const frame = `event: needs_authorization\ndata: ${payload}\n\n`;
   const targetCid = ctx && typeof ctx.cid === "string" ? ctx.cid : "";
-  _writeAuthFrame(targetCid, frame);
+  _writeAuthFrame(targetCid, {
+    type: "control",
+    name: "needs_authorization",
+    data: payload,
+  });
 }
 
 export function pushAuthDecision({ requestId, approved, decidedBy }) {
@@ -802,7 +558,10 @@ export function pushAuthDecision({ requestId, approved, decidedBy }) {
     approved: !!approved,
     decidedBy: decidedBy ? String(decidedBy).slice(0, 32) : "user",
   });
-  const frame = `event: authorization_decided\ndata: ${payload}\n\n`;
   // broadcast — every connected tab should mirror modal close
-  _writeAuthFrame("", frame);
+  _writeAuthFrame("", {
+    type: "control",
+    name: "authorization_decided",
+    data: payload,
+  });
 }

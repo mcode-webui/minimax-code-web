@@ -27,7 +27,7 @@ This file is the memory of that journey.
 
 | Handle | Role |
 |---|---|
-| **Wzdhehe** | Original author and lead of mcode-webui. Designed and built the entire v0.5 → v1.1.1 line (~100+ commits): the zero-dependency HTTP/SSE server, the ACP-over-stdio engine wiring, the SPA frontend, the token/LAN security surface, and the bilingual UI. Submitted [PR #16]. |
+| **Wzdhehe** | Original author and lead of mcode-webui. Designed and built the entire v0.5 → v1.1.1 line (~100+ commits): the zero-dependency HTTP server and streaming push transport, the ACP-over-stdio engine wiring, the SPA frontend, the token/LAN security surface, and the bilingual UI. Submitted [PR #16]. |
 | **modacker** (commits as **moc**, `moc@sgmov.com`) | External reviewer turned co-author. Tested PR #16 on macOS and fixed the db-path blocker (round 5, [PR #23]); authored the round-8 CORS tightening and cross-origin token-leak fix ([PR #31]); authored **v2.0.0 — 工业化** ([PR #55]), the industrial rewrite that closed the v1 line; synced v2.0.0 back to the standalone mirror. |
 | **Hahaha** (`Mjc39672@gmail.com`) | Maintainer of the standalone mirror Wzdhehe/Mcode-webui with merge rights; merged the round-8 security fix (mirror PR #6). |
 | **weekbin** | Author of **mcode-trajectory-studio** ([PR #56]): the read-only session-trajectory inspector (7 MCP tools + studio panel) over the runtime SQLite projection, including its redaction and containment design. |
@@ -71,13 +71,13 @@ Trajectory 视图的能力，落到一个 MCode Agent Plugin 上".
   queue panel, ACP model picker, cross-workspace session search; four ACP
   surface probe rounds documented; layout consolidated to a single root tree.
 - **2026-09-19** — **v1.1.1**: live-test fixes (activity-aware prompt idle
-  timeout, throttled per-chunk SSE push).
+  timeout, throttled per-chunk streaming push).
 
 ### Plugin era — v2 line
 
 - **2026-09-20** — **v2.0.0 “工业化”** ([PR #55], author modacker, closes #16):
   append-only event stream with SHA-256 hash chain, per-request `authorize()`
-  gate (fail-closed audit), independent anomaly SSE channel, write-ahead
+  gate (fail-closed audit), independent anomaly REST snapshot channel, write-ahead
   intent/outcome events, interaction/feedback subsystem split, rate limiting,
   virtual chat list, session export (Markdown/JSON), quota forecast, token
   onboarding modal, local SBOM + CVE gates, loopback-default bind with

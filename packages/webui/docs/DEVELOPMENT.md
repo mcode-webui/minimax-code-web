@@ -23,7 +23,7 @@ node server.js
 # → http://127.0.0.1:18090
 ```
 
-If you want a debug session (verbose SSE, no cache, injectable events):
+If you want a debug session (verbose event-stream logging, no cache, injectable events):
 ```powershell
 $env:DEBUG_INJECT = '1'
 node server.js
@@ -61,7 +61,7 @@ node server.js
 
      // if it mutates state:
      pushStateFor(cid, { /* delta */ })
-     // for one-off SSE messages, see `pushOnlineCount` / `broadcastTokenRotated`
+     // for one-off control events, see `pushOnlineCount` / `broadcastTokenRotated`
 
      return ok(res, { /* response */ })
    }
@@ -89,12 +89,12 @@ node server.js
    ```
 
 4. **Don't write to `clientState.state` directly** from a route handler.
-   Use `pushStateFor(cid, …)` so the change is broadcast on the SSE
-   channel and the client is the source of truth.
+   Use `pushStateFor(cid, …)` so the change is broadcast on the
+   event stream and the client is the source of truth.
 
-## Adding a new SSE event type
+## Adding a new event-stream event type
 
-1. Define the event shape in `docs/ARCHITECTURE.md § 5` (SSE event schema).
+1. Define the event shape in `docs/ARCHITECTURE.md § 5` (event schema).
 2. In the transport layer (`mcode-acp.js` or `mcode-exec.js`), translate
    the raw mcode event to your normalized event:
    ```js
@@ -102,9 +102,9 @@ node server.js
    ```
 3. The transport layer pushes events via `pushStateFor(cid, …)` (state
    snapshots) or `broadcastTokenRotated(token)` (one-off event) which
-   go onto the SSE channel.
-4. In `public/app/main.js`, handle the event in the SSE message
-   handler in `connect()` and update `state.foo` accordingly.
+   go onto the WebSocket event stream (`/api/stream`).
+4. In `public/app/main.js`, handle the event in the event-stream
+   message handler in `connect()` and update `state.foo` accordingly.
 5. If the event needs UI, add a render function `renderFoo()` and call
    it from `render()`.
 
@@ -155,7 +155,7 @@ command; the webui picks it up on connect.
      body: JSON.stringify({ type: 'delta', text: 'hello from test' })
    })
    ```
-4. The injected event appears in the right panel and in the SSE
+4. The injected event appears in the right panel and in the event
    stream.
 
 You can also call `__DBG.log('whatever')` from the console — it shows

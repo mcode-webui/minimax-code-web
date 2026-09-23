@@ -77,7 +77,7 @@ settings API discloses it via `lanExposed` / `bindRestartPending` /
 
 **No upstream model API calls from the webui itself.** The webui is a
 front-end for `mcode acp` / `mcode exec`, which handles the model call.
-The webui only forwards stdin / parses stdout / renders the SSE stream.
+The webui only forwards stdin / parses stdout / renders the event stream (`GET /api/stream`).
 
 ---
 
@@ -98,8 +98,9 @@ The webui only forwards stdin / parses stdout / renders the SSE stream.
 
 ### 2.3 Token in URL query string
 - Browser opens `http://<host>:18090/?token=<TOKEN>` and the webui
-  auto-injects the token into every `fetch` / `EventSource` call as
-  `?token=` AND as `Authorization: Bearer`.
+  auto-injects the token into every `fetch` call (and into the
+  `/api/stream` WebSocket handshake) as `?token=` AND as
+  `Authorization: Bearer`.
 - **Risk**: query string ends up in browser history, server access logs
   (if any proxy / dev-tools captures it), and `Referer` headers sent to
   any external resource (none, in our case, but the webui's static files
@@ -118,7 +119,7 @@ The webui only forwards stdin / parses stdout / renders the SSE stream.
   `Authorization: Bearer` header instead of a token URL.
 
 ### 2.4 Error-message redaction
-- Token is never included in JSON responses, error bodies, or SSE
+- Token is never included in JSON responses, error bodies, or event-stream
   payloads. Error responses follow `{ok: false, error: "<message>"}` —
   no request URL or headers are reflected.
 - See `test/lib-config.test.js` and `test/lib-lan.test.js` for coverage
@@ -251,7 +252,8 @@ In order of operational cost:
 5. **Rotate the token before any cross-origin exposure** — operators
    who open the server to the LAN should rotate the token (§9.3) so any
    previously-leaked value becomes inert. The new value is broadcast
-   over SSE to live clients and stored in their `localStorage`.
+   over the event stream (`/api/stream`) to live clients and stored in
+   their `localStorage`.
 
 ### Cross-references
 
@@ -259,7 +261,7 @@ In order of operational cost:
 - §2.3 — Token in URL query string (related exfiltration vector)
 - §3 — Destructive endpoints (`DELETE /api/sessions/:id`,
   `POST /api/settings {resetToken: true}`, `/api/debug/*`)
-- §9 — Token auth gate + `auth.token_rotated` SSE broadcast
+- §9 — Token auth gate + `auth.token_rotated` broadcast over the event stream
 - `test/router-cors.test.js` — locks the trusted-origin policy
   (`test/lib-lan-origins.test.js` locks the trust-set builder)
 - `docs/HTTPS-REVERSE-PROXY.md` — adding a reverse proxy's external
@@ -373,7 +375,7 @@ bind per §1 (env `HOST` > persisted `lanBind` > loopback `127.0.0.1`).
 
 Endpoints under `/api/debug/*` are gated by `DEBUG_INJECT=1`. The
 two currently implemented routes are `inject` (force a server-side event
-into the SSE stream for testing) and `state` (return server-internal
+into the event stream for testing) and `state` (return server-internal
 state for debugging). **Never set `DEBUG_INJECT=1` in production** — it
 bypasses the standard error handling.
 
@@ -515,6 +517,14 @@ log + a disabled feature) — it does not crash.
   registry-installed or non-canonical layouts point at the right
   binary explicitly. Resolution priority: env override > `$MCODE_CMD`
   derived > dev layout fallback.
+- Network-topology wave 2 (`docs/drafts/arch_net_solution_0922.md` §6/§7):
+  `MCODE_ENGINE` (`acp`, default — the per-turn subprocess transport;
+  `embed` — in-process engine hosted on a worker thread with automatic
+  fallback to `acp` on boot failure). The webui transport switch was
+  removed: `GET /api/stream` is always enabled, and its upgrade executes
+  the same origin/LAN/token gate chain as every other `/api/*` route —
+  see the [Origin / CSRF gate (Gate 1b)](#origin--csrf-gate-gate-1b) and
+  [§1 Network exposure](#1-network-exposure) above.
 - Cross-platform: there is **no CI matrix**. The only CI is the
   marketplace root gate (single ubuntu / Node 22 job: `npm ci` +
   `npm run check`, which recursively runs every file under `test/`
@@ -533,7 +543,7 @@ panel. It centralizes the three most-relevant security / access controls:
 | **LAN access** (toggle) | On/off for the 403 gate on non-local requests (unchanged from v0.5.ap) | In-memory only; resets to `true` on restart (intentional — admins shouldn't get locked out) |
 | **Read-only mode** (toggle) | When on, non-local `POST` / `DELETE` to `/api/*` return 403 `{error: "read-only mode"}`. `GET`, `HEAD`, `OPTIONS` are exempt. Local requests are always exempt. `/api/settings` is exempt (escape hatch) | Persisted to `~/.mcode-webui/settings.json` |
 | **Token auth** (toggle) | When on, non-local requests must carry `?token=` or `Authorization: Bearer`. When off, the gate is bypassed even if a token is set (LAN-only deployment mode) | Persisted |
-| **Token value + reset** | First-run: server generates a 32-hex-char token (`crypto.randomBytes(16).toString('hex')`) and writes it to `~/.mcode-webui/settings.json`. The token is **printed to stdout exactly once at first start** (not to `.server.log`). The settings card shows the token until the operator clicks "我已保存" (acknowledge). After acknowledgment, the server stops sending the token in `GET /api/settings` responses — only already-connected clients keep it. `Reset token` generates a new value, persists, broadcasts an `auth.token_rotated` SSE event so other connected clients update their `localStorage` + `Authorization` header live, and resets `tokenAcknowledged` to `false` (the new token is shown again). | Persisted to `~/.mcode-webui/settings.json` (mode 0600, atomic write via `.tmp` + rename) |
+| **Token value + reset** | First-run: server generates a 32-hex-char token (`crypto.randomBytes(16).toString('hex')`) and writes it to `~/.mcode-webui/settings.json`. The token is **printed to stdout exactly once at first start** (not to `.server.log`). The settings card shows the token until the operator clicks "我已保存" (acknowledge). After acknowledgment, the server stops sending the token in `GET /api/settings` responses — only already-connected clients keep it. `Reset token` generates a new value, persists, broadcasts an `auth.token_rotated` control event over the event stream so other connected clients update their `localStorage` + `Authorization` header live, and resets `tokenAcknowledged` to `false` (the new token is shown again). | Persisted to `~/.mcode-webui/settings.json` (mode 0600, atomic write via `.tmp` + rename) |
 
 ### 9.1 Token resolution priority (per request)
 
@@ -555,22 +565,24 @@ on first run, set `TOKEN=<value>` in the environment.
 - Override path for tests / non-default installs:
   `MCODE_WEBUI_SETTINGS_PATH=/some/other/settings.json`.
 
-### 9.3 Token rotation — SSE `auth.token_rotated`
+### 9.3 Token rotation — `auth.token_rotated` control event
 
 When the operator hits "Reset token" in the UI:
 
 1. `POST /api/settings {resetToken: true}` (must already be authenticated)
 2. Server generates new 32-hex token, writes to disk
-3. Server broadcasts `event: auth.token_rotated\ndata: <new-token>\n\n` to
-   every connected SSE client (the connection is already authenticated,
-   so the token in cleartext over SSE is no worse than the periodic state
-   push that also includes `currentToken` for the same window).
+3. Server broadcasts an `auth.token_rotated` control frame
+   (`type: "control"`, `name: "auth.token_rotated"`, `data: <new-token>`)
+   to every client on the WebSocket event stream (the connection is
+   already authenticated, so the token in cleartext over the stream is no
+   worse than the periodic state snapshot that also includes
+   `currentToken` for the same window).
 4. Server also broadcasts a regular state push (`currentToken` will be in
    the JSON body until the operator clicks "我已保存").
-5. Clients that receive the SSE event update their `localStorage` and the
+5. Clients that receive the control event update their `localStorage` and the
    live `HEADERS.Authorization` object in place — subsequent `fetch` calls
    automatically use the new token.
-6. Clients on the old token that didn't get the SSE event (offline, etc.)
+6. Clients on the old token that didn't get the control event (offline, etc.)
    will see 401 on their next request and need to manually re-open with
    the new token URL.
 
@@ -598,11 +610,11 @@ When the operator hits "Reset token" in the UI:
   LAN and token gates). Interface-allowlist gate was prototyped in
   v1.0.1 but removed before release per PR #16 reviewer scope.
 - `server/routes/settings.js` — accepts new fields, handles rotation.
-- `server/lib/state-bus.js` — adds `broadcastTokenRotated`; SSE state
-  push now includes `readOnly`, `tokenEnabled`, `currentToken` (when
+- `server/lib/state-bus.js` — adds `broadcastTokenRotated`; state
+  snapshots now include `readOnly`, `tokenEnabled`, `currentToken` (when
   not acknowledged), `tokenAcknowledged`, `tokenRotatedAt`.
 - `public/app/state.js` — `HEADERS` is now a live-mutable object;
-  new `setToken()` + SSE `auth.token_rotated` handler.
+  new `setToken()` + `auth.token_rotated` event-stream handler.
 - `public/app/render.js` — `renderLanCardContent(settings)` exported.
 - `public/app/events.js` — `#chip-lan` click toggles the sub-card
   (was: directly toggled `lanBroadcast`); new handlers for each control

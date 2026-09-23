@@ -1,11 +1,21 @@
 // webui/server/lib/alerts.js
-// Anomaly channel — independent SSE bus for system-level signals
+// Anomaly channel — independent event stream for system-level signals
 // (mcode subprocess crash, token expired, sqlite failure, protocol
 // unsupported, etc.).
 //
+// Transport (decision 20 — SSE removed, WebSocket + REST only):
+//   • REST snapshot: GET /api/alerts returns {"kind":"snapshot","alerts":[...]}
+//     (the ring buffer); the frontend pulls it once per connection and
+//     dedupes the live frames against it by alert.id.
+//   • Live frames: state-bus' alert bridge forwards every frame to the
+//     /api/stream subscribers as a named control frame —
+//     `alerts.append` / `alerts.update`, data = JSON.stringify(frame).
+//   • A sink therefore receives the frame object itself:
+//     {kind:"append"|"update", alert:{...}}.
+//
 // Design (lease B02):
 //   • Three levels: "info" / "warn" / "error"
-//   • Ring buffer (last 100 alerts) — SSE replay on connect
+//   • Ring buffer (last 100 alerts) — snapshot replay on connect
 //   • Dedup window 60s — same {level, msg, src, cid} collapses to one
 //     alert with `count` incremented (avoids spam)
 //   • Optional event-stream emission (depends on B01 events.js — see
@@ -27,7 +37,7 @@ const RING_SIZE = 100;
 const DEDUP_WINDOW_MS = 60_000;
 
 const _buffer = []; // newest at end
-const _subscribers = new Set(); // SSE response objects
+const _subscribers = new Set(); // sink callbacks (receive frame objects)
 // dedupKey → { alert, ts }. Storing the alert object (by reference) — not
 // its buffer index — means wrap-and-shift of the ring buffer does not
 // invalidate the dedup hit. (See Finding 1 fix; previously we stored idx
@@ -133,7 +143,7 @@ function normalize(input) {
 }
 
 // pushAlert — add a system-level signal. Dedups, ring-buffers,
-// broadcasts to SSE subscribers, and (best-effort) writes an audit
+// broadcasts to subscribers, and (best-effort) writes an audit
 // event. Returns the alert object that was added (or the existing
 // dedup-matched alert with count incremented).
 export function pushAlert(input) {
@@ -150,7 +160,7 @@ export function pushAlert(input) {
         if (target) {
             target.count = (target.count || 1) + 1;
             target.ts = now;
-            // SSE: tell subscribers the count changed
+            // update frame: tell subscribers the count changed
             broadcast({ kind: "update", alert: target });
         }
         // Audit: one event per push attempt is too noisy; skip audit
@@ -167,20 +177,20 @@ export function pushAlert(input) {
     return alert;
 }
 
-// Broadcast a frame to every SSE subscriber.
+// Broadcast a frame to every event-stream sink (the state-bus alert
+// bridge turns it into alerts.* control frames on /api/stream).
 function broadcast(frame) {
-    const payload = `data: ${JSON.stringify(frame)}\n\n`;
-    for (const res of _subscribers) {
+    for (const sink of _subscribers) {
         try {
-            res.write(payload);
+            sink(frame);
         } catch {
-            // Subscriber write failed — drop on next subscribe cycle
+            // Subscriber threw — drop on next subscribe cycle
         }
     }
 }
 
 // getRecentAlerts — snapshot of the ring buffer (oldest → newest).
-// Used for SSE replay on connect.
+// Feeds the REST snapshot endpoint (GET /api/alerts).
 export function getRecentAlerts(limit) {
     if (typeof limit !== "number" || limit <= 0 || limit > RING_SIZE) {
         return _buffer.slice();
@@ -188,12 +198,12 @@ export function getRecentAlerts(limit) {
     return _buffer.slice(-limit);
 }
 
-// subscribeAlerts — register an SSE response. Returns an `unsubscribe`
-// thunk that the route must call on `req.on("close")`.
-export function subscribeAlerts(res) {
-    _subscribers.add(res);
+// subscribeAlerts — register a frame sink (callback). Returns an
+// `unsubscribe` thunk (idempotent).
+export function subscribeAlerts(sink) {
+    _subscribers.add(sink);
     return function unsubscribe() {
-        if (_subscribers.has(res)) _subscribers.delete(res);
+        if (_subscribers.has(sink)) _subscribers.delete(sink);
     };
 }
 

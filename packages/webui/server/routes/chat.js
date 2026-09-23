@@ -19,7 +19,13 @@ import { pushStateFor, pushAlert, getActiveChild } from "../lib/state-bus.js";
 import { handleLocalSlash, handleCmdCommand } from "../lib/slash.js";
 import { runMcodeAcp } from "../lib/mcode-acp.js";
 import { collectExecResult, runMcodeExec } from "../lib/mcode-exec.js";
-import { DEFAULT_MODEL } from "../lib/config.js";
+import {
+  bootEngineHost,
+  isEmbedRunning,
+  runMcodeEmbed,
+} from "../lib/mcode-embed.js";
+import { collectEmbedResult } from "../lib/embed-consumer.js";
+import { DEFAULT_MODEL, MCODE_ENGINE } from "../lib/config.js";
 
 async function readJson(req) {
   let body = "";
@@ -75,7 +81,7 @@ function resetThinkingClaim(cs) {
   }
 }
 
-// POST /api/send — main chat entry, fire-and-forget (response = ack; output via /api/events SSE)
+// POST /api/send — main chat entry, fire-and-forget (response = ack; output via /api/stream)
 export async function handleSend(req, res, ctx) {
   const cs = ctx.cs;
   const cid = ctx.cid;
@@ -138,24 +144,41 @@ export async function handleSend(req, res, ctx) {
     `[send] cid=${cid} content=${JSON.stringify(content.slice(0, 80))} model=${modelToUse} sessionId=${cs.mcodeSessionId} workspace=${(cs && cs.workspace && cs.workspace.dir) || "null"}`,
   );
   const t0 = Date.now();
-  const r =
-    process.env.MCODE_USE_ACP === "0"
-      ? await collectExecResult(
-          runMcodeExec(content, {
-            label: "prompt",
-            sessionId: cs.mcodeSessionId,
-            model: modelToUse,
-            cs,
-            cid,
-          }),
-        )
-      : await runMcodeAcp(content, {
-          label: "prompt",
-          sessionId: cs.mcodeSessionId,
-          model: modelToUse,
-          cs,
-          cid,
-        });
+  const engineOpts = {
+    label: "prompt",
+    sessionId: cs.mcodeSessionId,
+    model: modelToUse,
+    cs,
+    cid,
+  };
+  // 波次 2（arch_net_solution_0922.md §6.3）：MCODE_ENGINE=embed 走引擎宿主
+  //   Worker（boot 失败自动回退旧路径）；默认 "acp" 完全走下方旧路径，行为不变。
+  let r = null;
+  if (MCODE_ENGINE === "embed") {
+    if (!isEmbedRunning()) {
+      const boot = await bootEngineHost({
+        workspace: (cs && cs.workspace && cs.workspace.dir) || undefined,
+      });
+      if (!boot.ok) {
+        console.warn(
+          `[send] mcode embed boot failed, falling back to legacy transport: ${boot.reason}`,
+        );
+      }
+    }
+    if (isEmbedRunning()) {
+      r = await collectEmbedResult(runMcodeEmbed(content, engineOpts), {
+        cs,
+        cid,
+        label: engineOpts.label,
+      });
+    }
+  }
+  if (!r) {
+    r =
+      process.env.MCODE_USE_ACP === "0"
+        ? await collectExecResult(runMcodeExec(content, engineOpts))
+        : await runMcodeAcp(content, engineOpts);
+  }
   console.log(
     `[send] result ${Date.now() - t0}ms:`,
     JSON.stringify({

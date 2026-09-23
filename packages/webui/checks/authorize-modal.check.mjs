@@ -4,7 +4,7 @@
 // Why this test exists (2026-09-20 webui-manual-audit): the server half
 // of the authorize gate was complete — server/lib/authorize.js blocks
 // gated actions on a 5-minute fail-closed promise, state-bus.js pushes
-// `needs_authorization` / `authorization_decided` SSE frames, and
+// `needs_authorization` / `authorization_decided` control frames, and
 // POST /api/auth/decision is routed — but public/ had ZERO wiring. Every
 // gated action (delete / export / cross-workspace search / /clear / /new /
 // token reset) hung silently for 5 minutes and then declined. A
@@ -12,7 +12,7 @@
 // accidental destruction (an approve firing without a click).
 //
 // Coverage:
-//   • state.js SSE listeners: needs_authorization enqueues (dedup on
+//   • state.js stream handlers: needs_authorization enqueues (dedup on
 //     reconnect replay; malformed frames ignored); authorization_decided
 //     removes exactly that requestId (unknown ids no-op).
 //   • submitAuthDecision POST shape: {requestId, approve} with strict
@@ -31,7 +31,8 @@
 //
 // How the real modules load under node:test: public/app/state.js pulls
 // the whole render/events/util/i18n cluster, which touches DOM globals
-// at module-eval time (window / localStorage / document / EventSource).
+// at module-eval time (window / localStorage / document / location /
+// WebSocket).
 // We install minimal fakes BEFORE the dynamic import — the same globals
 // the browser provides for free. No t.mock.module needed: the modules
 // under test are the REAL frontend files, imported unmocked.
@@ -82,25 +83,51 @@ const _els = {};
 const _fetchCalls = [];
 let _fetchImpl = null; // per-test override; default 200 {ok:true}
 
-class FakeEventSource {
+// Fake WebSocket (decision 20: state.js switched the SSE stream →
+// WebSocket /api/stream). Node 24 ships a REAL global WebSocket —
+// installGlobals overrides globalThis.WebSocket with this BEFORE
+// state.js is imported so connect() never opens a live socket. The
+// frontend drives the stream through the onmessage/onclose properties.
+class FakeWebSocket {
   constructor(url) {
-    this.url = url;
-    this.listeners = new Map();
+    this.url = String(url);
+    this.readyState = 0; // CONNECTING
+    this.onopen = null;
+    this.onmessage = null;
+    this.onclose = null;
+    this.onerror = null;
+    this.sent = [];
     this.closed = false;
   }
-  addEventListener(name, fn) {
-    if (!this.listeners.has(name)) this.listeners.set(name, []);
-    this.listeners.get(name).push(fn);
+  send(data) { this.sent.push(String(data)); }
+  close() {
+    this.closed = true;
+    this.readyState = 3; // CLOSED
+    if (typeof this.onclose === "function") this.onclose({ code: 1000, reason: "" });
   }
-  close() { this.closed = true }
-  fire(name, data) {
-    for (const fn of this.listeners.get(name) || []) fn({ data });
-  }
+  // state.js drives the stream via onmessage; keep addEventListener as
+  // a harmless recorder for forwards-compatibility.
+  addEventListener() {}
 }
 
 function installGlobals() {
+  // Bare browser globals the frontend reads directly: connect() builds
+  // the ws:// URL from `location` (protocol/host) — Node has no
+  // `location`, so provide a minimal one (shared with window.location).
+  const loc = {
+    protocol: "http:",
+    host: "127.0.0.1:18090",
+    hostname: "127.0.0.1",
+    port: "18090",
+    origin: "http://127.0.0.1:18090",
+    search: "",
+    pathname: "/",
+    hash: "",
+    href: "http://127.0.0.1:18090/",
+  };
+  globalThis.location = loc;
   globalThis.window = {
-    location: { search: "", pathname: "/", hash: "" },
+    location: loc,
     history: { replaceState() {} },
     matchMedia: () => ({ matches: false }),
     addEventListener() {},
@@ -113,7 +140,7 @@ function installGlobals() {
       removeItem: (k) => m.delete(k),
     };
   })();
-  globalThis.EventSource = FakeEventSource;
+  globalThis.WebSocket = FakeWebSocket; // 覆盖 Node 自带的真 WebSocket
   globalThis.document = {
     getElementById: (id) => _els[id] || null,
     createElement: (tag) => makeEl(tag),
@@ -162,7 +189,8 @@ before(async (t) => {
     t.mock.timers.reset();
   }
   es = stateMod.es;
-  assert.ok(es instanceof FakeEventSource, "connect() must use our fake EventSource");
+  assert.ok(es instanceof FakeWebSocket, "connect() must open our fake WebSocket");
+  assert.match(es.url, /\/api\/stream/, `stream must target /api/stream, got: ${es.url}`);
 });
 
 beforeEach(() => {
@@ -194,18 +222,43 @@ after(() => {
 
 // ---------- helpers ----------
 
+let _frameSeq = 0;
+// Inject one protocol TEXT frame through the WebSocket's onmessage —
+// {v:1, seq, ts, type:"control", payload:{name, data}} where data is
+// the event payload as a JSON STRING (the same bytes the old SSE
+// `data:` line carried). fireRaw takes the string as-is so malformed
+// payloads stay malformed.
+function fireRaw(name, dataStr) {
+  assert.equal(
+    typeof es.onmessage,
+    "function",
+    "state.js must register ws.onmessage for control-frame dispatch",
+  );
+  es.onmessage({
+    data: JSON.stringify({
+      v: 1,
+      seq: ++_frameSeq,
+      ts: Date.now(),
+      type: "control",
+      payload: { name, data: dataStr },
+    }),
+  });
+}
+function fireControl(name, data) {
+  fireRaw(name, JSON.stringify(data));
+}
 function pushAuthFrame({ requestId, action = "slash.clear", ctx = {}, expiresAt = Date.now() + 300_000 }) {
-  es.fire("needs_authorization", JSON.stringify({ requestId, action, ctx, expiresAt }));
+  fireControl("needs_authorization", { requestId, action, ctx, expiresAt });
 }
 function fireDecided(requestId, approved = true, decidedBy = "user") {
-  es.fire("authorization_decided", JSON.stringify({ requestId, approved, decidedBy }));
+  fireControl("authorization_decided", { requestId, approved, decidedBy });
 }
 
 // ============================================================
-// state.js SSE listeners — queue add/remove
+// state.js stream handlers — queue add/remove
 // ============================================================
 
-describe("state.js SSE listeners — pending queue", () => {
+describe("state.js stream handlers — pending queue", () => {
   test("needs_authorization enqueues the parsed frame and opens the modal", () => {
     pushAuthFrame({
       requestId: "rid-1",
@@ -226,7 +279,7 @@ describe("state.js SSE listeners — pending queue", () => {
     assert.equal(_els["auth-modal-position"].textContent, "");
   });
 
-  test("duplicate frame (SSE reconnect replay) does not double-queue", () => {
+  test("duplicate frame (resume replay) does not double-queue", () => {
     pushAuthFrame({ requestId: "rid-dup", action: "token.reset" });
     pushAuthFrame({ requestId: "rid-dup", action: "token.reset" });
     assert.equal(stateMod.getPendingAuthRequests().length, 1);
@@ -272,9 +325,9 @@ describe("state.js SSE listeners — pending queue", () => {
 
   test("malformed frames are ignored without throwing", () => {
     pushAuthFrame({ requestId: "rid-m" });
-    es.fire("needs_authorization", "not json at all");
-    es.fire("authorization_decided", "");
-    es.fire("needs_authorization", JSON.stringify({ noRequestId: true }));
+    fireRaw("needs_authorization", "not json at all");
+    fireRaw("authorization_decided", "");
+    fireRaw("needs_authorization", JSON.stringify({ noRequestId: true }));
     const q = stateMod.getPendingAuthRequests();
     assert.equal(q.length, 1);
     assert.equal(q[0].requestId, "rid-m");

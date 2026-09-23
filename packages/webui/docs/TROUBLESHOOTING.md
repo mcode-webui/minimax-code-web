@@ -7,7 +7,7 @@
 > verified fix.
 
 If the fix here doesn't work, enable the in-page debug log (bottom-right
-of the webui) and check the right panel for SSE events. You can also
+of the webui) and check the right panel for event-stream activity. You can also
 run `node --check public/app/main.js` to verify the file parses.
 
 ---
@@ -17,17 +17,17 @@ run `node --check public/app/main.js` to verify the file parses.
 **Symptoms**: HTML loads, no red error block, but the sidebar is
 empty and the right panel shows "—" everywhere.
 
-**Cause**: the init() promise chain failed silently, or the SSE
-connection never opened.
+**Cause**: the init() promise chain failed silently, or the
+`/api/stream` WebSocket connection never opened.
 
 **Fix**:
 1. Open devtools (F12) → Console → look for the `__DBG.log` entries
    at the bottom-right debug panel.
 2. If you see `init: start` but not `init: state loaded`, the
    `/api/state` request is failing. Check the network tab.
-3. If you see `init done` but the UI is still empty, the SSE
-   connection is failing. Reload the page; the webui will
-   reconnect.
+3. If you see `init done` but the UI is still empty, the
+   `/api/stream` WebSocket connection is failing. Reload the page; the
+   webui will reconnect.
 
 ## `⚠ webui JS 初始化失败: TypeError: Cannot read properties of null (reading 'addEventListener')`
 
@@ -51,8 +51,8 @@ of date and the browser is running an old main.js.
 
 ## `Failed to load resource: net::ERR_CONNECTION_REFUSED` to `127.0.0.1:18090`
 
-**Symptoms**: devtools shows the SSE or `/api/state` request failing
-with "connection refused". UI shows "init fail" or is stuck on
+**Symptoms**: devtools shows the `/api/stream` WebSocket or
+`/api/state` request failing with "connection refused". UI shows "init fail" or is stuck on
 "loading…".
 
 **Cause**: the server is not running, or it's running on a different
@@ -71,7 +71,7 @@ port.
 webui's session list is empty.
 
 **Cause**: the webui cached an older empty list. This usually
-resolves itself on the next SSE `state` event, but if it's
+resolves itself on the next event-stream `state` snapshot, but if it's
 persistent:
 
 **Fix**: hard-reload the page.
@@ -98,12 +98,12 @@ mcode sqlite via `GET /api/acp-sessions` on init.
 **Symptoms**: clicking "Skip" or pressing Esc doesn't close the
 plan modal.
 
-**Cause**: the click handler is calling `hidePlan()` but the SSE
-event from mcode hasn't arrived yet, so the next render re-opens
-it.
+**Cause**: the click handler is calling `hidePlan()` but the
+event-stream update from mcode hasn't arrived yet, so the next render
+re-opens it.
 
 **Fix**:
-1. Wait 2-3 seconds for the SSE ack.
+1. Wait 2-3 seconds for the event-stream ack.
 2. If it still doesn't dismiss, click "Skip" again — sometimes
    the first click is consumed by the focus ring and the second
    click hits the button.
@@ -137,17 +137,23 @@ functionality.
 
 **Fix**: this is cosmetic, ignore it. Or add a `public/favicon.ico`.
 
-## SSE connection drops every 30-60 seconds
+## Event-stream connection drops every 30-60 seconds
 
 **Symptoms**: the right panel freezes for a few seconds, then catches
-up. devtools shows EventSource repeatedly closing and re-opening.
+up. devtools shows the `/api/stream` WebSocket repeatedly closing and
+re-opening (Network → WS tab).
 
-**Cause**: an intermediate proxy (nginx, cloudflare) is closing
-the SSE connection. SSE has no keep-alive in the protocol, so
-proxies may decide to close idle connections.
+**Cause**: an intermediate proxy (nginx, cloudflare) is closing the
+connection between the webui's 30s pings, or it drops the
+`Upgrade` / `Connection` headers so the handshake never holds.
 
 **Fix**:
-- Set a longer proxy timeout: `proxy_read_timeout 3600s;` in nginx.
+- Set a longer proxy timeout: `proxy_read_timeout 3600s;` in nginx,
+  and make sure the proxy forwards `Upgrade` / `Connection`
+  (see `docs/HTTPS-REVERSE-PROXY.md` §3).
+- After a close the SPA reconnects ~3 seconds after `onclose` and
+  resumes from `lastSeq`, so a drop costs at most a few seconds
+  of catch-up.
 - Or deploy the webui behind a path that doesn't go through a
   proxy. For local dev, this is a non-issue.
 
@@ -186,8 +192,9 @@ mcode subprocess" below.
 is waiting on stdin and we're not feeding it.
 
 **Fix**:
-1. Open devtools → Network → find the `/api/events` EventSource.
-   If it's still open, the issue is on the mcode side.
+1. Open devtools → Network → filter for `/api/stream` and find the
+   WebSocket connection. If it's still open (status 101), the issue is
+   on the mcode side.
 2. Find the mcode subprocess: `Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" | Where-Object { $_.CommandLine -like "*acp*" }`
 3. Kill it: `Stop-Process -Id <PID> -Force`
 4. The webui will spawn a fresh subprocess on the next message.
@@ -211,13 +218,13 @@ optional fields, so this should be rare.
 or shows the wrong value.
 
 **Cause**: mcode's permission state isn't being reflected in
-`state.permissions`. The webui reads this from the SSE
-`state` events.
+`state.permissions`. The webui reads this from the event-stream
+`state` snapshots.
 
 **Fix**:
 1. Check `curl 'http://127.0.0.1:18090/api/state?cid=<cid>' | jq .permissions`
 2. If empty, mcode hasn't reported the current permission mode.
-   Send any message — the next SSE event will include it.
+   Send any message — the next event-stream snapshot will include it.
 3. If the webui shows the wrong value, it's because mcode 0.1.5
    acp doesn't implement `session/set_mode`. The displayed value
    is the user's selection, but the actual mcode mode hasn't

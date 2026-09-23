@@ -3,7 +3,7 @@
 **English** | [简体中文](README.zh-CN.md)
 
 > **Browser frontend for the MiniMax Code agent runtime.**
-> Streams `mcode acp` / `mcode exec` sessions over HTTP/SSE. Zero npm
+> Streams `mcode acp` / `mcode exec` sessions over HTTP/WebSocket. Zero npm
 > dependencies; runs on Node 22.19+.
 
 The Web UI is a first-class part of this repository — the same engine that
@@ -29,7 +29,7 @@ node packages/webui/server.js
 
 The server binds loopback by default. LAN exposure is explicit opt-in
 (`--host` / `HOST` env, or the persisted `lanBind` setting). On first start a
-token is generated and delivered to the browser over SSE; non-local requests
+token is generated and delivered to the browser over the event stream; non-local requests
 must carry `?token=<value>` or `Authorization: Bearer <value>`.
 
 Recommended on non-loopback networks:
@@ -44,7 +44,7 @@ mcode webui --host 0.0.0.0
 
 | File | What |
 |------|------|
-| `server.js` | HTTP + SSE server bootstrap |
+| `server.js` | HTTP + WebSocket server bootstrap |
 | `server/` | Router, route modules, and pure libs (`server/lib/`) |
 | `acp.mjs` | `mcode acp` JSON-RPC client (spawns the engine over stdio) |
 | `public/` | Static frontend SPA |
@@ -64,7 +64,7 @@ Real captures taken against a running v2.0.0 server — see
 | # | What it shows |
 |---|---|
 | 1 | **Startup** — empty chat view on first launch |
-| 2 | **Mid-stream chat** — history restored, SSE deltas in flight, tok/s meter |
+| 2 | **Mid-stream chat** — history restored, stream deltas in flight, tok/s meter |
 | 3 | **Settings panel** — Appearance / Language / LAN Access toggles |
 | 4 | **Chat input** — prompt typed, send/stop affordances, `/` and `@file` hints |
 | 5 | **Post-send + tool call** — assistant streaming, tool-call block auto-collapse |
@@ -79,7 +79,7 @@ IDE integrations match on these strings.
 
 | Capability | One-line |
 |---|---|
-| `chat-streaming` | SSE deltas from `mcode acp` rendered token-by-token |
+| `chat-streaming` | stream deltas from `mcode acp` rendered token-by-token |
 | `tool-execution` | Bash / Read / Write / Edit forwarded from acp `tool_call` events |
 | `plan-mode` | Plan review modal with `agree` / `skip` / `add context` options |
 | `ask-user-tool` | 2-4 option question modal with `Other` free-text fallback |
@@ -125,7 +125,7 @@ degrades to sequential scans.
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — runtime topology, request lifecycle, module contracts
 - [`docs/DESKTOP-ARCHITECTURE.md`](docs/DESKTOP-ARCHITECTURE.md) — measured desktop and TUI architecture reference
 - [`docs/DESIGN.md`](docs/DESIGN.md) — design system of record (tokens, theme protocol, layout) and the desktop alignment contract
-- [`docs/API.md`](docs/API.md) — HTTP/SSE surface
+- [`docs/API.md`](docs/API.md) — HTTP/WebSocket surface
 - [`docs/CAPABILITIES.md`](docs/CAPABILITIES.md) — capability deep-dive
 - [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) — dev workflow, tests
 - [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) — common failures
@@ -137,7 +137,7 @@ degrades to sequential scans.
 Read [`references/SECURITY-NOTES.md`](references/SECURITY-NOTES.md) before
 binding to anything other than loopback. Highlights: loopback bind by default,
 trusted-origin CORS, per-request `authorize()` gate (fail-closed audit),
-independent anomaly SSE channel, workspace containment, bounded uploads,
+independent anomaly REST snapshot channel, workspace containment, bounded uploads,
 rate limiting, no telemetry.
 
 ## License
