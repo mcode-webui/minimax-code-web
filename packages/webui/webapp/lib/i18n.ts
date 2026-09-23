@@ -124,7 +124,9 @@ const en = {
      comes from `api.getQuota()` (5h-style snapshot: remaining %, resetAt,
      weeklyResetAt). The popover renders whatever is in the snapshot. */
   "usagePopover.title": "Usage",
-  "usagePopover.quota": "Quota",
+  "usagePopover.fiveHour": "5-hour limit",
+  "usagePopover.weekly": "Weekly limit",
+  "usage.used": "Used",
   "usagePopover.unavailable": "Quota data not available",
   "usagePopover.refresh": "Refresh",
   "usagePopover.errorTitle": "Failed to load usage",
@@ -357,7 +359,9 @@ const zh: Record<MessageKey, string> = {
   /* 帐号菜单的「用量」hover Tooltip popover。配额数据来自 `api.getQuota()`
      （5h 风格快照：remaining %、resetAt、weeklyResetAt）。 */
   "usagePopover.title": "用量",
-  "usagePopover.quota": "配额",
+  "usagePopover.fiveHour": "5 小时限额",
+  "usagePopover.weekly": "每周限额",
+  "usage.used": "已用",
   "usagePopover.unavailable": "暂无用量数据",
   "usagePopover.refresh": "刷新",
   "usagePopover.errorTitle": "用量加载失败",

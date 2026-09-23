@@ -742,10 +742,9 @@ function MenuRow({
 /**
  * Usage row + hover Tooltip popover. Upstream uses `Tooltip trigger="hover"
  * placement="rightTop"` wrapping a chevron row, with `Q` (offset 599872) as
- * the popover content. webui has no `processedQuotas[]` yet (only a single
- * `QuotaSnapshot` with `remaining` / `resetAt` / `weeklyResetAt`), so the
- * popover renders one labelled *Quota* row today and grows more rows as the
- * engine adds the per-window breakdown.
+ * the popover content. The payload carries one figure per quota window (the
+ * rolling 5-hour one and the weekly one), and the popover renders one row per
+ * window.
  */
 function UsageMenuRow({
   t,
@@ -869,10 +868,24 @@ function UsagePopover({ t }: { t: (key: MessageKey) => string }) {
     void load(false);
   }, [load]);
 
-  const used = typeof quota?.remaining === "number" ? Math.max(0, Math.min(100, 100 - quota.remaining)) : null;
-  const reset = quota?.resetAt
-    ? new Date(quota.resetAt > 1e12 ? quota.resetAt : quota.resetAt * 1000).toLocaleString()
-    : null;
+  // The engine reports two quota windows: one rolling over 5 hours and one
+  // weekly. Both are rendered. A single row could only ever describe one of
+  // them, which is how the weekly figure went missing while the API was already
+  // returning it. A window with no figure is dropped rather than drawn as 0%.
+  const windows = [
+    {
+      key: "fiveHour",
+      label: t("usagePopover.fiveHour"),
+      remaining: quota?.remaining,
+      resetAt: quota?.resetAt,
+    },
+    {
+      key: "weekly",
+      label: t("usagePopover.weekly"),
+      remaining: quota?.weeklyRemaining,
+      resetAt: quota?.weeklyResetAt,
+    },
+  ].filter((w) => typeof w.remaining === "number");
 
   return (
     <div className="flex flex-col gap-2">
@@ -893,23 +906,36 @@ function UsagePopover({ t }: { t: (key: MessageKey) => string }) {
           <span className="text-caption-small-strong text-text_default_primary">{t("usagePopover.errorTitle")}</span>
           <span className="text-caption-small text-text_default_tertiary">{t("usagePopover.errorBody")}</span>
         </div>
-      ) : quota?.ok && used !== null ? (
-        <div className="flex flex-col gap-1.5">
-          <div className="flex items-baseline justify-between">
-            <span className="text-caption-small text-text_default_tertiary">{t("usagePopover.quota")}</span>
-            <span className="text-caption-small-strong text-text_default_primary">{used}%</span>
-          </div>
-          <div className="h-1 w-full overflow-hidden rounded-full bg-bg_grouped_primary">
-            <div
-              className="h-full rounded-full bg-bg_interaction_primary_default"
-              style={{ width: `${used}%` }}
-            />
-          </div>
-          {reset ? (
-            <span className="text-caption-small text-text_default_tertiary">
-              {t("usage.reset")}: {reset}
-            </span>
-          ) : null}
+      ) : quota?.ok && windows.length > 0 ? (
+        <div className="flex flex-col gap-2">
+          {windows.map((w) => {
+            // `remaining` is what is left, so the bar fills as it is consumed.
+            const used = Math.max(0, Math.min(100, 100 - (w.remaining as number)));
+            const reset = w.resetAt
+              ? new Date(w.resetAt > 1e12 ? w.resetAt : w.resetAt * 1000).toLocaleString()
+              : null;
+            return (
+              <div key={w.key} className="flex flex-col gap-1.5">
+                <div className="flex items-baseline justify-between">
+                  <span className="text-caption-small text-text_default_tertiary">{w.label}</span>
+                  <span className="text-caption-small-strong text-text_default_primary">
+                    {t("usage.used")} {used}%
+                  </span>
+                </div>
+                <div className="h-1 w-full overflow-hidden rounded-full bg-bg_grouped_primary">
+                  <div
+                    className="h-full rounded-full bg-bg_interaction_primary_default"
+                    style={{ width: `${used}%` }}
+                  />
+                </div>
+                {reset ? (
+                  <span className="text-caption-small text-text_default_tertiary">
+                    {t("usage.reset")}: {reset}
+                  </span>
+                ) : null}
+              </div>
+            );
+          })}
         </div>
       ) : (
         <span className="text-caption-small text-text_default_tertiary">{t("usagePopover.unavailable")}</span>
