@@ -213,6 +213,31 @@ export interface ModelsPayload {
 
 export const listModels = () => request<ModelsPayload>("/api/models");
 
+/**
+ * The account card's data, from the engine's `mcode/account/status` method.
+ *
+ * Display fields and quota figures only: the engine's projection carries no
+ * credential and omits the account email on purpose. Fetched on demand rather
+ * than carried in the state snapshot, which is broadcast to every SSE
+ * subscriber.
+ */
+export interface AccountPayload {
+  ok: boolean;
+  /** Set when `ok` is false — the account surface is unreachable, not empty. */
+  reason?: string;
+  status?: "ready" | "needs-login" | "warning" | "unknown";
+  authMode?: string;
+  modelSource?: "token-plan" | "byok";
+  defaultModel?: string;
+  managedTokenPresent?: boolean;
+  identity?: { name?: string };
+  tokenPlanQuotaState?: "available" | "not-subscribed" | "unavailable";
+  tokenPlan?: { tier?: string; expiresAtMs?: number; creditBalance?: string };
+  warnings?: string[];
+}
+
+export const getAccount = () => request<AccountPayload>("/api/account");
+
 export const setModel = (model: string) =>
   request<{ ok: boolean }>("/api/set-model", { method: "POST", json: { model } });
 
