@@ -1,41 +1,37 @@
 // webui/server/lib/authorize.js
-// Per-request authorization helper (Lease B03, mcode-webui v2).
+// Per-request authorization helper.
 //
-// Design (MATH-skeleton-webui-v2 §1.3 + BORROW-harness-v2 §3):
-//   • `authorize(action, ctx, opts)` blocks on user confirmation; the
-//     UI pops a modal listening for the `needs_authorization` SSE event.
-//     The user accepts or declines; the server resolves the pending
-//     promise via POST /api/auth/decision.
+// `authorize(action, ctx, opts)` blocks on user confirmation; the UI
+// pops a modal listening for the `needs_authorization` SSE event. The
+// user accepts or declines; the server resolves the pending promise
+// via POST /api/auth/decision.
 //
-//   • Default timeout = 5 minutes. Timeout = reject (fail-closed; see
-//     ANTI-PATTERNS-FIX-PLAN §AP6 + §AP10 rationale — silent fallback
-//     to "approved" is the root cause of accidental destructive
-//     actions).
+// Default timeout = 5 minutes. Timeout = reject (fail-closed: a
+// silent fallback to "approved" is the root cause of accidental
+// destructive actions).
 //
-//   • Audit trail (Lease B01 dependency): every approve / reject /
-//     timeout writes one NDJSON event via the static import of
-//     `server/lib/events.js` (fail-closed since the 2026-09-20 rigor
-//     fix). The DECISION-OUTCOME audit write (auth.approve/reject/
-//     timeout/cancelled) is loud-but-non-blocking: on write failure we
-//     pushAlert + console.error and still resolve the user's decision,
-//     because a click in the modal is irreversible — throwing away the
-//     user's explicit choice to spite a broken disk would turn one
-//     failure into two. The destructive action itself is separately
-//     guarded by the route-level write-ahead intent events (see
-//     routes/sessions.js etc.), which DO fail closed.
+// Audit: every approve / reject / timeout writes one NDJSON event via
+// the static import of `server/lib/events.js`. The DECISION-OUTCOME
+// audit write (auth.approve/reject/timeout/cancelled) is
+// loud-but-non-blocking: on write failure we pushAlert + console.error
+// and still resolve the user's decision, because a click in the
+// modal is irreversible — throwing away the user's explicit choice
+// to spite a broken disk would turn one failure into two. The
+// destructive action itself is separately guarded by the route-level
+// write-ahead intent events (see routes/sessions.js etc.), which DO
+// fail closed.
 //
-//   • Pure module: no fs / spawn / router side-effects on import. The
-//     `handleAuthDecision` HTTP handler is exported for the router
-//     (wiring is owned by Lease C03 / main reconciliation).
+// Pure module: no fs / spawn / router side-effects on import. The
+// `handleAuthDecision` HTTP handler is exported for the router.
 //
 // Action whitelist:
 //   session.delete          DELETE /api/sessions/:id (destructive)
 //   sessions.cleanup-orphans POST /api/sessions/cleanup-orphans
 //   session.cleanup-all     bulk delete (extension hook)
-//   session.export          GET /api/sessions/:id/export (C06 — non-destructive
+//   session.export          GET /api/sessions/:id/export (non-destructive
 //                           but exposes conversation history; same gate class
 //                           as session.delete)
-//   session.search          GET /api/sessions/search (C05 — non-destructive
+//   session.search          GET /api/sessions/search (non-destructive
 //                           but surfaces titles across workspaces the user
 //                           is not currently in; same gate class as export)
 //   token.reset             rotate the LAN auth token
@@ -53,21 +49,14 @@ export const AUTHORIZE_ACTIONS = Object.freeze([
   "session.delete",
   "sessions.cleanup-orphans",
   "session.cleanup-all",
-  // C06: session export is non-destructive but reveals chat history.
-  // Added here as the natural integration touchpoint between the C06
-  // lease (which is the first consumer) and the B03 authorize gate.
   "session.export",
-  // C05: cross-workspace session search is non-destructive but
-  //   surfaces titles from workspaces the user is not currently in.
-  //   Same gate class as session.export — added as the natural
-  //   integration touchpoint between C05 (consumer) and B03.
   "session.search",
   "token.reset",
   "slash.clear",
   "startup.cleanup",
 ]);
 
-export const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+export const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 
 function _isValidAction(action) {
   return AUTHORIZE_ACTIONS.includes(action);
@@ -78,11 +67,11 @@ function _isValidAction(action) {
 // requestId → { resolve, timer, action, ctx, requestedAt, expiresAt }
 const _pending = new Map();
 
-// ---------- audit (B01 events.js) ----------
+// ---------- audit ----------
 
 // _tryWriteEvent — synchronous, loud-but-non-blocking audit write.
-// events.js#append is fail-closed (throws) since the 2026-09-20 rigor
-// fix; authorize deliberately does NOT propagate that throw:
+// events.js#append is fail-closed (throws); authorize deliberately
+// does NOT propagate that throw:
 //   - For decision-OUTCOME events (auth.approve / auth.reject /
 //     auth.timeout / auth.cancelled) the user's click already
 //     happened and is irreversible. Swallowing the DECISION would
@@ -95,13 +84,10 @@ const _pending = new Map();
 //     these are observability lines, not the enforcement line.
 function _tryWriteEvent(evt) {
   try {
-    // Normalize to the events.js#append(kind, fields) signature. The
-    // old dynamic-import caller passed the whole object as `kind`,
-    // which events.js stringified into `"[object Object]"` — four such
-    // corrupted lines exist in real audit chains (2026-09-20 audit).
-    // `data` → `payload` because append() only accepts the payload via
-    // the explicit `payload` key when meta keys (target/cid/actor) are
-    // present.
+    // Normalize to the events.js#append(kind, fields) signature.
+    // (`data` → `payload`: append() only accepts the payload via the
+    // explicit `payload` key when meta keys (target/cid/actor) are
+    // present.)
     _eventsAppend(evt.kind, {
       target: evt.target || "",
       cid: evt.cid || "",
@@ -124,28 +110,29 @@ function _tryWriteEvent(evt) {
 
 // ---------- core API ----------
 
-  // authorize(action, ctx, opts) → Promise<{approved, decidedBy, decidedAt}>
-  //   action: one of AUTHORIZE_ACTIONS (throws on invalid)
-  //   ctx:    { cid: string, [any extra context] } — cid is optional;
-  //           empty cid = broadcast to all SSE clients
-  //   opts:   { timeoutMs?: number, metadata?: object, bypass?: boolean }
-  //           bypass=true skips the user gate (only for trusted internal
-  //           callers — e.g. LAN token rotation triggered by C08 modal
-  //           that already presented its own confirmation UI).
-  //
-  // NOTE (2026-09-20 rigor fix): there is deliberately NO test-mode
-  //   auto-approve. The old branch inspected Node's runtime flag vector
-  //   for --test / --experimental-test-module-mocks and approved every
-  //   gated action without a user decision — which meant no test ever
-  //   exercised the real decision path, and any future flag confusion
-  //   in the production flag vector would silently disable the gate.
-  //   Tests now drive the REAL path via test/_setup.js#withDecisions
-  //   (in process) or SSE + POST /api/auth/decision (integration).
-  //
-  // Returns:
-  //   { approved: true,  decidedBy: 'user',   decidedAt: ms }
-  //   { approved: false, decidedBy: 'user',   decidedAt: ms }   (user declined)
-  //   { approved: false, decidedBy: 'timeout',decidedAt: ms }   (default fail-closed)
+// authorize(action, ctx, opts) → Promise<{approved, decidedBy, decidedAt}>
+//   action: one of AUTHORIZE_ACTIONS (throws on invalid)
+//   ctx:    { cid: string, [any extra context] } — cid is optional;
+//           empty cid = broadcast to all SSE clients
+//   opts:   { timeoutMs?: number, metadata?: object, bypass?: boolean }
+//           bypass=true skips the user gate (only for trusted internal
+//           callers — e.g. LAN token rotation triggered by the
+//           settings card modal that already presented its own
+//           confirmation UI).
+//
+// There is deliberately NO test-mode auto-approve. A prior branch
+// inspected Node's runtime flag vector for --test /
+// --experimental-test-module-mocks and approved every gated action
+// without a user decision — meaning no test exercised the real
+// decision path, and any future flag confusion in the production flag
+// vector would silently disable the gate. Tests now drive the REAL
+// path via test/_setup.js#withDecisions (in process) or SSE +
+// POST /api/auth/decision (integration).
+//
+// Returns:
+//   { approved: true,  decidedBy: 'user',   decidedAt: ms }
+//   { approved: false, decidedBy: 'user',   decidedAt: ms }   (user declined)
+//   { approved: false, decidedBy: 'timeout',decidedAt: ms }   (default fail-closed)
 export function authorize(action, ctx = {}, opts = {}) {
   if (!_isValidAction(action)) {
     return Promise.resolve({
@@ -193,7 +180,7 @@ export function authorize(action, ctx = {}, opts = {}) {
           metadata: opts.metadata || null,
         },
       });
-      // Mirror the resolution over SSE so other tabs close the modal
+      // Mirror the resolution over SSE so other tabs close the modal.
       try {
         pushAuthDecision({ requestId, approved: false, decidedBy: "timeout" });
       } catch {}
@@ -236,7 +223,7 @@ export function authorize(action, ctx = {}, opts = {}) {
   });
 }
 
-// ---------- HTTP handler (wired by C03 / main reconciliation) ----------
+// ---------- HTTP handler ----------
 
 // handleAuthDecision — POST /api/auth/decision
 //   body: { requestId: string, approve: boolean }

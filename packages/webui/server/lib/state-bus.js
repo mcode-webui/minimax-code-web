@@ -24,32 +24,31 @@ import {
   maskTokenPlanKey,
 } from "./settings.js";
 
-// v0.5.ai: A2 per-client 架构
-// 每个 webui tab 一个 client (cid = localStorage webui_cid)
-// 每个 client 独立：state (chat/mcodeSessionId/context/usage/running), activeChild, SSE connection
-// 缺 cid 的请求 fallback 到 'default' client (兼容老 client)
+// Each webui tab is a separate client (cid from localStorage
+// `webui_cid`); each client owns its own state (chat / mcodeSessionId /
+// context / usage / running), active child, and SSE connection. Requests
+// without a cid fall back to a 'default' client.
 
-// v2.0 (lease B02): pushAlert re-export — chokepoint-friendly alias.
-//   Routes that need to surface a system signal (chat errors,
-//   subprocess crash, token expiry, etc.) call this rather than
-//   importing alerts.js directly. The chokepoint pattern (only
-//   state-bus touches per-cid state) extends naturally: only
-//   state-bus touches the alert bus too. alerts.js remains the
-//   pure module; state-bus is the wire.
+// pushAlert re-export — chokepoint-friendly alias. Routes that need
+// to surface a system signal (chat errors, subprocess crash, token
+// expiry, etc.) call this rather than importing alerts.js directly.
+// The chokepoint pattern (only state-bus touches per-cid state)
+// extends naturally: only state-bus touches the alert bus too.
+// alerts.js remains the pure module; state-bus is the wire.
 export { pushAlert } from "./alerts.js";
 
-// v0.5.ai: 每个 webui tab 一个独立 state。
 export function makeClientState() {
   return {
-    version: "1.0", // v1.0: 首次公开发布版本 (顶栏显示 "v" + version)
-    workspace: { dir: DEFAULT_WORKSPACE, branch: null, tree: null }, // v0.5.bb: 默认 null（之前是 MCODE_ROOT）
+    version: "1.0", // 顶栏显示 "v" + version
+    workspace: { dir: DEFAULT_WORKSPACE, branch: null, tree: null },
     model: { name: DEFAULT_MODEL, thinking: "On", ctx: "512k" },
     sessionId: null, // webui 侧边栏 session id (randomUUID)
     mcodeSessionId: null, // mcode acp/exec 自己的 session id (mvs_xxx)
     sessionTitle: "Untitled",
-    // v0.5.bx-31: "最近 active session 所属工作区" — 独立于 state.workspace.dir
-    //   之前切 session 会同步改 state.workspace.dir (v0.5.ar),导致 sidebar 排序时该工作区组永远置顶
-    //   现在切 session 改 lastUsedWorkspace,不再动 workspace.dir (chip-workspace 跟它无关)
+    // "最近 active session 所属工作区" — independent of state.workspace.dir.
+    // Switching session no longer mutates workspace.dir (which used to
+    // pin that workspace's group at the top of the sidebar forever);
+    // it updates lastUsedWorkspace instead.
     lastUsedWorkspace: null,
     context: {
       tokens: 0,
@@ -60,6 +59,14 @@ export function makeClientState() {
       thinkingStatus: "Idle",
       thinkingDuration: null,
       lastUsageAt: null,
+      // Per-section breakdown (SYSTEM_PROMPT / MEMORY / TOOLS / SKILLS
+      // / MESSAGES / OTHER). The upstream engine does not currently
+      // emit this, so default null; the UI only renders the segmented
+      // progress + breakdown rows when it is non-empty.
+      breakdown: null,
+      // Plan-usage row. Populated when engine/server emits it; null
+      // until then.
+      plan: null,
     },
     usage: {
       plan: null,
@@ -87,6 +94,13 @@ export function makeClientState() {
       currentIdx: 0,
       question: "",
       options: [],
+      // multiSelect defaults to false on the inactive state so the
+      // AskModal's defensive `ask.multiSelect === true` check falls
+      // through to single-select when no ask is active. Populated
+      // with the real value (normalised to boolean) by
+      // tool-ask-user.js#setAskPending and #hydrateAskFromQuestions
+      // when an ask lands.
+      multiSelect: false,
     },
     plan: { active: false, title: null, summary: "", options: [] },
     running: {
@@ -106,13 +120,10 @@ export const clients = new Map(); // cid -> clientState
 export const sseByCid = new Map(); // cid -> SSE response
 export const activeChildByCid = new Map(); // cid -> child process
 
-// v2.3 (in-product): a fresh client (page reload, new tab) must resume the
-//   conversation it was in. Before this, a fresh per-cid state always started
-//   empty (sessionId: null), so the next send created a NEW webui session and
-//   a NEW mcode session — one logical conversation split into many sidebar
-//   records every reload. Instead, bind the fresh client to the most recent
-//   session in its workspace (sessions.json is the persisted store; the
-//   "+" new-session flow still wins because it creates the newest record).
+// A fresh client (page reload, new tab) must resume the conversation it
+// was in. Binds the fresh client to the most recent session in its
+// workspace (sessions.json is the persisted store); the "+" new-session
+// flow still wins because it creates the newest record.
 function restoreLatestSession(cs) {
   try {
     const all = loadSessions();
@@ -121,8 +132,8 @@ function restoreLatestSession(cs) {
     const candidates = all
       .filter((s) => {
         if (!s) return false;
-        // Legacy records (pre-v2.3) have no workspace field — they belong to
-        // the default workspace by construction (single-workspace era).
+        // Legacy records have no workspace field — they belong to the
+        // default workspace by construction (single-workspace era).
         const sw = s.workspace || "";
         return sw === ws || (!sw && ws === DEFAULT_WORKSPACE);
       })
@@ -165,11 +176,10 @@ export const SSE_HEADERS = {
   "X-Accel-Buffering": "no",
 };
 
-// v2.3: the sessions list in a snapshot is sidebar metadata only — the
-//   frontend never reads session.chat from state.sessions (the chat area
-//   hydrates from state.chat / the switch response). Shipping every
-//   session's full chat array on EVERY push was the main payload cost of
-//   long thinking turns. Strip it; loadSessions is now mtime-memoized.
+// The sessions list in a snapshot is sidebar metadata only — the
+// frontend never reads session.chat from state.sessions (the chat area
+// hydrates from state.chat / the switch response). Strip the chat arrays
+// so long thinking turns don't ship the entire history on every push.
 function sessionsListForSnapshot() {
   return loadSessions().map((s) => ({
     id: s.id,
@@ -184,12 +194,16 @@ function sessionsListForSnapshot() {
   }));
 }
 
-// pushStateFor: 推 state 给指定 cid（或 '__broadcast__' 推给所有）
-//   opts.lanBroadcast: 当前 LAN 广播状态（从 settings.js 注入）
-//   opts.mcodeSessions: 已过滤的 mcode sessions 数组（从 acp-client.js 注入）
-// v0.5.bx-31: cache miss 时 fire-and-forget 拉一次, 拉完自动 push 给所有 SSE 客户端
-// v1.0: 推送带 mcodeSessionsPending 标记 — 占位推送 (cache miss 空数组) 为 true, 权威推送为 false;
-//   fetch 失败也要推终态 (否则 client 侧栏 ready 门控永远等不到权威值, loading 卡死)
+// pushStateFor: push state for the given cid (or '__broadcast__' for all).
+//   opts.lanBroadcast: current LAN broadcast state (injected from settings.js)
+//   opts.mcodeSessions: pre-filtered mcode sessions (injected from acp-client.js)
+// On cache miss, fire-and-forget a fetch and auto-push the authoritative
+// result to every SSE client.
+// Pushes carry an `mcodeSessionsPending` marker — placeholder pushes
+// (cache-miss empty array) are true, authoritative pushes are false.
+// A failed fetch still pushes a terminal state (otherwise the client's
+// sidebar-ready gate waits forever for the authoritative value and
+// loading stalls).
 const _mcodeSessionsFetchPending = new Set(); // workspace keys currently being fetched
 function ensureMcodeSessionsFetchedAndPush(workspace) {
   if (_mcodeSessionsFetchPending.has(workspace)) return;
@@ -198,7 +212,8 @@ function ensureMcodeSessionsFetchedAndPush(workspace) {
     for (const [c, res] of sseByCid) {
         const ccs = clients.get(c) || makeClientState();
         const cws = (ccs.workspace && ccs.workspace.dir) || "";
-        // v1.0: 权威推送优先 fresh cache, 退而求其次 stale (同 ws 过期列表), 避免空列表闪跌
+        // Authoritative push prefers fresh cache, falls back to stale
+        // (same-ws, TTL-expired) — avoids flashing an empty list.
         const cached =
           getMcodeSessionsCacheSync(cws) ??
           getMcodeSessionsStaleSync(cws) ??
@@ -216,31 +231,29 @@ function ensureMcodeSessionsFetchedAndPush(workspace) {
         lanBroadcast: getLanBroadcast(),
         readOnly: getReadOnly(),
         tokenEnabled: getTokenEnabled(),
-        // v1.0.1: 下发 currentToken 仅在未 acknowledge 时 (减少密钥暴露窗口)
+        // currentToken is only sent while un-acknowledged (shrinks
+        // the secret-exposure window).
         currentToken: getTokenAcknowledged() ? "" : getCurrentToken(),
         tokenAcknowledged: getTokenAcknowledged(),
         tokenRotatedAt: getTokenRotatedAt(),
-        // v2026-08-28 modacker: Token Plan (套餐用量) feature fields.
-        //   Previously these were only synced via the one-shot
-        //   /api/settings fetch in loadLanInfo(); the SSE replace-state
-        //   pattern (state = JSON.parse(ev.data)) then clobbered them
-        //   on the next push, so toggling the switch appeared to do
-        //   nothing — the usage button stayed hidden. Including them
-        //   in the snapshot makes the client single-source-of-truth
-        //   for everything it shows. The masked key never includes
-        //   the full Subscription Key, only "sk-cp-...XXXX".
+        // Token Plan feature fields. These MUST be in the snapshot —
+        // they are clobbered by the SSE replace-state pattern
+        // (state = JSON.parse(ev.data)), and without including them
+        // the next push after a /api/settings mutation hides the
+        // usage button again. The masked key never includes the
+        // full Subscription Key, only "sk-cp-...XXXX".
         quotaEnabled: getQuotaEnabled(),
         hasTokenPlanKey: getTokenPlanApiKey().length > 0,
         tokenPlanApiKeyMasked: maskTokenPlanKey(),
-        // v2026-08-28 modacker (A+C): external key source surface.
-        //   Webui uses this to hide the "delete" button when the
-        //   key is managed by env / file (the operator would have
-        //   to remove it there, not in the UI).
+        // External key source surface. Webui uses this to hide the
+        // "delete" button when the key is managed by env / file
+        // (the operator would have to remove it there, not in the UI).
         tokenPlanApiKeySource: getTokenPlanApiKeySource(),
         tokenPlanApiKeyFilePath: getTokenPlanApiKeyFilePath(),
       };
-      // v2 (Lease C04): route through 60Hz coalescer — multiple authoritative
-      // pushes within STATE_PUSH_THROTTLE_MS collapse to one write per cid.
+      // Routed through the 60Hz coalescer — multiple authoritative
+      // pushes within STATE_PUSH_THROTTLE_MS collapse to one write
+      // per cid.
       _schedulePush(c, JSON.stringify(snapshot), res);
     }
   };
@@ -254,7 +267,7 @@ function ensureMcodeSessionsFetchedAndPush(workspace) {
       console.warn(
         `[webui] ensureMcodeSessionsFetchedAndPush failed: ${e.message}`,
       );
-      pushAuthoritative(); // v1.0: 失败也推终态 (用当前 cache 值, 可能是空数组 — 合法)
+      pushAuthoritative(); // still push terminal state (current cache; empty array is legal)
     });
 }
 
@@ -283,36 +296,34 @@ export function pushStateFor(cid, opts = {}) {
         currentToken: getTokenAcknowledged() ? "" : getCurrentToken(),
         tokenAcknowledged: getTokenAcknowledged(),
         tokenRotatedAt: getTokenRotatedAt(),
-        // v2026-08-28 modacker: Token Plan (套餐用量) feature fields —
-        //   see note on the per-cid-branch snapshot below. Same fields,
-        //   same rationale. This is the broadcast path that fires
-        //   after /api/settings mutations (and on the second client
-        //   connect in the test we just ran), so any push without
-        //   these clobbers state.quotaEnabled and re-hides the button.
+        // Token Plan feature fields — see ensureMcodeSessionsFetchedAndPush
+        // above for the rationale. This broadcast path fires after
+        // /api/settings mutations; any push without these clobbers
+        // state.quotaEnabled and re-hides the button.
         quotaEnabled: getQuotaEnabled(),
         hasTokenPlanKey: getTokenPlanApiKey().length > 0,
         tokenPlanApiKeyMasked: maskTokenPlanKey(),
-        // v2026-08-28 modacker (A+C): external key source surface.
-        //   Webui uses this to hide the "delete" button when the
-        //   key is managed by env / file (the operator would have
-        //   to remove it there, not in the UI).
+        // External key source surface — see the per-cid branch below.
         tokenPlanApiKeySource: getTokenPlanApiKeySource(),
         tokenPlanApiKeyFilePath: getTokenPlanApiKeyFilePath(),
       };
-      // v2 (Lease C04): coalesced write — N broadcasts within the throttle
-      // window collapse to ONE write per cid (last call's snapshot wins).
+      // Coalesced write — N broadcasts within the throttle window
+      // collapse to ONE write per cid (last call's snapshot wins).
       _schedulePush(c, JSON.stringify(snapshot), res);
     }
     return;
   }
   const cs = getClient(cid);
-  // v1.0: 统一走 mcodeSessionsSnapshotFields — 过期缓存推旧值 (pending=true), 不推空占位
+  // Push stale cache (pending=true) when fresh is unavailable; never
+  // push an empty placeholder (a stale list is better than a flash
+  // to nothing while the authoritative fetch is in flight).
   const fields =
     opts.mcodeSessions !== undefined
       ? { mcodeSessions: opts.mcodeSessions, mcodeSessionsPending: false }
       : mcodeSessionsSnapshotFields((cs.workspace && cs.workspace.dir) || "");
-  // 注入 sessions 列表（来自磁盘 db）— 让 webui 侧边栏 "最近会话" 不被 SSE 推送覆盖
-  // v0.5.bv: 同步带 mcodeSessions（cache 命中，0 cost；cache miss 才 await）
+  // Inject sessions list from disk db so the sidebar "recent sessions"
+  // is never clobbered by an SSE push that happens to have an empty
+  // mcodeSessions fetch in flight.
   const snapshot = {
     ...cs,
     sessions: sessionsListForSnapshot(),
@@ -325,33 +336,30 @@ export function pushStateFor(cid, opts = {}) {
     currentToken: getTokenAcknowledged() ? "" : getCurrentToken(),
     tokenAcknowledged: getTokenAcknowledged(),
     tokenRotatedAt: getTokenRotatedAt(),
-    // v2026-08-28 modacker: Token Plan (套餐用量) feature fields —
-    //   see note on the broadcast-branch snapshot above. Same fields,
-    //   same rationale. Without these the per-cid SSE push also
-    //   clobbers the local `state.quotaEnabled` and the usage button
-    //   hides itself right after the user toggles it on.
+    // Token Plan feature fields — see ensureMcodeSessionsFetchedAndPush
+    // above for rationale. Without these the per-cid SSE push also
+    // clobbers the local `state.quotaEnabled` and the usage button
+    // hides itself right after the user toggles it on.
     quotaEnabled: getQuotaEnabled(),
     hasTokenPlanKey: getTokenPlanApiKey().length > 0,
     tokenPlanApiKeyMasked: maskTokenPlanKey(),
-    // v2026-08-28 modacker (A+C): external key source surface — see
-    //   the broadcast-branch snapshot above for rationale.
+    // External key source surface — see the broadcast branch above.
     tokenPlanApiKeySource: getTokenPlanApiKeySource(),
     tokenPlanApiKeyFilePath: getTokenPlanApiKeyFilePath(),
   };
   const payload = JSON.stringify(snapshot);
   const res = sseByCid.get(cid);
-  // v2 (Lease C04): 60Hz coalescing — multiple pushStateFor() calls for
-  // the same cid within STATE_PUSH_THROTTLE_MS collapse to ONE SSE write.
-  // Diff mode: if the payload is byte-identical to the last write, the
-  // client receives nothing (no full-state replace, no DOM thrash).
+  // 60Hz coalescing — multiple pushStateFor() calls for the same cid
+  // within STATE_PUSH_THROTTLE_MS collapse to ONE SSE write.
+  // Diff mode: if the payload is byte-identical to the last write,
+  // the client receives nothing (no full-state replace, no DOM thrash).
   _schedulePush(cid, payload, res);
 }
 
-// v1.0: 统一的 mcodeSessions 快照字段构造 — 所有 SSE 推送点必须带这两个字段。
-//   之前 pushOnlineCount / SSE 首推不带, 客户端整包替换 state 后 mcodeSessions 变 undefined,
-//   侧栏随机从 ~36 条闪跌到 ~16 条 (只剩 webui 本地条目), 下次完整推送又弹回。
-//   v1.0 (改): 缓存过期但同 workspace 时推过期列表 (pending=true), 不再推空占位 —
-//   过期值好过空值, 权威值到达前侧栏不闪跌
+// Unified mcodeSessions snapshot field construction — every SSE push
+// point must include both fields. Push stale (pending=true) when fresh
+// is unavailable; never push an empty placeholder. (Stale values are
+// better than nothing while the authoritative fetch is in flight.)
 export function mcodeSessionsSnapshotFields(workspace) {
   const ws = workspace || "";
   const cached = getMcodeSessionsCacheSync(ws);
@@ -366,67 +374,53 @@ export function mcodeSessionsSnapshotFields(workspace) {
   return { mcodeSessions: [], mcodeSessionsPending: true };
 }
 
-// ============================================================
-// v2 (Lease C04) — 60Hz SSE coalescing + diff mode
+// 60Hz SSE coalescing + diff mode.
 //
-// What this adds:
-//   - _schedulePush(cid, payloadStr, res): routes an SSE write through
-//     a per-cid diff gate. The diff gate compares the incoming payload
-//     against the last written payload for this cid (byte-identical
-//     JSON). If identical, the write is suppressed — no full-state
-//     JSON goes out, the client doesn't render() against identical
-//     bytes, no DOM thrash. This is the "diff 模式 — 不复位整个 state"
-//     half of the lease spec.
-//   - 60Hz coalescing: when STATE_PUSH_THROTTLE_MS > 0, the diff gate
-//     is gated by a time window as well. Subsequent pushes within the
-//     window are stored as "pending" — when the window expires, the
-//     LAST pending payload is written (last-call-wins). The first push
-//     in any window writes synchronously (preserves the existing
-//     sync-write contract that callers like runUsageQuery rely on).
-//     The 16ms default targets 60Hz, matching common display refresh
-//     rates so the client render loop never starves.
-//   - STATE_PUSH_THROTTLE_MS env var: configurable throttle window.
-//     Default 16ms per lease spec. Set to 0 to disable the time-based
-//     throttle (every push writes synchronously — useful for tests
-//     that depend on the pre-coalescer contract, and for low-latency
-//     debugging). The diff gate is always active regardless.
-//   - resetCoalesceState() / flushPendingPushes() / peekLastPushed() /
-//     peekLastWriteTs(): test escape hatches.
+// _schedulePush(cid, payloadStr, res) routes an SSE write through a
+// per-cid diff gate. The diff gate compares the incoming payload
+// against the last written payload for this cid (byte-identical JSON).
+// If identical, the write is suppressed — no full-state JSON goes out,
+// the client doesn't render() against identical bytes, no DOM thrash.
 //
-// What this does NOT change:
-//   - Named SSE events (auth.token_rotated / token.first_run /
-//     needs_authorization / authorization_decided) keep their
-//     immediate-write path. They're low-frequency and benefit from
-//     minimum latency. Coalescing is only applied to the `state`
-//     stream (the full snapshot replacement path).
-//   - Wire format: client still receives full state, not diffs. The
-//     diff check is purely a "should I emit this byte?" decision; the
-//     payload structure is unchanged. This keeps state.js#connect()
-//     compatible without touching the client.
-// ============================================================
+// When STATE_PUSH_THROTTLE_MS > 0, the diff gate is gated by a time
+// window as well. Subsequent pushes within the window are stored as
+// "pending" — when the window expires, the LAST pending payload is
+// written (last-call-wins). The first push in any window writes
+// synchronously (preserves the existing sync-write contract that
+// callers like runUsageQuery rely on). The 16ms default targets 60Hz,
+// matching common display refresh rates so the client render loop
+// never starves.
+//
+// STATE_PUSH_THROTTLE_MS env var: configurable throttle window.
+// Default 16ms. Set to 0 to disable the time-based throttle (every
+// push writes synchronously — useful for tests that depend on the
+// pre-coalescer contract, and for low-latency debugging). The diff
+// gate is always active regardless.
+//
+// Named SSE events (auth.token_rotated / token.first_run /
+// needs_authorization / authorization_decided) keep their
+// immediate-write path — low-frequency, latency-sensitive, never go
+// through the coalescer. Wire format is unchanged: the client still
+// receives full state, not diffs. The diff check is purely a
+// "should I emit this byte?" decision; payload structure is
+// identical to pre-coalescer.
 
 export const STATE_PUSH_THROTTLE_MS = Math.max(
     0,
     Number(process.env.STATE_PUSH_THROTTLE_MS) || 0,
 );
 
-// cid -> { payloadStr, res, timer? }
-//   - payloadStr: pending JSON payload (last-call-wins within window)
-//   - res: SSE response object to write to
-//   - timer: setTimeout to flush pending when window expires (absent if
-//            the pending is being flushed right now)
+// cid -> { payloadStr, res } — pending payload (last-call-wins within window)
 const _pendingByCid = new Map();
-// cid -> setTimeout handle for the pending flush
 const _flushTimers = new Map();
-// cid -> millisecond timestamp of the last successful write
 const _lastWriteTsByCid = new Map();
-// cid -> JSON string of the last payload that was successfully written
+// JSON string of the last payload that was successfully written
 const _lastPushedByCid = new Map();
-// cid -> res reference of the last successful write. Used to detect
-//   "this cid got a fresh SSE response (re-connect / test reset)"
-//   — when the res changes, we MUST write unconditionally regardless
-//   of throttle/diff state. Tests that do `sseByCid.set(cid, fakeSse())`
-//   directly create a new fakeSse each time, so this naturally resets.
+// res reference of the last successful write. When it differs from the
+// res we're about to write to, treat as a fresh SSE connection (the
+// new client hasn't seen the prior writes), discard the diff cache
+// and write unconditionally. Tests that do `sseByCid.set(cid, fakeSse())`
+// directly create a new fakeSse each time, so this naturally resets.
 const _lastPushedResByCid = new Map();
 
 function _writeNow(cid, payloadStr, res) {
@@ -455,13 +449,13 @@ export function peekLastPushedRes(cid) {
 function _schedulePush(cid, payloadStr, res) {
     if (!res) return; // no client to write to (cid without SSE)
 
-    // Fresh-client detection: if the cid's stored res differs from
-    // the current res, treat as a brand-new SSE connection. The
-    // previous writes went to a different res (or no res at all if
-    // this is the first connection), so the diff cache must be
-    // discarded — otherwise the new client would silently miss its
-    // very first state. Tests that re-bind a cid's res between cases
-    // hit this branch automatically.
+    // Fresh-client detection: if the stored res differs from the
+    // current res, treat as a brand-new SSE connection. The previous
+    // writes went to a different res (or no res at all if this is the
+    // first connection), so the diff cache must be discarded —
+    // otherwise the new client would silently miss its very first
+    // state. Tests that re-bind a cid's res between cases hit this
+    // branch automatically.
     const cachedRes = _lastPushedResByCid.get(cid);
     if (cachedRes !== res) {
         // Drop any pending push + timer for this cid — they're stale
@@ -532,7 +526,7 @@ function _flushPending(cid) {
 
 // Test-only: clear pending timers + diff cache + last-write timestamps.
 // Production code never calls this — production throttles stay "live"
-// for the process lifetime. Exported so test/lib-state-bus.test.js can
+// for the process lifetime. Exported so test/lib/state-bus.check.mjs can
 // deterministically reset between cases.
 export function resetCoalesceState() {
     for (const [, timer] of _flushTimers) {
@@ -549,7 +543,7 @@ export function resetCoalesceState() {
 
 // Test-only: force-flush all pending pushes immediately (without
 // waiting for the throttle window to expire). Returns the number of
-// cids flushed. Used in test/lib-state-bus.test.js to assert "within
+// cids flushed. Used in test/lib/state-bus.check.mjs to assert "within
 // a coalesce window, exactly N writes went out" without dealing with
 // real timer timing.
 export function flushPendingPushes() {
@@ -570,7 +564,9 @@ export function peekLastWriteTs(cid) {
     return _lastWriteTsByCid.get(cid);
 }
 
-// v0.5.ak: SSE 客户端数变化时广播（让所有 tab 实时看到 onlineCount）
+// pushOnlineCount — broadcast on SSE client count changes so every tab
+// sees the live onlineCount. Re-uses pushStateFor's snapshot shape so
+// the diff logic in _schedulePush applies uniformly.
 export function pushOnlineCount(lanBroadcast) {
   const cachedCmds = getCachedMcodeCommands();
   for (const [c, res] of sseByCid) {
@@ -589,25 +585,23 @@ export function pushOnlineCount(lanBroadcast) {
       currentToken: getTokenAcknowledged() ? "" : getCurrentToken(),
       tokenAcknowledged: getTokenAcknowledged(),
       tokenRotatedAt: getTokenRotatedAt(),
-      // v2026-08-28 modacker: Token Plan (套餐用量) feature fields —
-      //   see pushStateFor above. pushOnlineCount fires on every SSE
-      //   client connect/disconnect, so without these the next push
-      //   after a tab opens would also clobber quotaEnabled.
+      // Token Plan feature fields — see pushStateFor above for rationale.
+      // pushOnlineCount fires on every SSE client connect/disconnect,
+      // so without these the next push after a tab opens would also
+      // clobber quotaEnabled.
       quotaEnabled: getQuotaEnabled(),
       hasTokenPlanKey: getTokenPlanApiKey().length > 0,
       tokenPlanApiKeyMasked: maskTokenPlanKey(),
-      // v2026-08-28 modacker (A+C): external key source surface — see
-      //   the broadcast-branch snapshot above for rationale.
+      // External key source surface — see the broadcast branch above.
       tokenPlanApiKeySource: getTokenPlanApiKeySource(),
       tokenPlanApiKeyFilePath: getTokenPlanApiKeyFilePath(),
     };
-    // v2 (Lease C04): coalesced write — multiple pushOnlineCount() calls
-    // within the throttle window collapse to ONE write per cid.
+    // Coalesced write — multiple pushOnlineCount() calls within the
+    // throttle window collapse to ONE write per cid.
     _schedulePush(c, JSON.stringify(snapshot), res);
   }
 }
 
-// 把当前 cid 的 child 设为 active（acp client / exec child 都用同一个 map）
 export function setActiveChild(cid, child) {
   if (cid) activeChildByCid.set(cid, child);
 }
@@ -620,9 +614,9 @@ export function clearActiveChild(cid) {
   if (cid) activeChildByCid.delete(cid);
 }
 
-// v0.5.bx-29: 找出所有绑定了同一个 mcodeSessionId 的 cid
-//   用于 mavis db 真值更新后, 通知其它同 session 的 cid (手机 + 电脑开同一 session)
-//   返回 [{cid, cs}, ...] 数组
+// Find every cid bound to the same mcodeSessionId — used to notify
+// other clients of the same session (e.g. mobile + desktop open the
+// same session) after a runtime-side truth update.
 export function getCidsByMcodeSession(mvsSessionId) {
   if (!mvsSessionId) return [];
   const out = [];
@@ -641,12 +635,12 @@ export function getSseClient(cid) {
 
 export function setSseClient(cid, res) {
   sseByCid.set(cid, res);
-  // v2 (Lease C04): when an SSE client (re)connects, the previous
-  // diff cache + throttle timestamps are stale — the new client
-  // hasn't seen the prior writes, so "diff against last push" is
-  // wrong (would skip the very first push this client should receive).
-  // Reset coalesce state for this cid so the next pushStateFor emits
-  // the full snapshot unconditionally.
+  // When an SSE client (re)connects, the previous diff cache +
+  // throttle timestamps are stale — the new client hasn't seen the
+  // prior writes, so "diff against last push" is wrong (would skip
+  // the very first push this client should receive). Reset coalesce
+  // state for this cid so the next pushStateFor emits the full
+  // snapshot unconditionally.
   const timer = _flushTimers.get(cid);
   if (timer) {
     try {
@@ -662,10 +656,10 @@ export function setSseClient(cid, res) {
 export function endSseClient(cid, res) {
   // Only clear the map entry if it still points at the same res (avoid races)
   if (sseByCid.get(cid) === res) sseByCid.delete(cid);
-  // v2 (Lease C04): drop the coalesce state for this cid too — the
-  // client disconnected, no point in keeping pending pushes around
-  // (they'd flush to a dead res anyway and the `try/catch` would
-  // silently swallow it). Cleanup keeps the map bounded for long-lived
+  // Drop the coalesce state for this cid too — the client
+  // disconnected, no point in keeping pending pushes around (they'd
+  // flush to a dead res anyway and the `try/catch` would silently
+  // swallow it). Cleanup keeps the map bounded for long-lived
   // processes that see many transient clients.
   const timer = _flushTimers.get(cid);
   if (timer) {
@@ -682,7 +676,7 @@ export function endSseClient(cid, res) {
   _lastPushedResByCid.delete(cid);
 }
 
-// v1.0.1: broadcastTokenRotated — push a named SSE event so all
+// broadcastTokenRotated — push a named SSE event so all
 // already-authenticated clients can update their HEADERS + localStorage
 // without waiting for the periodic state push. Body is the new token
 // (raw string, not JSON, to make it obvious in logs / devtools that
@@ -708,19 +702,17 @@ export function broadcastTokenRotated(token) {
   }
 }
 
-// v2 (Lease C08) — pushTokenFirstRun
-//
-// Fires the `token.first_run` SSE event exactly once per process
-// lifetime. server.js calls this from inside `initSettings({printToken})`
-// when settings.js has just generated a fresh token (no settings.json
-// on disk + no TOKEN env). The UI listens for this event and pops the
-// onboarding modal — keeping the raw token off stdout (shell history,
-// Docker logs, systemd journal, screen shares).
+// pushTokenFirstRun — fires the `token.first_run` SSE event exactly
+// once per process lifetime. server.js calls this from inside
+// `initSettings({printToken})` when settings.js has just generated a
+// fresh token (no settings.json on disk + no TOKEN env). The UI
+// listens for this event and pops the onboarding modal — keeping the
+// raw token off stdout (shell history, Docker logs, systemd journal,
+// screen shares).
 //
 // Rotation uses the existing `auth.token_rotated` event above — we
 // don't re-fire `token.first_run` after the first boot, even if the
-// token is rotated before the operator clicked acknowledge. See
-// ANTI-PATTERNS-FIX-PLAN §AP1 for the security rationale.
+// token is rotated before the operator clicked acknowledge.
 //
 // `isFirstRun()` (auth.js) is the re-send guard. Once the client
 // closes the modal and POSTs `/api/settings {acknowledgeToken: true}`,
@@ -742,14 +734,13 @@ export function pushTokenFirstRun({ token, persistPath }) {
   }
 }
 
-// ============================================================
-// v2 (Lease B03) — Per-request authorization SSE channel
+// Per-request authorization SSE channel.
 //
-// authorize.js (server/lib/authorize.js) gates destructive actions
-// behind a user-confirmation modal. The frontend listens for
-// `needs_authorization` events on its /api/events stream and pops a
-// confirmation; the user accepts or declines and the server resolves
-// the pending request via POST /api/auth/decision.
+// authorize.js gates destructive actions behind a user-confirmation
+// modal. The frontend listens for `needs_authorization` events on its
+// /api/events stream and pops a confirmation; the user accepts or
+// declines and the server resolves the pending request via POST
+// /api/auth/decision.
 //
 // pushAuthRequest — fire a `needs_authorization` SSE frame to the
 // target cid (or every connected client if cid is empty). Body is the
@@ -762,7 +753,6 @@ export function pushTokenFirstRun({ token, persistPath }) {
 // The SSE channel is the SAME /api/events stream the client already
 // opened — no new connection needed. The frame is a named SSE event
 // so it won't be confused with `state`/`chat`/`delta` payloads.
-// ============================================================
 
 function _writeAuthFrame(targetCid, frame) {
   if (targetCid) {

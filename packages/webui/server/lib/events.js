@@ -1,27 +1,21 @@
 // webui/server/lib/events.js
 // Append-only NDJSON event stream + sha256 hash chain.
 //
-// Lease B01 — implements the verifiability criterion:
-//   - Every state-changing action (settings toggle, session create/delete/switch,
-//     slash governance commands, db-level session delete) writes one NDJSON line
-//     to ~/.mcode-webui/events.ndjson (path overridable via MCODE_WEBUI_EVENTS_PATH).
-//   - Each line carries `before_hash` (== `prev_after_hash`) and `after_hash`
-//     where `after_hash = sha256(prev_after_hash + JSON.stringify(this))`.
-//   - The first line's `before_hash` is "" (the empty string). The chain
-//     is verifiable in either direction (forward or reverse read) per
-//     ORD-007 推衍链健全性与镜像 (math skeleton §1.2).
+// Every state-changing action (settings toggle, session create /
+// delete / switch, slash governance commands, db-level session
+// delete) writes one NDJSON line to ~/.mcode-webui/events.ndjson
+// (path overridable via MCODE_WEBUI_EVENTS_PATH).
+//
+// Each line carries `before_hash` (== prev line's `after_hash`) and
+// `after_hash` where `after_hash = sha256(prev_after_hash +
+// JSON.stringify(this))`. The first line's `before_hash` is "" (the
+// empty string). The chain is verifiable in either direction (forward
+// or reverse read) by verify().
 //
 // Why a separate module (not inlined into each write site):
 //   - One atomic write implementation (.tmp + rename, mode 0600)
 //   - One process-level monotonic seq counter (lazy init from existing max)
 //   - One `verify()` function the operator / reconcile batch can run later
-//
-// Math backbones (sih-math 2026-09-13 mapping):
-//   - PROB-018 双重有损链与信息不增(DPI) — append-only NDJSON is forward+reverse
-//     read-invariant; reading never introduces ambiguity.
-//   - ORD-023 抽象重写系统与确定性范式 — append is a convergent rewrite step;
-//     idempotent replay of one event yields zero net change.
-//   - ORD-007 推衍链健全性与镜像 — sha256(prev+this) is the chain.
 //
 // File location: ~/.mcode-webui/events.ndjson by default. Override via
 // MCODE_WEBUI_EVENTS_PATH for tests (the verify() / seq-init code only
@@ -47,39 +41,38 @@ import { createHash } from "node:crypto";
 const EVENTS_DIR_DEFAULT = join(homedir(), ".mcode-webui");
 const EVENTS_PATH_DEFAULT = join(EVENTS_DIR_DEFAULT, "events.ndjson");
 
-// _eventsPath — lazy resolver. Tests can set MCODE_WEBUI_EVENTS_PATH before
-// the first append() call without re-importing the module (same pattern as
-// settings.js#_settingsPath).
+// _eventsPath — lazy resolver. Tests can set MCODE_WEBUI_EVENTS_PATH
+// before the first append() call without re-importing the module
+// (same pattern as settings.js#_settingsPath).
 function _eventsPath() {
   return process.env.MCODE_WEBUI_EVENTS_PATH || EVENTS_PATH_DEFAULT;
 }
 
-// _ensureDir — best-effort mkdir of the parent directory. Settings.js uses
-// the same best-effort pattern (settings.js#ensureDir lines 126-134); we
-// mirror it here so a permission error doesn't take the server down — the
-// append() call will simply fail and the caller decides what to do.
+// _ensureDir — best-effort mkdir of the parent directory. settings.js
+// uses the same best-effort pattern; we mirror it here so a permission
+// error doesn't take the server down — the append() call will simply
+// fail and the caller decides what to do.
 function _ensureDir() {
   try {
     mkdirSync(dirname(_eventsPath()), { recursive: true });
   } catch (e) {
-    // Best-effort: log + continue. The actual write below will throw a
-    // clearer error if the dir is truly inaccessible.
+    // Best-effort: log + continue. The actual write below will throw
+    // a clearer error if the dir is truly inaccessible.
     console.warn(
       `[webui] events mkdir ${dirname(_eventsPath())} failed: ${e.message}`,
     );
   }
 }
 
-// _seqStart — process-level monotonic seq. Lazy init reads the existing
-// file's max(seq) + 1 on first append() call. If the file is missing or
-// corrupt, start at 1. This makes a fresh process resume numbering rather
-// than restart at 1 (which would collide with older lines).
+// _seqCounter — process-level monotonic seq. Lazy init reads the
+// existing file's max(seq) + 1 on first append() call. If the file is
+// missing or corrupt, start at 1. Fresh processes resume numbering
+// rather than restart at 1 (which would collide with older lines).
 //
-// Note: this is in-process memory; two webui processes writing to the same
-// events.ndjson would race. That's by design — the server is single-process
-// today (one mcode webui per host). If that changes, swap for flock or
-// rename-to-tmp-then-rename-back (which is what writeAtomic does for the
-// file itself, so each line is atomic but counter increments are not).
+// Note: this is in-process memory; two webui processes writing to the
+// same events.ndjson would race. That's by design — the server is
+// single-process today (one mcode webui per host). If that changes,
+// swap for flock; line writes are atomic but counter increments are not.
 let _seqCounter = 0;
 let _seqInitialized = false;
 

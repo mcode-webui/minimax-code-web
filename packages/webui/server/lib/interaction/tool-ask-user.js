@@ -1,8 +1,6 @@
 // webui/server/lib/interaction/tool-ask-user.js
 // Per-tool ask dialog seam. Owns the `cs.ask` state shape used by the
-// AskUser tool modal in the webui. Closes the tool-ask-user seam from
-// BORROW-dsh-deepseek-harness-2026-08-28 § 3 and is the foundation
-// for ANTI-PATTERNS-FIX-PLAN.md §AP10 (slash governance UI gate).
+// AskUser tool modal in the webui.
 //
 // NOTE: the `cs.ask` state is currently mutated by mcode-acp.js
 // stream code paths; this module provides the helper API so future
@@ -22,6 +20,11 @@ export function makeAskState() {
     currentIdx: 0,
     question: "",
     options: [],
+    // The canonical ask shape must match `state-bus.js`'s default ask shape
+    // key-for-key; two shapes for one contract is how a field silently goes
+    // missing on one path. `false` (not undefined) keeps the UI's
+    // `ask.multiSelect === true` read falling through to single-select.
+    multiSelect: false,
   };
 }
 
@@ -43,6 +46,10 @@ export function setAskPending(cs, cid, payload) {
     currentIdx: 0,
     question: first.question || "",
     options: Array.isArray(first.options) ? first.options : [],
+    // multiSelect is read defensively by the UI (`ask.multiSelect === true`).
+    // Normalise to a boolean so an absent / wrong-type value cannot trick
+    // the modal into rendering checkboxes for a single-select prompt.
+    multiSelect: first.multiSelect === true,
   };
   pushStateFor(cid);
   return true;
@@ -62,6 +69,10 @@ export function isAskPending(cs) {
 
 // recordAskProgress — mark the current question answered and advance idx.
 //   Returns the next currentIdx, or total when all answered.
+//   When advancing to the "next" question preview, also copies the
+//   preview's multiSelect so a follow-up single/multi question does not
+//   inherit the previous step's flag (a regression class introduced
+//   when the field began flowing through this chokepoint).
 export function recordAskProgress(cs) {
   if (!cs || !cs.ask || !cs.ask.active) return 0;
   const next = cs.ask.currentIdx + 1;
@@ -75,8 +86,14 @@ export function recordAskProgress(cs) {
   if (done && cs.ask.nextQuestion) {
     cs.ask.question = cs.ask.nextQuestion;
     cs.ask.options = cs.ask.nextOptions || [];
+    // Carry the next question's multiSelect so a step-2 single-select
+    // question doesn't render checkboxes inherited from a step-1
+    // multi-select (and vice versa). The preview field is cleared
+    // after the handoff so the snapshot doesn't carry stale data.
+    cs.ask.multiSelect = cs.ask.nextMultiSelect === true;
     cs.ask.nextQuestion = "";
     cs.ask.nextOptions = [];
+    cs.ask.nextMultiSelect = false;
   }
   return done ? cs.ask.total : next;
 }
@@ -84,6 +101,9 @@ export function recordAskProgress(cs) {
 // hydrateAskFromQuestions — populate cs.ask from a normalized
 //   questions list (typically output of user-questions.normalizeQuestions).
 //   Peeks ahead so the UI can show the "next" question's preview.
+//   Both the active question's `multiSelect` and the preview's
+//   `nextMultiSelect` are carried so the ported AskModal's defensive
+//   `ask.multiSelect === true` read activates at the right step.
 export function hydrateAskFromQuestions(cs, cid, questions) {
   if (!cs) return false;
   if (!Array.isArray(questions) || questions.length === 0) return false;
@@ -97,8 +117,10 @@ export function hydrateAskFromQuestions(cs, cid, questions) {
     currentIdx: 0,
     question: first.question || "",
     options: Array.isArray(first.options) ? first.options : [],
+    multiSelect: first.multiSelect === true,
     nextQuestion: second ? second.question || "" : "",
     nextOptions: second && Array.isArray(second.options) ? second.options : [],
+    nextMultiSelect: !!(second && second.multiSelect === true),
   };
   pushStateFor(cid);
   return true;

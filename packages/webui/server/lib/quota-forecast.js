@@ -37,8 +37,8 @@
 //
 // File location pattern mirrors events.js (B01): lazy resolver that
 // honors an env override, mkdirSync best-effort, appendFileSync one
-// line at a time. Settings.js#ensureDir (lines 126-134) is the prior
-// art for the dir-creation pattern.
+// line at a time. settings.js#ensureDir is the prior art for the
+// dir-creation pattern.
 
 import {
   existsSync,

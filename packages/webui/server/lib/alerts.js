@@ -20,6 +20,7 @@
 //   single chokepoint total.
 
 import { randomUUID } from "node:crypto";
+import { append as _eventsAppend } from "./events.js";
 
 // Ring buffer — fixed size, head drops oldest
 const RING_SIZE = 100;
@@ -58,26 +59,19 @@ function pushRing(alert) {
 }
 
 // Write a structured event to events.ndjson (B01 dependency).
-// Dynamic import + try/catch — if B01 is not yet implemented, alerts
-// still work in-process; the audit-trail write is best-effort.
-let _eventsMod = null;
-let _eventsModTried = false;
+// Static import (events.js only imports node:* builtins — verified
+// pre-bundle) so this works in both the source layout and the bundled
+// dist/webui layout. The previous dynamic `new URL("./events.js",
+// import.meta.url)` form would fail after bundling because every
+// module in the bundle shares the entry's URL, so the module-relative
+// resolution no longer points at server/lib/events.js.
+// mcode-session-delete.js also imports events.js statically at
+// top-level, so the static form has no cycle. The try/catch around
+// `_eventsAppend(...)` keeps the audit-trail write best-effort: if
+// events.js is missing or its append throws, alerts still work
+// in-process.
 async function tryWriteEvent(alert) {
-    if (_eventsModTried && !_eventsMod) return; // already known missing
-    if (!_eventsMod) {
-        _eventsModTried = true;
-        try {
-            // Dynamic import is async — we resolve once and cache. Use
-            // the module-relative path so the lease stays inside
-            // server/lib without needing config.js.
-            const url = new URL("./events.js", import.meta.url);
-            _eventsMod = await import(url.href);
-        } catch {
-            _eventsMod = null;
-            return;
-        }
-    }
-    if (!_eventsMod || typeof _eventsMod.append !== "function") return;
+    if (typeof _eventsAppend !== "function") return;
     try {
         // B01 contract: append(kind, fields, opts).
         //   `target` and `cid` are hoisted to top-level fields inside
@@ -94,7 +88,7 @@ async function tryWriteEvent(alert) {
             sessionId,
             data,
         } = alert;
-        _eventsMod.append(`alert.${alert.level}`, {
+        _eventsAppend(`alert.${alert.level}`, {
             target: alert.src || "",
             cid: alert.cid || "",
             payload: {

@@ -26,30 +26,26 @@ import { loadSessions } from "./sessions.js";
 import { spawn } from "node:child_process";
 import { basename } from "node:path";
 
-// -----------------------------------------------------------------------
-// v2 security (PR #55 review point 5): workspace containment.
-// 之前 handleWorkspaceChange / browseWorkspace 接受任意绝对路径 — 任何能过
-// 鉴权的浏览器客户端都能把工作区设到主机上任意目录（mcode 会在那里以服务
-// 进程身份跑），browse 还能枚举任意目录内容。现在引入"允许根"（allowed
-// roots）边界：
-//   1. 候选路径 resolve 后必须再经 realpathSync（解析全部软链）落在某个
-//      允许根之内才可用。目录穿越（../）在 resolve 归一时折回真实位置、
-//      软链逃逸在 realpath 时暴露 — 两者最终都撞在 containment 检查上被
-//      拒，并给出可行动错误（列出允许根 + 扩展方法）。
-//   2. 允许根来源 = 最小配置面（不进 settings/config — 那是其他模块的领
-//      地）：env MCODE_WEBUI_WORKSPACE_ROOTS，系统路径分隔符分段（POSIX
-//      ":" / Windows ";"）。设置后【完全替换】默认面，可收窄可扩宽。
-//      未设置时的默认面 = 用户主目录 + 现配默认工作区（MCODE_WORKSPACE /
-//      TUI cwd.json / homedir 三源之一，见 config.js DEFAULT_WORKSPACE）
-//      + 系统 tmp 目录 — 即现状默认行为的全部合法落点（默认工作区兜底就
-//      是 home；scratch 工作区惯例在 tmp），默认行为不破坏。
-//   3. 已知残余（诚实申报）: 存进 cs.workspace.dir 的是 resolve() 形而非
-//      realpath 归一形（保持既有行为与测试兼容）；若校验通过后软链被改
-//      指向允许根外，存在残余窗口 — 但远窄于修复前的"任意目录"。
+// Workspace containment.
+//
+// Candidate paths are realpathSync'd into one of an "allowed roots"
+// set before being accepted; traversal and symlink-escape attempts are
+// rejected at that check with an actionable error. Allowed roots come
+// from env MCODE_WEBUI_WORKSPACE_ROOTS (system-path-delimiter
+// separated, full-replacement semantics); unset = default surface =
+// user home + DEFAULT_WORKSPACE + tmp dir. So scratch workspaces in
+// /tmp keep working without configuration.
+//
+// Known residual: cs.workspace.dir stores the resolve() form, not the
+// realpath form (matches the prior behavior + tests). If a symlink is
+// repointed out of the allowed roots AFTER the initial check, there is
+// a small window — far narrower than the prior "any directory"
+// surface. The route handlers do not currently re-check on every
+// command, by design.
 const WORKSPACE_ROOTS_ENV = "MCODE_WEBUI_WORKSPACE_ROOTS";
 
-// 允许根列表（realpath 归一、去重、只收存在的目录）。每次调用现读 env，
-// 测试与运维都能即时改面，无缓存失效问题。
+// Read every call (realpath + dedupe + filter to existing dirs). Tests
+// and ops can change the surface mid-run with no cache invalidation.
 export function getAllowedWorkspaceRoots() {
   const fromEnv = process.env[WORKSPACE_ROOTS_ENV];
   const candidates = [];
@@ -99,8 +95,9 @@ function containmentError(absDir, realDir, roots) {
   );
 }
 
-// 校验 absDir（resolve 后的绝对路径）：realpath 解析全部软链后必须落在
-// 允许根内。返回 {ok:true, real, roots} 或 {ok:false, error, roots}。
+// Resolve `absDir` (already an absolute path) and verify it falls
+// inside one of the allowed roots after full symlink resolution.
+// Returns {ok:true, real, roots} or {ok:false, error, roots}.
 function resolveWithinRoots(absDir) {
   const roots = getAllowedWorkspaceRoots();
   let real;
@@ -119,11 +116,14 @@ function resolveWithinRoots(absDir) {
   return { ok: false, roots, error: containmentError(absDir, real, roots) };
 }
 
-// v0.5.al: per-cid 切换 workspace
-// body: {dir, syncTui?, saveRecent?}
-//   dir: 绝对路径（必须是存在的目录，且落在允许根内 — v2 security）
-//   syncTui: true 时同时写 ~/.minimax/runtime/cwd.json（让 mcode TUI 也看到新 cwd）
-//   saveRecent: true 时（默认 true）把 dir 加到 localStorage recents
+// Per-cid workspace switch.
+// body: {dir, syncTui?, saveRecent?, action?}
+//   dir: absolute path; must exist and fall inside an allowed root
+//   syncTui: when true, also write ~/.minimax/runtime/cwd.json so the
+//            mcode TUI sees the new cwd
+//   saveRecent: when true (default), record dir in the per-cid recents
+//   action: 'set' (default) | 'useTui' (read TUI's cwd.json) |
+//           'reset' (DEFAULT_WORKSPACE) | 'detect' (read-only probe)
 export function handleWorkspaceChange(cs, cid, payload) {
   const action = payload.action || "set"; // 'set' | 'useTui' | 'reset' | 'detect'
   let target;
@@ -147,18 +147,17 @@ export function handleWorkspaceChange(cs, cid, payload) {
   }
   if (!target || typeof target !== "string")
     return { ok: false, error: "dir 不能为空" };
-  // 校验目录存在
   if (!existsSync(target) || !statSync(target).isDirectory()) {
     return { ok: false, error: `目录不存在: ${target}` };
   }
   const absDir = resolve(target);
-  // v2 security: containment 校验（realpath 解软链后必须在允许根内）。
-  // useTui/reset 的目标同样过闸 — 越界时给可行动错误而非静默放行。
+  // Containment check — useTui/reset targets go through the same gate
+  // and yield an actionable error on miss instead of silent passthrough.
   const contained = resolveWithinRoots(absDir);
   if (!contained.ok) return { ok: false, error: contained.error };
-  // 写到 cs（保持 resolve() 形；containment 已由 realpath 校验通过）
+  // Store the resolve() form (matches existing behavior + tests; the
+  // containment check above is the real enforcement line).
   cs.workspace = { dir: absDir, branch: null, tree: null };
-  // 可选：同步 mcode TUI（写 cwd.json，下次 TUI 启动会看到新 cwd）
   if (payload.syncTui) {
     try {
       const cwdFile = join(homedir(), ".minimax", "runtime", "cwd.json");
@@ -181,13 +180,18 @@ export function handleWorkspaceChange(cs, cid, payload) {
   };
 }
 
-// v0.5.am: 列出目录下的子目录（仅目录，懒加载给前端树用）
-// query: ?path=<absolute>  (省略时返回允许根列表)
-// v2 security: 目录枚举与工作区同边界 — 只有落在允许根内的目录才可枚举；
-//   省略 path 时的根视图只暴露允许根本身（之前 POSIX 枚举 "/" 全量子目录、
-//   Windows 枚举盘符，等于对任意客户端开放目录枚举 oracle）。响应形状保持
-//   兼容：POSIX 仍 dir:"/"，Windows 仍 dir:null + roots 数组；前端
-//   public/app/events.js loadBrowse 对 data.roots 有现成分支。
+// List the directories under `rawPath` (only directories, lazy-loaded
+// for the front-end tree). When `rawPath` is empty, returns the allowed
+// roots.
+//
+// Same containment boundary as handleWorkspaceChange: only directories
+// inside an allowed root are enumerable. The root-view (no path) is
+// restricted to the allowed roots themselves, not the platform root.
+//
+// Response shape compatibility:
+//   POSIX: dir:"/", entries from "/"
+//   Windows: dir:null, roots-only
+// The front-end branches on data.roots; both shapes must stay stable.
 export function browseWorkspace(rawPath) {
   const MAX = 500; // 单层最多返回 500 个子目录，避免 huge dirs 把前端卡死
   let target,
@@ -209,7 +213,8 @@ export function browseWorkspace(rawPath) {
   if (!existsSync(target) || !statSync(target).isDirectory()) {
     return { ok: false, error: `目录不存在: ${rawPath}` };
   }
-  // v2 security: 枚举前 containment 校验（realpath 解软链后必须在允许根内）
+  // Containment check before enumerating — only directories inside an
+  // allowed root are enumerable.
   const contained = resolveWithinRoots(target);
   if (!contained.ok) return { ok: false, error: contained.error };
   const parentPath = dirname(target);
@@ -252,14 +257,13 @@ export function browseWorkspace(rawPath) {
   };
 }
 
-// -----------------------------------------------------------------------
-// v2.2 (feat-workspace-lhl sync, 2026-09-21): 目录选择器配套接口，从独立仓
-// Mcode-webui 同步合并。所有新增入口均为只读聚合或返回候选；最终落点一律
-// 经 handleWorkspaceChange 的 containment 校验，允许根边界不变。
+// Directory-picker helpers (exposed by the webui for the front-end's
+// fallback directory selection flow). All entries are read-only
+// aggregates or return candidates; final points-of-no-return go
+// through handleWorkspaceChange's containment check.
 
-// v1.2 (feat-workspace-lhl): 展开 ~ 前缀 — 目录选择降级路径 / 手动输入都
-//   可以直接写 "~/projects/foo"，服务端统一展开为主目录绝对路径。
-//   只处理开头恰好一个 ~（~ 自身、~/、~\ 三种形态）；~user 语法不支持。
+// expandTilde — accepts leading "~", "~/" or "~\" exactly once and
+// expands to the user's home directory. ("~user" syntax not supported.)
 export function expandTilde(rawPath) {
   if (typeof rawPath !== "string") return rawPath;
   const trimmed = rawPath.trim();
@@ -270,17 +274,19 @@ export function expandTilde(rawPath) {
   return trimmed;
 }
 
-
-// v1.2 (feat-workspace-lhl): 零弹窗目录选择配套 — 前端 webkitdirectory input
-//   （隐藏 file input，普通上传手势、无浏览器授权弹窗）只能拿到「文件夹名」，
-//   绝对路径由服务端按名字在常见根目录里搜一遍，把候选交给用户确认
-//   （唯一候选直接提交，多个候选内联点选，搜不到就降级内置目录树）。
-//   搜索根按平台区分：
-//     - 所有平台: home 自身 + home 一级子目录 + home 常见项目父目录的二级
-//     - win32:   每个存在盘符的根（C:\name D:\name …）
-//     - darwin:  /Volumes 挂载卷（/Volumes/name）
-//     - linux:   /mnt、/media(/$USER)、/run/media(/$USER)
-//   opts.home / opts.platform / opts.user 可注入（测试用）。
+// resolveWorkspaceCandidates — pair the front-end's webkitdirectory
+// <input type="file"> (hidden, no browser authorization prompt) with
+// a server-side search for matching folder names in platform-typical
+// search roots. One candidate → submit directly; multiple → user picks;
+// none → caller falls back to the built-in tree.
+//
+// Search roots by platform:
+//   all: home itself + home's first-level subdirs + common project parents (2 levels)
+//   win32: every existing drive letter (C:\name, D:\name, ...)
+//   darwin: /Volumes/<name>
+//   linux: /mnt, /media(/$USER), /run/media(/$USER)
+//
+// opts.home / opts.platform / opts.user are injectable for tests.
 export function resolveWorkspaceCandidates(rawName, opts = {}) {
   const home = opts.home || homedir();
   const platform = opts.platform || process.platform;
@@ -401,11 +407,9 @@ export function resolveWorkspaceCandidates(rawName, opts = {}) {
 }
 
 
-// v2 (feat-workspace-lhl): GET /api/workspace/recent
-//   从 sessions DB 模糊搜索工作区列表，按最近会话时间倒排。
-//   search: 模糊匹配路径（不区分大小写），可空
-//   limit: 最大返回条数（默认 5，后端固定上限 20）
-//   响应: { ok, items: [{dir, name, lastActiveAt, sessionCount}], total }
+// GET /api/workspace/recent — group sessions.json by dir and return
+// the most-recently-active workspaces, case-insensitive substring
+// filter on `search` (optional). `limit` defaults to 5, hard cap 20.
 export function getRecentWorkspaces({ search = "", limit = 5 } = {}) {
   const all = loadSessions();
   // 按 dir 分组，聚合 lastActiveAt 和 sessionCount
@@ -450,10 +454,10 @@ export function getRecentWorkspaces({ search = "", limit = 5 } = {}) {
 }
 
 
-// v2 (feat-workspace-lhl): POST /api/workspace/pick
-//   后端 spawn 原生 OS 目录选择器（和 dsh 相同方式），
-//   Linux: zenity → kdialog fallback；macOS: osascript；Windows: PowerShell dialog。
-//   返回 { ok, path }（用户取消时 path === null）。
+// POST /api/workspace/pick — spawn the platform's native directory
+// picker (zenity / kdialog on Linux; osascript on macOS; PowerShell
+// dialog on Windows). Returns { ok, path } where path === null when
+// the user cancelled. `signal` (AbortSignal) cancels the child.
 export function pickDirectoryNative(signal) {
   const platform = process.platform;
   return new Promise((resolve, reject) => {
@@ -596,14 +600,13 @@ async function tryKdialog(signal) {
   });
 }
 
-// v0.5.am: 列出目录下的子目录（仅目录，懒加载给前端树用）
-// query: ?path=<absolute> 或 "~/xxx"（v1.2 起支持 ~ 展开）
-//   (省略时返回根盘符 / 根目录，响应同时带 home/platform/tmpDir 供前端定位)
+// browseWorkspace (defined above) handles `?path=<abs>` or `?path=~/xxx`;
+// when path is omitted it returns the root view (with home / platform /
+// tmpDir for the front-end to localize).
 
-// -----------------------------------------------------------------------
-// v2.2: fs 路由（/api/fs/read、/api/fs/mkdir）的 containment 出口。
-//   readDirectory/createDirectory 只允许落在允许根内的路径 — 与
-//   browseWorkspace 同边界。返回 {ok:true, path} 或 {ok:false, error}。
+// assertWorkspacePath — containment gate for the /api/fs/* routes
+// (/api/fs/read, /api/fs/mkdir). Same boundary as browseWorkspace;
+// the route handlers only see { ok:true, path } or { ok:false, error }.
 export function assertWorkspacePath(rawPath) {
   if (!rawPath || typeof rawPath !== "string") {
     return { ok: false, error: "path 不能为空" };
@@ -614,8 +617,9 @@ export function assertWorkspacePath(rawPath) {
   return { ok: true, path: absDir };
 }
 
-// v2.2: mkdir 专用 — 目标目录尚不存在，realpath 必然失败；校验其父目录
-//   （必须存在且落在允许根内），目标本身只要求 basename 合法。
+// assertWorkspaceParentPath — mkdir-specific: target directory does not
+// exist yet (realpath would fail), so verify the parent exists and is
+// inside an allowed root, and that the basename itself is legal.
 export function assertWorkspaceParentPath(rawPath) {
   if (!rawPath || typeof rawPath !== "string") {
     return { ok: false, error: "path 不能为空" };

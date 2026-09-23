@@ -1,14 +1,14 @@
 // webui/server/lib/settings.js
 // Runtime-tunable settings + persistent storage.
 //
-// v0.5.ap: LAN broadcast toggle (in-memory)
-// v1.0.1: 扩展 — read-only mode, token enabled/rotation, interface allowlist.
-//   持久化到 ~/.mcode-webui.settings.json, 启动时 load, setter 自动写盘。
+// Persisted to ~/.mcode-webui/settings.json; loaded at init, every
+// setter auto-writes.
 //
-// State: process.env.TOKEN 永远优先于 settings.json (保留 v1.0.1 行为,
-//   让 env 部署跟图形 UI 切换互不冲突)。
+// State: process.env.TOKEN always wins over settings.json (so env
+// deployments and the GUI toggle don't fight).
 //
-// Atomic write: 先写 .tmp 再 rename, 避免半写状态。
+// Atomic write: write .tmp, then rename — no half-written state on
+// disk.
 
 import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, openSync, closeSync } from "node:fs";
 import { homedir } from "node:os";
@@ -19,22 +19,20 @@ import { getServingPort, HOST } from "./config.js";
 import { LAN_IP, isLoopbackHost } from "./lan.js";
 import { MCODE_CMD, DEFAULT_WORKSPACE, DEFAULT_MODEL } from "./config.js";
 
-// B01: append-only event stream + sha256 chain. Every setter below
-// writes a `settings.update.intent` event BEFORE the state change and
-// a `settings.update` outcome event after it (write-ahead audit,
-// 2026-09-20 rigor fix). events.js#append is fail-closed: an intent
+// Every setter writes a `settings.update.intent` event BEFORE the
+// state change and a `settings.update` outcome event after it
+// (write-ahead audit). events.js#append is fail-closed: an intent
 // write failure aborts the change (no mutation happened yet); an
 // outcome write failure propagates to the route, which answers 5xx +
 // pushes an alert — the in-memory change is NOT rolled back (the
 // persist already ran; hiding it would be worse than reporting it).
 import { append as _eventsAppend } from "./events.js";
 
-// -----------------------------------------------------------------------
-// Persistent settings file path
-// -----------------------------------------------------------------------
-// Override via env MCODE_WEBUI_SETTINGS_PATH (used by tests + for non-default
-// installs). The path is resolved lazily so tests can set the env var
-// before calling init() without re-importing the module.
+// Persistent settings file path.
+//
+// Override via env MCODE_WEBUI_SETTINGS_PATH (used by tests + for
+// non-default installs). The path is resolved lazily so tests can set
+// the env var before calling init() without re-importing the module.
 const SETTINGS_DIR_DEFAULT = join(homedir(), ".mcode-webui");
 const SETTINGS_PATH_DEFAULT = join(SETTINGS_DIR_DEFAULT, "settings.json");
 function _settingsPath() {
@@ -45,25 +43,24 @@ const SETTINGS_VERSION = 1;
 function defaultState() {
   return {
     version: SETTINGS_VERSION,
-    lanBroadcast: true,       // 不持久化在文件里 — 重启默认 true (跟 v0.5.ap 行为一致)
+    lanBroadcast: true,       // not persisted — reboot always re-enables LAN
     readOnly: false,
-    tokenEnabled: true,       // 默认开
-    currentToken: "",         // 启动时 init() 决定
+    tokenEnabled: true,
+    currentToken: "",         // resolved by init()
     tokenRotatedAt: 0,
     tokenAcknowledged: false,
-    // v2 security fix (PR #55 review point 2): persisted opt-in for the
-    // LAN bind. Default false → config.js resolves the boot bind to
-    // loopback 127.0.0.1. true → next boot binds 0.0.0.0 (env HOST still
-    // wins when set). The socket bind is boot-time state; flipping this
-    // at runtime takes effect after restart (disclosed via
-    // bindRestartPending in the snapshot).
+    // Persisted opt-in for the LAN bind. Default false → config.js
+    // resolves the boot bind to loopback 127.0.0.1. true → next boot
+    // binds 0.0.0.0 (env HOST still wins when set). Socket bind is
+    // boot-time state; flipping this at runtime takes effect after
+    // restart (disclosed via bindRestartPending in the snapshot).
     lanBind: false,
-    // v2 security fix (PR #55 review point 1): explicit cross-origin
-    // allowlist reflected by the CORS gate in router.js. Empty default —
-    // only origins the server itself serves plus these entries are
-    // ever trusted. Sanitized at write time (sanitizeTrustedOrigins).
+    // Explicit cross-origin allowlist reflected by the CORS gate in
+    // router.js. Empty default — only origins the server itself
+    // serves plus these entries are ever trusted. Sanitized at write
+    // time (sanitizeTrustedOrigins).
     trustedOrigins: [],
-    // v2026-08-28 modacker: Token Plan API key (Subscription Key from
+    // Token Plan API key (Subscription Key from
     // platform.minimaxi.com) — when `quotaEnabled=true` AND a key is
     // set, webui's "套餐用量" feature becomes visible and calls the
     // official /v1/token_plan/remains API. Otherwise the feature is
@@ -87,26 +84,26 @@ let trustedOriginsList = [];
 let quotaEnabled = false;
 let tokenPlanApiKey = "";
 
-// v2026-08-28 modacker: external Token Plan key sources (env / file).
-//   These are read ONCE at init() and shadow the in-memory value when
-//   present. The webui's text input (which writes to `tokenPlanApiKey`
-//   via setTokenPlanApiKey) cannot override them — the priority chain
-//   is "env > file > settings.json", same shape as the existing
-//   process.env.TOKEN override for the LAN auth token (lines 91-94,
-//   230-234). This means:
-//     - Operator with env set: webui text input is "shown for
-//       discoverability" but does not take effect. The UI surfaces
-//       this by hiding the "delete" button (env-managed keys can't
-//       be deleted from the webui — only by unsetting the env).
-//     - Operator with file set: same semantics; the file is re-read
-//       only on init (not on every fetch) so a manual edit requires
-//       a webui restart to take effect — matches the operator's
-//       mental model of "this is a config file, I restart the
-//       service after editing it".
-//   We do NOT persist env/file values back to settings.json (they
-//   are not "ours" to persist) and we do NOT clobber them when
-//   setTokenPlanApiKey("") is called from the webui (it only clears
-//   the in-memory + settings.json path).
+// External Token Plan key sources (env / file).
+// Read ONCE at init() and shadow the in-memory value when present.
+// The webui's text input (which writes to `tokenPlanApiKey` via
+// setTokenPlanApiKey) cannot override them — the priority chain is
+// "env > file > settings.json", same shape as the existing
+// process.env.TOKEN override for the LAN auth token.
+//
+// Env / file semantics:
+//   - Operator with env set: webui text input is "shown for
+//     discoverability" but does not take effect. The UI surfaces
+//     this by hiding the "delete" button (env-managed keys can't be
+//     deleted from the webui — only by unsetting the env).
+//   - Operator with file set: same semantics; the file is re-read
+//     only on init (not on every fetch) so a manual edit requires a
+//     webui restart to take effect.
+//
+// We do NOT persist env/file values back to settings.json (they are
+// not "ours" to persist) and we do NOT clobber them when
+// setTokenPlanApiKey("") is called from the webui (it only clears the
+// in-memory + settings.json path).
 let _envTokenPlanKey = "";     // captured from process.env at init
 let _fileTokenPlanKey = "";    // read from conventional file at init
 let _fileTokenPlanPath = "";   // resolved path (for log line + UI display)
@@ -384,11 +381,46 @@ export function getLanBind() {
 }
 
 // v2 security fix (PR #55 review point 1): explicit trusted-origin
-// allowlist for the CORS gate. Returns a copy — callers must not mutate
-// the module's list.
+// allowlist for the CORS gate. Returns a copy — callers must not
+// mutate the module's list.
+//
+// v2.5: `MCODE_WEBUI_TRUSTED_ORIGINS` (comma-separated) is merged in on
+//   top. Why an env var rather than only the persisted list: the dev
+//   setup runs the frontend on its own port (`next dev` on :18091) and
+//   proxies /api/* through to :18090, so the browser's Origin is
+//   `http://localhost:18091` — never the backend's own. router.js Gate 1b
+//   rejects every non-GET with an untrusted Origin, which silently killed
+//   the entire mutating API (switch/new/delete session, send, settings
+//   save) in dev while GETs kept working. Checking this into a user's
+//   settings.json on their behalf would be invasive and sticky; an env
+//   var is per-process and opt-in, which is what a dev launcher wants.
+//   Same sanitizer as the persisted path — fail-closed and normalized —
+//   except that a malformed value is dropped with a warning rather than
+//   rejecting the batch, because there is no caller to return 400 to.
 export function getTrustedOrigins() {
-  return [...trustedOriginsList];
+  return [...new Set([...trustedOriginsList, ...envTrustedOrigins()])];
 }
+
+/** `MCODE_WEBUI_TRUSTED_ORIGINS` split, sanitized, invalid entries dropped. */
+function envTrustedOrigins() {
+  const raw = (process.env.MCODE_WEBUI_TRUSTED_ORIGINS || "").trim();
+  if (!raw) return [];
+  // Parsed once per distinct value: getTrustedOrigins() runs on every request, and
+  // a rejected entry would otherwise re-log on each one.
+  if (raw === _envOriginsRaw) return _envOriginsCache;
+  const out = [];
+  for (const candidate of raw.split(",").map((s) => s.trim()).filter(Boolean)) {
+    const one = sanitizeTrustedOrigins([candidate]);
+    if (one.ok) out.push(...one.value);
+    else console.warn(`[webui] ignoring MCODE_WEBUI_TRUSTED_ORIGINS entry "${candidate.slice(0, 60)}": ${one.error}`);
+  }
+  _envOriginsRaw = raw;
+  _envOriginsCache = out;
+  return out;
+}
+
+let _envOriginsRaw = null;
+let _envOriginsCache = [];
 
 // v2026-08-28 modacker: Token Plan (套餐用量) feature gates.
 // When `quotaEnabled=false` OR no `tokenPlanApiKey` set, the

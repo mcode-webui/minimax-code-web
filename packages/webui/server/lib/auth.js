@@ -16,23 +16,24 @@
 //   - Static files (HTML/CSS/JS/images) and OPTIONS preflight are always
 //     public so the SPA can bootstrap; only `/api/*` and SSE are gated.
 //
-// v2 security note (PR #55 review point 1): the local bypass below is a
-// SOCKET-identity fact (the connection originated on this machine), not
-// a browser-origin fact. It must never double as a cross-origin
-// exemption: a page on evil.com targeting http://127.0.0.1:<port> also
-// arrives over a loopback socket. The browser boundary is enforced
-// separately and EARLIER by router.js Gate 1b (mutating requests with
-// an untrusted Origin header are 403'd before this module runs, local
-// or not) plus Gate 1's trusted-origin-only CORS reflection.
+// The local bypass below is a SOCKET-identity fact (the connection
+// originated on this machine), not a browser-origin fact. It must
+// never double as a cross-origin exemption: a page on evil.com
+// targeting http://127.0.0.1:<port> also arrives over a loopback
+// socket. The browser boundary is enforced separately and EARLIER by
+// router.js Gate 1b (mutating requests with an untrusted Origin
+// header are 403'd before this module runs, local or not) plus Gate
+// 1's trusted-origin-only CORS reflection.
 //
 // Token resolution priority on each request:
 //   1. process.env.TOKEN (env wins, always — deploys / docker)
 //   2. In-memory `expectedToken` (synced from settings.js after rotation)
 //   3. Static TOKEN from config.js (fallback for tests)
 //
-// If tokenEnabled is false (set via settings.js setter) AND process.env.TOKEN
-// is empty AND the in-memory expectedToken is also empty, no auth is enforced
-// (backwards-compatible "loopback-only" / "trusted LAN" deployment).
+// If tokenEnabled is false (set via settings.js setter) AND
+// process.env.TOKEN is empty AND the in-memory expectedToken is also
+// empty, no auth is enforced (backwards-compatible "loopback-only" /
+// "trusted LAN" deployment).
 
 import { isLocalRequest } from "./lan.js";
 import { TOKEN } from "./config.js";
@@ -84,11 +85,11 @@ export function extractToken(req) {
   // EventSource / fetch with custom headers can use `Authorization: Bearer`.
   const auth = req.headers && req.headers.authorization;
   if (auth) {
-    // v2 security fix (PR #55 / CodeQL): the old `^Bearer\s+(.+)$` paired
-    // an overlapping `\s+`/`.+` — polynomial backtracking on hostile
-    // headers. `[ \t]+` then `(\S.*)` use disjoint character classes, so
-    // the match is linear. Whitespace other than SP/HTAB after "Bearer"
-    // now fails closed (falls through to the query-string path).
+    // CodeQL: the old `^Bearer\s+(.+)$` paired overlapping `\s+`/`.+`
+    // — polynomial backtracking on hostile headers. `[ \t]+` then
+    // `(\S.*)` use disjoint character classes, so the match is linear.
+    // Whitespace other than SP/HTAB after "Bearer" now fails closed
+    // (falls through to the query-string path).
     const m = /^Bearer[ \t]+(\S.*)$/i.exec(String(auth));
     if (m) return clip(m[1].trim());
   }
@@ -165,16 +166,13 @@ export function isAuthEnforced() {
   return Boolean(getExpectedToken());
 }
 
-// ============================================================
-// v2 (Lease C08) — First-run notification flag
+// First-run notification flag.
 //
-// Background (ANTI-PATTERNS-FIX-PLAN §AP1):
-//   server.js used to print a 14-line ASCII box containing the raw
-//   token to stdout on first-ever boot. That leaked into shell
-//   history / Docker logs / systemd journal / screen shares. The fix
-//   pushes the token via SSE `token.first_run` so the UI can show it
-//   in a modal instead. Rotation uses `auth.token_rotated` (already in
-//   state-bus.js since v1.0.1).
+// The token is never echoed to stdout (it would land in shell
+// history / Docker logs / systemd journal / screen shares). Instead
+// server.js pushes the token via SSE `token.first_run` so the UI can
+// show it in a modal. Rotation uses `auth.token_rotated` (in
+// state-bus.js).
 //
 // Surface:
 //   - isFirstRun() — true iff this process has NOT yet pushed a
@@ -186,10 +184,9 @@ export function isAuthEnforced() {
 //     settings.js to also persist the canonical `tokenAcknowledged`
 //     field (settings.json).
 //
-// Settings.js owns the persistent `tokenAcknowledged`; auth.js's
+// settings.js owns the persistent `tokenAcknowledged`; auth.js's
 // `_firstRunNotified` is the parallel in-memory mirror used to gate
 // the SSE re-send. The two stay in sync via this helper.
-// ============================================================
 
 let _firstRunNotified = false;
 

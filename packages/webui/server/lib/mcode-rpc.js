@@ -1,14 +1,13 @@
 // webui/server/lib/mcode-rpc.js
-// v0.5.by: 干净的 mcode acp 协议 RPC wrapper
+// ACP RPC wrapper.
 //
-// mcode acp 0.1.5 server 实际支持的方法 (从 probes/probe-mcode-rpc-v2.mjs 实测):
-//   ✅ initialize / session/list / session/new / session/load / session/close / session/prompt
-//   ❌ session/set_mode / set_config_option / cancel / activate / fork / resume / delete
-//      (Method not found — mcode 0.1.5 协议层根本没暴露)
+// Every method here has an engine handler: packages/tui/src/acp/agent.ts
+// registers session.new/list/load/resume/close/setMode/setConfigOption/prompt,
+// and extensions.ts registers session/activate. `session/delete` is the sole
+// exception — see MCODE_ACP_CAPABILITIES.
 //
-// 设计: 调不支持的方法不 throw,返 {ok:false, error, code:'unsupported'}
-//   路由层能据此给前端 501 Not Implemented 错,而不是 500 Internal Server Error
-//   前端可以降级处理 (比如用 slash command 代替 RPC,或提示用户升级 mcode)
+// A failure comes back as {ok:false, error, code} instead of throwing, so the
+// route layer maps `code` onto a status rather than answering 500.
 
 import { getMcodeAcpClient, listAllMcodeSessions } from "./acp-client.js";
 
@@ -35,24 +34,7 @@ function fail(error, code) {
   return { ok: false, error: sanitizeError(error), code: code || "rpc_error" };
 }
 
-// mcode 0.1.5 acp 不支持的方法 (实探测得, 2026-08-20)
-const UNSUPPORTED = new Set([
-  "session/set_mode",
-  "session/set_config_option",
-  "session/cancel",
-  "session/activate",
-  "session/fork",
-  "session/resume",
-  "session/delete",
-]);
-
 async function callRpc(method, params) {
-  if (UNSUPPORTED.has(method)) {
-    return fail(
-      `mcode 0.1.5 acp does not implement ${method} (server returns "Method not found")`,
-      "unsupported",
-    );
-  }
   const client = await getMcodeAcpClient();
   if (!client)
     return fail(new Error("mcode acp client unavailable"), "no_client");
@@ -66,40 +48,59 @@ async function callRpc(method, params) {
   }
 }
 
-// ============================================================
-// session/set_mode  — ❌ mcode 0.1.5 不支持
-//   webui 想进 plan/goal mode 的实际可行路径: 发送 "/plan <text>" 或 "/goal <text>" 作为普通 prompt
-//   mcode 会在 server 端解析 slash command,自动切到对应 mode
-// ============================================================
-export async function setMode(_sessionId, _mode) {
-  return callRpc("session/set_mode", { sessionId: _sessionId, mode: _mode });
+async function notifyRpc(method, params) {
+  const client = await getMcodeAcpClient();
+  if (!client)
+    return fail(new Error("mcode acp client unavailable"), "no_client");
+  try {
+    await client.notify(method, params);
+    return ok({ notified: true });
+  } catch (e) {
+    if (e && e.data && typeof e.data.code === "string")
+      return fail(e, e.data.code);
+    return fail(e);
+  }
 }
 
 // ============================================================
-// session/set_config_option  — ❌ mcode 0.1.5 不支持
-//   webui 想设 permissionMode 的实际可行路径: 启动 mcode 时用 --permission 标志
-//   mcode 0.1.5 不支持 mid-stream permission mode 切换
+// session/set_mode — forwarded to the engine
+//   The wire field is `modeId`, and it must be one of the session's
+//   availableModes (packages/tui/src/acp/control-state.ts: 'default' / 'plan'),
+//   or the engine answers invalidParams. This is not the permission mode —
+//   that is a config option, below.
 // ============================================================
-export async function setConfigOption(_sessionId, _key, _value) {
+export async function setMode(sessionId, modeId) {
+  return callRpc("session/set_mode", { sessionId, modeId });
+}
+
+// ============================================================
+// session/set_config_option — forwarded to the engine
+//   The wire field is `configId`, and `value` must be a string. For permission
+//   modes configId is 'permissionMode' (ACP_CONFIG_PERMISSION_MODE in
+//   packages/tui/src/acp/control-state.ts) and value is one of PERMISSION_MODES.
+// ============================================================
+export async function setConfigOption(sessionId, configId, value) {
   return callRpc("session/set_config_option", {
-    sessionId: _sessionId,
-    key: _key,
-    value: _value,
+    sessionId,
+    configId,
+    value,
   });
 }
 
 // ============================================================
-// session/cancel  — ❌ mcode 0.1.5 不支持
-//   webui 想取消正在跑 prompt 的唯一路径: 杀 mcode acp 子进程 (SIGKILL)
-//   不温和但有效
+// session/cancel — a NOTIFICATION, not a request
+//   The engine registers it with app.onNotification (packages/tui/src/acp/
+//   agent.ts), which aborts the active prompt's AbortController; a request
+//   would come back "Method not found". It carries no reply, so a success here
+//   means "sent", not "the prompt stopped".
 // ============================================================
-export async function cancelSession(_sessionId) {
-  return callRpc("session/cancel", { sessionId: _sessionId });
+export async function cancelSession(sessionId) {
+  return notifyRpc("session/cancel", { sessionId });
 }
 
 // ============================================================
-// session/load  — ✅ mcode 0.1.5 支持
-//   加载任意 mcode session (含 TUI 跑的)。远控 TUI 的基础能力
+// session/load — forwarded to the engine
+//   Loads any mcode session, including one the TUI started.
 // ============================================================
 export async function loadSession(sessionId, cwd) {
   if (!sessionId)
@@ -122,16 +123,16 @@ export async function loadSession(sessionId, cwd) {
 }
 
 // ============================================================
-// session/activate  — ❌ mcode 0.1.5 不支持
-//   单 acp client 一次只能 active 一个 session (cli.js state: activeSessionId 唯一)
-//   但 activate 不是 JSON-RPC 公开方法, webui 走 "load 不同 session" 即可切换
+// session/activate — forwarded to the engine
+//   Registered by extensions.ts. One acp client tracks a single active session,
+//   so activating another is how the client is pointed at it.
 // ============================================================
-export async function activateSession(_sessionId) {
-  return callRpc("session/activate", { sessionId: _sessionId });
+export async function activateSession(sessionId) {
+  return callRpc("session/activate", { sessionId });
 }
 
 // ============================================================
-// session/close  — ✅ mcode 0.1.5 支持
+// session/close — forwarded to the engine
 // ============================================================
 export async function closeSession(sessionId) {
   if (!sessionId)
@@ -150,23 +151,26 @@ export async function closeSession(sessionId) {
 }
 
 // ============================================================
-// session/list  — ✅ mcode 0.1.5 支持
-//   简单 wrap for route 层
+// session/list — forwarded to the engine
 // ============================================================
 export async function listSessions() {
   return listAllMcodeSessions();
 }
 
 // ============================================================
-// mcode 0.1.5 acp 接受的能力清单 (供前端 capability detection)
+// What the frontend may call through this wrapper, for capability detection.
 // ============================================================
 export const MCODE_ACP_CAPABILITIES = {
-  set_mode: false,
-  set_config_option: false,
-  cancel: false,
-  activate: false,
-  fork: false,
-  resume: false,
+  set_mode: true,
+  set_config_option: true,
+  cancel: true,
+  activate: true,
+  // The engine implements fork and resume but no webui route exposes them yet.
+  fork: true,
+  resume: true,
+  // Not available at any layer: mcode's protocol registers `session/delete` but
+  // implements no handler, which is why deletes go through SQL on the
+  // local_runtime_* tables (see sqlite-resolver.js).
   delete: false,
   load: true,
   close: true,
@@ -175,8 +179,9 @@ export const MCODE_ACP_CAPABILITIES = {
   prompt: true,
 };
 
-// 权限 mode 合法值 — cli.js 0.1.5 配置 schema 里有这 6 个, 但 session/set_config_option
-// 调不通, 所以这些值暂时只能用 mcode 启动 --permission 标志传, 不能 mid-session 改
+// Valid permission modes from the CLI config schema. session/set_config_option is
+// refused by this wrapper, so a mode can only be set through mcode's --permission
+// startup flag, not mid-session.
 export const PERMISSION_MODES = [
   "default",
   "bypassPermissions",
