@@ -71,10 +71,17 @@ export const MessageList = memo(function MessageList({
   }, [onScrollBottomChange]);
 
   // 自动滚到底部（用户上滚后暂停：stickRef=false）。
-  useEffect(() => {
+  // 布局前先滚一次（paint 前到位，避免闪跳），再在下一帧补滚一次 —— 流式分片
+  // 渲染（markdown/代码高亮）会让 scrollHeight 在首帧后继续增长，单次设置会
+  // 停在半途，用户看到的就是「不跟随」。
+  useLayoutEffect(() => {
     const el = scrollRef.current;
     if (el === null || !stickRef.current) return;
     el.scrollTop = el.scrollHeight;
+    const raf = requestAnimationFrame(() => {
+      if (stickRef.current) el.scrollTop = el.scrollHeight;
+    });
+    return () => cancelAnimationFrame(raf);
   }, [messages, streaming]);
 
   // 会话隔离：切换 sessionKey 恢复该会话自己的滚动位置（没有记录则贴底）。

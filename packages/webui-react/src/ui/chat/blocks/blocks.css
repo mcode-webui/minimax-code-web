@@ -362,3 +362,45 @@
   max-height: 240px;
   overflow-y: auto;
 }
+
+/* 思考块三态（折叠 / 5 行预览 / 全文）：标题行 + 固定预览高 + 操作按钮 */
+.blk-thinking-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 2px 4px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+}
+
+.blk-thinking-toggle:hover .blk-thinking-label { text-decoration: underline; }
+
+/* 5 行预览：行高 1.5em × 5 = 7.5em；超出滚动 */
+.blk-thinking-body.blk-thinking-capped {
+  max-height: 7.5em;
+}
+
+.blk-thinking-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.blk-thinking-btn {
+  padding: 1px 8px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.blk-thinking-btn:hover { background: var(--bg-hover); color: var(--text); }

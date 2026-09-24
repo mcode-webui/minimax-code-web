@@ -24,10 +24,23 @@ describe('BlockView 按 kind 分发', () => {
     expect(screen.getByText('世界').tagName).toBe('STRONG');
   });
 
-  it('thinking → 可折叠思考块', () => {
+  it('thinking → 默认折叠，点开后 5 行预览，可展开全文', () => {
     render(<BlockView block={thinkingBlock({ text: '推理内容', done: true })} />);
     expect(screen.getByText('思考过程')).toBeInTheDocument();
-    expect(screen.getByText('推理内容')).toBeInTheDocument();
+    // 默认折叠：正文不可见
+    expect(screen.queryByText('推理内容')).not.toBeInTheDocument();
+    // 点标题 → 5 行预览（capped）
+    fireEvent.click(screen.getByText('思考过程'));
+    const body = screen.getByText('推理内容');
+    expect(body).toHaveClass('blk-thinking-capped');
+    // 展开全部 → 全文（去掉 cap）；收起 → 回预览
+    fireEvent.click(screen.getByRole('button', { name: '展开全部' }));
+    expect(screen.getByText('推理内容')).not.toHaveClass('blk-thinking-capped');
+    fireEvent.click(screen.getByRole('button', { name: '收起' }));
+    expect(screen.getByText('推理内容')).toHaveClass('blk-thinking-capped');
+    // 再点标题 → 回折叠
+    fireEvent.click(screen.getByText('思考过程'));
+    expect(screen.queryByText('推理内容')).not.toBeInTheDocument();
   });
 
   it('tool-call → 工具名 + 状态徽标', () => {

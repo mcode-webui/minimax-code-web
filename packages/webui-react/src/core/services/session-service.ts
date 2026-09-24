@@ -117,7 +117,35 @@ export function chatLinesToMessages(raw: unknown[]): ChatLinesResult {
   let seq = 0;
   let cur: { role: Role; kind: 'text' | 'thinking'; text: string } | null = null;
 
+  // 工具块（→ 前缀 + 缩进续行，服务端 mcode-acp 写入的文法）：
+  //   → toolName  {input}   ← 块头
+  //     [completed]         ← 状态行（completed/failed/in_progress）—— 必须吃进块里，
+  //     output             ← 否则原样漏出就是用户报告的「大量 [completed] 回显」
+  //     @ /path            ← 涉及的本地文件
+  //     ! error            ← 错误
+  let tool: { name: string; status: 'running' | 'done' | 'error'; out: string[]; locs: number; err: string | null } | null = null;
+  const flushTool = (): void => {
+    if (!tool) return;
+    const out = tool.out.slice(0, 8);
+    if (tool.out.length > 8) out.push('…');
+    const parts: string[] = [];
+    if (out.length > 0) parts.push(out.join('\n'));
+    if (tool.err) parts.push('! ' + tool.err);
+    if (tool.locs > 0) parts.push(`@ ${tool.locs} 个本地文件`);
+    const block: MessageBlock = {
+      id: 'wb-' + seq,
+      kind: 'tool-call',
+      toolName: tool.name,
+      status: tool.status,
+      summary: parts.length > 0 ? parts.join('\n') : undefined,
+    };
+    messages.push({ id: 'wm-' + seq, role: 'system', blocks: [block], ts: seq, streaming: false });
+    seq += 1;
+    tool = null;
+  };
+
   const flush = (): void => {
+    flushTool();
     if (!cur) return;
     const block: MessageBlock =
       cur.kind === 'thinking'
@@ -176,10 +204,34 @@ export function chatLinesToMessages(raw: unknown[]): ChatLinesResult {
       feed('system', 'text', line.replace(/^[○◯!]\s+/, ''));
       continue;
     }
-    if (/^(Plan\s*[:：]|Ask\b|[◎→])/i.test(line.trim())) {
+    if (/^→\s+/.test(line)) {
+      flush();
+      const tm = line.match(/^→\s+(\S+?)(?:\s{2,}(.+))?$/);
+      tool = { name: tm ? tm[1] : 'tool', status: 'running', out: [], locs: 0, err: null };
+      continue;
+    }
+    // 工具块的缩进续行（必须先于其它分类 —— vanilla 同款文法）。
+    if (tool && /^\s{2,}\S/.test(line)) {
+      const stripped = line.replace(/^\s{2,}/, '');
+      const st = stripped.match(/^\[([^\]]+)\]$/);
+      if (st) {
+        const s = st[1];
+        tool.status = s === 'completed' ? 'done' : s === 'failed' ? 'error' : 'running';
+      } else if (/^!\s+/.test(stripped)) {
+        tool.err = stripped.replace(/^!\s+/, '');
+        tool.status = 'error';
+      } else if (/^@\s+/.test(stripped)) {
+        tool.locs += 1;
+      } else if (tool.out.length < 12) {
+        tool.out.push(stripped);
+      }
+      continue;
+    }
+    if (/^(Plan\s*[:：]|Ask\b|[◎])/i.test(line.trim())) {
       feed('assistant', 'text', line);
       continue;
     }
+    if (tool) flushTool();
     appendContinuation(line);
   }
   flush();
