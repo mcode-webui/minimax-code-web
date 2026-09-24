@@ -10,7 +10,7 @@ import {
   persistCurrentChat,
   promoteDraftToMcodeSid,
 } from "../lib/sessions.js";
-import { pushStateFor, pushAlert, getActiveChild } from "../lib/state-bus.js";
+import { pushStateFor, pushAlert, getActiveChild, beginRun, endRun } from "../lib/state-bus.js";
 // 2026-09-20 rigor fix (G1 bypass finding): import the lib/slash.js shell,
 //   NOT interaction/commands.js directly. The shell carries the B03
 //   authorize("slash.clear") gate + write-ahead audit (slash.clear.intent /
@@ -85,172 +85,190 @@ export async function handleSend(req, res, ctx) {
   }
   // ask_user modal answer — don't add to chat as a user message.
   const isAskAnswer = payload.isAskAnswer === true;
+
+  // Claim the turn BEFORE acknowledging. Every prompt spawns its own engine
+  // subprocess, so without this a double-send (retry, two tabs, a scripted
+  // client) silently starts a second one: measured on a running server, ten
+  // concurrent sends produced ten live engine processes. Three claims are
+  // checked — this cid is idle, no other cid is running this engine session,
+  // and the server is under MAX_CONCURRENT (which /api/health advertises as
+  // `maxConcurrent` and which nothing used to read).
+  //
+  // Answering 409 rather than acking and failing later is deliberate: the ack
+  // is fire-and-forget, so a rejection after it would be invisible to the
+  // caller. api.sendMessage surfaces a non-2xx as an error, so the composer
+  // shows it.
+  const claim = beginRun(cid, cs && cs.mcodeSessionId);
+  if (!claim.ok) {
+    res.writeHead(409, { "Content-Type": "application/json; charset=utf-8" });
+    return res.end(
+      JSON.stringify({
+        ok: false,
+        error: claim.detail,
+        reason: claim.reason,
+        ...(claim.reason === "at-capacity"
+          ? { running: claim.running, limit: claim.limit }
+          : {}),
+      }),
+    );
+  }
+
   res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
   res.end(JSON.stringify({ ok: true }));
 
-  if (!isAskAnswer) {
-    cs.chat = [...(cs.chat || []), `› ${content}`];
-    // Sending a message bumps lastUsedWorkspace so the sidebar sorts
-    // this workspace's group to the top. Switching session does NOT
-    // (browsing ≠ sending); ask_user answer does NOT (modal ≠
-    // message).
-    cs.lastUsedWorkspace = (cs.workspace && cs.workspace.dir) || null;
-    pushStateFor(cid);
-    persistCurrentChat(cs);
-  }
-
-  // First-message bootstrap: if no webui session id exists yet, create
-  // a fresh one with the current chat snapshot. The webui session id
-  // is a randomUUID, distinct from the mcode session id allocated
-  // inside the run.
-  if (!cs.sessionId) {
-    const all = loadSessions();
-    const id = randomUUID();
-    const item = {
-      id,
-      title: "New session",
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-      chat: cs.chat || [],
-      // Persist the workspace too — restoreLatestSession filters by
-      // workspace, so a record without one can never be rehydrated
-      // after a reload (the page would render as a fresh empty
-      // session).
-      workspace: (cs.workspace && cs.workspace.dir) || null,
-    };
-    all.unshift(item);
-    saveSessions(all);
-    cs.sessionId = id;
-  }
-
-  // Detect slash commands that we can satisfy without spawning mcode
-  const slashResult = await handleLocalSlash(content, cs, cid);
-  if (slashResult.handled) {
-    if (slashResult.continueMcode && slashResult.rewriteContent !== undefined) {
-      content = slashResult.rewriteContent;
-      // fall through to mcode call
-    } else {
-      return;
+  try {
+    if (!isAskAnswer) {
+      cs.chat = [...(cs.chat || []), `› ${content}`];
+      // Sending a message bumps lastUsedWorkspace so the sidebar sorts
+      // this workspace's group to the top. Switching session does NOT
+      // (browsing ≠ sending); ask_user answer does NOT (modal ≠
+      // message).
+      cs.lastUsedWorkspace = (cs.workspace && cs.workspace.dir) || null;
+      pushStateFor(cid);
+      persistCurrentChat(cs);
     }
-  }
 
-  // mcode acp is the default transport; MCODE_USE_ACP=0 falls back to
-  // mcode exec (escape hatch if the acp protocol regresses).
-  const modelToUse = (cs && cs.model && cs.model.name) || DEFAULT_MODEL;
-  console.log(
-    `[send] cid=${cid} content=${JSON.stringify(content.slice(0, 80))} model=${modelToUse} sessionId=${cs.mcodeSessionId} workspace=${(cs && cs.workspace && cs.workspace.dir) || "null"}`,
-  );
-  const t0 = Date.now();
-  const engineOpts = {
-    label: "prompt",
-    sessionId: cs.mcodeSessionId,
-    model: modelToUse,
-    cs,
-    cid,
-  };
-  // 波次 2（arch_net_solution_0922.md §6.3）：MCODE_ENGINE=embed 走引擎宿主
-  //   Worker（boot 失败自动回退旧路径）；默认 "acp" 完全走下方旧路径，行为不变。
-  let r = null;
-  if (MCODE_ENGINE === "embed") {
-    if (!isEmbedRunning()) {
-      const boot = await bootEngineHost({
-        workspace: (cs && cs.workspace && cs.workspace.dir) || undefined,
-      });
-      if (!boot.ok) {
-        console.warn(
-          `[send] mcode embed boot failed, falling back to legacy transport: ${boot.reason}`,
-        );
+    // First-message bootstrap: if no webui session id exists yet, create
+    // a fresh one with the current chat snapshot. The webui session id
+    // is a randomUUID, distinct from the mcode session id allocated
+    // inside the run.
+    if (!cs.sessionId) {
+      const all = loadSessions();
+      const id = randomUUID();
+      const item = {
+        id,
+        title: "New session",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        chat: cs.chat || [],
+        // Persist the workspace too — restoreLatestSession filters by
+        // workspace, so a record without one can never be rehydrated
+        // after a reload (the page would render as a fresh empty
+        // session).
+        workspace: (cs.workspace && cs.workspace.dir) || null,
+      };
+      all.unshift(item);
+      saveSessions(all);
+      cs.sessionId = id;
+    }
+
+    // Detect slash commands that we can satisfy without spawning mcode
+    const slashResult = await handleLocalSlash(content, cs, cid);
+    if (slashResult.handled) {
+      if (slashResult.continueMcode && slashResult.rewriteContent !== undefined) {
+        content = slashResult.rewriteContent;
+        // fall through to mcode call
+      } else {
+        return;
       }
     }
-    if (isEmbedRunning()) {
-      r = await collectEmbedResult(runMcodeEmbed(content, engineOpts), {
-        cs,
-        cid,
-        label: engineOpts.label,
-      });
-    }
-  }
-  if (!r) {
-    r =
+
+    // mcode acp is the default transport; MCODE_USE_ACP=0 falls back to
+    // mcode exec (escape hatch if the acp protocol regresses).
+    const modelToUse = (cs && cs.model && cs.model.name) || DEFAULT_MODEL;
+    console.log(
+      `[send] cid=${cid} content=${JSON.stringify(content.slice(0, 80))} model=${modelToUse} sessionId=${cs.mcodeSessionId} workspace=${(cs && cs.workspace && cs.workspace.dir) || "null"}`,
+    );
+    const t0 = Date.now();
+    const r =
       process.env.MCODE_USE_ACP === "0"
-        ? await collectExecResult(runMcodeExec(content, engineOpts))
-        : await runMcodeAcp(content, engineOpts);
-  }
-  console.log(
-    `[send] result ${Date.now() - t0}ms:`,
-    JSON.stringify({
-      status: r.status,
-      error: r.error,
-      answer: r.answer && r.answer.slice(0, 80),
-      sessionId: r.sessionId,
-    }).slice(0, 500),
-  );
-  if (r.status === "succeeded" && r.answer) {
-    // v0.5.bx-4: 流式输出已经在 streamAcpPrompt/streamUpdateLine 里把 ▲ 和 ● 行写进 chat 了
-    const oneLine = r.answer.replace(/\n+/g, " ").trim();
-    let lastAnsIdx = -1;
-    for (let i = cs.chat.length - 1; i >= 0; i--) {
-      if (typeof cs.chat[i] === "string" && cs.chat[i].startsWith("● ")) {
-        lastAnsIdx = i;
-        break;
+        ? await collectExecResult(
+            runMcodeExec(content, {
+              label: "prompt",
+              sessionId: cs.mcodeSessionId,
+              model: modelToUse,
+              cs,
+              cid,
+            }),
+          )
+        : await runMcodeAcp(content, {
+            label: "prompt",
+            sessionId: cs.mcodeSessionId,
+            model: modelToUse,
+            cs,
+            cid,
+          });
+    console.log(
+      `[send] result ${Date.now() - t0}ms:`,
+      JSON.stringify({
+        status: r.status,
+        error: r.error,
+        answer: r.answer && r.answer.slice(0, 80),
+        sessionId: r.sessionId,
+      }).slice(0, 500),
+    );
+    if (r.status === "succeeded" && r.answer) {
+      // v0.5.bx-4: 流式输出已经在 streamAcpPrompt/streamUpdateLine 里把 ▲ 和 ● 行写进 chat 了
+      const oneLine = r.answer.replace(/\n+/g, " ").trim();
+      let lastAnsIdx = -1;
+      for (let i = cs.chat.length - 1; i >= 0; i--) {
+        if (typeof cs.chat[i] === "string" && cs.chat[i].startsWith("● ")) {
+          lastAnsIdx = i;
+          break;
+        }
+      }
+      if (lastAnsIdx >= 0) {
+        cs.chat[lastAnsIdx] = `● ${oneLine}`;
+      } else {
+        cs.chat = [...cs.chat, `● ${oneLine}`];
+      }
+      cs.context.assistantLast = oneLine;
+      cs.context.assistantAt = Date.now();
+    } else if (r.status === "failed" || r.error) {
+      const rawMsg = (r.error?.message || r.status).replace(/\n+/g, " ");
+      let oneLine = rawMsg;
+      let hint = "";
+      if (/Questionnaire|user input/i.test(rawMsg)) {
+        hint = " (Ask 工具在 webui/exec 模式不可用，请直接用输入框发问)";
+      } else if (/requires.*input|interactive/i.test(rawMsg)) {
+        hint = " (此工具需要交互模式，webui 暂不支持)";
+      }
+      // v2.0 (lease B02): §AP3 — errors no longer pollute the chat
+      // stream. Surface them via the independent anomaly channel;
+      // cs.context.assistantLast keeps the error in the model context
+      // (so a follow-up turn can reference it) but the user-facing
+      // chat list stays clean. The bell icon (frontend, C batch) shows
+      // the alert with the matching id.
+      pushAlert({
+        level: "error",
+        msg: `[chat.send] ${oneLine}${hint}`,
+        src: "chat.send",
+        cid,
+        sessionId: r.sessionId || null,
+        data: { status: r.status, error: r.error || null },
+      });
+      cs.context.assistantLast = `[error] ${oneLine}`;
+      cs.context.assistantAt = Date.now();
+      // v2 (2026-09-20 webui-manual-audit): a failed send is a TERMINAL
+      //   turn state — reset the thinking claim so the pushStateFor at
+      //   the end of this handler lands an at-rest state instead of
+      //   re-asserting whatever running/thinkingStatus cs carried in.
+      //   Without this, the context panel's 思考中 indicator never
+      //   clears (start-phase failures never reach the runners'
+      //   finalize()). The success branch needs no equivalent: by the
+      //   time r.status === "succeeded" is observed here, finalize()
+      //   has already run inside runMcodeAcp/collectExecResult and put
+      //   cs into exactly this idle shape.
+      resetThinkingClaim(cs);
+    }
+    // v2.4 单一基础会话：回合绑定了 mcode 会话（cs.mcodeSessionId 由 acp
+    //   finalize 写入）后，把草稿记录晋升为引擎身份（id → mvs_…），或并入
+    //   该 mcode 会话既有的叠加记录——保证一次对话在存储里只有一条记录。
+    if (cs.mcodeSessionId) {
+      try {
+        promoteDraftToMcodeSid(cs);
+      } catch (e) {
+        console.warn(`[chat] promoteDraftToMcodeSid failed: ${e.message}`);
       }
     }
-    if (lastAnsIdx >= 0) {
-      cs.chat[lastAnsIdx] = `● ${oneLine}`;
-    } else {
-      cs.chat = [...cs.chat, `● ${oneLine}`];
-    }
-    cs.context.assistantLast = oneLine;
-    cs.context.assistantAt = Date.now();
-  } else if (r.status === "failed" || r.error) {
-    const rawMsg = (r.error?.message || r.status).replace(/\n+/g, " ");
-    let oneLine = rawMsg;
-    let hint = "";
-    if (/Questionnaire|user input/i.test(rawMsg)) {
-      hint = " (Ask 工具在 webui/exec 模式不可用，请直接用输入框发问)";
-    } else if (/requires.*input|interactive/i.test(rawMsg)) {
-      hint = " (此工具需要交互模式，webui 暂不支持)";
-    }
-    // v2.0 (lease B02): §AP3 — errors no longer pollute the chat
-    // stream. Surface them via the independent anomaly channel;
-    // cs.context.assistantLast keeps the error in the model context
-    // (so a follow-up turn can reference it) but the user-facing
-    // chat list stays clean. The bell icon (frontend, C batch) shows
-    // the alert with the matching id.
-    pushAlert({
-      level: "error",
-      msg: `[chat.send] ${oneLine}${hint}`,
-      src: "chat.send",
-      cid,
-      sessionId: r.sessionId || null,
-      data: { status: r.status, error: r.error || null },
-    });
-    cs.context.assistantLast = `[error] ${oneLine}`;
-    cs.context.assistantAt = Date.now();
-    // v2 (2026-09-20 webui-manual-audit): a failed send is a TERMINAL
-    //   turn state — reset the thinking claim so the pushStateFor at
-    //   the end of this handler lands an at-rest state instead of
-    //   re-asserting whatever running/thinkingStatus cs carried in.
-    //   Without this, the context panel's 思考中 indicator never
-    //   clears (start-phase failures never reach the runners'
-    //   finalize()). The success branch needs no equivalent: by the
-    //   time r.status === "succeeded" is observed here, finalize()
-    //   has already run inside runMcodeAcp/collectExecResult and put
-    //   cs into exactly this idle shape.
-    resetThinkingClaim(cs);
+    persistCurrentChat(cs);
+    pushStateFor(cid);
+  } finally {
+    // Releases the cid claim and, if this run owned it, the engine-session
+    // claim. Covers every exit after the ack — including the early return for
+    // a locally-handled slash command, which never spawns an engine.
+    endRun(cid);
   }
-  // v2.4 单一基础会话：回合绑定了 mcode 会话（cs.mcodeSessionId 由 acp
-  //   finalize 写入）后，把草稿记录晋升为引擎身份（id → mvs_…），或并入
-  //   该 mcode 会话既有的叠加记录——保证一次对话在存储里只有一条记录。
-  if (cs.mcodeSessionId) {
-    try {
-      promoteDraftToMcodeSid(cs);
-    } catch (e) {
-      console.warn(`[chat] promoteDraftToMcodeSid failed: ${e.message}`);
-    }
-  }
-  persistCurrentChat(cs);
-  pushStateFor(cid);
 }
 
 // POST /api/stop — 中断正在跑的 prompt

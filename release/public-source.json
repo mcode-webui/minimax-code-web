@@ -3544,6 +3544,7 @@
     "packages/webui/test/server/router-dispatch.test.js",
     "packages/webui/test/server/router-origin-gate.check.mjs",
     "packages/webui/test/server/router-readonly.test.js",
+    "packages/webui/test/server/send-run-guard.test.js",
     "packages/webui/test/server/server-startup.test.js",
     "packages/webui/test/tooling/check-docs-alignment.test.js",
     "packages/webui/test/trajectory/containment.test.mjs",

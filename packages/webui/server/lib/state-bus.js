@@ -1,7 +1,7 @@
 // webui/server/lib/state-bus.js
 // Per-cid state + event stream (WebSocket /api/stream) management.
 
-import { DEFAULT_WORKSPACE, DEFAULT_MODEL } from "./config.js";
+import { DEFAULT_WORKSPACE, DEFAULT_MODEL, MAX_CONCURRENT } from "./config.js";
 import { isFirstRun } from "./auth.js";
 import { loadSessions } from "./sessions.js";
 import {
@@ -486,6 +486,90 @@ export function getActiveChild(cid) {
 
 export function clearActiveChild(cid) {
   if (cid) activeChildByCid.delete(cid);
+}
+
+// ============================================================
+// Run registry — one live turn per cid, one per engine session, and
+// a global ceiling.
+//
+// Why this exists. Every prompt spawns its own engine subprocess
+// (`runMcodeAcp` builds a `new McodeAcpClient`, `runMcodeExec` a raw
+// `spawn`), and there was nothing stopping a second prompt for the same
+// client from starting while the first was still in flight. Measured on a
+// running server with a stub engine: two concurrent `POST /api/send` on one
+// cid produced two engine processes, each holding its own engine session;
+// ten produced ten. `MAX_CONCURRENT` was defined in config.js and advertised
+// by `GET /api/health` as `maxConcurrent`, but nothing read it.
+//
+// The per-cid check alone is not enough, because a second browser tab is a
+// second cid: `restoreLatestSession` binds a fresh client to the most recent
+// session's `mcodeSessionId` with `running.active` false, so both tabs look
+// idle and both may send. Two engine processes then hold the same engine
+// session, and `persistCurrentChat` is a read-modify-write of the whole
+// sessions store — so the slower writer's view of the chat overwrites the
+// faster one's, which can silently discard a live streamed turn. Hence the
+// second index, keyed by engine session.
+//
+// Callers: `beginRun` / `endRun` from `routes/chat.js#handleSend`. The check
+// runs BEFORE the fire-and-forget 200 ack so a rejected double-send is a real
+// 409 the client surfaces, rather than a silent second run.
+const runsByCid = new Map(); // cid -> { sid, startedAt }
+const runsBySid = new Map(); // mcodeSessionId -> cid
+
+/**
+ * Claim the right to run a turn.
+ *
+ * @param {string} cid
+ * @param {string|null} sid engine session this turn will continue, if known
+ * @returns {{ok:true}|{ok:false, reason:'cid-busy'|'session-busy'|'at-capacity', detail?:string, running?:number, limit?:number}}
+ */
+export function beginRun(cid, sid) {
+  const key = cid || "default";
+  if (runsByCid.has(key)) {
+    return { ok: false, reason: "cid-busy", detail: "a turn is already running for this client" };
+  }
+  // A second tab on the same conversation: both cids are idle, the engine
+  // session is not. Refuse rather than let two processes fight over it.
+  if (sid && runsBySid.has(sid)) {
+    return {
+      ok: false,
+      reason: "session-busy",
+      detail: "this conversation is already running in another window",
+    };
+  }
+  if (runsByCid.size >= MAX_CONCURRENT) {
+    return {
+      ok: false,
+      reason: "at-capacity",
+      detail: `server is already running ${MAX_CONCURRENT} turns`,
+      running: runsByCid.size,
+      limit: MAX_CONCURRENT,
+    };
+  }
+  runsByCid.set(key, { sid: sid || null, startedAt: Date.now() });
+  if (sid) runsBySid.set(sid, key);
+  return { ok: true };
+}
+
+/** Release a turn claimed by `beginRun`. Safe to call when nothing is held. */
+export function endRun(cid) {
+  const key = cid || "default";
+  const entry = runsByCid.get(key);
+  if (!entry) return;
+  runsByCid.delete(key);
+  // Only drop the sid claim if this cid still owns it — a later run on the
+  // same session may have re-registered it.
+  if (entry.sid && runsBySid.get(entry.sid) === key) runsBySid.delete(entry.sid);
+}
+
+/** Live turn count, for diagnostics and tests. */
+export function activeRunCount() {
+  return runsByCid.size;
+}
+
+/** The run currently held by a cid, or null. */
+export function getRunForCid(cid) {
+  return runsByCid.get(cid || "default") || null;
 }
 
 // Find every cid bound to the same mcodeSessionId — used to notify
