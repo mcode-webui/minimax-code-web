@@ -14,16 +14,10 @@ import {
 } from "../lib/workspace.js";
 import { DEFAULT_WORKSPACE } from "../lib/config.js";
 import { loadSessions } from "../lib/sessions.js";
+import { readJson } from "../lib/read-json.js";
 
 export async function handleWorkspace(req, res, ctx) {
-  let body = "";
-  for await (const chunk of req) body += chunk;
-  let payload;
-  try {
-    payload = JSON.parse(body || "{}");
-  } catch {
-    payload = {};
-  }
+  const payload = await readJson(req);
   const result = handleWorkspaceChange(ctx.cs, ctx.cid, payload);
   res.writeHead(
     result.ok

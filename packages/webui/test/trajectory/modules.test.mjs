@@ -137,10 +137,19 @@ test('every relative import resolves to a real file', async () => {
 test('no client surface imports the flow or controller layer', async () => {
   // The structural rule behind the acyclicity: a surface may announce an intent,
   // never reach up into the orchestrator that renders it.
-  const surfaces = ['sidebar.js', 'capability.js', 'stats.js', 'timeline.js', 'stream.js', 'inspector.js'];
+  //
+  // This scans the *directory*, not a hand-listed set of files. The earlier
+  // version enumerated six surfaces while the directory holds nineteen, so a new
+  // surface that reached into the orchestrator would have passed — a guard that
+  // claimed the category but only covered the instances its author had seen.
+  //
+  // The three orchestrator modules themselves are excluded: they legitimately
+  // import each other, and they are the thing the rule is about, not a surface.
   const dir = path.join(ROOT, 'public', 'trajectory', 'js');
+  const orchestrators = new Set(['flow.js', 'controller.js', 'wire.js']);
+  const entries = (await readdir(dir)).filter((n) => n.endsWith('.js') && !orchestrators.has(n));
   const offenders = [];
-  for (const name of surfaces) {
+  for (const name of entries) {
     const source = await readFile(path.join(dir, name), 'utf8');
     for (const specifier of relativeImports(source)) {
       if (specifier === './flow.js' || specifier === './controller.js' || specifier === './wire.js') {
@@ -149,4 +158,7 @@ test('no client surface imports the flow or controller layer', async () => {
     }
   }
   assert.deepEqual(offenders, [], offenders.join('; '));
+  // The scan is only meaningful if it actually covered the surfaces, so assert
+  // the directory has grown past the six the old hand-list knew about.
+  assert.ok(entries.length > 6, `expected to scan every surface, only found ${entries.length}`);
 });

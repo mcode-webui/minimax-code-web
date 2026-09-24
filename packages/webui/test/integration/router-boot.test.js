@@ -17,7 +17,7 @@
 // Scope (D02 brief):
 //   GET  /api/health              (happy + 404 path)
 //   GET  /api/state               (happy + wrong method)
-//   GET  /api/alerts              (REST snapshot happy; wrong method)
+//   GET  /api/alerts              (SSE happy; bad path = wrong method)
 //   GET  /api/usage/forecast      (happy + zero-history reason)
 //   GET  /api/sessions/<id>/export (happy md + error 404)
 //   GET  /                        (happy static index)
@@ -31,18 +31,18 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import http from "node:http";
-import { decideNextAuthorization } from "../_setup.js";
+import { decideNextAuthorization } from "../helpers/_setup.js";
+import { findFreePort, parseListeningPort } from "../helpers/free-port.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const serverJsPath = join(__dirname, "..", "..", "server.js");
 
-// Port-pick: 19500..19600 — outside the dev range (18090), outside the
-// C08 helper range (18080/18081), outside privileged (<1024). Even on
-// busy machines this range is usually free; if it isn't, the test
-// fails loudly with EADDRINUSE which is the right signal.
-function pickPort() {
-    return 19500 + Math.floor(Math.random() * 100);
-}
+// Port: findFreePort() returns an OS-allocated ephemeral port. The
+// recorded `port` is the value the child logged on its "listening
+// on http://host:port" line, NOT the port we asked for —
+// server/lib/port.js#listenWithPortFallback walks forward on
+// EADDRINUSE, so callers must always read the bound port or they
+// POST to a wrong/stale socket (see test/helpers/free-port.js).
 
 // Spawn server.js with isolated settings + events paths. Returns
 // { proc, port, tmpDir, ready }. `ready` resolves once the server
@@ -51,22 +51,35 @@ async function spawnServer() {
     const tmpDir = mkdtempSync(join(tmpdir(), "mcode-webui-d02-router-"));
     const settingsPath = join(tmpDir, "settings.json");
     const eventsPath = join(tmpDir, "events.ndjson");
-    const port = pickPort();
+    const requestedPort = await findFreePort();
     const env = {
         ...process.env,
-        PORT: String(port),
+        PORT: String(requestedPort),
         HOST: "127.0.0.1", // loopback only — auth gates still bypass for local
         MCODE_WEBUI_SETTINGS_PATH: settingsPath,
         MCODE_WEBUI_EVENTS_PATH: eventsPath,
         // U1 (2026-09-20 rigor fix): redirect upload dir + sessions db
         // away from MCODE_ROOT — server.js mkdirSync(UPLOAD_DIR) at boot
         // and persistCurrentChat's saveSessions would otherwise create
-        // stray .webui-uploads/ + .webui-sessions.json in the plugin
+        // stray .webui-uploads/ + sessions.json in the plugin
         // tree, which breaks marketplace validate.mjs ("invalid Plugin
         // directory"). tmpDir is per-test mkdtemp'd and rmSync'd in
         // stopServer below, so cleanup stays automatic.
         MCODE_WEBUI_UPLOAD_DIR: join(tmpDir, "uploads"),
         MCODE_WEBUI_SESSIONS_DB: join(tmpDir, "sessions.json"),
+        // The forecast test below asserts `no_history` on a "fresh server".
+        // Without this the route reads the operator's real
+        // ~/.mcode-webui/usage-history.ndjson, so the assertion passes or
+        // fails depending on whether that machine has ever fetched a quota.
+        MCODE_WEBUI_HISTORY_PATH: join(tmpDir, "usage-history.ndjson"),
+        // Hermetic engine isolation: this suite's premise is "the routes we hit
+        // do not invoke mcode" — but GET /api/state does spawn the ACP singleton
+        // whenever a resolvable engine exists, and on a host WITH an installed
+        // mcode (the Windows .cmd launcher chain) that first spawn overran the
+        // 10s client timeout. Pointing MCODE_CMD at a nonexistent path
+        // reproduces the engine-absent host this suite was written for; the spawn
+        // fails fast and /api/state falls back to an empty session list.
+        MCODE_CMD: join(tmpDir, "no-such-mcode"),
         TOKEN: "", // explicit empty so auth init is deterministic
         // Disable TOKEN_STDOUT so stdout is clean for assertion.
         MCODE_WEBUI_TOKEN_STDOUT: "0",
@@ -86,25 +99,30 @@ async function spawnServer() {
     proc.stdout.on("data", (d) => (stdout += d.toString()));
     proc.stderr.on("data", (d) => (stderr += d.toString()));
 
+    let boundPort = null;
     const ready = new Promise((resolve, reject) => {
         const onChunk = (chunk) => {
-            if (/listening on/.test(stdout)) {
+            const p = parseListeningPort(stdout);
+            if (p !== null) {
+                boundPort = p;
                 proc.stdout.off("data", onChunk);
+                clearTimeout(timer);
                 resolve();
             }
         };
-        proc.stdout.on("data", onChunk);
-        setTimeout(() => {
+        const timer = setTimeout(() => {
             reject(
                 new Error(
-                    `server.js did not start within 3s on port ${port}\n` +
+                    `server.js did not start within 3s on port ${requestedPort}\n` +
                     `stdout: ${stdout}\nstderr: ${stderr}`,
                 ),
             );
         }, 3000);
+        proc.stdout.on("data", onChunk);
     });
     await ready;
-    return { proc, port, tmpDir, settingsPath, eventsPath, stderr };
+    const port = boundPort !== null ? boundPort : requestedPort;
+    return { proc, port, requestedPort, tmpDir, settingsPath, eventsPath, stderr };
 }
 
 async function stopServer(proc, tmpDir) {
@@ -216,15 +234,14 @@ test("router-boot: GET /api/state returns client state snapshot", async () => {
     assert.equal(res.status, 200, `expected 200, got ${res.status}. body: ${res.body}`);
     assert.ok(res.json, "response must be JSON");
     // Snapshot fields confirmed in server/routes/state.js#handleState
-    // (lines 117-156). Note: `onlineCount` is only on the event-stream
-    // push (state-bus.js), not the /api/state JSON response.
+    // (lines 117-156). Note: `onlineCount` is only on the SSE push
+    // (state-bus.js line 156), not the /api/state JSON response.
     assert.equal(typeof res.json.version, "string", "version field present");
     assert.ok(res.json.workspace, "workspace field present");
     assert.ok(res.json.model, "model field present");
     assert.equal(Array.isArray(res.json.chat), true, "chat is an array");
     assert.equal(typeof res.json.readOnly, "boolean", "readOnly flag present");
     assert.equal(typeof res.json.tokenEnabled, "boolean", "tokenEnabled flag present");
-    assert.equal(typeof res.json.quotaEnabled, "boolean", "quotaEnabled flag present");
 });
 
 test("router-boot: POST /api/state returns 404 (route is GET-only)", async () => {
@@ -237,25 +254,54 @@ test("router-boot: POST /api/state returns 404 (route is GET-only)", async () =>
 });
 
 // -----------------------------------------------------------------------
-// /api/alerts — REST snapshot (SSE removed by decision 20; the live
-// alerts.append/alerts.update traffic rides /api/stream — see
-// ws-channel.test.js). The "error path" here is the wrong-method
-// attempt.
+// /api/alerts — SSE. We just hit it once and read the first frame
+// (snapshot). For full streaming tests, see sse-channel.test.js. The
+// "error path" here is the wrong-method attempt.
 // -----------------------------------------------------------------------
-test("router-boot: GET /api/alerts returns REST snapshot (application/json)", async () => {
-    const res = await httpRequest({ port: server.port, path: "/api/alerts" });
-    assert.equal(res.status, 200, `expected 200, got ${res.status}. body: ${res.body}`);
-    assert.ok(
-        String(res.headers["content-type"] || "").includes("application/json"),
-        `Content-Type must be application/json, got ${res.headers["content-type"]}`,
+test("router-boot: GET /api/alerts opens SSE + emits snapshot frame", async () => {
+    const res = await new Promise((resolve, reject) => {
+        const req = http.request(
+            { method: "GET", host: "127.0.0.1", port: server.port, path: "/api/alerts" },
+            (r) => {
+                const chunks = [];
+                r.on("data", (c) => chunks.push(c));
+                const timer = setTimeout(() => {
+                    req.destroy();
+                    resolve({
+                        status: r.statusCode,
+                        headers: r.headers,
+                        body: Buffer.concat(chunks).toString("utf8"),
+                    });
+                }, 200);
+                r.on("end", () => {
+                    clearTimeout(timer);
+                    resolve({
+                        status: r.statusCode,
+                        headers: r.headers,
+                        body: Buffer.concat(chunks).toString("utf8"),
+                    });
+                });
+                r.on("error", (e) => {
+                    clearTimeout(timer);
+                    reject(e);
+                });
+            },
+        );
+        req.on("error", reject);
+        req.end();
+    });
+    assert.equal(res.status, 200, `expected 200 SSE, got ${res.status}`);
+    assert.equal(
+        String(res.headers["content-type"] || "").startsWith("text/event-stream"),
+        true,
+        "Content-Type must be text/event-stream",
     );
-    assert.ok(res.json, "response must parse as JSON");
-    assert.equal(res.json.kind, "snapshot");
-    assert.ok(Array.isArray(res.json.alerts), "body.alerts must be an array");
-    assert.equal(res.json.alerts.length, 0, "fresh server has no alerts");
+    // Snapshot frame: data: {"kind":"snapshot","alerts":[]}
+    assert.match(res.body, /data: \{[^]*"kind":\s*"snapshot"/);
+    assert.match(res.body, /"alerts":\s*\[\]/);
 });
 
-test("router-boot: POST /api/alerts returns 404 (REST route is GET-only)", async () => {
+test("router-boot: POST /api/alerts returns 404 (SSE route is GET-only)", async () => {
     const res = await httpRequest({
         method: "POST",
         port: server.port,
@@ -341,8 +387,9 @@ test("router-boot: GET /api/sessions//export?format=bad returns 400 unsupported 
 // -----------------------------------------------------------------------
 test("router-boot: GET / serves index.html or 404 fallback", async () => {
     const res = await httpRequest({ port: server.port, path: "/" });
-    // The plugin's public/index.html may or may not exist depending on
-    // the install layout. We accept either:
+    // The Next static export (webapp/out/index.html) may or may not exist
+    // depending on the install layout (build may be skipped on a bare
+    // checkout). We accept either:
     //   - 200 with HTML body (index.html present), OR
     //   - 404 with the router's "not found" tail (index.html absent —
     //     serveIndex returns false → router hits the fallback path).

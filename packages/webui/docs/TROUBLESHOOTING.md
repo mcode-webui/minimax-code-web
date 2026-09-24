@@ -7,8 +7,10 @@
 > verified fix.
 
 If the fix here doesn't work, enable the in-page debug log (bottom-right
-of the webui) and check the right panel for event-stream activity. You can also
-run `node --check public/app/main.js` to verify the file parses.
+of the webui) and check the right panel for SSE events. You can also
+rebuild the frontend (`pnpm run webui:build`) and rerun `pnpm --filter
+@mavis/webui webapp:typecheck` to surface any TS error in the new
+App Router code.
 
 ---
 
@@ -17,42 +19,43 @@ run `node --check public/app/main.js` to verify the file parses.
 **Symptoms**: HTML loads, no red error block, but the sidebar is
 empty and the right panel shows "—" everywhere.
 
-**Cause**: the init() promise chain failed silently, or the
-`/api/stream` WebSocket connection never opened.
+**Cause**: the init() promise chain failed silently, or the SSE
+connection never opened.
 
 **Fix**:
 1. Open devtools (F12) → Console → look for the `__DBG.log` entries
    at the bottom-right debug panel.
 2. If you see `init: start` but not `init: state loaded`, the
    `/api/state` request is failing. Check the network tab.
-3. If you see `init done` but the UI is still empty, the
-   `/api/stream` WebSocket connection is failing. Reload the page; the
-   webui will reconnect.
+3. If you see `init done` but the UI is still empty, the SSE
+   connection is failing. Reload the page; the webui will
+   reconnect.
 
 ## `⚠ webui JS 初始化失败: TypeError: Cannot read properties of null (reading 'addEventListener')`
 
 **Symptoms**: full-page red error block in the browser with this
-message and a stack trace ending in `attachEvents` or `init`.
+message and a stack trace ending in a component or `init` callback.
 
-**Cause**: the `main.js` script is referencing an HTML element that
-was deleted in `index.html`, OR the `cache-bust?v=N` query is out
-of date and the browser is running an old main.js.
+**Cause**: a component is referencing a DOM node that was removed
+(or renamed) in a layout edit, OR a stale `_next/static` chunk is
+loaded from a previous export and the new layout no longer matches it.
 
 **Fix**:
 1. **Hard-reload** the page (Ctrl+Shift+R). This usually fixes it
-   when the issue is stale cache.
-2. If hard-reload doesn't help, check `git log --oneline -5` for
-   recent commits to `public/index.html` and `public/app/main.js`.
-   If main.js was updated but the cache-bust wasn't bumped, bump
-   it (see `docs/DEVELOPMENT.md` § "Bump the cache-bust").
-3. If the issue is a deleted element, the error message includes
-   the line number. Look up the element ID in that line and
-   either restore it in `index.html` or remove the JS reference.
+   when the issue is a stale export cached by an intermediate proxy.
+2. If hard-reload doesn't help, rebuild the export with
+   `pnpm run webui:build` and restart the server so `dist/webui/webapp/out/`
+   reflects the new layout. There is no manual `?v=N` cache-bust
+   any more — the hash on every `_next/static/<hash>/…` URL is the
+   cache buster.
+3. If the issue is a renamed or removed DOM node, the error
+   message includes the file and line. Restore the node, or remove
+   the JS reference at that line.
 
 ## `Failed to load resource: net::ERR_CONNECTION_REFUSED` to `127.0.0.1:18090`
 
-**Symptoms**: devtools shows the `/api/stream` WebSocket or
-`/api/state` request failing with "connection refused". UI shows "init fail" or is stuck on
+**Symptoms**: devtools shows the SSE or `/api/state` request failing
+with "connection refused". UI shows "init fail" or is stuck on
 "loading…".
 
 **Cause**: the server is not running, or it's running on a different
@@ -61,7 +64,7 @@ port.
 **Fix**:
 1. Check the server is up: `curl http://127.0.0.1:18090/api/health`
    should return JSON.
-2. If not running, start it: `cd webui; node server.js`.
+2. If not running, start it: `cd packages/webui && node server.js`.
 3. If running on a different port, set `$env:PORT = <port>` and
    restart. Then update the URL in the browser.
 
@@ -71,7 +74,7 @@ port.
 webui's session list is empty.
 
 **Cause**: the webui cached an older empty list. This usually
-resolves itself on the next event-stream `state` snapshot, but if it's
+resolves itself on the next SSE `state` event, but if it's
 persistent:
 
 **Fix**: hard-reload the page.
@@ -98,12 +101,12 @@ mcode sqlite via `GET /api/acp-sessions` on init.
 **Symptoms**: clicking "Skip" or pressing Esc doesn't close the
 plan modal.
 
-**Cause**: the click handler is calling `hidePlan()` but the
-event-stream update from mcode hasn't arrived yet, so the next render
-re-opens it.
+**Cause**: the click handler is calling `hidePlan()` but the SSE
+event from mcode hasn't arrived yet, so the next render re-opens
+it.
 
 **Fix**:
-1. Wait 2-3 seconds for the event-stream ack.
+1. Wait 2-3 seconds for the SSE ack.
 2. If it still doesn't dismiss, click "Skip" again — sometimes
    the first click is consumed by the focus ring and the second
    click hits the button.
@@ -122,9 +125,11 @@ or use a different CID, the dismissal is lost.
 
 **Fix**:
 - If the question reappears in the same session: don't clear
-  localStorage. If you really need to, double-click the brand
-  logo in the top-left to clear `presentedKeys` (this is the
-  same as clearing `DISMISSED_QUESTIONS`).
+  localStorage. If you really need to, clear the per-CID
+  presentation state from `localStorage` (the same key the
+  shell uses for `DISMISSED_QUESTIONS`); there is no longer a
+  brand-logo shortcut, since the legacy vanilla-JS UI and the
+  `public/brand-logo.png` image were removed.
 - If the question reappears in a new session: that's by design.
   New session = new state.
 
@@ -135,25 +140,21 @@ functionality.
 
 **Cause**: no favicon is served.
 
-**Fix**: this is cosmetic, ignore it. Or add a `public/favicon.ico`.
+**Fix**: this is cosmetic, ignore it. The Next export ships `favicon_v2.ico`
+and `favicon_v2.png` from `webapp/public/`; the legacy `/favicon.ico` is
+no longer served.
 
-## Event-stream connection drops every 30-60 seconds
+## SSE connection drops every 30-60 seconds
 
 **Symptoms**: the right panel freezes for a few seconds, then catches
-up. devtools shows the `/api/stream` WebSocket repeatedly closing and
-re-opening (Network → WS tab).
+up. devtools shows EventSource repeatedly closing and re-opening.
 
-**Cause**: an intermediate proxy (nginx, cloudflare) is closing the
-connection between the webui's 30s pings, or it drops the
-`Upgrade` / `Connection` headers so the handshake never holds.
+**Cause**: an intermediate proxy (nginx, cloudflare) is closing
+the SSE connection. SSE has no keep-alive in the protocol, so
+proxies may decide to close idle connections.
 
 **Fix**:
-- Set a longer proxy timeout: `proxy_read_timeout 3600s;` in nginx,
-  and make sure the proxy forwards `Upgrade` / `Connection`
-  (see `docs/HTTPS-REVERSE-PROXY.md` §3).
-- After a close the SPA reconnects ~3 seconds after `onclose` and
-  resumes from `lastSeq`, so a drop costs at most a few seconds
-  of catch-up.
+- Set a longer proxy timeout: `proxy_read_timeout 3600s;` in nginx.
 - Or deploy the webui behind a path that doesn't go through a
   proxy. For local dev, this is a non-issue.
 
@@ -174,10 +175,13 @@ a `/stop`, check the server console for the actual exit reason.
 **Symptoms**: clicking the ⏹ button sends a cancel request but the
 model keeps responding for several seconds.
 
-**Cause**: mcode 0.1.5 acp does not implement `session/cancel`. The
-webui's `/api/protocol/cancel` falls back to SIGTERM on the
-subprocess, but the subprocess takes a moment to die and the
-in-flight tool calls may complete first.
+**Cause**: `POST /api/stop` sends the acp `session/cancel` notification
+through the cid's active child. The engine may take a moment to drain
+the in-flight tool calls; if the notification could not be delivered
+(because no active child is registered for this cid), the route falls
+back to SIGTERM on the subprocess, then SIGKILL after 2 s. In either
+case the prompt keeps producing tokens until the engine finishes
+finalizing.
 
 **Fix**: wait 2-3 seconds. The model will stop emitting tokens
 shortly. If it doesn't, the subprocess is stuck — see "Stuck
@@ -192,9 +196,8 @@ mcode subprocess" below.
 is waiting on stdin and we're not feeding it.
 
 **Fix**:
-1. Open devtools → Network → filter for `/api/stream` and find the
-   WebSocket connection. If it's still open (status 101), the issue is
-   on the mcode side.
+1. Open devtools → Network → find the `/api/events` EventSource.
+   If it's still open, the issue is on the mcode side.
 2. Find the mcode subprocess: `Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" | Where-Object { $_.CommandLine -like "*acp*" }`
 3. Kill it: `Stop-Process -Id <PID> -Force`
 4. The webui will spawn a fresh subprocess on the next message.
@@ -218,17 +221,20 @@ optional fields, so this should be rare.
 or shows the wrong value.
 
 **Cause**: mcode's permission state isn't being reflected in
-`state.permissions`. The webui reads this from the event-stream
-`state` snapshots.
+`state.permissions`. The webui reads this from the SSE
+`state` events.
 
 **Fix**:
 1. Check `curl 'http://127.0.0.1:18090/api/state?cid=<cid>' | jq .permissions`
 2. If empty, mcode hasn't reported the current permission mode.
-   Send any message — the next event-stream snapshot will include it.
-3. If the webui shows the wrong value, it's because mcode 0.1.5
-   acp doesn't implement `session/set_mode`. The displayed value
-   is the user's selection, but the actual mcode mode hasn't
-   changed. This will fix itself when mcode implements the method.
+   Send any message — the next SSE event will include it.
+3. If the webui shows the wrong value, confirm the actual change
+   landed by sending another prompt and watching the SSE state —
+   `state.permissions` is rewritten by `POST /api/permissions` on
+   every successful response. A `mcodeSynced: false` plus `warning`
+   field on the response means the route accepted the request but
+   the engine rejected the `session/set_config_option` call (look
+   at the server log for the actual acp error).
 
 ## "Cannot read properties of undefined (reading 'listSessions')"
 
@@ -239,8 +245,11 @@ renamed. If you see this, the webui was loaded from a stale
 cache.
 
 **Fix**: hard-reload. If it persists, check the network tab for
-the main.js response — it should include the version comment
-"v0.5.bx-NN".
+the `/_next/static/chunks/main-app-<hash>.js` (or any chunk under
+`/_next/static/`) response — it should include the webui version
+(`@mavis/webui/package.json`). The Next export content-addresses each
+chunk so a stale one is the symptom of a stale `webapp/out/` rather than
+a missing rebuild.
 
 ## Server won't start: "cannot listen on 127.0.0.1:18090 — EADDRINUSE"
 
@@ -289,8 +298,10 @@ client isn't sending it. Or the token mismatch.
 does nothing.
 
 **Cause**: the mcode binary is not at the expected path. The
-default is `<webui-root>/../../mcode.cmd` (which resolves to
-`%USERPROFILE%\.minimax-code\mcode.cmd`).
+default detection chain (see `server/lib/config.js#MCODE_CMD`) is:
+`$MCODE_CMD` env > `MCODE_WEBUI_SELF_ENTRY` > repo
+`<packages/webui>/../../dist/cli.js` > `~/.minimax-code/mcode.cmd` >
+`PATH` (`mcode`).
 
 **Fix**:
 1. Verify the path: `Test-Path %USERPROFILE%\.minimax-code\mcode.cmd`

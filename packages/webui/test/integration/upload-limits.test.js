@@ -2,7 +2,7 @@
 // End-to-end coverage for PR #55 review point 3 ("Uploads are
 // unbounded"): the real server.js + router + routes/upload.js +
 // lib/upload.js stack with the three upload limits wired through env
-// knobs. Complements test/lib-upload.test.js (parser unit level) with
+// knobs. Complements test/lib/upload.test.js (parser unit level) with
 // the HTTP wire behavior:
 //
 //   - normal upload → 200, exact bytes on disk, size in the response
@@ -14,9 +14,9 @@
 //     upload dir — including a client that tears the socket mid-upload
 //   - non-multipart content-type still 400 (pre-existing behavior)
 //
-// Server spawn pattern copied from test/integration/router-boot.test.js
-// (isolated settings/events/uploads/sessions paths under a mkdtemp dir,
-// loopback HOST, TOKEN explicit empty).
+// Server spawn pattern matches test/integration/router-boot.test.js:
+// isolated settings/events/uploads/sessions paths under a mkdtemp dir,
+// loopback HOST, TOKEN explicit empty.
 
 import { test } from "node:test";
 import { strict as assert } from "node:assert";
@@ -27,24 +27,27 @@ import { join, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import http from "node:http";
 
+import { findFreePort, parseListeningPort } from "../helpers/free-port.js";
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const serverJsPath = join(__dirname, "..", "..", "server.js");
 
-function pickPort() {
-  // 19700..19799 — outside the dev range (18090) and the ranges other
-  // integration files pick (18080/181, 19500..19600).
-  return 19700 + Math.floor(Math.random() * 100);
-}
-
 // Spawn server.js with isolated state + per-test upload limit env
 // overrides (`limits` maps 1:1 onto the MCODE_WEBUI_UPLOAD_* knobs).
+//
+// Port: findFreePort() allocates a kernel ephemeral port. The
+//   returned `port` is the value the child logged on its "listening
+//   on http://host:port" line, NOT the port we asked for —
+//   server/lib/port.js#listenWithPortFallback walks forward on
+//   EADDRINUSE, so the test must read the actual bound port or it
+//   POSTs to a wrong/stale socket (see test/helpers/free-port.js).
 async function spawnServer(limits = {}) {
   const tmpDir = mkdtempSync(join(tmpdir(), "mcode-webui-upload-e2e-"));
   const uploadDir = join(tmpDir, "uploads");
-  const port = pickPort();
+  const requestedPort = await findFreePort();
   const env = {
     ...process.env,
-    PORT: String(port),
+    PORT: String(requestedPort),
     HOST: "127.0.0.1",
     MCODE_WEBUI_SETTINGS_PATH: join(tmpDir, "settings.json"),
     MCODE_WEBUI_EVENTS_PATH: join(tmpDir, "events.ndjson"),
@@ -65,25 +68,42 @@ async function spawnServer(limits = {}) {
   let stderr = "";
   proc.stdout.on("data", (d) => (stdout += d.toString()));
   proc.stderr.on("data", (d) => (stderr += d.toString()));
+  let boundPort = null;
   await new Promise((resolve, reject) => {
     const onChunk = () => {
-      if (/listening on/.test(stdout)) {
+      const p = parseListeningPort(stdout);
+      if (p !== null) {
+        boundPort = p;
         proc.stdout.off("data", onChunk);
+        clearTimeout(timer);
         resolve();
       }
     };
-    proc.stdout.on("data", onChunk);
-    setTimeout(
+    const timer = setTimeout(
       () =>
         reject(
           new Error(
-            `server.js did not start within 3s on port ${port}\nstdout: ${stdout}\nstderr: ${stderr}`,
+            `server.js did not start within 3s on port ${requestedPort}\nstdout: ${stdout}\nstderr: ${stderr}`,
           ),
         ),
       3000,
     );
+    proc.stdout.on("data", onChunk);
   });
-  return { proc, port, tmpDir, uploadDir };
+  // If the server fell back to a different port (rare — findFreePort
+  // already gave us an ephemeral one), trust the line, not our ask.
+  const port = boundPort !== null ? boundPort : requestedPort;
+  return {
+    proc,
+    port,
+    requestedPort,
+    tmpDir,
+    uploadDir,
+    // The child's output, for failure diagnostics. Without this a timeout
+    // reports only "no response within Nms" and the actual reason — a boot
+    // warning, a crash, a slow start — is lost.
+    getLogs: () => ({ stdout, stderr }),
+  };
 }
 
 async function stopServer(server) {
@@ -176,6 +196,20 @@ function postUpload({ port, body, contentType, timeoutMs = 15000 }) {
     }, timeoutMs);
     req.on("error", (e) => {
       if (settled || req.res) return; // post-response reset is expected
+      // A write that breaks *because the server stopped reading* is the
+      // behaviour under test, not a failure: the server answers 413 and closes
+      // without draining the body, so the client's next write can lose the race
+      // against the response and surface EPIPE first.
+      //
+      // Which of the two arrives first is a property of the interleaving, not
+      // of the server, and asserting on it made this test fail roughly one run
+      // in three on an unchanged tree. The 413 is the assertion; let the
+      // `response` event (or the timeout) settle it.
+      //
+      // Connection-level failures are still real failures: nothing was ever
+      // accepted, so there is no response coming.
+      const midStreamAbort = ["EPIPE", "ECONNRESET", "ERR_STREAM_DESTROYED"];
+      if (midStreamAbort.includes(e.code)) return;
       settled = true;
       clearTimeout(timer);
       reject(new Error(`request failed before response: ${e.message}`));
@@ -246,7 +280,19 @@ test("upload-limits: oversized request → 413 mid-stream, no leftover, client w
     const body = multipartBody([
       { name: "file", filename: "huge.bin", content: Buffer.alloc(8 * 1024 * 1024, 0x71) },
     ]);
-    const res = await postUpload({ port: server.port, body });
+    // This is the heaviest test in the suite: it spawns a real server, pushes
+    // 8 MiB, and the server then drains the unread remainder. `node --test` runs
+    // test *files* in parallel, so this one competes with the rest of the suite
+    // for CPU — measured: 5/5 passes in isolation, ~2/3 in a full run at the
+    // default 15s. The bound is therefore a property of the machine's load, not
+    // of the server, and 45s keeps the assertion meaningful (a server that never
+    // answers still fails) without making the test a load detector.
+    const res = await postUpload({ port: server.port, body, timeoutMs: 45_000 }).catch((e) => {
+      const { stdout, stderr } = server.getLogs();
+      throw new Error(
+        `${e.message}\n--- server stdout ---\n${stdout.slice(-2000)}\n--- server stderr ---\n${stderr.slice(-2000)}`,
+      );
+    });
     assert.equal(res.status, 413, `body: ${res.body}`);
     assert.equal(res.json.ok, false);
     assert.equal(res.json.code, "UPLOAD_REQ_TOO_LARGE");
@@ -256,12 +302,19 @@ test("upload-limits: oversized request → 413 mid-stream, no leftover, client w
       "close",
       "413 must close the connection (body was not fully consumed)",
     );
-    // The client handed only a small fraction of the body to the socket
-    // before the response preempted it — the server stopped reading
-    // mid-stream instead of buffering all 8 MiB first.
+    // The client did not hand over the whole body: the server stopped reading
+    // mid-stream and answered instead of buffering all 8 MiB first.
+    //
+    // The property is "less than the whole body", not a byte threshold. An
+    // earlier version asserted `< 4 MiB`, which is a proxy for the same idea
+    // but measures how far the client's write loop got before the close took
+    // effect — a scheduling outcome that varies run to run. It reported a
+    // failure on an unchanged tree (4,308,992 of 8,388,718 written) while the
+    // server had in fact behaved exactly as intended: a 413, `connection:
+    // close`, and the body left unread.
     assert.ok(
-      res.bytesWritten < 4 * 1024 * 1024,
-      `client wrote ${res.bytesWritten} of ${body.length} — server did not abort mid-stream`,
+      res.bytesWritten < body.length,
+      `client wrote ${res.bytesWritten} of ${body.length} — server buffered the whole body instead of aborting mid-stream`,
     );
     assert.deepEqual(listUploads(server.uploadDir), [], "no file, no temp after abort");
   } finally {

@@ -13,6 +13,18 @@
 // All heavy imports are dynamic so a missing node:sqlite (older Node) or a
 // missing data directory degrades to "panel unavailable" instead of killing
 // the webui server.
+//
+// The trajectory subtree (server/trajectory/) is NOT bundled — scripts/build.mjs
+// copies it verbatim into dist/webui/server/trajectory/. The dynamic
+// specifiers below are NON-LITERAL (built from pathToFileURL(TRAJECTORY_DIR +
+// ...) at call time) on purpose: esbuild leaves non-literal imports alone
+// and the resolved file URL is honored by Node at runtime, so the same
+// `load()` works whether server.js sits at packages/webui/server.js or at
+// dist/webui/server.js.
+
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+import { TRAJECTORY_DIR } from "./layout.js";
 
 let cached = null;
 let handler = null;
@@ -20,10 +32,12 @@ let handler = null;
 async function load() {
   if (cached !== null) return cached;
   try {
+    const storeUrl = pathToFileURL(resolve(TRAJECTORY_DIR, "store.mjs")).href;
+    const nodeVerUrl = pathToFileURL(resolve(TRAJECTORY_DIR, "node-version.mjs")).href;
     const [{ openStore, resolveDataDir, resolveHomeDir }, { isNodeSupported }] =
       await Promise.all([
-        import("../trajectory/store.mjs"),
-        import("../trajectory/node-version.mjs"),
+        import(storeUrl),
+        import(nodeVerUrl),
       ]);
     if (!isNodeSupported(process.version)) {
       console.warn("[webui] trajectory studio: node version unsupported, panel disabled");
@@ -50,7 +64,8 @@ export async function getTrajectoryPanelHandler() {
   if (handler) return handler;
   const ctx = await load();
   if (!ctx || ctx.unavailable || !ctx.store) return null;
-  const { createMountedPanelHandler } = await import("../trajectory/http.mjs");
+  const httpUrl = pathToFileURL(resolve(TRAJECTORY_DIR, "http.mjs")).href;
+  const { createMountedPanelHandler } = await import(httpUrl);
   handler = createMountedPanelHandler({
     store: ctx.store,
     homeDir: ctx.homeDir,

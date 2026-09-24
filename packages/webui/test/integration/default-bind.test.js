@@ -17,21 +17,26 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { findFreePort, parseListeningPort } from "../helpers/free-port.js";
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const serverJsPath = join(__dirname, "..", "..", "server.js");
 
-// Port allocation: 19701/19702/19703 — disjoint from router-boot (19500s)
-// and C08 (18080s). Each case gets its OWN deterministic port and the
-// helper only resolves after the child process has fully exited: on
-// Linux, resolving at the listening line and immediately binding the
-// next case raced the dying listener into EADDRINUSE (SIGTERM → close
-// is asynchronous; TIME_WAIT/lingering proc held 0.0.0.0:<port>).
+// Port: each case asks the kernel for an ephemeral port via
+// findFreePort(); assertions compare against the port PARSED from the
+// child's "listening on" line, regardless of any server/lib/port.js
+// fallback. The helper only resolves after the child has fully
+// exited: on Linux, resolving at the listening line and immediately
+// binding the next case raced the dying listener into EADDRINUSE
+// (SIGTERM → close is asynchronous; TIME_WAIT/lingering proc held
+// 0.0.0.0:<port>).
 
-function bootOnce({ port, envOverrides = {}, settingsJson } = {}) {
+async function bootOnce({ envOverrides = {}, settingsJson } = {}) {
   const tmpDir = mkdtempSync(join(tmpdir(), "mcode-webui-bind-"));
+  const requestedPort = await findFreePort();
   const env = {
     ...process.env,
-    PORT: String(port),
+    PORT: String(requestedPort),
     MCODE_WEBUI_SETTINGS_PATH: join(tmpDir, "settings.json"),
     MCODE_WEBUI_EVENTS_PATH: join(tmpDir, "events.ndjson"),
     MCODE_WEBUI_UPLOAD_DIR: join(tmpDir, "uploads"),
@@ -62,7 +67,8 @@ function bootOnce({ port, envOverrides = {}, settingsJson } = {}) {
     }, 4000);
     proc.stdout.on("data", (d) => {
       stdout += d.toString();
-      if (!settled && /listening on/.test(stdout)) {
+      const parsed = parseListeningPort(stdout);
+      if (!settled && parsed !== null) {
         settled = true;
         clearTimeout(bail);
         // Tear the listener down COMPLETELY before resolving so the
@@ -77,7 +83,7 @@ function bootOnce({ port, envOverrides = {}, settingsJson } = {}) {
         void exited.then(() => {
           clearTimeout(hardKill);
           try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
-          resolve({ stdout, port });
+          resolve({ stdout, port: parsed });
         });
       }
     });
@@ -100,7 +106,7 @@ function bootOnce({ port, envOverrides = {}, settingsJson } = {}) {
 }
 
 test("default bind: no env HOST + no settings file → listening on 127.0.0.1", async () => {
-  const { stdout, port } = await bootOnce({ port: 19701 });
+  const { stdout, port } = await bootOnce();
   assert.match(
     stdout,
     new RegExp(`listening on http://127\\.0\\.0\\.1:${port}`),
@@ -109,7 +115,7 @@ test("default bind: no env HOST + no settings file → listening on 127.0.0.1", 
 });
 
 test("LAN opt-in: persisted lanBind:true → listening on 0.0.0.0", async () => {
-  const { stdout, port } = await bootOnce({ port: 19702, settingsJson: { lanBind: true } });
+  const { stdout, port } = await bootOnce({ settingsJson: { lanBind: true } });
   assert.match(
     stdout,
     new RegExp(`listening on http://0\\.0\\.0\\.0:${port}`),
@@ -120,7 +126,6 @@ test("LAN opt-in: persisted lanBind:true → listening on 0.0.0.0", async () => 
 test("explicit env HOST=0.0.0.0 keeps winning over the persisted setting", async () => {
   // lanBind:false on disk + env HOST set → env must own the bind.
   const { stdout, port } = await bootOnce({
-    port: 19703,
     envOverrides: { HOST: "0.0.0.0" },
     settingsJson: { lanBind: false },
   });

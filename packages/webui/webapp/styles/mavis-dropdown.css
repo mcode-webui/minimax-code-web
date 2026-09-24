@@ -1,0 +1,191 @@
+/* Account-menu skin — the desktop client's `mavis-dropdown`, `mavis-user-dropdown`
+ * and `mavis-usage-popover-overlay` rules, copied verbatim.
+ *
+ * Why a copy: antd owns the widget, this layer owns the surface, and the surface
+ * is expressed as the desktop's own class names rather than as theme tokens —
+ * half-pixel borders, fixed widths, the 10px/20px shadows and the row's padding
+ * have no token to derive them from. The components opt in by putting the same
+ * class names on `overlayClassName` / `rootClassName` that the desktop puts
+ * there, so the class strings in the JSX stay 1:1 with the reference.
+ *
+ * Provenance — installed client 3.0.67-inside.44:
+ *   /opt/MiniMax Code/app/app-64/resources/app.asar
+ *     out/_next/static/css/053bbf300f9cfb17.css   (dropdown + user-dropdown block)
+ *     out/_next/static/css/0316aef61590ecd6.css   (usage-popover block)
+ * Re-read it with `node packages/webui/scripts/desktop-reference.mjs --surface
+ * user-footer` against a running client, or by unpacking the asar.
+ *
+ * Two parts of the desktop's block are deliberately not copied:
+ *   - `.matrix-menu-item > div { gap: 6px }`. The desktop's Tailwind build emits
+ *     utilities with `!important` (`.gap-2{gap:.5rem!important}`), so that rule
+ *     loses there and its rows measure an 8px gap. Ours is not built that way, so
+ *     copying the rule would give us a 6px gap the desktop does not have; `gap-2`
+ *     on the row supplies the 8px instead.
+ *   - the `.ant-popover-arrow` colours: both menus render with `arrow={false}`.
+ *
+ * Measured against the live client (light theme, expanded sidebar):
+ *   dropdown 244x374, padding 4px, radius 12px, 0 0 10px 0 shadow
+ *   menu ul  234 wide, padding 0, radius 0, no shadow
+ *   item li  234x32, padding 0, margin 0, radius 8px
+ *   row      234x32, padding 6px, icon box 18x18, label line-height 20px
+ *   divider  234x8, padding 0 8px, opacity 1
+ *   popover  222 wide, inner padding 4px, radius 12px, 0 0 20px 0 shadow
+ */
+
+.mavis-dropdown.ant-dropdown {
+  background-color:var(--bg_grouped_secondary_elevated)!important;
+  border-radius:12px!important;
+  border:1px solid var(--border_default);
+  box-shadow:0 0 20px 0 var(--shadow_default);
+  overflow:hidden
+}
+
+.mavis-dropdown.ant-dropdown .ant-dropdown-menu {
+  background-color:var(--bg_grouped_secondary_elevated)!important;
+  padding:4px!important;
+  border-radius:12px!important;
+  box-shadow:none!important
+}
+
+/* The row carries the padding (`.matrix-menu-item` in the JSX), so the item
+   itself must not: antd's default `5px 12px` would add to it and the rows would
+   sit 20px in from the panel edge instead of 6. */
+.mavis-dropdown.ant-dropdown .ant-dropdown-menu .ant-dropdown-menu-item {
+  padding:0;
+  border-radius:8px;
+  min-width:0
+}
+
+.mavis-dropdown.ant-dropdown .ant-dropdown-menu .ant-dropdown-menu-item:hover {
+  background-color:var(--bg_interaction_tertiary_hover)
+}
+
+.mavis-dropdown.ant-dropdown .ant-dropdown-menu .ant-dropdown-menu-item.ant-dropdown-menu-item-disabled:hover {
+  background-color:#0000!important
+}
+
+.mavis-dropdown.ant-dropdown .ant-dropdown-menu .ant-dropdown-menu-title-content {
+  min-width:0;
+  overflow:hidden
+}
+
+.mavis-dropdown.ant-dropdown .ant-dropdown-menu .ant-dropdown-menu-submenu {
+  border-radius:8px
+}
+
+.mavis-dropdown.ant-dropdown .ant-dropdown-menu .ant-dropdown-menu-submenu:hover {
+  background-color:var(--bg_interaction_tertiary_hover)
+}
+
+.mavis-dropdown.ant-dropdown .ant-dropdown-menu .ant-dropdown-menu-submenu .ant-dropdown-menu-submenu-title {
+  padding:0!important
+}
+
+.mavis-dropdown.ant-dropdown .ant-dropdown-menu .ant-dropdown-menu-submenu .ant-dropdown-menu-submenu-title:hover {
+  background-color:#0000!important
+}
+
+/* The account menu itself: a 244px panel, not antd's content-sized default. */
+.mavis-dropdown.mavis-user-dropdown.ant-dropdown {
+  box-sizing:border-box;
+  width:244px!important;
+  min-width:244px!important;
+  padding:4px;
+  background-color:var(--bg_grouped_secondary_elevated)!important;
+  border:.5px solid var(--border_default);
+  border-radius:12px!important;
+  box-shadow:0 0 10px 0 var(--shadow_default)
+}
+
+.mavis-dropdown.mavis-user-dropdown.ant-dropdown>div {
+  display:flex;
+  width:100%;
+  flex-direction:column;
+  gap:4px
+}
+
+.mavis-dropdown.mavis-user-dropdown.ant-dropdown .ant-dropdown-menu {
+  box-sizing:border-box;
+  width:100%!important;
+  min-width:0!important;
+  padding:0!important;
+  border:none;
+  border-radius:0!important;
+  box-shadow:none!important
+}
+
+.mavis-dropdown.mavis-user-dropdown.ant-dropdown .ant-dropdown-menu .ant-dropdown-menu-item,
+.mavis-dropdown.mavis-user-dropdown.ant-dropdown .ant-dropdown-menu .ant-dropdown-menu-submenu {
+  margin:0
+}
+
+.mavis-dropdown.mavis-user-dropdown.ant-dropdown .ant-dropdown-menu .mavis-user-menu-icon>svg {
+  width:18px;
+  height:18px
+}
+
+/* antd's own disabled item is 20% opacity (`opacity-20` in the JSX); the divider
+   is a disabled item too and has to keep full opacity for its hairline. */
+.mavis-dropdown.mavis-user-dropdown.ant-dropdown .ant-dropdown-menu .mavis-user-menu-divider {
+  height:8px!important;
+  padding:0 8px;
+  opacity:1!important
+}
+
+/* The flyout a submenu opens into ("Contact us", "Learn more"). Same surface as
+   the panel it hangs off, one radius smaller. */
+.mavis-dropdown-root-sub-menu.mavis-user-dropdown-submenu.ant-dropdown-menu-submenu .ant-dropdown-menu {
+  box-sizing:border-box;
+  padding:4px!important;
+  border:.5px solid var(--border_default);
+  border-radius:12px!important;
+  box-shadow:0 0 10px 0 var(--shadow_default)
+}
+
+.mavis-dropdown-root-sub-menu.mavis-user-dropdown-submenu.ant-dropdown-menu-submenu .ant-dropdown-menu .ant-dropdown-menu-item {
+  margin:0;
+  padding:0;
+  border-radius:8px
+}
+
+.mavis-dropdown-root-sub-menu.mavis-user-dropdown-submenu.ant-dropdown-menu-submenu .ant-dropdown-menu .matrix-menu-item {
+  min-height:32px;
+  padding:6px
+}
+
+/* The usage flyout. antd's `Popover` sizes to its content; this one is a fixed
+   222px so the two quota rows line up with the row that opens them. */
+.mavis-popover-overlay.mavis-usage-popover-overlay.ant-popover {
+  width:222px;
+  min-width:222px;
+  max-width:222px
+}
+
+.mavis-popover-overlay.mavis-usage-popover-overlay.ant-popover .ant-popover-inner {
+  box-sizing:border-box;
+  width:222px!important;
+  padding:4px!important;
+  overflow:hidden;
+  background:var(--bg_grouped_secondary_elevated)!important;
+  border:1px solid var(--border_default)!important;
+  border-radius:12px!important;
+  box-shadow:0 0 20px 0 var(--shadow_default)!important
+}
+
+/* Custom-content popups — the composer's selectors. antd still owns the shell
+   (portal, placement, dismissal, the trigger's `ant-dropdown-trigger` wiring),
+   but the panel inside draws its own chrome, so the wrapper must draw none:
+   without this it would be a white 12px-radius card *behind* the panel, and the
+   panel's own hairline and shadow would sit on top of a second one. */
+.mavis-dropdown.mavis-dropdown-custom-content.ant-dropdown:not(.native-chat-actions-dropdown) {
+  overflow:visible;
+  border:0;
+  background:#0000!important;
+  box-shadow:none
+}
+
+/* Rows in a `mavis-dropdown-compact` menu sit flush; the desktop keeps this so a
+   compact menu's first row is not pushed down by the panel's own padding. */
+.mavis-dropdown.mavis-dropdown-compact .ant-dropdown-menu .ant-dropdown-menu-item {
+  margin-bottom:0
+}

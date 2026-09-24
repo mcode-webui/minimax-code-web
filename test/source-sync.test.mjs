@@ -589,6 +589,12 @@ function verificationFixture(t) {
   mkdirSync(path.join(root, 'scripts'), { recursive: true });
   const verifier = path.join(root, 'scripts/verify.mjs');
   copyFileSync(new URL('../scripts/verify.mjs', import.meta.url), verifier);
+  // The verify pipeline invokes additional repository scripts by direct path
+  // (not through the fake package manager). The fixture only exercises the
+  // pipeline's routing, so we stub these scripts to a passing no-op rather
+  // than running the real checks against an empty build tree.
+  mkdirSync(path.join(root, 'scripts/lib'), { recursive: true });
+  writeFileSync(path.join(root, 'scripts/check-webui-bundle.mjs'), `console.log('Web UI server bundle ok (fixture stub).');`);
   const manager = path.join(directory, 'manager.cjs');
   writeFileSync(manager, `
     const fs = require('node:fs');
@@ -629,15 +635,21 @@ function verificationFixture(t) {
   };
 }
 
-test('platform verification omits only the compiler gate and invalid profiles fail closed', t => {
+test('platform verification omits only the compiler gates and invalid profiles fail closed', t => {
   const f = verificationFixture(t);
   const full = f.run(['--list']);
   const platform = f.run(['--profile', 'platform', '--list']);
   assert.equal(full.status, 0, full.stderr);
   assert.equal(platform.status, 0, platform.stderr);
   const gates = full.stdout.trim().split('\n');
-  assert.ok(gates.includes('typecheck'));
-  assert.deepEqual(platform.stdout.trim().split('\n'), gates.filter(g => g !== 'typecheck'));
+  // Compiler inputs are identical across the matrix, so any step whose name
+  // contains "typecheck" is marked fullOnly and elided on the platform profile.
+  const fullOnlyGates = ['typecheck', 'webui:typecheck'];
+  for (const name of fullOnlyGates) assert.ok(gates.includes(name), `${name} missing from full profile`);
+  assert.deepEqual(
+    platform.stdout.trim().split('\n'),
+    gates.filter(g => !fullOnlyGates.includes(g)),
+  );
   assert.notEqual(f.run(['--profile', 'platfrom', '--list']).status, 0);
   assert.notEqual(f.run(['--unknown']).status, 0);
   assert.equal(existsSync(f.reportDir), false);

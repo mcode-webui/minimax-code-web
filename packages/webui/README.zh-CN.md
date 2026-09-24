@@ -3,8 +3,9 @@
 > 简体中文 | [English](README.md)
 
 > **MiniMax Code 智能体运行时的浏览器前端。**
-> 通过 HTTP/WebSocket 流式传输 `mcode acp` / `mcode exec` 会话。零 npm
-> 依赖；运行于 Node 22.19+。
+> 通过 HTTP/SSE 流式传输 `mcode acp` / `mcode exec` 会话。三个
+> 运行时依赖（`hono`、`@hono/node-server`、`@mavis/shared`）；
+> 运行于 Node 22.19+。
 
 Web UI 是本仓库的一等组成部分 —— 驱动 TUI（`mcode acp`，基于 stdio 的
 Agent Client Protocol）的同一个引擎同时驱动浏览器前端，与终端 UI
@@ -29,7 +30,7 @@ node packages/webui/server.js
 
 服务器默认绑定回环地址。局域网暴露需显式选择开启
 （`--host` / `HOST` 环境变量，或持久化的 `lanBind` 设置）。首次
-启动时会生成一个令牌并通过事件流发送给浏览器；非本地请求必须携带
+启动时会生成一个令牌并通过 SSE 发送给浏览器；非本地请求必须携带
 `?token=<value>` 或 `Authorization: Bearer <value>`。
 
 在非回环网络上推荐的做法：
@@ -44,15 +45,15 @@ mcode webui --host 0.0.0.0
 
 | 文件 | 说明 |
 |------|------|
-| `server.js` | HTTP + WebSocket 服务器引导 |
-| `server/` | 路由器、路由模块与纯函数库（`server/lib/`） |
+| `server.js` | 源码模式入口：注册 workspace 导入解析器后加载服务端。构建产物运行的是 `dist/webui/server.js` 这个 bundle |
+| `server/` | 路由器、路由模块与纯函数库（`server/lib/`）；启动逻辑位于 `server/bootstrap.js` |
 | `acp.mjs` | `mcode acp` JSON-RPC 客户端（通过 stdio 派生引擎） |
-| `public/` | 静态前端 SPA |
+| `webapp/` | UI：Next.js App Router 应用，静态导出到 `webapp/out`，作为唯一的静态根被服务 |
+| `public/` | 仅剩静态资源——轨迹工作室的界面位于 `public/trajectory/` |
 | `server/trajectory/` | 会话轨迹工作室（只读 SQLite 检视） |
 | `references/SECURITY-NOTES.md` | **权威安全披露**（在回环之外暴露前必读） |
 | `docs/` | ARCHITECTURE、API、CAPABILITIES、DEVELOPMENT、TROUBLESHOOTING、CHANGELOG |
-| `test/` | `node:test` 测试套件 |
-| `checks/` | 打桩单元检查（`t.mock.module`；需要 module-mocks 标志） |
+| `test/` | `node:test` 测试套件。目录结构与 `server/` 下的被测模块路径一一对应：`test/lib/<name>.{test.js,check.mjs}` 对应 `server/lib/<name>.js`，`test/routes/<name>.{test.js,check.mjs}` 对应 `server/routes/<name>.js`，`test/server/<name>.{test.js,check.mjs}` 对应顶层 router / app / server bootstrap。`*.check.mjs` 文件因使用 `t.mock.module` 需要 `--experimental-test-module-mocks` 标志；`*.test.js` 不需要。`test/tooling/` 覆盖 `scripts/` 下的脚本。辅助模块（`_setup.js`、`mavis-sources.mjs`）位于 `test/helpers/`。`test/integration/`、`test/matrix/`、`test/trajectory/`、`test/fixtures/` 保持不变。 |
 | `scripts/` | 文档对齐检查器、SBOM 生成器、测试数据库夹具构建器 |
 | `package.json` | 包元数据 + 清单（`mcodeWebui.capabilities`） |
 
@@ -64,7 +65,7 @@ mcode webui --host 0.0.0.0
 | # | 展示内容 |
 |---|---|
 | 1 | **启动** —— 首次启动时的空聊天视图 |
-| 2 | **流式聊天中** —— 历史已恢复，流式增量正在传输，tok/s 仪表 |
+| 2 | **流式聊天中** —— 历史已恢复，SSE 增量正在传输，tok/s 仪表 |
 | 3 | **设置面板** —— 外观 / 语言 / 局域网访问开关 |
 | 4 | **聊天输入** —— 已输入提示词，发送/停止控件，`/` 与 `@file` 提示 |
 | 5 | **发送后 + 工具调用** —— 助手流式输出，工具调用块自动折叠 |
@@ -78,7 +79,7 @@ mcode webui --host 0.0.0.0
 
 | 能力 | 一句话说明 |
 |---|---|
-| `chat-streaming` | 来自 `mcode acp` 的流式增量逐令牌渲染 |
+| `chat-streaming` | 来自 `mcode acp` 的 SSE 增量逐令牌渲染 |
 | `tool-execution` | 从 acp `tool_call` 事件转发的 Bash / Read / Write / Edit |
 | `plan-mode` | 计划审阅模态框，含 `agree` / `skip` / `add context` 选项 |
 | `ask-user-tool` | 2–4 个选项的提问模态框，带 `Other` 自由文本回退 |
@@ -87,7 +88,7 @@ mcode webui --host 0.0.0.0
 | `session-management` | WebUI 会话的列出 / 创建 / 切换 / 删除 |
 | `file-attachments` | 拖拽 / 点击 / 粘贴上传 + `@path` 注入 |
 | `quota-usage` | `mmx quota show` + 每轮上下文窗口显示 |
-| `bilingual-ui` | 通过 `t(key)` 查找表实现 zh-CN / en 语言切换 |
+| `bilingual-ui` | 通过类型化的 `t(MessageKey)` 查找实现 zh-CN / en 语言切换 |
 | `lan-sharing` | 默认回环；局域网暴露需显式选择开启（`HOST` 环境变量 / `lanBind` 设置）+ 运行时开/关切换 |
 | `token-auth` | 非本地请求使用 `?token=` / `Authorization: Bearer` |
 | `mobile-responsive` | <900px 时为抽屉式，<600px 时为单列 |
@@ -122,7 +123,7 @@ FTS5）为 **>=22.19 <23 || >=24 <27**，与运行时自身的引擎范围一致
 ## 文档
 
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) —— 运行时拓扑、请求生命周期、模块契约
-- [`docs/API.md`](docs/API.md) —— HTTP/WebSocket 接口面
+- [`docs/API.md`](docs/API.md) —— HTTP/SSE 接口面
 - [`docs/CAPABILITIES.md`](docs/CAPABILITIES.md) —— 能力深入解析
 - [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) —— 开发工作流、测试
 - [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) —— 常见故障
@@ -134,7 +135,7 @@ FTS5）为 **>=22.19 <23 || >=24 <27**，与运行时自身的引擎范围一致
 在绑定到回环之外的任何地址之前，请阅读
 [`references/SECURITY-NOTES.md`](references/SECURITY-NOTES.md)。要点：
 默认绑定回环、可信来源 CORS、逐请求 `authorize()` 门禁（失败关闭的
-审计）、独立的异常 REST 快照通道、工作区围栏、受限上传、速率限制、无遥测。
+审计）、独立的异常 SSE 通道、工作区围栏、受限上传、速率限制、无遥测。
 
 ## 许可证
 

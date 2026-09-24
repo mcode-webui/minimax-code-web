@@ -3,24 +3,43 @@
   "version": "2.0.0",
   "private": true,
   "type": "module",
-  "description": "Browser frontend for MiniMax Code. Serves the web chat UI over HTTP/WebSocket and drives the mcode engine (ACP over stdio). Migrated from the mcode-webui community plugin (PR #55 of MiniMax-Code-Plugins) into the product as a first-class package.",
+  "description": "Browser frontend for MiniMax Code. Serves the web chat UI over HTTP/SSE and drives the mcode engine (ACP over stdio). Migrated from the mcode-webui community plugin (PR #55 of MiniMax-Code-Plugins) into the product as a first-class package.",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
-    "test": "node --experimental-test-module-mocks --test test/*.test.js checks/*.check.mjs test/integration/*.test.js test/matrix/*.test.js test/trajectory/*.mjs",
-    "test:unit": "node --experimental-test-module-mocks --test test/*.test.js",
-    "test:mocked": "node --experimental-test-module-mocks --test checks/*.check.mjs",
-    "test:integration": "node --experimental-test-module-mocks --test test/integration/*.test.js test/matrix/*.test.js",
+    "webapp:dev": "next dev webapp --port 18091",
+    "webapp:build": "next build webapp",
+    "webapp:typecheck": "tsc -p webapp/tsconfig.json --noEmit",
+    "test:webapp": "node --import tsx --import ./test/helpers/mavis-sources.mjs --test \"webapp/test/**/*.test.ts\"",
+    "test": "node --import tsx --import ./test/helpers/mavis-sources.mjs --experimental-test-module-mocks --test test/lib/*.test.js test/lib/*.check.mjs test/lib/*/*.test.js test/lib/*/*.check.mjs test/routes/*.test.js test/routes/*.check.mjs test/server/*.test.js test/server/*.check.mjs test/tooling/*.test.js test/integration/*.test.js test/matrix/*.test.js test/trajectory/*.mjs",
+    "test:unit": "node --import tsx --import ./test/helpers/mavis-sources.mjs --experimental-test-module-mocks --test test/lib/*.test.js test/lib/*/*.test.js test/routes/*.test.js test/server/*.test.js test/tooling/*.test.js",
+    "test:mocked": "node --import tsx --import ./test/helpers/mavis-sources.mjs --experimental-test-module-mocks --test test/lib/*.check.mjs test/lib/*/*.check.mjs test/routes/*.check.mjs test/server/*.check.mjs",
+    "test:integration": "node --import tsx --import ./test/helpers/mavis-sources.mjs --experimental-test-module-mocks --test test/integration/*.test.js test/matrix/*.test.js",
     "check": "node scripts/check-docs-alignment.mjs",
     "check:ci": "node scripts/check-docs-alignment.mjs --ci",
     "sbom": "node scripts/gen-sbom.mjs",
     "trajectory:doctor": "node server/trajectory/main.mjs --doctor",
     "trajectory:serve": "node server/trajectory/main.mjs --serve",
-    "test:trajectory": "node --test test/trajectory/*.mjs"
+    "test:trajectory": "node --import tsx --import ./test/helpers/mavis-sources.mjs --test test/trajectory/*.mjs"
   },
   "engines": {
     "node": ">=22.19 <23 || >=24.2 <27"
+  },
+  "devDependencies": {
+    "@ant-design/nextjs-registry": "1.3.0",
+    "@types/node": "26.6.2",
+    "@types/react": "18.3.31",
+    "@types/react-dom": "18.3.7",
+    "antd": "5.29.3",
+    "autoprefixer": "10.6.1",
+    "marked": "18.0.12",
+    "next": "14.2.35",
+    "postcss": "8.5.28",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "tailwindcss": "3.4.19",
+    "typescript": "5.9.3"
   },
   "mcodeWebui": {
     "defaultPort": 18090,
@@ -29,7 +48,7 @@
     "capabilities": [
       {
         "name": "chat-streaming",
-        "description": "Streams model output token-by-token from the mcode acp subprocess over the WebSocket event stream (`GET /api/stream`). Each delta event includes `text` and `isPartial` so the browser can render progressive assistant replies without buffering the full response."
+        "description": "Streams model output token-by-token from the mcode acp subprocess via Server-Sent Events (`GET /api/events`). Each delta event includes `text` and `isPartial` so the browser can render progressive assistant replies without buffering the full response."
       },
       {
         "name": "tool-execution",
@@ -69,7 +88,7 @@
       },
       {
         "name": "lan-sharing",
-        "description": "Binds loopback `127.0.0.1:18090` by default; LAN exposure is an explicit opt-in — the `HOST` env var or the persisted `lanBind` setting (`POST /api/settings {lanBind: true}`, effective on restart). A runtime toggle (`POST /api/settings {lanBroadcast: false}`) additionally closes the LAN gate with a bilingual 403 page. The settings snapshot discloses the live exposure via `lanExposed` / `bindRestartPending` / `lanExposureNotice`."
+        "description": "Binds loopback `127.0.0.1:18090` by default; LAN exposure is an explicit opt-in \u2014 the `HOST` env var or the persisted `lanBind` setting (`POST /api/settings {lanBind: true}`, effective on restart). A runtime toggle (`POST /api/settings {lanBroadcast: false}`) additionally closes the LAN gate with a bilingual 403 page. The settings snapshot discloses the live exposure via `lanExposed` / `bindRestartPending` / `lanExposureNotice`."
       },
       {
         "name": "token-auth",
@@ -82,8 +101,7 @@
     ],
     "endpoints": {
       "health": "GET /api/health",
-      "alerts": "GET /api/alerts (REST snapshot)",
-      "stream": "GET /api/stream (WebSocket event stream)",
+      "events": "GET /api/events (SSE)",
       "state": "GET /api/state",
       "sessions": "GET|POST|DELETE /api/sessions[/:id|/switch]",
       "chat": "POST /api/send|stop|cmd",
@@ -96,5 +114,10 @@
       "debug": "GET|POST /api/debug/* (DEBUG_INJECT gated)"
     }
   },
-  "license": "MIT"
+  "license": "MIT",
+  "dependencies": {
+    "@hono/node-server": "^2.1.1",
+    "@mavis/shared": "workspace:*",
+    "hono": "^4.7.11"
+  }
 }

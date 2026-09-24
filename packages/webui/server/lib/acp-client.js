@@ -5,11 +5,10 @@
 
 import { McodeAcpClient } from "../../acp.mjs";
 import { DEFAULT_WORKSPACE, MCODE_RUNTIME_DB } from "./config.js";
-import { syncActiveCapabilities } from "./capability.js";
-import { deleteMcodeSessionFromDb } from "./db.js";
+import { deleteMcodeSessionFromDb } from "./mcode-session-delete.js";
 
 // v0.5.bu: 拉 mcode 真实 session 列表（mcode acp session/list 协议）
-// 数据源：mcode TUI 自己的 session 存储（不是 webui 的 .webui-sessions.json）
+// 数据源：mcode TUI 自己的 session 存储（不是 webui 的 sessions.json）
 // 按 cwd 过滤（mcode 每个 session 都有 cwd 字段，匹配 cs.workspace.dir 才显示）
 let mcodeSessionsCache = { ws: null, sessions: [], fetchedAt: 0 };
 
@@ -27,8 +26,6 @@ export async function getMcodeAcpClient() {
     try {
       await client.start();
       _mcodeAcpSingleton = client;
-      // 播种运行时能力注册表（声明清单/惰性探测/旧引擎回退，见 capability.js）
-      syncActiveCapabilities(client.capabilities);
       console.log(`[acp] singleton client started pid=${client.pid || "?"}`);
       return client;
     } catch (e) {
@@ -55,9 +52,12 @@ export async function listAllMcodeSessions() {
     return r && Array.isArray(r.sessions) ? r.sessions : [];
   } catch (e) {
     console.warn(`[acp] listAllMcodeSessions failed: ${e.message}`);
-    // v2026-09-23: 失败时必须 stop 再弃引用 —— 只置 null 会泄漏 mcode acp 子进程，
-    //   其 stdio 管道撑住调用方事件循环（无登录态环境里 node --test 跑完不退出；
-    //   生产环境 auth 过期时每次失败都泄漏一个子进程）。
+    // Stop before dropping the reference. Nulling alone leaks the subprocess:
+    // its stdio pipes keep the caller's event loop alive, so `node --test` never
+    // exits in a logged-out environment, and in production every auth failure
+    // leaks one child. (Fix landed on main as 7590309; carried through the
+    // rebase by hand because the rest of main's change to this file is the
+    // superseded transport.)
     if (_mcodeAcpSingleton === client) {
       _mcodeAcpSingleton = null;
       try { client.stop(); } catch {}
@@ -121,7 +121,7 @@ export async function getMcodeSessionTitle(mcodeSessionId) {
     return hit && hit.title ? hit.title : null;
   } catch (e) {
     console.warn(`[acp] getMcodeSessionTitle failed: ${e.message}`);
-    // v2026-09-23: 同 listAllMcodeSessions —— stop 后再弃引用，避免泄漏子进程。
+    // Same as listAllMcodeSessions — stop before dropping the reference.
     if (_mcodeAcpSingleton === client) {
       _mcodeAcpSingleton = null;
       try { client.stop(); } catch {}
@@ -157,7 +157,7 @@ export function shutdownMcodeAcpSingleton() {
 // v0.5.by: 暴露 mcode acp initialize 响应 (含 agentInfo) 给能力探测
 //  - 用于 GET /api/protocol/capabilities 返回动态 mcode version (不 hardcode)
 //  - 不暴露 _mcodeAcpSingleton 内部,只读 agentInfo
-//  - mcode 0.1.5 acp initialize 返 { protocolVersion, agentCapabilities, agentInfo: { name, title, version } }
+//  - initialize answers with { protocolVersion, agentCapabilities, agentInfo: { name, title, version } }
 export function getMcodeServerInfo() {
   if (!_mcodeAcpSingleton || !_mcodeAcpSingleton.capabilities) return null;
   return _mcodeAcpSingleton.capabilities.agentInfo || null;

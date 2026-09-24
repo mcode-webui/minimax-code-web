@@ -40,9 +40,10 @@
 - **Reads `~/.minimax/v2/sqlite/runtime-state.sqlite`** (read-only) for
   real token usage. The plugin **never** writes that file.
 - **Writes file uploads to `MCODE_WEBUI_UPLOAD_DIR`** (default
-  `.webui-uploads/` next to the webui), inside a bounded streaming
-  parser with request / file / quota limits (§3.2). No files outside
-  that directory are written.
+  `$WEBUI_DATA_DIR/uploads`, where `WEBUI_DATA_DIR` defaults to
+  `~/.mcode-webui`), inside a bounded streaming parser with request /
+  file / quota limits (§3.2). No files outside that directory are
+  written.
 - **Workspace changes and directory browsing are contained** to allowed
   roots (default: user home + default workspace + system tmp;
   `MCODE_WEBUI_WORKSPACE_ROOTS` replaces the set). See §4.
@@ -77,7 +78,7 @@ settings API discloses it via `lanExposed` / `bindRestartPending` /
 
 **No upstream model API calls from the webui itself.** The webui is a
 front-end for `mcode acp` / `mcode exec`, which handles the model call.
-The webui only forwards stdin / parses stdout / renders the event stream (`GET /api/stream`).
+The webui only forwards stdin / parses stdout / renders the SSE stream.
 
 ---
 
@@ -98,9 +99,8 @@ The webui only forwards stdin / parses stdout / renders the event stream (`GET /
 
 ### 2.3 Token in URL query string
 - Browser opens `http://<host>:18090/?token=<TOKEN>` and the webui
-  auto-injects the token into every `fetch` call (and into the
-  `/api/stream` WebSocket handshake) as `?token=` AND as
-  `Authorization: Bearer`.
+  auto-injects the token into every `fetch` / `EventSource` call as
+  `?token=` AND as `Authorization: Bearer`.
 - **Risk**: query string ends up in browser history, server access logs
   (if any proxy / dev-tools captures it), and `Referer` headers sent to
   any external resource (none, in our case, but the webui's static files
@@ -119,7 +119,7 @@ The webui only forwards stdin / parses stdout / renders the event stream (`GET /
   `Authorization: Bearer` header instead of a token URL.
 
 ### 2.4 Error-message redaction
-- Token is never included in JSON responses, error bodies, or event-stream
+- Token is never included in JSON responses, error bodies, or SSE
   payloads. Error responses follow `{ok: false, error: "<message>"}` —
   no request URL or headers are reflected.
 - See `test/lib-config.test.js` and `test/lib-lan.test.js` for coverage
@@ -252,8 +252,7 @@ In order of operational cost:
 5. **Rotate the token before any cross-origin exposure** — operators
    who open the server to the LAN should rotate the token (§9.3) so any
    previously-leaked value becomes inert. The new value is broadcast
-   over the event stream (`/api/stream`) to live clients and stored in
-   their `localStorage`.
+   over SSE to live clients and stored in their `localStorage`.
 
 ### Cross-references
 
@@ -261,7 +260,7 @@ In order of operational cost:
 - §2.3 — Token in URL query string (related exfiltration vector)
 - §3 — Destructive endpoints (`DELETE /api/sessions/:id`,
   `POST /api/settings {resetToken: true}`, `/api/debug/*`)
-- §9 — Token auth gate + `auth.token_rotated` broadcast over the event stream
+- §9 — Token auth gate + `auth.token_rotated` SSE broadcast
 - `test/router-cors.test.js` — locks the trusted-origin policy
   (`test/lib-lan-origins.test.js` locks the trust-set builder)
 - `docs/HTTPS-REVERSE-PROXY.md` — adding a reverse proxy's external
@@ -329,11 +328,12 @@ already-deleted sid yields `outcome: "already_absent"`, not an error.
 ### 3.2 File upload
 
 `POST /api/upload` writes to `MCODE_WEBUI_UPLOAD_DIR` (default
-`.webui-uploads/` next to the webui). Files are stored with their
-original names plus a uuid prefix to prevent collisions. The directory
-is created on demand; no symlink resolution is performed on the target
-path (so a hostile `MCODE_WEBUI_UPLOAD_DIR=/etc` is the user's problem,
-not the plugin's).
+`$WEBUI_DATA_DIR/uploads`, where `WEBUI_DATA_DIR` defaults to
+`~/.mcode-webui`). Files are stored with their original names plus a
+uuid prefix to prevent collisions. The directory is created on demand;
+no symlink resolution is performed on the target path (so a hostile
+`MCODE_WEBUI_UPLOAD_DIR=/etc` is the user's problem, not the
+plugin's).
 
 **Bounded streaming with three enforced limits (v2 security fix, PR
 #55 review point 3)**: the multipart parser is a streaming state
@@ -375,7 +375,7 @@ bind per §1 (env `HOST` > persisted `lanBind` > loopback `127.0.0.1`).
 
 Endpoints under `/api/debug/*` are gated by `DEBUG_INJECT=1`. The
 two currently implemented routes are `inject` (force a server-side event
-into the event stream for testing) and `state` (return server-internal
+into the SSE stream for testing) and `state` (return server-internal
 state for debugging). **Never set `DEBUG_INJECT=1` in production** — it
 bypasses the standard error handling.
 
@@ -396,8 +396,9 @@ crash) leaves the child.
 | Path | Access | Purpose |
 |------|--------|---------|
 | `~/.minimax/v2/sqlite/runtime-state.sqlite` | **read-only** (sqlite3 `-readonly`) | Real token usage for the usage panel. See `server/lib/mavis-usage.js`. |
-| `~/.minimax-code/webui/.webui-sessions.json` | read+write | webui-side session store (atomic write, corruption-explicit — see below). |
-| `~/.minimax-code/webui/.webui-uploads/` | write | File upload target (configurable via `MCODE_WEBUI_UPLOAD_DIR`; bounded by the §3.2 limits). |
+| `~/.mcode-webui/sessions.json` | read+write | webui-side session store (atomic write, corruption-explicit — see below). |
+| `~/.mcode-webui/uploads/` | write | File upload target (configurable via `MCODE_WEBUI_UPLOAD_DIR`; bounded by the §3.2 limits). |
+| `~/.mcode-webui/settings.json` | read+write | Settings + token (see §9). |
 | `<user-selected workspace, within allowed roots>` | read+list | Workspace picker (`/api/workspace/browse`). Reads directory tree only, no execution. Contained — see below. |
 | `~/.minimax/runtime/cwd.json` | read | mcode TUI's last cwd (used as workspace default). Read-only — never written. |
 
@@ -442,15 +443,15 @@ roots**:
 
 ### 4.2 Session-store persistence (v2 hardening, PR #55 review point 5)
 
-The webui-side session store (`.webui-sessions.json`) is written
-atomically and fails loud:
+The webui-side session store (`sessions.json`, under `WEBUI_DATA_DIR`,
+default `~/.mcode-webui`) is written atomically and fails loud:
 
 - **Atomic writes** — save writes a same-directory temp file
-  (`.tmp`) then `rename()`s it into place (same directory → same
-  filesystem → rename is atomic). The main file on disk is always
-  either the complete old content or the complete new content; a crash
-  mid-write can only leave a `.tmp` (cleaned on the next save), never a
-  truncated half-written store.
+  (`sessions.json.tmp`) then `rename()`s it into place (same directory
+  → same filesystem → rename is atomic). The main file on disk is
+  always either the complete old content or the complete new content;
+  a crash mid-write can only leave a `.tmp` (cleaned on the next save),
+  never a truncated half-written store.
 - **Single-writer serialization** — the server is a single Node
   process (no cluster/fork/worker) and all persistence calls are
   synchronous, so two saves cannot interleave at the syscall level.
@@ -496,40 +497,36 @@ log + a disabled feature) — it does not crash.
 
 ## 7. Testing & reproducibility
 
-- `npm test` runs `node --experimental-test-module-mocks --test
-  test/*.test.js checks/*.check.mjs test/integration/*.test.js
-  test/matrix/*.test.js` (mocked suites live outside `test/` so the
-  flagless marketplace root gate never trips on the mock flag — see
-  docs/CI.md "Test layout and suite routing").
-- No lint gate exists: the `lint` script was removed in the
-  2026-09-20 rigor fix (this tree never contained an ESLint or
-  Prettier config; a declared gate that never ran green was deleted
-  along with its unused devDependencies — see docs/CI.md honesty
-  notes).
+- `pnpm --filter @mavis/webui test` runs
+  `node --experimental-test-module-mocks --test test/lib/*.test.js
+  test/lib/*.check.mjs test/lib/*/*.test.js test/lib/*/*.check.mjs
+  test/routes/*.test.js test/routes/*.check.mjs test/server/*.test.js
+  test/server/*.check.mjs test/tooling/*.test.js
+  test/integration/*.test.js test/matrix/*.test.js
+  test/trajectory/*.mjs` (mocked suites are the `.check.mjs` files,
+  which sit beside their `.test.js` counterparts in the same subject
+  directory — see `package.json` `scripts.test`). The webui-local
+  alignment gate is `pnpm --filter @mavis/webui check`, which runs
+  `scripts/check-docs-alignment.mjs` and verifies that every endpoint
+  documented in `docs/API.md` is registered, every capability listed
+  in `package.json` appears in `README.md` and
+  `docs/CAPABILITIES.md`, and every env var named in this file is
+  exported by `server/lib/config.js`.
 - All tests use **temp file fixtures** (`mkdtempSync`). No test writes
   to the user's real `~/.minimax/` or `~/.mcode-webui/` directory unless
   `MCODE_RUNTIME_DB` / `MCODE_WEBUI_SETTINGS_PATH` env is explicitly
   overridden.
 - v1.0.1 round 4: `MCODE_BETTER_SQLITE3` env override added to
-  `server/lib/db.js::getMcodeBetterSqlite3()`. The hard-coded path to
-  mcode's bundled `better-sqlite3` only works in the canonical
-  dev layout (`<mcode-root>/webui/`); the env override lets users on
+  `server/lib/sqlite-resolver.js::getMcodeBetterSqlite3()` (the
+  function was lifted out of the old `server/lib/db.js`, which has
+  since been split into `sqlite-resolver.js` +
+  `mcode-session-delete.js`; the statement below still describes the
+  same behaviour). The hard-coded path to mcode's bundled
+  `better-sqlite3` only works in the canonical dev layout
+  (`<mcode-root>/webui/`); the env override lets users on
   registry-installed or non-canonical layouts point at the right
   binary explicitly. Resolution priority: env override > `$MCODE_CMD`
   derived > dev layout fallback.
-- Network-topology wave 2 (`docs/drafts/arch_net_solution_0922.md` §6/§7):
-  `MCODE_ENGINE` (`acp`, default — the per-turn subprocess transport;
-  `embed` — in-process engine hosted on a worker thread with automatic
-  fallback to `acp` on boot failure). The webui transport switch was
-  removed: `GET /api/stream` is always enabled, and its upgrade executes
-  the same origin/LAN/token gate chain as every other `/api/*` route —
-  see the [Origin / CSRF gate (Gate 1b)](#origin--csrf-gate-gate-1b) and
-  [§1 Network exposure](#1-network-exposure) above.
-- Cross-platform: there is **no CI matrix**. The only CI is the
-  marketplace root gate (single ubuntu / Node 22 job: `npm ci` +
-  `npm run check`, which recursively runs every file under `test/`
-  flagless). Cross-platform verification is a manual local recipe —
-  see docs/CI.md "Local matrix".
 
 ---
 
@@ -543,7 +540,7 @@ panel. It centralizes the three most-relevant security / access controls:
 | **LAN access** (toggle) | On/off for the 403 gate on non-local requests (unchanged from v0.5.ap) | In-memory only; resets to `true` on restart (intentional — admins shouldn't get locked out) |
 | **Read-only mode** (toggle) | When on, non-local `POST` / `DELETE` to `/api/*` return 403 `{error: "read-only mode"}`. `GET`, `HEAD`, `OPTIONS` are exempt. Local requests are always exempt. `/api/settings` is exempt (escape hatch) | Persisted to `~/.mcode-webui/settings.json` |
 | **Token auth** (toggle) | When on, non-local requests must carry `?token=` or `Authorization: Bearer`. When off, the gate is bypassed even if a token is set (LAN-only deployment mode) | Persisted |
-| **Token value + reset** | First-run: server generates a 32-hex-char token (`crypto.randomBytes(16).toString('hex')`) and writes it to `~/.mcode-webui/settings.json`. The token is **printed to stdout exactly once at first start** (not to `.server.log`). The settings card shows the token until the operator clicks "我已保存" (acknowledge). After acknowledgment, the server stops sending the token in `GET /api/settings` responses — only already-connected clients keep it. `Reset token` generates a new value, persists, broadcasts an `auth.token_rotated` control event over the event stream so other connected clients update their `localStorage` + `Authorization` header live, and resets `tokenAcknowledged` to `false` (the new token is shown again). | Persisted to `~/.mcode-webui/settings.json` (mode 0600, atomic write via `.tmp` + rename) |
+| **Token value + reset** | First-run: server generates a 32-hex-char token (`crypto.randomBytes(16).toString('hex')`) and writes it to `~/.mcode-webui/settings.json`. The token is **printed to stdout exactly once at first start** (not to `.server.log`). The settings card shows the token until the operator clicks "我已保存" (acknowledge). After acknowledgment, the server stops sending the token in `GET /api/settings` responses — only already-connected clients keep it. `Reset token` generates a new value, persists, broadcasts an `auth.token_rotated` SSE event so other connected clients update their `localStorage` + `Authorization` header live, and resets `tokenAcknowledged` to `false` (the new token is shown again). | Persisted to `~/.mcode-webui/settings.json` (mode 0600, atomic write via `.tmp` + rename) |
 
 ### 9.1 Token resolution priority (per request)
 
@@ -565,24 +562,22 @@ on first run, set `TOKEN=<value>` in the environment.
 - Override path for tests / non-default installs:
   `MCODE_WEBUI_SETTINGS_PATH=/some/other/settings.json`.
 
-### 9.3 Token rotation — `auth.token_rotated` control event
+### 9.3 Token rotation — SSE `auth.token_rotated`
 
 When the operator hits "Reset token" in the UI:
 
 1. `POST /api/settings {resetToken: true}` (must already be authenticated)
 2. Server generates new 32-hex token, writes to disk
-3. Server broadcasts an `auth.token_rotated` control frame
-   (`type: "control"`, `name: "auth.token_rotated"`, `data: <new-token>`)
-   to every client on the WebSocket event stream (the connection is
-   already authenticated, so the token in cleartext over the stream is no
-   worse than the periodic state snapshot that also includes
-   `currentToken` for the same window).
+3. Server broadcasts `event: auth.token_rotated\ndata: <new-token>\n\n` to
+   every connected SSE client (the connection is already authenticated,
+   so the token in cleartext over SSE is no worse than the periodic state
+   push that also includes `currentToken` for the same window).
 4. Server also broadcasts a regular state push (`currentToken` will be in
    the JSON body until the operator clicks "我已保存").
-5. Clients that receive the control event update their `localStorage` and the
+5. Clients that receive the SSE event update their `localStorage` and the
    live `HEADERS.Authorization` object in place — subsequent `fetch` calls
    automatically use the new token.
-6. Clients on the old token that didn't get the control event (offline, etc.)
+6. Clients on the old token that didn't get the SSE event (offline, etc.)
    will see 401 on their next request and need to manually re-open with
    the new token URL.
 
@@ -600,6 +595,13 @@ When the operator hits "Reset token" in the UI:
 
 ### 9.5 Files added / modified in v1.0.1
 
+> **Note.** The frontend entries that referenced `public/app/*.js`,
+> `public/index.html`, and `public/styles/main.css` were deleted when
+> the legacy vanilla-JS SPA was removed in the bundle-convergence
+> refactor. The settings / token surfaces they described now live in
+> `webapp/components/shell.tsx` and `webapp/lib/store.tsx` (see
+> `docs/ARCHITECTURE.md § 6`).
+
 - **NEW** `server/lib/settings.js` (substantially rewritten) — owns
   persistent settings + token generation + interface lookup.
 - **NEW** `server/lib/auth.js` — adds `setExpectedToken`,
@@ -610,23 +612,23 @@ When the operator hits "Reset token" in the UI:
   LAN and token gates). Interface-allowlist gate was prototyped in
   v1.0.1 but removed before release per PR #16 reviewer scope.
 - `server/routes/settings.js` — accepts new fields, handles rotation.
-- `server/lib/state-bus.js` — adds `broadcastTokenRotated`; state
-  snapshots now include `readOnly`, `tokenEnabled`, `currentToken` (when
+- `server/lib/state-bus.js` — adds `broadcastTokenRotated`; SSE state
+  push now includes `readOnly`, `tokenEnabled`, `currentToken` (when
   not acknowledged), `tokenAcknowledged`, `tokenRotatedAt`.
-- `public/app/state.js` — `HEADERS` is now a live-mutable object;
-  new `setToken()` + `auth.token_rotated` event-stream handler.
-- `public/app/render.js` — `renderLanCardContent(settings)` exported.
-- `public/app/events.js` — `#chip-lan` click toggles the sub-card
-  (was: directly toggled `lanBroadcast`); new handlers for each control
-  inside the card.
-- `public/index.html` — `<div id="lan-card" hidden>` markup; CSS in
-  `public/styles/main.css`.
-- `public/app/i18n.js` — 22 new keys (`lan_card_*`).
-- **NEW** `test/lib-settings.test.js` — persistence + new setters.
-- **NEW** `test/router-readonly.test.js` — read-only gate logic.
-- Extended `test/lib-auth.test.js` (`setExpectedToken`,
-  `setTokenAuthEnabled`), `test/routes-settings.test.js` (new fields,
-  `resetToken`, `acknowledgeToken`), `test/_setup.js` (mock shape).
+- **NEW** `test/lib/settings.test.js` — persistence + new setters
+  (today: `test/lib/settings.test.js`, `test/lib/settings-sec-net.check.mjs`).
+- **NEW** `test/router-readonly.test.js` — read-only gate logic
+  (today: `test/server/router-readonly.test.js`).
+- Extended `test/lib/auth.test.js` (`setExpectedToken`,
+  `setTokenAuthEnabled`), `test/routes/settings.check.mjs` (new fields,
+  `resetToken`, `acknowledgeToken`), `test/helpers/_setup.js`
+  (mock shape).
+
+The same v1.0.1 work on the legacy vanilla-JS frontend is no longer
+shipped. The settings/token surfaces that v1.0.1 added are now
+implemented inside the Next App Router shell (see `webapp/components/shell.tsx`
+for the LAN/read-only/token card and `webapp/lib/store.tsx` for the
+typed store hook that replaced `HEADERS` + `setToken()`).
 
 
 ---

@@ -10,7 +10,7 @@ import {
   persistCurrentChat,
   promoteDraftToMcodeSid,
 } from "../lib/sessions.js";
-import { pushStateFor, pushAlert, getActiveChild } from "../lib/state-bus.js";
+import { pushStateFor, pushAlert, getActiveChild, beginRun, endRun } from "../lib/state-bus.js";
 // 2026-09-20 rigor fix (G1 bypass finding): import the lib/slash.js shell,
 //   NOT interaction/commands.js directly. The shell carries the B03
 //   authorize("slash.clear") gate + write-ahead audit (slash.clear.intent /
@@ -19,42 +19,27 @@ import { pushStateFor, pushAlert, getActiveChild } from "../lib/state-bus.js";
 import { handleLocalSlash, handleCmdCommand } from "../lib/slash.js";
 import { runMcodeAcp } from "../lib/mcode-acp.js";
 import { collectExecResult, runMcodeExec } from "../lib/mcode-exec.js";
-import {
-  bootEngineHost,
-  isEmbedRunning,
-  runMcodeEmbed,
-} from "../lib/mcode-embed.js";
-import { collectEmbedResult } from "../lib/embed-consumer.js";
-import { DEFAULT_MODEL, MCODE_ENGINE } from "../lib/config.js";
+import { cancelSession } from "../lib/mcode-rpc.js";
+import { DEFAULT_MODEL } from "../lib/config.js";
+import { resolveAttachments } from "../lib/attachments.js";
+import { readJson } from "../lib/read-json.js";
 
-async function readJson(req) {
-  let body = "";
-  for await (const chunk of req) body += chunk;
-  try {
-    return JSON.parse(body || "{}");
-  } catch {
-    return {};
-  }
-}
 
-// v2 (2026-09-20 webui-manual-audit): resetThinkingClaim — drop every
-//   field by which the pushed state can claim "a run is in progress".
-//   The frontend's 思考中 indicator / send→stop button key off
-//   state.running.active, the footer status off
-//   state.context.thinkingStatus, and the chat virtual list marks a
-//   block as still-streaming when its line ends with the ▍ cursor.
-//   The streaming runners reset all of this in their finalize()
-//   (mcode-acp.js / mcode-exec.js), but a failure BEFORE the stream
-//   starts (acp client.start() ENOENT, session/load throw, exec
-//   resolveMcodeSpawn fail-closed) skips finalize entirely — so
-//   whatever claim cs carried into the turn survives every later
-//   pushStateFor and the panel shows 思考中 forever. Idle shape is
-//   byte-mirrored from finalize() + makeClientState() so the reset
-//   path and the normal end-of-turn path stay symmetric.
-//   lastUsageAt is deliberately NOT cleared: it records "when usage
-//   was last observed", not an active-run claim — finalize() keeps it
-//   too, and zeroing it would erase the context panel's freshness
-//   datum for no gain.
+// resetThinkingClaim — drop every field by which the pushed state
+// can claim "a run is in progress". The streaming runners reset all
+// of this in their finalize() (mcode-acp.js / mcode-exec.js), but a
+// failure BEFORE the stream starts (acp client.start() ENOENT,
+// session/load throw, exec resolveMcodeSpawn fail-closed) skips
+// finalize entirely — so whatever claim cs carried into the turn
+// survives every later pushStateFor and the panel shows 思考中
+// forever. Idle shape is byte-mirrored from finalize() +
+// makeClientState() so the reset path and the normal end-of-turn path
+// stay symmetric.
+//
+// lastUsageAt is deliberately NOT cleared: it records "when usage
+// was last observed", not an active-run claim — finalize() keeps it
+// too, and zeroing it would erase the context panel's freshness
+// datum for no gain.
 function resetThinkingClaim(cs) {
   cs.running = {
     active: false,
@@ -81,188 +66,237 @@ function resetThinkingClaim(cs) {
   }
 }
 
-// POST /api/send — main chat entry, fire-and-forget (response = ack; output via /api/stream)
+// POST /api/send — main chat entry, fire-and-forget (response = ack; output via /api/events SSE)
 export async function handleSend(req, res, ctx) {
   const cs = ctx.cs;
   const cid = ctx.cid;
   const payload = await readJson(req);
   let content = (payload.content || "").trim();
-  if (!content) {
+  // Uploaded files. The composer enables Send for an attachment with no text,
+  // so this list — not `content` — can be what makes a turn worth starting.
+  // Paths arrive from the client and are untrusted: `resolveAttachments` keeps
+  // only what is inside UPLOAD_DIR and exists, and reports the rest so the
+  // rejection is visible instead of silent.
+  const {
+    attachments,
+    rejected: rejectedAttachments,
+    dropped: droppedAttachments,
+  } = resolveAttachments(payload.attachments);
+  if (!content && attachments.length === 0) {
     res.writeHead(400, { "Content-Type": "application/json" });
     return res.end(JSON.stringify({ ok: false, error: "content required" }));
   }
-  // v0.5.bx-13: ask_user 弹窗答案 — 不当 user message 加到 chat
+  if (rejectedAttachments > 0 || droppedAttachments > 0) {
+    // Silent truncation would be the same class of bug as the drop this
+    // replaces: the user would believe every chip was delivered.
+    pushAlert({
+      level: "warn",
+      msg:
+        `${rejectedAttachments} attachment path(s) rejected (not an uploaded file)` +
+        (droppedAttachments > 0 ? `, ${droppedAttachments} dropped (duplicate or over the per-turn limit)` : ""),
+      src: "chat.send",
+      cid,
+      data: { rejected: rejectedAttachments, dropped: droppedAttachments },
+    });
+  }
+  // ask_user modal answer — don't add to chat as a user message.
   const isAskAnswer = payload.isAskAnswer === true;
+
+  // Claim the turn BEFORE acknowledging. Every prompt spawns its own engine
+  // subprocess, so without this a double-send (retry, two tabs, a scripted
+  // client) silently starts a second one: measured on a running server, ten
+  // concurrent sends produced ten live engine processes. Three claims are
+  // checked — this cid is idle, no other cid is running this engine session,
+  // and the server is under MAX_CONCURRENT (which /api/health advertises as
+  // `maxConcurrent` and which nothing used to read).
+  //
+  // Answering 409 rather than acking and failing later is deliberate: the ack
+  // is fire-and-forget, so a rejection after it would be invisible to the
+  // caller. api.sendMessage surfaces a non-2xx as an error, so the composer
+  // shows it.
+  const claim = beginRun(cid, cs && cs.mcodeSessionId);
+  if (!claim.ok) {
+    res.writeHead(409, { "Content-Type": "application/json; charset=utf-8" });
+    return res.end(
+      JSON.stringify({
+        ok: false,
+        error: claim.detail,
+        reason: claim.reason,
+        ...(claim.reason === "at-capacity"
+          ? { running: claim.running, limit: claim.limit }
+          : {}),
+      }),
+    );
+  }
+
   res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
   res.end(JSON.stringify({ ok: true }));
 
-  // v0.5.ai: per-cid — 操作 cs (ask 答案跳过, chat 保持干净)
-  if (!isAskAnswer) {
-    cs.chat = [...(cs.chat || []), `› ${content}`];
-    // v0.5.bx-32: 真正发消息时记 lastUsedWorkspace — sidebar 排序时该工作区置顶
-    //   之前切 session 也写,用户点 c 区对话 (不发消息) c 区就自动置顶了 — 体验不对
-    //   切 session 不算发消息,所以切 session 时不写 (在 routes/sessions.js handleSwitchSession 已删)
-    //   ask_user 答案不算发消息,也不写
-    cs.lastUsedWorkspace = (cs.workspace && cs.workspace.dir) || null;
-    pushStateFor(cid);
-    persistCurrentChat(cs);
-  }
-
-  // v0.5.ak: 发首条消息时如果 cs.sessionId 为空，先建一个 webui session entry
-  if (!cs.sessionId) {
-    const all = loadSessions();
-    const id = randomUUID();
-    const item = {
-      id,
-      title: "New session",
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-      chat: cs.chat || [],
-      // v2.3: 记 workspace — 刷新恢复（state-bus.restoreLatestSession）按工作区
-      //   过滤，没写 workspace 的记录永远无法被恢复（刷新后白屏成新会话）。
-      workspace: (cs.workspace && cs.workspace.dir) || null,
-    };
-    all.unshift(item);
-    saveSessions(all);
-    cs.sessionId = id;
-  }
-
-  // Detect slash commands that we can satisfy without spawning mcode
-  const slashResult = await handleLocalSlash(content, cs, cid);
-  if (slashResult.handled) {
-    if (slashResult.continueMcode && slashResult.rewriteContent !== undefined) {
-      content = slashResult.rewriteContent;
-      // fall through to mcode call
-    } else {
-      return;
+  try {
+    if (!isAskAnswer) {
+      // An attachment-only turn has no text to echo; the `›` line would be a
+      // bare marker. The chips in the composer are the record of what was sent,
+      // and the engine reports the references back.
+      if (content) cs.chat = [...(cs.chat || []), `› ${content}`];
+      // Sending a message bumps lastUsedWorkspace so the sidebar sorts
+      // this workspace's group to the top. Switching session does NOT
+      // (browsing ≠ sending); ask_user answer does NOT (modal ≠
+      // message).
+      cs.lastUsedWorkspace = (cs.workspace && cs.workspace.dir) || null;
+      pushStateFor(cid);
+      persistCurrentChat(cs);
     }
-  }
 
-  // v0.5.ah: 走 mcode acp 协议（默认）— MCODE_USE_ACP=0 切回 mcode exec 逃生
-  const modelToUse = (cs && cs.model && cs.model.name) || DEFAULT_MODEL;
-  console.log(
-    `[send] cid=${cid} content=${JSON.stringify(content.slice(0, 80))} model=${modelToUse} sessionId=${cs.mcodeSessionId} workspace=${(cs && cs.workspace && cs.workspace.dir) || "null"}`,
-  );
-  const t0 = Date.now();
-  const engineOpts = {
-    label: "prompt",
-    sessionId: cs.mcodeSessionId,
-    model: modelToUse,
-    cs,
-    cid,
-  };
-  // 波次 2（arch_net_solution_0922.md §6.3）：MCODE_ENGINE=embed 走引擎宿主
-  //   Worker（boot 失败自动回退旧路径）；默认 "acp" 完全走下方旧路径，行为不变。
-  let r = null;
-  if (MCODE_ENGINE === "embed") {
-    if (!isEmbedRunning()) {
-      const boot = await bootEngineHost({
-        workspace: (cs && cs.workspace && cs.workspace.dir) || undefined,
-      });
-      if (!boot.ok) {
-        console.warn(
-          `[send] mcode embed boot failed, falling back to legacy transport: ${boot.reason}`,
-        );
+    // First-message bootstrap: if no webui session id exists yet, create
+    // a fresh one with the current chat snapshot. The webui session id
+    // is a randomUUID, distinct from the mcode session id allocated
+    // inside the run.
+    if (!cs.sessionId) {
+      const all = loadSessions();
+      const id = randomUUID();
+      const item = {
+        id,
+        title: "New session",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        chat: cs.chat || [],
+        // Persist the workspace too — restoreLatestSession filters by
+        // workspace, so a record without one can never be rehydrated
+        // after a reload (the page would render as a fresh empty
+        // session).
+        workspace: (cs.workspace && cs.workspace.dir) || null,
+      };
+      all.unshift(item);
+      saveSessions(all);
+      cs.sessionId = id;
+    }
+
+    // Detect slash commands that we can satisfy without spawning mcode
+    const slashResult = await handleLocalSlash(content, cs, cid);
+    if (slashResult.handled) {
+      if (slashResult.continueMcode && slashResult.rewriteContent !== undefined) {
+        content = slashResult.rewriteContent;
+        // fall through to mcode call
+      } else {
+        return;
       }
     }
-    if (isEmbedRunning()) {
-      r = await collectEmbedResult(runMcodeEmbed(content, engineOpts), {
-        cs,
-        cid,
-        label: engineOpts.label,
-      });
-    }
-  }
-  if (!r) {
-    r =
+
+    // mcode acp is the default transport; MCODE_USE_ACP=0 falls back to
+    // mcode exec (escape hatch if the acp protocol regresses).
+    const modelToUse = (cs && cs.model && cs.model.name) || DEFAULT_MODEL;
+    console.log(
+      `[send] cid=${cid} content=${JSON.stringify(content.slice(0, 80))} model=${modelToUse} sessionId=${cs.mcodeSessionId} workspace=${(cs && cs.workspace && cs.workspace.dir) || "null"}`,
+    );
+    const t0 = Date.now();
+    const r =
       process.env.MCODE_USE_ACP === "0"
-        ? await collectExecResult(runMcodeExec(content, engineOpts))
-        : await runMcodeAcp(content, engineOpts);
-  }
-  console.log(
-    `[send] result ${Date.now() - t0}ms:`,
-    JSON.stringify({
-      status: r.status,
-      error: r.error,
-      answer: r.answer && r.answer.slice(0, 80),
-      sessionId: r.sessionId,
-    }).slice(0, 500),
-  );
-  if (r.status === "succeeded" && r.answer) {
-    // v0.5.bx-4: 流式输出已经在 streamAcpPrompt/streamUpdateLine 里把 ▲ 和 ● 行写进 chat 了
-    const oneLine = r.answer.replace(/\n+/g, " ").trim();
-    let lastAnsIdx = -1;
-    for (let i = cs.chat.length - 1; i >= 0; i--) {
-      if (typeof cs.chat[i] === "string" && cs.chat[i].startsWith("● ")) {
-        lastAnsIdx = i;
-        break;
+        ? await collectExecResult(
+            runMcodeExec(content, {
+              label: "prompt",
+              sessionId: cs.mcodeSessionId,
+              model: modelToUse,
+              cs,
+              cid,
+              attachments,
+            }),
+          )
+        : await runMcodeAcp(content, {
+            label: "prompt",
+            sessionId: cs.mcodeSessionId,
+            model: modelToUse,
+            cs,
+            cid,
+            attachments,
+          });
+    console.log(
+      `[send] result ${Date.now() - t0}ms:`,
+      JSON.stringify({
+        status: r.status,
+        error: r.error,
+        answer: r.answer && r.answer.slice(0, 80),
+        sessionId: r.sessionId,
+      }).slice(0, 500),
+    );
+    if (r.status === "succeeded" && r.answer) {
+      // v0.5.bx-4: 流式输出已经在 streamAcpPrompt/streamUpdateLine 里把 ▲ 和 ● 行写进 chat 了
+      const oneLine = r.answer.replace(/\n+/g, " ").trim();
+      let lastAnsIdx = -1;
+      for (let i = cs.chat.length - 1; i >= 0; i--) {
+        if (typeof cs.chat[i] === "string" && cs.chat[i].startsWith("● ")) {
+          lastAnsIdx = i;
+          break;
+        }
+      }
+      if (lastAnsIdx >= 0) {
+        cs.chat[lastAnsIdx] = `● ${oneLine}`;
+      } else {
+        cs.chat = [...cs.chat, `● ${oneLine}`];
+      }
+      cs.context.assistantLast = oneLine;
+      cs.context.assistantAt = Date.now();
+    } else if (r.status === "failed" || r.error) {
+      const rawMsg = (r.error?.message || r.status).replace(/\n+/g, " ");
+      let oneLine = rawMsg;
+      let hint = "";
+      if (/Questionnaire|user input/i.test(rawMsg)) {
+        hint = " (Ask 工具在 webui/exec 模式不可用，请直接用输入框发问)";
+      } else if (/requires.*input|interactive/i.test(rawMsg)) {
+        hint = " (此工具需要交互模式，webui 暂不支持)";
+      }
+      // v2.0 (lease B02): §AP3 — errors no longer pollute the chat
+      // stream. Surface them via the independent anomaly channel;
+      // cs.context.assistantLast keeps the error in the model context
+      // (so a follow-up turn can reference it) but the user-facing
+      // chat list stays clean. The bell icon (frontend, C batch) shows
+      // the alert with the matching id.
+      pushAlert({
+        level: "error",
+        msg: `[chat.send] ${oneLine}${hint}`,
+        src: "chat.send",
+        cid,
+        sessionId: r.sessionId || null,
+        data: { status: r.status, error: r.error || null },
+      });
+      cs.context.assistantLast = `[error] ${oneLine}`;
+      cs.context.assistantAt = Date.now();
+      // v2 (2026-09-20 webui-manual-audit): a failed send is a TERMINAL
+      //   turn state — reset the thinking claim so the pushStateFor at
+      //   the end of this handler lands an at-rest state instead of
+      //   re-asserting whatever running/thinkingStatus cs carried in.
+      //   Without this, the context panel's 思考中 indicator never
+      //   clears (start-phase failures never reach the runners'
+      //   finalize()). The success branch needs no equivalent: by the
+      //   time r.status === "succeeded" is observed here, finalize()
+      //   has already run inside runMcodeAcp/collectExecResult and put
+      //   cs into exactly this idle shape.
+      resetThinkingClaim(cs);
+    }
+    // v2.4 单一基础会话：回合绑定了 mcode 会话（cs.mcodeSessionId 由 acp
+    //   finalize 写入）后，把草稿记录晋升为引擎身份（id → mvs_…），或并入
+    //   该 mcode 会话既有的叠加记录——保证一次对话在存储里只有一条记录。
+    if (cs.mcodeSessionId) {
+      try {
+        promoteDraftToMcodeSid(cs);
+      } catch (e) {
+        console.warn(`[chat] promoteDraftToMcodeSid failed: ${e.message}`);
       }
     }
-    if (lastAnsIdx >= 0) {
-      cs.chat[lastAnsIdx] = `● ${oneLine}`;
-    } else {
-      cs.chat = [...cs.chat, `● ${oneLine}`];
-    }
-    cs.context.assistantLast = oneLine;
-    cs.context.assistantAt = Date.now();
-  } else if (r.status === "failed" || r.error) {
-    const rawMsg = (r.error?.message || r.status).replace(/\n+/g, " ");
-    let oneLine = rawMsg;
-    let hint = "";
-    if (/Questionnaire|user input/i.test(rawMsg)) {
-      hint = " (Ask 工具在 webui/exec 模式不可用，请直接用输入框发问)";
-    } else if (/requires.*input|interactive/i.test(rawMsg)) {
-      hint = " (此工具需要交互模式，webui 暂不支持)";
-    }
-    // v2.0 (lease B02): §AP3 — errors no longer pollute the chat
-    // stream. Surface them via the independent anomaly channel;
-    // cs.context.assistantLast keeps the error in the model context
-    // (so a follow-up turn can reference it) but the user-facing
-    // chat list stays clean. The bell icon (frontend, C batch) shows
-    // the alert with the matching id.
-    pushAlert({
-      level: "error",
-      msg: `[chat.send] ${oneLine}${hint}`,
-      src: "chat.send",
-      cid,
-      sessionId: r.sessionId || null,
-      data: { status: r.status, error: r.error || null },
-    });
-    cs.context.assistantLast = `[error] ${oneLine}`;
-    cs.context.assistantAt = Date.now();
-    // v2 (2026-09-20 webui-manual-audit): a failed send is a TERMINAL
-    //   turn state — reset the thinking claim so the pushStateFor at
-    //   the end of this handler lands an at-rest state instead of
-    //   re-asserting whatever running/thinkingStatus cs carried in.
-    //   Without this, the context panel's 思考中 indicator never
-    //   clears (start-phase failures never reach the runners'
-    //   finalize()). The success branch needs no equivalent: by the
-    //   time r.status === "succeeded" is observed here, finalize()
-    //   has already run inside runMcodeAcp/collectExecResult and put
-    //   cs into exactly this idle shape.
-    resetThinkingClaim(cs);
+    persistCurrentChat(cs);
+    pushStateFor(cid);
+  } finally {
+    // Releases the cid claim and, if this run owned it, the engine-session
+    // claim. Covers every exit after the ack — including the early return for
+    // a locally-handled slash command, which never spawns an engine.
+    endRun(cid);
   }
-  // v2.4 单一基础会话：回合绑定了 mcode 会话（cs.mcodeSessionId 由 acp
-  //   finalize 写入）后，把草稿记录晋升为引擎身份（id → mvs_…），或并入
-  //   该 mcode 会话既有的叠加记录——保证一次对话在存储里只有一条记录。
-  if (cs.mcodeSessionId) {
-    try {
-      promoteDraftToMcodeSid(cs);
-    } catch (e) {
-      console.warn(`[chat] promoteDraftToMcodeSid failed: ${e.message}`);
-    }
-  }
-  persistCurrentChat(cs);
-  pushStateFor(cid);
 }
 
 // POST /api/stop — 中断正在跑的 prompt
-// v0.5.by: 优先走 mcode acp session/cancel RPC (温和取消 — 让 mcode 走 finalize),
-//   走不通再 hard kill child process (兜底)
-// 注意: mcode 0.1.5 acp 不支持 session/cancel (probe 实测 "Method not found"),
-//   所以 cancelled 永远是 false, 直接走 hard kill
-// 旧实现: 永远 child.kill() — 太粗暴,会让 mcode acp 进程直接 SIGKILL,
-//   同进程里的 background task 也会被 runtime-shutdown 杀 (子 agent 跑不完的根因之一)
+// Sends the engine's `session/cancel` notification first, so the prompt is aborted
+// and finalize runs. SIGKILL is the fallback for a child that cannot be told to
+// stop at all — killing the process takes its background tasks down with it,
+// which is why the graceful path is tried first.
 export async function handleStop(_req, res, ctx) {
   const cid = ctx.cid;
   const cs = ctx.cs;
@@ -270,15 +304,14 @@ export async function handleStop(_req, res, ctx) {
   const wasRunning = !!child;
   let cancelled = false;
   let hardKilled = false;
-  // 1. 温和路径: 调 session/cancel RPC
-  //    mcode 0.1.5 不支持 — r.ok=false, code='unsupported'
+  // 1. Gentle path: send the `session/cancel` notification. The engine aborts the
+  //    active prompt's AbortController; there is no reply, so `ok` means "sent".
   if (cs && cs.mcodeSessionId) {
     try {
-      const { cancelSession } = await import("../lib/mcode-rpc.js");
-      const r = await cancelSession(cs.mcodeSessionId);
+      const r = await cancelSession(cs.mcodeSessionId, ctx.cid);
       if (r.ok) cancelled = true;
-      else if (r.code !== "unsupported") {
-        // 真错 (不是不支持) — 记下来排查
+      else {
+        // No client to notify — worth a line in the log before the SIGKILL.
         console.warn(
           `[stop] session/cancel failed cid=${cid}: ${r.error} (code=${r.code})`,
         );
@@ -336,7 +369,7 @@ export async function handleStop(_req, res, ctx) {
       hardKilled,
       note: cancelled
         ? "gentle cancel"
-        : "hard kill (mcode 0.1.5 acp 不支持 session/cancel)",
+        : "hard kill (session/cancel could not be delivered)",
     }),
   );
 }

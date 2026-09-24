@@ -1,29 +1,47 @@
 // webui/server/lib/config.js
 // Pure configuration constants. No side effects.
 
-import { resolve, join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { resolve, join } from "node:path";
 import { homedir } from "node:os";
 import { existsSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 
+// IMPORTANT: import the SUBPATH, never the bare root. The root index
+// re-exports ./logging/* which drags in pino (and pino-pretty) into the
+// bundle. The local-runtime-paths module is a leaf (node:path only),
+// so it is free for both source mode (workspace-source-hooks.mjs
+// resolves @mavis/shared/local-runtime-paths to ./src/local-runtime-paths.ts)
+// and the bundled layout (esbuild inlines it). The workspace link is
+// declared in packages/webui/package.json's dependencies block.
+import { resolveV2DirectoryContract } from "@mavis/shared/local-runtime-paths";
+
 import { isPortPinned } from "./port.js";
+import { WEBUI_ROOT as PACKAGE_ROOT } from "./layout.js";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-// __dirname here = packages/webui/server/lib/. The webui package root is 2 levels up.
-// In-product layout (mcode-webui migration): the webui ships inside the MiniMax Code
-// repository at packages/webui/, and the engine is the CLI this repository builds.
-// Historical note: as a plugin the root resolved 3 levels up to the .minimax-code
-// install directory that hosted mcode.cmd and the plugin's data files.
+/** webui package root — alias for compatibility with models.js:6,17. */
+export { PACKAGE_ROOT };
 
-// v0.5.z: workspace 优先级 — env MCODE_WORKSPACE > mcode TUI 写的 ~/.minimax/runtime/cwd.json > 兜底
-// v0.5.bn: mcode 写的 cwd.json 开头有 UTF-8 BOM（\ufeff），JSON.parse 不认会抛 — 这里剥掉再 parse
+// Data-dir precedence (canonical):
+//   MINIMAX_DATA_DIR (the newer env name used by packages/tui/src/runtime/data-dir.ts
+//     and packages/config/src/config.ts) > MAVIS_DATA_DIR (legacy alias) >
+//   ~/.minimax (fallback). One resolver, exported so both MAVIS_DATA_DIR and the
+//   runtime DB path below agree with the rest of the product, and so the
+//   trajectory/config.mjs sibling stays in lockstep when it adopts the same
+//   helper.
+function resolveDataDir() {
+  const env = (process.env.MINIMAX_DATA_DIR ?? process.env.MAVIS_DATA_DIR ?? "").trim();
+  if (env) return env;
+  return join(homedir(), ".minimax");
+}
+
+// mcode writes ~/.minimax/runtime/cwd.json with a UTF-8 BOM (\ufeff) at
+// the head; JSON.parse rejects it, so strip the BOM before parsing.
 function detectTuiCwd() {
   const f = join(homedir(), ".minimax", "runtime", "cwd.json");
   if (!existsSync(f)) return null;
   try {
     let raw = readFileSync(f, "utf8");
-    if (raw.charCodeAt(0) === 0xfeff) raw = raw.slice(1); // 剥 BOM
+    if (raw.charCodeAt(0) === 0xfeff) raw = raw.slice(1);
     const o = JSON.parse(raw);
     if (o && typeof o.cwd === "string" && o.cwd) return o.cwd;
   } catch (e) {
@@ -32,21 +50,17 @@ function detectTuiCwd() {
   return null;
 }
 
-export const PACKAGE_ROOT = resolve(__dirname, "..", ".."); // packages/webui/server/lib → ../../ → packages/webui
-// v2.1 (in-product migration): runtime data root. All mutable webui state
-// (uploads, sessions json, settings) lives under one user-level directory,
-// default ~/.mcode-webui — matching where settings.json already persisted.
-// The plugin era wrote data next to the plugin inside .minimax-code; that
-// layout no longer exists now that the webui ships inside the repository.
+// Runtime data root. All mutable webui state (uploads, sessions json,
+// settings) lives under one user-level directory, default
+// ~/.mcode-webui — matching where settings.json already persisted.
 export const WEBUI_DATA_DIR =
   process.env.MCODE_WEBUI_DATA_DIR || join(homedir(), ".mcode-webui");
-// v2.1: mcode engine 检测链 — 插件时代探测 .minimax-code 安装目录, 现在优先找
-//   本仓库自带的 CLI。优先级:
-//     1. env MCODE_CMD                        (显式覆盖, 永远最优先)
-//     2. env MCODE_WEBUI_SELF_ENTRY           (由 `mcode webui` 启动器注入 — 正在运行的这个 CLI)
-//     3. monorepo 构建产物 PACKAGE_ROOT/../../dist/cli.js (开发/源码布局)
-//     4. 用户安装布局 ~/.minimax-code/mcode.cmd
-//     5. PATH 裸名 "mcode"
+// mcode engine detection chain. Priority order:
+//   1. env MCODE_CMD                        (explicit override, always first)
+//   2. env MCODE_WEBUI_SELF_ENTRY           (injected by `mcode webui` launcher — the running CLI)
+//   3. monorepo build artifact PACKAGE_ROOT/../../dist/cli.js (dev/source layout)
+//   4. user install layout ~/.minimax-code/mcode.cmd
+//   5. PATH bare name "mcode"
 export const MCODE_CMD = (() => {
   if (process.env.MCODE_CMD) return process.env.MCODE_CMD;
   const self = process.env.MCODE_WEBUI_SELF_ENTRY;
@@ -57,24 +71,27 @@ export const MCODE_CMD = (() => {
   if (existsSync(homeLayout)) return homeLayout;
   return "mcode"; // PATH fallback
 })();
-// 默认端口历史: 7890 (最初) → 8080 (v0.5.bx-38, "web alt" 语义清晰, 但 8080 被
-//   desktop / mavis 桌面端以及各类开发服务器占用得太频繁) → 18090 (当前)。高位
-//   端口在桌面/开发机上冲突概率低得多, 也和容器默认端口 (docker-compose 的
-//   WEBUI_PORT=18080) 同属高位段, 不再跟常见 HTTP 服务抢。
-//   仍可被 process.env.PORT 覆盖 (比如临时用 7890 跑测试)。
+// Default port 18090 (high-range to avoid collisions with desktop apps
+// and common dev servers that squat on 8080 / 7890 / etc.). Overrideable
+// by process.env.PORT (e.g. for running tests on a low port).
 //
-// 端口回退: 默认端口只是默认值, 不再是承诺 — 它被占用时服务器会往后找下一个
-//   空闲端口 (见 server/lib/port.js)。显式配置的端口 (PORT>0, 或启动器的 --port)
-//   仍按精确值处理: docker 端口发布 / 容器健康检查 / webui 集成测试都按配置值
-//   寻址, 无法发现回退。
+// Port fallback: the default port is a preference, not a promise — if
+// it is taken, the server walks forward to the next free port (see
+// server/lib/port.js). Explicitly configured ports (PORT>0, or the
+// launcher's --port) stay exact: docker publishes, container health
+// checks, and webui integration tests all dial the configured value
+// and cannot discover a fallback.
 export const PORT = Number(process.env.PORT) || 18090;
-// 显式指定端口时禁止回退。未设置 / 空 / 0 / 非数值都视为"未指定", 走默认端口
-// 并允许回退 —— 与上面的 `Number(...) || 18090` 判定保持一致 (isPortPinned 是
-// 这条规则的唯一实现, 见 server/lib/port.js)。
+// Explicit ports are pinned. Unset / empty / 0 / non-numeric all mean
+// "not specified" and fall back to the default port, which may itself
+// fall back — matching the `Number(...) || 18090` test above
+// (isPortPinned is the only implementation of that rule, see
+// server/lib/port.js).
 export const PORT_PINNED = isPortPinned(process.env.PORT);
-// 实际对外提供服务的端口。默认端口回退之后它不再等于 PORT, 所以请求期消费者
-// (CORS origin 信任集、health/state/share URL、LAN 提示文案) 必须调用
-// getServingPort(), 不能在 import 期把 PORT 快照成常量。
+// The port actually serving. After default-port fallback this can
+// differ from PORT, so per-request consumers (CORS origin trust set,
+// health/state/share URL, LAN hint copy) MUST call getServingPort()
+// — never snapshot PORT at import time.
 let servingPort = PORT;
 export function getServingPort() {
   return servingPort;
@@ -82,15 +99,15 @@ export function getServingPort() {
 export function setServingPort(port) {
   if (Number.isInteger(port) && port > 0) servingPort = port;
 }
-// v2 security fix (PR #55 review point 2): default bind is now loopback.
-//   v0.5.ao 默认 0.0.0.0（"浏览器/手机/局域网访问是主场景"），但本服务是
-//   高权限面（agent / filesystem / session 控制），网络可达必须是运营者
-//   显式选择而不是缺省。LAN 暴露的显式 opt-in 有两条，均继续受尊重：
-//     1. env HOST（部署/docker 既有通道，永远最优先）
-//     2. settings.json 持久化 lanBind=true（v2 新增设置项，见
-//        server/lib/settings.js；重启后生效）
-//   两者皆无 → 127.0.0.1。升级用户只要没写过显式配置就落到新默认（评审
-//   正是要求如此）；写过的零惊扰。
+// Default bind is loopback (127.0.0.1): this is a high-trust-surface
+// service (agent / filesystem / session control), so network reachability
+// must be an explicit operator choice, not the default. LAN opt-in has
+// two paths, both still respected:
+//   1. env HOST (deploy / docker — always wins)
+//   2. settings.json persistent lanBind=true (see server/lib/settings.js;
+//      takes effect on restart)
+// Neither → loopback. Upgraders who haven't set either land on the new
+// default; anyone who set one already keeps their setting.
 export const HOST = resolveBindHost(process.env.HOST, readPersistedLanBind());
 
 // Pure resolution rule for the boot bind. Exported for tests.
@@ -119,25 +136,21 @@ function readPersistedLanBind() {
     return false;
   }
 }
-// v1.0.1: optional auth token for non-local requests. When set, all
-// /api/* and /api/stream requests must carry either `?token=<value>` or
+// Optional auth token for non-local requests. When set, all /api/* and
+// SSE requests must carry either `?token=<value>` or
 // `Authorization: Bearer <value>`. Local requests always bypass. See
 // plugins/Wzdhehe/mcode-webui/references/SECURITY-NOTES.md §2.
 export const TOKEN = process.env.TOKEN || "";
-// v2 (lease C08): TOKEN_STDOUT — escape hatch for docker / no-UI
-//   environments where the operator has no event-stream client to receive the
-//   `token.first_run` modal. When "1", server.js prints a single
-//   NEUTRAL line ("token persisted to: <path>") — the raw token is
-//   NEVER echoed. Default off: production operators use the web UI
-//   modal that the event-stream frame drives. See ANTI-PATTERNS-FIX-PLAN §AP1.
+// TOKEN_STDOUT — escape hatch for docker / no-UI environments where
+// the operator has no SSE client to receive the `token.first_run`
+// modal. When "1", server.js prints a single NEUTRAL line
+// ("token persisted to: <path>") — the raw token is NEVER echoed.
+// Default off: production operators use the web UI modal that the SSE
+// event drives.
 export const TOKEN_STDOUT = process.env.MCODE_WEBUI_TOKEN_STDOUT === "1";
 export const DEFAULT_MODEL =
   process.env.MCODE_MODEL || "minimax_api/MiniMax-M3";
 export const DEFAULT_TIMEOUT = process.env.MCODE_TIMEOUT || "120s";
-// v2 波次 2（arch_net_solution_0922.md §6/§8）：引擎传输开关。
-//   默认 "acp" = 旧行为不变（每回合 mcode acp 子进程）；"embed" = 引擎宿主
-//   Worker 线程（boot 失败自动回退 acp）。
-export const MCODE_ENGINE = process.env.MCODE_ENGINE || "acp";
 export const DEFAULT_MAX_STEPS = Number(process.env.MCODE_MAX_STEPS) || 6;
 export const MAX_CONCURRENT = Number(process.env.MCODE_MAX_CONCURRENT) || 3;
 export const UPLOAD_DIR =
@@ -145,36 +158,27 @@ export const UPLOAD_DIR =
 export const SESSIONS_DB =
   process.env.MCODE_WEBUI_SESSIONS_DB ||
   join(WEBUI_DATA_DIR, "sessions.json");
-// v0.5.bx-19: mcode session 物理存储位置
-// v1.0: 支持 MCODE_RUNTIME_DB 环境变量覆盖 — E2E 测试用真实库副本跑真删路径, 不碰真库
+// mcode session physical storage location. Env override wins so E2E
+// tests can run real-delete paths against a copy of the db without
+// touching the production one. The default comes from the workspace
+// contract `resolveV2DirectoryContract`.
 export const MCODE_RUNTIME_DB =
   process.env.MCODE_RUNTIME_DB ||
-  join(
-    homedir(),
-    ".minimax",
-    "v2",
-    "sqlite",
-    "runtime-state.sqlite",
-  );
-// v0.5.bx-10: mavis 桌面端 sqlite db — local_runtime_token_usage 表存真实 token usage
-export const MAVIS_DATA_DIR =
-  process.env.MAVIS_DATA_DIR || join(homedir(), ".minimax");
-export const MAVIS_DB_PATH = join(
-  MAVIS_DATA_DIR,
-  "v2",
-  "sqlite",
-  "runtime-state.sqlite",
-);
+  resolveV2DirectoryContract(resolveDataDir()).runtimeStateDb;
+// mavis desktop sqlite db — local_runtime_token_usage holds real token usage.
+export const MAVIS_DATA_DIR = resolveDataDir();
+export const MAVIS_DB_PATH = resolveV2DirectoryContract(MAVIS_DATA_DIR).runtimeStateDb;
 export const SQLITE3_BIN =
   detectSqlite3Bin() ?? "sqlite3"; // fallback: rely on PATH (spawn will ENOENT gracefully if missing)
 
-// v2.0 (lease C03): per-{IP,token} rate limiter knobs.
+// Per-{IP,token} rate limiter knobs.
 //   - MCODE_WEBUI_RATE_LIMIT      : steady-state allowance per 60s (default 60)
 //   - MCODE_WEBUI_RATE_LIMIT_BURST: hard ceiling within one window (default 100)
 // Token holders get a 2x multiplier on both (see server/lib/rate-limit.js).
-// v2.3: chat 空闲看门狗 — acp/exec 流事件每到一个就续命，静默超过该窗口才判超时。
-//   之前是固定 90s 墙钟：长思考/多工具回合被拦腰掐断（"prompt did not return
-//   in 90s"）。默认 120s 静默；MCODE_WEBUI_PROMPT_IDLE_TIMEOUT 秒可调（正数生效）。
+// Chat idle watchdog — acp/exec stream events reset the timer; a run
+// is only timed out when silent for this window. Default 120s silent
+// (the prior 90s wall clock chopped long-thinking / multi-tool turns).
+// MCODE_WEBUI_PROMPT_IDLE_TIMEOUT seconds is the override (positive).
 export const PROMPT_IDLE_TIMEOUT_MS = (() => {
   const s = Number(process.env.MCODE_WEBUI_PROMPT_IDLE_TIMEOUT);
   return Number.isFinite(s) && s > 0 ? Math.round(s * 1000) : 120000;
@@ -182,22 +186,22 @@ export const PROMPT_IDLE_TIMEOUT_MS = (() => {
 export const RATE_LIMIT_PER_MIN = Number(process.env.MCODE_WEBUI_RATE_LIMIT || 60);
 export const RATE_LIMIT_BURST = Number(process.env.MCODE_WEBUI_RATE_LIMIT_BURST || 100);
 
-// v2.0 (reconcile §6.2): re-export the four SECURITY-NOTES env vars that
-// scripts/check-docs-alignment.mjs requires as direct `export const` of the
-// same name. Each is already consumed inline by the code that follows
-// (UPLOAD_DIR reads MCODE_WEBUI_UPLOAD_DIR; db.js reads MCODE_BETTER_SQLITE3;
-// settings.js reads MCODE_WEBUI_SETTINGS_PATH; debug/inject reads DEBUG_INJECT).
-// Exposing the raw env value keeps doc-aligned introspection simple without
-// touching the consumer-side resolution.
+// Re-export the four SECURITY-NOTES env vars that
+// scripts/check-docs-alignment.mjs requires as direct `export const`
+// of the same name. Each is already consumed inline by the code that
+// follows (UPLOAD_DIR reads MCODE_WEBUI_UPLOAD_DIR; sqlite-resolver.js
+// reads MCODE_BETTER_SQLITE3; settings.js reads
+// MCODE_WEBUI_SETTINGS_PATH; debug/inject reads DEBUG_INJECT).
+// Exposing the raw env value keeps doc-aligned introspection simple
+// without touching the consumer-side resolution.
 export const MCODE_WEBUI_UPLOAD_DIR = process.env.MCODE_WEBUI_UPLOAD_DIR || null;
 export const MCODE_WEBUI_SETTINGS_PATH = process.env.MCODE_WEBUI_SETTINGS_PATH || null;
 export const MCODE_BETTER_SQLITE3 = process.env.MCODE_BETTER_SQLITE3 || null;
 export const DEBUG_INJECT = process.env.DEBUG_INJECT || null;
 
-// v0.5.bx-44 (red-line-2): platform-specific fallback paths to try when
-//   probing for sqlite3 binary. Pure function for testability — no FS /
-//   process side effects. mcode-plugin-guide red-lines.md §"测试可复现性"
-//   forbids hardcoding host-specific paths in shipped source.
+// Platform-specific fallback paths to try when probing for the
+// sqlite3 binary. Pure function for testability — no FS / process
+// side effects.
 export function getPlatformFallbackPaths(
   platform = process.platform,
   env = process.env,
@@ -259,9 +263,9 @@ export function detectSqlite3Bin() {
   return null;
 }
 
-// v0.5.bn: 默认工作区必须有真实路径，否则 mcode acp session/new 报 "Invalid params"
-//   之前的 null 设计是想要"用户没选就不发"语义，但 acp 必须传 cwd
-//   优先级：env MCODE_WORKSPACE > mcode TUI 的 cwd.json > 用户家目录（兜底）
+// DEFAULT_WORKSPACE must be a real path — mcode acp session/new
+// rejects "Invalid params" without one. Priority: env MCODE_WORKSPACE
+// > mcode TUI's cwd.json > user's home (fallback).
 export const DEFAULT_WORKSPACE = (() => {
   if (process.env.MCODE_WORKSPACE) {
     console.log(
@@ -282,7 +286,8 @@ export const DEFAULT_WORKSPACE = (() => {
 // re-export detectTuiCwd for workspace route
 export { detectTuiCwd };
 
-// v0.5.bl: 全局未捕获错误处理（server 崩了不静默，至少打日志 + 写 .server.err）
+// installGlobalErrorHandlers — log + append .server.err so a crashed
+// server leaves a trail rather than going silent.
 export function installGlobalErrorHandlers() {
   process.on("uncaughtException", (err) => {
     console.error("[uncaughtException]", err);

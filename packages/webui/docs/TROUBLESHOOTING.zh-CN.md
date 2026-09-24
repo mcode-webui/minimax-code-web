@@ -6,8 +6,10 @@
 > 报错信息、根因，以及经过验证的修复方法。
 
 如果这里的修复方法不起作用，请启用页面内调试日志（webui 右下角）
-并查看右侧面板中的事件流动态。你也可以运行
-`node --check public/app/main.js` 来验证该文件能否正常解析。
+并查看右侧面板中的 SSE 事件。你也可以重新构建前端
+（`pnpm run webui:build`）并重新跑
+`pnpm --filter @mavis/webui webapp:typecheck`，让 App Router
+代码中的任何 TypeScript 错误暴露出来。
 
 ---
 
@@ -16,41 +18,40 @@
 **症状**：HTML 已加载，没有红色报错块，但侧边栏为空，
 右侧面板处处显示 "—"。
 
-**根因**：init() 的 promise 链静默失败，或者
-`/api/stream` WebSocket 连接从未打开。
+**根因**：init() 的 promise 链静默失败，或者 SSE
+连接从未打开。
 
 **修复**：
 1. 打开开发者工具（F12）→ Console → 查看右下角调试面板中的
    `__DBG.log` 条目。
 2. 如果你看到 `init: start` 但没有 `init: state loaded`，说明
    `/api/state` 请求失败了。检查 network 标签页。
-3. 如果你看到 `init done` 但 UI 仍为空，说明
-   `/api/stream` WebSocket 连接失败了。重新加载页面，webui 会重新连接。
+3. 如果你看到 `init done` 但 UI 仍为空，说明 SSE
+   连接失败了。重新加载页面，webui 会重新连接。
 
 ## `⚠ webui JS 初始化失败: TypeError: Cannot read properties of null (reading 'addEventListener')`
 
 **症状**：浏览器中出现整页红色报错块，包含此消息，
-堆栈跟踪以 `attachEvents` 或 `init` 结尾。
+堆栈跟踪以某个组件或 `init` 回调结尾。
 
-**根因**：`main.js` 脚本引用了一个在 `index.html` 中已被删除的
-HTML 元素；或者 `cache-bust?v=N` 查询参数已过期，
-浏览器正在运行旧版 main.js。
+**根因**：组件引用了一个在 layout 编辑中已被移除（或重命名）的节点；
+或者浏览器加载了上一次导出的 `_next/static` chunk，而新 layout 已经
+不再对应它。
 
 **修复**：
-1. **强制刷新**页面（Ctrl+Shift+R）。当问题是缓存过期时，
+1. **强制刷新**页面（Ctrl+Shift+R）。当问题是中间代理缓存的旧导出时，
    这通常就能解决。
-2. 如果强制刷新没用，用 `git log --oneline -5` 检查
-   `public/index.html` 和 `public/app/main.js` 最近的提交。
-   如果 main.js 更新了但 cache-bust 没有递增，请递增它
-   （参见 `docs/DEVELOPMENT.md` § "Bump the cache-bust"）。
-3. 如果问题是元素被删除，报错信息中会包含行号。在该行中
-   找到元素 ID，然后要么在 `index.html` 中恢复它，
-   要么移除对应的 JS 引用。
+2. 如果强制刷新没用，用 `pnpm run webui:build` 重新构建导出，
+   并重启服务器，让 `dist/webui/webapp/out/` 反映新的 layout。
+   不再有手动的 `?v=N` 缓存破除——每个 `_next/static/<hash>/…` URL
+   上的哈希本身就是缓存破除。
+3. 如果问题是节点被重命名或移除，报错信息中会包含文件和行号。
+   恢复该节点，或移除该行上对它的引用。
 
 ## `Failed to load resource: net::ERR_CONNECTION_REFUSED` 指向 `127.0.0.1:18090`
 
-**症状**：开发者工具显示 `/api/stream` WebSocket 或
-`/api/state` 请求失败，提示 "connection refused"。UI 显示 "init fail" 或卡在
+**症状**：开发者工具显示 SSE 或 `/api/state` 请求失败，
+提示 "connection refused"。UI 显示 "init fail" 或卡在
 "loading…"。
 
 **根因**：服务器没有运行，或者运行在不同的端口上。
@@ -58,7 +59,7 @@ HTML 元素；或者 `cache-bust?v=N` 查询参数已过期，
 **修复**：
 1. 检查服务器是否在运行：`curl http://127.0.0.1:18090/api/health`
    应返回 JSON。
-2. 如果没有运行，启动它：`cd webui; node server.js`。
+2. 如果没有运行，启动它：`cd packages/webui && node server.js`。
 3. 如果运行在不同端口，设置 `$env:PORT = <port>` 并重启。
    然后更新浏览器中的 URL。
 
@@ -66,8 +67,8 @@ HTML 元素；或者 `cache-bust?v=N` 查询参数已过期，
 
 **症状**：API 调用正常并返回会话，但 webui 的会话列表为空。
 
-**根因**：webui 缓存了一份较早的空列表。这通常会在下一份
-事件流 `state` 快照时自行恢复，但如果一直存在：
+**根因**：webui 缓存了一份较早的空列表。这通常会在下一个
+SSE `state` 事件时自行恢复，但如果一直存在：
 
 **修复**：强制刷新页面。
 
@@ -92,11 +93,11 @@ webui 的会话列表中。
 
 **症状**：点击 "Skip" 或按 Esc 无法关闭计划弹窗。
 
-**根因**：点击处理器调用了 `hidePlan()`，但来自 mcode 的
-事件流更新还没有到达，所以下一次渲染又把它打开了。
+**根因**：点击处理器调用了 `hidePlan()`，但来自 mcode 的 SSE
+事件还没有到达，所以下一次渲染又把它打开了。
 
 **修复**：
-1. 等 2-3 秒让事件流确认到达。
+1. 等 2-3 秒让 SSE 确认到达。
 2. 如果还是关不掉，再点一次 "Skip" —— 有时第一次点击被
    焦点环消耗掉了，第二次点击才会命中按钮。
 3. 如果弹窗真的卡死了，说明底层 mcode 状态卡住了。
@@ -125,24 +126,21 @@ localStorage 或使用了不同的 CID，关闭记录就会丢失。
 
 **根因**：没有提供 favicon。
 
-**修复**：这只是外观问题，忽略即可。或者添加一个
-`public/favicon.ico`。
+**修复**：这只是外观问题，忽略即可。Next 导出已经从 `webapp/public/`
+提供了 `favicon_v2.ico` 和 `favicon_v2.png`；旧的 `/favicon.ico`
+不再被服务。
 
-## 事件流连接每 30-60 秒断开一次
+## SSE 连接每 30-60 秒断开一次
 
 **症状**：右侧面板冻结几秒，然后追上来。开发者工具显示
-`/api/stream` WebSocket 反复关闭并重新打开（Network → WS 标签页）。
+EventSource 反复关闭并重新打开。
 
-**根因**：中间代理（nginx、cloudflare）在 webui 每 30 秒一次的
-ping 之间关闭了连接，或者它丢弃了 `Upgrade` / `Connection` 头，
-导致握手根本无法保持。
+**根因**：中间代理（nginx、cloudflare）正在关闭 SSE
+连接。SSE 协议中没有 keep-alive，所以代理可能会决定
+关闭空闲连接。
 
 **修复**：
-- 设置更长的代理超时：nginx 中使用 `proxy_read_timeout 3600s;`，
-  并确认代理转发了 `Upgrade` / `Connection`
-  （见 `docs/HTTPS-REVERSE-PROXY.md` §3）。
-- 连接关闭后，SPA 会在 `onclose` 约 3 秒后重连并从 `lastSeq`
-  续传，所以一次断开最多损失几秒的追赶。
+- 设置更长的代理超时：nginx 中使用 `proxy_read_timeout 3600s;`。
 - 或者把 webui 部署在不经代理的路径后面。本地开发时
   这不是问题。
 
@@ -163,10 +161,12 @@ ping 之间关闭了连接，或者它丢弃了 `Upgrade` / `Connection` 头，
 **症状**：点击 ⏹ 按钮发送了取消请求，但模型继续响应了
 好几秒。
 
-**根因**：mcode 0.1.5 的 acp 没有实现 `session/cancel`。
-webui 的 `/api/protocol/cancel` 会退化为对子进程发送
-SIGTERM，但子进程需要一点时间才会退出，而进行中的
-工具调用可能会先完成。
+**根因**：`POST /api/stop` 会经由该 cid 的活动子进程发出 acp
+`session/cancel` notification。引擎可能要花一点时间才能
+把正在进行的工具调用排空；如果该 notification 无法投递
+（因为该 cid 下没有注册活动子进程），路由会退化为对子进程
+发送 SIGTERM，并在 2 秒后升级为 SIGKILL。无论走哪条路径，
+提示词都会一直吐出 token，直到引擎完成收尾。
 
 **修复**：等 2-3 秒。模型很快会停止输出令牌。
 如果没有停止，说明子进程卡住了 —— 参见下文
@@ -181,8 +181,8 @@ SIGTERM，但子进程需要一点时间才会退出，而进行中的
 正在等待 stdin 而我们没有给它喂数据。
 
 **修复**：
-1. 打开开发者工具 → Network → 过滤 `/api/stream`，找到该
-   WebSocket 连接。如果它仍然开着（状态 101），问题在 mcode 一侧。
+1. 打开开发者工具 → Network → 找到 `/api/events` EventSource。
+   如果它仍然打开着，问题在 mcode 一侧。
 2. 找到 mcode 子进程：`Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" | Where-Object { $_.CommandLine -like "*acp*" }`
 3. 杀掉它：`Stop-Process -Id <PID> -Force`
 4. webui 会在下一条消息时生成一个全新的子进程。
@@ -205,16 +205,18 @@ SIGTERM，但子进程需要一点时间才会退出，而进行中的
 或显示错误的值。
 
 **根因**：mcode 的权限状态没有反映到
-`state.permissions` 中。webui 从事件流 `state` 快照中读取它。
+`state.permissions` 中。webui 从 SSE `state` 事件中读取它。
 
 **修复**：
 1. 检查 `curl 'http://127.0.0.1:18090/api/state?cid=<cid>' | jq .permissions`
 2. 如果为空，说明 mcode 还没有上报当前权限模式。
-   发送任意消息 —— 下一份事件流快照就会包含它。
-3. 如果 webui 显示错误的值，那是因为 mcode 0.1.5 的
-   acp 没有实现 `session/set_mode`。显示的值是用户的选择，
-   但实际的 mcode 模式并没有改变。等 mcode 实现该方法后
-   会自行修复。
+   发送任意消息 —— 下一个 SSE 事件就会包含它。
+3. 如果 webui 显示错误的值，再发一条提示词并观察 SSE
+   state 来确认实际是否生效——`state.permissions` 会在
+   每次 `POST /api/permissions` 成功响应后被改写。若响应里
+   出现 `mcodeSynced: false` 加 `warning` 字段，说明路由
+   接受了请求，但引擎拒绝了 `session/set_config_option`
+   调用（具体 acp 错误请到服务器日志里查看）。
 
 ## "Cannot read properties of undefined (reading 'listSessions')"
 
@@ -224,8 +226,10 @@ SIGTERM，但子进程需要一点时间才会退出，而进行中的
 过期引用。如果你看到这个，说明 webui 是从过期缓存加载的。
 
 **修复**：强制刷新。如果问题持续，检查 network 标签页中
-main.js 的响应 —— 它应该包含版本注释
-"v0.5.bx-NN"。
+`/_next/static/chunks/main-app-<hash>.js`（或 `/_next/static/` 下任意
+chunk）的响应 —— 它应该包含 webui 版本（`@mavis/webui/package.json`）。
+Next 导出对每个 chunk 都做内容寻址，所以 chunk 过期通常意味着
+`webapp/out/` 没跟着重建。
 
 ## 服务器无法启动："cannot listen on 127.0.0.1:18090 — EADDRINUSE"
 
@@ -270,9 +274,10 @@ main.js 的响应 —— 它应该包含版本注释
 
 **症状**：`/api/health` 返回 200，但发送消息没有任何反应。
 
-**根因**：mcode 二进制文件不在预期路径。默认值是
-`<webui-root>/../../mcode.cmd`（解析为
-`%USERPROFILE%\.minimax-code\mcode.cmd`）。
+**根因**：mcode 二进制文件不在预期路径。默认的探测链（见
+`server/lib/config.js#MCODE_CMD`）是：`$MCODE_CMD` 环境变量 >
+`MCODE_WEBUI_SELF_ENTRY` > 仓库中 `<packages/webui>/../../dist/cli.js`
+> `~/.minimax-code/mcode.cmd` > `PATH` 中的 `mcode`。
 
 **修复**：
 1. 验证路径：`Test-Path %USERPROFILE%\.minimax-code\mcode.cmd`

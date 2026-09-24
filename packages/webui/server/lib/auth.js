@@ -7,32 +7,33 @@
 //   - Local request (isLocalRequest === true) is always allowed (LAN card
 //     switch + first page load without token).
 //   - Non-local request requires a token when TOKEN auth is enabled:
-//       * `?token=<value>` query string (for the /api/stream WebSocket —
-//         browsers can't set custom headers on a WebSocket handshake).
+//       * `?token=<value>` query string (for SSE EventSource — browsers
+//         can't set custom headers on EventSource).
 //       * `Authorization: Bearer <value>` header (for fetch / programmatic
 //         callers; preferred to avoid URL-bar / referer / history leaks).
 //   - Token auth can be turned off (tokenEnabled = false) at runtime via
 //     the settings card; this is the "opt-in" escape hatch.
 //   - Static files (HTML/CSS/JS/images) and OPTIONS preflight are always
-//     public so the SPA can bootstrap; only `/api/*` and the `/api/stream` upgrade are gated.
+//     public so the SPA can bootstrap; only `/api/*` and SSE are gated.
 //
-// v2 security note (PR #55 review point 1): the local bypass below is a
-// SOCKET-identity fact (the connection originated on this machine), not
-// a browser-origin fact. It must never double as a cross-origin
-// exemption: a page on evil.com targeting http://127.0.0.1:<port> also
-// arrives over a loopback socket. The browser boundary is enforced
-// separately and EARLIER by router.js Gate 1b (mutating requests with
-// an untrusted Origin header are 403'd before this module runs, local
-// or not) plus Gate 1's trusted-origin-only CORS reflection.
+// The local bypass below is a SOCKET-identity fact (the connection
+// originated on this machine), not a browser-origin fact. It must
+// never double as a cross-origin exemption: a page on evil.com
+// targeting http://127.0.0.1:<port> also arrives over a loopback
+// socket. The browser boundary is enforced separately and EARLIER by
+// router.js Gate 1b (mutating requests with an untrusted Origin
+// header are 403'd before this module runs, local or not) plus Gate
+// 1's trusted-origin-only CORS reflection.
 //
 // Token resolution priority on each request:
 //   1. process.env.TOKEN (env wins, always — deploys / docker)
 //   2. In-memory `expectedToken` (synced from settings.js after rotation)
 //   3. Static TOKEN from config.js (fallback for tests)
 //
-// If tokenEnabled is false (set via settings.js setter) AND process.env.TOKEN
-// is empty AND the in-memory expectedToken is also empty, no auth is enforced
-// (backwards-compatible "loopback-only" / "trusted LAN" deployment).
+// If tokenEnabled is false (set via settings.js setter) AND
+// process.env.TOKEN is empty AND the in-memory expectedToken is also
+// empty, no auth is enforced (backwards-compatible "loopback-only" /
+// "trusted LAN" deployment).
 
 import { isLocalRequest } from "./lan.js";
 import { TOKEN } from "./config.js";
@@ -69,7 +70,7 @@ function getExpectedToken() {
 }
 
 // Pull a token candidate out of a request. Tries the header first
-// (preferred), then the URL query string (for the /api/stream upgrade).
+// (preferred), then the URL query string (for SSE / EventSource).
 // Returns "" if no token candidate is present. Caps length to defend
 // against unbounded `?token=...` allocations (e.g. 10 MB blob).
 const MAX_TOKEN_LEN = 256;
@@ -81,18 +82,18 @@ function clip(s) {
 }
 
 export function extractToken(req) {
-  // The /api/stream upgrade and fetch with custom headers use `Authorization: Bearer`.
+  // EventSource / fetch with custom headers can use `Authorization: Bearer`.
   const auth = req.headers && req.headers.authorization;
   if (auth) {
-    // v2 security fix (PR #55 / CodeQL): the old `^Bearer\s+(.+)$` paired
-    // an overlapping `\s+`/`.+` — polynomial backtracking on hostile
-    // headers. `[ \t]+` then `(\S.*)` use disjoint character classes, so
-    // the match is linear. Whitespace other than SP/HTAB after "Bearer"
-    // now fails closed (falls through to the query-string path).
+    // CodeQL: the old `^Bearer\s+(.+)$` paired overlapping `\s+`/`.+`
+    // — polynomial backtracking on hostile headers. `[ \t]+` then
+    // `(\S.*)` use disjoint character classes, so the match is linear.
+    // Whitespace other than SP/HTAB after "Bearer" now fails closed
+    // (falls through to the query-string path).
     const m = /^Bearer[ \t]+(\S.*)$/i.exec(String(auth));
     if (m) return clip(m[1].trim());
   }
-  // URL query fallback (also covers the /api/stream upgrade and browsers that strip
+  // URL query fallback (also covers EventSource on browsers that strip
   // custom headers). Safe-ish because we only use it for equality
   // comparison, never log it.
   try {
@@ -135,7 +136,7 @@ export function isRequestAuthorized(req) {
 }
 
 // Reject with 401. Sends a small JSON body (or a plain string for
-// clients that prefer text/event-stream). The response never
+// EventSource which prefers text/event-stream). The response never
 // echoes the supplied token or the expected token.
 export function writeAuthRequired(res) {
   if (!res.headersSent) {
@@ -165,20 +166,17 @@ export function isAuthEnforced() {
   return Boolean(getExpectedToken());
 }
 
-// ============================================================
-// v2 (Lease C08) — First-run notification flag
+// First-run notification flag.
 //
-// Background (ANTI-PATTERNS-FIX-PLAN §AP1):
-//   server.js used to print a 14-line ASCII box containing the raw
-//   token to stdout on first-ever boot. That leaked into shell
-//   history / Docker logs / systemd journal / screen shares. The fix
-//   pushes the token via the `token.first_run` event-stream frame so the UI can show it
-//   in a modal instead. Rotation uses `auth.token_rotated` (already in
-//   state-bus.js since v1.0.1).
+// The token is never echoed to stdout (it would land in shell
+// history / Docker logs / systemd journal / screen shares). Instead
+// server.js pushes the token via SSE `token.first_run` so the UI can
+// show it in a modal. Rotation uses `auth.token_rotated` (in
+// state-bus.js).
 //
 // Surface:
 //   - isFirstRun() — true iff this process has NOT yet pushed a
-//     `token.first_run` event-stream frame in its lifetime. Used by
+//     `token.first_run` SSE event in its lifetime. Used by
 //     state-bus.js#pushTokenFirstRun as a re-send guard.
 //   - markFirstRunNotified(token) — flip the in-memory flag. Called
 //     from the HTTP ack handler after the client closes the modal,
@@ -186,10 +184,9 @@ export function isAuthEnforced() {
 //     settings.js to also persist the canonical `tokenAcknowledged`
 //     field (settings.json).
 //
-// Settings.js owns the persistent `tokenAcknowledged`; auth.js's
+// settings.js owns the persistent `tokenAcknowledged`; auth.js's
 // `_firstRunNotified` is the parallel in-memory mirror used to gate
-// the event-stream re-send. The two stay in sync via this helper.
-// ============================================================
+// the SSE re-send. The two stay in sync via this helper.
 
 let _firstRunNotified = false;
 

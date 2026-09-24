@@ -2,16 +2,8 @@
 // POST /api/debug/inject, GET /api/debug/state (DEBUG_INJECT=1 gated)
 
 import { pushStateFor } from "../lib/state-bus.js";
+import { readJson } from "../lib/read-json.js";
 
-async function readJson(req) {
-  let body = "";
-  for await (const chunk of req) body += chunk;
-  try {
-    return JSON.parse(body || "{}");
-  } catch {
-    return {};
-  }
-}
 
 // POST /api/debug/inject — mock state 字段给浏览器测 UI 渲染
 export async function handleDebugInject(req, res, ctx) {

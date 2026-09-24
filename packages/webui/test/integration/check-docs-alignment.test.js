@@ -2,26 +2,16 @@
 // D02 lease: integration verification for scripts/check-docs-alignment.mjs
 // (the B05 / §AP11 gate).
 //
-// This file is a complement to test/check-docs-alignment.test.js (which
-// exercises the script's pathMatches helper in isolation). Here we run
-// the LIVE script against the real repo and assert the drift count + the
-// specific drifts that the v2 refactor expects to be present:
+// Complements test/tooling/check-docs-alignment.test.js (which exercises
+// the script's pathMatches helper in isolation). Here we run the LIVE
+// script against the real repo and assert the drift count + the specific
+// drifts the v2 refactor expects to be present:
 //
-//   - §AP11 cleanup-orphans drift IS present (B03 added the handler in
-//     lib/authorize.js but did not wire it into server/router.js —
-//     this is the registered known blocker for the D batch).
-//   - 4× SECURITY-NOTES env vars drift IS present (B05 reconcile is
-//     the owner).
-//   - Total drift = 6 lines (1 cleanup-orphans × 2 occurrences in
-//     [3/6] and [6/6], plus 4 env vars in [4/6]).
-//
-// Note on the brief's "≤ 5 after C05 §7 status line fix":
-//   C05's docs/CAPABILITIES.md §7 ⚠→✅ status change is recorded in
-//   C05-TASK.DRAFT.md §Changes made, but the check script's check
-//   [1/6] was already green BEFORE C05 (it asserts capabilities appear
-//   in both docs — status emoji is not in scope). The drift count is
-//   unaffected by C05's status change. We assert the actual count
-//   (6) here and let the verifier reconcile the brief.
+//   - §AP11 cleanup-orphans drift IS present (handler in lib/authorize.js
+//     not wired into server/router.js — registered known blocker for
+//     the D batch).
+//   - 4× SECURITY-NOTES env vars drift IS present (B05 reconcile owner).
+//   - Total drift = 6 lines.
 
 import { test, describe } from "node:test";
 import { strict as assert } from "node:assert";
@@ -84,7 +74,7 @@ describe("check-docs-alignment: live integration (B05 gate)", () => {
 
     test("drift count is 0 (post-reconcile §6.1 + §6.2)", () => {
         const r = runCheckScript();
-        // v2.0 reconcile §6 (2026-09-20, post-VERIFICATION-REPORT.md):
+        // v2.0 reconcile §6 (2026-09-20):
         //   - §AP11 cleanup-orphans route wired in router.js (reconcile §6.1)
         //   - 4× SECURITY-NOTES env vars exported in config.js (reconcile §6.2)
         // Pre-reconcile: 6 ✗ (D02 worker baseline 2026-09-20)
@@ -172,7 +162,7 @@ describe("check-docs-alignment: live integration (B05 gate)", () => {
 
 // -----------------------------------------------------------------------
 // Drift inventory: a structured summary of the current drift so the
-// verifier can quote it directly in VERIFICATION-REPORT.md. The exact
+// verifier can quote it directly. The exact
 // count must match the FAIL line above; if not, the check output
 // itself changed and the report should be regenerated.
 // -----------------------------------------------------------------------

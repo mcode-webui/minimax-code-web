@@ -1,208 +1,148 @@
 // webui/server/lib/usage.js
-// Quota (5h / weekly plan limits) queries.
+// Plan-level quota (the Token Plan's 5h and weekly windows) for the usage
+// popover and the /usage slash command.
 //
-// Architecture (SiHankor boundary, modacker 2026-08-28):
-//   - webui is a *plugin* for mcode; the only auth/key holder is mcode.
-//   - For plan-level quota, mcode does NOT currently expose a quota
-//     subcommand or local cache. We deliberately do NOT call the
-//     remote MiniMax API from the plugin (would duplicate auth) and
-//     do NOT read the desktop app (out of scope per project owner).
-//   - If the user has set a Token Plan API Key in settings, webui
-//     calls the official API directly using that key.
-//   - If no key is configured, the entire feature is hidden: we do
-//     NOT show a degraded empty state (no "—" placeholders, no info
-//     banner). The "套餐用量" button disappears from the UI entirely.
-//     Rationale: half-truths are worse than silence; the user has
-//     full control over whether to opt in.
+// The engine holds the credential, so it is the only side that may call MiniMax's
+// quota endpoint. What it learned is available to ACP clients as the extension
+// method `mcode/account/status` (packages/tui/src/acp/extensions.ts), whose
+// projection carries the plan tier plus each window's remaining percentage and
+// reset instant. webui asks the engine instead of keeping a Subscription Key of
+// its own: storing the user's credential in order to repeat a call the engine
+// already makes is a second copy of the secret, and buys no capability the engine
+// lacks.
 //
-// All session-level token usage is *not* the responsibility of this
-// module — that lives in `mavis-usage.js` and is read by the chat
-// flow when a mcode session exists.
+// Session-level token usage is not this module's concern — that lives in
+// `mavis-usage.js`, which the chat flow reads once a mcode session exists. The
+// `session*` fields of `cs.usage` belong to the chat flow (`mcode-acp.js`
+// accumulates them per turn), so nothing here resets them.
 
+import { getAccountStatus } from "./mcode-rpc.js";
+import { recordSnapshotFromCs } from "./quota-forecast.js";
 import { pushStateFor } from "./state-bus.js";
-import { getTokenPlanApiKey, getQuotaEnabled } from "./settings.js";
 
-const QUOTA_ENDPOINT = "https://www.minimaxi.com/v1/token_plan/remains";
-const QUOTA_TIMEOUT_MS = 15_000;
-
-// Token Plan API key must be the user's Subscription Key from
-// https://platform.minimaxi.com/user-center/token-plan — not the OAuth
-// session JWT (which the API rejects with status_code 1004).
-async function fetchTokenPlanRemains(apiKey) {
-  const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), QUOTA_TIMEOUT_MS);
-  try {
-    const r = await fetch(QUOTA_ENDPOINT, {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      signal: ac.signal,
-    });
-    if (!r.ok) {
-      throw new Error(`HTTP ${r.status} ${r.statusText}`);
-    }
-    return await r.json();
-  } finally {
-    clearTimeout(timer);
-  }
+// A window arrives as `{ remainingPercent?, resetAtMs?, unlimited }`. The
+// engine's own status bar reads one the same way (packages/tui/src/tui/shell/
+// chrome.ts `quotaAlertWindow`): `unlimited`, and a percentage that is not a
+// finite number, both mean "no figure to show". Matching the engine avoids
+// drawing a gauge for a window the engine itself would not report.
+function windowPercent(win) {
+  if (!win || win.unlimited === true) return null;
+  const pct = win.remainingPercent;
+  return typeof pct === "number" && Number.isFinite(pct) ? pct : null;
 }
 
-// runUsageQuery — called by POST /api/usage, /api/usage-trigger, and
-// the /usage slash command.
-//
-// Behavior matrix:
-//   quotaEnabled=false OR no key  → set hidden=true, return early.
-//   quotaEnabled=true + key set   → call API, populate fields, hidden=false.
-//   API fails                       → hidden=false, error set so the
-//                                    popover can show "load failed" toast.
-// parseTokenPlanResponse — extracted from runUsageQuery for
-// testability. Pure function: takes the API JSON, mutates the
-// supplied `cs.usage` shape, returns either { ok: true } or
-// { ok: false, error }. No side effects beyond the cs.usage
-// mutation, so tests can assert on the populated fields directly.
-//
-// Exported so test/usage.test.js can drive it with a fixed JSON
-// fixture (the real API response captured on 2026-08-28).
-export function parseTokenPlanResponse(data, cs) {
-  // base_resp is the standard platform wrapper. status_code !== 0
-  // means the API rejected the call (e.g., 1004 login fail).
-  const baseResp = data?.base_resp;
-  if (baseResp && baseResp.status_code && baseResp.status_code !== 0) {
-    return {
-      ok: false,
-      error: baseResp.status_msg || `API status ${baseResp.status_code}`,
-    };
+// `resetAtMs` is absolute epoch milliseconds. The snapshot and the popover both
+// read unix seconds, so convert here once.
+function windowResetSeconds(win) {
+  if (!win || typeof win.resetAtMs !== "number" || !Number.isFinite(win.resetAtMs)) {
+    return null;
   }
-
-  // Real Token Plan response shape (verified 2026-08-28 via curl
-  // with the user's key against the live endpoint):
-  //   {
-  //     model_remains: [
-  //       {
-  //         model_name: "general",
-  //         start_time, end_time, remains_time,
-  //         current_interval_total_count, current_interval_usage_count,
-  //         current_interval_remaining_percent, current_interval_status,
-  //         current_weekly_total_count, current_weekly_usage_count,
-  //         current_weekly_remaining_pct,
-  //         weekly_start_time, weekly_end_time, weekly_remains_time,
-  //         ...
-  //       },
-  //       ... (other models)
-  //     ]
-  //   }
-  //
-  // CRITICAL: the per-model fields live INSIDE model_remains[i],
-  // NOT at the top level. The first version of this parser read
-  //   data?.current_interval_remaining_percent
-  // which is always undefined, so the popover always showed "—".
-  // The fix is to pick the "general" entry (or the first one)
-  // and read from that, mirroring what getGeneralQuota() in
-  // public/app/state.js does client-side.
-  const modelEntry = Array.isArray(data?.model_remains)
-    ? (data.model_remains.find((m) => m && m.model_name === "general")
-      || data.model_remains[0]
-      || null)
-    : null;
-
-  cs.usage.plan = data?.plan ?? null;
-  cs.usage.expires = data?.expires ?? null;
-  cs.usage.credits = data?.credits ?? null;
-  // Stash the raw response for debugging — the event-stream push of cs
-  // exposes `usage.raw` to the client, and a "查看 raw 响应"
-  // affordance in the popover would surface this when the
-  // numbers look wrong (e.g., API shape drift). We cap it at
-  // 8 KB to avoid memory bloat on an unexpectedly large body.
-  try {
-    cs.usage.raw = JSON.stringify(data).slice(0, 8192);
-  } catch {
-    cs.usage.raw = null;
-  }
-  // 5h window percentage: pick the "general" model's remaining %
-  // out of model_remains[]. Falls back to null if the API shape
-  // changes and the field is missing.
-  //
-  // v2026-08-28 modacker: field name is `current_interval_remaining_percent`
-  //   (with the full word `percent`), NOT `current_interval_remaining_pct`.
-  //   The first version of this parser read `current_interval_remaining_pct`
-  //   — the typo was benign because both fields returned undefined and the
-  //   popover gracefully showed "—", but the new test fixture pins the
-  //   exact wire shape so any future drift is caught immediately.
-  const fiveHourRaw = modelEntry?.current_interval_remaining_percent;
-  cs.usage.fiveHourPercent = (typeof fiveHourRaw === "number")
-    ? fiveHourRaw
-    : null;
-  // weekly: same pattern, field is `current_weekly_remaining_percent`
-  //   (NOT `current_weekly_remaining_pct` — that was the typo above).
-  //   Pass through as a "%" string for popover format consistency.
-  const weeklyRaw = modelEntry?.current_weekly_remaining_percent;
-  cs.usage.weekly = (typeof weeklyRaw === "number")
-    ? `${weeklyRaw}%`
-    : null;
-  // 5h reset time: the API gives absolute start/end/remaining
-  // timestamps. We compute "next reset" as end_time (the next
-  // 5h boundary) — same semantic the popover wants. Falls
-  // back to a synthesized next 5h boundary if absent.
-  let resetTs = null;
-  const endTime = modelEntry?.end_time;
-  if (typeof endTime === "number") resetTs = Math.floor(endTime / 1000); // ms → s
-  cs.usage.fiveHourReset = resetTs;
-  // session-level fields are computed elsewhere (mavis-usage.js);
-  // reset them here so a stale value from a previous /api/usage
-  // call doesn't bleed through after a plan-level refresh.
-  cs.usage.sessionInput = 0;
-  cs.usage.sessionOutput = 0;
-  cs.usage.sessionTotal = 0;
-  cs.usage.sessionCacheRead = 0;
-  cs.usage.sessionCacheWrite = 0;
-  cs.usage.sessionReasoning = 0;
-  cs.usage.sessionCacheHitRate = 0;
-  return { ok: true };
+  return Math.floor(win.resetAtMs / 1000);
 }
 
-export async function runUsageQuery(cs, cid) {
-  const enabled = getQuotaEnabled();
-  const apiKey = getTokenPlanApiKey();
+/**
+ * Copy the engine's account projection into `cs.usage`.
+ *
+ * `tokenPlanQuotaState` is the engine's own verdict on whether it could read the
+ * plan, so it decides whether the figures below are real: only "available" means
+ * there is a live quota reading behind them. `hidden` follows that verdict, so a
+ * not-subscribed or unreachable account records no forecast history row instead
+ * of a row full of nulls.
+ *
+ * `plan` / `planExpiresAtMs` / `creditBalance` are display-only — nothing renders
+ * them today — and keep the engine's own field names and types, so a value is
+ * never re-interpreted on the way to the browser.
+ */
+export function applyAccountQuota(account, cs) {
+  const quota = (account && account.quota) || {};
+  const plan = (account && account.tokenPlan) || {};
+  const fiveHourPercent = windowPercent(quota.fiveHour);
+  const weeklyPercent = windowPercent(quota.weekly);
 
-  if (!enabled || !apiKey) {
-    // Feature off: hide entirely, don't fetch, don't show placeholders.
-    cs.usage.plan = null;
-    cs.usage.expires = null;
-    cs.usage.credits = null;
-    cs.usage.fiveHourPercent = null;
-    cs.usage.fiveHourReset = null;
-    cs.usage.weekly = null;
-    cs.usage.sessionInput = 0;
-    cs.usage.sessionOutput = 0;
-    cs.usage.sessionTotal = 0;
-    cs.usage.sessionCacheRead = 0;
-    cs.usage.sessionCacheWrite = 0;
-    cs.usage.sessionReasoning = 0;
-    cs.usage.sessionCacheHitRate = 0;
-    cs.usage.fetchedAt = Date.now();
-    cs.usage.error = null;
+  cs.usage.plan = typeof plan.tier === "string" ? plan.tier : null;
+  cs.usage.planExpiresAtMs =
+    typeof plan.expiresAtMs === "number" && Number.isFinite(plan.expiresAtMs)
+      ? plan.expiresAtMs
+      : null;
+  cs.usage.creditBalance =
+    typeof plan.creditBalance === "string" ? plan.creditBalance : null;
+  cs.usage.fiveHourPercent = fiveHourPercent;
+  // `weekly` stays a "%"-suffixed string: the long-standing snapshot shape
+  // carries it that way and quota-forecast.js parses it back out.
+  cs.usage.weekly = weeklyPercent === null ? null : `${weeklyPercent}%`;
+  cs.usage.fiveHourReset = windowResetSeconds(quota.fiveHour);
+  cs.usage.weeklyReset = windowResetSeconds(quota.weekly);
+  cs.usage.raw = null;
+  cs.usage.hidden = (account && account.tokenPlanQuotaState) !== "available";
+}
+
+/**
+ * The popover's payload.
+ *
+ * `remaining` is present only when the engine reported a figure, so the client
+ * can tell "no gauge to draw" from "0% left" — an `ok: true` payload without
+ * `remaining` renders the popover's unavailable state. `resetAt` and
+ * `weeklyResetAt` are unix seconds; the client normalizes either unit.
+ */
+export function quotaSnapshot(cs, extra = {}) {
+  const u = (cs && cs.usage) || {};
+  const weeklyRemaining = typeof u.weekly === "string" ? parseFloat(u.weekly) : NaN;
+  return {
+    ok: true,
+    source: "acp",
+    ...(typeof u.fiveHourPercent === "number" ? { remaining: u.fiveHourPercent } : {}),
+    ...(typeof u.fiveHourReset === "number" ? { resetAt: u.fiveHourReset } : {}),
+    ...(typeof u.weeklyReset === "number" ? { weeklyResetAt: u.weeklyReset } : {}),
+    ...(Number.isFinite(weeklyRemaining) ? { weeklyRemaining } : {}),
+    fetchedAt: u.fetchedAt ?? null,
+    ...extra,
+  };
+}
+
+/**
+ * Refresh `cs.usage` from the engine and push the new state to subscribers.
+ *
+ * Called by POST /api/usage, /api/usage-trigger and the /usage slash command.
+ * Returns the popover payload, so a caller that answers over HTTP can use the
+ * figures it just fetched instead of a second read.
+ *
+ * `record` is the difference between reading and measuring. A reading is what a
+ * caller wants on screen; a measurement is a sample for the forecast history,
+ * which is a file that only ever grows. The client polls the reading on a timer
+ * and asks for a measurement only when the user presses refresh, so the history
+ * stays a series of deliberate observations rather than 700 automatic ones a
+ * day. Defaults to true: a caller that says nothing keeps the old behaviour.
+ *
+ * Neither an engine failure nor a history failure is thrown. The first is
+ * reported in the payload and left in `cs.usage.error` (the popover shows a
+ * "load failed" line; the route's status stays 200 because the request itself
+ * succeeded), and the second is best-effort by construction — the forecast
+ * endpoint reports `no_history` when the file is missing or empty.
+ */
+export async function runUsageQuery(cs, cid, opts = {}) {
+  const { record = true } = opts;
+  const r = await getAccountStatus(cs && cs.mcodeSessionId);
+  cs.usage.fetchedAt = Date.now();
+  if (!r.ok) {
+    cs.usage.error = r.error;
     cs.usage.hidden = true;
     pushStateFor(cid);
-    return;
+    return {
+      ok: false,
+      source: "acp",
+      error: r.error,
+      fetchedAt: cs.usage.fetchedAt,
+    };
   }
-
-  try {
-    const data = await fetchTokenPlanRemains(apiKey);
-    const result = parseTokenPlanResponse(data, cs);
-    cs.usage.fetchedAt = Date.now();
-    if (result.ok) {
-      cs.usage.error = null;
-      cs.usage.hidden = false;
-    } else {
-      cs.usage.error = result.error;
-      cs.usage.hidden = false; // button shown so user sees the error
+  applyAccountQuota(r.data, cs);
+  cs.usage.error = null;
+  if (record) {
+    try {
+      recordSnapshotFromCs(cs);
+    } catch {
+      /* best-effort — see the note above */
     }
-  } catch (e) {
-    cs.usage.fetchedAt = Date.now();
-    cs.usage.error = String(e.message || e);
-    cs.usage.hidden = false; // button is shown so user can see the error
   }
   pushStateFor(cid);
+  return quotaSnapshot(cs);
 }

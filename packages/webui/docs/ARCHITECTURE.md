@@ -4,8 +4,8 @@
 
 > Companion to [README.md](../README.md). This document is for people
 > modifying the webui or integrating with it. It describes the runtime
-> topology, the module boundaries, the request lifecycle, and the
-> WebSocket event-stream payload contract.
+> topology, the module boundaries, the request lifecycle, and the SSE
+> payload contract.
 >
 > **Scope boundary.** This document is the single source of truth for how the
 > webui is built. The companion [DESKTOP-ARCHITECTURE.md](DESKTOP-ARCHITECTURE.md)
@@ -17,18 +17,20 @@
 
 ```
                               ┌─────────────────────────────────────────────┐
-                              │  Browser (public/)                          │
-                              │   • index.html (markup)                     │
-                              │   • app/main.js (ES module)                 │
-                              │   • styles/main.css                         │
+                              │  Browser (webapp/out, Next static export)   │
+                              │   • index.html + App Router pages           │
+                              │   • _next/static/* (content-hashed)        │
+                              │   • webapp/public/auth-gate.html (LAN gate) │
                               └─────────────────────────────────────────────┘
                                   │ ▲                          │ ▲
-                  fetch / JSON   │ │  WebSocket /api/stream    │ │
+                  fetch / JSON   │ │  EventSource / SSE        │ │
                                   ▼ │                          ▼ │
    ┌──────────────────────────────────────────────────────────────────────┐
-   │  server.js — bootstrap only (≈ 100 lines)                            │
+   │  server.js (source-mode) — registers @mavis/* → workspace TS resolver│
+   │  server/bootstrap.js — actual startup (delegated to by server.js) │
+   │  dist/webui/server.js — esbuild bundle of bootstrap.js (shipped)  │
    │   • installGlobalErrorHandlers()                                     │
-   │   • preflight: mcode.cmd exists, upload dir writable, etc.            │
+   │   • preflight: mcode binary exists, upload dir writable, etc.       │
    │   • http.createServer(handleRequest)                                 │
    └──────────────────────────────────────────────────────────────────────┘
                                   │
@@ -40,8 +42,8 @@
    │                                                                      │
    │  ┌─ static  ┐ ┌─ /api/health  ┐  ┌─ /api/state  ┐ ┌─ /api/sessions ┐ │
    │  │ index   │ │ health.js     │  │ state.js     │ │ sessions.js    │ │
-   │  │ .html   │ └───────────────┘  │ + /api/stream│ │ + acp-         │ │
-   │  │ .css/js │                    │   (WebSocket)│ │   sessions/*   │ │
+   │  │ .html   │ └───────────────┘  │ + /api/events│ │ + acp-         │ │
+   │  │ .css/js │                    │   (SSE)      │ │   sessions/*   │ │
    │  │ .png    │                    └──────────────┘ └────────────────┘ │
    │  └─────────┘                                                       │
    │  ┌─ /api/send    ┐ ┌─ /api/usage  ┐ ┌─ /api/workspace  ┐             │
@@ -69,9 +71,11 @@
    ┌──────────────────────────────────────────────────────────────────────┐
    │  server/lib/ — pure modules (one concern each)                      │
    │                                                                      │
-   │  config · lan · models · db · sessions                              │
-   │  state-bus · acp-client · mcode-rpc · mcode-acp · mcode-exec        │
-   │  mavis-usage · usage · settings · upload · workspace · slash        │
+   │  config · layout · lan · models · sqlite-resolver ·                │
+   │  mcode-session-delete · sessions · state-bus · acp-client         │
+   │  mcode-rpc · mcode-acp · mcode-exec · chat-line · context-percent  │
+   │  mavis-usage · usage · settings · upload · workspace · slash ·     │
+   │  static                                                           │
    └──────────────────────────────────────────────────────────────────────┘
                                   │                          ▲
                                   ▼                          │  JSON-RPC over stdio
@@ -99,14 +103,14 @@ browser           server/router.js           server/lib/*                mcode
    │                                │                              │ ─── spawn / pipe stdin ───►
    │                                │                              │
    │                                │ state-bus: pushStateFor(cid) │
-   │   ◄──────────── WS event  ────│   {type:'state', running:…}  │
+   │   ◄──────────── SSE event ────│   {type:'state', running:…}  │
    │   {type:'chat', lines:[…]}    │                              │
-   │   ◄──────────── WS event  ────│   ◄── line  ◄─── stdout  ────│
+   │   ◄──────────── SSE event ────│   ◄── line  ◄─── stdout  ────│
    │   {type:'delta', text:'…'}    │                              │
    │   …                            │                              │
-   │   ◄──────────── WS event  ────│   ◄── exec.result  ──────────│
+   │   ◄──────────── SSE event ────│   ◄── exec.result  ──────────│
    │   {type:'exec', status:'ok'}   │                              │
-   │   ◄──────────── WS event  ────│                              │
+   │   ◄──────────── SSE event ────│                              │
    │   {type:'state', running:false}│                              │
    │   …                            │                              │
    │ connection closes / kept open   │                              │
@@ -118,9 +122,9 @@ Key invariants:
   client id, a UUID stored in `localStorage.webui_cid`). A new tab gets a new
   subprocess; a closed tab kills its subprocess. State is per-cid, not
   per-connection.
-- **The WebSocket event stream (`GET /api/stream`) is the only source of
-  state updates** for the client. REST endpoints mutate server state but do
-  not push to the client. The client treats the event stream as truth.
+- **The SSE channel is the only source of state updates** for the client.
+  REST endpoints mutate server state but do not push to the client. The
+  client treats SSE as truth.
 - **`pushStateFor(cid, opts)` is the only function that mutates per-cid
   state on the server.** Everything else is read-only. This is why
   `state-bus.js` is the size it is — it's the single chokepoint.
@@ -135,7 +139,7 @@ rendered. Names are the real code symbols.
 sequenceDiagram
     autonumber
     actor U as User
-    participant B as Browser SPA<br/>(public/app: events/render/state)
+    participant B as Browser (webapp/out)<br/>(Next App Router pages)
     participant R as server/router.js<br/>(gate chain)
     participant C as routes/chat.js<br/>handleSend
     participant S as lib/state-bus.js<br/>(per-cid clientState)
@@ -162,11 +166,11 @@ sequenceDiagram
     E->>E: assemble system prompt:<br/>AGENTS.md (system-reminder module),<br/>skills, permission presets
     A->>E: session/prompt {prompt}
     E->>E: model call (provider / minimax_api key)
-    C-->>B: 200 {ok:true}  (ack only — everything else is the event stream)
+    C-->>B: 200 {ok:true}  (ack only — everything else is SSE)
 ```
 
 The stream that follows — every engine event becomes a chat line, every
-chat mutation becomes a state snapshot on the event stream:
+chat mutation becomes an SSE state snapshot:
 
 ```mermaid
 sequenceDiagram
@@ -182,7 +186,7 @@ sequenceDiagram
         A->>M: {kind:'thought', text}
         M->>M: streamUpdateLine(cs.chat, "▲", text)
         M->>S: pushStateFor(cid)  (60Hz coalesced)
-        S-->>B: WS {type:'state', chat:[...], running:{active:true,tps}}
+        S-->>B: SSE {type:'state', chat:[...], running:{active:true,tps}}
         B->>B: thinking block (escaped text, collapsible)
     end
     loop per tool call (incl. MCP tools & skill-spawned tools)
@@ -271,7 +275,7 @@ flowchart TD
         F{"clicked id is mvs_…?"}
         G["switch: find-or-create overlay<br/>(id = mvs_…, idempotent)"]
         H["transcript backfill from<br/>runtime SQLite (≤400 lines / ≤200KB)"]
-        I["bind cs: sessionId / mcodeSessionId / chat<br/>→ pushStateFor (event stream)"]
+        I["bind cs: sessionId / mcodeSessionId / chat<br/>→ pushStateFor (SSE)"]
     end
 
     subgraph STORES["stores"]
@@ -329,30 +333,37 @@ Each `server/lib/*.js` file exports a small set of named functions. No
 file reaches into another's internals. The notable contracts:
 
 ### `config.js`
-- Exports frozen-ish constants: `MCODE_ROOT`, `MCODE_CMD`, `PORT`, `HOST`,
-  `TOKEN`, `DEFAULT_MODEL`, `DEFAULT_TIMEOUT`, `DEFAULT_MAX_STEPS`,
+- Exports frozen-ish constants: `PACKAGE_ROOT` (alias for `WEBUI_ROOT`),
+  `WEBUI_DATA_DIR`, `MCODE_CMD`, `PORT`, `PORT_PINNED`, `HOST`, `TOKEN`,
+  `TOKEN_STDOUT`, `DEFAULT_MODEL`, `DEFAULT_TIMEOUT`, `DEFAULT_MAX_STEPS`,
   `MAX_CONCURRENT`, `UPLOAD_DIR`, `SESSIONS_DB`, `MCODE_RUNTIME_DB`,
-  `MAVIS_DATA_DIR`, `MAVIS_DB_PATH`, `SQLITE3_BIN`, `DEFAULT_WORKSPACE`.
-- Exports functions: `getPlatformFallbackPaths`, `detectSqlite3Bin`,
-  `detectTuiCwd` (re-export), `installGlobalErrorHandlers`.
+  `MAVIS_DATA_DIR`, `MAVIS_DB_PATH`, `SQLITE3_BIN`, `DEFAULT_WORKSPACE`,
+  `PROMPT_IDLE_TIMEOUT_MS`, `RATE_LIMIT_PER_MIN`, `RATE_LIMIT_BURST`,
+  `MCODE_WEBUI_UPLOAD_DIR`, `MCODE_WEBUI_SETTINGS_PATH`,
+  `MCODE_BETTER_SQLITE3`, `DEBUG_INJECT`.
+- Exports functions: `getServingPort`, `setServingPort`, `resolveBindHost`,
+  `getPlatformFallbackPaths`, `detectSqlite3Bin`, `detectTuiCwd`
+  (re-export), `installGlobalErrorHandlers`.
 - Reads `process.env.*` exactly once at module load. No per-request
-  re-reading.
+  re-reading (port fallback is an exception — `setServingPort` updates
+  the live port after boot).
+- Data-dir precedence: `MINIMAX_DATA_DIR` > `MAVIS_DATA_DIR` > `~/.minimax`
+  (one resolver shared with `MAVIS_DB_PATH`, which is the runtime SQLite).
 - `installGlobalErrorHandlers()` writes uncaught exceptions to
-  `.server.err` so they survive a process restart.
+  `.server.err` under `WEBUI_DATA_DIR` so they survive a process restart.
 
 ### `state-bus.js`
 The chokepoint. Exports:
 
 | Function | Purpose |
 |---|---|
-| `getClient(cid)` | Returns the per-cid `clientState` built by `makeClientState()` (`version`, `workspace`, `model`, `sessionId`, `mcodeSessionId`, `chat`, `sessions`, `context`, `usage`, `permissions`, `running`, `plan`, `ask`, `todo`, `goal` …). Lazily creates on first call; there is no `sse` field — the per-cid live channel is the `/api/stream` subscription on the event bus. |
-| `pushStateFor(cid, opts)` | Build a full snapshot for the cid — the `clientState` fields plus injected `sessions`, settings and quota fields (`opts` carries `lanBroadcast` / `mcodeSessions` overrides) — and publish it straight to the event bus as a `state.snapshot` event; `cid === "__broadcast__"` fans out to every subscribed cid. |
-| `pushOnlineCount(lanBroadcast)` | Set `onlineCount` to the number of event-stream subscribers (`getSubscribedCids().length`) and emit a `state.snapshot` to every subscribed cid. Called on `/api/stream` connect/disconnect. |
+| `getClient(cid)` | Returns the `clientState` object: `state`, `sse`, `activeChild`, `chatHistory`, `requestSeq`. Lazily creates on first call. |
+| `pushStateFor(cid, opts)` | Build a normalized `state` object and write it to `clientState.state`. Broadcasts to the SSE channel unless `opts.silent`. |
+| `pushOnlineCount(lanBroadcast)` | Count `sseByCid.size` and broadcast to all clients. Called on connect/disconnect. |
+| `SSE_HEADERS` | Standard headers: `Content-Type: text/event-stream`, `Cache-Control: no-cache`, `Connection: keep-alive`, `X-Accel-Buffering: no`. |
 
-The snapshot payload shape is documented in § 4 below. Snapshots are
-built on the fly by `pushStateFor` (`clientState` fields + injected
-sessions / settings / quota fields); the rest of the codebase reads
-the `clientState` fields themselves.
+The `state` payload is documented in § 5 below. The `clientState.state`
+object is the **only** thing the rest of the codebase reads from.
 
 ### `acp-client.js`
 Wraps mcode's JSON-RPC-over-stdio protocol. Exports:
@@ -368,27 +379,53 @@ Wraps mcode's JSON-RPC-over-stdio protocol. Exports:
   `session/commands`.
 
 ### `mcode-rpc.js`
-The shim for methods mcode 0.1.5 does not implement:
+
+The acp-side wrapper. Each public function (`setMode`,
+`setConfigOption`, `cancelSession`, `loadSession`, `activateSession`,
+`listSessions`, `getAccountStatus`, …) dispatches through
+`clientForCid(cid, requireLive)`:
+
+  - if a `cid` is supplied, the cid's registered active child
+    (the per-prompt `McodeAcpClient`) is preferred — that subprocess
+    is the one whose `sessions` map holds the in-flight session;
+  - `requireLive: true` (used by `cancelSession` / `setConfigOption`)
+    returns `null` rather than falling back to the singleton when no
+    active child is registered, because silent fallback would mask the
+    dispatch bug that previous PRs reintroduced;
+  - everything else falls back to the singleton, which keeps the
+    commands-probe and session-list paths working without a cid.
+
+The capability table webui advertises to itself:
 
 ```js
-const UNSUPPORTED = new Set([
-  'session/set_mode',
-  'session/set_config_option',
-  'session/cancel',
-  'session/activate', 'session/fork', 'session/resume', 'session/delete',
-  'session/request_permission', 'session/subscribe',
-])
+export const MCODE_ACP_CAPABILITIES = {
+  set_mode: true,
+  set_config_option: true,
+  cancel: true,
+  activate: true,
+  fork: true,
+  resume: true,
+  // session/delete registers on the engine but no handler exists,
+  // which is why deletes go through SQL on the local_runtime_*
+  // tables (see sqlite-resolver.js).
+  delete: false,
+  load: true,
+  close: true,
+  list: true,
+  new: true,
+  prompt: true,
+}
 ```
 
-`callRpc(method, params)` returns
-`{ok:false, code:'unsupported', error:'…'}` synchronously when the
-method is unsupported. The caller decides what to do — usually a toast
-on the client.
+`callRpc(method, params)` returns `{ok:false, code:'unsupported',
+error:'…'}` when the engine answers with `-32601 Method not found`
+(or the equivalent in the jsonrpc envelope). The caller decides what
+to do — usually a toast on the client.
 
 ### `mcode-acp.js` vs `mcode-exec.js`
 Two transports with a shared shape. The transport layer is selected
-by `mcode-rpc.js` based on `mcode version >= 0.1.4` and the per-request
-`/exec` opt-in.
+by `mcode-rpc.js` based on the engine's reported version (from the
+`initialize` reply's `agentInfo`) and the per-request `/exec` opt-in.
 
 Both expose:
 - `runMcode(content, opts)` → `AsyncGenerator<NormalizedEvent>`
@@ -399,10 +436,10 @@ Both expose:
 `state`, `chat`, `delta`, `tool`, `permission`, `plan`, `ask`,
 `exec`, `usage`. See § 5.
 
-## 4. The state snapshot payload
+## 4. The `clientState.state` payload
 
-This is the shape every state snapshot on the event stream contains.
-The webui mirrors it 1:1 into the `state` JS variable.
+This is the shape every SSE `state` event contains. The webui mirrors
+it 1:1 into the `state` JS variable.
 
 ```ts
 {
@@ -439,7 +476,7 @@ The webui mirrors it 1:1 into the `state` JS variable.
     cwd: string,
     updatedAt: number }>,
   mcodeSessionId?: string,         // currently-active mcode session
-  context?: {                       // updated by delta accumulation
+  context?: {                       // updated by SSE delta accumulation
     used: number,                   // tokens used (per-turn)
     percent: number,                // 0..100
     cacheRead: number,              // per-turn cache reads
@@ -462,7 +499,7 @@ The webui mirrors it 1:1 into the `state` JS variable.
   todo?: Array<{ content: string, status: 'pending'|'in_progress'|'done' }>,
   lanBroadcast: boolean,           // mirrors /api/settings
   onlineCount: number,              // from pushOnlineCount
-  // 🆕 v1.0.1 — settings surface pushed over event-stream state updates
+  // 🆕 v1.0.1 — settings surface pushed over SSE state updates
   readOnly: boolean,                // read-only mode (server gate blocks remote POST/DELETE on /api/*)
   tokenEnabled: boolean,            // token auth master switch (default true)
   currentToken: string,             // 32-hex auto-generated token; "" after tokenAcknowledged=true
@@ -475,50 +512,31 @@ The webui **does not** hold additional state outside this object. Any UI
 panel that needs data reads it from `state` and reacts to `state`
 changes via `render()`.
 
-## 5. Event schema (WebSocket event stream)
+## 5. SSE event schema
 
-Two event types — `state` (the standard state push) and a 🆕
-v1.0.1 named event `auth.token_rotated` that fires only when the
-token changes.
-
-> **Channel note (decision 20).** SSE is removed. These events ride
-> `GET /api/stream` as `state.snapshot` frames (payload = the §4 state
-> object) and `control` frames (`{v:1, seq, ts, type:"control",
-> payload:{name, data}}`) — see [API.md `GET /api/stream`](API.md).
-> The `event:` / `data:` lines below are the pre-decision-20 encoding,
-> retained as the canonical event-name → payload map.
+Two channels, one data frame type. `/api/events` is the per-CID state stream
+and carries `state` plus four named events; `/api/alerts` is a global anomaly
+stream (see §5.1).
 
 ```
 event: state
-data: {"version":"0.1.3","running":{"active":true,…},…}
+data: {"version":"1.0","running":{"active":true},"chat":["› …"],"…":…}
 
-event: chat
-data: {"lines":[{"role":"user","content":"…"}]}
-
-event: delta
-data: {"sessionId":"mvs_…","text":"hello","isPartial":true}
-
-event: tool
-data: {"name":"Bash","input":{…},"output":"…","status":"ok"|"err"|"running"}
-
-event: permission
-data: {"id":"perm_…","tool":"Bash","input":{…},"options":["ask","auto","full"]}
-
-event: plan
-data: {"title":"…","summary":"…","options":[…],"totalLines":N,"summaryLines":N}
-
-event: ask
-data: {"questions":[{"header":"…","question":"…","options":[…], "multiSelect":false}]}
-
-event: exec
-data: {"status":"ok"|"err"|"aborted","durationMs":N,"errorMessage"?:string}
-
-event: usage
-data: {"remaining":N,"resetAt":N,…}
-
-event: online
-data: {"count":N,"lanBroadcast":true}
+event: auth.token_rotated
+data: <new-32-hex-token>     // raw string, NOT JSON-wrapped
 ```
+
+That is the whole schema on this channel. There is **one** data frame type
+(`state`) plus four named events that the server emits out of band:
+`auth.token_rotated`, `token.first_run`, `needs_authorization` and
+`authorization_decided`. The separate `chat` / `delta` / `tool` /
+`permission` / `plan` / `ask` / `exec` / `usage` / `online` frames that an
+earlier revision of this section listed were never emitted by this server —
+those shapes travel as *fields inside* the single `state` snapshot
+(`state.chat`, `state.plan`, `state.ask`, `state.context`, `state.usage`,
+`state.onlineCount`). A client parses one payload and renders from it; it does
+not switch on an event name. The one exception is the second channel,
+`/api/alerts`, which does carry named events — see §5.1.
 
 🆕 **v1.0.1** — a separate named event for live token rotation:
 
@@ -535,59 +553,140 @@ and the live `HEADERS.Authorization` object **in place** — subsequent
 Clients that were offline when the event fired will get `401` on
 their next request; they need to be re-sent the new URL manually.
 
-The payload's `data` field is the **raw token string**, not a
-JSON-encoded string — it's obvious in devtools that this is sensitive
-material, and double-encoding would not add any value (and would
-obscure the token when copy-pasted from network logs).
+The body is **raw text**, not JSON-encoded — it's obvious in devtools
+that this is sensitive material, and `JSON.stringify` would not add
+any value (and would obscure the token when copy-pasted from
+network logs).
 
 The webui treats each event as an idempotent update; replaying the
-same event is safe. The event stream keeps a per-cid ring buffer: on
-reconnect the client resumes from `lastSeq`, and when the buffer has
-underrun the server replays the latest `state.snapshot` as the
-baseline (the first-connect baseline comes from `GET /api/state`).
+same event is safe. The server uses an at-most-once delivery model
+(SSE drops on disconnect → no retry), which the client handles by
+fetching `/api/state` on reconnect.
 
 ## 6. Frontend topology
 
 ```
-public/index.html         (markup only, no inline <script> or <style>)
-public/app/main.js        (single ES module, ~4200 lines)
-public/styles/main.css    (single stylesheet)
-public/lib/marked.min.js  (third-party markdown)
+packages/webui/webapp/                Next.js 14.2.35 app (React 18 + Tailwind)
+├── app/                              App Router: layout.tsx, page.tsx
+├── components/                       shell, chat, composer, toolbar, panels, modals, icons
+├── lib/                              transcript, sse, api, cid, store, markdown, i18n, theme, types
+├── styles/tokens.css                 design tokens (verbatim from desktop)
+├── styles/desktop-typography.css     typography preset cascade
+├── styles/official-utilities.css     copied upstream utility classes
+├── public/                           static assets Next copies into the export
+│   ├── auth-gate.html                LAN token gate (served by the same static root)
+│   ├── favicon_v2.ico                site icon
+│   └── favicon_v2.png                site icon
+└── out/                              next export — served by server/lib/static.js
+
+packages/webui/public/trajectory/     standalone Trajectory Studio (its own backend,
+                                    CSP, token posture) — only legacy subtree left
+                                    under public/; routed at /trajectory/ before any
+                                    static lookup.
 ```
 
-`main.js` is intentionally monolithic. The codebase chose a single
-file over a build step because:
-- No bundler → zero build time, zero source maps, zero config
-- Easier to grep (one file = one search)
-- Cache-bust via `?v=N` query string on `<script src>`
+The frontend is a **Next static export**, not the legacy vanilla-JS SPA. The
+export is rebuilt by `pnpm run webui:build` (which `pnpm build` runs) and
+copied into `dist/webui/webapp/out/` so the bundled runtime serves it from
+the same relative location as a source checkout. There is exactly one
+static root: `server/lib/static.js` reads from `NEXT_EXPORT_DIR` (the Next
+export) only — there is no `PUBLIC_DIR` fallback for the main UI. The
+Trajectory Studio under `public/trajectory/` is mounted at `/trajectory/`
+by the trajectory handler (its own backend / CSP / token posture), not by
+the static root. Internal layout:
 
-Internal structure (top to bottom):
-1. **Config** — env, `CID`, `TOKEN`, `API_SUFFIX`
-2. **I18N tables** — `zh`, `en` objects; `t(key)` lookup; `applyI18n()` walk
-3. **DOM cache** — `els = {...}` populated on `init()`
-4. **Render functions** — `render()`, `renderChat()`, `renderSessions()`, `renderUsage()`, `renderRight()`, `renderGoal()`, `renderTodo()`, `renderContext()`
-5. **State synchronization** — `connect()` (WebSocket event stream), `pushStateFor` mirror
-6. **Event handlers** — `attachEvents()` (delegation + per-element), `attachModalEvents()`
-7. **Action functions** — `send()`, `stopExec()`, `setMode()`, `setModel()`, `submitWorkspaceChange()`, `cancelConfirm()`, `refreshSessions()`, `refreshUsage()`
-8. **Helpers** — `parseChatLines()`, `parseMarkdown()`, `renderMessage()`, `escapeHtml()`
-9. **Init** — try { init(); attachModalEvents() } catch { show red error }
+1. **App Router** — `app/layout.tsx` (theme bootstrap, global styles), `app/page.tsx` (composition)
+2. **Components** — `shell`, `chat`, `chat-virtual-list`, `composer`, `toolbar`, `panels`, `modals`, `inbox`, `session-tree`, `context-meter`, `action-error-banner`, `icons`
+3. **Logic** — `lib/transcript`, `lib/sse`, `lib/api`, `lib/cid`, `lib/store`, `lib/markdown`, `lib/i18n`, `lib/theme`, `lib/types`, `lib/action-errors`, `lib/alerts`, `lib/use-locale`, `lib/workspace-filter`
+4. **Styles** — `styles/tokens.css` (verbatim from desktop), `styles/desktop-typography.css`, `styles/official-utilities.css`; `app/globals.css` is the App Router global stylesheet
+5. **Public** — `public/auth-gate.html` (the LAN token gate, served by the same static root), `public/favicon_v2.ico`, `public/favicon_v2.png`
+6. **Output** — `out/` is the `next export`; the server's static handler serves it as the single root
 
-## 7. Why zero npm dependencies
+## 7. Runtime vs. build dependencies
 
-The webui is intentionally dependency-free. Reasons:
+The server is **bundled, not copied** and is no longer required to be
+dependency-free. `scripts/build.mjs` produces `dist/webui/server.js` from
+`packages/webui/server/bootstrap.js`, reusing the shared workspace-source
+esbuild plugin (the same plugin the `cli` bundle uses); that bundle is
+the only runtime form shipped in the published archive. In a source
+checkout, `packages/webui/server.js` is a small source-mode bootstrap:
+it registers the `tsx` loader and an import resolver that maps every
+`@mavis/*` specifier to the workspace's TypeScript sources, then
+delegates to the same `server/bootstrap.js`. Source runs, tests, and the
+shipped bundle all resolve the same way.
 
-- `mcode.cmd` is already a toolchain that pulls its own deps
-- A webui that needs `npm install` to start is one more thing that can break
-- All required functionality (HTTP server, JSON, multipart parsing) is
-  in Node stdlib; the WebSocket event stream is a hand-written RFC 6455
-  subset, not a dependency
+### 7.1 Tiered dependency policy
 
-The `package.json` exists for the `name`/`version`/`scripts` fields and
-for editor tooling (Node type detection). `npm start` is a one-liner
-that just runs `node server.js`.
+Use the tier that matches the surface you are touching.
 
-If a future change needs a new dep, the rule is: add it, document why,
-keep the dep optional where possible (try/catch + fallback).
+**Tier 1 — must be reused, never re-implemented.** Contracts and pure logic
+that a workspace package already owns. Drift between a copy and its source is
+silent and expensive, so anything in this tier has to be imported by subpath
+from `@mavis/*`:
+
+- data-directory and path contracts (`@mavis/shared` paths, the
+  `~/.mcode-webui` layout)
+- model catalogues and provider presets
+- questionnaire / question schemas and the corresponding ACP method shapes
+- retry / redaction / formatting helpers
+- any contract duplicated elsewhere in the workspace — if two packages would
+  diverge on a field rename, it is Tier 1 by definition.
+
+**Tier 2 — may be owned locally.** Process- and platform-bound surfaces of
+this HTTP server that no other surface shares:
+
+- MIME map, multipart parsing
+- LAN / IP allow-list and CORS handling for this server's listener
+- port-fallback policy, static-asset serving, `/api/*` auth middleware
+- this server's own settings/token state, idle watchdog, upload directory.
+
+These are Web UI-shaped by design; pulling them out would just create a
+second package to version.
+
+**Tier 3 — must not be imported.** Internals of packages that ship native
+modules with platform-bound prebuilds (TUI native binaries, sandbox-runtime).
+The reason is platform reach, not purity: depending on them from a JS bundle
+that runs on every supported Node turns the package into a native-module
+package. Depend on the ACP protocol, not on TUI internals (this is already
+the rule recorded in `DESKTOP-ARCHITECTURE.md` §6 row 7).
+
+### 7.2 The frontend rule, unchanged
+
+New *frontend* libraries are held to the same rule that was correct in the
+previous text: prefer one the workspace already depends on (as `marked` is,
+via `packages/tui`) so the lockfile, the licence inventory and the
+standalone boundary all stay as they are. Tier 1 / Tier 2 / Tier 3 apply to
+the server only.
+
+### 7.3 Enforcement
+
+"Add a dependency and import it" is now a supported, checked path, not a
+forbidden one:
+
+- `pnpm webui:typecheck` covers the frontend TS; `scripts/check-webui-bundle.mjs`
+  inspects the produced bundle and fails on any bare external import that is
+  not declared in `cliExternalModules`. The bundle check is what would have
+  caught `hono` shipping without being declared in the release manifest.
+- `scripts/verify.mjs` runs both gates; a red bundle check is a red `pnpm verify`.
+
+### 7.4 Why the old "dependency-free" rule existed, and why it no longer applies
+
+The old rule was written for the plugin era, when the webui was distributed
+as a directory the user dropped into a `mcode` install: no build pipeline, no
+lockfile, no release archive. In that world, every runtime dependency was
+another thing the user had to install or whose absence could silently break
+the plugin; the safe answer was "no dependencies at all". That reasoning no
+longer holds: the webui is now an in-tree workspace member with a build step,
+its server is produced by `scripts/build.mjs` as `dist/webui/server.js`, and
+the published archive (`scripts/lib/cli-release.mjs` + `releaseManifest`) pins
+every external module. The cost of a hand-copied implementation is now higher
+than the cost of importing a real package, because the copy cannot be checked
+by the build pipeline.
+
+The "no bundling" comment in `scripts/build.mjs` is owned by workstream 1 and
+will be removed when its bundle entry point lands. This document is the
+authority on the policy; treat any source comment that contradicts §7 as
+stale.
 
 ## 8. Failure modes
 
@@ -595,7 +694,7 @@ keep the dep optional where possible (try/catch + fallback).
 |---|---|---|
 | mcode acp subprocess crashes | `child.on('exit')` listener | pushStateFor with `running.active=false`; client shows "agent stopped" toast |
 | mcode acp returns "Method not found" | `mcode-rpc.js` whitelist | returns `{ok:false, code:'unsupported'}` synchronously; route handler returns 501 Not Implemented; client shows toast |
-| Event stream drops | WebSocket `onclose` | reconnect with backoff + `resume {lastSeq}`; on ring-buffer underrun the server replays the latest `state.snapshot` (first connect fetches `/api/state`) |
+| SSE connection drops | `EventSource.onerror` | auto-reconnect with backoff; on reconnect, fetch `/api/state` and resync |
 | LAN request from a non-whitelisted IP | `router.js` L120 | 403 + friendly HTML page (or JSON for /api/*) |
 | Server out of file descriptors | `installGlobalErrorHandlers` EMFILE sink | written to `.server.err`; user sees an empty page; reload usually fixes it |
 | mcode exec encoding is GBK (Windows) | Node defaults to UTF-8 in `spawn`; no fix needed | documented in README as a pitfall for future Python ports |
@@ -611,23 +710,21 @@ The pattern (see `docs/DEVELOPMENT.md` for the full walk-through):
    { method: 'POST', match: (p) => p === '/api/foo', handler: fooRoute.handleFoo }
    ```
 4. If the new endpoint mutates state, call `pushStateFor(cid, {...})` from
-   the handler. Never write to the `clientState` fields directly.
-5. If the endpoint is invoked by the webui, add it to the fetch helper
-   in `public/app/main.js` (`API_SUFFIX` is automatically appended).
+   the handler. Never write to `clientState.state` directly.
+5. If the endpoint is invoked by the webui, add it to the fetch helper in
+   `packages/webui/webapp/lib/api.ts` (`API_SUFFIX` is automatically appended).
 
 ## 10. Future directions
 
-- **mcode `acp` capability parity**: once mcode implements the missing
-  methods (`set_mode`, `cancel`, etc.), the `UNSUPPORTED` set in
-  `mcode-rpc.js` shrinks; the corresponding `/api/protocol/*` endpoints
-  become functional. The `protocol/capabilities` endpoint already
-  advertises this.
-- **Structured uplink frames**: the push channel is the WebSocket event
-  stream (`GET /api/stream`) — SSE was removed (decision 20,
-  `docs/drafts/arch_net_solution_0922.md` §10). Client frames are
-  currently limited to `resume` / `ping` / `pong` / `close`; structured
-  uplink messages (answers, cancels) over the same connection remain
-  future work.
+- **mcode `acp` capability parity**: methods the engine has not yet
+  implemented stay in the unsupported path of `mcode-rpc.js`; the
+  corresponding `/api/protocol/*` routes answer `501 unsupported`.
+  `GET /api/protocol/capabilities` exposes the current table so the
+  webui can grey out controls that the engine does not yet back.
+- **WebSocket transport**: SSE is fine for unidirectional push. If
+  bidirectional low-latency control becomes a need (e.g. live
+  cursor tracking in a shared session), replace the EventSource
+  with a WebSocket and keep the same message schema.
 - **Multi-user session sharing**: per-cid state can be replaced with
   per-session state and a session-id routing key. The architecture
   already separates per-cid state from per-session data; the

@@ -20,22 +20,23 @@ import { spawn } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { homedir } from 'node:os'
 import { existsSync } from 'node:fs'
-import { join, dirname } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { join, resolve } from 'node:path'
+import { WEBUI_ROOT } from './server/lib/layout.js'
 
-const __dirname = dirname(fileURLToPath(import.meta.url))
 const DEFAULT_CWD = process.cwd()
 
-// v1.0: mcode 可执行文件动态解析 — 之前硬编码 C:\Users\<author>\... 绝对路径,
-//   插件分发到别人机器上必然失效。
-// v2.1 (in-product): 优先级 env MCODE_CMD > MCODE_WEBUI_SELF_ENTRY(启动器注入)
-//   > 本仓库构建产物 dist/cli.js > ~/.minimax-code/mcode.cmd > PATH 里的 mcode
+// esbuild inlines every workspace module into the webui entry, so
+// `import.meta.url` math is the entry's URL for every module here.
+// WEBUI_ROOT is the single source of truth that pins the layout
+// (packages/webui/ in source, dist/webui/ in the bundle), so the
+// repo-cli path resolves to <repo>/dist/cli.js in either layout.
 function resolveMcodeCmd() {
   if (process.env.MCODE_CMD) return process.env.MCODE_CMD
   const self = process.env.MCODE_WEBUI_SELF_ENTRY
   if (self && existsSync(self)) return self
-  // packages/webui/acp.mjs → ../../dist/cli.js
-  const repoCli = join(__dirname, '..', '..', 'dist', 'cli.js')
+  // <WEBUI_ROOT>/../../dist/cli.js — webui lives at packages/webui/ (source)
+  // or dist/webui/ (bundled), so two levels up always lands on the repo root.
+  const repoCli = resolve(WEBUI_ROOT, '..', '..', 'dist', 'cli.js')
   if (existsSync(repoCli)) return repoCli
   if (process.platform === 'win32') {
     const p = join(homedir(), '.minimax-code', 'mcode.cmd')
@@ -56,21 +57,26 @@ export class McodeAcpClient extends EventEmitter {
     this.pending = new Map()  // id → {resolve, reject, method}
     this.capabilities = null
     this.started = false
+    // `_alive` (not `alive`) because every existing caller gates on it as a
+    // truth signal for "this client still owns a usable subprocess". The
+    // process-level exit handler below flips it back to false, so a stale
+    // singleton (the previous PR's bug: `_mcodeAcpSingleton.alive` always
+    // undefined) is now actually detected and replaced on the next call.
+    this._alive = false
   }
 
-  // 启动 subprocess + initialize + 解析 capabilities
+  get alive() {
+    return this._alive && this.child !== null && this.started === true
+  }
+
   async start() {
     if (this.started) return this.capabilities
-    // Windows: 直接 spawn mcode.cmd（Node CreateProcess 知道 .cmd shim，不用 cmd.exe 套）
-    //   - cmd.exe /c mcode 会输出 Windows 横幅污染 stdout JSON 解析
-    // Linux/macOS: spawn 'mcode' 走 PATH
-    // Windows: spawn('cmd.exe', ['/c', 'mcode.cmd', 'acp']) 是 node probe 验证能 work 的姿势
-    //  - 直接 spawn mcode.cmd + shell:false → Node 22+ EINVAL（不让直接 CreateProcess .cmd）
-    //  - shell:true → Node 内置 cmd.exe 解释，但会输出 Windows 横幅污染 JSON
-    //  - cmd.exe /c <.cmd> → cmd.exe 作为父进程，不解释不打印横幅，只 exec mcode.cmd
-    // v2.1 (in-product): MCODE_CMD 可能是本仓库的 cli.js 入口（dist/cli.js 或启动器注入）
-    //   —— .js/.mjs 入口在当前 Node 下运行；解析结果在所有平台生效（之前 POSIX
-    //   硬编码 'mcode'，忽略了 resolveMcodeCmd 的返回值）。
+    // Windows .cmd shim handling: Node 22+ rejects `spawn('mcode.cmd', { shell:false })`
+    // with EINVAL (no direct CreateProcess for .cmd). spawn(cmd.exe, ['/c', mcode.cmd])
+    // works because cmd.exe execs the shim without printing the Windows banner that
+    // shell:true or '/c mcode' would emit into stdout and corrupt the JSON parse.
+    // On Linux/macOS, plain `spawn('mcode')` walks PATH. .js/.mjs entries run under
+    // process.execPath on every platform.
     const resolved = resolveMcodeCmd()
     let cmd, args
     if (/\.(js|mjs)$/i.test(resolved)) {
@@ -86,28 +92,32 @@ export class McodeAcpClient extends EventEmitter {
     this.child = spawn(cmd, args, {
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
-      shell: false,  // 关键：false 让 cmd.exe 不打印横幅
+      shell: false,
     })
-    // U4 (2026-09-20): 子进程死亡信号必须在到达时让所有 pending 落定。
-    //   Node 24 对 spawn 失败（mcode 未安装 → ENOENT）只发 error+close，
-    //   不发 exit —— 之前 pending 只在 exit 里 reject，request('initialize')
-    //   永不落定，上层 await 链整体悬空（无 mcode 的 Linux 上 /api/state
-    //   永久无响应；开发机有 mcode 时是环境噪声假绿）。exit/close 双挂 +
-    //   error 兜底，排水幂等，先到者生效。
+    // Node 24 does NOT emit 'exit' on spawn failure (ENOENT when mcode is
+    // not installed) — only 'error' + 'close'. If pending requests were
+    // rejected only in 'exit', request('initialize') would hang forever,
+    // taking the whole /api/state await chain with it. Hook all three
+    // signals; _rejectAllPending is idempotent (cleared map → no-op).
     this.child.on('error', (e) => {
       this._rejectAllPending(new Error(`mcode acp child error: ${e.message}`))
-      // 重发射仅在有人监听时进行 —— 裸 emit('error') 无监听会抛
-      // Unhandled 'error' event，无全局兜底的嵌入方会直接崩溃进程
+      // Bare emit('error') with no listener throws Unhandled 'error'
+      // event in Node's EventEmitter — embedders without a global handler
+      // would crash the process. Only re-emit when someone is listening.
       if (this.listenerCount('error') > 0) this.emit('error', e)
       else console.error(`[acp] mcode acp child error: ${e.message}`)
     })
     this.child.on('exit', (code, signal) => {
+      this._alive = false
+      this.started = false
       this.emit('exit', { code, signal })
-      // 拒绝所有 pending
       this._rejectAllPending(new Error(`mcode acp exited (code=${code} signal=${signal})`))
     })
     this.child.on('close', (code, signal) => {
-      // close 在子进程死亡后必然触发（含 exit 不发的 spawn 失败场景）
+      // 'close' fires after every child termination, including the
+      // ENOENT spawn-failure path that skips 'exit'.
+      this._alive = false
+      this.started = false
       this._rejectAllPending(new Error(`mcode acp closed (code=${code} signal=${signal})`))
     })
     this.child.stdout.setEncoding('utf8')
@@ -116,13 +126,13 @@ export class McodeAcpClient extends EventEmitter {
     this.child.stderr.on('data', (c) => {
       if (this.debug) process.stderr.write('[acp stderr] ' + c)
     })
-    // initialize
     this.capabilities = await this.request('initialize', {
       protocolVersion: 1,
       clientInfo: { name: 'mcode-webui', version: '0.1.0' },
       capabilities: { mcpCapabilities: { http: false, sse: false } },
     })
     this.started = true
+    this._alive = true
     return this.capabilities
   }
 
@@ -130,9 +140,9 @@ export class McodeAcpClient extends EventEmitter {
     return process.platform === 'win32' ? resolveMcodeCmd() : 'mcode'
   }
 
-  // U4 (2026-09-20): 排水拒绝全部 pending 请求 — 幂等（pending 清空后再调为
-  //   no-op）。子进程死亡信号（error/exit/close）任何一个到达都必须让等待方
-  //   落定，否则调用方的 await 永久悬空。
+  // Reject every pending request. Idempotent (calling on an already-
+  // cleared map is a no-op). Called from every child-death signal so
+  // awaiting callers always settle, never hang.
   _rejectAllPending(err) {
     for (const [, p] of this.pending) {
       p.reject(err)
@@ -140,7 +150,6 @@ export class McodeAcpClient extends EventEmitter {
     this.pending.clear()
   }
 
-  // 解析 stdout（每行一条 JSON）
   _onData(chunk) {
     this.buf += chunk
     let nl
@@ -158,7 +167,6 @@ export class McodeAcpClient extends EventEmitter {
       if (this.debug) process.stderr.write('[acp] non-json line: ' + line + '\n')
       return
     }
-    // 响应（带 id）
     if (typeof msg.id !== 'undefined' && (msg.result !== undefined || msg.error !== undefined)) {
       const p = this.pending.get(msg.id)
       if (p) {
@@ -168,11 +176,8 @@ export class McodeAcpClient extends EventEmitter {
       }
       return
     }
-    // notification（method 但无 id）
     if (msg.method) {
-      // 内部 raw 事件
       this.emit('notification', msg)
-      // 细粒度事件
       if (msg.method === 'session/update' && msg.params?.update) {
         const u = msg.params.update
         this.emit('sessionUpdate', u)
@@ -183,7 +188,6 @@ export class McodeAcpClient extends EventEmitter {
     }
   }
 
-  // 通用 request
   request(method, params) {
     if (!this.child) return Promise.reject(new Error('acp not started'))
     const id = ++this.nextId
@@ -205,8 +209,6 @@ export class McodeAcpClient extends EventEmitter {
     this.child.stdin.write(JSON.stringify(msg) + '\n')
   }
 
-  // --- 高级 API ---
-
   async newSession(cwd = this.cwd) {
     return await this.request('session/new', { cwd, mcpServers: [] })
   }
@@ -219,10 +221,31 @@ export class McodeAcpClient extends EventEmitter {
     return await this.request('session/list', cursor ? { cursor } : {})
   }
 
-  // 发 prompt + 等 stopReason + 收集 thinking/answer
-  // onChunk({kind: 'thought'|'message'|'other'|'done', text?, update?, stopReason?})
-  async prompt(sessionId, text, onChunk) {
-    // 先清理之前 listener，避免多个 prompt 串
+  // onChunk callback shape:
+  //   { kind: 'thought' | 'message' | 'tool_call' | 'tool_update' |
+  //           'usage' | 'plan_update' | 'plan_removed' | 'mode_update' |
+  //           'goal_update' | 'config_option_update' |
+  //           'session_info_update' | 'other' | 'done',
+  //     text?, update?, stopReason?, usage? }
+  //   tool_call / tool_update / usage / plan_update / mode_update /
+  //   goal_update / config_option_update / session_info_update pass
+  //   the raw session/update payload as `update`. done carries
+  //   stopReason + usage aggregated from the response.
+  async prompt(sessionId, promptOrBlocks, onChunk) {
+    // NOTE: listeners are added per-prompt and removed when the
+    // response settles. Concurrent prompts on the same client will
+    // cross-talk on sessionUpdate — callers must serialize.
+    //
+    // `promptOrBlocks` is either the plain text (the common case) or a
+    // pre-built ACP content-block array. Blocks exist for attachments:
+    // the engine's `promptToText` (packages/tui/src/acp/agent.ts) accepts
+    // exactly `text` and `resource_link` and rejects anything else with
+    // "not supported in ACP P0" — so an uploaded file has to arrive as a
+    // `resource_link`, not as extra prose bolted onto the text and not as a
+    // `resource` / `image` block the engine would reject.
+    const blocks = Array.isArray(promptOrBlocks)
+      ? promptOrBlocks
+      : [{ type: 'text', text: promptOrBlocks }]
     return await new Promise((resolve, reject) => {
       // qa (OOM hardening): 不再累积 result.events — 每个 session/update
       //   （含截图工具的 base64 rawOutput）都被 push 进数组且无任何消费者，
@@ -239,51 +262,45 @@ export class McodeAcpClient extends EventEmitter {
           if (u.messageId) result.messageIds.add(u.messageId)
           try { onChunk?.({ kind: 'message', text: u.content.text }) } catch {}
         } else if (u.sessionUpdate === 'tool_call') {
-          // v0.5.bs: mcode acp 工具调用开始 — 透传完整 update 给上层（字段：toolCallId/title/name/status/rawInput）
+          // payload: {toolCallId, title, name, status, rawInput, ...}
           try { onChunk?.({ kind: 'tool_call', update: u }) } catch {}
         } else if (u.sessionUpdate === 'tool_call_update') {
-          // v0.5.bs: 工具完成 — 透传 rawOutput 等给上层
           try { onChunk?.({ kind: 'tool_update', update: u }) } catch {}
         } else if (u.sessionUpdate === 'usage_update') {
-          // v0.5.bx: mcode acp 上下文用量（{used, size, cost} — 当前 session 已用 vs 上限）
-          // 字段是累计值（不是 incremental），直接覆盖 cs.context
+          // payload: {used, size, cost} — cumulative values for the
+          // current session. Overwrite cs.context with these (do not
+          // add to prior counters).
           try { onChunk?.({ kind: 'usage', update: u }) } catch {}
         } else if (u.sessionUpdate === 'plan_update') {
-          // v0.5.bx-9: mcode acp 0.1.5+ 可能发 plan_update 事件（plan 模式 LLM 出方案）
-          //   字段: {sessionId, planId, title, summary, options: [{label, description}]}
-          //   0.1.4 probe 没发过（available_commands 也没 /plan），但先透传以备未来
+          // payload: {sessionId, planId, title, summary, options:[{label,description}]}
           try { onChunk?.({ kind: 'plan_update', update: u }) } catch {}
         } else if (u.sessionUpdate === 'plan_removed') {
-          // v0.5.bx-9: 取消 plan 模式
           try { onChunk?.({ kind: 'plan_removed', update: u }) } catch {}
         } else if (u.sessionUpdate === 'current_mode_update') {
-          // v0.5.bx-9: mcode 切到 plan/ask 模式时发 — 透传给 webui 决定弹 PlanMode/Ask modal
           try { onChunk?.({ kind: 'mode_update', update: u }) } catch {}
         } else if (u.sessionUpdate === 'goal_update') {
-          // v0.5.bx-9: 目标追踪（mcode 0.1.4 acp 没见，但 0.1.5+ 可能加）
           try { onChunk?.({ kind: 'goal_update', update: u }) } catch {}
         } else if (u.sessionUpdate === 'config_option_update') {
-          // v0.5.by: mcode acp 0.1.5 推的 config 变化 (如 permissionMode 被改)
-          // payload: { sessionId, key, value, ... } — 透传给上层, 上层按 key 分发
+          // payload: {sessionId, key, value, ...} — dispatcher in the
+          // upper layer picks the field by `key`.
           try { onChunk?.({ kind: 'config_option_update', update: u }) } catch {}
         } else if (u.sessionUpdate === 'session_info_update') {
-          // v0.5.by: mcode acp 0.1.5 推的 session info 变化 (mcode docs 没列具体字段, 透传)
           try { onChunk?.({ kind: 'session_info_update', update: u }) } catch {}
         } else {
           try { onChunk?.({ kind: 'other', update: u }) } catch {}
         }
       }
       this.on('sessionUpdate', onUpdate)
-      // 发 prompt
       this.request('session/prompt', {
         sessionId,
-        prompt: [{ type: 'text', text }],
+        prompt: blocks,
       }).then((r) => {
         result.stopReason = r?.stopReason || 'end_turn'
-        // v0.5.bx: 捕获 usage 字段（Gcm schema: totalTokens/inputTokens/outputTokens/thoughtTokens/cachedReadTokens/cachedWriteTokens）
-        // mcode acp 0.1.3 把 usage 放在 session/prompt response 里，不发独立 usage_update event
+        // mcode acp 0.1.3 returns usage on the session/prompt response,
+        // not as a separate usage_update event. Schema (Gcm convention):
+        //   totalTokens, inputTokens, outputTokens, thoughtTokens,
+        //   cachedReadTokens, cachedWriteTokens.
         if (r && r.usage) result.usage = r.usage
-        // v0.5.bx-7: debug — 看 mcode 0.1.4 实际 response 结构
         if (process.env.MCODE_ACP_DEBUG) {
           console.log('[acp.prompt.response]', JSON.stringify({
             stopReason: r?.stopReason,
@@ -312,6 +329,6 @@ export class McodeAcpClient extends EventEmitter {
     this.started = false
   }
 
-  // 别名：跟 child_process 的 child.kill() 接口一致，/api/stop 能直接用
+  // Alias for child_process.child.kill() so /api/stop can call either.
   kill() { this.stop() }
 }
