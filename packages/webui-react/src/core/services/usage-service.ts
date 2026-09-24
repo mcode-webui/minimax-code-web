@@ -43,14 +43,15 @@ export function createUsageService(deps: UsageServiceDeps): UsageServicePort {
 
   return {
     async quota(): Promise<UsageInfo> {
-      // 走 POST：服务端 router 只给 /api/usage 注册了 POST 处理器（handleUsage），
-      // GET 会 404。POST 语义是「触发拉取并返回缓存值」，正是这里要的。
-      const res = asRecord(await ports.http.post('/api/usage', {})) ?? {};
+      // 用量数值的权威来源是 /api/state 的 usage 域：POST /api/usage 是 fire-and-forget
+      // 触发器（先回 {ok:true}，查询异步跑完后经 state 推送到达），响应体里没有数值。
+      const state = asRecord(await ports.http.get('/api/state')) ?? {};
+      const res = asRecord(state['usage']) ?? {};
       return {
         fiveHourPercent: num(res['fiveHourPercent'] ?? res['remaining']),
         weeklyPercent: weeklyPercent(res['weeklyPercent'] ?? res['weekly']),
         fetchedAt: num(res['fetchedAt']),
-        source: typeof res['source'] === 'string' ? res['source'] : undefined,
+        source: typeof res['source'] === 'string' ? res['source'] : 'api-state',
         hidden: res['hidden'] === true ? true : undefined,
       };
     },
