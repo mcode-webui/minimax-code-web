@@ -16,8 +16,10 @@ export interface ToggleSwitchProps {
  * 哑组件：受控输入，状态由 props 进，变化由 onChange 出。
  */
 export function ToggleSwitch({ checked, onChange, id, label }: ToggleSwitchProps) {
+  // 必须是 <label> 包裹 input：input 是 0×0 透明的（纯视觉滑块在外面），
+  // 若根节点是 <span>，用户点可视滑块永远不会拨动开关（#功能缺陷：配置开关失灵）。
   return (
-    <span className="toggle" title={label}>
+    <label className="toggle" title={label}>
       <input
         id={id}
         className="toggle-input"
@@ -27,6 +29,6 @@ export function ToggleSwitch({ checked, onChange, id, label }: ToggleSwitchProps
         onChange={(e) => onChange(e.target.checked)}
       />
       <span className="toggle-slider" aria-hidden="true" />
-    </span>
+    </label>
   );
 }

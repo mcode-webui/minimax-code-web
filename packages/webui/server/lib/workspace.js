@@ -234,7 +234,8 @@ export function browseWorkspace(rawPath) {
     }
     try {
       if (ent.isDirectory()) {
-        dirs.push({ name: ent.name, path: join(target, ent.name) });
+        // isDir 自描述：browse 只枚举目录，显式回传供目录选择器逐级下钻。
+        dirs.push({ name: ent.name, path: join(target, ent.name), isDir: true });
       }
     } catch {
       skipped++;

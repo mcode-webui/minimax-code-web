@@ -15,7 +15,19 @@ import type {
   SessionServicePort,
   StreamPort,
 } from '../../contracts/ports';
-import type { ModelSelection, SessionId, SessionSlice, SessionSummary, ThinkingEffort } from '../../contracts/domain';
+import type {
+  ChatMessage,
+  ContextUsage,
+  MessageBlock,
+  ModelSelection,
+  Role,
+  SessionId,
+  SessionSlice,
+  SessionSummary,
+  ThinkingEffort,
+  TodoItem,
+  WorkspaceInfo,
+} from '../../contracts/domain';
 import { THINKING_EFFORTS, emptySessionSlice } from '../../contracts/domain';
 
 /** session-service 用到的端口窄视图（持有器视图）。 */
@@ -38,6 +50,12 @@ export interface SessionService extends SessionServicePort {
   store(id: SessionId): Store<SessionSlice>;
   update(id: SessionId, updater: Updater<SessionSlice>): void;
   ids(): SessionId[];
+  /**
+   * GET /api/state / state.snapshot 帧 → 切片水合。chat 只属于 state.sessionId
+   * 那个会话：写入按 state.sessionId 落位，其它会话切片一概不动（会话隔离）。
+   * 返回 state.sessionId（无则 null）。
+   */
+  hydrateFromWireState(raw: unknown): SessionId | null;
 }
 
 export const DEFAULT_MODEL_SELECTION: ModelSelection = {
@@ -61,12 +79,128 @@ function toSummary(raw: unknown): SessionSummary | null {
     workspace: typeof o['workspace'] === 'string' ? o['workspace'] : null,
     mcodeSessionId: typeof o['mcodeSessionId'] === 'string' ? o['mcodeSessionId'] : null,
     titleCustom: o['titleCustom'] === true,
-    updatedAt: Number(o['updatedAt']) || 0,
+    // state.sessions 影子行只有 createdAt —— 回落它，避免相对时间显示 "—"。
+    updatedAt: Number(o['updatedAt']) || Number(o['createdAt']) || 0,
   };
 }
 
 function isEffort(v: unknown): v is ThinkingEffort {
   return typeof v === 'string' && (THINKING_EFFORTS as readonly string[]).includes(v);
+}
+
+function asRecord(v: unknown): Record<string, unknown> | null {
+  return typeof v === 'object' && v !== null ? (v as Record<string, unknown>) : null;
+}
+
+function num(v: unknown): number | null {
+  return typeof v === 'number' && Number.isFinite(v) ? v : null;
+}
+
+export interface ChatLinesResult {
+  messages: ChatMessage[];
+  todos: TodoItem[];
+}
+
+/**
+ * 服务端 chat 行语法 → 消息 / 待办（对齐 vanilla public/app/render.js#parseChatLines）：
+ *   › 或 > = 用户；● / • = 助手；▲ = 思考（连续行聚合成一块）；! / ○ / [xxx] = 系统；
+ *   ✓✔○◌◯✗✘× 前缀 = 待办行（像 [error]/Questionnaire 的除外）；Plan: / Ask: / ◎ / →
+ *   成块文本平铺为助手文本 —— 历史水合只做展示，绝不触发 plan/ask 弹窗副作用。
+ *   续行并入当前块；每个 › / ● 行是独立一条消息（与 vanilla 一致）。
+ */
+export function chatLinesToMessages(raw: unknown[]): ChatLinesResult {
+  const messages: ChatMessage[] = [];
+  const todos: TodoItem[] = [];
+  let seq = 0;
+  let cur: { role: Role; kind: 'text' | 'thinking'; text: string } | null = null;
+
+  const flush = (): void => {
+    if (!cur) return;
+    const block: MessageBlock =
+      cur.kind === 'thinking'
+        ? { id: 'wb-' + seq, kind: 'thinking', text: cur.text, done: true }
+        : { id: 'wb-' + seq, kind: 'text', text: cur.text, markdown: cur.role !== 'user' };
+    messages.push({ id: 'wm-' + seq, role: cur.role, blocks: [block], ts: seq, streaming: false });
+    seq += 1;
+    cur = null;
+  };
+  const feed = (role: Role, kind: 'text' | 'thinking', text: string): void => {
+    // 只有连续 ▲ 思考行聚合成一块；其余前缀行各自成条（vanilla 语义）。
+    if (kind === 'thinking' && cur && cur.kind === 'thinking') {
+      cur.text += '\n' + text;
+      return;
+    }
+    flush();
+    cur = { role, kind, text };
+  };
+  // 续行并入当前块；无当前块时视为助手续写。（放在闭包里读 cur —— 外层循环直接
+  // 读会被 TS 的闭包捕获收窄判成 never。）
+  const appendContinuation = (text: string): void => {
+    if (cur) cur.text += '\n' + text;
+    else feed('assistant', 'text', text);
+  };
+
+  for (const rawLine of raw) {
+    const line = typeof rawLine === 'string' ? rawLine : rawLine == null ? '' : String(rawLine);
+    if (line.trim() === '') continue;
+    const systemish =
+      /^\[(error|warning|info|system)\]/i.test(line) ||
+      /Questionnaire|requires.*user input|requires.*interactive/i.test(line);
+    const todo = line.match(/^([✓✔○◌◯✗✘×])\s+(.+)$/);
+    if (todo && !systemish) {
+      const mark = todo[1];
+      todos.push({
+        id: 'wt-' + todos.length,
+        content: todo[2],
+        status: mark === '✓' || mark === '✔' ? 'completed' : 'pending',
+      });
+      feed('system', 'text', line);
+      continue;
+    }
+    if (/^[›>]\s+/.test(line)) {
+      feed('user', 'text', line.replace(/^[›>]\s+/, ''));
+      continue;
+    }
+    if (/^[●•]\s+/.test(line)) {
+      feed('assistant', 'text', line.replace(/^[●•]\s+/, ''));
+      continue;
+    }
+    if (/^▲\s+/.test(line)) {
+      feed('assistant', 'thinking', line.replace(/^▲\s+/, ''));
+      continue;
+    }
+    if (systemish || /^[○◯!]\s+/.test(line)) {
+      feed('system', 'text', line.replace(/^[○◯!]\s+/, ''));
+      continue;
+    }
+    if (/^(Plan\s*[:：]|Ask\b|[◎→])/i.test(line.trim())) {
+      feed('assistant', 'text', line);
+      continue;
+    }
+    appendContinuation(line);
+  }
+  flush();
+  return { messages, todos };
+}
+
+function mapContextUsage(o: Record<string, unknown>): ContextUsage {
+  const used = num(o['used']) ?? num(o['tokens']) ?? 0;
+  const limit = num(o['limit']) ?? 0;
+  return {
+    used,
+    limit,
+    percent: num(o['percent']) ?? (limit > 0 ? Math.round((used * 100) / limit) : 0),
+    tps: num(o['tps']) ?? 0,
+    source: 'api-state',
+  };
+}
+
+function mapWorkspaceInfo(o: Record<string, unknown>): WorkspaceInfo {
+  return {
+    dir: typeof o['dir'] === 'string' ? o['dir'] : null,
+    branch: typeof o['branch'] === 'string' ? o['branch'] : null,
+    tree: typeof o['tree'] === 'string' ? o['tree'] : null,
+  };
 }
 
 export function createSessionService(deps: SessionServiceDeps): SessionService {
@@ -154,8 +288,10 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
 
     async create(workspace?: string | null): Promise<SessionId> {
       const body = workspace != null ? { workspace } : {};
-      const res = await ports.http.post<{ id?: unknown }>('/api/sessions', body);
-      const id = typeof res.id === 'string' ? res.id : '';
+      const res = await ports.http.post<{ id?: unknown; session?: { id?: unknown } }>('/api/sessions', body);
+      // 服务端实际回 { ok, session: { id, ... } }；兼容旧的 { id } 直出形状。
+      const nested = res.session && typeof res.session === 'object' ? res.session.id : undefined;
+      const id = typeof nested === 'string' ? nested : typeof res.id === 'string' ? res.id : '';
       if (!id) throw new Error('session create: missing id in response');
       update(id, {
         summary: {
@@ -171,8 +307,34 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     },
 
     async switchTo(id: SessionId): Promise<void> {
-      await ports.http.post('/api/sessions/switch', { id });
+      const res = await ports.http.post<{ session?: unknown }>('/api/sessions/switch', { id });
       // 会话隔离：切换只通知服务端，本地任何切片都不清空、不重建。
+      // 响应回带该会话的 chat —— 立即水合它**自己的**切片（按 res.session.id 落位），
+      // 切换会话马上能看到对话内容，且绝不写到别的会话上。
+      const s = asRecord(res.session);
+      const sid = s && typeof s['id'] === 'string' && s['id'] !== '' ? s['id'] : id;
+      const chat = s && Array.isArray(s['chat']) ? s['chat'] : null;
+      if (chat) {
+        const parsed = chatLinesToMessages(chat);
+        update(sid, (prev) => ({
+          ...prev,
+          messages: parsed.messages,
+          todos: parsed.todos.length > 0 ? parsed.todos : prev.todos,
+          summary:
+            s && typeof s['title'] === 'string'
+              ? prev.summary
+                ? { ...prev.summary, title: s['title'] }
+                : {
+                    id: sid,
+                    title: s['title'],
+                    workspace: null,
+                    mcodeSessionId: typeof s['mcodeSessionId'] === 'string' ? s['mcodeSessionId'] : null,
+                    titleCustom: false,
+                    updatedAt: Date.now(),
+                  }
+              : prev.summary,
+        }));
+      }
     },
 
     async rename(id: SessionId, title: string): Promise<void> {
@@ -204,6 +366,53 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
 
     subscribe(id: SessionId, listener: () => void): () => void {
       return storeFor(id).subscribe(listener);
+    },
+
+    hydrateFromWireState(raw: unknown): SessionId | null {
+      const s = asRecord(raw);
+      if (!s) return null;
+      const sid = typeof s['sessionId'] === 'string' && s['sessionId'] !== '' ? s['sessionId'] : null;
+      if (!sid) return null;
+      const chat = Array.isArray(s['chat']) ? s['chat'] : null;
+      const runningO = asRecord(s['running']);
+      const runningNow = runningO ? runningO['active'] === true : false;
+      const ctxO = asRecord(s['context']);
+      const wsO = asRecord(s['workspace']);
+      const modelO = asRecord(s['model']);
+      const title = typeof s['sessionTitle'] === 'string' ? s['sessionTitle'] : null;
+      const mcodeSid = typeof s['mcodeSessionId'] === 'string' ? s['mcodeSessionId'] : null;
+      update(sid, (prev) => {
+        const parsed = chat ? chatLinesToMessages(chat) : null;
+        const messages = parsed ? parsed.messages : prev.messages;
+        if (runningNow && messages.length > 0) {
+          const last = messages[messages.length - 1];
+          messages[messages.length - 1] = { ...last, streaming: true };
+        }
+        return {
+          ...prev,
+          summary:
+            title != null || mcodeSid != null
+              ? {
+                  id: sid,
+                  title: title ?? prev.summary?.title ?? '',
+                  workspace: prev.summary?.workspace ?? null,
+                  mcodeSessionId: mcodeSid ?? prev.summary?.mcodeSessionId ?? null,
+                  titleCustom: prev.summary?.titleCustom ?? false,
+                  updatedAt: prev.summary?.updatedAt ?? Date.now(),
+                }
+              : prev.summary,
+          messages,
+          todos: parsed && parsed.todos.length > 0 ? parsed.todos : prev.todos,
+          running: runningNow,
+          context: ctxO ? mapContextUsage(ctxO) : prev.context,
+          workspace: wsO ? mapWorkspaceInfo(wsO) : prev.workspace,
+          selection:
+            modelO && typeof modelO['name'] === 'string' && modelO['name'] !== ''
+              ? { ...prev.selection, model: modelO['name'] }
+              : prev.selection,
+        };
+      });
+      return sid;
     },
 
     store: storeFor,

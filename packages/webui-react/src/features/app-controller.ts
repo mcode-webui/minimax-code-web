@@ -37,6 +37,7 @@ import type {
 import { groupSessionsByWorkspace } from '../contracts/domain';
 import type { WireSettings } from '../contracts/protocol';
 import type { Registry } from '../contracts/ports';
+import type { SessionService } from '../core/services/session-service';
 
 export type ThemeMode = 'light' | 'dark';
 export type Lang = 'zh' | 'en';
@@ -124,6 +125,26 @@ export interface AppController {
   snapshot(): AppSnapshot;
   subscribe(listener: () => void): () => void;
   actions: AppActions;
+}
+
+function asRecord(v: unknown): Record<string, unknown> | null {
+  return typeof v === 'object' && v !== null ? (v as Record<string, unknown>) : null;
+}
+
+function numOrNull(v: unknown): number | null {
+  return typeof v === 'number' && Number.isFinite(v) ? v : null;
+}
+
+/** weekly 可能是 91 / "91%" / "unlimited" —— 一律收窄为百分比或 null。 */
+function weeklyPercentOf(v: unknown): number | null {
+  if (typeof v === 'number' && Number.isFinite(v)) return v;
+  if (typeof v === 'string') {
+    const t = v.trim().replace(/%$/, '');
+    if (t === '' || t.toLowerCase() === 'unlimited') return null;
+    const n = Number(t);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
 }
 
 export function createAppController(reg: Registry): AppController {
@@ -434,6 +455,79 @@ export function createAppController(reg: Registry): AppController {
       notify();
     },
   };
+
+  // ── 服务端状态同步（消息展示 / 切会话内容）──────────────────────────────
+  /**
+   * GET /api/state 基线与 state.snapshot 帧同构。chat 只属于 state.sessionId
+   * 那个会话 —— 切片写入由 SessionService.hydrateFromWireState 按 state.sessionId
+   * 落位（绝不串会话），这里只补控制器级的会话列表 / 用量 / 上下文变量。
+   */
+  function applyWireState(raw: unknown): void {
+    const s = asRecord(raw);
+    if (!s) return;
+    let changed = false;
+
+    const rows = Array.isArray(s['sessions']) ? s['sessions'] : null;
+    if (rows) {
+      const list: SessionSummary[] = [];
+      for (const r of rows) {
+        const o = asRecord(r);
+        if (!o || typeof o['id'] !== 'string' || o['id'] === '') continue;
+        list.push({
+          id: o['id'],
+          title: typeof o['title'] === 'string' ? o['title'] : '',
+          workspace: typeof o['workspace'] === 'string' ? o['workspace'] : null,
+          mcodeSessionId: typeof o['mcodeSessionId'] === 'string' ? o['mcodeSessionId'] : null,
+          titleCustom: o['titleCustom'] === true,
+          updatedAt: Number(o['updatedAt']) || Number(o['createdAt']) || 0,
+        });
+      }
+      sessions = list;
+      changed = true;
+    }
+
+    const impl = reg.sessions as Partial<SessionService>;
+    const sid = typeof s['sessionId'] === 'string' && s['sessionId'] !== '' ? s['sessionId'] : null;
+    if (sid && typeof impl.hydrateFromWireState === 'function') {
+      impl.hydrateFromWireState(raw);
+      // 初始采纳服务端当前会话；之后本地点选优先（selectSession 自己走 switch）。
+      if (activeSessionId === null) {
+        activeSessionId = sid;
+        resubscribeSession();
+      }
+      const slice = reg.sessions.slice(sid);
+      if (sid === activeSessionId) context = slice.context;
+      if (slice.workspace) workspace = slice.workspace;
+      changed = true;
+    }
+
+    const usageO = asRecord(s['usage']);
+    if (usageO) {
+      usage = {
+        fiveHourPercent: numOrNull(usageO['fiveHourPercent'] ?? usageO['remaining']),
+        weeklyPercent: weeklyPercentOf(usageO['weeklyPercent'] ?? usageO['weekly']),
+        fetchedAt: numOrNull(usageO['fetchedAt']),
+      };
+      changed = true;
+    }
+
+    if (changed) notify();
+  }
+
+  // 基线 GET /api/state + 增量 state.snapshot 帧。这里也是 /api/stream 的唯一连接点：
+  // 授权弹窗（needs_authorization —— 删除会话 / token 重置走 authorize 门）、告警、
+  // 状态推送全依赖这条流；不连接则删除等操作会一直挂到超时被拒。
+  subDeps.push(
+    reg.stream.onFrame((raw) => {
+      const f = asRecord(raw);
+      if (f && f['type'] === 'state.snapshot') applyWireState(f['payload']);
+    }),
+  );
+  reg.stream.connect();
+  void reg.http
+    .get('/api/state')
+    .then((state) => applyWireState(state))
+    .catch(() => { /* 基线拉取失败不阻塞 —— 流帧会补齐 */ });
 
   void bootstrap();
 

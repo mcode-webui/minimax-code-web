@@ -7,6 +7,8 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import { createAppController } from '../src/features/app-controller';
+import { chatLinesToMessages, createSessionService } from '../src/core/services/session-service';
+import type { HttpPort, KeyValueStorePort, StreamPort } from '../src/contracts/ports';
 import type { Registry } from '../src/contracts/ports';
 import type { SessionSlice, SessionSummary } from '../src/contracts/domain';
 
@@ -155,6 +157,70 @@ describe('热插拔', () => {
     // 其余端口仍然是原来那套（未被牵连）
     expect(swappedReg.http).toBe(reg.http);
     expect(swappedReg.sessions).toBe(reg.sessions);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// chat 行文法 → 消息（切换会话内容展示的结构保证）
+// ════════════════════════════════════════════════════════════════════════════
+
+describe('chatLinesToMessages（服务端 chat 行 → 消息/待办）', () => {
+  it('› / ● 前缀翻译成 user / assistant，连续 ▲ 聚合成思考块', () => {
+    const r = chatLinesToMessages(['› 你好', '● 你好呀', '▲ 想一想', '▲ 再想想', '● 结论']);
+    expect(r.messages.map((m) => m.role)).toEqual(['user', 'assistant', 'assistant', 'assistant']);
+    const think = r.messages[2].blocks[0];
+    expect(think.kind).toBe('thinking');
+    if (think.kind === 'thinking') expect(think.text).toBe('想一想\n再想想');
+  });
+
+  it('✓/✗ 行记入 todos（✓=completed），聊天里保留原文', () => {
+    const r = chatLinesToMessages(['✓ 第一步', '✗ 第二步']);
+    expect(r.todos.map((t) => t.status)).toEqual(['completed', 'pending']);
+    expect(r.messages).toHaveLength(2);
+  });
+
+  it('Plan:/Ask: 成块文本平铺为助手文本（水合不触发弹窗副作用）', () => {
+    const r = chatLinesToMessages(['Plan: 方案', '◎ Ask 要继续吗？']);
+    expect(r.messages).toHaveLength(2);
+    expect(r.messages.every((m) => m.role === 'assistant')).toBe(true);
+    expect(r.messages.every((m) => m.blocks[0].kind === 'text')).toBe(true);
+  });
+});
+
+describe('hydrateFromWireState（state.snapshot → 切片，按 state.sessionId 落位）', () => {
+  const stubDeps = {
+    ports: {
+      http: {
+        get: async () => ({}),
+        post: async () => ({}),
+        del: async () => ({}),
+        upload: async () => ({}),
+      } as unknown as HttpPort,
+      stream: {
+        connect: () => { /* noop */ },
+        close: () => { /* noop */ },
+        send: () => { /* noop */ },
+        onFrame: () => () => { /* noop */ },
+        status: () => 'idle' as const,
+      } as unknown as StreamPort,
+      kv: { get: () => null, set: () => { /* noop */ }, remove: () => { /* noop */ } } as KeyValueStorePort,
+    },
+  };
+
+  it('chat 只写进 state.sessionId 的切片，其它会话原样不动（会话隔离）', () => {
+    const svc = createSessionService(stubDeps);
+    svc.slice('other'); // 预热另一个会话切片
+    const sid = svc.hydrateFromWireState({
+      sessionId: 's1',
+      chat: ['› 问题', '● 回答'],
+      running: { active: true },
+    });
+    expect(sid).toBe('s1');
+    expect(svc.slice('s1').messages).toHaveLength(2);
+    expect(svc.slice('s1').running).toBe(true);
+    expect(svc.slice('s1').messages[1].streaming).toBe(true); // 流式中：末条带光标
+    expect(svc.slice('other').messages).toHaveLength(0);
+    expect(svc.slice('other').running).toBe(false);
   });
 });
 

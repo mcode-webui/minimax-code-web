@@ -119,7 +119,8 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): WorkspaceSer
           out.push({
             name: typeof o['name'] === 'string' ? o['name'] : baseName(o['path']),
             path: o['path'],
-            isDir: o['isDir'] === true,
+            // browse 只枚举目录；旧服务端不带 isDir 键 —— 缺失即目录，逐级下钻才可用。
+            isDir: o['isDir'] !== false,
           });
         }
       }
