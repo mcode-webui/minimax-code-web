@@ -93,6 +93,10 @@ export class McodeAcpClient extends EventEmitter {
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
       shell: false,
+      // POSIX 下让子进程当进程组长 —— stop() 才能杀整组。引擎的 acp
+      // 入口会自己拉起 MCP 插件链 (proxy → mcp-server → …)，这些孙进程收不到
+      // 针对直接子进程的信号，于是每次重启都留下一棵孤儿插件树。
+      detached: process.platform !== 'win32',
     })
     // Node 24 does NOT emit 'exit' on spawn failure (ENOENT when mcode is
     // not installed) — only 'error' + 'close'. If pending requests were
@@ -323,7 +327,20 @@ export class McodeAcpClient extends EventEmitter {
 
   stop() {
     if (this.child) {
-      try { this.child.kill() } catch {}
+      const pid = this.child.pid
+      if (process.platform !== 'win32' && pid) {
+        // 进程组 SIGTERM → 3s 兜底 SIGKILL (整组, 含 MCP 插件链)。
+        // detached:true (见 start()) 让 pid 即进程组 id, 取负号即整组。
+        try { process.kill(-pid, 'SIGTERM') } catch { try { this.child.kill('SIGTERM') } catch {} }
+        const c = this.child
+        const t = setTimeout(() => {
+          try { process.kill(-pid, 'SIGKILL') } catch {}
+          try { c.kill('SIGKILL') } catch {}
+        }, 3000)
+        if (typeof t.unref === 'function') t.unref()
+      } else {
+        try { this.child.kill() } catch {}
+      }
       this.child = null
     }
     this.started = false

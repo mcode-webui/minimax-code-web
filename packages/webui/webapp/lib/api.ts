@@ -235,10 +235,29 @@ export const getSessionTree = (refresh = false) =>
 
 // --- model and permissions --------------------------------------------------
 
+export interface ModelEntry {
+  id: string;
+  name?: string;
+  /** Display name; the server's `models.json` overlay may rename an entry. */
+  label?: string;
+  /** Provider segment parsed out of the engine's encoded model id. */
+  provider?: string;
+  contextLimit?: number;
+}
+
+export interface ModelGroup {
+  id: string;
+  label: string;
+  models: ModelEntry[];
+}
+
 export interface ModelsPayload {
   ok: boolean;
   current: string;
-  models: { id: string; name?: string }[];
+  models: ModelEntry[];
+  /** The same catalogue partitioned by provider. Absent on older servers. */
+  groups?: ModelGroup[];
+  source?: string;
 }
 
 export const listModels = () => request<ModelsPayload>("/api/models");

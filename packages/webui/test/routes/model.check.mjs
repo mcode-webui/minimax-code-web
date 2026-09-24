@@ -14,6 +14,9 @@
 import { test, describe, before } from "node:test";
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { setupMocks, absPath } from "../helpers/_setup.js";
 
 let modelRoute;
@@ -101,6 +104,133 @@ describe("handleGetModels — /api/models", () => {
     assert.equal(body.reason, "no_session_config");
     // and it must not write that value back into the state a prompt would use
     assert.equal(cs.model.name, "minimax_api/MiniMax-M3");
+  });
+
+  test("partitions the catalogue by provider, parsed out of the engine id", () => {
+    const ctx = {
+      cs: fakeCs(undefined, [
+        {
+          ...MODEL_OPTION,
+          options: [
+            { value: "m:minimax_api:MiniMax-M3:v:default", name: "MiniMax-M3" },
+            { value: "m:anthropic_api:claude-opus:v:default", name: "claude-opus" },
+            { value: "m:minimax_api:MiniMax-M2.7:v:default", name: "MiniMax-M2.7" },
+          ],
+        },
+      ]),
+    };
+    const res = fakeRes();
+    modelRoute.handleGetModels(null, res, ctx);
+    const body = JSON.parse(res._body);
+    assert.deepEqual(
+      body.groups.map((g) => g.id),
+      ["minimax_api", "anthropic_api"],
+    );
+    // Partitioning necessarily reorders an interleaved catalogue, so the
+    // contract is: every entry appears exactly once, and each group keeps the
+    // catalogue's relative order within itself.
+    assert.deepEqual(
+      [...new Set(body.groups.flatMap((g) => g.models.map((m) => m.id)))].sort(),
+      [...new Set(body.models.map((m) => m.id))].sort(),
+    );
+    assert.equal(
+      body.groups.flatMap((g) => g.models).length,
+      body.models.length,
+      "grouping must not drop or duplicate entries",
+    );
+    assert.deepEqual(
+      body.groups[0].models.map((m) => m.id),
+      ["m:minimax_api:MiniMax-M3:v:default", "m:minimax_api:MiniMax-M2.7:v:default"],
+      "a group preserves the catalogue order of its own entries",
+    );
+    assert.equal(body.models[0].provider, "minimax_api");
+    // No overlay on disk → the group label falls back to the provider id.
+    assert.equal(body.groups[0].label, "minimax_api");
+  });
+
+  test("an id outside the m:<provider>:<model> encoding still groups, by its provider/ prefix", () => {
+    const ctx = {
+      cs: fakeCs(undefined, [
+        {
+          ...MODEL_OPTION,
+          options: [
+            { value: "minimax_api/MiniMax-M3", name: "MiniMax-M3" },
+            { value: "openai/gpt-5", name: "gpt-5" },
+          ],
+        },
+      ]),
+    };
+    const res = fakeRes();
+    modelRoute.handleGetModels(null, res, ctx);
+    const body = JSON.parse(res._body);
+    assert.deepEqual(
+      body.groups.map((g) => g.id),
+      ["minimax_api", "openai"],
+    );
+  });
+
+  test("models.json overlay renames a group and enriches an entry, without inventing models", () => {
+    const dir = mkdtempSync(join(tmpdir(), "webui-models-"));
+    const cfg = join(dir, "models.json");
+    writeFileSync(
+      cfg,
+      JSON.stringify({
+        providers: [
+          {
+            id: "minimax_api",
+            label: "MiniMax",
+            models: [{ id: "MiniMax-M3", label: "M3 (国内)", contextLimit: 1000000 }],
+          },
+        ],
+      }),
+    );
+    process.env.MCODE_WEBUI_MODELS_CONFIG = cfg;
+    try {
+      // The engine's own encoding, as routes/model.js documents it. The
+      // overlay matches on the model segment, so the `m:`/`:v:` framing is
+      // stripped before lookup.
+      const res = fakeRes();
+      modelRoute.handleGetModels(null, res, {
+        cs: fakeCs(undefined, [
+          {
+            ...MODEL_OPTION,
+            options: [
+              { value: "m:minimax_api:MiniMax-M3:v:default", name: "MiniMax-M3" },
+              { value: "m:minimax_api:MiniMax-M2.7:v:default", name: "MiniMax-M2.7" },
+            ],
+          },
+        ]),
+      });
+      const body = JSON.parse(res._body);
+      assert.equal(body.source, "acp-session-config+overlay");
+      const byId = Object.fromEntries(body.groups.flatMap((g) => g.models).map((m) => [m.id, m]));
+      const m3 = byId["m:minimax_api:MiniMax-M3:v:default"];
+      assert.equal(m3.label, "M3 (国内)");
+      assert.equal(m3.contextLimit, 1000000);
+      // `name` still carries the engine's own label so older clients are unaffected.
+      assert.equal(m3.name, "MiniMax-M3");
+      // An entry the overlay does not mention is still offered, unrenamed.
+      assert.equal(byId["m:minimax_api:MiniMax-M2.7:v:default"].label, "MiniMax-M2.7");
+      assert.equal(body.groups[0].label, "MiniMax");
+      // An overlay entry the engine does not list must not be offered.
+      assert.equal(body.models.length, 2);
+    } finally {
+      delete process.env.MCODE_WEBUI_MODELS_CONFIG;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a missing or malformed models.json is not an error", () => {
+    process.env.MCODE_WEBUI_MODELS_CONFIG = join(tmpdir(), "webui-does-not-exist.json");
+    try {
+      const res = fakeRes();
+      modelRoute.handleGetModels(null, res, { cs: fakeCs(undefined, [MODEL_OPTION]) });
+      const body = JSON.parse(res._body);
+      assert.equal(body.source, "acp-session-config");
+      assert.equal(body.models.length, 2);
+    } finally {
+      delete process.env.MCODE_WEBUI_MODELS_CONFIG;
+    }
   });
 });
 

@@ -21,6 +21,13 @@ let _mcodeAcpInitPromise = null; // 防止并发 init 同一个 client
 export async function getMcodeAcpClient() {
   if (_mcodeAcpSingleton && _mcodeAcpSingleton.alive) return _mcodeAcpSingleton;
   if (_mcodeAcpInitPromise) return _mcodeAcpInitPromise;
+  // 覆盖引用前先 stop 掉旧实例: `alive` 判定为假的 client 仍可能持有子进程
+  // (例如 child 已置空但 _alive 未同步, 或子进程仍在收尾), 直接覆盖引用会把它
+  // 和它的 MCP 插件树一起漏掉。与下面 init 失败路径的 stop-before-null 同理。
+  if (_mcodeAcpSingleton && !_mcodeAcpSingleton.alive) {
+    try { _mcodeAcpSingleton.stop(); } catch {}
+    _mcodeAcpSingleton = null;
+  }
   _mcodeAcpInitPromise = (async () => {
     const client = new McodeAcpClient({ debug: false });
     try {
