@@ -12,7 +12,7 @@ export const PUBLIC_DIR = resolve(__dirname, "..", "..", "public");
 
 // v0.5.ab: 静态文件服务（/lib/* — marked、highlight.js 库）
 // v0.5.ar: 扩展为任何文件扩展名（品牌 logo 等），用白名单防止 path traversal（拒绝 .. 和 \）
-export function serveStatic(pathname, res) {
+export function serveStatic(pathname, res, root = PUBLIC_DIR) {
   // 安全检查：拒绝 .. 和 \
   const safe = pathname
     .replace(/^\/+/, "")
@@ -22,7 +22,7 @@ export function serveStatic(pathname, res) {
     res.writeHead(403);
     return res.end("forbidden");
   }
-  let filePath = join(PUBLIC_DIR, safe);
+  let filePath = join(root, safe);
   // v2.4: 目录回落到 index.html —— /react/ 之前 404（只认文件不认目录），
   // 用户必须手敲 /react/index.html 才能看到 React 版。
   if (existsSync(filePath) && statSync(filePath).isDirectory()) {
@@ -76,21 +76,21 @@ export function serveStatic(pathname, res) {
  * 制造冲突，见 AGENTS.md）。构建产物缺失时回落到 vanilla，保证 fresh clone
  * 没跑过 build 也能打开页面。
  */
-export function serveIndex(res) {
-  const reactPath = join(PUBLIC_DIR, "react", "index.html");
+export function serveIndex(res, root = PUBLIC_DIR) {
+  const reactPath = join(root, "react", "index.html");
   if (existsSync(reactPath) && statSync(reactPath).isFile()) {
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
     return res.end(readFileSync(reactPath));
   }
-  return serveLegacyIndex(res);
+  return serveLegacyIndex(res, root);
 }
 
 /**
  * 归档入口 —— 原 vanilla 单页（index.html + app/ + styles/）。
  * 资源用的是根绝对路径（/app/*.js、/styles/*.css），所以放在 /legacy/ 下照常工作。
  */
-export function serveLegacyIndex(res) {
-  const htmlPath = join(PUBLIC_DIR, "index.html");
+export function serveLegacyIndex(res, root = PUBLIC_DIR) {
+  const htmlPath = join(root, "index.html");
   if (existsSync(htmlPath) && statSync(htmlPath).isFile()) {
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
     return res.end(readFileSync(htmlPath));

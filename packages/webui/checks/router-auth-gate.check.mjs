@@ -93,6 +93,9 @@ async function get(path, opts = {}) {
   return res;
 }
 
+import { existsSync } from "node:fs";
+import { PUBLIC_DIR } from "../server/lib/static.js";
+
 const isGate = (res) => res._body.includes("auth-gate") || res._body.includes("webui_token");
 // 「到达了某个应用外壳」—— 根路径现在默认是 React 新版（/react/assets/ 前缀的
 // 资源引用），归档的 vanilla 单页在 /legacy/（DOM id chat-inner）。两者都算过关，
@@ -131,22 +134,36 @@ describe("router — token gate page (v2.3)", () => {
     assert.ok(isIndex(res), "local requests never see the gate");
   });
 
-  // v2.5: 根路径默认新版，原版归档到 /legacy/（用户决策：
-  // 「原版归档，运行默认是新版」）。这里把切换锁死，防止回退。
-  test("根路径默认是 React 新版外壳", async () => {
+  // v2.5: 根路径默认新版，原版归档到 /legacy/（用户决策：「原版归档，运行默认是新版」）。
+  //
+  // 断言按**真实契约**写，而不是硬绑构建产物：public/react/ 是 vite 的构建
+  // 输出（gitignored），CI 的 test:webui 并不先跑 build，所以 fresh checkout
+  // 上它不存在 —— 那时 serveIndex 必须回落到 vanilla 外壳，页面照样可达。
+  // 于是：产物在 → 必须是 React 外壳；产物不在 → 必须是 vanilla 外壳。
+  // 两种情况都必须是「一个能打开的应用外壳」。
+  const reactBuilt = existsSync(join(PUBLIC_DIR, "react", "index.html"));
+
+  test("根路径默认是 React 新版外壳（构建产物存在时）", async () => {
     const res = await get("/", { remoteAddress: "127.0.0.1", headers: { host: `127.0.0.1:${PORT}` } });
     assert.equal(res._status, 200);
-    assert.ok(isReactShell(res), "/ 必须是 React 新版（构建产物存在时）");
+    if (reactBuilt) {
+      assert.ok(isReactShell(res), "/ 必须是 React 新版外壳");
+    } else {
+      assert.ok(isVanillaShell(res), "构建产物缺失时 / 必须回落到 vanilla 外壳");
+    }
+    assert.ok(isIndex(res), "/ 必须可达，不能 404");
   });
 
-  test("原版归档在 /legacy/，两个入口都能打开", async () => {
+  test("原版归档在 /legacy/，且与根路径互不占用", async () => {
     const legacy = await get("/legacy/", { remoteAddress: "127.0.0.1", headers: { host: `127.0.0.1:${PORT}` } });
     assert.equal(legacy._status, 200);
-    assert.ok(isVanillaShell(legacy), "/legacy/ 必须是原版 vanilla 外壳");
+    assert.ok(isVanillaShell(legacy), "/legacy/ 必须是原版 vanilla 外壳（归档永远可达）");
 
     const modern = await get("/", { remoteAddress: "127.0.0.1", headers: { host: `127.0.0.1:${PORT}` } });
-    assert.ok(isReactShell(modern));
-    assert.ok(!isVanillaShell(modern), "/ 不应再是 vanilla 外壳");
+    assert.ok(isIndex(modern), "/ 也必须可达");
+    if (reactBuilt) {
+      assert.ok(!isVanillaShell(modern), "产物在时 / 不应再是 vanilla 外壳");
+    }
   });
 
   test("gate page is self-contained and stores the right localStorage key", async () => {
