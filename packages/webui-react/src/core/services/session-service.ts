@@ -299,6 +299,8 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
   const fallback: ModelSelection = deps.defaultSelection ?? DEFAULT_MODEL_SELECTION;
   /** 会话隔离的核心结构：每个 sessionId 一份独立 store，互不共享。 */
   const slices = new Map<SessionId, Store<SessionSlice>>();
+  /** 上次水合指纹（sid:chatLen:tail80）—— 相同则跳过全量重解析。 */
+  let lastHydrateKey = '';
 
   function loadSelection(id: SessionId): ModelSelection {
     try {
@@ -465,6 +467,12 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       const sid = typeof s['sessionId'] === 'string' && s['sessionId'] !== '' ? s['sessionId'] : null;
       if (!sid) return null;
       const chat = Array.isArray(s['chat']) ? s['chat'] : null;
+      // 指纹跳过：state.snapshot 高频推送，chat 未变时跳过 27955 行的全量 parse
+      // 与切片替换（大会话 1.8MB state 下这是主线程杀手）。
+      const tail = chat && chat.length > 0 ? chat[chat.length - 1] : '';
+      const fp = sid + ':' + (chat ? chat.length : 0) + ':' + (typeof tail === 'string' ? tail.slice(-80) : '');
+      if (fp === lastHydrateKey) return sid;
+      lastHydrateKey = fp;
       const runningO = asRecord(s['running']);
       const runningNow = runningO ? runningO['active'] === true : false;
       const ctxO = asRecord(s['context']);

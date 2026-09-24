@@ -196,6 +196,28 @@ export function browseWorkspace(rawPath) {
   if (!rawPath) {
     // 没传 path → 根视图 = 允许根（前端把它渲染为顶层节点）
     roots = getAllowedWorkspaceRoots();
+    // React 端只渲染 children —— 无 path 时若返回 dir="/"+空 children，「选择目录」
+    // 打开的是空列表且 cwd 为空无法前进（死路）。默认落到第一个存在的允许根列出
+    // 内容，其余允许根作为合成目录项排在最前；roots 仍原样返回（vanilla 兼容）。
+    const firstRoot = (roots || []).find(
+      (r) => existsSync(r) && statSync(r).isDirectory(),
+    );
+    if (firstRoot) {
+      const others = (roots || []).filter((r) => r !== firstRoot);
+      const listed = browseWorkspace(firstRoot);
+      if (listed.ok) {
+        const synthetic = others.map((r) => ({
+          name: r,
+          path: r,
+          isDir: true,
+        }));
+        return {
+          ...listed,
+          roots,
+          children: [...synthetic, ...listed.children],
+        };
+      }
+    }
     target = process.platform === "win32" ? null : "/";
     if (target) {
       const parentPath = dirname(target);
