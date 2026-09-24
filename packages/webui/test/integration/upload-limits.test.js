@@ -93,7 +93,17 @@ async function spawnServer(limits = {}) {
   // If the server fell back to a different port (rare — findFreePort
   // already gave us an ephemeral one), trust the line, not our ask.
   const port = boundPort !== null ? boundPort : requestedPort;
-  return { proc, port, requestedPort, tmpDir, uploadDir };
+  return {
+    proc,
+    port,
+    requestedPort,
+    tmpDir,
+    uploadDir,
+    // The child's output, for failure diagnostics. Without this a timeout
+    // reports only "no response within Nms" and the actual reason — a boot
+    // warning, a crash, a slow start — is lost.
+    getLogs: () => ({ stdout, stderr }),
+  };
 }
 
 async function stopServer(server) {
@@ -270,7 +280,19 @@ test("upload-limits: oversized request → 413 mid-stream, no leftover, client w
     const body = multipartBody([
       { name: "file", filename: "huge.bin", content: Buffer.alloc(8 * 1024 * 1024, 0x71) },
     ]);
-    const res = await postUpload({ port: server.port, body });
+    // This is the heaviest test in the suite: it spawns a real server, pushes
+    // 8 MiB, and the server then drains the unread remainder. `node --test` runs
+    // test *files* in parallel, so this one competes with the rest of the suite
+    // for CPU — measured: 5/5 passes in isolation, ~2/3 in a full run at the
+    // default 15s. The bound is therefore a property of the machine's load, not
+    // of the server, and 45s keeps the assertion meaningful (a server that never
+    // answers still fails) without making the test a load detector.
+    const res = await postUpload({ port: server.port, body, timeoutMs: 45_000 }).catch((e) => {
+      const { stdout, stderr } = server.getLogs();
+      throw new Error(
+        `${e.message}\n--- server stdout ---\n${stdout.slice(-2000)}\n--- server stderr ---\n${stderr.slice(-2000)}`,
+      );
+    });
     assert.equal(res.status, 413, `body: ${res.body}`);
     assert.equal(res.json.ok, false);
     assert.equal(res.json.code, "UPLOAD_REQ_TOO_LARGE");
