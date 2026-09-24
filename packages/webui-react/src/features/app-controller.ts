@@ -22,6 +22,7 @@ import type {
   Attachment,
   ContextUsage,
   EnterPlanModeState,
+  ModelGroup,
   ModelSelection,
   PendingAuth,
   ProviderOption,
@@ -39,6 +40,7 @@ import { groupSessionsByWorkspace } from '../contracts/domain';
 import type { WireSettings } from '../contracts/protocol';
 import type { PermissionModeCatalog, Registry } from '../contracts/ports';
 import type { SessionService } from '../core/services/session-service';
+import type { ModelService } from '../core/services/model-service';
 import type { SlashEntry } from '../ui/composer/SlashOverlay';
 
 export type ThemeMode = 'light' | 'dark';
@@ -59,6 +61,8 @@ export interface AppSnapshot {
   slice: SessionSlice | null;
   providers: ProviderOption[];
   models: ModelOption[];
+  /** 按供应商分组的模型目录（模型选择器两段式的第一段）。 */
+  modelGroups: ModelGroup[];
   selection: ModelSelection | null;
   settings: WireSettings | null;
   usage: UsageInfo | null;
@@ -191,6 +195,7 @@ export function createAppController(reg: Registry): AppController {
   let sessions: SessionSummary[] = [];
   let providers: ProviderOption[] = [];
   let models: ModelOption[] = [];
+  let modelGroups: ModelGroup[] = [];
   let settings: WireSettings | null = null;
   let usage: UsageInfo | null = null;
   let context: ContextUsage | null = null;
@@ -240,6 +245,7 @@ export function createAppController(reg: Registry): AppController {
       slice,
       providers,
       models,
+      modelGroups,
       selection: slice ? slice.selection : null,
       settings,
       usage,
@@ -280,6 +286,13 @@ export function createAppController(reg: Registry): AppController {
     } catch {
       providers = [];
       models = [];
+    }
+    // 分组目录：服务端 /api/models groups（配置文件 + 内置）；旧实现缺 groups() 时回落派生。
+    try {
+      const svc = reg.models as Partial<ModelService>;
+      modelGroups = typeof svc.groups === 'function' ? await svc.groups() : [];
+    } catch {
+      modelGroups = [];
     }
   }
 

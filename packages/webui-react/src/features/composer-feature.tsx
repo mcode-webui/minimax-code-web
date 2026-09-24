@@ -164,10 +164,8 @@ export function ComposerFeature({ controller }: ComposerFeatureProps) {
           <>
             <ModelPicker
               open={modelPickerOpen}
-              providers={s.providers}
-              models={s.models}
+              groups={s.modelGroups}
               selection={selection ?? { provider: '', model: '', thinking: 'medium' }}
-              onSelectProvider={(p) => void a.setProvider(p)}
               onSelectModel={(m) => void a.setModel(m)}
               onSelectThinking={(e) => void a.setThinking(e)}
               onSubmitCustom={(v) => {

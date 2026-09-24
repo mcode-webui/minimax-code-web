@@ -1,12 +1,12 @@
-// 覆盖契约点：ui/composer —— ModelPicker 三段式（供应商/模型/思考强度五档）点击各段分别回调
-// onSelectProvider / onSelectModel / onSelectThinking 且当前项有选中态；自定义输入回车提交、取消/关闭上抛；
-// Composer 输入受控、Enter 发送 / Shift+Enter 不发送、running 时变停止按钮。
+// 覆盖契约点：ui/composer —— ModelPicker 两段式（按供应商分组的模型列表 → 思考强度五档）
+// 点击模型/档位分别回调 onSelectModel / onSelectThinking 且当前项有选中态；分组头渲染供应商标签；
+// 自定义输入回车提交、取消/关闭上抛；Composer 输入受控、Enter 发送 / Shift+Enter 不发送、running 时变停止按钮。
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
-import type { ModelSelection } from '../../src/contracts/domain';
+import type { ModelGroup, ModelSelection } from '../../src/contracts/domain';
 import { ModelPicker } from '../../src/ui/composer/ModelPicker';
 import { Composer } from '../../src/ui/composer/Composer';
-import { modelOption, providerOption } from './fixtures';
+import { modelOption } from './fixtures';
 
 const SELECTION: ModelSelection = {
   provider: 'minimax_api',
@@ -14,17 +14,25 @@ const SELECTION: ModelSelection = {
   thinking: 'medium',
 };
 
+const GROUPS: ModelGroup[] = [
+  {
+    id: 'minimax_api',
+    label: 'MiniMax',
+    models: [modelOption()],
+  },
+  {
+    id: 'openai',
+    label: 'OpenAI',
+    models: [modelOption({ id: 'openai/gpt-5', label: 'GPT-5', provider: 'openai', contextLimit: 200_000 })],
+  },
+];
+
 function renderPicker(over: Partial<Parameters<typeof ModelPicker>[0]> = {}) {
   return render(
     <ModelPicker
       open={true}
-      providers={[providerOption(), providerOption({ id: 'openai', label: 'OpenAI' })]}
-      models={[
-        modelOption(),
-        modelOption({ id: 'openai/gpt-5', label: 'GPT-5', provider: 'openai', contextLimit: 200_000 }),
-      ]}
+      groups={GROUPS}
       selection={SELECTION}
-      onSelectProvider={vi.fn()}
       onSelectModel={vi.fn()}
       onSelectThinking={vi.fn()}
       onSubmitCustom={vi.fn()}
@@ -34,48 +42,28 @@ function renderPicker(over: Partial<Parameters<typeof ModelPicker>[0]> = {}) {
   );
 }
 
-describe('ModelPicker 三段式 —— ① 供应商段', () => {
-  it('渲染供应商列表，当前供应商有选中态（current + ✓）', () => {
+describe('ModelPicker 两段式 —— ① 分组模型段（先选模型）', () => {
+  it('按供应商分组渲染：每组有分组头，当前模型有选中态（current + ✓）', () => {
     renderPicker();
-    const current = screen.getByRole('button', { name: 'MiniMax' });
-    expect(current).toHaveClass('current');
-    expect(current).toHaveTextContent('✓');
-    const other = screen.getByRole('button', { name: 'OpenAI' });
-    expect(other).not.toHaveClass('current');
-  });
-
-  it('点供应商回调 onSelectProvider(id)，不误触发模型/思考回调', () => {
-    const onSelectProvider = vi.fn();
-    const onSelectModel = vi.fn();
-    const onSelectThinking = vi.fn();
-    renderPicker({ onSelectProvider, onSelectModel, onSelectThinking });
-    fireEvent.click(screen.getByRole('button', { name: 'OpenAI' }));
-    expect(onSelectProvider).toHaveBeenCalledWith('openai');
-    expect(onSelectModel).not.toHaveBeenCalled();
-    expect(onSelectThinking).not.toHaveBeenCalled();
-  });
-});
-
-describe('ModelPicker 三段式 —— ② 模型段', () => {
-  it('渲染模型列表，当前模型有选中态', () => {
-    renderPicker();
+    expect(screen.getByText('MiniMax')).toBeInTheDocument();
+    expect(screen.getByText('OpenAI')).toBeInTheDocument();
     const current = screen.getByRole('button', { name: /^MiniMax-M3/ });
     expect(current).toHaveClass('current');
     expect(current).toHaveTextContent('✓');
     expect(screen.getByRole('button', { name: /^GPT-5/ })).not.toHaveClass('current');
   });
 
-  it('点模型回调 onSelectModel(全限定 id)', () => {
+  it('点模型回调 onSelectModel(全限定 id)，不触发思考回调', () => {
     const onSelectModel = vi.fn();
-    const onSelectProvider = vi.fn();
-    renderPicker({ onSelectModel, onSelectProvider });
+    const onSelectThinking = vi.fn();
+    renderPicker({ onSelectModel, onSelectThinking });
     fireEvent.click(screen.getByRole('button', { name: /^GPT-5/ }));
     expect(onSelectModel).toHaveBeenCalledWith('openai/gpt-5');
-    expect(onSelectProvider).not.toHaveBeenCalled();
+    expect(onSelectThinking).not.toHaveBeenCalled();
   });
 });
 
-describe('ModelPicker 三段式 —— ③ 思考强度五档', () => {
+describe('ModelPicker 两段式 —— ② 思考强度五档（后选思考强度）', () => {
   it('五档齐备（关/低/中/高/极高），当前档 aria-checked', () => {
     renderPicker();
     const radios = screen.getAllByRole('radio');
@@ -84,29 +72,25 @@ describe('ModelPicker 三段式 —— ③ 思考强度五档', () => {
     expect(checked).toHaveClass('current');
   });
 
-  it('点档位回调 onSelectThinking(五档枚举值)，不触发其它段回调', () => {
+  it('点档位回调 onSelectThinking(五档枚举值)，不触发模型回调', () => {
     const onSelectThinking = vi.fn();
-    const onSelectProvider = vi.fn();
     const onSelectModel = vi.fn();
-    renderPicker({ onSelectThinking, onSelectProvider, onSelectModel });
+    renderPicker({ onSelectThinking, onSelectModel });
     fireEvent.click(screen.getByRole('radio', { name: '高' }));
     expect(onSelectThinking).toHaveBeenCalledWith('high');
     fireEvent.click(screen.getByRole('radio', { name: '极高' }));
     expect(onSelectThinking).toHaveBeenCalledWith('max');
-    expect(onSelectProvider).not.toHaveBeenCalled();
     expect(onSelectModel).not.toHaveBeenCalled();
   });
 
-  it('点击段之间互不串扰：三段各自回调独立', () => {
-    const onSelectProvider = vi.fn();
+  it('点击段之间互不串扰：两段各自回调独立', () => {
     const onSelectModel = vi.fn();
     const onSelectThinking = vi.fn();
-    renderPicker({ onSelectProvider, onSelectModel, onSelectThinking });
-    fireEvent.click(screen.getByRole('button', { name: 'OpenAI' }));
+    renderPicker({ onSelectModel, onSelectThinking });
     fireEvent.click(screen.getByRole('button', { name: /^MiniMax-M3/ }));
     fireEvent.click(screen.getByRole('radio', { name: '低' }));
-    expect(onSelectProvider).toHaveBeenCalledTimes(1);
     expect(onSelectModel).toHaveBeenCalledTimes(1);
+    expect(onSelectModel).toHaveBeenCalledWith('minimax_api/MiniMax-M3');
     expect(onSelectThinking).toHaveBeenCalledTimes(1);
     expect(onSelectThinking).toHaveBeenCalledWith('low');
   });

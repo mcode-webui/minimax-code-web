@@ -9,6 +9,7 @@
  */
 import type { HttpPort, ModelServicePort } from '../../contracts/ports';
 import type {
+  ModelGroup,
   ModelOption,
   ModelSelection,
   ProviderId,
@@ -33,15 +34,18 @@ export interface ModelServiceDeps {
   ports: ModelPorts;
 }
 
-/** 比端口更宽：自定义供应商的管理留给设置面板。 */
+/** 比端口更宽：自定义供应商的管理留给设置面板；分组目录供两段式选择器。 */
 export interface ModelService extends ModelServicePort {
   addCustomProvider(option: ProviderOption): void;
   removeCustomProvider(id: ProviderId): void;
   customProviders(): ProviderOption[];
+  /** 按供应商分组的模型目录（服务端未分组时由扁平目录派生）。 */
+  groups(): Promise<ModelGroup[]>;
 }
 
 interface Catalog {
   models: ModelOption[];
+  groups: ModelGroup[];
   current: string;
   hint: string | undefined;
 }
@@ -96,23 +100,64 @@ export function createModelService(deps: ModelServiceDeps): ModelService {
     }
   }
 
+  function mapModelEntry(o: Record<string, unknown>): ModelOption | null {
+    if (typeof o['id'] !== 'string' || !o['id']) return null;
+    const id = o['id'];
+    const provider = typeof o['provider'] === 'string' && o['provider'] ? o['provider'] : splitModelId(id);
+    return {
+      id,
+      label: typeof o['label'] === 'string' && o['label'] ? o['label'] : id,
+      provider,
+      contextLimit: typeof o['contextLimit'] === 'number' ? o['contextLimit'] : undefined,
+    };
+  }
+
+  /** 服务端 groups 优先；缺省（旧后端/单测 fake）按 provider 从扁平目录派生。 */
+  function deriveGroups(models: ModelOption[], rawGroups: unknown): ModelGroup[] {
+    if (Array.isArray(rawGroups)) {
+      const out: ModelGroup[] = [];
+      for (const raw of rawGroups) {
+        const g = asRecord(raw);
+        if (!g || typeof g['id'] !== 'string' || !g['id']) continue;
+        const list: ModelOption[] = [];
+        for (const entry of Array.isArray(g['models']) ? g['models'] : []) {
+          const o = asRecord(entry);
+          if (!o) continue;
+          const mapped = mapModelEntry(o);
+          if (mapped) list.push(mapped);
+        }
+        out.push({
+          id: g['id'],
+          label: typeof g['label'] === 'string' && g['label'] ? g['label'] : g['id'],
+          models: list,
+        });
+      }
+      if (out.length > 0) return out;
+    }
+    const map = new Map<ProviderId, ModelGroup>();
+    for (const m of models) {
+      let group = map.get(m.provider);
+      if (!group) {
+        group = { id: m.provider, label: m.provider, models: [] };
+        map.set(m.provider, group);
+      }
+      group.models.push(m);
+    }
+    return [...map.values()];
+  }
+
   async function fetchCatalog(): Promise<Catalog> {
-    const res = await ports.http.get<{ models?: unknown; current?: unknown; hint?: unknown }>('/api/models');
+    const res = await ports.http.get<{ models?: unknown; groups?: unknown; current?: unknown; hint?: unknown }>('/api/models');
     const models: ModelOption[] = [];
     if (Array.isArray(res.models)) {
       for (const raw of res.models) {
         const o = asRecord(raw);
-        if (!o || typeof o['id'] !== 'string' || !o['id']) continue;
-        const id = o['id'];
-        const provider = typeof o['provider'] === 'string' && o['provider'] ? o['provider'] : splitModelId(id);
-        models.push({
-          id,
-          label: typeof o['label'] === 'string' && o['label'] ? o['label'] : id,
-          provider,
-          contextLimit: typeof o['contextLimit'] === 'number' ? o['contextLimit'] : undefined,
-        });
+        if (!o) continue;
+        const mapped = mapModelEntry(o);
+        if (mapped) models.push(mapped);
       }
     }
+    const groups = deriveGroups(models, res.groups);
     const current = typeof res.current === 'string' ? res.current : '';
     const hint = typeof res.hint === 'string' ? res.hint : undefined;
 
@@ -127,7 +172,11 @@ export function createModelService(deps: ModelServiceDeps): ModelService {
         }
       }
     }
-    return { models, current, hint };
+    return { models, groups, current, hint };
+  }
+
+  async function groupsList(): Promise<ModelGroup[]> {
+    return (await fetchCatalog()).groups;
   }
 
   return {
@@ -203,5 +252,7 @@ export function createModelService(deps: ModelServiceDeps): ModelService {
     customProviders(): ProviderOption[] {
       return readCustomProviders();
     },
+
+    groups: groupsList,
   };
 }

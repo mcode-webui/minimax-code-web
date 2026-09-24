@@ -19,10 +19,8 @@ import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { useEffect, useRef, useState } from 'react';
 
 import type {
-  ModelOption,
+  ModelGroup,
   ModelSelection,
-  ProviderId,
-  ProviderOption,
   ThinkingEffort,
 } from '../../contracts/domain';
 import { THINKING_EFFORTS } from '../../contracts/domain';
@@ -47,39 +45,34 @@ export function formatContextLimit(limit: number | undefined): string {
 export interface ModelPickerProps {
   /** 是否显示（受控）。 */
   open: boolean;
-  /** 供应商列表。 */
-  providers: ProviderOption[];
-  /** 当前供应商下的模型列表。 */
-  models: ModelOption[];
+  /** 按供应商分组的模型目录（第一段：先选模型）。 */
+  groups: ModelGroup[];
   /** 当前选择。 */
   selection: ModelSelection;
-  onSelectProvider: (provider: ProviderId) => void;
   onSelectModel: (modelId: string) => void;
   onSelectThinking: (effort: ThinkingEffort) => void;
   /** 自定义 provider/model 输入框回车提交（原始文本）。 */
   onSubmitCustom: (value: string) => void;
   onClose: () => void;
   title?: string;
-  /** 供应商/模型列表加载中。 */
+  /** 目录加载中。 */
   loading?: boolean;
-  /** 某供应商下模型为空时的提示（如指向 mcode TUI 配置）。 */
+  /** 目录为空时的提示（如指向配置文件 / mcode TUI）。 */
   emptyHint?: string;
 }
 
 export function ModelPicker(props: ModelPickerProps) {
   const {
     open,
-    providers,
-    models,
+    groups,
     selection,
-    onSelectProvider,
     onSelectModel,
     onSelectThinking,
     onSubmitCustom,
     onClose,
     title = '切换模型',
     loading = false,
-    emptyHint = '该供应商下暂无模型 — 请在 mcode TUI 配置，或在下方自定义输入',
+    emptyHint = '暂无模型 — 可在 models.json 配置，或在下方自定义输入',
   } = props;
 
   const [custom, setCustom] = useState('');
@@ -108,62 +101,42 @@ export function ModelPicker(props: ModelPickerProps) {
     <div className="modelpicker" role="dialog" aria-label={title}>
       <div className="modelpicker-title">{title}</div>
 
-      {/* ① 供应商 */}
+      {/* ① 模型（按供应商分组 —— 先选模型） */}
       <div className="modelpicker-section">
-        <div className="modelpicker-section-label">供应商</div>
+        <div className="modelpicker-section-label">模型 · 按供应商</div>
         <div className="modelpicker-list">
           {loading ? <div className="modelpicker-loading">加载中...</div> : null}
-          {!loading && providers.length === 0 ? (
-            <div className="modelpicker-empty">暂无供应商</div>
-          ) : null}
-          {providers.map((p) => {
-            const current = p.id === selection.provider;
-            return (
-              <button
-                key={p.id}
-                type="button"
-                className={current ? 'modelpicker-item-btn current' : 'modelpicker-item-btn'}
-                title={p.hint ?? p.label}
-                onClick={() => onSelectProvider(p.id)}
-              >
-                <span className="modelpicker-item-label">{p.label}</span>
-                {current ? check : null}
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* ② 模型 */}
-      <div className="modelpicker-section">
-        <div className="modelpicker-section-label">模型</div>
-        <div className="modelpicker-list">
-          {loading ? <div className="modelpicker-loading">加载中...</div> : null}
-          {!loading && models.length === 0 ? (
+          {!loading && groups.length === 0 ? (
             <div className="modelpicker-empty">{emptyHint}</div>
           ) : null}
-          {models.map((m) => {
-            const current = m.id === selection.model;
-            return (
-              <button
-                key={m.id}
-                type="button"
-                className={current ? 'modelpicker-item-btn current' : 'modelpicker-item-btn'}
-                title={m.id}
-                onClick={() => onSelectModel(m.id)}
-              >
-                <span className="modelpicker-item-label">{m.label}</span>
-                <span className="modelpicker-item-meta">
-                  {formatContextLimit(m.contextLimit)}
-                </span>
-                {current ? check : null}
-              </button>
-            );
-          })}
+          {groups.map((g) => (
+            <div key={g.id} className="modelpicker-group">
+              <div className="modelpicker-group-label">{g.label}</div>
+              {g.models.map((m) => {
+                // 目录 id 是全限定（provider/model）；selection.model 可能是裸名 —— 两者都算当前。
+                const current = m.id === selection.model || m.label === selection.model;
+                return (
+                  <button
+                    key={m.id}
+                    type="button"
+                    className={current ? 'modelpicker-item-btn current' : 'modelpicker-item-btn'}
+                    title={m.id}
+                    onClick={() => onSelectModel(m.id)}
+                  >
+                    <span className="modelpicker-item-label">{m.label}</span>
+                    <span className="modelpicker-item-meta">
+                      {formatContextLimit(m.contextLimit)}
+                    </span>
+                    {current ? check : null}
+                  </button>
+                );
+              })}
+            </div>
+          ))}
         </div>
       </div>
 
-      {/* ③ 思考强度 */}
+      {/* ② 思考强度（后选思考强度） */}
       <div className="modelpicker-section">
         <div className="modelpicker-section-label">思考强度</div>
         <div className="modelpicker-thinking" role="radiogroup" aria-label="思考强度">

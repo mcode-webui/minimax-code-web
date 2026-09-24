@@ -174,3 +174,25 @@
 }
 
 .modelpicker-cancel:hover { background: var(--bg-hover); }
+
+/* 供应商分组标题（两段式：分组模型列表 → 思考强度） */
+.modelpicker-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.modelpicker-group + .modelpicker-group {
+  margin-top: 6px;
+}
+
+.modelpicker-group-label {
+  padding: 4px 8px 2px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  opacity: 0.75;
+  letter-spacing: 0.02em;
+  border-bottom: 1px dashed var(--border);
+  margin-bottom: 2px;
+}

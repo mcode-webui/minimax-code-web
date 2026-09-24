@@ -36,6 +36,13 @@ export interface ModelOption {
   contextLimit?: number;
 }
 
+/** 模型目录的供应商分组（/api/models groups —— 目录按供应商分组返回）。 */
+export interface ModelGroup {
+  id: ProviderId;
+  label: string;
+  models: ModelOption[];
+}
+
 /** 思考强度 —— 映射到各家 reasoning effort。 */
 export type ThinkingEffort = 'off' | 'low' | 'medium' | 'high' | 'max';
 
