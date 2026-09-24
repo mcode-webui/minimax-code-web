@@ -9,4 +9,3 @@ packages/webui/public/react/
 .env.*
 !.env.example
 .DS_Store
-.verify-shots/
