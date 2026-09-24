@@ -32,7 +32,7 @@ import {
   rejectLan,
 } from "./lib/settings.js";
 import { getClient, getCidFromReq } from "./lib/state-bus.js";
-import { serveStatic, serveIndex } from "./lib/static.js";
+import { serveStatic, serveIndex, serveLegacyIndex } from "./lib/static.js";
 import { getTrajectoryPanelHandler } from "./lib/trajectory.js";
 import { isRequestAuthorized, writeAuthRequired } from "./lib/auth.js";
 // v2.0 (lease C03): per-{IP,token} fixed-window rate limiter. See
@@ -76,6 +76,19 @@ function rejectReadOnly(res, _pathname) {
 const ROUTES = [
   // Static + HTML
   {
+    // v2.5: 归档入口 —— 原 vanilla 单页。新版接管根路径后，旧版从这里进入。
+    // 文件本身没搬家（搬家会给下次 source-sync 制造冲突），只是换了路由。
+    method: "GET",
+    match: (p) => p === "/legacy" || p === "/legacy/" || p === "/legacy/index.html",
+    handler: (_req, res) => {
+      if (serveLegacyIndex(res) === false) {
+        res.writeHead(404);
+        res.end("not found");
+      }
+      return true;
+    },
+  },
+  {
     method: "GET",
     match: (p) => p === "/" || p === "/index.html",
     handler: (req, res) => {
@@ -97,7 +110,10 @@ const ROUTES = [
   },
   {
     method: "GET",
-    match: (p) => !!p && p !== "/" && p.includes("."),
+    // v2.4: 原判据是「路径含扩展名点号」，导致目录型入口 /react/（无点号）
+    // 根本不进这条路由、直接 404 —— React 版只能手敲 /react/index.html 才能打开。
+    // 放宽为「有点号」或「以斜杠结尾（目录入口）」，目录由 serveStatic 回落到 index.html。
+    match: (p) => !!p && p !== "/" && (p.includes(".") || p.endsWith("/")),
     handler: (_req, res, _ctx, pathname) => {
       if (serveStatic(pathname, res) !== false) return true;
       return false; // not handled — fall through

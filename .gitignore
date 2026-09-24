@@ -1,5 +1,6 @@
 node_modules/
 dist/
+packages/webui/public/react/
 .turbo/
 .cache/
 .pnpm-store/

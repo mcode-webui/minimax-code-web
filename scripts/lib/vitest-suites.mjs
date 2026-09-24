@@ -46,6 +46,11 @@ export function suiteInventoryViolations(files, suites) {
       // own gate (pnpm test:webui), not under Vitest — same policy as the
       // repository-level node:test gates.
       !file.startsWith("packages/webui/") &&
+      // packages/webui-react follows the same policy for a different reason: it
+      // ships its own vitest.config.ts (jsdom + testing-library setup) and runs
+      // under pnpm test:webui-react, so its DOM tests cannot run in this
+      // node-environment runner.
+      !file.startsWith("packages/webui-react/") &&
       /\.(?:test|spec)\.[cm]?[jt]sx?$/u.test(file) &&
       !registered.has(file)
     )

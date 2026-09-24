@@ -1,0 +1,103 @@
+/* ContextPanel —— 右栏 CONTEXT 段内容（1:1 对齐 main.css 的 .context-bar / .tps-display 族） */
+.context-panel {
+  display: block;
+}
+
+/* ── 进度条 ── */
+.context-bar {
+  margin: 8px 0;
+  width: 100%;
+  height: 6px;
+  background: var(--bg-active);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.context-bar-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 3px;
+  transition: width 0.3s;
+}
+.context-bar-fill--high {
+  background: var(--warning);
+}
+.context-bar-fill--danger {
+  background: var(--danger);
+}
+.context-bar-fill--estimated {
+  opacity: 0.65;
+}
+
+/* ── 数据源徽标（标题行） ── */
+.kv-usage-source {
+  display: inline-block;
+  padding: 1px 5px;
+  font-size: 9.5px;
+  font-weight: 600;
+  border-radius: 3px;
+  letter-spacing: 0.3px;
+  vertical-align: middle;
+  cursor: help;
+}
+.kv-usage-source--estimate {
+  background: color-mix(in srgb, var(--text-tertiary) 15%, transparent);
+  color: var(--text-secondary);
+  border: 1px solid color-mix(in srgb, var(--text-tertiary) 30%, transparent);
+}
+.kv-usage-source--real {
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+  color: var(--text);
+  border: 1px solid color-mix(in srgb, var(--text) 25%, transparent);
+}
+.kv-usage-source--mcode {
+  background: color-mix(in srgb, var(--text-secondary) 12%, transparent);
+  color: var(--text-secondary);
+  border: 1px solid color-mix(in srgb, var(--text-secondary) 30%, transparent);
+}
+
+/* ── mavis 模型徽标 ── */
+.kv-mavis-model {
+  display: inline-block;
+  padding: 1px 5px;
+  font-size: 9.5px;
+  font-weight: 500;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--text-tertiary) 12%, transparent);
+  color: var(--text-secondary);
+  border: 1px solid color-mix(in srgb, var(--text-tertiary) 22%, transparent);
+  vertical-align: middle;
+  cursor: help;
+}
+
+/* ── 缓存读徽标（纯文本样式，无边框 —— Wzdhehe 反馈） ── */
+.kv-cache-read {
+  display: inline-block;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  vertical-align: middle;
+  cursor: help;
+}
+
+/* ── 速度 ── */
+.tps-display {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  padding: 4px 0;
+}
+.tps-icon {
+  width: 12px;
+  height: 12px;
+  color: var(--warning);
+  flex-shrink: 0;
+}
+.tps-value {
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+.tps-unit {
+  color: var(--text-tertiary);
+}

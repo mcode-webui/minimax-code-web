@@ -1,0 +1,18 @@
+/* chat/list.css —— 消息流滚动容器（MessageList） */
+/* 视觉基准：public/styles/main.css 的 .chat-scroll / .chat-inner。 */
+/* 铁律：只用 styles/tokens.css 的 CSS 变量。 */
+
+.msg-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 24px 0;
+}
+.msg-list-inner {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 0 24px;
+  display: flex;
+  flex-direction: column;
+}

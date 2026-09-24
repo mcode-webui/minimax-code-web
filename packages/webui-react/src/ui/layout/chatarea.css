@@ -1,0 +1,162 @@
+/* ChatArea —— 中间栏（1:1 对齐 main.css 的 .chat-area 族） */
+.chat-area {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg);
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+.chat-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px 0;
+}
+.chat-inner {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 0 24px;
+}
+
+/* ── 欢迎空态 ── */
+.chat-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 55%;
+  padding: 60px 24px 20px;
+  text-align: center;
+  max-width: 800px;
+  margin: 0 auto;
+}
+
+/* 欢迎页布局：chat-scroll + input-area 整体垂直居中 */
+.chat-area--welcome {
+  justify-content: center;
+  align-items: stretch;
+}
+.chat-area--welcome .chat-scroll {
+  flex: 0 0 auto;
+  width: 100%;
+  max-width: 1200px;
+  padding: 0;
+  overflow: visible;
+  margin: 0 auto;
+}
+.chat-area--welcome .chat-empty {
+  min-height: auto;
+  padding: 40px 24px 20px;
+}
+.chat-area--welcome .input-area {
+  border-top: none;
+  background: transparent;
+  padding: 8px 24px 24px;
+}
+.chat-area--welcome .input-hint {
+  text-align: center;
+  margin-top: 8px;
+}
+
+/* ── 思考中指示 ── */
+.chat-thinking {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 4px 16px;
+  padding: 8px 14px;
+  background: var(--bg-hover);
+  border-radius: 12px 12px 12px 4px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.chat-thinking-avatar {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+.chat-thinking-dots {
+  display: inline-flex;
+  gap: 3px;
+}
+.chat-thinking-dots span {
+  width: 5px;
+  height: 5px;
+  background: var(--text-tertiary);
+  border-radius: 50%;
+  animation: thinking-bounce 1.2s infinite ease-in-out;
+}
+.chat-thinking-dots span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.chat-thinking-dots span:nth-child(3) {
+  animation-delay: 0.3s;
+}
+@keyframes thinking-bounce {
+  0%,
+  60%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.4;
+  }
+  30% {
+    transform: translateY(-3px);
+    opacity: 1;
+  }
+}
+
+/* ── 输入区 ── */
+.input-area {
+  border-top: 1px solid var(--border);
+  background: var(--bg-elevated);
+  padding: 16px 24px 20px;
+}
+.input-inner {
+  max-width: 1200px;
+  width: 100%;
+  margin: 0 auto;
+}
+.input-workspace-row {
+  display: flex;
+  justify-content: flex-start;
+  margin-top: 10px;
+  padding: 0 4px;
+}
+.input-hint {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  padding: 6px 8px 0;
+}
+
+/* ── 拖拽上传遮罩 ── */
+.dropzone-overlay {
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border: 2px dashed var(--accent);
+  border-radius: 8px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  color: var(--accent);
+  font-weight: 600;
+  z-index: 50;
+  pointer-events: none;
+}
+.dropzone-overlay--show {
+  display: flex;
+}
+
+@media (max-width: 600px) {
+  .chat-inner {
+    padding: 0 12px;
+  }
+  .input-area {
+    padding: 8px 12px 12px;
+  }
+}

@@ -31,6 +31,11 @@ const skippedTrees = new Set([
   // contain internal hostnames that `internalText` would otherwise flag.
   // Regained by `packages/webui/desktop-unpacked/extract-asar.sh`.
   "packages/webui/desktop-unpacked",
+  // Vite build output of packages/webui-react (its outDir is
+  // ../webui/public/react, i.e. inside the published packages/webui/public
+  // tree). It holds hashed bundle chunks and sourcemaps, not reviewable
+  // source, so it must never enter the published file inventory.
+  "packages/webui/public/react",
 ]);
 function filesIn(directory, prefix = "") {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {

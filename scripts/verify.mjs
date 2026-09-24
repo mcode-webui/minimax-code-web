@@ -61,6 +61,10 @@ const steps = [
   { name: "test:byok", script: "test:byok" },
   // Web UI package (packages/webui): node:test suite incl. trajectory studio.
   { name: "test:webui", script: "test:webui" },
+  // React Web UI package (packages/webui-react): its own vitest.config.ts with
+  // jsdom + testing-library setup, so it runs under its own gate rather than the
+  // node-environment Vitest runner behind test:capabilities.
+  { name: "test:webui-react", script: "test:webui-react" },
   // The permission facade uses POSIX process and filesystem semantics.
   {
     name: "test:policy",

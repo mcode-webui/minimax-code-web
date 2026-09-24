@@ -1,0 +1,52 @@
+/* ui/composer/attachmentlist.css —— 附件行样式（只用 styles/tokens.css 的变量） */
+
+.attachment-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.attachment-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: var(--bg-hover);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.attachment-icon { flex-shrink: 0; opacity: 0.75; }
+
+.attachment-name {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attachment-size {
+  color: var(--text-tertiary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.attachment-status {
+  font-size: 11px;
+}
+
+.attachment-status.is-uploading { color: var(--text-tertiary); }
+.attachment-status.is-error { color: var(--danger); }
+
+.attachment-remove {
+  color: var(--text-tertiary);
+  cursor: pointer;
+  font-weight: 700;
+  line-height: 1;
+  padding: 0 2px;
+}
+
+.attachment-remove:hover { color: var(--danger); }

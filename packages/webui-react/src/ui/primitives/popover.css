@@ -1,0 +1,51 @@
+/* PopoverCard —— 锚定弹层（1:1 对齐 main.css 的 popover 族：圆角 + 阴影 + 入场动画） */
+.popover-root {
+  position: relative;
+  display: block;
+  min-width: 0;
+}
+.popover-anchor {
+  display: block;
+  min-width: 0;
+}
+.popover-card {
+  position: absolute;
+  z-index: 120;
+  min-width: 240px;
+  max-width: calc(100vw - 24px);
+  max-height: calc(100vh - 100px);
+  overflow-y: auto;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow-lg);
+  font-size: 12.5px;
+  color: var(--text);
+  animation: popover-in 0.16s ease-out;
+}
+.popover-card--top {
+  bottom: calc(100% + 8px);
+  left: 0;
+}
+.popover-card--bottom {
+  top: calc(100% + 8px);
+  left: 0;
+}
+.popover-card--left {
+  right: calc(100% + 8px);
+  bottom: 0;
+}
+.popover-card--right {
+  left: calc(100% + 8px);
+  bottom: 0;
+}
+@keyframes popover-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}

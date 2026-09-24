@@ -1,0 +1,63 @@
+/* TodoList —— 右栏 TODO 条目（1:1 对齐 main.css 的 .todo-item 族） */
+.todo-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.todo-empty {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  font-style: italic;
+}
+.todo-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+}
+.todo-marker {
+  color: var(--text-tertiary);
+  width: 14px;
+  text-align: center;
+  flex-shrink: 0;
+  font-size: 12px;
+}
+.todo-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+/* pending —— 弱化 */
+.todo-item--pending .todo-marker {
+  color: var(--text-tertiary);
+}
+.todo-item--pending .todo-text {
+  color: var(--text-secondary);
+}
+/* in_progress —— 强调 + 呼吸 */
+.todo-item--in_progress .todo-marker {
+  color: var(--accent);
+  animation: todo-pulse 1.4s ease-in-out infinite;
+}
+.todo-item--in_progress .todo-text {
+  color: var(--text);
+  font-weight: 500;
+}
+/* completed —— 删除线 + 弱化 */
+.todo-item--completed .todo-marker {
+  color: var(--success);
+}
+.todo-item--completed .todo-text {
+  text-decoration: line-through;
+  color: var(--text-tertiary);
+}
+@keyframes todo-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}

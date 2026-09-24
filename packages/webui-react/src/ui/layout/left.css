@@ -1,0 +1,370 @@
+/* LeftPanel —— 左栏（1:1 对齐 main.css 的 .left-panel / .lan-card / .btn-new 族） */
+.left-panel {
+  background: var(--bg-sidebar);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  width: 240px;
+  flex-shrink: 0;
+  overflow: visible;
+  position: relative;
+  z-index: 20;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* ── 顶部：新建会话 + 搜索 ── */
+.left-section {
+  padding: 12px;
+  border-bottom: 1px solid var(--border-light);
+}
+.btn-new {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 13px;
+  font-family: inherit;
+  color: var(--text);
+  transition: all 0.15s;
+}
+.btn-new:hover {
+  background: var(--bg-hover);
+  border-color: var(--text-tertiary);
+}
+.btn-new .icon {
+  width: 14px;
+  height: 14px;
+}
+.search-box {
+  position: relative;
+  margin-top: 8px;
+}
+.search-input {
+  width: 100%;
+  padding: 7px 10px 7px 32px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 13px;
+  font-family: inherit;
+  color: var(--text);
+}
+.search-input:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+.search-input::placeholder {
+  color: var(--text-tertiary);
+}
+.search-icon {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-tertiary);
+  pointer-events: none;
+}
+
+/* ── 中部：会话滚动区 ── */
+.sessions-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.sessions-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 8px 4px;
+}
+.sessions-header-title {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 500;
+}
+.btn-refresh-sessions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  background: transparent;
+  border: none;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  font-family: inherit;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.btn-refresh-sessions:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.btn-refresh-sessions:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+.btn-refresh-sessions .icon {
+  width: 12px;
+  height: 12px;
+}
+.icon--spin {
+  animation: left-spin 0.8s linear infinite;
+}
+@keyframes left-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+.sessions-list {
+  padding-bottom: 8px;
+}
+.session-title-empty {
+  padding: 6px 12px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  font-style: italic;
+}
+
+/* ── 底部：功能区 ── */
+.left-bottom {
+  border-top: 1px solid var(--border);
+  background: var(--bg-sidebar);
+  position: relative;
+}
+.user-footer {
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-top: 1px solid var(--border);
+  text-decoration: none;
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 500;
+  transition: background 0.1s, color 0.1s;
+  cursor: pointer;
+}
+.user-footer:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.user-footer .icon {
+  flex-shrink: 0;
+}
+
+/* ── 用量弹层 ── */
+.usage-popover-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.usage-popover-title {
+  font-weight: 600;
+  color: var(--text);
+  font-size: 13px;
+}
+.usage-popover-refresh {
+  border: none;
+  background: transparent;
+  padding: 2px 4px;
+  cursor: pointer;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-family: inherit;
+  transition: background 0.1s;
+}
+.usage-popover-refresh:hover {
+  color: var(--text);
+  background: var(--bg-hover);
+}
+.usage-popover-refresh .icon {
+  width: 12px;
+  height: 12px;
+  display: block;
+}
+.usage-popover-body {
+  padding: 10px 12px 12px;
+}
+.usage-loading {
+  color: var(--text-tertiary);
+  font-style: italic;
+  padding: 4px 0;
+}
+
+/* ── 外观 / 局域网二级卡片（1:1 对齐 main.css 的 .lan-card 族） ── */
+.lan-card {
+  padding: 12px 14px 14px;
+  min-width: 300px;
+}
+.lan-card-title {
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 10px;
+}
+.lan-card-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border-light);
+}
+.lan-card-row:last-of-type {
+  border-bottom: none;
+}
+.lan-card-row-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+.lan-card-row-label > span:first-child {
+  font-weight: 500;
+  color: var(--text);
+}
+.lan-card-row-help {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  line-height: 1.4;
+}
+.lan-card-section {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-light);
+}
+.lan-card-section-label {
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--text);
+  margin-bottom: 6px;
+}
+.lan-card-token-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.lan-card-token-mask,
+.lan-card-token-value {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  background: var(--bg-input);
+  padding: 4px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--border-light);
+  word-break: break-all;
+  flex: 1;
+  min-width: 0;
+}
+.lan-card-token-value {
+  color: var(--text);
+}
+.lan-card-token-placeholder {
+  font-size: 12px;
+  color: var(--text-secondary);
+  padding: 4px 8px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-light);
+  border-radius: 4px;
+  flex: 1;
+  text-align: left;
+}
+.lan-card-btn {
+  font-size: 11.5px;
+  font-family: inherit;
+  padding: 4px 10px;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.lan-card-btn:hover {
+  background: var(--bg-hover);
+}
+.lan-card-btn-primary {
+  background: var(--accent);
+  color: var(--on-accent);
+  border-color: var(--accent);
+}
+.lan-card-btn-primary:hover {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+.lan-card-btn-danger {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+.lan-card-btn-danger:hover {
+  background: var(--danger);
+  color: var(--on-accent);
+}
+.lan-card-warning {
+  margin-top: 8px;
+  padding: 8px 10px;
+  background: var(--accent-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 11.5px;
+  color: var(--text);
+  line-height: 1.5;
+}
+.lan-card-actions {
+  margin-top: 8px;
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.lan-card-help {
+  margin-top: 6px;
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+  line-height: 1.4;
+}
+
+/* ── 移动端抽屉 ── */
+@media (max-width: 1100px) {
+  .left-panel {
+    width: 220px;
+  }
+}
+@media (max-width: 900px) {
+  .left-panel {
+    position: fixed;
+    top: 44px;
+    bottom: 0;
+    left: 0;
+    width: 300px;
+    z-index: 30;
+    box-shadow: var(--shadow-lg);
+    transform: translateX(-100%);
+    transition: transform 0.2s;
+  }
+  .left-panel--open {
+    transform: translateX(0);
+  }
+}

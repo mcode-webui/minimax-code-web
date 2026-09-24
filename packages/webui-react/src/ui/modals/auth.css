@@ -1,0 +1,169 @@
+/* ui/modals/auth.css —— 授权确认弹窗（只用 styles/tokens.css 的变量） */
+/* 复用 ask-modal 的卡片形制；无关闭按钮、无 Esc、无背景点击关闭 */
+
+.auth-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 20px;
+}
+
+.auth-modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+:root[data-theme='dark'] .auth-modal-backdrop {
+  background: color-mix(in srgb, var(--on-accent) 55%, transparent);
+}
+
+.auth-modal-content {
+  position: relative;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  width: 100%;
+  max-width: 560px;
+  max-height: 65vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  box-shadow: var(--shadow-lg);
+  animation: auth-modal-in 0.22s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@keyframes auth-modal-in {
+  from { transform: translateY(12px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+.auth-modal-header {
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.auth-modal-icon { font-size: 18px; }
+
+.auth-modal-title {
+  flex: 1;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.auth-modal-position {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.auth-modal-body {
+  padding: 18px 20px;
+  overflow: auto;
+  flex: 1;
+}
+
+.auth-modal-action {
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--text);
+  font-weight: 600;
+  margin-bottom: 12px;
+}
+
+.auth-modal-ctx {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.auth-modal-ctx-row {
+  display: flex;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.auth-modal-ctx-key {
+  min-width: 90px;
+  opacity: 0.7;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.auth-modal-ctx-value {
+  word-break: break-all;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+
+.auth-modal-countdown {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+}
+
+.auth-modal-countdown-value {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.auth-modal-error {
+  margin-top: 10px;
+  font-size: 11.5px;
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  padding: 6px 8px;
+  border-radius: 4px;
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
+  font-family: var(--font-mono);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.auth-modal-footer {
+  padding: 12px 18px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.auth-modal-btn-primary, .auth-modal-btn-secondary {
+  padding: 8px 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-elevated);
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  white-space: nowrap;
+}
+
+.auth-modal-btn-primary {
+  background: var(--accent);
+  color: var(--on-accent);
+  border-color: var(--accent);
+}
+
+.auth-modal-btn-primary:disabled,
+.auth-modal-btn-secondary:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.auth-modal-btn-secondary:hover { background: var(--bg-hover); }

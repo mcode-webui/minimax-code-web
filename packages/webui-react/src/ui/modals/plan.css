@@ -1,0 +1,219 @@
+/* ui/modals/plan.css —— Plan Review 弹窗（只用 styles/tokens.css 的变量） */
+/* 对齐 vanilla .modal(Plan) / .plan-* 系列 */
+
+.plan-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  animation: plan-fade-in 0.15s ease-out;
+}
+
+@keyframes plan-fade-in { from { opacity: 0; } to { opacity: 1; } }
+
+.plan-modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+:root[data-theme='dark'] .plan-modal-backdrop {
+  background: color-mix(in srgb, var(--on-accent) 55%, transparent);
+}
+
+.plan-modal-card {
+  position: relative;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow-lg);
+  width: 100%;
+  max-width: 600px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: plan-card-in 0.18s ease-out;
+}
+
+.plan-modal-card.wide { max-width: 760px; }
+
+@keyframes plan-card-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.plan-modal-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border-light);
+}
+
+.plan-modal-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--accent);
+  flex: 1;
+  font-family: var(--font-mono);
+}
+
+.plan-frozen {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  background: var(--bg-hover);
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
+.plan-modal-close {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  color: var(--text-tertiary);
+  transition: all 0.1s;
+}
+
+.plan-modal-close:hover { background: var(--bg-hover); color: var(--text); }
+
+.plan-modal-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 18px;
+}
+
+.plan-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 12px;
+  line-height: 1.4;
+}
+
+.plan-summary {
+  background: var(--bg-sidebar);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  max-height: 280px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  margin-bottom: 12px;
+}
+
+.plan-summary-empty {
+  font-style: italic;
+  color: var(--text-tertiary);
+  padding: 24px;
+  text-align: center;
+}
+
+.plan-add-context {
+  width: 100%;
+  margin-top: 8px;
+  padding: 8px 12px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 13px;
+  font-family: inherit;
+  resize: vertical;
+  min-height: 60px;
+  color: var(--text);
+  box-sizing: border-box;
+}
+
+.plan-add-context:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-bg);
+}
+
+.plan-add-context::placeholder { color: var(--text-tertiary); }
+
+.plan-options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.plan-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+  transition: all 0.1s;
+  font: inherit;
+  color: inherit;
+  box-sizing: border-box;
+}
+
+.plan-option:hover { background: var(--bg-hover); border-color: var(--text-tertiary); }
+
+.plan-option.active { border-color: var(--accent); }
+
+.plan-option.primary {
+  background: var(--accent);
+  color: var(--on-accent);
+  border-color: var(--accent);
+}
+
+.plan-option.primary:hover { background: var(--accent-hover); }
+
+/* 选项序号圆标（1/2/3） */
+.plan-option-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  font-weight: 700;
+  font-size: 11px;
+  text-align: center;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.plan-option.primary .plan-option-num {
+  border-color: var(--on-accent);
+  color: var(--on-accent);
+}
+
+.plan-option-label { font-size: 13px; font-weight: 500; }
+
+.plan-modal-footer {
+  padding: 12px 18px;
+  border-top: 1px solid var(--border-light);
+  font-size: 11px;
+  color: var(--text-tertiary);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.plan-modal-footer kbd {
+  background: var(--bg-hover);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0 4px;
+  font-family: inherit;
+  font-size: 10px;
+}

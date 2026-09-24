@@ -1,0 +1,40 @@
+/* RightPanel —— 右栏（1:1 对齐 main.css 的 .right-panel） */
+.right-panel {
+  background: var(--bg-sidebar);
+  border-left: 1px solid var(--border);
+  overflow-y: auto;
+  padding: 16px;
+  width: 320px;
+  flex-shrink: 0;
+  transition: transform 0.2s;
+}
+/* GOAL 时长行 —— 原 UI 内联样式：4px 上边距、11px、三级文字色 */
+.goal-duration {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  min-height: 0;
+}
+
+@media (max-width: 1100px) {
+  .right-panel {
+    width: 300px;
+  }
+}
+@media (max-width: 900px) {
+  .right-panel {
+    position: fixed;
+    top: 44px;
+    bottom: 0;
+    right: 0;
+    width: 300px;
+    z-index: 30;
+    box-shadow: var(--shadow-lg);
+    border-left: 1px solid var(--border);
+    transform: translateX(100%);
+    transition: transform 0.2s;
+  }
+  .right-panel--open {
+    transform: translateX(0);
+  }
+}

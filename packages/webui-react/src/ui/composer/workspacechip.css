@@ -1,0 +1,142 @@
+/* ui/composer/workspacechip.css —— 工作区 chip + 快速切换下拉（只用 tokens 变量） */
+/* 对齐 vanilla .chat-empty-workspace / .ws-quick-* 样式 */
+
+.wschip {
+  position: relative;
+  display: inline-flex;
+}
+
+.wschip-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  background: var(--bg-hover);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+  transition: all 0.15s;
+  font-family: inherit;
+}
+
+.wschip-button:hover {
+  background: var(--bg-active);
+  border-color: var(--accent);
+}
+
+.wschip-button .icon {
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+}
+
+.wschip-name {
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wschip-dropdown {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  z-index: 1000;
+  min-width: 260px;
+  max-width: 380px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: var(--shadow-lg);
+  padding: 6px 0;
+  overflow: hidden;
+  animation: wschip-in 0.12s ease-out;
+}
+
+@keyframes wschip-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.wschip-list {
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.wschip-loading,
+.wschip-empty {
+  padding: 16px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-tertiary);
+}
+
+.wschip-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 14px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text);
+  transition: background 0.12s;
+  background: transparent;
+  border: none;
+  text-align: left;
+  font-family: inherit;
+}
+
+.wschip-item:hover { background: var(--bg-hover); }
+
+.wschip-item.active {
+  background: var(--accent-bg);
+  color: var(--accent-text);
+  font-weight: 600;
+}
+
+.wschip-item-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wschip-item-count {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  background: var(--bg);
+  border: 1px solid var(--border-light);
+  border-radius: 10px;
+  padding: 1px 7px;
+  flex-shrink: 0;
+}
+
+.wschip-check {
+  color: var(--accent);
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.wschip-item.active .wschip-check { color: var(--accent-text); }
+
+.wschip-add {
+  display: block;
+  width: 100%;
+  padding: 9px 14px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--accent);
+  border-top: 1px solid var(--border-light);
+  margin-top: 4px;
+  transition: background 0.12s;
+  background: transparent;
+  border-left: none;
+  border-right: none;
+  border-bottom: none;
+  text-align: left;
+  font-family: inherit;
+}
+
+.wschip-add:hover { background: var(--accent-bg); }

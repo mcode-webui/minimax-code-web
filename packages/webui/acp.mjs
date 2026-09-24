@@ -56,6 +56,15 @@ export class McodeAcpClient extends EventEmitter {
     this.pending = new Map()  // id → {resolve, reject, method}
     this.capabilities = null
     this.started = false
+    // v-fix 2026-09-24(内存泄漏): 子进程存活标志 —— getMcodeAcpClient 依赖 alive 判定
+    //   单例可否复用; 之前没有 alive 定义, 单例永不复用, 30s 轮询每次都 new 一个
+    //   client + spawn 一个 cli.js acp(还拖起 MCP 插件链), 旧的被覆盖且永不 stop。
+    this._childExited = false
+  }
+
+  // v-fix 2026-09-24: 真实的存活判定 (child 存在且未退出)。
+  get alive() {
+    return Boolean(this.child) && !this._childExited
   }
 
   // 启动 subprocess + initialize + 解析 capabilities
@@ -87,7 +96,12 @@ export class McodeAcpClient extends EventEmitter {
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
       shell: false,  // 关键：false 让 cmd.exe 不打印横幅
+      // v-fix 2026-09-24: POSIX 下让子进程当进程组长 —— stop 时杀整组;
+      //   否则 cli.js acp 自己拉起的 MCP 插件链 (codex-mcp-proxy → codex mcp-server)
+      //   收不到信号, 全部变孤儿, 每条 ~300MB 永久泄漏。
+      detached: process.platform !== 'win32',
     })
+    this._childExited = false
     // U4 (2026-09-20): 子进程死亡信号必须在到达时让所有 pending 落定。
     //   Node 24 对 spawn 失败（mcode 未安装 → ENOENT）只发 error+close，
     //   不发 exit —— 之前 pending 只在 exit 里 reject，request('initialize')
@@ -102,6 +116,7 @@ export class McodeAcpClient extends EventEmitter {
       else console.error(`[acp] mcode acp child error: ${e.message}`)
     })
     this.child.on('exit', (code, signal) => {
+      this._childExited = true
       this.emit('exit', { code, signal })
       // 拒绝所有 pending
       this._rejectAllPending(new Error(`mcode acp exited (code=${code} signal=${signal})`))
@@ -306,7 +321,20 @@ export class McodeAcpClient extends EventEmitter {
 
   stop() {
     if (this.child) {
-      try { this.child.kill() } catch {}
+      const pid = this.child.pid
+      this._childExited = true
+      if (process.platform !== 'win32' && pid) {
+        // v-fix 2026-09-24: 进程组 SIGTERM → 3s 兜底 SIGKILL (整组, 含 MCP 插件链)
+        try { process.kill(-pid, 'SIGTERM') } catch { try { this.child.kill('SIGTERM') } catch {} }
+        const c = this.child
+        const t = setTimeout(() => {
+          try { process.kill(-pid, 'SIGKILL') } catch {}
+          try { c.kill('SIGKILL') } catch {}
+        }, 3000)
+        if (typeof t.unref === 'function') t.unref()
+      } else {
+        try { this.child.kill() } catch {}
+      }
       this.child = null
     }
     this.started = false

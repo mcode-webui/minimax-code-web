@@ -22,6 +22,14 @@ let _mcodeAcpInitPromise = null; // 防止并发 init 同一个 client
 export async function getMcodeAcpClient() {
   if (_mcodeAcpSingleton && _mcodeAcpSingleton.alive) return _mcodeAcpSingleton;
   if (_mcodeAcpInitPromise) return _mcodeAcpInitPromise;
+  // v-fix 2026-09-24(内存泄漏根因): alive 此前不存在 → 单例从不复用, 每 30s 轮询
+  //   都 new 一个 client 并 spawn cli.js acp (拖起 codex-mcp-proxy → codex 整条链),
+  //   且旧单例被直接覆盖、永不 stop —— 服务器跑一天泄漏 ~68GB。
+  //   现在: (a) acp.mjs 真的定义了 alive; (b) 覆盖前先 stop 掉旧实例。
+  if (_mcodeAcpSingleton && !_mcodeAcpSingleton.alive) {
+    try { _mcodeAcpSingleton.stop(); } catch {}
+    _mcodeAcpSingleton = null;
+  }
   _mcodeAcpInitPromise = (async () => {
     const client = new McodeAcpClient({ debug: false });
     try {

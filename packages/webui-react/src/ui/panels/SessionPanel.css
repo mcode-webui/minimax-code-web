@@ -1,0 +1,10 @@
+/* SessionPanel —— 右栏 SESSION 段内容 */
+.session-panel {
+  display: block;
+}
+/* v0.5.bx: mcode session id 用等宽 + 略大字（避免 10px 下 m/n 混淆） */
+.session-panel .kv-row:first-child .kv-value {
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.2px;
+}
