@@ -2,8 +2,17 @@
 // GET /api/state — full state snapshot (first-connect baseline for the
 // /api/stream client; live frames then arrive over the stream).
 
-import { getClient } from "../lib/state-bus.js";
-import { loadSessions } from "../lib/sessions.js";
+import {
+  getClient,
+  getCidFromReq,
+  pushStateFor,
+  pushOnlineCount,
+  mcodeSessionsSnapshotFields,
+  getSseClient,
+  setSseClient,
+  endSseClient,
+  sessionsListForSnapshot,
+} from "../lib/state-bus.js";
 import {
   getMcodeSessionsForWorkspace,
   getCachedMcodeCommands,
@@ -35,7 +44,7 @@ export async function handleEvents(req, res, ctx) {
   //   conditional on acknowledged, etc) — 否则 sub-card 第一次 render 时是空的
   const snapshot = {
     ...cs,
-    sessions: loadSessions(),
+    sessions: sessionsListForSnapshot(),
     ...mcodeSessionsSnapshotFields((cs.workspace && cs.workspace.dir) || ""),
     lanBroadcast: getLanBroadcast(),
     readOnly: getReadOnly(),
@@ -104,7 +113,7 @@ export async function handleState(req, res, ctx) {
   return res.end(
     JSON.stringify({
       ...cs,
-      sessions: loadSessions(),
+      sessions: sessionsListForSnapshot(),
       mcodeSessions,
       availableCommands: getCachedMcodeCommands(),
       lanBroadcast: getLanBroadcast(),

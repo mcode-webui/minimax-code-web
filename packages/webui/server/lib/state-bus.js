@@ -177,7 +177,17 @@ export const SSE_HEADERS = {
 // frontend never reads session.chat from state.sessions (the chat area
 // hydrates from state.chat / the switch response). Strip the chat arrays
 // so long thinking turns don't ship the entire history on every push.
-function sessionsListForSnapshot() {
+// The chat-stripped projection of the session store, for anything that puts
+// `sessions` into a client-facing payload.
+//
+// This is exported because it is not only for the push path: `routes/state.js`
+// builds the `/api/state` body and the SSE connection's first frame, and both
+// used to call `loadSessions()` directly, which put every session's full `chat`
+// array on the wire. The helper had been added here and applied to the two
+// state-bus push sites; those two call sites in `routes/state.js` were missed,
+// so the leak survived the fix. `routes/state.js` is a *different file* from
+// this one, which is exactly why a helper beats remembering to filter.
+export function sessionsListForSnapshot() {
   return loadSessions().map((s) => ({
     id: s.id,
     title: s.title,

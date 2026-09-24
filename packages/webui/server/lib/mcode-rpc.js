@@ -55,7 +55,15 @@ function fail(error, code) {
 async function clientForCid(cid, requireLive) {
   if (cid) {
     const child = getActiveChild(cid);
-    if (child && child.alive) return child;
+    // Require the RPC surface, not merely a liveness flag. `activeChildByCid`
+    // holds two different kinds of object: an `McodeAcpClient` (ACP transport,
+    // has `.request` / `.notify` / `.alive`) and a raw `ChildProcess` (exec
+    // transport, has neither). Testing `.alive` alone happened to exclude the
+    // exec child only because that class has no such property — which then made
+    // every exec-mode `requireLive` lookup fail with a message implying the
+    // engine was unavailable, when in fact exec has no engine session to talk
+    // to at all. Keying on the capability makes it correct by contract.
+    if (child && typeof child.request === "function" && child.alive) return child;
   }
   if (requireLive) return null;
   return await getMcodeAcpClient();
@@ -65,16 +73,44 @@ async function clientForCid(cid, requireLive) {
 // the full setupMocks wrapper. The route layer relies on this same function.
 export { clientForCid };
 
+/**
+ * Why a `requireLive` lookup found nothing, in terms the caller can act on.
+ *
+ * There are two very different reasons, and collapsing them into one
+ * "mcode acp client unavailable" string misreports a structural property as a
+ * transient outage:
+ *
+ *  - An **exec** run registers a raw `ChildProcess` (`mcode-exec.js`), which has
+ *    no RPC surface at all. `session/set_config_option` and `session/cancel`
+ *    are not merely undeliverable to it — they are inapplicable, because the
+ *    one-shot `mcode exec` CLI has no persistent engine session to configure.
+ *    (The transport choice is `cs.permissions !== "Full access"`; see
+ *    `runMcodeAcp`.) A permission or model change still takes effect, on the
+ *    *next* turn, because `cs.permissions` is what selects the transport and
+ *    supplies the mode for the next spawn.
+ *  - Nothing is registered for this cid, meaning no turn is in flight — also
+ *    normal, and also not an error the user should act on beyond retrying.
+ *
+ * Returning a distinct `code` lets the route word its warning accurately
+ * instead of implying the engine refused a change it was never asked to make.
+ */
+function noLiveClientFailure(cid) {
+  const child = cid ? getActiveChild(cid) : null;
+  if (child && typeof child.request !== "function") {
+    return fail(
+      new Error(
+        "this turn uses the exec transport, which has no live engine session to update — the change applies from the next turn",
+      ),
+      "no_acp_session",
+    );
+  }
+  return fail(new Error("mcode acp client unavailable"), "no_client");
+}
+
 async function callRpc(method, params, opts = {}) {
   const client = await clientForCid(opts.cid, opts.requireLive);
-  if (!client)
-    return fail(new Error("mcode acp client unavailable"), "no_client");
-  // 播种后二次判定: client 启动时 acp-client 已按 initialize 响应刷新注册表
-  if (getActiveRegistry().classify(method) === "unsupported") {
-    return fail(
-      `mcode acp does not implement ${method} (mcode 0.1.5 server returns "Method not found")`,
-      "unsupported",
-    );
+  if (!client) {
+    return opts.requireLive ? noLiveClientFailure(opts.cid) : fail(new Error("mcode acp client unavailable"), "no_client");
   }
   try {
     const r = await client.request(method, params ?? probeParamsFor(method));
@@ -97,8 +133,9 @@ async function callRpc(method, params, opts = {}) {
 
 async function notifyRpc(method, params, opts = {}) {
   const client = await clientForCid(opts.cid, opts.requireLive);
-  if (!client)
-    return fail(new Error("mcode acp client unavailable"), "no_client");
+  if (!client) {
+    return opts.requireLive ? noLiveClientFailure(opts.cid) : fail(new Error("mcode acp client unavailable"), "no_client");
+  }
   try {
     await client.notify(method, params);
     return ok({ notified: true });

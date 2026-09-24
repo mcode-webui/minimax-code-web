@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Input as AntInput, type InputRef } from "antd";
 
 import * as api from "@/lib/api";
-import { runAction } from "@/lib/action-errors";
+import { reportActionError, runAction } from "@/lib/action-errors";
 import { useSessionContext } from "@/lib/store";
 import type { MessageKey } from "@/lib/i18n";
 import { Icon } from "./icons";
@@ -563,57 +563,77 @@ function SessionNode({
 
   // Enter commits and the input then unmounts; `settled` stops the unmount from
   // writing a second time through blur.
+  //
+  // The draft is cleared only AFTER the write resolves, and only on success. It
+  // used to be cleared first, which meant a failed rename (offline, 4xx, a
+  // declined `session.rename` authorization) unmounted the input and left the
+  // user with no trace of what they had typed and no way to retry it.
+  //
+  // `reportActionError` rather than `runAction`, because this call site has to
+  // know whether the write succeeded: `runAction` reports and returns
+  // `undefined`, which is indistinguishable from a successful rename whose own
+  // value happens to be `undefined`.
   const commitRename = useCallback(async () => {
     if (settled.current) return;
     settled.current = true;
     const next = (draft ?? "").trim();
-    setDraft(null);
-    if (!next || next === (session.title || "")) return;
-    await runAction(t("sidebar.rename"), api.renameSession(session.id, next));
-    onChanged();
+    // Nothing to write: close the editor, and keep the short-circuit ahead of
+    // any await so an unchanged title never becomes a request.
+    if (!next || next === (session.title || "")) {
+      setDraft(null);
+      return;
+    }
+    try {
+      await api.renameSession(session.id, next);
+      setDraft(null);
+      onChanged();
+    } catch (cause) {
+      // Keep the input mounted with the typed text so it can be retried or
+      // copied out. Re-arm the latch so a second Enter/blur tries again.
+      reportActionError(t("sidebar.rename"), cause);
+      settled.current = false;
+    }
   }, [draft, session.id, session.title, onChanged, t]);
 
-  const rowClass = [
-    "w-full flex items-center gap-2 pl-2 pr-0.5 h-[30px] text-left transition-colors rounded-lg",
+  // Row geometry. `pl-2` lives on the OUTER container, not on the button, so
+  // that the disclosure — now a sibling of the button rather than a child of
+  // it — keeps the same left inset it had while nested.
+  const rowSurface = [
+    "w-full flex items-center gap-2 pl-2 pr-0.5 h-[30px] transition-colors rounded-lg",
     active
       ? "bg-bg_interaction_tertiary_hover text-text_default_primary"
       : "text-text_default_primary hover:bg-bg_interaction_tertiary_hover",
   ].join(" ");
 
-  const rowBody = (
-          <div className="min-w-0 flex-1 transition-all mr-2 group-hover/row:mr-[90px] group-focus-within/row:mr-[90px]">
-            <div className="flex items-center gap-2">
-              {/* The disclosure is a sibling of the marker, not of the row button:
-                  a button inside a button is invalid HTML and makes the click
-                  target ambiguous. */}
-              {hasChildren ? (
-                <span
-                  role="button"
-                  tabIndex={0}
-                  aria-label={t("sidebar.subagents")}
-                  aria-expanded={open}
-                  data-testid="sidebar-session-subagents-toggle"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onToggle(session.id);
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      onToggle(session.id);
-                    }
-                  }}
-                  className="flex-shrink-0 cursor-pointer flex items-center justify-center text-icon_default_tertiary"
-                >
-                  <Icon
-                    name="caretDown"
-                    size={12}
-                    className={open ? "transition-transform" : "-rotate-90 transition-transform"}
-                  />
-                </span>
-              ) : null}
+  // A real `<button>` cannot contain another interactive element, and the
+  // previous markup put this `role="button"` span inside the row button. That
+  // is invalid HTML and puts two tab stops inside one control, so assistive
+  // tech and keyboard users get an ambiguous target. It is rendered as a
+  // SIBLING of the row button instead — which is what the comment here used
+  // to claim it was.
+  const caretToggle = hasChildren ? (
+    <button
+      type="button"
+      aria-label={t("sidebar.subagents")}
+      aria-expanded={open}
+      data-testid="sidebar-session-subagents-toggle"
+      onClick={(event) => {
+        event.stopPropagation();
+        onToggle(session.id);
+      }}
+      className="flex-shrink-0 flex items-center justify-center text-icon_default_tertiary"
+    >
+      <Icon
+        name="caretDown"
+        size={12}
+        className={open ? "transition-transform" : "-rotate-90 transition-transform"}
+      />
+    </button>
+  ) : null;
 
+  const rowBody = (
+          <div className="min-w-0 flex-1 text-left transition-all mr-2 group-hover/row:mr-[90px] group-focus-within/row:mr-[90px]">
+            <div className="flex items-center gap-2">
               <span
                 aria-hidden
                 className="flex flex-shrink-0 items-center justify-center h-[31px] w-[18px] text-icon_default_tertiary"
@@ -674,20 +694,25 @@ function SessionNode({
       <div className="group/row relative rounded-lg">
         {renaming ? (
           /* Editing swaps the element: a `<button>` must not contain an
-             `<input>`, and it would swallow the keystrokes. */
-          <div data-testid="sidebar-session-row" className={rowClass}>
+             `<input>`, and it would swallow the keystrokes. The disclosure is
+             withheld while editing — collapsing the list out from under an
+             open editor is not something the user asked for. */
+          <div data-testid="sidebar-session-row" className={rowSurface}>
             {rowBody}
           </div>
         ) : (
-          <button
-            type="button"
-            onClick={onOpen}
-            data-shortcut-session-target={session.id}
-            data-testid="sidebar-session-row"
-            className={rowClass}
-          >
-            {rowBody}
-          </button>
+          <div className={rowSurface}>
+            {caretToggle}
+            <button
+              type="button"
+              onClick={onOpen}
+              data-shortcut-session-target={session.id}
+              data-testid="sidebar-session-row"
+              className="min-w-0 flex-1 flex items-center rounded-lg text-left"
+            >
+              {rowBody}
+            </button>
+          </div>
         )}
 
         {renaming ? null : (
