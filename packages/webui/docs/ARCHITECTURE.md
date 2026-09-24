@@ -4,8 +4,8 @@
 
 > Companion to [README.md](../README.md). This document is for people
 > modifying the webui or integrating with it. It describes the runtime
-> topology, the module boundaries, the request lifecycle, and the
-> WebSocket event-stream payload contract.
+> topology, the module boundaries, the request lifecycle, and the SSE
+> payload contract.
 >
 > **Scope boundary.** This document is the single source of truth for how the
 > webui is built. The companion [DESKTOP-ARCHITECTURE.md](DESKTOP-ARCHITECTURE.md)
@@ -23,7 +23,7 @@
                               │   • webapp/public/auth-gate.html (LAN gate) │
                               └─────────────────────────────────────────────┘
                                   │ ▲                          │ ▲
-                  fetch / JSON   │ │  WebSocket /api/stream    │ │
+                  fetch / JSON   │ │  EventSource / SSE        │ │
                                   ▼ │                          ▼ │
    ┌──────────────────────────────────────────────────────────────────────┐
    │  server.js (source-mode) — registers @mavis/* → workspace TS resolver│
@@ -42,8 +42,8 @@
    │                                                                      │
    │  ┌─ static  ┐ ┌─ /api/health  ┐  ┌─ /api/state  ┐ ┌─ /api/sessions ┐ │
    │  │ index   │ │ health.js     │  │ state.js     │ │ sessions.js    │ │
-   │  │ .html   │ └───────────────┘  │ + /api/stream│ │ + acp-         │ │
-   │  │ .css/js │                    │   (WebSocket)│ │   sessions/*   │ │
+   │  │ .html   │ └───────────────┘  │ + /api/events│ │ + acp-         │ │
+   │  │ .css/js │                    │   (SSE)      │ │   sessions/*   │ │
    │  │ .png    │                    └──────────────┘ └────────────────┘ │
    │  └─────────┘                                                       │
    │  ┌─ /api/send    ┐ ┌─ /api/usage  ┐ ┌─ /api/workspace  ┐             │
@@ -103,14 +103,14 @@ browser           server/router.js           server/lib/*                mcode
    │                                │                              │ ─── spawn / pipe stdin ───►
    │                                │                              │
    │                                │ state-bus: pushStateFor(cid) │
-   │   ◄──────────── WS event  ────│   {type:'state', running:…}  │
+   │   ◄──────────── SSE event ────│   {type:'state', running:…}  │
    │   {type:'chat', lines:[…]}    │                              │
-   │   ◄──────────── WS event  ────│   ◄── line  ◄─── stdout  ────│
+   │   ◄──────────── SSE event ────│   ◄── line  ◄─── stdout  ────│
    │   {type:'delta', text:'…'}    │                              │
    │   …                            │                              │
-   │   ◄──────────── WS event  ────│   ◄── exec.result  ──────────│
+   │   ◄──────────── SSE event ────│   ◄── exec.result  ──────────│
    │   {type:'exec', status:'ok'}   │                              │
-   │   ◄──────────── WS event  ────│                              │
+   │   ◄──────────── SSE event ────│                              │
    │   {type:'state', running:false}│                              │
    │   …                            │                              │
    │ connection closes / kept open   │                              │
@@ -122,9 +122,9 @@ Key invariants:
   client id, a UUID stored in `localStorage.webui_cid`). A new tab gets a new
   subprocess; a closed tab kills its subprocess. State is per-cid, not
   per-connection.
-- **The WebSocket event stream (`GET /api/stream`) is the only source of
-  state updates** for the client. REST endpoints mutate server state but do
-  not push to the client. The client treats the event stream as truth.
+- **The SSE channel is the only source of state updates** for the client.
+  REST endpoints mutate server state but do not push to the client. The
+  client treats SSE as truth.
 - **`pushStateFor(cid, opts)` is the only function that mutates per-cid
   state on the server.** Everything else is read-only. This is why
   `state-bus.js` is the size it is — it's the single chokepoint.
@@ -166,11 +166,11 @@ sequenceDiagram
     E->>E: assemble system prompt:<br/>AGENTS.md (system-reminder module),<br/>skills, permission presets
     A->>E: session/prompt {prompt}
     E->>E: model call (provider / minimax_api key)
-    C-->>B: 200 {ok:true}  (ack only — everything else is the event stream)
+    C-->>B: 200 {ok:true}  (ack only — everything else is SSE)
 ```
 
 The stream that follows — every engine event becomes a chat line, every
-chat mutation becomes a state snapshot on the event stream:
+chat mutation becomes an SSE state snapshot:
 
 ```mermaid
 sequenceDiagram
@@ -186,7 +186,7 @@ sequenceDiagram
         A->>M: {kind:'thought', text}
         M->>M: streamUpdateLine(cs.chat, "▲", text)
         M->>S: pushStateFor(cid)  (60Hz coalesced)
-        S-->>B: WS {type:'state', chat:[...], running:{active:true,tps}}
+        S-->>B: SSE {type:'state', chat:[...], running:{active:true,tps}}
         B->>B: thinking block (escaped text, collapsible)
     end
     loop per tool call (incl. MCP tools & skill-spawned tools)
@@ -275,7 +275,7 @@ flowchart TD
         F{"clicked id is mvs_…?"}
         G["switch: find-or-create overlay<br/>(id = mvs_…, idempotent)"]
         H["transcript backfill from<br/>runtime SQLite (≤400 lines / ≤200KB)"]
-        I["bind cs: sessionId / mcodeSessionId / chat<br/>→ pushStateFor (event stream)"]
+        I["bind cs: sessionId / mcodeSessionId / chat<br/>→ pushStateFor (SSE)"]
     end
 
     subgraph STORES["stores"]
@@ -357,14 +357,13 @@ The chokepoint. Exports:
 
 | Function | Purpose |
 |---|---|
-| `getClient(cid)` | Returns the per-cid `clientState` built by `makeClientState()` (`version`, `workspace`, `model`, `sessionId`, `mcodeSessionId`, `chat`, `sessions`, `context`, `usage`, `permissions`, `running`, `plan`, `ask`, `todo`, `goal` …). Lazily creates on first call; there is no `sse` field — the per-cid live channel is the `/api/stream` subscription on the event bus. |
-| `pushStateFor(cid, opts)` | Build a full snapshot for the cid — the `clientState` fields plus injected `sessions`, settings and quota fields (`opts` carries `lanBroadcast` / `mcodeSessions` overrides) — and publish it straight to the event bus as a `state.snapshot` event; `cid === "__broadcast__"` fans out to every subscribed cid. |
-| `pushOnlineCount(lanBroadcast)` | Set `onlineCount` to the number of event-stream subscribers (`getSubscribedCids().length`) and emit a `state.snapshot` to every subscribed cid. Called on `/api/stream` connect/disconnect. |
+| `getClient(cid)` | Returns the `clientState` object: `state`, `sse`, `activeChild`, `chatHistory`, `requestSeq`. Lazily creates on first call. |
+| `pushStateFor(cid, opts)` | Build a normalized `state` object and write it to `clientState.state`. Broadcasts to the SSE channel unless `opts.silent`. |
+| `pushOnlineCount(lanBroadcast)` | Count `sseByCid.size` and broadcast to all clients. Called on connect/disconnect. |
+| `SSE_HEADERS` | Standard headers: `Content-Type: text/event-stream`, `Cache-Control: no-cache`, `Connection: keep-alive`, `X-Accel-Buffering: no`. |
 
-The snapshot payload shape is documented in § 4 below. Snapshots are
-built on the fly by `pushStateFor` (`clientState` fields + injected
-sessions / settings / quota fields); the rest of the codebase reads
-the `clientState` fields themselves.
+The `state` payload is documented in § 5 below. The `clientState.state`
+object is the **only** thing the rest of the codebase reads from.
 
 ### `acp-client.js`
 Wraps mcode's JSON-RPC-over-stdio protocol. Exports:
@@ -437,10 +436,10 @@ Both expose:
 `state`, `chat`, `delta`, `tool`, `permission`, `plan`, `ask`,
 `exec`, `usage`. See § 5.
 
-## 4. The state snapshot payload
+## 4. The `clientState.state` payload
 
-This is the shape every state snapshot on the event stream contains.
-The webui mirrors it 1:1 into the `state` JS variable.
+This is the shape every SSE `state` event contains. The webui mirrors
+it 1:1 into the `state` JS variable.
 
 ```ts
 {
@@ -477,7 +476,7 @@ The webui mirrors it 1:1 into the `state` JS variable.
     cwd: string,
     updatedAt: number }>,
   mcodeSessionId?: string,         // currently-active mcode session
-  context?: {                       // updated by delta accumulation
+  context?: {                       // updated by SSE delta accumulation
     used: number,                   // tokens used (per-turn)
     percent: number,                // 0..100
     cacheRead: number,              // per-turn cache reads
@@ -500,7 +499,7 @@ The webui mirrors it 1:1 into the `state` JS variable.
   todo?: Array<{ content: string, status: 'pending'|'in_progress'|'done' }>,
   lanBroadcast: boolean,           // mirrors /api/settings
   onlineCount: number,              // from pushOnlineCount
-  // 🆕 v1.0.1 — settings surface pushed over event-stream state updates
+  // 🆕 v1.0.1 — settings surface pushed over SSE state updates
   readOnly: boolean,                // read-only mode (server gate blocks remote POST/DELETE on /api/*)
   tokenEnabled: boolean,            // token auth master switch (default true)
   currentToken: string,             // 32-hex auto-generated token; "" after tokenAcknowledged=true
@@ -513,18 +512,11 @@ The webui **does not** hold additional state outside this object. Any UI
 panel that needs data reads it from `state` and reacts to `state`
 changes via `render()`.
 
-## 5. Event schema (WebSocket event stream)
+## 5. SSE event schema
 
 Two channels, one data frame type. `/api/events` is the per-CID state stream
 and carries `state` plus four named events; `/api/alerts` is a global anomaly
 stream (see §5.1).
-
-> **Channel note (decision 20).** SSE is removed. These events ride
-> `GET /api/stream` as `state.snapshot` frames (payload = the §4 state
-> object) and `control` frames (`{v:1, seq, ts, type:"control",
-> payload:{name, data}}`) — see [API.md `GET /api/stream`](API.md).
-> The `event:` / `data:` lines below are the pre-decision-20 encoding,
-> retained as the canonical event-name → payload map.
 
 ```
 event: state
@@ -561,16 +553,15 @@ and the live `HEADERS.Authorization` object **in place** — subsequent
 Clients that were offline when the event fired will get `401` on
 their next request; they need to be re-sent the new URL manually.
 
-The payload's `data` field is the **raw token string**, not a
-JSON-encoded string — it's obvious in devtools that this is sensitive
-material, and double-encoding would not add any value (and would
-obscure the token when copy-pasted from network logs).
+The body is **raw text**, not JSON-encoded — it's obvious in devtools
+that this is sensitive material, and `JSON.stringify` would not add
+any value (and would obscure the token when copy-pasted from
+network logs).
 
 The webui treats each event as an idempotent update; replaying the
-same event is safe. The event stream keeps a per-cid ring buffer: on
-reconnect the client resumes from `lastSeq`, and when the buffer has
-underrun the server replays the latest `state.snapshot` as the
-baseline (the first-connect baseline comes from `GET /api/state`).
+same event is safe. The server uses an at-most-once delivery model
+(SSE drops on disconnect → no retry), which the client handles by
+fetching `/api/state` on reconnect.
 
 ## 6. Frontend topology
 
@@ -703,7 +694,7 @@ stale.
 |---|---|---|
 | mcode acp subprocess crashes | `child.on('exit')` listener | pushStateFor with `running.active=false`; client shows "agent stopped" toast |
 | mcode acp returns "Method not found" | `mcode-rpc.js` whitelist | returns `{ok:false, code:'unsupported'}` synchronously; route handler returns 501 Not Implemented; client shows toast |
-| Event stream drops | WebSocket `onclose` | reconnect with backoff + `resume {lastSeq}`; on ring-buffer underrun the server replays the latest `state.snapshot` (first connect fetches `/api/state`) |
+| SSE connection drops | `EventSource.onerror` | auto-reconnect with backoff; on reconnect, fetch `/api/state` and resync |
 | LAN request from a non-whitelisted IP | `router.js` L120 | 403 + friendly HTML page (or JSON for /api/*) |
 | Server out of file descriptors | `installGlobalErrorHandlers` EMFILE sink | written to `.server.err`; user sees an empty page; reload usually fixes it |
 | mcode exec encoding is GBK (Windows) | Node defaults to UTF-8 in `spawn`; no fix needed | documented in README as a pitfall for future Python ports |

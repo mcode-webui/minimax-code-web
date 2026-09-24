@@ -1,25 +1,20 @@
 // webui/test/routes/alerts.check.mjs
 // Unit tests for server/routes/alerts.js — handleAlerts SSE endpoint.
 //
-// Why this test exists: lease B02 wires /api/alerts (bell-icon data
-// source). With SSE removed (decision 20 — WebSocket event stream +
-// REST only) the route collapsed to a plain REST snapshot:
-//   GET /api/alerts → 200 application/json
-//                   → body {"kind":"snapshot","alerts":[...]} (the ring
-//                     buffer from getRecentAlerts()).
-// Live append/update traffic rides the /api/stream WebSocket as the
-// alerts.append / alerts.update control frames (state-bus'
-// attachAlertBridge) — so there is no streaming header, heartbeat, or
-// subscriber bookkeeping left to assert on this route.
+// Why this test exists: lease B02 wires /api/alerts (anomaly SSE).
+// The route must:
+//   1. Reply with text/event-stream + correct headers
+//   2. Replay the ring buffer as a `snapshot` frame
+//   3. Forward subsequent pushAlert() frames to the subscriber
+//   4. Tear down heartbeat + subscriber on `req.on("close")`
 //
-// Test strategy: NO setupMocks — the route's only dependency is the
-// pure alerts.js. pushAlert is THE single write point and state-bus
-// re-exports the exact same function as its chokepoint alias, so
-// injecting via alertsLib.pushAlert below is semantically identical to
-// calling state-bus.pushAlert().
+// Test strategy: NO setupMocks — alerts.js is the only dep and is
+// pure. We synthesize a fake req/res with a write hook and exercise
+// the live broadcast path.
 
 import { test, describe, beforeEach } from "node:test";
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { pathToFileURL } from "node:url";
 import { join } from "node:path";
 
@@ -29,78 +24,113 @@ const absPath = (rel) =>
 const alertsRoute = await import(absPath("routes/alerts.js"));
 const alertsLib = await import(absPath("lib/alerts.js"));
 
-// Fake res covering both writeHead-style and setHeader-style JSON
-// responses: status + headers land in _headers, body accumulates from
-// write()/end() chunks.
 function fakeRes() {
     const res = {
         _status: null,
-        _headers: {},
-        _body: "",
+        _headers: null,
+        writes: [],
         writeHead(s, h) {
             this._status = s;
-            if (h) this._headers = h;
-        },
-        setHeader(k, v) {
-            this._headers[k] = v;
+            this._headers = h;
         },
         write(chunk) {
-            this._body += String(chunk);
+            this.writes.push(chunk);
             return true;
-        },
-        end(chunk) {
-            if (chunk !== undefined) this._body += String(chunk);
-        },
-        headerOf(name) {
-            for (const [k, v] of Object.entries(this._headers)) {
-                if (k.toLowerCase() === String(name).toLowerCase()) return String(v);
-            }
-            return "";
         },
     };
     return res;
 }
 
-describe("handleAlerts — GET /api/alerts (REST)", () => {
+function fakeReq() {
+    const req = new EventEmitter();
+    return req;
+}
+
+describe("handleAlerts — /api/alerts", () => {
     beforeEach(() => {
         alertsLib._resetForTests();
     });
 
-    test("returns 200 application/json with kind=snapshot + alerts array", async () => {
+    test("returns 200 with SSE headers", async () => {
+        const req = fakeReq();
         const res = fakeRes();
-        await alertsRoute.handleAlerts({}, res, {});
+        const handled = await alertsRoute.handleAlerts(req, res, { cid: "c" });
+        assert.equal(handled, true);
         assert.equal(res._status, 200);
-        assert.ok(
-            res.headerOf("Content-Type").includes("application/json"),
-            `Content-Type must be application/json, got: ${res.headerOf("Content-Type")}`,
-        );
-        const body = JSON.parse(res._body);
-        assert.equal(body.kind, "snapshot");
-        assert.ok(Array.isArray(body.alerts), "body.alerts must be an array");
-        // Fresh ring buffer (beforeEach reset) → empty snapshot.
-        assert.equal(body.alerts.length, 0);
+        assert.match(res._headers["Content-Type"], /text\/event-stream/);
+        assert.match(res._headers["Cache-Control"], /no-cache/);
+        assert.equal(res._headers["X-Accel-Buffering"], "no");
+        // prevent the heartbeat interval from keeping the test loop alive
+        req.emit("close");
     });
 
-    test("snapshot carries an injected alert from the pushAlert chokepoint", async () => {
-        // state-bus.pushAlert re-exports this exact function — injecting
-        // here IS the state-bus.pushAlert path.
-        const injected = alertsLib.pushAlert({
-            level: "error",
-            msg: "boom",
-            src: "s",
-            cid: "cid-rest",
-        });
+    test("first frame is a snapshot of the ring buffer", async () => {
+        alertsLib.pushAlert({ level: "info", msg: "first", src: "s" });
+        alertsLib.pushAlert({ level: "error", msg: "second", src: "s" });
+        const req = fakeReq();
         const res = fakeRes();
-        await alertsRoute.handleAlerts({}, res, {});
-        const body = JSON.parse(res._body);
-        assert.equal(body.kind, "snapshot");
-        const hit = body.alerts.find((a) => a.id === injected.id);
-        assert.ok(
-            hit,
-            `injected alert must appear in the snapshot, got: ${res._body.slice(0, 300)}`,
+        await alertsRoute.handleAlerts(req, res, {});
+        const snapFrame = JSON.parse(res.writes[0].slice(6));
+        assert.equal(snapFrame.kind, "snapshot");
+        assert.equal(snapFrame.alerts.length, 2);
+        assert.equal(snapFrame.alerts[0].msg, "first");
+        assert.equal(snapFrame.alerts[1].msg, "second");
+        req.emit("close");
+    });
+
+    test("live pushAlert after subscribe is forwarded as an `append` frame", async () => {
+        const req = fakeReq();
+        const res = fakeRes();
+        await alertsRoute.handleAlerts(req, res, {});
+        const writesBefore = res.writes.length;
+
+        alertsLib.pushAlert({
+            level: "warn",
+            msg: "live",
+            src: "s",
+            cid: "cid-x",
+        });
+
+        assert.equal(res.writes.length, writesBefore + 1);
+        const liveFrame = JSON.parse(
+            res.writes[res.writes.length - 1].slice(6),
         );
-        assert.equal(hit.msg, "boom");
-        assert.equal(hit.level, "error");
-        assert.equal(hit.cid, "cid-rest");
+        assert.equal(liveFrame.kind, "append");
+        assert.equal(liveFrame.alert.msg, "live");
+        assert.equal(liveFrame.alert.cid, "cid-x");
+        req.emit("close");
+    });
+
+    test("req close → subscriber is removed", async () => {
+        const req = fakeReq();
+        const res = fakeRes();
+        await alertsRoute.handleAlerts(req, res, {});
+        assert.equal(alertsLib.getSubscriberCount(), 1);
+        req.emit("close");
+        assert.equal(alertsLib.getSubscriberCount(), 0);
+    });
+
+    test("req close → no further frames after unsubscribe", async () => {
+        const req = fakeReq();
+        const res = fakeRes();
+        await alertsRoute.handleAlerts(req, res, {});
+        const writesBefore = res.writes.length;
+        req.emit("close");
+        alertsLib.pushAlert({ level: "info", msg: "post-close", src: "s" });
+        assert.equal(res.writes.length, writesBefore);
+    });
+
+    test("returns true on client already gone (write throws during replay)", async () => {
+        const req = fakeReq();
+        const res = {
+            writeHead() {},
+            write() {
+                throw new Error("socket hang up");
+            },
+        };
+        const handled = await alertsRoute.handleAlerts(req, res, {});
+        assert.equal(handled, true);
+        // cleanup
+        req.emit("close");
     });
 });

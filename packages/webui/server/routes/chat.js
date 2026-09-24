@@ -66,7 +66,7 @@ function resetThinkingClaim(cs) {
   }
 }
 
-// POST /api/send — main chat entry, fire-and-forget (response = ack; output via /api/stream)
+// POST /api/send — main chat entry, fire-and-forget (response = ack; output via /api/events SSE)
 export async function handleSend(req, res, ctx) {
   const cs = ctx.cs;
   const cid = ctx.cid;

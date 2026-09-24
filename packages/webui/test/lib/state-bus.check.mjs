@@ -1,27 +1,14 @@
 // webui/test/lib/state-bus.check.mjs
 // Unit tests for server/lib/state-bus.js — pushStateFor + ensureMcodeSessionsFetchedAndPush
 //
-// Why this test exists: v0.5.bx-31 broadcast bug — when the first event
-// stream (/api/stream) subscriber is attached and the mcodeSessions
-// cache is empty, the SUT must fire-and-forget fetch the sessions and
-// then publish the authoritative state to all subscribed cids. The
-// dedup test ensures a second call with the same workspace is a no-op
-// while the first is in flight.
-//
-// [decision 20] SSE 已移除：下行唯一通道是 event-bus（WebSocket
-// /api/stream 订阅面），旧 SSE 适配器与 per-cid 连接映射一并删除。本文件的捕获模式：
-//   const cap = capture(cid);   // 触发推送“之前”订阅
-//   <触发推送>;
-//   lastSnapshot(cap.box);      // 从尾部反向找 type==="state.snapshot" 的快照
-//   snapshotAt(cap.box, n);     // 多次推送时取第 N 条快照（原 writes[0] 清空语义）
-// onlineCount 语义 = getSubscribedCids().length —— capture 即“在线”。
+// Why this test exists: v0.5.bx-31 broadcast bug — when the first SSE
+// connection is established and mcodeSessions cache is empty, the
+// SUT must fire-and-forget fetch the sessions and then push to all
+// connected SSE clients. The dedup test ensures a second call with
+// the same workspace is a no-op while the first is in flight.
 
 import { test, describe, before, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import {
-  subscribeEvents,
-  resetEventBusForTests,
-} from "../server/lib/event-bus.js";
 import {
   setupMocks,
   absPath,
@@ -30,9 +17,7 @@ import {
 } from "../helpers/_setup.js";
 
 let pushStateFor, mcodeSessionsSnapshotFields;
-let clients, makeClientState;
-let pushOnlineCount, setActiveChild, getActiveChild, clearActiveChild;
-let getCidsByMcodeSession, getClient, getCidFromReq;
+let clients, sseByCid, makeClientState;
 let acpFetchCalls, cachedByWs;
 
 before(async (t) => {
@@ -41,14 +26,8 @@ before(async (t) => {
   pushStateFor = mod.pushStateFor;
   mcodeSessionsSnapshotFields = mod.mcodeSessionsSnapshotFields;
   clients = mod.clients;
+  sseByCid = mod.sseByCid;
   makeClientState = mod.makeClientState;
-  pushOnlineCount = mod.pushOnlineCount;
-  setActiveChild = mod.setActiveChild;
-  getActiveChild = mod.getActiveChild;
-  clearActiveChild = mod.clearActiveChild;
-  getCidsByMcodeSession = mod.getCidsByMcodeSession;
-  getClient = mod.getClient;
-  getCidFromReq = mod.getCidFromReq;
 });
 
 // Mock acp-client to track fetch calls and serve cache from in-memory map
@@ -64,10 +43,9 @@ beforeEach(async () => {
       cachedByWs.has(ws) ? cachedByWs.get(ws) : null,
     getMcodeSessionsStaleSync: () => null,
   });
-  // 清 client 状态 + 重置事件总线。注意：reset 之后要重新 capture
-  // （“先 capture 后触发”），所以下面每个用例都在触发推送前订阅。
+  // Clear clients / sseByCid between tests
   clients.clear();
-  resetEventBusForTests();
+  sseByCid.clear();
   registerSessionsStore({
     initial: [
       {
@@ -82,36 +60,14 @@ beforeEach(async () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// 事件总线捕获（原 fakeSse + SSE 连接映射模式的等价替换）
-// ---------------------------------------------------------------------------
-function capture(cid) {
-  const box = [];
-  const unsub = subscribeEvents(cid, (item) => box.push(item));
-  return { box, unsub };
-}
-
-function snapshotsOf(box) {
-  return box
-    .filter((i) => i && i.event && i.event.type === "state.snapshot")
-    .map((i) => i.event.snapshot);
-}
-
-// 从尾部反向找最后一条 state.snapshot —— 等价于旧的“读最后一帧写入”。
-function lastSnapshot(box) {
-  const snaps = snapshotsOf(box);
-  assert.ok(snaps.length > 0, "expected at least one state.snapshot event");
-  return snaps[snaps.length - 1];
-}
-
-// 多次推送序列里的第 N 条快照（0-based）—— 等价于旧的“清空 writes[0] 再读”。
-function snapshotAt(box, n) {
-  const snaps = snapshotsOf(box);
-  assert.ok(
-    snaps.length > n,
-    `expected snapshot #${n}, only got ${snaps.length}`,
-  );
-  return snaps[n];
+function fakeSse() {
+  const writes = [];
+  return {
+    writes,
+    write: (chunk) => {
+      writes.push(chunk);
+    },
+  };
 }
 
 describe("pushStateFor", () => {
@@ -120,10 +76,10 @@ describe("pushStateFor", () => {
     const cs = makeClientState();
     cs.workspace.dir = "/w";
     clients.set(cid, cs);
-    const cap = capture(cid);
+    sseByCid.set(cid, fakeSse());
     const sessions = [{ id: "direct-1" }];
     pushStateFor(cid, { mcodeSessions: sessions });
-    const payload = lastSnapshot(cap.box);
+    const payload = JSON.parse(sseByCid.get(cid).writes[0].slice(6));
     assert.deepEqual(payload.mcodeSessions, sessions);
   });
 
@@ -132,10 +88,10 @@ describe("pushStateFor", () => {
     const cs = makeClientState();
     cs.workspace.dir = "/cached-ws";
     clients.set(cid, cs);
-    const cap = capture(cid);
+    sseByCid.set(cid, fakeSse());
     cachedByWs.set("/cached-ws", [{ id: "cached-1" }]);
     pushStateFor(cid);
-    const payload = lastSnapshot(cap.box);
+    const payload = JSON.parse(sseByCid.get(cid).writes[0].slice(6));
     assert.deepEqual(payload.mcodeSessions, [{ id: "cached-1" }]);
     // No fetch should have been triggered
     assert.equal(acpFetchCalls.length, 0);
@@ -146,50 +102,72 @@ describe("pushStateFor", () => {
     const cs = makeClientState();
     cs.workspace.dir = "/uncached-ws";
     clients.set(cid, cs);
-    const cap = capture(cid);
+    sseByCid.set(cid, fakeSse());
     pushStateFor(cid);
-    // 断言第一条（同步）快照：cache miss → 空占位立即发布。异步的
-    // authoritative 推送走 microtask，不会落在这个同步断言里。
-    const payload = snapshotAt(cap.box, 0);
+    const payload = JSON.parse(sseByCid.get(cid).writes[0].slice(6));
     // Immediately sees [] (cache miss → empty placeholder)
     assert.deepEqual(payload.mcodeSessions, []);
   });
 });
 
 describe('pushStateFor "__broadcast__"', () => {
-  test("publishes one snapshot to every subscribed cid", () => {
+  test("iterates all connected SSE clients", () => {
+    const a = fakeSse(),
+      b = fakeSse();
     clients.set("a", makeClientState());
+    sseByCid.set("a", a);
     clients.set("b", makeClientState());
-    const ca = capture("a");
-    const cb = capture("b");
+    sseByCid.set("b", b);
     pushStateFor("__broadcast__", { mcodeSessions: [{ id: "bcast" }] });
-    assert.equal(snapshotsOf(ca.box).length, 1);
-    assert.equal(snapshotsOf(cb.box).length, 1);
-    assert.deepEqual(lastSnapshot(ca.box).mcodeSessions, [{ id: "bcast" }]);
-    assert.deepEqual(lastSnapshot(cb.box).mcodeSessions, [{ id: "bcast" }]);
+    assert.equal(a.writes.length, 1);
+    assert.equal(b.writes.length, 1);
+    const pa = JSON.parse(a.writes[0].slice(6));
+    const pb = JSON.parse(b.writes[0].slice(6));
+    assert.deepEqual(pa.mcodeSessions, [{ id: "bcast" }]);
+    assert.deepEqual(pb.mcodeSessions, [{ id: "bcast" }]);
   });
 });
 
 // ============================================================
-// 批次 D 扩展: 覆盖事件流订阅面（在线数）+ active child 管理
+// 批次 D 扩展: 覆盖 SSE 频道管理 + active child 管理
 // ============================================================
 
+let pushOnlineCount, setActiveChild, getActiveChild, clearActiveChild;
+let getCidsByMcodeSession, getSseClient, setSseClient, endSseClient;
+let getClient, getCidFromReq;
+
+before(async () => {
+  const sb = await import(absPath("lib/state-bus.js"));
+  pushOnlineCount = sb.pushOnlineCount;
+  setActiveChild = sb.setActiveChild;
+  getActiveChild = sb.getActiveChild;
+  clearActiveChild = sb.clearActiveChild;
+  getCidsByMcodeSession = sb.getCidsByMcodeSession;
+  getSseClient = sb.getSseClient;
+  setSseClient = sb.setSseClient;
+  endSseClient = sb.endSseClient;
+  getClient = sb.getClient;
+  getCidFromReq = sb.getCidFromReq;
+});
+
 describe("pushOnlineCount", () => {
-  test("publishes online count to every subscribed stream client", () => {
+  test("broadcasts online count to all connected SSE clients", () => {
+    const a = fakeSse(),
+      b = fakeSse();
     clients.set("a", makeClientState());
+    sseByCid.set("a", a);
     clients.set("b", makeClientState());
-    const ca = capture("a");
-    const cb = capture("b");
+    sseByCid.set("b", b);
     pushOnlineCount(false);
-    assert.equal(snapshotsOf(ca.box).length, 1);
-    assert.equal(snapshotsOf(cb.box).length, 1);
-    // onlineCount 语义 = getSubscribedCids().length → 两个订阅 cid = 2
-    const pa = lastSnapshot(ca.box);
+    assert.equal(a.writes.length, 1);
+    assert.equal(b.writes.length, 1);
+    // payload should have onlineCount=2
+    const pa = JSON.parse(a.writes[0].slice(6));
     assert.equal(pa.onlineCount, 2);
   });
 
-  test("does not throw when no stream clients are subscribed", () => {
-    resetEventBusForTests();
+  test("does not throw when no SSE clients connected", () => {
+    sseByCid.clear();
     assert.doesNotThrow(() => pushOnlineCount(false));
   });
 });
@@ -257,6 +235,46 @@ describe("getCidsByMcodeSession", () => {
   });
 });
 
+describe("SSE channel helpers", () => {
+  test("getSseClient returns null for unregistered cid", () => {
+    assert.equal(getSseClient("never-set"), null);
+  });
+
+  test("setSseClient + getSseClient round-trip", () => {
+    const cid = "cid-sse-1";
+    const res = fakeSse();
+    setSseClient(cid, res);
+    assert.strictEqual(getSseClient(cid), res);
+  });
+
+  test("setSseClient for same cid overwrites previous", () => {
+    const cid = "cid-sse-2";
+    const a = fakeSse();
+    const b = fakeSse();
+    setSseClient(cid, a);
+    setSseClient(cid, b);
+    assert.strictEqual(getSseClient(cid), b, "should overwrite");
+  });
+
+  test("endSseClient clears the map entry", () => {
+    const cid = "cid-sse-3";
+    const res = fakeSse();
+    setSseClient(cid, res);
+    endSseClient(cid, res);
+    assert.equal(getSseClient(cid), null);
+  });
+
+  test("endSseClient with mismatched res does NOT clear (race-safe)", () => {
+    const cid = "cid-sse-4";
+    const a = fakeSse();
+    const b = fakeSse();
+    setSseClient(cid, a);
+    // Caller passes a different res (stale)
+    endSseClient(cid, b);
+    assert.strictEqual(getSseClient(cid), a, "should still be a, not cleared");
+  });
+});
+
 describe("getClient + getCidFromReq", () => {
   test("getClient creates a fresh state for unknown cid", () => {
     const cid = "cid-fresh-1";
@@ -297,7 +315,7 @@ describe("getClient + getCidFromReq", () => {
 
 // ============================================================
 // v1.0 推送字段回归 — 侧栏闪跌三连修:
-//   1) pushOnlineCount / 首推曾不带 mcodeSessions → 客户端 undefined 闪跌
+//   1) pushOnlineCount / SSE 首推曾不带 mcodeSessions → 客户端 undefined 闪跌
 //   2) 缓存过期时曾推空占位 → 闪跌后弹回
 //   3) 统一走 mcodeSessionsSnapshotFields, 过期推旧值 (pending=true)
 // ============================================================
@@ -308,9 +326,9 @@ describe("v1.0 push fields — mcodeSessions 永不缺失、永不空占位", ()
     const cs = makeClientState();
     cs.workspace.dir = "/w";
     clients.set(cid, cs);
-    const cap = capture(cid);
+    sseByCid.set(cid, fakeSse());
     pushOnlineCount(true);
-    const payload = lastSnapshot(cap.box);
+    const payload = JSON.parse(sseByCid.get(cid).writes[0].slice(6));
     assert.ok(Array.isArray(payload.mcodeSessions),
       "回归: pushOnlineCount 曾不带该字段, 客户端整包替换后 undefined → 侧栏闪跌");
     assert.equal(payload.mcodeSessions.length, 1);
@@ -324,9 +342,9 @@ describe("v1.0 push fields — mcodeSessions 永不缺失、永不空占位", ()
     const cs = makeClientState();
     cs.workspace.dir = "/w";
     clients.set(cid, cs);
-    const cap = capture(cid);
+    sseByCid.set(cid, fakeSse());
     pushOnlineCount(true);
-    const payload = lastSnapshot(cap.box);
+    const payload = JSON.parse(sseByCid.get(cid).writes[0].slice(6));
     assert.ok(Array.isArray(payload.mcodeSessions));
     assert.equal(payload.mcodeSessions.length, 2, "过期值好过空值 — 不允许闪跌到空列表");
     assert.equal(payload.mcodeSessionsPending, true);
@@ -356,9 +374,9 @@ describe("v1.0 push fields — mcodeSessions 永不缺失、永不空占位", ()
     const cs = makeClientState();
     cs.workspace.dir = "/w";
     clients.set(cid, cs);
-    const cap = capture(cid);
+    sseByCid.set(cid, fakeSse());
     pushStateFor(cid);
-    const payload = lastSnapshot(cap.box);
+    const payload = JSON.parse(sseByCid.get(cid).writes[0].slice(6));
     assert.ok(Array.isArray(payload.mcodeSessions));
     assert.equal(payload.mcodeSessions.length, 1);
     assert.equal(payload.mcodeSessionsPending, true);

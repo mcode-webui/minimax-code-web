@@ -151,10 +151,6 @@ export const TOKEN_STDOUT = process.env.MCODE_WEBUI_TOKEN_STDOUT === "1";
 export const DEFAULT_MODEL =
   process.env.MCODE_MODEL || "minimax_api/MiniMax-M3";
 export const DEFAULT_TIMEOUT = process.env.MCODE_TIMEOUT || "120s";
-// v2 波次 2（arch_net_solution_0922.md §6/§8）：引擎传输开关。
-//   默认 "acp" = 旧行为不变（每回合 mcode acp 子进程）；"embed" = 引擎宿主
-//   Worker 线程（boot 失败自动回退 acp）。
-export const MCODE_ENGINE = process.env.MCODE_ENGINE || "acp";
 export const DEFAULT_MAX_STEPS = Number(process.env.MCODE_MAX_STEPS) || 6;
 export const MAX_CONCURRENT = Number(process.env.MCODE_MAX_CONCURRENT) || 3;
 export const UPLOAD_DIR =

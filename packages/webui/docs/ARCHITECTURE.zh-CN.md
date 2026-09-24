@@ -4,8 +4,8 @@
 
 > 本文档是 [README.md](../README.md) 的配套文档，面向需要
 > 修改 webui 或与其集成的人员。它描述了运行时
-> 拓扑、模块边界、请求生命周期以及 WebSocket
-> 事件流载荷契约。
+> 拓扑、模块边界、请求生命周期以及 SSE
+> 载荷契约。
 
 ## 1. 高层拓扑
 
@@ -17,7 +17,7 @@
                               │   • webapp/public/auth-gate.html（LAN 门禁）│
                               └─────────────────────────────────────────────┘
                                   │ ▲                          │ ▲
-                  fetch / JSON   │ │  WebSocket /api/stream    │ │
+                  fetch / JSON   │ │  EventSource / SSE        │ │
                                   ▼ │                          ▼ │
    ┌──────────────────────────────────────────────────────────────────────┐
    │  server.js（源码模式）——注册 @mavis/* → 工作区 TS 的解析器        │
@@ -37,8 +37,8 @@
    │                                                                      │
    │  ┌─ static  ┐ ┌─ /api/health  ┐  ┌─ /api/state  ┐ ┌─ /api/sessions ┐ │
    │  │ index   │ │ health.js     │  │ state.js     │ │ sessions.js    │ │
-   │  │ .html   │ └───────────────┘  │ + /api/stream│ │ + acp-         │ │
-   │  │ .css/js │                    │   (WebSocket)│ │   sessions/*   │ │
+   │  │ .html   │ └───────────────┘  │ + /api/events│ │ + acp-         │ │
+   │  │ .css/js │                    │   (SSE)      │ │   sessions/*   │ │
    │  │ .png    │                    └──────────────┘ └────────────────┘ │
    │  └─────────┘                                                       │
    │  ┌─ /api/send    ┐ ┌─ /api/usage  ┐ ┌─ /api/workspace  ┐             │
@@ -98,14 +98,14 @@ browser           server/router.js           server/lib/*                mcode
    │                                │                              │ ─── spawn / pipe stdin ───►
    │                                │                              │
    │                                │ state-bus: pushStateFor(cid) │
-   │   ◄──────────── WS event  ────│   {type:'state', running:…}  │
+   │   ◄──────────── SSE event ────│   {type:'state', running:…}  │
    │   {type:'chat', lines:[…]}    │                              │
-   │   ◄──────────── WS event  ────│   ◄── line  ◄─── stdout  ────│
+   │   ◄──────────── SSE event ────│   ◄── line  ◄─── stdout  ────│
    │   {type:'delta', text:'…'}    │                              │
    │   …                            │                              │
-   │   ◄──────────── WS event  ────│   ◄── exec.result  ──────────│
+   │   ◄──────────── SSE event ────│   ◄── exec.result  ──────────│
    │   {type:'exec', status:'ok'}   │                              │
-   │   ◄──────────── WS event  ────│                              │
+   │   ◄──────────── SSE event ────│                              │
    │   {type:'state', running:false}│                              │
    │   …                            │                              │
    │ connection closes / kept open   │                              │
@@ -117,10 +117,9 @@ browser           server/router.js           server/lib/*                mcode
   客户端 id 为键，即存储在 `localStorage.webui_cid` 中的 UUID）。
   新标签页会获得一个新子进程；关闭标签页会杀死其子进程。状态是按
   cid 划分的，而不是按连接划分的。
-- **WebSocket 事件流（`GET /api/stream`）是客户端状态更新的
-  唯一来源**。
+- **SSE 通道是客户端状态更新的唯一来源**。
   REST 端点会改变服务器状态，但不会推送给客户端。
-  客户端将事件流视为事实来源。
+  客户端将 SSE 视为事实来源。
 - **`pushStateFor(cid, opts)` 是服务器上唯一会修改
   按 cid 划分的状态的函数。** 其他一切都是只读的。这就是
   `state-bus.js` 有如此体量的原因——它是唯一的收口点（chokepoint）。
@@ -162,11 +161,11 @@ sequenceDiagram
     E->>E: 组装系统提示词：<br/>AGENTS.md（system-reminder 模块）、<br/>技能、权限预设
     A->>E: session/prompt {prompt}
     E->>E: 模型调用（provider / minimax_api 密钥）
-    C-->>B: 200 {ok:true}（仅是确认——其余一切走事件流）
+    C-->>B: 200 {ok:true}（仅是确认——其余一切走 SSE）
 ```
 
 随后的流式输出——每个引擎事件都变成一行聊天内容，每次
-聊天变更都变成事件流上的状态快照：
+聊天变更都变成一个 SSE 状态快照：
 
 ```mermaid
 sequenceDiagram
@@ -182,7 +181,7 @@ sequenceDiagram
         A->>M: {kind:'thought', text}
         M->>M: streamUpdateLine(cs.chat, "▲", text)
         M->>S: pushStateFor(cid)（60Hz 合并）
-        S-->>B: WS {type:'state', chat:[...], running:{active:true,tps}}
+        S-->>B: SSE {type:'state', chat:[...], running:{active:true,tps}}
         B->>B: 思维链块（转义文本，可折叠）
     end
     loop 每个工具调用（含 MCP 工具与技能派生的工具）
@@ -268,7 +267,7 @@ flowchart TD
         F{"点击的 id 是 mvs_…<br/>且没有记录？"}
         G["切换：查找或创建叠加记录<br/>（id = mvs_…，幂等）"]
         H["从运行时 SQLite 进行<br/>正文回填（≤400 行 / ≤200KB）"]
-        I["绑定 cs：sessionId / mcodeSessionId / chat<br/>→ pushStateFor（事件流）"]
+        I["绑定 cs：sessionId / mcodeSessionId / chat<br/>→ pushStateFor（SSE）"]
     end
 
     subgraph STORES["存储"]
@@ -349,13 +348,13 @@ flowchart TD
 
 | 函数 | 用途 |
 |---|---|
-| `getClient(cid)` | 返回 `makeClientState()` 构建的按 cid 的 `clientState`（`version`、`workspace`、`model`、`sessionId`、`mcodeSessionId`、`chat`、`sessions`、`context`、`usage`、`permissions`、`running`、`plan`、`ask`、`todo`、`goal` 等）。首次调用时惰性创建；没有 `sse` 字段 —— 实时下行是事件总线上 `/api/stream` 的订阅。 |
-| `pushStateFor(cid, opts)` | 为该 cid 现场构造完整快照 —— `clientState` 字段加注入的 `sessions`、settings 与 quota 字段（`opts` 承载 `lanBroadcast` / `mcodeSessions` 覆盖）—— 并直接向事件总线发布 `state.snapshot` 事件；`cid === "__broadcast__"` 时广播到每个已订阅 cid。 |
-| `pushOnlineCount(lanBroadcast)` | 把 `onlineCount` 设为事件流订阅数（`getSubscribedCids().length`），并向每个已订阅 cid 发出 `state.snapshot`。在 `/api/stream` 连接/断开时调用。 |
+| `getClient(cid)` | 返回 `clientState` 对象：`state`、`sse`、`activeChild`、`chatHistory`、`requestSeq`。首次调用时惰性创建。 |
+| `pushStateFor(cid, opts)` | 构建规范化的 `state` 对象并写入 `clientState.state`。除非 `opts.silent`，否则向 SSE 通道广播。 |
+| `pushOnlineCount(lanBroadcast)` | 统计 `sseByCid.size` 并广播给所有客户端。在连接/断开时调用。 |
+| `SSE_HEADERS` | 标准头：`Content-Type: text/event-stream`、`Cache-Control: no-cache`、`Connection: keep-alive`、`X-Accel-Buffering: no`。 |
 
-快照载荷形状在下文 § 4 中说明。快照由 `pushStateFor` 现场构造
-（`clientState` 字段 + 注入的 sessions / settings / quota 字段）；
-代码库其余部分读取的是 `clientState` 字段本身。
+`state` 载荷在下文 § 5 中说明。`clientState.state`
+对象是代码库其余部分**唯一**读取的东西。
 
 ### `acp-client.js`
 封装 mcode 的基于 stdio 的 JSON-RPC 协议。导出：
@@ -426,9 +425,9 @@ export const MCODE_ACP_CAPABILITIES = {
 `state`、`chat`、`delta`、`tool`、`permission`、`plan`、`ask`、
 `exec`、`usage`。见 § 5。
 
-## 4. 状态快照载荷
+## 4. `clientState.state` 载荷
 
-这是事件流上每份状态快照所包含的形状。webui 将其
+这是每个 SSE `state` 事件所包含的形状。webui 将其
 1:1 镜像到 `state` JS 变量中。
 
 ```ts
@@ -466,7 +465,7 @@ export const MCODE_ACP_CAPABILITIES = {
     cwd: string,
     updatedAt: number }>,
   mcodeSessionId?: string,         // currently-active mcode session
-  context?: {                       // updated by delta accumulation
+  context?: {                       // updated by SSE delta accumulation
     used: number,                   // tokens used (per-turn)
     percent: number,                // 0..100
     cacheRead: number,              // per-turn cache reads
@@ -489,7 +488,7 @@ export const MCODE_ACP_CAPABILITIES = {
   todo?: Array<{ content: string, status: 'pending'|'in_progress'|'done' }>,
   lanBroadcast: boolean,           // mirrors /api/settings
   onlineCount: number,              // from pushOnlineCount
-  // 🆕 v1.0.1 — settings surface pushed over event-stream state updates
+  // 🆕 v1.0.1 — settings surface pushed over SSE state updates
   readOnly: boolean,                // read-only mode (server gate blocks remote POST/DELETE on /api/*)
   tokenEnabled: boolean,            // token auth master switch (default true)
   currentToken: string,             // 32-hex auto-generated token; "" after tokenAcknowledged=true
@@ -502,16 +501,10 @@ webui **不会**在此对象之外持有额外状态。任何需要数据的
 UI 面板都从 `state` 读取，并通过 `render()` 响应
 `state` 的变化。
 
-## 5. 事件模式（WebSocket 事件流）
+## 5. SSE 事件模式
 
 两条通道、一种数据帧。`/api/events` 是按 CID 的状态流，携带 `state` 加四个
 命名事件；`/api/alerts` 是全局异常流（见 §5.1）。
-
-> **通道注记（决策 20）**：SSE 已移除。这些事件经 `GET /api/stream`
-> 以 `state.snapshot` 帧（载荷 = §4 的 state 对象）与 `control` 帧
-> （`{v:1, seq, ts, type:"control", payload:{name, data}}`）下发 —— 见
-> [API.md `GET /api/stream`](API.md)。下方的 `event:` / `data:` 行是
-> 决策 20 之前的编码，保留作为 事件名 → 载荷 的权威映射。
 
 ```
 event: state
@@ -546,16 +539,14 @@ data: <new-32-hex-token>     // raw string, NOT JSON-wrapped
 事件触发时离线的客户端将在下一次请求时收到 `401`；
 需要手动把新 URL 重新发给它们。
 
-载荷的 `data` 字段是**原始令牌字符串**，而非 JSON 编码的
-字符串——在 devtools 中一眼就能看出这是敏感材料，而二次
-编码不会增加任何价值（并且在从网络日志复制粘贴时还会
-遮蔽令牌）。
+正文是**原始文本**，而非 JSON 编码——在 devtools 中
+一眼就能看出这是敏感材料，而 `JSON.stringify` 不会增加
+任何价值（并且在从网络日志复制粘贴时还会遮蔽令牌）。
 
 webui 将每个事件视为幂等更新；重放同一
-事件是安全的。事件流按 cid 保留环形缓冲：
-重连时客户端以 `lastSeq` 续传；缓冲欠载时
-服务器重放最近的 `state.snapshot` 作为基线
-（首连基线取自 `GET /api/state`）。
+事件是安全的。服务器采用至多一次投递模型
+（SSE 在断连时丢弃 → 不重试），客户端通过在
+重连时拉取 `/api/state` 来应对。
 
 ## 6. 前端拓扑
 
@@ -672,7 +663,7 @@ standalone 边界都保持原状。第 1 / 第 2 / 第 3 层只适用于服务�
 |---|---|---|
 | mcode acp 子进程崩溃 | `child.on('exit')` 监听器 | 以 `running.active=false` 调用 pushStateFor；客户端显示「agent stopped」toast |
 | mcode acp 返回 "Method not found" | `mcode-rpc.js` 允许列表 | 同步返回 `{ok:false, code:'unsupported'}`；路由处理器返回 501 Not Implemented；客户端显示 toast |
-| 事件流断开 | WebSocket `onclose` | 带退避的重连 + `resume {lastSeq}`；环形缓冲欠载时服务器重放最近的 `state.snapshot`（首连拉取 `/api/state`） |
+| SSE 连接断开 | `EventSource.onerror` | 带退避的自动重连；重连后拉取 `/api/state` 并重新同步 |
 | 来自非白名单 IP 的 LAN 请求 | `router.js` L120 | 403 + 友好的 HTML 页面（/api/* 则返回 JSON） |
 | 服务器文件描述符耗尽 | `installGlobalErrorHandlers` 的 EMFILE 兜底 | 写入 `.server.err`；用户看到空白页；重新加载通常可修复 |
 | mcode exec 编码为 GBK（Windows） | Node 在 `spawn` 中默认使用 UTF-8；无需修复 | 已在 README 中记录为面向未来 Python 移植的坑 |
@@ -688,7 +679,7 @@ standalone 边界都保持原状。第 1 / 第 2 / 第 3 层只适用于服务�
    { method: 'POST', match: (p) => p === '/api/foo', handler: fooRoute.handleFoo }
    ```
 4. 如果新端点会修改状态，在处理器中调用 `pushStateFor(cid, {...})`。
-   绝不要直接写入 `clientState` 字段。
+   绝不要直接写入 `clientState.state`。
 5. 如果该端点由 webui 调用，将其添加到
    `packages/webui/webapp/lib/api.ts` 中的 fetch 辅助函数（`API_SUFFIX` 会自动附加）。
 

@@ -70,7 +70,7 @@ node server.js
 
      // if it mutates state:
      pushStateFor(cid, { /* delta */ })
-     // for one-off control events, see `pushOnlineCount` / `broadcastTokenRotated`
+     // for one-off SSE messages, see `pushOnlineCount` / `broadcastTokenRotated`
 
      return ok(res, { /* response */ })
    }
@@ -98,12 +98,12 @@ node server.js
    ```
 
 4. **不要在路由处理器中直接写入 `clientState.state`**。
-   使用 `pushStateFor(cid, …)`，这样变更会通过
-   事件流广播，客户端才是事实来源。
+   使用 `pushStateFor(cid, …)`，这样变更会通过 SSE
+   通道广播，客户端才是事实来源。
 
-## 添加新的事件流事件类型
+## 添加新的 SSE 事件类型
 
-1. 在 `docs/ARCHITECTURE.md § 5`（事件模式）中定义事件结构。
+1. 在 `docs/ARCHITECTURE.md § 5`（SSE 事件模式）中定义事件结构。
 2. 在传输层（`mcode-acp.js` 或 `mcode-exec.js`）中，将
    原始 mcode 事件翻译为你的规范化事件：
    ```js
@@ -167,8 +167,8 @@ webui 会在连接时获取它。
      body: JSON.stringify({ type: 'delta', text: 'hello from test' })
    })
    ```
-4. 注入的事件会出现在右侧面板和
-   事件流中。
+4. 注入的事件会出现在右侧面板和 SSE
+   流中。
 
 你也可以在控制台调用 `__DBG.log('whatever')`——它会显示
 在右下角的调试面板中。

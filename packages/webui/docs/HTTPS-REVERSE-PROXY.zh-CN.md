@@ -5,7 +5,7 @@
 > **本文档存在的理由。** webui 绑定的是纯 HTTP（Node `http.createServer`）。
 > TLS 终端被委托给位于它前面的反向代理。本页收集了
 > 三份可直接复制的配置（nginx、caddy、Traefik 2），外加那些
-> 不知道要留意就会被坑到的 WebSocket 陷阱。
+> 不知道要留意就会被坑到的 SSE 陷阱。
 
 ## 目录
 
@@ -13,7 +13,7 @@
 |---|---|
 | 1 | [为什么需要反向代理](#1-为什么需要反向代理) |
 | 2 | [webui 与代理如何共享认证](#2-webui-与代理如何共享认证) |
-| 3 | [常见陷阱 —— WebSocket 事件流](#3-常见陷阱--websocket-事件流) |
+| 3 | [常见陷阱 —— Server-Sent Events (SSE)](#3-常见陷阱--server-sent-events-sse) |
 | 4 | [nginx](#4-nginx) |
 | 5 | [caddy](#5-caddy) |
 | 6 | [Traefik 2](#6-traefik-2) |
@@ -40,16 +40,16 @@ webui 接受两种令牌载体（见 [`server/lib/auth.js`](../server/lib/auth.j
 | 载体 | 使用场景 |
 |---|---|
 | `Authorization: Bearer <token>` | 浏览器 `fetch`、程序化客户端。首选 —— 永远不会接触 URL 栏 / referer / 历史记录。 |
-| `?token=<token>` 查询字符串 | 浏览器 `WebSocket`（`/api/stream`）。`WebSocket` API 无法设置自定义请求头，所以从浏览器认证 WebSocket 握手的唯一方式就是走 URL。 |
+| `?token=<token>` 查询字符串 | 浏览器 `EventSource`（SSE）。`EventSource` API 无法设置自定义请求头，所以从浏览器认证 SSE 连接的唯一方式就是走 URL。 |
 
 **对下面代理配置的建议**：在 webui 进程上设置 `MCODE_WEBUI_TOKEN=<random>`，然后任选其一：
 
 - （首选）让代理把 `Authorization` 请求头改写为 webui 期望的值（`proxy_set_header Authorization "Bearer <token>"`），或者
-- 直接透传 `?token=<token>`（WebSocket 握手会看到它）。
+- 直接透传 `?token=<token>`（EventSource 会看到它）。
 
 **不要把令牌写进日志。** nginx 和 caddy 默认都会记录包含查询字符串的请求行；如果你把 `?token=` 放进 URL，它就会落进访问日志。要么：
 - 在代理处剥离 `token=` 查询参数（`proxy_set_header Authorization "Bearer $arg_token"`），要么
-- 对 WebSocket / API location 设置 `access_log off`。
+- 对 SSE / API location 设置 `access_log off`。
 
 ### 2.1 代理之后的浏览器源 —— `trustedOrigins` 允许清单（v2）
 
@@ -96,15 +96,16 @@ curl -X POST http://127.0.0.1:18090/api/settings \
 - 不发送 `Origin` 的程序化客户端（curl、MCP、CLI）不受
   该门禁影响 —— 它们照常通过代理工作。
 
-## 3. 常见陷阱 —— WebSocket 事件流
+## 3. 常见陷阱 —— Server-Sent Events (SSE)
 
-实时下行通道（`GET /api/stream`，一个 WebSocket）是"我的代理除了实时推送之外一切正常"类 bug 报告的头号来源。陷阱在于 Upgrade 握手：反向代理必须转发 `Upgrade` / `Connection` 头并以 HTTP/1.1 对上游通信，否则握手在连接建立之前就会被拒绝。（`GET /api/alerts` 是普通 REST 快照，代理无需特殊处理。）
+SSE 长连接（`/api/events`、`/api/alerts`）是"我的代理除了实时推送之外一切正常"类 bug 报告的头号来源。陷阱在于缓冲：反向代理默认会**缓冲上游响应**以便在一次 TCP 写入中发送，这会杀死任何依赖增量刷新的流。
 
 | 陷阱 | 症状 | 修复 |
 |---|---|---|
-| **`Upgrade` / `Connection` 头被丢弃** | `/api/stream` 握手失败（400/426），SPA 没有实时下行 | `proxy_set_header Upgrade $http_upgrade;` + `proxy_set_header Connection "upgrade";`（nginx，独立的 `/api/stream` location）/ caddy 默认转发 / Traefik 2 默认转发 |
-| **下游使用 HTTP/1.0** | 握手全程需要 HTTP/1.1 | `proxy_http_version 1.1;`（nginx）/ `versions h1 h2`（Traefik 2.4+ 默认） |
-| **读取超时短于心跳间隔** | 代理在 webui 每 30 秒一次的 ping 之间杀掉连接 | `proxy_read_timeout 1h;`（nginx）/ `timeouts { read 1h }`（Traefik 2） |
+| **响应缓冲** | 事件每隔 30 秒以上成批出现，而不是即时出现 | `proxy_buffering off;`（nginx）/ `flush_interval -1` 或不设置 `buffer`（caddy）/ `flushInterval: "100ms"`（Traefik 2 file provider） |
+| **下游使用 HTTP/1.0** | 某些代理对上游默认使用 HTTP/1.0；SSE 需要 1.1 的分块传输 | `proxy_http_version 1.1;`（nginx）/ `versions h1 h2`（Traefik 2.4+ 默认） |
+| **代理注入 Connection: close 头** | EventSource 每隔几分钟就关闭 | `proxy_set_header Connection "";`（nginx）/ caddy 默认即可 / Traefik 2 默认即可 |
+| **读取超时短于事件间隔** | 如果代理的空闲超时 < 事件间隔，它会杀掉 SSE | `proxy_read_timeout 1h;`（nginx）/ `timeouts { read 1h }`（Traefik 2） |
 | **`/api/health` 被限流** | 存活探针在负载下收到 429 | 也在代理层豁免 `/api/health`（大多数代理如此 —— 但某些限流中间件不会） |
 
 ## 4. nginx
@@ -156,19 +157,25 @@ server {
     access_log /var/log/nginx/mcode-webui.access.log;
     error_log  /var/log/nginx/mcode-webui.error.log;
 
-    # --- WebSocket event stream (/api/stream) ----------------------------
-    # MUST come before the catch-all `/` location so the upgrade
-    # headers and the long read timeout win.
-    location = /api/stream {
+    # --- SSE / streaming endpoints ---------------------------------------
+    # MUST come before the catch-all `/` location so the SSE-specific
+    # overrides win.
+    location ~ ^/api/(events|alerts)$ {
         proxy_pass http://mcode_webui_upstream;
 
-        # WebSocket upgrade: forward the handshake headers upstream.
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
+        # SSE: disable buffering so each `data:` line flushes immediately.
+        proxy_buffering off;
+        proxy_cache off;
 
-        # Keep the connection open longer than the proxy's default
-        # 60s idle timeout; the webui pings every 30s.
+        # SSE: HTTP/1.1 upstream so chunked transfer encoding works.
+        proxy_http_version 1.1;
+
+        # SSE: clear the upstream Connection header — some apps send
+        # "close" which makes EventSource disconnect mid-stream.
+        proxy_set_header Connection "";
+
+        # SSE: keep the connection open longer than the proxy's default
+        # 60s idle timeout. 1h matches webui's keepalive cadence.
         proxy_read_timeout 1h;
         proxy_send_timeout 1h;
 
@@ -191,7 +198,7 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header Authorization    $auth_bearer;
 
-        # Reasonable default for the JSON API. /api/stream already has
+        # Reasonable default for the JSON API. /api/events already has
         # its own block above.
         proxy_read_timeout 60s;
     }
@@ -227,8 +234,8 @@ webui.example.com {
 
     # ----- Reverse proxy base config -----
     reverse_proxy http://127.0.0.1:18090 {
-        # Keep the upstream connection open. Caddy's default is
-        # 30s; bump to 1h to comfortably outlive the 30s ping.
+        # SSE: keep the upstream connection open. Caddy's default is
+        # 30s; bump to 1h to match the webui's keepalive.
         transport http {
             # Caddy 2.7+ supports read_timeout per transport.
             read_timeout 1h
@@ -245,25 +252,30 @@ webui.example.com {
         # query string). lib/auth.js#extractToken accepts both.
         header_up Authorization {http.reverse_proxy.header.Authorization}
 
-        # WebSocket: Caddy forwards the Upgrade / Connection headers
-        # by default — no extra configuration is needed for /api/stream.
+        # SSE: Caddy does NOT buffer streaming responses by default
+        # (unlike nginx), so no `flush_interval -1` is needed. If you
+        # see buffering in your version, add:
+        #   flush_interval -1
+        # ...to this block. Caddy 2.7+ already passes through SSE.
     }
 
-    # ----- WebSocket route (must come BEFORE the catch-all) -----
-    # `GET /api/stream` is the WebSocket event stream. The base
-    # reverse_proxy above proxies the handshake correctly out of the box
-    # (Caddy forwards Upgrade / Connection by default), but the explicit
-    # block lets reviewers see *why* this path exists.
-    @stream_paths {
-        path /api/stream
+    # ----- SSE-specific route (must come BEFORE the catch-all) -----
+    # The `events` and `alerts` endpoints are SSE streams. The base
+    # reverse_proxy above handles them correctly out of the box, but
+    # the explicit block lets reviewers see *why* these paths exist.
+    @sse_paths {
+        path /api/events /api/alerts
     }
-    handle @stream_paths {
+    handle @sse_paths {
         reverse_proxy http://127.0.0.1:18090 {
             transport http {
                 read_timeout 1h
+                # SSE: do NOT buffer. Caddy 2.7+ default is fine.
+                # Older versions: uncomment to force passthrough.
+                # flush_interval -1
             }
-            # Don't truncate the connection at the upstream's idle
-            # timeout. Caddy 2.7+ also requires you to NOT set
+            # Don't truncate the response at the upstream's idle timeout.
+            # Caddy 2.7+ also requires you to NOT set
             # `timeouts { read 30s }` at the server level — it's
             # transport-local.
         }
@@ -323,17 +335,16 @@ http:
       loadBalancer:
         servers:
           - url: "http://127.0.0.1:18090"
-        # Keep the event-stream connection alive longer than Traefik's
-        # 30s default. Traefik's `serversTransport` controls this.
+        # SSE: keep the connection alive longer than Traefik's 30s default.
+        # Traefik's `serversTransport` controls this.
         serversTransport: mcode-webui-transport
 
   serversTransports:
     mcode-webui-transport:
-      # 1h read/idle timeout: the default 30s would drop the
-      # /api/stream WebSocket between the webui's 30s pings.
+      # SSE: 1h read timeout. Default 30s would kill long-idle SSE.
       forwardingTimeouts:
         dialTimeout: "30s"
-        responseHeaderTimeout: "0s"   # no timeout on response headers
+        responseHeaderTimeout: "0s"   # no timeout on response headers — SSE
         idleConnTimeout: "1h"         # keepalive matches webui
 
   middlewares:
@@ -371,8 +382,13 @@ http:
       headers:
         customRequestHeaders:
           X-Real-IP: "true"  # placeholder; Traefik fills this automatically
-        # WebSocket: Traefik forwards the Upgrade / Connection headers
-        # by default — nothing else is needed for /api/stream.
+        # SSE: do NOT buffer. Traefik 2.10 passes streaming responses
+        # through by default. If you're on 2.4 or older and see SSE
+        # buffering, add a plugin:
+        #   plugin:
+        #     name: buffering
+        #     config:
+        #       flushInterval: "100ms"
 ```
 
 ## 7. 验证清单
@@ -396,18 +412,10 @@ curl -i "https://${HOST}/api/state" | head -1
 curl -i -H "Authorization: Bearer <your-token>" "https://${HOST}/api/state" | head -1
 # Expect: HTTP/2 200
 
-# 4. WebSocket event stream — a plain GET must be refused with 426
-#    (Upgrade Required); a handshake must return 101.
-curl -i --http1.1 -H "Authorization: Bearer <your-token>" \
-    "https://${HOST}/api/stream"
-# Expect: HTTP/1.1 426 Upgrade Required
-
-curl -i --http1.1 -H "Authorization: Bearer <your-token>" \
-    -H "Connection: Upgrade" -H "Upgrade: websocket" \
-    -H "Sec-WebSocket-Version: 13" \
-    -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" \
-    "https://${HOST}/api/stream"
-# Expect: HTTP/1.1 101 Switching Protocols
+# 4. SSE — open a stream and confirm events arrive within 1s, not 30s.
+timeout 5 curl -N -H "Authorization: Bearer <your-token>" \
+    "https://${HOST}/api/events"
+# Expect: data: {...} lines arriving at near-realtime cadence.
 
 # 5. Browser-origin gate (v2) — with the external origin registered in
 #    trustedOrigins (§2.1), the preflight is answered and the origin is
@@ -433,9 +441,9 @@ curl -s -i -X POST "https://${HOST}/api/settings" \
 | 浏览器 `POST`/`DELETE` 返回 403 `cross-origin request rejected` | v2 Origin/CSRF 门禁：外部源不在 `trustedOrigins` 中 | `POST /api/settings {"trustedOrigins": ["https://webui.example.com"]}` —— 使用浏览器可见的确切源，不带尾部斜杠（§2.1）。检查代理没有改写/剥离 `Origin` 请求头 |
 | 浏览器无法读取 API 响应（控制台出现 CORS 报错）但 curl 正常 | 外部源未列入允许清单 —— 不受信源按设计得不到任何 `Access-Control-*` 头 | 同样的修复：在 `trustedOrigins` 中注册该源（§2.1） |
 | `curl` 返回 301 跳转 HTTPS 但浏览器显示证书错误 | 你测试的是重定向，而不是 TLS 握手 | 直接测试：`curl -v https://webui.example.com/api/health` |
-| `/api/stream` WebSocket 握手失败（400/426），没有实时下行 | 代理丢弃了 `Upgrade` / `Connection` 头 | 见 §3 —— 转发升级头（nginx `proxy_set_header Upgrade $http_upgrade;` + `proxy_set_header Connection "upgrade";`）；caddy / Traefik 默认转发 |
-| 事件流几分钟后断开 | 代理空闲超时短于 webui 的 30 秒 ping | 把 `proxy_read_timeout` / `read_timeout` / `forwardingTimeouts.idleConnTimeout` 调大到 1h |
-| `?token=` 出现在 nginx 访问日志中 | nginx 默认日志包含查询字符串 | 要么在代理处剥离（推荐），要么对 WebSocket / API location 设置 `access_log off` |
+| SSE 事件每隔 30 秒成批到达 | 代理在缓冲 | 见 §3 —— 设置 `proxy_buffering off`（nginx）/ 添加 `buffering` 插件（Traefik 2.4）/ 检查 Caddy 版本 |
+| SSE 几分钟后断开 | 代理空闲超时 | 把 `proxy_read_timeout` / `read_timeout` / `forwardingTimeouts.idleConnTimeout` 调大到 1h |
+| `?token=` 出现在 nginx 访问日志中 | nginx 默认日志包含查询字符串 | 要么在代理处剥离（推荐），要么对 SSE location 设置 `access_log off` |
 | 即使带令牌也返回 401 | 令牌在请求头改写中丢失 | 检查你的 `proxy_set_header Authorization` 行；验证 webui 进程的 `MCODE_WEBUI_TOKEN` 与之匹配 |
 | 健康端点被限流（429） | 配置错误的中间件也在限流 | `/api/health` 已在 webui 层被豁免（router.js Gate 4）。如果你的代理中间件仍在限流，也在那里豁免 `/api/health` |
 | webui 重启后 nginx 返回 502 | 重启期间上游不可用 | `proxy_next_upstream` + 重试；或者等 webui 恢复后直接 reload nginx |

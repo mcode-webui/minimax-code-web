@@ -879,7 +879,7 @@ export async function handleAcpSessionTitle(req, res, _ctx) {
 //   gate with authorize("session.search", ctx). The new action name
 //   is appended to AUTHORIZE_ACTIONS in server/lib/authorize.js so
 //   the whitelist check accepts it. In production this pops the same
-//   needs_authorization modal (event-stream control frame) as session.delete / session.export;
+//   needs_authorization SSE modal as session.delete / session.export;
 //   tests drive the decision via test/_setup.js#withDecisions (the
 //   execArgv auto-approve was removed in the 2026-09-20 rigor fix).
 //

@@ -15,9 +15,7 @@
 //
 // We mock state-bus.js so pushAuthRequest / pushAuthDecision push
 // into a captured `_sseFrames` array, letting tests assert what was
-// emitted to the client. (SSE is gone — decision 20: the real module
-// publishes control frames through event-bus; the mock keeps its own
-// record so assertions stay independent of the transport.)
+// emitted to the client.
 
 import { test, describe, before, beforeEach } from "node:test";
 import assert from "node:assert/strict";
@@ -31,6 +29,7 @@ const absPath = (rel) => pathToFileURL(resolve(SERVER_DIR, rel)).href;
 
 // ----- state-bus mock state (read by the registered module mock) -----
 let _sseFrames = [];
+let _subscribers = new Map(); // cid -> Set<fakeRes>
 
 function _installStateBusMock(t) {
   t.mock.module(absPath("lib/state-bus.js"), {
@@ -43,7 +42,9 @@ function _installStateBusMock(t) {
       pushStateFor: () => {},
       pushOnlineCount: () => {},
       clients: new Map(),
+      sseByCid: _subscribers,
       activeChildByCid: new Map(),
+      SSE_HEADERS: {},
       mcodeSessionsSnapshotFields: () => ({
         mcodeSessions: [],
         mcodeSessionsPending: false,
@@ -52,6 +53,18 @@ function _installStateBusMock(t) {
       getActiveChild: () => null,
       clearActiveChild: () => {},
       getCidsByMcodeSession: () => [],
+      getSseClient: (cid) => _subscribers.get(cid) || null,
+      setSseClient: (cid, res) => {
+        if (!_subscribers.has(cid)) _subscribers.set(cid, new Set());
+        _subscribers.get(cid).add(res);
+      },
+      endSseClient: (cid, res) => {
+        const set = _subscribers.get(cid);
+        if (set) {
+          set.delete(res);
+          if (set.size === 0) _subscribers.delete(cid);
+        }
+      },
       broadcastTokenRotated: () => {},
       // ---- the B03 helpers under test ----
       pushAuthRequest: ({ requestId, action, ctx, expiresAt }) => {
@@ -114,6 +127,7 @@ before(async (t) => {
 
 beforeEach(() => {
   _sseFrames = [];
+  _subscribers = new Map();
   _resetForTests();
 });
 
@@ -144,7 +158,7 @@ describe("authorize — happy paths", () => {
     assert.equal(getPendingCount(), 1);
     const [requestId] = getPendingRequestIds();
     assert.ok(requestId);
-    // control event was emitted on push
+    // SSE event was emitted on push
     assert.equal(_sseFrames.length, 1);
     assert.equal(_sseFrames[0].event, "needs_authorization");
     assert.equal(_sseFrames[0].action, "slash.clear");
@@ -178,7 +192,7 @@ describe("authorize — happy paths", () => {
     assert.equal(r.approved, true);
     assert.equal(r.decidedBy, "bypass");
     assert.equal(getPendingCount(), 0);
-    assert.equal(_sseFrames.length, 0, "bypass must NOT push a needs_authorization control frame");
+    assert.equal(_sseFrames.length, 0, "bypass must NOT push needs_authorization SSE");
   });
 });
 
@@ -223,11 +237,11 @@ describe("authorize — 5-minute default timeout (fail-closed)", () => {
     }
     assert.equal(r.approved, false);
     assert.equal(r.decidedBy, "timeout");
-    // control-frame mirror for other tabs
+    // SSE mirror for other tabs
     assert.ok(
       _sseFrames.some((f) => f.event === "authorization_decided" &&
         f.approved === false && f.decidedBy === "timeout"),
-      "timeout must broadcast the authorization_decided control frame",
+      "timeout must broadcast authorization_decided SSE",
     );
   });
 
@@ -373,9 +387,9 @@ describe("authorize — no test-mode auto-approve (static guard)", () => {
 });
 
 // ============================================================
-// control-event emission contract
+// SSE emission contract
 // ============================================================
-describe("pushAuthRequest / pushAuthDecision — control-frame contracts", () => {
+describe("pushAuthRequest / pushAuthDecision — SSE contracts", () => {
   test("authorize emits exactly one needs_authorization frame per call", () => {
     authorize("slash.clear", { cid: "tab-s1" }, {});
     assert.equal(_sseFrames.length, 1);

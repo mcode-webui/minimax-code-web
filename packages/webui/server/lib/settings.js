@@ -28,7 +28,6 @@ import { MCODE_CMD, DEFAULT_WORKSPACE, DEFAULT_MODEL } from "./config.js";
 // pushes an alert — the in-memory change is NOT rolled back (the
 // persist already ran; hiding it would be worse than reporting it).
 import { append as _eventsAppend } from "./events.js";
-import { getMcodeServerInfo } from "./acp-client.js";
 
 // Persistent settings file path.
 //
@@ -596,7 +595,7 @@ export function setAllowedInterfaces(_ifaces) {
 }
 
 // rotateToken — generate a new token, persist, sync to auth module.
-//   Caller is responsible for broadcasting the new token over the event stream.
+//   Caller is responsible for broadcasting the new token via SSE.
 //   Returns the new token string.
 //
 // v1.0.1: order of operations is critical for crash-safety.
@@ -808,11 +807,9 @@ export function getSettingsSnapshot(availableInterfaces = null) {
     bindRestartPending,
     lanExposureNotice,
     mcodeCmd: MCODE_CMD,
-    // Same read-only peek as /api/health: agentInfo.version from the ACP
-    // handshake once a session exists, "unknown" before that. This
-    // snapshot feeds the UI's account card, so the value must never be a
-    // fabricated constant.
-    mcodeVersion: getMcodeServerInfo()?.version || "unknown",
+    // A pinned constant here reported the version webui was written against
+    // instead of the one running. `unknown` until a client attaches.
+    mcodeVersion: (agentInfo && agentInfo.version) || "unknown",
     defaultWorkspace: DEFAULT_WORKSPACE,
     defaultModel: DEFAULT_MODEL,
   };

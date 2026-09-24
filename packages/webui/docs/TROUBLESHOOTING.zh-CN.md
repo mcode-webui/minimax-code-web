@@ -18,16 +18,16 @@
 **症状**：HTML 已加载，没有红色报错块，但侧边栏为空，
 右侧面板处处显示 "—"。
 
-**根因**：init() 的 promise 链静默失败，或者
-`/api/stream` WebSocket 连接从未打开。
+**根因**：init() 的 promise 链静默失败，或者 SSE
+连接从未打开。
 
 **修复**：
 1. 打开开发者工具（F12）→ Console → 查看右下角调试面板中的
    `__DBG.log` 条目。
 2. 如果你看到 `init: start` 但没有 `init: state loaded`，说明
    `/api/state` 请求失败了。检查 network 标签页。
-3. 如果你看到 `init done` 但 UI 仍为空，说明
-   `/api/stream` WebSocket 连接失败了。重新加载页面，webui 会重新连接。
+3. 如果你看到 `init done` 但 UI 仍为空，说明 SSE
+   连接失败了。重新加载页面，webui 会重新连接。
 
 ## `⚠ webui JS 初始化失败: TypeError: Cannot read properties of null (reading 'addEventListener')`
 
@@ -50,8 +50,8 @@
 
 ## `Failed to load resource: net::ERR_CONNECTION_REFUSED` 指向 `127.0.0.1:18090`
 
-**症状**：开发者工具显示 `/api/stream` WebSocket 或
-`/api/state` 请求失败，提示 "connection refused"。UI 显示 "init fail" 或卡在
+**症状**：开发者工具显示 SSE 或 `/api/state` 请求失败，
+提示 "connection refused"。UI 显示 "init fail" 或卡在
 "loading…"。
 
 **根因**：服务器没有运行，或者运行在不同的端口上。
@@ -67,8 +67,8 @@
 
 **症状**：API 调用正常并返回会话，但 webui 的会话列表为空。
 
-**根因**：webui 缓存了一份较早的空列表。这通常会在下一份
-事件流 `state` 快照时自行恢复，但如果一直存在：
+**根因**：webui 缓存了一份较早的空列表。这通常会在下一个
+SSE `state` 事件时自行恢复，但如果一直存在：
 
 **修复**：强制刷新页面。
 
@@ -93,11 +93,11 @@ webui 的会话列表中。
 
 **症状**：点击 "Skip" 或按 Esc 无法关闭计划弹窗。
 
-**根因**：点击处理器调用了 `hidePlan()`，但来自 mcode 的
-事件流更新还没有到达，所以下一次渲染又把它打开了。
+**根因**：点击处理器调用了 `hidePlan()`，但来自 mcode 的 SSE
+事件还没有到达，所以下一次渲染又把它打开了。
 
 **修复**：
-1. 等 2-3 秒让事件流确认到达。
+1. 等 2-3 秒让 SSE 确认到达。
 2. 如果还是关不掉，再点一次 "Skip" —— 有时第一次点击被
    焦点环消耗掉了，第二次点击才会命中按钮。
 3. 如果弹窗真的卡死了，说明底层 mcode 状态卡住了。
@@ -130,21 +130,17 @@ localStorage 或使用了不同的 CID，关闭记录就会丢失。
 提供了 `favicon_v2.ico` 和 `favicon_v2.png`；旧的 `/favicon.ico`
 不再被服务。
 
-## 事件流连接每 30-60 秒断开一次
+## SSE 连接每 30-60 秒断开一次
 
 **症状**：右侧面板冻结几秒，然后追上来。开发者工具显示
-`/api/stream` WebSocket 反复关闭并重新打开（Network → WS 标签页）。
+EventSource 反复关闭并重新打开。
 
-**根因**：中间代理（nginx、cloudflare）在 webui 每 30 秒一次的
-ping 之间关闭了连接，或者它丢弃了 `Upgrade` / `Connection` 头，
-导致握手根本无法保持。
+**根因**：中间代理（nginx、cloudflare）正在关闭 SSE
+连接。SSE 协议中没有 keep-alive，所以代理可能会决定
+关闭空闲连接。
 
 **修复**：
-- 设置更长的代理超时：nginx 中使用 `proxy_read_timeout 3600s;`，
-  并确认代理转发了 `Upgrade` / `Connection`
-  （见 `docs/HTTPS-REVERSE-PROXY.md` §3）。
-- 连接关闭后，SPA 会在 `onclose` 约 3 秒后重连并从 `lastSeq`
-  续传，所以一次断开最多损失几秒的追赶。
+- 设置更长的代理超时：nginx 中使用 `proxy_read_timeout 3600s;`。
 - 或者把 webui 部署在不经代理的路径后面。本地开发时
   这不是问题。
 
@@ -185,8 +181,8 @@ ping 之间关闭了连接，或者它丢弃了 `Upgrade` / `Connection` 头，
 正在等待 stdin 而我们没有给它喂数据。
 
 **修复**：
-1. 打开开发者工具 → Network → 过滤 `/api/stream`，找到该
-   WebSocket 连接。如果它仍然开着（状态 101），问题在 mcode 一侧。
+1. 打开开发者工具 → Network → 找到 `/api/events` EventSource。
+   如果它仍然打开着，问题在 mcode 一侧。
 2. 找到 mcode 子进程：`Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" | Where-Object { $_.CommandLine -like "*acp*" }`
 3. 杀掉它：`Stop-Process -Id <PID> -Force`
 4. webui 会在下一条消息时生成一个全新的子进程。
@@ -209,7 +205,7 @@ ping 之间关闭了连接，或者它丢弃了 `Upgrade` / `Connection` 头，
 或显示错误的值。
 
 **根因**：mcode 的权限状态没有反映到
-`state.permissions` 中。webui 从事件流 `state` 快照中读取它。
+`state.permissions` 中。webui 从 SSE `state` 事件中读取它。
 
 **修复**：
 1. 检查 `curl 'http://127.0.0.1:18090/api/state?cid=<cid>' | jq .permissions`

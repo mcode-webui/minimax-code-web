@@ -71,7 +71,7 @@ node server.js
 
      // if it mutates state:
      pushStateFor(cid, { /* delta */ })
-     // for one-off control events, see `pushOnlineCount` / `broadcastTokenRotated`
+     // for one-off SSE messages, see `pushOnlineCount` / `broadcastTokenRotated`
 
      return ok(res, { /* response */ })
    }
@@ -99,12 +99,12 @@ node server.js
    ```
 
 4. **Don't write to `clientState.state` directly** from a route handler.
-   Use `pushStateFor(cid, …)` so the change is broadcast on the
-   event stream and the client is the source of truth.
+   Use `pushStateFor(cid, …)` so the change is broadcast on the SSE
+   channel and the client is the source of truth.
 
-## Adding a new event-stream event type
+## Adding a new SSE event type
 
-1. Define the event shape in `docs/ARCHITECTURE.md § 5` (event schema).
+1. Define the event shape in `docs/ARCHITECTURE.md § 5` (SSE event schema).
 2. In the transport layer (`mcode-acp.js` or `mcode-exec.js`), translate
    the raw mcode event to your normalized event:
    ```js
@@ -170,7 +170,7 @@ command; the webui picks it up on connect.
      body: JSON.stringify({ type: 'delta', text: 'hello from test' })
    })
    ```
-4. The injected event appears in the right panel and in the event
+4. The injected event appears in the right panel and in the SSE
    stream.
 
 You can also call `__DBG.log('whatever')` from the console — it shows

@@ -74,7 +74,7 @@ plan.
 
 ---
 
-## State & event stream
+## State & SSE
 
 ### `GET /api/state`
 
@@ -86,13 +86,11 @@ Returns the current `state` object for this CID. See
 { "ok": true, "version": "0.5.2", "running": {"active": false}, … }
 ```
 
-### `GET /api/alerts`
+### `GET /api/events`
 
-REST snapshot of the anomaly / system-signal ring buffer (at most 100
-entries, oldest first). Live updates are not delivered here — they
-arrive as `alerts.append` / `alerts.update` control frames on the
-WebSocket event stream (`GET /api/stream`); clients merge those frames
-into this snapshot and de-duplicate by `alert.id`.
+Server-Sent Events stream for this CID. The connection stays open
+indefinitely. Events are listed in
+[ARCHITECTURE.md §5](ARCHITECTURE.md).
 
 **Response 200** (`Content-Type: text/event-stream`)
 ```
@@ -106,9 +104,9 @@ event: exec
 data: {"status":"ok","durationMs":12345}
 ```
 
-### `GET /api/stream`
-
-WebSocket event stream endpoint (design doc `docs/drafts/arch_net_solution_0922.md` §7.2). The endpoint is always enabled — there is no transport switch — and the upgrade executes the same gate chain (origin / LAN / token) as every other `/api/*` route; a plain `GET` without an `Upgrade` header answers 426, and a successful RFC 6455 handshake establishes the connection. Server-to-client frames are WS text JSON: `hello` (`{v:1, type:"hello", payload:{cid, resumeSupported, latestSeq, heartbeatMs, ringCapacity}}` — `cid` echoes the client id this stream is bound to), `state.snapshot` and `control` event frames carrying `seq`/`ts`, and `error` frames. The shipped SPA consumes this endpoint: it receives state snapshots and control events here, takes its first-connect baseline from `GET /api/state`, and its alert snapshot from `GET /api/alerts`. The client may send only JSON text frames (`resume`/`ping`/`pong`/`close`); binary frames close the connection with 1002. Resume: `{v:1, type:"resume", payload:{lastSeq}}` replays buffered events in strictly increasing `seq` order; when the ring buffer has underrun, the most recent `state.snapshot` is sent as the baseline. Heartbeats are WS ping control frames (default 30s; two missed pongs close with 1001). The inbound token-bucket quota is 20 frames/s sustained with a burst of 40; exceeding it closes with 1013.
+The connection is held open until the client closes it (`EventSource.close()`)
+or the server shuts down. No automatic reconnect from the server side;
+the webui handles reconnection with exponential backoff.
 
 ### `GET /api/alerts`
 
@@ -141,7 +139,7 @@ data: {"ts":1730000000000}
 ### `POST /api/send`
 
 Send a user message. Spawns (or reuses) the mcode subprocess for this CID
-and streams the result over the WebSocket event stream (`GET /api/stream`).
+and streams the result via SSE.
 
 **Request**
 ```json
@@ -697,9 +695,8 @@ exists.
 
 Returns the full settings snapshot. **This endpoint is exempt from
 the LAN guard** — it's how a remote user toggles LAN back on after
-locking themselves out. The same snapshot is also pushed over the
-WebSocket event stream on state changes (see
-[ARCHITECTURE.md §5 event schema](./ARCHITECTURE.md#5-event-schema-websocket-event-stream)).
+locking themselves out. The same snapshot is also pushed via SSE on
+state changes (see [ARCHITECTURE.md §5 SSE state push](./ARCHITECTURE.md#5-sse-state-push)).
 
 **Response 200** (🆕 v1.0.1, 🔒 v2 security — PR #55 review)
 ```json
@@ -763,7 +760,7 @@ admin can always toggle things remotely, even in read-only mode).
   "trustedOrigins": ["https://webui.example.com"],  // 🔒 v2 — explicit CORS allowlist; replaces the stored list wholesale
   "readOnly": true,                // 🆕 v1.0.1 — toggle read-only mode
   "tokenEnabled": false,           // 🆕 v1.0.1 — toggle token auth master switch
-  "resetToken": true,              // 🆕 v1.0.1 — generate new token + broadcast auth.token_rotated over the event stream
+  "resetToken": true,              // 🆕 v1.0.1 — generate new token + broadcast auth.token_rotated SSE
   "acknowledgeToken": true         // 🆕 v1.0.1 — operator confirms they saved the token; server stops sending it
 }
 ```

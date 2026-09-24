@@ -71,7 +71,7 @@ SSE 状态快照 —— 后者会向包括局域网客户端在内的全部订�
 
 ---
 
-## 状态与事件流
+## 状态与 SSE
 
 ### `GET /api/state`
 
@@ -83,12 +83,11 @@ SSE 状态快照 —— 后者会向包括局域网客户端在内的全部订�
 { "ok": true, "version": "0.5.2", "running": {"active": false}, … }
 ```
 
-### `GET /api/alerts`
+### `GET /api/events`
 
-异常 / 系统信号环形缓冲的 REST 快照（至多 100 条，旧 → 新）。
-实时更新不由本端点下发 —— 它们以 `alerts.append` /
-`alerts.update` 控制帧经 WebSocket 事件流（`GET /api/stream`）
-下发；客户端把这些帧并入本快照，并按 `alert.id` 去重。
+此 CID 的服务端推送事件（Server-Sent Events）流。连接会无限期保持
+打开。事件列表见
+[ARCHITECTURE.md §5](ARCHITECTURE.md)。
 
 **响应 200**（`Content-Type: text/event-stream`）
 ```
@@ -102,9 +101,9 @@ event: exec
 data: {"status":"ok","durationMs":12345}
 ```
 
-### `GET /api/stream`
-
-WebSocket 事件流端点（技术方案 `docs/drafts/arch_net_solution_0922.md` §7.2）。本端点始终启用 —— 传输开关已删除 —— 升级执行与全部 `/api/*` 路由相同的门链（origin / LAN / token）；不带 `Upgrade` 头的普通 `GET` 返回 426，成功的 RFC 6455 握手建立连接。服务端 → 客户端帧为 WS text JSON：`hello`（`{v:1, type:"hello", payload:{cid, resumeSupported, latestSeq, heartbeatMs, ringCapacity}}` —— `cid` 回显该流绑定的客户端 id）、带 `seq`/`ts` 的 `state.snapshot` 与 `control` 事件帧、`error` 帧。发行版 SPA 即通过本端点接收状态快照与控制事件：首连基线经 `GET /api/state` 获取，告警快照经 `GET /api/alerts` 获取。客户端 → 服务端仅接受 JSON text 帧（`resume`/`ping`/`pong`/`close`），二进制帧以 1002 关闭。断线恢复：`{v:1, type:"resume", payload:{lastSeq}}` 按 seq 严格递增重放缓冲事件；环形缓冲欠载时以最近 `state.snapshot` 为基线。心跳为 WS ping 控制帧（默认 30 秒，连续 2 次无 pong 以 1001 关闭）；入站帧令牌桶配额为稳态 20 帧/秒、突发 40，超出以 1013 关闭。
+连接会一直持有，直到客户端关闭（`EventSource.close()`）
+或服务器关闭。服务器端不会自动重连；
+webui 会以指数退避方式处理重连。
 
 ### `GET /api/alerts`
 
@@ -136,7 +135,7 @@ data: {"ts":1730000000000}
 ### `POST /api/send`
 
 发送一条用户消息。为此 CID 启动（或复用）mcode 子进程，
-并通过 WebSocket 事件流（`GET /api/stream`）流式返回结果。
+并通过 SSE 流式返回结果。
 
 **请求体**
 ```json
@@ -674,8 +673,8 @@ dotfile。符号链接当文件返回时是 `Dirent` 项（webui 视为
 
 返回完整的设置快照。**此端点豁免于局域网防护** —— 它是远程
 用户在把自己锁在门外之后重新开启局域网访问的途径。同一快照
-也会在状态变化时经 WebSocket 事件流推送
-（见 [ARCHITECTURE.md §5 事件模式](./ARCHITECTURE.md#5-event-schema-websocket-event-stream)）。
+也会在状态变化时通过 SSE 推送
+（见 [ARCHITECTURE.md §5 SSE state push](./ARCHITECTURE.md#5-sse-state-push)）。
 
 **响应 200**（🆕 v1.0.1，🔒 v2 安全 —— PR #55 评审）
 ```json
@@ -739,7 +738,7 @@ dotfile。符号链接当文件返回时是 `Dirent` 项（webui 视为
   "trustedOrigins": ["https://webui.example.com"],  // 🔒 v2 — explicit CORS allowlist; replaces the stored list wholesale
   "readOnly": true,                // 🆕 v1.0.1 — toggle read-only mode
   "tokenEnabled": false,           // 🆕 v1.0.1 — toggle token auth master switch
-  "resetToken": true,              // 🆕 v1.0.1 — generate new token + broadcast auth.token_rotated over the event stream
+  "resetToken": true,              // 🆕 v1.0.1 — generate new token + broadcast auth.token_rotated SSE
   "acknowledgeToken": true         // 🆕 v1.0.1 — operator confirms they saved the token; server stops sending it
 }
 ```

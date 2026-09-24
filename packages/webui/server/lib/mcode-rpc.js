@@ -113,18 +113,9 @@ async function callRpc(method, params, opts = {}) {
     return opts.requireLive ? noLiveClientFailure(opts.cid) : fail(new Error("mcode acp client unavailable"), "no_client");
   }
   try {
-    const r = await client.request(method, params ?? probeParamsFor(method));
-    getActiveRegistry().markSupported(method);
+    const r = await client.request(method, params);
     return ok(r);
   } catch (e) {
-    // 惰性探测: 真实调用的错误即探测结果 — Method not found 判不支持并缓存
-    getActiveRegistry().recordProbeResult(method, e);
-    if (getActiveRegistry().classify(method) === "unsupported") {
-      return fail(
-        `mcode acp does not implement ${method} (mcode 0.1.5 server returns "Method not found")`,
-        "unsupported",
-      );
-    }
     if (e && e.data && typeof e.data.code === "string")
       return fail(e, e.data.code);
     return fail(e);

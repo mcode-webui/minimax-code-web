@@ -1,6 +1,5 @@
 // webui/server/routes/state.js
-// GET /api/state — full state snapshot (first-connect baseline for the
-// /api/stream client; live frames then arrive over the stream).
+// GET /api/events (SSE) + GET /api/state
 
 import {
   getClient,
@@ -102,7 +101,7 @@ export async function handleState(req, res, ctx) {
   );
   res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
   // v0.5.bx-29: /api/state 也尝试 hydrate mavis db 真值 (best-effort)
-  //   事件流客户端 (WebSocket /api/stream) 也会调这个端点, 所以 hydrate 也能发生在重连时
+  //   SSE 客户端 (EventSource) 也会调这个端点, 所以 hydrate 也能发生在 reconnect 时
   if (cs.mcodeSessionId) {
     try {
       await applyMavisUsageToCs(cs, cs.mcodeSessionId, { getMcodeModelLimit });
@@ -118,12 +117,12 @@ export async function handleState(req, res, ctx) {
       availableCommands: getCachedMcodeCommands(),
       lanBroadcast: getLanBroadcast(),
       // v1.0.1: include the full settings surface so the sub-card
-      // renders correctly on first /api/state fetch (before the event
-      // stream delivers its first state push).
+      // renders correctly on first /api/state fetch (before the SSE
+      // connection delivers its first state push).
       readOnly: getReadOnly(),
       tokenEnabled: getTokenEnabled(),
       // Only send currentToken when not acknowledged — same policy as
-      // the event-stream push (see state-bus.js).
+      // the SSE push (see state-bus.js).
       currentToken: getTokenAcknowledged() ? "" : getCurrentToken(),
       tokenAcknowledged: getTokenAcknowledged(),
       tokenRotatedAt: getTokenRotatedAt(),

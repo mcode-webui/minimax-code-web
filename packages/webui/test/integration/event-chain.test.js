@@ -9,7 +9,7 @@
 //   3. Tamper detection: corrupt line N → verify() returns
 //      { ok:false, error:"hash_mismatch", line:N }
 //   4. B01 + B02 + B03 三方整合: authorize() gated token.reset driven
-//      through the REAL wire path (WS needs_authorization control +
+//      through the REAL wire path (SSE needs_authorization frame +
 //      POST /api/auth/decision) → settings mutation writes
 //      events.ndjson + no alert fires for benign writes.
 //   5. Gate-blocking (2026-09-20 rigor fix): user decline → 403 +
@@ -63,7 +63,7 @@ async function spawnServer(opts = {}) {
     };
     // Plain node: no mock flag. The authorize() gate is fully live in
     // the child; gated requests are decided through the production
-    // wire path (WS /api/stream + POST /api/auth/decision).
+    // wire path (SSE + POST /api/auth/decision).
     const proc = spawn("node", [serverJsPath], {
         stdio: ["ignore", "pipe", "pipe"],
         cwd: join(__dirname, "..", ".."),
@@ -425,17 +425,17 @@ describe("event-chain: tamper detection via verify()", () => {
 //
 // The child server runs the REAL gate (no auto-approve). A POST
 // /api/settings resetToken=true:
-//   - authorize() pends and pushes needs_authorization over the WS event stream
+//   - authorize() pends and pushes needs_authorization over SSE
 //   - the test captures the frame, POSTs /api/auth/decision (approve)
 //   - the gate resolves approved → settings.js#rotateToken() runs
 //   - events.js#append() writes auth.* + token.reset.* + settings.* lines
 //   - state-bus.js#broadcastTokenRotated() pushes auth.token_rotated
-//     to all /api/stream clients
+//     to all SSE clients
 //   - NO alert fires (benign state change — alerts are for system
 //     signals only)
 //
-// We assert that the chain gains settings.* events AND the event
-// stream receives auth.token_rotated.
+// We assert that the chain gains settings.* events AND the SSE
+// channel receives auth.token_rotated.
 // -----------------------------------------------------------------------
 describe("event-chain: B01 + B02 + B03 integration via token reset", () => {
     let server;
@@ -447,13 +447,40 @@ describe("event-chain: B01 + B02 + B03 integration via token reset", () => {
         server = null;
     });
 
-    test("token.reset writes settings.write event + emits auth.token_rotated control frame", async () => {
-        // Open the /api/stream WebSocket first so we see the broadcast.
-        const stream = await openEventStream(server.port, "cid-b03-integrate");
-        assert.notEqual(stream.timedOut, true, "WS upgrade should finish before the 2500ms guard");
-        // Let the subscription settle server-side.
+    test("token.reset writes settings.write event + emits auth.token_rotated SSE", async () => {
+        // Subscribe to /api/events first so we see the broadcast.
+        const ssePromise = new Promise((resolve, reject) => {
+            const req = http.request(
+                {
+                    method: "GET",
+                    host: "127.0.0.1",
+                    port: server.port,
+                    path: "/api/events?cid=cid-b03-integrate",
+                },
+                (res) => {
+                    let body = "";
+                    res.setEncoding("utf8");
+                    res.on("data", (c) => (body += c));
+                    const timer = setTimeout(() => {
+                        try { req.destroy(); } catch {}
+                        resolve({ status: res.statusCode, body });
+                    }, 2500);
+                    res.on("end", () => {
+                        clearTimeout(timer);
+                        resolve({ status: res.statusCode, body });
+                    });
+                    res.on("error", (e) => {
+                        clearTimeout(timer);
+                        reject(e);
+                    });
+                },
+            );
+            req.on("error", reject);
+            req.end();
+        });
+        // Let the SSE connect.
         await new Promise((r) => setTimeout(r, 200));
-        // Start the decider FIRST and let its WebSocket handshake register
+        // Start the decider FIRST and let its SSE subscription register
         // (broadcasts are not replayed to late subscribers), THEN fire
         // the gated POST, then drive the decision through the
         // production wire path.
@@ -483,19 +510,12 @@ describe("event-chain: B01 + B02 + B03 integration via token reset", () => {
         const tokenResetEvents = events.filter((e) => /^token\.reset\./.test(e.kind || ""));
         assert.ok(tokenResetEvents.length >= 2,
             "token.reset.intent + token.reset.done both recorded");
-        // The auth.token_rotated control frame must be on the stream.
-        const waitStart = Date.now();
-        let rotated = null;
-        while (!rotated && Date.now() - waitStart < 2500) {
-            rotated = stream.frames.find(
-                (f) => f && f.type === "control" && f.payload && f.payload.name === "auth.token_rotated",
-            );
-            if (!rotated) await new Promise((r) => setTimeout(r, 25));
-        }
-        stream.close();
-        assert.ok(
-            rotated,
-            `expected auth.token_rotated control frame. frames: ${JSON.stringify(stream.frames.slice(0, 20))}`,
+        // The auth.token_rotated SSE frame must be on the wire.
+        const res = await ssePromise;
+        assert.match(
+            res.body,
+            /event: auth\.token_rotated/,
+            `SSE body should contain auth.token_rotated frame. body: ${res.body.slice(0, 500)}`,
         );
     });
 });
@@ -567,10 +587,10 @@ describe("event-chain: gate-blocking (decline / timeout / approve)", () => {
     }
 
     // Fire a gated DELETE and drive the decision through the real wire
-    // path. Opens the decider's WebSocket first, then fires the request.
+    // path. Subscribes the decider SSE first, then fires the request.
     async function deleteWithDecision(port, id, approve) {
         const decisionPromise = decideNextAuthorization({ port, approve, cid: "cid-decider" });
-        // Give the decider's WebSocket a moment to register before
+        // Give the decider's SSE connection a moment to register before
         // the gate broadcast fires (broadcasts are not replayed).
         await new Promise((r) => setTimeout(r, 150));
         const reqPromise = requestJson({ method: "DELETE", port, path: `/api/sessions/${id}` });

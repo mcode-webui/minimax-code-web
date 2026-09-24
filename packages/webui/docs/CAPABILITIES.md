@@ -11,7 +11,7 @@ The webui is bound by three constraints:
    version through the `agentInfo` payload of the `initialize` reply;
    see `/api/protocol/capabilities`).
 2. What the Node `http` / `child_process` APIs can do.
-3. What the browser's `WebSocket` and `fetch` can do.
+3. What the browser's `EventSource` and `fetch` can do.
 
 Anything outside these three is either ❌ blocked (no workaround) or
 ⚠ partial (workaround exists, with caveats).
@@ -184,8 +184,8 @@ single index that satisfies the check.
 | **Token auth: acknowledged state machine (v1.0.1)** | ✅ | After "我已保存", the server records `tokenAcknowledged=true` and stops including `currentToken` in subsequent `GET /api/settings` responses and SSE state pushes. UI replaces the value/mask row with a `✓ 已保存 — 查看请点"重置" / Saved — click "Reset" to view again` placeholder. Resetting triggers a new rotation. Persisted across restarts. |
 | **Token auth: settings persistence (v1.0.1)** | ✅ | Token + readOnly + tokenEnabled + tokenAcknowledged + tokenRotatedAt + allowedInterfaces (no-op stub) all persist to `~/.mcode-webui/settings.json`. `lanBroadcast` remains in-memory only (intentional — reboot re-enables LAN so admins don't get locked out). |
 | Read-only mode (v1.0.1) | ✅ | When on, non-local `POST` / `DELETE` to `/api/*` return `403 {"error": "read-only mode"}`. `GET` / `HEAD` / `OPTIONS` exempt. Local requests always exempt. `/api/settings` exempt (escape hatch). Persisted. Top-bar shows a red pulsing "只读 / READ ONLY" chip when on. |
-| Per-cid WebSocket event stream | ✅ | one `GET /api/stream` connection per browser tab; one mcode subprocess per cid |
-| HTTPS | ⚠ | v2.0.0 (lease C03) — HTTPS itself requires a reverse proxy; **fully documented** in `docs/HTTPS-REVERSE-PROXY.md` (387 lines, nginx / caddy / Traefik 2 configurations with WebSocket upgrade and long-connection notes). No code change in webui. |
+| Per-cid SSE channel | ✅ | one EventSource per browser tab; one mcode subprocess per cid |
+| HTTPS | ⚠ | v2.0.0 (lease C03) — HTTPS itself requires a reverse proxy; **fully documented** in `docs/HTTPS-REVERSE-PROXY.md` (387 lines, nginx / caddy / Traefik 2 configurations with SSE long-connection notes). No code change in webui. |
 | mTLS / client cert | ❌ | same as above; documentation in `docs/HTTPS-REVERSE-PROXY.md` |
 | Rate limiting | ✅ | v2.0.0 (lease C03): `server/lib/rate-limit.js` (252 lines) — token-bucket per-ip with 60/min default + 100 burst + 2× multiplier for token holders. Router gate 4 returns 429 when exceeded. `lib-rate-limit.test.js` (339 lines, 21 unit tests). |
 

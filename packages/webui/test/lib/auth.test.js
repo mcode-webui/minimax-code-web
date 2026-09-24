@@ -245,12 +245,12 @@ test("isRequestAuthorized: header wrong token => false", () => {
   }
 });
 
-test("isRequestAuthorized: query matches TOKEN (/api/stream query path)", () => {
+test("isRequestAuthorized: query matches TOKEN (SSE path)", () => {
   process.env.TOKEN = "expected-token";
   try {
     assert.equal(
       isRequestAuthorized(
-        makeReq({}, "/api/stream?token=expected-token&cid=x"),
+        makeReq({}, "/api/events?token=expected-token&cid=x"),
       ),
       true,
     );
@@ -263,7 +263,7 @@ test("isRequestAuthorized: query wrong token => false", () => {
   process.env.TOKEN = "expected-token";
   try {
     assert.equal(
-      isRequestAuthorized(makeReq({}, "/api/stream?token=wrong")),
+      isRequestAuthorized(makeReq({}, "/api/events?token=wrong")),
       false,
     );
   } finally {

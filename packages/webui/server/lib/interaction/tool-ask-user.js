@@ -5,8 +5,8 @@
 // NOTE: the `cs.ask` state is currently mutated by mcode-acp.js
 // stream code paths; this module provides the helper API so future
 // Borrow 1 (transcript) and Borrow 3 (hook seam) call sites can
-// route through one chokepoint. Stream writes always go via
-// state-bus.pushStateFor — no direct stream writes from here.
+// route through one chokepoint. SSE writes always go via
+// state-bus.pushStateFor — no direct SSE writes from here.
 
 import { pushStateFor } from "../state-bus.js";
 

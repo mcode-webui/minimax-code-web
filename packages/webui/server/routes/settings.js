@@ -3,7 +3,7 @@
 //
 // v0.5.ap: lanBroadcast toggle
 // v1.0.1: readOnly / tokenEnabled / resetToken / acknowledgeToken.
-//   Rotation broadcasts an event-stream frame so other clients can update their
+//   Rotation broadcasts an SSE event so other clients can update their
 //   localStorage.
 
 import {
@@ -156,7 +156,7 @@ export async function handlePostSettings(req, res, ctx) {
     changed = true;
   }
 
-  // resetToken — generate a new token, broadcast over the event stream, return the new value
+  // resetToken — generate a new token, broadcast SSE, return the new value
   if (payload.resetToken === true) {
     // B03: token rotation is destructive — every remote client loses
     //   its HEADERS / localStorage credential and must re-handshake.
@@ -202,7 +202,7 @@ export async function handlePostSettings(req, res, ctx) {
       res.writeHead(500, { "Content-Type": "application/json; charset=utf-8" });
       return res.end(JSON.stringify({ ok: false, error: e.message }));
     }
-    // Broadcast the new token to all currently-connected event-stream clients.
+    // Broadcast the new token to all currently-connected SSE clients.
     // We push BOTH the dedicated auth.token_rotated event (so clients
     // can update their HEADERS + localStorage immediately, before the
     // state push arrives) AND the full state push (which includes
