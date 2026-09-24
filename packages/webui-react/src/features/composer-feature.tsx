@@ -56,8 +56,8 @@ export function ComposerFeature({ controller }: ComposerFeatureProps) {
   const [wsChipOpen, setWsChipOpen] = useState(false);
   const [wsPickerOpen, setWsPickerOpen] = useState(false);
   const [slashOpen, setSlashOpen] = useState(false);
-  // 缺口 #9：permMode 暂为本地状态 —— AppSnapshot 尚未提供 permissionMode
-  // （WireClientState.permissions 待主控上抛），因此**未与服务端同步**。
+  // 权限模式：以服务端标签（state.permissions，如 "Full access"）回读为准；
+  // 切换经 POST /api/permissions 同步（mcode 固定于启动时，服务端仅同步 UI 标签）。
   const [permMode, setPermMode] = useState<PermissionMode>('ask');
   const [permOpen, setPermOpen] = useState(false);
   // 「选择目录」的浏览模式：null = 显示 recents；否则显示服务端目录列表逐级浏览。
@@ -69,6 +69,16 @@ export function ComposerFeature({ controller }: ComposerFeatureProps) {
   useEffect(() => {
     setSlashOpen(s.draft.startsWith('/') && !s.draft.includes(' '));
   }, [s.draft]);
+
+  // 权限标签 → 模式值（服务端标签：Ask / Auto / Read / Full access）；
+  // 未知标签保守回落 'ask'，避免把 UI 徽标显示成用户没选过的档位。
+  useEffect(() => {
+    const label = s.permissionLabel;
+    if (label === 'Ask') setPermMode('ask');
+    else if (label === 'Auto') setPermMode('auto');
+    else if (label === 'Read') setPermMode('read');
+    else if (label === 'Full access') setPermMode('full');
+  }, [s.permissionLabel]);
 
   const selection = s.slice?.selection;
   const wsPath = s.slice?.workspace?.dir ?? s.workspace?.dir ?? null;
@@ -215,6 +225,9 @@ export function ComposerFeature({ controller }: ComposerFeatureProps) {
         onSelect={(mode) => {
           setPermMode(mode);
           setPermOpen(false);
+          void a.setPermissionMode(mode).catch((e: unknown) => {
+            notifier.toast(`权限模式同步失败：${e instanceof Error ? e.message : String(e)}`, 'error');
+          });
         }}
         onClose={() => setPermOpen(false)}
       />

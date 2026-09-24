@@ -14,12 +14,31 @@ import {
   type PlanChoice,
   type PlanModeChoice,
 } from '../ui/modals';
-import type { AppController } from './app-controller';
+import type { AppController, Lang } from './app-controller';
 import { useRegistry } from './registry-context';
 import { useAppActions, useAppSnapshot } from './use-app';
 
 export interface ModalsFeatureProps {
   controller: AppController;
+}
+
+/**
+ * plan 应答的后续话术：agree/add 的决定要到达模型，唯一可用通道是把话术
+ * 作为消息发出（vanilla 的 /api/answer 曾是 no-op，决定根本没送出去）。
+ * 文案在 UI 层本地化；skip 不发。
+ */
+function planFollowUpText(choice: PlanChoice, contextText: string, lang: Lang): string | null {
+  const ctx = contextText.trim();
+  if (choice === 'agree') {
+    return lang === 'en' ? 'Approved. Proceed with the plan.' : '同意该计划，开始执行。';
+  }
+  if (choice === 'add') {
+    if (ctx === '') return null;
+    return lang === 'en'
+      ? `Addendum: ${ctx}\n\nProceed with the updated plan.`
+      : `补充：${ctx}\n\n请按补充后的计划执行。`;
+  }
+  return null;
 }
 
 /** 授权请求 ctx 字段 → 友好名（'cid' 由 AuthModal 自动跳过）。 */
@@ -92,7 +111,8 @@ export function ModalsFeature({ controller }: ModalsFeatureProps) {
     setAskDismissed(true);
   };
 
-  // ── ③ PlanModal：由当前会话里未决（pending）的 plan 块触发，同一块只弹一次 ──
+  // ── ③ PlanModal：wire state.plan 直读（plan_update 事件维护）优先，
+  //    历史会话无 wire plan 时回落到聊天文本里的 pending plan 块 ──
   const pendingPlan = useMemo<PlanBlock | null>(() => {
     let found: PlanBlock | null = null;
     for (const m of s.slice?.messages ?? []) {
@@ -102,6 +122,15 @@ export function ModalsFeature({ controller }: ModalsFeatureProps) {
     }
     return found;
   }, [s.slice]);
+
+  // live plan：应答（POST /api/answer type=plan）后服务端清 cs.plan 并广播
+  // state → slice.plan 变 null → 弹窗必然关闭，无需本地手动维持开合。
+  const livePlan = s.slice?.plan ?? null;
+  const livePlanKey = livePlan ? livePlan.planId ?? livePlan.title : null;
+  const [livePlanDismissed, setLivePlanDismissed] = useState(false);
+  useEffect(() => {
+    setLivePlanDismissed(false);
+  }, [livePlanKey]);
 
   const [planOpen, setPlanOpen] = useState(false);
   const [planContext, setPlanContext] = useState('');
@@ -114,24 +143,43 @@ export function ModalsFeature({ controller }: ModalsFeatureProps) {
     }
   }, [pendingPlan]);
 
-  // ── ④ PlanModeModal / ⑤ ApiKeyModal：受控 open 用本地 useState ──
-  // TODO（接缝缺失，非本轮所有权）：PlanModal/PlanModeModal 的应答在 vanilla 走
-  // POST /api/answer（sendPlanAnswer/sendPlanModeAnswer），端口面（contracts/）尚未
-  // 暴露该通道；PlanModeModal 的触发源（state.enterPlanMode.active）也待主控上抛到
-  // AppSnapshot。本地 open 与回调已就绪，通道到位后补一行即可。
-  const [planModeOpen, setPlanModeOpen] = useState(false);
+  // ── ④ PlanModeModal：state.enterPlanMode.active 驱动（mode_update 事件）；
+  //    应答后服务端清 enterPlanMode → active 变 false 自动关闭。 ──
+  const planModeActive = s.enterPlanMode?.active === true;
+  const planModePrompt = s.enterPlanMode?.prompt ?? null;
+  const [planModeDismissed, setPlanModeDismissed] = useState(false);
+  const planModePromptRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (planModePrompt !== planModePromptRef.current) {
+      planModePromptRef.current = planModePrompt;
+      setPlanModeDismissed(false);
+    }
+  }, [planModePrompt]);
+
+  // ── ⑤ ApiKeyModal：受控 open 用本地 useState ──
   const [apiKeyOpen, setApiKeyOpen] = useState(false);
   const [apiKeyValue, setApiKeyValue] = useState('');
 
   const choosePlan = (choice: PlanChoice, contextText: string): void => {
-    void choice;
-    void contextText;
     setPlanOpen(false);
+    setLivePlanDismissed(true);
+    void a
+      .answerPlan(choice, contextText)
+      .then(() => {
+        // agree/add 的决定要到达模型 —— 作为消息发出；skip 不发。
+        const text = planFollowUpText(choice, contextText, s.lang);
+        if (text !== null) return a.send(text);
+      })
+      .catch((e: unknown) => {
+        notifier.toast(`应答失败：${e instanceof Error ? e.message : String(e)}`, 'error');
+      });
   };
 
   const choosePlanMode = (choice: PlanModeChoice): void => {
-    void choice;
-    setPlanModeOpen(false);
+    setPlanModeDismissed(true);
+    void a.answerPlanMode(choice).catch((e: unknown) => {
+      notifier.toast(`应答失败：${e instanceof Error ? e.message : String(e)}`, 'error');
+    });
   };
 
   // ApiKeyModal：保存/清空 Subscription Key —— 对齐 vanilla events.js 的
@@ -199,16 +247,23 @@ export function ModalsFeature({ controller }: ModalsFeatureProps) {
       />
 
       <PlanModal
-        open={planOpen}
-        planTitle={pendingPlan?.title ?? 'Plan'}
-        summary={(pendingPlan?.steps ?? []).join('\n')}
+        open={planOpen || (livePlan != null && !livePlanDismissed)}
+        planTitle={livePlan?.title ?? pendingPlan?.title ?? 'Plan'}
+        summary={livePlan?.summary !== '' && livePlan != null ? livePlan.summary : (pendingPlan?.steps ?? []).join('\n')}
         contextText={planContext}
         onContextChange={setPlanContext}
         onSubmit={choosePlan}
-        onClose={() => setPlanOpen(false)}
+        onClose={() => {
+          setPlanOpen(false);
+          setLivePlanDismissed(true);
+        }}
       />
 
-      <PlanModeModal open={planModeOpen} onChoose={choosePlanMode} onClose={() => setPlanModeOpen(false)} />
+      <PlanModeModal
+        open={planModeActive && !planModeDismissed}
+        onChoose={choosePlanMode}
+        onClose={() => setPlanModeDismissed(true)}
+      />
 
       <ApiKeyModal
         open={apiKeyOpen}

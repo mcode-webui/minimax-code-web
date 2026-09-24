@@ -22,11 +22,12 @@ import { AttachmentList } from './AttachmentList';
  * 权限模式。与 modals/PermissionModal.tsx 的同名联合保持一致
  * （contracts 暂不含此类型；结构化类型系统下两个定义可互换）。
  */
-export type PermissionMode = 'ask' | 'auto' | 'full';
+export type PermissionMode = 'ask' | 'auto' | 'read' | 'full';
 
 const MODE_LABELS: Record<PermissionMode, string> = {
   ask: 'ASK',
   auto: 'AUTO',
+  read: 'READ',
   full: 'FULL',
 };
 

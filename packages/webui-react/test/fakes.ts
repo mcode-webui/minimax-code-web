@@ -18,6 +18,7 @@ import type {
   AuthServicePort,
   ChatServicePort,
   HttpPort,
+  InteractServicePort,
   ModelServicePort,
   NotifierPort,
   Registry,
@@ -71,6 +72,7 @@ function emptySlice(id: SessionId): SessionSlice {
     workspace: null,
     todos: [],
     goal: null,
+    plan: null,
     attachments: [],
   };
 }
@@ -115,6 +117,9 @@ export function makeHarness(opts: HarnessOptions = {}) {
   }));
   const authDecide = vi.fn(async (_requestId: string, _approve: boolean): Promise<void> => { /* noop */ });
   const sessionRemove = vi.fn(async (_id: SessionId): Promise<void> => { /* noop */ });
+  const answerPlan = vi.fn(async (_option: 'agree' | 'skip' | 'add', _context?: string): Promise<void> => { /* noop */ });
+  const answerPlanMode = vi.fn(async (_choice: 'continue' | 'deny'): Promise<void> => { /* noop */ });
+  const setPermissionMode = vi.fn(async (_mode: string): Promise<void> => { /* noop */ });
 
   const notifier: NotifierPort = { toast, confirm };
   const chat: ChatServicePort = { send: chatSend, stop: chatStop, command: chatCommand };
@@ -197,6 +202,20 @@ export function makeHarness(opts: HarnessOptions = {}) {
     },
     auth,
     upload: uploadService,
+    interact: {
+      answerPlan,
+      answerPlanMode,
+      permissionModes: async () => ({
+        webui: [
+          { value: 'ask', label: 'Ask' },
+          { value: 'auto', label: 'Auto' },
+          { value: 'read', label: 'Read' },
+          { value: 'full', label: 'Full access' },
+        ],
+        mcode: [],
+      }),
+      setPermissionMode,
+    } satisfies InteractServicePort,
   };
 
   const controller = createAppController(reg);
@@ -213,6 +232,9 @@ export function makeHarness(opts: HarnessOptions = {}) {
     upload,
     authDecide,
     sessionRemove,
+    answerPlan,
+    answerPlanMode,
+    setPermissionMode,
     // 控制面
     slice,
     setAuthQueue(next: PendingAuth[]): void {

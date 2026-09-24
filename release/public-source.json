@@ -3332,6 +3332,7 @@
     "packages/webui-react/src/core/services/alerts-service.ts",
     "packages/webui-react/src/core/services/auth-service.ts",
     "packages/webui-react/src/core/services/chat-service.ts",
+    "packages/webui-react/src/core/services/interact-service.ts",
     "packages/webui-react/src/core/services/model-service.ts",
     "packages/webui-react/src/core/services/notifier-port.ts",
     "packages/webui-react/src/core/services/session-service.ts",

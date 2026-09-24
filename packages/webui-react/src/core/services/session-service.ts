@@ -18,8 +18,11 @@ import type {
 import type {
   ChatMessage,
   ContextUsage,
+  GoalPhase,
+  GoalState,
   MessageBlock,
   ModelSelection,
+  PlanState,
   Role,
   SessionId,
   SessionSlice,
@@ -193,6 +196,42 @@ function mapContextUsage(o: Record<string, unknown>): ContextUsage {
     tps: num(o['tps']) ?? 0,
     source: 'api-state',
   };
+}
+
+/** wire state.plan → PlanState；inactive / 非对象 → null（应答后服务端已清空）。 */
+function mapPlanState(o: Record<string, unknown>): PlanState | null {
+  if (o['active'] !== true) return null;
+  const rawOptions = Array.isArray(o['options']) ? o['options'] : [];
+  const options = rawOptions.flatMap((raw) => {
+    const p = typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>) : null;
+    if (!p) return [];
+    return [{
+      label: typeof p['label'] === 'string' ? p['label'] : '',
+      desc: typeof p['desc'] === 'string' ? p['desc']
+        : typeof p['description'] === 'string' ? p['description'] : '',
+    }];
+  });
+  return {
+    active: true,
+    planId: typeof o['planId'] === 'string' ? o['planId'] : null,
+    title: typeof o['title'] === 'string' ? o['title'] : '',
+    summary: typeof o['summary'] === 'string' ? o['summary'] : '',
+    options,
+  };
+}
+
+const GOAL_PHASES: readonly GoalPhase[] = ['active', 'paused', 'blocked', 'complete'];
+
+/** wire state.goal → GoalState；inactive → null。status 未知值保守落 'active'。 */
+function mapGoalState(o: Record<string, unknown>): GoalState | null {
+  if (o['active'] !== true) return null;
+  const text = typeof o['text'] === 'string' ? o['text']
+    : typeof o['description'] === 'string' ? o['description'] : '';
+  if (text === '') return null;
+  const rawStatus = typeof o['status'] === 'string' ? o['status'] : 'active';
+  const phase = (GOAL_PHASES as readonly string[]).includes(rawStatus) ? (rawStatus as GoalPhase) : 'active';
+  const duration = typeof o['duration'] === 'number' && Number.isFinite(o['duration']) ? o['duration'] : 0;
+  return { objective: text, phase, rounds: duration, startedAt: undefined };
 }
 
 function mapWorkspaceInfo(o: Record<string, unknown>): WorkspaceInfo {
@@ -379,6 +418,8 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       const ctxO = asRecord(s['context']);
       const wsO = asRecord(s['workspace']);
       const modelO = asRecord(s['model']);
+      const planO = asRecord(s['plan']);
+      const goalO = asRecord(s['goal']);
       const title = typeof s['sessionTitle'] === 'string' ? s['sessionTitle'] : null;
       const mcodeSid = typeof s['mcodeSessionId'] === 'string' ? s['mcodeSessionId'] : null;
       update(sid, (prev) => {
@@ -404,6 +445,8 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
           messages,
           todos: parsed && parsed.todos.length > 0 ? parsed.todos : prev.todos,
           running: runningNow,
+          plan: planO ? mapPlanState(planO) : prev.plan,
+          goal: goalO ? mapGoalState(goalO) : prev.goal,
           context: ctxO ? mapContextUsage(ctxO) : prev.context,
           workspace: wsO ? mapWorkspaceInfo(wsO) : prev.workspace,
           selection:

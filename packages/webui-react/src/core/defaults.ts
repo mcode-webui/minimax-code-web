@@ -32,6 +32,7 @@ import { createUsageService } from './services/usage-service';
 import { createAlertsService } from './services/alerts-service';
 import { createAuthService } from './services/auth-service';
 import { createUploadService } from './services/upload-service';
+import { createInteractService } from './services/interact-service';
 
 /**
  * 可变端口持有器 = 装配出来的 Registry 本体。
@@ -64,5 +65,6 @@ export function createDefaultRegistry(): DefaultPorts {
   ports.alerts = createAlertsService({ ports });
   ports.auth = createAuthService({ ports });
   ports.upload = createUploadService({ ports });
+  ports.interact = createInteractService({ ports });
   return ports;
 }

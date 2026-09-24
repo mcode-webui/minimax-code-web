@@ -21,6 +21,7 @@ import type {
   AlertItem,
   Attachment,
   ContextUsage,
+  EnterPlanModeState,
   ModelSelection,
   PendingAuth,
   ProviderOption,
@@ -36,7 +37,7 @@ import type {
 } from '../contracts/domain';
 import { groupSessionsByWorkspace } from '../contracts/domain';
 import type { WireSettings } from '../contracts/protocol';
-import type { Registry } from '../contracts/ports';
+import type { PermissionModeCatalog, Registry } from '../contracts/ports';
 import type { SessionService } from '../core/services/session-service';
 import type { SlashEntry } from '../ui/composer/SlashOverlay';
 
@@ -75,6 +76,10 @@ export interface AppSnapshot {
   collapsedGroups: string[];
   /** 服务端可用斜杠命令目录（state.availableCommands 派生）；空则容器用内置兜底表。 */
   slashEntries: SlashEntry[];
+  /** mcode 请求进入 plan 模式（state.enterPlanMode 直读）；应答后服务端清空。 */
+  enterPlanMode: EnterPlanModeState | null;
+  /** 当前权限模式标签（state.permissions，如 "Full access"）。 */
+  permissionLabel: string;
 }
 
 export interface AppActions {
@@ -115,6 +120,15 @@ export interface AppActions {
   markAlertsRead(): void;
   clearAlerts(): void;
   decideAuth(requestId: string, approve: boolean): Promise<void>;
+  // 模式互动：plan / planmode 应答 + 权限模式（新增接缝）
+  /** 应答方案弹窗；agree/add 的后续话术由 UI 层经 send 下发（本地化不属于控制器）。 */
+  answerPlan(option: 'agree' | 'skip' | 'add', context?: string): Promise<void>;
+  /** 应答「进入 plan 模式？」；服务端置 planMode 并清 enterPlanMode。 */
+  answerPlanMode(choice: 'continue' | 'deny'): Promise<void>;
+  /** 权限模式目录（下拉选项）。 */
+  permissionModes(): Promise<PermissionModeCatalog>;
+  /** 切换权限模式（服务端同步 UI 标签）。 */
+  setPermissionMode(mode: string): Promise<void>;
   // 纯 UI 状态
   setTheme(theme: ThemeMode): void;
   setLang(lang: Lang): void;
@@ -189,6 +203,9 @@ export function createAppController(reg: Registry): AppController {
   let searchQuery = '';
   let collapsedGroups: string[] = [];
   let slashEntries: SlashEntry[] = [];
+  // 模式互动（per-cid，不按会话隔离）：mcode 请求进入 plan 模式 + 权限标签。
+  let enterPlanMode: EnterPlanModeState | null = null;
+  let permissionLabel = '';
   // 会话隔离的输入草稿：切会话各自保留，绝不共享同一份缓冲。
   const drafts = new Map<SessionId, string>();
   // ask-user 选项的勾选态，同样按会话隔离。
@@ -238,6 +255,8 @@ export function createAppController(reg: Registry): AppController {
       rightOpen,
       searchQuery,
       collapsedGroups,
+      enterPlanMode,
+      permissionLabel,
       slashEntries,
     };
     cachedSnapshot = built;
@@ -458,6 +477,21 @@ export function createAppController(reg: Registry): AppController {
     clearAlerts() { reg.alerts.clear(); notify(); },
     async decideAuth(requestId, approve) { await reg.auth.decide(requestId, approve); notify(); },
 
+    async answerPlan(option, context) {
+      await reg.interact.answerPlan(option, context);
+      // 应答已生效（服务端清 plan 并广播 state）——本地无需再改切片。
+    },
+    async answerPlanMode(choice) {
+      await reg.interact.answerPlanMode(choice);
+    },
+    permissionModes() {
+      return reg.interact.permissionModes();
+    },
+    async setPermissionMode(mode) {
+      await reg.interact.setPermissionMode(mode);
+      // 标签经下一次 state 推送回流（POST /api/permissions 会 pushStateFor）。
+    },
+
     setTheme(t) { theme = t; notify(); },
     setLang(l) { lang = l; notify(); },
     setLeftOpen(v) { leftOpen = v; notify(); },
@@ -550,6 +584,21 @@ export function createAppController(reg: Registry): AppController {
         slashEntries = entries;
         changed = true;
       }
+    }
+
+    // 模式互动（per-cid）：enterPlanMode 直读（应答后服务端清空 → null，
+    // PlanModeModal 随之关闭）；permissions 是标签字符串（如 "Full access"）。
+    const epmO = asRecord(s['enterPlanMode']);
+    if (epmO) {
+      enterPlanMode = {
+        active: epmO['active'] === true,
+        prompt: typeof epmO['prompt'] === 'string' ? epmO['prompt'] : null,
+      };
+      changed = true;
+    }
+    if (typeof s['permissions'] === 'string') {
+      permissionLabel = s['permissions'];
+      changed = true;
     }
 
     // 设置字段在 state 里扁平摆放（与 /api/settings 同名）——合入 settings。

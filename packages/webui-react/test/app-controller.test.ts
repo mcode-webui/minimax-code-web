@@ -33,6 +33,7 @@ function fakeRegistry(seed: SessionSummary[] = []): Registry {
         workspace: null,
         todos: [],
         goal: null,
+        plan: null,
         attachments: [],
       };
       slices.set(id, s);
@@ -86,6 +87,12 @@ function fakeRegistry(seed: SessionSummary[] = []): Registry {
     alerts: { snapshot: async () => [], list: () => [], unread: () => 0, markRead: noop, clear: noop, subscribe: () => unsub },
     auth: { pending: () => [], decide: async () => { /* noop */ }, subscribe: () => unsub },
     upload: { upload: async () => ({ id: 'a', name: 'n', path: '/p', size: 0, status: 'done' as const }) },
+    interact: {
+      answerPlan: async () => { /* noop */ },
+      answerPlanMode: async () => { /* noop */ },
+      permissionModes: async () => ({ webui: [], mcode: [] }),
+      setPermissionMode: async () => { /* noop */ },
+    },
   };
 }
 
@@ -303,5 +310,41 @@ describe('斜杠命令路由（缺口 #6）', () => {
     await c.actions.send('普通文本');
     expect(send).toHaveBeenCalledWith('s1', '普通文本', expect.any(Array));
     expect(command).not.toHaveBeenCalled();
+  });
+});
+
+describe('模式互动（plan/planmode 应答 + 权限模式，缺口 #8 系列）', () => {
+  it('answerPlan / answerPlanMode / setPermissionMode 委派到 interact 端口', async () => {
+    const calls: { plan: Array<[string, string | undefined]>; planMode: string[]; perm: string[] } = {
+      plan: [], planMode: [], perm: [],
+    };
+    const reg = fakeRegistry();
+    reg.interact = {
+      answerPlan: async (option, context) => { calls.plan.push([option, context]); },
+      answerPlanMode: async (choice) => { calls.planMode.push(choice); },
+      permissionModes: async () => ({
+        webui: [
+          { value: 'ask', label: 'Ask' },
+          { value: 'auto', label: 'Auto' },
+          { value: 'read', label: 'Read' },
+          { value: 'full', label: 'Full access' },
+        ],
+        mcode: [],
+      }),
+      setPermissionMode: async (mode) => { calls.perm.push(mode); },
+    };
+    const c = createAppController(reg);
+
+    await c.actions.answerPlan('agree', '补充说明');
+    await c.actions.answerPlan('skip');
+    await c.actions.answerPlanMode('deny');
+    await c.actions.setPermissionMode('full');
+    const catalog = await c.actions.permissionModes();
+
+    expect(calls.plan).toEqual([['agree', '补充说明'], ['skip', undefined]]);
+    expect(calls.planMode).toEqual(['deny']);
+    expect(calls.perm).toEqual(['full']);
+    expect(catalog.webui).toHaveLength(4);
+    expect(catalog.webui.some((o) => o.value === 'read')).toBe(true);
   });
 });

@@ -1,5 +1,5 @@
 // webui/server/routes/model.js
-// GET /api/models, POST /api/set-model, POST /api/permissions, POST /api/answer (legacy)
+// GET /api/models, POST /api/set-model, POST /api/permissions, POST /api/answer
 
 import { getBuiltinModelsFromMcode } from "../lib/models.js";
 import { pushStateFor } from "../lib/state-bus.js";
@@ -122,19 +122,36 @@ export function handleListPermissionModes(_req, res) {
   );
 }
 
-// POST /api/answer — legacy no-op (新 webui 走 /api/send)
-export async function handleAnswer(req, res, _ctx) {
+// POST /api/answer — mode-interaction answers (plan / planmode / permission)
+// v0.5.bx-13 left this a no-op because ask answers moved to /api/send
+// {isAskAnswer:true}; plan/planmode never got a replacement, so the vanilla
+// PlanModal/PlanModeModal answers silently went nowhere. Real state channel:
+//   { type: 'plan',     option: 'agree'|'skip'|'add', context? } → clear cs.plan + cs.enterPlanMode
+//   { type: 'planmode', option: 'continue'|'deny' }              → set cs.planMode, clear cs.enterPlanMode
+//   { type: 'permission', option }                               → ack only (mcode fixes the
+//                                                                   permission mode at launch)
+// The follow-up prompt for agree/add stays the client's job via /api/send —
+// the client localizes the answer text; the server never invents copy.
+export async function handleAnswer(req, res, ctx) {
+  const cs = ctx && ctx.cs;
   const payload = await readJson(req);
+  const type = payload.type;
+  const option = payload.option;
+  let applied = false;
+  if (cs) {
+    if (type === "plan") {
+      cs.plan = { active: false, planId: null, title: null, summary: "", options: [] };
+      cs.enterPlanMode = { active: false, prompt: null };
+      applied = true;
+    } else if (type === "planmode") {
+      cs.planMode = option === "continue";
+      cs.enterPlanMode = { active: false, prompt: null };
+      applied = true;
+    }
+  }
+  if (applied && ctx && ctx.cid) pushStateFor(ctx.cid);
   if (process.env.MCODE_USAGE_DEBUG)
-    console.log(
-      `[api.answer] type=${payload.type} option=${payload.option} (legacy, no-op)`,
-    );
-  res.writeHead(200, { "Content-Type": "application/json" });
-  return res.end(
-    JSON.stringify({
-      ok: true,
-      deprecated: true,
-      note: "use /api/send for new flow",
-    }),
-  );
+    console.log(`[api.answer] type=${type} option=${option} applied=${applied}`);
+  res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+  return res.end(JSON.stringify({ ok: true, applied }));
 }

@@ -157,6 +157,31 @@ export interface GoalState {
   startedAt?: number;
 }
 
+// ── 模式互动（wire state.plan / state.enterPlanMode 直读）──────────────────
+/** plan_update 推送的方案选项条目（wire state.plan.options）。 */
+export interface PlanOption {
+  label: string;
+  desc: string;
+}
+
+/**
+ * 服务端 plan 状态（plan_update / plan_removed 维护）。
+ * 应答（POST /api/answer type=plan）后服务端清空 → null，弹窗随之关闭。
+ */
+export interface PlanState {
+  active: boolean;
+  planId: string | null;
+  title: string;
+  summary: string;
+  options: PlanOption[];
+}
+
+/** mcode 请求进入 plan 模式（mode_update → state.enterPlanMode）。 */
+export interface EnterPlanModeState {
+  active: boolean;
+  prompt: string | null;
+}
+
 export interface ContextUsage {
   used: number;
   limit: number;
@@ -192,6 +217,8 @@ export interface SessionSlice {
   workspace: WorkspaceInfo | null;
   todos: TodoItem[];
   goal: GoalState | null;
+  /** wire state.plan 直读（plan_update 事件维护）；应答后服务端清空 → null。 */
+  plan: PlanState | null;
   attachments: Attachment[];
 }
 
@@ -274,6 +301,7 @@ export function emptySessionSlice(id: SessionId, selection: ModelSelection): Ses
     workspace: null,
     todos: [],
     goal: null,
+    plan: null,
     attachments: [],
   };
 }

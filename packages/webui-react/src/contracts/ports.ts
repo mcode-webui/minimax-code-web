@@ -180,6 +180,37 @@ export interface UploadServicePort {
   upload(file: File | Blob, name: string): Promise<Attachment>;
 }
 
+// ── 模式互动（plan / planmode 应答 + 权限模式）──────────────────────────────
+
+/** 权限模式目录条目（GET /api/permissions-modes）。 */
+export interface PermissionModeOption {
+  value: string;
+  label: string;
+  mcodeValue?: string;
+}
+
+/** 权限模式目录：webui 四档 + mcode 原值两组。 */
+export interface PermissionModeCatalog {
+  webui: PermissionModeOption[];
+  mcode: PermissionModeOption[];
+}
+
+/**
+ * 模式互动应答：plan / planmode 走 POST /api/answer，权限模式走
+ * /api/permissions（切换）与 /api/permissions-modes（目录）。
+ * agree/add 的后续话术由 UI 层经 chat.send 下发 —— 文案本地化不属于传输层职责。
+ */
+export interface InteractServicePort {
+  /** 应答方案弹窗；服务端清 plan 状态并广播 state。 */
+  answerPlan(option: 'agree' | 'skip' | 'add', context?: string): Promise<void>;
+  /** 应答「进入 plan 模式？」请求；服务端置 planMode 并清 enterPlanMode。 */
+  answerPlanMode(choice: 'continue' | 'deny'): Promise<void>;
+  /** 权限模式目录（下拉选项）。 */
+  permissionModes(): Promise<PermissionModeCatalog>;
+  /** 切换权限模式（mcode 固定于启动时，服务端仅同步 UI 标签）。 */
+  setPermissionMode(mode: string): Promise<void>;
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // 3. 组装根（composition root）—— 热插拔的替换点
 // ════════════════════════════════════════════════════════════════════════════
@@ -205,6 +236,7 @@ export interface Registry {
   alerts: AlertsServicePort;
   auth: AuthServicePort;
   upload: UploadServicePort;
+  interact: InteractServicePort;
 }
 
 /** 部分覆盖：未提供的端口由 core 的默认实现补齐。 */

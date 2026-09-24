@@ -139,6 +139,36 @@ export interface WireMcodeSession {
   updatedAt?: number;
 }
 
+export interface WirePlanOption {
+  label?: string;
+  description?: string;
+  desc?: string;
+}
+
+/** wire state.plan —— plan_update / plan_removed 事件维护。 */
+export interface WirePlan {
+  active?: boolean;
+  planId?: string | null;
+  title?: string | null;
+  summary?: string;
+  options?: WirePlanOption[];
+}
+
+/** wire state.goal —— goal_update 事件维护。 */
+export interface WireGoal {
+  active?: boolean;
+  text?: string | null;
+  description?: string | null;
+  status?: string | null;
+  duration?: number | string | null;
+}
+
+/** wire state.enterPlanMode —— mode_update(mode=plan) 事件维护。 */
+export interface WireEnterPlanMode {
+  active?: boolean;
+  prompt?: string | null;
+}
+
 /** 每个浏览器 tab（cid）一份的服务端状态。 */
 export interface WireClientState {
   version?: string;
@@ -159,6 +189,9 @@ export interface WireClientState {
   tokenPlanApiKeySource?: 'env' | 'file' | 'settings' | '';
   tokenPlanApiKeyFilePath?: string;
   askUserAnswers?: Record<string, unknown>;
+  plan?: WirePlan;
+  goal?: WireGoal;
+  enterPlanMode?: WireEnterPlanMode;
   [k: string]: unknown;
 }
 

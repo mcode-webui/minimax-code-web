@@ -18,14 +18,15 @@ import { useEffect, useRef, useState } from 'react';
  * 权限模式。与 composer/Composer.tsx 的同名联合保持一致
  * （contracts 暂不含此类型；结构化类型系统下两个定义可互换）。
  */
-export type PermissionMode = 'ask' | 'auto' | 'full';
+export type PermissionMode = 'ask' | 'auto' | 'read' | 'full';
 
-const MODE_ORDER: readonly PermissionMode[] = ['ask', 'auto', 'full'];
+const MODE_ORDER: readonly PermissionMode[] = ['ask', 'auto', 'read', 'full'];
 
 const MODE_DEFS: readonly { key: PermissionMode; num: number; label: string; desc: string }[] = [
   { key: 'ask', num: 1, label: 'ASK', desc: 'Confirm sensitive actions' },
   { key: 'auto', num: 2, label: 'AUTO', desc: 'Ask only when risk is high' },
-  { key: 'full', num: 3, label: 'FULL', desc: 'Run without confirmation' },
+  { key: 'read', num: 3, label: 'READ', desc: 'Read-only, no writes' },
+  { key: 'full', num: 4, label: 'FULL', desc: 'Run without confirmation' },
 ];
 
 export interface PermissionModalProps {
@@ -62,6 +63,10 @@ export function PermissionModal(props: PermissionModalProps) {
       setActive('auto');
       onSelect('auto');
     } else if (e.key === '3') {
+      e.preventDefault();
+      setActive('read');
+      onSelect('read');
+    } else if (e.key === '4') {
       e.preventDefault();
       setActive('full');
       onSelect('full');

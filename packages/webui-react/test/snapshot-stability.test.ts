@@ -21,7 +21,7 @@ function inertRegistry(): Registry {
     stream: { connect: noop, close: noop, send: noop, onFrame: () => unsub, status: () => 'open' as const },
     kv: { get: () => null, set: noop, remove: noop },
     notifier: { toast: noop, confirm: async () => true },
-    sessions: { list: async () => [], create: async () => 's1', switchTo: async () => {}, rename: async () => {}, remove: async () => {}, slice: () => ({ id: 's1', summary: null, messages: [], inflightId: null, running: false, selection: { provider: 'p', model: 'p/m', thinking: 'low' as const }, context: null, workspace: null, todos: [], goal: null, attachments: [] }), subscribe: () => unsub },
+    sessions: { list: async () => [], create: async () => 's1', switchTo: async () => {}, rename: async () => {}, remove: async () => {}, slice: () => ({ id: 's1', summary: null, messages: [], inflightId: null, running: false, selection: { provider: 'p', model: 'p/m', thinking: 'low' as const }, context: null, workspace: null, todos: [], goal: null, plan: null, attachments: [] }), subscribe: () => unsub },
     chat: { send: async () => {}, stop: async () => {}, command: async () => {} },
     models: { providers: async () => [], models: async () => [], current: () => ({ provider: 'p', model: 'p/m', thinking: 'low' as const }), setProvider: async (_id, p) => ({ provider: p, model: 'p/m', thinking: 'low' as const }), setModel: async (_id, m) => ({ provider: 'p', model: m, thinking: 'low' as const }), setThinking: async (_id, e) => ({ provider: 'p', model: 'p/m', thinking: e }) },
     workspace: { current: () => null, use: async () => ({ dir: null }), reset: async () => ({ dir: null }), browse: async () => [], recents: () => [], addRecent: noop },
@@ -30,6 +30,12 @@ function inertRegistry(): Registry {
     alerts: { snapshot: async () => [], list: () => [], unread: () => 0, markRead: noop, clear: noop, subscribe: () => unsub },
     auth: { pending: () => [], decide: async () => {}, subscribe: () => unsub },
     upload: { upload: async () => ({ id: 'a', name: 'n', path: '/p', size: 0, status: 'done' as const }) },
+    interact: {
+      answerPlan: async () => {},
+      answerPlanMode: async () => {},
+      permissionModes: async () => ({ webui: [], mcode: [] }),
+      setPermissionMode: async () => {},
+    },
   } as Registry;
 }
 
