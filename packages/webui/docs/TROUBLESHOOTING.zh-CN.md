@@ -165,10 +165,12 @@ ping 之间关闭了连接，或者它丢弃了 `Upgrade` / `Connection` 头，
 **症状**：点击 ⏹ 按钮发送了取消请求，但模型继续响应了
 好几秒。
 
-**根因**：mcode 0.1.5 的 acp 没有实现 `session/cancel`。
-webui 的 `/api/protocol/cancel` 会退化为对子进程发送
-SIGTERM，但子进程需要一点时间才会退出，而进行中的
-工具调用可能会先完成。
+**根因**：`POST /api/stop` 会经由该 cid 的活动子进程发出 acp
+`session/cancel` notification。引擎可能要花一点时间才能
+把正在进行的工具调用排空；如果该 notification 无法投递
+（因为该 cid 下没有注册活动子进程），路由会退化为对子进程
+发送 SIGTERM，并在 2 秒后升级为 SIGKILL。无论走哪条路径，
+提示词都会一直吐出 token，直到引擎完成收尾。
 
 **修复**：等 2-3 秒。模型很快会停止输出令牌。
 如果没有停止，说明子进程卡住了 —— 参见下文
@@ -212,11 +214,13 @@ SIGTERM，但子进程需要一点时间才会退出，而进行中的
 **修复**：
 1. 检查 `curl 'http://127.0.0.1:18090/api/state?cid=<cid>' | jq .permissions`
 2. 如果为空，说明 mcode 还没有上报当前权限模式。
-   发送任意消息 —— 下一份事件流快照就会包含它。
-3. 如果 webui 显示错误的值，那是因为 mcode 0.1.5 的
-   acp 没有实现 `session/set_mode`。显示的值是用户的选择，
-   但实际的 mcode 模式并没有改变。等 mcode 实现该方法后
-   会自行修复。
+   发送任意消息 —— 下一个 SSE 事件就会包含它。
+3. 如果 webui 显示错误的值，再发一条提示词并观察 SSE
+   state 来确认实际是否生效——`state.permissions` 会在
+   每次 `POST /api/permissions` 成功响应后被改写。若响应里
+   出现 `mcodeSynced: false` 加 `warning` 字段，说明路由
+   接受了请求，但引擎拒绝了 `session/set_config_option`
+   调用（具体 acp 错误请到服务器日志里查看）。
 
 ## "Cannot read properties of undefined (reading 'listSessions')"
 

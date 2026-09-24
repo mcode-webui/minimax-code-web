@@ -380,27 +380,53 @@ Wraps mcode's JSON-RPC-over-stdio protocol. Exports:
   `session/commands`.
 
 ### `mcode-rpc.js`
-The shim for methods mcode 0.1.5 does not implement:
+
+The acp-side wrapper. Each public function (`setMode`,
+`setConfigOption`, `cancelSession`, `loadSession`, `activateSession`,
+`listSessions`, `getAccountStatus`, …) dispatches through
+`clientForCid(cid, requireLive)`:
+
+  - if a `cid` is supplied, the cid's registered active child
+    (the per-prompt `McodeAcpClient`) is preferred — that subprocess
+    is the one whose `sessions` map holds the in-flight session;
+  - `requireLive: true` (used by `cancelSession` / `setConfigOption`)
+    returns `null` rather than falling back to the singleton when no
+    active child is registered, because silent fallback would mask the
+    dispatch bug that previous PRs reintroduced;
+  - everything else falls back to the singleton, which keeps the
+    commands-probe and session-list paths working without a cid.
+
+The capability table webui advertises to itself:
 
 ```js
-const UNSUPPORTED = new Set([
-  'session/set_mode',
-  'session/set_config_option',
-  'session/cancel',
-  'session/activate', 'session/fork', 'session/resume', 'session/delete',
-  'session/request_permission', 'session/subscribe',
-])
+export const MCODE_ACP_CAPABILITIES = {
+  set_mode: true,
+  set_config_option: true,
+  cancel: true,
+  activate: true,
+  fork: true,
+  resume: true,
+  // session/delete registers on the engine but no handler exists,
+  // which is why deletes go through SQL on the local_runtime_*
+  // tables (see sqlite-resolver.js).
+  delete: false,
+  load: true,
+  close: true,
+  list: true,
+  new: true,
+  prompt: true,
+}
 ```
 
-`callRpc(method, params)` returns
-`{ok:false, code:'unsupported', error:'…'}` synchronously when the
-method is unsupported. The caller decides what to do — usually a toast
-on the client.
+`callRpc(method, params)` returns `{ok:false, code:'unsupported',
+error:'…'}` when the engine answers with `-32601 Method not found`
+(or the equivalent in the jsonrpc envelope). The caller decides what
+to do — usually a toast on the client.
 
 ### `mcode-acp.js` vs `mcode-exec.js`
 Two transports with a shared shape. The transport layer is selected
-by `mcode-rpc.js` based on `mcode version >= 0.1.4` and the per-request
-`/exec` opt-in.
+by `mcode-rpc.js` based on the engine's reported version (from the
+`initialize` reply's `agentInfo`) and the per-request `/exec` opt-in.
 
 Both expose:
 - `runMcode(content, opts)` → `AsyncGenerator<NormalizedEvent>`
@@ -502,7 +528,7 @@ token changes.
 
 ```
 event: state
-data: {"version":"0.1.3","running":{"active":true,…},…}
+data: {"version":"0.5.2","running":{"active":true,…},…}
 
 event: chat
 data: {"lines":[{"role":"user","content":"…"}]}
@@ -711,17 +737,15 @@ The pattern (see `docs/DEVELOPMENT.md` for the full walk-through):
 
 ## 10. Future directions
 
-- **mcode `acp` capability parity**: once mcode implements the missing
-  methods (`set_mode`, `cancel`, etc.), the `UNSUPPORTED` set in
-  `mcode-rpc.js` shrinks; the corresponding `/api/protocol/*` endpoints
-  become functional. The `protocol/capabilities` endpoint already
-  advertises this.
-- **Structured uplink frames**: the push channel is the WebSocket event
-  stream (`GET /api/stream`) — SSE was removed (decision 20,
-  `docs/drafts/arch_net_solution_0922.md` §10). Client frames are
-  currently limited to `resume` / `ping` / `pong` / `close`; structured
-  uplink messages (answers, cancels) over the same connection remain
-  future work.
+- **mcode `acp` capability parity**: methods the engine has not yet
+  implemented stay in the unsupported path of `mcode-rpc.js`; the
+  corresponding `/api/protocol/*` routes answer `501 unsupported`.
+  `GET /api/protocol/capabilities` exposes the current table so the
+  webui can grey out controls that the engine does not yet back.
+- **WebSocket transport**: SSE is fine for unidirectional push. If
+  bidirectional low-latency control becomes a need (e.g. live
+  cursor tracking in a shared session), replace the EventSource
+  with a WebSocket and keep the same message schema.
 - **Multi-user session sharing**: per-cid state can be replaced with
   per-session state and a session-id routing key. The architecture
   already separates per-cid state from per-session data; the

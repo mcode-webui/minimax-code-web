@@ -371,26 +371,51 @@ flowchart TD
   重复 JSON-RPC 往返。
 
 ### `mcode-rpc.js`
-针对 mcode 0.1.5 未实现的方法的垫片（shim）：
+acp 侧的封装。每一个公共函数（`setMode`、`setConfigOption`、
+`cancelSession`、`loadSession`、`activateSession`、`listSessions`、
+`getAccountStatus` …）都通过 `clientForCid(cid, requireLive)`
+来派发：
+
+  - 如果传入了 `cid`，则优先选用该 cid 注册的活动子进程
+    （即每次提示词对应的 `McodeAcpClient`）——那个子进程的
+    `sessions` 表持有当前在飞的会话；
+  - `requireLive: true`（`cancelSession` / `setConfigOption` 使用）
+    在没有活动子进程注册时返回 `null`，**不会**回退到单例，
+    因为静默回退会掩盖前面几个 PR 重新引入的派发 bug；
+  - 其余调用回退到单例，这能让 commands 探测与会话列
+    表路径在没有 cid 时也正常工作。
+
+webui 对自己宣告的能力表：
 
 ```js
-const UNSUPPORTED = new Set([
-  'session/set_mode',
-  'session/set_config_option',
-  'session/cancel',
-  'session/activate', 'session/fork', 'session/resume', 'session/delete',
-  'session/request_permission', 'session/subscribe',
-])
+export const MCODE_ACP_CAPABILITIES = {
+  set_mode: true,
+  set_config_option: true,
+  cancel: true,
+  activate: true,
+  fork: true,
+  resume: true,
+  // session/delete 在引擎侧注册了，但不存在处理器——这正是
+  // 删除需要通过 SQL 走 local_runtime_* 表的原因
+  //（见 sqlite-resolver.js）。
+  delete: false,
+  load: true,
+  close: true,
+  list: true,
+  new: true,
+  prompt: true,
+}
 ```
 
-当方法不受支持时，`callRpc(method, params)` 同步返回
+当引擎以 `-32601 Method not found`（或 jsonrpc 信封中的
+等价错误）应答时，`callRpc(method, params)` 返回
 `{ok:false, code:'unsupported', error:'…'}`。由调用者决定
 如何处理——通常是客户端弹一个 toast。
 
 ### `mcode-acp.js` 与 `mcode-exec.js`
 两种传输，共享同一形状。传输层由 `mcode-rpc.js`
-根据 `mcode version >= 0.1.4` 以及按请求的
-`/exec` 显式选择来决定。
+根据引擎自身上报的版本（取自 `initialize` 应答里的
+`agentInfo`）以及按请求的 `/exec` 显式选择来决定。
 
 两者都暴露：
 - `runMcode(content, opts)` → `AsyncGenerator<NormalizedEvent>`
@@ -491,7 +516,7 @@ v1.0.1 的命名事件 `auth.token_rotated`，仅在
 
 ```
 event: state
-data: {"version":"0.1.3","running":{"active":true,…},…}
+data: {"version":"0.5.2","running":{"active":true,…},…}
 
 event: chat
 data: {"lines":[{"role":"user","content":"…"}]}
@@ -684,16 +709,15 @@ standalone 边界都保持原状。第 1 / 第 2 / 第 3 层只适用于服务�
 
 ## 10. 未来方向
 
-- **mcode `acp` 能力对齐**：一旦 mcode 实现了缺失的
-  方法（`set_mode`、`cancel` 等），`mcode-rpc.js` 中的
-  `UNSUPPORTED` 集合就会缩小；相应的 `/api/protocol/*` 端点
-  将变得可用。`protocol/capabilities` 端点已经
-  对外宣告了这一点。
-- **结构化上行帧**：推送通道即 WebSocket 事件流
-  （`GET /api/stream`）—— SSE 已移除（决策 20，
-  `docs/drafts/arch_net_solution_0922.md` §10）。客户端帧
-  目前仅限 `resume` / `ping` / `pong` / `close`；同一连接上的
-  结构化上行消息（应答、取消）仍属未来工作。
+- **mcode `acp` 能力对齐**：引擎尚未实现的方法仍会走
+  `mcode-rpc.js` 的 unsupported 路径；相应的 `/api/protocol/*`
+  路由会返回 `501 unsupported`。`GET /api/protocol/capabilities`
+  暴露当前能力表，webui 据此可以把引擎尚未支持的控制项
+  灰显出来。
+- **WebSocket 传输**：SSE 对单向推送已经足够。如果
+  双向低延迟控制成为需求（例如在共享会话中实时
+  跟踪光标），可以用 WebSocket 替换 EventSource
+  并保持相同的消息模式。
 - **多用户会话共享**：按 cid 的状态可以替换为
   按会话的状态加上会话 id 路由键。该架构
   已经把按 cid 的状态与按会话的数据分离；

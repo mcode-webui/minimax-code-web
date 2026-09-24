@@ -181,10 +181,13 @@ a `/stop`, check the server console for the actual exit reason.
 **Symptoms**: clicking the ⏹ button sends a cancel request but the
 model keeps responding for several seconds.
 
-**Cause**: mcode 0.1.5 acp does not implement `session/cancel`. The
-webui's `/api/protocol/cancel` falls back to SIGTERM on the
-subprocess, but the subprocess takes a moment to die and the
-in-flight tool calls may complete first.
+**Cause**: `POST /api/stop` sends the acp `session/cancel` notification
+through the cid's active child. The engine may take a moment to drain
+the in-flight tool calls; if the notification could not be delivered
+(because no active child is registered for this cid), the route falls
+back to SIGTERM on the subprocess, then SIGKILL after 2 s. In either
+case the prompt keeps producing tokens until the engine finishes
+finalizing.
 
 **Fix**: wait 2-3 seconds. The model will stop emitting tokens
 shortly. If it doesn't, the subprocess is stuck — see "Stuck
@@ -231,11 +234,14 @@ or shows the wrong value.
 **Fix**:
 1. Check `curl 'http://127.0.0.1:18090/api/state?cid=<cid>' | jq .permissions`
 2. If empty, mcode hasn't reported the current permission mode.
-   Send any message — the next event-stream snapshot will include it.
-3. If the webui shows the wrong value, it's because mcode 0.1.5
-   acp doesn't implement `session/set_mode`. The displayed value
-   is the user's selection, but the actual mcode mode hasn't
-   changed. This will fix itself when mcode implements the method.
+   Send any message — the next SSE event will include it.
+3. If the webui shows the wrong value, confirm the actual change
+   landed by sending another prompt and watching the SSE state —
+   `state.permissions` is rewritten by `POST /api/permissions` on
+   every successful response. A `mcodeSynced: false` plus `warning`
+   field on the response means the route accepted the request but
+   the engine rejected the `session/set_config_option` call (look
+   at the server log for the actual acp error).
 
 ## "Cannot read properties of undefined (reading 'listSessions')"
 

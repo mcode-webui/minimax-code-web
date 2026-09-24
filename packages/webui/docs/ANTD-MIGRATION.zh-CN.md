@@ -127,8 +127,10 @@ Switch 的几何尺寸同样来自这份主题（`trackHeight: 16`、`trackMinWi
   2. **Tailwind 工具类打不过 antd。** `bg-transparent` 没生效：它只有 1 个类，而 antd 的规则是 `:where(.css-hash).ant-modal .ant-modal-header`——因为 `hashPriority` 是低，所以有效特异性是 2 个类。这正是让移植皮肤取胜的同一条层叠事实，只是换了一面：要覆盖就用 `styles`、或 antd 没自己上色的槽位 `classNames`、或组件 token，永远不要用工具类。
 
   怎么渲染出来的，对下一阶段很重要：这些提示由引擎驱动，所以用了 `POST /api/debug/inject`（`DEBUG_INJECT=1`，文档写明用途是"注入 state 给浏览器测 UI 渲染"）把 `state.ask` 灌进真实 store、渲染真实组件。这是所有引擎驱动界面的可达验证路径。
-- **Phase 3 — 会话周边的面**：右侧拓展区换 `Drawer`，上下文计量换 `Progress`，设置里的 `Input` / `Checkbox` / `Switch`。两个**记录在案而非靠猜**的阻碍：桌面端的设置面在这个 build 里从账号菜单进不去（它的 Settings 行是切到应用内分区；唯一能打开的弹窗——更新通知——是手写 `div`，不是 antd），确认弹窗的 DOM 也无法按需触发。做法照 Phase 3a：从规则移植皮肤，再用渲染验证。
-- **Phase 4 — 列表**：会话树、告警、面板表格。
+- **Phase 3 — 会话周边的面。已完成，且其中一条前提是错的。** 设置里的 `Input` / `Switch` / `Segmented` 已完成：它们吃桌面端自己的主题 token，而 `Input` 与 `Segmented` 还吃桌面端自己的 `.mavis-*` 规则（逐字节一致，已对照 bundle 核验）。本前端自己写的 `Switch` 皮肤已删除——见「主题」一节。
+  `Drawer` 那一半没能通过对照 bundle 的检验。桌面端**没有** antd `Drawer`：整个提取出的 `out/_next/static` 里 `ant-drawer` 与 `rc-drawer` 出现次数为零，任何样式表里也没有 `.mavis-drawer` 规则。它有的是一个自制的可拖拽面板——`file-panel-sidebar`、`file-panel-sidebar-drag-handle`、`file-panel-sidebar-toggle`——外加自己的 `Drawer` **状态机**枚举（`Did(Close|Open)|Will(Close|Open)`），那是动效原语，不是 antd。所以从来就没有组件可移植；「换 `Drawer`」是读参考资料之前就写下的计划项。`panels.tsx` 现有的 `<aside>` 加宽度过渡更贴近桌面端，保持不变。
+- **Phase 4 — 列表。部分完成，且部分不该做。** 告警列表的空态已迁到 antd `Empty`（完成）。会话树与面板表格**不应**迁到 antd `Tree` / `Table`，理由只有 bundle 才说得清：桌面端的文件树是虚拟化的——`changed-files-tree-virtual-canvas` / `changed-files-tree-virtual-row` 跑在 `changed-files-tree-scroll` 视口上。antd `Tree` 同样不虚拟化，所以迁过去既丢掉桌面端的结构、又丢掉它的伸缩行为。面板表格同理：桌面端的右侧区是带标签页的文件面板（`file-panel-add-tab-menu`、`file-panel-sidebar`），不是表格。
+  这里暴露出的真正缺口是**虚拟化**，而不是「改用 antd」：`session-tree.tsx` 会即时渲染每一个项目、目录、会话与子代理。`chat-virtual-list.tsx` 已经是转录的同类实现，所以模式在仓库里现成；把它接到侧栏树上是真有收益的实活，而不是一次组件库迁移。
 
 ## 依赖流程
 

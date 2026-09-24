@@ -275,15 +275,39 @@ port the desktop's skin for the surface if it needs one, verify.
   test UI rendering in the browser") was used to drive `state.ask` through the real
   store and render the real component. That is the reachable verification path for
   every engine-driven surface.
-- **Phase 3 — the surfaces around the conversation.** `Drawer` for the right
-  extension area, `Progress` for the context meter, `Input` / `Checkbox` / `Switch`
-  in settings. Two blockers are recorded rather than guessed at: the desktop's
-  settings surface is not reachable from this build's account menu (its Settings row
-  routes into an in-app section, and the one modal that does open — the update
-  notice — is a hand-rolled `div`, not antd), and the confirm-modal DOM cannot be
-  triggered on demand. Port the skin from the rules and verify by render, as in
-  Phase 3a.
-- **Phase 4 — the lists.** Session tree, alerts, panels' tables.
+- **Phase 3 — the surfaces around the conversation. DONE, and one premise was
+  wrong.** `Input` / `Switch` / `Segmented` in settings are done: they ride the
+  desktop's own theme tokens and, for Input and Segmented, the desktop's own
+  `.mavis-*` rules (byte-identical, verified against the bundle). The `Switch`
+  skin this frontend had written was deleted — see *The theme*.
+
+  The `Drawer` half did not survive contact with the bundle. The desktop has
+  **no antd `Drawer`**: `ant-drawer` and `rc-drawer` have zero occurrences
+  across the whole extracted `out/_next/static`, and there is no
+  `.mavis-drawer` rule in any stylesheet. What it has instead is a bespoke
+  resizable panel — `file-panel-sidebar`, `file-panel-sidebar-drag-handle`,
+  `file-panel-sidebar-toggle` — plus its own `Drawer` *state machine* enum
+  (`Did(Close|Open)|Will(Close|Open)`), which is a motion primitive, not antd.
+  So there was never a component to port to; "换 `Drawer`" was a plan item
+  written before the reference was read. `panels.tsx`'s existing `<aside>`
+  with a width transition is the closer match to the desktop, and it stays.
+
+- **Phase 4 — the lists. PARTLY DONE, and partly should not happen.**
+  The alerts list's empty state moved to antd `Empty` (DONE). The session tree
+  and the panels' tables should **not** move to antd `Tree` / `Table`, for a
+  reason only the bundle shows: the desktop's file tree is virtualized —
+  `changed-files-tree-virtual-canvas` / `changed-files-tree-virtual-row` over
+  a `changed-files-tree-scroll` viewport. antd `Tree` does not virtualize
+  either, so porting to it would lose both the desktop's structure and its
+  scaling behaviour. The same applies to the panels' tables: the desktop's
+  right area is a tabbed file panel (`file-panel-add-tab-menu`,
+  `file-panel-sidebar`), not a table.
+
+  The honest gap this exposes is therefore **virtualization**, not "use antd":
+  `session-tree.tsx` renders every project, directory, session and subagent
+  eagerly. `chat-virtual-list.tsx` already exists for the transcript, so the
+  pattern is in the tree; wiring it to the sidebar tree is real work with a
+  real payoff, and is not a component-library migration.
 
 ## Dependency procedure
 

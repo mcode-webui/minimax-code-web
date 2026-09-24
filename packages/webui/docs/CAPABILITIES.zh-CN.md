@@ -7,7 +7,8 @@
 > 应该查看的位置。
 
 webui 受三项约束限制：
-1. mcode 0.1.5 acp 通过 JSON-RPC 暴露的能力。
+1. 引擎的 acp 通过 JSON-RPC 暴露的能力（引擎在 `initialize` 应答的
+   `agentInfo` 载荷中上报其版本，详见 `/api/protocol/capabilities`）。
 2. Node `http` / `child_process` API 能做的事。
 3. 浏览器 `WebSocket` 与 `fetch` 能做的事。
 
@@ -51,11 +52,11 @@ CI 会对上述每一个名称是否出现在本文档中进行断言
 | 长聊天列表虚拟化（≥ 200 条消息） | ✅ | `webapp/lib/transcript.ts` 虚拟窗口分支（N ≥ 200），带滚动/缩放 rAF 处理器；由 `webapp/test/transcript.test.ts` 覆盖。 |
 | Markdown 渲染（标题、列表、代码） | ✅ | `lib/marked.min.js` 本地内置（不走 CDN） |
 | 代码块语法高亮 | ✅ | highlight.js（本地副本） |
-| 运行中取消 | ⚠ | acp `session/cancel` 在 0.1.5 中返回 "Method not found"。webui 的 `/api/protocol/cancel` 退化为对子进程发送 SIGTERM。acp 会话在终止前可能还会再发出几个事件。 |
-| 回退 / 分叉某条消息 | ❌ | mcode acp 0.1.5 不支持 |
+| 运行中取消 | ✅ | acp `session/cancel` 以 notification 形式发送，并钉在该 cid 的活动子进程上（`/api/protocol/cancel` → `server/lib/mcode-rpc.js#cancelSession`）。只有当 notification 无法投递时，才会走硬杀兜底（`/api/stop` → SIGTERM/SIGKILL）。acp 会话在排空前可能还会再发出几个事件。 |
+| 回退 / 分叉某条消息 | ⚠ | 引擎已实现 `session/fork` 和 `session/resume`（`MCODE_ACP_CAPABILITIES.fork / .resume = true`），但目前 webui 还没有路由暴露它们——参见 [§13](CAPABILITIES.zh-CN.md#13-要启用--行-mcode-需要增加什么)。 |
 | 编辑已发送的消息并重新发送 | ❌ | acp 协议未暴露 |
 | 重新生成最后一条助手回复 | ❌ | acp 没有丢弃某一轮的方法 |
-| 流式输出中间思维链（`<thinking>`） | ⚠ | 如果 delta 中存在则会渲染，但 mcode 0.1.5 将其作为纯文本发出——没有结构化分离 |
+| 流式输出中间思维链（`<thinking>`） | ⚠ | 如果 delta 中存在则会渲染，但引擎将其作为纯文本发出——没有结构化分离 |
 
 ## 2. 计划模式
 
@@ -72,11 +73,11 @@ CI 会对上述每一个名称是否出现在本文档中进行断言
 
 | 功能 | 状态 | 原因 / 位置 |
 |---|---|---|
-| 会话级权限模式（`ask`/`auto`/`full`） | ✅ | 类型化的 `state.permissions`；webui 仅通过 `/api/protocol/set-mode` 端点发送 `setMode`，而 mcode 0.1.5 对其返回 "Method not found"。显示的模式是 mcode 最近一次的已知值。 |
+| 会话级权限模式（`ask`/`auto`/`read`/`full`） | ✅ | 类型化的 `state.permissions`；webui 通过 `/api/permissions {mode}` 发送 `setConfigOption {configId:'permissionMode'}`，该路由经由 cid 的活动子进程调用 `session/set_config_option`。同时，该路由会把所选标签回写到 `cs.permissions`，让 UI 不必等待下一次 SSE state 推送就能即时刷新。 |
 | 单工具权限提示弹窗 | ✅ | 当 acp 发出 `permission` 事件时，`webapp/components/modals.tsx` 打开权限弹窗 |
 | 批准 / 拒绝 / 始终允许此工具 | ✅ | 三个选项：`ask`、`auto`、`full`；经由 `/api/answer` 发送 |
-| 为会话剩余时间预先授权某个工具 | ⚠ | 与模式设置相同；仅限单次调用——mcode 0.1.5 没有按工具划分的白名单 |
-| 自定义规则（例如 "Bash 在 /tmp 上自动放行，其余询问"） | ❌ | mcode acp 没有规则语言 |
+| 为会话剩余时间预先授权某个工具 | ⚠ | 仅限单次调用——目前还没有按工具划分的白名单 |
+| 自定义规则（例如 "Bash 在 /tmp 上自动放行，其余询问"） | ❌ | acp 协议没有规则语言 |
 
 ## 4. Ask-user 工具
 
@@ -89,7 +90,7 @@ CI 会对上述每一个名称是否出现在本文档中进行断言
 | 重新显示已关闭的问题 | ✅ | 关闭集合按会话 + CID 隔离；新会话或新 CID 重新开始，同一问题可以再次询问 |
 | 重复提示同一个问题 | ⚠ | 一旦问题 id 在当前会话中被关闭，webui 会静默丢弃它。清空该集合是一个手动操作（新会话或新 CID）。 |
 | 嵌套问题（一个提问包含子问题） | ⚠ | 协议支持 `questions` 数组；webui 将它们渲染为依次排队的多个独立弹窗，而不是在单个弹窗中嵌套。 |
-| 可选 / 必填标志 | ❌ | mcode 0.1.5 未暴露可选标志——每个问题都按必填处理 |
+| 可选 / 必填标志 | ❌ | 引擎未暴露可选标志——每个问题都按必填处理 |
 
 ## 5. 斜杠命令
 

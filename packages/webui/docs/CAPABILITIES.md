@@ -7,7 +7,9 @@
 > look in the code.
 
 The webui is bound by three constraints:
-1. What mcode 0.1.5 acp exposes via JSON-RPC.
+1. What the engine's acp exposes via JSON-RPC (the engine reports its
+   version through the `agentInfo` payload of the `initialize` reply;
+   see `/api/protocol/capabilities`).
 2. What the Node `http` / `child_process` APIs can do.
 3. What the browser's `WebSocket` and `fetch` can do.
 
@@ -51,11 +53,11 @@ single index that satisfies the check.
 | Long chat list virtualization (≥ 200 messages) | ✅ | `webapp/lib/transcript.ts` virtual-window branch (N ≥ 200) with scroll/resize rAF handler; covered by `webapp/test/transcript.test.ts`. |
 | Markdown rendering (headings, lists, code) | ✅ | `webapp/lib/markdown.ts` wrapping the workspace `marked` package (`packages/tui` already depends on it; no CDN) |
 | Syntax highlighting in code blocks | ✅ | `marked` code renderer (`webapp/lib/markdown.ts`) + CSS classes from `webapp/styles/official-utilities.css` |
-| Cancel mid-run | ⚠ | acp `session/cancel` returns "Method not found" in 0.1.5. The webui's `/api/protocol/cancel` falls back to SIGTERM on the subprocess. The acp session may emit a few extra events before dying. |
-| Rewind / fork a message | ❌ | Not in mcode acp 0.1.5 |
+| Cancel mid-run | ✅ | acp `session/cancel` is sent as a notification, pinned on the cid's active child (`/api/protocol/cancel` → `server/lib/mcode-rpc.js#cancelSession`). The hard-kill fallback (`/api/stop` → SIGTERM/SIGKILL) is only used when the notification cannot be delivered. The acp session may emit a few extra events before draining. |
+| Rewind / fork a message | ⚠ | The engine implements `session/fork` and `session/resume` (`MCODE_ACP_CAPABILITIES.fork / .resume = true`), but no webui route exposes them yet — see [§13](CAPABILITIES.md#13-what-mcode-would-need-to-add-to-enable-the--rows). |
 | Edit a sent message and resend | ❌ | Not exposed by the acp protocol |
 | Regenerate the last assistant response | ❌ | No acp method to discard a turn |
-| Stream intermediate thinking (`<thinking>`) | ⚠ | Rendered if present in delta, but mcode 0.1.5 emits them as plain text — no structured separation |
+| Stream intermediate thinking (`<thinking>`) | ⚠ | Rendered if present in delta, but the engine emits them as plain text — no structured separation |
 
 ## 2. Plan mode
 
@@ -72,11 +74,11 @@ single index that satisfies the check.
 
 | Feature | Status | Why / where |
 |---|---|---|
-| Session-level permission mode (`ask`/`auto`/`full`) | ✅ | the typed `state.permissions`; webui sends `setMode` only via the `/api/protocol/set-mode` endpoint, which mcode 0.1.5 returns "Method not found" for. The mode shown is mcode's last-known value. |
+| Session-level permission mode (`ask`/`auto`/`read`/`full`) | ✅ | the typed `state.permissions`; webui sends `setConfigOption {configId:'permissionMode'}` through `/api/permissions {mode}`, which routes via the cid's active child to `session/set_config_option`. The route also writes the chosen label back into `cs.permissions` so the UI updates without waiting for the next SSE state push. |
 | Per-tool permission prompt modal | ✅ | when acp emits a `permission` event, `webapp/components/modals.tsx` opens the permission modal |
 | Approve / deny / always-allow-this-tool | ✅ | three options: `ask`, `auto`, `full`; sent via `/api/answer` |
-| Pre-grant a tool for the rest of the session | ⚠ | same as mode setting; per-call only — there's no per-tool whitelist in mcode 0.1.5 |
-| Custom rules (e.g. "Bash on /tmp is auto, rest is ask") | ❌ | mcode acp has no rule language |
+| Pre-grant a tool for the rest of the session | ⚠ | per-call only — there is no per-tool whitelist yet |
+| Custom rules (e.g. "Bash on /tmp is auto, rest is ask") | ❌ | the acp protocol has no rule language |
 
 ## 4. Ask-user tool
 
@@ -89,7 +91,7 @@ single index that satisfies the check.
 | Re-show a dismissed question | ✅ | the dismissal set is per-session and per-CID; opening a new session or new CID starts fresh, and the same question can be re-asked |
 | Re-prompt the same question | ⚠ | once a question id is dismissed in the current session, the webui silently drops it. Clearing the set is a manual gesture (new session or new CID). |
 | Nested questions (one ask containing sub-questions) | ⚠ | the protocol supports a `questions` array; the webui renders them as separate modals queued one after another, not nested in a single modal. |
-| Optional / required flag | ❌ | mcode 0.1.5 doesn't expose the optional flag — every question is treated as required |
+| Optional / required flag | ❌ | the engine does not expose the optional flag — every question is treated as required |
 
 ## 5. Slash commands
 
