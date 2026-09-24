@@ -177,11 +177,25 @@ not be delivered, then SIGKILL after 2s).
 
 **Request** `{}`
 
-**Response 200** `{ok: true, cancelled: true, killEndpoint: "/api/stop"}`
+**Response 200**
+```json
+{ "ok": true, "wasRunning": true, "cancelled": true, "hardKilled": false, "note": "gentle cancel" }
+```
 
-When the notification does not reach the engine, the route answers with
-`{ok: true, cancelled: false, warning, code, killEndpoint: "/api/stop"}` —
-the caller can re-issue `POST /api/stop` for the hard-kill cascade.
+- `wasRunning` — whether an active child backed this cid.
+- `cancelled` — the `session/cancel` notification was delivered. Only
+  meaningful when `wasRunning` and the turn is on the **ACP** transport; the
+  exec transport has no engine session to notify, so it answers
+  `cancelled:false` with the hard-kill note.
+- `hardKilled` — the SIGTERM/SIGKILL cascade fired.
+- `note` — `"gentle cancel"` or `"hard kill (session/cancel could not be
+  delivered)"`. This is the field to read; there is no `killEndpoint`,
+  `warning` or `code` in this response.
+
+An earlier revision of this document described `{warning, code,
+killEndpoint}` here. Those fields are not in the response; the hard-kill
+cascade is this same route, so a client that needs it re-issues `POST
+/api/stop`.
 
 ### `POST /api/cmd`
 
@@ -227,7 +241,11 @@ When `workspace` is provided it must clear the same containment gate as
 `POST /api/workspace` (existing directory inside an allowed root, symlinks
 resolved) — 400 otherwise, and no session record is created.
 
-**Response 200** `{ok: true, id: "uuid"}`
+**Response 200** `{ok: true, session: <the full session record>}`
+
+The whole record comes back, not just an id — the client renders the new row
+from it without a follow-up fetch. `id`, `title`, `workspace`, `mcodeSessionId`,
+`chat`, `createdAt`, `updatedAt`, and (once set) `titleCustom`.
 
 ### `POST /api/sessions/switch`
 
@@ -239,7 +257,18 @@ re-attaches to the mcode session.
 { "id": "uuid" }
 ```
 
-**Response 200** `{ok: true}`
+`id` accepts a webui uuid or an `mvs_…` engine id.
+
+**Response 200**
+```json
+{
+  "ok": true,
+  "session": { "id": "uuid", "mcodeSessionId": "mvs_…", "title": "…", "chat": ["› …", "● …"] }
+}
+```
+
+The chat is returned here because switching is a navigation the client must
+render immediately, before the next SSE push arrives.
 
 ### `POST /api/sessions/rename`
 
@@ -268,31 +297,44 @@ reversible (same class as `session.create`); a `session.rename` audit event
 
 ### `POST /api/sessions/cleanup-orphans`
 
-Delete mcode sessions that no webui session references. Two scopes:
+Delete mcode sessions that no webui session references. There is **no request
+body and no `scope` parameter** — the route only ever deletes orphans, and
+never the currently-active session.
 
-- `scope: "orphans"` (default) — only delete mcode sessions with no
-  webui reference. The currently-active session is always preserved.
-- `scope: "all"` — delete every mcode session, then re-link webui
-  sessions that had a `mcodeSessionId` (which now points to a deleted
-  session — they become "webui-only" again).
+`?dryRun=true` previews without side effects (and without the authorize gate,
+since nothing is touched). The real path is gated by
+`authorize("sessions.cleanup-orphans")` and audited
+(`sessions.cleanup-orphans.intent` before any delete, `.done` after).
 
-**Request**
+**Request** — no body. Optional query: `?dryRun=true`
+
+**Response 200** (preview)
 ```json
-{ "scope": "orphans" }
+{ "ok": true, "dryRun": true, "count": 18, "ids": ["mvs_5103ca…", "mvs_88c796…"] }
 ```
 
-**Response 200**
+**Response 200** (executed)
 ```json
 {
   "ok": true,
-  "scope": "orphans",
-  "total": 37,
-  "targets": 18,
+  "dryRun": false,
   "deleted": 18,
   "failed": 0,
-  "log": ["deleted mvs_5103ca…", "deleted mvs_88c796…", …]
+  "deletedIds": ["mvs_5103ca…"],
+  "failedItems": [{ "id": "mvs_…", "status": 500, "reason": "…" }],
+  "decidedBy": "user",
+  "decidedAt": 1730000000000
 }
 ```
+
+**Response 200** (nothing to do) `{ok: true, dryRun: false, deleted: 0, ids: []}`
+— returned before the authorize gate, since there is nothing to approve.
+
+**Response 403** `{ok: false, error: "authorize declined", decidedBy, decidedAt}`
+
+If the `.done` audit append fails the route answers 5xx even though some
+deletes already ran: the operator must see the audit gap rather than a silent
+200.
 
 ### `DELETE /api/sessions/:id`
 
@@ -409,10 +451,29 @@ Export a session's chat as Markdown or JSON. Reads
 (action `session.export`). The default `format` is `md`; `download=true`
 attaches a `Content-Disposition` so the browser saves it.
 
-**Response 200** — `format=md` → `text/markdown; charset=utf-8` body
-with the chat rendered as Markdown; `format=json` → `application/json`
-body with the full session record (id, title, workspace, mcodeSessionId,
-chat, createdAt, updatedAt).
+**Response 200** — `format=md` → `text/markdown; charset=utf-8` body with the
+chat rendered as Markdown.
+
+`format=json` → `application/json`:
+```json
+{
+  "ok": true,
+  "session": { "id": "uuid", "title": "…", "workspace": "C:\\…", "createdAt": 0, "updatedAt": 0, "mcodeSessionId": "mvs_…" },
+  "messages": [{ "role": "user", "content": "…" }],
+  "_meta": {
+    "source": "merged",
+    "exportedAt": 1730000000000,
+    "messageCount": 2,
+    "mcode_unavailable": false
+  }
+}
+```
+
+The conversation is under **`messages`**, not `chat` — it is a merged,
+role-tagged list (webui transcript + engine rows), which is a different shape
+from the `chat` string array kept in the session store. `_meta.mcode_unavailable`
+reports whether the engine side could be read; when it is `true`,
+`mcode_unavailable_reason` says why.
 
 **Errors** — 400 missing `id` / unsupported format (with `allowed` list);
 403 authorize declined; 404 unknown id.
@@ -440,7 +501,20 @@ Change the workspace for the current CID.
 - `action: "useTui"` — copy the TUI's cwd to webui
 - `action: "reset"` — restore webui's default workspace
 
-**Response 200** `{ok: true, dir: "…", branch: "main", treeState: "clean"}`
+**Response 200**
+```json
+{
+  "ok": true,
+  "workspace": { "dir": "C:\\path\\to\\project", "branch": null, "tree": null },
+  "tuiCwd": "/home/you/projects/foo",
+  "defaultWorkspace": "C:\\Users\\you\\.mcode-webui\\webui"
+}
+```
+
+The current workspace is nested under `workspace`, not flattened to the top
+level. `branch` and `tree` are `null` — the server does not shell out to git,
+and a previous revision of this document claimed `"main"` / `"clean"`, which
+were never measured.
 
 ### `GET /api/workspace/browse?path=…`
 
@@ -743,21 +817,31 @@ echoed in the body so the client sees WHICH limit fired:
 
 ### `GET /api/models`
 
-Returns the builtin + currently-configured model list.
+Returns the model catalogue from the **engine session's own config options** —
+not a builtin list and not anything read out of the engine binary. `listModels`
+is per-session, so there is nothing to report until a session exists.
 
 **Response 200**
 ```json
 {
   "ok": true,
   "current": "minimax_api/MiniMax-M3",
+  "source": "acp-session-config",
   "models": [
-    { "id": "minimax_api/MiniMax-M3", "label": "MiniMax-M3", "provider": "minimax_api" }
+    { "id": "minimax_api/MiniMax-M3", "name": "MiniMax-M3" }
   ]
 }
 ```
 
-If the list is empty, the response includes a `hint` field pointing
-the user at the mcode TUI for model configuration.
+- `models[]` entries are `{id, name}` — `id` is the engine's config value,
+  `name` its display label. There is no `label` or `provider` field.
+- `current` is the option's `currentValue`, or `null` when the session has
+  not reported one. It is never backfilled from a guess: a previous version
+  wrote the default model back into `cs.model` here, which is what put an
+  invented name into the state a later prompt would use.
+
+If the list is empty the response adds `reason: "no_session_config"`. The
+`current` field is then `null`; nothing is written back.
 
 ### `POST /api/set-model`
 
@@ -778,6 +862,11 @@ for the next one.
 ```
 
 Without an `mcodeSessionId` yet: `{ok: true, model: "...", mcodeSynced: false, warning: "no mcode session yet — recorded for the next one"}`.
+
+`warning` distinguishes the same three cases as [POST
+/api/permissions](#post-apipermissions) — `no_acp_session` when the live run
+is on the exec transport (structural, applies to the next turn) versus
+`no_client` when an ACP run is expected but has no registered client.
 
 ### `POST /api/permissions`
 
@@ -804,13 +893,24 @@ label into the local `cs.permissions` so the UI updates immediately.
   `Full access`).
 - `mcodeSynced: true` when the engine's `session/set_config_option`
   call landed on the active child.
-- Without an `mcodeSessionId` yet (no session for this CID), the
-  response also carries `warning: "no mcode session yet — applies to
-  the next one"` and `mcodeSynced: false`.
+- The change is recorded in `cs.permissions` either way, which is what
+  selects the transport and supplies the mode for the next prompt.
 
-**Errors** — 400 missing/empty `mode`; the engine's refusal (404/501/…)
-is mapped to `{ok: false, error, code}` with the matching HTTP status,
-and `mcodeSynced: false`.
+**Warnings** — `mcodeSynced: false` comes with a `warning` saying which case
+it is, because the two are not the same problem:
+
+- `no mcode session yet — applies to the next one` — no engine session has
+  been created for this CID yet.
+- `no_acp_session`: "this turn uses the exec transport, which has no live
+  engine session to update — the change applies from the next turn". The
+  engine transport is selected by permission mode (`runMcodeAcp` uses exec
+  whenever the mode is not Full access) and the one-shot `mcode exec` CLI has
+  no persistent session to address. This is structural, not an outage.
+- `no_client` — an ACP turn is expected but no live client is registered.
+
+**A missing or empty `mode` is not a 400.** The route reads
+`(payload.mode || "full")`, so an absent mode resolves to Full access rather
+than erroring. Send the mode explicitly; do not rely on a default.
 
 ### `GET /api/permissions-modes`
 
@@ -829,13 +929,21 @@ client can render the dropdown without doing the conversion itself.
     { "value": "full", "label": "Full access", "mcodeValue": "bypassPermissions" }
   ],
   "mcode": [
-    { "value": "default", "label": "Ask" },
-    { "value": "auto",    "label": "Auto" },
-    { "value": "read",    "label": "Read" },
-    { "value": "bypassPermissions", "label": "Full access" }
+    { "value": "default",          "label": "Ask" },
+    { "value": "bypassPermissions","label": "Full access" },
+    { "value": "auto",             "label": "Auto" },
+    { "value": "off",              "label": "…" },
+    { "value": "read",             "label": "Read" },
+    { "value": "full",             "label": "…" }
   ]
 }
 ```
+
+`webui[]` is the curated four the UI offers. `mcode[]` is the engine's full
+`PERMISSION_MODES` list — six values, including `off` and `full`, which the
+`webui[]` projection does not surface. `mcodePermissionToWebui` supplies the
+label; `off` and `full` have no webui alias, so their label is whatever that
+map yields.
 
 ### `POST /api/answer`
 
@@ -853,7 +961,15 @@ Respond to an active permission / plan / ask_user prompt.
   - `planmode`: `continue` | `deny`
   - `ask`: `esc` (skip) | `<index>` (option) | `<text>` (free-form)
 
-**Response 200** `{ok: true}`
+**Response 200**
+```json
+{ "ok": true, "deprecated": true, "note": "use /api/send for new flow" }
+```
+
+The route is a **legacy no-op**: it logs the call and answers without acting on
+it. Answers go through `POST /api/send` with `{content, isAskAnswer: true}`.
+`deprecated: true` is always present — a client that only checks `ok` will keep
+calling an endpoint that does nothing.
 
 ---
 
@@ -901,16 +1017,28 @@ source of truth for "已用 N / 占比 N%" in the right panel.
 ```json
 {
   "ok": true,
-  "lastTurnContextTokens": 12345,
-  "lastInputTokens": 1000,
-  "lastCacheReadTokens": 500,
-  "lastCacheWriteTokens": 200,
-  "lastOutputTokens": 800,
-  "contextLimit": 524288,
+  "found": true,
+  "sid": "mvs_…",
+  "rows": [{ "ts": 1730000000000, "input": 1000, "output": 800 }],
+  "totalInput": 1000,
+  "totalOutput": 800,
+  "totalCacheRead": 500,
+  "totalCacheWrite": 200,
+  "totalReasoning": 120,
+  "contextUsed": 1920,
   "model": "MiniMax-M3",
-  "ts": 1234567890
+  "modelLimit": 524288,
+  "firstTs": 1730000000000,
+  "lastTs": 1730000000000,
+  "dbPath": "/home/you/.mavis/usage.db"
 }
 ```
+
+- `contextUsed` is `totalInput + totalOutput + totalReasoning` — the cache
+  counters are a subset of input, not additional context.
+- `modelLimit` comes from the model's config, and is `null` when unknown.
+- `found: false` (with `dbExists`) when the db or the session row is absent —
+  see the 404 shape below.
 
 ### `POST /api/refresh`
 
@@ -922,11 +1050,9 @@ quota from the engine.
 
 ### `GET /api/usage/forecast`
 
-Predict quota exhaustion time. Reads
-`$WEBUI_DATA_DIR/usage-history.ndjson` and runs the linear + robust
-(Huber) extrapolation; the UI shows the bilingual countdown. Best-
-effort: a missing or empty history file answers `200 {ok: true,
-forecast: { reason: "no_history" }}` so the UI can render a "collecting
+Predict quota exhaustion time. Reads `$WEBUI_DATA_DIR/usage-history.ndjson`
+and extrapolates the 5-hour and weekly windows. Best-effort: a missing or
+empty history file still answers `200`, so the UI can render a "collecting
 data…" placeholder rather than an error.
 
 **Response 200**
@@ -934,13 +1060,37 @@ data…" placeholder rather than an error.
 {
   "ok": true,
   "forecast": {
-    "fiveHour": { "etaIso": "2025-10-29T18:00:00.000Z", "method": "linear", "remainingPct": 86, "samples": 12 },
-    "weekly":   { "etaIso": "2025-11-02T03:30:00.000Z", "method": "huber", "remainingPct": 92, "samples": 12 }
+    "hoursUntilExhaustion5h": 3.5,
+    "hoursUntilExhaustionWeekly": 82.0,
+    "confidence5h": 0.8,
+    "confidenceWeekly": 0.6,
+    "samples": 12,
+    "model": "least-squares-linear"
   }
 }
 ```
 
-When there is not enough data yet, `forecast` collapses to `{ reason: "no_history" }` or `{ reason: "insufficient_samples" }`.
+**Response 200** (not enough data) — the numeric fields are still present and
+`null`, they do not collapse away:
+```json
+{
+  "ok": true,
+  "forecast": {
+    "hoursUntilExhaustion5h": null,
+    "hoursUntilExhaustionWeekly": null,
+    "confidence5h": 0,
+    "confidenceWeekly": 0,
+    "samples": 0,
+    "model": "least-squares-linear",
+    "reason": "no_history"
+  }
+}
+```
+
+`reason` is `"no_history"` (empty/missing file) or `"insufficient_samples"`
+(fewer than 3 samples). An `hoursUntilExhaustion*` value is always a future
+number — the model clamps a past exhaustion to "won't run out" rather than
+reporting a negative time.
 
 ---
 
@@ -1116,10 +1266,12 @@ for the action whitelist and the default 5-minute timeout.
 
 ### `POST /api/debug/inject`
 
-Inject a fake event into the event stream for a CID. Used for testing
-the UI without a real mcode subprocess.
+Overwrite slices of a CID's in-memory state, for exercising the UI without a
+real engine. Each field is optional; supplied ones replace, omitted ones are
+left alone. This is **not** a raw SSE event injector — it mutates state, and
+the normal push path then broadcasts it.
 
-**Request**
+**Request** (the CID comes from the `?cid=` query, not the body)
 ```json
 {
   "goal":    { "text": "…", "done": false },

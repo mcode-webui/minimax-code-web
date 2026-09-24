@@ -18,16 +18,8 @@ function configOption(cs, id) {
 // BORROW-dsh-deepseek-harness-2026-08-28 § 3). Same string-mapping
 // behavior as the inline ternary chain that lived here before.
 import { webuiModeToLabel } from "../lib/interaction/permission-presets.js";
+import { readJson } from "../lib/read-json.js";
 
-async function readJson(req) {
-  let body = "";
-  for await (const chunk of req) body += chunk;
-  try {
-    return JSON.parse(body || "{}");
-  } catch {
-    return {};
-  }
-}
 
 // GET /api/models
 // The catalogue is the engine's `model` config option (the same list the TUI's

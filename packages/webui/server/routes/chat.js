@@ -21,16 +21,8 @@ import { runMcodeAcp } from "../lib/mcode-acp.js";
 import { collectExecResult, runMcodeExec } from "../lib/mcode-exec.js";
 import { cancelSession } from "../lib/mcode-rpc.js";
 import { DEFAULT_MODEL } from "../lib/config.js";
+import { readJson } from "../lib/read-json.js";
 
-async function readJson(req) {
-  let body = "";
-  for await (const chunk of req) body += chunk;
-  try {
-    return JSON.parse(body || "{}");
-  } catch {
-    return {};
-  }
-}
 
 // resetThinkingClaim — drop every field by which the pushed state
 // can claim "a run is in progress". The streaming runners reset all

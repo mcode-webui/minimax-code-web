@@ -504,9 +504,8 @@ UI 面板都从 `state` 读取，并通过 `render()` 响应
 
 ## 5. 事件模式（WebSocket 事件流）
 
-两种事件类型——`state`（标准状态推送）和一个 🆕
-v1.0.1 的命名事件 `auth.token_rotated`，仅在
-令牌变更时触发。
+两条通道、一种数据帧。`/api/events` 是按 CID 的状态流，携带 `state` 加四个
+命名事件；`/api/alerts` 是全局异常流（见 §5.1）。
 
 > **通道注记（决策 20）**：SSE 已移除。这些事件经 `GET /api/stream`
 > 以 `state.snapshot` 帧（载荷 = §4 的 state 对象）与 `control` 帧
@@ -516,35 +515,21 @@ v1.0.1 的命名事件 `auth.token_rotated`，仅在
 
 ```
 event: state
-data: {"version":"0.5.2","running":{"active":true,…},…}
+data: {"version":"1.0","running":{"active":true},"chat":["› …"],"…":…}
 
-event: chat
-data: {"lines":[{"role":"user","content":"…"}]}
-
-event: delta
-data: {"sessionId":"mvs_…","text":"hello","isPartial":true}
-
-event: tool
-data: {"name":"Bash","input":{…},"output":"…","status":"ok"|"err"|"running"}
-
-event: permission
-data: {"id":"perm_…","tool":"Bash","input":{…},"options":["ask","auto","full"]}
-
-event: plan
-data: {"title":"…","summary":"…","options":[…],"totalLines":N,"summaryLines":N}
-
-event: ask
-data: {"questions":[{"header":"…","question":"…","options":[…], "multiSelect":false}]}
-
-event: exec
-data: {"status":"ok"|"err"|"aborted","durationMs":N,"errorMessage"?:string}
-
-event: usage
-data: {"remaining":N,"resetAt":N,…}
-
-event: online
-data: {"count":N,"lanBroadcast":true}
+event: auth.token_rotated
+data: <new-32-hex-token>     // raw string, NOT JSON-wrapped
 ```
+
+这就是该通道的全部模式。此通道只有**一种**数据帧类型（`state`），外加服务端
+带外发出的四个命名事件：`auth.token_rotated`、`token.first_run`、
+`needs_authorization`、`authorization_decided`。本节早先版本列出的
+`chat` / `delta` / `tool` / `permission` / `plan` / `ask` / `exec` / `usage` /
+`online` 这些独立帧，本服务端**从未发出过**——那些形状是作为*字段*存在于
+唯一那份 `state` 快照里的（`state.chat`、`state.plan`、`state.ask`、
+`state.context`、`state.usage`、`state.onlineCount`）。客户端解析一份负载并从
+其中渲染，不会按事件名分支。唯一的例外是第二条通道 `/api/alerts`，它确实
+带命名事件——见 §5.1。
 
 🆕 **v1.0.1**——用于实时令牌轮换的独立命名事件：
 

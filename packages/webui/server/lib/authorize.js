@@ -42,6 +42,7 @@ import { randomUUID } from "node:crypto";
 import { pushAuthRequest, pushAuthDecision } from "./state-bus.js";
 import { pushAlert } from "./alerts.js";
 import { append as _eventsAppend } from "./events.js";
+import { readJson } from "./read-json.js";
 
 // ---------- action whitelist ----------
 
@@ -233,14 +234,7 @@ export function authorize(action, ctx = {}, opts = {}) {
 //     404 { ok: false, error: 'not found' }  (no such pending request)
 //     410 { ok: false, error: 'already decided' } (idempotency guard)
 export async function handleAuthDecision(req, res) {
-  let raw = "";
-  for await (const chunk of req) raw += chunk;
-  let body;
-  try {
-    body = JSON.parse(raw || "{}");
-  } catch {
-    body = {};
-  }
+  const body = await readJson(req);
   const requestId = body && typeof body.requestId === "string" ? body.requestId : "";
   const approve = !!(body && body.approve === true);
   if (!requestId) {

@@ -39,12 +39,22 @@ function readReq(path, extra = "") {
 }
 
 function mkdirReq(path) {
+  // Model the real request: a Node `IncomingMessage` is an **async iterable**,
+  // which is what the shared bounded reader (lib/read-json.js) consumes. An
+  // earlier version of this fixture was a bare EventEmitter emitting
+  // `data`/`end`, which only matched the route's previous hand-rolled reader
+  // and stopped working the moment the route moved to the shared one — which
+  // is exactly the kind of fixture that hides a real change rather than
+  // catching it.
   const req = new EventEmitter();
   req.url = "/api/fs/mkdir";
-  process.nextTick(() => {
-    req.emit("data", JSON.stringify({ path }));
-    req.emit("end");
-  });
+  const body = Buffer.from(JSON.stringify({ path }));
+  req[Symbol.asyncIterator] = () => {
+    let done = false;
+    return {
+      next: async () => (done ? { done: true, value: undefined } : ((done = true), { done: false, value: body })),
+    };
+  };
   return req;
 }
 

@@ -4,6 +4,7 @@
 // POST /api/fs/mkdir                       创建目录 { path }
 
 import { readDirectory, createDirectory, resolveTarget } from '../lib/fs-util.js'
+import { readJson, BodyTooLargeError } from '../lib/read-json.js'
 import { assertWorkspacePath, assertWorkspaceParentPath, expandTilde } from '../lib/workspace.js'
 
 // v2.2 (in-product): containment 门 — 目录浏览/创建与 browseWorkspace 同边界，
@@ -54,27 +55,32 @@ export function handleFsRead(req, res) {
   res.end(JSON.stringify(result))
 }
 
-export function handleFsMkdir(req, res) {
-  let body = ''
-  req.on('data', (chunk) => { body += chunk })
-  req.on('end', () => {
-    let data
-    try { data = JSON.parse(body) } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ ok: false, error: 'invalid json' }))
+export async function handleFsMkdir(req, res) {
+  // Uses the shared bounded reader. This route used to carry its own
+  // `req.on('data', …)` buffer, which is why it escaped the body cap added
+  // for every other JSON route: the cap was written for the
+  // `for await (const chunk of req)` shape and nothing caught this one.
+  let data;
+  try {
+    data = await readJson(req);
+  } catch (cause) {
+    if (cause instanceof BodyTooLargeError) {
+      res.writeHead(413, { 'Content-Type': 'application/json; charset=utf-8', Connection: 'close' })
+      res.end(JSON.stringify({ ok: false, error: cause.message, code: 'BODY_TOO_LARGE' }))
       return
     }
+    throw cause;
+  }
 
-    // mkdir 的目标尚不存在 — 校验父目录在允许根内（v2.2）
-    const gate = assertWorkspaceParentPath(resolveTarget(expandTilde(data.path)))
-    if (!gate.ok) {
-      res.writeHead(403, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ ok: false, error: gate.error }))
-      return
-    }
+  // mkdir 的目标尚不存在 — 校验父目录在允许根内（v2.2）
+  const gate = assertWorkspaceParentPath(resolveTarget(expandTilde(data.path)))
+  if (!gate.ok) {
+    res.writeHead(403, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ ok: false, error: gate.error }))
+    return
+  }
 
-    const result = createDirectory(gate.path)
-    res.writeHead(200, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify(result))
-  })
+  const result = createDirectory(gate.path)
+  res.writeHead(200, { 'Content-Type': 'application/json' })
+  res.end(JSON.stringify(result))
 }

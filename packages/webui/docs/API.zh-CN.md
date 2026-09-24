@@ -170,11 +170,24 @@ WebSocket 事件流（`/api/stream`）流式下发。
 
 **请求体** `{}`
 
-**响应 200** `{ok: true, cancelled: true, killEndpoint: "/api/stop"}`
+**响应 200**
+```json
+{ "ok": true, "wasRunning": true, "cancelled": true, "hardKilled": false, "note": "gentle cancel" }
+```
 
-通知未抵达引擎时，路由返回
-`{ok: true, cancelled: false, warning, code, killEndpoint: "/api/stop"}` ——
-调用方可再次 `POST /api/stop` 触发硬杀级联。
+- `wasRunning` —— 该 CID 是否真有活动子进程在背后支撑。
+- `cancelled` —— `session/cancel` 通知是否已送达。仅在
+  `wasRunning` 且本轮走的是 **ACP** 传输层时才有意义；exec
+  传输层没有引擎会话可通知，因此它会回答
+  `cancelled:false` 并附带硬杀说明。
+- `hardKilled` —— SIGTERM / SIGKILL 级联是否触发。
+- `note` —— `"gentle cancel"` 或 `"hard kill (session/cancel could not
+  be delivered)"`。这是要读的字段；本响应里**没有**
+  `killEndpoint`、`warning` 或 `code`。
+
+本条目早期版本描述的 `{warning, code, killEndpoint}` 字段在本
+响应中并不存在；硬杀级联走的正是这条路由本身 —— 客户端若
+需要硬杀，请再次调用 `POST /api/stop`。
 
 ### `POST /api/cmd`
 
@@ -220,7 +233,12 @@ WebSocket 事件流（`/api/stream`）流式下发。
 （目录存在、落在允许根内、软链解析后不越界）—— 否则返回 400，
 且不创建任何会话记录。
 
-**响应 200** `{ok: true, id: "uuid"}`
+**响应 200** `{ok: true, session: <完整会话记录>}`
+
+返回的是整条记录而非仅一个 id —— 客户端可直接据此渲染新行，
+无需再发一次请求。记录字段：`id`、`title`、`workspace`、
+`mcodeSessionId`、`chat`、`createdAt`、`updatedAt`，以及
+（一旦设置过的）`titleCustom`。
 
 ### `POST /api/sessions/switch`
 
@@ -232,7 +250,18 @@ WebSocket 事件流（`/api/stream`）流式下发。
 { "id": "uuid" }
 ```
 
-**响应 200** `{ok: true}`
+`id` 接受 webui uuid 或 `mvs_…` 形式的引擎 id。
+
+**响应 200**
+```json
+{
+  "ok": true,
+  "session": { "id": "uuid", "mcodeSessionId": "mvs_…", "title": "…", "chat": ["› …", "● …"] }
+}
+```
+
+`chat` 在此处一并返回，是因为切换是一次客户端必须即时渲染的
+导航动作，不能等到下一次 SSE 推送到达。
 
 ### `POST /api/sessions/rename`
 
@@ -260,31 +289,43 @@ mcode 会话 id，或尚无 webui 壳记录的裸 `mvs_…`（会自动建壳承
 
 ### `POST /api/sessions/cleanup-orphans`
 
-删除没有任何 webui 会话引用的 mcode 会话。两个作用域：
+删除没有任何 webui 会话引用的 mcode 会话。**没有请求体，
+也没有 `scope` 参数** —— 本路由只删孤儿，永远不会动当前
+活动会话。
 
-- `scope: "orphans"`（默认）—— 仅删除没有 webui 引用的
-  mcode 会话。当前活动会话始终会被保留。
-- `scope: "all"` —— 删除所有 mcode 会话，然后重新关联那些
-  带有 `mcodeSessionId` 的 webui 会话（该 id 现在指向一个已删除
-  的会话 —— 它们重新变为"仅 webui"会话）。
+`?dryRun=true` 在不产生任何副作用的情况下给出预览，也不经授权
+闸门（既然没碰任何东西）。真实路径由
+`authorize("sessions.cleanup-orphans")` 闸门控制，并带有审计
+（删除前追加 `sessions.cleanup-orphans.intent`，删除后追加 `.done`）。
 
-**请求体**
+**请求体** —— 无。查询参数：`?dryRun=true`
+
+**响应 200**（预览）
 ```json
-{ "scope": "orphans" }
+{ "ok": true, "dryRun": true, "count": 18, "ids": ["mvs_5103ca…", "mvs_88c796…"] }
 ```
 
-**响应 200**
+**响应 200**（执行）
 ```json
 {
   "ok": true,
-  "scope": "orphans",
-  "total": 37,
-  "targets": 18,
+  "dryRun": false,
   "deleted": 18,
   "failed": 0,
-  "log": ["deleted mvs_5103ca…", "deleted mvs_88c796…", …]
+  "deletedIds": ["mvs_5103ca…"],
+  "failedItems": [{ "id": "mvs_…", "status": 500, "reason": "…" }],
+  "decidedBy": "user",
+  "decidedAt": 1730000000000
 }
 ```
+
+**响应 200**（无事可做）`{ok: true, dryRun: false, deleted: 0, ids: []}`
+—— 在授权闸门之前返回，因为根本没东西需要授权。
+
+**响应 403** `{ok: false, error: "authorize declined", decidedBy, decidedAt}`
+
+若 `.done` 审计追加失败，路由会返回 5xx，即使删除已经发生：
+—— 操作员必须看到的是审计上的缺口，而不是一个沉默的 200。
 
 ### `DELETE /api/sessions/:id`
 
@@ -401,9 +442,27 @@ mcode 会话 id，或尚无 webui 壳记录的裸 `mvs_…`（会自动建壳承
 `download=true` 会附上 `Content-Disposition`，让浏览器直接保存。
 
 **响应 200** —— `format=md` → `text/markdown; charset=utf-8` 响应体，
-聊天渲染为 Markdown；`format=json` → `application/json`
-响应体，含完整会话记录（id、title、workspace、mcodeSessionId、
-chat、createdAt、updatedAt）。
+聊天渲染为 Markdown。
+
+`format=json` → `application/json`：
+```json
+{
+  "ok": true,
+  "session": { "id": "uuid", "title": "…", "workspace": "C:\\…", "createdAt": 0, "updatedAt": 0, "mcodeSessionId": "mvs_…" },
+  "messages": [{ "role": "user", "content": "…" }],
+  "_meta": {
+    "source": "merged",
+    "exportedAt": 1730000000000,
+    "messageCount": 2,
+    "mcode_unavailable": false
+  }
+}
+```
+
+对话内容在 **`messages`** 下，而非 `chat` —— 它是一份合并后的、
+带 `role` 标签的列表（webui 转写 + 引擎行），与会话存储里
+`chat` 字符串数组的形态不同。`_meta.mcode_unavailable` 报告引擎
+侧能否读到；若为 `true`，`mcode_unavailable_reason` 字段说明原因。
 
 **错误** —— 400：缺 `id` / 不支持的 format（响应体带 `allowed` 列表）；
 403：授权被拒；404：id 未知。
@@ -431,7 +490,19 @@ chat、createdAt、updatedAt）。
 - `action: "useTui"` —— 把 TUI 的 cwd 复制到 webui
 - `action: "reset"` —— 恢复 webui 的默认工作区
 
-**响应 200** `{ok: true, dir: "…", branch: "main", treeState: "clean"}`
+**响应 200**
+```json
+{
+  "ok": true,
+  "workspace": { "dir": "C:\\path\\to\\project", "branch": null, "tree": null },
+  "tuiCwd": "/home/you/projects/foo",
+  "defaultWorkspace": "C:\\Users\\you\\.mcode-webui\\webui"
+}
+```
+
+当前工作区嵌套在 `workspace` 下，并非被摊平到顶层。`branch`
+和 `tree` 都是 `null` —— 服务器并不会为 git 拉起 shell；早先
+版本声称的 `"main"` / `"clean"` 实际从未测量过。
 
 ### `GET /api/workspace/browse?path=…`
 
@@ -726,21 +797,31 @@ Multipart 文件上传。保存到 `MCODE_WEBUI_UPLOAD_DIR` 并返回
 
 ### `GET /api/models`
 
-返回内置 + 当前已配置的模型列表。
+返回模型清单，来源是**引擎会话自身的配置项** —— 既非内置
+列表，也不是从引擎二进制里解析的。`listModels` 是按会话
+的，因此在尚无会话时无可报告内容。
 
 **响应 200**
 ```json
 {
   "ok": true,
   "current": "minimax_api/MiniMax-M3",
+  "source": "acp-session-config",
   "models": [
-    { "id": "minimax_api/MiniMax-M3", "label": "MiniMax-M3", "provider": "minimax_api" }
+    { "id": "minimax_api/MiniMax-M3", "name": "MiniMax-M3" }
   ]
 }
 ```
 
-如果列表为空，响应会包含一个 `hint` 字段，指引用户前往
-mcode TUI 进行模型配置。
+- `models[]` 条目形态为 `{id, name}` —— `id` 是引擎配置项
+  的值，`name` 是它的展示标签。本字段不存在 `label` 或 `provider`。
+- `current` 是该选项的 `currentValue`；当会话尚未上报时
+  为 `null`。本字段从不基于猜测回填：早先版本会把默认
+  模型反写进 `cs.model`，正是在后续提示符要用的状态里塞进
+  一个臆造的名字。
+
+若列表为空，响应会附 `reason: "no_session_config"`。此时
+`current` 字段为 `null`；任何东西都不会被反写。
 
 ### `POST /api/set-model`
 
@@ -760,6 +841,8 @@ mcode TUI 进行模型配置。
 ```
 
 尚无 `mcodeSessionId` 时：`{ok: true, model: "...", mcodeSynced: false, warning: "no mcode session yet — recorded for the next one"}`。
+
+`warning` 区分与 [`POST /api/permissions`](#post-apipermissions) 同样的三种情况 —— `no_acp_session`（当前走 exec 传输层 —— 结构性问题，从下一轮生效）与 `no_client`（预期走 ACP 但尚无已注册的客户端）。
 
 ### `POST /api/permissions`
 
@@ -786,13 +869,24 @@ mcode TUI 进行模型配置。
   `Full access`）。
 - `mcodeSynced: true` 表示引擎的 `session/set_config_option`
   调用落到了活动子进程上。
-- 尚无 `mcodeSessionId`（本 CID 还未创建会话）时，响应
-  还会带 `warning: "no mcode session yet — applies to
-  the next one"` 与 `mcodeSynced: false`。
+- 无论如何都会把变更记入 `cs.permissions`，这正是决定使用
+  哪种传输层、以及为下一条提示词提供 `mode` 值的地方。
 
-**错误** —— 400：缺 / 空 `mode`；引擎拒绝（404/501/…）
-会映射为 `{ok: false, error, code}` 并保留对应 HTTP 状态，
-同时 `mcodeSynced: false`。
+**警告** —— `mcodeSynced: false` 伴随着一条说明具体情况的
+`warning`，因为这并非同一种问题：
+
+- `no mcode session yet — applies to the next one` —— 该 CID
+  还没有创建任何引擎会话。
+- `no_acp_session`："这一轮走的是 exec 传输层，它没有可更新的
+  引擎会话 —— 变更从下一轮起生效。"引擎传输层由权限模式决定
+  （`runMcodeAcp` 在模式不为 Full access 时一律走 exec），
+  而一次性 `mcode exec` CLI 没有可以寻址的持久会话。这是
+  结构性的问题，不是服务故障。
+- `no_client` —— 预期走 ACP 但目前还没有已注册的客户端。
+
+**缺失或为空的 `mode` 并不是 400。** 路由读取的是
+`(payload.mode || "full")`，因此缺失的 `mode` 会被解析为
+"Full access" 而非报错。请始终显式传入 `mode`，不要依赖默认值。
 
 ### `GET /api/permissions-modes`
 
@@ -811,13 +905,21 @@ mcode TUI 进行模型配置。
     { "value": "full", "label": "Full access", "mcodeValue": "bypassPermissions" }
   ],
   "mcode": [
-    { "value": "default", "label": "Ask" },
-    { "value": "auto",    "label": "Auto" },
-    { "value": "read",    "label": "Read" },
-    { "value": "bypassPermissions", "label": "Full access" }
+    { "value": "default",          "label": "Ask" },
+    { "value": "bypassPermissions","label": "Full access" },
+    { "value": "auto",             "label": "Auto" },
+    { "value": "off",              "label": "…" },
+    { "value": "read",             "label": "Read" },
+    { "value": "full",             "label": "…" }
   ]
 }
 ```
+
+`webui[]` 是 UI 提供的精选四项。`mcode[]` 是引擎完整的
+`PERMISSION_MODES` 列表 —— 共六个值，额外包含 `off` 与 `full`，
+而这两者不会出现在 `webui[]` 投影里。标签由 `mcodePermissionToWebui`
+提供；`off` 和 `full` 在 webui 中没有别名，因此其标签就是该
+映射给出的结果。
 
 ### `POST /api/answer`
 
@@ -835,7 +937,15 @@ mcode TUI 进行模型配置。
   - `planmode`：`continue` | `deny`
   - `ask`：`esc`（跳过）| `<index>`（选项）| `<text>`（自由文本）
 
-**响应 200** `{ok: true}`
+**响应 200**
+```json
+{ "ok": true, "deprecated": true, "note": "use /api/send for new flow" }
+```
+
+本路由是**遗留的空操作（no-op）**：它仅记录调用日志，不采取
+任何动作即作答。回应请走 `POST /api/send`，载荷为
+`{content, isAskAnswer: true}`。`deprecated: true` 永远都会出现 —— 仅检查
+`ok` 的客户端会一直调用一个什么都不做的端点。
 
 ---
 
@@ -879,16 +989,27 @@ Subscription Key（见 `server/lib/usage.js`）。
 ```json
 {
   "ok": true,
-  "lastTurnContextTokens": 12345,
-  "lastInputTokens": 1000,
-  "lastCacheReadTokens": 500,
-  "lastCacheWriteTokens": 200,
-  "lastOutputTokens": 800,
-  "contextLimit": 524288,
+  "found": true,
+  "sid": "mvs_…",
+  "rows": [{ "ts": 1730000000000, "input": 1000, "output": 800 }],
+  "totalInput": 1000,
+  "totalOutput": 800,
+  "totalCacheRead": 500,
+  "totalCacheWrite": 200,
+  "totalReasoning": 120,
+  "contextUsed": 1920,
   "model": "MiniMax-M3",
-  "ts": 1234567890
+  "modelLimit": 524288,
+  "firstTs": 1730000000000,
+  "lastTs": 1730000000000,
+  "dbPath": "/home/you/.mavis/usage.db"
 }
 ```
+
+- `contextUsed = totalInput + totalOutput + totalReasoning` —— 缓存
+  计数器是 input 的子集，不构成额外的上下文。
+- `modelLimit` 来自模型的配置，模型未知时为 `null`。
+- 数据库或会话记录缺失时为 `found: false`（附 `dbExists`）—— 见下方 404 形态。
 
 ### `POST /api/refresh`
 
@@ -899,25 +1020,45 @@ Subscription Key（见 `server/lib/usage.js`）。
 
 ### `GET /api/usage/forecast`
 
-预测配额耗尽时间。读取
-`$WEBUI_DATA_DIR/usage-history.ndjson` 并执行线性 + 稳健
-（Huber）外推；UI 渲染中英双语的倒计时。尽力而为：
-历史文件缺失或为空时返回 `200 {ok: true,
-forecast: { reason: "no_history" }}`，让 UI 能渲染
-"数据收集中…"占位，而不是抛错。
+预测配额耗尽时间。读取 `$WEBUI_DATA_DIR/usage-history.ndjson`
+并对 5 小时与每周窗口做外推。尽力而为：历史文件缺失或为空
+时仍然返回 `200`，以便 UI 渲染"数据收集中…"占位，而不是抛错。
 
 **响应 200**
 ```json
 {
   "ok": true,
   "forecast": {
-    "fiveHour": { "etaIso": "2025-10-29T18:00:00.000Z", "method": "linear", "remainingPct": 86, "samples": 12 },
-    "weekly":   { "etaIso": "2025-11-02T03:30:00.000Z", "method": "huber", "remainingPct": 92, "samples": 12 }
+    "hoursUntilExhaustion5h": 3.5,
+    "hoursUntilExhaustionWeekly": 82.0,
+    "confidence5h": 0.8,
+    "confidenceWeekly": 0.6,
+    "samples": 12,
+    "model": "least-squares-linear"
   }
 }
 ```
 
-数据还不够时，`forecast` 会坍缩为 `{ reason: "no_history" }` 或 `{ reason: "insufficient_samples" }`。
+**响应 200**（数据还不够）—— 数值字段仍然出现但为 `null`，不会坍缩：
+```json
+{
+  "ok": true,
+  "forecast": {
+    "hoursUntilExhaustion5h": null,
+    "hoursUntilExhaustionWeekly": null,
+    "confidence5h": 0,
+    "confidenceWeekly": 0,
+    "samples": 0,
+    "model": "least-squares-linear",
+    "reason": "no_history"
+  }
+}
+```
+
+`reason` 取值为 `"no_history"`（文件缺失或为空）或
+`"insufficient_samples"`（少于 3 个样本）。`hoursUntilExhaustion*`
+始终是一个未来时刻 —— 模型会把已耗尽的情形夹到"不会耗尽"，
+而不是给出一个负值。
 
 ---
 
@@ -1088,10 +1229,12 @@ code, killEndpoint: "/api/stop" }`。温和版→SIGKILL 的级联
 
 ### `POST /api/debug/inject`
 
-向某个 CID 的事件流注入一个伪造事件。用于在没有真实
-mcode 子进程的情况下测试 UI。
+覆盖某个 CID 内存中的若干状态切片，用于在没有真实引擎的情况下
+演练 UI。每个字段都是可选的；传入了就替换，未传入则保持原状。
+**这不是**一个原始 SSE 事件注入器 —— 它修改的是状态，然后由
+正常推送路径把它广播出去。
 
-**请求体**
+**请求体**（CID 取自 `?cid=` 查询参数，而非请求体）
 ```json
 {
   "goal":    { "text": "…", "done": false },

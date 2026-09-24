@@ -209,10 +209,22 @@ export async function handleRequest(req, res) {
       console.error("[router] %s %s threw:", req.method, pathname, e);
       try {
         if (!res.headersSent) {
-          res.writeHead(500, {
+          // Same 413 the Hono layer answers (app.js#invokeHandler): a body over
+          // the shared reader's cap is the client's, not a server fault, and
+          // both layers must agree or the same request answers differently
+          // depending on which layer happened to own the route.
+          const tooLarge = e && e.name === "BodyTooLargeError";
+          res.writeHead(tooLarge ? 413 : 500, {
             "Content-Type": "application/json; charset=utf-8",
+            ...(tooLarge ? { Connection: "close" } : {}),
           });
-          res.end(JSON.stringify({ ok: false, error: e.message }));
+          res.end(
+            JSON.stringify({
+              ok: false,
+              error: tooLarge ? e.message : e.message,
+              ...(tooLarge ? { code: "BODY_TOO_LARGE" } : {}),
+            }),
+          );
         }
       } catch {}
       return;

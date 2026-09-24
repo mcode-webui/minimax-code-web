@@ -31,6 +31,7 @@ import { pushAlert } from "../lib/alerts.js";
 // B01: settings.update / token.reset events (fail-closed since the
 // 2026-09-20 rigor fix — see lib/settings.js header).
 import { append as _eventsAppend } from "../lib/events.js";
+import { readJson } from "../lib/read-json.js";
 
 // _auditFail — shared failure sink: HTTP 5xx + alert on the anomaly
 // channel. Mirrors routes/sessions.js#_auditFail.
@@ -60,15 +61,7 @@ export function handleGetSettings(_req, res) {
 }
 
 export async function handlePostSettings(req, res, ctx) {
-  let body = "";
-  for await (const chunk of req) body += chunk;
-  let payload;
-  try {
-    payload = JSON.parse(body || "{}");
-  } catch {
-    payload = {};
-  }
-  if (payload === null || typeof payload !== "object") payload = {};
+  const payload = await readJson(req);
 
   let changed = false;
   let tokenRotated = false;

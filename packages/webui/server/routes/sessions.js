@@ -81,15 +81,6 @@ function killMcodeSessionResurrection(mcodeSid) {
   dropMcodeSessionFromCache(mcodeSid);
 }
 
-async function readJson(req) {
-  let body = "";
-  for await (const chunk of req) body += chunk;
-  try {
-    return JSON.parse(body || "{}");
-  } catch {
-    return {};
-  }
-}
 
 // Title fast path — resolve an mvs_ session's title from the
 // in-memory walked-session cache (the same cache behind
@@ -594,6 +585,10 @@ export async function handleDeleteSession(req, res, ctx) {
     if (/^mvs_[a-f0-9]{32}$/.test(id)) {
       if (!dryRun) killMcodeSessionResurrection(id);
       const mcodeDbDel = deleteMcodeSessionFromDb(id, { MCODE_RUNTIME_DB, dryRun });
+      // Same reason as the wrapper-delete path below: this removes rows from
+      // the db the cached sidebar tree is built from. Skipped on a dry run,
+      // which mutates nothing.
+      if (!dryRun) invalidateSessionTree();
       console.log(
         `[delete] cid=${cid} ORPHAN mcode session sid=${id.substring(0, 12)}… ok=${mcodeDbDel.ok}` +
           (mcodeDbDel.ok
@@ -702,6 +697,17 @@ export async function handleDeleteSession(req, res, ctx) {
   const deletedItem = all[idx];
   all.splice(idx, 1);
   saveSessions(all);
+  // The sidebar tree is assembled from `local_runtime_sessions` in the runtime
+  // db, and it is cached for CACHE_TTL_MS (the git probe per directory is the
+  // expensive part). A delete removes rows from that db, so the cache has to go
+  // or the row stays in the sidebar — still clickable — for up to 15s. This
+  // was the one mutation that missed it; rename had been handled, and
+  // switch/new were never wrong (switch does not change the set, and a new
+  // webui session has no engine row until its first prompt).
+  //
+  // Invalidate before the engine delete below, so the next read cannot repopulate
+  // from a db this call is about to change.
+  invalidateSessionTree();
   // Mirror the delete on the mcode side when this record has an mcode sid.
   const mcodeSid = deletedItem.mcodeSessionId;
   let mcodeDbDel = null;
@@ -998,6 +1004,7 @@ export async function handleSearchSessions(req, res, ctx) {
 //   than 24h — same rule as cleanupEmptyDefaultSessions() in lib/sessions.js.
 import { existsSync, readFileSync } from "node:fs";
 import { SESSIONS_DB } from "../lib/config.js";
+import { readJson } from "../lib/read-json.js";
 
 const ORPHAN_STALE_MS = 24 * 60 * 60 * 1000;
 

@@ -23,16 +23,8 @@ import {
 } from "../lib/mcode-rpc.js";
 import { loadSessions, saveSessions, resetContext } from "../lib/sessions.js";
 import { pushStateFor } from "../lib/state-bus.js";
+import { readJson } from "../lib/read-json.js";
 
-async function readJson(req) {
-  let body = "";
-  for await (const chunk of req) body += chunk;
-  try {
-    return JSON.parse(body || "{}");
-  } catch {
-    return {};
-  }
-}
 
 function respond(res, code, payload) {
   res.writeHead(code, { "Content-Type": "application/json; charset=utf-8" });

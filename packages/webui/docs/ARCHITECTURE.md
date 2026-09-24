@@ -515,9 +515,9 @@ changes via `render()`.
 
 ## 5. Event schema (WebSocket event stream)
 
-Two event types — `state` (the standard state push) and a 🆕
-v1.0.1 named event `auth.token_rotated` that fires only when the
-token changes.
+Two channels, one data frame type. `/api/events` is the per-CID state stream
+and carries `state` plus four named events; `/api/alerts` is a global anomaly
+stream (see §5.1).
 
 > **Channel note (decision 20).** SSE is removed. These events ride
 > `GET /api/stream` as `state.snapshot` frames (payload = the §4 state
@@ -528,35 +528,23 @@ token changes.
 
 ```
 event: state
-data: {"version":"0.5.2","running":{"active":true,…},…}
+data: {"version":"1.0","running":{"active":true},"chat":["› …"],"…":…}
 
-event: chat
-data: {"lines":[{"role":"user","content":"…"}]}
-
-event: delta
-data: {"sessionId":"mvs_…","text":"hello","isPartial":true}
-
-event: tool
-data: {"name":"Bash","input":{…},"output":"…","status":"ok"|"err"|"running"}
-
-event: permission
-data: {"id":"perm_…","tool":"Bash","input":{…},"options":["ask","auto","full"]}
-
-event: plan
-data: {"title":"…","summary":"…","options":[…],"totalLines":N,"summaryLines":N}
-
-event: ask
-data: {"questions":[{"header":"…","question":"…","options":[…], "multiSelect":false}]}
-
-event: exec
-data: {"status":"ok"|"err"|"aborted","durationMs":N,"errorMessage"?:string}
-
-event: usage
-data: {"remaining":N,"resetAt":N,…}
-
-event: online
-data: {"count":N,"lanBroadcast":true}
+event: auth.token_rotated
+data: <new-32-hex-token>     // raw string, NOT JSON-wrapped
 ```
+
+That is the whole schema on this channel. There is **one** data frame type
+(`state`) plus four named events that the server emits out of band:
+`auth.token_rotated`, `token.first_run`, `needs_authorization` and
+`authorization_decided`. The separate `chat` / `delta` / `tool` /
+`permission` / `plan` / `ask` / `exec` / `usage` / `online` frames that an
+earlier revision of this section listed were never emitted by this server —
+those shapes travel as *fields inside* the single `state` snapshot
+(`state.chat`, `state.plan`, `state.ask`, `state.context`, `state.usage`,
+`state.onlineCount`). A client parses one payload and renders from it; it does
+not switch on an event name. The one exception is the second channel,
+`/api/alerts`, which does carry named events — see §5.1.
 
 🆕 **v1.0.1** — a separate named event for live token rotation:
 

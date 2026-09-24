@@ -44,6 +44,7 @@ import { Hono } from "hono";
 import { getRequestListener } from "@hono/node-server";
 
 import { runGates } from "./lib/gates.js";
+import { BodyTooLargeError } from "./lib/read-json.js";
 import { getCidFromReq, getClient } from "./lib/state-bus.js";
 
 import * as accountRoute from "./routes/account.js";
@@ -276,13 +277,44 @@ function responseFromCapture(c, capture) {
  */
 function invokeHandler(c, capture, handler) {
   const ctx = c.get(CTX_KEY);
-  const handled = handler(c.env.incoming, capture, ctx);
-  if (handled && typeof handled.then === "function") {
-    // Async handler — let Hono await the real Response we synthesise once
-    // the handler has populated the capture.
-    return handled.then(() => responseFromCapture(c, capture));
+  // An over-sized JSON body throws from the shared reader (lib/read-json.js)
+  // rather than accumulating without limit. Answering 413 here, centrally,
+  // means no route can forget to handle it and no future route inherits the
+  // unbounded buffer — the cap and the status live in one place each.
+  //
+  // Both the sync throw and the async rejection have to be covered: the
+  // handlers are `async`, so a body that is read after the first `await` (or
+  // rejected from the `for await` loop itself) surfaces as a rejection rather
+  // than a throw at the call site.
+  const tooLarge = () =>
+    new Response(
+      JSON.stringify({ ok: false, error: "request body too large", code: "BODY_TOO_LARGE" }),
+      {
+        status: 413,
+        headers: {
+          "Content-Type": "application/json; charset=utf-8",
+          Connection: "close",
+        },
+      },
+    );
+  try {
+    const handled = handler(c.env.incoming, capture, ctx);
+    if (handled && typeof handled.then === "function") {
+      // Async handler — let Hono await the real Response we synthesise once
+      // the handler has populated the capture.
+      return handled.then(
+        () => responseFromCapture(c, capture),
+        (cause) => {
+          if (cause instanceof BodyTooLargeError) return tooLarge();
+          throw cause;
+        },
+      );
+    }
+    return responseFromCapture(c, capture);
+  } catch (cause) {
+    if (cause instanceof BodyTooLargeError) return tooLarge();
+    throw cause;
   }
-  return responseFromCapture(c, capture);
 }
 
 /** Build the Hono app. Cheap, and built per call so no state is shared between tests. */

@@ -26,17 +26,8 @@ import { MAVIS_DB_PATH } from "../lib/config.js";
 //   readHistory + forecastExhaustion + recordSnapshotFromCs.
 //   Pure module — no state-bus / settings coupling, just FS + math.
 import { readHistory, forecastExhaustion } from "../lib/quota-forecast.js";
+import { readJson } from "../lib/read-json.js";
 
-/** The shared body reader — same shape as the other routes'. */
-async function readJson(req) {
-  let body = "";
-  for await (const chunk of req) body += chunk;
-  try {
-    return JSON.parse(body || "{}");
-  } catch {
-    return {};
-  }
-}
 
 // POST /api/usage & /api/usage-trigger
 //
