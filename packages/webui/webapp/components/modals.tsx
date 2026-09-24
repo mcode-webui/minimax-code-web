@@ -1,12 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Input as AntInput, Modal as AntModal } from "antd";
+import { useState } from "react";
 
 import * as api from "@/lib/api";
 import { useSessionContext } from "@/lib/store";
 import { postAuthDecision } from "@/lib/api";
 import type { MessageKey } from "@/lib/i18n";
-import { Icon } from "./icons";
 
 /**
  * Blocking prompts: plan review, ask_user and authorization.
@@ -196,11 +196,11 @@ function AskModal({ t }: { t: (key: MessageKey) => string }) {
       </div>
 
       <div className="mt-4 flex items-center gap-2">
-        <input
+        <AntInput
           value={other}
           onChange={(event) => setOther(event.target.value)}
           placeholder={t("ask.other")}
-          className="h-8 min-w-0 flex-1 rounded-lg border border-border_default bg-bg_grouped_secondary_elevated px-2 text-sm text-text_default_primary outline-none placeholder:text-text_default_tertiary"
+          className="mavis-input min-w-0 flex-1"
           onKeyDown={(event) => {
             if (event.key === "Enter" && canSubmit) {
               event.preventDefault();
@@ -268,57 +268,77 @@ function AuthModal({ t }: { t: (key: MessageKey) => string }) {
  * The body scrolls once it outgrows the viewport, which matters for the settings
  * dialog; the blocking prompts are short enough that it never engages.
  */
+/**
+ * The blocking decision prompts (plan / ask / authorize).
+ *
+ * antd's `Modal`, wearing the desktop's confirm-modal skin: the
+ * `mavis-confirm-modal-compact*` rules were already ported verbatim into
+ * `styles/official-utilities.css`, so the numbers below are the desktop's own
+ * rather than a guess — the mask is `#00000040` with 10px of padding, the
+ * surface has no border, a 20px radius and a `0 0 48px -12px` shadow, and the
+ * title is weight 590 (which `text-heading3` also sets, so the ported title rule
+ * is belt and braces).
+ *
+ * Note the mask: `--utility_blanket` is `#000000b2` and that is what the
+ * desktop's *generic* overlay uses (measured on its update notice), but its
+ * confirm modal overrides the dim to `#00000040`. The specific rule wins.
+ *
+ * Not dismissible, and that is the point: each of these carries a decision the
+ * server is waiting on. The hand-rolled version got that by omitting three
+ * listeners; here it is three explicit props — `closable={false}`,
+ * `keyboard={false}`, `maskClosable={false}`. `footer={null}` because every
+ * prompt brings its own answer buttons, and `destroyOnHidden` so a closed
+ * prompt's local state (a typed "Other", a ticked set) does not survive into the
+ * next question.
+ */
 export function Modal({
   title,
   meta,
-  onClose,
   children,
 }: {
   title: string;
   meta?: string;
-  onClose?: () => void;
   children: React.ReactNode;
 }) {
-  useEffect(() => {
-    if (!onClose) return;
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
   return (
-    <div className="fixed inset-0 z-[1000] flex items-center justify-center p-4">
-      {/* Upstream dims with the blanket token rather than a hardcoded black. */}
-      <div
-        className="absolute inset-0 bg-utility_blanket"
-        onClick={onClose}
-        aria-hidden
-      />
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label={title}
-        className="relative flex max-h-[calc(100vh-2rem)] w-full max-w-[520px] flex-col rounded-2xl border border-border_default bg-bg_grouped_secondary_elevated p-4 shadow-shadow_default"
-      >
-        <div className="mb-3 flex items-center gap-2">
-          <span className="text-heading3 text-text_default_primary">{title}</span>
-          {meta ? <span className="text-caption-small-strong text-text_default_tertiary">{meta}</span> : null}
-          {onClose ? (
-            <button
-              type="button"
-              aria-label={title}
-              onClick={onClose}
-              className="ml-auto flex size-7 flex-none items-center justify-center rounded-lg text-icon_default_tertiary transition-colors hover:bg-bg_interaction_tertiary_hover hover:text-icon_default_primary"
-            >
-              <Icon name="close" size={15} />
-            </button>
+    <AntModal
+      open
+      centered
+      closable={false}
+      keyboard={false}
+      maskClosable={false}
+      footer={null}
+      destroyOnHidden
+      width={520}
+      rootClassName="mavis-confirm-modal-compact"
+      classNames={{
+        mask: "mavis-confirm-modal-compact-mask",
+        content: "mavis-confirm-modal-compact-surface",
+      }}
+      // antd paints the header with `colorBgElevated`, and this app's
+      // ConfigProvider does not configure antd's dark algorithm — the dark
+      // palette comes from the token layer. So the header is a white band across
+      // the desktop's dark surface, with white title text on it.
+      //
+      // A `bg-transparent` class does not fix it: antd's rule is
+      // `:where(.css-hash).ant-modal .ant-modal-header`, which is two effective
+      // classes and beats a one-class utility. `styles` emits an inline
+      // declaration, which wins. (Same cascade fact as `hashPriority` in
+      // `docs/ANTD-MIGRATION.md`, from the other side.)
+      styles={{ header: { background: "transparent" } }}
+      title={
+        <span className="flex items-center gap-2">
+          <span className="mavis-confirm-modal-compact-title text-heading3 text-text_default_primary">
+            {title}
+          </span>
+          {meta ? (
+            <span className="text-caption-small-strong text-text_default_tertiary">{meta}</span>
           ) : null}
-        </div>
-        <div className="thin-scrollbar min-h-0 flex-1 overflow-y-auto">{children}</div>
-      </div>
-    </div>
+        </span>
+      }
+    >
+      {children}
+    </AntModal>
   );
 }
 

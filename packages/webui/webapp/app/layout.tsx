@@ -1,8 +1,12 @@
+import { AntdRegistry } from "@ant-design/nextjs-registry";
+import { ConfigProvider } from "antd";
 import type { Metadata, Viewport } from "next";
 
+import { DESKTOP_ANTD_THEME } from "../lib/antd-theme";
 import "./globals.css";
 import "../styles/tokens.css";
 import "../styles/official-utilities.css";
+import "../styles/mavis-dropdown.css";
 import "../styles/desktop-typography.css";
 
 export const metadata: Metadata = {
@@ -70,6 +74,17 @@ const THEME_BOOTSTRAP = `(function () {
  */
 const PLATFORM_CLASSES = "mavis-platform-electron mavis-desktop-typography-enabled";
 
+/**
+ * antd theme.
+ *
+ * The desktop client is antd v5 under a `mavis-*` skin (see ANTD-MIGRATION.md),
+ * and its `ConfigProvider` theme object is transcribed verbatim in
+ * `lib/antd-theme.ts` — including the part that matters most here: its tokens are
+ * `var(--token)` references, not hex literals, so antd's generated CSS resolves
+ * through `styles/tokens.css` and flips with the `light` / `dark` class on
+ * `<html>` alongside the `mavis-*` skin and the Tailwind utilities. There is no
+ * light/dark branching here, and no `darkAlgorithm`, for the same reason.
+ */
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html
@@ -81,7 +96,22 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <head>
         <script dangerouslySetInnerHTML={{ __html: THEME_BOOTSTRAP }} />
       </head>
-      <body>{children}</body>
+      <body>
+        {/* No `hashPriority`: antd's default wraps the generated hash class in
+            `:where()` and that is what the desktop's cascade depends on. Its
+            runtime output reads
+              `:where(.css-hash).ant-dropdown .ant-dropdown-menu .ant-dropdown-menu-item`
+            — three effective classes — so the desktop's `mavis-*` skin rules,
+            which are one class longer, win without needing `!important`. Raising
+            the priority drops the `:where()` and makes antd's rule four classes
+            instead: a tie with the skin, decided by document order, and antd's
+            stylesheet is inserted last. Measured on the running desktop client;
+            the extracted stylesheets say nothing about this, because they are the
+            skin and Tailwind, not antd's generated CSS. */}
+        <AntdRegistry>
+          <ConfigProvider theme={DESKTOP_ANTD_THEME}>{children}</ConfigProvider>
+        </AntdRegistry>
+      </body>
     </html>
   );
 }

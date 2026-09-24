@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Input as AntInput, type InputRef } from "antd";
 
 import * as api from "@/lib/api";
 import { runAction } from "@/lib/action-errors";
@@ -546,13 +547,13 @@ function SessionNode({
   // `draft === null` means "not renaming". The title commits on Enter or blur and
   // is discarded on Escape.
   const [draft, setDraft] = useState<string | null>(null);
-  const inputRef = useRef<HTMLInputElement | null>(null);
+  const inputRef = useRef<InputRef>(null);
   const settled = useRef(false);
   const renaming = draft !== null;
   const title = session.title || t(UNTITLED);
 
   useEffect(() => {
-    if (renaming) inputRef.current?.select();
+    if (renaming) inputRef.current?.input?.select();
   }, [renaming]);
 
   const startRename = useCallback(() => {
@@ -621,7 +622,7 @@ function SessionNode({
               </span>
 
               {renaming ? (
-                <input
+                <AntInput
                   ref={inputRef}
                   type="text"
                   maxLength={200}

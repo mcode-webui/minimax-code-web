@@ -1,11 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 
 import * as api from "@/lib/api";
 import { refreshQuota, useSessionContext } from "@/lib/store";
 import type { MessageKey } from "@/lib/i18n";
+import { Dropdown, Popover } from "antd";
+import type { MenuProps } from "antd";
 import { Icon } from "./icons";
 import { InboxFlyout } from "./inbox";
 import { SessionTree } from "./session-tree";
@@ -420,10 +421,12 @@ function NavRow({
  * next to a real upstream row was what the user flagged as 歪的.
  *
  * Upstream's Contact us (`R.AkR`) and Learn more (`R.Mxk`) submenus are not
- * rendered at all. Their entries point at product pages and a support mailbox
- * that this distribution does not have, so every row would be a disabled
- * placeholder; they are deferred until there is a real target, and the command
- * to add them back is this doc comment plus `userMenu.*` in lib/i18n.ts.
+ * rendered, and their extracted glyphs were deleted 2026-09-24. Their entries
+ * point at product pages and a support mailbox that this distribution does not
+ * have, so every row would have been a disabled placeholder — exactly the
+ * "invented row next to a real one" shape the user rejected. There is nothing
+ * to route to, so the menu does not carry them at all. If a real target ever
+ * lands, the upstream module ids above are the source to re-extract from.
  */
 /** Last path segment of a workspace directory, for display. */
 function workspaceLeaf(dir: string | undefined): string {
@@ -453,35 +456,11 @@ function SidebarFooter({
   alertCount?: number;
 }) {
   const [open, setOpen] = useState(false);
-  const [usageHover, setUsageHover] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
 
-  // Same dismissal contract as the composer's dropdown: outside click or Escape.
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (event: MouseEvent) => {
-      const target = event.target as Node;
-      // The usage popover is portalled to document.body, so it lives outside
-      // `rootRef` — check it too, or a click inside it closes the menu before the
-      // click lands on its control. Without this the refresh button never ran:
-      // the mousedown closed the menu and unmounted the button mid-click.
-      if (rootRef.current?.contains(target)) return;
-      if (menuRef.current?.contains(target)) return;
-      if (document.querySelector("[data-testid='sidebar-user-usage-popover']")?.contains(target)) return;
-      setOpen(false);
-    };
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-
+  // Outside-click and Escape dismissal are antd's now (the Dropdown owns them),
+  // which is why the hand-rolled `mousedown` listener that used to live here is
+  // gone: it had to know about every portalled flyout, and it got that wrong.
   // The account card reads the engine through /api/account rather than the state
   // snapshot: the snapshot is broadcast to every SSE subscriber, so account data
   // does not belong in it. Re-fetched when the menu opens, so a login or a plan
@@ -511,300 +490,272 @@ function SidebarFooter({
   };
 
   /**
-   * The account menu. Shared by both footer shapes: the full row (expanded) and
-   * the rail avatar (collapsed) — the desktop's rail puts the same dropdown on a
-   * single avatar button.
+   * The account menu: antd's `Dropdown` + `Menu`, because that is what the
+   * desktop's menu is (`DESIGN.md` maps its `mavis-dropdown` onto antd
+   * `Dropdown`). The hand-rolled version re-implemented what the library owns —
+   * outside-click and Escape dismissal, portal placement, hover-to-open — and each
+   * of those was a defect in this file at some point.
+   *
+   * Shared by both footer shapes: the full row (expanded) and the rail avatar
+   * (collapsed) — the desktop's rail puts the same dropdown on a single avatar
+   * button.
+   *
+   * The panel's *appearance* is the desktop's too: `overlayClassName` carries its
+   * `mavis-dropdown mavis-user-dropdown`, which the ported skin keys off. Without
+   * it the menu would be antd's default — content-sized, 8px radius, no hairline,
+   * a different shadow — and its items would keep antd's own padding.
    */
-  const menu = open ? (
-    <div
-      ref={menuRef}
-      role="menu"
-      data-testid="sidebar-user-menu"
-      className="absolute right-1 bottom-[calc(100%+4px)] left-1 z-[100] rounded-[12px] border border-border_default bg-bg_grouped_secondary_elevated p-3 shadow-shadow_default"
-    >
-      <div className="my-2 h-px bg-border_default" role="separator" />
-      <MenuRow
-        icon="settings"
-        label={t("sidebar.settings")}
-        onClick={pick(() => onOpenSettings?.())}
-      />
-      <MenuRow
-        icon="gift"
-        label={t("userMenu.checkin")}
-        chevron
-        disabled
-        title={t("common.unsupported")}
-      />
-      <UsageMenuRow
-        t={t}
-        onHoverChange={setUsageHover}
-        isOpen={usageHover}
-      />
-      <div className="my-2 h-px bg-border_default" role="separator" />
-      <MenuRow
-        icon="logout"
-        label={t("userMenu.signOut")}
-        disabled
-        title={t("common.unsupported")}
-      />
-    </div>
-  ) : null;
-
-  if (rail) {
-    return (
-      <div ref={rootRef} className="relative flex-shrink-0 border-t-[0.5px] border-border_default">
-        {menu}
-        <button
-          type="button"
-          data-testid="sidebar-user-menu-trigger-rail"
-          aria-label={t("sidebar.menu")}
-          aria-haspopup="menu"
-          aria-expanded={open}
-          onClick={() => setOpen((value) => !value)}
-          className="group/avatar flex size-[52px] cursor-pointer items-center justify-center"
-        >
-          <span className="flex size-6 items-center justify-center overflow-hidden rounded-full transition-[filter] group-hover/avatar:brightness-110">
-            <span className="flex size-6 items-center justify-center rounded-full bg-bg_grouped_tertiary text-xs text-text_default_primary">
-              {name.slice(0, 1).toUpperCase()}
-            </span>
-          </span>
-        </button>
-      </div>
-    );
-  }
+  const menuItems: MenuProps["items"] = [
+    {
+      key: "settings",
+      label: <MenuRow icon="settings" label={t("sidebar.settings")} />,
+      onClick: () => pick(() => onOpenSettings?.())(),
+    },
+    {
+      key: "checkin",
+      disabled: true,
+      label: (
+        <MenuRow
+          icon="gift"
+          label={t("userMenu.checkin")}
+          chevron
+          disabled
+          title={t("common.unsupported")}
+        />
+      ),
+    },
+    { key: "usage", label: <MenuRow icon="gauge" label={<UsageLabel t={t} />} /> },
+    { key: "divider", disabled: true, label: <MenuDivider /> },
+    {
+      key: "signOut",
+      disabled: true,
+      label: (
+        <MenuRow
+          icon="logout"
+          label={t("userMenu.signOut")}
+          disabled
+          title={t("common.unsupported")}
+        />
+      ),
+    },
+  ];
 
   return (
     <div ref={rootRef} className="relative flex-shrink-0 border-t-[0.5px] border-border_default">
-      {menu}
-
-      <div
-        data-testid="sidebar-user-menu-trigger"
-        role="button"
-        tabIndex={0}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        aria-label={t("sidebar.menu")}
-        onClick={() => setOpen((value) => !value)}
-        onKeyDown={(event) => {
-          if (event.key === "Enter" || event.key === " ") {
-            event.preventDefault();
-            setOpen((value) => !value);
-          }
+      <Dropdown
+        open={open}
+        onOpenChange={setOpen}
+        trigger={["click"]}
+        /* Upward from the footer, aligned with the row: the desktop's menu opens
+           over the sidebar rather than beside it. */
+        placement="topLeft"
+        /* The desktop's own class names. The panel's width, radius, hairline,
+           shadow and item padding are not theme tokens, so they live in the ported
+           skin (`styles/mavis-dropdown.css`) keyed off exactly these two. */
+        overlayClassName="mavis-dropdown mavis-user-dropdown"
+        menu={{
+          items: menuItems,
+          rootClassName: "mavis-dropdown-root-sub-menu mavis-user-dropdown-submenu",
+          style: { width: "100%" },
         }}
-        className="m-1 flex h-12 w-[calc(100%-8px)] flex-1 items-center overflow-hidden rounded-[10px] px-2 hover:bg-bg_interaction_tertiary_hover"
+        /* `popupRender` wraps the menu itself, which is where the testid has to
+           live: `MenuProps` does not accept arbitrary attributes. */
+        popupRender={(menuNode) => <div data-testid="sidebar-user-menu">{menuNode}</div>}
       >
-        <div className="flex size-7 flex-shrink-0 items-center justify-center overflow-hidden rounded-full border border-border_light">
-          <span className="flex size-7 items-center justify-center rounded-full bg-bg_grouped_tertiary text-sm font-medium text-text_default_primary">
-            {name.slice(0, 1).toUpperCase()}
-          </span>
-        </div>
-        <div className="ml-2 flex min-w-0 max-w-[135px] flex-1 flex-col gap-[2px]">
-          <span className="max-w-[135px] truncate text-[14px] font-[400] leading-[20px] text-text_default_primary">
-            {name}
-          </span>
-          <span className="max-w-[135px] truncate text-[12px] font-[400] leading-[16px] text-text_default_tertiary">
-            {planTier}
-          </span>
-        </div>
+        {rail ? (
+          <button
+            type="button"
+            data-testid="sidebar-user-menu-trigger-rail"
+            aria-label={t("sidebar.menu")}
+            className="group/avatar flex size-[52px] cursor-pointer items-center justify-center"
+          >
+            <span className="flex size-6 items-center justify-center overflow-hidden rounded-full transition-[filter] group-hover/avatar:brightness-110">
+              <span className="flex size-6 items-center justify-center rounded-full bg-bg_grouped_tertiary text-xs text-text_default_primary">
+                {name.slice(0, 1).toUpperCase()}
+              </span>
+            </span>
+          </button>
+        ) : (
+          /* A `div` rather than a `button`: the row contains the inbox button, and
+             a button inside a button is not valid. antd clones this child and
+             attaches its own click handler plus `aria-expanded`, so the keyboard
+             handling is the only part left to state here. */
+          <div
+            data-testid="sidebar-user-menu-trigger"
+            role="button"
+            tabIndex={0}
+            aria-label={t("sidebar.menu")}
+            /* antd clones this child and attaches its own click handler, but it
+               does not set `aria-expanded` on a `div` child — the state is ours
+               to publish. */
+            aria-haspopup="menu"
+            aria-expanded={open}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                setOpen(true);
+              }
+            }}
+            className="m-1 flex h-12 w-[calc(100%-8px)] flex-1 items-center overflow-hidden rounded-[10px] px-2 hover:bg-bg_interaction_tertiary_hover"
+          >
+            <div className="flex size-7 flex-shrink-0 items-center justify-center overflow-hidden rounded-full border border-border_light">
+              <span className="flex size-7 items-center justify-center rounded-full bg-bg_grouped_tertiary text-sm font-medium text-text_default_primary">
+                {name.slice(0, 1).toUpperCase()}
+              </span>
+            </div>
+            <div className="ml-2 flex min-w-0 max-w-[135px] flex-1 flex-col gap-[2px]">
+              <span className="max-w-[135px] truncate text-[14px] font-[400] leading-[20px] text-text_default_primary">
+                {name}
+              </span>
+              <span className="max-w-[135px] truncate text-[12px] font-[400] leading-[16px] text-text_default_tertiary">
+                {planTier}
+              </span>
+            </div>
 
-        {/* 站内信 (inbox). Upstream keeps this entry at the end of the user row
-            (`ml-auto`) with its own tooltip and unread dot; the click must not
-            bubble into the row's menu toggle. */}
-        <button
-          type="button"
-          aria-label={alertCount > 0 ? t("inbox.entryUnread") : t("inbox.entryNoUnread")}
-          title={t("inbox.title")}
-          data-testid="inbox-entry"
-          onClick={(event) => {
-            event.stopPropagation();
-            onOpenAlerts();
-          }}
-          onPointerDown={(event) => event.stopPropagation()}
-          onMouseDown={(event) => event.stopPropagation()}
-          className="relative ml-auto flex size-8 flex-shrink-0 items-center justify-center rounded-[8px] border-0 bg-transparent p-0 text-icon_default_primary transition-colors duration-150 hover:bg-bg_interaction_tertiary_hover"
-        >
-          <Icon name="bell" size={20} />
-          {alertCount > 0 ? (
-            <span
-              data-testid="inbox-unread-dot"
-              aria-hidden="true"
-              className="absolute top-1 right-1 size-1.5 rounded-full bg-bg_interaction_danger_primary_default"
-            />
-          ) : null}
-        </button>
-      </div>
+            {/* 站内信 (inbox). Upstream keeps this entry at the end of the user row
+                (`ml-auto`) with its own tooltip and unread dot; the click must not
+                bubble into the row's menu toggle. */}
+            <button
+              type="button"
+              aria-label={alertCount > 0 ? t("inbox.entryUnread") : t("inbox.entryNoUnread")}
+              title={t("inbox.title")}
+              data-testid="inbox-entry"
+              onClick={(event) => {
+                event.stopPropagation();
+                onOpenAlerts();
+              }}
+              onPointerDown={(event) => event.stopPropagation()}
+              onMouseDown={(event) => event.stopPropagation()}
+              className="relative ml-auto flex size-8 flex-shrink-0 items-center justify-center rounded-[8px] border-0 bg-transparent p-0 text-icon_default_primary transition-colors duration-150 hover:bg-bg_interaction_tertiary_hover"
+            >
+              <Icon name="bell" size={20} />
+              {alertCount > 0 ? (
+                <span
+                  data-testid="inbox-unread-dot"
+                  aria-hidden="true"
+                  className="absolute top-1 right-1 size-1.5 rounded-full bg-bg_interaction_danger_primary_default"
+                />
+              ) : null}
+            </button>
+          </div>
+        )}
+      </Dropdown>
     </div>
   );
 }
 
 /**
- * One row of the account menu: leading glyph, label, optional trailing value or
- * chevron. `disabled` rows are the reference menu's entries this server cannot
- * back yet — they stay visible and say why on hover.
+ * One row of the account menu: an 18px leading glyph, the label, and an optional
+ * trailing chevron.
+ *
+ * This is the row's *content*; the item around it is antd's `li` — radius, hover,
+ * focus and the disabled state are the library's. The desktop splits the two the
+ * same way and its stylesheet keys off `.matrix-menu-item`, so the class is kept
+ * verbatim along with the `p-1.5` that supplies the row's padding. The item's own
+ * padding is reset to zero by the ported skin; without that reset antd's `5px
+ * 12px` would add to this and the rows would sit 20px in from the panel edge
+ * instead of 6px.
+ *
+ * `disabled` is a prop rather than something read off the item: the desktop dims
+ * the row itself (`opacity-20`) rather than relying on antd's disabled text
+ * colour, which the row's own colour class would override anyway.
  */
 function MenuRow({
   icon,
   label,
-  value,
   chevron,
   disabled,
   title,
-  onClick,
-  onMouseEnter,
-  onMouseLeave,
 }: {
   icon: Parameters<typeof Icon>[0]["name"];
-  label: string;
-  value?: string;
+  label: React.ReactNode;
   chevron?: boolean;
   disabled?: boolean;
   title?: string;
-  onClick?: () => void;
-  onMouseEnter?: () => void;
-  onMouseLeave?: () => void;
 }) {
   return (
-    <button
-      type="button"
-      role="menuitem"
-      disabled={disabled}
+    <div
       title={title}
-      onClick={onClick}
-      onMouseEnter={onMouseEnter}
-      onMouseLeave={onMouseLeave}
-      className={[
-        "flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left text-sm transition-colors",
-        disabled
-          ? "cursor-not-allowed text-text_default_tertiary opacity-50"
-          : "text-text_default_primary hover:bg-bg_interaction_tertiary_hover",
-      ].join(" ")}
+      className={`matrix-menu-item flex w-full min-w-0 items-center overflow-hidden p-1.5 text-[14px] text-text_default_primary ${
+        disabled ? "cursor-not-allowed opacity-20" : "cursor-pointer"
+      }`}
     >
-      <span
-        className={[
-          "flex size-4 flex-shrink-0 items-center justify-center",
-          disabled ? "text-icon_default_tertiary" : "text-icon_default_secondary",
-        ].join(" ")}
-      >
-        <Icon name={icon} size={16} />
-      </span>
-      <span className="min-w-0 flex-1 truncate">{label}</span>
-      {value ? (
-        <span className="flex-shrink-0 text-caption-small-strong text-text_default_tertiary">
-          {value}
-        </span>
-      ) : null}
-      {chevron ? (
-        <span className="flex flex-shrink-0 items-center justify-center text-icon_default_tertiary">
-          <Icon name="chevronRight" size={14} />
-        </span>
-      ) : null}
-    </button>
+      <div className="relative flex w-full min-w-0 items-center gap-2 md:min-w-[108px]">
+        <div
+          className="mavis-user-menu-icon flex flex-shrink-0 items-center justify-center"
+          style={{ width: 18, height: 18 }}
+        >
+          <Icon name={icon} size={18} />
+        </div>
+        <div className="flex min-w-0 flex-1 items-center font-[400] leading-5">
+          <span className="flex w-full min-w-0 items-center justify-between gap-2">
+            <span className="min-w-0 flex-1 truncate">{label}</span>
+            {chevron ? (
+              <Icon
+                name="chevronRight"
+                size={16}
+                className="shrink-0 text-icon_default_tertiary"
+              />
+            ) : null}
+          </span>
+        </div>
+      </div>
+    </div>
   );
 }
 
 /**
- * Usage row + hover Tooltip popover. Upstream uses `Tooltip trigger="hover"
- * placement="rightTop"` wrapping a chevron row, with `Q` (offset 599872) as
- * the popover content. The payload carries one figure per quota window (the
- * rolling 5-hour one and the weekly one), and the popover renders one row per
- * window.
+ * The menu's group separator.
+ *
+ * Not antd's `type: "divider"`, which draws its own line at its own inset: the
+ * desktop renders a hairline in `--border_default` as a disabled item's label, so
+ * it inherits the panel's 4px padding and the menu's item spacing. Same
+ * construction here — including the `mavis-user-menu-divider` class, which is what
+ * restores the opacity the disabled state would otherwise dim.
  */
-function UsageMenuRow({
-  t,
-  onHoverChange,
-  isOpen,
-}: {
-  t: (key: MessageKey) => string;
-  onHoverChange: (open: boolean) => void;
-  isOpen: boolean;
-}) {
-  const rowRef = useRef<HTMLButtonElement>(null);
-  // Track a wrapped hover state so the popover stays open while the cursor
-  // moves between the row and the popover itself. Without this, the row's
-  // `mouseleave` fires before the popover's `mouseenter` and the popover
-  // disappears in the same tick the user tries to read it.
-  const hoverAreaRef = useRef<HTMLDivElement>(null);
-  const [position, setPosition] = useState<{ top: number; left: number } | null>(null);
-
-  const place = useCallback(() => {
-    const el = rowRef.current;
-    if (!el) return;
-    const rect = el.getBoundingClientRect();
-    // Anchor the popover to the right of the row, vertically centered on the
-    // row. Use `left` (not `right`) so the popover naturally extends right
-    // from the row's right edge — `right: window.innerWidth - rect.left + 6`
-    // (the earlier formula) places the popover to the LEFT of the row, which
-    // is off-screen for a sidebar-on-the-left layout.
-    const popoverWidth = 260;
-    const left = Math.min(
-      rect.right + 6,
-      window.innerWidth - popoverWidth - 8,
-    );
-    setPosition({
-      top: rect.top + rect.height / 2,
-      left,
-    });
-  }, []);
-
-  useEffect(() => {
-    if (!isOpen) {
-      setPosition(null);
-      return;
-    }
-    place();
-    window.addEventListener("resize", place);
-    window.addEventListener("scroll", place, true);
-    return () => {
-      window.removeEventListener("resize", place);
-      window.removeEventListener("scroll", place, true);
-    };
-  }, [isOpen, place]);
-
-  // The hover area wraps row + popover so a single mouseEnter/Leave pair
-  // governs the open state and the row ↔ popover gap doesn't cause flicker.
+function MenuDivider() {
   return (
-    <div
-      ref={hoverAreaRef}
-      onMouseEnter={() => onHoverChange(true)}
-      onMouseLeave={() => onHoverChange(false)}
-    >
-      <button
-        ref={rowRef}
-        type="button"
-        role="menuitem"
-        data-testid="sidebar-user-usage-row"
-        onFocus={() => onHoverChange(true)}
-        onBlur={() => onHoverChange(false)}
-        className="flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left text-sm text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_hover"
-      >
-        <span className="flex size-4 flex-shrink-0 items-center justify-center text-icon_default_secondary">
-          <Icon name="gauge" size={16} />
-        </span>
-        <span className="min-w-0 flex-1 truncate">{t("toolbar.usage")}</span>
-        <span className="flex flex-shrink-0 items-center justify-center text-icon_default_tertiary">
-          <Icon name="chevronRight" size={14} />
-        </span>
-      </button>
-      {isOpen && position && typeof document !== "undefined"
-        ? createPortal(
-            <div
-              role="tooltip"
-              data-testid="sidebar-user-usage-popover"
-              style={{
-                position: "fixed",
-                top: position.top,
-                left: position.left,
-                transform: "translateY(-50%)",
-                zIndex: 110,
-              }}
-              className="w-[260px] rounded-[12px] border border-border_default bg-bg_grouped_secondary_elevated p-3 shadow-shadow_default"
-            >
-              <UsagePopover t={t} />
-            </div>,
-            document.body,
-          )
-        : null}
+    <div className="mavis-user-menu-divider pointer-events-none flex h-[4px] items-center">
+      <div className="h-[1px] w-full bg-border_default" />
     </div>
+  );
+}
+
+/**
+ * The usage row's label: the text plus a chevron that opens the quota flyout on
+ * hover.
+ *
+ * antd `Popover` rather than the hand-rolled flyout this replaces — the portal,
+ * the placement and the gap between the row and the panel are the library's, and
+ * each of those was a defect here at some point (the old formula resolved from the
+ * wrong edge and opened off-screen; its `mouseleave` fired before the panel's
+ * `mouseenter` and the panel vanished in the same tick). The delays and the offset
+ * are the desktop's.
+ *
+ * The row is a menu item's click target, so the flyout stops the click: opening
+ * the quota panel must not also close the menu behind it.
+ */
+function UsageLabel({ t }: { t: (key: MessageKey) => string }) {
+  return (
+    <Popover
+      trigger="hover"
+      placement="rightTop"
+      align={{ offset: [4, -4] }}
+      mouseEnterDelay={0.05}
+      mouseLeaveDelay={0.15}
+      arrow={false}
+      overlayClassName="mavis-popover-overlay mavis-usage-popover-overlay"
+      content={<UsagePopover t={t} />}
+    >
+      <span
+        data-testid="sidebar-user-usage-row"
+        onClick={(event) => event.stopPropagation()}
+        className="inline-flex w-full cursor-default items-center justify-between gap-2"
+      >
+        <span>{t("toolbar.usage")}</span>
+        <Icon name="chevronRight" size={16} className="shrink-0 text-icon_default_tertiary" />
+      </span>
+    </Popover>
   );
 }
 
@@ -840,9 +791,9 @@ function UsagePopover({ t }: { t: (key: MessageKey) => string }) {
   ].filter((w) => typeof w.remaining === "number");
 
   return (
-    <div className="flex flex-col gap-2">
-      <div className="flex items-center justify-between">
-        <span className="text-caption-small-strong text-text_default_primary">{t("usagePopover.title")}</span>
+    <div data-testid="sidebar-user-usage-popover" className="flex w-full flex-col gap-2">
+      <div className="flex items-center justify-between px-2 pt-1">
+        <span className="text-[14px] leading-5 text-text_default_primary">{t("usagePopover.title")}</span>
         <button
           type="button"
           // `record` — the user asked for fresh figures, so this reading is also
@@ -856,43 +807,39 @@ function UsagePopover({ t }: { t: (key: MessageKey) => string }) {
         </button>
       </div>
       {error ? (
-        <div className="flex flex-col gap-1">
-          <span className="text-caption-small-strong text-text_default_primary">{t("usagePopover.errorTitle")}</span>
-          <span className="text-caption-small text-text_default_tertiary">{t("usagePopover.errorBody")}</span>
+        <div className="flex flex-col gap-1 px-2">
+          <span className="text-[14px] leading-5 text-text_default_primary">{t("usagePopover.errorTitle")}</span>
+          <span className="text-[12px] leading-4 text-text_default_secondary">{t("usagePopover.errorBody")}</span>
         </div>
       ) : quota?.ok && windows.length > 0 ? (
-        <div className="flex flex-col gap-2">
-          {windows.map((w) => {
-            // `remaining` is what is left, so the bar fills as it is consumed.
-            const used = Math.max(0, Math.min(100, 100 - (w.remaining as number)));
-            const reset = w.resetAt
-              ? new Date(w.resetAt > 1e12 ? w.resetAt : w.resetAt * 1000).toLocaleString()
-              : null;
-            return (
-              <div key={w.key} className="flex flex-col gap-1.5">
-                <div className="flex items-baseline justify-between">
-                  <span className="text-caption-small text-text_default_tertiary">{w.label}</span>
-                  <span className="text-caption-small-strong text-text_default_primary">
-                    {t("usage.used")} {used}%
-                  </span>
-                </div>
-                <div className="h-1 w-full overflow-hidden rounded-full bg-bg_grouped_primary">
-                  <div
-                    className="h-full rounded-full bg-bg_interaction_primary_default"
-                    style={{ width: `${used}%` }}
-                  />
-                </div>
-                {reset ? (
-                  <span className="text-caption-small text-text_default_tertiary">
-                    {t("usage.reset")}: {reset}
-                  </span>
-                ) : null}
+        windows.map((w) => {
+          // `remaining` is what is left; the row reports what was used. The
+          // desktop's row is text only — it draws no bar, so neither does this.
+          const used = Math.max(0, Math.min(100, 100 - (w.remaining as number)));
+          const reset = w.resetAt
+            ? new Date(w.resetAt > 1e12 ? w.resetAt : w.resetAt * 1000).toLocaleString()
+            : null;
+          return (
+            <div key={w.key} className="flex flex-col gap-1 overflow-hidden rounded-[8px] px-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[14px] font-normal leading-5 text-text_default_primary">{w.label}</span>
+                <span className="text-[14px] font-normal leading-5 text-text_default_primary">
+                  {t("usage.used")} {used}%
+                </span>
               </div>
-            );
-          })}
-        </div>
+              {reset ? (
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[12px] leading-4 text-text_default_secondary">{t("usage.reset")}</span>
+                  <span className="text-[12px] leading-4 text-text_default_secondary">{reset}</span>
+                </div>
+              ) : null}
+            </div>
+          );
+        })
       ) : (
-        <span className="text-caption-small text-text_default_tertiary">{t("usagePopover.unavailable")}</span>
+        <span className="px-2 text-[12px] leading-4 text-text_default_secondary">
+          {t("usagePopover.unavailable")}
+        </span>
       )}
     </div>
   );

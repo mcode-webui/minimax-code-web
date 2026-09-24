@@ -271,8 +271,17 @@ export const getAccount = () => request<AccountPayload>("/api/account");
 export const setModel = (model: string) =>
   request<{ ok: boolean }>("/api/set-model", { method: "POST", json: { model } });
 
-export const setPermissions = (permissions: string) =>
-  request<{ ok: boolean }>("/api/permissions", { method: "POST", json: { permissions } });
+/**
+ * Change the session's permission mode.
+ *
+ * The body key is `mode` because that is what `handleSetPermissions` reads
+ * (`server/routes/model.js`, which documents `{ mode: 'ask'|'auto'|'read'|'full' }`).
+ * This used to send `permissions`, which the route does not look at: it fell
+ * through to its `full` default, so *every* choice — including "Ask" — silently
+ * applied `bypassPermissions`. See `webapp/test/api-permissions.test.ts`.
+ */
+export const setPermissions = (mode: string) =>
+  request<{ ok: boolean }>("/api/permissions", { method: "POST", json: { mode } });
 
 /**
  * Answer a pending permission prompt or plan review.

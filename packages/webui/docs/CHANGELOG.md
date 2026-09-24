@@ -13,6 +13,23 @@ landed on the development branch but are not yet cut into a release.
 
 ### Added
 
+- **界面组件改为 antd v5**（与桌面端同库同版本，`antd@5.29.3`）。此前本前端把 antd
+  的行为手写了一遍，账号二级菜单、用量悬浮卡、composer 的两个选择器都因此出过
+  hover/portal/定位类缺陷。已完成三块：
+  - **账号菜单**：`Dropdown` + `Menu`，面板、行、分隔线、用量行按桌面端自身结构重做
+    （面板 244 宽 / 4px 内边距 / 12px 圆角 / `0 0 10px 0` 阴影，行内边距 6px、图标盒
+    18px，分隔线 8px 高），桌面端的 `mavis-dropdown` 皮肤逐条移植到
+    `webapp/styles/mavis-dropdown.css`，删掉约 110 行手写的外部点击/Escape/hover/定位
+    代码。用量悬浮卡改为桌面端的双行形态，**删掉手写进度条**（桌面端不画）。
+  - **composer 的权限与模型选择器**：`Dropdown`，弹层按桌面端的
+    `mavis-dropdown-custom-content` 约定（透明包装 + 面板自绘）。权限行补齐了桌面端
+    的三个字形（`permissionAsk` / `permissionAuto` / `checkSmall`），箭头在展开时翻转
+    向上。删掉两个选择器共用的约 90 行手写弹层。
+  - **阻塞型提示弹窗**（plan / ask / 授权）：antd `Modal`，套桌面端已移植的
+    `mavis-confirm-modal-compact*` 皮肤（遮罩 `#00000040`、面板无边框 + 20px 圆角 +
+    `0 0 48px -12px` 阴影、标题 590）。「不可关闭」改为显式三个 prop
+    （`closable` / `keyboard` / `maskClosable`），不再靠"少挂监听器"实现。
+  设计取舍与不变量见 `docs/ANTD-MIGRATION.md`。
 - **会话重命名（增删改查的"改"）**：`POST /api/sessions/rename` + sidebar 行内
   重命名（✎ 按钮，Enter/失焦提交、Esc 取消）。标题以用户为准（`titleCustom`
   标记），mcode 自动标题生成永不覆盖；sidebar 的 mcode 条目 merge 时用户改名
@@ -61,6 +78,12 @@ landed on the development branch but are not yet cut into a release.
 
 ### Fixed
 
+- **权限模式选择器从未生效，且会把权限降级为「始终授权」**：前端发
+  `{ permissions }`，而 `handleSetPermissions` 读的是 `payload.mode`；路由对不认识的
+  body 不报错，落回自己的 `full` 默认值 —— 于是用户选「主动询问」实际下发的是
+  `bypassPermissions`。前端改为发 `{ mode }`，并补了 `webapp/test/api-permissions.test.ts`
+  钉住请求体形状（路由自己的单测是按路由的契约造 body 的，所以两边只和路由一致、
+  发现不了这个错位）。
 - **`POST /api/sessions` 的工作区绕道**：`body.workspace` 是用户输入，此前
   原样落库并写入 `cs.workspace`（不校验存在性、不走 containment、不 resolve），
   等于绕过 `POST /api/workspace` 的允许根围栏。现在复用 `assertWorkspacePath`

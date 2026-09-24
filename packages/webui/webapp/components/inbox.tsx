@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Empty } from "antd";
 import { createPortal } from "react-dom";
 
 import { useAlerts } from "@/lib/alerts";
@@ -154,7 +155,13 @@ export function InboxList({ t }: { t: (key: MessageKey) => string }) {
 
   if (alerts.length === 0) {
     return (
-      <p className="px-2 py-6 text-center text-sm text-text_default_tertiary">{t("alerts.empty")}</p>
+      <div className="px-2 py-6" data-testid="alerts-empty">
+        <Empty
+          image={Empty.PRESENTED_IMAGE_SIMPLE}
+          description={t("alerts.empty")}
+          styles={{ image: { height: 36 } }}
+        />
+      </div>
     );
   }
 

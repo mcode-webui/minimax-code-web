@@ -1,5 +1,6 @@
 "use client";
 
+import { Dropdown } from "antd";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
@@ -8,7 +9,7 @@ import { useSessionContext } from "@/lib/store";
 import { decodeTranscript } from "@/lib/transcript";
 import { translate, type Locale, type MessageKey } from "@/lib/i18n";
 import { ContextMeter } from "./context-meter";
-import { Icon } from "./icons";
+import { Icon, type IconName } from "./icons";
 
 /**
  * Message composer.
@@ -19,12 +20,9 @@ import { Icon } from "./icons";
  * plus send button on the right. The card uses upstream's asymmetric radius
  * (tl/tr 20px, bl/br 24px) on `bg-default-scrim`.
  *
- * Two deliberate substitutions, both forced by the dependency boundary (this
- * package ships no runtime libraries beyond React):
- *   - upstream edits with Tiptap/ProseMirror; this is a `textarea` styled with the
- *     same `rich-text-editor` class, so the typography and caret colour match.
- *   - upstream's dropdowns are antd; `Menu` below reproduces the container styling
- *     from the token layer.
+ * One deliberate substitution, forced by the dependency boundary: upstream edits
+ * with Tiptap/ProseMirror; this is a `textarea` styled with the same
+ * `rich-text-editor` class, so the typography and caret colour match.
  */
 
 /**
@@ -65,10 +63,20 @@ export function isFileDrag(types: ArrayLike<string> | null | undefined): boolean
  * byte-identical to `webuiModeToLabel`, because that label is what the server
  * reports and what `resolvePermissionMode` matches on.
  */
-const PERMISSION_MODES: { id: string; key: MessageKey; selectable: boolean }[] = [
-  { id: "ask", key: "permission.ask", selectable: true },
-  { id: "auto", key: "permission.auto", selectable: true },
-  { id: "full", key: "permission.full", selectable: true },
+/**
+ * The selectable permission modes, in the desktop's order, with the glyph the
+ * desktop draws for each. `read` and `off` are not offered — the desktop's menu
+ * has exactly these three — so they carry no icon rather than an invented one.
+ *
+ * The ids are this server's wire ids (`PERMISSION_PRESETS` in
+ * `server/lib/interaction/permission-presets.js`), not the engine's values the
+ * desktop's option testids encode: `ask`/`full` here are `default`/
+ * `bypassPermissions` on the wire.
+ */
+const PERMISSION_MODES: { id: string; key: MessageKey; icon?: IconName; selectable: boolean }[] = [
+  { id: "ask", key: "permission.ask", icon: "permissionAsk", selectable: true },
+  { id: "auto", key: "permission.auto", icon: "permissionAuto", selectable: true },
+  { id: "full", key: "permission.full", icon: "reply", selectable: true },
   { id: "read", key: "permission.read", selectable: false },
   { id: "off", key: "permission.off", selectable: false },
 ];
@@ -425,65 +433,23 @@ export function Composer({ t, inline = false }: { t: (key: MessageKey) => string
                 <Icon name="attach" size={18} />
               </RoundButton>
 
-              <Menu
-                label={t("permission.label")}
-                trigger={
-                  <button
-                    type="button"
-                    data-testid="permission-mode-trigger"
-                    className="desktop-text-ui-body flex h-[30px] items-center gap-1 rounded-[10px] px-2 text-sm text-text_default_tertiary transition-colors hover:bg-bg_interaction_tertiary_hover"
-                  >
-                    <Icon name="reply" size={15} />
-                    <span className="permission-mode-trigger-label whitespace-nowrap">
-                      {t(PERMISSION_MODES.find((m) => m.id === permission)?.key ?? "permission.full")}
-                    </span>
-                    <Icon name="chevronDown" size={14} />
-                  </button>
-                }
-              >
-                {PERMISSION_MODES.filter((mode) => mode.selectable).map((mode) => (
-                  <MenuItem
-                    key={mode.id}
-                    selected={mode.id === permission}
-                    onClick={() => void api.setPermissions(mode.id)}
-                  >
-                    {t(mode.key)}
-                  </MenuItem>
-                ))}
-              </Menu>
+              <PermissionSelect
+                t={t}
+                value={permission}
+                onPick={(id) => void api.setPermissions(id)}
+              />
             </div>
 
-            <div className="flex min-w-0 shrink items-center gap-2">
+            <div className="flex min-w-0 shrink items-center gap-3" data-message-input-toolbar-right>
               {/* Context-window readout, immediately left of the model selector. */}
               <ContextMeter t={t} />
-              <Menu
-                label={t("composer.model")}
-                align="right"
-                trigger={
-                  <button
-                    type="button"
-                    className="flex h-8 min-w-0 items-center gap-1 rounded-[10px] pl-2.5 pr-2 text-sm text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_hover"
-                  >
-                    <span className="max-w-[180px] truncate whitespace-nowrap">
-                      {currentModelLabel}
-                    </span>
-                    <Icon name="chevronDown" size={14} />
-                  </button>
-                }
-              >
-                {models.length === 0 ? (
-                  <MenuItem onClick={() => {}}>{t("composer.noModels")}</MenuItem>
-                ) : null}
-                {models.map((model) => (
-                  <MenuItem
-                    key={model.id}
-                    selected={model.id === state?.model.name}
-                    onClick={() => void api.setModel(model.id)}
-                  >
-                    {modelDisplayName(model.label)}
-                  </MenuItem>
-                ))}
-              </Menu>
+              <ModelSelect
+                t={t}
+                models={models}
+                value={state?.model.name}
+                label={currentModelLabel}
+                onPick={(id) => void api.setModel(id)}
+              />
 
               {running ? (
                 /* Upstream's stop control is a 30px circle in the quaternary icon
@@ -511,7 +477,7 @@ export function Composer({ t, inline = false }: { t: (key: MessageKey) => string
                     title={`${t("composer.mic")} — ${t("common.unsupported")}`}
                     data-testid="composer-mic-button"
                     disabled
-                    className="flex size-[30px] shrink-0 cursor-not-allowed items-center justify-center rounded-[10px] text-icon_default_secondary opacity-40"
+                    className="flex size-8 shrink-0 cursor-not-allowed items-center justify-center rounded-[10px] text-icon_default_secondary opacity-40"
                   >
                     <Icon name="mic" size={18} />
                   </button>
@@ -522,7 +488,7 @@ export function Composer({ t, inline = false }: { t: (key: MessageKey) => string
                     data-testid="composer-send-button"
                     disabled={readOnly || sending || empty}
                     onClick={() => void submit()}
-                    className="flex size-[30px] shrink-0 items-center justify-center rounded-[10px] text-icon_interaction_primary_default transition-colors bg-bg_interaction_primary_default hover:opacity-90 disabled:bg-bg_interaction_primary_inactive"
+                    className="flex size-8 shrink-0 select-none items-center justify-center rounded-[10px] bg-bg_interaction_primary_default text-icon_interaction_primary_default transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:bg-bg_interaction_primary_inactive"
                   >
                     <Icon name="send" size={18} />
                   </button>
@@ -571,6 +537,15 @@ export function Composer({ t, inline = false }: { t: (key: MessageKey) => string
   );
 }
 
+/**
+ * A 32px square icon button in the toolbar's left group.
+ *
+ * The class list is the desktop's attach control, measured on the running
+ * client: `w-8 h-8` (32px, not the 30px the send button used to be) with a 10px
+ * radius, the secondary icon colour and the tertiary hover wash. The desktop
+ * makes this a `div role="button" tabindex="0"`; a real `<button>` is the same
+ * shape and is focusable and operable by keyboard without the extra wiring.
+ */
 function RoundButton({
   label,
   onClick,
@@ -589,7 +564,7 @@ function RoundButton({
       title={label}
       data-testid={testId}
       onClick={onClick}
-      className="flex size-[30px] shrink-0 cursor-pointer items-center justify-center rounded-[10px] text-icon_default_secondary transition-colors hover:bg-bg_interaction_tertiary_hover"
+      className="flex h-8 w-8 shrink-0 cursor-pointer select-none items-center justify-center rounded-[10px] text-icon_default_secondary transition-colors hover:bg-bg_interaction_tertiary_hover"
     >
       {children}
     </button>
@@ -597,130 +572,222 @@ function RoundButton({
 }
 
 /**
- * Popup used by the composer's permission and model controls.
+ * The panel both composer selectors open into.
  *
- * The panel is portalled to `document.body` and positioned with `fixed` from
- * the trigger's rect, instead of being an `absolute` child of the trigger.
- * Fixed positioning inside a body portal removes the whole class of failure
- * where an `absolute` child was painted/clipped by the composer's
- * `overflow-hidden` ancestors; the position is also clamped to the viewport.
- *
- * Dismissal contract is outside click / Escape; scroll and resize just
- * reposition the panel (a fixed panel must keep tracking its trigger).
+ * antd's `Dropdown` is the shell — portal, placement, dismissal, and the
+ * `ant-dropdown-trigger` wiring on the child — and this is the content, which is
+ * how the desktop builds these too: its composer popups are
+ * `mavis-dropdown-custom-content`, i.e. a transparent wrapper (ported in
+ * `styles/mavis-dropdown.css`) around a panel that draws its own chrome. The
+ * class list here is the desktop's, measured on the running client:
+ * `min-w-[160px]`, a 12px radius, a hairline in `--border_default`, the elevated
+ * background, 4px padding, and a 20px offset-less shadow.
  */
-function Menu({
-  label,
-  align = "left",
-  trigger,
-  children,
-}: {
-  label: string;
-  align?: "left" | "right";
-  trigger: React.ReactNode;
-  children: React.ReactNode;
-}) {
-  const [open, setOpen] = useState(false);
-  const [placement, setPlacement] = useState<{ left: number; bottom: number; minWidth: number } | null>(null);
-  const rootRef = useRef<HTMLDivElement>(null);
-  const panelRef = useRef<HTMLDivElement>(null);
-
-  const place = useCallback(() => {
-    const element = rootRef.current;
-    if (!element) return;
-    const rect = element.getBoundingClientRect();
-    const width = Math.max(160, rect.width);
-    const left =
-      align === "right"
-        ? Math.min(window.innerWidth - 8 - width, rect.right - width)
-        : Math.min(Math.max(8, rect.left), Math.max(8, window.innerWidth - 8 - width));
-    setPlacement({ left, bottom: window.innerHeight - rect.top + 6, minWidth: width });
-  }, [align]);
-
-  useEffect(() => {
-    if (open) place();
-    else setPlacement(null);
-  }, [open, place]);
-
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (event: MouseEvent) => {
-      const target = event.target as Node;
-      // The panel lives outside `rootRef`, so both are checked — otherwise
-      // mousedown inside the panel would close it before the click landed.
-      if (rootRef.current?.contains(target) || panelRef.current?.contains(target)) return;
-      setOpen(false);
-    };
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
-    };
-    // Reposition rather than close: a fixed panel has to keep tracking its
-    // trigger, and a click can scroll the page on its own.
-    const onMove = () => place();
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    window.addEventListener("resize", onMove);
-    window.addEventListener("scroll", onMove, true);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-      window.removeEventListener("resize", onMove);
-      window.removeEventListener("scroll", onMove, true);
-    };
-  }, [open, place]);
-
+function SelectPanel({ testId, children }: { testId: string; children: React.ReactNode }) {
   return (
-    <div ref={rootRef} className="relative">
-      <div
-        onClick={() => setOpen((current) => !current)}
-        onKeyDown={(event) => {
-          if (event.key === "Enter" || event.key === " ") setOpen((current) => !current);
-        }}
-        role="button"
-        tabIndex={0}
-        aria-label={label}
-        aria-expanded={open}
-      >
-        {trigger}
-      </div>
-      {open && placement && typeof document !== "undefined"
-        ? createPortal(
-            <div
-              ref={panelRef}
-              role="menu"
-              aria-label={label}
-              style={{ left: placement.left, bottom: placement.bottom, minWidth: placement.minWidth }}
-              className="fixed z-[200] rounded-[12px] border-[0.5px] border-border_default bg-bg_grouped_secondary_elevated p-1 shadow-[0_0_20px_rgba(10,10,10,0.08)]"
-            >
-              {children}
-            </div>,
-            document.body,
-          )
-        : null}
+    <div
+      data-testid={testId}
+      className="min-w-[160px] rounded-[12px] border border-border_default bg-bg_grouped_secondary_elevated p-1 shadow-[0_0_20px_rgba(10,10,10,0.08)]"
+    >
+      {children}
     </div>
   );
 }
 
-function MenuItem({
+/**
+ * One row of a `SelectPanel`.
+ *
+ * A plain button, not an antd `Menu` item: the desktop renders these popups as
+ * custom content, and its rows are buttons. The tick sits in a fixed 14px
+ * trailing slot so a selected row's label starts on the same x as its
+ * neighbours' — the same reason the desktop reserves the slot.
+ */
+function SelectRow({
+  testId,
+  icon,
+  label,
   selected,
   onClick,
-  children,
 }: {
+  testId: string;
+  icon?: IconName;
+  label: string;
   selected?: boolean;
-  onClick: () => void;
-  children: React.ReactNode;
+  onClick?: () => void;
 }) {
   return (
     <button
       type="button"
+      data-testid={testId}
       onClick={onClick}
-      className={[
-        "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition-colors hover:bg-bg_interaction_tertiary_hover",
-        selected ? "text-text_default_accent" : "text-text_default_primary",
-      ].join(" ")}
+      className="flex w-full items-center gap-2 rounded-[8px] px-2 py-1 text-left transition-colors hover:bg-bg_interaction_tertiary_hover"
     >
-      <span className="min-w-0 flex-1 truncate">{children}</span>
-      {selected ? <span className="text-caption-small-strong">✓</span> : null}
+      {icon ? <Icon name={icon} size={16} className="text-icon_default_secondary" /> : null}
+      <span className="min-w-0 flex-1 truncate text-sm font-normal leading-5 text-text_default_primary">
+        {label}
+      </span>
+      <span className="w-3.5 flex-shrink-0">
+        {selected ? <Icon name="checkSmall" size={14} className="text-text_default_primary" /> : null}
+      </span>
     </button>
+  );
+}
+
+/**
+ * Permission-mode selector.
+ *
+ * The trigger is the desktop's, measured on the running client: a 32px pill in
+ * the secondary text colour whose leading glyph is the *selected* mode's, with a
+ * chevron that flips to point up while the menu is showing. The rows are the
+ * three selectable modes; `read` and `off` are not offered because the desktop's
+ * menu has exactly three, and the ids here are this server's wire ids rather
+ * than the engine values the desktop's option testids encode (see
+ * `PERMISSION_MODES`).
+ */
+function PermissionSelect({
+  t,
+  value,
+  onPick,
+}: {
+  t: (key: MessageKey) => string;
+  value: string;
+  onPick: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const modes = PERMISSION_MODES.filter((mode) => mode.selectable);
+  // Unknown value → the `full` entry, which is what the server defaults to as
+  // well. Optional throughout rather than asserted: the lookup cannot miss, but
+  // an assertion would be a claim the compiler cannot check either.
+  const current =
+    PERMISSION_MODES.find((mode) => mode.id === value && mode.selectable) ??
+    PERMISSION_MODES.find((mode) => mode.id === "full");
+
+  return (
+    <Dropdown
+      open={open}
+      onOpenChange={setOpen}
+      trigger={["click"]}
+      placement="bottomLeft"
+      overlayClassName="mavis-dropdown mavis-dropdown-compact mavis-dropdown-custom-content"
+      popupRender={() => (
+        <SelectPanel testId="permission-mode-dropdown">
+          {modes.map((mode) => (
+            <SelectRow
+              key={mode.id}
+              testId={`permission-mode-option-${mode.id}`}
+              icon={mode.icon}
+              label={t(mode.key)}
+              selected={mode.id === current?.id}
+              onClick={() => {
+                setOpen(false);
+                onPick(mode.id);
+              }}
+            />
+          ))}
+        </SelectPanel>
+      )}
+    >
+      <button
+        type="button"
+        data-testid="permission-mode-trigger"
+        aria-label={t(current?.key ?? "permission.full")}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        className="flex h-8 items-center gap-1 rounded-[10px] px-2 text-sm text-text_default_secondary transition-colors hover:bg-bg_interaction_tertiary_hover"
+      >
+        {current?.icon ? (
+          <Icon name={current.icon} size={18} className="text-icon_default_secondary" />
+        ) : null}
+        <span
+          data-testid="permission-mode-label"
+          className="permission-mode-trigger-label whitespace-nowrap"
+        >
+          {t(current?.key ?? "permission.full")}
+        </span>
+        <Icon
+          name={open ? "chevronUp" : "chevronDown"}
+          size={16}
+          className="text-icon_default_tertiary"
+        />
+      </button>
+    </Dropdown>
+  );
+}
+
+/**
+ * Model selector.
+ *
+ * Same shell and panel as `PermissionSelect`. The desktop's own model popover is
+ * hand-rolled rather than an antd dropdown, and it does not open under synthetic
+ * input, so its panel could not be captured — the chrome here follows the
+ * composer's other popups instead of inventing a third look. `bottomRight` keeps
+ * a long model name from opening past the right edge, which is where this
+ * control sits.
+ *
+ * The label is the caller's: resolving a model id to a display name is this
+ * frontend's own mapping, and antd has nothing to say about it.
+ */
+function ModelSelect({
+  t,
+  models,
+  value,
+  label,
+  onPick,
+}: {
+  t: (key: MessageKey) => string;
+  models: { id: string; label: string }[];
+  value?: string;
+  label: string;
+  onPick: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <Dropdown
+      open={open}
+      onOpenChange={setOpen}
+      trigger={["click"]}
+      placement="bottomRight"
+      overlayClassName="mavis-dropdown mavis-dropdown-compact mavis-dropdown-custom-content"
+      popupRender={() => (
+        <SelectPanel testId="model-select-panel">
+          {models.length === 0 ? (
+            <SelectRow testId="model-select-empty" label={t("composer.noModels")} />
+          ) : (
+            models.map((model) => (
+              <SelectRow
+                key={model.id}
+                testId={`model-select-option-${modelSlug(model.id)}`}
+                label={modelDisplayName(model.label)}
+                selected={model.id === value}
+                onClick={() => {
+                  setOpen(false);
+                  onPick(model.id);
+                }}
+              />
+            ))
+          )}
+        </SelectPanel>
+      )}
+    >
+      <button
+        type="button"
+        data-testid="model-selector-trigger"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        className="flex h-8 min-w-0 items-center gap-1 rounded-[10px] pl-2.5 pr-2 text-sm text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_hover"
+      >
+        {/* `truncate` where the desktop relies on `whitespace-nowrap`: model ids
+            come from arbitrary providers, and an unbounded chip would squeeze
+            the toolbar's left group instead of clipping itself. */}
+        <span className="max-w-[180px] truncate whitespace-nowrap">{label}</span>
+        <Icon
+          name={open ? "chevronUp" : "chevronDown"}
+          size={16}
+          className="text-icon_default_tertiary"
+        />
+      </button>
+    </Dropdown>
   );
 }
 
@@ -736,6 +803,20 @@ function modelDisplayName(name?: string | null): string {
   if (!value) return "";
   const parts = value.split("/");
   return (parts[parts.length - 1] ?? "").trim() || value;
+}
+
+/**
+ * A model id as a `data-testid` suffix.
+ *
+ * Engine model ids are `m:<provider>:<model>:v:<variant>`, with `:` and `/` in
+ * them, so they cannot be used raw. Collapsing the runs of punctuation keeps the
+ * id recognisable in a selector while staying a valid attribute value.
+ */
+function modelSlug(id: string): string {
+  return id
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
 }
 
 /**

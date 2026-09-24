@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Input as AntInput, type InputRef, Segmented as AntSegmented, Switch } from "antd";
 
 import * as api from "@/lib/api";
 import { useAlerts } from "@/lib/alerts";
@@ -187,13 +188,17 @@ export function SettingsModal({
             >
               <Icon name="reply" size={16} className="rotate-180" />
             </button>
-            <input
+            <AntInput
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               placeholder={t("settings.searchPlaceholder")}
               aria-label={t("settings.searchPlaceholder")}
               data-testid="settings-search-input"
-              className="h-8 min-w-0 flex-1 rounded-[8px] border border-border_default bg-bg_grouped_primary px-2 text-sm text-text_default_primary outline-none placeholder:text-text_default_tertiary"
+              // .mavis-input is the desktop skin (36px / 8px radius / token-based
+              // bg/border). The previous hand-rolled <input> was 32px / 8px — the
+              // extra 4px come from the official desktop class. Acceptable: this is
+              // a settings-modal search field, not a 1:1 match to a desktop widget.
+              className="mavis-input min-w-0 flex-1"
             />
           </div>
 
@@ -492,13 +497,13 @@ function FilesPanel({ t }: { t: (key: MessageKey) => string }) {
           narrows that directory's contents. Case-insensitive, with `*` / `?`
           globs, exactly what the placeholder promises. */}
       <div className="flex items-center gap-1">
-        <input
+        <AntInput
           value={filter}
           onChange={(event) => setFilter(event.target.value)}
           placeholder={t("files.filterPlaceholder")}
           aria-label={t("files.filterPlaceholder")}
           data-testid="files-filter"
-          className="h-8 min-w-0 flex-1 rounded-[8px] border border-border_default bg-bg_grouped_primary px-2 text-sm text-text_default_primary outline-none placeholder:text-text_default_tertiary"
+          className="mavis-input min-w-0 flex-1"
         />
         {filter ? (
           <button
@@ -947,25 +952,12 @@ function Toggle({
   return (
     <label className="flex cursor-pointer items-center justify-between gap-2">
       <span className="text-sm text-text_default_primary">{label}</span>
-      <button
-        type="button"
-        role="switch"
-        aria-checked={checked}
-        aria-label={label}
+      <Switch
+        checked={checked}
         disabled={disabled}
-        onClick={() => onChange(!checked)}
-        className={[
-          "relative h-5 w-9 flex-none rounded-full transition-colors disabled:opacity-50",
-          checked ? "bg-bg_interaction_primary_default" : "bg-bg_interaction_secondary_default",
-        ].join(" ")}
-      >
-        <span
-          className={[
-            "absolute top-0.5 size-4 rounded-full bg-bg_default_primary transition-[left]",
-            checked ? "left-[18px]" : "left-0.5",
-          ].join(" ")}
-        />
-      </button>
+        aria-label={label}
+        onChange={(value) => onChange(value)}
+      />
     </label>
   );
 }
@@ -1035,31 +1027,18 @@ function Segmented({
   return (
     <div className="flex items-center justify-between gap-2">
       <span className="text-sm text-text_default_primary">{label}</span>
-      <div
-        role="group"
-        aria-label={label}
-        className="flex h-7 flex-none items-center rounded-full border border-border_default bg-bg_default_primary p-0.5"
-      >
-        {options.map((option) => {
-          const selected = option.id === value;
-          return (
-            <button
-              key={option.id}
-              type="button"
-              aria-pressed={selected}
-              onClick={() => onChange(option.id)}
-              className={[
-                "flex h-6 items-center justify-center rounded-full px-2 text-caption-small-strong transition-colors",
-                selected
-                  ? "bg-bg_interaction_tertiary_hover text-text_default_primary"
-                  : "text-text_default_tertiary hover:text-text_default_primary",
-              ].join(" ")}
-            >
-              {option.label}
-            </button>
-          );
-        })}
-      </div>
+      <AntSegmented
+        className="mavis-segmented"
+        // antd's options carry {label, value}; we accept {id, label} from
+        // callers for backwards compatibility (see ThemeSwitch /
+        // LanguageSwitch).
+        options={options.map((option) => ({
+          label: option.label,
+          value: option.id,
+        }))}
+        value={value}
+        onChange={(next) => onChange(String(next))}
+      />
     </div>
   );
 }
@@ -1084,10 +1063,10 @@ function SearchPanel({
   const [busy, setBusy] = useState(false);
   const [searched, setSearched] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<InputRef>(null);
 
   useEffect(() => {
-    inputRef.current?.focus();
+    inputRef.current?.input?.focus();
   }, []);
 
   useEffect(() => {
@@ -1114,12 +1093,12 @@ function SearchPanel({
 
   return (
     <div className="flex flex-col gap-3">
-      <input
+      <AntInput
         ref={inputRef}
         value={query}
         onChange={(event) => setQuery(event.target.value)}
         placeholder={t("search.placeholder")}
-        className="h-8 rounded-lg border border-border_default bg-bg_grouped_secondary_elevated px-2 text-sm text-text_default_primary outline-none placeholder:text-text_default_tertiary"
+        className="mavis-input"
       />
 
       {busy ? <span className="text-caption-small-strong text-text_default_tertiary">…</span> : null}
