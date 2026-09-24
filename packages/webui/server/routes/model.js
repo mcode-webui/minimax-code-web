@@ -82,7 +82,7 @@ export async function handleSetModel(req, res, ctx) {
   let mcodeSynced = false;
   let warning = sid ? null : "no mcode session yet — recorded for the next one";
   if (sid) {
-    const r = await setConfigOption(sid, "model", modelId);
+    const r = await setConfigOption(sid, "model", modelId, ctx.cid);
     mcodeSynced = r.ok;
     if (!r.ok) warning = r.error;
   }
@@ -114,7 +114,7 @@ export async function handleSetPermissions(req, res, ctx) {
   let mcodeSynced = false;
   let warning = sid ? null : "no mcode session yet — applies to the next one";
   if (sid && mcodeValue) {
-    const r = await setConfigOption(sid, "permissionMode", mcodeValue);
+    const r = await setConfigOption(sid, "permissionMode", mcodeValue, ctx.cid);
     mcodeSynced = r.ok;
     if (!r.ok) warning = r.error;
   }

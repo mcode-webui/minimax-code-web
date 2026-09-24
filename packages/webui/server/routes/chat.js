@@ -269,7 +269,7 @@ export async function handleStop(_req, res, ctx) {
   //    active prompt's AbortController; there is no reply, so `ok` means "sent".
   if (cs && cs.mcodeSessionId) {
     try {
-      const r = await cancelSession(cs.mcodeSessionId);
+      const r = await cancelSession(cs.mcodeSessionId, ctx.cid);
       if (r.ok) cancelled = true;
       else {
         // No client to notify — worth a line in the log before the SIGKILL.

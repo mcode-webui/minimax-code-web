@@ -10,7 +10,7 @@
 // route layer maps `code` onto a status rather than answering 500.
 
 import { getMcodeAcpClient, listAllMcodeSessions } from "./acp-client.js";
-import { getActiveRegistry, probeParamsFor, CAPABILITY_UI } from "./capability.js";
+import { getActiveChild } from "./state-bus.js";
 
 function ok(data) {
   return { ok: true, data };
@@ -35,8 +35,38 @@ function fail(error, code) {
   return { ok: false, error: sanitizeError(error), code: code || "rpc_error" };
 }
 
-async function callRpc(method, params) {
-  const client = await getMcodeAcpClient();
+/**
+ * Pick the right acp client for a session-bound RPC.
+ *
+ * `runMcodeAcp` (server/lib/mcode-acp.js) creates a fresh `McodeAcpClient`
+ * per prompt and registers it on the cid's "active child". The transport the
+ * singleton (`getMcodeAcpClient()`) opens is a different process, so a
+ * request/notification routed through the singleton lands on a subprocess
+ * whose `sessions` map does not contain the one the caller is operating on;
+ * `requireAttachedSession` on the engine side then refuses the call, and
+ * the route silently returns "not synced" — the route layer's `mcodeSynced`
+ * stays false and the user sees nothing change. See mcode-rpc.js history
+ * for the matching entry point and tests/server/mcode-rpc.test.js for the
+ * regression test that asserts this dispatch.
+ *
+ * Falls back to the singleton when there is no active child, because the
+ * commands-probe and session/list paths still need it.
+ */
+async function clientForCid(cid, requireLive) {
+  if (cid) {
+    const child = getActiveChild(cid);
+    if (child && child.alive) return child;
+  }
+  if (requireLive) return null;
+  return await getMcodeAcpClient();
+}
+
+// Exported for tests that want to assert the dispatch without going through
+// the full setupMocks wrapper. The route layer relies on this same function.
+export { clientForCid };
+
+async function callRpc(method, params, opts = {}) {
+  const client = await clientForCid(opts.cid, opts.requireLive);
   if (!client)
     return fail(new Error("mcode acp client unavailable"), "no_client");
   // 播种后二次判定: client 启动时 acp-client 已按 initialize 响应刷新注册表
@@ -65,8 +95,8 @@ async function callRpc(method, params) {
   }
 }
 
-async function notifyRpc(method, params) {
-  const client = await getMcodeAcpClient();
+async function notifyRpc(method, params, opts = {}) {
+  const client = await clientForCid(opts.cid, opts.requireLive);
   if (!client)
     return fail(new Error("mcode acp client unavailable"), "no_client");
   try {
@@ -86,8 +116,8 @@ async function notifyRpc(method, params) {
 //   or the engine answers invalidParams. This is not the permission mode —
 //   that is a config option, below.
 // ============================================================
-export async function setMode(sessionId, modeId) {
-  return callRpc("session/set_mode", { sessionId, modeId });
+export async function setMode(sessionId, modeId, cid) {
+  return callRpc("session/set_mode", { sessionId, modeId }, { cid });
 }
 
 // ============================================================
@@ -96,12 +126,12 @@ export async function setMode(sessionId, modeId) {
 //   modes configId is 'permissionMode' (ACP_CONFIG_PERMISSION_MODE in
 //   packages/tui/src/acp/control-state.ts) and value is one of PERMISSION_MODES.
 // ============================================================
-export async function setConfigOption(sessionId, configId, value) {
-  return callRpc("session/set_config_option", {
-    sessionId,
-    configId,
-    value,
-  });
+export async function setConfigOption(sessionId, configId, value, cid) {
+  return callRpc(
+    "session/set_config_option",
+    { sessionId, configId, value },
+    { cid, requireLive: true },
+  );
 }
 
 // ============================================================
@@ -110,9 +140,17 @@ export async function setConfigOption(sessionId, configId, value) {
 //   agent.ts), which aborts the active prompt's AbortController; a request
 //   would come back "Method not found". It carries no reply, so a success here
 //   means "sent", not "the prompt stopped".
+//
+//   `cid` here matters: handleStop already holds the live child via
+//   `getActiveChild(cid)`. Routing through the cid pins the notification on
+//   the same subprocess that owns the in-flight prompt's AbortController.
+//   Without it, the notification goes to the singleton's subprocess, which
+//   does not have the prompt's session loaded — the engine answers "session
+//   not found" via _rejectAllPending on the caller side and the cancel is a
+//   no-op while the prompt keeps running.
 // ============================================================
-export async function cancelSession(sessionId) {
-  return notifyRpc("session/cancel", { sessionId });
+export async function cancelSession(sessionId, cid) {
+  return notifyRpc("session/cancel", { sessionId }, { cid, requireLive: true });
 }
 
 // ============================================================

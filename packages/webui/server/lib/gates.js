@@ -104,9 +104,20 @@ export function runGates(req, res, pathname) {
 
   const local = isLocalRequest(req);
 
-  // Gate 2: LAN reject (only for non-local requests; /api/settings is the exception that lets users turn LAN back on)
+  // Gate 2: LAN reject (only for non-local requests; /api/settings is the
+  // exception that lets users turn LAN back on).
+  //
+  // The return statement is `return true` rather than `return` because the
+  // contract of `runGates` is "true when a gate has answered, caller must
+  // stop": a bare `return` evaluates to `undefined`, which the Hono caller
+  // treats as falsy and continues to the route handler. The gate then has
+  // written its 403 and the handler writes a real 200 on top, splicing both
+  // bodies and serving the data anyway. See
+  // test/server/gates-lan-reject.test.js.
   if (!local && !getLanBroadcast()) {
-    if (rejectLan(res, pathname, req.socket.remoteAddress, req.headers["accept-language"])) return;
+    if (rejectLan(res, pathname, req.socket.remoteAddress, req.headers["accept-language"])) {
+      return true;
+    }
   }
 
   // Gate 3: token auth (v1.0.1).

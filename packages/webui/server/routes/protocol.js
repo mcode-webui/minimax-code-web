@@ -97,7 +97,7 @@ export async function handleSetConfigOption(req, res, ctx) {
   if (!sessionId)
     return respond(res, 400, { ok: false, error: "sessionId required" });
   if (!key) return respond(res, 400, { ok: false, error: "key required" });
-  const r = await setConfigOption(sessionId, key, value);
+  const r = await setConfigOption(sessionId, key, value, ctx && ctx.cid);
   if (!r.ok) {
     const httpCode =
       r.code === "unsupported"
@@ -127,7 +127,7 @@ export async function handleCancel(req, res, ctx) {
   const { sessionId } = await readJson(req);
   if (!sessionId)
     return respond(res, 400, { ok: false, error: "sessionId required" });
-  const r = await cancelSession(sessionId);
+  const r = await cancelSession(sessionId, ctx && ctx.cid);
   // A refusal means the `session/cancel` notification could not be delivered —
   // it is a notification (no reply), so we cannot say whether the prompt
   // actually stopped. This route only sends the notification; the

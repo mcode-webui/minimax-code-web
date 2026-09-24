@@ -57,6 +57,16 @@ export class McodeAcpClient extends EventEmitter {
     this.pending = new Map()  // id → {resolve, reject, method}
     this.capabilities = null
     this.started = false
+    // `_alive` (not `alive`) because every existing caller gates on it as a
+    // truth signal for "this client still owns a usable subprocess". The
+    // process-level exit handler below flips it back to false, so a stale
+    // singleton (the previous PR's bug: `_mcodeAcpSingleton.alive` always
+    // undefined) is now actually detected and replaced on the next call.
+    this._alive = false
+  }
+
+  get alive() {
+    return this._alive && this.child !== null && this.started === true
   }
 
   async start() {
@@ -98,12 +108,16 @@ export class McodeAcpClient extends EventEmitter {
       else console.error(`[acp] mcode acp child error: ${e.message}`)
     })
     this.child.on('exit', (code, signal) => {
+      this._alive = false
+      this.started = false
       this.emit('exit', { code, signal })
       this._rejectAllPending(new Error(`mcode acp exited (code=${code} signal=${signal})`))
     })
     this.child.on('close', (code, signal) => {
       // 'close' fires after every child termination, including the
       // ENOENT spawn-failure path that skips 'exit'.
+      this._alive = false
+      this.started = false
       this._rejectAllPending(new Error(`mcode acp closed (code=${code} signal=${signal})`))
     })
     this.child.stdout.setEncoding('utf8')
@@ -118,6 +132,7 @@ export class McodeAcpClient extends EventEmitter {
       capabilities: { mcpCapabilities: { http: false, sse: false } },
     })
     this.started = true
+    this._alive = true
     return this.capabilities
   }
 
