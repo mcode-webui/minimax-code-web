@@ -33,7 +33,10 @@ export function SessionsFeature({ controller }: SessionsFeatureProps) {
     void (async () => {
       const ok = await notifier.confirm('删除会话', `确定删除会话「${titleOf(id)}」？删除后不可恢复。`);
       if (ok) await a.deleteSession(id);
-    })();
+    })().catch((e: unknown) => {
+      // 删除被拒 / 网络失败：提示而不是未处理的 Promise 拒绝。
+      notifier.toast(e instanceof Error ? e.message : String(e), 'error');
+    });
   };
 
   const copyText = (text: string, okMsg: string): void => {
@@ -70,7 +73,11 @@ export function SessionsFeature({ controller }: SessionsFeatureProps) {
           collapsedKeys={s.collapsedGroups}
           onToggleGroup={a.toggleGroup}
           onSelect={(id) => void a.selectSession(id)}
-          onRename={(id, title) => void a.renameSession(id, title)}
+          onRename={(id, title) => {
+            void a.renameSession(id, title).catch((e: unknown) => {
+              notifier.toast(e instanceof Error ? e.message : String(e), 'error');
+            });
+          }}
           onDelete={handleDelete}
         />
       )}
@@ -112,7 +119,12 @@ export function SessionsFeature({ controller }: SessionsFeatureProps) {
       token={token}
       onToggleTokenVisible={() => setTokenVisible((v) => !v)}
       onCopyToken={() => copyText(token.token, '已复制 token')}
-      onResetToken={() => void a.resetToken()}
+      onResetToken={() => {
+        // 授权门拒绝会抛 "authorize declined" —— 提示收口，不冒未处理拒绝。
+        void a.resetToken().catch((e: unknown) => {
+          notifier.toast(e instanceof Error ? e.message : String(e), 'error');
+        });
+      }}
       onAcknowledgeToken={() => void a.acknowledgeToken()}
     />
   );

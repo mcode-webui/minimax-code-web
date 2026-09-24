@@ -38,6 +38,7 @@ import { groupSessionsByWorkspace } from '../contracts/domain';
 import type { WireSettings } from '../contracts/protocol';
 import type { Registry } from '../contracts/ports';
 import type { SessionService } from '../core/services/session-service';
+import type { SlashEntry } from '../ui/composer/SlashOverlay';
 
 export type ThemeMode = 'light' | 'dark';
 export type Lang = 'zh' | 'en';
@@ -72,6 +73,8 @@ export interface AppSnapshot {
   rightOpen: boolean;
   searchQuery: string;
   collapsedGroups: string[];
+  /** 服务端可用斜杠命令目录（state.availableCommands 派生）；空则容器用内置兜底表。 */
+  slashEntries: SlashEntry[];
 }
 
 export interface AppActions {
@@ -127,6 +130,16 @@ export interface AppController {
   actions: AppActions;
 }
 
+/** GET /api/settings 与 state 快照里扁平摆放的设置字段（同名对齐 WireSettings）。 */
+const SETTINGS_WIRE_KEYS = [
+  'lanBroadcast', 'lanBind', 'readOnly', 'tokenEnabled', 'currentToken',
+  'tokenAcknowledged', 'tokenRotatedAt', 'lanIp', 'lanUrl', 'lanUrlWithToken',
+  'localUrl', 'lanExposed', 'bindRestartPending', 'lanExposureNotice',
+  'trustedOrigins', 'defaultModel', 'defaultWorkspace', 'mcodeCmd', 'mcodeVersion',
+  'port', 'host', 'bindHost', 'quotaEnabled', 'hasTokenPlanKey',
+  'tokenPlanApiKeyMasked', 'tokenPlanApiKeySource', 'tokenPlanApiKeyFilePath',
+] as const;
+
 function asRecord(v: unknown): Record<string, unknown> | null {
   return typeof v === 'object' && v !== null ? (v as Record<string, unknown>) : null;
 }
@@ -175,6 +188,7 @@ export function createAppController(reg: Registry): AppController {
   let rightOpen = false;
   let searchQuery = '';
   let collapsedGroups: string[] = [];
+  let slashEntries: SlashEntry[] = [];
   // 会话隔离的输入草稿：切会话各自保留，绝不共享同一份缓冲。
   const drafts = new Map<SessionId, string>();
   // ask-user 选项的勾选态，同样按会话隔离。
@@ -224,6 +238,7 @@ export function createAppController(reg: Registry): AppController {
       rightOpen,
       searchQuery,
       collapsedGroups,
+      slashEntries,
     };
     cachedSnapshot = built;
     return built;
@@ -508,6 +523,47 @@ export function createAppController(reg: Registry): AppController {
         weeklyPercent: weeklyPercentOf(usageO['weeklyPercent'] ?? usageO['weekly']),
         fetchedAt: numOrNull(usageO['fetchedAt']),
       };
+      changed = true;
+    }
+
+    // 斜杠命令目录：服务端 availableCommands（local / mcode 两组）→ 面板条目。
+    const cmdsO = asRecord(s['availableCommands']);
+    if (cmdsO) {
+      const entries: SlashEntry[] = [];
+      const add = (list: unknown): void => {
+        if (!Array.isArray(list)) return;
+        for (const c of list) {
+          const o = asRecord(c);
+          if (!o || typeof o['name'] !== 'string' || o['name'] === '') continue;
+          const name = o['name'].startsWith('/') ? o['name'] : '/' + o['name'];
+          entries.push({
+            id: 'cmd:' + name,
+            cmd: name,
+            desc: typeof o['description'] === 'string' ? o['description'] : '',
+            kind: 'cmd',
+          });
+        }
+      };
+      add(cmdsO['local']);
+      add(cmdsO['mcode']);
+      if (entries.length > 0) {
+        slashEntries = entries;
+        changed = true;
+      }
+    }
+
+    // 设置字段在 state 里扁平摆放（与 /api/settings 同名）——合入 settings。
+    // POST /api/settings 会广播 state，多标签页 / 外部改动借此同步到界面。
+    const flat: Record<string, unknown> = {};
+    let hasFlat = false;
+    for (const key of SETTINGS_WIRE_KEYS) {
+      if (key in s) {
+        flat[key] = s[key];
+        hasFlat = true;
+      }
+    }
+    if (hasFlat) {
+      settings = { ...(settings ?? {}), ...flat };
       changed = true;
     }
 

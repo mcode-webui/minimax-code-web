@@ -113,6 +113,8 @@ export function ComposerFeature({ controller }: ComposerFeatureProps) {
   };
 
   const chipItems: WorkspaceQuickItem[] = s.recents.map((e) => ({ path: e.path, name: e.name }));
+  // 命令面板条目：优先服务端真实目录（state.availableCommands 派生），为空用内置兜底。
+  const slashEntries = s.slashEntries.length > 0 ? s.slashEntries : SLASH_ENTRIES;
 
   return (
     <>
@@ -198,7 +200,7 @@ export function ComposerFeature({ controller }: ComposerFeatureProps) {
 
       <SlashOverlay
         open={slashOpen}
-        entries={SLASH_ENTRIES}
+        entries={slashEntries}
         onSelect={(entry) => {
           a.setDraft('');
           setSlashOpen(false);
