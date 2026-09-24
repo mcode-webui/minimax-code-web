@@ -58,6 +58,16 @@ export function RightPanel({
     >
       <div className="flex h-full min-h-0 flex-col overflow-hidden pr-4 shadow-[inset_8px_0px_12px_-8px_var(--opacity_black_1_8)]">
         <div className="thin-scrollbar min-h-0 flex-1 overflow-y-auto px-4 pb-4">
+          {/*
+            `alerts` and `progress` are rendered but no launcher can reach them:
+            every `openPanel(...)` call in the app passes one of `workspace`,
+            `files`, `search` or `plugins`, and the bell opens the inbox
+            flyout (components/inbox.tsx), not this panel. Neither kind has a
+            counterpart in the desktop's right panel, whose tab registry is
+            exactly `changes` / `terminal` / `browser` / `files`. See the
+            ProgressPanel comment. Kept, not deleted, so a future launcher is a
+            one-line change — but do not read them as ported surfaces.
+          */}
           {kind === "workspace" ? <WorkspacePanel t={t} /> : null}
           {kind === "files" ? <FilesPanel t={t} /> : null}
           {kind === "alerts" ? <AlertsPanel t={t} /> : null}
@@ -267,13 +277,25 @@ export function SettingsModal({
 }
 
 /**
- * Progress panel.
+ * Progress panel — **currently unreachable**.
  *
- * Upstream renders a chronological feed of tool activity, plan/ask decisions and
- * recent assistant turns for the active run — the `进度` tab on the right edge.
- * The server does not expose a dedicated progress feed, so this view falls back
- * to the recent alerts + the active session's running activity, giving the same
- * "what is happening right now" surface.
+ * An earlier revision of this comment claimed upstream renders this as "the
+ * `进度` tab on the right edge". It does not. The desktop's right panel is a
+ * tabbed *file* panel and its tab registry is exactly four entries:
+ * `changes`, `terminal`, `browser`, `files`, each gated on a capability
+ * (extracted from the shipped bundle's `iJ` list). There is no progress tab
+ * and no alerts tab there either.
+ *
+ * This view therefore has no counterpart to port, and nothing opens it: the
+ * only panel kinds any launcher passes to `openPanel` are `search`,
+ * `workspace`, `files` and `plugins`. The activity feed it approximates lives
+ * on a different desktop surface (the turn inspector's `activity-group-*`
+ * regions), which has no webui entry point.
+ *
+ * It is kept rather than deleted because the content is assembled from state
+ * this app already has, so wiring a launcher is a small change — but it should
+ * not be read as a ported surface. If it is ever reached, what it shows is
+ * "recent alerts plus the active run", not an upstream progress timeline.
  */
 function ProgressPanel({ t }: { t: (key: MessageKey) => string }) {
   const { state } = useSessionContext();

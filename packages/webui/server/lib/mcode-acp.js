@@ -21,6 +21,7 @@ import {
   getMcodeSessionsForWorkspace,
 } from "./acp-client.js";
 import { getMcodeModelLimit } from "./models.js";
+import { buildPromptBlocks, promptTextFor } from "./attachments.js";
 import { loadSessions, saveSessions } from "./sessions.js";
 
 // runMcodeAcp / streamAcpPrompt — mcode acp protocol streaming.
@@ -33,6 +34,8 @@ export async function runMcodeAcp(content, opts = {}) {
   const existingSid = opts.sessionId || null;
   const cs = opts.cs;
   const cid = opts.cid;
+  // Uploaded files, already validated to be inside UPLOAD_DIR by the route.
+  const attachments = Array.isArray(opts.attachments) ? opts.attachments : [];
   const workspace =
     (cs && cs.workspace && cs.workspace.dir) || DEFAULT_WORKSPACE;
   if (cs && cs.permissions && cs.permissions !== "Full access") {
@@ -47,6 +50,10 @@ export async function runMcodeAcp(content, opts = {}) {
         model: modelToUse,
         cs,
         cid,
+        // exec has no block channel — it writes plain text to stdin, so the
+        // resource links are rendered with the same wording the engine's own
+        // `promptToText` uses for them.
+        content: promptTextFor(content, attachments),
       }),
     );
   }
@@ -87,7 +94,7 @@ export async function runMcodeAcp(content, opts = {}) {
         console.warn(`[webui] bindDraftToMcodeSid: ${e.message}`);
       }
     }
-    return await streamAcpPrompt(client, sid, content, label, cs, cid);
+    return await streamAcpPrompt(client, sid, content, label, cs, cid, attachments);
   } catch (e) {
     // v2.0 (lease B02): §AP5 — surface subprocess start / session
     // failures on the anomaly channel instead of swallowing them
@@ -225,7 +232,7 @@ export function applyToolUpdate(r, cs, update) {
 // streamAcpPrompt — like collectExecResult, but the event source is
 // the acp client's prompt callback rather than a child-process stdout
 // stream.
-function streamAcpPrompt(client, sid, content, label, cs, cid) {
+function streamAcpPrompt(client, sid, content, label, cs, cid, attachments = []) {
   return new Promise((resolve) => {
     const r = {
       answer: null,
@@ -488,7 +495,7 @@ function streamAcpPrompt(client, sid, content, label, cs, cid) {
       resolve(r);
     }
     client
-      .prompt(sid, content, (c) => {
+      .prompt(sid, buildPromptBlocks(content, attachments), (c) => {
         // v0.5.bm: 详细日志 — 看到 mcode acp 返回了什么
         console.log(
           `[acp.cb] kind=${c.kind} text=${JSON.stringify((c.text || "").slice(0, 200))} data=${JSON.stringify(c.data || "").slice(0, 200)}`,

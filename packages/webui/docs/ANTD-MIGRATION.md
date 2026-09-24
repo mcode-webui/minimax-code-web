@@ -309,6 +309,29 @@ port the desktop's skin for the surface if it needs one, verify.
   pattern is in the tree; wiring it to the sidebar tree is real work with a
   real payoff, and is not a component-library migration.
 
+- **The right panel's tab set — and two panel kinds that nothing can open.**
+  A surface walk found that `PanelKind` declares six kinds and `RightPanel`
+  renders all six, but only four are reachable: every `openPanel(...)` call in
+  the app passes `workspace`, `files`, `search` or `plugins`, and the bell
+  opens the inbox flyout rather than the `alerts` panel. `alerts` and
+  `progress` are therefore dead surfaces in the published bundle.
+
+  They also had no counterpart to port. The desktop's right panel is a tabbed
+  *file* panel whose registry is exactly four entries — `changes`,
+  `terminal`, `browser`, `files`, each capability-gated (extracted from the
+  bundle's tab list). There is no progress tab and no alerts tab there. An
+  earlier comment on `ProgressPanel` claimed upstream renders it as "the
+  `进度` tab on the right edge"; that was written before the reference was
+  read and is false. The comments now say so, and name what the desktop's
+  right panel actually contains.
+
+  Kept rather than deleted: the content is assembled from state this app
+  already holds, so adding a launcher would be a one-line change. But they are
+  not ported surfaces, and `ProgressPanel` shows "recent alerts plus the active
+  run" rather than an upstream timeline — the activity feed it resembles
+  lives on the turn inspector's `activity-group-*` regions, which has no webui
+  entry point.
+
 ## Dependency procedure
 
 1. `pnpm --filter @mavis/webui add -D antd@5.29.3 @ant-design/nextjs-registry@1.3.0`

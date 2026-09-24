@@ -17,6 +17,9 @@
 
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { createHonoApp } from "../../server/app.js";
 import { runGates } from "../../server/lib/gates.js";
@@ -26,13 +29,33 @@ import {
 } from "../../server/lib/settings.js";
 import { setupMocks } from "../helpers/_setup.js";
 
+// Isolate the audit stream. The gate chain records audit events, and
+// lib/events.js defaults to `~/.mcode-webui/events.ndjson` — so without this
+// the suite wrote into the operator's real home directory. That is both a
+// hygiene problem (tests must not touch real user state) and a flake: every
+// other suite that isolates the same file also isolates the path, and two
+// writers sharing the default path collide on the write-tmp-then-rename in
+// events.js#_writeAtomic, which surfaced as a spurious ENOENT about a
+// `.tmp` file that a concurrent writer had already renamed away.
+//
+// The same pattern lives in test/routes/settings.check.mjs and
+// test/routes/sessions.check.mjs.
+let _tmpEventsDir;
 before(async (t) => {
+  _tmpEventsDir = mkdtempSync(join(tmpdir(), "webui-lan-gate-test-events-"));
+  process.env.MCODE_WEBUI_EVENTS_PATH = join(_tmpEventsDir, "events.ndjson");
   await setupMocks(t, {});
 });
 
 after(() => {
   setLanBroadcast(true);
   setReadOnly(false);
+  delete process.env.MCODE_WEBUI_EVENTS_PATH;
+  if (_tmpEventsDir) {
+    try {
+      rmSync(_tmpEventsDir, { recursive: true, force: true });
+    } catch {}
+  }
 });
 
 /** Minimal Node-request stand-in: only what `runGates` reads. */

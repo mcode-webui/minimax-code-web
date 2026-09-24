@@ -21,6 +21,8 @@
 
 import { test, describe, before } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { setupMocks, absPath } from "../helpers/_setup.js";
 
 let slash;
@@ -84,5 +86,43 @@ describe("matchSlash — pure regex parser (via mock that mirrors real impl)", (
     const r = slash.matchSlash("/help\targ");
     // \s in regex includes tab
     assert.equal(r.cmd, "help");
+  });
+});
+
+describe("the mock and the real parser cannot drift", () => {
+  // This suite runs against a *mock* of matchSlash, and the mock carries its own
+  // copy of the regex. Its describe name says so, but a test that only exercises
+  // the mock is not a guard on the parser at all: change the real
+  // SLASH_REGEX and every assertion here would still pass.
+  //
+  // test/lib/interaction/interaction.check.mjs does import the real
+  // commands.js and cover the parser, which is why the risk was survivable —
+  // but two suites claiming the same concern while only one holds it is exactly
+  // how the real one gets deleted someday. This asserts the two copies are
+  // identical, so the mock can never quietly stop mirroring.
+  const commandsSource = readFileSync(
+    join(import.meta.dirname, "..", "..", "server", "lib", "interaction", "commands.js"),
+    "utf8",
+  );
+  const setupSource = readFileSync(
+    join(import.meta.dirname, "..", "helpers", "_setup.js"),
+    "utf8",
+  );
+
+  const realMatch = commandsSource.match(/const SLASH_REGEX = (\/\^.*?\/[a-z]*);/s);
+  const mockMatch = setupSource.match(/content\.match\((\/\^.*?\/[a-z]*)\)/s);
+
+  test("both copies of the slash regex are present", () => {
+    assert.ok(realMatch, "could not find SLASH_REGEX in interaction/commands.js");
+    assert.ok(mockMatch, "could not find the mock's regex in _setup.js");
+  });
+
+  test("the mock's regex is byte-identical to the real one", () => {
+    assert.equal(
+      mockMatch[1],
+      realMatch[1],
+      "the _setup.js mock has drifted from SLASH_REGEX; the parser tests in this " +
+        "file only exercise the mock, so a divergence here means they test nothing",
+    );
   });
 });

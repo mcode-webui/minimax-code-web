@@ -147,26 +147,44 @@ and streams the result over the WebSocket event stream (`GET /api/stream`).
 ```json
 {
   "content": "refactor the workspace picker to use a tree",
-  "attachments": ["@C:\\path\\to\\file.py"],
+  "attachments": ["@/home/you/.mcode-webui/uploads/1790228071891-8d8ec6.txt"],
   "isAskAnswer": false
 }
 ```
 
-- `content` (string, required) — the user message. May include `@path`
-  references to attachments; the webui injects these automatically.
-- `attachments` (string[], optional) — list of `@path` strings to
-  prepend to the content. The webui populates this from the attachment
-  UI; you usually don't pass it directly.
-- `isAskAnswer` (bool, optional) — when `true`, the content is the
-  answer to an active `ask_user` question. Set by the ask modal
-  automatically.
+- `content` (string) — the user message. Required **unless** `attachments`
+  is non-empty: the composer deliberately enables Send for an attachment with
+  no text, so a bare file is a valid turn.
+- `attachments` (string[], optional) — uploaded files, as returned by
+  `POST /api/upload`. A single leading `@` is accepted and stripped (the
+  desktop's mention convention, and what the composer sends).
+  Each path must resolve **inside `UPLOAD_DIR` and exist as a file**;
+  anything else is rejected — the reference text is fed to the model as if the
+  user had typed it, so an unchecked path would let a caller name any file on
+  the host. Duplicates are collapsed and the list is capped at 16 per turn
+  (`MAX_ATTACHMENTS_PER_TURN`). Rejections and drops are counted and pushed to
+  the alert channel rather than silently ignored.
+- `isAskAnswer` (bool, optional) — when `true`, the content is the answer to
+  an active `ask_user` question, and the server does not add a `›` line to the
+  transcript. Set by the ask modal automatically.
 
-**Response 200** `{ok: true}` immediately. The actual response streams
-over the WebSocket event stream (`/api/stream`).
+**How attachments reach the engine.** As ACP `resource_link` content blocks —
+`[{type:"text",…}, {type:"resource_link", name, uri}, …]` — because the
+engine's own `promptToText` (`packages/tui/src/acp/agent.ts`) accepts exactly
+`text` and `resource_link` and rejects anything else with "Prompt content type
+X is not supported in ACP P0". The desktop's own `resource` / `image` blocks
+are *not* valid here. On the `mcode exec` transport, which has no block
+channel, the same wording the engine uses is written to stdin instead.
+
+**Response 200** `{ok: true}` immediately. The actual response is streamed
+via `/api/events`.
 
 **Errors**
-- 409 if `state.running.active === true` (already running)
-- 400 if `content` is empty
+- 400 when `content` is empty **and** no attachment survives validation
+- 409 when a turn is already in flight — `reason: "cid-busy"` (this client is
+  busy), `"session-busy"` (another client is running this conversation), or
+  `"at-capacity"` (the server is at `MAX_CONCURRENT`, which `/api/health`
+  reports as `maxConcurrent`)
 
 ### `POST /api/stop`
 

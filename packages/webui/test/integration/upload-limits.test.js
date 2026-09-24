@@ -186,6 +186,20 @@ function postUpload({ port, body, contentType, timeoutMs = 15000 }) {
     }, timeoutMs);
     req.on("error", (e) => {
       if (settled || req.res) return; // post-response reset is expected
+      // A write that breaks *because the server stopped reading* is the
+      // behaviour under test, not a failure: the server answers 413 and closes
+      // without draining the body, so the client's next write can lose the race
+      // against the response and surface EPIPE first.
+      //
+      // Which of the two arrives first is a property of the interleaving, not
+      // of the server, and asserting on it made this test fail roughly one run
+      // in three on an unchanged tree. The 413 is the assertion; let the
+      // `response` event (or the timeout) settle it.
+      //
+      // Connection-level failures are still real failures: nothing was ever
+      // accepted, so there is no response coming.
+      const midStreamAbort = ["EPIPE", "ECONNRESET", "ERR_STREAM_DESTROYED"];
+      if (midStreamAbort.includes(e.code)) return;
       settled = true;
       clearTimeout(timer);
       reject(new Error(`request failed before response: ${e.message}`));
@@ -266,12 +280,19 @@ test("upload-limits: oversized request → 413 mid-stream, no leftover, client w
       "close",
       "413 must close the connection (body was not fully consumed)",
     );
-    // The client handed only a small fraction of the body to the socket
-    // before the response preempted it — the server stopped reading
-    // mid-stream instead of buffering all 8 MiB first.
+    // The client did not hand over the whole body: the server stopped reading
+    // mid-stream and answered instead of buffering all 8 MiB first.
+    //
+    // The property is "less than the whole body", not a byte threshold. An
+    // earlier version asserted `< 4 MiB`, which is a proxy for the same idea
+    // but measures how far the client's write loop got before the close took
+    // effect — a scheduling outcome that varies run to run. It reported a
+    // failure on an unchanged tree (4,308,992 of 8,388,718 written) while the
+    // server had in fact behaved exactly as intended: a 413, `connection:
+    // close`, and the body left unread.
     assert.ok(
-      res.bytesWritten < 4 * 1024 * 1024,
-      `client wrote ${res.bytesWritten} of ${body.length} — server did not abort mid-stream`,
+      res.bytesWritten < body.length,
+      `client wrote ${res.bytesWritten} of ${body.length} — server buffered the whole body instead of aborting mid-stream`,
     );
     assert.deepEqual(listUploads(server.uploadDir), [], "no file, no temp after abort");
   } finally {

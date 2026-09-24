@@ -131,6 +131,9 @@ Switch 的几何尺寸同样来自这份主题（`trackHeight: 16`、`trackMinWi
   `Drawer` 那一半没能通过对照 bundle 的检验。桌面端**没有** antd `Drawer`：整个提取出的 `out/_next/static` 里 `ant-drawer` 与 `rc-drawer` 出现次数为零，任何样式表里也没有 `.mavis-drawer` 规则。它有的是一个自制的可拖拽面板——`file-panel-sidebar`、`file-panel-sidebar-drag-handle`、`file-panel-sidebar-toggle`——外加自己的 `Drawer` **状态机**枚举（`Did(Close|Open)|Will(Close|Open)`），那是动效原语，不是 antd。所以从来就没有组件可移植；「换 `Drawer`」是读参考资料之前就写下的计划项。`panels.tsx` 现有的 `<aside>` 加宽度过渡更贴近桌面端，保持不变。
 - **Phase 4 — 列表。部分完成，且部分不该做。** 告警列表的空态已迁到 antd `Empty`（完成）。会话树与面板表格**不应**迁到 antd `Tree` / `Table`，理由只有 bundle 才说得清：桌面端的文件树是虚拟化的——`changed-files-tree-virtual-canvas` / `changed-files-tree-virtual-row` 跑在 `changed-files-tree-scroll` 视口上。antd `Tree` 同样不虚拟化，所以迁过去既丢掉桌面端的结构、又丢掉它的伸缩行为。面板表格同理：桌面端的右侧区是带标签页的文件面板（`file-panel-add-tab-menu`、`file-panel-sidebar`），不是表格。
   这里暴露出的真正缺口是**虚拟化**，而不是「改用 antd」：`session-tree.tsx` 会即时渲染每一个项目、目录、会话与子代理。`chat-virtual-list.tsx` 已经是转录的同类实现，所以模式在仓库里现成；把它接到侧栏树上是真有收益的实活，而不是一次组件库迁移。
+- **右侧区的标签页集合——以及两个根本打不开的面。** 一次界面走查发现：`PanelKind` 声明了 6 种，`RightPanel` 也把 6 种都渲染了，但只有 4 种可达：应用里每一处 `openPanel(...)` 传的都是 `workspace`、`files`、`search` 或 `plugins`，而铃铛打开的是 inbox 悬浮卡、不是 `alerts` 面板。于是 `alerts` 与 `progress` 是发布产物里的死面。
+  它们同时也没有可移植的对应物。桌面端的右侧区是一个带标签页的**文件**面板，其注册表恰好四项——`changes`、`terminal`、`browser`、`files`，每项都按 capability 门控（从 bundle 的标签列表里提取）。那里既没有进度标签，也没有告警标签。`ProgressPanel` 早先的注释声称上游把它渲染为「右侧边缘的 `进度` 标签页」；那是读参考资料之前写的，是假的。注释现在如实写出，并说明桌面端右侧区实际包含什么。
+  选择保留而不是删除：其内容由本应用已有的 state 组装，接上一个入口只是一行改动。但它们不是移植过来的面，且 `ProgressPanel` 展示的是「近期告警 + 当前运行」，而不是上游的时间线——它类似的活动流位于回合检视器的 `activity-group-*` 区域，而 webui 没有那个入口。
 
 ## 依赖流程
 

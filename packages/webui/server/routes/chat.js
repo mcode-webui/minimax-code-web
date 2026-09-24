@@ -21,6 +21,7 @@ import { runMcodeAcp } from "../lib/mcode-acp.js";
 import { collectExecResult, runMcodeExec } from "../lib/mcode-exec.js";
 import { cancelSession } from "../lib/mcode-rpc.js";
 import { DEFAULT_MODEL } from "../lib/config.js";
+import { resolveAttachments } from "../lib/attachments.js";
 import { readJson } from "../lib/read-json.js";
 
 
@@ -71,9 +72,32 @@ export async function handleSend(req, res, ctx) {
   const cid = ctx.cid;
   const payload = await readJson(req);
   let content = (payload.content || "").trim();
-  if (!content) {
+  // Uploaded files. The composer enables Send for an attachment with no text,
+  // so this list — not `content` — can be what makes a turn worth starting.
+  // Paths arrive from the client and are untrusted: `resolveAttachments` keeps
+  // only what is inside UPLOAD_DIR and exists, and reports the rest so the
+  // rejection is visible instead of silent.
+  const {
+    attachments,
+    rejected: rejectedAttachments,
+    dropped: droppedAttachments,
+  } = resolveAttachments(payload.attachments);
+  if (!content && attachments.length === 0) {
     res.writeHead(400, { "Content-Type": "application/json" });
     return res.end(JSON.stringify({ ok: false, error: "content required" }));
+  }
+  if (rejectedAttachments > 0 || droppedAttachments > 0) {
+    // Silent truncation would be the same class of bug as the drop this
+    // replaces: the user would believe every chip was delivered.
+    pushAlert({
+      level: "warn",
+      msg:
+        `${rejectedAttachments} attachment path(s) rejected (not an uploaded file)` +
+        (droppedAttachments > 0 ? `, ${droppedAttachments} dropped (duplicate or over the per-turn limit)` : ""),
+      src: "chat.send",
+      cid,
+      data: { rejected: rejectedAttachments, dropped: droppedAttachments },
+    });
   }
   // ask_user modal answer — don't add to chat as a user message.
   const isAskAnswer = payload.isAskAnswer === true;
@@ -110,7 +134,10 @@ export async function handleSend(req, res, ctx) {
 
   try {
     if (!isAskAnswer) {
-      cs.chat = [...(cs.chat || []), `› ${content}`];
+      // An attachment-only turn has no text to echo; the `›` line would be a
+      // bare marker. The chips in the composer are the record of what was sent,
+      // and the engine reports the references back.
+      if (content) cs.chat = [...(cs.chat || []), `› ${content}`];
       // Sending a message bumps lastUsedWorkspace so the sidebar sorts
       // this workspace's group to the top. Switching session does NOT
       // (browsing ≠ sending); ask_user answer does NOT (modal ≠
@@ -171,6 +198,7 @@ export async function handleSend(req, res, ctx) {
               model: modelToUse,
               cs,
               cid,
+              attachments,
             }),
           )
         : await runMcodeAcp(content, {
@@ -179,6 +207,7 @@ export async function handleSend(req, res, ctx) {
             model: modelToUse,
             cs,
             cid,
+            attachments,
           });
     console.log(
       `[send] result ${Date.now() - t0}ms:`,

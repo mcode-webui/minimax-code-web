@@ -48,6 +48,10 @@ function _eventsPath() {
   return process.env.MCODE_WEBUI_EVENTS_PATH || EVENTS_PATH_DEFAULT;
 }
 
+// Monotonic suffix for the atomic-write temp file, so two appends in the same
+// process never share a tmp name (see _writeAtomic).
+let _tmpSeq = 0;
+
 // _ensureDir — best-effort mkdir of the parent directory. settings.js
 // uses the same best-effort pattern; we mirror it here so a permission
 // error doesn't take the server down — the append() call will simply
@@ -241,14 +245,23 @@ function _writeAtomic(line) {
     throw e;
   }
   const content = existing + newLine;
-  // Write the combined content to .tmp, then rename atomically.
+  // Write the combined content to a tmp file, then rename atomically.
+  //
+  // The tmp name is unique per process and per call. A fixed "<path>.tmp" is a
+  // real cross-process race: two writers (a second webui instance, or a test
+  // suite that has not isolated MCODE_WEBUI_EVENTS_PATH) both create the same
+  // tmp, the first renames it away, and the second's rename fails with ENOENT
+  // about a file it just wrote — which this function reports and rethrows, so
+  // the failure surfaces as a request error rather than an audit hiccup. The
+  // per-call suffix also keeps two appends within one process from colliding.
+  const tmp = `${path}.${process.pid}.${++_tmpSeq}.tmp`;
   let fd;
   try {
-    fd = openSync(path + ".tmp", "w", 0o600);
+    fd = openSync(tmp, "w", 0o600);
   } catch (e) {
     // Some FS / Windows ignore 0o600; fall back to plain writeFileSync
-    writeFileSync(path + ".tmp", content, { encoding: "utf8", mode: 0o600 });
-    renameSync(path + ".tmp", path);
+    writeFileSync(tmp, content, { encoding: "utf8", mode: 0o600 });
+    renameSync(tmp, path);
     return;
   }
   try {
@@ -259,8 +272,12 @@ function _writeAtomic(line) {
     } catch {}
   }
   try {
-    renameSync(path + ".tmp", path);
+    renameSync(tmp, path);
   } catch (e) {
+    // Best-effort cleanup so a failed rename does not leave a stray tmp behind.
+    try {
+      unlinkSync(tmp);
+    } catch {}
     console.error(`[webui] events rename ${path} failed: ${e.message}`);
     throw e;
   }

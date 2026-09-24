@@ -16,7 +16,7 @@
 
 import { test, describe } from "node:test";
 import { strict as assert } from "node:assert";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -29,6 +29,27 @@ const routerSource = [
   readFileSync(join(__dirname, "..", "..", "server", "router.js"), "utf8"),
   readFileSync(join(__dirname, "..", "..", "server", "lib", "gates.js"), "utf8"),
 ].join("\n");
+
+/**
+ * Every server source file, for the guards that claim to be exhaustive.
+ *
+ * The Allow-Origin guard is named "anywhere" because a wildcard combined with
+ * the local-request token bypass lets any web page read API responses by
+ * targeting 127.0.0.1 — the blast radius is the whole server, not two files.
+ * `routerSource` covers the two that set the header today, so a *new* surface
+ * that set its own wildcard was invisible to the guard that exists to prevent
+ * exactly that.
+ */
+function serverSources(dir) {
+  const out = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const p = join(dir, entry.name);
+    if (entry.isDirectory()) out.push(...serverSources(p));
+    else if (entry.name.endsWith(".js")) out.push([p, readFileSync(p, "utf8")]);
+  }
+  return out;
+}
+const ALL_SERVER_SOURCES = serverSources(join(__dirname, "..", "..", "server"));
 
 // Boolean model of Gate 3 (v1.0.1 post-fix). Assumes the non-method
 // preconditions all hold: non-local request, tokenAuthOn=true, expected
@@ -51,10 +72,23 @@ describe("router — CORS headers (v2 trusted-origin policy, PR #55 review point
   });
 
   test("no wildcard Allow-Origin anywhere (v2: wildcard × local-bypass hole is closed)", () => {
-    assert.doesNotMatch(
-      routerSource,
-      /Access-Control-Allow-Origin['"]\s*,\s*['"]\*/,
-      "router.js must NOT send Access-Control-Allow-Origin: * — combined with the local-request token bypass any web page could read API responses by targeting 127.0.0.1 (PR #55 review point 1)"
+    // Scanned across the whole server tree, because the hole is a whole-server
+    // property: any surface that emits a wildcard inherits the local-request
+    // token bypass. Two files are not "anywhere".
+    const offenders = [];
+    for (const [file, src] of ALL_SERVER_SOURCES) {
+      // The literal header name followed by a wildcard value, in either
+      // `setHeader("Access-Control-Allow-Origin", "*")` order, allowing
+      // whitespace/newlines between the arguments.
+      if (/Access-Control-Allow-Origin['"`]\s*,\s*['"`]\*/u.test(src)) {
+        offenders.push(`${file.replace(/.*\/server\//u, "")}`);
+      }
+    }
+    assert.deepEqual(
+      offenders,
+      [],
+      "no server file may send Access-Control-Allow-Origin: * — combined with the local-request token bypass any web page could read API responses by targeting 127.0.0.1 (PR #55 review point 1): " +
+        offenders.join(", "),
     );
   });
 

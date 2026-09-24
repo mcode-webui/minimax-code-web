@@ -231,10 +231,21 @@ export class McodeAcpClient extends EventEmitter {
   //   goal_update / config_option_update / session_info_update pass
   //   the raw session/update payload as `update`. done carries
   //   stopReason + usage aggregated from the response.
-  async prompt(sessionId, text, onChunk) {
+  async prompt(sessionId, promptOrBlocks, onChunk) {
     // NOTE: listeners are added per-prompt and removed when the
     // response settles. Concurrent prompts on the same client will
     // cross-talk on sessionUpdate — callers must serialize.
+    //
+    // `promptOrBlocks` is either the plain text (the common case) or a
+    // pre-built ACP content-block array. Blocks exist for attachments:
+    // the engine's `promptToText` (packages/tui/src/acp/agent.ts) accepts
+    // exactly `text` and `resource_link` and rejects anything else with
+    // "not supported in ACP P0" — so an uploaded file has to arrive as a
+    // `resource_link`, not as extra prose bolted onto the text and not as a
+    // `resource` / `image` block the engine would reject.
+    const blocks = Array.isArray(promptOrBlocks)
+      ? promptOrBlocks
+      : [{ type: 'text', text: promptOrBlocks }]
     return await new Promise((resolve, reject) => {
       // qa (OOM hardening): 不再累积 result.events — 每个 session/update
       //   （含截图工具的 base64 rawOutput）都被 push 进数组且无任何消费者，
@@ -282,7 +293,7 @@ export class McodeAcpClient extends EventEmitter {
       this.on('sessionUpdate', onUpdate)
       this.request('session/prompt', {
         sessionId,
-        prompt: [{ type: 'text', text }],
+        prompt: blocks,
       }).then((r) => {
         result.stopReason = r?.stopReason || 'end_turn'
         // mcode acp 0.1.3 returns usage on the session/prompt response,

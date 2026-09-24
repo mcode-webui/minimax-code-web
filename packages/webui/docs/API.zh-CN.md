@@ -142,25 +142,39 @@ data: {"ts":1730000000000}
 ```json
 {
   "content": "refactor the workspace picker to use a tree",
-  "attachments": ["@C:\\path\\to\\file.py"],
+  "attachments": ["@/home/you/.mcode-webui/uploads/1790228071891-8d8ec6.txt"],
   "isAskAnswer": false
 }
 ```
 
-- `content`（字符串，必填）—— 用户消息。可以包含指向附件的
-  `@path` 引用；webui 会自动注入这些引用。
-- `attachments`（字符串数组，可选）—— 要前置到内容中的
-  `@path` 字符串列表。webui 会从附件 UI 填充此字段；
-  通常不需要直接传递。
-- `isAskAnswer`（布尔值，可选）—— 为 `true` 时，内容是对一个
-  进行中的 `ask_user` 提问的回答。由询问弹窗自动设置。
+- `content`（字符串）—— 用户消息。除非 `attachments` 非空，否则为**必填**：
+  composer 会在「只有附件、没有文字」时也让 Send 可点，所以只带一个文件也是
+  合法的一轮。
+- `attachments`（字符串数组，可选）—— 已上传的文件，取值来自
+  `POST /api/upload` 的返回。允许单个前导 `@` 并会剥掉（桌面端的 mention
+  约定，composer 就是这么发的）。每个路径必须**落在 `UPLOAD_DIR` 之内且确实
+  是文件**，否则拒绝——引用文本会当作用户输入喂给模型，不校验就等于允许调用
+  方指名主机上的任意文件。重复项会去重，每轮上限 16 条
+  （`MAX_ATTACHMENTS_PER_TURN`）。被拒绝与被丢弃的条数会计数并推到告警通道，
+  而不是静默忽略。
+- `isAskAnswer`（布尔值，可选）—— 为 `true` 时，内容是对一个进行中的
+  `ask_user` 提问的回答，服务端不会向转录追加 `›` 行。由询问弹窗自动设置。
 
-**响应 200** 立即返回 `{ok: true}`。实际响应经
-WebSocket 事件流（`/api/stream`）流式下发。
+**附件如何抵达引擎。** 以 ACP 的 `resource_link` 内容块发送——
+`[{type:"text",…}, {type:"resource_link", name, uri}, …]`——因为引擎自己的
+`promptToText`（`packages/tui/src/acp/agent.ts`）只接受 `text` 与
+`resource_link`，其余一律报「Prompt content type X is not supported in ACP
+P0」。桌面端自己的 `resource` / `image` 块在这里**不合法**。在
+`mcode exec` 传输上（没有内容块通道），改为把引擎使用的同一句措辞写入
+stdin。
+
+**响应 200** 立即返回 `{ok: true}`。实际响应通过 `/api/events` 流式推送。
 
 **错误**
-- 若 `state.running.active === true`（已在运行）返回 409
-- 若 `content` 为空返回 400
+- `content` 为空**且**没有附件通过校验时返回 400
+- 已有回合在飞时返回 409——`reason` 为 `"cid-busy"`（本客户端正忙）、
+  `"session-busy"`（另一个客户端正在跑这个会话）或 `"at-capacity"`
+  （服务端已达 `MAX_CONCURRENT`，即 `/api/health` 里报的 `maxConcurrent`）
 
 ### `POST /api/stop`
 
