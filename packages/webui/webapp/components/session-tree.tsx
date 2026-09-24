@@ -56,12 +56,22 @@ export function SessionTree({ t }: { t: (key: MessageKey) => string }) {
   const [openSessions, setOpenSessions] = useState<string[]>([]);
   const [revealed, setRevealed] = useState<Record<string, number>>({});
 
+  // Last-write-wins. Two effects below drive `refresh` — one on the active
+  // session changing (a plain, usually-cached read) and one on the run state
+  // changing (a forced re-read past the server's 15s cache). They are not
+  // mutually exclusive, so a slow forced re-read could otherwise land after a
+  // faster cached one and resurrect a stale status — a session still painted
+  // as running after its turn ended, or the wrong ordering.
+  const refreshGen = useRef(0);
   const refresh = useCallback(async (force = false) => {
+    const gen = ++refreshGen.current;
     try {
       const next = await api.getSessionTree(force);
+      if (gen !== refreshGen.current) return; // a newer read won
       setPayload(next.ok ? next : null);
       setError(next.ok ? null : next.reason ?? "unavailable");
     } catch (cause) {
+      if (gen !== refreshGen.current) return;
       setError(cause instanceof Error ? cause.message : String(cause));
     }
   }, []);

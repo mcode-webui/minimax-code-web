@@ -419,10 +419,18 @@ function FilesPanel({ t }: { t: (key: MessageKey) => string }) {
   // and the promise its placeholder makes.
   const [filter, setFilter] = useState("");
 
+  // Last-write-wins. Without this, clicking `/a` then `/a/b` lets the older
+  // `/a` listing land after the newer `/a/b` one and overwrite it, leaving the
+  // breadcrumb saying `/a/b` above `/a`'s contents. A generation counter is
+  // enough: the newest `load` owns the result, and anything older is dropped
+  // when it finally arrives.
+  const loadGen = useRef(0);
   const load = useCallback(async (target: string) => {
+    const gen = ++loadGen.current;
     setLoading(true);
     try {
       const next = await api.getFsDir(target);
+      if (gen !== loadGen.current) return; // a newer navigation won
       if (next.ok) {
         setListing(next);
         setError(null);
@@ -430,9 +438,12 @@ function FilesPanel({ t }: { t: (key: MessageKey) => string }) {
         setError(next.error ?? "unreadable");
       }
     } catch (cause) {
+      if (gen !== loadGen.current) return;
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
-      setLoading(false);
+      // Only the newest load clears the spinner; an older one finishing late
+      // must not claim the panel is idle while a newer read is still running.
+      if (gen === loadGen.current) setLoading(false);
     }
   }, []);
 
@@ -1069,7 +1080,15 @@ function SearchPanel({
     inputRef.current?.input?.focus();
   }, []);
 
+  // Last-write-wins across in-flight searches. The cleanup only cancels the
+  // debounce timer; once a request has actually been issued, an older response
+  // can still land after a newer one and replace the right results with stale
+  // ones. A generation counter drops the stale response. The counter is bumped
+  // in the cleanup too, so a response that lands after the query changed (or
+  // was cleared) is discarded rather than repopulating an empty box.
+  const searchGen = useRef(0);
   useEffect(() => {
+    const gen = ++searchGen.current;
     const trimmed = query.trim();
     if (trimmed === "") {
       setHits([]);
@@ -1082,13 +1101,22 @@ function SearchPanel({
       void api
         .searchSessions(trimmed)
         .then((payload) => {
+          if (gen !== searchGen.current) return;
           setHits(payload.results ?? []);
           setSearched(true);
         })
-        .catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)))
-        .finally(() => setBusy(false));
+        .catch((cause) => {
+          if (gen !== searchGen.current) return;
+          setError(cause instanceof Error ? cause.message : String(cause));
+        })
+        .finally(() => {
+          if (gen === searchGen.current) setBusy(false);
+        });
     }, 180);
-    return () => window.clearTimeout(handle);
+    return () => {
+      window.clearTimeout(handle);
+      searchGen.current += 1;
+    };
   }, [query]);
 
   return (

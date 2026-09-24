@@ -1121,10 +1121,26 @@ the UI without a real mcode subprocess.
 
 **Request**
 ```json
-{ "cid": "uuid", "type": "delta", "text": "hello" }
+{
+  "goal":    { "text": "…", "done": false },
+  "todo":    [{ "id": "1", "text": "…", "done": false }],
+  "ask":     { "questions": [{ "header": "…", "question": "…", "options": ["…"] }] },
+  "plan":    { "title": "…", "summary": "…", "options": ["…"] },
+  "enterPlanMode": { "active": true },
+  "appendChat": ["› a line to append", "● and a reply"]
+}
 ```
 
-**Response 200** `{ok: true}`
+`appendChat` must be an **array of chat lines**. A bare string is silently
+ignored — the response still says `ok: true` with an empty `applied`, so
+check `applied.appendedChatLines`. The other fields are merged or replaced
+according to their own shape (`todo` is replaced wholesale, `goal` /
+`ask` / `plan` / `enterPlanMode` are shallow-merged into the existing
+object).
+
+**Response 200** `{"ok": true, "applied": {…}, "cid": "…"}` — `applied` names
+each field that was actually consumed, which is how you tell a no-op from a
+write.
 
 **Gating**: this endpoint only works if `DEBUG_INJECT=1` is set in the
 server's environment. The server logs a warning every time it's

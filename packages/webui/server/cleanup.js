@@ -102,7 +102,7 @@ export function runStartupCleanup() {
   // Lazy init for the mcode commands cache; the first /help press triggers it too.
   setTimeout(() => {
     ensureMcodeCommands().catch(() => {});
-  }, 5000);
+  }, 5000).unref();
 
   if (!orphanIds || orphanIds.length === 0) {
     // Nothing to clean — silent exit, no audit, no authorize request.

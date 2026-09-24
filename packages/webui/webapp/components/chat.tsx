@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { renderMarkdown } from "@/lib/markdown";
+import { reportActionError } from "@/lib/action-errors";
 import {
   decodeTranscript,
   groupActivity,
@@ -266,11 +267,21 @@ function MessageActions({
   const [liked, setLiked] = useState<"none" | "up" | "down">("none");
   const onCopy = useCallback(() => {
     if (typeof navigator === "undefined") return;
-    void navigator.clipboard.writeText(text).then(() => {
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1200);
-    });
-  }, [text]);
+    // The clipboard promise rejects when permission is denied or the document
+    // is not focused; without a catch that is an unhandled rejection and the row
+    // silently stays in its "copy" state. Fall back to reporting the failure
+    // through the same banner the other mutations use, so a denied clipboard is
+    // visible instead of looking like a no-op button.
+    void navigator.clipboard
+      .writeText(text)
+      .then(() => {
+        setCopied(true);
+        window.setTimeout(() => setCopied(false), 1200);
+      })
+      .catch((cause) => {
+        reportActionError(t("chat.copy"), cause);
+      });
+  }, [text, t]);
   // Early return: when conditions don't hold, the row is removed from the DOM
   // entirely. The Chat render site also gates on `showActions`; this is the
   // safety net so the gap-under-message complaint can never come back even if a

@@ -95,9 +95,19 @@ export function readDirectory(targetPath, opts = {}) {
   const { limit = 500, showHidden = false } = opts
   const absPath = resolve(resolveTarget(targetPath))
 
+  // Report a parent only when it is itself inside an allowed root. The panel's
+  // "up" control is disabled on `!listing.parent`, so reporting a parent that
+  // the containment gate will refuse leaves a permanently-enabled control that
+  // can only ever answer 403 — at the outermost reachable directory, which is
+  // exactly where a user clicks it to find out they are at the top.
+  //
+  // `reachableParent` is injected by the route (which already holds the
+  // containment check) so this module keeps no dependency on the workspace
+  // roots; without it the behaviour is unchanged apart from the boundary.
   let parent = null
   try {
-    parent = resolve(absPath, '..')
+    const candidate = resolve(absPath, '..')
+    if (!opts.reachableParent || opts.reachableParent(candidate)) parent = candidate
   } catch {}
 
   let entries = []

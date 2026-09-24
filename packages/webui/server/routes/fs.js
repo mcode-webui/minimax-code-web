@@ -43,7 +43,13 @@ export function handleFsRead(req, res) {
     return
   }
 
-  const result = readDirectory(path, { showHidden })
+  const result = readDirectory(path, {
+    showHidden,
+    // Only advertise a parent the containment gate would actually accept, so
+    // the panel's "up" control disables at the boundary instead of offering a
+    // move that can only 403.
+    reachableParent: (candidate) => assertWorkspacePath(candidate).ok,
+  })
   res.writeHead(200, { 'Content-Type': 'application/json' })
   res.end(JSON.stringify(result))
 }

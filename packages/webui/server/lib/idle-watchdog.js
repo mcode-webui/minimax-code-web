@@ -45,8 +45,12 @@ export function createIdleWatchdog({
     // Re-check soon, but no later than the remaining idle budget.
     const next = Math.max(minTickMs, Math.min(tickInterval(), idleMs - idle));
     timer = setTimeout(tick, next);
+    // unref'd like the other long-lived timers in the server: the watchdog must
+    // never be the reason the process stays alive.
+    if (timer.unref) timer.unref();
   }
   timer = setTimeout(tick, tickInterval());
+  if (timer.unref) timer.unref();
   return {
     stop() {
       stopped = true;

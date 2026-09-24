@@ -1093,10 +1093,23 @@ mcode 子进程的情况下测试 UI。
 
 **请求体**
 ```json
-{ "cid": "uuid", "type": "delta", "text": "hello" }
+{
+  "goal":    { "text": "…", "done": false },
+  "todo":    [{ "id": "1", "text": "…", "done": false }],
+  "ask":     { "questions": [{ "header": "…", "question": "…", "options": ["…"] }] },
+  "plan":    { "title": "…", "summary": "…", "options": ["…"] },
+  "enterPlanMode": { "active": true },
+  "appendChat": ["› a line to append", "● and a reply"]
+}
 ```
 
-**响应 200** `{ok: true}`
+`appendChat` 必须是**聊天行组成的数组**。传单个字符串会被静默忽略——响应仍然是
+`ok: true` 且 `applied` 为空，所以要看 `applied.appendedChatLines`。其余字段按
+各自的形状处理（`todo` 整体替换；`goal` / `ask` / `plan` / `enterPlanMode`
+浅合并进已有对象）。
+
+**响应 200** `{"ok": true, "applied": {…}, "cid": "…"}`——`applied` 会列出真正
+被消费的字段，这正是区分「什么都没做」和「写入了」的地方。
 
 **门禁**：此端点仅在服务器环境中设置了 `DEBUG_INJECT=1`
 时才可用。每次被调用时服务器都会记录一条警告。生产部署
