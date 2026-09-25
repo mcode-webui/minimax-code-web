@@ -55,6 +55,7 @@ function bootEchoServer() {
       res.end("ok");
     }
   });
+  servers.push(server);
   return new Promise((resolve) => {
     server.listen(0, "127.0.0.1", () => {
       const addr = server.address();
@@ -79,12 +80,36 @@ function get(url, opts = {}) {
 // not leak across tests. Hoisted to file scope so the second
 // describe below can register there too.
 const handles = [];
+// Every server these tests boot. The suite teardown MUST close them:
+// a listening handle is ref'd, so a server that is booted but never
+// signalled (the uninstall() case below never reaches shutdown()'s
+// server.close()) keeps this test process alive forever — `node --test`
+// then waits on it with all tests green and zero failures, which is
+// exactly the CI hang (job killed at the 15m timeout, ~10 orphan
+// processes reaped at cleanup).
+const servers = [];
 after(() => {
   for (const h of handles) {
     try {
       h.uninstall();
     } catch {
       // already torn down
+    }
+  }
+  for (const server of servers) {
+    // Destroy any held SSE-style connections first so close()'s
+    // callback can fire; already-closed servers are no-ops.
+    try {
+      if (typeof server.closeAllConnections === "function") {
+        server.closeAllConnections();
+      }
+    } catch {
+      // nothing left to destroy
+    }
+    try {
+      server.close();
+    } catch {
+      // already closed by shutdown()
     }
   }
 });
