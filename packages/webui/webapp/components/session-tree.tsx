@@ -8,6 +8,7 @@ import { reportActionError, runAction } from "@/lib/action-errors";
 import { useSessionContext } from "@/lib/store";
 import type { MessageKey } from "@/lib/i18n";
 import { Icon } from "./icons";
+import { ProjectRowSwitchAction } from "./workspace-picker";
 
 /**
  * Sidebar session tree — Project → directory → main session → subagent.
@@ -272,6 +273,9 @@ function ProjectNode({
   const label = project.repoPaths.length
     ? `${project.name}, ${project.repoPaths.join(", ")}`
     : project.name;
+  // The first repo path is the broad-stroke target; multi-directory
+  // projects expose the per-directory choice below through DirectoryNode.
+  const switchRepoPath = project.repoPaths[0] ?? project.directories[0]?.path;
 
   return (
     <>
@@ -323,7 +327,14 @@ function ProjectNode({
               {project.sessionCount}
             </span>
           </span>
-          <span className="pointer-events-none absolute inset-y-0 right-0.5 flex items-center opacity-0 transition-opacity duration-200 group-hover/project-header:pointer-events-auto group-hover/project-header:opacity-100">
+          <span className="pointer-events-none absolute inset-y-0 right-0.5 flex items-center gap-0.5 opacity-0 transition-opacity duration-200 group-hover/project-header:pointer-events-auto group-hover/project-header:opacity-100">
+            {switchRepoPath ? (
+              <ProjectRowSwitchAction
+                t={t}
+                repoPath={switchRepoPath}
+                onChanged={onChanged}
+              />
+            ) : null}
             <RowAction
               label={t("sidebar.newInProject")}
               tone="primary"

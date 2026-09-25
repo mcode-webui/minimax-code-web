@@ -177,6 +177,16 @@ const en = {
   "workspace.picker.pathPlaceholder": "Path…",
   "workspace.picker.up": "Up one level",
   "workspace.picker.home": "Home",
+  /* v0.5.by: home-chip dropdown (Level 1). WorkspaceChipDropdown mounts
+     an antd Dropdown anchored to the chip on the home screen; the three
+     rows mirror the pr-22 reference. The dropdown opens the full
+     WorkspacePickerModal for "选择新项目" (Level 2). */
+  "workspace.chipDropdown.recent": "Recent",
+  "workspace.chipDropdown.chooseNew": "Choose new project",
+  "workspace.chipDropdown.noProject": "No project",
+  /* Sidebar project-row switch action — hovers next to the existing
+     "new task in this project" plus on each project row. */
+  "workspace.projectRow.switch": "Switch to this workspace",
   "workspace.picker.root": "Allowed roots",
   "workspace.picker.newFolder": "New folder",
   "workspace.picker.newFolderPrompt": "Folder name",
@@ -436,6 +446,12 @@ const zh: Record<MessageKey, string> = {
   "workspace.picker.pathPlaceholder": "路径…",
   "workspace.picker.up": "返回上一级",
   "workspace.picker.home": "主目录",
+  /* v0.5.by: home-chip dropdown (Level 1) — 中文 */
+  "workspace.chipDropdown.recent": "最近",
+  "workspace.chipDropdown.chooseNew": "选择新项目",
+  "workspace.chipDropdown.noProject": "不需要项目",
+  /* 侧栏项目行的切换动作 */
+  "workspace.projectRow.switch": "切换到此工作区",
   "workspace.picker.root": "允许根",
   "workspace.picker.newFolder": "新建文件夹",
   "workspace.picker.newFolderPrompt": "文件夹名",
