@@ -650,6 +650,63 @@ export function endRun(cid) {
   if (entry.sid && runsBySid.get(entry.sid) === key) runsBySid.delete(entry.sid);
 }
 
+/**
+ * Backfill (or re-point) the engine-session claim of a live run.
+ *
+ * Why this exists: during a session's FIRST turn `handleSend` calls
+ * `beginRun(cid, cs.mcodeSessionId)` while `cs.mcodeSessionId` is still
+ * null — the engine session id only comes into existence inside
+ * `runMcodeAcp`'s `session/new`. The run was therefore registered with
+ * `sid: null`, `runsBySid` never guarded that session, and a second
+ * window (a different cid that had already learned the new session id)
+ * could send to it and get a 200 instead of a 409 session-busy — the
+ * engine then rejected the duplicate prompt and the message vanished.
+ *
+ * `runMcodeAcp` calls this the moment the turn's engine session id is
+ * determined (right next to `bindDraftToMcodeSid`, which sets
+ * `cs.mcodeSessionId`), so the registry claim lands mid-turn, not at
+ * finalize. It is also the re-point path: when a stale `session/load`
+ * fails and the turn falls back to a fresh engine session, the entry's
+ * old sid claim is released (only if this cid still owns it — the same
+ * ownership rule `endRun` applies) and the new sid is claimed.
+ *
+ * All checks and mutations are synchronous, so within Node's single
+ * thread a `beginRun` that raced here sees either the pre-backfill or
+ * the post-backfill map — never a half-updated one. A late `beginRun`
+ * carrying this sid from another cid cannot double-register: the
+ * `runsBySid.has(sid)` check inside `beginRun` runs against the same
+ * map this function just filled.
+ *
+ * @param {string} cid client whose live run should claim `sid`
+ * @param {string|null|undefined} sid the engine session id now in use
+ * @returns {boolean} true when the run's sid claim is (already) `sid`
+ */
+export function updateRunSid(cid, sid) {
+  if (!sid) return false;
+  const key = cid || "default";
+  const entry = runsByCid.get(key);
+  // No live run for this cid (endRun already released it, or beginRun
+  // was never this cid's) — nothing to backfill, and no claim may be
+  // created out of thin air.
+  if (!entry) return false;
+  // Idempotent: the run already carries this exact sid (e.g. a turn
+  // that loaded an existing session — beginRun registered it).
+  if (entry.sid === sid) return true;
+  // Never steal another cid's claim. If a different cid is registered
+  // for this sid, the guard missed it earlier; overwriting here would
+  // let `endRun` on this cid drop the OTHER cid's protection.
+  const owner = runsBySid.get(sid);
+  if (owner && owner !== key) return false;
+  // Release the stale claim this run held (load-failure fallback
+  // re-pointed the turn onto a fresh engine session).
+  if (entry.sid && runsBySid.get(entry.sid) === key) {
+    runsBySid.delete(entry.sid);
+  }
+  entry.sid = sid;
+  runsBySid.set(sid, key);
+  return true;
+}
+
 /** Live turn count, for diagnostics and tests. */
 export function activeRunCount() {
   return runsByCid.size;

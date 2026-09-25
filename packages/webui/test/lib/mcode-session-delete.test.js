@@ -22,6 +22,17 @@ import { pathToFileURL } from "node:url";
 
 const absPath = (rel) => pathToFileURL(join(import.meta.dirname, "..", "..", "server", rel)).href;
 
+// Audit hygiene: deleteMcodeSessionFromDb appends `session.delete` /
+// `session.delete.intent` lines to events.ndjson via the REAL lib/events.js
+// (static import inside mcode-session-delete.js). The fixture deletes below
+// (e.g. mvs_deadbeef…) would otherwise append junk to the operator's real
+// ~/.mcode-webui/events.ndjson on every run. Redirect to a per-run tmp file —
+// events.js resolves the path lazily per append, so the env override set
+// here covers every append this file performs (same pattern as
+// test/lib/alerts.check.mjs).
+const _tmpAuditDir = mkdtempSync(join(tmpdir(), "webui-session-delete-test-"));
+process.env.MCODE_WEBUI_EVENTS_PATH = join(_tmpAuditDir, "events.ndjson");
+
 // Find sqlite3 binary. On this host: C:\Users\<you>\anaconda3\Library\bin\sqlite3.exe
 // On CI: system PATH
 const SQLITE3_BIN = process.env.SQLITE3_BIN || "sqlite3";
@@ -221,4 +232,11 @@ describe("deleteMcodeSessionFromDb — table-missing case (does not throw)", { s
     // No row counts > 0 since tables don't exist → log is empty
     assert.equal(r.log.length, 0, `log should be empty, got: ${r.log.join(",")}`);
   });
+});
+
+// Remove the redirected audit log after the whole file has run.
+after(() => {
+  try {
+    rmSync(_tmpAuditDir, { recursive: true, force: true });
+  } catch {}
 });

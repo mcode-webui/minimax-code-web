@@ -1,10 +1,22 @@
 "use client";
 
 import { Dropdown } from "antd";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { createPortal } from "react-dom";
 
 import * as api from "@/lib/api";
+import {
+  getComposerDraft,
+  setComposerDraft,
+  subscribeComposerDraft,
+} from "@/lib/composer-draft";
 import { useSessionContext } from "@/lib/store";
 import { decodeTranscript } from "@/lib/transcript";
 import { translate, type Locale, type MessageKey } from "@/lib/i18n";
@@ -83,9 +95,19 @@ const PERMISSION_MODES: { id: string; key: MessageKey; icon?: IconName; selectab
 
 export function Composer({ t, inline = false }: { t: (key: MessageKey) => string; inline?: boolean }) {
   const { state } = useSessionContext();
-  const [value, setValue] = useState("");
-  const [attachments, setAttachments] = useState<string[]>([]);
-  const [error, setError] = useState<string | null>(null);
+  // Text, attachments, and the error banner live in the module-scope draft
+  // store (lib/composer-draft.ts) rather than useState: page.tsx swaps this
+  // component between two tree positions when the first conversation line
+  // lands in a state push, and a `useState`-held draft died with the
+  // unmounted instance. The store survives the swap, so whatever the user
+  // typed — and the failure banner they need to read — outlives any
+  // remount. `sending` stays local: it is per-submit bookkeeping, not user
+  // input worth preserving.
+  const draft = useSyncExternalStore(subscribeComposerDraft, getComposerDraft, getComposerDraft);
+  const value = draft.value;
+  const attachments = draft.attachments;
+  const error = draft.error;
+  const setValue = useCallback((next: string) => setComposerDraft({ value: next }), []);
   const [sending, setSending] = useState(false);
   const [models, setModels] = useState<
     {
@@ -217,16 +239,15 @@ export function Composer({ t, inline = false }: { t: (key: MessageKey) => string
     const content = value.trim();
     if ((!content && attachments.length === 0) || readOnly || sending) return;
     setSending(true);
-    setError(null);
+    setComposerDraft({ error: null });
     try {
       // A leading slash is a command, not a message: mcode parses those, and the
       // webui's own slash commands are handled server-side too.
       if (content.startsWith("/")) await api.sendCommand(content);
       else await api.sendMessage({ content, attachments });
-      setValue("");
-      setAttachments([]);
+      setComposerDraft({ value: "", attachments: [] });
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setComposerDraft({ error: cause instanceof Error ? cause.message : String(cause) });
     } finally {
       setSending(false);
     }
@@ -240,10 +261,12 @@ export function Composer({ t, inline = false }: { t: (key: MessageKey) => string
         const result = await api.uploadFile(file);
         if (result?.path) picked.push(`@${result.path}`);
       } catch (cause) {
-        setError(cause instanceof Error ? cause.message : String(cause));
+        setComposerDraft({ error: cause instanceof Error ? cause.message : String(cause) });
       }
     }
-    if (picked.length) setAttachments((current) => [...current, ...picked]);
+    if (picked.length) {
+      setComposerDraft((current) => ({ attachments: [...current.attachments, ...picked] }));
+    }
   }, []);
 
   // Drag-and-drop file upload. `preventDefault` on `dragover` is required:

@@ -12,6 +12,7 @@ import {
   pushStateFor,
   pushAlert,
   getCidsByMcodeSession,
+  updateRunSid,
 } from "./state-bus.js";
 import { applyMavisUsageToCs } from "./mavis-usage.js";
 import { mcodePermissionToWebui } from "./mcode-rpc.js";
@@ -241,6 +242,16 @@ export async function runMcodeAcp(content, opts = {}) {
       } catch (e) {
         console.warn(`[webui] bindDraftToMcodeSid: ${e.message}`);
       }
+      // First-turn session-busy guard: `handleSend` claimed the run with
+      // `beginRun(cid, cs.mcodeSessionId)` BEFORE this turn existed, so on
+      // a session's first turn the claim was registered with `sid: null`
+      // and `runsBySid` never guarded the engine session — a second window
+      // could send to the same brand-new session and get a 200, then lose
+      // its prompt to the engine's "Session already has an active Turn".
+      // The turn's sid is now known: backfill the claim mid-turn (idempotent
+      // when beginRun already carried a real sid; re-points the claim when a
+      // failed session/load fell back to a fresh engine session above).
+      updateRunSid(cid, sid);
     }
     return await streamAcpPrompt(client, sid, content, label, cs, cid, attachments);
   } catch (e) {

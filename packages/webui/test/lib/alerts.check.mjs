@@ -17,6 +17,15 @@ import { join } from "node:path";
 import { mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 
+// pushAlert audit-writes every unique alert to events.ndjson via the REAL
+// lib/events.js (static import inside alerts.js). Most cases below push
+// dozens of unique "m<i>" alerts; without this redirect each one appended
+// a junk `alert.info` line to the operator's real ~/.mcode-webui/events.ndjson.
+// Same pattern as test/routes/chat-failed-send.check.mjs — env override only,
+// production behavior untouched (events.js resolves the path lazily per append).
+const _tmpAuditDir = mkdtempSync(join(tmpdir(), "webui-alerts-check-"));
+process.env.MCODE_WEBUI_EVENTS_PATH = join(_tmpAuditDir, "events.ndjson");
+
 const absPath = (rel) =>
     pathToFileURL(join(import.meta.dirname, "..", "..", "server", rel)).href;
 
@@ -379,4 +388,11 @@ describe("ALERT_LEVELS export", () => {
     test("exposes info / warn / error", () => {
         assert.deepEqual(alerts.ALERT_LEVELS, ["info", "warn", "error"]);
     });
+});
+
+// Remove the redirected audit log after the whole file has run.
+after(() => {
+    try {
+        rmSync(_tmpAuditDir, { recursive: true, force: true });
+    } catch {}
 });

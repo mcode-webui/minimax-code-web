@@ -20,15 +20,27 @@
 //   - The fakeReq/fakeRes helpers mimic the shape of node's
 //     IncomingMessage and ServerResponse.
 
-import { test, describe, before, beforeEach } from "node:test";
+import { test, describe, before, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   setupMocks,
   absPath,
   registerSessionsStore,
   withDecisions,
 } from "../helpers/_setup.js";
+
+// Audit hygiene: every search crosses the REAL authorize("session.search")
+// gate, whose decisions are audit-written to events.ndjson via the real
+// lib/events.js (auth.pending / auth.approve / auth.reject per search).
+// Redirect to a per-run tmp file so the operator's real
+// ~/.mcode-webui/events.ndjson stays clean (same pattern as
+// test/lib/alerts.check.mjs).
+const _tmpAuditDir = mkdtempSync(join(tmpdir(), "webui-sessions-search-check-"));
+process.env.MCODE_WEBUI_EVENTS_PATH = join(_tmpAuditDir, "events.ndjson");
 
 let handleSearchSessions;
 let handleListSessions; // sanity: the unrelated list handler still works
@@ -537,4 +549,11 @@ describe("handleListSessions — non-regression sanity", () => {
     assert.equal(body.ok, true);
     assert.equal(body.sessions.length, crossStore.length);
   });
+});
+
+// Remove the redirected audit log after the whole file has run.
+after(() => {
+  try {
+    rmSync(_tmpAuditDir, { recursive: true, force: true });
+  } catch {}
 });
