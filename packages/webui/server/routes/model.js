@@ -12,7 +12,6 @@ import {
   PERMISSION_MODES,
 } from "../lib/mcode-rpc.js";
 import { getBuiltinModelsFromMcode } from "../lib/models.js";
-import { DEFAULT_MODEL } from "../lib/config.js";
 import { webuiModeToLabel } from "../lib/interaction/permission-presets.js";
 import { readJson } from "../lib/read-json.js";
 
@@ -189,11 +188,17 @@ export function handleGetModels(_req, res, ctx) {
   }
 
   // `current` is the engine's value when one exists; otherwise the
-  // recorded pre-session choice, so the chip is never blank.
+  // recorded pre-session choice (`cs.model.name`, written by
+  // `handleSetModel`). When neither exists we report `null` rather than
+  // falling back to `DEFAULT_MODEL` — the old behaviour invented an
+  // active model the engine never confirmed, and the chip ended up
+  // claiming a model the session was not actually running. The chip
+  // renders a neutral label when `current` is `null` (see composer.tsx
+  // currentModelLabel).
   const current =
     (option && option.currentValue) ||
     currentName ||
-    DEFAULT_MODEL;
+    null;
 
   const source =
     option && Array.isArray(option.options) && option.options.length > 0

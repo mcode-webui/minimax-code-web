@@ -352,9 +352,21 @@ export interface BrowseEntry {
   isDir: boolean;
 }
 
+/**
+ * Server response from `GET /api/workspace/browse[?path=…]`.
+ *
+ * The server's wire field is **`dir`** — see
+ * `packages/webui/server/lib/workspace.js#browseWorkspace`, which returns
+ * `{ ok, dir, parent, children, roots, skipped, total }`. FilesPanel was
+ * unaffected because its row reads are directory-name based; the workspace
+ * picker in WorkspaceBrowseTab reads `dir` for the confirm/mkdir buttons,
+ * so getting this wrong disables the picker (no confirm, silent mkdir).
+ */
 export interface BrowseResult {
   ok: boolean;
-  path: string | null;
+  /** The directory the server listed. Server wire field is `dir`. */
+  dir: string | null;
+  /** One level up; null when at a containment boundary. */
   parent: string | null;
   children: BrowseEntry[];
   skipped?: number;

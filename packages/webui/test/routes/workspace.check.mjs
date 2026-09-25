@@ -163,6 +163,43 @@ describe("handleWorkspaceBrowse — /api/workspace/browse GET", () => {
     assert.equal(body.ok, true);
     assert.ok(Array.isArray(body.roots));
   });
+
+  test("browse wire shape — `dir`, `parent`, `children` (no `path`)", () => {
+    // Regression pin: the picker UI reads `listing.dir` for confirm / mkdir,
+    // and the webapp's BrowseResult type declares `dir`. The server has
+    // always returned `dir`, but the picker once read `listing.path` and the
+    // type used to claim `path` — both wrong, and the bug shipped because
+    // the wire shape had no test. This test pins every field the picker
+    // consumes so a future rename is caught at the route layer rather than
+    // by the next acceptance pass.
+    const tmp = mkdtempSync(join(tmpdir(), "webui-browse-shape-"));
+    try {
+      mkdirSync(join(tmp, "sub"));
+      const req = Readable.from([Buffer.from("")]);
+      req.url = `/api/workspace/browse?path=${encodeURIComponent(tmp)}`;
+      req.headers = { host: "localhost" };
+      const res = fakeRes();
+      wsRoute.handleWorkspaceBrowse(req, res, {});
+      const body = JSON.parse(res._body);
+      assert.equal(res._status, 200);
+      assert.equal(body.ok, true);
+      // The directory the listing is for — picker reads this for confirm/mkdir.
+      assert.equal(body.dir, tmp);
+      // One level up (tmpdir has a parent on POSIX; on Windows it may be null).
+      assert.ok("parent" in body, "parent key present");
+      // Children — picker reads this for the listing rows.
+      assert.ok(Array.isArray(body.children));
+      assert.equal(body.children.length, 1);
+      assert.equal(body.children[0].name, "sub");
+      assert.equal(body.children[0].path, join(tmp, "sub"));
+      // The `path` field MUST NOT exist on the browse response — a future
+      // rename to add it would mask the existing `dir` and re-introduce
+      // the picker bug. Asserting absence here keeps the contract tight.
+      assert.equal(body.path, undefined, "no `path` field on browse response");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
 });
 
 // ============================================================

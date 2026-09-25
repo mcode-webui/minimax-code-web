@@ -21,6 +21,12 @@ const {
   buildEmptyTurnNote,
   applyToolUpdate,
   applyConfigOptionUpdate,
+  // v0.5.by: pre-session model apply — resolution helpers.
+  findModelOption,
+  matchesModelId,
+  resolveModelId,
+  lastSegment,
+  applyRecordedModel,
 } = await import(absPath("lib/mcode-acp.js"));
 
 describe("buildEmptyTurnNote (v2.3)", () => {
@@ -213,5 +219,213 @@ describe("applyConfigOptionUpdate — propagate model + permissionMode (defect #
     applyConfigOptionUpdate(cs, { /* no configOptions */ });
     assert.equal(cs.model.name, "minimax_api:MiniMax-M3");
     assert.equal(cs.permissions, "Full access");
+  });
+});
+
+// ============================================================
+// v0.5.by: pre-session model apply — resolution helpers.
+//
+// The full integration (applyRecordedModel calling client.request) needs
+// the engine side; these tests pin the resolution rules in isolation.
+// Regression pin: a future refactor that drops `/`-vs-`:` normalization,
+// or accepts a recorded id without checking it against the engine's
+// options, would re-introduce "engine ran on default while chip showed
+// the user's pick".
+// ============================================================
+
+const MODEL_OPTION = {
+  type: "select",
+  id: "model",
+  currentValue: "minimax_api:MiniMax-M3",
+  options: [
+    { value: "minimax_api:MiniMax-M3", name: "MiniMax-M3" },
+    { value: "minimax_api:MiniMax-M2.7", name: "MiniMax-M2.7" },
+    { value: "minimax_api:MiniMax-M2.5", name: "MiniMax-M2.5" },
+  ],
+};
+
+describe("lastSegment — id parser", () => {
+  test("returns the bare model name for slash-separated ids", () => {
+    assert.equal(lastSegment("minimax_api/MiniMax-M3"), "MiniMax-M3");
+  });
+  test("returns the bare model name for colon-separated ids", () => {
+    assert.equal(lastSegment("minimax_api:MiniMax-M3"), "MiniMax-M3");
+  });
+  test("returns the id unchanged when no separator is present", () => {
+    assert.equal(lastSegment("MiniMax-M3"), "MiniMax-M3");
+  });
+});
+
+describe("findModelOption — locate the engine's model option", () => {
+  test("returns the option when cs.configOptions carries it", () => {
+    const cs = { configOptions: [MODEL_OPTION] };
+    assert.equal(findModelOption(cs), MODEL_OPTION);
+  });
+  test("returns null when cs.configOptions is missing or empty", () => {
+    assert.equal(findModelOption({}), null);
+    assert.equal(findModelOption({ configOptions: [] }), null);
+    assert.equal(findModelOption(null), null);
+  });
+  test("returns null when no option has id === 'model'", () => {
+    const cs = {
+      configOptions: [{ id: "permissionMode", type: "select", options: [] }],
+    };
+    assert.equal(findModelOption(cs), null);
+  });
+});
+
+describe("matchesModelId — recorded vs engine currentValue", () => {
+  test("matches exact engine-encoded value", () => {
+    assert.equal(
+      matchesModelId(
+        "minimax_api:MiniMax-M3",
+        "minimax_api:MiniMax-M3",
+        MODEL_OPTION,
+      ),
+      true,
+    );
+  });
+  test("a recorded engine-encoded id still matches an option even when the engine is on something else", () => {
+    // matchesModelId's purpose is "does this recorded id need an apply?"
+    // — true means the engine already has it (or another option of the
+    // same id, which can't happen here) and we can skip. The recorded id
+    // matching an `option.value` is enough; currentValue is consulted
+    // separately for the early-return shortcut only.
+    assert.equal(
+      matchesModelId(
+        "minimax_api:MiniMax-M2.5",
+        "minimax_api:MiniMax-M3",
+        MODEL_OPTION,
+      ),
+      true,
+    );
+  });
+  test("an id unknown to the engine's option list does not match", () => {
+    assert.equal(
+      matchesModelId(
+        "minimax_api:MiniMax-UNKNOWN",
+        "minimax_api:MiniMax-M3",
+        MODEL_OPTION,
+      ),
+      false,
+    );
+  });
+  test("matches against any option.value (not just currentValue)", () => {
+    // Engine-encoded recorded id matches option.value even when currentValue
+    // is on a different option.
+    assert.equal(
+      matchesModelId(
+        "minimax_api:MiniMax-M2.7",
+        "minimax_api:MiniMax-M3",
+        MODEL_OPTION,
+      ),
+      true,
+    );
+  });
+  test("returns false when modelOption is null and recorded differs from current", () => {
+    // The first guard (recorded === engineCurrent) wins regardless of
+    // modelOption; only fall through to the modelOption check when the
+    // recorded id is not the engine's current.
+    assert.equal(
+      matchesModelId("minimax_api:MiniMax-M2.5", "minimax_api:MiniMax-M3", null),
+      false,
+    );
+  });
+});
+
+describe("resolveModelId — recorded id → engine option.value", () => {
+  test("engine-encoded value matches as-is (no rewrite)", () => {
+    assert.equal(
+      resolveModelId("minimax_api:MiniMax-M2.5", MODEL_OPTION),
+      "minimax_api:MiniMax-M2.5",
+    );
+  });
+  test("builtin-catalogue id (`/` separator) matches by bare name", () => {
+    // The user picked from the builtin catalogue (slash separator) and the
+    // engine uses colon separator; resolve by `option.name`.
+    assert.equal(
+      resolveModelId("minimax_api/MiniMax-M2.5", MODEL_OPTION),
+      "minimax_api:MiniMax-M2.5",
+    );
+  });
+  test("bare model name with one matching option resolves to that option", () => {
+    assert.equal(
+      resolveModelId("MiniMax-M2.5", MODEL_OPTION),
+      "minimax_api:MiniMax-M2.5",
+    );
+  });
+  test("returns null when no option matches (ambiguous or unknown)", () => {
+    // "MiniMax-XYZ" is not in the option list — null skips the apply,
+    // letting the engine's currentValue stand.
+    assert.equal(resolveModelId("MiniMax-XYZ", MODEL_OPTION), null);
+  });
+  test("returns null when the bare name matches multiple options (ambiguous)", () => {
+    const ambiguous = {
+      ...MODEL_OPTION,
+      options: [
+        ...MODEL_OPTION.options,
+        { value: "minimax_api:MiniMax-M3-other", name: "MiniMax-M3" },
+      ],
+    };
+    // Two options share the same `name` → caller skips rather than pick
+    // the wrong one.
+    assert.equal(resolveModelId("MiniMax-M3", ambiguous), null);
+  });
+});
+
+describe("applyRecordedModel — integration with a fake acp client", () => {
+  test("skips silently when no pre-session pick is recorded", async () => {
+    const calls = [];
+    const fakeClient = { request: async (m, p) => { calls.push([m, p]); return {}; } };
+    const cs = { model: {}, configOptions: [MODEL_OPTION] };
+    await applyRecordedModel(fakeClient, "sid-1", cs, "cid-1");
+    assert.deepEqual(calls, [], "no set_config_option issued");
+  });
+
+  test("applies when the recorded id differs from the engine's currentValue", async () => {
+    const calls = [];
+    const fakeClient = {
+      request: async (m, p) => {
+        calls.push([m, p]);
+        return {};
+      },
+    };
+    const cs = {
+      model: { name: "minimax_api/MiniMax-M2.5" }, // builtin-catalogue form
+      configOptions: [MODEL_OPTION],
+    };
+    await applyRecordedModel(fakeClient, "sid-1", cs, "cid-1");
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0][0], "session/set_config_option");
+    assert.deepEqual(calls[0][1], {
+      sessionId: "sid-1",
+      configId: "model",
+      value: "minimax_api:MiniMax-M2.5", // resolved to engine form
+    });
+    // The local configOptions snapshot reflects the new currentValue, so
+    // the next /api/models reads the same model the engine is running.
+    assert.equal(cs.configOptions[0].currentValue, "minimax_api:MiniMax-M2.5");
+  });
+
+  test("skips when the recorded id already matches the engine's currentValue", async () => {
+    const calls = [];
+    const fakeClient = { request: async (m) => { calls.push([m]); return {}; } };
+    const cs = {
+      model: { name: "minimax_api:MiniMax-M3" },
+      configOptions: [MODEL_OPTION],
+    };
+    await applyRecordedModel(fakeClient, "sid-1", cs, "cid-1");
+    assert.deepEqual(calls, [], "no reapply when already on the recorded model");
+  });
+
+  test("skips when the recorded id is unknown to the engine", async () => {
+    const calls = [];
+    const fakeClient = { request: async (m) => { calls.push([m]); return {}; } };
+    const cs = {
+      model: { name: "minimax_api/MiniMax-XYZ" },
+      configOptions: [MODEL_OPTION],
+    };
+    await applyRecordedModel(fakeClient, "sid-1", cs, "cid-1");
+    assert.deepEqual(calls, [], "unknown id → engine default stands");
   });
 });

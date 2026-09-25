@@ -29,6 +29,137 @@ import { loadSessions, saveSessions } from "./sessions.js";
 // If cs.permissions is set to anything other than "Full access", the
 // acp protocol layer does not expose permission push — fall back to
 // mcode-exec (which honours --permission ask/full/auto/off).
+
+/**
+ * Push the recorded pre-session model pick to a brand-new engine session.
+ *
+ * Called from `runMcodeAcp` immediately after `session/new` returns, while
+ * the new `McodeAcpClient` is still in scope but not yet registered as the
+ * cid's active child (so going through `setConfigOption` in
+ * `server/lib/mcode-rpc.js` would miss the dispatch — `clientForCid`
+ * would fall back to the singleton, which is a different acp subprocess).
+ *
+ * Resolution: `cs.model.name` carries the id the user picked, which can be
+ *   - the engine's own option.value (`minimax_api:MiniMax-M3`,
+ *     `:` separator) — direct match, no rewrite;
+ *   - the builtin-catalogue form (`minimax_api/MiniMax-M3`,
+ *     `/` separator) — matched against option.name, retargeted to
+ *     option.value;
+ *   - a stale engine-encoded form for an option no longer listed
+ *     (`currentValue` already advanced) — no change, the engine's
+ *     `currentValue` is what runs.
+ *
+ * A successful apply updates `cs.configOptions` with the new currentValue
+ * so the next `/api/models` reads the same model the engine is running.
+ *
+ * Errors are swallowed: a fresh session with the engine's default is
+ * better than a failed session start; the user can re-pick on the chip.
+ */
+async function applyRecordedModel(client, sid, cs, cid) {
+  const recorded = cs && cs.model && typeof cs.model.name === "string"
+    ? cs.model.name.trim()
+    : "";
+  if (!recorded) return;
+  const modelOption = findModelOption(cs);
+  if (!modelOption) return; // engine hasn't reported its model option yet
+  const engineCurrent = modelOption.currentValue;
+  if (matchesModelId(recorded, engineCurrent, modelOption)) return;
+
+  const resolved = resolveModelId(recorded, modelOption);
+  if (!resolved) {
+    console.warn(
+      `[webui] applyRecordedModel: recorded id "${recorded}" does not match any engine option; skipping`,
+    );
+    return;
+  }
+  await client.request("session/set_config_option", {
+    sessionId: sid,
+    configId: "model",
+    value: resolved,
+  });
+  // Reflect the apply on the local config-options snapshot so a follow-up
+  // /api/models reads the engine's new currentValue instead of the
+  // session-boot default. The engine pushes a `config_option_update`
+  // notification when it processes the apply; this local update is the
+  // synchronous mirror that keeps the chip and the engine in lockstep
+  // before the next SSE flush lands.
+  const opts = Array.isArray(cs.configOptions) ? cs.configOptions : [];
+  for (const o of opts) {
+    if (o && o.id === "model" && typeof o === "object") {
+      o.currentValue = resolved;
+    }
+  }
+  if (cid) pushStateFor(cid);
+}
+
+/** Locate the engine's `model` config option, or null if none was reported yet. */
+function findModelOption(cs) {
+  if (!cs || !Array.isArray(cs.configOptions)) return null;
+  return cs.configOptions.find((o) => o && o.id === "model") || null;
+}
+
+/**
+ * True when `recorded` already represents what the engine is running.
+ *
+ * Two ways to match: engine-encoded `option.value` (exact), or the bare
+ * model name (`option.name`) regardless of provider prefix. The latter
+ * covers the case where the chip recorded `minimax_api/MiniMax-M3`
+ * (builtin-catalogue form) while the engine's `currentValue` is
+ * `minimax_api:MiniMax-M3` (engine form).
+ */
+function matchesModelId(recorded, engineCurrent, modelOption) {
+  if (typeof engineCurrent === "string" && engineCurrent === recorded) return true;
+  if (!modelOption || !Array.isArray(modelOption.options)) return false;
+  for (const opt of modelOption.options) {
+    if (!opt || typeof opt !== "object") continue;
+    if (typeof opt.value === "string" && opt.value === recorded) return true;
+  }
+  return false;
+}
+
+/**
+ * Resolve the recorded id to one of the engine's option.values.
+ *
+ * - exact `option.value` match → return as-is;
+ * - bare model name (`MiniMax-M3`, the `option.name` or the suffix
+ *   after the last separator in the recorded id) matching exactly one
+ *   option → return that option's `value`;
+ * - multiple matches or none → null (caller skips).
+ */
+function resolveModelId(recorded, modelOption) {
+  if (!modelOption || !Array.isArray(modelOption.options)) return null;
+  const options = modelOption.options.filter(
+    (o) => o && typeof o === "object" && typeof o.value === "string",
+  );
+  // Direct value match wins.
+  for (const o of options) {
+    if (o.value === recorded) return o.value;
+  }
+  const bareName = lastSegment(recorded);
+  const matches = options.filter((o) => o.name === bareName);
+  if (matches.length === 1) return matches[0].value;
+  return null;
+}
+
+/** Last segment after `/` or `:` — `minimax_api/MiniMax-M3` → `MiniMax-M3`. */
+function lastSegment(id) {
+  const i = Math.max(id.lastIndexOf("/"), id.lastIndexOf(":"));
+  return i >= 0 ? id.slice(i + 1) : id;
+}
+
+// Exported for unit tests (test/lib/mcode-acp-note.test.js extends to
+// cover applyRecordedModel's resolution logic). The pre-session model
+// apply needs to handle three input forms without regressing, so the
+// pure helpers are tested in isolation; the integration with the
+// `McodeAcpClient` is exercised by `runMcodeAcp` itself.
+export {
+  applyRecordedModel,
+  findModelOption,
+  matchesModelId,
+  resolveModelId,
+  lastSegment,
+};
+
 export async function runMcodeAcp(content, opts = {}) {
   const label = opts.label || "prompt";
   const existingSid = opts.sessionId || null;
@@ -82,6 +213,23 @@ export async function runMcodeAcp(content, opts = {}) {
     // them instead of guessing from mcode's build output.
     if (control && Array.isArray(control.configOptions)) {
       cs.configOptions = control.configOptions;
+    }
+    // Pre-session model pick — the chip shows whatever the user picked
+    // (`cs.model.name`), but a brand-new engine session boots its own
+    // default. Without this apply step the engine would run on its default
+    // while the chip claimed something else, surfacing as "engine ran
+    // glm-5.3 while the chip showed M2.5". We resolve the recorded id
+    // against the engine's model option (same `value`/`name` matching the
+    // `/api/set-model` route uses) and push it through
+    // `session/set_config_option` directly on the in-scope client — the
+    // active-child registry is not yet wired here, so going through
+    // `setConfigOption` from `mcode-rpc.js` would always miss.
+    if (sid && !existingSid) {
+      try {
+        await applyRecordedModel(client, sid, cs, cid);
+      } catch (e) {
+        console.warn(`[webui] applyRecordedModel: ${e.message}`);
+      }
     }
     // qa (两条记录): 草稿→引擎身份的绑定在 session 创建时立即执行，不再
     //   等到 finalize。之前长任务全程草稿是 uuid 孤儿 —— sidebar 同时显示

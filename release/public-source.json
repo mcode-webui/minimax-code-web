@@ -3619,6 +3619,7 @@
     "packages/webui/webapp/test/transcript-roundtrip.test.ts",
     "packages/webui/webapp/test/transcript.test.ts",
     "packages/webui/webapp/test/workspace-filter.test.ts",
+    "packages/webui/webapp/test/workspace-picker-wire.test.ts",
     "packages/webui/webapp/tsconfig.json",
     "pnpm-lock.yaml",
     "pnpm-workspace.yaml",

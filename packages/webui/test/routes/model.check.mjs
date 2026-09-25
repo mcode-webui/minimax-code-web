@@ -448,7 +448,7 @@ describe("handleGetModels — catalogue merge", () => {
     );
   });
 
-  test("empty catalogue (no config, no builtin, no session) reports reason:no_catalogue and current falls back to DEFAULT_MODEL", () => {
+  test("empty catalogue (no config, no builtin, no session) reports reason:no_catalogue and current is null", () => {
     setBuiltinModelsMock([]);
     const prev = process.env.MCODE_WEBUI_MODELS_CONFIG;
     process.env.MCODE_WEBUI_MODELS_CONFIG = join(
@@ -462,8 +462,11 @@ describe("handleGetModels — catalogue merge", () => {
       const body = JSON.parse(res._body);
       assert.deepEqual(body.models, []);
       assert.equal(body.reason, "no_catalogue");
-      // DEFAULT_MODEL is the documented "no recorded choice either" sentinel
-      assert.equal(body.current, "minimax_api/MiniMax-M3");
+      // `null` rather than `DEFAULT_MODEL`: the chip must not claim a model
+      // the engine never confirmed (the original behaviour was the
+      // "no_session_config → DEFAULT_MODEL" bug). composer.tsx renders a
+      // neutral label when `current` is null.
+      assert.equal(body.current, null);
     } finally {
       if (prev === undefined) delete process.env.MCODE_WEBUI_MODELS_CONFIG;
       else process.env.MCODE_WEBUI_MODELS_CONFIG = prev;

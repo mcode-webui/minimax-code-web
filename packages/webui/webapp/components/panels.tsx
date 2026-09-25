@@ -1163,13 +1163,20 @@ function WorkspaceBrowseTab({
   const hidden = matched.length - visible.length;
 
   const pick = async () => {
-    if (!listing?.path) {
+    // Server wire field is `dir` (see server/lib/workspace.js#browseWorkspace).
+    // The wire name used to drift to the wrong field in the webapp type and
+    // reading code — that regression was the root cause of the picker
+    // silently doing nothing (confirm button permanently disabled). Keep
+    // this on `listing.dir`; the regression test in
+    // webapp/test/workspace-picker-wire.test.ts pins both the type and
+    // the read site.
+    if (!listing?.dir) {
       setError(t("workspace.picker.error"));
       return;
     }
     setBusy(true);
     try {
-      await api.setWorkspace(listing.path);
+      await api.setWorkspace(listing.dir);
       onClose();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -1179,20 +1186,20 @@ function WorkspaceBrowseTab({
   };
 
   const mkdir = async () => {
-    if (!listing?.path) return;
+    if (!listing?.dir) return;
     const name = window.prompt(t("workspace.picker.newFolderPrompt"), "");
     if (!name) return;
     const trimmed = name.trim();
     if (!trimmed) return;
     try {
-      const next = `${listing.path.replace(/\/+$/, "")}/${trimmed}`;
+      const next = `${listing.dir.replace(/\/+$/, "")}/${trimmed}`;
       const result = await api.mkdir(next);
       if (!result.ok) {
         setError(result.path ? "mkdir failed" : "mkdir failed");
         return;
       }
       // Re-list the parent to surface the new folder.
-      await load(listing.path);
+      await load(listing.dir);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     }
@@ -1266,7 +1273,7 @@ function WorkspaceBrowseTab({
         </button>
         <button
           type="button"
-          disabled={!listing?.path}
+          disabled={!listing?.dir}
           onClick={() => void mkdir()}
           data-testid="workspace-picker-mkdir"
           className="h-7 rounded-[8px] border border-border_default px-2 text-caption-small-strong text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_hover disabled:opacity-40"
@@ -1410,7 +1417,7 @@ function WorkspaceBrowseTab({
         </button>
         <button
           type="button"
-          disabled={busy || !listing?.path}
+          disabled={busy || !listing?.dir}
           onClick={() => void pick()}
           data-testid="workspace-picker-confirm"
           className="h-8 rounded-lg bg-bg_interaction_primary_default px-3 text-sm font-weight_medium text-text_default_inverted_static transition-colors hover:bg-bg_interaction_primary_hover disabled:opacity-50"
