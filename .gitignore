@@ -34,3 +34,8 @@ dist/
 # `packages/webui/desktop-unpacked/extract-asar.sh`. See SPEC.md inside that
 # directory for the source revision that produced it.
 packages/webui/desktop-unpacked/
+
+# Private agent-workflow tickets (to-tickets output). Local working material
+# for the feedback-driven workflow described in AGENTS.md; never committed
+# or published. Also excluded from the source inventory scan.
+.tickets/
