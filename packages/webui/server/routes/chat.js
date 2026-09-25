@@ -9,8 +9,17 @@ import {
   saveSessions,
   persistCurrentChat,
   promoteDraftToMcodeSid,
+  appendChatToSession,
 } from "../lib/sessions.js";
-import { pushStateFor, pushAlert, getActiveChild, beginRun, endRun } from "../lib/state-bus.js";
+import {
+  pushStateFor,
+  pushAlert,
+  getActiveChild,
+  beginRun,
+  endRun,
+  createRunChat,
+  drainRunChat,
+} from "../lib/state-bus.js";
 // 2026-09-20 rigor fix (G1 bypass finding): import the lib/slash.js shell,
 //   NOT interaction/commands.js directly. The shell carries the B03
 //   authorize("slash.clear") gate + write-ahead audit (slash.clear.intent /
@@ -171,6 +180,14 @@ export async function handleSend(req, res, ctx) {
       cs.sessionId = id;
     }
 
+    // session-isolation/02 (run-mirror): the webui record this turn
+    // belongs to, captured before any await (draft creation above just
+    // made sure it exists). Mid-run switches re-point cs (sessionId /
+    // mcodeSessionId / chat) at another record — the finalize drain and
+    // the engine-side bind/title writes must know where the turn CAME
+    // FROM, not where the user is looking now.
+    const owningWebuiSessionId = (cs && cs.sessionId) || null;
+
     // Detect slash commands that we can satisfy without spawning mcode
     const slashResult = await handleLocalSlash(content, cs, cid);
     if (slashResult.handled) {
@@ -188,6 +205,14 @@ export async function handleSend(req, res, ctx) {
     console.log(
       `[send] cid=${cid} content=${JSON.stringify(content.slice(0, 80))} model=${modelToUse} sessionId=${cs.mcodeSessionId} workspace=${(cs && cs.workspace && cs.workspace.dir) || "null"}`,
     );
+    // session-isolation/02 (run-mirror): seed the per-(cid, owning
+    // session) line buffer right before the engine runs (a no-op while
+    // mcodeSessionId is still null — the buffer is keyed by the engine
+    // sid, which `streamAcpPrompt` creates the moment it is known; a
+    // locally-handled slash command above never leaves a stale buffer
+    // behind). The engine's stream writes land in this buffer, never
+    // directly in cs.chat; the finalize drain below flushes it.
+    createRunChat(cid, cs && cs.mcodeSessionId, []);
     const t0 = Date.now();
     const r =
       process.env.MCODE_USE_ACP === "0"
@@ -208,6 +233,7 @@ export async function handleSend(req, res, ctx) {
             cs,
             cid,
             attachments,
+            owningWebuiSessionId,
           });
     console.log(
       `[send] result ${Date.now() - t0}ms:`,
@@ -218,24 +244,80 @@ export async function handleSend(req, res, ctx) {
         sessionId: r.sessionId,
       }).slice(0, 500),
     );
+    // session-isolation/02 (run-mirror): finalize drain. The turn's
+    // stream lines accumulated in the runChat buffer keyed by the
+    // OWNING engine session; the user's `›` line was persisted up front.
+    // Where the buffer flushes depends on where the user is looking:
+    //   still viewing the owning session → append into cs.chat (the
+    //     live view) — the success-branch ● rewrite below then lands on
+    //     the drained line and persistCurrentChat persists the record;
+    //   switched away mid-run → cs.chat belongs to ANOTHER session —
+    //     never touched. The drained lines (with the final ● text
+    //     patched in) go to the owning session's persisted record via
+    //     appendChatToSession; the final persistCurrentChat(cs) below
+    //     only re-writes the viewed session's own (unchanged) chat.
+    // stillViewing keys on the engine sid the turn actually ran on
+    // (r.sessionId — it can differ from the beginRun claim when a stale
+    // session/load fell back to a fresh engine session), with the
+    // owning webui record id as the fallback view test for a turn whose
+    // draft never got bound.
+    const owningSid = (r && r.sessionId) || cs.mcodeSessionId || null;
+    const drainedLines = owningSid ? drainRunChat(cid, owningSid) : null;
+    const stillViewing =
+      !owningSid ||
+      cs.mcodeSessionId === owningSid ||
+      (owningWebuiSessionId != null && cs.sessionId === owningWebuiSessionId);
+    // The flushed line list, normalized once: a successful turn's last
+    // ● line is rewritten to the authoritative answer text — the same
+    // normalization the still-viewing path has always applied to
+    // cs.chat — no matter which destination the lines end up in.
+    const flushDrainedLines = (oneLine) => {
+      if (!drainedLines || drainedLines.length === 0) return null;
+      const lines = drainedLines.slice();
+      if (oneLine != null) {
+        let patched = false;
+        for (let i = lines.length - 1; i >= 0; i--) {
+          if (typeof lines[i] === "string" && lines[i].startsWith("● ")) {
+            lines[i] = `● ${oneLine}`;
+            patched = true;
+            break;
+          }
+        }
+        if (!patched) lines.push(`● ${oneLine}`);
+      }
+      if (stillViewing) {
+        cs.chat = [...cs.chat, ...lines];
+      } else {
+        try {
+          appendChatToSession(owningSid, lines);
+        } catch (e) {
+          console.warn(`[chat] appendChatToSession failed: ${e.message}`);
+        }
+      }
+      return lines;
+    };
     if (r.status === "succeeded" && r.answer) {
       // v0.5.bx-4: 流式输出已经在 streamAcpPrompt/streamUpdateLine 里把 ▲ 和 ● 行写进 chat 了
       const oneLine = r.answer.replace(/\n+/g, " ").trim();
-      let lastAnsIdx = -1;
-      for (let i = cs.chat.length - 1; i >= 0; i--) {
-        if (typeof cs.chat[i] === "string" && cs.chat[i].startsWith("● ")) {
-          lastAnsIdx = i;
-          break;
+      const flushed = flushDrainedLines(oneLine);
+      if (stillViewing) {
+        let lastAnsIdx = -1;
+        for (let i = cs.chat.length - 1; i >= 0; i--) {
+          if (typeof cs.chat[i] === "string" && cs.chat[i].startsWith("● ")) {
+            lastAnsIdx = i;
+            break;
+          }
         }
-      }
-      if (lastAnsIdx >= 0) {
-        cs.chat[lastAnsIdx] = `● ${oneLine}`;
-      } else {
-        cs.chat = [...cs.chat, `● ${oneLine}`];
+        if (lastAnsIdx >= 0) {
+          cs.chat[lastAnsIdx] = `● ${oneLine}`;
+        } else {
+          cs.chat = [...cs.chat, `● ${oneLine}`];
+        }
       }
       cs.context.assistantLast = oneLine;
       cs.context.assistantAt = Date.now();
-    } else if (r.status === "failed" || r.error) {
+    } else {
+      if (r.status === "failed" || r.error) {
       const rawMsg = (r.error?.message || r.status).replace(/\n+/g, " ");
       let oneLine = rawMsg;
       let hint = "";
@@ -271,10 +353,20 @@ export async function handleSend(req, res, ctx) {
       //   has already run inside runMcodeAcp/collectExecResult and put
       //   cs into exactly this idle shape.
       resetThinkingClaim(cs);
+      }
+      // Non-success turn (failed, timeout, or succeeded with no answer
+      // text — e.g. the empty-turn note line): the buffered lines are
+      // still the owning session's content — flush them exactly like
+      // the success path, minus the ● normalization.
+      flushDrainedLines(null);
     }
     // v2.4 单一基础会话：回合绑定了 mcode 会话（cs.mcodeSessionId 由 acp
     //   finalize 写入）后，把草稿记录晋升为引擎身份（id → mvs_…），或并入
     //   该 mcode 会话既有的叠加记录——保证一次对话在存储里只有一条记录。
+    //   (session-isolation/02: when the user switched away mid-run, cs
+    //   belongs to the OTHER session; this is a no-op for it — the
+    //   owning record was already promoted at bind time via
+    //   bindRecordToMcodeSid inside runMcodeAcp.)
     if (cs.mcodeSessionId) {
       try {
         promoteDraftToMcodeSid(cs);

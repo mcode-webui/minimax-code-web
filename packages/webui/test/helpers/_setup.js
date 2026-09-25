@@ -285,6 +285,77 @@ export async function setupMocks(t, overrides = {}) {
         }
       },
       persistCurrentChat: () => {},
+      // session-isolation/02 (run-mirror): the buffer-drain finalize path
+      //   (routes/chat.js) writes the turn back to the owning session's
+      //   persisted record; mirror the real lookup (by webui id, then by
+      //   engine sid) against the in-memory store.
+      appendChatToSession: (sessionId, lines) => {
+        if (!sessionId || !Array.isArray(lines) || lines.length === 0) {
+          return false;
+        }
+        const item =
+          _sessionsStore.find((r) => r && r.id === sessionId) ||
+          _sessionsStore.find((r) => r && r.mcodeSessionId === sessionId);
+        if (!item) return false;
+        item.chat = [...(item.chat || []), ...lines];
+        item.updatedAt = Date.now();
+        return true;
+      },
+      // session-isolation/02 (run-mirror): cs-driven draft bind — mirrors
+      //   bindDraftToMcodeSid via the mock's promoteDraftToMcodeSid.
+      bindDraftToMcodeSid: (cs, sid) => {
+        if (!cs || !sid) return false;
+        cs.mcodeSessionId = sid;
+        // replicate the mock's promoteDraftToMcodeSid body
+        if (!cs.mcodeSessionId || !cs.sessionId) return false;
+        if (cs.sessionId === cs.mcodeSessionId) return false;
+        const draft = _sessionsStore.find(
+          (r) => r && r.id === cs.sessionId && !r.mcodeSessionId,
+        );
+        const existing = _sessionsStore.find(
+          (r) => r && r.mcodeSessionId === cs.mcodeSessionId,
+        );
+        if (existing) {
+          if (draft && Array.isArray(draft.chat) && draft.chat.length) {
+            existing.chat = [...(existing.chat || []), ...draft.chat];
+          }
+          existing.updatedAt = Date.now();
+          if (draft) _sessionsStore.splice(_sessionsStore.indexOf(draft), 1);
+          cs.sessionId = existing.id;
+          return true;
+        }
+        if (!draft) return false;
+        draft.id = cs.mcodeSessionId;
+        draft.mcodeSessionId = cs.mcodeSessionId;
+        draft.updatedAt = Date.now();
+        cs.sessionId = draft.id;
+        return true;
+      },
+      // session-isolation/02 (run-mirror): record-targeted bind (no cs).
+      bindRecordToMcodeSid: (webuiId, sid) => {
+        if (!webuiId || !sid) return null;
+        const bound = _sessionsStore.find((r) => r && r.mcodeSessionId === sid);
+        if (bound) return bound.id;
+        const draft = _sessionsStore.find(
+          (r) => r && r.id === webuiId && !r.mcodeSessionId,
+        );
+        if (!draft) return null;
+        const existing = _sessionsStore.find(
+          (r) => r && r.mcodeSessionId === sid,
+        );
+        if (existing) {
+          if (Array.isArray(draft.chat) && draft.chat.length) {
+            existing.chat = [...(existing.chat || []), ...draft.chat];
+          }
+          existing.updatedAt = Date.now();
+          _sessionsStore.splice(_sessionsStore.indexOf(draft), 1);
+          return existing.id;
+        }
+        draft.id = sid;
+        draft.mcodeSessionId = sid;
+        draft.updatedAt = Date.now();
+        return draft.id;
+      },
       // v2.4: single-identity helpers — the mock keeps the in-memory store
       // shape so promotion/overlay logic is testable through handlers too.
       promoteDraftToMcodeSid: (cs) => {

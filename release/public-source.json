@@ -3526,6 +3526,7 @@
     "packages/webui/test/routes/alerts.check.mjs",
     "packages/webui/test/routes/chat-failed-send.check.mjs",
     "packages/webui/test/routes/chat-first-turn-session-guard.check.mjs",
+    "packages/webui/test/routes/chat-run-mirror.check.mjs",
     "packages/webui/test/routes/chat.check.mjs",
     "packages/webui/test/routes/debug.check.mjs",
     "packages/webui/test/routes/export.check.mjs",
