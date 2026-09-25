@@ -37,6 +37,7 @@ import { createHonoListener, ownsRequest } from './app.js'
 import { runStartupCleanup } from './cleanup.js'
 import { startTranscriptSync } from './lib/transcript-sync.js'
 import { shutdownMcodeAcpSingleton } from './lib/acp-client.js'
+import { installGracefulShutdown } from './lib/graceful-shutdown.js'
 import { init as initSettings, getPersistPath, getTokenEnabled } from './lib/settings.js'
 import { setTokenAuthEnabled as setAuthTokenEnabled } from './lib/auth.js'
 import { pushTokenFirstRun } from './lib/state-bus.js'
@@ -152,15 +153,16 @@ listenWithPortFallback(server, {
   },
 })
 
-process.on('SIGINT', () => {
-  console.log('[webui] SIGINT, shutting down...')
-  stopTranscriptSync()
-  shutdownMcodeAcpSingleton()
-  server.close(() => process.exit(0))
-})
-process.on('SIGTERM', () => {
-  console.log('[webui] SIGTERM, shutting down...')
-  stopTranscriptSync()
-  shutdownMcodeAcpSingleton()
-  server.close(() => process.exit(0))
+// Bounded graceful shutdown — see packages/webui/server/lib/graceful-shutdown.js
+// for the design rationale. Default bounds (1.5s grace, 4s hard exit)
+// are well under the dev watcher's 5s SIGKILL grace, so a clean
+// shutdown always lands first; a hung cleanup cannot wedge the
+// watcher because the hard exit timer force-exits regardless.
+installGracefulShutdown(server, {
+  stopTranscriptSync,
+  shutdownMcodeAcpSingleton,
+  onSignal: (signal) => {
+    console.log(`[webui] ${signal}, shutting down...`)
+    console.log(`[webui] Waiting for graceful termination...`)
+  },
 })

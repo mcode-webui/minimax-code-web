@@ -8,16 +8,18 @@
 // readable, and tears them down together on Ctrl+C. No new runtime dependency —
 // just `node:child_process`.
 //
-// Both halves reload on save: the backend through Node's built-in `--watch`
-// (disable with MCODE_WEBUI_DEV_NO_WATCH=1), the frontend through `next dev`.
+// Both halves reload on save: the backend through a custom in-process watcher
+// (see watchBackend below; disable with MCODE_WEBUI_DEV_NO_WATCH=1), the frontend
+// through `next dev`.
 //
 // In a built checkout, `pnpm mcode-web` already serves the exported UI; this
 // launcher is only useful when iterating on `webapp/` source.
 
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, watch } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { shouldWatchFile } from "./lib/dev-watch-scope.mjs";
 
 const root = path.resolve(fileURLToPath(new URL("../", import.meta.url)));
 const webuiDir = path.join(root, "packages", "webui");
@@ -86,7 +88,10 @@ function spawnChild(name, command, args, cwd, color, extraEnv) {
 
   child.on("exit", (code, signal) => {
     children.delete(name);
-    if (!exiting) {
+    // An exit while we are restarting the backend is expected — the
+    // SIGTERM came from restartBackend. Skip the "crashed" branch
+    // so the launcher keeps running and the respawn lands.
+    if (!exiting && !(name === "backend" && restartingBackend)) {
       // One side crashed — kill the other so the user does not end up with a
       // half-running pair, and exit non-zero so the shell / CI surfaces it.
       exiting = true;
@@ -106,22 +111,166 @@ function spawnChild(name, command, args, cwd, color, extraEnv) {
   return child;
 }
 
-// The backend runs under Node's built-in watcher so editing the server takes effect
-// without a manual restart. `next dev` already hot-reloads the frontend; the backend
-// was the half that silently kept serving the code it started with, which is the
-// "开发期改不动" complaint this closes. No new dependency: `--watch` is Node's own.
+// Custom backend watcher.
 //
-// Plain `--watch` (not `--watch-path`) on purpose: it follows the module graph, so it
-// restarts on server.js and anything under server/ that got imported, and stays quiet
-// while Next churns through `webapp/.next`. An explicit path list would also have to
-// enumerate every server/ subdirectory by hand and drift out of date.
+// Node 24's `--watch` flag follows the entire module graph: an mtime
+// change inside any transitively imported file (notably
+// `node_modules/@hono/node-server/dist/*.mjs` after a sibling
+// worktree's `pnpm install` activity reaches this checkout through
+// the shared pnpm store hardlinks) restarts the backend. With the
+// old "any change restarts" behaviour the SIGTERM landed on a
+// backend mid-cleanup, `server.close()` waited on a live SSE
+// socket, and the process wedged — the watcher saw it alive but
+// not listening and refused to spawn a replacement.
 //
-// A restart drops in-flight SSE streams and the spawned `acp` engine, so a save during
-// a running turn kills that turn. That is inherent to restart-based reload; set
-// MCODE_WEBUI_DEV_NO_WATCH=1 when you need a stable process (for example while
-// stepping through the engine in a debugger).
+// `fs.watch({ recursive: true })` lets us scope the watch to the
+// `server/` directory tree and ignore `node_modules`/`.next`/
+// `dist`/etc, while keeping the "restart on save" affordance.
 const watchBackend = process.env.MCODE_WEBUI_DEV_NO_WATCH !== "1";
-const backendArgs = watchBackend ? ["--watch", "server.js"] : ["server.js"];
+const backendArgs = watchBackend ? ["server.js"] : ["server.js"];
+
+// `shouldWatchFile` lives in scripts/lib/dev-watch-scope.mjs so the
+// test can import it without pulling in child_process / process.on
+// side effects from this launcher.
+
+function watchBackendSources(onChange) {
+  // fs.watch on the entry file picks up top-level changes; the
+  // recursive watcher on server/ covers the imported tree. We
+  // register both because some platforms only deliver changes to
+  // one watcher for a given file.
+  //
+  // On Linux, fs.watch emits only the basename for non-recursive
+  // watches; on macOS and Windows it emits the relative path. We
+  // join the basename with the watch target so shouldWatchFile's
+  // path-component filter sees the same shape everywhere.
+  const entryPath = path.join(webuiDir, "server.js");
+  const serverDir = path.join(webuiDir, "server");
+  const watchers = [];
+  for (const target of [entryPath, serverDir]) {
+    if (!existsSync(target)) continue;
+    try {
+      const w = watch(target, { recursive: target === serverDir }, (event, filename) => {
+        // Join the basename with the watch target so the filter
+        // sees a stable absolute-or-relative path. fs.watch can
+        // pass `filename === null` (Linux, kqueue variants) — guard.
+        const joined = filename ? path.join(target, filename) : target;
+        if (process.env.MCODE_WEBUI_DEV_WATCH_TRACE) {
+          console.error(
+            `[mcode:dev] fs.watch event: target=${target} event=${event} filename=${filename} joined=${joined}`,
+          );
+        }
+        if (shouldWatchFile(joined)) onChange(joined);
+      });
+      w.on("error", (error) => {
+        console.error(`[mcode:dev] watch(${target}) error: ${error.message}`);
+      });
+      watchers.push(w);
+    } catch (error) {
+      console.error(`[mcode:dev] watch(${target}) failed: ${error.message}`);
+    }
+  }
+  return () => {
+    for (const w of watchers) {
+      try {
+        w.close();
+      } catch {
+        // already closed
+      }
+    }
+  };
+}
+
+let restartInFlight = false;
+let restartingBackend = false;
+let restartTimer = null;
+function scheduleBackendRestart(triggerFile) {
+  if (restartTimer) clearTimeout(restartTimer);
+  // Coalesce bursts (saving several files in quick succession should
+  // produce one restart, not N). 200ms is short enough that an
+  // interactive save feels instant, long enough that a multi-file
+  // commit collapses to one cycle.
+  restartTimer = setTimeout(() => {
+    restartTimer = null;
+    void restartBackend(triggerFile);
+  }, 200);
+  if (typeof restartTimer.unref === "function") restartTimer.unref();
+}
+
+async function restartBackend(triggerFile) {
+  if (restartInFlight) return;
+  restartInFlight = true;
+  try {
+    const old = children.get("backend");
+    if (!old) return; // already gone
+    console.log(
+      `[mcode:dev] restart: ${path.relative(root, triggerFile)} — restarting backend`,
+    );
+    // Mark the child as "expected to exit" so spawnChild's exit
+    // handler does not treat the SIGTERM as a crash and tear down
+    // the whole launcher. The flag is cleared after we respawn or
+    // give up.
+    restartingBackend = true;
+    try {
+      old.kill("SIGTERM");
+    } catch {
+      // already gone
+    }
+    const exited = await waitForExit(old, 8000);
+    if (!exited) {
+      console.warn(
+        `[mcode:dev] backend did not exit within 8s after SIGTERM — SIGKILL`,
+      );
+      try {
+        old.kill("SIGKILL");
+      } catch {
+        // already gone
+      }
+      await waitForExit(old, 2000);
+    }
+    children.delete("backend");
+    // Respawn. spawnChild's exit handler is wired for "exited
+    // unexpectedly"; we cleared that path by deleting the entry
+    // before respawning so the respawn won't trigger the sibling-
+    // kill chain. The exit code from the SIGTERM (143) is fine to
+    // discard here.
+    const backend = spawnChild(
+      "backend",
+      process.execPath,
+      backendArgs,
+      webuiDir,
+      "36",
+      { PORT: String(BACKEND_PORT), MCODE_WEBUI_TRUSTED_ORIGINS: DEV_TRUSTED_ORIGINS },
+    );
+    if (typeof backend.unref === "function") backend.unref();
+  } finally {
+    restartInFlight = false;
+    restartingBackend = false;
+  }
+}
+
+function waitForExit(child, timeoutMs) {
+  return new Promise((resolve) => {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      resolve(true);
+      return;
+    }
+    let settled = false;
+    const onExit = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(true);
+    };
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      child.off("exit", onExit);
+      resolve(false);
+    }, timeoutMs);
+    if (typeof timer.unref === "function") timer.unref();
+    child.once("exit", onExit);
+  });
+}
 
 const backend = spawnChild(
   "backend",
@@ -148,6 +297,11 @@ console.log(
     : "[mcode:dev] backend watcher is OFF (MCODE_WEBUI_DEV_NO_WATCH=1).",
 );
 console.log(`[mcode:dev] Ctrl+C stops both.`);
+
+if (watchBackend) {
+  const stopWatcher = watchBackendSources((file) => scheduleBackendRestart(file));
+  process.once("exit", stopWatcher);
+}
 
 function shutdown(signal) {
   if (exiting) return;
