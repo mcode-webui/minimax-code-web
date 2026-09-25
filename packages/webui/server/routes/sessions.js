@@ -42,6 +42,53 @@ import { append as _eventsAppend } from "../lib/events.js";
 // workspace write lands on the same boundary.
 import { assertWorkspacePath } from "../lib/workspace.js";
 
+/**
+ * Detect the cumulative-render pollution pattern in a stored chat
+ * buffer (session-isolation/06). When the engine emits each segment
+ * of an `agent_message`, streamUpdateLine writes a new `●` line; a
+ * non-cumulative buffer has each line containing only its own
+ * segment's text. A cumulative buffer — the bug — has at least one
+ * later `●` line whose text is a strict superset of an earlier
+ * `●` line (because the accumulator never reset between segments and
+ * every later line re-wrote every prior segment's text). This
+ * predicate is O(n^2) in the number of `●` lines but a single
+ * session's `chat` is bounded (~400 lines by the transcript cap) so
+ * the worst case is a few thousand substring checks per switch —
+ * cheap enough.
+ *
+ * Returns true when the buffer is clearly cumulative (an earlier
+ * `●` line is a strict substring of a later one AND the longer line
+ * strictly extends the shorter). Conservative on both sides:
+ *   - a single-`●`-line buffer is never cumulative;
+ *   - non-`●` lines (system, tool, ▲ thought) are ignored — only
+ *     `●` rows matter, since the cumulative bug only affects message
+ *     segments;
+ *   - ties (equal-length `●` lines) are NOT cumulative — same
+ *     length, no superset relation.
+ */
+function chatLooksCumulative(chat) {
+  if (!Array.isArray(chat) || chat.length === 0) return false;
+  const dots = [];
+  for (const line of chat) {
+    if (typeof line !== "string") continue;
+    // Match the same prefix the streamer writes: `● ` then text.
+    // Also accept bare `●` at end-of-line (transcript-sync appends
+    // stripped-down `●` markers in some paths).
+    if (line.startsWith("● ")) dots.push(line.slice(2));
+    else if (line === "●") continue;
+    else continue;
+  }
+  for (let i = 0; i < dots.length; i += 1) {
+    for (let j = i + 1; j < dots.length; j += 1) {
+      const a = dots[i];
+      const b = dots[j];
+      if (b.length <= a.length) continue; // strict superset ⇒ longer
+      if (b.includes(a)) return true;
+    }
+  }
+  return false;
+}
+
 // _auditFail — shared failure sink for audit writes. events.js#append
 // THROWS on write failure; a governance action must not complete with
 // a missing audit trail, so every route-level append is wrapped and
@@ -297,34 +344,67 @@ export async function handleSwitchSession(req, res, ctx) {
   // grammar BEFORE responding, so response session.chat and cs.chat
   // carry history. Caps inside (last 400 lines / 200KB) keep the SSE
   // state push bounded; a 1000+-message session must not balloon it.
+  //
+  // session-isolation/06 (persist hygiene): the original rule only
+  // backfilled when target.chat was empty, so a polluted buffer
+  // (the cumulative-render bug from Item 1, before its fix) would
+  // persist via saveSessions and win forever. The new rule is:
+  //   - if stored chat is empty → backfill (unchanged).
+  //   - if stored chat looks cumulative → prefer DB read and re-persist.
+  //     "cumulative" = at least two `●` lines whose text is a strict
+  //     superset of an earlier `●` line (the engine emits each
+  //     segment's full text per line, so a non-cumulative buffer has
+  //     no such inclusion pair).
+  //   - otherwise → keep stored chat (preserve drafts / unsaved turns;
+  //     the user-visible content lives only in cs.chat in those cases).
   // FAILURE MUST NOT BREAK SWITCHING: any error logs and continues
-  // with chat: [] — the switch itself always succeeds.
+  // with the original chat — the switch itself always succeeds.
   if (
     target.mcodeSessionId &&
-    /^mvs_[a-f0-9]{32}$/.test(target.mcodeSessionId) &&
-    (!Array.isArray(target.chat) || target.chat.length === 0)
+    /^mvs_[a-f0-9]{32}$/.test(target.mcodeSessionId)
   ) {
-    try {
-      const r = loadTranscriptChatLines(target.mcodeSessionId, {
-        dbPath: MCODE_RUNTIME_DB,
-      });
-      if (r.ok && r.lines.length > 0) {
-        target.chat = r.lines;
-        target.updatedAt = Date.now();
-        saveSessions(all); // persist the populated wrapper (updatedAt bumped)
-        console.log(
-          `[switch] cid=${cid} transcript backfill ${target.id.substring(0, 8)}… mcode=${target.mcodeSessionId.substring(0, 12)}… lines=${r.lines.length} msgs=${r.messageCount} probe=${r.probe}${r.truncated ? " (capped)" : ""}`,
-        );
-      } else if (!r.ok) {
-        console.log(
-          `[switch] cid=${cid} transcript unavailable for ${target.mcodeSessionId.substring(0, 12)}… reason=${r.reason || "unknown"}`,
+    const storedHasChat = Array.isArray(target.chat) && target.chat.length > 0;
+    const storedCumulative = storedHasChat && chatLooksCumulative(target.chat);
+    const shouldBackfill =
+      !storedHasChat || storedCumulative;
+    if (shouldBackfill) {
+      try {
+        const r = loadTranscriptChatLines(target.mcodeSessionId, {
+          dbPath: MCODE_RUNTIME_DB,
+        });
+        if (r.ok && r.lines.length > 0) {
+          const dbEmpty = target.chat.length === 0;
+          const dbShrinks = r.lines.length < target.chat.length;
+          const reason = dbEmpty
+            ? "empty"
+            : storedCumulative
+              ? "stored_cumulative"
+              : "stored_shrinks";
+          target.chat = r.lines;
+          target.updatedAt = Date.now();
+          saveSessions(all); // persist the populated wrapper (updatedAt bumped)
+          console.log(
+            `[switch] cid=${cid} transcript backfill ${target.id.substring(0, 8)}… mcode=${target.mcodeSessionId.substring(0, 12)}… reason=${reason} lines=${r.lines.length} msgs=${r.messageCount} probe=${r.probe}${r.truncated ? " (capped)" : ""}`,
+          );
+        } else if (!r.ok) {
+          console.log(
+            `[switch] cid=${cid} transcript unavailable for ${target.mcodeSessionId.substring(0, 12)}… reason=${r.reason || "unknown"}`,
+          );
+        } else if (storedCumulative) {
+          // Cumulative buffer + DB read came back empty — preserve
+          // the stored chat (which is at least the user's last view)
+          // and log the discrepancy so a post-mortem can see what
+          // happened.
+          console.log(
+            `[switch] cid=${cid} stored chat looked cumulative but DB read returned no lines; preserving stored chat for ${target.mcodeSessionId.substring(0, 12)}…`,
+          );
+        }
+      } catch (e) {
+        console.warn(
+          `[switch] cid=${cid} transcript backfill failed for ${target.mcodeSessionId.substring(0, 12)}… (continuing with stored chat):`,
+          e && e.message ? e.message : e,
         );
       }
-    } catch (e) {
-      console.warn(
-        `[switch] cid=${cid} transcript backfill failed for ${target.mcodeSessionId.substring(0, 12)}… (continuing with empty chat):`,
-        e && e.message ? e.message : e,
-      );
     }
   }
   const prevSid = cs.sessionId;
