@@ -95,6 +95,18 @@ let _tokenEnabled = true;
 let _currentToken = "";
 let _tokenRotatedAt = 0;
 let _tokenAcknowledged = false;
+// Mutable builtin-catalogue mock (same dispatch-through pattern as
+// _acpMock and _rpcMock) so the catalogue-merge tests in
+// test/routes/model.check.mjs can flip getBuiltinModelsFromMcode's
+// return value between tests without re-issuing mock.module (Node
+// 24.14 rejects a second registration for the same specifier).
+const _builtinModelsMock = { list: [] };
+export function setBuiltinModelsMock(list) {
+  _builtinModelsMock.list = Array.isArray(list) ? [...list] : [];
+}
+export function getBuiltinModelsMock() {
+  return [..._builtinModelsMock.list];
+}
 // Per-test direct handles (for tests that need to read state after the SUT)
 export const acpMock = _acpMock;
 
@@ -441,7 +453,11 @@ export async function setupMocks(t, overrides = {}) {
   t.mock.module(absPath("lib/models.js"), {
     namedExports: {
       getMcodeModelLimit: async () => ({ context: 512000 }),
-      // v0.5.bx 系列 patch: routes/model.js 也 import 这俩
+      // v0.5.by: dispatch-through wrapper, so a later
+      //   setBuiltinModelsMock([...]) flips the catalogue without a
+      //   second mock.module registration. The route reads this on
+      //   every request.
+      getBuiltinModelsFromMcode: () => [..._builtinModelsMock.list],
     },
   });
   t.mock.module(absPath("lib/slash.js"), {

@@ -80,25 +80,35 @@ describe("handleGetModels — /api/models", () => {
       body.models.map((m) => m.id),
       ["minimax_api:MiniMax-M3", "minimax_api:MiniMax-M2.7"],
     );
+    // Both `name` (legacy callers) and `label` (the new provider-grouped
+    // panel) carry the engine's display name.
     assert.equal(body.models[0].name, "MiniMax-M3");
+    assert.equal(body.models[0].label, "MiniMax-M3");
     // The engine's encoded value, so it round-trips through /api/set-model.
     assert.equal(body.current, "minimax_api:MiniMax-M3");
+    // No builtin catalogue was provided by this test, and the engine
+    // already covered the catalogue — groups[] should reflect only the
+    // engine source.
+    assert.equal(body.groups.length, 1);
+    assert.equal(body.groups[0].id, "__engine");
   });
 
-  test("before a session exists: no catalogue and no claimed current model", () => {
-    // `current` is null rather than webui's DEFAULT_MODEL: the engine has not
-    // named a session model yet, and DEFAULT_MODEL is a different encoding
-    // (`minimax_api/MiniMax-M3`) from the engine's (`m:<provider>:<model>:...`),
-    // so reporting it claimed a model the session was not running.
+  test("before a session exists: recorded pre-session choice surfaces as `current`", () => {
+    // The engine has not named a session model yet, but `cs.model.name`
+    // is a recorded pre-session choice (handleSetModel writes it).
+    // That value is now surfaced as `current` instead of `null` — the
+    // chip should reflect what the user has actually picked, not blank
+    // out under the "no engine session" reading.
     const cs = fakeCs("minimax_api/MiniMax-M3");
     const ctx = { cs };
     const res = fakeRes();
     modelRoute.handleGetModels(null, res, ctx);
     const body = JSON.parse(res._body);
     assert.equal(body.ok, true);
+    // Mock default builtin catalogue is []; no providers config either.
+    // Models list is therefore empty in this default-mock test setup.
     assert.deepEqual(body.models, []);
-    assert.equal(body.current, null);
-    assert.equal(body.reason, "no_session_config");
+    assert.equal(body.current, "minimax_api/MiniMax-M3");
     // and it must not write that value back into the state a prompt would use
     assert.equal(cs.model.name, "minimax_api/MiniMax-M3");
   });
@@ -268,5 +278,195 @@ describe("handleAnswer — /api/answer (legacy no-op)", () => {
     const body = JSON.parse(res._body);
     assert.equal(body.ok, true);
     assert.equal(body.deprecated, true);
+  });
+});
+
+// ============================================================
+// Catalogue merge — engine config option vs providers config vs
+// mcode cli-bundle builtin. The builtin mock dispatches through a
+// mutable wrapper (see helpers/_setup.js) so a per-test list flip
+// takes effect on the next call without re-importing the route.
+// ============================================================
+
+import {
+  setBuiltinModelsMock,
+} from "../helpers/_setup.js";
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+function withModelsConfig(contents, body) {
+  const dir = mkdtempSync(join(tmpdir(), "webui-models-merge-"));
+  const file = join(dir, "models.json");
+  writeFileSync(file, JSON.stringify(contents));
+  const prev = process.env.MCODE_WEBUI_MODELS_CONFIG;
+  // Read every call: changing cwd is enough for the route's default,
+  // but we also explicitly point env at the temp file so the path is
+  // independent of cwd (the route prefers env over cwd/models.json).
+  process.env.MCODE_WEBUI_MODELS_CONFIG = file;
+  try {
+    return body();
+  } finally {
+    if (prev === undefined) delete process.env.MCODE_WEBUI_MODELS_CONFIG;
+    else process.env.MCODE_WEBUI_MODELS_CONFIG = prev;
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+describe("handleGetModels — catalogue merge", () => {
+  test("before a session exists: falls back to providers config + builtin catalogue", () => {
+    // Pre-session: no engine configOption. The merged response should
+    // source its models from MCODE_WEBUI_MODELS_CONFIG plus the mcode
+    // cli-bundle builtin catalogue, grouped by provider.
+    setBuiltinModelsMock(["MiniMax-M3", "MiniMax-M2.7"]);
+    return withModelsConfig(
+      {
+        providers: [
+          {
+            id: "openai_compat",
+            label: "OpenAI-compat",
+            models: [
+              { id: "gpt-4o-mini", label: "GPT-4o mini", contextLimit: 128000 },
+            ],
+          },
+        ],
+      },
+      () => {
+        const cs = fakeCs("minimax_api/MiniMax-M3");
+        const res = fakeRes();
+        modelRoute.handleGetModels(null, res, { cs, cid: "cid-merge1" });
+        const body = JSON.parse(res._body);
+        assert.equal(body.ok, true);
+        assert.equal(body.source, "config+mcode-cli-bundle");
+        // providers-config model surfaces in the flat list
+        assert.ok(
+          body.models.find((m) => m.id === "openai_compat/gpt-4o-mini"),
+          "providers config model present",
+        );
+        assert.equal(
+          body.models.find((m) => m.id === "openai_compat/gpt-4o-mini")
+            .contextLimit,
+          128000,
+          "contextLimit surfaces from config",
+        );
+        // and in the matching group
+        const cfgGroup = body.groups.find((g) => g.id === "openai_compat");
+        assert.ok(cfgGroup, "providers config group present");
+        assert.equal(cfgGroup.label, "OpenAI-compat");
+        // builtin models folded into the minimax_api group
+        const builtins = body.groups.find((g) => g.id === "minimax_api");
+        assert.ok(builtins, "builtin group present");
+        const builtinIds = builtins.models.map((m) => m.id);
+        assert.ok(builtinIds.includes("minimax_api/MiniMax-M3"));
+        assert.ok(builtinIds.includes("minimax_api/MiniMax-M2.7"));
+        // current reflects the recorded pre-session choice rather than
+        // the engine's null/blank value
+        assert.equal(body.current, "minimax_api/MiniMax-M3");
+      },
+    );
+  });
+
+  test("before a session, no providers config: builtin catalogue only", () => {
+    setBuiltinModelsMock(["MiniMax-M3"]);
+    // Explicitly unset the env so the route's cwd/models.json fallback
+    // does not silently pick up a real file. (Most CI cwd has none, but
+    // be defensive.)
+    const prev = process.env.MCODE_WEBUI_MODELS_CONFIG;
+    process.env.MCODE_WEBUI_MODELS_CONFIG = join(
+      tmpdir(),
+      "definitely-not-existing-models.json",
+    );
+    try {
+      const cs = fakeCs("minimax_api/MiniMax-M3");
+      const res = fakeRes();
+      modelRoute.handleGetModels(null, res, { cs, cid: "cid-merge2" });
+      const body = JSON.parse(res._body);
+      assert.equal(body.source, "mcode-cli-bundle");
+      const builtinGroup = body.groups.find((g) => g.id === "minimax_api");
+      assert.ok(builtinGroup, "builtin group present");
+      assert.deepEqual(
+        builtinGroup.models.map((m) => m.id),
+        ["minimax_api/MiniMax-M3"],
+      );
+      assert.equal(body.current, "minimax_api/MiniMax-M3");
+    } finally {
+      if (prev === undefined) delete process.env.MCODE_WEBUI_MODELS_CONFIG;
+      else process.env.MCODE_WEBUI_MODELS_CONFIG = prev;
+    }
+  });
+
+  test("engine config option stays authoritative when present", () => {
+    setBuiltinModelsMock([]);
+    const cs = fakeCs(undefined, [MODEL_OPTION]);
+    const res = fakeRes();
+    modelRoute.handleGetModels(null, res, { cs, cid: "cid-merge3" });
+    const body = JSON.parse(res._body);
+    assert.equal(body.source, "acp-session-config");
+    // engine-encoded ids round-trip
+    assert.deepEqual(
+      body.models.map((m) => m.id),
+      ["minimax_api:MiniMax-M3", "minimax_api:MiniMax-M2.7"],
+    );
+    assert.equal(body.current, "minimax_api:MiniMax-M3");
+  });
+
+  test("providers config id wins over builtin id collision", () => {
+    // Same provider prefix + same model id from both sources: the
+    // config entry is added first, so the builtin pass sees the id
+    // already in `seen` and skips it.
+    setBuiltinModelsMock(["MiniMax-M3"]);
+    return withModelsConfig(
+      {
+        providers: [
+          {
+            id: "minimax_api",
+            label: "MiniMax (config)",
+            models: [
+              {
+                id: "MiniMax-M3",
+                label: "MiniMax-M3 (config override)",
+                contextLimit: 64000,
+              },
+            ],
+          },
+        ],
+      },
+      () => {
+        const cs = fakeCs("minimax_api/MiniMax-M3");
+        const res = fakeRes();
+        modelRoute.handleGetModels(null, res, { cs, cid: "cid-merge4" });
+        const body = JSON.parse(res._body);
+        // Only one entry for this id; its label/contextLimit come from
+        // the config rather than the builtin catalogue.
+        const ids = body.models
+          .filter((m) => m.id === "minimax_api/MiniMax-M3")
+          .map((m) => m);
+        assert.equal(ids.length, 1, "config id wins the collision");
+        assert.equal(ids[0].label, "MiniMax-M3 (config override)");
+        assert.equal(ids[0].contextLimit, 64000);
+      },
+    );
+  });
+
+  test("empty catalogue (no config, no builtin, no session) reports reason:no_catalogue and current falls back to DEFAULT_MODEL", () => {
+    setBuiltinModelsMock([]);
+    const prev = process.env.MCODE_WEBUI_MODELS_CONFIG;
+    process.env.MCODE_WEBUI_MODELS_CONFIG = join(
+      tmpdir(),
+      "definitely-not-existing-models.json",
+    );
+    try {
+      const cs = { model: {} }; // no cs.model.name recorded
+      const res = fakeRes();
+      modelRoute.handleGetModels(null, res, { cs, cid: "cid-merge5" });
+      const body = JSON.parse(res._body);
+      assert.deepEqual(body.models, []);
+      assert.equal(body.reason, "no_catalogue");
+      // DEFAULT_MODEL is the documented "no recorded choice either" sentinel
+      assert.equal(body.current, "minimax_api/MiniMax-M3");
+    } finally {
+      if (prev === undefined) delete process.env.MCODE_WEBUI_MODELS_CONFIG;
+      else process.env.MCODE_WEBUI_MODELS_CONFIG = prev;
+    }
   });
 });

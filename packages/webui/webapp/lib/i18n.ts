@@ -80,6 +80,10 @@ const en = {
   "composer.dropHint": "Drop file to upload",
   "composer.model": "Model",
   "composer.noModels": "No models available",
+  /* Model selector — provider-grouped dropdown. "Other" catches
+     engine-encoded ids whose provider prefix did not coerce (i.e. a
+     model the catalogue could not bucket). */
+  "modelSelector.other": "Other",
 
   "permission.label": "Permission mode",
   "permission.ask": "Ask",
@@ -163,6 +167,35 @@ const en = {
   "usage.reset": "Resets",
   "alerts.empty": "No messages",
   "workspace.sectionEnvironment": "Environment",
+  /* Workspace panel — switch workspace entry. The picker modal itself
+     borrows from pr-22's fs-picker.js feature checklist: a path input,
+     parent navigation, directory listing, glob filter, create-new-folder,
+     recents tab, and an "Open native picker" button on supported
+     platforms. */
+  "workspace.switch": "Switch workspace",
+  "workspace.picker.title": "Switch workspace",
+  "workspace.picker.pathPlaceholder": "Path…",
+  "workspace.picker.up": "Up one level",
+  "workspace.picker.home": "Home",
+  "workspace.picker.root": "Allowed roots",
+  "workspace.picker.newFolder": "New folder",
+  "workspace.picker.newFolderPrompt": "Folder name",
+  "workspace.picker.filterPlaceholder": "Filter… (globs like *.md)",
+  "workspace.picker.confirm": "Select",
+  "workspace.picker.cancel": "Cancel",
+  "workspace.picker.pickCurrent": "Use this folder",
+  "workspace.picker.noWorkspace": "No workspace (scratch)",
+  "workspace.picker.loading": "Loading…",
+  "workspace.picker.empty": "This folder is empty",
+  "workspace.picker.error": "Could not read this folder",
+  "workspace.picker.tabs.recents": "Recent",
+  "workspace.picker.tabs.browse": "Browse",
+  "workspace.picker.recents.empty": "No recent workspaces",
+  "workspace.picker.recents.search": "Search recent workspaces",
+  "workspace.picker.native": "Open native picker",
+  "workspace.picker.nativeUnsupported": "Native picker not available on this platform",
+  "workspace.picker.useWorkspace": "Use this workspace",
+  "workspace.picker.created": "Created",
   /* Workspace panel section labels are aligned with the desktop's
      `workspace_panel.section_*` keys (反编译 36705 chunk). */
   "workspace.sectionPlan": "Plan",
@@ -314,6 +347,8 @@ const zh: Record<MessageKey, string> = {
   "composer.dropHint": "松开上传文件",
   "composer.model": "模型",
   "composer.noModels": "暂无可用模型",
+  /* Model selector — provider-grouped dropdown. */
+  "modelSelector.other": "其他",
 
   "permission.label": "权限模式",
   "permission.ask": "主动询问",
@@ -395,6 +430,31 @@ const zh: Record<MessageKey, string> = {
   /* Workspace panel section labels are aligned with the desktop's
      `workspace_panel.section_*` keys (反编译 36705 chunk). */
   "workspace.sectionEnvironment": "环境信息",
+  /* Workspace panel — switch workspace entry (中文). */
+  "workspace.switch": "切换工作区",
+  "workspace.picker.title": "切换工作区",
+  "workspace.picker.pathPlaceholder": "路径…",
+  "workspace.picker.up": "返回上一级",
+  "workspace.picker.home": "主目录",
+  "workspace.picker.root": "允许根",
+  "workspace.picker.newFolder": "新建文件夹",
+  "workspace.picker.newFolderPrompt": "文件夹名",
+  "workspace.picker.filterPlaceholder": "过滤…（支持 glob，如 *.md）",
+  "workspace.picker.confirm": "选择",
+  "workspace.picker.cancel": "取消",
+  "workspace.picker.pickCurrent": "使用当前文件夹",
+  "workspace.picker.noWorkspace": "无需工作区(临时)",
+  "workspace.picker.loading": "加载中…",
+  "workspace.picker.empty": "文件夹为空",
+  "workspace.picker.error": "无法读取该文件夹",
+  "workspace.picker.tabs.recents": "最近",
+  "workspace.picker.tabs.browse": "浏览",
+  "workspace.picker.recents.empty": "暂无最近工作区",
+  "workspace.picker.recents.search": "搜索最近工作区",
+  "workspace.picker.native": "打开原生选择器",
+  "workspace.picker.nativeUnsupported": "当前平台无原生选择器",
+  "workspace.picker.useWorkspace": "使用此工作区",
+  "workspace.picker.created": "已创建",
   "workspace.sectionPlan": "计划",
   "workspace.sectionAgentTeam": "Agent 团队",
   "workspace.sectionWorkingFolders": "工作文件夹",

@@ -1,6 +1,9 @@
 // webui/server/routes/model.js
 // GET /api/models, POST /api/set-model, POST /api/permissions, POST /api/answer (legacy)
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
 import { pushStateFor } from "../lib/state-bus.js";
 import {
   mcodePermissionToWebui,
@@ -8,55 +11,219 @@ import {
   webuiPermissionToMcode,
   PERMISSION_MODES,
 } from "../lib/mcode-rpc.js";
+import { getBuiltinModelsFromMcode } from "../lib/models.js";
+import { DEFAULT_MODEL } from "../lib/config.js";
+import { webuiModeToLabel } from "../lib/interaction/permission-presets.js";
+import { readJson } from "../lib/read-json.js";
 
 /** The engine's `select` config option with this id, or null before a session exists. */
 function configOption(cs, id) {
   const options = Array.isArray(cs && cs.configOptions) ? cs.configOptions : [];
   return options.find((o) => o && o.id === id) || null;
 }
-// B04: webuiModeToLabel extracted to the permission-presets seam (per
-// BORROW-dsh-deepseek-harness-2026-08-28 § 3). Same string-mapping
-// behavior as the inline ternary chain that lived here before.
-import { webuiModeToLabel } from "../lib/interaction/permission-presets.js";
-import { readJson } from "../lib/read-json.js";
 
+/**
+ * Read the optional providers-config file.
+ *
+ * Path precedence: `MCODE_WEBUI_MODELS_CONFIG` env → `<cwd>/models.json`.
+ * Shape: `{ providers: [{ id, label, models: [{ id, label?, contextLimit? }] }] }`.
+ * Re-read on every request: editing the file does not require a server restart.
+ * Missing / unreadable / malformed → null (treated as "no config").
+ */
+function readModelsConfig() {
+  const path =
+    process.env.MCODE_WEBUI_MODELS_CONFIG || join(process.cwd(), "models.json");
+  try {
+    const raw = readFileSync(path, "utf8");
+    const parsed = JSON.parse(raw);
+    if (!parsed || !Array.isArray(parsed.providers)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
 
-// GET /api/models
-// The catalogue is the engine's `model` config option (the same list the TUI's
-// /models shows), which arrives with the session. `value` is the engine's
-// encoded selection — `m:<provider>:<model>:v:<variant>` — so it round-trips
-// straight back through /api/set-model.
-//
-// Without that option there is no catalogue and no current model to report, and
-// this used to answer with `DEFAULT_MODEL` (`minimax_api/MiniMax-M3`), which is
-// neither the engine's encoding nor the engine's state: the client rendered it as
-// the active model while the session was running something else entirely. It
-// answers `null` now, and the caller shows a neutral label. Nothing is written
-// back into `cs.model` either — that backfill is what put the invented name into
-// the state a later prompt would use.
+/**
+ * Coerce a provider prefix out of a model id.
+ *
+ * `minimax_api/MiniMax-M3` → `minimax_api`. Bare `MiniMax-M3` falls back to
+ * `minimax_api` (the engine's only shipping builtin provider) so a user-typed
+ * short id still resolves to a known group instead of orphaning itself.
+ */
+function providerOf(modelId, fallback = "minimax_api") {
+  if (!modelId) return fallback;
+  const i = modelId.indexOf("/");
+  if (i <= 0) return fallback;
+  return modelId.slice(0, i);
+}
+
+/**
+ * GET /api/models — catalogue, with priority-aware merging.
+ *
+ * Priority order (highest wins for `current`, first wins for each id):
+ *   1. Engine session's `model` config option. Its `options[].value` is
+ *      the engine's encoded id (e.g. `m:<provider>:<model>:v:<variant>`),
+ *      so it round-trips straight through `POST /api/set-model`. Used
+ *      when a session is active.
+ *   2. Optional `MCODE_WEBUI_MODELS_CONFIG` / `models.json` providers
+ *      config. Per-provider groups with labels and `contextLimit`s.
+ *   3. `getBuiltinModelsFromMcode()` — extracted from mcode's own
+ *      cli.js bundle, so the list tracks mcode's TUI without a webui
+ *      release.
+ *
+ * `current` resolution:
+ *   - With an active session config option: `option.currentValue`.
+ *   - Without one: the recorded pre-session choice (`cs.model.name`),
+ *     which `handleSetModel` already writes — so the selector shows
+ *     the user's pick even before the engine attaches.
+ *
+ * Response carries `groups` so the UI can render provider sections,
+ * alongside the flat `models` array for callers that do not care
+ * about grouping.
+ */
 export function handleGetModels(_req, res, ctx) {
   const cs = ctx.cs;
   const option = configOption(cs, "model");
-  const models = (option && Array.isArray(option.options) ? option.options : []).map((o) => ({
-    id: o.value,
-    name: o.name,
-  }));
-  const current = (option && option.currentValue) || null;
+  const engineOption = option; // keep the alias so reviewers can read priority order
+
+  const list = [];
+  const groups = [];
+  const seen = new Set();
+
+  // 1) Engine session config option — authoritative when present. We keep
+  //    its encoded ids verbatim so /api/set-model round-trips. Both `name`
+  //    and `label` are set on engine-sourced entries because pre-existing
+  //    callers (the composer chip) read `name`, while the new
+  //    provider-grouped panel reads `label`.
+  if (engineOption) {
+    const engineGroupId = "__engine";
+    const engineGroup = {
+      id: engineGroupId,
+      label: "Engine session",
+      models: [],
+    };
+    for (const o of Array.isArray(engineOption.options) ? engineOption.options : []) {
+      const id = o && typeof o.value === "string" ? o.value : null;
+      if (!id) continue;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const displayName = (o && o.name) || id;
+      const entry = {
+        id,
+        name: displayName,
+        label: displayName,
+        provider: providerOf(id),
+        source: "engine",
+      };
+      engineGroup.models.push(entry);
+      list.push(entry);
+    }
+    if (engineGroup.models.length > 0) groups.push(engineGroup);
+  }
+
+  // 2) Providers config — read every request so editing the file does not
+  //    require a restart. Config wins on id collision with the builtin
+  //    catalogue so providers can override labels and contextLimit.
+  const config = readModelsConfig();
+  if (config) {
+    for (const p of config.providers) {
+      if (!p || typeof p.id !== "string" || !p.id) continue;
+      const models = [];
+      for (const m of Array.isArray(p.models) ? p.models : []) {
+        if (!m || typeof m.id !== "string" || !m.id) continue;
+        const fullId = m.id.includes("/") ? m.id : `${p.id}/${m.id}`;
+        if (seen.has(fullId)) continue;
+        seen.add(fullId);
+        const entry = {
+          id: fullId,
+          label: typeof m.label === "string" && m.label ? m.label : m.id,
+          provider: p.id,
+          source: "config",
+        };
+        if (typeof m.contextLimit === "number" && m.contextLimit > 0) {
+          entry.contextLimit = m.contextLimit;
+        }
+        models.push(entry);
+        list.push(entry);
+      }
+      groups.push({
+        id: p.id,
+        label: typeof p.label === "string" && p.label ? p.label : p.id,
+        models,
+      });
+    }
+  }
+
+  // 3) Builtin catalogue (extracted from mcode's cli.js bundle). The
+  //    "current provider" is the one recorded in cs.model.name; falling
+  //    back to minimax_api keeps a brand-new session from looking empty.
+  const builtins = getBuiltinModelsFromMcode();
+  const currentName =
+    (cs.model && typeof cs.model.name === "string" && cs.model.name) || "";
+  const currentProvider = currentName.includes("/")
+    ? currentName.split("/")[0]
+    : "minimax_api";
+  let builtinGroup = groups.find((g) => g.id === currentProvider);
+  if (!builtinGroup) {
+    builtinGroup = { id: currentProvider, label: currentProvider, models: [] };
+    groups.push(builtinGroup);
+  }
+  for (const m of builtins) {
+    const fullId = `${currentProvider}/${m}`;
+    if (seen.has(fullId)) continue;
+    seen.add(fullId);
+    const entry = {
+      id: fullId,
+      label: m,
+      provider: currentProvider,
+      source: "builtin",
+    };
+    list.push(entry);
+    builtinGroup.models.push(entry);
+  }
+
+  // Drop the empty builtin shell — a no-bundle empty group is noise.
+  if (builtinGroup && builtinGroup.models.length === 0 && !config) {
+    const idx = groups.indexOf(builtinGroup);
+    if (idx >= 0) groups.splice(idx, 1);
+  }
+
+  // `current` is the engine's value when one exists; otherwise the
+  // recorded pre-session choice, so the chip is never blank.
+  const current =
+    (option && option.currentValue) ||
+    currentName ||
+    DEFAULT_MODEL;
+
+  const source =
+    option && Array.isArray(option.options) && option.options.length > 0
+      ? "acp-session-config"
+      : config
+        ? "config+mcode-cli-bundle"
+        : "mcode-cli-bundle";
+
   res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
   return res.end(
     JSON.stringify({
       ok: true,
-      models,
+      models: list,
+      groups,
       current,
-      source: "acp-session-config",
-      // listModels is per-session, so there is nothing to report until the
-      // engine has created one.
-      ...(models.length === 0 ? { reason: "no_session_config" } : {}),
+      source,
+      // Backwards-compat: surface the same soft-failure marker the older
+      // engine-only build did when nothing could be sourced. With the
+      // merge it should be rare (builtin catalogue + providers config
+      // cover most installs), but a missing mcode bundle AND an absent
+      // config leaves the catalogue empty — and a caller that wants to
+      // know "is this a hard failure or just no engine attached?" still
+      // gets the same hint.
+      ...(list.length === 0 ? { reason: "no_catalogue" } : {}),
     }),
   );
 }
 
-// POST /api/set-model — 只更新 cs.model
+// POST /api/set-model — only updates cs.model; with a session the same value
+// is also pushed to the engine via session/set_config_option.
 export async function handleSetModel(req, res, ctx) {
   const cs = ctx.cs;
   const cid = ctx.cid;
@@ -68,8 +235,6 @@ export async function handleSetModel(req, res, ctx) {
   }
   cs.model = cs.model || {};
   cs.model.name = modelId;
-  // Switching the engine's model is a session config option; without a session
-  // this only records the choice for the session that is about to be created.
   const sid = cs.mcodeSessionId;
   let mcodeSynced = false;
   let warning = sid ? null : "no mcode session yet — recorded for the next one";
@@ -98,8 +263,6 @@ export async function handleSetPermissions(req, res, ctx) {
   const cid = ctx.cid;
   const payload = await readJson(req);
   const webuiMode = (payload.mode || "full").toLowerCase();
-  // B04: webuiModeToLabel lives in interaction/permission-presets.js
-  // (extracted from this inline ternary chain — same byte-identical output).
   const label = webuiModeToLabel(webuiMode);
   const mcodeValue = webuiPermissionToMcode(webuiMode);
   const sid = cs.mcodeSessionId;

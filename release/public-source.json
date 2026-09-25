@@ -3609,6 +3609,7 @@
     "packages/webui/webapp/test/attachment-drop.test.ts",
     "packages/webui/webapp/test/chat-virtual-list.test.ts",
     "packages/webui/webapp/test/cid.test.ts",
+    "packages/webui/webapp/test/composer-models.test.ts",
     "packages/webui/webapp/test/context-meter-format.test.ts",
     "packages/webui/webapp/test/greeting.test.ts",
     "packages/webui/webapp/test/icons.test.ts",
