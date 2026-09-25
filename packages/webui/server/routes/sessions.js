@@ -355,8 +355,14 @@ export async function handleSwitchSession(req, res, ctx) {
   //     superset of an earlier `●` line (the engine emits each
   //     segment's full text per line, so a non-cumulative buffer has
   //     no such inclusion pair).
-  //   - otherwise → keep stored chat (preserve drafts / unsaved turns;
-  //     the user-visible content lives only in cs.chat in those cases).
+  //   - otherwise → keep stored chat. DB-authoritative: transcript-sync
+  //     overwrites the stored chat from the engine DB on the next tick
+  //     (~4s later), so any stored-only lines a user typed into the
+  //     composer but never sent will be lost. The rule above does not
+  //     promise draft preservation; it promises to NOT clobber a
+  //     clean stored buffer with the DB read on every switch. Draft
+  //     preservation is a separate concern (the composer keeps its
+  //     own draft in its own state, see composer-draft.test.ts).
   // FAILURE MUST NOT BREAK SWITCHING: any error logs and continues
   // with the original chat — the switch itself always succeeds.
   if (

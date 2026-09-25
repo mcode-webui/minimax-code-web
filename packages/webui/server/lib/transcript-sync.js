@@ -45,11 +45,20 @@ const MVS_SESSION_ID = /^mvs_[a-f0-9]{32}$/;
 // delta is older than that AND there is no live ACP child to write
 // the next line. The threshold is configurable for tests.
 const DEFAULT_WEDGED_RUN_MS = 5 * 60 * 1000;
-const wedgedRunMs = (() => {
+// Local binding first — the alias below only re-exports this same
+// value. Without the local binding the wedge branch below would
+// throw "TRANSCRIPT_SYNC_WEDGED_MS is not defined" on every tick
+// that hits a stale tab, which (a) prevents the wedge healing from
+// running AND (b) aborts the whole sync pass so even tabs that
+// would normally sync cleanly stop syncing while any tab is
+// mid-turn. The earlier commit shipped that bug (the unit tests
+// passed because they read the exported alias; the internal
+// reference was the broken one).
+const TRANSCRIPT_SYNC_WEDGED_MS = (() => {
   const env = Number(process.env.MCODE_WEBUI_TRANSCRIPT_WEDGED_MS);
   return Number.isFinite(env) && env >= 0 ? env : DEFAULT_WEDGED_RUN_MS;
 })();
-export { wedgedRunMs as TRANSCRIPT_SYNC_WEDGED_MS };
+export { TRANSCRIPT_SYNC_WEDGED_MS as wedgedRunMs };
 
 /**
  * Did the stored transcript move?

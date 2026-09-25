@@ -35,7 +35,10 @@ before(async (t) => {
   });
   const ts = await import(absPath("lib/transcript-sync.js"));
   syncTranscriptsOnce = ts.syncTranscriptsOnce;
-  defaultWedgedMs = ts.TRANSCRIPT_SYNC_WEDGED_MS;
+  // The module exports the threshold under the legacy name
+  // `wedgedRunMs` (alias of `TRANSCRIPT_SYNC_WEDGED_MS`). Read either
+  // — this test pins the runtime threshold (5 min).
+  defaultWedgedMs = ts.wedgedRunMs;
   stateBus = await import(absPath("lib/state-bus.js"));
 });
 
@@ -112,5 +115,31 @@ describe("transcript-sync — wedge healing (Item 3)", () => {
 
   test("TRANSCRIPT_SYNC_WEDGED_MS defaults to 5 minutes", () => {
     assert.equal(defaultWedgedMs, 5 * 60 * 1000);
+  });
+
+  // Regression pin for the alias-only bug: when the wedge branch
+  // referenced the EXPORTED alias name (rather than a local
+  // binding), every tick against a stale tab threw
+  // "TRANSCRIPT_SYNC_WEDGED_MS is not defined" — the wedge healing
+  // never fired AND the throw aborted the whole sync pass, so
+  // healthy tabs stopped syncing while any tab was mid-turn. The
+  // earlier unit tests passed because they read the exported name;
+  // the INTERNAL reference was the broken one. This test runs a
+  // tick against a wedged tab and asserts no throw — that catches
+  // the alias-reference pattern directly.
+  test("a wedged tick does NOT throw (internal name binding, not just export)", () => {
+    fresh();
+    stateBus.clients.get("cid-test").running = {
+      active: true,
+      startedAt: Date.now() - 10 * 60 * 1000, // 10 min ago
+      lastDeltaAt: null,
+    };
+    stateBus.activeChildByCid?.delete?.("cid-test");
+    // A real DB read path will fail (no sqlite at /no/such/path.sqlite),
+    // but the wedge exception itself must resolve the local binding
+    // before the DB read — that was the bug.
+    assert.doesNotThrow(() =>
+      syncTranscriptsOnce({ dbPath: "/no/such/path.sqlite" }),
+    );
   });
 });
