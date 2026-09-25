@@ -21,6 +21,7 @@ import { compareVersions, releaseCli } from '../scripts/release-cli.mjs';
 import { compareRuns, exitCodeForStatus, renderReport, spread, validateRun, validateRequest, validateToolOutput, median, selectScenarios } from '../scripts/perf/report.mjs';
 import { copyMcodeToolsArtifact, downloadMcodeToolsArtifact, MCODE_TOOLS_ARTIFACT } from '../scripts/lib/mcode-tools-artifact.mjs';
 import { checkWindowsSourceLocation, runWindowsSourceLocationCheck } from '../scripts/check-windows-source-location.mjs';
+import { collectTestIsolationViolations, formatTestIsolationViolations } from '../scripts/test-isolation-lint.check.mjs';
 
 test('Windows source preflight accepts localized fsutil labels', () => {
   const result = checkWindowsSourceLocation({
@@ -1127,4 +1128,43 @@ test('source imports preserve vendored Office schema bytes through Git staging',
     git('-c', `core.autocrlf=${autocrlf}`, 'add', '--', '.gitattributes', schema);
     assert.deepEqual(git('show', `:${schema}`), bytes);
   }
+});
+
+// Session-isolation/05: the test-isolation lint runs here — inside the root
+// release-tools gate — instead of through packages/webui's test:unit globs,
+// whose cwd made every repo-root scripts/ path match zero files (the lint
+// reported "pass 0" while scanning nothing). The first assertion keeps the
+// real test trees honest; the synthetic fixtures keep the lint itself honest
+// by proving it still detects a violating spawn and clears a compliant one,
+// so a future refactor cannot silently turn this gate back into a no-op.
+test('test isolation lint finds every server.js spawn missing its MCODE_WEBUI_* overrides', () => {
+  const violations = collectTestIsolationViolations();
+  assert.deepEqual(violations, [], formatTestIsolationViolations(violations));
+});
+
+test('test isolation lint detects a violating spawn and clears a compliant one', t => {
+  const root = mkdtempSync(path.join(tmpdir(), 'isolation-lint-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  mkdirSync(path.join(root, 'nested'));
+  // serverArg is concatenated so this test file's own source never contains
+  // the literal `spawn(..., ['server.js'])` shape — the real-tree assertion
+  // above scans test/ too, and the fixture template must not trip it.
+  const serverArg = "'server" + ".js'";
+  const spawnFixture = body => `import { spawn } from 'node:child_process';\n${body}`;
+  writeFileSync(path.join(root, 'nested', 'violating.test.mjs'), spawnFixture(
+    `function startServer() {\n  return spawn(process.execPath, [${serverArg}]);\n}\n`,
+  ));
+  const overrides = ['MCODE_WEBUI_SETTINGS_PATH', 'MCODE_WEBUI_EVENTS_PATH', 'MCODE_WEBUI_SESSIONS_DB', 'MCODE_WEBUI_UPLOAD_DIR']
+    .map(name => `${name}: tmpPath`).join(', ');
+  writeFileSync(path.join(root, 'compliant.test.mjs'), spawnFixture(
+    `function startServer() {\n  const env = { ${overrides} };\n  return spawn(process.execPath, [${serverArg}], { env });\n}\n`,
+  ));
+  const violations = collectTestIsolationViolations({ roots: [root] });
+  assert.equal(violations.length, 1);
+  assert.match(violations[0].file, /violating\.test\.mjs$/);
+  assert.deepEqual(violations[0].missing, ['MCODE_WEBUI_SETTINGS_PATH', 'MCODE_WEBUI_EVENTS_PATH', 'MCODE_WEBUI_SESSIONS_DB', 'MCODE_WEBUI_UPLOAD_DIR']);
+  assert.match(formatTestIsolationViolations(violations), /violating\.test\.mjs/);
+  assert.doesNotMatch(formatTestIsolationViolations(violations), /compliant\.test\.mjs/);
+  rmSync(path.join(root, 'nested'), { recursive: true, force: true });
+  assert.deepEqual(collectTestIsolationViolations({ roots: [root] }), []);
 });

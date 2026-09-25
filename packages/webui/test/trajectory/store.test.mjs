@@ -4,13 +4,35 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import test from 'node:test';
+import test, { after } from 'node:test';
 
 import { openStore, resolveDataDir, resolveHomeDir, encodeFtsQuery } from '../../server/trajectory/store.mjs';
 import { resolveWorkspaceIdentity } from '../../server/trajectory/git.mjs';
 import { redactValue, redactText, redactPath } from '../../server/trajectory/redact.mjs';
 import { TOOLS, handleRpcMessage } from '../../server/trajectory/mcp.mjs';
 import { ftsModuleAvailable } from '../../server/trajectory/sqlite.mjs';
+import { getMcodeAcpClient, shutdownMcodeAcpSingleton } from '../../server/lib/acp-client.js';
+
+// The trajectory store's import graph reaches server/lib/state-bus.js, whose
+// mcode-sessions cache warm-up spawns the resident mcode ACP engine child
+// whenever the engine resolves (dev checkouts; CI after the build gate). The
+// child's stdio keeps this file's pipes open, so `node --test` never sees the
+// file finish — every test passes, zero failures, and the job dies at the
+// timeout. Await the shared init promise (so the teardown cannot race the
+// in-flight start), then stop the child once the suite settles.
+after(async () => {
+  try {
+    await getMcodeAcpClient();
+  } catch {
+    // engine never started (no resolvable mcode binary) — nothing to stop
+  }
+  try {
+    shutdownMcodeAcpSingleton();
+  } catch {
+    // nothing was started
+  }
+  await new Promise((r) => setTimeout(r, 50));
+});
 
 /**
  * Whether this runtime's bundled SQLite has FTS5.

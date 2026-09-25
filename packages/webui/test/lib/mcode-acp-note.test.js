@@ -11,7 +11,7 @@
 //     propagating both permissionMode and model from the engine's
 //     authoritative state (defect #2).
 
-import { test, describe } from "node:test";
+import { test, describe, after } from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -28,6 +28,35 @@ const {
   lastSegment,
   applyRecordedModel,
 } = await import(absPath("lib/mcode-acp.js"));
+// Same module instance the runtime graph uses — see the teardown below.
+const { getMcodeAcpClient, shutdownMcodeAcpSingleton } = await import(
+  absPath("lib/acp-client.js")
+);
+
+// Importing server/lib/mcode-acp.js pulls in the webui runtime graph,
+// and on a machine where the mcode engine resolves (dev checkouts, and
+// CI after the build gate produces dist/cli.js) that graph starts the
+// resident ACP singleton child process during module load — a state-bus
+// snapshot warms the mcode-sessions cache, whose fetch spawns the
+// engine. The child's stdio keeps this test process's pipes open, so
+// `node --test` never sees the file finish: every test passes, zero
+// failures, and the job is killed at the timeout. Await the shared
+// init promise (so the teardown cannot race the in-flight start) and
+// stop the child once the suite settles.
+after(async () => {
+  try {
+    await getMcodeAcpClient();
+  } catch {
+    // engine never started (e.g. no resolvable mcode binary) — nothing to stop
+  }
+  try {
+    shutdownMcodeAcpSingleton();
+  } catch {
+    // nothing was started
+  }
+  // Give the child a beat to exit before the runner moves on.
+  await new Promise((r) => setTimeout(r, 50));
+});
 
 describe("buildEmptyTurnNote (v2.3)", () => {
   test("normal turn with an answer → no note", () => {
