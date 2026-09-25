@@ -16,6 +16,7 @@ import { useChatVirtualization } from "./chat-virtual-list";
 import { useSessionContext } from "@/lib/store";
 import { iconByName, type SummaryIconType } from "@/lib/transcript";
 import type { Locale, MessageKey } from "@/lib/i18n";
+import { WorkspaceChipDropdown } from "./workspace-picker";
 
 /**
  * Conversation surface.
@@ -659,15 +660,7 @@ export function HomeState({ t, children, locale }: ChatProps & { children: React
           {children}
           <div className="mt-0 flex w-full items-center gap-3 px-3">
             <div className="flex flex-1 items-center justify-center gap-3">
-              <button
-                type="button"
-                className="flex h-8 items-center gap-1 rounded-full border border-border_default bg-bg_default_primary px-3 text-caption-small-strong text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_hover"
-              >
-                <Icon name="folder" size={13} />
-                <span className="truncate whitespace-nowrap">
-                  {state?.workspace.dir.split("/").filter(Boolean).pop() ?? t("home.chooseFolder")}
-                </span>
-              </button>
+              <WorkspaceChipDropdown t={t} />
               <button
                 type="button"
                 aria-pressed

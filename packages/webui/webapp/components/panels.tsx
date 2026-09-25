@@ -823,6 +823,12 @@ function SectionPlaceholder({ testid, t }: { testid: string; t: (key: MessageKey
  * picker button is opportunistic: when it succeeds, the picked path is
  * fed straight into the same `setWorkspace` call.
  *
+ * Exported so other surfaces (the home-screen workspace chip's "选择新
+ * 项目" affordance, see `components/workspace-picker.tsx`) can mount it
+ * without going through the conversation-view WorkspacePanel. The modal
+ * is one component, one source of truth — each caller owns its own open
+ * state and never shares an instance.
+ *
  * Wire: the modal is dismissible (settings-modal-style), and the picked
  * path is forwarded to `POST /api/workspace` (the same handler the rest
  * of the app uses). On success the picker closes; the state snapshot
@@ -830,7 +836,7 @@ function SectionPlaceholder({ testid, t }: { testid: string; t: (key: MessageKey
  * downstream consumer (composer attachments, session tree) sees it
  * without further wiring.
  */
-function WorkspacePickerModal({
+export function WorkspacePickerModal({
   t,
   open,
   onClose,
