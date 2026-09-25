@@ -403,6 +403,16 @@ function streamAcpPrompt(client, sid, content, label, cs, cid, attachments = [])
       durationMs: null,
       stopReason: null,
       tps: null,
+      // session-isolation/06: per-segment accumulator reset.
+      // `lastChunkKind` is the kind of the chunk that last wrote a
+      // `▲` or `●` line; when the new chunk is the same kind we
+      // append to the existing buffer (normal streaming growth), when
+      // it is different we reset so the new line contains only the
+      // new segment. Reset on every turn (streamAcpPrompt is called
+      // once per prompt), so a new message after stop/save/resume
+      // starts with lastChunkKind === null and the first chunk of
+      // any kind triggers a clean accumulator.
+      lastChunkKind: null,
     };
     const t0 = Date.now();
     cs.running = {
@@ -699,11 +709,22 @@ function streamAcpPrompt(client, sid, content, label, cs, cid, attachments = [])
             );
           }
         } else if (c.kind === "thought" && typeof c.text === "string") {
-          r.thinking = (r.thinking || "") + c.text;
+          // session-isolation/06 (stream cumulative-render): each
+          // agent_message segment starts fresh — the bug was that
+          // r.thinking was turn-long, so after a tool_call line broke
+          // streamUpdateLine's same-prefix chain, the next message
+          // chunk appended a NEW `▲` line containing every prior
+          // segment. Reset the buffer when the previous chunk kind
+          // was something other than a thought.
+          if (r.lastChunkKind !== "thought") r.thinking = "";
+          r.thinking += c.text;
+          r.lastChunkKind = "thought";
           const oneLine = r.thinking.replace(/\n+/g, " ").trim();
           streamUpdateLine(cs.chat, "▲", oneLine);
         } else if (c.kind === "message" && typeof c.text === "string") {
-          r.answer = (r.answer || "") + c.text;
+          if (r.lastChunkKind !== "message") r.answer = "";
+          r.answer += c.text;
+          r.lastChunkKind = "message";
           const oneLine = r.answer.replace(/\n+/g, " ").trim();
           streamUpdateLine(cs.chat, "●", oneLine);
         } else if (c.kind === "tool_call" && c.update) {
@@ -716,6 +737,11 @@ function streamAcpPrompt(client, sid, content, label, cs, cid, attachments = [])
           // 记下这行在 chat 里的位置（之后 tool_update 用来在它后面插输出）
           if (!r.toolIndexById) r.toolIndexById = new Map();
           r.toolIndexById.set(u.toolCallId, cs.chat.length - 1);
+          // session-isolation/06: tool_call (and tool_update,
+          // plan_update, error, anything else) breaks the same-prefix
+          // chain. Without this update, the next message chunk would
+          // see lastChunkKind === "message" and skip the reset.
+          r.lastChunkKind = "tool_call";
         } else if (c.kind === "tool_update" && c.update) {
           applyToolUpdate(r, cs, c.update);
         } else if (c.kind === "plan_update" && c.update) {

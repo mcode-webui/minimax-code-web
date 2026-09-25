@@ -35,6 +35,31 @@ export const TRANSCRIPT_SYNC_MS =
 /** Only real mcode session ids have a transcript to read. */
 const MVS_SESSION_ID = /^mvs_[a-f0-9]{32}$/;
 
+// session-isolation/06 (Item 3 — wedge healing): a tab can sit with
+// `cs.running.active=true` forever if the backend received SIGTERM
+// mid-stream — see the graceful-shutdown ticket for the cause. The
+// transcript-sync poller must NOT skip such a tab forever, otherwise
+// the polluted buffer persists across view reloads. Define a stuck-
+// run threshold (5 minutes — comfortably longer than any realistic
+// model latency) and let the DB-rebuild path run when the last
+// delta is older than that AND there is no live ACP child to write
+// the next line. The threshold is configurable for tests.
+const DEFAULT_WEDGED_RUN_MS = 5 * 60 * 1000;
+// Local binding first — the alias below only re-exports this same
+// value. Without the local binding the wedge branch below would
+// throw "TRANSCRIPT_SYNC_WEDGED_MS is not defined" on every tick
+// that hits a stale tab, which (a) prevents the wedge healing from
+// running AND (b) aborts the whole sync pass so even tabs that
+// would normally sync cleanly stop syncing while any tab is
+// mid-turn. The earlier commit shipped that bug (the unit tests
+// passed because they read the exported alias; the internal
+// reference was the broken one).
+const TRANSCRIPT_SYNC_WEDGED_MS = (() => {
+  const env = Number(process.env.MCODE_WEBUI_TRANSCRIPT_WEDGED_MS);
+  return Number.isFinite(env) && env >= 0 ? env : DEFAULT_WEDGED_RUN_MS;
+})();
+export { TRANSCRIPT_SYNC_WEDGED_MS as wedgedRunMs };
+
 /**
  * Did the stored transcript move?
  *
@@ -68,8 +93,35 @@ export function syncTranscriptsOnce({ dbPath = MCODE_RUNTIME_DB } = {}) {
     if (!MVS_SESSION_ID.test(cs.mcodeSessionId || "")) continue;
     // A local turn owns `cs.chat` until it finishes: streaming writes lines the
     // DB does not have yet, and a concurrent read would roll them back.
-    if (cs.running && cs.running.active) continue;
-    if (getActiveChild(cid)) continue;
+    //
+    // session-isolation/06 (wedge healing): the `active` flag can stick
+    // `true` forever if the backend received SIGTERM mid-stream and
+    // the active-child registry was not cleared (see the
+    // graceful-shutdown ticket). Without the wedge exception below,
+    // a wedged tab keeps the polluted chat and transcript-sync never
+    // recovers it. The exception fires when:
+    //   - cs.running.active is true (looks wedged)
+    //   - AND the last delta is older than TRANSCRIPT_SYNC_WEDGED_MS
+    //     (no stream activity for >5 min by default)
+    //   - AND there is no live ACP child to write the next line
+    // An active real run (lastDeltaAt recent) still skips; a wedged
+    // run (stale lastDeltaAt, no active child) heals.
+    if (cs.running && cs.running.active) {
+      const lastDelta =
+        (cs.running && cs.running.lastDeltaAt) ||
+        (cs.running && cs.running.startedAt) ||
+        0;
+      const stale = lastDelta
+        ? Date.now() - lastDelta > TRANSCRIPT_SYNC_WEDGED_MS
+        : true;
+      if (stale && !getActiveChild(cid)) {
+        // fall through to the heal path below
+      } else {
+        continue;
+      }
+    } else if (getActiveChild(cid)) {
+      continue;
+    }
 
     let read;
     try {

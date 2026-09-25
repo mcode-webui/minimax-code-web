@@ -148,8 +148,19 @@ function multipartBody(parts) {
 // POST /api/upload with a chunked writer loop that yields to the event
 // loop, so the 413-early-response path can preempt a large body mid-
 // send. Resolves { status, json, bytesWritten } once the response ends.
-function postUpload({ port, body, contentType, timeoutMs = 15000 }) {
-  return new Promise((resolve, reject) => {
+//
+// macOS CI runners (PR #30) hit a fixed 15s window roughly 1 run in 3
+// on the "oversized single file → 413" path — the bottleneck is the
+// kernel-side accept / write race between our 2 MB body upload and the
+// server's read-and-close-on-cap path, not the test logic. Rather than
+// lengthen every deadline (which just pushes the problem down the CI
+// queue), we retry the request ONCE on a clean timeout, then surface
+// the timeout if both attempts fail. Each attempt's deadline is still
+// 15 s, but the test as a whole gets a full ~30 s window — bounded by
+// `retries * timeoutMs`. Other errors propagate immediately so the
+// 413 / leftover assertions still pin the actual behaviour.
+function postUpload({ port, body, contentType, timeoutMs = 15000, retries = 1 }) {
+  const attempt = () => new Promise((resolve, reject) => {
     let settled = false;
     let bytesWritten = 0;
     const req = http.request(
@@ -237,6 +248,15 @@ function postUpload({ port, body, contentType, timeoutMs = 15000 }) {
       }
       if (!req.destroyed && !settled) req.end();
     })().catch(() => {});
+  });
+  // Bounded retry on a clean timeout — see the function-level
+  // comment above. Other errors propagate immediately so the 413 /
+  // leftover assertions still pin the actual behaviour.
+  return attempt().catch((e) => {
+    if (retries <= 0 || !(e && /no response within/.test(e.message))) {
+      throw e;
+    }
+    return attempt();
   });
 }
 
