@@ -88,6 +88,9 @@ export function Composer({ t, inline = false }: { t: (key: MessageKey) => string
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [models, setModels] = useState<{ id: string; label: string }[]>([]);
+  const [modelGroups, setModelGroups] = useState<
+    { id: string; label: string; models: { id: string; label: string }[] }[]
+  >([]);
   const [slashIndex, setSlashIndex] = useState(0);
   const editorRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -129,9 +132,16 @@ export function Composer({ t, inline = false }: { t: (key: MessageKey) => string
   useEffect(() => {
     void api
       .listModels()
-      .then((payload) =>
-        setModels((payload.models ?? []).map((m) => ({ id: m.id, label: m.name || m.id }))),
-      )
+      .then((payload) => {
+        setModels((payload.models ?? []).map((m) => ({ id: m.id, label: m.label || m.name || m.id })));
+        setModelGroups(
+          (payload.groups ?? []).map((g) => ({
+            id: g.id,
+            label: g.label || g.id,
+            models: (g.models ?? []).map((m) => ({ id: m.id, label: m.label || m.name || m.id })),
+          })),
+        );
+      })
       .catch(() => {});
   }, [modelKey, sessionKey]);
 
@@ -446,6 +456,7 @@ export function Composer({ t, inline = false }: { t: (key: MessageKey) => string
               <ModelSelect
                 t={t}
                 models={models}
+                groups={modelGroups}
                 value={state?.model.name}
                 label={currentModelLabel}
                 onPick={(id) => void api.setModel(id)}
@@ -730,17 +741,54 @@ function PermissionSelect({
 function ModelSelect({
   t,
   models,
+  groups,
   value,
   label,
   onPick,
 }: {
   t: (key: MessageKey) => string;
   models: { id: string; label: string }[];
+  groups?: { id: string; label: string; models: { id: string; label: string }[] }[];
   value?: string;
   label: string;
   onPick: (id: string) => void;
 }) {
   const [open, setOpen] = useState(false);
+
+  const pick = useCallback((id: string) => {
+    setOpen(false);
+    onPick(id);
+  }, [onPick]);
+
+  // Grouping is a progressive enhancement: the server partitions the catalogue
+  // by provider, but a single-provider catalogue (or an older server that sends
+  // no `groups` at all) renders exactly as the flat list did, so adding the
+  // partition costs no existing user anything.
+  const partitioned = (groups?.length ?? 0) > 1;
+  const rows = partitioned
+    ? (groups ?? []).map((group) => (
+        <div key={group.id} className="mavis-dropdown-group">
+          <div className="mavis-dropdown-group-label">{group.label}</div>
+          {group.models.map((model) => (
+            <SelectRow
+              key={model.id}
+              testId={`model-select-option-${modelSlug(model.id)}`}
+              label={modelDisplayName(model.label)}
+              selected={model.id === value}
+              onClick={() => pick(model.id)}
+            />
+          ))}
+        </div>
+      ))
+    : models.map((model) => (
+        <SelectRow
+          key={model.id}
+          testId={`model-select-option-${modelSlug(model.id)}`}
+          label={modelDisplayName(model.label)}
+          selected={model.id === value}
+          onClick={() => pick(model.id)}
+        />
+      ));
 
   return (
     <Dropdown
@@ -754,18 +802,7 @@ function ModelSelect({
           {models.length === 0 ? (
             <SelectRow testId="model-select-empty" label={t("composer.noModels")} />
           ) : (
-            models.map((model) => (
-              <SelectRow
-                key={model.id}
-                testId={`model-select-option-${modelSlug(model.id)}`}
-                label={modelDisplayName(model.label)}
-                selected={model.id === value}
-                onClick={() => {
-                  setOpen(false);
-                  onPick(model.id);
-                }}
-              />
-            ))
+            rows
           )}
         </SelectPanel>
       )}

@@ -1,6 +1,9 @@
 // webui/server/routes/model.js
 // GET /api/models, POST /api/set-model, POST /api/permissions, POST /api/answer (legacy)
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
 import { pushStateFor } from "../lib/state-bus.js";
 import {
   mcodePermissionToWebui,
@@ -20,6 +23,78 @@ function configOption(cs, id) {
 import { webuiModeToLabel } from "../lib/interaction/permission-presets.js";
 import { readJson } from "../lib/read-json.js";
 
+/**
+ * Optional model-catalogue overlay, re-read on every request so editing the
+ * file takes effect without a restart.
+ *
+ * Path: `MCODE_WEBUI_MODELS_CONFIG`, else `models.json` under the server's cwd.
+ * Shape: `{ providers: [{ id, label, models: [{ id, label, contextLimit? }] }] }`.
+ *
+ * This is an *overlay*, not a replacement. The engine's session config option
+ * stays the authority on which models exist and which one is current — an
+ * overlay entry that the engine does not list is not offered, and an engine
+ * entry the overlay does not mention is still offered. The overlay only
+ * supplies display metadata (label, contextLimit) and lets an operator name
+ * the provider groups. Reading a missing or malformed file is not an error;
+ * it just means no overlay.
+ */
+function readModelsOverlay() {
+  const path =
+    process.env.MCODE_WEBUI_MODELS_CONFIG || join(process.cwd(), "models.json");
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8"));
+    if (!parsed || !Array.isArray(parsed.providers)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Provider for an engine model id.
+ *
+ * The engine encodes a selection as `m:<provider>:<model>:v:<variant>`, so the
+ * provider is the second colon-delimited field. Ids that are not in that
+ * encoding fall back to the `provider/` prefix form, and anything else reports
+ * an empty provider (the caller renders those as one unnamed group).
+ */
+function providerOf(modelId) {
+  if (typeof modelId !== "string") return "";
+  const encoded = /^m:([^:]+):/.exec(modelId);
+  if (encoded) return encoded[1];
+  const slash = /^([^/]+)\//.exec(modelId);
+  return slash ? slash[1] : "";
+}
+
+/** Model name within an engine id: `m:<provider>:<model>:v:<variant>` → `<model>`. */
+function bareNameOf(modelId) {
+  if (typeof modelId !== "string") return "";
+  const encoded = /^m:[^:]+:([^:]+):/.exec(modelId);
+  if (encoded) return encoded[1];
+  const slash = /^[^/]+\/(.+)$/.exec(modelId);
+  return slash ? slash[1] : modelId;
+}
+
+/**
+ * Index the overlay by provider, then by the model ids it can supply metadata
+ * for. A model may be written bare (`MiniMax-M3`) or fully qualified
+ * (`minimax_api/MiniMax-M3`); both resolve to the same entry.
+ */
+function indexOverlay(overlay) {
+  const byProvider = new Map();
+  for (const p of overlay.providers) {
+    if (!p || typeof p.id !== "string" || !p.id) continue;
+    const byModel = new Map();
+    for (const m of Array.isArray(p.models) ? p.models : []) {
+      if (!m || typeof m.id !== "string" || !m.id) continue;
+      byModel.set(m.id, m);
+      const bare = m.id.includes("/") ? m.id.slice(m.id.indexOf("/") + 1) : m.id;
+      byModel.set(bare, m);
+    }
+    byProvider.set(p.id, { label: typeof p.label === "string" && p.label ? p.label : p.id, byModel });
+  }
+  return byProvider;
+}
 
 // GET /api/models
 // The catalogue is the engine's `model` config option (the same list the TUI's
@@ -34,21 +109,51 @@ import { readJson } from "../lib/read-json.js";
 // answers `null` now, and the caller shows a neutral label. Nothing is written
 // back into `cs.model` either — that backfill is what put the invented name into
 // the state a later prompt would use.
+//
+// `groups` partitions that same catalogue by provider so a client can render
+// one section per provider instead of one flat list. It is derived from the
+// engine ids, so it is always consistent with `models`; the optional
+// `models.json` overlay may rename a group and enrich an entry.
 export function handleGetModels(_req, res, ctx) {
   const cs = ctx.cs;
   const option = configOption(cs, "model");
-  const models = (option && Array.isArray(option.options) ? option.options : []).map((o) => ({
-    id: o.value,
-    name: o.name,
-  }));
+  const overlay = readModelsOverlay();
+  const overlayIndex = overlay ? indexOverlay(overlay) : null;
+
+  const groups = new Map();
+  const models = (option && Array.isArray(option.options) ? option.options : []).map((o) => {
+    const provider = providerOf(o.value);
+    const providerEntry = overlayIndex?.get(provider);
+    const overlayModel = providerEntry?.byModel.get(bareNameOf(o.value))
+      ?? providerEntry?.byModel.get(o.value);
+    const entry = {
+      id: o.value,
+      name: o.name,
+      // `label` is the overlay's display name when it has one, else the
+      // engine's. Both spellings ship so older clients reading `name` keep
+      // working and newer ones can prefer `label`.
+      label: typeof overlayModel?.label === "string" && overlayModel.label ? overlayModel.label : o.name,
+      provider,
+    };
+    if (typeof overlayModel?.contextLimit === "number" && overlayModel.contextLimit > 0) {
+      entry.contextLimit = overlayModel.contextLimit;
+    }
+    if (!groups.has(provider)) {
+      groups.set(provider, { id: provider, label: providerEntry?.label ?? provider, models: [] });
+    }
+    groups.get(provider).models.push(entry);
+    return entry;
+  });
+
   const current = (option && option.currentValue) || null;
   res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
   return res.end(
     JSON.stringify({
       ok: true,
       models,
+      groups: [...groups.values()],
       current,
-      source: "acp-session-config",
+      source: overlayIndex ? "acp-session-config+overlay" : "acp-session-config",
       // listModels is per-session, so there is nothing to report until the
       // engine has created one.
       ...(models.length === 0 ? { reason: "no_session_config" } : {}),

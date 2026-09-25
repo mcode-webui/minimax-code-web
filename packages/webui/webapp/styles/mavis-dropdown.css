@@ -189,3 +189,21 @@
 .mavis-dropdown.mavis-dropdown-compact .ant-dropdown-menu .ant-dropdown-menu-item {
   margin-bottom:0
 }
+
+/* Provider sections in the model popover. The server partitions the catalogue
+   by provider; each partition gets a quiet heading above its rows. The heading
+   is a presentational divider only — the rows keep carrying the menu semantics,
+   so no extra role/aria is introduced here. */
+.mavis-dropdown-group+.mavis-dropdown-group {
+  margin-top:var(--spacing_4)
+}
+
+.mavis-dropdown-group-label {
+  padding:var(--spacing_4) var(--spacing_8) var(--spacing_4);
+  color:var(--gray_500);
+  font-size:11px;
+  line-height:16px;
+  font-weight:500;
+  letter-spacing:.02em;
+  text-transform:uppercase
+}
