@@ -2,6 +2,10 @@
 // POST /api/workspace, GET /api/workspace/browse
 // v1.2 (feat-workspace-lhl): + GET /api/workspace/tree（工作区→会话树，sessions
 //   store 分组）+ GET /api/workspace/resolve（文件夹名 → 绝对路径候选）
+// v0.5.by (feat-workspace-picker-paths): removed POST /api/workspace/pick —
+//   the native OS picker (zenity/kdialog/osascript/PowerShell) is gone
+//   per ticket feedback. The in-product WorkspacePickerModal is the
+//   only workspace-pick surface.
 
 import { basename } from "node:path";
 import { homedir, tmpdir } from "node:os";
@@ -10,7 +14,6 @@ import {
   browseWorkspace,
   resolveWorkspaceCandidates,
   getRecentWorkspaces,
-  pickDirectoryNative,
 } from "../lib/workspace.js";
 import { DEFAULT_WORKSPACE } from "../lib/config.js";
 import { loadSessions } from "../lib/sessions.js";
@@ -127,20 +130,4 @@ export function handleWorkspaceRecent(req, res, _ctx) {
   result.tmpDir = tmpdir();
   res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
   return res.end(JSON.stringify(result));
-}
-
-// v2 (feat-workspace-lhl): POST /api/workspace/pick
-//   后端 spawn 原生 OS 目录选择器（zenity/kdialog/osascript/PowerShell）。
-//   响应: { ok, path }（用户取消时 path === null）
-export async function handleWorkspacePick(req, res, _ctx) {
-  try {
-    const path = await pickDirectoryNative();
-    const result = { ok: true, path };
-    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-    return res.end(JSON.stringify(result));
-  } catch (e) {
-    const result = { ok: false, error: e.message };
-    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-    return res.end(JSON.stringify(result));
-  }
 }

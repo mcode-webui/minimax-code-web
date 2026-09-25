@@ -1125,21 +1125,27 @@ function WorkspaceBrowseTab({
   const [filter, setFilter] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [errorRoots, setErrorRoots] = useState<string[] | null>(null);
   const [busy, setBusy] = useState(false);
-  const [nativeBusy, setNativeBusy] = useState(false);
 
   const loadGen = useRef(0);
   const load = useCallback(async (target: string) => {
     const gen = ++loadGen.current;
     setLoading(true);
     setError(null);
+    setErrorRoots(null);
     try {
       const result = await api.browseWorkspace(target || undefined);
       if (gen !== loadGen.current) return;
       if (result.ok) {
         setListing(result);
       } else {
+        // The server carries `roots` on the containment error payload
+        // (server/lib/workspace.js#assertWorkspacePath /
+        // resolveWithinRoots) so the picker can render "must be under:
+        // …" instead of a bare "非法". Surface them in the UI.
         setError(result.error ?? t("workspace.picker.error"));
+        if (Array.isArray(result.roots)) setErrorRoots(result.roots);
       }
     } catch (cause) {
       if (gen !== loadGen.current) return;
@@ -1211,32 +1217,9 @@ function WorkspaceBrowseTab({
     }
   };
 
-  const nativeSupported =
-    typeof window !== "undefined" &&
-    (window.navigator.platform.toLowerCase().includes("mac") ||
-      window.navigator.platform.toLowerCase().includes("linux") ||
-      window.navigator.platform.toLowerCase().includes("win"));
-
-  const nativePick = async () => {
-    setNativeBusy(true);
-    try {
-      const result = await api.pickWorkspaceNative();
-      if (result.ok && result.path) {
-        await api.setWorkspace(result.path);
-        onClose();
-        return;
-      }
-      setError(result.error ?? t("workspace.picker.error"));
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      setNativeBusy(false);
-    }
-  };
-
   return (
     <div className="flex flex-col gap-2">
-      {/* Toolbar: parent, path, home, root, mkdir, native picker. */}
+      {/* Toolbar: parent, path, home, root, mkdir. */}
       <div className="flex items-center gap-1">
         <button
           type="button"
@@ -1286,17 +1269,9 @@ function WorkspaceBrowseTab({
         >
           {t("workspace.picker.newFolder")}
         </button>
-        {nativeSupported ? (
-          <button
-            type="button"
-            disabled={nativeBusy}
-            onClick={() => void nativePick()}
-            data-testid="workspace-picker-native"
-            className="h-7 rounded-[8px] border border-border_default px-2 text-caption-small-strong text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_hover disabled:opacity-40"
-          >
-            {t("workspace.picker.native")}
-          </button>
-        ) : null}
+        {/* Native OS picker (zenity/kdialog/osascript/PowerShell) removed
+            per ticket feedback — the in-product WorkspacePickerModal is the
+            only path now. See routes/workspace.js#v0.5.by comment. */}
       </div>
 
       {/* Filter row — same matcher as FilesPanel. */}
@@ -1322,12 +1297,20 @@ function WorkspaceBrowseTab({
       </div>
 
       {error ? (
-        <p
+        <div
           data-testid="workspace-picker-error"
-          className="text-caption-small-strong text-text_status_error"
+          className="rounded-[8px] bg-bg_grouped_secondary_elevated px-2 py-1.5 text-caption-small-strong text-text_status_error"
         >
-          {error}
-        </p>
+          <span className="block">{error}</span>
+          {errorRoots && errorRoots.length > 0 ? (
+            <span
+              data-testid="workspace-picker-error-roots"
+              className="mt-1 block text-text_default_tertiary"
+            >
+              {t("workspace.picker.mustBeUnder")} {errorRoots.join(", ")}
+            </span>
+          ) : null}
+        </div>
       ) : null}
 
       {loading && entries.length === 0 ? (

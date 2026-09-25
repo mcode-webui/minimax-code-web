@@ -380,11 +380,37 @@ export interface BrowseResult {
   error?: string;
 }
 
-/** List a directory for the workspace tree browser (containment-checked server-side). */
-export const browseWorkspace = (path?: string) =>
-  request<BrowseResult>(
+/** List a directory for the workspace tree browser (containment-checked server-side).
+ *
+ * Reads `roots` from the error payload so the picker can render an
+ * actionable "must be under: …" hint. `request()` throws on non-OK
+ * responses and loses the rest of the payload, so this call goes
+ * straight through `fetch` and parses the body — the route returns
+ * the same `{ok:false, error, roots}` shape whether the status is
+ * 200 or 400, and the picker UI treats them the same way.
+ */
+export async function browseWorkspace(
+  path?: string,
+): Promise<BrowseResult> {
+  const url = withClientQuery(
     `/api/workspace/browse${path ? `?path=${encodeURIComponent(path)}` : ""}`,
   );
+  const response = await fetch(url, { headers: { Accept: "application/json" } });
+  const text = await response.text();
+  let payload: BrowseResult;
+  try {
+    payload = text ? (JSON.parse(text) as BrowseResult) : { ok: false, error: "empty response", dir: null, parent: null, children: [] };
+  } catch {
+    payload = {
+      ok: false,
+      error: `HTTP ${response.status}`,
+      dir: null,
+      parent: null,
+      children: [],
+    };
+  }
+  return payload;
+}
 
 export interface RecentWorkspace {
   dir: string;
@@ -436,12 +462,7 @@ export interface WorkspaceTreeResult {
 export const workspaceTree = () =>
   request<WorkspaceTreeResult>("/api/workspace/tree");
 
-/** Native OS directory picker (zenity/kdialog/osascript/PowerShell). */
-export const pickWorkspaceNative = () =>
-  request<{ ok: boolean; path: string | null; error?: string }>(
-    "/api/workspace/pick",
-    { method: "POST", json: {} },
-  );
+
 
 // --- uploads ----------------------------------------------------------------
 

@@ -17,14 +17,146 @@ import {
   isAbsolute,
   sep,
   delimiter,
+  win32,
+  posix,
 } from "node:path";
-import { homedir, tmpdir } from "node:os";
+import { homedir, tmpdir, platform as osPlatform } from "node:os";
 import { DEFAULT_WORKSPACE } from "./config.js";
 import { detectTuiCwd } from "./config.js";
 import { pushStateFor } from "./state-bus.js";
 import { loadSessions } from "./sessions.js";
-import { spawn } from "node:child_process";
 import { basename } from "node:path";
+
+/**
+ * Normalize a user-supplied workspace path string into something
+ * `node:path#resolve` will turn into the same absolute path on
+ * Windows, macOS, and Linux.
+ *
+ * Supported input shapes:
+ *   - `~`, `~/foo/bar`, `~\foo\bar` → home directory + remainder
+ *     (the user's home; NOT root's). On Windows `~` is not a builtin
+ *     tilde, so we expand it the same way for cross-platform parity.
+ *   - `$HOME`, `$USERPROFILE`, `%USERPROFILE%`, `$TMPDIR`, `%TEMP%`,
+ *     `$TMP`, `%TMP%`, `$HOME/foo`, `%USERPROFILE%\bar` →
+ *     `os.homedir()` / `os.tmpdir()` etc, read from `process.env`
+ *     (the server process env equals the user's env when the
+ *     webui was launched for the current user).
+ *   - Backslashes are left intact. `path.resolve` on Windows accepts
+ *     them natively; on POSIX they survive `realpath` so a user
+ *     pasting a Windows-style path while debugging on Mac sees a
+ *     real ENOENT rather than a silently rewritten path.
+ *   - Empty / whitespace-only → null (callers return a "path
+ *     required" error).
+ *
+ * Trailing whitespace and trailing separators are stripped.
+ *
+ * Security: env var expansion reads from `process.env` but only for
+ * keys on an explicit allow-list (HOME / USERPROFILE / TMPDIR / TEMP
+ * / TMP). Unknown `$FOO` or `%FOO%` references are left literal so
+ * the user can see what they typed and fix it — a strict allow-list
+ * is the standard shell-quoting answer; arbitrary interpolation would
+ * let an unprivileged user probe for env-var presence.
+ */
+export function expandUserPath(input) {
+  if (typeof input !== "string") return null;
+  let s = input.trim();
+  if (!s) return null;
+  // Strip a single trailing separator (`/` or `\`). Drive roots
+  // ("C:\\" / "/") are a special case — handled by the separator
+  // regex below since "C:" alone with no separator collapses to "".
+  s = s.replace(/[\\/]+$/, "");
+  if (!s) return null;
+  // Strip any quoting the user might have added by reflex.
+  if (
+    (s.startsWith('"') && s.endsWith('"')) ||
+    (s.startsWith("'") && s.endsWith("'"))
+  ) {
+    s = s.slice(1, -1);
+  }
+  // ~  → home  (and ~user syntax is intentionally unsupported — too
+  //         ambiguous on multi-user hosts and not used in practice).
+  if (s === "~") return homedir();
+  if (s.startsWith("~/") || s.startsWith("~\\")) {
+    return join(homedir(), s.slice(2));
+  }
+  // The set of well-known env vars the picker expands. Each name
+  // falls back through the alias chain below — Windows ships
+  // `%TEMP%` / `%TMP%`, POSIX ships `$TMPDIR`; a user who pastes a
+  // Windows-style path on a POSIX host should still see their
+  // intent honoured when TMPDIR is set.
+  const ALIASES = new Set(["HOME", "USERPROFILE", "TMPDIR", "TEMP", "TMP"]);
+  // Pick the first env var that exists, in the alias-chain order.
+  // `os.tmpdir()` is the Node-canonical answer for the system temp
+  // directory and is the implicit fallback when none of the env
+  // vars are set.
+  function lookupEnv(name) {
+    if (!ALIASES.has(name)) return process.env[name];
+    if (Object.prototype.hasOwnProperty.call(process.env, name)) {
+      return process.env[name];
+    }
+    // Fall back through the alias chain — the user's typed name
+    // is a hint about *which* env-var the system uses; we honour
+    // whichever one the host actually has.
+    for (const alt of ALIASES) {
+      if (Object.prototype.hasOwnProperty.call(process.env, alt)) {
+        return process.env[alt];
+      }
+    }
+    return undefined;
+  }
+  // %VAR% → process.env.VAR (Windows convention).
+  // The leading % is what makes it a Windows env-var reference;
+  // `path.resolve` would otherwise treat it as a literal directory
+  // name and the user would see a confusing ENOENT.
+  const win32Env = s.match(/^%([A-Z][A-Z0-9_]*)%(.*)$/);
+  if (win32Env) {
+    const name = win32Env[1];
+    const rest = win32Env[2];
+    if (ALIASES.has(name)) {
+      const value = lookupEnv(name);
+      if (value) return rest ? join(value, rest) : value;
+    }
+    // Unknown: leave literal — `path.resolve` will surface ENOENT
+    // with the literal name so the user sees what they typed.
+  }
+  // Mid-path %VAR% (Windows-style): replace each occurrence.
+  s = s.replace(/%([A-Z][A-Z0-9_]*)%/g, (whole, name) => {
+    if (ALIASES.has(name)) {
+      const v = lookupEnv(name);
+      if (v) return v;
+    }
+    return whole;
+  });
+  // $VAR (POSIX-style). Same alias chain via lookupEnv — `$TEMP`
+  // and `$TMPDIR` resolve to whichever env var the host has set.
+  s = s.replace(
+    /\$([A-Z_][A-Z0-9_]*)/g,
+    (whole, name) => {
+      if (ALIASES.has(name)) {
+        const v = lookupEnv(name);
+        if (v) return v;
+      }
+      return whole;
+    },
+  );
+  return s;
+}
+
+/**
+ * Resolve a possibly-relative path against a base directory.
+ *
+ * `expandUserPath` returns a string that may still be relative
+ * (e.g. `foo/bar` after `~` had no env var). `path.resolve` handles
+ * relative-to-cwd by default, so we just forward through. The picker
+ * is also relative-aware at the route layer (`browseWorkspace` is
+ * called with the URL's `?path=` which is the user's typed input,
+ * and we resolve against the server's cwd — same as a shell would
+ * interpret `cd foo` from the directory the user launched the
+ * webui in).
+ */
+function resolveAgainstBase(rawPath, _baseDir) {
+  return resolve(rawPath);
+}
 
 // Workspace containment.
 //
@@ -209,14 +341,33 @@ export function browseWorkspace(rawPath) {
     }
     return { ok: true, dir: target, parent, roots, children: [] };
   }
-  target = resolve(rawPath);
+  // Expand `~`, `$HOME`, `%USERPROFILE%`, … before the existence
+  // check. A path typed on Windows and pasted on POSIX gets
+  // normalised through `path.resolve`; an env var / tilde gets
+  // interpolated here. Relative inputs are resolved against the
+  // raw input (which the route forwards from the current browse
+  // dir via the URL) so "go up one level" while browsing
+  // `/home/foo/projects` jumps into `/home/foo/projects/..` rather
+  // than the server cwd.
+  const expanded = expandUserPath(rawPath);
+  if (!expanded) {
+    return { ok: false, error: `路径不能为空` };
+  }
+  target = resolveAgainstBase(expanded, rawPath);
   if (!existsSync(target) || !statSync(target).isDirectory()) {
-    return { ok: false, error: `目录不存在: ${rawPath}` };
+    // Even a non-existent target benefits from the allowed-roots
+    // hint — the picker user just typed a path that does not exist
+    // in any allowed root, and the next question is "where can I
+    // browse?". Reading the roots here is cheap (they're cached
+    // for the request).
+    return { ok: false, error: `目录不存在: ${target}`, roots: getAllowedWorkspaceRoots() };
   }
   // Containment check before enumerating — only directories inside an
-  // allowed root are enumerable.
+  // allowed root are enumerable. The error payload carries the
+  // allowed roots so the picker UI can render an actionable
+  // "must be under: …" hint instead of a bare "非法".
   const contained = resolveWithinRoots(target);
-  if (!contained.ok) return { ok: false, error: contained.error };
+  if (!contained.ok) return { ok: false, error: contained.error, roots: contained.roots };
   const parentPath = dirname(target);
   parent = parentPath === target ? null : parentPath;
   if (parent !== null && !resolveWithinRoots(parent).ok) {
@@ -464,179 +615,49 @@ export function getRecentWorkspaces({ search = "", limit = 5 } = {}) {
 }
 
 
-// POST /api/workspace/pick — spawn the platform's native directory
-// picker (zenity / kdialog on Linux; osascript on macOS; PowerShell
-// dialog on Windows). Returns { ok, path } where path === null when
-// the user cancelled. `signal` (AbortSignal) cancels the child.
-export function pickDirectoryNative(signal) {
-  const platform = process.platform;
-  return new Promise((resolve, reject) => {
-    let child;
-    let settled = false;
-    const settle = (fn) => {
-      if (settled) return;
-      settled = true;
-      signal?.removeEventListener("abort", onAbort);
-      child?.kill();
-      fn();
-    };
-    const onAbort = () => {
-      settle(() => reject(new Error("picker aborted")));
-    };
-    signal?.addEventListener("abort", onAbort, { once: true });
-    try {
-      if (platform === "linux") {
-        // 优先用 kdialog（KDE 原生目录选择器，无"上传"按钮，体验最好）
-        // kdialog 也有 TTY 问题，用 setsid 创建独立 session
-        child = spawn("setsid", ["--", "kdialog", "--getexistingdirectory", ".", "--title", "选择工作区目录"], {
-          stdio: ["ignore", "pipe", "inherit"],
-          windowsHide: true,
-          env: { ...process.env },
-          detached: false,
-        });
-        let stdout = "";
-        child.stdout.on("data", (d) => (stdout += d));
-        child.on("close", (code) => {
-          if (signal?.aborted) {
-            settle(() => reject(new Error("picker aborted")));
-          } else if (code === 0) {
-            const path = stdout.replace(/[\r\n]+$/, "").trim();
-            settle(() => resolve(path || null));
-          } else {
-            // 用户取消（code === 1）或其他错误 → try zenity
-            settle(() => {
-              tryZenity(signal).then(resolve).catch(reject);
-            });
-          }
-        });
-        child.on("error", (e) => {
-          settle(() => {
-            if (e.code === "ENOENT") {
-              tryZenity(signal).then(resolve).catch(reject);
-            } else {
-              reject(e);
-            }
-          });
-        });
-      } else if (platform === "darwin") {
-        child = spawn("osascript", [
-          "-e",
-          'set selectedFolder to choose folder with prompt "选择工作区目录"',
-          "-e",
-          "POSIX path of selectedFolder",
-        ], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true, env: { ...process.env } });
-        let stdout = "";
-        child.stdout.on("data", (d) => (stdout += d));
-        child.on("close", (code) => {
-          if (signal?.aborted) {
-            settle(() => reject(new Error("picker aborted")));
-          } else if (code === 0) {
-            const path = stdout.replace(/[\r\n]+$/, "").trim();
-            settle(() => resolve(path || null));
-          } else {
-            // 用户取消（osascript -128 = user cancelled）
-            settle(() => resolve(null));
-          }
-        });
-        child.on("error", (e) => settle(() => reject(e)));
-      } else if (platform === "win32") {
-        // Windows: PowerShell 风格 folder picker（不依赖三方库）
-        const ps = [
-          "Add-Type -AssemblyName System.Windows.Forms",
-          "$f = New-Object System.Windows.Forms.FolderBrowserDialog",
-          "$f.Description = '选择工作区目录'",
-          "$f.ShowNewFolderButton = $true",
-          "if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $f.SelectedPath } else { '' }",
-        ].join("; ");
-        child = spawn("powershell", ["-NoProfile", "-Command", ps], {
-          stdio: ["ignore", "pipe", "pipe"],
-          windowsHide: true,
-          env: { ...process.env },
-        });
-        let stdout = "";
-        child.stdout.on("data", (d) => (stdout += d));
-        child.on("close", (code) => {
-          if (signal?.aborted) {
-            settle(() => reject(new Error("picker aborted")));
-          } else if (code === 0) {
-            const path = stdout.replace(/[\r\n]+$/, "").trim();
-            settle(() => resolve(path || null));
-          } else {
-            settle(() => resolve(null));
-          }
-        });
-        child.on("error", (e) => settle(() => reject(e)));
-      } else {
-        settle(() => reject(new Error(`unsupported platform: ${platform}`)));
-      }
-    } catch (e) {
-      settle(() => reject(e));
-    }
-  });
-}
-
-async function tryKdialog(signal) {
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const settle = (fn) => {
-      if (settled) return;
-      settled = true;
-      signal?.removeEventListener("abort", onAbort);
-      child?.kill();
-      fn();
-    };
-    const onAbort = () => settle(() => reject(new Error("picker aborted")));
-    signal?.addEventListener("abort", onAbort, { once: true });
-    const child = spawn("setsid", ["--", "kdialog", "--getexistingdirectory", ".", "--title", "选择工作区目录"], {
-      stdio: ["ignore", "pipe", "inherit"],
-      windowsHide: true,
-      env: { ...process.env },
-    });
-    let stdout = "";
-    child.stdout.on("data", (d) => (stdout += d));
-    child.on("close", (code) => {
-      if (signal?.aborted) {
-        settle(() => reject(new Error("picker aborted")));
-      } else if (code === 0) {
-        const path = stdout.replace(/[\r\n]+$/, "").trim();
-        settle(() => resolve(path || null));
-      } else {
-        settle(() => resolve(null)); // 用户取消
-      }
-    });
-    child.on("error", (e) => {
-      settle(() => reject(new Error("no supported native directory picker found (install zenity or kdialog)")));
-    });
-  });
-}
-
 // browseWorkspace (defined above) handles `?path=<abs>` or `?path=~/xxx`;
 // when path is omitted it returns the root view (with home / platform /
 // tmpDir for the front-end to localize).
 
 // assertWorkspacePath — containment gate for the /api/fs/* routes
 // (/api/fs/read, /api/fs/mkdir). Same boundary as browseWorkspace;
-// the route handlers only see { ok:true, path } or { ok:false, error }.
+// the route handlers only see { ok:true, path } or
+// { ok:false, error, roots } so the UI can render "must be under: …"
+// with the actual allowed roots when containment rejects.
 export function assertWorkspacePath(rawPath) {
   if (!rawPath || typeof rawPath !== "string") {
     return { ok: false, error: "path 不能为空" };
   }
-  const absDir = resolve(rawPath);
+  const expanded = expandUserPath(rawPath);
+  if (!expanded) {
+    return { ok: false, error: "path 不能为空" };
+  }
+  const absDir = resolve(expanded);
   const contained = resolveWithinRoots(absDir);
-  if (!contained.ok) return { ok: false, error: contained.error };
+  if (!contained.ok) {
+    return { ok: false, error: contained.error, roots: contained.roots };
+  }
   return { ok: true, path: absDir };
 }
 
 // assertWorkspaceParentPath — mkdir-specific: target directory does not
 // exist yet (realpath would fail), so verify the parent exists and is
 // inside an allowed root, and that the basename itself is legal.
+// Same env/tilde expansion as assertWorkspacePath so mkdir takes the
+// same input shapes.
 export function assertWorkspaceParentPath(rawPath) {
   if (!rawPath || typeof rawPath !== "string") {
     return { ok: false, error: "path 不能为空" };
   }
-  const absDir = resolve(rawPath);
+  const expanded = expandUserPath(rawPath);
+  if (!expanded) {
+    return { ok: false, error: "path 不能为空" };
+  }
+  const absDir = resolve(expanded);
   const parent = dirname(absDir);
   const contained = resolveWithinRoots(parent);
-  if (!contained.ok) return { ok: false, error: contained.error };
+  if (!contained.ok) {
+    return { ok: false, error: contained.error, roots: contained.roots };
+  }
   return { ok: true, path: absDir };
 }

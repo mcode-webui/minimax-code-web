@@ -202,9 +202,8 @@ const en = {
   "workspace.picker.tabs.browse": "Browse",
   "workspace.picker.recents.empty": "No recent workspaces",
   "workspace.picker.recents.search": "Search recent workspaces",
-  "workspace.picker.native": "Open native picker",
-  "workspace.picker.nativeUnsupported": "Native picker not available on this platform",
   "workspace.picker.useWorkspace": "Use this workspace",
+  "workspace.picker.mustBeUnder": "Path must be under:",
   "workspace.picker.created": "Created",
   /* Workspace panel section labels are aligned with the desktop's
      `workspace_panel.section_*` keys (反编译 36705 chunk). */
@@ -467,9 +466,8 @@ const zh: Record<MessageKey, string> = {
   "workspace.picker.tabs.browse": "浏览",
   "workspace.picker.recents.empty": "暂无最近工作区",
   "workspace.picker.recents.search": "搜索最近工作区",
-  "workspace.picker.native": "打开原生选择器",
-  "workspace.picker.nativeUnsupported": "当前平台无原生选择器",
   "workspace.picker.useWorkspace": "使用此工作区",
+  "workspace.picker.mustBeUnder": "路径必须在以下位置之一：",
   "workspace.picker.created": "已创建",
   "workspace.sectionPlan": "计划",
   "workspace.sectionAgentTeam": "Agent 团队",
