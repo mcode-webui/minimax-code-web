@@ -19,6 +19,10 @@ import type {
   Attachment,
   ContextUsage,
   Cid,
+  FsFileResult,
+  FsListResult,
+  GitBranches,
+  GitStatus,
   ModelOption,
   ModelSelection,
   PendingAuth,
@@ -28,8 +32,10 @@ import type {
   SessionSlice,
   ThinkingEffort,
   UsageInfo,
+  WorkspaceBrowseResult,
   WorkspaceEntry,
   WorkspaceInfo,
+  WorkspaceRecentEntry,
   ChatMessage,
 } from './domain';
 import type { ClientFrame, WireClientState, WireSettings } from './protocol';
@@ -134,9 +140,30 @@ export interface WorkspaceServicePort {
   current(): WorkspaceInfo | null;
   use(dir: string, syncTui?: boolean): Promise<WorkspaceInfo>;
   reset(): Promise<WorkspaceInfo>;
-  browse(path?: string): Promise<WorkspaceEntry[]>;
+  /** 逐级浏览服务端目录（返回当前目录 + 上级目录，供「上一级」导航）。 */
+  browse(path?: string): Promise<WorkspaceBrowseResult>;
   recents(): WorkspaceEntry[];
   addRecent(path: string): void;
+  /** 服务端聚合的已有工作区列表（含会话数角标，来源于 sessions 库）。 */
+  listRecent(): Promise<WorkspaceRecentEntry[]>;
+  /** 列目录（/api/fs/read，目录 + 文件条目；供右栏文件树懒加载）。 */
+  listDir(path: string): Promise<FsListResult>;
+  /** 读文本文件内容（/api/fs/file，≤512KB、拒二进制；供右栏文档预览）。 */
+  readFile(path: string): Promise<FsFileResult>;
+  /** 创建目录（/api/fs/mkdir，供选择目录弹窗「新建文件夹」）。 */
+  createDir(path: string): Promise<{ ok: boolean; error?: string }>;
+  /** 在系统中打开文件/目录（xdg-open；folder 模式打开文件管理器）。 */
+  openInSystem(path: string, mode: 'file' | 'folder'): Promise<{ ok: boolean; error?: string }>;
+  /** 原样文件的 URL（/api/fs/raw）—— 内置浏览器 iframe 直接打开 html 等。 */
+  rawFileUrl(path: string): string;
+  /** 工作区 git 状态（分支 + 变更文件）。 */
+  gitStatus(dir: string): Promise<GitStatus>;
+  /** 本地分支列表。 */
+  gitBranches(dir: string): Promise<GitBranches>;
+  /** 切换本地分支。 */
+  gitCheckout(dir: string, branch: string): Promise<{ ok: boolean; error?: string }>;
+  /** 单文件相对 HEAD 的 diff。 */
+  gitDiff(dir: string, file: string): Promise<{ ok: boolean; diff: string; error?: string }>;
 }
 
 /** 服务端设置（LAN / 只读 / token 等）。 */

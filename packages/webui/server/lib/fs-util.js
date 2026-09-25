@@ -154,3 +154,26 @@ export function createDirectory(targetPath) {
     return { ok: false, error: e.message, path: absPath }
   }
 }
+
+// 读取文本文件内容（webui-react 右栏文档预览用）：
+//   允许根内（由 routes/fs.js 的 safePath 先行 containment）、≤512KB、
+//   含 NUL 字节视为二进制拒读；成功时剥掉 UTF-8 BOM。
+export function readFileContent(targetPath) {
+  const absPath = resolve(resolveTarget(targetPath))
+  try {
+    const st = statSync(absPath)
+    if (!st.isFile()) return { ok: false, error: 'not a regular file', path: absPath }
+    const MAX = 512 * 1024
+    if (st.size > MAX) return { ok: false, error: 'file too large (max 512KB)', path: absPath }
+    const buf = readFileSync(absPath)
+    if (buf.includes(0)) return { ok: false, error: 'binary file not supported', path: absPath }
+    return {
+      ok: true,
+      path: absPath,
+      size: st.size,
+      content: buf.toString('utf8').replace(/^\uFEFF/, ''),
+    }
+  } catch (e) {
+    return { ok: false, error: e.message, path: absPath }
+  }
+}

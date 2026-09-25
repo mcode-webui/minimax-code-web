@@ -123,6 +123,133 @@ export function makeClientState() {
 export const clients = new Map(); // cid -> clientState
 export const activeChildByCid = new Map(); // cid -> child process
 
+// ── 运行镜像：按会话隔离运行期输出（多会话并行 + 切换不串台）────────────────
+// 运行开始（handleSend）时以当时的 cs.chat 快照建镜像；引擎流式写入全部走
+// cs.chat 访问器：
+//   查看会话 == 运行会话 → 透传真实数组（实时视图，行为与旧版一致）
+//   查看会话 != 运行会话 → 读写镜像（缓冲，绝不污染当前查看的会话）
+// 回合收尾（chat.js）drain：在运行会话上→已透传，正常持久化；不在→把镜像
+// 行写回运行会话的持久化记录。支持同一 cid 多个会话同时运行（镜像按会话键控）。
+const runMirrorByCid = new Map(); // cid -> Map<sessionId, { chat: [] }>
+const realChatByCid = new Map(); // cid -> 当前查看会话的真实 chat 数组
+
+function mirrorActiveFor(cid, cs) {
+  const m = runMirrorByCid.get(cid);
+  if (!m) return null;
+  return m.get(cs.sessionId) || null;
+}
+
+/** 运行开始：以 liveChat 快照建该会话的运行镜像。 */
+export function startRunMirror(cid, sessionId, liveChat) {
+  if (!cid || !sessionId) return;
+  let m = runMirrorByCid.get(cid);
+  if (!m) {
+    m = new Map();
+    runMirrorByCid.set(cid, m);
+  }
+  m.set(sessionId, { chat: Array.isArray(liveChat) ? [...liveChat] : [] });
+}
+
+/**
+ * 回合收尾专用 drain：
+ *   查看会话的镜像存在 → 取它（live=true，行已实时透传，收尾需定格 real）。
+ *   否则取「任意其它会话」的镜像（用户切走了，行需要写回归属会话记录）。
+ *   都没有 → null。
+ */
+export function drainRunMirrorForFinalize(cid, viewSessionId) {
+  const m = runMirrorByCid.get(cid);
+  if (!m) return null;
+  if (m.has(viewSessionId)) {
+    const lines = m.get(viewSessionId).chat;
+    m.delete(viewSessionId);
+    if (m.size === 0) runMirrorByCid.delete(cid);
+    return { sessionId: viewSessionId, lines, live: true };
+  }
+  for (const [sid, entry] of m) {
+    m.delete(sid);
+    if (m.size === 0) runMirrorByCid.delete(cid);
+    return { sessionId: sid, lines: entry.chat, live: false };
+  }
+  return null;
+}
+
+/** 读取某会话的镜像 chat（未运行返回 null）。 */
+export function runMirrorLinesFor(cid, sessionId) {
+  const m = runMirrorByCid.get(cid);
+  return m && m.get(sessionId) ? m.get(sessionId).chat : null;
+}
+
+/** 本 cid 上是否有任意运行中的会话（多会话并发生成在引擎层尚不支持时，
+ *  发送守卫用它在全局层面兜底，避免两个引擎输出交织串台）。 */
+export function hasAnyRunMirror(cid) {
+  const m = runMirrorByCid.get(cid);
+  return m !== undefined && m.size > 0;
+}
+
+/** 运行是否仍在进行（该会话存在未 drain 的镜像）。 */
+export function hasRunMirror(cid, sessionId) {
+  const m = runMirrorByCid.get(cid);
+  return m !== undefined ? m.has(sessionId) : false;
+}
+
+/** 回合收尾：取出镜像行；live=true 表示查看会话即运行会话（已透传，无需回写）。 */
+export function drainRunMirror(cid, viewSessionId) {
+  const m = runMirrorByCid.get(cid);
+  if (!m) return null;
+  const firstKey = m.keys().next();
+  // 未指定会话 → drain 该 cid 上唯一/最新的镜像（兼容旧调用）
+  const sid =
+    viewSessionId && m.has(viewSessionId)
+      ? viewSessionId
+      : !viewSessionId && firstKey.done === false
+        ? firstKey.value
+        : null;
+  if (sid === null) return null;
+  const entry = m.get(sid);
+  m.delete(sid);
+  if (m.size === 0) runMirrorByCid.delete(cid);
+  return { sessionId: sid, lines: entry ? entry.chat : [], live: sid === csViewSession(cid) };
+}
+
+function csViewSession(cid) {
+  const ccs = clients.get(cid);
+  return ccs ? ccs.sessionId : null;
+}
+
+/** 直写某 cid 当前查看会话的真实 chat（绕过镜像路由：会话切换/新建/清空用）。 */
+export function setRealChatByCid(cid, arr) {
+  realChatByCid.set(cid, Array.isArray(arr) ? arr : []);
+}
+
+export function realChatOf(cid) {
+  return realChatByCid.get(cid) || null;
+}
+
+/** 给 per-cid cs 挂 chat 路由访问器（getClient 创建时调用）。 */
+function attachChatRouting(cs, cid) {
+  // 单一数据源：真实 chat 只存 realChatByCid（setRealChatByCid 亦写这里）。
+  // 旧实现里闭包 real 与映射表各存一份且互不同步 —— 新建会话清空映射后，
+  // getter 仍返回闭包里的旧会话内容，造成「新会话出现旧消息」的串台。
+  realChatByCid.set(cid, cs.chat);
+  Object.defineProperty(cs, 'chat', {
+    configurable: true,
+    enumerable: true,
+    get() {
+      const m = mirrorActiveFor(cid, cs);
+      if (m) return m.chat;
+      return realChatByCid.get(cid) || [];
+    },
+    set(v) {
+      const m = mirrorActiveFor(cid, cs);
+      if (m) {
+        if (Array.isArray(v)) m.chat = v;
+        return;
+      }
+      realChatByCid.set(cid, Array.isArray(v) ? v : []);
+    },
+  });
+}
+
 // v2.3 (in-product): a fresh client (page reload, new tab) must resume the
 //   conversation it was in. Before this, a fresh per-cid state always started
 //   empty (sessionId: null), so the next send created a NEW webui session and
@@ -161,6 +288,7 @@ export function getClient(cid) {
   if (!clients.has(cid)) {
     const cs = makeClientState();
     restoreLatestSession(cs);
+    attachChatRouting(cs, cid);
     clients.set(cid, cs);
   }
   return clients.get(cid);
@@ -267,6 +395,26 @@ function ensureMcodeSessionsFetchedAndPush(workspace) {
     });
 }
 
+/** 视图会话的运行态：视图会话没在跑时归零（多会话并行时指示互不误亮）。 */
+function runningForView(cid) {
+  const ccs = clients.get(cid);
+  const r = ccs ? ccs.running : null;
+  const viewSid = ccs ? ccs.sessionId : null;
+  if (r && r.active && r.sessionId && r.sessionId !== viewSid) {
+    return {
+      active: false,
+      prompt: null,
+      pid: null,
+      startedAt: null,
+      model: null,
+      sessionId: r.sessionId,
+      lastDeltaAt: null,
+      tps: 0,
+    };
+  }
+  return r;
+}
+
 export function pushStateFor(cid, opts = {}) {
   const lanBroadcast =
     opts.lanBroadcast !== undefined ? opts.lanBroadcast : getLanBroadcast();
@@ -282,6 +430,11 @@ export function pushStateFor(cid, opts = {}) {
           : mcodeSessionsSnapshotFields(cws);
       const snapshot = {
         ...ccs,
+        // 钉住当前查看会话的真实 chat（镜像激活期间 getter 会返回运行缓冲，
+        // 广播给查看者的必须是查看者自己的会话内容）
+        chat: realChatOf(c) || [],
+        // 运行态按视图会话归零：切到别的会话时，别的会话的运行指示不误亮
+        running: runningForView(c),
         sessions: sessionsListForSnapshot(),
         ...fields,
         availableCommands: cachedCmds,
@@ -323,6 +476,9 @@ export function pushStateFor(cid, opts = {}) {
   // v0.5.bv: 同步带 mcodeSessions（cache 命中，0 cost；cache miss 才 await）
   const snapshot = {
     ...cs,
+    // 钉住当前查看会话的真实 chat（镜像激活期间 getter 返回运行缓冲）
+    chat: realChatOf(cid) || [],
+    running: runningForView(cid),
     sessions: sessionsListForSnapshot(),
     ...fields,
     availableCommands: cachedCmds,
@@ -426,17 +582,31 @@ export function pushOnlineCount(lanBroadcast) {
   }
 }
 
-// 把当前 cid 的 child 设为 active（acp client / exec child 都用同一个 map）
-export function setActiveChild(cid, child) {
-  if (cid) activeChildByCid.set(cid, child);
+// 把 child 设为 active（acp client / exec child 同一 map）。
+// 双写：有 sid 用「cid|sid」键控（多会话并行时各会话 stop 互不影响），
+// 同时维护无键位的「最新 child」兜底（stop 查找链的最后一环）。
+export function setActiveChild(cid, child, sid) {
+  if (!cid) return;
+  if (sid) activeChildByCid.set(cid + '|' + sid, child);
+  activeChildByCid.set(cid, child);
 }
 
-export function getActiveChild(cid) {
+export function getActiveChild(cid, sid) {
+  if (sid) {
+    // 查找链：webui 会话 id → mcode 会话 id → 无键位最新
+    return (
+      activeChildByCid.get(cid + '|' + sid) ||
+      activeChildByCid.get(cid) ||
+      null
+    );
+  }
   return activeChildByCid.get(cid) || null;
 }
 
-export function clearActiveChild(cid) {
-  if (cid) activeChildByCid.delete(cid);
+export function clearActiveChild(cid, sid) {
+  if (!cid) return;
+  if (sid) activeChildByCid.delete(cid + '|' + sid);
+  activeChildByCid.delete(cid);
 }
 
 // v0.5.bx-29: 找出所有绑定了同一个 mcodeSessionId 的 cid

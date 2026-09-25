@@ -81,7 +81,7 @@ function fakeRegistry(seed: SessionSummary[] = []): Registry {
       setModel: async (id: string, m: string) => { ensure(id).selection = { ...ensure(id).selection, model: m }; emit(id); return ensure(id).selection; },
       setThinking: async (id: string, e) => { ensure(id).selection = { ...ensure(id).selection, thinking: e }; emit(id); return ensure(id).selection; },
     },
-    workspace: { current: () => null, use: async () => ({ dir: '/w' }), reset: async () => ({ dir: null }), browse: async () => [], recents: () => [], addRecent: () => { /* noop */ } },
+    workspace: { current: () => null, use: async () => ({ dir: '/w' }), reset: async () => ({ dir: null }), browse: async () => ({ dir: null, parent: null, entries: [] }), recents: () => [], addRecent: () => { /* noop */ }, listRecent: async () => [], listDir: async () => ({ ok: false, dir: null, parent: null, entries: [] }), readFile: async () => ({ ok: false, path: null, content: null }), createDir: async () => ({ ok: true }), openInSystem: async () => ({ ok: true }), rawFileUrl: (p: string) => p, gitStatus: async () => ({ ok: true, isRepo: false, branch: null, files: [] }), gitBranches: async () => ({ ok: true, branches: [] }), gitCheckout: async () => ({ ok: true }), gitDiff: async () => ({ ok: true, diff: '' }) },
     settings: { get: async () => ({}), update: async () => ({}), resetToken: async () => ({ token: 't' }), acknowledgeToken: async () => { /* noop */ } },
     usage: { quota: async () => ({ fiveHourPercent: 50, weeklyPercent: 50, fetchedAt: 1 }), refresh: async () => { /* noop */ }, context: async () => null },
     alerts: { snapshot: async () => [], list: () => [], unread: () => 0, markRead: noop, clear: noop, subscribe: () => unsub },

@@ -56,6 +56,7 @@ import * as usageRoute from "./routes/usage.js";
 import * as workspaceRoute from "./routes/workspace.js";
 // v2.2 (feat-workspace-lhl sync): fs picker endpoints
 import * as fsRoute from "./routes/fs.js";
+import * as gitRoute from "./routes/git.js";
 import * as settingsRoute from "./routes/settings.js";
 import * as uploadRoute from "./routes/upload.js";
 import * as modelRoute from "./routes/model.js";
@@ -309,9 +310,49 @@ const ROUTES = [
     handler: fsRoute.handleFsRead,
   },
   {
+    // webui-react 右栏文档预览：读文本文件（允许根内、≤512KB、拒二进制）
+    method: "GET",
+    match: (p) => p === "/api/fs/file",
+    handler: fsRoute.handleFsReadFile,
+  },
+  {
     method: "POST",
     match: (p) => p === "/api/fs/mkdir",
     handler: fsRoute.handleFsMkdir,
+  },
+  {
+    // webui-react 内置浏览器：按扩展名原样返回文件（html 等 iframe 直接打开）
+    method: "GET",
+    match: (p) => p === "/api/fs/raw",
+    handler: fsRoute.handleFsRaw,
+  },
+  {
+    // webui-react 文件树右键：在系统中打开 / 在文件管理器中打开（xdg-open）
+    method: "POST",
+    match: (p) => p === "/api/fs/open",
+    handler: fsRoute.handleFsOpen,
+  },
+
+  // webui-react 右栏 Git 面板：状态 / 分支 / diff / 切换分支
+  {
+    method: "GET",
+    match: (p) => p === "/api/git/status",
+    handler: gitRoute.handleGitStatus,
+  },
+  {
+    method: "GET",
+    match: (p) => p === "/api/git/branches",
+    handler: gitRoute.handleGitBranches,
+  },
+  {
+    method: "GET",
+    match: (p) => p === "/api/git/diff",
+    handler: gitRoute.handleGitDiff,
+  },
+  {
+    method: "POST",
+    match: (p) => p === "/api/git/checkout",
+    handler: gitRoute.handleGitCheckout,
   },
 
   // Settings

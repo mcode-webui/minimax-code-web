@@ -28,7 +28,12 @@ import {
 import { loadTranscriptChatLines } from "../lib/transcript.js";
 import { applyMavisUsageToCs } from "../lib/mavis-usage.js";
 import { getMcodeModelLimit } from "../lib/models.js";
-import { pushStateFor, clients } from "../lib/state-bus.js";
+import {
+  pushStateFor,
+  clients,
+  setRealChatByCid,
+  runMirrorLinesFor,
+} from "../lib/state-bus.js";
 import { MCODE_RUNTIME_DB } from "../lib/config.js";
 import { authorize } from "../lib/authorize.js";
 import { pushAlert } from "../lib/alerts.js";
@@ -192,7 +197,7 @@ export async function handleNewSession(req, res, ctx) {
   cs.sessionId = id;
   cs.mcodeSessionId = null; // 新建 webui session 同时开新 mcode 上下文
   cs.sessionTitle = item.title;
-  cs.chat = [];
+  setRealChatByCid(cid, []);
   cs.usage = {
     ...cs.usage,
     sessionInput: 0,
@@ -226,6 +231,10 @@ export async function handleNewSession(req, res, ctx) {
 }
 
 // POST /api/sessions/switch — switch to session by webui id or mvs_xxx
+// v3 运行镜像：切换不再被锁。引擎输出按会话键控进运行镜像（state-bus），
+// 切走/切回都不会串台；镜像在回合收尾时写回归属会话的持久化记录。
+// 切回「正在运行的会话」时，把镜像里已产出的行合并回放，用户能立刻看到
+// 部分回复，后续流式输出经 cs.chat 路由继续实时透传。
 export async function handleSwitchSession(req, res, ctx) {
   const cs = ctx.cs;
   const cid = ctx.cid;
@@ -345,7 +354,11 @@ export async function handleSwitchSession(req, res, ctx) {
   cs.sessionId = target.id;
   cs.mcodeSessionId = target.mcodeSessionId || null; // 切到有 mcodeSessionId 的就绑上
   cs.sessionTitle = target.title || "Untitled";
-  cs.chat = Array.isArray(target.chat) ? target.chat : [];
+  // 写当前查看会话的真实 chat（setRealChatByCid 绕过镜像路由）。
+  // 目标正是运行中的会话 → 合并镜像里已产出的行（切回即可见部分回复）。
+  const mirrorLines = runMirrorLinesFor(cid, target.id);
+  const history = Array.isArray(target.chat) ? target.chat : [];
+  setRealChatByCid(cid, mirrorLines ? [...history, ...mirrorLines] : history);
   cs.usage = {
     ...cs.usage,
     sessionInput: 0,
@@ -616,7 +629,7 @@ export async function handleDeleteSession(req, res, ctx) {
           cs.mcodeSessionId = null;
           cs.sessionId = null;
           cs.sessionTitle = "Untitled";
-          cs.chat = [];
+          setRealChatByCid(cid, []);
           resetContext(cs);
           pushStateFor(cid);
         }
@@ -735,7 +748,7 @@ export async function handleDeleteSession(req, res, ctx) {
       ccs.sessionId = null;
       ccs.mcodeSessionId = null;
       ccs.sessionTitle = "Untitled";
-      ccs.chat = [];
+      setRealChatByCid(c, []);
       ccs.usage = {
         ...ccs.usage,
         sessionInput: 0,

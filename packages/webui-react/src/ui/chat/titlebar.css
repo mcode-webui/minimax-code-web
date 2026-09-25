@@ -1,0 +1,125 @@
+/* chat/titlebar.css —— 会话标题栏（SessionTitleBar） */
+/* 参考布局：三段式（左工具 | 居中标题∨ | 右工具），底部分隔线。 */
+
+.stitle {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 44px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--border-light);
+  flex-shrink: 0;
+}
+
+.stitle-side {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.stitle-side--left { flex: 1; justify-content: flex-start; }
+.stitle-side--right { flex: 1; justify-content: flex-end; }
+
+.stitle-center {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: 60%;
+}
+
+.stitle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+  font-family: inherit;
+  padding: 5px 10px;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+.stitle-btn:hover { background: var(--bg-hover); }
+
+.stitle-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stitle-chevron {
+  color: var(--text-tertiary);
+  transition: transform 0.15s ease;
+  flex-shrink: 0;
+}
+.stitle-btn--open .stitle-chevron { transform: rotate(180deg); }
+
+/* 运行中小绿点 */
+.stitle-run {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--status-on);
+  flex-shrink: 0;
+  animation: execrow-pulse 1.2s ease-in-out infinite;
+}
+
+.stitle-ro {
+  font-size: 11px;
+  color: var(--danger);
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
+  border-radius: 999px;
+  padding: 1px 8px;
+  flex-shrink: 0;
+}
+
+/* 会话切换下拉（容器把列表放进来） */
+.stitle-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(340px, 80vw);
+  max-height: 50vh;
+  overflow: auto;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  z-index: 30;
+  padding: 4px;
+}
+
+.stitle-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  font-family: inherit;
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.stitle-option:hover { background: var(--bg-hover); }
+.stitle-option--active { background: var(--bg-active); }
+
+.stitle-option-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

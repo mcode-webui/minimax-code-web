@@ -68,6 +68,94 @@ export interface WorkspaceEntry {
   isDir: boolean;
 }
 
+/** 最近/已有工作区条目（在 WorkspaceEntry 上附加会话数角标与服务端聚合时间）。 */
+export interface WorkspaceRecentEntry extends WorkspaceEntry {
+  sessionCount?: number;
+  lastActiveAt?: number;
+}
+
+/** 服务端目录浏览结果：当前目录 + 上级目录（供「上一级」导航）+ 子目录列表。 */
+export interface WorkspaceBrowseResult {
+  dir: string | null;
+  parent: string | null;
+  entries: WorkspaceEntry[];
+}
+
+// ── 文件系统（右栏文件树 / 文档预览）────────────────────────────────────────
+
+/** /api/fs/read 条目（文件树懒加载节点）。 */
+export interface FsEntry {
+  name: string;
+  path: string;
+  isDir: boolean;
+  /** 字节大小（文件）。 */
+  size?: number;
+  /** 修改时间（毫秒）。 */
+  mtime?: number;
+  /** 权限字符串（如 rwxr-xr-x）。 */
+  mode?: string;
+}
+
+/** /api/fs/read 结果。 */
+export interface FsListResult {
+  ok: boolean;
+  dir: string | null;
+  parent: string | null;
+  entries: FsEntry[];
+  /** 服务端主目录（readDirectory 回传）—— 面包屑/顶层判定用。 */
+  home?: string | null;
+  error?: string;
+}
+
+/** /api/fs/file 结果（文本文件内容；≤512KB，二进制拒读）。 */
+export interface FsFileResult {
+  ok: boolean;
+  path: string | null;
+  content: string | null;
+  size?: number;
+  error?: string;
+}
+
+// ── git（右栏 Git 面板：变更 / 分支 / diff）─────────────────────────────────
+
+/** 单个变更文件（porcelain v1 的 XY + 路径）。 */
+export interface GitFileChange {
+  /** 暂存区状态（M/A/D/R/…；' ' = 无）。 */
+  x: string;
+  /** 工作区状态。 */
+  y: string;
+  path: string;
+  /** 重命名前的原路径。 */
+  origPath?: string | null;
+  /** 是否已暂存。 */
+  staged: boolean;
+}
+
+/** /api/git/status 结果；isRepo=false 表示目录不是 git 仓库。 */
+export interface GitStatus {
+  ok: boolean;
+  isRepo: boolean;
+  branch?: string | null;
+  upstream?: string | null;
+  ahead?: number;
+  behind?: number;
+  files: GitFileChange[];
+  error?: string;
+}
+
+/** 本地分支。 */
+export interface GitBranch {
+  name: string;
+  current: boolean;
+}
+
+/** /api/git/branches 结果。 */
+export interface GitBranches {
+  ok: boolean;
+  branches: GitBranch[];
+  error?: string;
+}
+
 // ── 会话 ───────────────────────────────────────────────────────────────────
 export interface SessionSummary {
   id: SessionId;

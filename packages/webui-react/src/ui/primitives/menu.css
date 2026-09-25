@@ -66,3 +66,15 @@
 .menu-row--expanded .menu-row-chevron {
   transform: rotate(90deg);
 }
+
+/* 禁用态（占位导航项）：弱化、不可交互 */
+.menu-row--disabled {
+  color: var(--text-tertiary);
+  cursor: default;
+}
+.menu-row--disabled:hover {
+  background: transparent;
+}
+.menu-row--disabled .menu-row-icon {
+  opacity: 0.7;
+}

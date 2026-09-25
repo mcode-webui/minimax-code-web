@@ -1,0 +1,20 @@
+/* primitives/resizehandle.css —— 面板宽度拖拽把手 */
+
+.resize-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: -2px;
+  width: 5px;
+  cursor: col-resize;
+  z-index: 15;
+  flex-shrink: 0;
+}
+.resize-handle--left {
+  right: auto;
+  left: -2px;
+}
+.resize-handle:hover,
+.resize-handle:active {
+  background: var(--accent-glow);
+}

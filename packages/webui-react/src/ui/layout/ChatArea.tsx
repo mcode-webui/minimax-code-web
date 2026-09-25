@@ -3,6 +3,8 @@ import type { DragEvent, ReactNode } from 'react';
 import './chatarea.css';
 
 export interface ChatAreaProps {
+  /** 会话标题栏插槽（SessionTitleBar，渲染在滚动区之上）。 */
+  titlebar?: ReactNode;
   /** 欢迎空态插槽（logo + 提示语）。 */
   empty?: ReactNode;
   /** 消息流插槽。 */
@@ -35,6 +37,7 @@ export interface ChatAreaProps {
  */
 export function ChatArea(props: ChatAreaProps) {
   const {
+    titlebar,
     empty,
     messages,
     thinking = false,
@@ -97,6 +100,7 @@ export function ChatArea(props: ChatAreaProps) {
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
+      {titlebar}
       <div className="chat-scroll">
         {empty && <div className="chat-empty">{empty}</div>}
         <div className="chat-inner">{messages}</div>

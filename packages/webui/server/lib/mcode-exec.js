@@ -209,7 +209,8 @@ export function runMcodeExec(prompt, opts = {}) {
   child.stdin.write(prompt, "utf8");
   child.stdin.end();
   // v0.5.ai: per-cid child tracker（/api/stop 按 cid 找 child）
-  setActiveChild(cid, child);
+  setActiveChild(cid, child, sessionId);
+  if (cs && cs.sessionId) setActiveChild(cid, child, cs.sessionId);
   return { child, args, label, model, workspace, sessionId, cs, cid };
 }
 
@@ -327,7 +328,7 @@ export function collectExecResult(childPromise) {
       const dt = Date.now() - t0;
       r.durationMs = r.durationMs || dt;
       if (r._stopped) r.status = "stopped";
-      clearActiveChild(cid);
+      clearActiveChild(cid, sessionId);
       cs.running = {
         active: false,
         prompt: null,

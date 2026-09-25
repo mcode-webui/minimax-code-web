@@ -16,7 +16,6 @@ import enUS from 'antd/locale/en_US';
 import { AppShell } from './ui/layout/AppShell';
 import { createAppController } from './features/app-controller';
 import { useAppActions, useAppSnapshot } from './features/use-app';
-import { TopbarFeature } from './features/topbar-feature';
 import { SessionsFeature } from './features/sessions-feature';
 import { ChatFeature } from './features/chat-feature';
 import { PanelsFeature } from './features/panels-feature';
@@ -63,11 +62,11 @@ export function App() {
       }}
     >
       <AntApp>
+        {/* 参考布局：无全局顶栏 —— 四栏直接满高（会话状态并入标题栏/左栏用户卡）。 */}
         <AppShell
           leftOpen={s.leftOpen}
           rightOpen={s.rightOpen}
           onBackdropClick={() => { a.setLeftOpen(false); a.setRightOpen(false); }}
-          topbar={<TopbarFeature controller={controller} />}
           left={<SessionsFeature controller={controller} />}
           chat={<ChatFeature controller={controller} />}
           right={<PanelsFeature controller={controller} />}

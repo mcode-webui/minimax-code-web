@@ -33,8 +33,9 @@ import type {
   SessionSummary,
   ThinkingEffort,
   UsageInfo,
-  WorkspaceEntry,
+  WorkspaceBrowseResult,
   WorkspaceInfo,
+  WorkspaceRecentEntry,
 } from '../contracts/domain';
 import { groupSessionsByWorkspace } from '../contracts/domain';
 import type { WireSettings } from '../contracts/protocol';
@@ -45,6 +46,12 @@ import type { SlashEntry } from '../ui/composer/SlashOverlay';
 
 export type ThemeMode = 'light' | 'dark';
 export type Lang = 'zh' | 'en';
+
+/** 右侧栏 Tab 页标识。 */
+export type RightTab = "files" | "preview" | "browser" | "git" | "details";
+const RIGHT_TABS: readonly RightTab[] = [
+  "files", "preview", "browser", "git", "details",
+];
 
 export interface AppSnapshot {
   ready: boolean;
@@ -71,11 +78,16 @@ export interface AppSnapshot {
   alertsUnread: number;
   authQueue: PendingAuth[];
   workspace: WorkspaceInfo | null;
-  recents: WorkspaceEntry[];
+  recents: WorkspaceRecentEntry[];
   theme: ThemeMode;
   lang: Lang;
   leftOpen: boolean;
   rightOpen: boolean;
+/** 右侧栏当前 Tab；null = 右栏整体收起。 */
+  rightTab: RightTab | null;
+  /** 面板宽度（px，kv 持久化）。 */
+  leftWidth: number;
+  rightWidth: number;
   searchQuery: string;
   collapsedGroups: string[];
   /** 服务端可用斜杠命令目录（state.availableCommands 派生）；空则容器用内置兜底表。 */
@@ -98,6 +110,8 @@ export interface AppActions {
   send(content?: string): Promise<void>;
   stop(): Promise<void>;
   sendCommand(cmd: string): Promise<void>;
+  /** 重试：把最后一条用户消息原样重发（重新生成最近一次回答）。 */
+  resendLast(): Promise<void>;
   /** 写当前会话草稿（按 SessionId 隔离，互不覆盖）。 */
   setDraft(text: string): void;
   // ask-user 块的受控交互
@@ -111,7 +125,7 @@ export interface AppActions {
   // 工作区
   useWorkspace(dir: string): Promise<void>;
   resetWorkspace(): Promise<void>;
-  browseWorkspace(path?: string): Promise<WorkspaceEntry[]>;
+  browseWorkspace(path?: string): Promise<WorkspaceBrowseResult>;
   // 附件
   uploadFiles(files: File[]): Promise<void>;
   removeAttachment(id: string): void;
@@ -138,6 +152,10 @@ export interface AppActions {
   setLang(lang: Lang): void;
   setLeftOpen(v: boolean): void;
   setRightOpen(v: boolean): void;
+  /** 右侧面板可见性批量设置（标题栏右侧的工具钮）。 */
+  setRightTab(tab: RightTab | null): void;
+  /** 面板宽度设置（拖拽把手；kv 持久化）。 */
+  setPanelWidth(key: 'left' | 'right', width: number): void;
   setSearchQuery(q: string): void;
   toggleGroup(key: string): void;
 }
@@ -200,11 +218,31 @@ export function createAppController(reg: Registry): AppController {
   let usage: UsageInfo | null = null;
   let context: ContextUsage | null = null;
   let workspace: WorkspaceInfo | null = null;
-  let recents: WorkspaceEntry[] = [];
+  let recents: WorkspaceRecentEntry[] = [];
   let theme: ThemeMode = 'light';
   let lang: Lang = 'zh';
-  let leftOpen = false;
+  let leftOpen = true;
   let rightOpen = false;
+  // 右侧栏 Tab（v3）：单栏 + Tab 页；kv 持久化。
+  let rightTab: RightTab | null = "files";
+  try {
+    const rawTab = reg.kv.get("webui_right_tab");
+    if (rawTab && (RIGHT_TABS as readonly string[]).includes(rawTab)) rightTab = rawTab as RightTab;
+  } catch { /* 坏数据当没有 */ }
+  // 面板宽度（kv 持久化；webui_panel_widths）。
+  let panelWidths: { left: number; right: number } = { left: 240, right: 420 };
+  try {
+    const raw = reg.kv.get('webui_panel_widths');
+    if (raw) {
+      const o = asRecord(JSON.parse(raw) as unknown);
+      if (o) {
+        panelWidths = {
+          left: typeof o['left'] === 'number' ? o['left'] : panelWidths.left,
+          right: typeof o['right'] === 'number' ? o['right'] : panelWidths.right,
+        };
+      }
+    }
+  } catch { /* 坏数据当没有 */ }
   let searchQuery = '';
   let collapsedGroups: string[] = [];
   let slashEntries: SlashEntry[] = [];
@@ -259,6 +297,9 @@ export function createAppController(reg: Registry): AppController {
       lang,
       leftOpen,
       rightOpen,
+      rightTab,
+      leftWidth: panelWidths.left,
+      rightWidth: panelWidths.right,
       searchQuery,
       collapsedGroups,
       enterPlanMode,
@@ -296,12 +337,41 @@ export function createAppController(reg: Registry): AppController {
     }
   }
 
+  /** 已有工作区列表 = 服务端 sessions 库聚合（含会话数角标）+ 本地 kv recents 去重合并。 */
+  async function loadWorkspaces() {
+    try {
+      workspace = reg.workspace.current();
+    } catch {
+      workspace = null;
+    }
+    try {
+      const serverList = await reg.workspace.listRecent();
+      const local = reg.workspace.recents();
+      const seen = new Set<string>();
+      const merged: WorkspaceRecentEntry[] = [];
+      for (const w of serverList) {
+        if (seen.has(w.path)) continue;
+        seen.add(w.path);
+        merged.push(w);
+      }
+      for (const w of local) {
+        if (seen.has(w.path)) continue;
+        seen.add(w.path);
+        merged.push({ name: w.name, path: w.path, isDir: true });
+      }
+      recents = merged;
+    } catch {
+      // 服务端聚合失败（旧后端无 /api/workspace/recent）时回落本地 kv。
+      recents = reg.workspace.recents();
+    }
+  }
+
   async function bootstrap() {
     try { sessions = await reg.sessions.list(); } catch { sessions = []; }
     await loadCatalog();
     try { settings = await reg.settings.get(); } catch { settings = null; }
     try { usage = await reg.usage.quota(); } catch { usage = null; }
-    try { workspace = reg.workspace.current(); recents = reg.workspace.recents(); } catch { /* noop */ }
+    await loadWorkspaces();
     ready = true;
     notify();
   }
@@ -315,10 +385,20 @@ export function createAppController(reg: Registry): AppController {
     },
     async selectSession(id) {
       if (activeSessionId === id) return;
+      const prev = activeSessionId;
       activeSessionId = id; // 旧切片原样保留 —— 会话隔离
       resubscribeSession();
       context = null;
-      try { await reg.sessions.switchTo(id); } catch { /* 服务端切换失败不阻塞本地隔离 */ }
+      try {
+        await reg.sessions.switchTo(id);
+      } catch (e) {
+        // 服务端拒绝切换（如运行中 409「请先停止再切换」）：回滚本地选择，
+        // 并把错误上抛给 UI toast —— 半切换状态比切不动更糟。
+        activeSessionId = prev;
+        resubscribeSession();
+        notify();
+        throw e instanceof Error ? e : new Error(String(e));
+      }
       try { context = await reg.usage.context(id); } catch { context = null; }
       notify();
     },
@@ -391,6 +471,25 @@ export function createAppController(reg: Registry): AppController {
     async sendCommand(cmd) {
       if (activeSessionId) await reg.chat.command(activeSessionId, cmd);
     },
+    async resendLast() {
+      const id = activeSessionId;
+      if (!id) return;
+      const msgs = reg.sessions.slice(id).messages;
+      let text = '';
+      for (let i = msgs.length - 1; i >= 0; i -= 1) {
+        const m = msgs[i];
+        if (m.role !== 'user') continue;
+        const parts: string[] = [];
+        for (const b of m.blocks) {
+          if (b.kind === 'text') parts.push(b.text);
+        }
+        text = parts.join('\n').trim();
+        break;
+      }
+      if (text === '') return;
+      // 复用 send 的分流（'/' 命令 vs 普通消息）；重试不带附件引用。
+      await actions.send(text);
+    },
 
     async setProvider(provider) {
       const id = activeSessionId;
@@ -424,11 +523,12 @@ export function createAppController(reg: Registry): AppController {
     async useWorkspace(dir) {
       workspace = await reg.workspace.use(dir, true);
       reg.workspace.addRecent(dir);
-      recents = reg.workspace.recents();
+      await loadWorkspaces();
       notify();
     },
     async resetWorkspace() {
       workspace = await reg.workspace.reset();
+      await loadWorkspaces();
       notify();
     },
     browseWorkspace(path) {
@@ -509,6 +609,19 @@ export function createAppController(reg: Registry): AppController {
     setLang(l) { lang = l; notify(); },
     setLeftOpen(v) { leftOpen = v; notify(); },
     setRightOpen(v) { rightOpen = v; notify(); },
+    setRightTab(tab) {
+      rightTab = tab;
+      try { reg.kv.set("webui_right_tab", tab || ""); } catch { /* 不致命 */ }
+      notify();
+    },
+    setPanelWidth(key, width) {
+      const clamped =
+        key === 'left' ? Math.max(200, Math.min(420, width)) :
+        Math.max(280, Math.min(800, width));
+      panelWidths = { ...panelWidths, [key]: clamped };
+      try { reg.kv.set('webui_panel_widths', JSON.stringify(panelWidths)); } catch { /* 持久化失败不致命 */ }
+      notify();
+    },
     setSearchQuery(q) { searchQuery = q; notify(); },
     toggleGroup(key) {
       collapsedGroups = collapsedGroups.includes(key)

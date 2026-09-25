@@ -1,0 +1,37 @@
+/* primitives/iconbutton.css —— 图标按钮（IconButton） */
+/* 幽灵小方钮：默认无色，hover 出底；active 常驻底色；danger 悬停转红。 */
+
+.iconbtn {
+  display: inline-grid;
+  place-items: center;
+  border: none;
+  background: transparent;
+  color: var(--text-tertiary);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  padding: 0;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.iconbtn--sm { width: 24px; height: 24px; }
+.iconbtn--md { width: 28px; height: 28px; }
+
+.iconbtn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+}
+.iconbtn:active:not(:disabled) { background: var(--bg-active); }
+
+.iconbtn--active {
+  background: var(--bg-active);
+  color: var(--text);
+}
+
+.iconbtn--danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--danger);
+}
+
+.iconbtn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}

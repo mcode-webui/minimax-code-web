@@ -140,11 +140,11 @@ describe('块级 memo 生效（长列表性能契约）', () => {
     const counter = { reads: 0 };
     const block = trackedTextBlock(counter);
     const message: ChatMessage = { id: 'm', role: 'assistant', ts: 1, blocks: [block] };
-    const { rerender } = render(<MessageItem message={message} logoSrc="/a.png" />);
+    const { rerender } = render(<MessageItem message={message} onCopyResult={() => undefined} />);
     expect(counter.reads).toBe(1);
 
-    // MessageItem 因 logoSrc 变化重渲染，block 引用不变 → memo 跳过 BlockView
-    rerender(<MessageItem message={message} logoSrc="/b.png" />);
+    // MessageItem 因回调引用变化重渲染，block 引用不变 → memo 跳过 BlockView
+    rerender(<MessageItem message={message} onCopyResult={() => undefined} />);
     expect(counter.reads).toBe(1);
   });
 

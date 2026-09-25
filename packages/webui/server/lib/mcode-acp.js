@@ -99,7 +99,7 @@ export async function runMcodeAcp(content, opts = {}) {
       thinking: null,
     };
   } finally {
-    clearActiveChild(cid);
+    clearActiveChild(cid, sid);
     client.stop();
   }
 }
@@ -147,7 +147,10 @@ function streamAcpPrompt(client, sid, content, label, cs, cid) {
       tps: 0,
     };
     cs.context.thinkingStatus = "Running";
-    setActiveChild(cid, client);
+    setActiveChild(cid, client, sid);
+    // 双键登记：webui 会话 id（uuid）也注册一份 —— stop 用 cs.sessionId 查找时
+    // 不依赖 mvs 键（首回合草稿会话的 cs.sessionId 是 uuid，与 sid 不同）。
+    if (cs.sessionId) setActiveChild(cid, client, cs.sessionId);
     pushStateFor(cid);
     // v2.3: idle watchdog — every stream event (thought/message/tool_call/
     //   tool_update/usage/other) refreshes cs.running.lastDeltaAt, so a long
@@ -186,7 +189,7 @@ function streamAcpPrompt(client, sid, content, label, cs, cid) {
       r._finalized = true;
       safetyTimeout.stop();
       r.durationMs = r.durationMs || Date.now() - t0;
-      clearActiveChild(cid);
+      clearActiveChild(cid, sid);
       cs.running = {
         active: false,
         prompt: null,

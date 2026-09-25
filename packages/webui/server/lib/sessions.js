@@ -300,6 +300,26 @@ export function persistCurrentChat(cs) {
   saveSessions(all);
 }
 
+// v3 运行镜像收尾：把某会话的运行期输出行写回该会话的持久化记录。
+// 场景：回合进行中用户切到了别的会话 —— 收尾时当前视图属于别的会话，
+// persistCurrentChat(cs) 会写错对象，所以镜像行在这里按会话归属落库。
+// 记录不存在（首回合即被切走）时用 cs 的草稿信息兜底建壳。
+export function appendChatToSession(sessionId, lines, cs) {
+  if (!sessionId || !Array.isArray(lines) || lines.length === 0) return;
+  const all = loadSessions();
+  let item = all.find((s) => s.id === sessionId);
+  if (!item && cs && cs.mcodeSessionId) {
+    item = ensureOverlayForMcodeSid(all, cs.mcodeSessionId, {
+      title: cs.sessionTitle || "Mcode session",
+      workspace: (cs.workspace && cs.workspace.dir) || "",
+    });
+  }
+  if (!item) return;
+  item.chat = [...(item.chat || []), ...lines];
+  item.updatedAt = Date.now();
+  saveSessions(all);
+}
+
 // v0.5.ad: 流式更新 chat 数组 — 同 prefix 最后一行就地替换，否则追加
 export function streamUpdateLine(chat, prefix, text) {
   const target = `${prefix} `;

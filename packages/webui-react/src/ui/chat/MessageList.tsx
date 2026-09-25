@@ -19,6 +19,8 @@ import { memo, useCallback, useEffect, useLayoutEffect, useRef } from 'react';
 import type { UIEvent } from 'react';
 import type { ChatMessage } from '../../contracts/domain';
 import { MessageItem } from './MessageItem';
+import type { ExecStats } from './ExecStatusRow';
+import type { Feedback } from './MessageActions';
 import { ThinkingBar } from './ThinkingBar';
 import { EmptyState } from './EmptyState';
 import './list.css';
@@ -45,6 +47,15 @@ export interface MessageListProps {
   askSelectedIds?: readonly string[];
   onAskToggleOption?: (optionId: string) => void;
   onAskConfirm?: (optionIds: string[]) => void;
+  /** 执行状态条数据 —— 只挂到最后一条助手消息（参考布局：回合耗时 + token/s）。 */
+  execStats?: ExecStats | null;
+  /** 重试（重新生成）—— 只挂到最后一条助手消息。 */
+  onRetry?: () => void;
+  /** 赞/踩反馈表（容器按消息 id 持有）。 */
+  feedbacks?: Readonly<Record<string, Feedback>>;
+  onFeedback?: (messageId: string, next: Feedback) => void;
+  /** 复制结果外抛（容器接 toast）。 */
+  onCopyResult?: (ok: boolean) => void;
 }
 
 export const MessageList = memo(function MessageList({
@@ -56,6 +67,11 @@ export const MessageList = memo(function MessageList({
   askSelectedIds,
   onAskToggleOption,
   onAskConfirm,
+  execStats = null,
+  onRetry,
+  feedbacks,
+  onFeedback,
+  onCopyResult,
 }: MessageListProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   /** 用户是否"贴底"（贴底才自动跟随）。 */
@@ -111,6 +127,16 @@ export const MessageList = memo(function MessageList({
 
   const showEmpty = messages.length === 0 && !streaming;
 
+  /** 最后一条助手消息 id：执行状态条 / 重试 / 反馈态只挂在它身上。 */
+  let lastAssistantId: string | null = null;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const m = messages[i];
+    if (m !== undefined && m.role === 'assistant') {
+      lastAssistantId = m.id;
+      break;
+    }
+  }
+
   return (
     <div className="msg-list" ref={scrollRef} onScroll={handleScroll}>
       {showEmpty ? (
@@ -121,10 +147,14 @@ export const MessageList = memo(function MessageList({
             <MessageItem
               key={m.id}
               message={m}
-              logoSrc={logoSrc}
               askSelectedIds={askSelectedIds}
               onAskToggleOption={onAskToggleOption}
               onAskConfirm={onAskConfirm}
+              execStats={m.id === lastAssistantId ? execStats : null}
+              feedback={feedbacks?.[m.id] ?? null}
+              onFeedback={onFeedback}
+              onCopyResult={onCopyResult}
+              onRetry={m.id === lastAssistantId ? onRetry : undefined}
             />
           ))}
           {streaming ? <ThinkingBar logoSrc={logoSrc} /> : null}

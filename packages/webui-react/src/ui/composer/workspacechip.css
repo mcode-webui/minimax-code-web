@@ -31,6 +31,12 @@
   flex-shrink: 0;
 }
 
+/* 文件夹图标无内联尺寸，SVG 缺省 100% 会把 chip 撑成 ~100px 高的大圆 —— 显式收敛到 16px。 */
+.wschip-button .workspace-group-icon {
+  width: 16px;
+  height: 16px;
+}
+
 .wschip-name {
   max-width: 280px;
   overflow: hidden;

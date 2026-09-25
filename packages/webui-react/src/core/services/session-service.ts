@@ -301,6 +301,8 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
   const slices = new Map<SessionId, Store<SessionSlice>>();
   /** 上次水合指纹（sid:chatLen:tail80）—— 相同则跳过全量重解析。 */
   let lastHydrateKey = '';
+  /** 已水合过的会话 —— 首次水合的消息视为「历史」（无真实时间戳，UI 显示 --）。 */
+  const hydratedSessions = new Set<SessionId>();
 
   function loadSelection(id: SessionId): ModelSelection {
     try {
@@ -408,6 +410,8 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       const sid = s && typeof s['id'] === 'string' && s['id'] !== '' ? s['id'] : id;
       const chat = s && Array.isArray(s['chat']) ? s['chat'] : null;
       if (chat) {
+        // 切会话载入的是历史 chat —— 标记已水合，避免后续 hydrate 把首条新消息误判为历史。
+        hydratedSessions.add(sid);
         const parsed = chatLinesToMessages(chat);
         update(sid, (prev) => ({
           ...prev,
@@ -484,7 +488,19 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       const mcodeSid = typeof s['mcodeSessionId'] === 'string' ? s['mcodeSessionId'] : null;
       update(sid, (prev) => {
         const parsed = chat ? chatLinesToMessages(chat) : null;
-        const messages = parsed ? parsed.messages : prev.messages;
+        let messages = parsed ? parsed.messages : prev.messages;
+        if (parsed) {
+          const isFirstHydrate = !hydratedSessions.has(sid);
+          hydratedSessions.add(sid);
+          const now = Date.now();
+          messages = parsed.messages.map((m, i) => {
+            // 首次水合＝历史消息：保留序号占位（ts 小值 → UI 显示 --）。
+            if (isFirstHydrate) return m;
+            // 后续水合：已有位置保留原时间戳；新追加的消息给当前时间。
+            const prevMsg = prev.messages[i];
+            return prevMsg ? { ...m, ts: prevMsg.ts } : { ...m, ts: now };
+          });
+        }
         if (runningNow && messages.length > 0) {
           const last = messages[messages.length - 1];
           messages[messages.length - 1] = { ...last, streaming: true };

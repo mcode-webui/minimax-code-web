@@ -1,7 +1,23 @@
-import type { ReactNode } from 'react';
+/**
+ * LeftPanel.tsx —— 左栏（参考布局版）
+ * ============================================================================
+ * 结构（自上而下）：
+ *   1. 新建任务（主按钮，右侧云图标）
+ *   2. 环境切换（本地 / 云端 —— webui 仅本地，云端为禁用占位）
+ *   3. 功能导航（插件 / 定时 / 网站 / 远程 —— webui 暂无对应后端，禁用占位）
+ *   4. 项目（工作区分组会话树：children / renderList 注入 + 搜索 + 刷新）
+ *   5. 底部：用量 / 外观 / 语言 / 局域网 弹层 + 重载页面 + GitHub + 用户卡（铃铛）
+ * 哑组件：会话列表内容由 children / renderList 注入，所有交互经回调上抛。
+ * ============================================================================
+ */
+
+import type { CSSProperties, ReactNode } from 'react';
 import { MenuRow } from '../primitives/MenuRow';
 import { PopoverCard } from '../primitives/PopoverCard';
 import { ToggleSwitch } from '../primitives/ToggleSwitch';
+import { Icon } from '../primitives/Icon';
+import { ResizeHandle } from '../primitives/ResizeHandle';
+import { AlertsBell, type AlertsBellProps } from './AlertsBell';
 import './left.css';
 
 export interface UsagePopoverContent {
@@ -28,7 +44,7 @@ export interface LeftPanelProps {
 
   /** 新建会话按钮点击。 */
   onNewSession?: () => void;
-  /** 搜索框文案覆盖。 */
+  /** 新建按钮文案，默认"新建任务"。 */
   newChatText?: string;
   /** 搜索框 placeholder。 */
   searchPlaceholder?: string;
@@ -37,7 +53,7 @@ export interface LeftPanelProps {
   /** 搜索输入变化。 */
   onSearchChange?: (value: string) => void;
 
-  /** 会话区标题，默认"会话列表"。 */
+  /** 会话区标题，默认"项目"。 */
   sessionsTitle?: string;
   /** 刷新会话列表。 */
   onRefreshSessions?: () => void;
@@ -113,8 +129,27 @@ export interface LeftPanelProps {
   /** "我已保存"。 */
   onAcknowledgeToken?: () => void;
 
+  /** 重载页面（原顶栏"强制刷新"迁移至此）。 */
+  onReload?: () => void;
+  /** 重载文案，默认"重载页面"。 */
+  reloadText?: string;
+
+  /** 面板宽度（可拖拽调整，受控）。 */
+  width?: number;
+  onResizeWidth?: (delta: number) => void;
+  onResetWidth?: () => void;
+
   /** GitHub 链接地址。 */
   githubHref?: string;
+
+  /** 用户卡：品牌标题（默认 Mcode Web UI）。 */
+  brandTitle?: string;
+  /** 用户卡：副标题（默认 v1.0 · BETA）。 */
+  brandSub?: string;
+  /** 用户卡头像图片地址。 */
+  logoSrc?: string;
+  /** 通知铃铛（弹层数据与开合由上层持有）。 */
+  alerts?: AlertsBellProps;
 
   /** 各类文案覆盖（i18n 接缝）。 */
   labels?: Partial<LeftPanelLabels>;
@@ -150,6 +185,15 @@ export interface LeftPanelLabels {
   tokenDisabledPlaceholder: string;
   usageRefresh: string;
   usageLoading: string;
+  /** 参考布局新增：功能导航（占位）与环境切换。 */
+  navPlugins: string;
+  navTimer: string;
+  navSites: string;
+  navRemote: string;
+  navSoon: string;
+  envLocal: string;
+  envCloud: string;
+  envCloudTitle: string;
 }
 
 const DEFAULT_LABELS: LeftPanelLabels = {
@@ -182,21 +226,29 @@ const DEFAULT_LABELS: LeftPanelLabels = {
   tokenDisabledPlaceholder: '\u2014 Token \u9274\u6743\u5df2\u5173\u95ed',
   usageRefresh: '\u5237\u65b0',
   usageLoading: '\u52a0\u8f7d\u4e2d...',
+  navPlugins: '\u63d2\u4ef6',
+  navTimer: '\u5b9a\u65f6',
+  navSites: '\u7f51\u7ad9',
+  navRemote: '\u8fdc\u7a0b',
+  navSoon: '\u5373\u5c06\u4e0a\u7ebf',
+  envLocal: '\u672c\u5730',
+  envCloud: '\u4e91\u7aef',
+  envCloudTitle: 'webui \u4ec5\u652f\u6301\u672c\u5730\u8fd0\u884c',
 };
 
 /**
- * LeftPanel —— 左栏：新建会话 + 搜索 + 会话滚动区 + 底部功能区。
+ * LeftPanel —— 左栏：新建任务 + 导航 + 项目会话树 + 底部功能区。
  * 哑组件：会话列表内容由 children / renderList 注入，所有交互经回调上抛。
  */
 export function LeftPanel(props: LeftPanelProps) {
   const {
     open,
     onNewSession,
-    newChatText = '\u65b0\u5efa\u4f1a\u8bdd',
-    searchPlaceholder = '\u641c\u7d22\u4f1a\u8bdd...',
+    newChatText = '\u65b0\u5efa\u4efb\u52a1',
+    searchPlaceholder = '\u641c\u7d22\u9879\u76ee / \u4f1a\u8bdd...',
     searchValue,
     onSearchChange,
-    sessionsTitle = '\u4f1a\u8bdd\u5217\u8868',
+    sessionsTitle = '\u9879\u76ee',
     onRefreshSessions,
     refreshText = '\u5237\u65b0',
     refreshing = false,
@@ -233,7 +285,16 @@ export function LeftPanel(props: LeftPanelProps) {
     onCopyToken,
     onResetToken,
     onAcknowledgeToken,
+    onReload,
+    reloadText = '\u91cd\u8f7d\u9875\u9762',
+    width,
+    onResizeWidth,
+    onResetWidth,
     githubHref = 'https://github.com/Wzdhehe/mcode-webui',
+    brandTitle = 'Mcode Web UI',
+    brandSub = 'v1.0 \u00b7 BETA',
+    logoSrc = '/brand-logo.png',
+    alerts,
     labels,
   } = props;
 
@@ -241,20 +302,48 @@ export function LeftPanel(props: LeftPanelProps) {
   const list = renderList ? renderList() : children;
 
   return (
-    <aside className={open ? 'left-panel left-panel--open' : 'left-panel'}>
-      <div className="left-section">
+    <aside
+      className={open ? 'left-panel left-panel--open' : 'left-panel left-panel--closed'}
+      style={width !== undefined ? ({ '--panel-w': width + 'px' } as CSSProperties) : undefined}
+    >
+      {/* ── 顶部：新建任务 + 环境切换 + 功能导航 ── */}
+      <div className="left-top">
         <button type="button" className="btn-new" onClick={onNewSession}>
-          <svg className="icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <line x1="12" y1="5" x2="12" y2="19" />
-            <line x1="5" y1="12" x2="19" y2="12" />
-          </svg>
-          <span>{newChatText}</span>
+          <Icon name="plus" size={14} strokeWidth={2.2} className="btn-new-plus" />
+          <span className="btn-new-text">{newChatText}</span>
+          <Icon name="cloud" size={15} className="btn-new-cloud" />
         </button>
+
+        <div className="env-switch" role="group" aria-label={l.envLocal + ' / ' + l.envCloud}>
+          <button type="button" className="env-opt env-opt--on">
+            <Icon name="monitor" size={13} strokeWidth={2} />
+            <span>{l.envLocal}</span>
+          </button>
+          <button type="button" className="env-opt" disabled title={l.envCloudTitle}>
+            <Icon name="cloud" size={13} strokeWidth={2} />
+            <span>{l.envCloud}</span>
+          </button>
+        </div>
+
+        <nav className="left-nav" aria-label={l.navSoon}>
+          <MenuRow icon={<Icon name="puzzle" size={16} />} text={l.navPlugins} value={l.navSoon} disabled title={l.navSoon} />
+          <MenuRow icon={<Icon name="clock" size={16} />} text={l.navTimer} value={l.navSoon} disabled title={l.navSoon} />
+          <MenuRow icon={<Icon name="globe" size={16} />} text={l.navSites} value={l.navSoon} disabled title={l.navSoon} />
+          <MenuRow icon={<Icon name="monitor" size={16} />} text={l.navRemote} value={l.navSoon} disabled title={l.navSoon} />
+        </nav>
+      </div>
+
+      {/* ── 中部：项目（工作区分组会话树）── */}
+      <div className="sessions-scroll">
+        <div className="sessions-header">
+          <span className="sessions-header-title">{sessionsTitle}</span>
+          <button type="button" className="btn-refresh-sessions" onClick={onRefreshSessions} disabled={refreshing} title={refreshText}>
+            <Icon name="refresh" size={12} className={refreshing ? 'icon--spin' : undefined} />
+            <span>{refreshText}</span>
+          </button>
+        </div>
         <div className="search-box">
-          <svg className="icon search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <circle cx="11" cy="11" r="8" />
-            <line x1="21" y1="21" x2="16.65" y2="16.65" />
-          </svg>
+          <Icon name="search" size={14} className="search-icon" />
           <input
             className="search-input"
             type="text"
@@ -265,19 +354,6 @@ export function LeftPanel(props: LeftPanelProps) {
             autoComplete="off"
           />
         </div>
-      </div>
-
-      <div className="sessions-scroll">
-        <div className="sessions-header">
-          <span className="sessions-header-title">{sessionsTitle}</span>
-          <button type="button" className="btn-refresh-sessions" onClick={onRefreshSessions} disabled={refreshing} title={refreshText}>
-            <svg className={refreshing ? 'icon icon--spin' : 'icon'} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <polyline points="23 4 23 10 17 10" />
-              <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
-            </svg>
-            <span>{refreshText}</span>
-          </button>
-        </div>
         <div className="sessions-list">
           {list == null || (Array.isArray(list) && list.length === 0) ? (
             <div className="session-title-empty">{emptyText}</div>
@@ -287,6 +363,7 @@ export function LeftPanel(props: LeftPanelProps) {
         </div>
       </div>
 
+      {/* ── 底部：设置弹层 + 用户卡 ── */}
       <div className="left-bottom">
         {!usageHidden && (
           <PopoverCard
@@ -297,7 +374,7 @@ export function LeftPanel(props: LeftPanelProps) {
             placement="right"
             anchor={
               <MenuRow
-                icon={<ChartIcon />}
+                icon={<Icon name="chart" size={16} />}
                 text={usageText ?? l.usage}
                 value={usageValue ?? '\u2014'}
                 onClick={onToggleUsage}
@@ -309,10 +386,7 @@ export function LeftPanel(props: LeftPanelProps) {
               <span className="usage-popover-title">{usageText ?? l.usage}</span>
               <button type="button" className="usage-popover-refresh" onClick={onRefreshUsage} title={l.usageRefresh}>
                 <span>{l.usageRefresh}</span>
-                <svg className="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <polyline points="23 4 23 10 17 10" />
-                  <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
-                </svg>
+                <Icon name="refresh" size={13} />
               </button>
             </div>
             <div className="usage-popover-body">
@@ -329,7 +403,7 @@ export function LeftPanel(props: LeftPanelProps) {
           placement="right"
           anchor={
             <MenuRow
-              icon={<SunIcon />}
+              icon={<Icon name="sun" size={16} />}
               text={l.appearance}
               value={appearanceValue ?? '\u2014'}
               onClick={onToggleAppearance}
@@ -356,7 +430,7 @@ export function LeftPanel(props: LeftPanelProps) {
           </div>
         </PopoverCard>
 
-        <MenuRow icon={<GlobeIcon />} text={l.language} value={languageValue ?? '\u2014'} onClick={onToggleLanguage} />
+        <MenuRow icon={<Icon name="globe" size={16} />} text={l.language} value={languageValue ?? '\u2014'} onClick={onToggleLanguage} />
 
         <PopoverCard
           open={lanOpen}
@@ -366,7 +440,7 @@ export function LeftPanel(props: LeftPanelProps) {
           placement="right"
           anchor={
             <MenuRow
-              icon={<WifiIcon />}
+              icon={<Icon name="wifi" size={16} />}
               text={l.lanAccess}
               value={lanValue ?? (lanBroadcast ? l.lanOn : l.lanOff)}
               valueTone={lanBroadcast ? 'on' : 'neutral'}
@@ -417,7 +491,7 @@ export function LeftPanel(props: LeftPanelProps) {
                   {token.visible ? (
                     <span className="lan-card-token-value">{token.token}</span>
                   ) : (
-                    <span className="lan-card-token-mask">••••••••••••••••••••••••••••••••</span>
+                    <span className="lan-card-token-mask">{'\u2022'.repeat(28)}</span>
                   )}
                   <button type="button" className="lan-card-btn" onClick={onToggleTokenVisible}>
                     {token.visible ? l.tokenHide : l.tokenShow}
@@ -449,61 +523,28 @@ export function LeftPanel(props: LeftPanelProps) {
           </div>
         </PopoverCard>
 
-        <a className="user-footer github-link" href={githubHref} target="_blank" rel="noopener noreferrer" title="mcode-webui on GitHub">
-          <svg className="icon" width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.58.1.79-.25.79-.56 0-.28-.01-1.02-.02-2-3.2.69-3.88-1.54-3.88-1.54-.52-1.33-1.28-1.68-1.28-1.68-1.05-.72.08-.7.08-.7 1.16.08 1.78 1.2 1.78 1.2 1.03 1.77 2.7 1.26 3.36.96.1-.75.4-1.26.73-1.55-2.55-.29-5.24-1.28-5.24-5.69 0-1.26.45-2.28 1.18-3.09-.12-.29-.51-1.46.11-3.04 0 0 .97-.31 3.18 1.18a11 11 0 0 1 5.79 0c2.21-1.49 3.18-1.18 3.18-1.18.63 1.58.23 2.75.11 3.04.74.81 1.18 1.83 1.18 3.09 0 4.42-2.7 5.39-5.27 5.68.41.36.78 1.06.78 2.13 0 1.54-.01 2.78-.01 3.16 0 .31.21.67.8.56C20.21 21.39 23.5 17.08 23.5 12 23.5 5.65 18.35.5 12 .5z" />
-          </svg>
-          <span>GitHub</span>
-        </a>
+        {onReload && <MenuRow icon={<Icon name="refresh" size={16} />} text={reloadText} onClick={onReload} />}
+
+        {/* 用户卡：头像 + 品牌 + GitHub + 通知铃铛（参考布局底部） */}
+        <div className="user-card">
+          <img className="user-card-avatar" src={logoSrc} alt={brandTitle} />
+          <div className="user-card-main">
+            <div className="user-card-name">{brandTitle}</div>
+            <div className="user-card-sub">{brandSub}</div>
+          </div>
+          <a className="user-card-github" href={githubHref} target="_blank" rel="noopener noreferrer" title="mcode-webui on GitHub" aria-label="GitHub">
+            <Icon name="github" size={17} />
+          </a>
+          <AlertsBell {...alerts} />
+        </div>
       </div>
+      {onResizeWidth ? (
+        <ResizeHandle
+          width={width ?? 240}
+          onWidthChange={(w) => onResizeWidth(w - (width ?? 240))}
+          onReset={onResetWidth}
+        />
+      ) : null}
     </aside>
-  );
-}
-
-function ChartIcon() {
-  return (
-    <svg className="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <line x1="6" y1="20" x2="6" y2="14" />
-      <line x1="12" y1="20" x2="12" y2="10" />
-      <line x1="18" y1="20" x2="18" y2="4" />
-      <line x1="3" y1="20" x2="21" y2="20" />
-    </svg>
-  );
-}
-
-function SunIcon() {
-  return (
-    <svg className="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-      <circle cx="12" cy="12" r="5" />
-      <line x1="12" y1="1" x2="12" y2="3" />
-      <line x1="12" y1="21" x2="12" y2="23" />
-      <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" />
-      <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
-      <line x1="1" y1="12" x2="3" y2="12" />
-      <line x1="21" y1="12" x2="23" y2="12" />
-      <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" />
-      <line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
-    </svg>
-  );
-}
-
-function GlobeIcon() {
-  return (
-    <svg className="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-      <circle cx="12" cy="12" r="10" />
-      <line x1="2" y1="12" x2="22" y2="12" />
-      <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
-    </svg>
-  );
-}
-
-function WifiIcon() {
-  return (
-    <svg className="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M5 12.55a11 11 0 0 1 14.08 0" />
-      <path d="M1.42 9a16 16 0 0 1 21.16 0" />
-      <path d="M8.53 16.11a6 6 0 0 1 6.95 0" />
-      <line x1="12" y1="20" x2="12.01" y2="20" />
-    </svg>
   );
 }

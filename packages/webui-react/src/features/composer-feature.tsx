@@ -50,7 +50,7 @@ function dirShortName(path: string | null): string {
 export function ComposerFeature({ controller }: ComposerFeatureProps) {
   const s = useAppSnapshot(controller);
   const a = useAppActions(controller);
-  const { notifier } = useRegistry();
+  const { notifier, workspace: workspaceSvc } = useRegistry();
 
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [wsChipOpen, setWsChipOpen] = useState(false);
@@ -60,8 +60,15 @@ export function ComposerFeature({ controller }: ComposerFeatureProps) {
   // 切换经 POST /api/permissions 同步（mcode 固定于启动时，服务端仅同步 UI 标签）。
   const [permMode, setPermMode] = useState<PermissionMode>('ask');
   const [permOpen, setPermOpen] = useState(false);
-  // 「选择目录」的浏览模式：null = 显示 recents；否则显示服务端目录列表逐级浏览。
-  const [browse, setBrowse] = useState<{ cwd: string; entries: WorkspaceEntry[] } | null>(null);
+  // 「选择目录」的浏览模式：null = 显示 recents；否则经 /api/fs/read 逐级浏览
+  // （含文件条目：size/mtime/mode 直接来自服务端 readDirectory）。
+  const [browse, setBrowse] = useState<{
+    cwd: string;
+    parent: string | null;
+    home: string | null;
+    entries: WorkspaceEntry[];
+  } | null>(null);
+  const [browseLoading, setBrowseLoading] = useState(false);
 
   const fileRef = useRef<HTMLInputElement | null>(null);
 
@@ -93,36 +100,66 @@ export function ComposerFeature({ controller }: ComposerFeatureProps) {
     void a.useWorkspace(dir).then(closeWs);
   };
 
-  /** 进入目录浏览模式（浏览器无原生目录框，经 browseWorkspace 逐级浏览服务端目录）。 */
-  const enterBrowse = (path: string | undefined, cwd: string): void => {
-    void a
-      .browseWorkspace(path)
-      .then((entries) => setBrowse({ cwd, entries }))
-      .catch(() => notifier.toast('浏览目录失败', 'error'));
+  /** 进入目录浏览模式（/api/fs/read：支持 ~ 与 documents 等关键字，含文件条目）。 */
+  const enterBrowse = (path: string | undefined): void => {
+    const target = path !== undefined && path.trim() !== '' ? path.trim() : '~';
+    setBrowseLoading(true);
+    workspaceSvc
+      .listDir(target)
+      .then((res) => {
+        if (!res.ok) {
+          notifier.toast(res.error ?? '目录不存在', 'error');
+          return;
+        }
+        setBrowse({
+          cwd: res.dir ?? target,
+          parent: res.parent,
+          home: res.home ?? null,
+          entries: res.entries,
+        });
+      })
+      .catch(() => notifier.toast('浏览目录失败', 'error'))
+      .finally(() => setBrowseLoading(false));
+  };
+
+  /** 浏览模式「新建文件夹」：重名自动编号，成功后刷新当前目录。 */
+  const handleCreateFolder = (): void => {
+    if (!browse) return;
+    const existing = new Set(browse.entries.map((e) => e.name));
+    let name = '新建文件夹';
+    for (let i = 2; existing.has(name); i += 1) name = '新建文件夹(' + String(i) + ')';
+    const target = browse.cwd.endsWith('/') ? browse.cwd + name : browse.cwd + '/' + name;
+    void workspaceSvc
+      .createDir(target)
+      .then((res) => {
+        if (res.ok) {
+          notifier.toast('已创建 ' + name, 'success');
+          enterBrowse(browse.cwd);
+        } else {
+          notifier.toast(res.error ?? '创建失败', 'error');
+        }
+      })
+      .catch(() => notifier.toast('创建失败', 'error'));
   };
 
   const handleSelectWsPath = (path: string): void => {
-    if (browse) {
-      const entry = browse.entries.find((e) => e.path === path);
-      if (entry?.isDir) enterBrowse(path, path);
-      return; // 浏览模式下点文件不动作；再点「选择目录」选用当前目录
-    }
     pickWorkspace(path);
   };
 
-  const handlePickDirectory = (): void => {
+  /** 确定/选择目录：path = 高亮目录；缺省 = 浏览模式选当前目录，recents 模式进入浏览。 */
+  const handlePickDirectory = (path?: string): void => {
     if (browse) {
-      if (browse.cwd) pickWorkspace(browse.cwd);
+      pickWorkspace(path ?? browse.cwd);
       return;
     }
-    enterBrowse(wsPath ?? undefined, wsPath ?? '');
+    enterBrowse(path ?? wsPath ?? '~');
   };
 
   const handleNoWorkspace = (): void => {
     void a.resetWorkspace().then(closeWs);
   };
 
-  const chipItems: WorkspaceQuickItem[] = s.recents.map((e) => ({ path: e.path, name: e.name }));
+  const chipItems: WorkspaceQuickItem[] = s.recents.map((e) => ({ path: e.path, name: e.name, sessionCount: e.sessionCount }));
   // 命令面板条目：优先服务端真实目录（state.availableCommands 派生），为空用内置兜底。
   const slashEntries = s.slashEntries.length > 0 ? s.slashEntries : SLASH_ENTRIES;
 
@@ -182,7 +219,13 @@ export function ComposerFeature({ controller }: ComposerFeatureProps) {
               onPickDirectory={handlePickDirectory}
               onNoWorkspace={handleNoWorkspace}
               onClose={closeWs}
-              title={browse ? `选择目录 — ${browse.cwd || '/'}` : undefined}
+              title={browse ? '选择目录' : undefined}
+              loading={browseLoading}
+              browseMode={browse !== null}
+              cwd={browse?.cwd ?? ''}
+              parentPath={browse?.parent ?? null}
+              onNavigateTo={enterBrowse}
+              onCreateFolder={handleCreateFolder}
             />
           </>
         }

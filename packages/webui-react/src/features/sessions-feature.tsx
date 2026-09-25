@@ -24,17 +24,15 @@ export function SessionsFeature({ controller }: SessionsFeatureProps) {
   const [lanOpen, setLanOpen] = useState(false);
   const [showUsage, setShowUsage] = useState(true);
   const [tokenVisible, setTokenVisible] = useState(false);
+  // 通知铃铛（参考布局：挂在左栏底部用户卡旁，原顶栏迁移）。
+  const [alertsOpen, setAlertsOpen] = useState(false);
 
   const settings = s.settings;
-  const titleOf = (id: SessionId): string => s.sessions.find((x) => x.id === id)?.title ?? id;
 
-  // 缺口 #5：删除前先经 NotifierPort.confirm 确认，正文带会话标题。
+  // 删除确认已收敛到行内（× → 「删除？是/否」）—— 「是」即最终确认，
+  // 不再二次弹 Modal（原 NotifierPort.confirm 与行内确认重复，删个会话要点 4 次）。
   const handleDelete = (id: SessionId): void => {
-    void (async () => {
-      const ok = await notifier.confirm('删除会话', `确定删除会话「${titleOf(id)}」？删除后不可恢复。`);
-      if (ok) await a.deleteSession(id);
-    })().catch((e: unknown) => {
-      // 删除被拒 / 网络失败：提示而不是未处理的 Promise 拒绝。
+    void a.deleteSession(id).catch((e: unknown) => {
       notifier.toast(e instanceof Error ? e.message : String(e), 'error');
     });
   };
@@ -72,7 +70,11 @@ export function SessionsFeature({ controller }: SessionsFeatureProps) {
           activeSessionId={s.activeSessionId}
           collapsedKeys={s.collapsedGroups}
           onToggleGroup={a.toggleGroup}
-          onSelect={(id) => void a.selectSession(id)}
+          onSelect={(id) =>
+            void a.selectSession(id).catch((e: unknown) => {
+              notifier.toast(e instanceof Error ? e.message : String(e), 'error');
+            })
+          }
           onRename={(id, title) => {
             void a.renameSession(id, title).catch((e: unknown) => {
               notifier.toast(e instanceof Error ? e.message : String(e), 'error');
@@ -126,6 +128,24 @@ export function SessionsFeature({ controller }: SessionsFeatureProps) {
         });
       }}
       onAcknowledgeToken={() => void a.acknowledgeToken()}
+      // 重载页面（原顶栏「强制刷新」迁移至左栏底部）。
+      onReload={() => window.location.reload()}
+      // 通知铃铛（用户卡旁，弹层数据与开合由本容器持有）。
+      alerts={{
+        unreadCount: s.alertsUnread,
+        open: alertsOpen,
+        onToggle: () => {
+          const next = !alertsOpen;
+          setAlertsOpen(next);
+          if (next) a.markAlertsRead();
+        },
+        alerts: s.alerts,
+        onClear: a.clearAlerts,
+      }}
+      // 可拖拽调宽（把手在面板右缘；双击复位 240）。
+      width={s.leftWidth}
+      onResizeWidth={(d) => a.setPanelWidth('left', s.leftWidth + d)}
+      onResetWidth={() => a.setPanelWidth('left', 240)}
     />
   );
 }

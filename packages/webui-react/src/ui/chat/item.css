@@ -1,74 +1,56 @@
-/* chat/item.css —— 单条消息样式（MessageItem） */
-/* 视觉基准：public/styles/main.css 的 .msg-* 段；用户消息右侧气泡、助手消息左侧品牌头像。 */
-/* 铁律：只用 styles/tokens.css 的 CSS 变量。 */
+/* chat/item.css —— 单条消息样式（MessageItem，参考布局版） */
+/* 视觉基准：MiniMax Code 桌面端会话区 —— 用户消息右侧灰色圆角气泡（无头像、 */
+/* 无角色名）；助手消息左对齐纯文本（无头像、无气泡），下方操作行 + 时间； */
+/* 系统消息居中弱化。铁律：只用 styles/tokens.css 的 CSS 变量。 */
 
 .msg {
-  display: flex;
-  gap: 12px;
-  padding: 12px 0;
-}
-.msg--user { flex-direction: row-reverse; }
-.msg--system { justify-content: center; }
-
-.msg-avatar {
-  width: 28px;
-  height: 28px;
-  border-radius: var(--radius-sm);
-  display: grid;
-  place-items: center;
-  font-size: 13px;
-  font-weight: 600;
-  flex-shrink: 0;
-  overflow: hidden;
-}
-.msg-avatar-img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  border-radius: inherit;
-  display: block;
-}
-.msg-avatar--user {
-  background: var(--bg-active);
-  color: var(--text-secondary);
-}
-.msg-avatar--system {
-  background: var(--bg-active);
-  color: var(--text-tertiary);
-  font-size: 12px;
+  padding: 8px 0;
 }
 
-.msg-content { flex: 1; min-width: 0; max-width: 100%; }
-.msg--user .msg-content {
+/* 用户消息：整体右对齐（气泡 + 时间都靠右） */
+.msg--user {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
 }
-.msg--system .msg-content { text-align: center; max-width: 680px; }
 
-.msg-role {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-secondary);
-  margin-bottom: 2px;
+/* 助手消息：左对齐纯文本 */
+.msg--assistant {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
 }
-.msg-body { min-width: 0; }
 
-/* 用户消息右侧气泡 */
-.msg-bubble {
-  background: var(--accent-bg);
-  color: var(--accent-text);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  padding: 8px 14px;
-  max-width: 85%;
-}
-.msg-bubble .blk-text a { color: var(--accent); }
-
-/* 系统消息：弱化为一条细线文本 */
+/* 系统消息：居中弱化为一条细线文本 */
+.msg--system { justify-content: center; }
 .msg--system .msg-body {
   font-size: 12px;
   color: var(--text-tertiary);
+  text-align: center;
+}
+
+.msg-body { min-width: 0; max-width: 100%; }
+
+/* 用户消息右侧气泡（参考布局：浅灰圆角、无描边） */
+.msg--user .msg-bubble {
+  background: var(--bg-active);
+  color: var(--text);
+  border-radius: 18px;
+  padding: 9px 15px;
+  max-width: 78%;
+}
+.msg--user .msg-bubble .msg-body { min-width: 0; }
+.msg-bubble .blk-text a { color: var(--accent); }
+
+/* 用户消息时间（气泡下方右侧，弱化小字） */
+.msg-meta {
+  margin-top: 4px;
+  padding-right: 2px;
+}
+.msg-meta-time {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
 }
 
 /* 流式光标 ▍ */

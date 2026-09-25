@@ -4,13 +4,121 @@
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  width: 240px;
+  width: var(--panel-w, 240px);
   flex-shrink: 0;
   overflow: visible;
   position: relative;
   z-index: 20;
   min-width: 0;
   min-height: 0;
+}
+
+/* 桌面端可收起：收起时整栏隐藏（移动端走抽屉规则） */
+@media (min-width: 901px) {
+  .left-panel--closed {
+    display: none;
+  }
+}
+
+/* ── 顶部（参考布局）：新建任务 / 环境切换 / 功能导航 ── */
+.left-top {
+  padding: 12px 12px 6px;
+  border-bottom: 1px solid var(--border-light);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.btn-new-text {
+  flex: 1;
+  text-align: left;
+}
+.btn-new-cloud {
+  margin-left: auto;
+  color: var(--text-tertiary);
+}
+
+/* 本地 / 云端 分段切换（参考布局胶囊；webui 仅本地，云端禁用占位） */
+.env-switch {
+  display: flex;
+  background: var(--bg-active);
+  border-radius: 999px;
+  padding: 3px;
+  gap: 2px;
+}
+.env-opt {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-family: inherit;
+  padding: 5px 0;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.env-opt--on {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+.env-opt:disabled {
+  color: var(--text-tertiary);
+  cursor: default;
+}
+
+/* 功能导航（插件/定时/网站/远程 占位） */
+.left-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 0 -4px;
+}
+
+/* ── 底部用户卡（参考布局）：头像 + 品牌 + GitHub + 铃铛 ── */
+.user-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--border);
+}
+.user-card-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: var(--bg-active);
+  flex-shrink: 0;
+}
+.user-card-main {
+  flex: 1;
+  min-width: 0;
+}
+.user-card-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.user-card-sub {
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+.user-card-github {
+  display: inline-flex;
+  padding: 4px;
+  border-radius: 6px;
+  color: var(--text-tertiary);
+}
+.user-card-github:hover {
+  color: var(--text);
+  background: var(--bg-hover);
 }
 
 /* ── 顶部：新建会话 + 搜索 ── */
@@ -349,16 +457,16 @@
 /* ── 移动端抽屉 ── */
 @media (max-width: 1100px) {
   .left-panel {
-    width: 220px;
+    width: 220px !important;
   }
 }
 @media (max-width: 900px) {
   .left-panel {
     position: fixed;
-    top: 44px;
+    top: 0;
     bottom: 0;
     left: 0;
-    width: 300px;
+    width: 300px !important;
     z-index: 30;
     box-shadow: var(--shadow-lg);
     transform: translateX(-100%);

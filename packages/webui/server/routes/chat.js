@@ -9,8 +9,18 @@ import {
   saveSessions,
   persistCurrentChat,
   promoteDraftToMcodeSid,
+  appendChatToSession,
 } from "../lib/sessions.js";
-import { pushStateFor, pushAlert, getActiveChild } from "../lib/state-bus.js";
+import {
+  pushStateFor,
+  pushAlert,
+  getActiveChild,
+  startRunMirror,
+  drainRunMirrorForFinalize,
+  hasRunMirror,
+  hasAnyRunMirror,
+  setRealChatByCid,
+} from "../lib/state-bus.js";
 // 2026-09-20 rigor fix (G1 bypass finding): import the lib/slash.js shell,
 //   NOT interaction/commands.js directly. The shell carries the B03
 //   authorize("slash.clear") gate + write-ahead audit (slash.clear.intent /
@@ -93,6 +103,19 @@ export async function handleSend(req, res, ctx) {
   }
   // v0.5.bx-13: ask_user 弹窗答案 — 不当 user message 加到 chat
   const isAskAnswer = payload.isAskAnswer === true;
+  // 运行中禁止再发：引擎全局单实例，并发 send 会把两个会话的输入/输出
+  // 交织进同一个 cs.chat（串台）。客户端应先停止上一条再发。
+  // 引擎为单实例：任一会话在生成时不允许再发（跨会话也不行，否则两个引擎
+  // 输出交织串台）。切换会话不受限（运行镜像按会话隔离，切走/切回不乱）。
+  if (hasAnyRunMirror(cid) && !isAskAnswer) {
+    res.writeHead(409, { "Content-Type": "application/json" });
+    return res.end(
+      JSON.stringify({
+        ok: false,
+        error: "有会话正在生成回复，请等待完成、先停止，或稍后再发送",
+      }),
+    );
+  }
   res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
   res.end(JSON.stringify({ ok: true }));
 
@@ -106,6 +129,9 @@ export async function handleSend(req, res, ctx) {
     cs.lastUsedWorkspace = (cs.workspace && cs.workspace.dir) || null;
     pushStateFor(cid);
     persistCurrentChat(cs);
+    // 会话键控运行镜像：本轮输出的归属会话在发送瞬间锁定 —— 之后无论切到
+    // 哪个会话，引擎输出都进镜像（不串台），收尾时写回本会话。
+    startRunMirror(cid, cs.sessionId, cs.chat);
   }
 
   // v0.5.ak: 发首条消息时如果 cs.sessionId 为空，先建一个 webui session entry
@@ -242,17 +268,30 @@ export async function handleSend(req, res, ctx) {
     //   cs into exactly this idle shape.
     resetThinkingClaim(cs);
   }
-  // v2.4 单一基础会话：回合绑定了 mcode 会话（cs.mcodeSessionId 由 acp
-  //   finalize 写入）后，把草稿记录晋升为引擎身份（id → mvs_…），或并入
-  //   该 mcode 会话既有的叠加记录——保证一次对话在存储里只有一条记录。
-  if (cs.mcodeSessionId) {
-    try {
-      promoteDraftToMcodeSid(cs);
-    } catch (e) {
-      console.warn(`[chat] promoteDraftToMcodeSid failed: ${e.message}`);
+  // 回合收尾：drain 本轮镜像（收尾专用，见 state-bus.drainRunMirrorForFinalize）。
+  //   live=true：用户停在运行会话上，行已实时透传 —— 定格为真实 chat 后走
+  //   原有 promote+persist；live=false：用户已切走 —— 行写回运行会话的持久化
+  //   记录，当前查看的会话（别人的视图）绝不被污染。
+  const finished = drainRunMirrorForFinalize(cid, cs.sessionId);
+  if (finished && !finished.live && finished.lines.length > 0) {
+    appendChatToSession(finished.sessionId, finished.lines, cs);
+  } else {
+    if (finished && finished.live) {
+      // 定格：把运行数组定格为真实 chat（此后 cs.chat getter 回到真实数组）
+      setRealChatByCid(cid, finished.lines);
     }
+    // v2.4 单一基础会话：回合绑定了 mcode 会话（cs.mcodeSessionId 由 acp
+    //   finalize 写入）后，把草稿记录晋升为引擎身份（id → mvs_…），或并入
+    //   该 mcode 会话既有的叠加记录——保证一次对话在存储里只有一条记录。
+    if (cs.mcodeSessionId) {
+      try {
+        promoteDraftToMcodeSid(cs);
+      } catch (e) {
+        console.warn(`[chat] promoteDraftToMcodeSid failed: ${e.message}`);
+      }
+    }
+    persistCurrentChat(cs);
   }
-  persistCurrentChat(cs);
   pushStateFor(cid);
 }
 
@@ -266,7 +305,10 @@ export async function handleSend(req, res, ctx) {
 export async function handleStop(_req, res, ctx) {
   const cid = ctx.cid;
   const cs = ctx.cs;
-  const child = getActiveChild(cid);
+  // 查找链：webui 会话键 → mcode 会话键 → 无键位最新（setActiveChild 三写保证）
+  let child = getActiveChild(cid, cs.sessionId);
+  if (!child && cs.mcodeSessionId) child = getActiveChild(cid, cs.mcodeSessionId);
+  if (!child) child = getActiveChild(cid);
   const wasRunning = !!child;
   let cancelled = false;
   let hardKilled = false;
@@ -347,6 +389,13 @@ export async function handleCmd(req, res, ctx) {
   const cid = ctx.cid;
   const payload = await readJson(req);
   const cmd = (payload.cmd || "").trim();
+  // 运行中禁止斜杠命令（与 send 同一守卫：避免与进行中的回复交织）。
+  if (hasAnyRunMirror(cid)) {
+    res.writeHead(409, { "Content-Type": "application/json" });
+    return res.end(
+      JSON.stringify({ ok: false, error: "上一条回复还在生成中，请等待完成或先停止" }),
+    );
+  }
   res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
   res.end(JSON.stringify({ ok: true }));
   await handleCmdCommand(cmd, cs, cid);
