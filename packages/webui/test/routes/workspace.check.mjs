@@ -192,6 +192,12 @@ describe("handleWorkspaceBrowse — /api/workspace/browse GET", () => {
       assert.equal(body.children.length, 1);
       assert.equal(body.children[0].name, "sub");
       assert.equal(body.children[0].path, join(tmp, "sub"));
+      // browseWorkspace only enumerates directories (files are filtered
+      // out at the server), so every child must carry `isDir: true`.
+      // The picker's row click navigates on `entry.isDir && setPath(...)`
+      // — without this flag the click handler never fires and the only
+      // way to navigate was the path input / up / home / roots buttons.
+      assert.equal(body.children[0].isDir, true);
       // The `path` field MUST NOT exist on the browse response — a future
       // rename to add it would mask the existing `dir` and re-introduce
       // the picker bug. Asserting absence here keeps the contract tight.
