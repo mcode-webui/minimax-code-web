@@ -68,7 +68,6 @@ describe("app.js — migration ledger", () => {
       "GET /api/workspace/tree",
       "GET /api/workspace/resolve",
       "GET /api/workspace/recent",
-      "POST /api/workspace/pick",
       "GET /api/fs/read",
       "POST /api/fs/mkdir",
       "GET /api/settings",

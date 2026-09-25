@@ -115,7 +115,6 @@ export const OWNED_ROUTES = new Set([
   "GET /api/workspace/tree",
   "GET /api/workspace/resolve",
   "GET /api/workspace/recent",
-  "POST /api/workspace/pick",
   // Native-style fs picker.
   "GET /api/fs/read",
   "POST /api/fs/mkdir",
@@ -451,9 +450,6 @@ export function createHonoApp() {
   );
   app.get("/api/workspace/recent", (c) =>
     invokeHandler(c, c.get(CAPTURE_KEY), workspaceRoute.handleWorkspaceRecent),
-  );
-  app.post("/api/workspace/pick", (c) =>
-    invokeHandler(c, c.get(CAPTURE_KEY), workspaceRoute.handleWorkspacePick),
   );
 
   // ----- Native-style fs picker -----

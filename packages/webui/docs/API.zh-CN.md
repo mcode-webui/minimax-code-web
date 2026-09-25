@@ -610,23 +610,6 @@ Linux 上为 `/`）
 }
 ```
 
-### `POST /api/workspace/pick`
-
-拉起系统原生的文件夹选择器（`zenity` / `kdialog` / `osascript` /
-PowerShell `FolderBrowser`），返回所选路径。本路由绝不抛错 ——
-用户取消时返回 `200 {ok: true, path: null}`；启动失败时返回
-`200 {ok: false, error}`。
-
-**响应 200**（用户已选择）
-```json
-{ "ok": true, "path": "C:\\path\\to\\folder" }
-```
-
-**响应 200**（用户取消）
-```json
-{ "ok": true, "path": null }
-```
-
 ---
 
 ## 文件系统

@@ -206,6 +206,34 @@ describe("handleWorkspaceBrowse — /api/workspace/browse GET", () => {
       rmSync(tmp, { recursive: true, force: true });
     }
   });
+
+  test("browse containment rejection — `ok:false` + `error` + `roots[]`, no `path`", () => {
+    // basic-features/03: containment errors carry the allowed roots
+    // so the UI can render "must be under: …". The browse route
+    // is the same gate as assertWorkspacePath; both must surface
+    // the same roots[] payload shape. A future refactor that drops
+    // `roots` from the error payload would re-introduce the bare
+    // "非法" message the ticket pinned against.
+    const req = Readable.from([Buffer.from("")]);
+    req.url = "/api/workspace/browse?path=" + encodeURIComponent("/no-such-outside-root");
+    req.headers = { host: "localhost" };
+    const res = fakeRes();
+    wsRoute.handleWorkspaceBrowse(req, res, {});
+    const body = JSON.parse(res._body);
+    // The route returns 400 on {ok:false}; we keep that contract
+    // (it was the wire behaviour before this ticket) and verify
+    // the body carries the actionable roots payload.
+    assert.equal(res._status, 400);
+    assert.equal(body.ok, false);
+    assert.equal(typeof body.error, "string");
+    assert.ok(body.error.length > 0);
+    assert.ok(
+      Array.isArray(body.roots) && body.roots.length > 0,
+      "roots[] is the actionable hint — without it the UI falls back to a bare 非法",
+    );
+    // Same wire contract as the success path: no `path`.
+    assert.equal(body.path, undefined, "no `path` field on the error payload");
+  });
 });
 
 // ============================================================

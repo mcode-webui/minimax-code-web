@@ -629,23 +629,6 @@ field on the response is for the "no workspace needed" button.
 }
 ```
 
-### `POST /api/workspace/pick`
-
-Spawn the native OS folder picker (`zenity` / `kdialog` / `osascript` /
-PowerShell `FolderBrowser`) and return the chosen path. The route
-never throws — a user cancel answers `200 {ok: true, path: null}`; a
-spawn failure answers `200 {ok: false, error}`.
-
-**Response 200** (user picked something)
-```json
-{ "ok": true, "path": "C:\\path\\to\\folder" }
-```
-
-**Response 200** (user cancelled)
-```json
-{ "ok": true, "path": null }
-```
-
 ---
 
 ## Filesystem
