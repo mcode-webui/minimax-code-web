@@ -1,7 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Input as AntInput, type InputRef, Segmented as AntSegmented, Switch } from "antd";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Input as AntInput,
+  type InputRef,
+  Modal as AntModal,
+  Segmented as AntSegmented,
+  Switch,
+  Tabs as AntTabs,
+} from "antd";
 
 import * as api from "@/lib/api";
 import { useAlerts } from "@/lib/alerts";
@@ -633,52 +640,81 @@ function WorkspacePanel({ t }: { t: (key: MessageKey) => string }) {
   // notice inside the section itself (instead of mutating the global alert
   // ring buffer, which is reserved for engine-emitted events).
   const [missingEndpoint, setMissingEndpoint] = useState<string | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
 
   return (
     <div
       className="flex w-full flex-col gap-3"
       data-testid="workspace-section-group"
     >
-      {/* §1 section_environmental — branch in subtitle, 3 git entries as
-          active buttons. Branch placeholder uses `\u00a0` (upstream's choice)
-          rather than `undefined` so the header keeps its height when the
-          engine has not yet picked a workspace. */}
+      {/* §1 section_environmental — branch in subtitle, the current workspace
+          directory underneath, a "Switch workspace" button, and 3 git
+          entries as active buttons. Branch placeholder uses `\u00a0`
+          (upstream's choice) rather than `undefined` so the header keeps its
+          height when the engine has not yet picked a workspace. */}
       <WorkspaceSection
         title={t("workspace.sectionEnvironment")}
         subtitle={state?.workspace.branch ?? "\u00a0"}
       >
-        <div className="flex flex-col gap-px">
-          {(
-            [
-              { row: "changes", testid: "workspace-changes-entry", icon: "file" },
-              { row: "commitAndPush", testid: "workspace-commit-entry", icon: "file" },
-              { row: "openTerminal", testid: "workspace-open-terminal-entry", icon: "terminal" },
-            ] as const
-          ).map(({ row, testid, icon }) => (
+        <div className="flex flex-col gap-2">
+          {/* The current workspace — the directory itself, plus the
+              "Switch workspace" button next to it. Empty when the server
+              has not reported one yet (the message is the "no workspace"
+              hint the picker renders for an unset state). */}
+          <div
+            data-testid="workspace-current-dir"
+            className="flex items-center gap-2 rounded-[8px] bg-bg_grouped_secondary_elevated px-2 py-1.5"
+          >
+            <span className="flex size-5 flex-none items-center justify-center text-icon_default_secondary">
+              <Icon name="folder" size={16} />
+            </span>
+            <span className="min-w-0 flex-1 truncate font-family-code text-caption-small-strong text-text_default_primary">
+              {state?.workspace.dir || t("workspace.picker.noWorkspace")}
+            </span>
             <button
-              key={row}
               type="button"
-              data-testid={testid}
-              title={t("workspace.env.activeHint")}
-              onClick={() => setMissingEndpoint(row)}
-              className="flex h-8 w-full items-center gap-2 rounded-[8px] pl-1.5 pr-2 text-left transition-colors hover:bg-bg_interaction_tertiary_hover"
+              data-testid="workspace-switch-button"
+              onClick={() => setPickerOpen(true)}
+              className="flex h-7 flex-none items-center gap-1 rounded-[8px] border border-border_default px-2 text-caption-small-strong text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_hover"
             >
-              <span className="flex size-5 flex-none items-center justify-center text-icon_default_primary">
-                <Icon name={icon} size={20} />
-              </span>
-              <span className="desktop-text-ui-body min-w-0 flex-1 truncate text-sm text-text_default_primary">
-                {t(`workspace.${row}` as MessageKey)}
-              </span>
+              <Icon name="folderEmpty" size={14} />
+              <span>{t("workspace.switch")}</span>
             </button>
-          ))}
-          {missingEndpoint ? (
-            <p
-              data-testid="workspace-env-missing-endpoint"
-              className="mt-1 rounded-[8px] bg-bg_grouped_secondary_elevated px-2 py-1.5 text-caption-small-strong text-text_default_tertiary"
-            >
-              {t("workspace.env.activeHint")}
-            </p>
-          ) : null}
+          </div>
+
+          <div className="flex flex-col gap-px">
+            {(
+              [
+                { row: "changes", testid: "workspace-changes-entry", icon: "file" },
+                { row: "commitAndPush", testid: "workspace-commit-entry", icon: "file" },
+                { row: "openTerminal", testid: "workspace-open-terminal-entry", icon: "terminal" },
+              ] as const
+            ).map(({ row, testid, icon }) => (
+              <button
+                key={row}
+                type="button"
+                data-testid={testid}
+                title={t("workspace.env.activeHint")}
+                onClick={() => setMissingEndpoint(row)}
+                className="flex h-8 w-full items-center gap-2 rounded-[8px] pl-1.5 pr-2 text-left transition-colors hover:bg-bg_interaction_tertiary_hover"
+              >
+                <span className="flex size-5 flex-none items-center justify-center text-icon_default_primary">
+                  <Icon name={icon} size={20} />
+                </span>
+                <span className="desktop-text-ui-body min-w-0 flex-1 truncate text-sm text-text_default_primary">
+                  {t(`workspace.${row}` as MessageKey)}
+                </span>
+              </button>
+            ))}
+            {missingEndpoint ? (
+              <p
+                data-testid="workspace-env-missing-endpoint"
+                className="mt-1 rounded-[8px] bg-bg_grouped_secondary_elevated px-2 py-1.5 text-caption-small-strong text-text_default_tertiary"
+              >
+                {t("workspace.env.activeHint")}
+              </p>
+            ) : null}
+          </div>
         </div>
       </WorkspaceSection>
 
@@ -710,6 +746,13 @@ function WorkspacePanel({ t }: { t: (key: MessageKey) => string }) {
       <WorkspaceSection title={t("workspace.sectionDeliverables")}>
         <SectionPlaceholder testid="workspace-cloud-result" t={t} />
       </WorkspaceSection>
+
+      <WorkspacePickerModal
+        t={t}
+        open={pickerOpen}
+        onClose={() => setPickerOpen(false)}
+        currentDir={state?.workspace.dir ?? null}
+      />
     </div>
   );
 }
@@ -761,6 +804,627 @@ function SectionPlaceholder({ testid, t }: { testid: string; t: (key: MessageKey
       className="flex items-center gap-2 rounded-[8px] px-1.5 py-2 text-text_default_tertiary"
     >
       <span className="desktop-text-ui-assist text-sm">{t("workspace.section.development")}</span>
+    </div>
+  );
+}
+
+/**
+ * Workspace picker — modal that drives the workspace switch flow.
+ *
+ * Implements the PR #22 fs-picker feature checklist (path input, parent
+ * navigation, directory listing, glob filter, create-new-folder, recents
+ * tab, native OS picker) using antd primitives in the current Next.js
+ * stack. Two tabs: `Recents` shows the server's recent-workspaces list
+ * (from session activity) and a "no workspace" button (uses tmpdir);
+ * `Browse` is the in-product directory navigator.
+ *
+ * The browser tab is the workhorse — it is the one that always works,
+ * including in token-gated / no-native-picker environments. The native
+ * picker button is opportunistic: when it succeeds, the picked path is
+ * fed straight into the same `setWorkspace` call.
+ *
+ * Wire: the modal is dismissible (settings-modal-style), and the picked
+ * path is forwarded to `POST /api/workspace` (the same handler the rest
+ * of the app uses). On success the picker closes; the state snapshot
+ * update carries the new directory through the SSE stream, so any
+ * downstream consumer (composer attachments, session tree) sees it
+ * without further wiring.
+ */
+function WorkspacePickerModal({
+  t,
+  open,
+  onClose,
+  currentDir,
+}: {
+  t: (key: MessageKey) => string;
+  open: boolean;
+  onClose: () => void;
+  currentDir: string | null;
+}) {
+  return (
+    <AntModal
+      open={open}
+      onCancel={onClose}
+      footer={null}
+      destroyOnHidden
+      width={560}
+      rootClassName="mavis-confirm-modal-compact"
+      classNames={{
+        mask: "mavis-confirm-modal-compact-mask",
+        content: "mavis-confirm-modal-compact-surface",
+      }}
+      styles={{ header: { background: "transparent" } }}
+      title={
+        <span className="flex items-center gap-2">
+          <span className="mavis-confirm-modal-compact-title text-heading3 text-text_default_primary">
+            {t("workspace.picker.title")}
+          </span>
+        </span>
+      }
+    >
+      <WorkspacePickerBody t={t} onClose={onClose} currentDir={currentDir} />
+    </AntModal>
+  );
+}
+
+/**
+ * The modal body. State machine: `Browse` reads `/api/workspace/browse`
+ * (containment-checked server-side), `Recents` reads `/api/workspace/recent`.
+ * Both feeds feed the same confirmation handler (`setWorkspace`).
+ */
+function WorkspacePickerBody({
+  t,
+  onClose,
+  currentDir,
+}: {
+  t: (key: MessageKey) => string;
+  onClose: () => void;
+  currentDir: string | null;
+}) {
+  const [tab, setTab] = useState<"recents" | "browse">("recents");
+
+  return (
+    <div className="flex flex-col gap-3" data-testid="workspace-picker">
+      <AntTabs
+        activeKey={tab}
+        onChange={(key) => setTab(key as "recents" | "browse")}
+        items={[
+          {
+            key: "recents",
+            label: t("workspace.picker.tabs.recents"),
+          },
+          {
+            key: "browse",
+            label: t("workspace.picker.tabs.browse"),
+          },
+        ]}
+      />
+
+      {tab === "recents" ? (
+        <WorkspaceRecentsTab
+          t={t}
+          onClose={onClose}
+          currentDir={currentDir}
+          onSwitchToBrowse={() => setTab("browse")}
+        />
+      ) : (
+        <WorkspaceBrowseTab t={t} onClose={onClose} currentDir={currentDir} />
+      )}
+    </div>
+  );
+}
+
+interface RecentPick {
+  dir: string;
+  name: string;
+  sessionCount: number;
+  lastActiveAt: number;
+}
+
+function WorkspaceRecentsTab({
+  t,
+  onClose,
+  currentDir,
+  onSwitchToBrowse,
+}: {
+  t: (key: MessageKey) => string;
+  onClose: () => void;
+  currentDir: string | null;
+  onSwitchToBrowse: () => void;
+}) {
+  const [search, setSearch] = useState("");
+  const [items, setItems] = useState<RecentPick[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [tmpDir, setTmpDir] = useState<string | null>(null);
+
+  // Last-write-wins: a search query that lands after a broader one
+  // should not silently re-replace the displayed list. Same trick as
+  // the FilesPanel.
+  const loadGen = useRef(0);
+  const load = useCallback(
+    async (q: string) => {
+      const gen = ++loadGen.current;
+      setLoading(true);
+      setError(null);
+      try {
+        const result = await api.recentWorkspaces(q, 20);
+        if (gen !== loadGen.current) return;
+        setItems(result.items ?? []);
+        if (result.tmpDir) setTmpDir(result.tmpDir);
+      } catch (cause) {
+        if (gen !== loadGen.current) return;
+        setError(cause instanceof Error ? cause.message : String(cause));
+      } finally {
+        if (gen === loadGen.current) setLoading(false);
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    const handle = window.setTimeout(() => {
+      void load(search);
+    }, 120);
+    return () => window.clearTimeout(handle);
+  }, [load, search]);
+
+  const pick = async (dir: string | null) => {
+    setBusy(true);
+    try {
+      if (dir === null) {
+        // "No workspace" uses tmpdir: same behaviour as the chat composer
+        // when launched without an explicit workspace. The server
+        // resolves the temp directory as the workspace.
+        if (!tmpDir) {
+          setError(t("workspace.picker.error"));
+          return;
+        }
+        await api.setWorkspace(tmpDir);
+      } else {
+        await api.setWorkspace(dir);
+      }
+      onClose();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const filtered = items.filter(
+    (it) =>
+      !search.trim() ||
+      it.dir.toLowerCase().includes(search.trim().toLowerCase()) ||
+      it.name.toLowerCase().includes(search.trim().toLowerCase()),
+  );
+
+  return (
+    <div className="flex flex-col gap-2">
+      <AntInput
+        value={search}
+        onChange={(event) => setSearch(event.target.value)}
+        placeholder={t("workspace.picker.recents.search")}
+        data-testid="workspace-recents-search"
+        className="mavis-input"
+      />
+
+      {error ? (
+        <p
+          data-testid="workspace-recents-error"
+          className="text-caption-small-strong text-text_status_error"
+        >
+          {error}
+        </p>
+      ) : null}
+
+      {loading && items.length === 0 ? (
+        <p className="text-caption-small-strong text-text_default_tertiary">
+          {t("workspace.picker.loading")}
+        </p>
+      ) : null}
+
+      {!loading && items.length === 0 && !error ? (
+        <p
+          data-testid="workspace-recents-empty"
+          className="rounded-[8px] bg-bg_grouped_secondary_elevated px-2 py-2 text-caption-small-strong text-text_default_tertiary"
+        >
+          {t("workspace.picker.recents.empty")}
+        </p>
+      ) : null}
+
+      {filtered.length > 0 ? (
+        <ul
+          data-testid="workspace-recents-list"
+          className="flex max-h-[260px] flex-col gap-px overflow-y-auto"
+        >
+          {filtered.map((item) => {
+            const isCurrent = item.dir === currentDir;
+            return (
+              <li key={item.dir}>
+                <button
+                  type="button"
+                  data-testid={`workspace-recents-row-${item.dir}`}
+                  disabled={busy}
+                  onClick={() => void pick(item.dir)}
+                  className="flex w-full flex-col gap-0.5 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-bg_interaction_tertiary_hover disabled:opacity-50"
+                >
+                  <span className="flex items-center gap-2">
+                    <span className="min-w-0 flex-1 truncate text-sm text-text_default_primary">
+                      {item.name}
+                    </span>
+                    {isCurrent ? (
+                      <span
+                        data-testid={`workspace-recents-current-${item.dir}`}
+                        className="rounded-full bg-bg_interaction_tertiary_selected px-1.5 py-0.5 text-caption-small-strong text-text_default_primary"
+                      >
+                        ✓
+                      </span>
+                    ) : null}
+                  </span>
+                  <span
+                    title={item.dir}
+                    className="truncate font-family-code text-caption-small-strong text-text_default_tertiary"
+                  >
+                    {item.dir}
+                  </span>
+                  <span className="text-caption-small-strong text-text_default_tertiary">
+                    {item.sessionCount} session{item.sessionCount === 1 ? "" : "s"}
+                  </span>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      ) : null}
+
+      <div className="flex items-center justify-between gap-2 pt-1">
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => void pick(null)}
+          data-testid="workspace-recents-no-workspace"
+          className="h-8 rounded-lg border border-border_default px-3 text-sm text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_hover disabled:opacity-50"
+        >
+          {t("workspace.picker.noWorkspace")}
+        </button>
+        <button
+          type="button"
+          onClick={onSwitchToBrowse}
+          data-testid="workspace-recents-browse"
+          className="h-8 rounded-lg border border-border_default px-3 text-sm text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_hover"
+        >
+          {t("workspace.picker.tabs.browse")}…
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function WorkspaceBrowseTab({
+  t,
+  onClose,
+  currentDir,
+}: {
+  t: (key: MessageKey) => string;
+  onClose: () => void;
+  currentDir: string | null;
+}) {
+  // Seed the directory from the active workspace when one is set —
+  // most of the time the user opens the picker to "go up one level",
+  // not to navigate from the platform root.
+  const [path, setPath] = useState<string>(() => currentDir ?? "");
+  const [listing, setListing] = useState<api.BrowseResult | null>(null);
+  const [filter, setFilter] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [nativeBusy, setNativeBusy] = useState(false);
+
+  const loadGen = useRef(0);
+  const load = useCallback(async (target: string) => {
+    const gen = ++loadGen.current;
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await api.browseWorkspace(target || undefined);
+      if (gen !== loadGen.current) return;
+      if (result.ok) {
+        setListing(result);
+      } else {
+        setError(result.error ?? t("workspace.picker.error"));
+      }
+    } catch (cause) {
+      if (gen !== loadGen.current) return;
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      if (gen === loadGen.current) setLoading(false);
+    }
+  }, [t]);
+
+  useEffect(() => {
+    void load(path);
+  }, [load, path]);
+
+  const entries = listing?.children ?? [];
+  // Dirs first, then alphabetical — the same shape FilesPanel uses.
+  const sorted = useMemo(() => {
+    const dirs = entries.filter((e) => e.isDir);
+    const rest = entries.filter((e) => !e.isDir);
+    dirs.sort((a, b) => a.name.localeCompare(b.name));
+    rest.sort((a, b) => a.name.localeCompare(b.name));
+    return [...dirs, ...rest];
+  }, [entries]);
+  const matched = filter
+    ? sorted.filter((e) => matchFilter(e.name, filter))
+    : sorted;
+  const visible = matched.slice(0, 200);
+  const hidden = matched.length - visible.length;
+
+  const pick = async () => {
+    // Server wire field is `dir` (see server/lib/workspace.js#browseWorkspace).
+    // The wire name used to drift to the wrong field in the webapp type and
+    // reading code — that regression was the root cause of the picker
+    // silently doing nothing (confirm button permanently disabled). Keep
+    // this on `listing.dir`; the regression test in
+    // webapp/test/workspace-picker-wire.test.ts pins both the type and
+    // the read site.
+    if (!listing?.dir) {
+      setError(t("workspace.picker.error"));
+      return;
+    }
+    setBusy(true);
+    try {
+      await api.setWorkspace(listing.dir);
+      onClose();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const mkdir = async () => {
+    if (!listing?.dir) return;
+    const name = window.prompt(t("workspace.picker.newFolderPrompt"), "");
+    if (!name) return;
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    try {
+      const next = `${listing.dir.replace(/\/+$/, "")}/${trimmed}`;
+      const result = await api.mkdir(next);
+      if (!result.ok) {
+        setError(result.path ? "mkdir failed" : "mkdir failed");
+        return;
+      }
+      // Re-list the parent to surface the new folder.
+      await load(listing.dir);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  };
+
+  const nativeSupported =
+    typeof window !== "undefined" &&
+    (window.navigator.platform.toLowerCase().includes("mac") ||
+      window.navigator.platform.toLowerCase().includes("linux") ||
+      window.navigator.platform.toLowerCase().includes("win"));
+
+  const nativePick = async () => {
+    setNativeBusy(true);
+    try {
+      const result = await api.pickWorkspaceNative();
+      if (result.ok && result.path) {
+        await api.setWorkspace(result.path);
+        onClose();
+        return;
+      }
+      setError(result.error ?? t("workspace.picker.error"));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setNativeBusy(false);
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-2">
+      {/* Toolbar: parent, path, home, root, mkdir, native picker. */}
+      <div className="flex items-center gap-1">
+        <button
+          type="button"
+          disabled={!listing?.parent}
+          onClick={() => listing?.parent && setPath(listing.parent)}
+          data-testid="workspace-picker-up"
+          aria-label={t("workspace.picker.up")}
+          title={t("workspace.picker.up")}
+          className="flex size-7 flex-none items-center justify-center rounded-[8px] text-icon_default_tertiary transition-colors hover:bg-bg_interaction_tertiary_hover disabled:opacity-40"
+        >
+          <Icon name="chevronRight" size={14} className="rotate-180" />
+        </button>
+        <AntInput
+          value={path}
+          onChange={(event) => setPath(event.target.value)}
+          onPressEnter={() => setPath(path.trim())}
+          placeholder={t("workspace.picker.pathPlaceholder")}
+          aria-label={t("workspace.picker.pathPlaceholder")}
+          data-testid="workspace-picker-path"
+          className="mavis-input min-w-0 flex-1"
+        />
+      </div>
+
+      <div className="flex flex-wrap items-center gap-1">
+        <button
+          type="button"
+          onClick={() => setPath("~")}
+          data-testid="workspace-picker-home"
+          className="h-7 rounded-[8px] border border-border_default px-2 text-caption-small-strong text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_hover"
+        >
+          {t("workspace.picker.home")}
+        </button>
+        <button
+          type="button"
+          onClick={() => setPath("")}
+          data-testid="workspace-picker-roots"
+          className="h-7 rounded-[8px] border border-border_default px-2 text-caption-small-strong text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_hover"
+        >
+          {t("workspace.picker.root")}
+        </button>
+        <button
+          type="button"
+          disabled={!listing?.dir}
+          onClick={() => void mkdir()}
+          data-testid="workspace-picker-mkdir"
+          className="h-7 rounded-[8px] border border-border_default px-2 text-caption-small-strong text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_hover disabled:opacity-40"
+        >
+          {t("workspace.picker.newFolder")}
+        </button>
+        {nativeSupported ? (
+          <button
+            type="button"
+            disabled={nativeBusy}
+            onClick={() => void nativePick()}
+            data-testid="workspace-picker-native"
+            className="h-7 rounded-[8px] border border-border_default px-2 text-caption-small-strong text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_hover disabled:opacity-40"
+          >
+            {t("workspace.picker.native")}
+          </button>
+        ) : null}
+      </div>
+
+      {/* Filter row — same matcher as FilesPanel. */}
+      <div className="flex items-center gap-1">
+        <AntInput
+          value={filter}
+          onChange={(event) => setFilter(event.target.value)}
+          placeholder={t("workspace.picker.filterPlaceholder")}
+          data-testid="workspace-picker-filter"
+          className="mavis-input min-w-0 flex-1"
+        />
+        {filter ? (
+          <button
+            type="button"
+            onClick={() => setFilter("")}
+            aria-label={t("files.clearFilter")}
+            data-testid="workspace-picker-filter-clear"
+            className="flex size-8 flex-none items-center justify-center rounded-[8px] text-icon_default_tertiary transition-colors hover:bg-bg_interaction_tertiary_hover"
+          >
+            <Icon name="close" size={15} />
+          </button>
+        ) : null}
+      </div>
+
+      {error ? (
+        <p
+          data-testid="workspace-picker-error"
+          className="text-caption-small-strong text-text_status_error"
+        >
+          {error}
+        </p>
+      ) : null}
+
+      {loading && entries.length === 0 ? (
+        <p className="text-caption-small-strong text-text_default_tertiary">
+          {t("workspace.picker.loading")}
+        </p>
+      ) : null}
+
+      {/* When no path has been given yet, the Browse tab's root view
+          shows the allowed roots rather than a folder list — clicking
+          one enters it. */}
+      {!path && !loading ? (
+        <ul
+          data-testid="workspace-picker-roots-list"
+          className="flex max-h-[260px] flex-col gap-px overflow-y-auto"
+        >
+          {(listing?.roots ?? []).map((root) => (
+            <li key={root}>
+              <button
+                type="button"
+                onClick={() => setPath(root)}
+                data-testid={`workspace-picker-root-${root}`}
+                className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-bg_interaction_tertiary_hover"
+              >
+                <span className="flex size-5 flex-none items-center justify-center text-icon_default_secondary">
+                  <Icon name="folder" size={15} />
+                </span>
+                <span
+                  title={root}
+                  className="min-w-0 flex-1 truncate font-family-code text-caption-small-strong text-text_default_primary"
+                >
+                  {root}
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+
+      {path && visible.length > 0 ? (
+        <ul
+          data-testid="workspace-picker-listing"
+          className="flex max-h-[260px] flex-col gap-px overflow-y-auto"
+        >
+          {visible.map((entry) => (
+            <li key={entry.path}>
+              <button
+                type="button"
+                onClick={() => entry.isDir && setPath(entry.path)}
+                data-testid={`workspace-picker-entry-${entry.path}`}
+                data-entry-type={entry.isDir ? "dir" : "file"}
+                className="flex w-full items-center gap-2 rounded-lg px-1.5 py-1 text-left transition-colors hover:bg-bg_interaction_tertiary_hover"
+              >
+                <span className="flex size-4 flex-none items-center justify-center text-icon_default_secondary">
+                  <Icon name={entry.isDir ? "folder" : "file"} size={14} />
+                </span>
+                <span className="min-w-0 flex-1 truncate text-sm text-text_default_primary">
+                  {entry.name}
+                </span>
+              </button>
+            </li>
+          ))}
+          {hidden > 0 ? (
+            <li
+              data-testid="workspace-picker-truncated"
+              className="px-1.5 py-1 text-caption-small-strong text-text_default_tertiary"
+            >
+              {t("files.showing")} {visible.length} / {matched.length}
+            </li>
+          ) : null}
+        </ul>
+      ) : null}
+
+      {!loading && path && matched.length === 0 && !error ? (
+        <p
+          data-testid="workspace-picker-empty"
+          className="px-1.5 py-1 text-caption-small-strong text-text_default_tertiary"
+        >
+          {filter
+            ? t("files.noMatch")
+            : t("workspace.picker.empty")}
+        </p>
+      ) : null}
+
+      <div className="flex items-center justify-end gap-2 pt-1">
+        <button
+          type="button"
+          onClick={onClose}
+          data-testid="workspace-picker-cancel"
+          className="h-8 rounded-lg border border-border_default px-3 text-sm text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_hover"
+        >
+          {t("workspace.picker.cancel")}
+        </button>
+        <button
+          type="button"
+          disabled={busy || !listing?.dir}
+          onClick={() => void pick()}
+          data-testid="workspace-picker-confirm"
+          className="h-8 rounded-lg bg-bg_interaction_primary_default px-3 text-sm font-weight_medium text-text_default_inverted_static transition-colors hover:bg-bg_interaction_primary_hover disabled:opacity-50"
+        >
+          {t("workspace.picker.useWorkspace")}
+        </button>
+      </div>
     </div>
   );
 }

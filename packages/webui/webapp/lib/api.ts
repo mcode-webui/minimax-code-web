@@ -235,10 +235,47 @@ export const getSessionTree = (refresh = false) =>
 
 // --- model and permissions --------------------------------------------------
 
+/**
+ * One entry in the model catalogue.
+ *
+ * `id` is the wire id (`minimax_api/MiniMax-M3`, or — when the engine session
+ * is active — its encoded `m:<provider>:<model>:v:<variant>` form). `label`
+ * is the display name; provider-grouped menus render this rather than the id.
+ * `provider` is the prefix before the first `/` (`minimax_api`, `openai_compat`,
+ * `__engine`, …) — `groups[]` is keyed by it so a UI can render per-provider
+ * sections. `source` is which list this entry came from (`engine` /
+ * `config` / `builtin`); informational.
+ *
+ * `contextLimit` is optional: it surfaces when a provider's
+ * `MCODE_WEBUI_MODELS_CONFIG` entry declares one, and is `undefined`
+ * otherwise (the engine's own per-session `usage_update.size` is preferred
+ * once one exists).
+ */
+export interface ModelEntry {
+  id: string;
+  name?: string;
+  label?: string;
+  provider?: string;
+  source?: "engine" | "config" | "builtin";
+  contextLimit?: number;
+}
+
+export interface ModelGroup {
+  id: string;
+  label: string;
+  models: ModelEntry[];
+}
+
 export interface ModelsPayload {
   ok: boolean;
+  /** `id` of the active model, or `null`/`DEFAULT_MODEL` fallback when none recorded. */
   current: string;
-  models: { id: string; name?: string }[];
+  models: ModelEntry[];
+  /** Per-provider groups; same models appear in `models[]` flat too. */
+  groups: ModelGroup[];
+  /** One of `acp-session-config` / `config+mcode-cli-bundle` / `mcode-cli-bundle`. */
+  source?: string;
+  reason?: string;
 }
 
 export const listModels = () => request<ModelsPayload>("/api/models");
@@ -293,11 +330,21 @@ export const answer = (type: string, option: string) =>
 
 // --- workspace --------------------------------------------------------------
 
+export interface SetWorkspaceResult {
+  ok: boolean;
+  dir: string;
+  branch: string | null;
+  treeState?: string;
+  workspace?: { dir: string; branch: string | null; tree: unknown };
+  defaultWorkspace?: string;
+  error?: string;
+}
+
 export const setWorkspace = (dir: string, syncTui = false) =>
-  request<{ ok: boolean; dir: string; branch: string | null; treeState: string }>(
-    "/api/workspace",
-    { method: "POST", json: { dir, syncTui } },
-  );
+  request<SetWorkspaceResult>("/api/workspace", {
+    method: "POST",
+    json: { dir, syncTui },
+  });
 
 export interface BrowseEntry {
   name: string;
@@ -305,12 +352,32 @@ export interface BrowseEntry {
   isDir: boolean;
 }
 
+/**
+ * Server response from `GET /api/workspace/browse[?path=…]`.
+ *
+ * The server's wire field is **`dir`** — see
+ * `packages/webui/server/lib/workspace.js#browseWorkspace`, which returns
+ * `{ ok, dir, parent, children, roots, skipped, total }`. FilesPanel was
+ * unaffected because its row reads are directory-name based; the workspace
+ * picker in WorkspaceBrowseTab reads `dir` for the confirm/mkdir buttons,
+ * so getting this wrong disables the picker (no confirm, silent mkdir).
+ */
 export interface BrowseResult {
   ok: boolean;
-  path: string | null;
+  /** The directory the server listed. Server wire field is `dir`. */
+  dir: string | null;
+  /** One level up; null when at a containment boundary. */
+  parent: string | null;
   children: BrowseEntry[];
+  skipped?: number;
+  total?: number;
   /** POSIX root view lists allowed roots with `children: []` (see API.md). */
   roots?: string[];
+  /** Server-reported home directory, surfaced alongside the root view. */
+  home?: string;
+  tmpDir?: string;
+  platform?: string;
+  error?: string;
 }
 
 /** List a directory for the workspace tree browser (containment-checked server-side). */
@@ -319,8 +386,62 @@ export const browseWorkspace = (path?: string) =>
     `/api/workspace/browse${path ? `?path=${encodeURIComponent(path)}` : ""}`,
   );
 
-export const recentWorkspaces = () =>
-  request<{ ok: boolean; recent: string[] }>("/api/workspace/recent");
+export interface RecentWorkspace {
+  dir: string;
+  name: string;
+  lastActiveAt: number;
+  sessionCount: number;
+}
+
+export interface RecentWorkspacesResult {
+  ok: boolean;
+  items: RecentWorkspace[];
+  total: number;
+  search: string;
+  limit: number;
+  tmpDir?: string;
+}
+
+/** Recents list — session-grouped and case-insensitive substring-filtered server-side. */
+export const recentWorkspaces = (search = "", limit = 5) =>
+  request<RecentWorkspacesResult>(
+    `/api/workspace/recent?search=${encodeURIComponent(search)}&limit=${limit}`,
+  );
+
+export interface WorkspaceTreeWorkspace {
+  dir: string;
+  name: string;
+  sessionCount: number;
+  lastActiveAt: number;
+  current: boolean;
+  sessions: Array<{
+    id: string;
+    mcodeSessionId: string | null;
+    title: string;
+    updatedAt: number;
+  }>;
+}
+
+export interface WorkspaceTreeResult {
+  ok: boolean;
+  current: string;
+  defaultWorkspace: string;
+  home: string;
+  tmpDir: string;
+  platform: string;
+  workspaces: WorkspaceTreeWorkspace[];
+}
+
+/** Workspace → sessions tree (used by the picker's recents tab). */
+export const workspaceTree = () =>
+  request<WorkspaceTreeResult>("/api/workspace/tree");
+
+/** Native OS directory picker (zenity/kdialog/osascript/PowerShell). */
+export const pickWorkspaceNative = () =>
+  request<{ ok: boolean; path: string | null; error?: string }>(
+    "/api/workspace/pick",
+    { method: "POST", json: {} },
+  );
 
 // --- uploads ----------------------------------------------------------------
 

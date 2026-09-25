@@ -1,5 +1,6 @@
 // webui/test/lib/models.test.js
-// Unit tests for server/lib/models.js — getMcodeModelLimit (model context limit).
+// Unit tests for server/lib/models.js — getMcodeModelLimit (model context limit)
+// and getBuiltinModelsFromMcode (cli.js bundle catalogue extraction).
 //
 // Why this test exists: getMcodeModelLimit maps a model name to its real
 // context limit (extracted from mcode's cli.js bundle). The wrong limit
@@ -7,8 +8,17 @@
 // "200%" depending on which way it's wrong. The fuzzy-match fallback
 // (M2.7-highspeed → M2.7's 200k) is non-obvious and easy to break.
 //
+// getBuiltinModelsFromMcode reads mcode's own cli.js bundle and the
+// sibling chunks/*.js, harvesting MiniMax-M* ids. Tests focus on the
+// "missing bundle" path: a fresh install (no dist/cli.js) must return []
+// rather than throw, so /api/models can still answer without a built mcode.
+//
 // Test strategy: NO mock.module. models.js only imports ./config.js.
-// getMcodeModelLimit is a pure function on its input string.
+// getMcodeModelLimit is a pure function on its input string;
+// getBuiltinModelsFromMcode reads node:fs through the MCODE_CMD config
+// (which resolves to whatever PACKAGE_ROOT/../../dist/cli.js points at
+// or, failing that, "mcode" — the test environment has no cli.js so
+// the resolver returns null and the extractor returns []).
 
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
@@ -18,6 +28,38 @@ import { pathToFileURL } from "node:url";
 const absPath = (rel) => pathToFileURL(join(import.meta.dirname, "..", "..", "server", rel)).href;
 
 const models = await import(absPath("lib/models.js"));
+
+describe("getBuiltinModelsFromMcode — cli.js bundle extraction", () => {
+  test("returns a MiniMax-M* array (the bundle shape) when dist/cli.js is built, [] otherwise", () => {
+    // Two acceptable outcomes:
+    //   - dist/cli.js is present (post-`pnpm build`): an array of
+    //     MiniMax-M* ids harvested from the bundle + its chunks.
+    //   - dist/cli.js is absent (cold test env): [].
+    // Both must NOT throw. The route handler relies on the empty-array
+    // branch to keep answering /api/models without a built mcode.
+    const result = models.getBuiltinModelsFromMcode();
+    if (result.length > 0) {
+      assert.ok(
+        result.every((id) => typeof id === "string" && /^MiniMax-M/.test(id)),
+        "every harvested id matches the MiniMax-M* pattern",
+      );
+    } else {
+      assert.deepEqual(result, []);
+    }
+  });
+
+  test("result is cached — repeated calls return the same array reference", () => {
+    // The CACHED_BUILTIN_MODELS latching is load-bearing: per-request
+    // callers (routes/model.js#handleGetModels) re-read on every call,
+    // but the underlying extraction runs once per process. A fresh
+    // install where dist/cli.js appears mid-process would otherwise
+    // hit the filesystem on every listModels. We pin the cache by
+    // reference identity here.
+    const first = models.getBuiltinModelsFromMcode();
+    const second = models.getBuiltinModelsFromMcode();
+    assert.equal(first, second, "cached reference identity preserved");
+  });
+});
 
 describe("getMcodeModelLimit — known models (exact match)", () => {
   test("'MiniMax-M3' returns 512000", () => {

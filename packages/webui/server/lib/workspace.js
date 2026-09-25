@@ -239,7 +239,17 @@ export function browseWorkspace(rawPath) {
     }
     try {
       if (ent.isDirectory()) {
-        dirs.push({ name: ent.name, path: join(target, ent.name) });
+        dirs.push({
+          name: ent.name,
+          path: join(target, ent.name),
+          // browseWorkspace only enumerates directories (the filter
+          // above) — files are deliberately omitted so the picker
+          // navigates workspaces rather than reads them. `isDir: true`
+          // is therefore a constant on every emitted child, but it is
+          // set explicitly so the wire shape and the BrowseEntry type
+          // agree without a client-side assumption.
+          isDir: true,
+        });
       }
     } catch {
       skipped++;

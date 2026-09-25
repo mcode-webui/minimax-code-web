@@ -87,7 +87,15 @@ export function Composer({ t, inline = false }: { t: (key: MessageKey) => string
   const [attachments, setAttachments] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
-  const [models, setModels] = useState<{ id: string; label: string }[]>([]);
+  const [models, setModels] = useState<
+    {
+      id: string;
+      label: string;
+      provider?: string;
+      contextLimit?: number;
+      source?: "engine" | "config" | "builtin";
+    }[]
+  >([]);
   const [slashIndex, setSlashIndex] = useState(0);
   const editorRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -121,16 +129,29 @@ export function Composer({ t, inline = false }: { t: (key: MessageKey) => string
   // The model catalogue comes from the server; the chip shows the active model
   // from the state snapshot so it tracks changes made elsewhere.
   //
-  // The server reads it from the engine's session config options, which do not
-  // exist until a session does — so re-fetch when the session or the active
-  // model changes rather than only on mount.
+  // The server merges three sources (engine session config option,
+  // MCODE_WEBUI_MODELS_CONFIG providers file, and the mcode cli-bundle
+  // builtin catalogue) and returns `groups[]` for provider-grouped rendering.
+  // The catalogue is refreshable: the server re-reads both providers config
+  // and the cli bundle per request, so a hot-edit in the bundled mcode
+  // binary or a saved models.json takes effect on the next chip open. We
+  // re-fetch when the session or the active model changes rather than only
+  // on mount.
   const modelKey = state?.model?.name ?? "";
   const sessionKey = state?.sessionId ?? "";
   useEffect(() => {
     void api
       .listModels()
       .then((payload) =>
-        setModels((payload.models ?? []).map((m) => ({ id: m.id, label: m.name || m.id }))),
+        setModels(
+          (payload.models ?? []).map((m) => ({
+            id: m.id,
+            label: m.label ?? m.name ?? m.id,
+            provider: m.provider,
+            contextLimit: m.contextLimit,
+            source: m.source,
+          })),
+        ),
       )
       .catch(() => {});
   }, [modelKey, sessionKey]);
@@ -724,6 +745,13 @@ function PermissionSelect({
  * a long model name from opening past the right edge, which is where this
  * control sits.
  *
+ * Provider grouping: when models carry a `provider`, the panel renders a
+ * labelled section per provider with a thin rule between them. The grouping is
+ * visual only — the flat `models[]` is the source of truth for keyboard /
+ * aria semantics, so single-select wiring stays identical. Ungrouped entries
+ * (engine-encoded ids before a session exists) fall through to the flat list
+ * under an "Other" heading.
+ *
  * The label is the caller's: resolving a model id to a display name is this
  * frontend's own mapping, and antd has nothing to say about it.
  */
@@ -735,12 +763,36 @@ function ModelSelect({
   onPick,
 }: {
   t: (key: MessageKey) => string;
-  models: { id: string; label: string }[];
+  models: { id: string; label: string; provider?: string }[];
   value?: string;
   label: string;
   onPick: (id: string) => void;
 }) {
   const [open, setOpen] = useState(false);
+
+  // Group by provider, preserving the catalogue order. A provider-less entry
+  // (engine-encoded ids whose prefix wasn't coerced) falls into "Other" so it
+  // is still reachable from the menu.
+  const grouped = useMemo(() => {
+    const order = [];
+    const buckets = new Map<string, typeof models>();
+    for (const model of models) {
+      const key = model.provider ?? "__other";
+      if (!buckets.has(key)) {
+        buckets.set(key, []);
+        order.push(key);
+      }
+      buckets.get(key)!.push(model);
+    }
+    return order.map((key) => ({
+      key,
+      label:
+        key === "__other"
+          ? t("modelSelector.other")
+          : providerLabel(key),
+      models: buckets.get(key)!,
+    }));
+  }, [models, t]);
 
   return (
     <Dropdown
@@ -754,18 +806,34 @@ function ModelSelect({
           {models.length === 0 ? (
             <SelectRow testId="model-select-empty" label={t("composer.noModels")} />
           ) : (
-            models.map((model) => (
-              <SelectRow
-                key={model.id}
-                testId={`model-select-option-${modelSlug(model.id)}`}
-                label={modelDisplayName(model.label)}
-                selected={model.id === value}
-                onClick={() => {
-                  setOpen(false);
-                  onPick(model.id);
-                }}
-              />
-            ))
+            <div className="flex flex-col">
+              {grouped.map((group, groupIndex) => (
+                <div
+                  key={group.key}
+                  data-testid={`model-select-group-${group.key}`}
+                  className={groupIndex === 0 ? "" : "mt-1 border-t border-border_default pt-1"}
+                >
+                  <div
+                    data-testid={`model-select-group-label-${group.key}`}
+                    className="px-2 pb-0.5 pt-1 text-caption-small-strong uppercase tracking-wide text-text_default_tertiary"
+                  >
+                    {group.label}
+                  </div>
+                  {group.models.map((model) => (
+                    <SelectRow
+                      key={model.id}
+                      testId={`model-select-option-${modelSlug(model.id)}`}
+                      label={modelDisplayName(model.label)}
+                      selected={model.id === value}
+                      onClick={() => {
+                        setOpen(false);
+                        onPick(model.id);
+                      }}
+                    />
+                  ))}
+                </div>
+              ))}
+            </div>
           )}
         </SelectPanel>
       )}
@@ -789,6 +857,30 @@ function ModelSelect({
       </button>
     </Dropdown>
   );
+}
+
+/**
+ * Display label for a provider id.
+ *
+ * Falls back to the raw id when nothing better is known — keeping the chip
+ * readable beats hiding the value. New provider ids ship without a translation
+ * here on purpose: an unknown id means the catalogue has a provider the rest
+ * of the UI does not yet know about, and rendering the raw id surfaces the
+ * drift instead of silently mapping it to something plausible.
+ */
+function providerLabel(id: string): string {
+  switch (id) {
+    case "minimax_api":
+      return "MiniMax";
+    case "openai_compat":
+      return "OpenAI";
+    case "anthropic":
+      return "Anthropic";
+    case "__engine":
+      return "Engine session";
+    default:
+      return id;
+  }
 }
 
 /**
