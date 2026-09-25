@@ -24,6 +24,7 @@ import {
   endRun,
   activeRunCount,
   getRunForCid,
+  updateRunSid,
 } from "../../server/lib/state-bus.js";
 
 // Each case gets its own module instance so the registries start empty — the
@@ -124,4 +125,84 @@ test("run guard — the default cid fallback", async (t) => {
   assert.equal(second.reason, "cid-busy");
   bus.endRun("");
   assert.equal(bus.activeRunCount(), 0);
+});
+
+// The first-turn hole: `handleSend` claims the run with
+// `beginRun(cid, cs.mcodeSessionId)` while `cs.mcodeSessionId` is still null
+// (the engine session id only comes into existence inside runMcodeAcp's
+// session/new). Until that claim is backfilled, `runsBySid` never guards the
+// brand-new session: a second window that had already learned the new sid
+// (sidebar switch / restoreLatestSession after the draft was promoted) sent
+// to it and got a 200, then lost its prompt to the engine's "Session already
+// has an active Turn". runMcodeAcp now calls updateRunSid mid-turn.
+test("run guard — updateRunSid backfills a first-turn claim (session-busy hole)", async (t) => {
+  const bus = await freshBus();
+
+  await t.test("backfilled claim blocks a second cid on the new session", () => {
+    // Window A: brand-new session, first turn — claimed with sid: null.
+    assert.equal(bus.beginRun("tabA", null).ok, true);
+    assert.equal(bus.getRunForCid("tabA").sid, null);
+    // The engine session comes into existence mid-turn...
+    assert.equal(bus.updateRunSid("tabA", "mvs_first"), true);
+    assert.equal(bus.getRunForCid("tabA").sid, "mvs_first");
+    // ...and window B (different cid, already knows the sid) must now be
+    // refused with session-busy instead of acking and failing later.
+    const other = bus.beginRun("tabB", "mvs_first");
+    assert.equal(other.ok, false);
+    assert.equal(other.reason, "session-busy");
+    assert.equal(bus.activeRunCount(), 1, "the refusal must not create a slot");
+    // endRun drops the backfilled claim (ownership: tabA owns it).
+    bus.endRun("tabA");
+    assert.equal(bus.beginRun("tabB", "mvs_first").ok, true);
+    bus.endRun("tabB");
+    assert.equal(bus.activeRunCount(), 0);
+  });
+
+  await t.test("a late beginRun racing the backfill cannot double-register", () => {
+    // tabC claimed the sid first (it knew the sid before tabD's turn was
+    // backfilled); the backfill must NOT overwrite the other cid's claim.
+    assert.equal(bus.beginRun("tabC", "mvs_race").ok, true);
+    assert.equal(bus.beginRun("tabD", null).ok, true);
+    assert.equal(bus.updateRunSid("tabD", "mvs_race"), false);
+    // tabD's entry keeps its (null) sid; tabC's claim stands.
+    assert.equal(bus.getRunForCid("tabD").sid, null);
+    // Releasing tabD must not drop tabC's protection.
+    bus.endRun("tabD");
+    assert.equal(bus.beginRun("tabE", "mvs_race").ok, false);
+    assert.equal(bus.beginRun("tabE", "mvs_race").reason, "session-busy");
+    bus.endRun("tabC");
+    assert.equal(bus.activeRunCount(), 0);
+  });
+
+  await t.test("idempotent when beginRun already carried the real sid", () => {
+    assert.equal(bus.beginRun("tabF", "mvs_known").ok, true);
+    assert.equal(bus.updateRunSid("tabF", "mvs_known"), true);
+    assert.equal(bus.activeRunCount(), 1);
+    bus.endRun("tabF");
+  });
+
+  await t.test("re-points the claim after a load-failure fallback to a fresh session", () => {
+    // Turn claimed on mvs_stale, session/load failed, runMcodeAcp created
+    // mvs_fresh: the claim must move so mvs_fresh is guarded and mvs_stale
+    // is released.
+    assert.equal(bus.beginRun("tabG", "mvs_stale").ok, true);
+    assert.equal(bus.updateRunSid("tabG", "mvs_fresh"), true);
+    assert.equal(bus.getRunForCid("tabG").sid, "mvs_fresh");
+    assert.equal(bus.beginRun("tabH", "mvs_fresh").ok, false);
+    assert.equal(bus.beginRun("tabH", "mvs_fresh").reason, "session-busy");
+    // mvs_stale was released along with the re-point.
+    assert.equal(bus.beginRun("tabH", "mvs_stale").ok, true);
+    bus.endRun("tabG");
+    bus.endRun("tabH");
+    assert.equal(bus.activeRunCount(), 0);
+  });
+
+  await t.test("no live run — nothing is claimed out of thin air", () => {
+    assert.equal(bus.updateRunSid("never-claimed", "mvs_ghost"), false);
+    assert.equal(bus.updateRunSid("tabZ", null), false);
+    assert.equal(bus.activeRunCount(), 0);
+    // The refused backfill must not have registered the sid either.
+    assert.equal(bus.beginRun("tabY", "mvs_ghost").ok, true);
+    bus.endRun("tabY");
+  });
 });

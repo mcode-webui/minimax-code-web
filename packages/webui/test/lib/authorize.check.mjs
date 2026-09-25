@@ -17,15 +17,28 @@
 // into a captured `_sseFrames` array, letting tests assert what was
 // emitted to the client.
 
-import { test, describe, before, beforeEach } from "node:test";
+import { test, describe, before, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
-import { dirname, resolve } from "node:path";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SERVER_DIR = resolve(__dirname, "..", "..", "server");
 const absPath = (rel) => pathToFileURL(resolve(SERVER_DIR, rel)).href;
+
+// Audit hygiene: authorize.js audit-writes every auth.pending / auth.approve /
+// auth.reject / auth.timeout / auth.cancelled decision to events.ndjson via
+// the REAL lib/events.js (static import inside authorize.js). The dozens of
+// synthetic flows below would otherwise append junk to the operator's real
+// ~/.mcode-webui/events.ndjson on every run. Redirect to a per-run tmp file —
+// events.js resolves the path lazily per append, so the env override set
+// here covers every append this file performs (same pattern as
+// test/lib/alerts.check.mjs).
+const _tmpAuditDir = mkdtempSync(join(tmpdir(), "webui-authorize-check-"));
+process.env.MCODE_WEBUI_EVENTS_PATH = join(_tmpAuditDir, "events.ndjson");
 
 // ----- state-bus mock state (read by the registered module mock) -----
 let _sseFrames = [];
@@ -419,4 +432,11 @@ describe("pushAuthRequest / pushAuthDecision — SSE contracts", () => {
     assert.equal(f.ctx.cid, "");
     _resetForTests();
   });
+});
+
+// Remove the redirected audit log after the whole file has run.
+after(() => {
+  try {
+    rmSync(_tmpAuditDir, { recursive: true, force: true });
+  } catch {}
 });
