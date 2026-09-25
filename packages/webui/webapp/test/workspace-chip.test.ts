@@ -4,7 +4,8 @@
 // dropdown (the Level-1 menu). The behaviour is small enough that the
 // webapp-side DOM test stays in node:test; mounting the antd Dropdown
 // would require jsdom + the dropdown's portal, neither of which the
-// rest of the webapp suite pulls in.
+// rest of the webapp suite pulls in (chat-virtual-list.test.ts is
+// explicit: "no jsdom in this suite").
 //
 // What this pins:
 //   1. `lastSegment` parses Windows + POSIX path separators (the
@@ -14,6 +15,10 @@
 //      `state.workspace.dir` carries a ✓; the others do not.
 //   3. The recent/no-project/choose-new row order matches the pr-22
 //      reference (recents first, switch-second, no-project third).
+//   4. Static-source assertion: the Dropdown mount in
+//      workspace-picker.tsx has an explicit overlay via `popupRender`
+//      or `menu` (antd throws "React.Children.only" on overlay mount
+//      without one, and the uncaught error unmounts the whole app).
 //
 // The interaction wiring (chip onClick opens dropdown, dropdown's
 // "选择新项目" opens the modal) is exercised by the live browser
@@ -90,5 +95,43 @@ describe("isActiveRow — recents ✓ marker", () => {
 describe("DROPDOWN_ORDER — recents-first, switch-second, no-project-third", () => {
   test("the three rows are emitted in the order the chip renders them", () => {
     assert.deepEqual([...DROPDOWN_ORDER], ["recents", "choose-new", "no-project"]);
+  });
+});
+// --- static-source assertion ---------------------------------------------
+//
+// The webapp test suite has no jsdom / RTL, so we cannot mount
+// `<Dropdown>` here. What we CAN do is read the source file and assert
+// the <Dropdown> mount has an explicit overlay — `popupRender` or
+// `menu`. Without one, rc-dropdown throws "React.Children.only
+// expected to receive a single React element child" on overlay mount
+// and the uncaught render error unmounts the whole app (document.body
+// empty until reload).
+//
+// A future refactor that swaps antd Dropdown for a hand-rolled menu
+// (which would not need `popupRender`) can rewrite this assertion to
+// match — the contract being pinned is "no overlay-less Dropdown
+// mount in workspace-picker.tsx".
+
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
+describe("WorkspaceChipDropdown <Dropdown> has an explicit overlay", () => {
+  const pickerSrc = readFileSync(
+    join(import.meta.dirname, "..", "components", "workspace-picker.tsx"),
+    "utf8",
+  );
+
+  // Isolate the WorkspaceChipDropdown component (the Level-1 entry).
+  const start = pickerSrc.indexOf("export function WorkspaceChipDropdown");
+  assert.ok(start > -1, "WorkspaceChipDropdown located");
+  const tail = pickerSrc.slice(start);
+  const end = tail.indexOf("\n/**");
+  const body = end > -1 ? tail.slice(0, end) : tail;
+
+  test("<Dropdown> uses popupRender OR menu (antd overlay contract)", () => {
+    assert.ok(
+      /<Dropdown[\s\S]*?(popupRender=|menu=)/.test(body),
+      "<Dropdown> must declare popupRender or menu; rc-dropdown throws React.Children.only otherwise",
+    );
   });
 });

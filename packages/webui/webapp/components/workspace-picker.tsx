@@ -160,6 +160,13 @@ export function WorkspaceChipDropdown({ t }: { t: (key: MessageKey) => string })
         trigger={["click"]}
         placement="bottomLeft"
         overlayClassName="mavis-dropdown mavis-dropdown-compact mavis-dropdown-custom-content"
+        // antd's Dropdown needs an explicit overlay via `menu` or
+        // `popupRender`; otherwise rc-dropdown throws on overlay mount
+        // with "React.Children.only expected to receive a single React
+        // element child" and unmounts the whole app. composer.tsx#PermissionSelect
+        // uses exactly this `popupRender` pattern with a custom panel —
+        // match it here so the chip dropdown renders the same chrome.
+        popupRender={() => dropdownContent}
       >
         <button
           type="button"
