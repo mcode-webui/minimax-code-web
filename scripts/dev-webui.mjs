@@ -61,11 +61,28 @@ const DEV_TRUSTED_ORIGINS = [
   `http://127.0.0.1:${FRONTEND_PORT}`,
 ].join(",");
 
-function spawnChild(name, command, args, cwd, color, extraEnv) {
+function spawnChild(name, command, args, cwd, color, extraEnv, onStdoutChunk) {
+  // `detached: true` puts the child in its own process group with the
+  // child as the pgid leader. Two consequences the ticket pinned:
+  //
+  //   1. A `kill -- -<launcher-pgid>` against this launcher no longer
+  //      cascades to the children automatically — the children's pgid
+  //      is the child's own pid, not the launcher's. The launcher
+  //      continues to forward SIGTERM on its own shutdown so Ctrl+C
+  //      still tears down the pair.
+  //   2. `child.kill('SIGTERM')` still works (signals the child's pgid
+  //      when the pid matches the pgid — same as before), so the
+  //      existing graceful-shutdown path is unchanged.
+  //
+  // `stdio: 'pipe'` plus the forward() below still works under
+  // detached: stdout/stderr are piped, NOT inherited from the parent.
+  // The detached stream ends up not having a controlling tty, which
+  // matches what we want (no SIGINT-from-keyboard on the dev process).
   const child = spawn(command, args, {
     cwd,
     env: { ...process.env, FORCE_COLOR: color ? "1" : "0", ...extraEnv },
     stdio: ["ignore", "pipe", "pipe"],
+    detached: true,
   });
   children.set(name, child);
 
@@ -75,6 +92,12 @@ function spawnChild(name, command, args, cwd, color, extraEnv) {
     stream.setEncoding("utf8");
     stream.on("data", (chunk) => {
       buf += chunk;
+      // Forward stdout chunks to the optional parser so the launcher
+      // can verify the backend bound BACKEND_PORT (closes the
+      // "two server.js not listening" state machine from the ticket).
+      if (onStdoutChunk && stream === child.stdout) {
+        onStdoutChunk(chunk.toString("utf8"));
+      }
       const lines = buf.split(/\r?\n/);
       buf = lines.pop() ?? "";
       for (const line of lines) dest.write(`${prefix}${line}\n`);
@@ -88,10 +111,21 @@ function spawnChild(name, command, args, cwd, color, extraEnv) {
 
   child.on("exit", (code, signal) => {
     children.delete(name);
+    // Signal attribution: log enough to distinguish a watcher-
+    // initiated restart (signal=SIGTERM, code=143 or null, planned
+    // restart flag set) from an external kill (signal=SIGKILL/SIGABRT
+    // or any signal without the planned-restart flag). Exact sender
+    // identification (which process group sent the signal) is not
+    // available to userspace on Linux without an audit client; this
+    // line is best-effort forensic, not authoritative.
+    const plannedRestart = name === "backend" && restartingBackend;
+    console.error(
+      `[mcode:dev] child exit: name=${name} code=${code} signal=${signal} planned_restart=${plannedRestart} pid=${child.pid ?? "?"} ppid=${child.ppid ?? "?"} ts=${new Date().toISOString()}`,
+    );
     // An exit while we are restarting the backend is expected — the
     // SIGTERM came from restartBackend. Skip the "crashed" branch
     // so the launcher keeps running and the respawn lands.
-    if (!exiting && !(name === "backend" && restartingBackend)) {
+    if (!exiting && !plannedRestart) {
       // One side crashed — kill the other so the user does not end up with a
       // half-running pair, and exit non-zero so the shell / CI surfaces it.
       exiting = true;
@@ -272,6 +306,66 @@ function waitForExit(child, timeoutMs) {
   });
 }
 
+// Port-binding verifier — closes the "two server.js, neither
+// listening" state machine the ticket pinned. The backend logs
+//   [webui] listening on http://<host>:<port>
+// once the bound socket is up; if the printed port does not match
+// BACKEND_PORT (or no listening line appears within the deadline),
+// the launcher treats the child as a failed start and surfaces the
+// reason so the user knows the real cause.
+//
+// Returns an `attach(child)` function the spawn caller invokes once
+// the child exists. The verifier watches the child's stdout for the
+// listening line and SIGKILLs the child on mismatch — the exit handler
+// then surfaces the mismatch through the standard "child exit" log
+// line.
+function makePortVerifier(expectedPort, deadlineMs) {
+  let buf = "";
+  let resolved = false;
+  let timer = null;
+  let boundChild = null;
+  const onChunk = (chunk) => {
+    if (resolved) return;
+    buf += chunk;
+    const m = buf.match(/\[webui\]\s+listening on\s+(?:http|https):\/\/[^:\s]+:(\d+)/);
+    if (m) {
+      const boundPort = Number(m[1]);
+      resolved = true;
+      if (timer) clearTimeout(timer);
+      if (boundPort !== expectedPort) {
+        console.error(
+          `[mcode:dev] backend bound to port ${boundPort} but BACKEND_PORT=${expectedPort} — treating as failed start`,
+        );
+        try {
+          boundChild && boundChild.kill("SIGKILL");
+        } catch {
+          // already gone
+        }
+      }
+    }
+  };
+  timer = setTimeout(() => {
+    if (resolved) return;
+    resolved = true;
+    console.error(
+      `[mcode:dev] backend did not print a listening line within ${deadlineMs}ms — treating as failed start (likely EADDRINUSE or import error)`,
+    );
+    try {
+      boundChild && boundChild.kill("SIGKILL");
+    } catch {
+      // already gone
+    }
+  }, deadlineMs);
+  if (typeof timer.unref === "function") timer.unref();
+  return {
+    onStdoutChunk: onChunk,
+    attach(child) {
+      boundChild = child;
+    },
+  };
+}
+
+const backendPortVerifier = makePortVerifier(BACKEND_PORT, 6000);
 const backend = spawnChild(
   "backend",
   process.execPath,
@@ -279,7 +373,9 @@ const backend = spawnChild(
   webuiDir,
   "36", // cyan
   { PORT: String(BACKEND_PORT), MCODE_WEBUI_TRUSTED_ORIGINS: DEV_TRUSTED_ORIGINS },
+  backendPortVerifier.onStdoutChunk,
 );
+backendPortVerifier.attach(backend);
 const frontend = spawnChild(
   "frontend",
   "npx",
@@ -306,28 +402,51 @@ if (watchBackend) {
 function shutdown(signal) {
   if (exiting) return;
   exiting = true;
-  console.error(`\n[mcode:dev] received ${signal}, stopping both processes…`);
-  for (const [name, child] of children) {
-    try {
-      child.kill("SIGTERM");
-    } catch {
-      // already gone
-    }
-  }
-  // Force-kill after 5s if anything is still alive.
-  setTimeout(() => {
+  // SIGINT (Ctrl+C): interactive shutdown — the user pressed ^C from
+  // the launching TTY and expects the dev server to die. Forward
+  // SIGTERM to the children so they tear down too.
+  //
+  // SIGTERM (external kill <pid> / kill -- -<pgid>): the launcher is
+  // being told to die by an outside process. Children were spawned
+  // with `detached: true` so they have their own process groups and
+  // survive this signal automatically — do NOT forward, otherwise the
+  // `detached: true` protection has no user-visible effect. The user
+  // can find them via lsof :18092 / :18093 if they want them gone.
+  if (signal === "SIGINT") {
+    console.error(
+      `\n[mcode:dev] received ${signal} (Ctrl+C) — stopping both processes…`,
+    );
     for (const [name, child] of children) {
       try {
-        if (!child.killed) {
-          child.kill("SIGKILL");
-          console.error(`[mcode:dev] force-killed ${name}`);
-        }
+        child.kill("SIGTERM");
       } catch {
         // already gone
       }
     }
+    // Force-kill after 5s if anything is still alive.
+    setTimeout(() => {
+      for (const [name, child] of children) {
+        try {
+          if (!child.killed) {
+            child.kill("SIGKILL");
+            console.error(`[mcode:dev] force-killed ${name}`);
+          }
+        } catch {
+          // already gone
+        }
+      }
+      process.exit(0);
+    }, 5000).unref();
+  } else {
+    // SIGTERM (or any non-INT): just exit. Children are their own
+    // pgid leaders thanks to detached: true on spawn, and their
+    // graceful-shutdown.js bound ensures SSE clients see a clean
+    // exit on any subsequent kill.
+    console.error(
+      `\n[mcode:dev] received ${signal} — exiting; children survive (detached pgids)`,
+    );
     process.exit(0);
-  }, 5000).unref();
+  }
 }
 
 process.on("SIGINT", () => shutdown("SIGINT"));

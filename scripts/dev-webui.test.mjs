@@ -17,6 +17,7 @@
 
 import { test, describe } from "node:test";
 import { strict as assert } from "node:assert";
+import { readFileSync as readFileSyncSync } from "node:fs";
 import { shouldWatchFile } from "./lib/dev-watch-scope.mjs";
 
 describe("shouldWatchFile — dev-watcher scope filter", () => {
@@ -77,5 +78,83 @@ describe("shouldWatchFile — dev-watcher scope filter", () => {
     assert.equal(shouldWatchFile(""), false);
     assert.equal(shouldWatchFile(null), false);
     assert.equal(shouldWatchFile(undefined), false);
+  });
+});
+describe("shouldWatchFile — pnpm global store defense-in-depth (v2)", () => {
+  test("rejects files under ~/.local/share/pnpm/store (the original SIGTERM wedge trigger)", () => {
+    // The pnpm global store is where `pnpm install` writes the
+    // real-file; node_modules/<pkg> is a hardlink to it. If a
+    // future refactor changes the substring check, the explicit
+    // pnpm-store prefix here still excludes the wedge path.
+    const store = `${process.env.HOME || "/root"}/.local/share/pnpm/store/v3/files/abc/123/hono-node-server/dist/serve.js`;
+    assert.equal(shouldWatchFile(store), false);
+  });
+
+  test("rejects files under the store even without /node_modules/ in the path", () => {
+    // The hardlink-target path is /node_modules/... in a worktree,
+    // but the in-place store path is /v3/files/...; the prefix check
+    // must reject both. The regression that re-introduces the
+    // wedge would be a refactor that drops the prefix check
+    // assuming the substring check is enough.
+    const store = `${process.env.HOME || "/root"}/.local/share/pnpm/store/v3/files/abc/serve.js`;
+    assert.equal(shouldWatchFile(store), false);
+  });
+});
+
+describe("makePortVerifier — port-binding verification (v2)", () => {
+  // Extract makePortVerifier from dev-webui.mjs without importing
+  // the module (which has spawn side effects). The function is
+  // pure: takes (expectedPort, deadlineMs), returns
+  // { onStdoutChunk, attach(child) }. We exercise it via a
+  // regex pull so the test imports nothing but node:test.
+  const source = readFileSyncSync(
+    new URL("./dev-webui.mjs", import.meta.url),
+    "utf8",
+  );
+  const match = source.match(
+    /function makePortVerifier\(expectedPort, deadlineMs\) \{([\s\S]*?)\n\}/,
+  );
+  if (!match) throw new Error("could not extract makePortVerifier");
+  // eslint-disable-next-line no-new-func
+  const makePortVerifier = new Function(
+    "expectedPort",
+    "deadlineMs",
+    `${match[0]}\n; return makePortVerifier(expectedPort, deadlineMs);`,
+  );
+
+  test("signals success when stdout reports the expected port", async () => {
+    const child = { kill() {} };
+    const verifier = makePortVerifier(18092, 60000);
+    verifier.attach(child);
+    verifier.onStdoutChunk(
+      "[webui] mcode cmd: /x/y/z\n" +
+        "[webui] listening on http://127.0.0.1:18092\n",
+    );
+    // Give the deadline timer a tick to fire — it should NOT, because
+    // the listening line was matched.
+    await new Promise((r) => setTimeout(r, 50));
+    // No assertion failure = verifier absorbed the chunk without
+    // trying to kill the child.
+  });
+
+  test("kills the child when the bound port does not match BACKEND_PORT", async () => {
+    let killed = false;
+    const child = { kill() { killed = true; } };
+    const verifier = makePortVerifier(18092, 60000);
+    verifier.attach(child);
+    verifier.onStdoutChunk(
+      "[webui] listening on http://127.0.0.1:18100\n", // wrong port
+    );
+    assert.equal(killed, true, "child should be SIGKILLed on port mismatch");
+  });
+
+  test("kills the child when no listening line appears within the deadline", async () => {
+    let killed = false;
+    const child = { kill() { killed = true; } };
+    const verifier = makePortVerifier(18092, 100); // 100ms deadline
+    verifier.attach(child);
+    // No chunks at all.
+    await new Promise((r) => setTimeout(r, 200));
+    assert.equal(killed, true, "child should be SIGKILLed on deadline");
   });
 });

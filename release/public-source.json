@@ -3665,6 +3665,7 @@
     "scripts/run-vitest-suite.mjs",
     "scripts/source-candidate.mjs",
     "scripts/source-inventory.mjs",
+    "scripts/test-isolation-lint.check.mjs",
     "scripts/verify-cli-release.mjs",
     "scripts/verify.mjs",
     "test/byok.test.mjs",

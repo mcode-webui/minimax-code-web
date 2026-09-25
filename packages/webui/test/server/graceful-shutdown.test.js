@@ -75,20 +75,26 @@ function get(url, opts = {}) {
   });
 }
 
-describe("installGracefulShutdown — bounded exit", () => {
-  let handles = [];
-  after(() => {
-    for (const h of handles) {
-      try {
-        h.uninstall();
-      } catch {
-        // already torn down
-      }
+// Handles to uninstall at suite teardown so signal handlers do
+// not leak across tests. Hoisted to file scope so the second
+// describe below can register there too.
+const handles = [];
+after(() => {
+  for (const h of handles) {
+    try {
+      h.uninstall();
+    } catch {
+      // already torn down
     }
-  });
-  function track(uninstall) {
-    handles.push({ uninstall });
   }
+});
+function track(uninstall) {
+  handles.push({ uninstall });
+}
+
+describe("installGracefulShutdown — bounded exit", () => {
+  // marker for the next describe (no shared state; track is module-scope now)
+  void handles;
 
   test("SIGTERM with no active connection exits within the close callback window", async () => {
     const { server, port } = await bootEchoServer();
@@ -181,5 +187,42 @@ describe("installGracefulShutdown — bounded exit", () => {
     process.emit("SIGTERM");
     await new Promise((r) => setTimeout(r, 200));
     assert.equal(calls.length, 0, "no exit after uninstall");
+  });
+});
+describe("installGracefulShutdown — signal attribution logging (v2)", () => {
+  test("logs signal + pid + ppid + timestamp on the SIGTERM path", async () => {
+    // Best-effort forensic: when SIGTERM lands, the helper logs
+    // its own identity (pid, ppid, signal name, ISO timestamp) so a
+    // post-incident review can correlate the shutdown with the
+    // launcher's child-exit line and external pkill logs.
+    const { server } = await bootEchoServer();
+    const { exit, calls } = recordExits();
+    const lines = [];
+    const original = console.log;
+    console.log = (...args) => lines.push(args.join(" "));
+    try {
+      const uninstall = installGracefulShutdown(server, {
+        exit,
+        graceMs: 100,
+        hardExitMs: 300,
+      });
+      // `track` and `uninstall` are defined in the outer describe;
+      // we register the uninstall so handlers do not leak across
+      // tests.
+      track(uninstall);
+      process.emit("SIGTERM");
+      await new Promise((r) => setTimeout(r, 200));
+    } finally {
+      console.log = original;
+    }
+    const attribution = lines.find((line) => line.startsWith("[graceful-shutdown] signal=SIGTERM"));
+    assert.ok(
+      attribution,
+      `graceful-shutdown signal line missing; got: ${JSON.stringify(lines)}`,
+    );
+    // Pin the format so future readers know exactly what to grep.
+    assert.match(attribution, /pid=\d+/);
+    assert.match(attribution, /ppid=\d+/);
+    assert.match(attribution, /ts=\d{4}-\d{2}-\d{2}T/); // ISO-8601 starts with YYYY-MM-DD
   });
 });

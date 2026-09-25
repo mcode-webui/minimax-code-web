@@ -81,6 +81,26 @@ export function installGracefulShutdown(server, options = {}) {
     if (shutdownStarted) return;
     shutdownStarted = true;
     onSignal(signal);
+    // Signal-attribution logging — best-effort forensic on the
+    // SIGTERM/SIGINT path. The Linux kernel does not expose the
+    // sender's pid/pgid/uid to userspace without an audit client;
+    // what we CAN log is our own identity (process.pid, process.ppid)
+    // and the timestamp. The launcher's child-exit log line
+    // (`[mcode:dev] child exit:`) tags the exit signal + the
+    // planned-restart flag, which together distinguish an internal
+    // restart from an external group kill.
+    //
+    // Honest disclaimer: nothing in this file or the launcher can
+    // identify the actual sender. The lines below are a paper trail
+    // for post-incident review, not attribution.
+    try {
+      console.log(
+        `[graceful-shutdown] signal=${signal} ts=${new Date().toISOString()} ` +
+          `pid=${process.pid} ppid=${process.ppid}`,
+      );
+    } catch {
+      // nothing to do — logging must not break the shutdown sequence
+    }
     // Cleanup callbacks must not throw past us — a thrown error in
     // either helper would skip the rest of the shutdown (close,
     // timer) and wedge the process. Swallow + carry on.
