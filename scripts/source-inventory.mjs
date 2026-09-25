@@ -31,6 +31,10 @@ const skippedTrees = new Set([
   // contain internal hostnames that `internalText` would otherwise flag.
   // Regained by `packages/webui/desktop-unpacked/extract-asar.sh`.
   "packages/webui/desktop-unpacked",
+  // Private agent-workflow tickets (to-tickets output, see the feedback-
+  // driven workflow in AGENTS.md). Git-ignored local working material that
+  // never contains publishable source.
+  ".tickets",
 ]);
 function filesIn(directory, prefix = "") {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {

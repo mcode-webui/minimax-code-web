@@ -60,6 +60,16 @@ The full profile is the local default. `platform` omits only duplicate type chec
 
 Source export reads committed `HEAD` and rejects uncommitted tracked changes. During editing, run the relevant individual gates; run the complete applicable profile on the reviewed commit with a clean tracked working tree before opening a PR. Report the checks actually run and any blocked or untested boundaries. Offline tests do not establish live-service or cross-platform acceptance.
 
+## Feedback-driven agent workflow
+
+User feedback on the running app is handled by an orchestrating agent that delegates to subagents; the orchestrator does not edit product code directly. The fixed pipeline is: clarify → record → implement → accept → ship.
+
+- **Clarify (grill-me).** For under-specified feedback, interview the reporter one question at a time until every load-bearing decision has an answer; each question ships with a recommendation. Skip this for unambiguous bug reports.
+- **Record (to-tickets).** Break approved work into tracer-bullet tickets: `.tickets/<feature-slug>/<NN>-<slug>.md`, numbered from `01` in dependency order, each declaring its blocking tickets and its acceptance criteria. `.tickets/` is private working material — git-ignored and excluded from the source inventory — and is never committed or published.
+- **Implement.** One development subagent (model route `minimax-cn/MiniMax-M3`) per ticket, on its own branch named per the convention above. Tickets whose blockers are all merged may be developed in parallel.
+- **Accept.** An independent acceptance subagent (model route `zai-coding-cn/GLM-5.3-Flash`; never the instance that wrote the code) reviews the diff against the ticket's acceptance criteria, runs the targeted gates (`pnpm typecheck`, `pnpm build`, and the test suites touching the change), and for UI-visible changes verifies the behavior in a browser with screenshots against the dev server (`pnpm webui:dev`, frontend at `http://127.0.0.1:18091/`). The full `pnpm verify` profile is left to CI.
+- **Ship.** Open a pull request that references the ticket and attaches the acceptance report (diff verdict, gates run, evidence screenshots). Enable auto-merge (squash); the PR merges once CI is green, and the branch is deleted. Direct pushes to the default branch remain forbidden.
+
 ## Boundaries
 
 Do not reference internal hosts, generated IDL, or private services; `check:source` catches known patterns but does not replace publication review. Do not restore paths listed in `scripts/lib/retired-sources.mjs` or remove supported capabilities to make standalone checks pass. Do not commit account data, sessions, logs, credentials, or real user content; use temporary data directories and synthetic test inputs. Documentation and commit messages are written in English; preserve the required languages of localized product strings and bundled runtime prompts. See `CONTRIBUTING.md`.
