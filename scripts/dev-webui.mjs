@@ -37,6 +37,38 @@ if (!existsSync(path.join(webappDir, "next.config.mjs"))) {
 const children = new Map();
 let exiting = false;
 
+// Signal a child's whole process group, not just its pid.
+//
+// Every child in the `children` map was spawned with `detached: true`
+// (see spawnChild below), so each child is the leader of its own
+// process group and `process.kill(-pid, sig)` reaches everything in
+// that group. That matters because the group contains processes this
+// launcher does NOT track: `next dev` forks a next-server worker
+// (a grandchild) that never appears in the map, so a pid-only
+// `child.kill()` left the real HTTP listener orphaned on every
+// teardown path — including the failed-start sibling shutdown where
+// one bad port killed the pair but not next-server.
+//
+// ESRCH (no process in the group — child already gone) and EINVAL on
+// platforms without POSIX process groups both land in the catch and
+// fall back to the pid-only signal, so the helper never throws and
+// never resurfaces a dead child. EPERM cannot occur for children we
+// spawned ourselves.
+function signalChildGroup(child, signal) {
+  if (!child || typeof child.pid !== "number") return;
+  try {
+    process.kill(-child.pid, signal);
+    return;
+  } catch {
+    // group already gone (ESRCH) or group signals unsupported here
+  }
+  try {
+    child.kill(signal);
+  } catch {
+    // already gone
+  }
+}
+
 // Ports are declared once: the frontend's port has to reach the backend as a
 // trusted origin (see below), so it cannot live only in the spawn args.
 const BACKEND_PORT = Number(process.env.PORT) || 18090;
@@ -70,9 +102,10 @@ function spawnChild(name, command, args, cwd, color, extraEnv, onStdoutChunk) {
   //      is the child's own pid, not the launcher's. The launcher
   //      continues to forward SIGTERM on its own shutdown so Ctrl+C
   //      still tears down the pair.
-  //   2. `child.kill('SIGTERM')` still works (signals the child's pgid
-  //      when the pid matches the pgid — same as before), so the
-  //      existing graceful-shutdown path is unchanged.
+  //   2. Teardown signals go through signalChildGroup (below), which
+  //      targets the child's group with `process.kill(-pid, sig)` —
+  //      so the next-server grandchild `next dev` forks dies with its
+  //      parent instead of surviving as an orphan.
   //
   // `stdio: 'pipe'` plus the forward() below still works under
   // detached: stdout/stderr are piped, NOT inherited from the parent.
@@ -132,7 +165,7 @@ function spawnChild(name, command, args, cwd, color, extraEnv, onStdoutChunk) {
       console.error(`[mcode:dev] ${name} exited (code=${code}, signal=${signal}) — shutting down siblings.`);
       for (const [otherName, other] of children) {
         try {
-          other.kill("SIGTERM");
+          signalChildGroup(other, "SIGTERM");
         } catch {
           // already gone
         }
@@ -245,7 +278,7 @@ async function restartBackend(triggerFile) {
     // give up.
     restartingBackend = true;
     try {
-      old.kill("SIGTERM");
+      signalChildGroup(old, "SIGTERM");
     } catch {
       // already gone
     }
@@ -255,7 +288,7 @@ async function restartBackend(triggerFile) {
         `[mcode:dev] backend did not exit within 8s after SIGTERM — SIGKILL`,
       );
       try {
-        old.kill("SIGKILL");
+        signalChildGroup(old, "SIGKILL");
       } catch {
         // already gone
       }
@@ -337,7 +370,7 @@ function makePortVerifier(expectedPort, deadlineMs) {
           `[mcode:dev] backend bound to port ${boundPort} but BACKEND_PORT=${expectedPort} — treating as failed start`,
         );
         try {
-          boundChild && boundChild.kill("SIGKILL");
+          signalChildGroup(boundChild, "SIGKILL");
         } catch {
           // already gone
         }
@@ -351,7 +384,7 @@ function makePortVerifier(expectedPort, deadlineMs) {
       `[mcode:dev] backend did not print a listening line within ${deadlineMs}ms — treating as failed start (likely EADDRINUSE or import error)`,
     );
     try {
-      boundChild && boundChild.kill("SIGKILL");
+      signalChildGroup(boundChild, "SIGKILL");
     } catch {
       // already gone
     }
@@ -411,24 +444,27 @@ function shutdown(signal) {
   // with `detached: true` so they have their own process groups and
   // survive this signal automatically — do NOT forward, otherwise the
   // `detached: true` protection has no user-visible effect. The user
-  // can find them via lsof :18092 / :18093 if they want them gone.
+  // can find them via `lsof -i :$BACKEND_PORT -i :$FRONTEND_PORT`
+  // (18090 / 18091 by default) if they want them gone.
   if (signal === "SIGINT") {
     console.error(
       `\n[mcode:dev] received ${signal} (Ctrl+C) — stopping both processes…`,
     );
     for (const [name, child] of children) {
       try {
-        child.kill("SIGTERM");
+        signalChildGroup(child, "SIGTERM");
       } catch {
         // already gone
       }
     }
-    // Force-kill after 5s if anything is still alive.
+    // Force-kill after 5s if anything is still alive. Liveness is read
+    // from exitCode/signalCode (not child.killed, which only tracks
+    // child.kill() calls and stays false after group signalling).
     setTimeout(() => {
       for (const [name, child] of children) {
         try {
-          if (!child.killed) {
-            child.kill("SIGKILL");
+          if (child.exitCode === null && child.signalCode === null) {
+            signalChildGroup(child, "SIGKILL");
             console.error(`[mcode:dev] force-killed ${name}`);
           }
         } catch {

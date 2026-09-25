@@ -35,7 +35,7 @@
     "test:capabilities": "node scripts/run-vitest-suite.mjs capability",
     "test:windows": "node scripts/run-vitest-suite.mjs windows",
     "test:artifact": "node --test test/public-artifact.test.mjs",
-    "test:release-tools": "node --test test/source-sync.test.mjs"
+    "test:release-tools": "node --test test/source-sync.test.mjs scripts/dev-webui.test.mjs"
   },
   "devDependencies": {
     "@types/node": "^20.19.0",

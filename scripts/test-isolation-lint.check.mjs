@@ -1,6 +1,6 @@
 // scripts/test-isolation-lint.check.mjs
 //
-// CI lint gate (session-isolation/05): every test that SPAWNS
+// Session-isolation/05 lint: every test that SPAWNS
 // packages/webui/server.js as a child process MUST set the
 // per-test temp-dir overrides for the data files the backend
 // writes to. Without the overrides, a test can land
@@ -10,9 +10,8 @@
 //
 // The lint is intentionally cheap: it scans the test/ and
 // packages/webui/test/ trees for the canonical spawn pattern
-// (`spawn(... server.js ...)` or `spawnSync(... server.js ...)` or
-// `process.execPath + [..., server.js]`), then checks the
-// surrounding function for the four env overrides:
+// (`spawn(... server.js ...)` or `spawnSync(... server.js ...)`),
+// then checks the surrounding function for the four env overrides:
 //
 //   MCODE_WEBUI_SETTINGS_PATH
 //   MCODE_WEBUI_EVENTS_PATH
@@ -23,24 +22,34 @@
 // mention of one of the env names in a comment is ignored. Only
 // spawn-within-the-same-function is the trigger.
 //
-// Why a dedicated lint, not a static-typescript rule: the test
-// files use `import { spawn } from "node:child_process"` and the
-// spawn call may live anywhere in the function (the env overrides
-// are typically constructed earlier and passed as `env`). A
-// regex over the function body is the cheapest precise check, and
-// running it from `node:test` keeps the gate in the standard
-// `pnpm test:webui` run.
-//
-// Pinned under the test:webui gate via packages/webui/package.json's
-// `test:unit` glob. Exits 0 on clean; exits 1 with a per-file
-// listing when a spawn is missing one or more overrides.
+// Wiring: this module is exercised by the root `test:release-tools`
+// gate (`node --test test/source-sync.test.mjs …`), per the repo
+// convention that repository-level node:test suites stay in their
+// existing gates and workflow-safety regressions land in
+// test/source-sync.test.mjs. The scan roots are resolved relative
+// to THIS file's location, so the gate's cwd is irrelevant — an
+// earlier attempt ran these paths through packages/webui's
+// test:unit runner, whose cwd made every glob match zero files
+// (a gate that reported "pass 0" and never scanned anything).
+// The file also stays runnable on its own for manual audits:
+//   node scripts/test-isolation-lint.check.mjs
+// which exits 0 on clean and 1 with a per-file listing otherwise.
 
-import { test } from "node:test";
-import { strict as assert } from "node:assert";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, extname } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
-const repoRoot = process.cwd();
+// Repo root is derived from this file's location (scripts/ is one
+// level below the root), never from process.cwd() — see the wiring
+// note above.
+const repoRoot = fileURLToPath(new URL("../", import.meta.url));
+
+export const REQUIRED_ENV_OVERRIDES = [
+  "MCODE_WEBUI_SETTINGS_PATH",
+  "MCODE_WEBUI_EVENTS_PATH",
+  "MCODE_WEBUI_SESSIONS_DB",
+  "MCODE_WEBUI_UPLOAD_DIR",
+];
 
 /**
  * Recursively walk `dir` and yield every regular file. Skips
@@ -59,13 +68,6 @@ function* walk(dir) {
     }
   }
 }
-
-const REQUIRED_ENV_OVERRIDES = [
-  "MCODE_WEBUI_SETTINGS_PATH",
-  "MCODE_WEBUI_EVENTS_PATH",
-  "MCODE_WEBUI_SESSIONS_DB",
-  "MCODE_WEBUI_UPLOAD_DIR",
-];
 
 /**
  * Does the file text contain a server.js spawn? The patterns are
@@ -134,8 +136,61 @@ function enclosingFunctionBody(text, spanStart) {
   return text;
 }
 
+/**
+ * Strip line comments (double slash) and block comments (slash-star …
+ * star-slash) from JS source, tracking string literals so comment
+ * markers inside strings (URLs, regexes-as-text) survive. Spawn shapes
+ * written in comments must not produce phantom matches —
+ * source-sync.test.mjs documents the fixture shape in prose and would
+ * otherwise trip the real-tree scan.
+ */
+function stripComments(text) {
+  let out = "";
+  let state = "code"; // code | line | block | single | double | template
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i];
+    const next = text[i + 1];
+    if (state === "code") {
+      if (ch === "/" && next === "/") { state = "line"; i += 2; continue; }
+      if (ch === "/" && next === "*") { state = "block"; i += 2; continue; }
+      if (ch === "'") state = "single";
+      else if (ch === '"') state = "double";
+      else if (ch === "`") state = "template";
+      out += ch;
+      i += 1;
+      continue;
+    }
+    if (state === "line") {
+      if (ch === "\n") { state = "code"; out += ch; }
+      i += 1;
+      continue;
+    }
+    if (state === "block") {
+      if (ch === "*" && next === "/") { state = "code"; out += " "; i += 2; continue; }
+      if (ch === "\n") out += ch;
+      i += 1;
+      continue;
+    }
+    // Inside a string literal: copy verbatim, honoring escapes.
+    if (ch === "\\") {
+      out += text.slice(i, i + 2);
+      i += 2;
+      continue;
+    }
+    if (
+      (state === "single" && ch === "'") ||
+      (state === "double" && ch === '"') ||
+      (state === "template" && ch === "`")
+    ) state = "code";
+    out += ch;
+    i += 1;
+  }
+  return out;
+}
+
 function lintFile(path) {
-  const text = readFileSync(path, "utf8");
+  const text = stripComments(readFileSync(path, "utf8"));
   const spawns = findSpawnIndices(text);
   if (spawns.length === 0) return [];
   const issues = [];
@@ -155,32 +210,60 @@ function lintFile(path) {
   return issues;
 }
 
-test("test isolation — every server.js spawn sets per-test MCODE_WEBUI_* env overrides", () => {
-  // Scope: the canonical test trees. scripts/test-isolation-lint
-  // covers repo-level tests; packages/webui/test/ covers the webui
-  // package. Both must pass before this gate goes green.
-  const roots = [
+/**
+ * Scan the canonical test trees for server.js spawns that lack the
+ * per-test MCODE_WEBUI_* env overrides. Returns an empty array when
+ * the tree is compliant; each entry otherwise describes one
+ * offending spawn. `roots` defaults to the repository's real test
+ * trees; test/source-sync.test.mjs passes synthetic fixture trees
+ * so CI keeps proving the lint still detects violations (a lint
+ * that silently matches nothing must fail the gate, not pass it).
+ */
+export function collectTestIsolationViolations({ roots } = {}) {
+  const scanRoots = roots ?? [
     join(repoRoot, "test"),
     join(repoRoot, "packages", "webui", "test"),
   ];
   const issues = [];
-  for (const root of roots) {
+  for (const root of scanRoots) {
     if (!statSync(root, { throwIfNoPath: false })) continue;
     for (const file of walk(root)) {
       if (![".js", ".mjs", ".cjs"].includes(extname(file))) continue;
       issues.push(...lintFile(file));
     }
   }
-  if (issues.length === 0) return; // green
+  return issues;
+}
+
+/** Human-readable per-file listing for gate output and CLI stderr. */
+export function formatTestIsolationViolations(issues) {
   const formatted = issues
     .map(
       (issue) =>
         `  ${issue.file}:${issue.offset}  missing: ${issue.missing.join(", ")}`,
     )
     .join("\n");
-  assert.fail(
+  return (
     `server.js spawn without per-test env overrides (${issues.length} issue(s)):\n${formatted}\n` +
-      "Every test that spawns server.js MUST set MCODE_WEBUI_{SETTINGS_PATH,EVENTS_PATH,SESSIONS_DB,UPLOAD_DIR} to per-test tmp paths before first import. " +
-      "See test/server/server-startup.test.js for the canonical pattern.",
+    "Every test that spawns server.js MUST set MCODE_WEBUI_{SETTINGS_PATH,EVENTS_PATH,SESSIONS_DB,UPLOAD_DIR} to per-test tmp paths before first import. " +
+    "See packages/webui/test/server/server-startup.test.js for the canonical pattern."
   );
-});
+}
+
+// Manual-audit entry point: `node scripts/test-isolation-lint.check.mjs`.
+// Inside a node:test run this file is only imported, never executed
+// as the main module, so the CLI block is inert in gates.
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(process.argv[1]).href
+) {
+  const issues = collectTestIsolationViolations();
+  if (issues.length === 0) {
+    console.log(
+      "test-isolation-lint: clean — every server.js spawn sets the per-test MCODE_WEBUI_* overrides.",
+    );
+  } else {
+    console.error(formatTestIsolationViolations(issues));
+    process.exitCode = 1;
+  }
+}
