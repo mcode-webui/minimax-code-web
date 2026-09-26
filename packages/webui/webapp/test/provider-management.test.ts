@@ -309,7 +309,7 @@ describe("draftToWire — draft → wire", () => {
       id: "p1",
       draftId: "__new_should_not_leak",
     };
-    const wire = draftToWire(draft) as Record<string, unknown>;
+    const wire = draftToWire(draft) as unknown as Record<string, unknown>;
     assert.equal(wire.draftId, undefined);
   });
 });

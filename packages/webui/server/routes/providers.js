@@ -43,6 +43,7 @@ import {
   testProvider as runProbe,
   getUserLevelPath,
   applyKeepKeyConvention,
+  loadUserLevelProviders,
 } from "../lib/providers-config.js";
 import { pushStateFor, sseByCid } from "../lib/state-bus.js";
 import { readJson } from "../lib/read-json.js";
@@ -104,11 +105,22 @@ export async function handlePutProviders(req, res, _ctx) {
     );
   }
   // Keep-existing-key convention (ticket 03 cross-branch API note):
-//   `auth.apiKey === ""` on an incoming provider means "don't change the
-//   existing key". We copy the current user-level file's apiKey onto
-//   those records before validation, so the masked placeholder the UI
-//   sends back does not silently wipe the plaintext on every edit. See
+//   `auth.apiKey` empty OR absent on an incoming provider means "don't
+//   change the existing key". We copy the user-level file's apiKey
+//   onto those records before validation, so the masked placeholder
+//   the UI sends back (and an absent-field body) does not silently
+//   wipe the plaintext on every edit. See
 //   lib/providers-config.js#applyKeepKeyConvention.
+//
+// Layer scope: the "previous key" lookup reads the user-level file
+// ONLY (`loadUserLevelProviders`), not the merged catalogue. Without
+// this scoping, editing a provider whose key is sourced from the env
+// or cwd layer would materialise the deployment secret into the
+// user-level file — once written there, the deployment layer can no
+// longer rotate it. The merged view still wins for the engine
+// (`loadProvidersConfig` priority order), so the visible behaviour
+// for the operator is unchanged: an env-defined key still wins at
+// read time even after the user edits the provider.
 //
 // Only applied when `parsed.providers` is actually an array — a missing
 // or non-array providers list is an error the original validation
@@ -119,7 +131,7 @@ const toWrite =
     ? parsed
     : {
         ...parsed,
-        providers: applyKeepKeyConvention(loadProvidersConfig().providers, incomingProviders),
+        providers: applyKeepKeyConvention(loadUserLevelProviders(), incomingProviders),
       };
 const result = writeProvidersConfig(toWrite);
   if (!result.ok) {
