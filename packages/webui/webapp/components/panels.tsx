@@ -19,6 +19,7 @@ import { matchFilter } from "@/lib/workspace-filter";
 import type { Locale, MessageKey } from "@/lib/i18n";
 import type { ThemeName } from "@/lib/types";
 import { Icon } from "./icons";
+import { ProviderManagementPanel } from "./provider-management";
 
 /**
  * Right-hand drawer.
@@ -108,7 +109,8 @@ export function RightPanel({
 type SettingsSection =
   | "general"
   | "appearance"
-  | "connection";
+  | "connection"
+  | "providers";
 
 const SETTINGS_NAV: {
   group: MessageKey;
@@ -129,6 +131,10 @@ const SETTINGS_NAV: {
     group: "settings.group.management",
     items: [
       { id: "connection", key: "settings.tab.connection", section: "connection" },
+      // Provider management (ticket 03) — model providers surface lives
+      // in the management group, below connection, and is the only
+      // server-driven section the desktop "用量与模型" group also covers.
+      { id: "providers", key: "providers.title", section: "providers" },
       { id: "account", key: "settings.tab.account" },
     ],
   },
@@ -1430,7 +1436,7 @@ function SettingsPanel({
   locale: Locale;
   setLocale: (locale: Locale) => void;
   /** Which category to render; undefined means a disabled (unsupported) one. */
-  section?: "general" | "appearance" | "connection";
+  section?: "general" | "appearance" | "connection" | "providers";
 }) {
   const [snapshot, setSnapshot] = useState<api.SettingsSnapshot | null>(null);
   const [busy, setBusy] = useState(false);
@@ -1581,6 +1587,12 @@ function SettingsPanel({
           </button>
         </div>
       </>
+    ),
+    providers: (
+      // The provider management panel owns its own loading / saving
+      // state — wrapping it in a card here keeps the section chrome
+      // consistent with the rest of SettingsPanel.
+      <ProviderManagementPanel t={t} />
     ),
   }[section];
 

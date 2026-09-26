@@ -774,3 +774,227 @@ describe("testProvider — no network for malformed inputs", () => {
     assert.equal(r.code, "PROBE_FAILED", "validation passed → fetch attempted → probe failed");
   });
 });
+
+// ---------------------------------------------------------------------
+// applyKeepKeyConvention — ticket 03 keep-existing-key convention.
+// ---------------------------------------------------------------------
+//
+// The UI GETs the masked catalogue (apiKey is `apiKeyMasked: "sk-aa***bb"`),
+// then PUTs the same shape back. Without a convention, the masked
+// placeholder would replace the plaintext on every edit. The
+// convention: an incoming `auth.apiKey === ""` means "do not change the
+// existing key for this provider id". The PUT handler is the only caller.
+
+describe("applyKeepKeyConvention — ticket 03 keep-existing-key convention", () => {
+  test("incoming apiKey='' copies the existing key when one is on disk", () => {
+    const existing = [
+      {
+        id: "p1",
+        label: "P1",
+        protocol: "openai",
+        auth: { type: "byok", apiKey: "sk-realkey-on-disk-aaaa" },
+        models: [],
+      },
+    ];
+    const incoming = [
+      {
+        id: "p1",
+        label: "P1 renamed",
+        protocol: "openai",
+        auth: { type: "byok", apiKey: "" }, // sentinel
+        models: [{ id: "m" }],
+      },
+    ];
+    const merged = providersConfig.applyKeepKeyConvention(existing, incoming);
+    assert.equal(merged.length, 1);
+    assert.equal(merged[0].auth.apiKey, "sk-realkey-on-disk-aaaa");
+    // Other fields untouched by the convention.
+    assert.equal(merged[0].label, "P1 renamed");
+    assert.deepEqual(merged[0].models, [{ id: "m" }]);
+  });
+
+  test("incoming apiKey non-empty is NOT replaced (the user is overwriting)", () => {
+    const existing = [
+      { id: "p1", auth: { type: "byok", apiKey: "sk-on-disk" } },
+    ];
+    const incoming = [
+      { id: "p1", auth: { type: "byok", apiKey: "sk-new-plaintext" } },
+    ];
+    const merged = providersConfig.applyKeepKeyConvention(existing, incoming);
+    assert.equal(merged[0].auth.apiKey, "sk-new-plaintext");
+  });
+
+  test("incoming apiKey='' with NO existing record keeps empty (new provider fails byok validation)", () => {
+    // The provider is brand new — there is nothing to keep. The empty
+    // key stays, and the normal validation rejects a `byok` record
+    // with an empty apiKey. This is the right behaviour: a UI that
+    // hits Save without filling the key must not silently inherit
+    // some other provider's credential.
+    const merged = providersConfig.applyKeepKeyConvention(
+      [{ id: "other", auth: { type: "byok", apiKey: "sk-something" } }],
+      [{ id: "brand-new", auth: { type: "byok", apiKey: "" } }],
+    );
+    assert.equal(merged[0].id, "brand-new");
+    assert.equal(merged[0].auth.apiKey, "");
+  });
+
+  test("absent auth.apiKey on an incoming record copies the user-level key", () => {
+    // The convention treats BOTH `auth.apiKey === ""` AND a missing
+    // `auth.apiKey` field as the sentinel. A PUT that drops the key
+    // field is the normal "no change" gesture from the editor form
+    // (which only ever sets the controlled value when the user types).
+    // Without this, the API would silently wipe a stored credential
+    // whenever a caller forgot to send the field — the v2 normaliser
+    // coerces a missing apiKey to "" anyway, so the on-disk write
+    // would land as empty. Pinning the behaviour here so a future
+    // "absent !== empty" change does not regress to the silent wipe.
+    const merged = providersConfig.applyKeepKeyConvention(
+      [{ id: "p1", auth: { type: "byok", apiKey: "sk-disk" } }],
+      [{ id: "p1", auth: { type: "byok" } }],
+    );
+    assert.equal(merged[0].auth.apiKey, "sk-disk", "absent key inherits from user-level");
+  });
+
+  test("absent auth.apiKey with NO existing record keeps the empty key", () => {
+    // Brand-new provider with no key — the empty stays empty, and
+    // the normal validation flow rejects a `byok` record with an
+    // empty key. Coding-plan records (which allow empty keys) pass
+    // through unchanged.
+    const merged = providersConfig.applyKeepKeyConvention(
+      [{ id: "other", auth: { type: "byok", apiKey: "sk-something" } }],
+      [{ id: "brand-new", auth: { type: "byok" } }],
+    );
+    assert.equal(merged[0].id, "brand-new");
+    assert.equal(merged[0].auth.apiKey, "");
+  });
+
+  test("returns a new array — the incoming body is not mutated", () => {
+    const incoming = [
+      { id: "p1", auth: { type: "byok", apiKey: "" } },
+    ];
+    const merged = providersConfig.applyKeepKeyConvention(
+      [{ id: "p1", auth: { type: "byok", apiKey: "sk-disk" } }],
+      incoming,
+    );
+    assert.notEqual(merged, incoming, "new array");
+    assert.equal(incoming[0].auth.apiKey, "", "incoming untouched");
+  });
+
+  test("a provider with no matching id in existing keeps its empty key", () => {
+    const merged = providersConfig.applyKeepKeyConvention(
+      [{ id: "other", auth: { type: "byok", apiKey: "sk-disk" } }],
+      [{ id: "brand-new", auth: { type: "byok", apiKey: "" } }],
+    );
+    assert.equal(merged[0].auth.apiKey, "");
+  });
+
+  test("absent auth.apiKey on existing record: copies the user-layer key", () => {
+    // Acceptance hardening (ticket 03 round 2): a PUT whose body
+    // omits the `auth.apiKey` field used to fall through validation
+    // and silently land on disk as "" — wiping the stored key. The
+    // convention now treats absent the same as empty.
+    const merged = providersConfig.applyKeepKeyConvention(
+      [{ id: "p1", auth: { type: "byok", apiKey: "sk-on-disk-aaaa" } }],
+      [{ id: "p1", auth: { type: "byok" } }],
+    );
+    assert.equal(merged[0].auth.apiKey, "sk-on-disk-aaaa");
+  });
+
+  test("absent auth.apiKey with auth itself omitted: still copies the user-layer key", () => {
+    // Defensive: the helper must not throw when `auth` is entirely
+    // absent from the incoming record. A bug here would 500 the
+    // entire PUT handler on a malformed body.
+    const merged = providersConfig.applyKeepKeyConvention(
+      [{ id: "p1", auth: { type: "byok", apiKey: "sk-on-disk" } }],
+      [{ id: "p1", protocol: "openai", models: [] }],
+    );
+    assert.equal(merged[0].auth.apiKey, "sk-on-disk");
+  });
+
+  test("deliberate key clearing is impossible: no input shape wipes a stored key", () => {
+    // The contract: once a key is on disk, no wire shape can clear
+    // it. The convention copies the previous key onto EVERY incoming
+    // shape that lacks an explicit value ("" or absent). A non-empty
+    // value replaces — there is no API call that means "delete the
+    // stored key and accept the consequence". Operators who need to
+    // rotate put a new key; the convention preserves only on "no
+    // change" gestures.
+    const existing = [{ id: "p1", auth: { type: "byok", apiKey: "sk-stored" } }];
+    const shapes = [
+      // explicit empty
+      { id: "p1", auth: { type: "byok", apiKey: "" } },
+      // absent field
+      { id: "p1", auth: { type: "byok" } },
+      // absent auth entirely
+      { id: "p1", protocol: "openai" },
+    ];
+    for (const shape of shapes) {
+      const merged = providersConfig.applyKeepKeyConvention(existing, [shape]);
+      assert.equal(
+        merged[0].auth.apiKey,
+        "sk-stored",
+        `shape ${JSON.stringify(shape.auth)} should keep existing key`,
+      );
+    }
+  });
+});
+
+// ---------------------------------------------------------------------
+// loadUserLevelProviders — user-layer-only loader (ticket 03 round 2).
+// ---------------------------------------------------------------------
+//
+// The convention reads THIS, not the merged `loadProvidersConfig()`
+// result, so editing an env-defined provider does not materialise
+// the deployment secret onto the operator-managed user-level file.
+// The merged view still wins for the engine — only the on-disk
+// write is scoped to the user layer.
+
+describe("loadUserLevelProviders — user-layer-only loader", () => {
+  test("returns [] when the user-level file is missing", () => {
+    // beforeEach cleared it. Sanity check on the contract.
+    assert.deepEqual(providersConfig.loadUserLevelProviders(), []);
+  });
+
+  test("returns only the user-level records (not env/cwd)", async () => {
+    // Seed the user-level file. The cwd layer is empty in this test
+    // because MCODE_WEBUI_MODELS_CONFIG is unset, so what we seed
+    // IS the only thing loadUserLevelProviders can see — and it
+    // must NOT include any merged material from other layers.
+    writeFileSync(
+      providersConfig.getUserLevelPath(),
+      JSON.stringify({
+        version: 2,
+        providers: [
+          { id: "u1", auth: { type: "byok", apiKey: "sk-user-only-aaaa" } },
+        ],
+      }),
+    );
+    const result = providersConfig.loadUserLevelProviders();
+    assert.equal(result.length, 1);
+    assert.equal(result[0].id, "u1");
+    assert.equal(result[0].auth.apiKey, "sk-user-only-aaaa");
+  });
+
+  test("env-layer key is NOT visible to loadUserLevelProviders", () => {
+    // Set an env-layer file with a key. The user-level file is
+    // empty (cleared by beforeEach). loadUserLevelProviders must
+    // return [] — the env secret does not leak into the user-layer
+    // loader. The convention then has nothing to copy.
+    const envPath = join(_tmpCwd, "env-only.json");
+    writeFileSync(
+      envPath,
+      JSON.stringify({
+        providers: [
+          { id: "envprov", auth: { type: "byok", apiKey: "sk-env-only-aaaa" } },
+        ],
+      }),
+    );
+    process.env.MCODE_WEBUI_MODELS_CONFIG = envPath;
+    try {
+      const result = providersConfig.loadUserLevelProviders();
+      assert.deepEqual(result, [], "env-only secrets must not be visible here");
+    } finally {
+      delete process.env.MCODE_WEBUI_MODELS_CONFIG;
+    }
+  });
+});

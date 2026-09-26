@@ -280,6 +280,149 @@ export interface ModelsPayload {
 
 export const listModels = () => request<ModelsPayload>("/api/models");
 
+// --- providers --------------------------------------------------------------
+//
+// Provider management UI surface (ticket 03). The server carries a v2
+// schema with three layers (env / cwd / user), masked keys, and a
+// per-protocol connectivity probe — see `server/lib/providers-config.js`
+// for the load-bearing details.
+//
+// `apiKey` is NEVER returned in plaintext — the response uses
+// `apiKeyMasked` (first-N + *** + last-N framing). The PUT body uses
+// `auth.apiKey === ""` as the keep-existing-key sentinel (a UI that
+// didn't touch the key field sends an empty string, the route copies
+// the on-disk key onto the record before validation). The two
+// conventions together mean the masked placeholder is the
+// placekeeper, not a value to round-trip.
+
+export type ProviderProtocol = "openai" | "anthropic" | "gemini";
+export type ProviderAuthType = "byok" | "coding-plan";
+
+export interface ProviderAuthView {
+  type: ProviderAuthType;
+  hasKey: boolean;
+  apiKeyMasked: string;
+  baseURL: string;
+}
+
+export interface ProviderModelView {
+  id: string;
+  label: string;
+  contextLimit?: number;
+  thinkingLevels?: string[];
+  modalities?: string[];
+}
+
+export interface ProviderView {
+  id: string;
+  label: string;
+  preset?: string;
+  enabled: boolean;
+  protocol: ProviderProtocol;
+  auth: ProviderAuthView;
+  models: ProviderModelView[];
+}
+
+export interface ProvidersSnapshot {
+  ok: true;
+  version: 2;
+  providers: ProviderView[];
+  sources: { env: string | null; cwd: string | null; user: string };
+  userPath: string;
+}
+
+export interface ProvidersPutResult {
+  ok: true;
+  providers: ProviderView[];
+  path: string;
+}
+
+/**
+ * GET /api/providers — the masked catalogue.
+ *
+ * Used by the management panel and by anything that wants to render a
+ * provider's "is this configured" status (the composer already gets
+ * `hasKey` from `/api/models`, so this call is panel-only).
+ */
+export const listProviders = () => request<ProvidersSnapshot>("/api/providers");
+
+/**
+ * PUT /api/providers — replace the user-level file with `body`.
+ *
+ * The body is the full v2 record (same shape `listProviders` returns);
+ * the route normalises and validates. `auth.apiKey === ""` on any
+ * incoming provider is the keep-existing-key sentinel — see
+ * `lib/providers-config.js#applyKeepKeyConvention`.
+ */
+export const putProviders = (body: {
+  version: 2;
+  providers: Array<{
+    id: string;
+    label?: string;
+    preset?: string;
+    enabled?: boolean;
+    protocol: ProviderProtocol;
+    auth: {
+      type: ProviderAuthType;
+      apiKey: string;
+      baseURL?: string;
+    };
+    models: Array<{
+      id: string;
+      label?: string;
+      contextLimit?: number;
+      thinkingLevels?: string[];
+      modalities?: string[];
+    }>;
+  }>;
+}) =>
+  request<ProvidersPutResult>("/api/providers", {
+    method: "PUT",
+    json: body,
+  });
+
+export interface ProviderTestResult {
+  ok: boolean;
+  protocol: string;
+  /** OK | INVALID_KEY | BAD_PROTOCOL | PROBE_FAILED */
+  code: string;
+  error?: string;
+  latencyMs?: number;
+  detail?: string;
+}
+
+/**
+ * POST /api/providers/test — connectivity probe.
+ *
+ * Takes the same `protocol` + `auth` shape as the management form (so
+ * the user can test BEFORE saving). `timeoutMs` is optional; the
+ * server defaults to 8s. The server returns 200 on success and a
+ * structured error otherwise — `request()` throws on non-OK, so this
+ * call uses raw fetch to capture the structured body either way.
+ */
+export async function testProviderConnection(payload: {
+  protocol: ProviderProtocol;
+  auth: { type: ProviderAuthType; apiKey: string; baseURL?: string };
+  timeoutMs?: number;
+}): Promise<ProviderTestResult> {
+  const response = await fetch(withClientQuery("/api/providers/test"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const text = await response.text();
+  let parsed: ProviderTestResult | null = null;
+  try {
+    parsed = text ? (JSON.parse(text) as ProviderTestResult) : null;
+  } catch {
+    parsed = null;
+  }
+  if (!parsed) {
+    throw new Error(response.ok ? "unexpected non-JSON response" : `HTTP ${response.status}`);
+  }
+  return parsed;
+}
+
 /**
  * The account card's data, from the engine's `mcode/account/status` method.
  *

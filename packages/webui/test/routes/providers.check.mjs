@@ -299,6 +299,202 @@ describe("handlePutProviders — /api/providers PUT", () => {
     assert.ok(found, "newprov visible after PUT");
     assert.equal(found.models.length, 1);
   });
+
+  test("keep-existing-key: empty apiKey in PUT preserves the key on disk", async () => {
+    // Seed: write a provider with a plaintext key.
+    await providersRoute.handlePutProviders(
+      fakeReq({
+        version: 2,
+        providers: [
+          {
+            id: "kp",
+            label: "KP",
+            protocol: "openai",
+            auth: { type: "byok", apiKey: "sk-original-plaintext-aaaa" },
+            models: [],
+          },
+        ],
+      }),
+      fakeRes(),
+      {},
+    );
+    // Edit: PUT the same provider back with apiKey === "" (the
+    // sentinel). Without the convention the plaintext would be wiped;
+    // with it, the on-disk key is preserved.
+    await providersRoute.handlePutProviders(
+      fakeReq({
+        version: 2,
+        providers: [
+          {
+            id: "kp",
+            label: "KP renamed",
+            protocol: "openai",
+            auth: { type: "byok", apiKey: "" },
+            models: [{ id: "m" }],
+          },
+        ],
+      }),
+      fakeRes(),
+      {},
+    );
+    const onDisk = JSON.parse(
+      readFileSync(providersConfig.getUserLevelPath(), "utf8"),
+    );
+    const kp = onDisk.providers.find((p) => p.id === "kp");
+    assert.equal(kp.auth.apiKey, "sk-original-plaintext-aaaa");
+    assert.equal(kp.label, "KP renamed");
+    assert.equal(kp.models.length, 1);
+  });
+
+  test("keep-existing-key: non-empty apiKey in PUT replaces the key", async () => {
+    await providersRoute.handlePutProviders(
+      fakeReq({
+        version: 2,
+        providers: [
+          {
+            id: "kp2",
+            label: "KP2",
+            protocol: "openai",
+            auth: { type: "byok", apiKey: "sk-old-plaintext-aaaa" },
+            models: [],
+          },
+        ],
+      }),
+      fakeRes(),
+      {},
+    );
+    await providersRoute.handlePutProviders(
+      fakeReq({
+        version: 2,
+        providers: [
+          {
+            id: "kp2",
+            label: "KP2",
+            protocol: "openai",
+            auth: { type: "byok", apiKey: "sk-new-plaintext-bbbb" },
+            models: [],
+          },
+        ],
+      }),
+      fakeRes(),
+      {},
+    );
+    const onDisk = JSON.parse(
+      readFileSync(providersConfig.getUserLevelPath(), "utf8"),
+    );
+    const kp = onDisk.providers.find((p) => p.id === "kp2");
+    assert.equal(kp.auth.apiKey, "sk-new-plaintext-bbbb");
+  });
+
+  test("keep-existing-key: ABSENT auth.apiKey preserves the stored key", async () => {
+    // Acceptance hardening (ticket 03 round 2): the PUT body drops
+    // the `auth.apiKey` field entirely. Without the convention's
+    // absent-field branch, the v2 normaliser would coerce undefined
+    // to "" and write the file as empty — silently wiping a stored
+    // credential. The route must keep the previous key.
+    await providersRoute.handlePutProviders(
+      fakeReq({
+        version: 2,
+        providers: [
+          {
+            id: "abs",
+            label: "Absent",
+            protocol: "openai",
+            auth: { type: "byok", apiKey: "sk-on-disk-original-aaaa" },
+            models: [],
+          },
+        ],
+      }),
+      fakeRes(),
+      {},
+    );
+    await providersRoute.handlePutProviders(
+      fakeReq({
+        version: 2,
+        providers: [
+          {
+            id: "abs",
+            label: "Absent renamed",
+            protocol: "openai",
+            auth: { type: "byok" }, // apiKey field is gone
+            models: [{ id: "m1" }],
+          },
+        ],
+      }),
+      fakeRes(),
+      {},
+    );
+    const onDisk = JSON.parse(
+      readFileSync(providersConfig.getUserLevelPath(), "utf8"),
+    );
+    const row = onDisk.providers.find((p) => p.id === "abs");
+    assert.equal(row.auth.apiKey, "sk-on-disk-original-aaaa");
+    assert.equal(row.label, "Absent renamed");
+    assert.equal(row.models.length, 1, "model row is NOT dropped");
+  });
+
+  test("keep-existing-key: env-layer key is NOT materialised to user-level", async () => {
+    // The convention's "previous key" lookup reads the user-level
+    // file only — NOT the merged catalogue. Without this scoping,
+    // editing an env-defined provider would copy the deployment
+    // secret into the user-level file, materialising it onto disk
+    // that the operator owns. Pinning here so a future refactor that
+    // swaps to `loadProvidersConfig().providers` regresses loudly.
+    const envPath = join(_tmpCwd, "env-only.json");
+    writeFileSync(
+      envPath,
+      JSON.stringify({
+        providers: [
+          {
+            id: "envprov",
+            protocol: "openai",
+            auth: { type: "byok", apiKey: "sk-env-secret-only-aaaa" },
+            models: [],
+          },
+        ],
+      }),
+    );
+    process.env.MCODE_WEBUI_MODELS_CONFIG = envPath;
+    try {
+      // Simulate a PUT body that targets the env-defined provider
+      // with the empty sentinel. Without the user-layer scoping, the
+      // convention would copy the env secret into the user file.
+      await providersRoute.handlePutProviders(
+        fakeReq({
+          version: 2,
+          providers: [
+            {
+              id: "envprov",
+              label: "Env Provider (edited)",
+              protocol: "openai",
+              auth: { type: "byok", apiKey: "" },
+              models: [{ id: "m1" }],
+            },
+          ],
+        }),
+        fakeRes(),
+        {},
+      );
+      const onDisk = JSON.parse(
+        readFileSync(providersConfig.getUserLevelPath(), "utf8"),
+      );
+      const row = onDisk.providers.find((p) => p.id === "envprov");
+      // The user-level record MUST NOT carry the env secret. The
+      // env secret is deployment-managed and stays at the env layer.
+      assert.equal(
+        row.auth.apiKey,
+        "",
+        "env-layer key must not leak into the user-level file",
+      );
+      // Other fields ARE written (label / models) — the operator
+      // edits land in user-level as expected; only the key stays
+      // at the env layer.
+      assert.equal(row.label, "Env Provider (edited)");
+      assert.equal(row.models.length, 1);
+    } finally {
+      delete process.env.MCODE_WEBUI_MODELS_CONFIG;
+    }
+  });
 });
 
 // =====================================================================

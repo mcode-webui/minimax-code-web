@@ -79,6 +79,40 @@ describe("parseSseFrame — control frames", () => {
     const action = parseSseFrame("auth.token_rotated", "deadbeef");
     assert.equal(action.kind, "ignored");
   });
+
+  test("providers.updated yields the masked provider array", () => {
+    // Ticket 03: the server broadcasts this after a successful
+    // PUT on /api/providers. The store forwards the array; the
+    // management panel and model selector bump a revision counter
+    // and re-fetch through the typed API rather than trust the
+    // SSE payload shape for masking + auth headers.
+    const payload = {
+      version: 2,
+      providers: [{ id: "p1", label: "P1", auth: { hasKey: true, apiKeyMasked: "sk-a***b" } }],
+    };
+    const action = parseSseFrame("providers.updated", JSON.stringify(payload));
+    assert.equal(action.kind, "providers-updated");
+    if (action.kind === "providers-updated") {
+      assert.equal(action.providers.length, 1);
+      assert.equal((action.providers[0] as { id: string }).id, "p1");
+    }
+  });
+
+  test("providers.updated with no providers key falls back to an empty array", () => {
+    // Server contract is { version, providers }; the parser is
+    // defensive so a malformed shape cannot crash the stream.
+    const action = parseSseFrame("providers.updated", JSON.stringify({ version: 2 }));
+    assert.equal(action.kind, "providers-updated");
+    if (action.kind === "providers-updated") {
+      assert.deepEqual(action.providers, []);
+    }
+  });
+
+  test("providers.updated with malformed JSON is reported", () => {
+    const action = parseSseFrame("providers.updated", "{not json");
+    assert.equal(action.kind, "malformed");
+    if (action.kind === "malformed") assert.equal(action.event, "providers.updated");
+  });
 });
 
 describe("parseSseFrame — forward compatibility", () => {

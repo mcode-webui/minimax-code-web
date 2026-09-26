@@ -94,7 +94,7 @@ const PERMISSION_MODES: { id: string; key: MessageKey; icon?: IconName; selectab
 ];
 
 export function Composer({ t, inline = false }: { t: (key: MessageKey) => string; inline?: boolean }) {
-  const { state } = useSessionContext();
+  const { state, providersRevision } = useSessionContext();
   // Text, attachments, and the error banner live in the module-scope draft
   // store (lib/composer-draft.ts) rather than useState: page.tsx swaps this
   // component between two tree positions when the first conversation line
@@ -176,7 +176,7 @@ export function Composer({ t, inline = false }: { t: (key: MessageKey) => string
         ),
       )
       .catch(() => {});
-  }, [modelKey, sessionKey]);
+  }, [modelKey, sessionKey, providersRevision]);
 
   /**
    * Slash-command completion.
