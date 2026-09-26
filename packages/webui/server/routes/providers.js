@@ -60,6 +60,10 @@ import {
   normaliseProvider,
 } from "../lib/providers-config.js";
 import {
+  syncProvidersToEngine,
+  syncProvidersFromPutBody,
+} from "../lib/engine-provider-sync.js";
+import {
   PROVIDER_PRESETS,
   publicPresetView,
   presetToMaterialised,
@@ -67,6 +71,7 @@ import {
 } from "../lib/provider-presets.js";
 import { pushStateFor, sseByCid } from "../lib/state-bus.js";
 import { readJson } from "../lib/read-json.js";
+import { shutdownMcodeAcpSingleton } from "../lib/acp-client.js";
 
 /**
  * GET /api/providers — masked catalogue + resolved-layer summary.
@@ -146,12 +151,13 @@ export async function handlePutProviders(req, res, _ctx) {
 // or non-array providers list is an error the original validation
 // surfaces as BAD_BODY, and we must not change that behaviour.
 const incomingProviders = Array.isArray(parsed.providers) ? parsed.providers : null;
+const existingUserLevel = loadUserLevelProviders();
 const toWrite =
   incomingProviders === null
     ? parsed
     : {
         ...parsed,
-        providers: applyKeepKeyConvention(loadUserLevelProviders(), incomingProviders),
+        providers: applyKeepKeyConvention(existingUserLevel, incomingProviders),
       };
 const result = writeProvidersConfig(toWrite);
   if (!result.ok) {
@@ -160,6 +166,26 @@ const result = writeProvidersConfig(toWrite);
     return res.end(
       JSON.stringify({ ok: false, code: result.code, error: result.error }),
     );
+  }
+  // ticket 05: project the same providers into the engine's
+  // `custom_provider` tree so the engine's `model` config option
+  // (packages/tui/src/acp/control-state.ts) advertises them and
+  // `applyRecordedModel` can resolve them. We run the sync AFTER
+  // the user-level file is durable so a sync failure cannot leave the
+  // engine advertising something the user-level file does not have.
+  // Surface the error in the response (acceptance criterion 1) but
+  // keep the response status 200 — the user-level write succeeded,
+  // the dialog refresh reflects the new catalogue, and the operator
+  // can retry the sync on the next PUT. The `engineSync` field lets
+  // the UI surface a non-blocking warning.
+  const engineSync = await syncProvidersToEngine(result.providers);
+  if (engineSync.ok) {
+    // Tear down the singleton subprocess so the next operation
+    // spawns a fresh one that reads the new config.yaml. Brand-new
+    // prompt subprocesses spawned by `runMcodeAcp` already pick up
+    // the latest config; this is only about the singleton used for
+    // session/list, commands probe, and account status.
+    shutdownMcodeAcpSingleton();
   }
   // Reload + broadcast. `loadProvidersConfig()` re-reads the file on
   // every call (no in-process cache), so a follow-up GET already
@@ -177,6 +203,22 @@ const result = writeProvidersConfig(toWrite);
       ok: true,
       providers: result.providers.map(publicView),
       path: result.path,
+      ...(engineSync.ok
+        ? {
+            engineSync: {
+              ok: true,
+              written: engineSync.written,
+              keys: engineSync.keys,
+            },
+          }
+        : {
+            engineSync: {
+              ok: false,
+              code: engineSync.code,
+              error: engineSync.error,
+            },
+            warning: `engine config sync failed: ${engineSync.error}`,
+          }),
     }),
   );
 }
@@ -431,6 +473,17 @@ export async function handleEnablePreset(req, res, _ctx, params = {}) {
       JSON.stringify({ ok: false, code: result.code, error: result.error }),
     );
   }
+  // ticket 05: project to the engine's custom_provider tree as
+  // well. The preset itself lands without an apiKey (the user must
+  // supply one), so the sync sees an "enabled without key" record
+  // and correctly skips it — but the same shape runs through the
+  // PUT path's logic when the user later supplies a key and saves
+  // again. We still call the sync so a non-preset byok provider the
+  // user already has flows through with no behaviour change.
+  const engineSync = await syncProvidersToEngine(result.providers);
+  if (engineSync.ok) {
+    shutdownMcodeAcpSingleton();
+  }
   // Broadcast — same SSE event PUT uses. The UI's model picker
   // re-fetches /api/models after this, picking up the new
   // template-driven entries.
@@ -446,6 +499,22 @@ export async function handleEnablePreset(req, res, _ctx, params = {}) {
       alreadyEnabled: false,
       provider: publicView(persisted),
       path: result.path,
+      ...(engineSync.ok
+        ? {
+            engineSync: {
+              ok: true,
+              written: engineSync.written,
+              keys: engineSync.keys,
+            },
+          }
+        : {
+            engineSync: {
+              ok: false,
+              code: engineSync.code,
+              error: engineSync.error,
+            },
+            warning: `engine config sync failed: ${engineSync.error}`,
+          }),
     }),
   );
 }

@@ -188,6 +188,16 @@ function matchesModelId(recorded, engineCurrent, modelOption) {
  *   after the last separator in the recorded id) matching exactly one
  *   option → return that option's `value`;
  * - multiple matches or none → null (caller skips).
+ *
+ * Ticket 05: the bare-name match is case-insensitive. The engine
+ * populates `option.name` from the user-supplied model label (e.g.
+ * `GLM-5.3` for a custom provider whose label happens to differ in
+ * case from the model id), while the webui records the model id in
+ * `cs.model.name` (e.g. `glm-5.3`). A strict comparison would skip
+ * the apply and leave the engine on its default. The recorded id is
+ * authoritative — when only one option matches case-insensitively,
+ * that option is the right target. (Multiple case-insensitive
+ * matches still returns null; ambiguity is ambiguity.)
  */
 function resolveModelId(recorded, modelOption) {
   if (!modelOption || !Array.isArray(modelOption.options)) return null;
@@ -199,7 +209,9 @@ function resolveModelId(recorded, modelOption) {
     if (o.value === recorded) return o.value;
   }
   const bareName = lastSegment(recorded);
-  const matches = options.filter((o) => o.name === bareName);
+  const matches = options.filter(
+    (o) => typeof o.name === "string" && o.name.toLowerCase() === bareName.toLowerCase(),
+  );
   if (matches.length === 1) return matches[0].value;
   return null;
 }
