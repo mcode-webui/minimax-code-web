@@ -13,6 +13,10 @@ import {
 } from "../lib/mcode-rpc.js";
 import { getBuiltinModelsFromMcode } from "../lib/models.js";
 import { loadProvidersConfig } from "../lib/providers-config.js";
+import {
+  readEngineCatalogue,
+  mergeEngineAndWebuiProviders,
+} from "../lib/engine-catalogue.js";
 import { webuiModeToLabel } from "../lib/interaction/permission-presets.js";
 import { readJson } from "../lib/read-json.js";
 
@@ -52,18 +56,28 @@ function readModelsConfig() {
 /**
  * Layered resolver used by /api/models. Returns the merged
  * `{ providers }` (v2 shape) or `null` when every layer is missing.
- * The deep-merge + dedupe semantics are owned by
- * `loadProvidersConfig()`; this helper only shapes its return into
- * the legacy `{ providers: [...] }` view that the rest of
+ *
+ * Ticket 06: the engine's `custom_provider` tree is the new bottom
+ * layer; the webui layers (env > cwd > user, already merged inside
+ * `loadProvidersConfig`) win on id collision. The merge itself
+ * lives in `mergeEngineAndWebuiProviders()` — see its file header
+ * for the precedence rules. The helper here just shapes its
+ * return into the legacy `{ providers: [...] }` view that
  * handleGetModels already understood.
  */
 function readProvidersConfigForModels() {
   try {
     const cfg = loadProvidersConfig();
-    if (!cfg || !Array.isArray(cfg.providers) || cfg.providers.length === 0) {
-      return null;
-    }
-    return { providers: cfg.providers };
+    const webuiProviders = (cfg && Array.isArray(cfg.providers)) ? cfg.providers : [];
+    // Engine catalogue read is best-effort: a missing `config.yaml`
+    // or a YAML parse error yields []. The merge below treats an
+    // empty engine catalogue as "no engine layer" and returns the
+    // webui layers verbatim — matching the pre-ticket-06 behaviour
+    // for installs without an engine config.
+    const engineProviders = readEngineCatalogue();
+    const merged = mergeEngineAndWebuiProviders(engineProviders, webuiProviders);
+    if (merged.length === 0) return null;
+    return { providers: merged };
   } catch {
     return null;
   }
@@ -93,6 +107,10 @@ function providerOf(modelId, fallback = "minimax_api") {
  *      when a session is active.
  *   2. Optional `MCODE_WEBUI_MODELS_CONFIG` / `models.json` providers
  *      config. Per-provider groups with labels and `contextLimit`s.
+ *      Ticket 06: this layer is the webui-side merge of
+ *      `env > cwd > user-level`, with the engine's
+ *      `custom_provider` tree as a new bottom layer — see
+ *      `lib/engine-catalogue.js` for the merge rules.
  *   3. `getBuiltinModelsFromMcode()` — extracted from mcode's own
  *      cli.js bundle, so the list tracks mcode's TUI without a webui
  *      release.
@@ -156,6 +174,11 @@ export function handleGetModels(_req, res, ctx) {
   //    fallback for callers that pass the legacy `models.json`
   //    through a different code path (none today, but keeping it
   //    documents the contract).
+  //
+  //    Ticket 06: the engine's `custom_provider` tree is also a
+  //    catalogue source — readEngineCatalogue() projects it to the
+  //    v2 shape (no key material) and mergeEngineAndWebuiProviders()
+  //    unions it with the webui layers (webui wins on collision).
   const config = readProvidersConfigForModels();
   if (config) {
     for (const p of config.providers) {
@@ -191,13 +214,22 @@ export function handleGetModels(_req, res, ctx) {
         models.push(entry);
         list.push(entry);
       }
+      // Auth shape: only `hasKey` and `type`; no apiKey/baseURL.
+      // Operators see "configured or not" without leaking the secret.
+      // Ticket 06: the merged layer (engine + webui) may carry
+      // `hasKey` either via `p.auth.apiKey` (webui-side plaintext —
+      // masked elsewhere) or via `p.auth.hasKey` (engine-side
+      // boolean, set by `lib/engine-catalogue.js`). Either signal
+      // means the provider is configurable from the picker.
+      const groupHasKey = !!(
+        (p.auth && p.auth.apiKey) ||
+        (p.auth && p.auth.hasKey)
+      );
       groups.push({
         id: p.id,
         label: typeof p.label === "string" && p.label ? p.label : p.id,
-        // Auth shape: only `hasKey` and `type`; no apiKey/baseURL.
-        // Operators see "configured or not" without leaking the secret.
         auth: {
-          hasKey: !!(p.auth && p.auth.apiKey),
+          hasKey: groupHasKey,
           type: p.auth && typeof p.auth.type === "string" ? p.auth.type : "byok",
         },
         protocol: typeof p.protocol === "string" ? p.protocol : "openai",
