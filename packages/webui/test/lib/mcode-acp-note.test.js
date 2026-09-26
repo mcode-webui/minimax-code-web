@@ -180,9 +180,11 @@ describe("applyConfigOptionUpdate — propagate model + permissionMode (defect #
         id: "model",
         type: "select",
         currentValue: model,
+        // Engine wire format (m:<provider>:<model>:u|v:<variant>); see
+        // packages/tui/src/acp/control-state.ts#modelConfigValue.
         options: [
-          { value: "minimax_api:MiniMax-M3", name: "MiniMax-M3" },
-          { value: "minimax_api:MiniMax-M2.7", name: "MiniMax-M2.7" },
+          { value: "m:minimax:MiniMax-M3:u", name: "MiniMax-M3" },
+          { value: "m:minimax:MiniMax-M2.7:u", name: "MiniMax-M2.7" },
         ],
       });
     }
@@ -191,62 +193,62 @@ describe("applyConfigOptionUpdate — propagate model + permissionMode (defect #
 
   test("propagates a model change into cs.model.name", () => {
     const cs = {
-      model: { name: "minimax_api:MiniMax-M3" },
+      model: { name: "m:minimax:MiniMax-M3:u" },
       permissions: "Full access",
     };
     applyConfigOptionUpdate(cs, {
-      configOptions: optsFor({ model: "minimax_api:MiniMax-M2.7" }),
+      configOptions: optsFor({ model: "m:minimax:MiniMax-M2.7:u" }),
     });
-    assert.equal(cs.model.name, "minimax_api:MiniMax-M2.7");
+    assert.equal(cs.model.name, "m:minimax:MiniMax-M2.7:u");
   });
 
   test("propagates both model and permissionMode in the same update", () => {
     const cs = {
-      model: { name: "minimax_api:MiniMax-M3" },
+      model: { name: "m:minimax:MiniMax-M3:u" },
       permissions: "Full access",
     };
     applyConfigOptionUpdate(cs, {
       configOptions: optsFor({
-        model: "minimax_api:MiniMax-M2.7",
+        model: "m:minimax:MiniMax-M2.7:u",
         permissionMode: "default",
       }),
     });
-    assert.equal(cs.model.name, "minimax_api:MiniMax-M2.7");
+    assert.equal(cs.model.name, "m:minimax:MiniMax-M2.7:u");
     assert.equal(cs.permissions, "Ask");
   });
 
   test("leaves cs.model alone when the model option is absent", () => {
-    const cs = { model: { name: "minimax_api:MiniMax-M3" }, permissions: "Full access" };
+    const cs = { model: { name: "m:minimax:MiniMax-M3:u" }, permissions: "Full access" };
     applyConfigOptionUpdate(cs, {
       configOptions: optsFor({ permissionMode: "default" }),
     });
-    assert.equal(cs.model.name, "minimax_api:MiniMax-M3", "no model option → model untouched");
+    assert.equal(cs.model.name, "m:minimax:MiniMax-M3:u", "no model option → model untouched");
     assert.equal(cs.permissions, "Ask");
   });
 
   test("leaves cs.model alone when the model option has no currentValue", () => {
-    const cs = { model: { name: "minimax_api:MiniMax-M3" }, permissions: "Full access" };
+    const cs = { model: { name: "m:minimax:MiniMax-M3:u" }, permissions: "Full access" };
     applyConfigOptionUpdate(cs, {
       configOptions: [
         { id: "model", type: "select", currentValue: null, options: [] },
         { id: "permissionMode", type: "select", currentValue: "default" },
       ],
     });
-    assert.equal(cs.model.name, "minimax_api:MiniMax-M3", "empty currentValue → model untouched");
+    assert.equal(cs.model.name, "m:minimax:MiniMax-M3:u", "empty currentValue → model untouched");
   });
 
   test("initialises cs.model when only the model option arrived (no prior cs.model)", () => {
     const cs = { permissions: "Full access" };
     applyConfigOptionUpdate(cs, {
-      configOptions: optsFor({ model: "minimax_api:MiniMax-M2.7" }),
+      configOptions: optsFor({ model: "m:minimax:MiniMax-M2.7:u" }),
     });
-    assert.deepEqual(cs.model, { name: "minimax_api:MiniMax-M2.7" });
+    assert.deepEqual(cs.model, { name: "m:minimax:MiniMax-M2.7:u" });
   });
 
   test("ignores an update with no configOptions array", () => {
-    const cs = { model: { name: "minimax_api:MiniMax-M3" }, permissions: "Full access" };
+    const cs = { model: { name: "m:minimax:MiniMax-M3:u" }, permissions: "Full access" };
     applyConfigOptionUpdate(cs, { /* no configOptions */ });
-    assert.equal(cs.model.name, "minimax_api:MiniMax-M3");
+    assert.equal(cs.model.name, "m:minimax:MiniMax-M3:u");
     assert.equal(cs.permissions, "Full access");
   });
 });
@@ -261,33 +263,33 @@ describe("applyConfigOptionUpdate — propagate model + permissionMode (defect #
 describe("applyConfigOptionUpdate — propagate thinkingEffort (ticket 04)", () => {
   function optsWithThinking(thinking) {
     return [
-      { id: "model", type: "select", currentValue: "minimax_api:MiniMax-M3", options: [] },
+      { id: "model", type: "select", currentValue: "m:minimax:MiniMax-M3:v:", options: [] },
       { id: "thinkingEffort", type: "select", currentValue: thinking, options: [] },
     ];
   }
 
   test("propagates a thinkingEffort change into cs.model.thinking", () => {
-    const cs = { model: { name: "minimax_api:MiniMax-M3", thinking: "low" }, permissions: "Full access" };
+    const cs = { model: { name: "m:minimax:MiniMax-M3:v:", thinking: "low" }, permissions: "Full access" };
     applyConfigOptionUpdate(cs, { configOptions: optsWithThinking("high") });
     assert.equal(cs.model.thinking, "high");
-    assert.equal(cs.model.name, "minimax_api:MiniMax-M3");
+    assert.equal(cs.model.name, "m:minimax:MiniMax-M3:v:");
   });
 
   test("clears cs.model.thinking when the engine clears its currentValue", () => {
-    const cs = { model: { name: "minimax_api:MiniMax-M3", thinking: "high" }, permissions: "Full access" };
+    const cs = { model: { name: "m:minimax:MiniMax-M3:v:", thinking: "high" }, permissions: "Full access" };
     applyConfigOptionUpdate(cs, { configOptions: optsWithThinking("") });
     assert.equal(
       Object.prototype.hasOwnProperty.call(cs.model, "thinking"),
       false,
       "thinking field dropped — picker shows no override",
     );
-    assert.equal(cs.model.name, "minimax_api:MiniMax-M3");
+    assert.equal(cs.model.name, "m:minimax:MiniMax-M3:v:");
   });
 
   test("leaves cs.model alone when no thinkingEffort option is in the update", () => {
-    const cs = { model: { name: "minimax_api:MiniMax-M3", thinking: "low" }, permissions: "Full access" };
+    const cs = { model: { name: "m:minimax:MiniMax-M3:v:", thinking: "low" }, permissions: "Full access" };
     applyConfigOptionUpdate(cs, {
-      configOptions: [{ id: "model", type: "select", currentValue: "minimax_api:MiniMax-M3", options: [] }],
+      configOptions: [{ id: "model", type: "select", currentValue: "m:minimax:MiniMax-M3:v:", options: [] }],
     });
     assert.equal(cs.model.thinking, "low", "untouched when option absent");
   });
@@ -302,16 +304,30 @@ describe("applyConfigOptionUpdate — propagate thinkingEffort (ticket 04)", () 
 // or accepts a recorded id without checking it against the engine's
 // options, would re-introduce "engine ran on default while chip showed
 // the user's pick".
-// ============================================================
-
+//
+// Wire format note (ticket 05): the engine sends `option.value` in the
+// `m:<encodedProvider>:<encodedModel>:u` (or `:v:<variant>`) shape —
+// see packages/tui/src/acp/control-state.ts#modelConfigValue. The webui
+// records `cs.model.name` in the user-facing `provider/model` form. The
+// resolution logic below pins both shapes so a future test refactor
+// cannot silently regress either direction.
 const MODEL_OPTION = {
   type: "select",
   id: "model",
-  currentValue: "minimax_api:MiniMax-M3",
+  currentValue: "m:minimax:MiniMax-M3:v:",
   options: [
-    { value: "minimax_api:MiniMax-M3", name: "MiniMax-M3" },
-    { value: "minimax_api:MiniMax-M2.7", name: "MiniMax-M2.7" },
-    { value: "minimax_api:MiniMax-M2.5", name: "MiniMax-M2.5" },
+    { value: "m:minimax:MiniMax-M3:v:", name: "MiniMax-M3" },
+    { value: "m:minimax:MiniMax-M3:v:thinking", name: "MiniMax-M3 · thinking" },
+    { value: "m:minimax:MiniMax-M2.7:u", name: "MiniMax-M2.7" },
+    { value: "m:minimax:MiniMax-M2.5:u", name: "MiniMax-M2.5" },
+    // Ticket 05: a custom_provider option the engine advertises because
+    // webui synced it into the engine's `custom_provider` registry.
+    // The wire value is `m:custom_provider%3A<key>:<modelId>:u` — the
+    // `:` after the provider prefix is URL-encoded.
+    {
+      value: "m:custom_provider%3Abyok-zhipu:glm-5.3:u",
+      name: "glm-5.3",
+    },
   ],
 };
 
@@ -349,8 +365,8 @@ describe("matchesModelId — recorded vs engine currentValue", () => {
   test("matches exact engine-encoded value", () => {
     assert.equal(
       matchesModelId(
-        "minimax_api:MiniMax-M3",
-        "minimax_api:MiniMax-M3",
+        "m:minimax:MiniMax-M3:v:",
+        "m:minimax:MiniMax-M3:v:",
         MODEL_OPTION,
       ),
       true,
@@ -364,8 +380,8 @@ describe("matchesModelId — recorded vs engine currentValue", () => {
     // separately for the early-return shortcut only.
     assert.equal(
       matchesModelId(
-        "minimax_api:MiniMax-M2.5",
-        "minimax_api:MiniMax-M3",
+        "m:minimax:MiniMax-M2.5:u",
+        "m:minimax:MiniMax-M3:v:",
         MODEL_OPTION,
       ),
       true,
@@ -374,8 +390,8 @@ describe("matchesModelId — recorded vs engine currentValue", () => {
   test("an id unknown to the engine's option list does not match", () => {
     assert.equal(
       matchesModelId(
-        "minimax_api:MiniMax-UNKNOWN",
-        "minimax_api:MiniMax-M3",
+        "m:minimax:MiniMax-UNKNOWN:u",
+        "m:minimax:MiniMax-M3:v:",
         MODEL_OPTION,
       ),
       false,
@@ -386,8 +402,8 @@ describe("matchesModelId — recorded vs engine currentValue", () => {
     // is on a different option.
     assert.equal(
       matchesModelId(
-        "minimax_api:MiniMax-M2.7",
-        "minimax_api:MiniMax-M3",
+        "m:minimax:MiniMax-M2.7:u",
+        "m:minimax:MiniMax-M3:v:",
         MODEL_OPTION,
       ),
       true,
@@ -398,7 +414,7 @@ describe("matchesModelId — recorded vs engine currentValue", () => {
     // modelOption; only fall through to the modelOption check when the
     // recorded id is not the engine's current.
     assert.equal(
-      matchesModelId("minimax_api:MiniMax-M2.5", "minimax_api:MiniMax-M3", null),
+      matchesModelId("m:minimax:MiniMax-M2.5:u", "m:minimax:MiniMax-M3:v:", null),
       false,
     );
   });
@@ -407,22 +423,35 @@ describe("matchesModelId — recorded vs engine currentValue", () => {
 describe("resolveModelId — recorded id → engine option.value", () => {
   test("engine-encoded value matches as-is (no rewrite)", () => {
     assert.equal(
-      resolveModelId("minimax_api:MiniMax-M2.5", MODEL_OPTION),
-      "minimax_api:MiniMax-M2.5",
+      resolveModelId("m:minimax:MiniMax-M2.5:u", MODEL_OPTION),
+      "m:minimax:MiniMax-M2.5:u",
     );
   });
   test("builtin-catalogue id (`/` separator) matches by bare name", () => {
-    // The user picked from the builtin catalogue (slash separator) and the
-    // engine uses colon separator; resolve by `option.name`.
+    // The user picked from the builtin catalogue (slash separator) and
+    // the engine's option uses `:`; resolve by `option.name`.
     assert.equal(
-      resolveModelId("minimax_api/MiniMax-M2.5", MODEL_OPTION),
-      "minimax_api:MiniMax-M2.5",
+      resolveModelId("minimax/MiniMax-M2.5", MODEL_OPTION),
+      "m:minimax:MiniMax-M2.5:u",
     );
   });
   test("bare model name with one matching option resolves to that option", () => {
     assert.equal(
       resolveModelId("MiniMax-M2.5", MODEL_OPTION),
-      "minimax_api:MiniMax-M2.5",
+      "m:minimax:MiniMax-M2.5:u",
+    );
+  });
+  test("custom-provider id (`custom_provider:<key>/<model>`) resolves to the registered engine value", () => {
+    // Ticket 05 — the cross-provider flow: after PUT /api/providers syncs
+    // the webui catalogue into the engine's `custom_provider` registry,
+    // the engine advertises the new model in its `model` config option
+    // with the URL-encoded `m:custom_provider%3A<key>:<model>:u` value.
+    // The dialog-stored `cs.model.name` is `custom_provider:byok-zhipu/glm-5.3`;
+    // `resolveModelId` strips to the bare name `glm-5.3` (the only segment
+    // after the `/`) and finds the unique option.value.
+    assert.equal(
+      resolveModelId("custom_provider:byok-zhipu/glm-5.3", MODEL_OPTION),
+      "m:custom_provider%3Abyok-zhipu:glm-5.3:u",
     );
   });
   test("returns null when no option matches (ambiguous or unknown)", () => {
@@ -435,7 +464,7 @@ describe("resolveModelId — recorded id → engine option.value", () => {
       ...MODEL_OPTION,
       options: [
         ...MODEL_OPTION.options,
-        { value: "minimax_api:MiniMax-M3-other", name: "MiniMax-M3" },
+        { value: "m:minimax:MiniMax-M3:v:other", name: "MiniMax-M3" },
       ],
     };
     // Two options share the same `name` → caller skips rather than pick
@@ -462,7 +491,7 @@ describe("applyRecordedModel — integration with a fake acp client", () => {
       },
     };
     const cs = {
-      model: { name: "minimax_api/MiniMax-M2.5" }, // builtin-catalogue form
+      model: { name: "minimax/MiniMax-M2.5" }, // builtin-catalogue form (slash)
       configOptions: [MODEL_OPTION],
     };
     await applyRecordedModel(fakeClient, "sid-1", cs, "cid-1");
@@ -471,18 +500,18 @@ describe("applyRecordedModel — integration with a fake acp client", () => {
     assert.deepEqual(calls[0][1], {
       sessionId: "sid-1",
       configId: "model",
-      value: "minimax_api:MiniMax-M2.5", // resolved to engine form
+      value: "m:minimax:MiniMax-M2.5:u", // resolved to engine wire form
     });
     // The local configOptions snapshot reflects the new currentValue, so
     // the next /api/models reads the same model the engine is running.
-    assert.equal(cs.configOptions[0].currentValue, "minimax_api:MiniMax-M2.5");
+    assert.equal(cs.configOptions[0].currentValue, "m:minimax:MiniMax-M2.5:u");
   });
 
   test("skips when the recorded id already matches the engine's currentValue", async () => {
     const calls = [];
     const fakeClient = { request: async (m) => { calls.push([m]); return {}; } };
     const cs = {
-      model: { name: "minimax_api:MiniMax-M3" },
+      model: { name: "m:minimax:MiniMax-M3:v:" },
       configOptions: [MODEL_OPTION],
     };
     await applyRecordedModel(fakeClient, "sid-1", cs, "cid-1");
@@ -493,11 +522,33 @@ describe("applyRecordedModel — integration with a fake acp client", () => {
     const calls = [];
     const fakeClient = { request: async (m) => { calls.push([m]); return {}; } };
     const cs = {
-      model: { name: "minimax_api/MiniMax-XYZ" },
+      model: { name: "minimax/MiniMax-XYZ" },
       configOptions: [MODEL_OPTION],
     };
     await applyRecordedModel(fakeClient, "sid-1", cs, "cid-1");
     assert.deepEqual(calls, [], "unknown id → engine default stands");
+  });
+
+  test("ticket 05 — cross-provider switching: recorded `custom_provider:<key>/<model>` resolves and applies", async () => {
+    const calls = [];
+    const fakeClient = {
+      request: async (m, p) => { calls.push([m, p]); return {}; },
+    };
+    const cs = {
+      model: { name: "custom_provider:byok-zhipu/glm-5.3" },
+      configOptions: [MODEL_OPTION],
+    };
+    await applyRecordedModel(fakeClient, "sid-1", cs, "cid-1");
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0][0], "session/set_config_option");
+    assert.deepEqual(calls[0][1], {
+      sessionId: "sid-1",
+      configId: "model",
+      // The engine's URL-encoded form is what the runtime accepts on the
+      // wire (`packages/tui/src/acp/control-state.ts#modelConfigValue`).
+      value: "m:custom_provider%3Abyok-zhipu:glm-5.3:u",
+    });
+    assert.equal(cs.configOptions[0].currentValue, "m:custom_provider%3Abyok-zhipu:glm-5.3:u");
   });
 });
 
@@ -542,21 +593,21 @@ describe("applyRecordedModel — thinkingEffort pre-session apply (ticket 04)", 
 
   test("applies recorded thinkingEffort after the model when both are recorded", async () => {
     const { calls, client } = clientRecorder();
-    const cs = csWithOptions("minimax_api/MiniMax-M2.5", "high");
+    const cs = csWithOptions("minimax/MiniMax-M2.5", "high");
     await applyRecordedModel(client, "sid-1", cs, "cid-1");
     assert.equal(calls.length, 2, "model then effort");
     assert.equal(calls[0][0], "session/set_config_option");
     assert.equal(calls[0][1].configId, "model");
     assert.equal(calls[1][1].configId, "thinkingEffort");
     assert.equal(calls[1][1].value, "high");
-    // Local config-options mirror reflects both applies.
-    assert.equal(cs.configOptions[0].currentValue, "minimax_api:MiniMax-M2.5");
+    // Local config-options mirror reflects both applies (engine wire format).
+    assert.equal(cs.configOptions[0].currentValue, "m:minimax:MiniMax-M2.5:u");
     assert.equal(cs.configOptions[1].currentValue, "high");
   });
 
   test("applies only the effort when the recorded model already matches the engine", async () => {
     const { calls, client } = clientRecorder();
-    const cs = csWithOptions("minimax_api:MiniMax-M3", "medium");
+    const cs = csWithOptions("m:minimax:MiniMax-M3:v:", "medium");
     await applyRecordedModel(client, "sid-1", cs, "cid-1");
     assert.equal(calls.length, 1);
     assert.equal(calls[0][1].configId, "thinkingEffort");
@@ -565,7 +616,7 @@ describe("applyRecordedModel — thinkingEffort pre-session apply (ticket 04)", 
 
   test("applies only the model when no thinking level is recorded", async () => {
     const { calls, client } = clientRecorder();
-    const cs = csWithOptions("minimax_api/MiniMax-M2.5", "");
+    const cs = csWithOptions("minimax/MiniMax-M2.5", "");
     await applyRecordedModel(client, "sid-1", cs, "cid-1");
     assert.equal(calls.length, 1);
     assert.equal(calls[0][1].configId, "model");
@@ -610,7 +661,7 @@ describe("applyRecordedModel — thinkingEffort pre-session apply (ticket 04)", 
     console.warn = (msg) => warnings.push(msg);
     let cs;
     try {
-      cs = csWithOptions("minimax_api/MiniMax-M2.5", "turbo");
+      cs = csWithOptions("minimax/MiniMax-M2.5", "turbo");
       await applyRecordedModel(client, "sid-1", cs, "cid-1");
     } finally {
       console.warn = origWarn;

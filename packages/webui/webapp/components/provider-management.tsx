@@ -337,6 +337,37 @@ export function ProviderManagementPanel({
                               : "no key"}
                       </span>
                     </div>
+                    {/* Configured-models preview (ticket 05): chips for the
+                        configured models with thinking levels / modalities so
+                        the operator sees what's wired up without expanding
+                        the editor. The list is read directly off the
+                        server-side `ProviderView.models[]` — it is the same
+                        shape the dialog surfaces, so what the user sees
+                        here matches the model picker. */}
+                    {p.models.length > 0 ? (
+                      <div
+                        data-testid={`provider-models-summary-${p.id || "new"}`}
+                        className="flex flex-wrap items-center gap-1 pt-1"
+                      >
+                        {p.models.slice(0, 4).map((m) => (
+                          <span
+                            key={m.id}
+                            data-testid={`provider-model-chip-${p.id || "new"}-${m.id}`}
+                            className="rounded-md border border-border_default bg-bg_default_primary px-1.5 py-0.5 text-caption-small-strong text-text_default_secondary font-family-code"
+                          >
+                            {m.label || m.id}
+                          </span>
+                        ))}
+                        {p.models.length > 4 ? (
+                          <span
+                            data-testid={`provider-model-overflow-${p.id || "new"}`}
+                            className="text-caption-small-strong text-text_default_tertiary"
+                          >
+                            +{p.models.length - 4}
+                          </span>
+                        ) : null}
+                      </div>
+                    ) : null}
                     {test ? (
                       <span
                         data-testid={`provider-test-summary-${p.id || "new"}`}
