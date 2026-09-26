@@ -251,20 +251,44 @@ export class McodeAcpClient extends EventEmitter {
       //   （含截图工具的 base64 rawOutput）都被 push 进数组且无任何消费者，
       //   自迭代长任务把堆撑到 GB 级直到 heap OOM。thinking/answer 累积
       //   保留（finalize 有消费者）。
-      const result = { thinking: '', answer: '', messageIds: new Set(), stopReason: null }
+      // session-isolation/07: thinking/answer are PER-SEGMENT, not
+      //   turn-long. The discriminator mirrors streamAcpPrompt's
+      //   lastChunkKind (session-isolation/06): chunks of the same kind
+      //   append (streaming growth), a kind change resets — so
+      //   result.answer / result.thinking carry the LAST segment when
+      //   the prompt settles, the same value the live `●` / `▲` lines
+      //   hold. The old turn-long concatenation leaked into the [send]
+      //   result log, the ● finalize rewrite, the no-usage token
+      //   estimate and the empty-turn note.
+      const result = { thinking: '', answer: '', messageIds: new Set(), stopReason: null, lastChunkKind: null }
       const onUpdate = (u) => {
         if (u.sessionUpdate === 'agent_thought_chunk' && u.content?.type === 'text') {
+          if (result.lastChunkKind !== 'thought') result.thinking = ''
           result.thinking += u.content.text
+          result.lastChunkKind = 'thought'
           if (u.messageId) result.messageIds.add(u.messageId)
           try { onChunk?.({ kind: 'thought', text: u.content.text }) } catch {}
         } else if (u.sessionUpdate === 'agent_message_chunk' && u.content?.type === 'text') {
+          if (result.lastChunkKind !== 'message') result.answer = ''
           result.answer += u.content.text
+          result.lastChunkKind = 'message'
           if (u.messageId) result.messageIds.add(u.messageId)
           try { onChunk?.({ kind: 'message', text: u.content.text }) } catch {}
         } else if (u.sessionUpdate === 'tool_call') {
+          // session-isolation/07 (acceptance alignment): ONLY
+          // chat-line-breaking tool events reset the per-segment
+          // accumulator — the same rule as streamAcpPrompt's
+          // lastChunkKind (server/lib/mcode-acp.js; keep the two in
+          // sync). Non-rendering events (usage_update, plan_update,
+          // session_info_update, mode/goal/config updates) can
+          // interleave MID-segment and must NOT reset: an early reset
+          // would truncate result.answer before streamAcpPrompt's
+          // settle merge consumes it.
+          result.lastChunkKind = 'tool_call'
           // payload: {toolCallId, title, name, status, rawInput, ...}
           try { onChunk?.({ kind: 'tool_call', update: u }) } catch {}
         } else if (u.sessionUpdate === 'tool_call_update') {
+          result.lastChunkKind = 'tool_call_update'
           try { onChunk?.({ kind: 'tool_update', update: u }) } catch {}
         } else if (u.sessionUpdate === 'usage_update') {
           // payload: {used, size, cost} — cumulative values for the

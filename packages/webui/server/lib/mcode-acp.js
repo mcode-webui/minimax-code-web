@@ -885,6 +885,12 @@ function streamAcpPrompt(
           // plan_update, error, anything else) breaks the same-prefix
           // chain. Without this update, the next message chunk would
           // see lastChunkKind === "message" and skip the reset.
+          // session-isolation/07: this reset set is the canonical one —
+          // keep acp.mjs#prompt's result.lastChunkKind in sync (only
+          // chat-line-breaking tool events reset there; usage / plan /
+          // session_info events must NOT, they can interleave
+          // MID-segment and an early reset would truncate
+          // result.answer).
           r.lastChunkKind = "tool_call";
         } else if (c.kind === "tool_update" && c.update) {
           applyToolUpdate(r, cs, c.update);
@@ -968,6 +974,15 @@ function streamAcpPrompt(
         pushStateFor(cid);
       })
       .then((result) => {
+        // session-isolation/07: the transport's result.answer/thinking
+        // carry the LAST segment (per-segment discriminator in acp.mjs,
+        // mirroring this callback's lastChunkKind resets) — not a
+        // turn-long concatenation. `|| r.answer` keeps the
+        // callback-derived value when the transport saw no chunks of
+        // that kind; both sides now agree on the same segment
+        // semantics, so the empty-turn note, the no-usage token
+        // estimate, the ● finalize rewrite and the [send] result log
+        // all read the final segment.
         r.answer = result.answer || r.answer;
         r.thinking = result.thinking || r.thinking;
         r.stopReason = result.stopReason;

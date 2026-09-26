@@ -3473,6 +3473,7 @@
     "packages/webui/test/integration/sse-channel.test.js",
     "packages/webui/test/integration/upload-limits.test.js",
     "packages/webui/test/lib/acp-cache.check.mjs",
+    "packages/webui/test/lib/acp-transport-answer.test.js",
     "packages/webui/test/lib/alerts.check.mjs",
     "packages/webui/test/lib/auth.test.js",
     "packages/webui/test/lib/authorize.check.mjs",
