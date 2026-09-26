@@ -1132,6 +1132,85 @@ proxy).
   the protocol default). The plaintext key never leaves the
   server in any response path.
 
+### `GET /api/providers/presets`
+
+Built-in preset provider gallery (ticket 02). The response lists every
+curated template (currently 10 — 智谱 / Kimi / 百炼 / 火山 / mimo /
+minimax / opencode go / OpenRouter / Claude Code / Codex) with the
+metadata each one would write into the user-level file on enable.
+The `enabled` flag and `enabledIds` array mark templates whose id
+already appears in the configured catalogue, so the UI can render
+"Enabled" / "Enable" buttons without a second round-trip.
+
+Templates never carry key material: `apiKey` / `apiKeyMasked` / `hasKey`
+are intentionally absent from the gallery payload. Users supply the
+credential after enabling a preset.
+
+**Response 200**
+```json
+{
+  "ok": true,
+  "version": 2,
+  "presets": [
+    {
+      "id": "zhipu",
+      "label": "智谱 (Zhipu / GLM)",
+      "protocol": "openai",
+      "auth": { "type": "byok", "baseURL": "https://open.bigmodel.cn/api/paas/v4/" },
+      "models": [
+        { "id": "glm-4-plus", "label": "GLM-4 Plus", "contextLimit": 128000, "modalities": ["text"] }
+      ],
+      "enabled": false
+    }
+  ],
+  "enabledIds": ["zhipu"]
+}
+```
+
+### `POST /api/providers/preset/:id/enable`
+
+One-click materialisation of a preset into the user-level catalogue.
+The handler resolves the template, merges it into the existing
+catalogue, writes the file via the same `writeProvidersConfig`
+pipeline that PUT uses (atomic rename, full v2 validation gate), and
+broadcasts the standard `providers.updated` SSE event so every
+connected client refreshes its catalogue. The next `/api/models`
+read picks up the new entries without a restart (the user-level file
+is re-read on every call).
+
+Idempotent: a second call for the same id returns `200` with
+`alreadyEnabled: true` and the existing masked record rather than
+clobbering the user's later edits to `apiKey` / `baseURL`. Custom
+providers that share an id with a preset are NOT overwritten — the
+handler surfaces the existing record under the same idempotent
+contract.
+
+The persisted record starts with an empty `apiKey`; the user fills
+it through the same form the custom-providers UI uses.
+
+**Response 200** (newly enabled)
+```json
+{
+  "ok": true,
+  "alreadyEnabled": false,
+  "provider": { /* masked view, same shape as GET */ },
+  "path": "/home/you/.mcode-webui/providers.json"
+}
+```
+
+**Response 200** (idempotent — preset already configured)
+```json
+{
+  "ok": true,
+  "alreadyEnabled": true,
+  "provider": { /* the existing masked record */ }
+}
+```
+
+- `400 UNKNOWN_PRESET` — `:id` does not name a known template.
+- `500 WRITE_FAILED` — disk I/O failure (the in-memory state did
+  not change; the operator should retry).
+
 ---
 
 ## Usage
