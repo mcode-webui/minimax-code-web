@@ -118,6 +118,37 @@ describe("acp.mjs prompt accumulation — per-segment (session-isolation/07)", (
     assert.equal(r.answer, "after tool");
   });
 
+  test("mid-segment usage / session_info events do NOT reset (acceptance alignment)", async () => {
+    // Acceptance drift pin, both directions: the transport's reset set
+    // must match the server's lastChunkKind rule exactly.
+    //   - tool_call-class events (chat-line-breaking) DO reset;
+    //   - non-rendering events that can interleave MID-segment
+    //     (usage_update, session_info_update, plan_update, ...) must
+    //     NOT — an early reset would truncate result.answer before
+    //     streamAcpPrompt's settle merge consumes it.
+    const client = makeTransportClient();
+    const p = client.prompt("sid-1", "hi");
+    client.emit("sessionUpdate", message("kept "));
+    client.emit("sessionUpdate", {
+      sessionUpdate: "usage_update",
+      used: 100,
+      size: 1000,
+    });
+    client.emit("sessionUpdate", message("across usage "));
+    client.emit("sessionUpdate", {
+      sessionUpdate: "session_info_update",
+      keys: "x",
+    });
+    client.emit("sessionUpdate", { sessionUpdate: "plan_update", planId: "p1" });
+    client.emit("sessionUpdate", message("and plan"));
+    const r = await p;
+    assert.equal(
+      r.answer,
+      "kept across usage and plan",
+      "non-rendering events must not break the segment",
+    );
+  });
+
   test("thought / message resets mirror the live ▲ / ● discriminator", async () => {
     const client = makeTransportClient();
     const p = client.prompt("sid-1", "hi");

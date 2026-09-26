@@ -885,6 +885,12 @@ function streamAcpPrompt(
           // plan_update, error, anything else) breaks the same-prefix
           // chain. Without this update, the next message chunk would
           // see lastChunkKind === "message" and skip the reset.
+          // session-isolation/07: this reset set is the canonical one —
+          // keep acp.mjs#prompt's result.lastChunkKind in sync (only
+          // chat-line-breaking tool events reset there; usage / plan /
+          // session_info events must NOT, they can interleave
+          // MID-segment and an early reset would truncate
+          // result.answer).
           r.lastChunkKind = "tool_call";
         } else if (c.kind === "tool_update" && c.update) {
           applyToolUpdate(r, cs, c.update);

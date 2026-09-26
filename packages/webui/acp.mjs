@@ -262,17 +262,6 @@ export class McodeAcpClient extends EventEmitter {
       //   estimate and the empty-turn note.
       const result = { thinking: '', answer: '', messageIds: new Set(), stopReason: null, lastChunkKind: null }
       const onUpdate = (u) => {
-        // session-isolation/07: any event that is not a thought /
-        // message chunk (tool_call, tool_update, plan_update, usage,
-        // ...) breaks the same-prefix chain — the next chunk starts a
-        // NEW segment, mirroring streamAcpPrompt's lastChunkKind
-        // discriminator.
-        if (
-          u.sessionUpdate !== 'agent_thought_chunk' &&
-          u.sessionUpdate !== 'agent_message_chunk'
-        ) {
-          result.lastChunkKind = 'other'
-        }
         if (u.sessionUpdate === 'agent_thought_chunk' && u.content?.type === 'text') {
           if (result.lastChunkKind !== 'thought') result.thinking = ''
           result.thinking += u.content.text
@@ -286,9 +275,20 @@ export class McodeAcpClient extends EventEmitter {
           if (u.messageId) result.messageIds.add(u.messageId)
           try { onChunk?.({ kind: 'message', text: u.content.text }) } catch {}
         } else if (u.sessionUpdate === 'tool_call') {
+          // session-isolation/07 (acceptance alignment): ONLY
+          // chat-line-breaking tool events reset the per-segment
+          // accumulator — the same rule as streamAcpPrompt's
+          // lastChunkKind (server/lib/mcode-acp.js; keep the two in
+          // sync). Non-rendering events (usage_update, plan_update,
+          // session_info_update, mode/goal/config updates) can
+          // interleave MID-segment and must NOT reset: an early reset
+          // would truncate result.answer before streamAcpPrompt's
+          // settle merge consumes it.
+          result.lastChunkKind = 'tool_call'
           // payload: {toolCallId, title, name, status, rawInput, ...}
           try { onChunk?.({ kind: 'tool_call', update: u }) } catch {}
         } else if (u.sessionUpdate === 'tool_call_update') {
+          result.lastChunkKind = 'tool_call_update'
           try { onChunk?.({ kind: 'tool_update', update: u }) } catch {}
         } else if (u.sessionUpdate === 'usage_update') {
           // payload: {used, size, cost} — cumulative values for the
