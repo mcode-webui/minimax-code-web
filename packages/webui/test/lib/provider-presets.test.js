@@ -41,8 +41,8 @@ const providersConfig = await import(absPath("lib/providers-config.js"));
 // ---------------------------------------------------------------------
 
 describe("PROVIDER_PRESETS — catalogue shape", () => {
-  test("the catalogue carries exactly 10 presets (per ticket 02)", () => {
-    assert.equal(presets.PROVIDER_PRESETS.length, 10);
+  test("the catalogue carries exactly 11 presets (per ticket 02 + ticket 06)", () => {
+    assert.equal(presets.PROVIDER_PRESETS.length, 11);
   });
 
   test("every template id is unique (no collisions inside the gallery)", () => {
@@ -75,11 +75,12 @@ describe("PROVIDER_PRESETS — catalogue shape", () => {
     }
   });
 
-  test("the catalogue covers the 10 ticket-named providers", () => {
-    // The ticket explicitly lists the 10 ids by display name.
-    // We assert the canonical id set so a refactor that renames
-    // an id (e.g. `minimax` → `minimax-internal`) is forced to
-    // revisit the gallery contract.
+  test("the catalogue covers the 11 ticket-named providers", () => {
+    // The ticket explicitly lists the 10 (ticket 02) + 1 (ticket 06,
+    // deepseek) ids by display name. We assert the canonical id set
+    // so a refactor that renames an id (e.g. `minimax` →
+    // `minimax-internal`) is forced to revisit the gallery
+    // contract.
     const expected = new Set([
       "zhipu",
       "kimi",
@@ -91,6 +92,7 @@ describe("PROVIDER_PRESETS — catalogue shape", () => {
       "openrouter",
       "claude-code",
       "codex",
+      "deepseek",
     ]);
     const actual = new Set(presets.getPresetIds());
     assert.deepEqual(actual, expected);
@@ -177,6 +179,7 @@ describe("PROVIDER_PRESETS — protocol/auth mapping", () => {
     ["openrouter", "openai", "byok"],
     ["claude-code", "anthropic", "coding-plan"],
     ["codex", "openai", "coding-plan"],
+    ["deepseek", "openai", "byok"],
   ];
 
   for (const [id, protocol, authType] of EXPECTED) {
@@ -333,5 +336,56 @@ describe("publicPresetView — gallery serialisation", () => {
   test("Claude Code uses the anthropic protocol, not openai", () => {
     const p = presets.getPresetById("claude-code");
     assert.equal(p.protocol, "anthropic");
+  });
+});
+
+// ---------------------------------------------------------------------
+// Ticket 06 — DeepSeek preset.
+//
+// The engine's operator-managed `deepseek-cn` entry is reached via
+// the anthropic-messages endpoint; the webui preset exposes the
+// public OpenAI-compatible path at api.deepseek.com so a user
+// without operator-managed keys can still bring up DeepSeek through
+// the dialog. deepseek-reasoner advertises reasoning-effort levels
+// so the picker renders the effort toggle.
+// ---------------------------------------------------------------------
+
+describe("PROVIDER_PRESETS — DeepSeek (ticket 06)", () => {
+  test("deepseek preset uses openai protocol + byok", () => {
+    const p = presets.getPresetById("deepseek");
+    assert.ok(p, "deepseek preset must be in the catalogue");
+    assert.equal(p.protocol, "openai");
+    assert.equal(p.auth.type, "byok");
+  });
+
+  test("deepseek baseURL is https://api.deepseek.com", () => {
+    const p = presets.getPresetById("deepseek");
+    assert.equal(p.auth.baseURL, "https://api.deepseek.com");
+  });
+
+  test("deepseek carries deepseek-chat + deepseek-reasoner", () => {
+    const p = presets.getPresetById("deepseek");
+    const ids = p.models.map((m) => m.id).sort();
+    assert.deepEqual(ids, ["deepseek-chat", "deepseek-reasoner"]);
+  });
+
+  test("deepseek-reasoner advertises thinkingLevels (so picker shows effort toggle)", () => {
+    const p = presets.getPresetById("deepseek");
+    const reasoner = p.models.find((m) => m.id === "deepseek-reasoner");
+    assert.ok(reasoner);
+    assert.ok(Array.isArray(reasoner.thinkingLevels));
+    assert.ok(reasoner.thinkingLevels.length > 0);
+    // Stable subset of levels the engine accepts on its
+    // `thinkingEffort` config option.
+    assert.ok(reasoner.thinkingLevels.includes("high"));
+  });
+
+  test("DeepSeek preset materialises with empty apiKey + preset tag", () => {
+    const m = presets.presetToMaterialised("deepseek");
+    assert.equal(m.id, "deepseek");
+    assert.equal(m.preset, "deepseek");
+    assert.equal(m.enabled, true);
+    assert.equal(m.auth.apiKey, "");
+    assert.equal(m.auth.baseURL, "https://api.deepseek.com");
   });
 });

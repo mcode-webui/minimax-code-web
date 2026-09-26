@@ -11,10 +11,50 @@
 // pushStateFor (called inside handleSetModel) would trigger a real mcode acp
 // client spawn via getMcodeSessionsForWorkspace on cache miss, hanging the test.
 
-import { test, describe, before } from "node:test";
+import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
 import { setupMocks, absPath } from "../helpers/_setup.js";
+import yaml from "js-yaml";
+
+// Engine data dir isolation (ticket 06). The /api/models route reads
+// the engine's `custom_provider` tree via `MINIMAX_DATA_DIR`; point
+// that env at an isolated tmp dir for this test file so the route
+// NEVER reads the host's real `~/.minimax/config.yaml`. Each test
+// that wants a populated engine catalogue writes a fixture into
+// this dir via `withEngineConfig`; tests that want an empty engine
+// catalogue just leave the dir empty (readEngineCatalogue returns
+// [] when config.yaml is missing).
+//
+// Webui data dir isolation — same hygiene for `MCODE_WEBUI_DATA_DIR`.
+// The /api/models route also reads the user-level providers.json
+// from this dir; the test file would otherwise leak the host's
+// real config into the response. Tests that want a populated
+// webui layer use `withModelsConfig` (env override) which beats
+// the user-level path in precedence.
+const _origMinimax = process.env.MINIMAX_DATA_DIR;
+const _origMavis = process.env.MAVIS_DATA_DIR;
+const _origWebuiDataDir = process.env.MCODE_WEBUI_DATA_DIR;
+const _origModelsConfig = process.env.MCODE_WEBUI_MODELS_CONFIG;
+const _engineDataDir = mkdtempSync(join(tmpdir(), "webui-model-engine-cat-"));
+const _webuiDataDir = mkdtempSync(join(tmpdir(), "webui-model-user-level-"));
+process.env.MINIMAX_DATA_DIR = _engineDataDir;
+delete process.env.MAVIS_DATA_DIR;
+process.env.MCODE_WEBUI_DATA_DIR = _webuiDataDir;
+delete process.env.MCODE_WEBUI_MODELS_CONFIG;
+
+after(async () => {
+  if (_origMinimax === undefined) delete process.env.MINIMAX_DATA_DIR;
+  else process.env.MINIMAX_DATA_DIR = _origMinimax;
+  if (_origMavis === undefined) delete process.env.MAVIS_DATA_DIR;
+  else process.env.MAVIS_DATA_DIR = _origMavis;
+  if (_origWebuiDataDir === undefined) delete process.env.MCODE_WEBUI_DATA_DIR;
+  else process.env.MCODE_WEBUI_DATA_DIR = _origWebuiDataDir;
+  if (_origModelsConfig === undefined) delete process.env.MCODE_WEBUI_MODELS_CONFIG;
+  else process.env.MCODE_WEBUI_MODELS_CONFIG = _origModelsConfig;
+  if (_engineDataDir) rmSync(_engineDataDir, { recursive: true, force: true });
+  if (_webuiDataDir) rmSync(_webuiDataDir, { recursive: true, force: true });
+});
 
 let modelRoute;
 before(async (t) => {
@@ -684,6 +724,315 @@ describe("handleGetModels — catalogue merge", () => {
     } finally {
       if (prev === undefined) delete process.env.MCODE_WEBUI_MODELS_CONFIG;
       else process.env.MCODE_WEBUI_MODELS_CONFIG = prev;
+    }
+  });
+});
+
+// ============================================================
+// Ticket 06 — engine `custom_provider` tree surfaces in /api/models.
+//
+// Before this ticket, the route only knew about the engine session
+// configOption, the webui's own providers.json (env > cwd > user),
+// and the mcode cli-bundle builtin extraction. An operator who
+// configured providers in `~/.minimax/config.yaml` (via
+// `mcode provider add` or by hand) saw an empty picker in the
+// webui even though the engine had 9+ providers ready.
+//
+// The fix reads the engine's `custom_provider` tree as a catalogue
+// source and merges it with the webui layers (webui wins on id
+// collision). The read is BEST-EFFORT — a missing config.yaml is
+// not an error. The apiKey / baseURL on the engine side are
+// projection-time stripped (display only).
+// ============================================================
+
+/**
+ * Helper: write a fake engine config to the per-file engine data
+ * dir, run `body()`, then drop the file. The dir itself is shared
+ * across the file (cleaned in `after`) so the route's
+ * `getEngineConfigPath()` always points at a real path.
+ */
+function withEngineConfig(customProvider, body) {
+  const path = join(_engineDataDir, "config.yaml");
+  writeFileSync(path, yaml.dump({ custom_provider: customProvider }), "utf8");
+  try {
+    return body();
+  } finally {
+    try { rmSync(path, { force: true }); } catch {}
+  }
+}
+
+describe("handleGetModels — engine custom_provider catalogue (ticket 06)", () => {
+  test("engine-side providers surface in /api/models without a session", () => {
+    // The bug this ticket closes: an operator with 9 entries in
+    // `~/.minimax/config.yaml#custom_provider` saw an empty picker.
+    setBuiltinModelsMock([]);
+    return withEngineConfig(
+      {
+        "deepseek-cn": {
+          name: "DeepSeek CN (anthropic)",
+          kind: "custom",
+          enabled: true,
+          api: "anthropic-messages",
+          options: { apiKey: "sk-foreign-deepseek", baseURL: "https://api.deepseek.com/anthropic", authMode: "api-key" },
+          models: {
+            "deepseek-flash": {
+              name: "DeepSeek V4.1 Flash",
+              limit: { context: 1000000 },
+              thinking: { effortOptions: ["max", "high", "low", "none"] },
+              modalities: { input: ["text", "image"] },
+            },
+          },
+        },
+      },
+      () => {
+        // No session configOption, no providers config, no builtin.
+        // The engine catalogue is the only source — and it MUST
+        // show up.
+        const cs = fakeCs();
+        const res = fakeRes();
+        modelRoute.handleGetModels(null, res, { cs, cid: "cid-eng1" });
+        const body = JSON.parse(res._body);
+        assert.equal(body.ok, true);
+        const ids = body.models.map((m) => m.id);
+        assert.ok(
+          ids.includes("deepseek-cn/deepseek-flash"),
+          `deepseek-flash must surface; got: ${ids.join(", ")}`,
+        );
+        const group = body.groups.find((g) => g.id === "deepseek-cn");
+        assert.ok(group, "engine provider group must be present");
+        assert.equal(group.label, "DeepSeek CN (anthropic)");
+        assert.equal(group.protocol, "anthropic");
+        assert.equal(group.auth.hasKey, true);
+        assert.equal(group.auth.type, "byok");
+        // Model metadata surfaces from the engine side.
+        const m = group.models[0];
+        assert.equal(m.label, "DeepSeek V4.1 Flash");
+        assert.equal(m.contextLimit, 1000000);
+        assert.deepEqual(m.thinkingLevels, ["max", "high", "low", "none"]);
+        assert.deepEqual(m.modalities, ["text", "image"]);
+      },
+    );
+  });
+
+  test("engine apiKey NEVER appears in any field of the /api/models response", () => {
+    setBuiltinModelsMock([]);
+    return withEngineConfig(
+      {
+        "secret-provider": {
+          kind: "custom",
+          enabled: true,
+          api: "openai-completions",
+          options: { apiKey: "sk-PRIVATE-NEVER-LEAK", baseURL: "https://secret.example/v1", authMode: "api-key" },
+          models: { "m1": { name: "M1" } },
+        },
+      },
+      () => {
+        const cs = fakeCs();
+        const res = fakeRes();
+        modelRoute.handleGetModels(null, res, { cs, cid: "cid-eng2" });
+        const body = JSON.parse(res._body);
+        const dump = res._body; // the entire serialised response
+        assert.equal(dump.includes("sk-PRIVATE-NEVER-LEAK"), false, "no plaintext key");
+        assert.equal(dump.includes("secret.example"), false, "no engine baseURL");
+        assert.equal(dump.includes("authMode"), false, "no engine authMode");
+        // hasKey is the only signal that survives masking.
+        const group = body.groups.find((g) => g.id === "secret-provider");
+        assert.ok(group);
+        assert.equal(group.auth.hasKey, true);
+        // The auth shape is exactly the masked contract — type +
+        // hasKey, nothing else.
+        assert.deepEqual(Object.keys(group.auth).sort(), ["hasKey", "type"]);
+      },
+    );
+  });
+
+  test("engine-side webui_owned entries ALSO surface (ticket 05's own writes)", () => {
+    // After ticket 05's sync, every entry the webui wrote carries
+    // `_webui_owned: true`. The catalogue reader must surface those
+    // alongside the foreign ones — the picker shows the union.
+    setBuiltinModelsMock([]);
+    return withEngineConfig(
+      {
+        "byok-zhipu": {
+          name: "Zhipu (webui-synced)",
+          kind: "custom",
+          enabled: true,
+          api: "openai-completions",
+          options: { apiKey: "sk-webui-zhipu", baseURL: "https://x/v1" },
+          models: { "glm-5.3": { name: "GLM-5.3" } },
+          _webui_owned: true,
+        },
+      },
+      () => {
+        const cs = fakeCs();
+        const res = fakeRes();
+        modelRoute.handleGetModels(null, res, { cs, cid: "cid-eng3" });
+        const body = JSON.parse(res._body);
+        const ids = body.models.map((m) => m.id);
+        assert.ok(ids.includes("byok-zhipu/glm-5.3"));
+        // Marker field does NOT leak into the response (the projection
+        // strips engine-internal fields).
+        assert.equal(res._body.includes("_webui_owned"), false);
+      },
+    );
+  });
+
+  test("merge rule: webui layer overrides engine-side label/scalar for same-id provider", () => {
+    // Same provider id exists in both the engine config and the
+    // webui's providers.json. The webui layer's label/protocol/etc.
+    // wins (per the merge rule in lib/engine-catalogue.js).
+    setBuiltinModelsMock([]);
+    return withEngineConfig(
+      {
+        "zai-max": {
+          name: "ZAI Max (engine)",
+          kind: "custom",
+          enabled: true,
+          api: "anthropic-messages",
+          options: { apiKey: "sk-zai", baseURL: "https://x/v1" },
+          models: { "glm-5.3": { name: "Engine GLM" } },
+        },
+      },
+      () => withModelsConfig(
+        {
+          providers: [
+            {
+              id: "zai-max",
+              label: "ZAI Max (operator override)",
+              protocol: "openai",
+              auth: { type: "byok", apiKey: "sk-from-webui" },
+              models: [
+                { id: "glm-5.3", label: "Webui GLM", contextLimit: 999000 },
+                { id: "glm-5.3-flash", label: "Webui Flash", contextLimit: 500000 },
+              ],
+            },
+          ],
+        },
+        () => {
+          const cs = fakeCs();
+          const res = fakeRes();
+          modelRoute.handleGetModels(null, res, { cs, cid: "cid-eng4" });
+          const body = JSON.parse(res._body);
+          const group = body.groups.find((g) => g.id === "zai-max");
+          assert.ok(group);
+          // Webui scalar wins.
+          assert.equal(group.label, "ZAI Max (operator override)");
+          assert.equal(group.protocol, "openai");
+          // Webui model wins on id collision (glm-5.3).
+          // The route composes `<providerId>/<modelId>` for ids
+          // that don't already contain a slash.
+          const glm = group.models.find((m) => m.id === "zai-max/glm-5.3");
+          assert.ok(glm, "merged glm-5.3 model present");
+          assert.equal(glm.label, "Webui GLM");
+          assert.equal(glm.contextLimit, 999000);
+          // Engine-only model passes through (glm-5.3-flash from webui
+          // is the new one; engine doesn't have it).
+          const flash = group.models.find((m) => m.id === "zai-max/glm-5.3-flash");
+          assert.ok(flash, "webui-only model surfaces");
+          assert.equal(flash.label, "Webui Flash");
+        },
+      ),
+    );
+  });
+
+  test("merge rule: engine-side fields fill in undefined webui values (foreign provider)", () => {
+    // A foreign engine provider the webui doesn't know about — the
+    // webui layer is missing it, but the engine's view passes
+    // through.
+    setBuiltinModelsMock([]);
+    return withEngineConfig(
+      {
+        "nousresearch": {
+          name: "Nous Research",
+          kind: "custom",
+          enabled: true,
+          api: "openai-completions",
+          options: { apiKey: "sk-nous", baseURL: "https://x/v1" },
+          models: {
+            "deepseek/deepseek-v4.1-flash": {
+              name: "DeepSeek V4.1 Flash",
+              limit: { context: 1000000 },
+              thinking: { effortOptions: ["max", "high", "low", "none"] },
+              modalities: { input: ["text", "image"] },
+            },
+          },
+        },
+      },
+      () => {
+        // No providers config — the engine catalogue is the only
+        // source. The foreign entry's label + models must appear
+        // even though the webui layer has nothing to say about it.
+        const cs = fakeCs();
+        const res = fakeRes();
+        modelRoute.handleGetModels(null, res, { cs, cid: "cid-eng5" });
+        const body = JSON.parse(res._body);
+        const ids = body.models.map((m) => m.id);
+        // The engine-side model id already contains a slash
+        // (`deepseek/deepseek-v4.1-flash` — a router-style upstream
+        // id); the route uses it verbatim rather than prepending
+        // the provider id. That's by design — see routes/model.js.
+        assert.ok(
+          ids.includes("deepseek/deepseek-v4.1-flash"),
+          `model id must surface verbatim; got: ${ids.join(", ")}`,
+        );
+        const group = body.groups.find((g) => g.id === "nousresearch");
+        assert.ok(group, "foreign provider group present");
+        assert.equal(group.label, "Nous Research");
+        assert.equal(group.models[0].contextLimit, 1000000);
+      },
+    );
+  });
+
+  test("disabled engine entries are excluded from /api/models", () => {
+    setBuiltinModelsMock([]);
+    return withEngineConfig(
+      {
+        "active-provider": {
+          kind: "custom",
+          enabled: true,
+          api: "openai-completions",
+          options: { apiKey: "sk-x", baseURL: "https://x/v1" },
+          models: { m: {} },
+        },
+        "off-provider": {
+          kind: "custom",
+          enabled: false,
+          api: "openai-completions",
+          options: { apiKey: "sk-x", baseURL: "https://x/v1" },
+          models: { m: {} },
+        },
+      },
+      () => {
+        const cs = fakeCs();
+        const res = fakeRes();
+        modelRoute.handleGetModels(null, res, { cs, cid: "cid-eng6" });
+        const body = JSON.parse(res._body);
+        const ids = body.groups.map((g) => g.id);
+        assert.ok(ids.includes("active-provider"));
+        assert.ok(!ids.includes("off-provider"), "disabled engine entry must NOT surface");
+      },
+    );
+  });
+
+  test("YAML parse error in engine config is non-fatal (empty engine layer)", () => {
+    // The route must not 500 when the engine's config.yaml is
+    // malformed — ticket 06 explicitly closes the "engine config
+    // breaks /api/models" failure mode.
+    setBuiltinModelsMock([]);
+    const path = join(_engineDataDir, "config.yaml");
+    writeFileSync(path, "this: is: not: valid: yaml: [\n", "utf8");
+    try {
+      const cs = fakeCs();
+      const res = fakeRes();
+      modelRoute.handleGetModels(null, res, { cs, cid: "cid-eng7" });
+      const body = JSON.parse(res._body);
+      // The route returns ok; the engine catalogue contributes nothing.
+      assert.equal(body.ok, true);
+      // No engine-sourced models appeared.
+      const engineSourced = body.models.filter((m) => /^[a-z]/.test(m.id));
+      assert.equal(engineSourced.length, 0);
+    } finally {
+      try { rmSync(path, { force: true }); } catch {}
     }
   });
 });

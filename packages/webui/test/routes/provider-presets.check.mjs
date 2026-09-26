@@ -90,14 +90,14 @@ function getBody(res) {
 // =====================================================================
 
 describe("handleGetPresets — /api/providers/presets GET", () => {
-  test("returns all 10 presets with enabled=false when nothing is configured", () => {
+  test("returns all 11 presets with enabled=false when nothing is configured (ticket 06)", () => {
     const res = fakeRes();
     providersRoute.handleGetPresets(null, res, {});
     assert.equal(res._status, 200);
     const body = getBody(res);
     assert.equal(body.ok, true);
     assert.equal(body.version, 2);
-    assert.equal(body.presets.length, 10);
+    assert.equal(body.presets.length, 11);
     for (const p of body.presets) {
       assert.equal(p.enabled, false, `preset '${p.id}' should start as enabled=false`);
     }

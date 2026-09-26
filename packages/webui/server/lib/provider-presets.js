@@ -93,6 +93,14 @@
 //   │                   │          │              │ Default to coding-plan because the       │
 //   │                   │          │              │ primary subscription is a session; the  │
 //   │                   │          │              │ engine also supports BYOK raw keys.      │
+//   │ deepseek          │ openai   │ byok         │ DeepSeek public API at api.deepseek.com. │
+//   │                   │          │              │ deepseek-reasoner advertises reasoning   │
+//   │                   │          │              │ effort levels; deepseek-chat is plain    │
+//   │                   │          │              │ chat. Engine operator configures the     │
+//   │                   │          │              │ "deepseek-cn" entry on the engine side   │
+//   │                   │          │              │ via the anthropic-messages endpoint —    │
+//   │                   │          │              │ this preset exposes the OpenAI-          │
+//   │                   │          │              │ compatible path. Ticket 06.              │
 //   └───────────────────┴──────────┴──────────────┴─────────────────────────────────────────┘
 //
 // Public surface (exported):
@@ -323,6 +331,23 @@ const codexModels = [
   },
 ];
 
+/** DeepSeek — public OpenAI-compatible endpoint at api.deepseek.com. */
+const deepseekModels = [
+  {
+    id: "deepseek-chat",
+    label: "DeepSeek-V3 Chat",
+    contextLimit: 128000,
+    modalities: ["text"],
+  },
+  {
+    id: "deepseek-reasoner",
+    label: "DeepSeek-R1 Reasoner",
+    contextLimit: 128000,
+    thinkingLevels: ["low", "medium", "high"],
+    modalities: ["text"],
+  },
+];
+
 // =====================================================================
 // Template construction.
 //
@@ -410,6 +435,13 @@ const RAW_PRESETS = [
     protocol: "openai",
     auth: { type: "coding-plan", baseURL: "https://api.openai.com/v1" },
     models: codexModels,
+  },
+  {
+    id: "deepseek",
+    label: "DeepSeek",
+    protocol: "openai",
+    auth: { type: "byok", baseURL: "https://api.deepseek.com" },
+    models: deepseekModels,
   },
 ];
 
