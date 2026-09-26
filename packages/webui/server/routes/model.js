@@ -12,6 +12,7 @@ import {
   PERMISSION_MODES,
 } from "../lib/mcode-rpc.js";
 import { getBuiltinModelsFromMcode } from "../lib/models.js";
+import { loadProvidersConfig } from "../lib/providers-config.js";
 import { webuiModeToLabel } from "../lib/interaction/permission-presets.js";
 import { readJson } from "../lib/read-json.js";
 
@@ -28,6 +29,12 @@ function configOption(cs, id) {
  * Shape: `{ providers: [{ id, label, models: [{ id, label?, contextLimit? }] }] }`.
  * Re-read on every request: editing the file does not require a server restart.
  * Missing / unreadable / malformed → null (treated as "no config").
+ *
+ * v2 layered resolution lives in `loadProvidersConfig()` (env > cwd >
+ * user-level with deep merge). The /api/models route now reads
+ * through that helper, so an env override of `MCODE_WEBUI_MODELS_CONFIG`
+ * continues to win over the cwd file (matching the v1 contract), and
+ * a `~/.mcode-webui/providers.json` layer is layered under both.
  */
 function readModelsConfig() {
   const path =
@@ -37,6 +44,26 @@ function readModelsConfig() {
     const parsed = JSON.parse(raw);
     if (!parsed || !Array.isArray(parsed.providers)) return null;
     return parsed;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Layered resolver used by /api/models. Returns the merged
+ * `{ providers }` (v2 shape) or `null` when every layer is missing.
+ * The deep-merge + dedupe semantics are owned by
+ * `loadProvidersConfig()`; this helper only shapes its return into
+ * the legacy `{ providers: [...] }` view that the rest of
+ * handleGetModels already understood.
+ */
+function readProvidersConfigForModels() {
+  try {
+    const cfg = loadProvidersConfig();
+    if (!cfg || !Array.isArray(cfg.providers) || cfg.providers.length === 0) {
+      return null;
+    }
+    return { providers: cfg.providers };
   } catch {
     return null;
   }
@@ -123,7 +150,13 @@ export function handleGetModels(_req, res, ctx) {
   // 2) Providers config — read every request so editing the file does not
   //    require a restart. Config wins on id collision with the builtin
   //    catalogue so providers can override labels and contextLimit.
-  const config = readModelsConfig();
+  //
+  //    v2 layered resolution (env > cwd > user-level) is provided by
+  //    `loadProvidersConfig()`; the v1 single-file reader stays as a
+  //    fallback for callers that pass the legacy `models.json`
+  //    through a different code path (none today, but keeping it
+  //    documents the contract).
+  const config = readProvidersConfigForModels();
   if (config) {
     for (const p of config.providers) {
       if (!p || typeof p.id !== "string" || !p.id) continue;
@@ -142,12 +175,32 @@ export function handleGetModels(_req, res, ctx) {
         if (typeof m.contextLimit === "number" && m.contextLimit > 0) {
           entry.contextLimit = m.contextLimit;
         }
+        // v2 schema surfaces: each model carries protocol +
+        // thinkingLevels + modalities so the selector can pick the
+        // right controls without a second round-trip. `auth` only
+        // exposes hasKey + type — apiKey NEVER reaches this response.
+        if (typeof p.protocol === "string" && p.protocol) {
+          entry.protocol = p.protocol;
+        }
+        if (Array.isArray(m.thinkingLevels) && m.thinkingLevels.length > 0) {
+          entry.thinkingLevels = [...m.thinkingLevels];
+        }
+        if (Array.isArray(m.modalities) && m.modalities.length > 0) {
+          entry.modalities = [...m.modalities];
+        }
         models.push(entry);
         list.push(entry);
       }
       groups.push({
         id: p.id,
         label: typeof p.label === "string" && p.label ? p.label : p.id,
+        // Auth shape: only `hasKey` and `type`; no apiKey/baseURL.
+        // Operators see "configured or not" without leaking the secret.
+        auth: {
+          hasKey: !!(p.auth && p.auth.apiKey),
+          type: p.auth && typeof p.auth.type === "string" ? p.auth.type : "byok",
+        },
+        protocol: typeof p.protocol === "string" ? p.protocol : "openai",
         models,
       });
     }
@@ -182,6 +235,9 @@ export function handleGetModels(_req, res, ctx) {
   }
 
   // Drop the empty builtin shell — a no-bundle empty group is noise.
+  // The drop is gated on "no providers config" so a fresh install with
+  // a config that names no models still has somewhere to attach the
+  // builtins once mcode reports them.
   if (builtinGroup && builtinGroup.models.length === 0 && !config) {
     const idx = groups.indexOf(builtinGroup);
     if (idx >= 0) groups.splice(idx, 1);

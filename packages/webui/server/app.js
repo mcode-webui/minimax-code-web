@@ -61,6 +61,7 @@ import * as uploadRoute from "./routes/upload.js";
 import * as modelRoute from "./routes/model.js";
 import * as debugRoute from "./routes/debug.js";
 import * as protocolRoute from "./routes/protocol.js";
+import * as providersRoute from "./routes/providers.js";
 import * as authorizeRoute from "./lib/authorize.js";
 
 /**
@@ -131,6 +132,10 @@ export const OWNED_ROUTES = new Set([
   "POST /api/permissions",
   "GET /api/permissions-modes",
   "POST /api/answer",
+  // Provider configuration (v2: masked catalogue + layered config).
+  "GET /api/providers",
+  "PUT /api/providers",
+  "POST /api/providers/test",
   // Debug injection (gated by DEBUG_INJECT=1).
   "POST /api/debug/inject",
   "GET /api/debug/state",
@@ -496,6 +501,17 @@ export function createHonoApp() {
   );
   app.post("/api/answer", (c) =>
     invokeHandler(c, c.get(CAPTURE_KEY), modelRoute.handleAnswer),
+  );
+
+  // ----- Provider configuration (v2) -----
+  app.get("/api/providers", (c) =>
+    invokeHandler(c, c.get(CAPTURE_KEY), providersRoute.handleGetProviders),
+  );
+  app.put("/api/providers", (c) =>
+    invokeHandler(c, c.get(CAPTURE_KEY), providersRoute.handlePutProviders),
+  );
+  app.post("/api/providers/test", (c) =>
+    invokeHandler(c, c.get(CAPTURE_KEY), providersRoute.handleTestProvider),
   );
 
   // ----- Debug injection (gated by DEBUG_INJECT=1) -----
