@@ -256,6 +256,22 @@ export function handleGetModels(_req, res, ctx) {
     currentName ||
     null;
 
+  // Current thinking-effort level: read the engine's `thinkingEffort`
+  // option when present; otherwise fall back to `cs.model.thinking`,
+  // which `handleSetModel` writes (pre-session record) and which the
+  // engine's `config_option_update` notification refreshes via
+  // `applyConfigOptionUpdate` (see lib/mcode-acp.js). The selector
+  // reads this to highlight the active level and to skip the picker
+  // when the active model has no `thinkingLevels`.
+  const thinkingEffortOption =
+    Array.isArray(cs && cs.configOptions) ? cs.configOptions.find((o) => o && o.id === "thinkingEffort") : null;
+  const currentThinking =
+    (thinkingEffortOption && typeof thinkingEffortOption.currentValue === "string"
+      ? thinkingEffortOption.currentValue
+      : null) ||
+    (cs && cs.model && typeof cs.model.thinking === "string" && cs.model.thinking) ||
+    null;
+
   const source =
     option && Array.isArray(option.options) && option.options.length > 0
       ? "acp-session-config"
@@ -270,6 +286,7 @@ export function handleGetModels(_req, res, ctx) {
       models: list,
       groups,
       current,
+      currentThinking,
       source,
       // Backwards-compat: surface the same soft-failure marker the older
       // engine-only build did when nothing could be sourced. With the
@@ -285,32 +302,97 @@ export function handleGetModels(_req, res, ctx) {
 
 // POST /api/set-model — only updates cs.model; with a session the same value
 // is also pushed to the engine via session/set_config_option.
+//
+// Body: `{ model: string, thinking?: string }`. `thinking` is the
+// reasoning-effort level the engine accepts on its `thinkingEffort`
+// config option (`low` / `medium` / `high`, plus `off` / `none` for
+// models that disable reasoning — see the engine's control-state.ts
+// `thinkingEffortOption`). Per the engine's contract, the
+// `thinkingEffort` set is rejected when no model is selected
+// (`Select a Session model before changing thinking effort.`,
+// agent.ts#1003), so a thinking-only update routes the same way the
+// set_config_option engine path expects: model first, then effort.
+//
+// `thinking` is OPTIONAL: a model-only update leaves the recorded
+// effort intact (it gets re-applied on the next session boot via
+// `applyRecordedModel`); an effort-only update leaves the model alone.
+// An empty string clears the recorded effort, signalling "no override
+// — let the engine's default stand".
 export async function handleSetModel(req, res, ctx) {
   const cs = ctx.cs;
   const cid = ctx.cid;
   const payload = await readJson(req);
-  const modelId = (payload.model || "").trim();
-  if (!modelId) {
+  const modelId = typeof payload.model === "string" ? payload.model.trim() : "";
+  const rawThinking =
+    typeof payload.thinking === "string" ? payload.thinking.trim() : undefined;
+  // "no field" → keep the existing cs.model.thinking; "empty string" →
+  // clear it (no override). Both arrive as falsy here, but the
+  // distinction is encoded by `thinkingWasProvided`.
+  const thinkingWasProvided = Object.prototype.hasOwnProperty.call(payload, "thinking");
+  const thinking = thinkingWasProvided ? (rawThinking || "") : undefined;
+  if (!modelId && !thinkingWasProvided) {
     res.writeHead(400, { "Content-Type": "application/json" });
     return res.end(JSON.stringify({ ok: false, error: "model required" }));
   }
   cs.model = cs.model || {};
-  cs.model.name = modelId;
+  if (modelId) cs.model.name = modelId;
+  if (thinkingWasProvided) {
+    cs.model.thinking = thinking;
+  }
   const sid = cs.mcodeSessionId;
   let mcodeSynced = false;
+  let thinkingSynced = false;
   let warning = sid ? null : "no mcode session yet — recorded for the next one";
+  // Engine contract: model first, then thinkingEffort (the engine
+  // rejects a thinkingEffort set when no model is selected). Only push
+  // when BOTH the recorded model and the new (or unchanged) thinking
+  // are concrete — the engine will validate the level against the
+  // selected model's effortOptions and reject unknown values.
   if (sid) {
-    const r = await setConfigOption(sid, "model", modelId, ctx.cid);
-    mcodeSynced = r.ok;
-    if (!r.ok) warning = r.error;
+    if (modelId) {
+      const r = await setConfigOption(sid, "model", modelId, ctx.cid);
+      mcodeSynced = r.ok;
+      if (!r.ok) warning = r.error;
+    }
+    if (thinkingWasProvided && thinking) {
+      const r = await setConfigOption(sid, "thinkingEffort", thinking, ctx.cid);
+      thinkingSynced = r.ok;
+      if (!r.ok && (!warning || warning === null || warning === "no mcode session yet — recorded for the next one")) {
+        warning = r.error;
+      }
+      if (r.ok) {
+        // Mirror the apply on the local configOptions snapshot so a
+        // follow-up /api/models reads the engine's new currentValue
+        // before the SSE flush lands (same reason as
+        // applyRecordedModel's cs.configOptions write).
+        const opts = Array.isArray(cs.configOptions) ? cs.configOptions : [];
+        for (const o of opts) {
+          if (o && o.id === "thinkingEffort") {
+            o.currentValue = thinking;
+          }
+        }
+      }
+    } else if (thinkingWasProvided && !thinking && modelId) {
+      // Model changed AND effort cleared. The engine picks its own
+      // default for the new model; we drop the local mirror so a
+      // subsequent /api/models doesn't keep showing the cleared value.
+      const opts = Array.isArray(cs.configOptions) ? cs.configOptions : [];
+      for (const o of opts) {
+        if (o && o.id === "thinkingEffort") {
+          delete o.currentValue;
+        }
+      }
+    }
   }
   pushStateFor(cid);
   res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
   return res.end(
     JSON.stringify({
       ok: true,
-      model: modelId,
+      ...(modelId ? { model: modelId } : {}),
+      ...(thinkingWasProvided ? { thinking } : {}),
       mcodeSynced,
+      thinkingSynced,
       ...(warning ? { warning } : {}),
     }),
   );

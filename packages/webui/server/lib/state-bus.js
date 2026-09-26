@@ -36,7 +36,7 @@ export function makeClientState() {
   return {
     version: "1.0", // 顶栏显示 "v" + version
     workspace: { dir: DEFAULT_WORKSPACE, branch: null, tree: null },
-    model: { name: DEFAULT_MODEL, thinking: "On", ctx: "512k" },
+    model: { name: DEFAULT_MODEL, thinking: "", ctx: "512k" },
     sessionId: null, // webui 侧边栏 session id (randomUUID)
     mcodeSessionId: null, // mcode acp/exec 自己的 session id (mvs_xxx)
     sessionTitle: "Untitled",

@@ -157,6 +157,177 @@ describe("handleSetModel — /api/set-model", () => {
   });
 });
 
+// ============================================================
+// Ticket 04 — thinking-effort payload on /api/set-model.
+//
+// Body shape: { model: string, thinking?: string }.
+//   * thinking absent → keep cs.model.thinking untouched (model-only update).
+//   * thinking === "" → clear cs.model.thinking (no override).
+//   * thinking === "low"/"medium"/"high"/"off" → persist + push.
+// The engine contract is "model first, then thinkingEffort"; with no
+// session, both writes are local + carry the warning string.
+// ============================================================
+
+import { registerRpcMock } from "../helpers/_setup.js";
+
+describe("handleSetModel — /api/set-model thinking payload", () => {
+  test("persists thinkingEffort alongside the model and pushes to the engine", async () => {
+    const calls = [];
+    registerRpcMock({
+      setConfigOption: async (_sid, configId, value, _cid) => {
+        calls.push({ configId, value });
+        return { ok: true, data: {} };
+      },
+    });
+    const cs = fakeCs("minimax_api/MiniMax-M3");
+    cs.mcodeSessionId = "mvs_test";
+    const ctx = { cs, cid: "cid-1" };
+    const res = fakeRes();
+    await modelRoute.handleSetModel(
+      fakeReq({ model: "minimax_api/MiniMax-M2.7", thinking: "high" }),
+      res,
+      ctx,
+    );
+    assert.equal(res._status, 200);
+    const body = JSON.parse(res._body);
+    assert.equal(body.ok, true);
+    assert.equal(body.model, "minimax_api/MiniMax-M2.7");
+    assert.equal(body.thinking, "high");
+    assert.equal(body.mcodeSynced, true);
+    assert.equal(body.thinkingSynced, true);
+    assert.equal(cs.model.name, "minimax_api/MiniMax-M2.7");
+    assert.equal(cs.model.thinking, "high");
+    // Engine contract: model before effort.
+    assert.equal(calls.length, 2);
+    assert.deepEqual(calls[0], { configId: "model", value: "minimax_api/MiniMax-M2.7" });
+    assert.deepEqual(calls[1], { configId: "thinkingEffort", value: "high" });
+  });
+
+  test("thinking-only update (no model in payload) leaves cs.model.name alone", async () => {
+    const calls = [];
+    registerRpcMock({
+      setConfigOption: async (_sid, configId, value, _cid) => {
+        calls.push({ configId, value });
+        return { ok: true, data: {} };
+      },
+    });
+    const cs = fakeCs("minimax_api/MiniMax-M3");
+    cs.mcodeSessionId = "mvs_test";
+    const ctx = { cs, cid: "cid-1" };
+    const res = fakeRes();
+    await modelRoute.handleSetModel(fakeReq({ thinking: "medium" }), res, ctx);
+    const body = JSON.parse(res._body);
+    assert.equal(body.ok, true);
+    assert.equal(body.model, undefined, "no model field echoed");
+    assert.equal(body.thinking, "medium");
+    assert.equal(cs.model.name, "minimax_api/MiniMax-M3", "model untouched");
+    assert.equal(cs.model.thinking, "medium");
+    // Only one engine call — no model push, just the effort push.
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0], { configId: "thinkingEffort", value: "medium" });
+  });
+
+  test("thinking:'' clears the recorded effort", async () => {
+    const calls = [];
+    registerRpcMock({
+      setConfigOption: async (_sid, configId, value, _cid) => {
+        calls.push({ configId, value });
+        return { ok: true, data: {} };
+      },
+    });
+    const cs = fakeCs("minimax_api/MiniMax-M3");
+    cs.model.thinking = "high";
+    cs.mcodeSessionId = "mvs_test";
+    const ctx = { cs, cid: "cid-1" };
+    const res = fakeRes();
+    await modelRoute.handleSetModel(fakeReq({ model: "minimax_api/MiniMax-M3", thinking: "" }), res, ctx);
+    assert.equal(cs.model.thinking, "");
+    // Empty effort → no engine call (the engine's default stands).
+    assert.equal(calls.length, 1, "no effort push on clear");
+    assert.equal(calls[0].configId, "model", "model still pushed");
+  });
+
+  test("missing model with no thinking still 400s (payload was empty)", async () => {
+    const cs = fakeCs();
+    const ctx = { cs, cid: "cid-1" };
+    const res = fakeRes();
+    await modelRoute.handleSetModel(fakeReq({}), res, ctx);
+    assert.equal(res._status, 400);
+  });
+
+  test("without a session, thinking persists locally and the warning is set", async () => {
+    registerRpcMock({
+      setConfigOption: async () => {
+        throw new Error("should not be called without a session");
+      },
+    });
+    const cs = fakeCs("minimax_api/MiniMax-M3");
+    // mcodeSessionId intentionally absent.
+    const ctx = { cs, cid: "cid-1" };
+    const res = fakeRes();
+    await modelRoute.handleSetModel(
+      fakeReq({ model: "minimax_api/MiniMax-M2.7", thinking: "low" }),
+      res,
+      ctx,
+    );
+    assert.equal(cs.model.name, "minimax_api/MiniMax-M2.7");
+    assert.equal(cs.model.thinking, "low");
+    const body = JSON.parse(res._body);
+    assert.equal(body.mcodeSynced, false);
+    assert.equal(body.thinkingSynced, false);
+    assert.match(body.warning, /no mcode session/);
+  });
+
+  test("engine rejection of the effort surfaces in the response without dropping the model apply", async () => {
+    const calls = [];
+    registerRpcMock({
+      setConfigOption: async (_sid, configId, value, _cid) => {
+        calls.push({ configId, value });
+        if (configId === "thinkingEffort") {
+          return { ok: false, error: "Thinking effort is not advertised for the selected model: turbo" };
+        }
+        return { ok: true, data: {} };
+      },
+    });
+    const cs = fakeCs("minimax_api/MiniMax-M3");
+    cs.mcodeSessionId = "mvs_test";
+    const ctx = { cs, cid: "cid-1" };
+    const res = fakeRes();
+    await modelRoute.handleSetModel(
+      fakeReq({ model: "minimax_api/MiniMax-M2.7", thinking: "turbo" }),
+      res,
+      ctx,
+    );
+    assert.equal(cs.model.name, "minimax_api/MiniMax-M2.7", "model still applied");
+    assert.equal(cs.model.thinking, "turbo", "local record preserved for next session boot");
+    const body = JSON.parse(res._body);
+    assert.equal(body.mcodeSynced, true);
+    assert.equal(body.thinkingSynced, false);
+    assert.match(body.warning, /turbo/);
+  });
+
+  test("engine acceptance updates cs.configOptions in lockstep (synchronous mirror)", async () => {
+    registerRpcMock({
+      setConfigOption: async () => ({ ok: true, data: {} }),
+    });
+    const cs = fakeCs("minimax_api/MiniMax-M3");
+    cs.mcodeSessionId = "mvs_test";
+    cs.configOptions = [
+      { id: "model", type: "select", currentValue: "minimax_api/MiniMax-M3" },
+      { id: "thinkingEffort", type: "select", currentValue: "low" },
+    ];
+    const ctx = { cs, cid: "cid-1" };
+    const res = fakeRes();
+    await modelRoute.handleSetModel(
+      fakeReq({ model: "minimax_api/MiniMax-M3", thinking: "high" }),
+      res,
+      ctx,
+    );
+    assert.equal(cs.configOptions[0].currentValue, "minimax_api/MiniMax-M3");
+    assert.equal(cs.configOptions[1].currentValue, "high");
+  });
+});
+
 describe("handleSetPermissions — /api/permissions (5 mode mappings)", () => {
   test("'ask' maps to 'Ask' label", async () => {
     const cs = fakeCs();
@@ -408,6 +579,49 @@ describe("handleGetModels — catalogue merge", () => {
       ["minimax_api:MiniMax-M3", "minimax_api:MiniMax-M2.7"],
     );
     assert.equal(body.current, "minimax_api:MiniMax-M3");
+  });
+
+  test("surfaces the engine's thinkingEffort currentValue as `currentThinking`", () => {
+    setBuiltinModelsMock([]);
+    const cs = fakeCs(undefined, [
+      MODEL_OPTION,
+      {
+        id: "thinkingEffort",
+        type: "select",
+        currentValue: "high",
+        options: [
+          { value: "low", name: "Low" },
+          { value: "medium", name: "Medium" },
+          { value: "high", name: "High" },
+        ],
+      },
+    ]);
+    const res = fakeRes();
+    modelRoute.handleGetModels(null, res, { cs, cid: "cid-thinking1" });
+    const body = JSON.parse(res._body);
+    assert.equal(body.currentThinking, "high");
+  });
+
+  test("falls back to cs.model.thinking when the engine has no thinkingEffort option yet", () => {
+    // Pre-session record: cs.model.thinking is set by handleSetModel,
+    // the engine hasn't pushed its configOption list yet.
+    setBuiltinModelsMock(["MiniMax-M3"]);
+    const cs = fakeCs("minimax_api/MiniMax-M3");
+    cs.model.thinking = "low";
+    const res = fakeRes();
+    modelRoute.handleGetModels(null, res, { cs, cid: "cid-thinking2" });
+    const body = JSON.parse(res._body);
+    assert.equal(body.currentThinking, "low");
+  });
+
+  test("currentThinking is null when neither the engine nor cs.model.thinking has a value", () => {
+    setBuiltinModelsMock(["MiniMax-M3"]);
+    const cs = fakeCs("minimax_api/MiniMax-M3");
+    cs.model.thinking = ""; // explicit "no override" — the runtime default
+    const res = fakeRes();
+    modelRoute.handleGetModels(null, res, { cs, cid: "cid-thinking3" });
+    const body = JSON.parse(res._body);
+    assert.equal(body.currentThinking, null);
   });
 
   test("providers config id wins over builtin id collision", () => {

@@ -40,7 +40,8 @@ import { loadSessions, saveSessions } from "./sessions.js";
 // mcode-exec (which honours --permission ask/full/auto/off).
 
 /**
- * Push the recorded pre-session model pick to a brand-new engine session.
+ * Push the recorded pre-session model pick (and, if recorded, the
+ * matching thinking-effort level) to a brand-new engine session.
  *
  * Called from `runMcodeAcp` immediately after `session/new` returns, while
  * the new `McodeAcpClient` is still in scope but not yet registered as the
@@ -61,6 +62,14 @@ import { loadSessions, saveSessions } from "./sessions.js";
  * A successful apply updates `cs.configOptions` with the new currentValue
  * so the next `/api/models` reads the same model the engine is running.
  *
+ * Engine contract: the `thinkingEffort` config option is rejected when
+ * no model is selected (`Select a Session model before changing
+ * thinking effort.`, agent.ts#1003). We push the model first, then the
+ * effort, in that order — and only when a level was recorded
+ * (`cs.model.thinking` non-empty). The level is otherwise accepted
+ * as-is: the engine validates it against the selected model's
+ * effortOptions and answers invalidParams on a mismatch.
+ *
  * Errors are swallowed: a fresh session with the engine's default is
  * better than a failed session start; the user can re-pick on the chip.
  */
@@ -68,37 +77,82 @@ async function applyRecordedModel(client, sid, cs, cid) {
   const recorded = cs && cs.model && typeof cs.model.name === "string"
     ? cs.model.name.trim()
     : "";
-  if (!recorded) return;
-  const modelOption = findModelOption(cs);
-  if (!modelOption) return; // engine hasn't reported its model option yet
-  const engineCurrent = modelOption.currentValue;
-  if (matchesModelId(recorded, engineCurrent, modelOption)) return;
+  const recordedThinking = cs && cs.model && typeof cs.model.thinking === "string"
+    ? cs.model.thinking.trim()
+    : "";
 
-  const resolved = resolveModelId(recorded, modelOption);
-  if (!resolved) {
-    console.warn(
-      `[webui] applyRecordedModel: recorded id "${recorded}" does not match any engine option; skipping`,
-    );
-    return;
-  }
-  await client.request("session/set_config_option", {
-    sessionId: sid,
-    configId: "model",
-    value: resolved,
-  });
-  // Reflect the apply on the local config-options snapshot so a follow-up
-  // /api/models reads the engine's new currentValue instead of the
-  // session-boot default. The engine pushes a `config_option_update`
-  // notification when it processes the apply; this local update is the
-  // synchronous mirror that keeps the chip and the engine in lockstep
-  // before the next SSE flush lands.
-  const opts = Array.isArray(cs.configOptions) ? cs.configOptions : [];
-  for (const o of opts) {
-    if (o && o.id === "model" && typeof o === "object") {
-      o.currentValue = resolved;
+  let modelApplied = false;
+  if (recorded) {
+    const modelOption = findModelOption(cs);
+    if (!modelOption) {
+      // Engine hasn't reported its model option yet — neither apply
+      // can fire (the engine rejects effort before a model is selected).
+      // Bail; both will get re-attempted on the next session event that
+      // carries a fresh configOptions list.
+      return;
+    }
+    const engineCurrent = modelOption.currentValue;
+    if (!matchesModelId(recorded, engineCurrent, modelOption)) {
+      const resolved = resolveModelId(recorded, modelOption);
+      if (!resolved) {
+        console.warn(
+          `[webui] applyRecordedModel: recorded id "${recorded}" does not match any engine option; skipping`,
+        );
+      } else {
+        await client.request("session/set_config_option", {
+          sessionId: sid,
+          configId: "model",
+          value: resolved,
+        });
+        // Reflect the apply on the local config-options snapshot so a
+        // follow-up /api/models reads the engine's new currentValue
+        // instead of the session-boot default. The engine pushes a
+        // `config_option_update` notification when it processes the
+        // apply; this local update is the synchronous mirror that keeps
+        // the chip and the engine in lockstep before the next SSE flush
+        // lands.
+        const opts = Array.isArray(cs.configOptions) ? cs.configOptions : [];
+        for (const o of opts) {
+          if (o && o.id === "model" && typeof o === "object") {
+            o.currentValue = resolved;
+          }
+        }
+        modelApplied = true;
+      }
     }
   }
-  if (cid) pushStateFor(cid);
+
+  // Thinking-effort apply (ticket 04): only when a level was recorded
+  // AND a model is selected (recorded or just applied). The engine
+  // validates the level against the selected model's effortOptions; a
+  // rejection is logged and otherwise ignored — the engine's default
+  // stands, and the next /api/models reflects that.
+  if (recordedThinking) {
+    if (!recorded && !modelApplied) {
+      // No recorded model and the engine's current model is unknown to
+      // us; we have no anchor for the effort. Skip.
+      return;
+    }
+    try {
+      await client.request("session/set_config_option", {
+        sessionId: sid,
+        configId: "thinkingEffort",
+        value: recordedThinking,
+      });
+      const opts = Array.isArray(cs.configOptions) ? cs.configOptions : [];
+      for (const o of opts) {
+        if (o && o.id === "thinkingEffort" && typeof o === "object") {
+          o.currentValue = recordedThinking;
+        }
+      }
+    } catch (e) {
+      console.warn(
+        `[webui] applyRecordedModel: thinking effort "${recordedThinking}" rejected: ${e.message}`,
+      );
+    }
+  }
+
+  if ((modelApplied || recordedThinking) && cid) pushStateFor(cid);
 }
 
 /** Locate the engine's `model` config option, or null if none was reported yet. */
@@ -346,8 +400,9 @@ export function buildEmptyTurnNote(stopReason, answer) {
 // applyConfigOptionUpdate — handle the engine's `config_option_update`
 // session event. Replaces `cs.configOptions` wholesale (the engine sends
 // the whole list), propagates `permissionMode.currentValue` through
-// `mcodePermissionToWebui`, and propagates `model.currentValue` into
-// `cs.model.name`. The model field is read with the same
+// `mcodePermissionToWebui`, propagates `model.currentValue` into
+// `cs.model.name`, and propagates `thinkingEffort.currentValue` into
+// `cs.model.thinking`. The model field is read with the same
 // `option.currentValue` contract that `routes/model.js#handleGetModels`
 // uses, so the two cannot disagree about which holds the encoded id.
 // When the model option is absent or its currentValue is empty,
@@ -365,6 +420,20 @@ export function applyConfigOptionUpdate(cs, update) {
   const model = opts.find((o) => o && o.id === "model");
   if (model && model.currentValue) {
     cs.model = { ...(cs.model || {}), name: model.currentValue };
+  }
+  const thinking = opts.find((o) => o && o.id === "thinkingEffort");
+  if (thinking) {
+    // currentValue can legitimately be empty (engine's default or no
+    // override); reflect that exactly so the picker shows "off" rather
+    // than a stale level. The field is dropped when the option is
+    // missing altogether (model without an effort dimension).
+    if (typeof thinking.currentValue === "string" && thinking.currentValue) {
+      cs.model = { ...(cs.model || {}), thinking: thinking.currentValue };
+    } else if (cs.model && "thinking" in cs.model) {
+      const { thinking: _drop, ...rest } = cs.model;
+      void _drop;
+      cs.model = rest;
+    }
   }
 }
 

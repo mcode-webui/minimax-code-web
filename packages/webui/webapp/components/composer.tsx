@@ -116,6 +116,17 @@ export function Composer({ t, inline = false }: { t: (key: MessageKey) => string
       provider?: string;
       contextLimit?: number;
       source?: "engine" | "config" | "builtin";
+      protocol?: "openai" | "anthropic" | "gemini";
+      thinkingLevels?: string[];
+      modalities?: string[];
+    }[]
+  >([]);
+  const [groups, setGroups] = useState<
+    {
+      id: string;
+      label: string;
+      auth?: { hasKey: boolean; type: "byok" | "coding-plan" };
+      protocol?: "openai" | "anthropic" | "gemini";
     }[]
   >([]);
   const [slashIndex, setSlashIndex] = useState(0);
@@ -164,7 +175,7 @@ export function Composer({ t, inline = false }: { t: (key: MessageKey) => string
   useEffect(() => {
     void api
       .listModels()
-      .then((payload) =>
+      .then((payload) => {
         setModels(
           (payload.models ?? []).map((m) => ({
             id: m.id,
@@ -172,9 +183,20 @@ export function Composer({ t, inline = false }: { t: (key: MessageKey) => string
             provider: m.provider,
             contextLimit: m.contextLimit,
             source: m.source,
+            protocol: m.protocol,
+            thinkingLevels: m.thinkingLevels,
+            modalities: m.modalities,
           })),
-        ),
-      )
+        );
+        setGroups(
+          (payload.groups ?? []).map((g) => ({
+            id: g.id,
+            label: g.label,
+            auth: g.auth,
+            protocol: g.protocol,
+          })),
+        );
+      })
       .catch(() => {});
   }, [modelKey, sessionKey, providersRevision]);
 
@@ -220,6 +242,10 @@ export function Composer({ t, inline = false }: { t: (key: MessageKey) => string
    * names for one model. Resolve through the catalogue so both surfaces name
    * the same thing, and fall back to the value only when the engine lists no
    * entry for it.
+   *
+   * When a thinking-effort level is recorded (`state.model.thinking`),
+   * append a short tag like "· High" so the user can see what they're
+   * about to send without opening the picker.
    */
   const currentModelLabel = useMemo(() => {
     const value = state?.model?.name ?? "";
@@ -227,13 +253,38 @@ export function Composer({ t, inline = false }: { t: (key: MessageKey) => string
     // is nothing to claim. Rendering the state's default here is how the chip
     // came to say `MiniMax-M3` while the session ran something else — the
     // default is webui's own constant, in an encoding the engine does not use.
-    if (models.length === 0) return t("composer.model");
+    let baseLabel: string;
+    if (models.length === 0) baseLabel = t("composer.model");
+    else {
+      const known = models.find((model) => model.id === value);
+      if (known) baseLabel = modelDisplayName(known.label);
+      // A catalogue without this value: show the engine's own string rather
+      // than inventing a label for it.
+      else baseLabel = value || t("composer.model");
+    }
+    const thinking = state?.model?.thinking;
+    if (!thinking) return baseLabel;
+    const level = thinkingLevelKey(thinking);
+    if (!level) return baseLabel;
+    return `${baseLabel} · ${t(level)}`;
+  }, [models, state?.model?.name, state?.model?.thinking, t]);
+
+  /**
+   * The thinking-effort levels the active model supports.
+   *
+   * The picker is mounted only when this list is non-empty; a model
+   * that does not advertise reasoning controls never shows a no-op
+   * control. The active model's id is matched against the catalogue
+   * the same way `currentModelLabel` does; missing match → empty
+   * picker (e.g. mid-fetch, or the engine encoded an id the
+   * catalogue doesn't carry).
+   */
+  const thinkingLevelsForActive = useMemo(() => {
+    const value = state?.model?.name ?? "";
+    if (!value) return [];
     const known = models.find((model) => model.id === value);
-    if (known) return modelDisplayName(known.label);
-    // A catalogue without this value: show the engine's own string rather than
-    // inventing a label for it.
-    return value || t("composer.model");
-  }, [models, state?.model?.name, t]);
+    return known?.thinkingLevels ?? [];
+  }, [models, state?.model?.name]);
 
   const submit = useCallback(async () => {
     const content = value.trim();
@@ -490,10 +541,42 @@ export function Composer({ t, inline = false }: { t: (key: MessageKey) => string
               <ModelSelect
                 t={t}
                 models={models}
+                groups={groups}
                 value={state?.model.name}
                 label={currentModelLabel}
-                onPick={(id) => void api.setModel(id)}
+                onPick={(id) => {
+                  // The composer hands the picker an id; we send the
+                  // same `thinking` we already recorded so the engine's
+                  // model+effort pair stays consistent across the
+                  // mid-session model change. The server enforces
+                  // "model first, then effort" and re-applies the
+                  // effort in lockstep.
+                  void api.setModel({
+                    model: id,
+                    ...(state?.model?.thinking
+                      ? { thinking: state.model.thinking }
+                      : {}),
+                  });
+                }}
               />
+              {/* Thinking-effort picker (ticket 04). Only rendered when
+                  the active model carries a `thinkingLevels` list; the
+                  picker is gated so models without reasoning controls
+                  never expose a no-op control. */}
+              {thinkingLevelsForActive.length > 0 ? (
+                <ThinkingEffortSelect
+                  t={t}
+                  levels={thinkingLevelsForActive}
+                  value={state?.model?.thinking ?? ""}
+                  disabled={running}
+                  onPick={(level) => {
+                    // Empty string clears the override (engine default
+                    // stands). The server interprets `""` exactly that way
+                    // — see routes/model.js#handleSetModel.
+                    void api.setModel({ thinking: level });
+                  }}
+                />
+              ) : null}
 
               {running ? (
                 /* Upstream's stop control is a 30px circle in the quaternary icon
@@ -641,41 +724,10 @@ function SelectPanel({ testId, children }: { testId: string; children: React.Rea
 /**
  * One row of a `SelectPanel`.
  *
- * A plain button, not an antd `Menu` item: the desktop renders these popups as
- * custom content, and its rows are buttons. The tick sits in a fixed 14px
- * trailing slot so a selected row's label starts on the same x as its
- * neighbours' — the same reason the desktop reserves the slot.
+ * Defined further down (after ModelSelect) to keep the chip-related
+ * primitives co-located with the model selector — see the second
+ * `function SelectRow` below for the load-bearing shape.
  */
-function SelectRow({
-  testId,
-  icon,
-  label,
-  selected,
-  onClick,
-}: {
-  testId: string;
-  icon?: IconName;
-  label: string;
-  selected?: boolean;
-  onClick?: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      data-testid={testId}
-      onClick={onClick}
-      className="flex w-full items-center gap-2 rounded-[8px] px-2 py-1 text-left transition-colors hover:bg-bg_interaction_tertiary_hover"
-    >
-      {icon ? <Icon name={icon} size={16} className="text-icon_default_secondary" /> : null}
-      <span className="min-w-0 flex-1 truncate text-sm font-normal leading-5 text-text_default_primary">
-        {label}
-      </span>
-      <span className="w-3.5 flex-shrink-0">
-        {selected ? <Icon name="checkSmall" size={14} className="text-text_default_primary" /> : null}
-      </span>
-    </button>
-  );
-}
 
 /**
  * Permission-mode selector.
@@ -775,18 +827,42 @@ function PermissionSelect({
  * (engine-encoded ids before a session exists) fall through to the flat list
  * under an "Other" heading.
  *
+ * Ticket 04 wiring:
+ *   - Per-row modality badges render next to the label when the model
+ *     declares `modalities` (`text` / `image` / `audio` / `video` /
+ *     `file`).
+ *   - Provider groups whose `auth.hasKey === false` render greyed with
+ *     a "configure in Settings" hint and disable their rows. The engine
+ *     session group is always usable (it has no `auth`).
+ *   - The flat `models[]` is still the source of truth for keyboard /
+ *     aria semantics; the group disable is purely visual + click-guard.
+ *
  * The label is the caller's: resolving a model id to a display name is this
  * frontend's own mapping, and antd has nothing to say about it.
  */
 function ModelSelect({
   t,
   models,
+  groups,
   value,
   label,
   onPick,
 }: {
   t: (key: MessageKey) => string;
-  models: { id: string; label: string; provider?: string }[];
+  models: {
+    id: string;
+    label: string;
+    provider?: string;
+    modalities?: string[];
+  }[];
+  /** Per-provider groups from `/api/models`. Used to disable no-key
+   *  providers and to look up the display label the server resolved
+   *  (`label` wins over the heuristic `providerLabel(providerId)`). */
+  groups: {
+    id: string;
+    label: string;
+    auth?: { hasKey: boolean; type: "byok" | "coding-plan" };
+  }[];
   value?: string;
   label: string;
   onPick: (id: string) => void;
@@ -795,27 +871,33 @@ function ModelSelect({
 
   // Group by provider, preserving the catalogue order. A provider-less entry
   // (engine-encoded ids whose prefix wasn't coerced) falls into "Other" so it
-  // is still reachable from the menu.
+  // is still reachable from the menu. The /api/models groups[] carries the
+  // server-resolved label + auth view; merge it into the in-component shape.
   const grouped = useMemo(() => {
-    const order = [];
-    const buckets = new Map<string, typeof models>();
+    const order: string[] = [];
+    const buckets = new Map<
+      string,
+      { id: string; label: string; models: typeof models; auth?: { hasKey: boolean; type: "byok" | "coding-plan" } }
+    >();
     for (const model of models) {
       const key = model.provider ?? "__other";
       if (!buckets.has(key)) {
-        buckets.set(key, []);
+        const meta = groups.find((g) => g.id === key);
+        buckets.set(key, {
+          id: key,
+          label:
+            key === "__other"
+              ? t("modelSelector.other")
+              : meta?.label ?? providerLabel(key),
+          models: [],
+          auth: meta?.auth,
+        });
         order.push(key);
       }
-      buckets.get(key)!.push(model);
+      buckets.get(key)!.models.push(model);
     }
-    return order.map((key) => ({
-      key,
-      label:
-        key === "__other"
-          ? t("modelSelector.other")
-          : providerLabel(key),
-      models: buckets.get(key)!,
-    }));
-  }, [models, t]);
+    return order.map((key) => buckets.get(key)!);
+  }, [models, groups, t]);
 
   return (
     <Dropdown
@@ -830,32 +912,55 @@ function ModelSelect({
             <SelectRow testId="model-select-empty" label={t("composer.noModels")} />
           ) : (
             <div className="flex flex-col">
-              {grouped.map((group, groupIndex) => (
-                <div
-                  key={group.key}
-                  data-testid={`model-select-group-${group.key}`}
-                  className={groupIndex === 0 ? "" : "mt-1 border-t border-border_default pt-1"}
-                >
+              {grouped.map((group, groupIndex) => {
+                const disabled = isGroupDisabled(group);
+                return (
                   <div
-                    data-testid={`model-select-group-label-${group.key}`}
-                    className="px-2 pb-0.5 pt-1 text-caption-small-strong uppercase tracking-wide text-text_default_tertiary"
+                    key={group.id}
+                    data-testid={`model-select-group-${group.id}`}
+                    data-disabled={disabled ? "true" : "false"}
+                    className={groupIndex === 0 ? "" : "mt-1 border-t border-border_default pt-1"}
                   >
-                    {group.label}
+                    <div
+                      data-testid={`model-select-group-label-${group.id}`}
+                      className="flex items-center justify-between px-2 pb-0.5 pt-1 text-caption-small-strong uppercase tracking-wide text-text_default_tertiary"
+                    >
+                      <span>{group.label}</span>
+                      {disabled ? (
+                        <span
+                          data-testid={`model-select-group-nokey-${group.id}`}
+                          className="normal-case tracking-normal text-text_default_tertiary"
+                          title={t("modelSelector.noKeyHint")}
+                        >
+                          {t("modelSelector.noKeyHint")}
+                        </span>
+                      ) : null}
+                    </div>
+                    {group.models.map((model) => (
+                      <SelectRow
+                        key={model.id}
+                        testId={`model-select-option-${modelSlug(model.id)}`}
+                        label={modelDisplayName(model.label)}
+                        rightAdornment={
+                          model.modalities && model.modalities.length > 0 ? (
+                            <ModalityBadges
+                              t={t}
+                              modalities={model.modalities}
+                            />
+                          ) : null
+                        }
+                        selected={model.id === value}
+                        disabled={disabled}
+                        onClick={() => {
+                          if (disabled) return;
+                          setOpen(false);
+                          onPick(model.id);
+                        }}
+                      />
+                    ))}
                   </div>
-                  {group.models.map((model) => (
-                    <SelectRow
-                      key={model.id}
-                      testId={`model-select-option-${modelSlug(model.id)}`}
-                      label={modelDisplayName(model.label)}
-                      selected={model.id === value}
-                      onClick={() => {
-                        setOpen(false);
-                        onPick(model.id);
-                      }}
-                    />
-                  ))}
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </SelectPanel>
@@ -872,6 +977,256 @@ function ModelSelect({
             come from arbitrary providers, and an unbounded chip would squeeze
             the toolbar's left group instead of clipping itself. */}
         <span className="max-w-[180px] truncate whitespace-nowrap">{label}</span>
+        <Icon
+          name={open ? "chevronUp" : "chevronDown"}
+          size={16}
+          className="text-icon_default_tertiary"
+        />
+      </button>
+    </Dropdown>
+  );
+}
+
+/**
+ * True when a provider group should render greyed.
+ *
+ * Groups with `auth.hasKey === false` cannot reach their models — every
+ * pick would 401/403. The engine session group (`__engine`) does not
+ * carry `auth` at all; it is always usable because the engine has
+ * already authenticated against its own credentials.
+ */
+function isGroupDisabled(group: {
+  id: string;
+  auth?: { hasKey: boolean; type: "byok" | "coding-plan" };
+}): boolean {
+  if (!group.auth) return false;
+  return group.auth.hasKey === false;
+}
+
+/**
+ * One row of a `SelectPanel`.
+ *
+ * A plain button, not an antd `Menu` item: the desktop renders these popups as
+ * custom content, and its rows are buttons. The tick sits in a fixed 14px
+ * trailing slot so a selected row's label starts on the same x as its
+ * neighbours' — the same reason the desktop reserves the slot.
+ *
+ * `rightAdornment` is the optional trailing content slot the chip's
+ * row uses for modality badges. `disabled` greys the row and ignores
+ * clicks (used by the no-key provider groups).
+ */
+function SelectRow({
+  testId,
+  icon,
+  label,
+  selected,
+  disabled,
+  rightAdornment,
+  onClick,
+}: {
+  testId: string;
+  icon?: IconName;
+  label: string;
+  selected?: boolean;
+  disabled?: boolean;
+  rightAdornment?: React.ReactNode;
+  onClick?: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      data-testid={testId}
+      data-selected={selected ? "true" : "false"}
+      data-disabled={disabled ? "true" : "false"}
+      disabled={disabled}
+      onClick={onClick}
+      className={[
+        "flex w-full items-center gap-2 rounded-[8px] px-2 py-1 text-left transition-colors",
+        disabled
+          ? "cursor-not-allowed text-text_default_tertiary"
+          : "hover:bg-bg_interaction_tertiary_hover",
+      ].join(" ")}
+    >
+      {icon ? <Icon name={icon} size={16} className="text-icon_default_secondary" /> : null}
+      <span className="min-w-0 flex-1 truncate text-sm font-normal leading-5 text-text_default_primary">
+        {label}
+      </span>
+      {rightAdornment ? (
+        <span className="flex shrink-0 items-center gap-1">{rightAdornment}</span>
+      ) : null}
+      <span className="w-3.5 flex-shrink-0">
+        {selected ? <Icon name="checkSmall" size={14} className="text-text_default_primary" /> : null}
+      </span>
+    </button>
+  );
+}
+
+/**
+ * Modality chips rendered on the right of a model row.
+ *
+ * Each `modalities[]` value maps to a short localised chip via
+ * `modelSelector.modalityBadge.<value>`. The chips are intentionally
+ * mono-line — the model's display name owns the row's main text slot,
+ * so a multi-line badge stack would compete with the truncate there.
+ */
+function ModalityBadges({
+  t,
+  modalities,
+}: {
+  t: (key: MessageKey) => string;
+  modalities: string[];
+}) {
+  return (
+    <>
+      {modalities.map((m) => {
+        const key = modalityBadgeKey(m);
+        return (
+          <span
+            key={m}
+            data-testid={`model-modality-badge-${m}`}
+            className="rounded-md border border-border_default px-1 py-0.5 text-[10px] uppercase tracking-wide text-text_default_tertiary"
+          >
+            {t(key)}
+          </span>
+        );
+      })}
+    </>
+  );
+}
+
+/**
+ * Map a server-supplied modality string to its i18n key.
+ *
+ * Falls back to `file` for any value the catalogue carries but the
+ * dictionary doesn't know — `file` is the closest neutral word and
+ * keeps the badge readable rather than dropping a glyph on the row.
+ */
+function modalityBadgeKey(modality: string): MessageKey {
+  switch (modality) {
+    case "text":
+      return "modelSelector.modalityBadge.text";
+    case "image":
+      return "modelSelector.modalityBadge.image";
+    case "audio":
+      return "modelSelector.modalityBadge.audio";
+    case "video":
+      return "modelSelector.modalityBadge.video";
+    default:
+      return "modelSelector.modalityBadge.file";
+  }
+}
+
+/**
+ * Map a server-supplied thinking level to its i18n key.
+ *
+ * The engine's `thinkingEffort` config option accepts `off` / `low` /
+ * `medium` / `high` (see packages/tui/src/acp/control-state.ts). Unknown
+ * levels fall through to no tag — the picker still shows them but the
+ * chip label stays clean.
+ */
+function thinkingLevelKey(level: string): MessageKey | null {
+  switch (level) {
+    case "off":
+      return "thinkingPicker.off";
+    case "low":
+      return "thinkingPicker.low";
+    case "medium":
+      return "thinkingPicker.medium";
+    case "high":
+      return "thinkingPicker.high";
+    default:
+      return null;
+  }
+}
+
+/**
+ * Thinking-effort picker.
+ *
+ * Same shell and panel as the other selectors. The trigger is the
+ * active level ("High" / "Medium" / …) or "Use engine default" when
+ * the user has not picked one (the recorded value is empty).
+ *
+ * The levels array comes from the active model's catalogue entry; the
+ * selector is only mounted when that list is non-empty, so the picker
+ * never advertises a level the model cannot accept. The "off" entry
+ * is omitted from the menu when the model's `thinkingLevels` does not
+ * include it — a model that only supports low/medium/high never shows
+ * an "Off" option that the engine would reject.
+ *
+ * `disabled` greys the trigger during an active run; mid-session
+ * changes are still recorded for the next turn (the documented
+ * "running → next turn" semantic).
+ */
+function ThinkingEffortSelect({
+  t,
+  levels,
+  value,
+  disabled,
+  onPick,
+}: {
+  t: (key: MessageKey) => string;
+  levels: string[];
+  value: string;
+  disabled?: boolean;
+  onPick: (level: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const currentKey = value ? thinkingLevelKey(value) : null;
+  const currentLabel = currentKey
+    ? t(currentKey)
+    : t("thinkingPicker.none");
+  return (
+    <Dropdown
+      open={open}
+      onOpenChange={setOpen}
+      trigger={["click"]}
+      placement="bottomRight"
+      overlayClassName="mavis-dropdown mavis-dropdown-compact mavis-dropdown-custom-content"
+      popupRender={() => (
+        <SelectPanel testId="thinking-effort-panel">
+          {levels.map((level) => {
+            const key = thinkingLevelKey(level);
+            return (
+              <SelectRow
+                key={level}
+                testId={`thinking-effort-option-${level}`}
+                label={key ? t(key) : level}
+                selected={value === level}
+                onClick={() => {
+                  setOpen(false);
+                  onPick(level);
+                }}
+              />
+            );
+          })}
+          <div className="mt-1 border-t border-border_default pt-1">
+            <SelectRow
+              testId="thinking-effort-option-none"
+              label={t("thinkingPicker.none")}
+              selected={!value}
+              onClick={() => {
+                setOpen(false);
+                onPick("");
+              }}
+            />
+          </div>
+        </SelectPanel>
+      )}
+    >
+      <button
+        type="button"
+        data-testid="thinking-effort-trigger"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        disabled={disabled}
+        className={[
+          "flex h-8 min-w-0 items-center gap-1 rounded-[10px] px-2 text-sm transition-colors",
+          disabled
+            ? "cursor-not-allowed text-text_default_tertiary"
+            : "text-text_default_primary hover:bg-bg_interaction_tertiary_hover",
+        ].join(" ")}
+      >
+        <span className="max-w-[80px] truncate whitespace-nowrap">{currentLabel}</span>
         <Icon
           name={open ? "chevronUp" : "chevronDown"}
           size={16}

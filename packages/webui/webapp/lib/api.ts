@@ -250,6 +250,18 @@ export const getSessionTree = (refresh = false) =>
  * `MCODE_WEBUI_MODELS_CONFIG` entry declares one, and is `undefined`
  * otherwise (the engine's own per-session `usage_update.size` is preferred
  * once one exists).
+ *
+ * v2 schema fields (ticket 01, surfaced for the selector in ticket 04):
+ *   * `protocol` — the wire protocol the model is reachable through
+ *     (`openai` / `anthropic` / `gemini`); the engine-sourced group
+ *     does not advertise one, so it's optional.
+ *   * `thinkingLevels` — the reasoning-effort levels the engine accepts
+ *     on this model (`["low", "medium", "high"]`, optionally including
+ *     `"off"`). When non-empty, the composer renders a level picker
+ *     alongside the model selector (ticket 04).
+ *   * `modalities` — the modality badges the model claims (`text` /
+ *     `image` / `audio` / `video`). Rendered as small chips next to
+ *     the model label.
  */
 export interface ModelEntry {
   id: string;
@@ -258,12 +270,35 @@ export interface ModelEntry {
   provider?: string;
   source?: "engine" | "config" | "builtin";
   contextLimit?: number;
+  protocol?: "openai" | "anthropic" | "gemini";
+  thinkingLevels?: string[];
+  modalities?: string[];
+}
+
+/**
+ * Auth view the catalogue carries per provider group.
+ *
+ * Mirrors the masked `auth` block on `/api/providers` (apiKey NEVER
+ * appears — only `hasKey` + `type`); see
+ * `server/routes/model.js#handleGetModels` for the masking rule.
+ */
+export interface ModelGroupAuth {
+  /** True when the provider has an API key configured. Groups with
+   *  `hasKey === false` render greyed with a "configure in Settings"
+   *  hint so the user can fix it without opening the management
+   *  panel. */
+  hasKey: boolean;
+  type: "byok" | "coding-plan";
 }
 
 export interface ModelGroup {
   id: string;
   label: string;
   models: ModelEntry[];
+  /** Auth view — present on provider-config groups, absent on the
+   *  engine session group (which is always usable). */
+  auth?: ModelGroupAuth;
+  protocol?: "openai" | "anthropic" | "gemini";
 }
 
 export interface ModelsPayload {
@@ -273,6 +308,10 @@ export interface ModelsPayload {
   models: ModelEntry[];
   /** Per-provider groups; same models appear in `models[]` flat too. */
   groups: ModelGroup[];
+  /** Current thinking-effort level (engine's `thinkingEffort.currentValue`,
+   *  falling back to `cs.model.thinking`, then `null`). The composer
+   *  reads this to highlight the active level in the picker. */
+  currentThinking?: string | null;
   /** One of `acp-session-config` / `config+mcode-cli-bundle` / `mcode-cli-bundle`. */
   source?: string;
   reason?: string;
@@ -448,8 +487,31 @@ export interface AccountPayload {
 
 export const getAccount = () => request<AccountPayload>("/api/account");
 
-export const setModel = (model: string) =>
-  request<{ ok: boolean }>("/api/set-model", { method: "POST", json: { model } });
+/**
+ * Set the active model and (optionally) the thinking-effort level.
+ *
+ * Body shape: `{ model?: string, thinking?: string }`. The two are
+ * independent — a thinking-only update leaves the model alone (the
+ * engine contract is "model selected before thinkingEffort"; the
+ * server enforces the order at apply time), and a model-only update
+ * leaves the recorded effort intact so the next session boot re-applies
+ * it through `applyRecordedModel`. An empty `thinking` clears the
+ * recorded effort (engine's default stands).
+ */
+export const setModel = (
+  payload: { model?: string; thinking?: string },
+) =>
+  request<{
+    ok: boolean;
+    model?: string;
+    thinking?: string;
+    mcodeSynced?: boolean;
+    thinkingSynced?: boolean;
+    warning?: string;
+  }>("/api/set-model", {
+    method: "POST",
+    json: payload,
+  });
 
 /**
  * Change the session's permission mode.
