@@ -20,6 +20,11 @@ export interface WorkspaceState {
 
 export interface ModelState {
   name: string;
+  /** Recorded pre-session thinking-effort level (`low` / `medium` /
+   *  `high` / `off`), or `""` when the user has not picked one and the
+   *  engine's default stands. Populated by `handleSetModel` and by
+   *  the engine's `config_option_update` notification
+   *  (`applyConfigOptionUpdate` in lib/mcode-acp.js). */
   thinking: string;
   ctx: string;
 }

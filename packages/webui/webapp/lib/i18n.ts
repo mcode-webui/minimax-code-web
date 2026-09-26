@@ -84,6 +84,25 @@ const en = {
      engine-encoded ids whose provider prefix did not coerce (i.e. a
      model the catalogue could not bucket). */
   "modelSelector.other": "Other",
+  // Model selector — ticket 04. Provider groups without an API key
+  // render greyed with a hint that points the user at the settings
+  // panel; the modalities chip maps each `modalities[]` value to a
+  // short display label.
+  "modelSelector.noKeyHint": "Add an API key in Settings to enable",
+  "modelSelector.modalityBadge.text": "text",
+  "modelSelector.modalityBadge.image": "image",
+  "modelSelector.modalityBadge.audio": "audio",
+  "modelSelector.modalityBadge.video": "video",
+  "modelSelector.modalityBadge.file": "file",
+  // Thinking-effort picker (off / low / medium / high). The
+  // `thinkingPicker.none` key is the "no level recorded" placeholder;
+  // it surfaces only between picking a model and the picker closing.
+  "thinkingPicker.label": "Thinking effort",
+  "thinkingPicker.none": "Use engine default",
+  "thinkingPicker.off": "Off",
+  "thinkingPicker.low": "Low",
+  "thinkingPicker.medium": "Medium",
+  "thinkingPicker.high": "High",
 
   "permission.label": "Permission mode",
   "permission.ask": "Ask",
@@ -417,6 +436,21 @@ const zh: Record<MessageKey, string> = {
   "composer.noModels": "暂无可用模型",
   /* Model selector — provider-grouped dropdown. */
   "modelSelector.other": "其他",
+  /* 模型选择器 — ticket 04。未配置 API Key 的供应商分组置灰并提示去
+     设置里填 key；模态徽标按 modalities 数组渲染。 */
+  "modelSelector.noKeyHint": "请在设置中配置 API Key",
+  "modelSelector.modalityBadge.text": "文本",
+  "modelSelector.modalityBadge.image": "图像",
+  "modelSelector.modalityBadge.audio": "音频",
+  "modelSelector.modalityBadge.video": "视频",
+  "modelSelector.modalityBadge.file": "文件",
+  /* 思考等级选择器 (off / low / medium / high)。 */
+  "thinkingPicker.label": "思考等级",
+  "thinkingPicker.none": "沿用引擎默认",
+  "thinkingPicker.off": "关闭",
+  "thinkingPicker.low": "低",
+  "thinkingPicker.medium": "中",
+  "thinkingPicker.high": "高",
 
   "permission.label": "权限模式",
   "permission.ask": "主动询问",

@@ -252,6 +252,48 @@ describe("applyConfigOptionUpdate — propagate model + permissionMode (defect #
 });
 
 // ============================================================
+// Ticket 04 — applyConfigOptionUpdate also propagates
+// `thinkingEffort.currentValue` into `cs.model.thinking`. The field is
+// dropped when the engine clears it (empty currentValue) so the picker
+// shows "off" rather than a stale level.
+// ============================================================
+
+describe("applyConfigOptionUpdate — propagate thinkingEffort (ticket 04)", () => {
+  function optsWithThinking(thinking) {
+    return [
+      { id: "model", type: "select", currentValue: "minimax_api:MiniMax-M3", options: [] },
+      { id: "thinkingEffort", type: "select", currentValue: thinking, options: [] },
+    ];
+  }
+
+  test("propagates a thinkingEffort change into cs.model.thinking", () => {
+    const cs = { model: { name: "minimax_api:MiniMax-M3", thinking: "low" }, permissions: "Full access" };
+    applyConfigOptionUpdate(cs, { configOptions: optsWithThinking("high") });
+    assert.equal(cs.model.thinking, "high");
+    assert.equal(cs.model.name, "minimax_api:MiniMax-M3");
+  });
+
+  test("clears cs.model.thinking when the engine clears its currentValue", () => {
+    const cs = { model: { name: "minimax_api:MiniMax-M3", thinking: "high" }, permissions: "Full access" };
+    applyConfigOptionUpdate(cs, { configOptions: optsWithThinking("") });
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(cs.model, "thinking"),
+      false,
+      "thinking field dropped — picker shows no override",
+    );
+    assert.equal(cs.model.name, "minimax_api:MiniMax-M3");
+  });
+
+  test("leaves cs.model alone when no thinkingEffort option is in the update", () => {
+    const cs = { model: { name: "minimax_api:MiniMax-M3", thinking: "low" }, permissions: "Full access" };
+    applyConfigOptionUpdate(cs, {
+      configOptions: [{ id: "model", type: "select", currentValue: "minimax_api:MiniMax-M3", options: [] }],
+    });
+    assert.equal(cs.model.thinking, "low", "untouched when option absent");
+  });
+});
+
+// ============================================================
 // v0.5.by: pre-session model apply — resolution helpers.
 //
 // The full integration (applyRecordedModel calling client.request) needs
@@ -456,5 +498,129 @@ describe("applyRecordedModel — integration with a fake acp client", () => {
     };
     await applyRecordedModel(fakeClient, "sid-1", cs, "cid-1");
     assert.deepEqual(calls, [], "unknown id → engine default stands");
+  });
+});
+
+// ============================================================
+// Ticket 04 — pre-session apply of the recorded thinking-effort
+// level. The engine contract requires a model to be selected before
+// `thinkingEffort` is accepted; the helper pushes model first (when
+// recorded) and effort second (when recorded).
+// ============================================================
+
+describe("applyRecordedModel — thinkingEffort pre-session apply (ticket 04)", () => {
+  function clientRecorder() {
+    const calls = [];
+    return {
+      calls,
+      client: { request: async (m, p) => { calls.push([m, p]); return {}; } },
+    };
+  }
+  // Deep-clone the shared option constants per cs so the in-place
+  // mutations `applyRecordedModel` performs on `currentValue` do not
+  // bleed across tests in this file (the test that asserts the local
+  // mirror stays at "low" after a failed effort apply would otherwise
+  // see "medium" left behind by an earlier passing test).
+  function csWithOptions(model, thinking) {
+    return {
+      model: { name: model, thinking },
+      configOptions: [
+        JSON.parse(JSON.stringify(MODEL_OPTION)),
+        {
+          type: "select",
+          id: "thinkingEffort",
+          currentValue: "low",
+          options: [
+            { value: "low", name: "Low" },
+            { value: "medium", name: "Medium" },
+            { value: "high", name: "High" },
+          ],
+        },
+      ],
+    };
+  }
+
+  test("applies recorded thinkingEffort after the model when both are recorded", async () => {
+    const { calls, client } = clientRecorder();
+    const cs = csWithOptions("minimax_api/MiniMax-M2.5", "high");
+    await applyRecordedModel(client, "sid-1", cs, "cid-1");
+    assert.equal(calls.length, 2, "model then effort");
+    assert.equal(calls[0][0], "session/set_config_option");
+    assert.equal(calls[0][1].configId, "model");
+    assert.equal(calls[1][1].configId, "thinkingEffort");
+    assert.equal(calls[1][1].value, "high");
+    // Local config-options mirror reflects both applies.
+    assert.equal(cs.configOptions[0].currentValue, "minimax_api:MiniMax-M2.5");
+    assert.equal(cs.configOptions[1].currentValue, "high");
+  });
+
+  test("applies only the effort when the recorded model already matches the engine", async () => {
+    const { calls, client } = clientRecorder();
+    const cs = csWithOptions("minimax_api:MiniMax-M3", "medium");
+    await applyRecordedModel(client, "sid-1", cs, "cid-1");
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0][1].configId, "thinkingEffort");
+    assert.equal(calls[0][1].value, "medium");
+  });
+
+  test("applies only the model when no thinking level is recorded", async () => {
+    const { calls, client } = clientRecorder();
+    const cs = csWithOptions("minimax_api/MiniMax-M2.5", "");
+    await applyRecordedModel(client, "sid-1", cs, "cid-1");
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0][1].configId, "model");
+  });
+
+  test("skips entirely when nothing is recorded", async () => {
+    const { calls, client } = clientRecorder();
+    const cs = { model: { name: "", thinking: "" }, configOptions: [
+      JSON.parse(JSON.stringify(MODEL_OPTION)),
+      { type: "select", id: "thinkingEffort", currentValue: "low", options: [] },
+    ] };
+    await applyRecordedModel(client, "sid-1", cs, "cid-1");
+    assert.deepEqual(calls, []);
+  });
+
+  test("skips entirely when no modelOption has been reported (engine still booting)", async () => {
+    const { calls, client } = clientRecorder();
+    // No MODEL_OPTION in configOptions → engine hasn't reported its
+    // model option yet. The effort apply would be rejected by the
+    // engine contract anyway.
+    const cs = {
+      model: { name: "minimax_api/MiniMax-M3", thinking: "high" },
+      configOptions: [{ id: "permissionMode", type: "select", options: [] }],
+    };
+    await applyRecordedModel(client, "sid-1", cs, "cid-1");
+    assert.deepEqual(calls, []);
+  });
+
+  test("logs a warning when the engine rejects the effort level (unknown effort)", async () => {
+    const calls = [];
+    const client = {
+      request: async (m, p) => {
+        calls.push([m, p]);
+        if (p && p.configId === "thinkingEffort") {
+          throw new Error("Thinking effort is not advertised for the selected model: turbo");
+        }
+        return {};
+      },
+    };
+    const warnings = [];
+    const origWarn = console.warn;
+    console.warn = (msg) => warnings.push(msg);
+    let cs;
+    try {
+      cs = csWithOptions("minimax_api/MiniMax-M2.5", "turbo");
+      await applyRecordedModel(client, "sid-1", cs, "cid-1");
+    } finally {
+      console.warn = origWarn;
+    }
+    // Model still went through; effort was rejected and logged.
+    assert.equal(calls.length, 2);
+    assert.equal(calls[0][1].configId, "model");
+    assert.equal(calls[1][1].configId, "thinkingEffort");
+    assert.ok(warnings.some((w) => /turbo/.test(w)));
+    // Local mirror not updated on the failed effort.
+    assert.equal(cs.configOptions[1].currentValue, "low");
   });
 });
