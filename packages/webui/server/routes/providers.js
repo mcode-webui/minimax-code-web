@@ -1,16 +1,29 @@
 // webui/server/routes/providers.js
-// GET /api/providers, PUT /api/providers, POST /api/providers/test
+// GET /api/providers, PUT /api/providers, POST /api/providers/test,
+// GET /api/providers/presets, POST /api/providers/preset/:id/enable
 //
 // Provider configuration v2 — the management surface behind the
 // schema and layered-resolution contract in
-// `lib/providers-config.js`. The three routes:
+// `lib/providers-config.js`. The routes:
 //
-//   GET  /api/providers      — full (masked) catalogue + resolved
-//                               layers + sources.
-//   PUT  /api/providers      — validate + persist to user-level
-//                               file + reload + SSE broadcast.
-//   POST /api/providers/test — local key format check first, then a
-//                               protocol-minimal connectivity probe.
+//   GET  /api/providers                     — full (masked) catalogue
+//                                             + resolved layers + sources.
+//   PUT  /api/providers                     — validate + persist to
+//                                             user-level file + reload
+//                                             + SSE broadcast.
+//   POST /api/providers/test                — local key format check
+//                                             first, then a protocol-
+//                                             minimal connectivity probe.
+//   GET  /api/providers/presets             — built-in preset
+//                                             templates, each with an
+//                                             `enabled` flag indicating
+//                                             whether the preset id is
+//                                             already configured.
+//   POST /api/providers/preset/:id/enable   — materialise a preset
+//                                             template into the
+//                                             user-level file as
+//                                             enabled (PUT semantics +
+//                                             hot apply).
 //
 // Security contract (pinned by tests):
 //   - apiKey is masked in EVERY response path. The public shape is
@@ -42,7 +55,14 @@ import {
   writeProvidersConfig,
   testProvider as runProbe,
   getUserLevelPath,
+  normaliseProvider,
 } from "../lib/providers-config.js";
+import {
+  PROVIDER_PRESETS,
+  publicPresetView,
+  presetToMaterialised,
+  getPresetById,
+} from "../lib/provider-presets.js";
 import { pushStateFor, sseByCid } from "../lib/state-bus.js";
 import { readJson } from "../lib/read-json.js";
 
@@ -231,4 +251,182 @@ export function _peekProvidersUpdatedFrame() {
  */
 export function _bodyReadable(body) {
   return Readable.from([Buffer.from(JSON.stringify(body), "utf8")]);
+}
+
+// =====================================================================
+// Preset routes (ticket 02).
+//
+//   GET  /api/providers/presets            — preset gallery.
+//   POST /api/providers/preset/:id/enable  — one-click materialise.
+//
+// The GET response carries each preset's `enabled` flag — true when
+// a provider with the same id is already in the configured
+// catalogue. The UI uses that flag to render "Enabled" / "Enable"
+// buttons without a second round-trip.
+//
+// The POST enable handler:
+//   1. resolves the template by id (400 if unknown);
+//   2. re-reads the current user-level catalogue;
+//   3. if a provider with the same id is already configured, returns
+//      409 with the existing record (idempotent semantics — calling
+//      enable twice is a no-op + informational response);
+//   4. otherwise prepends (or appends) the materialised template to
+//      the existing user-level catalogue and writes the file via
+//      `writeProvidersConfig` (which runs the same validation
+//      gate as a manual PUT);
+//   5. triggers the same `providers.updated` SSE broadcast as a PUT,
+//      so every connected client refreshes its catalogue.
+//
+// `apiKey` is deliberately left empty on materialisation — the
+// user must supply it after the template is enabled.
+// =====================================================================
+
+/**
+ * GET /api/providers/presets — built-in preset gallery.
+ *
+ * Response 200:
+ *   {
+ *     ok: true,
+ *     version: 2,
+ *     presets: [ publicPresetView(...) with an extra `enabled` flag ],
+ *     enabledIds: [ "zhipu", "claude-code", ... ]
+ *   }
+ */
+export function handleGetPresets(_req, res, _ctx) {
+  const cfg = loadProvidersConfig();
+  const configuredIds = new Set(cfg.providers.map((p) => p.id));
+  const presets = PROVIDER_PRESETS.map((p) => ({
+    ...publicPresetView(p),
+    enabled: configuredIds.has(p.id),
+  }));
+  res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+  return res.end(
+    JSON.stringify({
+      ok: true,
+      version: cfg.version,
+      presets,
+      enabledIds: [...configuredIds].filter((id) =>
+        PROVIDER_PRESETS.some((p) => p.id === id),
+      ),
+    }),
+  );
+}
+
+/**
+ * POST /api/providers/preset/:id/enable — materialise a preset.
+ *
+ * Behaviour:
+ *   - 400 when `id` does not name a known preset.
+ *   - 200 (idempotent) when the preset is already configured; the
+ *     response carries the existing (masked) provider record so
+ *     the UI can re-show it.
+ *   - 200 when the template was newly enabled; the response
+ *     carries the materialised (masked) provider record.
+ *
+ * Either way, a `providers.updated` SSE event is broadcast so
+ * every connected client refreshes its catalogue. The handler
+ * uses `writeProvidersConfig` (the same path as PUT) so the
+ * persisted file passes the same v2 validation gate and the
+ * layered-resolution hot reload applies on the next
+ * /api/providers GET.
+ */
+export async function handleEnablePreset(req, res, _ctx, params = {}) {
+  const id =
+    (params && typeof params.id === "string" && params.id) ||
+    extractIdFromUrl(req.url);
+  const tpl = getPresetById(id);
+  if (!tpl) {
+    res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
+    return res.end(
+      JSON.stringify({
+        ok: false,
+        code: "UNKNOWN_PRESET",
+        error: `preset '${id}' is not in the catalogue`,
+      }),
+    );
+  }
+
+  // Read the current user-level file. `writeProvidersConfig`
+  // writes the WHOLE catalogue (it owns the file), so we have
+  // to merge with whatever is already there before calling it.
+  const cfg = loadProvidersConfig();
+  const existing = cfg.providers.find((p) => p.id === tpl.id);
+  if (existing) {
+    // Idempotent: the preset is already configured. Surface the
+    // existing masked record so the caller can re-render it
+    // without a second GET.
+    pushStateFor("__broadcast__");
+    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+    return res.end(
+      JSON.stringify({
+        ok: true,
+        alreadyEnabled: true,
+        provider: publicView(existing),
+      }),
+    );
+  }
+
+  // New materialisation. Prepend the preset so the UI's
+  // "enable" action keeps the preset visible at the top of the
+  // provider list; the rest of the user-level catalogue is
+  // preserved verbatim.
+  const materialised = presetToMaterialised(tpl.id);
+  const nextProviders = [materialised, ...cfg.providers];
+  // Defensive validation — `writeProvidersConfig` would catch a
+  // bad shape, but a structured error here makes the failure
+  // mode obvious in the route test.
+  for (const p of nextProviders) {
+    const r = normaliseProvider(p);
+    if (!r.ok) {
+      res.writeHead(500, { "Content-Type": "application/json; charset=utf-8" });
+      return res.end(
+        JSON.stringify({
+          ok: false,
+          code: "MATERIALISE_FAILED",
+          error: r.error,
+        }),
+      );
+    }
+  }
+
+  const result = writeProvidersConfig({
+    version: 2,
+    providers: nextProviders,
+  });
+  if (!result.ok) {
+    const status = result.code === "WRITE_FAILED" ? 500 : 400;
+    res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
+    return res.end(
+      JSON.stringify({ ok: false, code: result.code, error: result.error }),
+    );
+  }
+  // Broadcast — same SSE event PUT uses. The UI's model picker
+  // re-fetches /api/models after this, picking up the new
+  // template-driven entries.
+  pushProvidersUpdated();
+  pushStateFor("__broadcast__");
+
+  // Find the persisted record for the response body.
+  const persisted = result.providers.find((p) => p.id === tpl.id);
+  res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+  return res.end(
+    JSON.stringify({
+      ok: true,
+      alreadyEnabled: false,
+      provider: publicView(persisted),
+      path: result.path,
+    }),
+  );
+}
+
+/**
+ * Pull `:id` out of `req.url` as a fallback when the Hono layer
+ * didn't already pass `params`. Kept defensive: the Hono handler
+ * always supplies params, but legacy callers / unit tests that
+ * synthesise a raw `req` URL may not.
+ */
+function extractIdFromUrl(reqUrl) {
+  if (typeof reqUrl !== "string") return "";
+  const m = reqUrl.match(/\/api\/providers\/preset\/([^/?#]+)\/enable/);
+  return m ? decodeURIComponent(m[1]) : "";
 }

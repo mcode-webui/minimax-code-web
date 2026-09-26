@@ -82,6 +82,8 @@ describe("app.js — migration ledger", () => {
       "GET /api/providers",
       "PUT /api/providers",
       "POST /api/providers/test",
+      "GET /api/providers/presets",
+      "POST /api/providers/preset/:id/enable",
       "POST /api/debug/inject",
       "GET /api/debug/state",
       "POST /api/protocol/set-mode",

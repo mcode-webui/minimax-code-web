@@ -136,6 +136,9 @@ export const OWNED_ROUTES = new Set([
   "GET /api/providers",
   "PUT /api/providers",
   "POST /api/providers/test",
+  // Preset providers (ticket 02): gallery + one-click enable.
+  "GET /api/providers/presets",
+  "POST /api/providers/preset/:id/enable",
   // Debug injection (gated by DEBUG_INJECT=1).
   "POST /api/debug/inject",
   "GET /api/debug/state",
@@ -512,6 +515,18 @@ export function createHonoApp() {
   );
   app.post("/api/providers/test", (c) =>
     invokeHandler(c, c.get(CAPTURE_KEY), providersRoute.handleTestProvider),
+  );
+  // ----- Preset providers (ticket 02) -----
+  app.get("/api/providers/presets", (c) =>
+    invokeHandler(c, c.get(CAPTURE_KEY), providersRoute.handleGetPresets),
+  );
+  app.post("/api/providers/preset/:id/enable", (c) =>
+    invokeHandler(
+      c,
+      c.get(CAPTURE_KEY),
+      (req, res, ctx) =>
+        providersRoute.handleEnablePreset(req, res, ctx, { id: c.req.param("id") }),
+    ),
   );
 
   // ----- Debug injection (gated by DEBUG_INJECT=1) -----
