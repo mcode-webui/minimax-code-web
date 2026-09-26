@@ -968,6 +968,15 @@ function streamAcpPrompt(
         pushStateFor(cid);
       })
       .then((result) => {
+        // session-isolation/07: the transport's result.answer/thinking
+        // carry the LAST segment (per-segment discriminator in acp.mjs,
+        // mirroring this callback's lastChunkKind resets) — not a
+        // turn-long concatenation. `|| r.answer` keeps the
+        // callback-derived value when the transport saw no chunks of
+        // that kind; both sides now agree on the same segment
+        // semantics, so the empty-turn note, the no-usage token
+        // estimate, the ● finalize rewrite and the [send] result log
+        // all read the final segment.
         r.answer = result.answer || r.answer;
         r.thinking = result.thinking || r.thinking;
         r.stopReason = result.stopReason;
