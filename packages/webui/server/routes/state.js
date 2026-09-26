@@ -7,6 +7,7 @@ import {
   pushStateFor,
   pushOnlineCount,
   mcodeSessionsSnapshotFields,
+  snapshotViewFields,
   getSseClient,
   setSseClient,
   endSseClient,
@@ -44,6 +45,11 @@ export async function handleEvents(req, res, ctx) {
   const snapshot = {
     ...cs,
     sessions: sessionsListForSnapshot(),
+    // session-isolation/02 (run-mirror): the first frame follows the same
+    // view contract as the push path — a client connecting mid-run sees
+    // the owning session's buffered lines (or a clean idle view of the
+    // session it opened instead).
+    ...snapshotViewFields(cid, cs),
     ...mcodeSessionsSnapshotFields((cs.workspace && cs.workspace.dir) || ""),
     lanBroadcast: getLanBroadcast(),
     readOnly: getReadOnly(),
@@ -113,6 +119,9 @@ export async function handleState(req, res, ctx) {
     JSON.stringify({
       ...cs,
       sessions: sessionsListForSnapshot(),
+      // session-isolation/02 (run-mirror): same view contract as the SSE
+      // push path (see handleEvents).
+      ...snapshotViewFields(ctx.cid, cs),
       mcodeSessions,
       availableCommands: getCachedMcodeCommands(),
       lanBroadcast: getLanBroadcast(),

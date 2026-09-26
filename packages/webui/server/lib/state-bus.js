@@ -230,6 +230,10 @@ function ensureMcodeSessionsFetchedAndPush(workspace) {
         //   直接 loadSessions()，把每个 session 的完整 chat 数组推进 SSE，
         //   是 v2.3 修掉的主负载；两处（本处 + pushOnlineCount）漏改。
         sessions: sessionsListForSnapshot(),
+        // session-isolation/02 (run-mirror): re-attach the live run's
+        // buffered lines when the viewed session owns the run, and scope
+        // the run indicator to the viewed session otherwise.
+        ...snapshotViewFields(c, ccs),
         mcodeSessions: cached,
         mcodeSessionsPending: false,
         availableCommands: getCachedMcodeCommands(),
@@ -309,6 +313,11 @@ export function pushStateFor(cid, opts = {}) {
   const snapshot = {
     ...cs,
     sessions: sessionsListForSnapshot(),
+    // session-isolation/02 (run-mirror): re-attach the live run's
+    // buffered lines when the viewed session owns the run (live view),
+    // and scope the run indicator to the viewed session otherwise (a
+    // foreign turn never claims "thinking" in this view).
+    ...snapshotViewFields(cid, cs),
     ...fields,
     availableCommands: cachedCmds,
     onlineCount: sseByCid.size,
@@ -548,6 +557,10 @@ export function pushOnlineCount(lanBroadcast) {
       // qa (session-workspace-crud): 同上 — 复用瘦身投影，别把 chat 数组
       //   随 onlineCount 广播出去。
       sessions: sessionsListForSnapshot(),
+      // session-isolation/02 (run-mirror): same view contract as every
+      // other snapshot builder — a broadcast landing mid-run must not
+      // flash a foreign turn's lines (or its run claim) into this view.
+      ...snapshotViewFields(c, cs),
       ...mcodeSessionsSnapshotFields((cs.workspace && cs.workspace.dir) || ""),
       availableCommands: cachedCmds,
       onlineCount: sseByCid.size,
@@ -637,6 +650,208 @@ export function beginRun(cid, sid) {
   runsByCid.set(key, { sid: sid || null, startedAt: Date.now() });
   if (sid) runsBySid.set(sid, key);
   return { ok: true };
+}
+
+// session-isolation/02 (run-mirror port): per-(cid, owning-session)
+// line buffer that captures every stream write during a single
+// turn. The buffer is independent of `cs.chat` (the VIEWING session's
+// chat) — a switch to another session while T1 is streaming keeps T1's
+// lines landing here rather than spilling into T2's view. At finalize,
+// the buffer is drained back into either `cs.chat` (if the user is
+// still viewing the owning session) or the owning session's persisted
+// record (if the user switched away mid-run). The buffer is
+// intentionally simple — keyed by session id, not by run id —
+// because session-id is the natural boundary for "where does this
+// turn's content live".
+const runChatByCid = new Map(); // cid -> Map<sessionId, { chat: string[] }>
+
+/**
+ * Create the run-time chat buffer for (cid, sessionId). Lines written
+ * by the engine during this turn land here instead of in `cs.chat`.
+ *
+ * Replaces any existing buffer for this cid: `beginRun` allows at most
+ * ONE live turn per cid, so the previous entry is either the same turn
+ * re-created before its first write (handleSend seeds the buffer at
+ * claim time, streamAcpPrompt re-creates it at stream start) or a stale
+ * empty entry from a turn whose `session/load` failed and fell back to
+ * a fresh engine session (the buffer re-keys with the new sid — the old
+ * key never received a line and must not linger). Replacing before the
+ * first engine write loses nothing.
+ */
+export function createRunChat(cid, sessionId, baseLines = []) {
+  if (!cid || !sessionId) return;
+  runChatByCid.set(cid, new Map([
+    [sessionId, {
+      chat: Array.isArray(baseLines) ? [...baseLines] : [],
+    }],
+  ]));
+}
+
+/** Append one line to the run-time buffer. No-op if the buffer does
+ * not exist (e.g. caller is not in a turn). */
+export function appendRunChatLine(cid, sessionId, line) {
+  if (!cid || !sessionId) return;
+  const m = runChatByCid.get(cid);
+  if (!m) return;
+  const entry = m.get(sessionId);
+  if (!entry) return;
+  entry.chat.push(line);
+}
+
+/** Read-only access to the buffer's chat array. Returns null if no
+ * buffer exists for this (cid, sessionId). The reference is shared
+ * with the buffer — callers must not mutate. */
+export function runChatLinesFor(cid, sessionId) {
+  const m = runChatByCid.get(cid);
+  if (!m) return null;
+  const entry = m.get(sessionId);
+  return entry ? entry.chat : null;
+}
+
+/** Remove the buffer and return its lines (or null). Caller is now
+ * responsible for appending those lines to whatever destination
+ * (cs.chat, the owning session's persisted record, etc.). */
+export function drainRunChat(cid, sessionId) {
+  const m = runChatByCid.get(cid);
+  if (!m) return null;
+  const entry = m.get(sessionId);
+  if (!entry) return null;
+  const lines = entry.chat.slice();
+  m.delete(sessionId);
+  if (m.size === 0) runChatByCid.delete(cid);
+  return lines;
+}
+
+/** Convenience for finalize + drain + safe-cleanup in one call. */
+export function hasRunChat(cid, sessionId) {
+  const m = runChatByCid.get(cid);
+  return m !== undefined && m.has(sessionId);
+}
+
+/** Remove the buffer without reading it. Safe to call when nothing
+ * is held (no-op). */
+export function removeRunChat(cid, sessionId) {
+  const m = runChatByCid.get(cid);
+  if (!m) return;
+  m.delete(sessionId);
+  if (m.size === 0) runChatByCid.delete(cid);
+}
+
+// ============================================================
+// View routing (run-mirror) — what a snapshot shows for the session
+// the user is LOOKING at.
+//
+// While a turn runs, the engine's lines accumulate in the runChat
+// buffer (keyed by the OWNING session's engine id), never in
+// `cs.chat` — `cs.chat` mirrors whichever session the user has open,
+// and that can change at any moment mid-run. The wire snapshots must
+// therefore re-attach the buffer at push time:
+//
+//   viewed session OWNS the live run → chat = cs.chat + buffer
+//     (the live view; lines stream in exactly as they did before
+//     run-mirror, they just travel via the buffer);
+//
+//   viewed session is a DIFFERENT session → chat stays cs.chat (its
+//     own record), and the run indicator fields are scoped to idle so
+//     the foreign turn never claims "thinking" in this view.
+//
+// Everything goes through `snapshotViewFields` so every snapshot
+// builder (SSE push, authoritative mcode-sessions push, online-count
+// broadcast, /api/state, the SSE first frame, the switch response)
+// renders the same view contract.
+// ============================================================
+
+// Idle `running` shape — byte-mirrored from makeClientState() and the
+// runners' finalize(). Frozen: it is shared across snapshots and must
+// never be mutated into.
+const IDLE_RUNNING_VIEW = Object.freeze({
+  active: false,
+  prompt: null,
+  pid: null,
+  startedAt: null,
+  model: null,
+  sessionId: null,
+  lastDeltaAt: null,
+  tps: 0,
+});
+
+/** True when the session `cs` currently displays OWNS this cid's live
+ * run (the run registry carries the turn's engine sid, and the viewed
+ * session is bound to that same engine sid). */
+export function viewOwnsLiveRun(cid, cs) {
+  const run = runsByCid.get(cid || "default");
+  if (!run || !run.sid) return false;
+  return !!cs && cs.mcodeSessionId === run.sid;
+}
+
+/** The chat array a snapshot should carry for `cs`: the viewed
+ * session's own chat, plus the live run's buffered lines when the
+ * viewed session owns the run. Returns the base array untouched (same
+ * reference) when there is nothing to merge. */
+export function runChatViewChat(cid, cs) {
+  const base = Array.isArray(cs && cs.chat) ? cs.chat : [];
+  if (!viewOwnsLiveRun(cid, cs)) return base;
+  const buf = runChatLinesFor(cid || "default", cs.mcodeSessionId);
+  if (!buf || buf.length === 0) return base;
+  return [...base, ...buf];
+}
+
+/**
+ * View-scoped snapshot overrides for `cid`/`cs`, or {} when the plain
+ * client state already renders correctly. Spread AFTER `...cs`:
+ *
+ *   - `chat` — cs.chat with the live buffer re-attached (owning view);
+ *   - `running` / `context` — idle-shaped when a turn is live on this
+ *     cid but the viewed session is a different one (T2 stays visually
+ *     idle while T1 streams elsewhere; ticket 02 acceptance #3).
+ */
+export function snapshotViewFields(cid, cs) {
+  const key = cid || "default";
+  const chat = runChatViewChat(cid, cs);
+  const chatChanged = chat !== (cs && cs.chat);
+  if (viewOwnsLiveRun(cid, cs)) {
+    const fields = chatChanged ? { chat } : {};
+    // The user is looking at the session that runs — including the case
+    // "switched away and back mid-run": a switch's resetContext healed
+    // cs.running to idle, but this view's turn is demonstrably live
+    // (the run registry holds it). Project the live run back onto the
+    // snapshot so the owning view keeps its running indicator (ticket 02
+    // acceptance #3) without mutating cs behind the switch route's back.
+    const run = runsByCid.get(key);
+    if (run && run.sid && cs && cs.running && !cs.running.active) {
+      fields.running = {
+        active: true,
+        prompt: "prompt",
+        pid: null,
+        startedAt: run.startedAt,
+        model: (cs.model && cs.model.name) || null,
+        sessionId: run.sid,
+        // The stream callback keeps refreshing cs.running.lastDeltaAt /
+        // tps even after a switch's resetContext — project the live
+        // values so the diff gate still suppresses identical frames.
+        lastDeltaAt: cs.running.lastDeltaAt || run.startedAt,
+        tps: cs.running.tps || 0,
+      };
+      fields.context = {
+        ...(cs.context || {}),
+        thinkingStatus: "Running",
+      };
+    }
+    return fields;
+  }
+  const run = runsByCid.get(key);
+  if (!run || !run.sid) {
+    // No live run anywhere on this cid — nothing to scope.
+    return chatChanged ? { chat } : {};
+  }
+  // A turn is live on this cid and the viewed session is NOT the
+  // owning one: keep this view's own chat and force the run claim off.
+  const context = cs && cs.context
+    ? { ...cs.context, thinkingStatus: "Idle", tps: 0 }
+    : undefined;
+  const fields = { chat, running: IDLE_RUNNING_VIEW };
+  if (context) fields.context = context;
+  return fields;
 }
 
 /** Release a turn claimed by `beginRun`. Safe to call when nothing is held. */

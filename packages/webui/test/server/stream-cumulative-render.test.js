@@ -56,6 +56,7 @@ class FakeMcodeAcpClient {
 
 let mcodeAcp;
 let sessions;
+let stateBus;
 
 before(async (t) => {
   // Mock acp.mjs FIRST so the SUT's `new McodeAcpClient()` imports
@@ -73,6 +74,10 @@ before(async (t) => {
   // "../../acp.mjs"`.
   mcodeAcp = await import(absPath("lib/mcode-acp.js"));
   sessions = await import(absPath("lib/sessions.js"));
+  // session-isolation/02 (run-mirror): stream writes land in the
+  // per-(cid, owning sid) runChat buffer, not cs.chat — the harness
+  // reads the routed lines through the same accessor the snapshots use.
+  stateBus = await import(absPath("lib/state-bus.js"));
   const chatLine = await import(absPath("lib/chat-line.js"));
   await setupMocks(t, {
     acp: {
@@ -149,7 +154,16 @@ async function runPrompt(chunks) {
     // Force-clear any leftover timers / state so the watchdog cannot
     // keep the test runner alive past this test.
     cs.running = { active: false, lastDeltaAt: null };
-    return cs.chat.map((line) =>
+    // session-isolation/02 (run-mirror): the stream writes went to the
+    // runChat buffer keyed by (cid, engine sid) — this harness runs
+    // runMcodeAcp directly (no handleSend finalize drain), so collect
+    // the routed lines the way a view would see them: the viewed chat
+    // plus the turn's buffered lines.
+    const buffered =
+      (cs.mcodeSessionId &&
+        stateBus.runChatLinesFor("cid-test", cs.mcodeSessionId)) ||
+      [];
+    return [...(cs.chat || []), ...buffered].map((line) =>
       typeof line === "string" && line.endsWith(" ▍")
         ? line.slice(0, -2)
         : line,

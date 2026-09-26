@@ -5,7 +5,15 @@ import { McodeAcpClient } from "../../acp.mjs";
 import { DEFAULT_WORKSPACE, DEFAULT_MODEL, PROMPT_IDLE_TIMEOUT_MS } from "./config.js";
 import { createIdleWatchdog } from "./idle-watchdog.js";
 import { streamUpdateLine } from "./chat-line.js";
-import { bindDraftToMcodeSid, computeContextPercent } from "./sessions.js";
+import {
+  createRunChat,
+  runChatLinesFor,
+} from "./state-bus.js";
+import {
+  bindDraftToMcodeSid,
+  bindRecordToMcodeSid,
+  computeContextPercent,
+} from "./sessions.js";
 import {
   setActiveChild,
   clearActiveChild,
@@ -166,6 +174,20 @@ export async function runMcodeAcp(content, opts = {}) {
   const existingSid = opts.sessionId || null;
   const cs = opts.cs;
   const cid = opts.cid;
+  // session-isolation/02 (run-mirror): the webui record this turn
+  // belongs to, captured BEFORE any await. Mid-run the user can switch
+  // sessions, which re-points the live `cs` (sessionId / mcodeSessionId
+  // / chat) at ANOTHER record — every cs-mutation downstream (draft
+  // promotion, finalize's sid binding and title write-back) must be
+  // gated on "the user is still looking at the session that ran", and
+  // the owning record is addressed by this id instead when they did
+  // not. `handleSend` passes the id it captured right after creating
+  // the turn's draft record; the cs fallback covers direct callers.
+  const owningWebuiSessionId =
+    (typeof opts.owningWebuiSessionId === "string" &&
+      opts.owningWebuiSessionId) ||
+    (cs && cs.sessionId) ||
+    null;
   // Uploaded files, already validated to be inside UPLOAD_DIR by the route.
   const attachments = Array.isArray(opts.attachments) ? opts.attachments : [];
   const workspace =
@@ -236,9 +258,23 @@ export async function runMcodeAcp(content, opts = {}) {
     //   等到 finalize。之前长任务全程草稿是 uuid 孤儿 —— sidebar 同时显示
     //   uuid 草稿和 mvs_ 引擎条目两条；此时点 mvs_ 条目会走 new_from_mcode
     //   建壳，把同一对话永久分裂成两条记录（审计日志实锤）。幂等。
+    //
+    // session-isolation/02 (run-mirror): bindDraftToMcodeSid mutates `cs`
+    //   AND renames/merges records through cs.sessionId — both are only
+    //   correct while the user is still viewing the session that ran. A
+    //   mid-run switch re-points cs at the OTHER session; promoting
+    //   through it would rename that session's record or merge its chat.
+    //   Still viewing → cs path as before; switched away → the same
+    //   promotion targeted at the OWNING record by id (cs untouched).
+    const stillViewingAtBind =
+      !owningWebuiSessionId || cs.sessionId === owningWebuiSessionId;
     if (sid) {
       try {
-        bindDraftToMcodeSid(cs, sid);
+        if (stillViewingAtBind) {
+          bindDraftToMcodeSid(cs, sid);
+        } else {
+          bindRecordToMcodeSid(owningWebuiSessionId, sid);
+        }
       } catch (e) {
         console.warn(`[webui] bindDraftToMcodeSid: ${e.message}`);
       }
@@ -253,7 +289,16 @@ export async function runMcodeAcp(content, opts = {}) {
       // failed session/load fell back to a fresh engine session above).
       updateRunSid(cid, sid);
     }
-    return await streamAcpPrompt(client, sid, content, label, cs, cid, attachments);
+    return await streamAcpPrompt(
+      client,
+      sid,
+      content,
+      label,
+      cs,
+      cid,
+      attachments,
+      owningWebuiSessionId,
+    );
   } catch (e) {
     // v2.0 (lease B02): §AP5 — surface subprocess start / session
     // failures on the anomaly channel instead of swallowing them
@@ -337,12 +382,16 @@ export function applyConfigOptionUpdate(cs, update) {
 export function applyToolUpdate(r, cs, update) {
   const u = update || {};
   if (!r.toolIndexById) r.toolIndexById = new Map();
+  // session-isolation/02: route tool-update writes into the runChat
+  // buffer (not cs.chat), so the viewing-session sees no cross-
+  // contamination when the user switches mid-run.
+  const chat = r && typeof r.chatArray === "function" ? r.chatArray() : cs.chat;
 
   let insertAfter = r.toolIndexById.get(u.toolCallId);
   if (insertAfter == null) {
     const name = u.title || u.name || u.toolName || "tool";
-    cs.chat = [...cs.chat, `→ ${name}`];
-    insertAfter = cs.chat.length - 1;
+    chat.push(`→ ${name}`);
+    insertAfter = chat.length - 1;
     r.toolIndexById.set(u.toolCallId, insertAfter);
   }
 
@@ -376,11 +425,19 @@ export function applyToolUpdate(r, cs, update) {
       `  ! ${typeof u.error === "string" ? u.error : u.error.message || JSON.stringify(u.error)}`,
     );
 
-  cs.chat = [
-    ...cs.chat.slice(0, insertAfter + 1),
-    ...newLines,
-    ...cs.chat.slice(insertAfter + 1),
-  ];
+  // Insert newLines into the chat array (runChat buffer when in a
+  // turn, cs.chat otherwise). Match the splice-with-index-shift that
+  // would happen on a regular array mutation.
+  const before = chat.slice(0, insertAfter + 1);
+  const after = chat.slice(insertAfter + 1);
+  for (let i = 0; i < before.length; i += 1) chat[i] = before[i];
+  for (let j = 0; j < newLines.length; j += 1) {
+    chat[before.length + j] = newLines[j];
+  }
+  for (let k = 0; k < after.length; k += 1) {
+    chat[before.length + newLines.length + k] = after[k];
+  }
+  chat.length = before.length + newLines.length + after.length;
   if (r.toolIndexById) {
     for (const [k, v] of r.toolIndexById) {
       if (v > insertAfter) r.toolIndexById.set(k, v + newLines.length);
@@ -391,7 +448,16 @@ export function applyToolUpdate(r, cs, update) {
 // streamAcpPrompt — like collectExecResult, but the event source is
 // the acp client's prompt callback rather than a child-process stdout
 // stream.
-function streamAcpPrompt(client, sid, content, label, cs, cid, attachments = []) {
+function streamAcpPrompt(
+  client,
+  sid,
+  content,
+  label,
+  cs,
+  cid,
+  attachments = [],
+  owningWebuiSessionId = null,
+) {
   return new Promise((resolve) => {
     const r = {
       answer: null,
@@ -413,6 +479,32 @@ function streamAcpPrompt(client, sid, content, label, cs, cid, attachments = [])
       // starts with lastChunkKind === null and the first chunk of
       // any kind triggers a clean accumulator.
       lastChunkKind: null,
+      // session-isolation/02 (run-mirror): the owning session id for
+      // this turn, captured at entry — the ENGINE sid the turn runs on
+      // (identical to `cs.mcodeSessionId` once the draft is bound).
+      // Every stream write (▲ / ● / tool_call / tool_update / plan /
+      // empty-turn note) lands in the runChat buffer keyed by this id,
+      // NEVER directly in cs.chat: mid-run the user can switch sessions
+      // and cs.chat then belongs to whichever session they opened. The
+      // wire snapshots re-attach the buffer for the owning view
+      // (state-bus.snapshotViewFields) and the route's finalize drain
+      // flushes the buffer to the owning session's view-or-record.
+      owningSessionId: sid,
+      // session-isolation/02 (run-mirror): the webui record id this
+      // turn belongs to, captured by runMcodeAcp before its first
+      // await. Finalize consults this to detect "the user switched
+      // away mid-run" before any cs mutation.
+      owningWebuiSessionId,
+      // `chatArray()` — the write target for every stream line. ALWAYS
+      // the runChat buffer while the turn's buffer exists (created just
+      // below, before the first engine event can arrive); cs.chat is
+      // only a fallback for calls outside a buffered turn (unit tests,
+      // non-turn helpers). View delivery is the snapshot's job, not the
+      // write target's.
+      chatArray() {
+        const m = runChatLinesFor(cid, sid);
+        return m !== null ? m : cs.chat;
+      },
     };
     const t0 = Date.now();
     cs.running = {
@@ -428,6 +520,14 @@ function streamAcpPrompt(client, sid, content, label, cs, cid, attachments = [])
     cs.context.thinkingStatus = "Running";
     setActiveChild(cid, client);
     pushStateFor(cid);
+    // session-isolation/02 (run-mirror): create the per-(cid,
+    // owning-session) buffer that captures every stream write
+    // during this turn. Lines DO NOT go to cs.chat directly — the
+    // viewing session might be a different one (the user may have
+    // switched mid-run). The buffer is drained at finalize back
+    // into either cs.chat (same session still viewing) or the
+    // owning session's persisted record (user switched away).
+    createRunChat(cid, sid, []);
     // Idle watchdog — every stream event (thought / message / tool_call /
     // tool_update / usage / other) refreshes cs.running.lastDeltaAt,
     // so a long but healthy turn never trips this; only a silent
@@ -473,13 +573,12 @@ function streamAcpPrompt(client, sid, content, label, cs, cid, attachments = [])
       //   upstream (no per-turn history replay), and we mirror that scope here.
       if (
         typeof r.durationMs === "number" &&
-        r.durationMs > 0 &&
-        Array.isArray(cs.chat)
+        r.durationMs > 0
       ) {
-        cs.chat = [
-          ...cs.chat,
-          `§§ processed_duration=${Math.round(r.durationMs)}ms`,
-        ];
+        const chatTarget = r && typeof r.chatArray === "function" ? r.chatArray() : cs.chat;
+        if (Array.isArray(chatTarget)) {
+          chatTarget.push(`§§ processed_duration=${Math.round(r.durationMs)}ms`);
+        }
       }
       clearActiveChild(cid);
       cs.running = {
@@ -497,12 +596,14 @@ function streamAcpPrompt(client, sid, content, label, cs, cid, attachments = [])
       // Strip the streaming cursor ▍ from every line — streamUpdateLine
       // adds it on every push, finalize must clear it or the thinking
       // / answer lines stay marked as streaming forever.
-      if (Array.isArray(cs.chat)) {
-        cs.chat = cs.chat.map((line) =>
-          typeof line === "string" && line.endsWith(" ▍")
-            ? line.slice(0, -2)
-            : line,
-        );
+      const cursorTarget = r && typeof r.chatArray === "function" ? r.chatArray() : cs.chat;
+      if (Array.isArray(cursorTarget)) {
+        for (let i = 0; i < cursorTarget.length; i += 1) {
+          const line = cursorTarget[i];
+          if (typeof line === "string" && line.endsWith(" ▍")) {
+            cursorTarget[i] = line.slice(0, -2);
+          }
+        }
       }
       if (r.usage) {
         cs.context.tokens =
@@ -554,7 +655,21 @@ function streamAcpPrompt(client, sid, content, label, cs, cid, attachments = [])
           `[finalize.usage] cid=${cid} r.usage=${JSON.stringify(r.usage)} r.answerLen=${(r.answer || "").length} r.thinkingLen=${(r.thinking || "").length}`,
         );
       }
-      if (r.sessionId) cs.mcodeSessionId = r.sessionId;
+      // session-isolation/02 (run-mirror): only re-point the VIEWED
+      // session's engine binding when the user is still looking at the
+      // session that ran. A mid-run switch left cs bound to the OTHER
+      // session — writing r.sessionId over it would redirect that
+      // session's next turn onto this turn's engine conversation.
+      // The still-viewing test covers both id forms: the pre-promotion
+      // draft id (owningWebuiSessionId) and the post-promotion engine
+      // id the record was renamed to at bind time.
+      const stillViewingAtFinalize =
+        !owningWebuiSessionId ||
+        cs.sessionId === owningWebuiSessionId ||
+        (r.sessionId != null && cs.sessionId === r.sessionId);
+      if (r.sessionId && stillViewingAtFinalize) {
+        cs.mcodeSessionId = r.sessionId;
+      }
       // Fire-and-forget — the mavis hook writes a
       // local_runtime_token_usage row after acp completes. Wait ~400ms
       // for it to land, then query the db for the real numbers.
@@ -601,16 +716,30 @@ function streamAcpPrompt(client, sid, content, label, cs, cid, attachments = [])
       // v0.5.bx: prompt 完成后用 mcodeSessionId 反查 mcode 真实 title
       if (r.sessionId) {
         const finalSid = r.sessionId;
+        // session-isolation/02 (run-mirror): binding and title belong to
+        // the record that RAN, addressed by id — cs.sessionId is only
+        // the right target while the user still views the owning
+        // session (both id forms count; see stillViewingAtFinalize).
+        // After a mid-run switch, writing through cs would stamp this
+        // turn's engine sid (and title) onto the session the user
+        // switched TO.
+        const bindTargetId = stillViewingAtFinalize
+          ? cs.sessionId
+          : owningWebuiSessionId;
         getMcodeSessionTitle(finalSid)
           .then((title) => {
             // qa (两条记录): mcodeSessionId 绑定与 title 查询解耦 —— 之前
             //   `if (!title) return` 提前退出会连绑定一起跳过，titleCustom
             //   守卫也曾把绑定一并挡住（该守卫只应保护标题本身）。绑定
             //   无条件写入。
-            if (cs.sessionId) {
+            if (bindTargetId) {
               try {
                 const all = loadSessions();
-                const item = all.find((s) => s.id === cs.sessionId);
+                // The owning record may have been promoted mid-run — its
+                // id is then the engine sid, not the captured webui id.
+                const item =
+                  all.find((s) => s && s.id === bindTargetId) ||
+                  all.find((s) => s && s.mcodeSessionId === finalSid);
                 if (item && item.mcodeSessionId !== finalSid) {
                   item.mcodeSessionId = finalSid;
                   item.updatedAt = Date.now();
@@ -628,24 +757,35 @@ function streamAcpPrompt(client, sid, content, label, cs, cid, attachments = [])
               cs.sessionTitle === "Untitled";
             if (isDefault && cs.mcodeSessionId === finalSid) {
               cs.sessionTitle = title;
-              // 同步到 webui session db（写 title，让 sidebar 能 1:1 找回来）
-              if (cs.sessionId) {
-                try {
-                  const all = loadSessions();
-                  const item = all.find((s) => s.id === cs.sessionId);
-                  // qa (session-workspace-crud): titleCustom 是用户显式改名
-                  //   (POST /api/sessions/rename) 的留痕 — 自动标题永不覆盖
-                  //   用户标题。isDefault 的 cs 侧判定之外再守一道 item 侧，
-                  //   封住"改名发生在 title RPC 在途时"的竞态窗口。
-                  if (item && !item.titleCustom) {
-                    item.title = title;
-                    item.updatedAt = Date.now();
-                    saveSessions(all);
-                  }
-                } catch (e) {
-                  console.warn(`[bx] save title failed: ${e.message}`);
+            }
+            // The record's title follows the conversation (the session
+            // that ran), regardless of which session is on screen; the
+            // cs-side mirror above only applies while still viewing.
+            // qa (session-workspace-crud): titleCustom 是用户显式改名
+            //   (POST /api/sessions/rename) 的留痕 — 自动标题永不覆盖
+            //   用户标题。isDefault 的 cs 侧判定之外再守一道 item 侧，
+            //   封住"改名发生在 title RPC 在途时"的竞态窗口。
+            try {
+              const all = loadSessions();
+              const item =
+                all.find((s) => s && s.id === bindTargetId) ||
+                all.find((s) => s && s.mcodeSessionId === finalSid);
+              if (item && !item.titleCustom && item.title !== title) {
+                const recordIsDefault =
+                  !item.title ||
+                  item.title === "New session" ||
+                  item.title === "Untitled" ||
+                  item.title === "Mcode session";
+                if (recordIsDefault) {
+                  item.title = title;
+                  item.updatedAt = Date.now();
+                  saveSessions(all);
                 }
               }
+            } catch (e) {
+              console.warn(`[bx] save title failed: ${e.message}`);
+            }
+            if (stillViewingAtFinalize) {
               pushStateFor(cid);
             }
           })
@@ -720,23 +860,27 @@ function streamAcpPrompt(client, sid, content, label, cs, cid, attachments = [])
           r.thinking += c.text;
           r.lastChunkKind = "thought";
           const oneLine = r.thinking.replace(/\n+/g, " ").trim();
-          streamUpdateLine(cs.chat, "▲", oneLine);
+          streamUpdateLine(r.chatArray(), "▲", oneLine);
         } else if (c.kind === "message" && typeof c.text === "string") {
           if (r.lastChunkKind !== "message") r.answer = "";
           r.answer += c.text;
           r.lastChunkKind = "message";
           const oneLine = r.answer.replace(/\n+/g, " ").trim();
-          streamUpdateLine(cs.chat, "●", oneLine);
+          streamUpdateLine(r.chatArray(), "●", oneLine);
         } else if (c.kind === "tool_call" && c.update) {
           // v0.5.bs: 工具调用开始 — 写 `→ toolName` 行到 chat
           const u = c.update;
           const name = u.title || u.name || u.toolName || "tool";
           const input = u.rawInput ? JSON.stringify(u.rawInput) : "";
           const line = input ? `→ ${name}  ${input}` : `→ ${name}`;
-          cs.chat = [...cs.chat, line];
+          // session-isolation/02: route into the runChat buffer (not
+          // cs.chat) when in a turn. The viewing-session sees no
+          // cross-contamination when the user switches mid-run.
+          const tcChat = r && typeof r.chatArray === "function" ? r.chatArray() : cs.chat;
+          tcChat.push(line);
           // 记下这行在 chat 里的位置（之后 tool_update 用来在它后面插输出）
           if (!r.toolIndexById) r.toolIndexById = new Map();
-          r.toolIndexById.set(u.toolCallId, cs.chat.length - 1);
+          r.toolIndexById.set(u.toolCallId, tcChat.length - 1);
           // session-isolation/06: tool_call (and tool_update,
           // plan_update, error, anything else) breaks the same-prefix
           // chain. Without this update, the next message chunk would
@@ -833,7 +977,10 @@ function streamAcpPrompt(client, sid, content, label, cs, cid, attachments = [])
         // v2.3: 思考链超长回合（思维耗尽输出预算）以无正文结束 — 界面上
         //   表现为"思考戛然而止"。落一条 system 提示行说明结局与续法。
         const note = buildEmptyTurnNote(r.stopReason, r.answer);
-        if (note) cs.chat = [...(cs.chat || []), note];
+        if (note) {
+          const noteChat = r && typeof r.chatArray === "function" ? r.chatArray() : cs.chat;
+          noteChat.push(note);
+        }
         finalize();
       })
       .catch((e) => {

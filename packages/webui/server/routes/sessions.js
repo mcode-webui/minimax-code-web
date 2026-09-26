@@ -28,7 +28,11 @@ import {
 import { loadTranscriptChatLines } from "../lib/transcript.js";
 import { applyMavisUsageToCs } from "../lib/mavis-usage.js";
 import { getMcodeModelLimit } from "../lib/models.js";
-import { pushStateFor, clients } from "../lib/state-bus.js";
+import {
+  pushStateFor,
+  clients,
+  runChatViewChat,
+} from "../lib/state-bus.js";
 import { MCODE_RUNTIME_DB } from "../lib/config.js";
 import { getSessionTree, invalidateSessionTree } from "../lib/session-tree.js";
 import { authorize } from "../lib/authorize.js";
@@ -473,7 +477,12 @@ export async function handleSwitchSession(req, res, ctx) {
         id: target.id,
         mcodeSessionId: cs.mcodeSessionId,
         title: cs.sessionTitle,
-        chat: cs.chat,
+        // session-isolation/02 (run-mirror): switching back to the
+        // session that is mid-run must show what it produced so far.
+        // cs.chat holds the record's lines; the live turn's output is
+        // still in the runChat buffer — re-attach it for the owning
+        // view (same contract as every state snapshot).
+        chat: runChatViewChat(cid, cs),
       },
     }),
   );

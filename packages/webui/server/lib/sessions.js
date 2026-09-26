@@ -145,11 +145,66 @@ export function promoteDraftToMcodeSid(cs) {
  * finalize may call it again. Leaving the draft unbound for the whole turn
  * makes the sidebar show two records for one conversation (uuid draft + the
  * mvs_ engine entry), and clicking the latter forks it into two.
+ *
+ * session-isolation/02 (run-mirror): callers capture the turn's owning
+ * webui session id at send time. When the user has already switched to
+ * another session by the time the engine session id is known, `cs` no
+ * longer points at the owning record — promoting through `cs` would
+ * rename/merge whichever record the user switched TO. Use
+ * `bindRecordToMcodeSid` for that case; this one stays the cs-driven
+ * path for the still-viewing case.
  */
 export function bindDraftToMcodeSid(cs, sid) {
   if (!cs || !sid) return false;
   cs.mcodeSessionId = sid;
   return promoteDraftToMcodeSid(cs);
+}
+
+/**
+ * session-isolation/02 (run-mirror): `promoteDraftToMcodeSid` for a
+ * record addressed BY ID, without touching `cs`.
+ *
+ * Mid-run the live `cs` can belong to a different session (the user
+ * switched away while the engine session id was still unknown). The
+ * turn's draft record must still be promoted — engine identity bound,
+ * id rewritten to the mvs id (or merged into an existing overlay) —
+ * exactly what `promoteDraftToMcodeSid` does, but targeted at the
+ * owning record so the switched-to session's record is never renamed
+ * or merged by someone else's turn.
+ *
+ * Idempotent: a record already carrying `sid` (or an already-promoted
+ * record that no longer matches `webuiId`) is left alone.
+ *
+ * @returns {string|null} the owning record's id after promotion
+ *   (null when there was nothing to bind — record gone, or already
+ *   bound to another engine session).
+ */
+export function bindRecordToMcodeSid(webuiId, sid) {
+  if (!webuiId || !sid) return null;
+  const all = loadSessions();
+  // Already promoted for this turn? (webuiId may BE the mvs id after a
+  // previous promotion, or the record may carry the binding already.)
+  const bound = findOverlayForMcodeSid(all, sid);
+  if (bound) return bound.id;
+  const draft = all.find((s) => s && s.id === webuiId && !s.mcodeSessionId);
+  if (!draft) return null;
+  const existing = findOverlayForMcodeSid(all, sid);
+  if (existing) {
+    const draftChat = Array.isArray(draft.chat) ? draft.chat : [];
+    if (draftChat.length > 0) {
+      existing.chat = [...(existing.chat || []), ...draftChat];
+    }
+    existing.updatedAt = Date.now();
+    const idx = all.indexOf(draft);
+    if (idx >= 0) all.splice(idx, 1);
+    saveSessions(all);
+    return existing.id;
+  }
+  draft.id = sid;
+  draft.mcodeSessionId = sid;
+  draft.updatedAt = Date.now();
+  saveSessions(all);
+  return draft.id;
 }
 
 // Memoize parsed content by (mtimeMs, size). pushStateFor calls
@@ -303,6 +358,33 @@ export function persistCurrentChat(cs) {
   item.chat = cs.chat || [];
   item.updatedAt = Date.now();
   saveSessions(all);
+}
+
+/**
+ * session-isolation/02 (run-mirror): append finished-turn lines to a
+ * session's PERSISTED record, addressed by id or engine session id.
+ *
+ * Used by the finalize drain when the user switched away mid-run: the
+ * live `cs` belongs to whichever session the user is looking at now,
+ * so `persistCurrentChat(cs)` would persist the wrong view. The turn's
+ * lines belong to the session that RAN, so they are written to that
+ * session's record directly — found by webui id, or by mcodeSessionId
+ * when the record was promoted mid-run (its id is then the mvs id).
+ *
+ * No-op when there is nothing to append or no record matches (the
+ * record was deleted mid-run — nothing sensible to resurrect).
+ */
+export function appendChatToSession(sessionId, lines) {
+  if (!sessionId || !Array.isArray(lines) || lines.length === 0) return false;
+  const all = loadSessions();
+  const item =
+    all.find((s) => s && s.id === sessionId) ||
+    findOverlayForMcodeSid(all, sessionId);
+  if (!item) return false;
+  item.chat = [...(item.chat || []), ...lines];
+  item.updatedAt = Date.now();
+  saveSessions(all);
+  return true;
 }
 
 // Boot-time cleanup of empty / default-titled session entries (the
