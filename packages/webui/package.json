@@ -109,6 +109,7 @@
       "settings": "GET|POST /api/settings",
       "upload": "POST /api/upload",
       "model": "GET /api/models, POST /api/set-model|permissions|answer",
+      "providers": "GET|PUT /api/providers, POST /api/providers/test",
       "usage": "GET|POST /api/usage[-real|-trigger|/refresh]",
       "protocol": "GET|POST /api/protocol/* (acp shim)",
       "debug": "GET|POST /api/debug/* (DEBUG_INJECT gated)"

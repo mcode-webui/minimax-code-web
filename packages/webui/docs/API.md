@@ -827,12 +827,23 @@ is per-session, so there is nothing to report until a session exists.
   "source": "acp-session-config",
   "models": [
     { "id": "minimax_api/MiniMax-M3", "name": "MiniMax-M3" }
+  ],
+  "groups": [
+    {
+      "id": "__engine",
+      "label": "Engine session",
+      "models": [
+        { "id": "minimax_api/MiniMax-M3", "label": "MiniMax-M3", "provider": "minimax_api", "source": "engine" }
+      ]
+    }
   ]
 }
 ```
 
-- `models[]` entries are `{id, name}` — `id` is the engine's config value,
-  `name` its display label. There is no `label` or `provider` field.
+- `models[]` entries are `{id, name, label, provider, source}` — `id`
+  is the engine's config value, `name` and `label` its display name,
+  `provider` the prefix split off `id`, `source` one of
+  `engine` / `config` / `builtin`.
 - `current` is the option's `currentValue`, or `null` when the session has
   not reported one. It is never backfilled from a guess: a previous version
   wrote the default model back into `cs.model` here, which is what put an
@@ -840,6 +851,12 @@ is per-session, so there is nothing to report until a session exists.
 
 If the list is empty the response adds `reason: "no_session_config"`. The
 `current` field is then `null`; nothing is written back.
+
+When a v2 providers config is present (`/api/providers` PUT
+target), each model carries `protocol` / `thinkingLevels` /
+`modalities` from the config; each provider group carries
+`auth: {hasKey, type}` (no `apiKey`, no `baseURL` — those exist
+only on the `/api/providers` surface where the key is masked).
 
 ### `POST /api/set-model`
 
@@ -968,6 +985,152 @@ The route is a **legacy no-op**: it logs the call and answers without acting on
 it. Answers go through `POST /api/send` with `{content, isAskAnswer: true}`.
 `deprecated: true` is always present — a client that only checks `ok` will keep
 calling an endpoint that does nothing.
+
+### `GET /api/providers`
+
+Return the merged v2 provider catalogue, with every `apiKey` masked
+(`apiKeyMasked`) — the plaintext credential is never returned in any
+response path. The response also names the file paths the server
+actually read for each layer, so an operator can confirm which file
+the live config came from.
+
+Layered resolution: `MCODE_WEBUI_MODELS_CONFIG` env → cwd `models.json`
+→ user-level `~/.mcode-webui/providers.json` (the PUT write target).
+Same-id provider deep merge; models dedupe by id with the higher layer
+winning.
+
+**Response 200**
+```json
+{
+  "ok": true,
+  "version": 2,
+  "providers": [
+    {
+      "id": "openai_compat",
+      "label": "OpenAI Compat",
+      "enabled": true,
+      "protocol": "openai",
+      "auth": {
+        "type": "byok",
+        "hasKey": true,
+        "apiKeyMasked": "sk-a***yz",
+        "baseURL": "https://api.openai.com"
+      },
+      "models": [
+        {
+          "id": "gpt-4o-mini",
+          "label": "GPT-4o mini",
+          "contextLimit": 128000,
+          "thinkingLevels": ["low", "medium", "high"],
+          "modalities": ["text", "image"]
+        }
+      ]
+    }
+  ],
+  "sources": {
+    "env": null,
+    "cwd": "/srv/webui/models.json",
+    "user": "/home/you/.mcode-webui/providers.json"
+  },
+  "userPath": "/home/you/.mcode-webui/providers.json"
+}
+```
+
+- `auth.apiKeyMasked` is the only apiKey shape returned by any route
+  in this surface. A test (and `scripts/check-docs-alignment.mjs`)
+  pins the rule: the plaintext key MUST NEVER appear in any
+  `/api/providers*` response, regardless of which layer held it.
+- `sources.env` is `null` when `MCODE_WEBUI_MODELS_CONFIG` is unset;
+  `sources.cwd` is omitted from the layer set in that case (the env
+  override is the cwd file).
+
+### `PUT /api/providers`
+
+Validate-and-persist a v2 provider config to the user-level file
+(`~/.mcode-webui/providers.json`, the file written by this handler).
+The env / cwd layers are deployment-owned and never written here.
+
+The handler atomically writes via rename (no half-written file on
+disk), reloads the layer set on the next call, and broadcasts an
+SSE `providers.updated` named event with the masked payload so
+every connected client refreshes its catalogue without polling.
+`/api/models` picks up the change on the next request — no restart
+required.
+
+**Request**
+```json
+{
+  "version": 2,
+  "providers": [
+    {
+      "id": "openai_compat",
+      "label": "OpenAI Compat",
+      "enabled": true,
+      "protocol": "openai",
+      "auth": { "type": "byok", "apiKey": "sk-realkey...", "baseURL": "https://api.openai.com" },
+      "models": [
+        { "id": "gpt-4o-mini", "label": "GPT-4o mini", "contextLimit": 128000 }
+      ]
+    }
+  ]
+}
+```
+
+**Response 200**
+```json
+{
+  "ok": true,
+  "providers": [ /* masked view, same shape as GET */ ],
+  "path": "/home/you/.mcode-webui/providers.json"
+}
+```
+
+- `400 BAD_BODY` — invalid provider shape, unknown protocol, or
+  validation failure (each error carries a human-readable `error`
+  string with the offending field).
+- `500 WRITE_FAILED` — disk I/O failure (the in-memory state did
+  not change; the operator should retry).
+
+### `POST /api/providers/test`
+
+Run a per-protocol minimal connectivity probe. Local key-format
+validation happens BEFORE any network call — a malformed key gets
+`400 INVALID_KEY` with no fetch. A successful probe returns
+`{ok:true, latencyMs, detail}`; a network failure returns
+`502 PROBE_FAILED` with the upstream status code (no response body
+— upstream error messages can echo the credential in a misconfigured
+proxy).
+
+**Request**
+```json
+{
+  "protocol": "openai",
+  "auth": { "type": "byok", "apiKey": "sk-realkey...", "baseURL": "https://api.openai.com" }
+}
+```
+
+**Response 200** (probe succeeded)
+```json
+{ "ok": true, "protocol": "openai", "code": "OK", "latencyMs": 187, "detail": "HTTP 200" }
+```
+
+**Response 400** (malformed key — no network call)
+```json
+{ "ok": false, "protocol": "openai", "code": "INVALID_KEY", "error": "auth.apiKey is too short (< 8 chars)" }
+```
+
+**Response 502** (upstream rejected the request)
+```json
+{ "ok": false, "protocol": "openai", "code": "PROBE_FAILED", "error": "HTTP 401", "latencyMs": 412 }
+```
+
+- Protocol whitelist: `openai` (`GET /v1/models`), `anthropic`
+  (`POST /v1/messages` with `claude-3-5-sonnet-20241022`,
+  `max_tokens:1`), `gemini` (`GET /v1beta/models?key=...`).
+  Anything else returns `400 BAD_PROTOCOL` with no network call.
+- The key is sent only to the `baseURL` from the request body (or
+  the protocol default). The plaintext key never leaves the
+  server in any response path.
 
 ---
 
