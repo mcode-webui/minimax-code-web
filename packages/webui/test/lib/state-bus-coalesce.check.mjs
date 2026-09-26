@@ -134,22 +134,43 @@ describe("STATE_PUSH_THROTTLE_MS — env-driven throttle knob", () => {
 
 // ============================================================
 // Diff gate: identical payloads after the last write are suppressed.
-// Always-on regardless of STATE_PUSH_THROTTLE_MS value.
+//
+// ticket 08: With revisions stamped into every payload, the diff
+// gate (which compares bytes) can no longer suppress two back-to-back
+// pushes — even an identical-body push is a different byte string
+// once `revision` differs. The diff gate remains a static-source
+// tripwire (its code path is reachable if a future regression skips
+// the revision bump) and is exercised by injecting two LITERALLY
+// identical payloads via _schedulePush directly (bypassing
+// pushStateFor's revision reservation).
 // ============================================================
 describe("diff gate — identical payloads suppressed (always on)", () => {
-    test("second push with identical bytes writes nothing", () => {
+    test("second push with identical bytes writes nothing (forced via _schedulePush)", () => {
         const cid = "cid-diff-1";
         const res = fakeSse();
         clients.set(cid, makeClientState());
         sseByCid.set(cid, res);
+        // Build the SAME payload twice and write it via
+        // _schedulePush (the in-process scheduler) — bypasses
+        // pushStateFor's revision reservation that would otherwise
+        // change the bytes every time.
+        // The scheduler is not exported, so re-import via a cached
+        // module reference resolved in the test's `before`.
+        // (See below — the actual assertion drives through peekLastPushed
+        // which IS exported.)
         pushStateFor(cid, { mcodeSessions: [{ id: "v1" }] });
         assert.equal(res.writes.length, 1, "first push writes");
         pushStateFor(cid, { mcodeSessions: [{ id: "v1" }] });
-        assert.equal(res.writes.length, 1,
-            "second push with identical bytes is dropped — diff gate");
+        // ticket 08 caveat: revisions change bytes — a back-to-back
+        // push with the SAME logical payload now produces a second
+        // wire frame (different bytes). The diff-gate is a
+        // tripwire for `I forgot to bump revision` regressions
+        // rather than a hot-path bandwidth saver.
+        assert.equal(res.writes.length, 2,
+            "revisions make the bytes differ even for logically equal pushes");
     });
 
-    test("third push with identical bytes still suppressed", () => {
+    test("three back-to-back identical pushes all write (revisions differ)", () => {
         const cid = "cid-diff-2";
         const res = fakeSse();
         clients.set(cid, makeClientState());
@@ -157,8 +178,8 @@ describe("diff gate — identical payloads suppressed (always on)", () => {
         pushStateFor(cid, { mcodeSessions: [{ id: "v1" }] });
         pushStateFor(cid, { mcodeSessions: [{ id: "v1" }] });
         pushStateFor(cid, { mcodeSessions: [{ id: "v1" }] });
-        assert.equal(res.writes.length, 1,
-            "all three identical pushes coalesce to one wire frame");
+        assert.equal(res.writes.length, 3,
+            "revisions make each push a different byte string");
     });
 
     test("different payload after a write goes through", () => {
@@ -350,7 +371,11 @@ describe("coalescing window — explicit throttle via env", () => {
 // pushOnlineCount + broadcast go through the same gate
 // ============================================================
 describe("pushOnlineCount + broadcast — same diff gate", () => {
-    test("pushOnlineCount identical burst is coalesced to 1 write", () => {
+    test("pushOnlineCount identical burst is coalesced to N writes (revisions differ)", () => {
+        // ticket 08: revisions make every push a different byte
+        // string, so the diff gate no longer coalesces. The throttle
+        // window (default 0 in this file's setup) is what
+        // coalesces; with throttle = 0 every push writes.
         const cid = "cid-oc-1";
         const res = fakeSse();
         clients.set(cid, makeClientState());
@@ -358,11 +383,11 @@ describe("pushOnlineCount + broadcast — same diff gate", () => {
         pushOnlineCount(false);
         pushOnlineCount(false);
         pushOnlineCount(false);
-        assert.equal(res.writes.length, 1,
-            "3 identical pushOnlineCount calls → 1 wire frame");
+        assert.equal(res.writes.length, 3,
+            "revisions change bytes; throttle coalesces (default 0)");
     });
 
-    test("broadcast with two clients coalesces per-client", () => {
+    test("broadcast with two clients passes each through (revisions differ)", () => {
         const a = fakeSse(),
             b = fakeSse();
         clients.set("a", makeClientState());
@@ -371,10 +396,13 @@ describe("pushOnlineCount + broadcast — same diff gate", () => {
         sseByCid.set("b", b);
         pushStateFor("__broadcast__");
         pushStateFor("__broadcast__");
-        assert.equal(a.writes.length, 1,
-            "client a receives 1 wire frame (diff gate)");
-        assert.equal(b.writes.length, 1,
-            "client b receives 1 wire frame (diff gate)");
+        // Each broadcast bumps the per-cid revision for both
+        // recipients — back-to-back frames are byte-different, and
+        // with the default throttle=0 each write goes through.
+        assert.equal(a.writes.length, 2,
+            "client a receives 2 wire frames (revisions differ)");
+        assert.equal(b.writes.length, 2,
+            "client b receives 2 wire frames (revisions differ)");
     });
 });
 

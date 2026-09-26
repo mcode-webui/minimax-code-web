@@ -27,6 +27,20 @@ export interface ModelState {
    *  (`applyConfigOptionUpdate` in lib/mcode-acp.js). */
   thinking: string;
   ctx: string;
+  /**
+   * Ticket 08 (set-model SSE race) — server-side pick timestamps.
+   * `handleSetModel` stamps `modelPickedAt` when the user changed the
+   * model and `thinkingPickedAt` when the user changed the thinking
+   * effort; `applyConfigOptionUpdate` defers its engine-mirror for
+   * each field while the matching timestamp is fresh
+   * (`PICK_DEFER_WINDOW_MS` in server/lib/mcode-acp.js). These
+   * fields are administrative — the UI ignores them — but the client
+   * does not filter them out either: they ride along on the
+   * full-snapshot replace. Optional in the type so existing tests
+   * with hand-built state fixtures don't have to set them.
+   */
+  modelPickedAt?: number;
+  thinkingPickedAt?: number;
 }
 
 export interface ContextState {
@@ -166,6 +180,20 @@ export interface WebuiState {
   lanBroadcast: boolean;
   readOnly: boolean;
   tokenEnabled: boolean;
+  /**
+   * Ticket 08 (set-model SSE race) — per-cid monotonic snapshot
+   * revision. The server stamps every push (single cid, broadcast,
+   * `/api/state`, SSE first frame) with a strictly increasing counter.
+   * The store applies a snapshot only when its revision is greater
+   * than the last-applied one, so a stale frame cannot rewind the
+   * rendered state even if the wire reorders or a coalesce-window
+   * late-arrival slips through the diff gate.
+   *
+   * Optional in the type so the static prerender initial value
+   * (`getServerSnapshot`) can omit it; legacy fixtures and hand-built
+   * snapshots likewise stay legal.
+   */
+  revision?: number;
   [key: string]: unknown;
 }
 

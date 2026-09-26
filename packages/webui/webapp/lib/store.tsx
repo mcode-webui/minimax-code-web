@@ -11,7 +11,7 @@ import {
 import type { AuthorizeRequest, TokenFirstRun, WebuiState } from "./types";
 import * as api from "./api";
 import { withClientQuery } from "./cid";
-import { NAMED_EVENTS, parseSseFrame } from "./sse";
+import { NAMED_EVENTS, parseSseFrame, type SseAction } from "./sse";
 
 /**
  * Session store — one shared subscription to the server's state stream.
@@ -54,6 +54,19 @@ export interface StoreSnapshot {
    * to 0 on mount; the absolute value is meaningless across reloads.
    */
   providersRevision: number;
+  /**
+   * Ticket 08 (set-model SSE race) — the highest per-cid snapshot
+   * revision the store has applied so far. Each full-state frame
+   * carries a server-stamped `revision`; the store only replaces the
+   * live `state` when the incoming revision strictly exceeds the
+   * stored value. This makes the rendered UI monotonic regardless of
+   * any wire-reordering / coalesce-window late-arrivals and is the
+   * client-side companion to the server-side ownership-aware mirror
+   * in `applyConfigOptionUpdate` (server/lib/mcode-acp.js). `-1`
+   * means "no snapshot has been accepted yet" — the first frame
+   * always passes the guard.
+   */
+  stateRevision: number;
 }
 
 const INITIAL: StoreSnapshot = {
@@ -66,6 +79,7 @@ const INITIAL: StoreSnapshot = {
   quotaBusy: false,
   quotaError: null,
   providersRevision: 0,
+  stateRevision: -1,
 };
 
 let snapshot: StoreSnapshot = INITIAL;
@@ -74,6 +88,75 @@ const listeners = new Set<() => void>();
 function setSnapshot(patch: Partial<StoreSnapshot>): void {
   snapshot = { ...snapshot, ...patch };
   for (const listener of listeners) listener();
+}
+
+/**
+ * Test-only handle: read the live snapshot. The production module never
+ * exposes this; the test runner (webapp/test/store-revision.test.ts)
+ * asserts through it after dispatching frames into the EventSource.
+ */
+export function __testSnapshot(): StoreSnapshot {
+  return snapshot;
+}
+
+/**
+ * Test-only handle: simulate an SSE frame dispatch. Production code
+ * NEVER calls this — it exists so the revision-guard reducer can be
+ * unit-tested without standing up React.
+ *
+ * @param action the parsed SSE action to apply
+ * @returns the resulting snapshot
+ */
+export function __testApplyAction(action: SseAction | { kind: "connected"; value: boolean }): StoreSnapshot {
+  switch (action.kind) {
+    case "state": {
+      const incoming = action.state.revision;
+      if (typeof incoming === "number") {
+        if (incoming <= snapshot.stateRevision) return snapshot;
+        setSnapshot({
+          state: action.state,
+          stateRevision: incoming,
+          connected: true,
+          error: null,
+        });
+      } else {
+        setSnapshot({ state: action.state, connected: true, error: null });
+      }
+      return snapshot;
+    }
+    case "authorize":
+      setSnapshot({ authorize: action.request });
+      return snapshot;
+    case "authorize-cleared":
+      setSnapshot({ authorize: null });
+      return snapshot;
+    case "first-run":
+      setSnapshot({ firstRun: action.payload });
+      return snapshot;
+    case "providers-updated":
+      setSnapshot({ providersRevision: snapshot.providersRevision + 1 });
+      return snapshot;
+    case "malformed":
+      setSnapshot({ error: `malformed ${action.event || "message"} frame` });
+      return snapshot;
+    case "heartbeat":
+    case "ignored":
+      return snapshot;
+    case "connected":
+      setSnapshot({ connected: action.value });
+      return snapshot;
+  }
+  return snapshot;
+}
+
+/**
+ * Test-only handle: reset the store to its INITIAL state between
+ * tests. Production code never calls this.
+ */
+export function __testReset(): void {
+  snapshot = INITIAL;
+  listeners.clear();
+  source = null;
 }
 
 function subscribe(listener: () => void): () => void {
@@ -107,9 +190,33 @@ export function connect(): () => void {
     const handle = (event: string, data: string) => {
       const action = parseSseFrame(event, data);
       switch (action.kind) {
-        case "state":
-          setSnapshot({ state: action.state, connected: true, error: null });
+        case "state": {
+          // Ticket 08 (set-model SSE race): revision guard. The server
+          // stamps every snapshot with a per-cid monotonic `revision`.
+          // Apply the snapshot ONLY when the incoming revision strictly
+          // exceeds the last-applied one — a wire-reordered or
+          // coalesce-window-late frame cannot rewind the rendered state.
+          // The initial value is `-1`, so the very first snapshot always
+          // passes the guard.
+          const incoming = action.state.revision;
+          if (typeof incoming === "number") {
+            if (incoming <= snapshot.stateRevision) break;
+            setSnapshot({
+              state: action.state,
+              stateRevision: incoming,
+              connected: true,
+              error: null,
+            });
+          } else {
+            // No revision on the frame (defensive — every server-side
+            // writer stamps one). Accept the snapshot so the UI keeps
+            // moving, but DO NOT advance the guard so a subsequent
+            // lower-revision frame is still rejected. Future tags
+            // without the field are caught by this branch as well.
+            setSnapshot({ state: action.state, connected: true, error: null });
+          }
           break;
+        }
         case "authorize":
           setSnapshot({ authorize: action.request });
           break;

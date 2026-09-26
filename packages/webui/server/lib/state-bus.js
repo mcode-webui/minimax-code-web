@@ -116,6 +116,70 @@ export const clients = new Map(); // cid -> clientState
 export const sseByCid = new Map(); // cid -> SSE response
 export const activeChildByCid = new Map(); // cid -> child process
 
+// ============================================================
+// Per-cid monotonic snapshot revision (ticket 08 — set-model SSE race).
+//
+// Why this exists. set-model had two writers to `cs.model.name` racing
+// against each other (handleSetModel's optimistic write vs the engine's
+// `config_option_update` mirror). The two writers held the field in
+// different encodings (user-friendly form vs engine wire form), the SSE
+// stream sometimes emitted alternating snapshots, and the React store —
+// which always applies the latest full snapshot verbatim — could settle
+// on a stale value (the dev of ticket 07 saw `[GLM-5.3, M3, GLM-5.3]`
+// via a direct SSE listener). Two defenses:
+//
+//   1. Server stamps every snapshot with a per-cid monotonic `revision`.
+//      A client that remembers its last-applied revision drops any
+//      snapshot whose revision is `<=` the high-water mark — wire
+//      reorderings, coalesce-window late-arrivals, and the engine's
+//      notification chasing the optimistic write all collapse to the
+//      same monotonic sequence.
+//
+//   2. Server-side write ownership (see `applyConfigOptionUpdate` in
+//      `server/lib/mcode-acp.js`): the engine's mirror respects a
+//      short window after a local user pick so the wire form does not
+//      re-assert itself over the recorded user-friendly form.
+//
+// The revision is bumped INSIDE the push path — a coalesce-window
+// deferred write still carries the LAST pre-write bump, so the wire
+// receives a strictly monotonic sequence per cid. The diff gate
+// (`_lastPushedByCid`) becomes effectively vestigial once revisions
+// are in the payload (every write differs in bytes), but the diff gate
+// stays for safety: a static-source tripwire that catches "no
+// revision was stamped" regressions.
+const _revisionByCid = new Map(); // cid -> last assigned revision (monotonic per cid)
+
+/**
+ * Reserve the next revision for `cid`, returning the integer that the
+ * snapshot should carry. Reserves BEFORE the snapshot is JSON-stringified
+ * so the value is observable to the wire.
+ */
+export function nextRevisionFor(cid) {
+  const key = cid || "default";
+  const cur = _revisionByCid.get(key) || 0;
+  const next = cur + 1;
+  _revisionByCid.set(key, next);
+  return next;
+}
+
+/** Read-only access for tests and for the /api/state handler. */
+export function revisionFor(cid) {
+  return _revisionByCid.get(cid || "default") || 0;
+}
+
+/**
+ * Reset the per-cid revision. Used by endSseClient so a brand-new
+ * connection doesn't see the previous client's high-water mark (the
+ * new client never received those frames, so suppressing its early
+ * frames would be wrong). Production callers other than the SSE
+ * bookkeeping NEVER invoke this — the counter stays monotonic for
+ * the lifetime of a cid's cs.
+ */
+export function resetRevisionFor(cid) {
+  const key = cid || "default";
+  _revisionByCid.delete(key);
+}
+
 // A fresh client (page reload, new tab) must resume the conversation it
 // was in. Binds the fresh client to the most recent session in its
 // workspace (sessions.json is the persisted store); the "+" new-session
@@ -246,6 +310,9 @@ function ensureMcodeSessionsFetchedAndPush(workspace) {
         currentToken: getTokenAcknowledged() ? "" : getCurrentToken(),
         tokenAcknowledged: getTokenAcknowledged(),
         tokenRotatedAt: getTokenRotatedAt(),
+        // ticket 08: monotonic per-cid revision — every recipient sees
+        //   the same sequence regardless of coalesce ordering.
+        revision: nextRevisionFor(c),
       };
       // Routed through the 60Hz coalescer — multiple authoritative
       // pushes within STATE_PUSH_THROTTLE_MS collapse to one write
@@ -292,6 +359,8 @@ export function pushStateFor(cid, opts = {}) {
         currentToken: getTokenAcknowledged() ? "" : getCurrentToken(),
         tokenAcknowledged: getTokenAcknowledged(),
         tokenRotatedAt: getTokenRotatedAt(),
+        // ticket 08: monotonic per-cid revision.
+        revision: nextRevisionFor(c),
       };
       // Coalesced write — N broadcasts within the throttle window
       // collapse to ONE write per cid (last call's snapshot wins).
@@ -327,6 +396,10 @@ export function pushStateFor(cid, opts = {}) {
     currentToken: getTokenAcknowledged() ? "" : getCurrentToken(),
     tokenAcknowledged: getTokenAcknowledged(),
     tokenRotatedAt: getTokenRotatedAt(),
+    // ticket 08: monotonic per-cid revision. Every push increments;
+    // a coalesce-window deferred write still carries the LAST bump,
+    // so the wire sees a strictly monotonic sequence per cid.
+    revision: nextRevisionFor(cid),
   };
   const payload = JSON.stringify(snapshot);
   const res = sseByCid.get(cid);
@@ -570,6 +643,9 @@ export function pushOnlineCount(lanBroadcast) {
       currentToken: getTokenAcknowledged() ? "" : getCurrentToken(),
       tokenAcknowledged: getTokenAcknowledged(),
       tokenRotatedAt: getTokenRotatedAt(),
+      // ticket 08: monotonic per-cid revision (see nextRevisionFor at the
+      // top of this file).
+      revision: nextRevisionFor(c),
     };
     // Coalesced write — multiple pushOnlineCount() calls within the
     // throttle window collapse to ONE write per cid.
@@ -992,6 +1068,12 @@ export function endSseClient(cid, res) {
   // qa (OOM hardening): 释放死 res 引用 —— 之前 _lastPushedResByCid 永不
   // 清理，每个断开的 SSE 响应（连同其 socket 写缓冲）被进程终身持有。
   _lastPushedResByCid.delete(cid);
+  // ticket 08: drop the per-cid revision too. The next client opening
+  //   an SSE connection starts with no high-water mark so its first
+  //   frame applies unconditionally — see setSseClient + the reset
+  //   paths in `_schedulePush` and the diff gate (`fresh-client
+  //   detection`).
+  _revisionByCid.delete(cid);
 }
 
 // broadcastTokenRotated — push a named SSE event so all
