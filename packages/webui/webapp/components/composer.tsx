@@ -544,6 +544,8 @@ export function Composer({ t, inline = false }: { t: (key: MessageKey) => string
                 groups={groups}
                 value={state?.model.name}
                 label={currentModelLabel}
+                thinking={state?.model?.thinking ?? ""}
+                thinkingLevels={thinkingLevelsForActive}
                 onPick={(id) => {
                   // The composer hands the picker an id; we send the
                   // same `thinking` we already recorded so the engine's
@@ -557,6 +559,17 @@ export function Composer({ t, inline = false }: { t: (key: MessageKey) => string
                       ? { thinking: state.model.thinking }
                       : {}),
                   });
+                }}
+                onPickThinking={(level, modelId) => {
+                  // Inline level-pill callback. When the caller passes
+                  // a model id alongside the level (a row's hover pills),
+                  // apply both atomically — the server re-anchors
+                  // model+effort in lockstep so the engine never sees an
+                  // effort without a model anchor. With no model id, only
+                  // the level is forwarded and the active model stays.
+                  const payload: { thinking: string; model?: string } = { thinking: level };
+                  if (modelId) payload.model = modelId;
+                  void api.setModel(payload);
                 }}
               />
               {/* Thinking-effort picker (ticket 04). Only rendered when
@@ -846,7 +859,10 @@ function ModelSelect({
   groups,
   value,
   label,
+  thinking,
+  thinkingLevels,
   onPick,
+  onPickThinking,
 }: {
   t: (key: MessageKey) => string;
   models: {
@@ -854,6 +870,7 @@ function ModelSelect({
     label: string;
     provider?: string;
     modalities?: string[];
+    thinkingLevels?: string[];
   }[];
   /** Per-provider groups from `/api/models`. Used to disable no-key
    *  providers and to look up the display label the server resolved
@@ -865,9 +882,27 @@ function ModelSelect({
   }[];
   value?: string;
   label: string;
+  /** Currently recorded thinking-effort level (`""` means "engine default"). */
+  thinking: string;
+  /** Active model's thinking levels (only present when the active
+   *  model advertises reasoning controls). Drives the inline level
+   *  pill row rendered at the top of the panel. */
+  thinkingLevels: string[];
   onPick: (id: string) => void;
+  /** Apply a thinking level alongside (or instead of) a model pick.
+   *  The composer's caller uses the same wiring the ThinkingEffortSelect
+   *  uses — `api.setModel({ model, thinking })`. Passing `model`
+   *  alone means "change level only, keep current model"; passing
+   *  both sets the model and the level atomically (the server
+   *  enforces "model first, then effort" so the engine never sees
+   *  an effort without a model anchor). */
+  onPickThinking: (level: string, modelId?: string) => void;
 }) {
   const [open, setOpen] = useState(false);
+  // Model id whose row is currently expanded to show its level pills.
+  // Defaults to the active model so the user can change level without
+  // scrolling; hovering a row overrides the expansion to that row.
+  const [expandedModelId, setExpandedModelId] = useState<string | null>(value ?? null);
 
   // Group by provider, preserving the catalogue order. A provider-less entry
   // (engine-encoded ids whose prefix wasn't coerced) falls into "Other" so it
@@ -899,10 +934,20 @@ function ModelSelect({
     return order.map((key) => buckets.get(key)!);
   }, [models, groups, t]);
 
+  // Re-sync the expanded row when the active model changes (e.g. after
+  // a session reset). Falling back to `null` shows no expansion; the
+  // active row's pills then disappear until the user hovers or picks.
+  useEffect(() => {
+    setExpandedModelId(value ?? null);
+  }, [value]);
+
   return (
     <Dropdown
       open={open}
-      onOpenChange={setOpen}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (!next) setExpandedModelId(value ?? null);
+      }}
       trigger={["click"]}
       placement="bottomRight"
       overlayClassName="mavis-dropdown mavis-dropdown-compact mavis-dropdown-custom-content"
@@ -912,6 +957,49 @@ function ModelSelect({
             <SelectRow testId="model-select-empty" label={t("composer.noModels")} />
           ) : (
             <div className="flex flex-col">
+              {/* Inline thinking-effort row — when the active model advertises
+                  reasoning controls, the level pills render at the top of the
+                  panel so the user can change effort without picking a new
+                  model. Clicking a pill applies both the model (kept as the
+                  active model) and the new level atomically. Hovering a row
+                  in the list below re-targets the pills to that row's levels
+                  so a model+level change costs a single click. */}
+              {thinkingLevels.length > 0 ? (
+                <div
+                  data-testid="model-select-level-row"
+                  className="mx-1 mb-1 mt-0.5 flex flex-col gap-1 rounded-[8px] bg-bg_grouped_secondary px-2 py-1.5"
+                >
+                  <span className="text-caption-small-strong uppercase tracking-wide text-text_default_tertiary">
+                    {t("modelSelector.level")}
+                  </span>
+                  <div className="flex flex-wrap gap-1">
+                    {thinkingLevels.map((level) => {
+                      const isActive = thinking === level;
+                      return (
+                        <button
+                          key={level}
+                          type="button"
+                          data-testid={`model-select-level-${level}`}
+                          data-active={isActive ? "true" : "false"}
+                          aria-pressed={isActive}
+                          onClick={() => {
+                            setOpen(false);
+                            onPickThinking(level);
+                          }}
+                          className={[
+                            "h-6 rounded-md border px-2 text-caption-small-strong transition-colors",
+                            isActive
+                              ? "border-border_heavy bg-bg_interaction_tertiary_selected text-text_default_primary"
+                              : "border-border_default text-text_default_secondary hover:bg-bg_interaction_tertiary_hover hover:text-text_default_primary",
+                          ].join(" ")}
+                        >
+                          {thinkingLevelLabel(t, level)}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : null}
               {grouped.map((group, groupIndex) => {
                 const disabled = isGroupDisabled(group);
                 return (
@@ -936,28 +1024,86 @@ function ModelSelect({
                         </span>
                       ) : null}
                     </div>
-                    {group.models.map((model) => (
-                      <SelectRow
-                        key={model.id}
-                        testId={`model-select-option-${modelSlug(model.id)}`}
-                        label={modelDisplayName(model.label)}
-                        rightAdornment={
-                          model.modalities && model.modalities.length > 0 ? (
-                            <ModalityBadges
-                              t={t}
-                              modalities={model.modalities}
-                            />
-                          ) : null
-                        }
-                        selected={model.id === value}
-                        disabled={disabled}
-                        onClick={() => {
-                          if (disabled) return;
-                          setOpen(false);
-                          onPick(model.id);
-                        }}
-                      />
-                    ))}
+                    {group.models.map((model) => {
+                      const rowLevels = model.thinkingLevels ?? [];
+                      const showLevels = !disabled && rowLevels.length > 0 &&
+                        (expandedModelId === model.id ||
+                          (expandedModelId == null && model.id === value));
+                      return (
+                        <div
+                          key={model.id}
+                          data-testid={`model-select-row-wrap-${modelSlug(model.id)}`}
+                          onMouseEnter={() => {
+                            if (rowLevels.length > 0) setExpandedModelId(model.id);
+                          }}
+                          onMouseLeave={() => {
+                            // Collapse back to the active model when the cursor
+                            // leaves the row so the inline pills follow focus
+                            // instead of getting stuck on the last hovered row.
+                            if (expandedModelId === model.id) {
+                              setExpandedModelId(value ?? null);
+                            }
+                          }}
+                          className="rounded-[8px]"
+                        >
+                          <SelectRow
+                            testId={`model-select-option-${modelSlug(model.id)}`}
+                            label={modelDisplayName(model.label)}
+                            rightAdornment={
+                              model.modalities && model.modalities.length > 0 ? (
+                                <ModalityBadges
+                                  t={t}
+                                  modalities={model.modalities}
+                                />
+                              ) : null
+                            }
+                            selected={model.id === value}
+                            disabled={disabled}
+                            onClick={() => {
+                              if (disabled) return;
+                              setOpen(false);
+                              onPick(model.id);
+                            }}
+                          />
+                          {showLevels ? (
+                            <div
+                              data-testid={`model-select-row-levels-${modelSlug(model.id)}`}
+                              className="mx-1 mb-0.5 flex flex-wrap gap-1 rounded-[8px] px-2 pb-1"
+                            >
+                              {rowLevels.map((level) => {
+                                const isActive =
+                                  model.id === value && thinking === level;
+                                return (
+                                  <button
+                                    key={level}
+                                    type="button"
+                                    data-testid={`model-select-row-level-${modelSlug(model.id)}-${level}`}
+                                    data-active={isActive ? "true" : "false"}
+                                    aria-pressed={isActive}
+                                    onClick={() => {
+                                      setOpen(false);
+                                      // Pass the model id so the server
+                                      // re-anchors the model+effort pair
+                                      // atomically; the level is applied
+                                      // alongside.
+                                      onPickThinking(level, model.id);
+                                    }}
+                                    className={[
+                                      "h-6 rounded-md border px-2 text-caption-small-strong transition-colors",
+                                      isActive
+                                        ? "border-border_heavy bg-bg_interaction_tertiary_selected text-text_default_primary"
+                                        : "border-border_default text-text_default_secondary hover:bg-bg_interaction_tertiary_hover hover:text-text_default_primary",
+                                    ].join(" ")}
+                                  >
+                                    {thinkingLevelLabel(t, level)}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          ) : null}
+                        </div>
+                      );
+                    })}
                   </div>
                 );
               })}
@@ -1120,23 +1266,45 @@ function modalityBadgeKey(modality: string): MessageKey {
  * Map a server-supplied thinking level to its i18n key.
  *
  * The engine's `thinkingEffort` config option accepts `off` / `low` /
- * `medium` / `high` (see packages/tui/src/acp/control-state.ts). Unknown
+ * `medium` / `high` (see packages/tui/src/acp/control-state.ts), and
+ * the providers catalogue carries the same shape plus the model's
+ * own flavours (`max` / `xhigh` / `minimal` / `none`). Unknown
  * levels fall through to no tag — the picker still shows them but the
  * chip label stays clean.
  */
 function thinkingLevelKey(level: string): MessageKey | null {
   switch (level) {
     case "off":
+    case "none":
       return "thinkingPicker.off";
     case "low":
       return "thinkingPicker.low";
+    case "minimal":
+      return "thinkingPicker.minimal";
     case "medium":
       return "thinkingPicker.medium";
     case "high":
       return "thinkingPicker.high";
+    case "xhigh":
+      return "thinkingPicker.xhigh";
+    case "max":
+      return "thinkingPicker.max";
     default:
       return null;
   }
+}
+
+/**
+ * Resolve a thinking level to its display label (the same keys
+ * `thinkingLevelKey` returns, just looked up through `t`).
+ *
+ * Unknown levels fall through to the raw string — same fallback the
+ * ThinkingEffortSelect menu uses, so a model that ships a brand-new
+ * level still surfaces it instead of dropping a glyph on the chip.
+ */
+function thinkingLevelLabel(t: (key: MessageKey) => string, level: string): string {
+  const key = thinkingLevelKey(level);
+  return key ? t(key) : level;
 }
 
 /**

@@ -89,6 +89,12 @@ const en = {
   // panel; the modalities chip maps each `modalities[]` value to a
   // short display label.
   "modelSelector.noKeyHint": "Add an API key in Settings to enable",
+  /* Model selector — ticket 07. The thinking-effort heading rendered at
+     the top of the model selector dropdown, alongside the inline level
+     pills. Falls back to the empty string is undesirable, so the
+     heading is always present when at least one level is offered. */
+  "modelSelector.level": "Thinking effort",
+  "modelSelector.levelHint": "Picking a level here also re-anchors the model",
   "modelSelector.modalityBadge.text": "text",
   "modelSelector.modalityBadge.image": "image",
   "modelSelector.modalityBadge.audio": "audio",
@@ -101,8 +107,11 @@ const en = {
   "thinkingPicker.none": "Use engine default",
   "thinkingPicker.off": "Off",
   "thinkingPicker.low": "Low",
+  "thinkingPicker.minimal": "Minimal",
   "thinkingPicker.medium": "Medium",
   "thinkingPicker.high": "High",
+  "thinkingPicker.xhigh": "Extra high",
+  "thinkingPicker.max": "Max",
 
   "permission.label": "Permission mode",
   "permission.ask": "Ask",
@@ -439,6 +448,9 @@ const zh: Record<MessageKey, string> = {
   /* 模型选择器 — ticket 04。未配置 API Key 的供应商分组置灰并提示去
      设置里填 key；模态徽标按 modalities 数组渲染。 */
   "modelSelector.noKeyHint": "请在设置中配置 API Key",
+  /* 模型选择器 — ticket 07。下拉顶部新增的思考等级行标题与提示。 */
+  "modelSelector.level": "思考等级",
+  "modelSelector.levelHint": "点等级会同时绑定当前模型",
   "modelSelector.modalityBadge.text": "文本",
   "modelSelector.modalityBadge.image": "图像",
   "modelSelector.modalityBadge.audio": "音频",
@@ -449,8 +461,11 @@ const zh: Record<MessageKey, string> = {
   "thinkingPicker.none": "沿用引擎默认",
   "thinkingPicker.off": "关闭",
   "thinkingPicker.low": "低",
+  "thinkingPicker.minimal": "极少",
   "thinkingPicker.medium": "中",
   "thinkingPicker.high": "高",
+  "thinkingPicker.xhigh": "极高",
+  "thinkingPicker.max": "最大",
 
   "permission.label": "权限模式",
   "permission.ask": "主动询问",
