@@ -85,6 +85,11 @@ export function ProviderManagementPanel({
   const [providers, setProviders] = useState<DraftProvider[] | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /** Set on `addProvider`, consumed by `ProviderEditor` to auto-focus the
+   *  id field on the freshly-created draft. Cleared the first time the
+   *  user touches any field — auto-focusing a field the user already
+   *  edited is annoying. */
+  const [autoFocusDraftId, setAutoFocusDraftId] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -158,6 +163,7 @@ export function ProviderManagementPanel({
     const draft = newDraftProvider();
     setProviders((current) => [...(current ?? []), draft]);
     setSelectedId(draft.draftId);
+    setAutoFocusDraftId(draft.draftId);
   }, []);
 
   const markDeleted = useCallback((draftId: string) => {
@@ -227,6 +233,24 @@ export function ProviderManagementPanel({
       // Refresh the local view from the server so masked placeholders
       // line up with the just-saved record.
       await load();
+      // Auto-test after save: a user who just configured a new provider
+      // expects feedback immediately, not a separate click on the
+      // "Test connection" button. The test runs against the live draft
+      // values the user typed; the test result lands inline next to
+      // the save button (described by `testByProvider`).
+      //
+      // The auto-test fires on the *first* newly-added draft with a key
+      // — existing providers were already tested when the user touched
+      // their key field, and re-running the probe on every save would
+      // hide a stale result under a fresh success message.
+      const fresh = providers.find(
+        (p) =>
+          !p.markedForDeletion &&
+          p.isNew &&
+          p.auth.type === "byok" &&
+          p.auth.apiKey.trim().length > 0,
+      );
+      if (fresh) await testSelected();
     } catch (cause) {
       setSaveError(
         t("providers.saveError").replace(
@@ -237,7 +261,7 @@ export function ProviderManagementPanel({
     } finally {
       setBusy(false);
     }
-  }, [providers, validation.ok, load, t]);
+  }, [providers, validation.ok, load, t, testSelected]);
 
   if (loadError && !providers) {
     return (
@@ -403,6 +427,12 @@ export function ProviderManagementPanel({
             <ProviderEditor
               t={t}
               draft={selected}
+              autoFocusId={autoFocusDraftId === selected.draftId}
+              onTouched={() => {
+                if (autoFocusDraftId === selected.draftId) {
+                  setAutoFocusDraftId(null);
+                }
+              }}
               onChange={updateSelected}
               onDelete={() => markDeleted(selected.id)}
               onTest={() => void testSelected()}
@@ -428,9 +458,17 @@ export function ProviderManagementPanel({
               type="button"
               data-testid="providers-save"
               disabled={busy || !validation.ok}
+              aria-busy={busy || undefined}
               onClick={() => void save()}
-              className="h-8 rounded-lg bg-bg_interaction_primary_default px-3 text-sm font-weight_medium text-text_default_inverted_static transition-colors hover:bg-bg_interaction_primary_hover disabled:opacity-50"
+              className="flex h-8 items-center gap-1.5 rounded-lg bg-bg_interaction_primary_default px-3 text-sm font-weight_medium text-text_default_inverted_static transition-colors hover:bg-bg_interaction_primary_hover disabled:cursor-not-allowed disabled:opacity-50"
             >
+              {busy ? (
+                <span
+                  aria-hidden="true"
+                  data-testid="providers-save-spinner"
+                  className="size-3 animate-spin rounded-full border-2 border-current border-t-transparent"
+                />
+              ) : null}
               {busy ? t("providers.saving") : t("providers.save")}
             </button>
             {savedAt ? (
@@ -463,6 +501,14 @@ export function ProviderManagementPanel({
 interface ProviderEditorProps {
   t: (key: MessageKey) => string;
   draft: DraftProvider;
+  /** True while the editor is mounted on a freshly-added draft — the
+   *  id input auto-focuses so the user can start typing without
+   *  moving the cursor. */
+  autoFocusId?: boolean;
+  /** Called once when the user touches any field; the panel uses this
+   *  to clear its auto-focus flag so the focus does not re-fire on
+   *  every re-render. */
+  onTouched?: () => void;
   onChange: (mutator: (draft: DraftProvider) => DraftProvider) => void;
   onDelete: () => void;
   onTest: () => void;
@@ -472,12 +518,27 @@ interface ProviderEditorProps {
 function ProviderEditor({
   t,
   draft,
+  autoFocusId,
+  onTouched,
   onChange,
   onDelete,
   onTest,
   testResult,
 }: ProviderEditorProps) {
+  const idInputRef = useRef<React.ComponentRef<typeof AntInput> | null>(null);
   const idError = validateProviderId(draft.id);
+
+  // Autofocus the id input on freshly-added drafts. The effect runs
+  // only when `autoFocusId` flips on — re-running on every render would
+  // yank focus from the user as they type.
+  useEffect(() => {
+    if (!autoFocusId) return;
+    // antd's Input forwards the ref to the underlying <input>; reach
+    // into it via the public `input` property (typed as the inner
+    // element by antd 5's class API).
+    const inner = idInputRef.current?.input;
+    if (inner && typeof inner.focus === "function") inner.focus();
+  }, [autoFocusId]);
   const testDescription = testResult ? describeTestOutcome(t, testResult) : null;
 
   return (
@@ -508,10 +569,14 @@ function ProviderEditor({
         </legend>
         <Field label={t("providers.field.id")}>
           <AntInput
+            ref={idInputRef}
             value={draft.id}
             disabled={!draft.isNew}
             data-testid="provider-field-id"
-            onChange={(e) => onChange((p) => ({ ...p, id: e.target.value }))}
+            onChange={(e) => {
+              onTouched?.();
+              onChange((p) => ({ ...p, id: e.target.value }));
+            }}
             className="mavis-input"
             status={idError ? "error" : undefined}
           />

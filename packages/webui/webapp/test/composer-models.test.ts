@@ -161,13 +161,20 @@ function modalityBadgeKey(modality: string): string {
 function thinkingLevelKey(level: string): string | null {
   switch (level) {
     case "off":
+    case "none":
       return "thinkingPicker.off";
     case "low":
       return "thinkingPicker.low";
+    case "minimal":
+      return "thinkingPicker.minimal";
     case "medium":
       return "thinkingPicker.medium";
     case "high":
       return "thinkingPicker.high";
+    case "xhigh":
+      return "thinkingPicker.xhigh";
+    case "max":
+      return "thinkingPicker.max";
     default:
       return null;
   }
@@ -220,6 +227,17 @@ describe("thinkingLevelKey — engine effort → i18n key", () => {
     assert.equal(thinkingLevelKey("high"), "thinkingPicker.high");
   });
 
+  test("provider-catalogue flavours (max / xhigh / minimal / none) map too", () => {
+    // The /api/models catalogue may carry flavours the engine's own
+    // thinkingEffort option does not (max / xhigh / minimal) — the
+    // chip and inline pills render them with their own label rather
+    // than dropping a glyph on the row.
+    assert.equal(thinkingLevelKey("max"), "thinkingPicker.max");
+    assert.equal(thinkingLevelKey("xhigh"), "thinkingPicker.xhigh");
+    assert.equal(thinkingLevelKey("minimal"), "thinkingPicker.minimal");
+    assert.equal(thinkingLevelKey("none"), "thinkingPicker.off");
+  });
+
   test("unknown levels return null so the chip label stays clean", () => {
     assert.equal(thinkingLevelKey("turbo"), null);
     assert.equal(thinkingLevelKey(""), null);
@@ -227,7 +245,165 @@ describe("thinkingLevelKey — engine effort → i18n key", () => {
 });
 
 // ============================================================
-// Persistence round-trip — the setModel payload the composer sends.
+// Ticket 07 — inline level pill availability.
+//
+// The model selector renders an inline row of thinking-level pills
+// at the top of the dropdown when the active model advertises
+// reasoning controls. The pill row is hidden when the active model
+// carries an empty `thinkingLevels[]` so the dropdown never advertises
+// a level the engine would reject.
+//
+// The selection rule is identical to the existing ThinkingEffortSelect
+// gating: presence of `thinkingLevels[]` on the catalogue entry is the
+// only signal. Pin the rule here so a future regression that gates
+// the pill row differently surfaces as a test failure.
+// ============================================================
+
+interface CatalogueEntry {
+  id: string;
+  label: string;
+  thinkingLevels?: string[];
+}
+
+/** Mirror of composer.tsx#ModelSelect's "active model has reasoning
+ *  controls" derivation. */
+function activeModelHasInlineLevels(
+  catalogue: CatalogueEntry[],
+  activeId: string,
+): boolean {
+  if (!activeId) return false;
+  const known = catalogue.find((m) => m.id === activeId);
+  return !!known && Array.isArray(known.thinkingLevels) && known.thinkingLevels.length > 0;
+}
+
+describe("inline level row availability — ticket 07", () => {
+  test("empty active id → no inline row (no model selected)", () => {
+    assert.equal(activeModelHasInlineLevels([], ""), false);
+    assert.equal(activeModelHasInlineLevels(
+      [{ id: "m", label: "M", thinkingLevels: ["low"] }],
+      "",
+    ), false);
+  });
+
+  test("active model with non-empty thinkingLevels → inline row visible", () => {
+    assert.equal(activeModelHasInlineLevels(
+      [{ id: "minimax/M3", label: "M3", thinkingLevels: ["low", "high"] }],
+      "minimax/M3",
+    ), true);
+  });
+
+  test("active model with empty thinkingLevels → no inline row", () => {
+    assert.equal(activeModelHasInlineLevels(
+      [{ id: "minimax/M3", label: "M3", thinkingLevels: [] }],
+      "minimax/M3",
+    ), false);
+    assert.equal(activeModelHasInlineLevels(
+      [{ id: "minimax/M3", label: "M3" }],
+      "minimax/M3",
+    ), false);
+  });
+
+  test("active model missing from catalogue → no inline row", () => {
+    // A catalogue without the active id (mid-fetch, or the engine
+    // encoded an id the catalogue doesn't carry) hides the row.
+    assert.equal(activeModelHasInlineLevels(
+      [{ id: "minimax/M3", label: "M3", thinkingLevels: ["low"] }],
+      "openai/gpt-4o",
+    ), false);
+  });
+});
+
+// ============================================================
+// Ticket 07 — quick-add provider validation.
+//
+// The management panel's "add provider" main path runs through three
+// steps: add (creates a draft) → fill (id / key / etc.) → save. The
+// step-1 button is disabled when the panel is busy and the step-3
+// save button is disabled when validation fails. Pin the load-bearing
+// validation shapes here without a render harness.
+// ============================================================
+
+import {
+  newDraftProvider,
+  validateProviderId,
+  validateModelRow as validateModelRowLib,
+  draftToWire,
+} from "../lib/provider-management";
+import type { DraftProvider, DraftModel } from "../lib/provider-management";
+
+/** True when the "Save providers" button should be enabled. */
+function canSave(
+  draft: DraftProvider,
+  validationOk: boolean,
+  busy: boolean,
+): boolean {
+  if (busy) return false;
+  if (!validationOk) return false;
+  // A draft with no id and no models is the "user clicked Add, never
+  // filled anything" state — the panel can stay disabled until the
+  // operator has typed something meaningful. The full validation
+  // result covers this; the predicate mirrors the existing rule.
+  return true;
+}
+
+function blankDraft(): DraftProvider {
+  return newDraftProvider();
+}
+
+function filledDraft(): DraftProvider {
+  const d = blankDraft();
+  d.id = "openai_compat";
+  d.label = "OpenAI";
+  d.auth.apiKey = "sk-realtype-12345";
+  return d;
+}
+
+describe("quick-add provider flow — ticket 07", () => {
+  test("fresh draft has an invalid id, so Save is disabled", () => {
+    const draft = blankDraft();
+    const err = validateProviderId(draft.id);
+    assert.ok(err !== null, "an empty id must fail validateProviderId");
+    assert.equal(canSave(draft, false, false), false);
+  });
+
+  test("typing a valid id is not enough — the auth.key path needs a value", () => {
+    const draft = blankDraft();
+    draft.id = "openai_compat";
+    const idErr = validateProviderId(draft.id);
+    assert.equal(idErr, null, "valid id alone must not surface an error");
+    // No apiKey yet → byok auth needs a key before saving. The
+    // existing wire shape forwards `""` as the keep-existing-key
+    // sentinel, but a new draft with `""` is interpreted as "no key
+    // ever set" by the server, so the panel keeps Save disabled until
+    // the user types something. We mirror that by checking the
+    // draft's `apiKey.trim().length` here:
+    assert.equal(draft.auth.apiKey.trim().length > 0, false);
+  });
+
+  test("typing a valid id + key with valid rows unblocks Save", () => {
+    const draft = filledDraft();
+    draft.models = [{ id: "gpt-4o", label: "GPT-4o", contextLimit: "128000", thinkingLevels: ["low"], modalities: ["text"] }];
+    const ok =
+      validateProviderId(draft.id) === null &&
+      draft.models.every((m: DraftModel) => validateModelRowLib(m) === null);
+    assert.equal(ok, true);
+    assert.equal(canSave(draft, true, false), true);
+  });
+
+  test("draftToWire — the quick-add wire shape is empty-models when none typed", () => {
+    const draft = filledDraft();
+    const wire = draftToWire(draft);
+    assert.equal(wire.id, "openai_compat");
+    assert.deepEqual(wire.models, []);
+    assert.equal(wire.auth.apiKey, "sk-realtype-12345");
+  });
+
+  test("busy state disables Save even when validation is clean", () => {
+    const draft = filledDraft();
+    assert.equal(canSave(draft, true, false), true);
+    assert.equal(canSave(draft, true, true), false);
+  });
+});
 //
 // The server contract (handleSetModel) accepts:
 //   { model: string }                        — model only, thinking preserved

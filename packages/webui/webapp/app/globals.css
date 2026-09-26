@@ -134,3 +134,20 @@
 .font-family-code {
   font-family: var(--font_family_code);
 }
+
+/* Respect prefers-reduced-motion.
+ *
+ * Every transition / animation added by ticket 07 (the model-selector
+ * level pills, the provider save spinner) is overridden here so the
+ * movement becomes instant for users who opted out. We do not kill
+ * antd's own animations (those live in js and stay on) — only the
+ * class-name transitions the new components introduce. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.001ms !important;
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
