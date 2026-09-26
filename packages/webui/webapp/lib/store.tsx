@@ -45,6 +45,15 @@ export interface StoreSnapshot {
   quota: api.QuotaSnapshot | null;
   quotaBusy: boolean;
   quotaError: string | null;
+  /**
+   * Monotonic counter that bumps every time a `providers.updated` SSE frame
+   * arrives. Consumers (the management panel, the model selector) listen to
+   * the counter rather than to the payload itself: re-fetching through the
+   * typed API client keeps masking + auth + headers consistent across the
+   * app, and a counter is enough to trigger an effect. The counter resets
+   * to 0 on mount; the absolute value is meaningless across reloads.
+   */
+  providersRevision: number;
 }
 
 const INITIAL: StoreSnapshot = {
@@ -56,6 +65,7 @@ const INITIAL: StoreSnapshot = {
   quota: null,
   quotaBusy: false,
   quotaError: null,
+  providersRevision: 0,
 };
 
 let snapshot: StoreSnapshot = INITIAL;
@@ -108,6 +118,14 @@ export function connect(): () => void {
           break;
         case "first-run":
           setSnapshot({ firstRun: action.payload });
+          break;
+        case "providers-updated":
+          // Bump the revision so the management panel and the model
+          // selector re-fetch. The masked payload carried by the SSE
+          // frame is NOT stored — the consumers read the typed API
+          // again, which keeps the masking and auth headers consistent
+          // across the app (and lets us drop a frame-shaped buffer).
+          setSnapshot({ providersRevision: snapshot.providersRevision + 1 });
           break;
         case "malformed":
           setSnapshot({ error: `malformed ${action.event || "message"} frame` });

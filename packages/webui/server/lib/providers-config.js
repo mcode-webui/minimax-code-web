@@ -659,3 +659,66 @@ export function _extractPlaintextKey(provider) {
     ? provider.auth.apiKey
     : "";
 }
+
+// =====================================================================
+// Keep-existing-key convention (ticket 03 cross-branch API note)
+// =====================================================================
+//
+// Background: GET /api/providers returns `apiKeyMasked` (e.g. "sk-aa***bb")
+// rather than the plaintext, so a UI that PUTs back what it has on screen
+// would send the masked value as the new apiKey — the plaintext would be
+// lost on every edit. There is no "unchanged" semantics in the v2 PUT
+// contract (ticket 01 deliberately kept the body a full replacement so
+// the validation/normalisation path is simple), so the management UI
+// ships a convention on top:
+//
+//   * incoming `auth.apiKey === ""` is interpreted as "do not change the
+//     existing key for this provider id". The handler copies the existing
+//     key onto the incoming record before validation/normalisation.
+//
+//   * anything non-empty — including the masked placeholder — is treated
+//     as the new value. The UI must therefore blank the field when the
+//     user does not want to overwrite it (the editor renders the masked
+//     placeholder as the input's placeholder, not its value).
+//
+// Cross-branch API note: the convention lives on this branch (ticket
+// 03) because ticket 01's PUT contract was already merged without it.
+// The convention is opt-in — a UI that always sends the plaintext only
+// sees normal replacement behaviour. The PUT handler is the only place
+// this helper runs, so the rest of the validation surface is unchanged.
+
+/**
+ * Apply the keep-existing-key convention.
+ *
+ * For every incoming provider whose `auth.apiKey === ""` (the sentinel):
+ *   - if a same-id provider exists in `existing` with a non-empty
+ *     `auth.apiKey`, copy it onto the incoming record;
+ *   - if no such existing provider exists (the incoming record is brand
+ *     new), the empty stays empty and the normal validation flow
+ *     rejects it for `byok` (which is the right behaviour: a new byok
+ *     provider with no key cannot pass a test probe).
+ *
+ * The function is pure (no IO). Returns a NEW array — `incoming` is not
+ * mutated, so the original body still exists for error reporting if the
+ * caller wants to surface it.
+ */
+export function applyKeepKeyConvention(existing, incoming) {
+  const existingById = new Map();
+  for (const p of existing || []) {
+    if (p && p.id) existingById.set(p.id, p);
+  }
+  return (incoming || []).map((p) => {
+    if (!p || typeof p !== "object") return p;
+    const auth = p.auth && typeof p.auth === "object" ? p.auth : {};
+    if (auth.apiKey !== "") return p; // not the sentinel — keep as-is
+    const previous = existingById.get(p.id);
+    const previousKey =
+      previous && previous.auth && typeof previous.auth.apiKey === "string"
+        ? previous.auth.apiKey
+        : "";
+    return {
+      ...p,
+      auth: { ...auth, apiKey: previousKey },
+    };
+  });
+}

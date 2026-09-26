@@ -42,6 +42,7 @@ import {
   writeProvidersConfig,
   testProvider as runProbe,
   getUserLevelPath,
+  applyKeepKeyConvention,
 } from "../lib/providers-config.js";
 import { pushStateFor, sseByCid } from "../lib/state-bus.js";
 import { readJson } from "../lib/read-json.js";
@@ -102,7 +103,25 @@ export async function handlePutProviders(req, res, _ctx) {
       JSON.stringify({ ok: false, code: "BAD_BODY", error: "body must be a JSON object" }),
     );
   }
-  const result = writeProvidersConfig(parsed);
+  // Keep-existing-key convention (ticket 03 cross-branch API note):
+//   `auth.apiKey === ""` on an incoming provider means "don't change the
+//   existing key". We copy the current user-level file's apiKey onto
+//   those records before validation, so the masked placeholder the UI
+//   sends back does not silently wipe the plaintext on every edit. See
+//   lib/providers-config.js#applyKeepKeyConvention.
+//
+// Only applied when `parsed.providers` is actually an array — a missing
+// or non-array providers list is an error the original validation
+// surfaces as BAD_BODY, and we must not change that behaviour.
+const incomingProviders = Array.isArray(parsed.providers) ? parsed.providers : null;
+const toWrite =
+  incomingProviders === null
+    ? parsed
+    : {
+        ...parsed,
+        providers: applyKeepKeyConvention(loadProvidersConfig().providers, incomingProviders),
+      };
+const result = writeProvidersConfig(toWrite);
   if (!result.ok) {
     const status = result.code === "WRITE_FAILED" ? 500 : 400;
     res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });

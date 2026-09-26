@@ -24,6 +24,10 @@ export type SseAction =
   | { kind: "authorize-cleared" }
   /** First-ever start: the generated token, until acknowledged. */
   | { kind: "first-run"; payload: TokenFirstRun }
+  /** Providers were saved; the masked catalogue arrived. Consumers
+   *  refresh the management panel and re-fetch /api/models so the
+   *  composer selector shows new groups without a page reload. */
+  | { kind: "providers-updated"; providers: unknown[] }
   /** Keepalive; nothing to render. */
   | { kind: "heartbeat" }
   /** A frame we recognise but intentionally do not act on. */
@@ -37,6 +41,11 @@ export const NAMED_EVENTS = [
   "authorization_decided",
   "token.first_run",
   "auth.token_rotated",
+  // Provider management (ticket 03): the server broadcasts this after
+  // a successful PUT on /api/providers so the management panel and the
+  // model selector refresh without polling. The data payload carries
+  // the masked providers list — apiKey NEVER plaintext on this path.
+  "providers.updated",
   "heartbeat",
 ] as const;
 
@@ -83,6 +92,16 @@ export function parseSseFrame(event: string, data: string): SseAction {
       // The token value is deliberately not read here: it is only needed by the
       // settings surface, which fetches it through the API when it is open.
       return { kind: "ignored", reason: "token rotation is handled by the settings surface" };
+    case "providers.updated": {
+      // The data payload is `{ version, providers: [publicView(...)] }`.
+      // We only forward the `providers` array — the version is just a
+      // contract marker for the route handler. Malformed payloads are
+      // surfaced rather than thrown so the connection stays live.
+      const parsed = parseJson<{ providers?: unknown[] }>(data);
+      if (!parsed.ok) return { kind: "malformed", event, detail: parsed.detail };
+      const providers = Array.isArray(parsed.value.providers) ? parsed.value.providers : [];
+      return { kind: "providers-updated", providers };
+    }
     default:
       return { kind: "ignored", reason: `unknown event: ${event || "(none)"}` };
   }

@@ -774,3 +774,102 @@ describe("testProvider — no network for malformed inputs", () => {
     assert.equal(r.code, "PROBE_FAILED", "validation passed → fetch attempted → probe failed");
   });
 });
+
+// ---------------------------------------------------------------------
+// applyKeepKeyConvention — ticket 03 keep-existing-key convention.
+// ---------------------------------------------------------------------
+//
+// The UI GETs the masked catalogue (apiKey is `apiKeyMasked: "sk-aa***bb"`),
+// then PUTs the same shape back. Without a convention, the masked
+// placeholder would replace the plaintext on every edit. The
+// convention: an incoming `auth.apiKey === ""` means "do not change the
+// existing key for this provider id". The PUT handler is the only caller.
+
+describe("applyKeepKeyConvention — ticket 03 keep-existing-key convention", () => {
+  test("incoming apiKey='' copies the existing key when one is on disk", () => {
+    const existing = [
+      {
+        id: "p1",
+        label: "P1",
+        protocol: "openai",
+        auth: { type: "byok", apiKey: "sk-realkey-on-disk-aaaa" },
+        models: [],
+      },
+    ];
+    const incoming = [
+      {
+        id: "p1",
+        label: "P1 renamed",
+        protocol: "openai",
+        auth: { type: "byok", apiKey: "" }, // sentinel
+        models: [{ id: "m" }],
+      },
+    ];
+    const merged = providersConfig.applyKeepKeyConvention(existing, incoming);
+    assert.equal(merged.length, 1);
+    assert.equal(merged[0].auth.apiKey, "sk-realkey-on-disk-aaaa");
+    // Other fields untouched by the convention.
+    assert.equal(merged[0].label, "P1 renamed");
+    assert.deepEqual(merged[0].models, [{ id: "m" }]);
+  });
+
+  test("incoming apiKey non-empty is NOT replaced (the user is overwriting)", () => {
+    const existing = [
+      { id: "p1", auth: { type: "byok", apiKey: "sk-on-disk" } },
+    ];
+    const incoming = [
+      { id: "p1", auth: { type: "byok", apiKey: "sk-new-plaintext" } },
+    ];
+    const merged = providersConfig.applyKeepKeyConvention(existing, incoming);
+    assert.equal(merged[0].auth.apiKey, "sk-new-plaintext");
+  });
+
+  test("incoming apiKey='' with NO existing record keeps empty (new provider fails byok validation)", () => {
+    // The provider is brand new — there is nothing to keep. The empty
+    // key stays, and the normal validation rejects a `byok` record
+    // with an empty apiKey. This is the right behaviour: a UI that
+    // hits Save without filling the key must not silently inherit
+    // some other provider's credential.
+    const merged = providersConfig.applyKeepKeyConvention(
+      [{ id: "other", auth: { type: "byok", apiKey: "sk-something" } }],
+      [{ id: "brand-new", auth: { type: "byok", apiKey: "" } }],
+    );
+    assert.equal(merged[0].id, "brand-new");
+    assert.equal(merged[0].auth.apiKey, "");
+  });
+
+  test("missing auth on incoming is left to the validation flow (no implicit keep)", () => {
+    // The convention applies ONLY when the body carries `auth.apiKey === ""`
+    // — a deliberate sentinel from the editor form ("the user did not
+    // touch the key field"). When `auth` itself is omitted, the record
+    // is treated as new and handed to the normal validation path
+    // (which defaults to byok and rejects an empty key). Pinning this
+    // here means a future change that "treats missing auth as keep
+    // existing" cannot silently inherit some other provider's credential.
+    const merged = providersConfig.applyKeepKeyConvention(
+      [{ id: "p1", auth: { type: "byok", apiKey: "sk-disk" } }],
+      [{ id: "p1", auth: { type: "byok" } }],
+    );
+    assert.equal(merged[0].auth.apiKey, undefined, "missing key stays missing");
+  });
+
+  test("returns a new array — the incoming body is not mutated", () => {
+    const incoming = [
+      { id: "p1", auth: { type: "byok", apiKey: "" } },
+    ];
+    const merged = providersConfig.applyKeepKeyConvention(
+      [{ id: "p1", auth: { type: "byok", apiKey: "sk-disk" } }],
+      incoming,
+    );
+    assert.notEqual(merged, incoming, "new array");
+    assert.equal(incoming[0].auth.apiKey, "", "incoming untouched");
+  });
+
+  test("a provider with no matching id in existing keeps its empty key", () => {
+    const merged = providersConfig.applyKeepKeyConvention(
+      [{ id: "other", auth: { type: "byok", apiKey: "sk-disk" } }],
+      [{ id: "brand-new", auth: { type: "byok", apiKey: "" } }],
+    );
+    assert.equal(merged[0].auth.apiKey, "");
+  });
+});

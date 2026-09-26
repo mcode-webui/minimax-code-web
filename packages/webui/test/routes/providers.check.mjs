@@ -299,6 +299,92 @@ describe("handlePutProviders — /api/providers PUT", () => {
     assert.ok(found, "newprov visible after PUT");
     assert.equal(found.models.length, 1);
   });
+
+  test("keep-existing-key: empty apiKey in PUT preserves the key on disk", async () => {
+    // Seed: write a provider with a plaintext key.
+    await providersRoute.handlePutProviders(
+      fakeReq({
+        version: 2,
+        providers: [
+          {
+            id: "kp",
+            label: "KP",
+            protocol: "openai",
+            auth: { type: "byok", apiKey: "sk-original-plaintext-aaaa" },
+            models: [],
+          },
+        ],
+      }),
+      fakeRes(),
+      {},
+    );
+    // Edit: PUT the same provider back with apiKey === "" (the
+    // sentinel). Without the convention the plaintext would be wiped;
+    // with it, the on-disk key is preserved.
+    await providersRoute.handlePutProviders(
+      fakeReq({
+        version: 2,
+        providers: [
+          {
+            id: "kp",
+            label: "KP renamed",
+            protocol: "openai",
+            auth: { type: "byok", apiKey: "" },
+            models: [{ id: "m" }],
+          },
+        ],
+      }),
+      fakeRes(),
+      {},
+    );
+    const onDisk = JSON.parse(
+      readFileSync(providersConfig.getUserLevelPath(), "utf8"),
+    );
+    const kp = onDisk.providers.find((p) => p.id === "kp");
+    assert.equal(kp.auth.apiKey, "sk-original-plaintext-aaaa");
+    assert.equal(kp.label, "KP renamed");
+    assert.equal(kp.models.length, 1);
+  });
+
+  test("keep-existing-key: non-empty apiKey in PUT replaces the key", async () => {
+    await providersRoute.handlePutProviders(
+      fakeReq({
+        version: 2,
+        providers: [
+          {
+            id: "kp2",
+            label: "KP2",
+            protocol: "openai",
+            auth: { type: "byok", apiKey: "sk-old-plaintext-aaaa" },
+            models: [],
+          },
+        ],
+      }),
+      fakeRes(),
+      {},
+    );
+    await providersRoute.handlePutProviders(
+      fakeReq({
+        version: 2,
+        providers: [
+          {
+            id: "kp2",
+            label: "KP2",
+            protocol: "openai",
+            auth: { type: "byok", apiKey: "sk-new-plaintext-bbbb" },
+            models: [],
+          },
+        ],
+      }),
+      fakeRes(),
+      {},
+    );
+    const onDisk = JSON.parse(
+      readFileSync(providersConfig.getUserLevelPath(), "utf8"),
+    );
+    const kp = onDisk.providers.find((p) => p.id === "kp2");
+    assert.equal(kp.auth.apiKey, "sk-new-plaintext-bbbb");
+  });
 });
 
 // =====================================================================
