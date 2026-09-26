@@ -371,6 +371,9 @@ describe("syncProvidersToEngine — atomic YAML write + operator preservation", 
     assert.equal(written.custom_provider["byok-zhipu"].options.apiKey, "sk-fake");
     assert.equal(written.custom_provider["byok-zhipu"].options.baseURL, "https://example.com/v1");
     assert.equal(written.custom_provider["byok-zhipu"].kind, "custom");
+    // Acceptance: the entry carries the ownership marker so a future
+    // sync knows it is webui-managed and a foreign entry does not.
+    assert.equal(written.custom_provider["byok-zhipu"]._webui_owned, true);
   });
 
   test("preserves the operator's provider.minimax + defaultModel sections", async () => {
@@ -383,6 +386,9 @@ describe("syncProvidersToEngine — atomic YAML write + operator preservation", 
           options: { apiKey: "sk-existing", authMode: "api-key", baseURL: "https://x/v1" },
         },
       },
+      // Foreign (operator-managed) entry — no ownership marker, so the
+      // sync must NOT touch it. Ticket 05 acceptance: merge-over-replace,
+      // not replace-everything.
       custom_provider: { existing_byok: { name: "Existing", kind: "custom", enabled: true } },
     };
     const fs = await import("node:fs/promises");
@@ -400,34 +406,159 @@ describe("syncProvidersToEngine — atomic YAML write + operator preservation", 
       },
     ]);
     assert.equal(r.ok, true);
+    assert.deepEqual(r.keys, ["byok-new"]);
+    assert.deepEqual(r.preserved, ["existing_byok"]);
     const after = yaml.load(readFileSync(join(_tmpDataDir, "config.yaml"), "utf8"));
     // Provider tree survives — operator's manual config is not touched.
     assert.equal(after.provider.minimax.options.apiKey, "sk-existing");
     assert.equal(after.defaultModel, "minimax/MiniMax-M3");
-    // custom_provider is replaced wholesale by the helper's projection.
-    // Operators who need a manual entry in production should use
-    // `mcode provider add`, not the webui PUT — the PUT path's contract
-    // is "this catalogue is the source of truth for engine sync".
+    // Foreign entry survives (no marker, untouched by webui).
+    assert.deepEqual(after.custom_provider["existing_byok"], {
+      name: "Existing",
+      kind: "custom",
+      enabled: true,
+    });
+    // New webui entry is added with its ownership marker.
     assert.equal(after.custom_provider["byok-new"].options.apiKey, "sk-new");
+    assert.equal(after.custom_provider["byok-new"]._webui_owned, true);
   });
 
-  test("empty catalogue is a no-op write (engine config left untouched)", async () => {
+  test("empty eligible list keeps a foreign entry intact (no destructive wipe)", async () => {
     const fs = await import("node:fs/promises");
     await fs.mkdir(_tmpDataDir, { recursive: true });
-    const seed = { defaultModel: "minimax/MiniMax-M3" };
+    const seed = {
+      defaultModel: "minimax/MiniMax-M3",
+      custom_provider: {
+        // Foreign (operator-managed) — pre-existing, no marker.
+        manual_only: {
+          name: "Manual",
+          kind: "custom",
+          enabled: true,
+          api: "openai-completions",
+          options: { apiKey: "sk-manual", baseURL: "https://manual.example/v1", authMode: "api-key" },
+        },
+      },
+    };
     await fs.writeFile(join(_tmpDataDir, "config.yaml"), yaml.dump(seed), "utf8");
 
+    // Empty eligible (every provider is ineligible) — must NOT wipe the
+    // foreign entry. Ticket 05 acceptance: the destruction class
+    // closed here is "removing a webui provider silently drops a foreign
+    // entry". The same destruction class applies to "PUTting an
+    // ineligible-only catalogue silently drops a foreign entry".
     const r = await syncProvidersToEngine([
-      // Coding-plan → ineligible.
       { id: "x", label: "x", enabled: true, protocol: "openai", auth: { type: "coding-plan" }, models: [] },
-      // No apiKey → ineligible.
       { id: "y", label: "y", enabled: true, protocol: "openai", auth: { type: "byok", baseURL: "https://z" }, models: [] },
     ]);
     assert.equal(r.ok, true);
+    // No eligible providers AND the merged tree is byte-identical to
+    // what's on disk (foreign was already there and is preserved
+    // verbatim). The helper short-circuits the write — no mtime churn,
+    // no needless chmod. The route can still surface the `preserved`
+    // list to the operator via the response.
     assert.equal(r.written, false);
-    // Engine config wasn't replaced.
+    assert.deepEqual(r.keys, []);
+    assert.deepEqual(r.preserved, ["manual_only"]);
+
     const after = yaml.load(readFileSync(join(_tmpDataDir, "config.yaml"), "utf8"));
+    assert.deepEqual(after.custom_provider.manual_only, seed.custom_provider.manual_only);
+    // The defaultModel is not touched either.
     assert.equal(after.defaultModel, "minimax/MiniMax-M3");
+  });
+
+  test("webui-managed entry whose provider is removed is dropped, foreign entry is kept", async () => {
+    const fs = await import("node:fs/promises");
+    await fs.mkdir(_tmpDataDir, { recursive: true });
+    // Pre-populate: a webui-managed entry from a previous sync AND a
+    // foreign entry.
+    const seed = {
+      custom_provider: {
+        byok_old: {
+          name: "Old webui",
+          kind: "custom",
+          enabled: true,
+          api: "openai-completions",
+          options: { apiKey: "sk-old", baseURL: "https://old.example/v1", authMode: "api-key" },
+          _webui_owned: true,
+        },
+        manual_only: {
+          name: "Manual",
+          kind: "custom",
+          enabled: true,
+          api: "openai-completions",
+          options: { apiKey: "sk-manual", baseURL: "https://manual.example/v1", authMode: "api-key" },
+        },
+      },
+    };
+    await fs.writeFile(join(_tmpDataDir, "config.yaml"), yaml.dump(seed), "utf8");
+
+    // Sync with no eligible providers — byok_old should be dropped
+    // (webui owned it, webui no longer claims it), manual_only survives.
+    const r = await syncProvidersToEngine([]);
+    assert.equal(r.ok, true);
+    assert.deepEqual(r.keys, []);
+    assert.deepEqual(r.preserved, ["manual_only"]);
+
+    const after = yaml.load(readFileSync(join(_tmpDataDir, "config.yaml"), "utf8"));
+    assert.equal(after.custom_provider["byok_old"], undefined);
+    assert.deepEqual(after.custom_provider.manual_only, seed.custom_provider.manual_only);
+  });
+
+  test("webui-managed entry update replaces the entry's data, keeps the marker", async () => {
+    const fs = await import("node:fs/promises");
+    await fs.mkdir(_tmpDataDir, { recursive: true });
+    const seed = {
+      custom_provider: {
+        "byok-zhipu": {
+          name: "Old label",
+          kind: "custom",
+          enabled: true,
+          api: "openai-completions",
+          options: { apiKey: "sk-old", baseURL: "https://old.example/v1", authMode: "api-key" },
+          _webui_owned: true,
+        },
+      },
+    };
+    await fs.writeFile(join(_tmpDataDir, "config.yaml"), yaml.dump(seed), "utf8");
+
+    // Re-sync with new apiKey/baseURL for the same id — entry is replaced
+    // in place, marker is preserved.
+    const r = await syncProvidersToEngine([
+      {
+        id: "byok-zhipu",
+        label: "New label",
+        enabled: true,
+        protocol: "openai",
+        auth: { type: "byok", apiKey: "sk-new", baseURL: "https://new.example/v1" },
+        models: [],
+      },
+    ]);
+    assert.equal(r.ok, true);
+    assert.deepEqual(r.keys, ["byok-zhipu"]);
+
+    const after = yaml.load(readFileSync(join(_tmpDataDir, "config.yaml"), "utf8"));
+    assert.equal(after.custom_provider["byok-zhipu"].options.apiKey, "sk-new");
+    assert.equal(after.custom_provider["byok-zhipu"].options.baseURL, "https://new.example/v1");
+    assert.equal(after.custom_provider["byok-zhipu"].name, "New label");
+    assert.equal(after.custom_provider["byok-zhipu"]._webui_owned, true);
+  });
+
+  test("writes custom_provider when at least one eligible provider exists; otherwise no-op write when nothing changes", async () => {
+    // 1) Empty eligible, no foreign — there's nothing to write, and
+    //    the engine already treats "no custom_provider key" as "no
+    //    custom providers". The helper reports written: false (no-op).
+    const r1 = await syncProvidersToEngine([]);
+    assert.equal(r1.ok, true);
+    assert.equal(r1.written, false);
+    assert.deepEqual(r1.keys, []);
+    assert.deepEqual(r1.preserved, []);
+
+    // 2) Re-run with the same empty eligible list — byte-identical to
+    //    what's on disk; the helper reports `written: false` and
+    //    skips the rewrite (no mtime churn, no needless chmod).
+    const r2 = await syncProvidersToEngine([]);
+    assert.equal(r2.ok, true);
+    assert.equal(r2.written, false);
   });
 
   test("missing engine config file → creates one", async () => {
@@ -478,6 +609,27 @@ describe("syncProvidersToEngine — atomic YAML write + operator preservation", 
     assert.ok(after.custom_provider.eligible);
     assert.equal(after.custom_provider["no-key"], undefined);
     assert.equal(after.custom_provider["disabled"], undefined);
+  });
+
+  test("config.yaml is written with mode 0600 (plaintext apiKey)", async () => {
+    const fs = await import("node:fs/promises");
+    await syncProvidersToEngine([
+      {
+        id: "byok-zhipu",
+        label: "z",
+        enabled: true,
+        protocol: "openai",
+        auth: { type: "byok", apiKey: "sk", baseURL: "https://x/v1" },
+        models: [],
+      },
+    ]);
+    const stat = await fs.stat(join(_tmpDataDir, "config.yaml"));
+    // POSIX mode 0600 — owner read/write only. The engine's own
+    // `updateLocalByokConfig` does the same (see
+    // packages/config/src/local-model-provider-write.ts).
+    if (process.platform !== "win32") {
+      assert.equal(stat.mode & 0o777, 0o600);
+    }
   });
 });
 
