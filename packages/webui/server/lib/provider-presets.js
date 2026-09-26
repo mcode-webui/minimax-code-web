@@ -47,6 +47,16 @@
 //      validator accepts either for any provider — these are the
 //      defaults, not constraints.
 //
+//      Note (ticket 02 acceptance): `auth.type: "coding-plan"` on a
+//      preset is currently COSMETIC at this layer. No code path
+//      branches on it — the engine consumes both shapes through the
+//      same key path, and the enable handler materialises an
+//      empty-key record consumed identically to a byok record. The
+//      label is preserved on the persisted record so future
+//      subscription-auth behaviour (per-provider key flow,
+//      auto-refresh, scoped quotas) has a stable placeholder to
+//      attach to; it does NOT change behaviour today.
+//
 //   5. Metadata is conservative. Where a model's documented
 //      `contextLimit`, `thinkingLevels`, or `modalities` are
 //      uncertain, the field is OMITTED rather than wrong. A

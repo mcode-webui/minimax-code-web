@@ -1146,6 +1146,14 @@ Templates never carry key material: `apiKey` / `apiKeyMasked` / `hasKey`
 are intentionally absent from the gallery payload. Users supply the
 credential after enabling a preset.
 
+A preset's `auth.type` (`byok` or `coding-plan`) is currently
+COSMETIC at this layer: no code path branches on it, and an enabled
+preset with empty key is consumed identically to a byok record by
+the engine. The label is preserved on the persisted record so a
+future subscription-auth behaviour (per-provider key flow,
+auto-refresh, scoped quotas) has a stable placeholder to attach to;
+it does NOT change behaviour today.
+
 **Response 200**
 ```json
 {
