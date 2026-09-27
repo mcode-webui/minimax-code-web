@@ -127,6 +127,34 @@ describe("modelKeyFromId", () => {
     assert.equal(modelKeyFromId(""), "");
     assert.equal(modelKeyFromId("with space"), "");
   });
+  // Ticket 09-02: upstream catalogues commonly carry namespace-style
+  // model ids (`deepseek/deepseek-v4.1-flash`,
+  // `z-ai/glm-5.3`, `openai/gpt-5.6-sol`). The engine's wire form
+  // `<providerId>/<modelId>` uses `/` as the structural separator;
+  // `parseSourceQualifiedModelKey` splits on the FIRST `/`, so a
+  // model id that contains `/` survives the round-trip. The
+  // pre-fix `PROVIDER_KEY_REGEX = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/`
+  // silently dropped these entries from the engine sync; the fix
+  // widens to allow `/` while still rejecting YAML-unsafe
+  // characters (whitespace, control tokens, anchors).
+  test("accepts upstream-namespace ids containing `/`", () => {
+    assert.equal(modelKeyFromId("deepseek/deepseek-v4.1-flash"), "deepseek/deepseek-v4.1-flash");
+    assert.equal(modelKeyFromId("z-ai/glm-5.3"), "z-ai/glm-5.3");
+    assert.equal(modelKeyFromId("openai/gpt-5.6-sol"), "openai/gpt-5.6-sol");
+  });
+  test("still rejects YAML-unsafe characters", () => {
+    // Whitespace, YAML list anchor, comment, and a colon (which
+    // the engine's custom_provider parser would interpret as a
+    // structural separator) all stay rejected.
+    assert.equal(modelKeyFromId("with:colon"), "");
+    assert.equal(modelKeyFromId("with#comment"), "");
+    assert.equal(modelKeyFromId("with[bracket]"), "");
+    assert.equal(modelKeyFromId("with&anchor"), "");
+    assert.equal(modelKeyFromId("with*asterisk"), "");
+    assert.equal(modelKeyFromId("with|pipe"), "");
+    assert.equal(modelKeyFromId("with>gt"), "");
+    assert.equal(modelKeyFromId("-leading-dash"), "");
+  });
 });
 
 describe("toEngineCustomProvider — eligibility", () => {

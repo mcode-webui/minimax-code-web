@@ -967,18 +967,24 @@ describe("handleGetModels — engine custom_provider catalogue (ticket 06)", () 
         modelRoute.handleGetModels(null, res, { cs, cid: "cid-eng5" });
         const body = JSON.parse(res._body);
         const ids = body.models.map((m) => m.id);
-        // The engine-side model id already contains a slash
-        // (`deepseek/deepseek-v4.1-flash` — a router-style upstream
-        // id); the route uses it verbatim rather than prepending
-        // the provider id. That's by design — see routes/model.js.
+        // Ticket 09-02: the webui id is always `<providerKey>/<engineModelKey>`,
+        // so the upstream-style id `deepseek/deepseek-v4.1-flash` lives
+        // under `nousresearch` as `nousresearch/deepseek/deepseek-v4.1-flash`.
+        // The first segment is the provider key (used for grouping); the
+        // rest is the engine model key verbatim (the engine allows `/`
+        // inside model ids; the wire form `<provider>/<model>` uses `/`
+        // as the structural separator only).
         assert.ok(
-          ids.includes("deepseek/deepseek-v4.1-flash"),
-          `model id must surface verbatim; got: ${ids.join(", ")}`,
+          ids.includes("nousresearch/deepseek/deepseek-v4.1-flash"),
+          `model id must surface as <providerKey>/<engineModelKey>; got: ${ids.join(", ")}`,
         );
         const group = body.groups.find((g) => g.id === "nousresearch");
         assert.ok(group, "foreign provider group present");
         assert.equal(group.label, "Nous Research");
         assert.equal(group.models[0].contextLimit, 1000000);
+        // Grouping attribution: the entry's `provider` field is the
+        // explicit provider id (not the first `/` segment of the id).
+        assert.equal(group.models[0].provider, "nousresearch");
       },
     );
   });
@@ -1034,5 +1040,336 @@ describe("handleGetModels — engine custom_provider catalogue (ticket 06)", () 
     } finally {
       try { rmSync(path, { force: true }); } catch {}
     }
+  });
+});
+
+// ============================================================
+// Ticket 09-02 — model grouping attribution.
+//
+// The user reported `nousresearch` had 8 models with upstream-style
+// ids (`deepseek/x`, `z-ai/y`, `openai/gpt-5.6-sol`, ...) and a
+// sibling `zai-max` lost its own `glm-5.3` to the bare-id dedupe.
+//
+// Root cause (ticket 09-02):
+//   - `m.id.includes("/") ? m.id : p.id + "/" + m.id` kept the
+//     upstream id verbatim, so a model with id `deepseek/x` lived in
+//     `/api/models` as `deepseek/x` with `provider = "deepseek"` —
+//     picked up under the wrong group's label and deduped against any
+//     other provider's same-named model.
+//   - `providerOf(id)` derived the group from the first `/` segment,
+//     not from the directory layer's explicit provider metadata.
+//
+// Fix (server/routes/model.js + server/lib/mcode-acp.js +
+// server/lib/engine-provider-sync.js):
+//   - The webui id is always `<providerKey>/<engineModelKey>` where
+//     `engineModelKey` may itself contain `/`. The grouping uses the
+//     entry's explicit `provider` field (set to `p.id`); the
+//     `providerOf(id)` helper is preserved for engine session
+//     entries whose ids are the engine wire form.
+//   - The `seen` dedupe uses the full prefixed id, so two providers
+//     with overlapping upstream ids stay distinct.
+//   - `resolveModelId` adds a `<providerKey>/<engineModelKey>` name
+//     match against the engine's `option.name`, so a session boot
+//     replay (and the mid-session set-model push) lands on the right
+//     engine option even when the model id contains `/`.
+//
+// These tests pin the load-bearing pieces. The end-to-end live
+// self-check is the dev server with a synthetic engine config that
+// carries the bug-triggering shape; this file isolates the route-layer
+// regressions so the test runtime doesn't have to spin up an engine.
+// ============================================================
+
+describe("handleGetModels — ticket 09-02: grouping attribution", () => {
+  test("upstream-style engine id is prefixed with its provider key", () => {
+    setBuiltinModelsMock([]);
+    return withEngineConfig(
+      {
+        nousresearch: {
+          name: "Nous Research",
+          kind: "custom",
+          enabled: true,
+          api: "openai-completions",
+          options: { apiKey: "sk-nous", baseURL: "https://x/v1" },
+          models: {
+            "deepseek/deepseek-v4.1-flash": {
+              name: "DeepSeek V4.1 Flash",
+              limit: { context: 1000000 },
+            },
+          },
+        },
+      },
+      () => {
+        const cs = fakeCs();
+        const res = fakeRes();
+        modelRoute.handleGetModels(null, res, { cs, cid: "cid-0902-a" });
+        const body = JSON.parse(res._body);
+        const ids = body.models.map((m) => m.id);
+        // The webui id is `<providerKey>/<engineModelKey>` — the upstream
+        // id `deepseek/deepseek-v4.1-flash` lives under `nousresearch`
+        // as `nousresearch/deepseek/deepseek-v4.1-flash`. The first
+        // segment is the provider key (the grouping anchor); the rest
+        // is the engine model key verbatim.
+        assert.ok(
+          ids.includes("nousresearch/deepseek/deepseek-v4.1-flash"),
+          `webui id must be <providerKey>/<engineModelKey>; got: ${ids.join(", ")}`,
+        );
+        // The bare upstream id (the pre-fix bug) must NOT appear.
+        assert.ok(
+          !ids.includes("deepseek/deepseek-v4.1-flash"),
+          `bare upstream id must not surface (pre-fix bug); got: ${ids.join(", ")}`,
+        );
+      },
+    );
+  });
+
+  test("entry.provider is the explicit provider id (not the first segment of the id)", () => {
+    // Grouping attribution: the bug was that `providerOf(id)` derived
+    // the group from the first `/` segment of the (bare) id, putting
+    // `deepseek/deepseek-v4.1-flash` into the `deepseek` group. With
+    // the fix, the entry's `provider` field is the directory-layer
+    // provider id (here `nousresearch`).
+    setBuiltinModelsMock([]);
+    return withEngineConfig(
+      {
+        nousresearch: {
+          name: "Nous Research",
+          kind: "custom",
+          enabled: true,
+          api: "openai-completions",
+          options: { apiKey: "sk-nous", baseURL: "https://x/v1" },
+          models: {
+            "deepseek/deepseek-v4.1-flash": {},
+            "openai/gpt-5.6-sol": {},
+            "qwen/qwen3.8-max-0902": {},
+          },
+        },
+      },
+      () => {
+        const cs = fakeCs();
+        const res = fakeRes();
+        modelRoute.handleGetModels(null, res, { cs, cid: "cid-0902-b" });
+        const body = JSON.parse(res._body);
+        const group = body.groups.find((g) => g.id === "nousresearch");
+        assert.ok(group, "nousresearch group present");
+        // Every model in the group carries `provider: "nousresearch"` —
+        // not the upstream-namespace's first segment.
+        for (const m of group.models) {
+          assert.equal(
+            m.provider,
+            "nousresearch",
+            `entry.provider must be the directory-layer provider; got: ${m.id} provider=${m.provider}`,
+          );
+        }
+        assert.equal(group.models.length, 3);
+      },
+    );
+  });
+
+  test("dedupe key is per-provider: sibling providers with overlapping upstream ids do not collide", () => {
+    // The pre-fix bug: `seen.add("z-ai/glm-5.3")` swallowed the sibling
+    // `zai-max/glm-5.3` because both end up as the bare id
+    // `z-ai/glm-5.3` (or `glm-5.3`, depending on how upstream shape
+    // overlaps). After the fix the webui id is `<providerKey>/<modelId>`
+    // and the dedupe is per-provider.
+    setBuiltinModelsMock([]);
+    return withEngineConfig(
+      {
+        nousresearch: {
+          name: "Nous Research",
+          kind: "custom",
+          enabled: true,
+          api: "openai-completions",
+          options: { apiKey: "sk-nous", baseURL: "https://x/v1" },
+          models: {
+            // Same bare upstream style that triggers the collision.
+            "z-ai/glm-5.3": {},
+            "openai/gpt-5.6-sol": {},
+          },
+        },
+        "zai-max": {
+          name: "ZAI Max",
+          kind: "custom",
+          enabled: true,
+          api: "openai-completions",
+          options: { apiKey: "sk-zai", baseURL: "https://x/v1" },
+          models: {
+            "glm-5.3": {},
+          },
+        },
+      },
+      () => {
+        const cs = fakeCs();
+        const res = fakeRes();
+        modelRoute.handleGetModels(null, res, { cs, cid: "cid-0902-c" });
+        const body = JSON.parse(res._body);
+        const ids = body.models.map((m) => m.id);
+        // Both the upstream-namespace form and the plain sibling
+        // survive — neither ate the other.
+        assert.ok(
+          ids.includes("nousresearch/z-ai/glm-5.3"),
+          `upstream-namespace form must survive; got: ${ids.join(", ")}`,
+        );
+        assert.ok(
+          ids.includes("zai-max/glm-5.3"),
+          `sibling plain form must survive; got: ${ids.join(", ")}`,
+        );
+        // Each group carries only its own models.
+        const ns = body.groups.find((g) => g.id === "nousresearch");
+        const zm = body.groups.find((g) => g.id === "zai-max");
+        assert.ok(ns && zm, "both groups present");
+        assert.equal(ns.models.length, 2);
+        assert.equal(zm.models.length, 1);
+        // Cross-pollination pin: no model lands in the wrong group.
+        for (const m of ns.models) {
+          assert.ok(m.id.startsWith("nousresearch/"));
+        }
+        for (const m of zm.models) {
+          assert.ok(m.id.startsWith("zai-max/"));
+        }
+      },
+    );
+  });
+
+  test("every model lands in its configured provider's group (cross-group pollution)", () => {
+    // The user's headline complaint: "第一个供应商 minimax 下有很多不是 minimax 的"
+    // — the engine config has a `minimax_api` group AND a separate
+    // provider with non-minimax models, but the picker put everything
+    // under minimax. The fix is that each model's group is its
+    // configured provider (explicit `entry.provider`), not derived
+    // from the first segment of the id.
+    setBuiltinModelsMock([]);
+    return withEngineConfig(
+      {
+        "zai-max": {
+          name: "ZAI Max",
+          kind: "custom",
+          enabled: true,
+          api: "openai-completions",
+          options: { apiKey: "sk-zai", baseURL: "https://x/v1" },
+          models: {
+            "glm-5.3": {},
+            "glm-5.3-flash": {},
+          },
+        },
+        "deepseek-cn": {
+          name: "DeepSeek CN",
+          kind: "custom",
+          enabled: true,
+          api: "openai-completions",
+          options: { apiKey: "sk-deep", baseURL: "https://x/v1" },
+          models: {
+            "deepseek-flash": {},
+          },
+        },
+        "kimi-taozi": {
+          name: "Kimi",
+          kind: "custom",
+          enabled: true,
+          api: "openai-completions",
+          options: { apiKey: "sk-kimi", baseURL: "https://x/v1" },
+          models: {
+            "kimi-k2": {},
+          },
+        },
+      },
+      () => {
+        const cs = fakeCs();
+        const res = fakeRes();
+        modelRoute.handleGetModels(null, res, { cs, cid: "cid-0902-d" });
+        const body = JSON.parse(res._body);
+        const expected = {
+          "zai-max": 2,
+          "deepseek-cn": 1,
+          "kimi-taozi": 1,
+        };
+        for (const [gid, count] of Object.entries(expected)) {
+          const group = body.groups.find((g) => g.id === gid);
+          assert.ok(group, `${gid} group must be present`);
+          assert.equal(
+            group.models.length,
+            count,
+            `${gid} must carry ${count} models; got: ${group.models.map((m) => m.id).join(", ")}`,
+          );
+          for (const m of group.models) {
+            assert.equal(
+              m.provider,
+              gid,
+              `entry.provider must equal its group id; got: ${m.id} provider=${m.provider}`,
+            );
+            assert.ok(
+              m.id.startsWith(`${gid}/`),
+              `model id must start with its provider key; got: ${m.id}`,
+            );
+          }
+        }
+      },
+    );
+  });
+
+  test("builtins stay under `minimax_api` even when the recorded pick's first segment is another provider (acceptance replay)", () => {
+    // Ticket 09-02 acceptance replay: a recorded pick of
+    // `nousresearch/openai/gpt-5.6-sol` previously dragged the
+    // builtin MiniMax shell into the `nousresearch` group (the
+    // derived `currentProvider = currentName.split("/")[0]` keyed
+    // the builtin shell by the pick's first segment). The fix keys
+    // the builtin shell by the BUILTIN_PROVIDER (`minimax_api`)
+    // unconditionally — the builtins belong to the cli-bundle
+    // extraction and are not the user's recorded pick.
+    setBuiltinModelsMock(["MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.5"]);
+    return withEngineConfig(
+      {
+        nousresearch: {
+          name: "Nous Research",
+          kind: "custom",
+          enabled: true,
+          api: "openai-completions",
+          options: { apiKey: "sk-nous", baseURL: "https://x/v1" },
+          models: {
+            "deepseek/deepseek-v4.1-flash": {},
+            "openai/gpt-5.6-sol": {},
+            "qwen/qwen3.8-max-0902": {},
+            "z-ai/glm-5.3": {},
+          },
+        },
+      },
+      () => {
+        const cs = fakeCs("nousresearch/openai/gpt-5.6-sol");
+        const res = fakeRes();
+        modelRoute.handleGetModels(null, res, { cs, cid: "cid-0902-builtins" });
+        const body = JSON.parse(res._body);
+        // The `nousresearch` group must carry ONLY its configured
+        // models — the 3 builtins stay under `minimax_api`.
+        const ns = body.groups.find((g) => g.id === "nousresearch");
+        assert.ok(ns, "nousresearch group present");
+        assert.equal(ns.models.length, 4, "nousresearch shows exactly its 4 config models");
+        for (const m of ns.models) {
+          assert.ok(
+            m.id.startsWith("nousresearch/"),
+            `nousresearch model id must start with 'nousresearch/'; got: ${m.id}`,
+          );
+          assert.ok(
+            !m.source || m.source !== "builtin",
+            `nousresearch must not contain any builtin-sourced model; got: ${m.id} source=${m.source}`,
+          );
+        }
+        // The `minimax_api` group carries the builtin shell (3
+        // models). The count depends on the mock — the loader can
+        // add additional builtins via the bundled cli.js; pin the
+        // minimum count + presence.
+        const builtin = body.groups.find((g) => g.id === "minimax_api");
+        assert.ok(builtin, "minimax_api builtin group present");
+        assert.ok(
+          builtin.models.length >= 3,
+          `minimax_api must carry the 3+ builtin models; got: ${builtin.models.length}`,
+        );
+        for (const m of builtin.models) {
+          assert.equal(m.source, "builtin", "builtin group models must be source=builtin");
+          assert.ok(
+            m.id.startsWith("minimax_api/"),
+            `builtin id must start with 'minimax_api/'; got: ${m.id}`,
+          );
+        }
+      },
+    );
   });
 });

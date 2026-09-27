@@ -492,6 +492,14 @@ export async function setupMocks(t, overrides = {}) {
     namedExports: {
       runMcodeAcp: (...a) => _mcodeAcpMock.runMcodeAcp(...a),
       streamAcpPrompt: (...a) => _mcodeAcpMock.streamAcpPrompt(...a),
+      // Ticket 09-02: routes/model.js#handleSetModel translates the
+      // webui id to the engine wire form via `resolveModelId`. The
+      // pure helper is also re-exported through `mcode-acp.js` for
+      // tests; expose the no-op stub here so the import resolves
+      // and the route can call it. Real tests that exercise the
+      // translation live in test/lib/mcode-acp-note.test.js, which
+      // bypasses this mock and exercises the source directly.
+      resolveModelId: (...a) => null,
     },
   });
   t.mock.module(absPath("lib/mcode-exec.js"), {

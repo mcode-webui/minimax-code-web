@@ -183,40 +183,176 @@ function matchesModelId(recorded, engineCurrent, modelOption) {
 /**
  * Resolve the recorded id to one of the engine's option.values.
  *
- * - exact `option.value` match → return as-is;
- * - bare model name (`MiniMax-M3`, the `option.name` or the suffix
- *   after the last separator in the recorded id) matching exactly one
- *   option → return that option's `value`;
- * - multiple matches or none → null (caller skips).
+ * Three match paths, in order:
  *
- * Ticket 05: the bare-name match is case-insensitive. The engine
- * populates `option.name` from the user-supplied model label (e.g.
- * `GLM-5.3` for a custom provider whose label happens to differ in
- * case from the model id), while the webui records the model id in
- * `cs.model.name` (e.g. `glm-5.3`). A strict comparison would skip
- * the apply and leave the engine on its default. The recorded id is
- * authoritative — when only one option matches case-insensitively,
- * that option is the right target. (Multiple case-insensitive
- * matches still returns null; ambiguity is ambiguity.)
+ *   1. Exact `option.value` match. Covers the engine wire form
+ *      (`m:minimax:MiniMax-M3:u`, `m:custom_provider%3A<key>:<model>:u`)
+ *      and any webui-recorded form that happens to equal the engine
+ *      wire value verbatim.
+ *
+ *   2. Webui `<providerKey>/<engineModelKey>` → engine-model-key match.
+ *      The webui id is structurally `<providerKey>/<engineModelKey>`
+ *      where `engineModelKey` may itself contain `/` (the engine
+ *      allows `/` inside model keys; the wire form's `/` is the
+ *      structural separator between provider and model). The engine
+ *      populates `option.name` from `displayName ?? modelId`, so for
+ *      models without a separate displayName `option.name === engineModelKey`
+ *      and the recorded id's segment-after-first-`/` matches it.
+ *      This is the case ticket 09-02 ships for (upstream catalogue
+ *      ids like `nousresearch/deepseek/x` → engine model key `deepseek/x`).
+ *
+ *   3. Last-segment fallback for legacy forms. `lastSegment(recorded)`
+ *      returns the segment after the LAST `/` or `:`. This is the
+ *      pre-ticket-09-02 fallback path and is preserved for callers
+ *      that recorded `custom_provider:byok-zhipu/glm-5.3` or
+ *      `minimax_api/MiniMax-M3` — those resolve to the bare model
+ *      name `glm-5.3` / `MiniMax-M3`, which the engine's `option.name`
+ *      carries.
+ *
+ * The match is case-insensitive (ticket 05). Multiple matches return
+ * null — ambiguity is ambiguity, and the caller skips rather than
+ * pick the wrong option.
  */
 function resolveModelId(recorded, modelOption) {
   if (!modelOption || !Array.isArray(modelOption.options)) return null;
   const options = modelOption.options.filter(
     (o) => o && typeof o === "object" && typeof o.value === "string",
   );
-  // Direct value match wins.
+  // (1) Direct value match — engine wire form, or a webui id that
+  // happens to equal an `option.value` verbatim.
   for (const o of options) {
     if (o.value === recorded) return o.value;
   }
-  const bareName = lastSegment(recorded);
-  const matches = options.filter(
-    (o) => typeof o.name === "string" && o.name.toLowerCase() === bareName.toLowerCase(),
+  // Branch on the structural shape of `recorded`. The webui id
+  // form (ticket 09-02) is `<providerKey>/<engineModelKey>` — the
+  // engine model key is everything after the FIRST `/`. Legacy
+  // forms (`minimax_api/MiniMax-M3`, `custom_provider:byok-zhipu/glm-5.3`)
+  // and bare names fall back to the last-segment match.
+  const slash = typeof recorded === "string" ? recorded.indexOf("/") : -1;
+  let bareName = null;
+  if (slash >= 0) {
+    // `<providerKey>/<engineModelKey>` form (engineModelKey may
+    // itself contain `/`). The engine populates `option.name` from
+    // `displayName ?? modelId` and appends ` · <variant>` when the
+    // option advertises a variant (see packages/tui/src/acp/
+    // control-state.ts#uniqueModelValues). The webui doesn't
+    // surface variant in its id — the variant is a separate
+    // concept the engine carries. We try the raw name first
+    // (most options have no variant suffix), then fall back to
+    // the variant-suffix-stripped name — so a recorded webui id
+    // lands on the option whether the engine is offering the bare
+    // or the variant form, and prefers the bare form when both
+    // are advertised (the engine's default).
+    bareName = recorded.slice(slash + 1);
+  } else if (typeof recorded === "string" && recorded) {
+    // Bare name or legacy colon form. `lastSegment` covers both.
+    bareName = lastSegment(recorded);
+  }
+  if (!bareName) return null;
+  const bareLower = bareName.toLowerCase();
+  // First pass: prefer options whose name matches the bare form
+  // exactly (covers `displayName === bareName`, no variant).
+  const exact = options.filter(
+    (o) => typeof o.name === "string" && o.name.toLowerCase() === bareLower,
   );
-  if (matches.length === 1) return matches[0].value;
+  if (exact.length === 1) return exact[0].value;
+  if (exact.length > 1) return null;
+  // Second pass: options whose name has the engine's ` · <variant>`
+  // suffix stripped to bare. Only kicks in when no exact match
+  // exists — so a multi-variant engine option set doesn't get
+  // collapsed to an ambiguous answer.
+  const stripped = options.filter(
+    (o) =>
+      typeof o.name === "string" &&
+      stripVariantSuffix(o.name).toLowerCase() === bareLower,
+  );
+  if (stripped.length === 1) return stripped[0].value;
+  // Third pass: URL-decode the `option.value` (the engine wire
+  // form is `m:<encodedProvider>:<encodedModel>:u|v:<variant>`)
+  // and compare the engine model id verbatim. This catches the
+  // case where `option.name` is the engine's `displayName` and
+  // differs from the model id — e.g. an upstream catalogue
+  // carries a router-style model id (`deepseek/deepseek-v4.1-flash`)
+  // with a separate display name (`DeepSeek V4.1 Flash`); the
+  // webui records the model id verbatim, but the engine's
+  // `option.name` is the display name. The wire-form decode
+  // recovers the model id and matches it.
+  const decoded = options.filter((o) => {
+    const modelId = engineModelIdFromWireValue(o.value);
+    return modelId !== null && modelId.toLowerCase() === bareLower;
+  });
+  if (decoded.length === 1) return decoded[0].value;
   return null;
 }
 
-/** Last segment after `/` or `:` — `minimax_api/MiniMax-M3` → `MiniMax-M3`. */
+/**
+ * Extract the engine model id from an `option.value` wire form.
+ *
+ * The engine wire form is `m:<encodedProvider>:<encodedModel>:u`
+ * (no variant) or `m:<encodedProvider>:<encodedModel>:v:<variant>`
+ * (with variant) — see packages/tui/src/acp/control-state.ts
+ * #modelConfigValue and #parseModelConfigValue. The provider
+ * and model segments are both URL-encoded. We split on `:`
+ * (skipping the leading `m:`), decode each segment, and
+ * return the model id. Returns `null` when the value isn't in
+ * the expected wire shape — the caller treats that as a non-match.
+ */
+function engineModelIdFromWireValue(wireValue) {
+  if (typeof wireValue !== "string") return null;
+  // `m:<provider>:<model>:<variantKind>[:<variant>]` — five or
+  // six segments. Split with a limit so colons inside the
+  // encoded model (rare but possible if upstream id has `:`) are
+  // contained; then take the third element as the model segment.
+  const parts = wireValue.split(":");
+  if (parts.length < 5 || parts[0] !== "m") return null;
+  const encodedModel = parts[2];
+  if (typeof encodedModel !== "string") return null;
+  try {
+    return decodeURIComponent(encodedModel);
+  } catch {
+    return encodedModel;
+  }
+}
+
+/**
+ * Strip the engine's ` · <variant>` suffix from an `option.name`.
+ *
+ * The engine composes `option.name` as
+ * `${displayName ?? modelId}${variant ? " · " + variant : ""}`
+ * (packages/tui/src/acp/control-state.ts#uniqueModelValues). The
+ * webui doesn't track variants in its id — they're a runtime-only
+ * concern — so a bare webui id never carries the suffix. Stripping
+ * before matching keeps the webui→engine translation round-trip
+ * alive even when the engine is offering only the variant form.
+ */
+function stripVariantSuffix(name) {
+  const i = name.indexOf(" · ");
+  return i >= 0 ? name.slice(0, i) : name;
+}
+
+/**
+ * Engine model key from a webui id — everything after the first `/`.
+ *
+ * `nousresearch/deepseek/x` → `deepseek/x` (multi-segment model keys
+ * are preserved whole). `zai-max/glm-5.3` → `glm-5.3`. `MiniMax-M3` →
+ * `MiniMax-M3` (bare names fall through). `m:minimax:MiniMax-M3:u`
+ * (engine wire form, no `/`) → the whole string — direct-match in
+ * `resolveModelId` covers this case before the name-match runs.
+ */
+function engineModelKeyFromId(id) {
+  if (typeof id !== "string" || !id) return id;
+  const slash = id.indexOf("/");
+  return slash >= 0 ? id.slice(slash + 1) : id;
+}
+
+/** Last segment after `/` or `:` — `minimax_api/MiniMax-M3` → `MiniMax-M3`.
+ *
+ * Legacy fallback for callers that recorded a form where the model id
+ * is the segment after the LAST separator. Kept for backward
+ * compatibility (and pinned by `lastSegment` tests); ticket 09-02
+ * prefers `engineModelKeyFromId` for the new `<providerKey>/<modelId>`
+ * webui form.
+ */
 function lastSegment(id) {
   const i = Math.max(id.lastIndexOf("/"), id.lastIndexOf(":"));
   return i >= 0 ? id.slice(i + 1) : id;
