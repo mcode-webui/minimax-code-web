@@ -157,15 +157,46 @@ export function SettingsModal({
   t,
   locale,
   setLocale,
+  initialSection,
+  autoAddProvider,
+  onAutoAddConsumed,
 }: {
   open: boolean;
   onClose: () => void;
   t: (key: MessageKey) => string;
   locale: Locale;
   setLocale: (locale: Locale) => void;
+  /** Section the modal should land on when it next opens. The page
+   *  sets this when the model selector's "Add provider" row is
+   *  clicked; the modal reads it as its initial state on each open
+   *  transition (a normal settings open from the sidebar passes
+   *  "general" and reuses the default). */
+  initialSection?: "general" | "appearance" | "connection" | "providers";
+  /** One-shot flag consumed by `ProviderManagementPanel`. When true,
+   *  the panel fires its add-provider flow on mount and calls
+   *  `onAutoAddConsumed`. The page sets this so a deep-link from the
+   *  model selector can land the user mid-add. */
+  autoAddProvider?: boolean;
+  onAutoAddConsumed?: () => void;
 }) {
-  const [active, setActive] = useState("general");
+  const [active, setActive] = useState<string>(initialSection ?? "general");
   const [query, setQuery] = useState("");
+
+  // Re-seed `active` whenever the modal opens from a different
+  // section. The seed is only applied on the open transition — using
+  // `open` as the dep means the user's in-modal navigation (clicking
+  // a sidebar tab) is preserved for the lifetime of the open modal,
+  // while a deep-link from outside the modal still wins.
+  const wasOpen = useRef(false);
+  useEffect(() => {
+    if (!open) {
+      wasOpen.current = false;
+      return;
+    }
+    if (wasOpen.current) return;
+    wasOpen.current = true;
+    if (initialSection) setActive(initialSection);
+  }, [open, initialSection]);
 
   useEffect(() => {
     if (!open) return;
@@ -281,7 +312,14 @@ export function SettingsModal({
         />
         <div className="flex min-w-0 flex-1 flex-col overflow-y-auto">
           <div className="mx-auto w-full min-w-[320px] max-w-[704px] px-6 py-6">
-            <SettingsPanel t={t} locale={locale} setLocale={setLocale} section={section} />
+            <SettingsPanel
+            t={t}
+            locale={locale}
+            setLocale={setLocale}
+            section={section}
+            autoAddProvider={autoAddProvider}
+            onAutoAddConsumed={onAutoAddConsumed}
+          />
           </div>
         </div>
       </div>
@@ -1431,12 +1469,17 @@ function SettingsPanel({
   locale,
   setLocale,
   section,
+  autoAddProvider,
+  onAutoAddConsumed,
 }: {
   t: (key: MessageKey) => string;
   locale: Locale;
   setLocale: (locale: Locale) => void;
   /** Which category to render; undefined means a disabled (unsupported) one. */
   section?: "general" | "appearance" | "connection" | "providers";
+  /** Forwarded to `ProviderManagementPanel` when `section === "providers"`. */
+  autoAddProvider?: boolean;
+  onAutoAddConsumed?: () => void;
 }) {
   const [snapshot, setSnapshot] = useState<api.SettingsSnapshot | null>(null);
   const [busy, setBusy] = useState(false);
@@ -1591,8 +1634,14 @@ function SettingsPanel({
     providers: (
       // The provider management panel owns its own loading / saving
       // state — wrapping it in a card here keeps the section chrome
-      // consistent with the rest of SettingsPanel.
-      <ProviderManagementPanel t={t} />
+      // consistent with the rest of SettingsPanel. The autoAdd flag
+      // and its consumer callback are forwarded so the model's
+      // "Add provider" deep-link can land the user mid-add.
+      <ProviderManagementPanel
+        t={t}
+        autoAddProvider={autoAddProvider}
+        onAutoAddConsumed={onAutoAddConsumed}
+      />
     ),
   }[section];
 

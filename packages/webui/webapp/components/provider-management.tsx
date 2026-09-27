@@ -78,8 +78,19 @@ export type { DraftProvider, DraftModel, ProviderTestOutcome };
 
 export function ProviderManagementPanel({
   t,
+  autoAddProvider,
+  onAutoAddConsumed,
 }: {
   t: (key: MessageKey) => string;
+  /** One-shot flag — when true, fire `addProvider()` on the next
+   *  load completion. The page sets this when the model selector's
+   *  "Add provider" row is clicked; the modal lands on the providers
+   *  section, the panel mounts, and once the catalogue is loaded we
+   *  create a fresh draft so the user can start typing immediately.
+   *  Cleared via `onAutoAddConsumed` so re-opening the modal does
+   *  not re-fire. */
+  autoAddProvider?: boolean;
+  onAutoAddConsumed?: () => void;
 }) {
   const { providersRevision } = useSessionContext();
   const [providers, setProviders] = useState<DraftProvider[] | null>(null);
@@ -122,6 +133,43 @@ export function ProviderManagementPanel({
     void load();
   }, [load, providersRevision]);
 
+  const addProvider = useCallback(() => {
+    // A new draft has a stable `draftId` (opaque, never written to
+    // disk) and an empty user-facing `id` until the user types. The
+    // selection path is keyed off `draftId` so editing the user-facing
+    // id does not lose the row.
+    const draft = newDraftProvider();
+    setProviders((current) => [...(current ?? []), draft]);
+    setSelectedId(draft.draftId);
+    setAutoFocusDraftId(draft.draftId);
+  }, []);
+
+  /**
+   * Auto-add fire-once (ticket 09).
+   *
+   * The model selector's top "Add provider" row sends the user here
+   * with `autoAddProvider = true`. Once the initial `load()` has
+   * populated `providers`, we fire `addProvider()` so the editor
+   * renders a fresh draft with the id input focused.
+   *
+   * The flag is one-shot: the effect tracks the consumed state with
+   * a ref so a later mount (re-opening the modal) without the flag
+   * does not re-fire, and a later mount WITH the flag does not
+   * fire on every `providersRevision` bump either.
+   */
+  const autoAddFiredRef = useRef(false);
+  useEffect(() => {
+    if (!autoAddProvider) {
+      autoAddFiredRef.current = false;
+      return;
+    }
+    if (autoAddFiredRef.current) return;
+    if (!providers) return;
+    autoAddFiredRef.current = true;
+    addProvider();
+    onAutoAddConsumed?.();
+  }, [autoAddProvider, providers, addProvider, onAutoAddConsumed]);
+
   // Validation summary across the whole draft, recomputed whenever
   // the user touches a field. The editor surface is only enabled
   // when the draft is valid; the Save button follows the same rule.
@@ -154,17 +202,6 @@ export function ProviderManagementPanel({
     },
     [selectedId],
   );
-
-  const addProvider = useCallback(() => {
-    // A new draft has a stable `draftId` (opaque, never written to
-    // disk) and an empty user-facing `id` until the user types. The
-    // selection path is keyed off `draftId` so editing the user-facing
-    // id does not lose the row.
-    const draft = newDraftProvider();
-    setProviders((current) => [...(current ?? []), draft]);
-    setSelectedId(draft.draftId);
-    setAutoFocusDraftId(draft.draftId);
-  }, []);
 
   const markDeleted = useCallback((draftId: string) => {
     setProviders((current) => {
