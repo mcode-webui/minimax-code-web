@@ -2,7 +2,14 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Locale, MessageKey } from "@/lib/i18n";
-import { fsRawUrl, getFsFile, type FsFilePayload } from "@/lib/api";
+import {
+  fsRawUrl,
+  getFsFile,
+  openFileWithDefault,
+  revealInFileManager,
+  type FileOpenResult,
+  type FsFilePayload,
+} from "@/lib/api";
 import { renderMarkdown } from "@/lib/markdown";
 import {
   basenameOf,
@@ -10,6 +17,11 @@ import {
   pickPreviewKind,
   type PreviewKind,
 } from "@/lib/file-preview";
+import {
+  classifyUnsupported,
+  type UnsupportedReason,
+} from "@/lib/file-open-reason";
+import { tFileOpen } from "@/lib/i18n-file-open";
 
 /**
  * File preview (slice 02 of the webui-parity program).
@@ -46,7 +58,7 @@ export interface FilePreviewProps {
   locale: Locale;
 }
 
-export function FilePreview({ path, t, locale: _locale }: FilePreviewProps) {
+export function FilePreview({ path, t, locale }: FilePreviewProps) {
   const [payload, setPayload] = useState<FsFilePayload | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -126,6 +138,8 @@ export function FilePreview({ path, t, locale: _locale }: FilePreviewProps) {
           error={error}
           payload={payload}
           fileName={fileName}
+          path={path}
+          locale={locale}
         />
       ) : null}
 
@@ -229,33 +243,258 @@ function PreviewError({
   error,
   payload,
   fileName,
+  path,
+  locale,
 }: {
   error: string;
   payload: FsFilePayload | null;
   fileName: string;
+  path: string;
+  locale: Locale;
 }) {
-  const mime = payload?.mime ?? "";
+  // The classification lives in lib/file-open-reason.ts so the
+  // component does not re-implement the regex / prefix split. The
+  // result also drives which buttons are enabled (the `actionsAvailable`
+  // flag — false for out-of-bounds, where the OS opener cannot help).
+  const unsupported = useMemo(
+    () => classifyUnsupported(error, payload),
+    [error, payload],
+  );
+
+  // Local state for the two actions: which one is currently firing
+  // (so the spinner / disable lives on the button, not on the whole
+  // panel), and which one last failed (the panel renders the failure
+  // copy inline so a click never silently no-ops).
+  const [busy, setBusy] = useState<"open-default" | "reveal" | null>(null);
+  const [failure, setFailure] = useState<{ key: "open-default" | "reveal"; message: string } | null>(null);
+  // Disabled-by-server: when the server has already answered a previous
+  // click with `code === "no-opener"`, we know the host cannot run the
+  // action at all — the button stays disabled for the lifetime of this
+  // open file, with the disabledHint tooltip explaining why. A "fresh"
+  // navigation to a different file clears this back to enabled.
+  const [disabledByServer, setDisabledByServer] = useState<{
+    openDefault: boolean;
+    reveal: boolean;
+    reason?: string;
+  }>({ openDefault: false, reveal: false });
+
+  // Reset per-file state when the panel re-mounts onto a different
+  // path (the React component re-uses between file switches).
+  useEffect(() => {
+    setBusy(null);
+    setFailure(null);
+    setDisabledByServer({ openDefault: false, reveal: false });
+  }, [path]);
+
+  const fireAction = useCallback(
+    async (kind: "open-default" | "reveal") => {
+      if (!unsupported.actionsAvailable) return;
+      if (disabledByServer.openDefault || disabledByServer.reveal) return;
+      setBusy(kind);
+      setFailure(null);
+      let result: FileOpenResult;
+      try {
+        result =
+          kind === "open-default"
+            ? await openFileWithDefault(path)
+            : await revealInFileManager(path);
+      } catch (cause) {
+        result = {
+          ok: false,
+          code: "spawn-failed",
+          error: cause instanceof Error ? cause.message : String(cause),
+        };
+      } finally {
+        setBusy(null);
+      }
+      if (result.ok) {
+        setFailure(null);
+        return;
+      }
+      // `no-opener` is a permanent disable — the host cannot run the
+      // action, so the button stays disabled with the dedicated hint.
+      // Other failures (spawn-failed, network) stay transient so a
+      // retry is still possible.
+      if (result.code === "no-opener") {
+        setDisabledByServer((current) => ({
+          ...current,
+          openDefault: kind === "open-default" ? true : current.openDefault,
+          reveal: kind === "reveal" ? true : current.reveal,
+        }));
+      }
+      setFailure({
+        key: kind,
+        message:
+          result.error ||
+          (result.code ? `code: ${result.code}` : "unknown error"),
+      });
+    },
+    [path, unsupported.actionsAvailable, disabledByServer],
+  );
+
+  const reasonText = reasonCopy(locale, unsupported.reason, unsupported.params);
   const language = payload?.language ?? "";
-  const isBinary = payload?.binary === true;
-  const isTooLarge = error.startsWith("file too large");
-  const isContainment = /越界|allowed root|MCODE_WEBUI_WORKSPACE_ROOTS/i.test(error);
+
   return (
     <div
-      className="flex items-start gap-2 rounded-[10px] border border-border_default bg-bg_grouped_secondary_elevated px-3 py-3 text-text_default_secondary"
+      className="flex flex-col gap-3 rounded-[10px] border border-border_default bg-bg_grouped_secondary_elevated px-3 py-3 text-text_default_secondary"
       data-testid="file-preview-error"
+      data-reason={unsupported.reason}
     >
-      <span className="text-sm">
-        {isContainment
-          ? "无法访问该文件：路径不在允许的工作区内。"
-          : isTooLarge
-            ? `${fileName} 超过单文件预览上限（512 KiB），请在编辑器中打开。`
-            : isBinary
-              ? `${fileName} 是二进制文件（${mime || "unknown type"}），无法预览。`
-              : `无法预览 ${fileName}：${error}`}
-        {language && !isContainment ? (
-          <span className="ml-1 text-text_default_tertiary">[{language}]</span>
+      <div className="flex items-start gap-2">
+        <span
+          className="flex size-4 flex-shrink-0 items-center justify-center text-icon_default_secondary"
+          aria-hidden
+        >
+          {/* Inline glyph keeps the row height stable without pulling in
+              a new icon registration — a small "warning" style square. */}
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+            <path
+              d="M8 1.5L1.5 13.5h13L8 1.5z"
+              stroke="currentColor"
+              strokeWidth="1.2"
+              strokeLinejoin="round"
+            />
+            <path
+              d="M8 6v3.5"
+              stroke="currentColor"
+              strokeWidth="1.2"
+              strokeLinecap="round"
+            />
+            <circle cx="8" cy="11.5" r="0.6" fill="currentColor" />
+          </svg>
+        </span>
+        <div className="flex min-w-0 flex-1 flex-col gap-1">
+          <span
+            className="text-caption-small-strong font-medium text-text_default_primary"
+            data-testid="file-preview-error-title"
+          >
+            {tFileOpen(locale, "fileOpen.header.unsupported")}
+          </span>
+          <span
+            className="text-sm"
+            data-testid="file-preview-error-reason"
+          >
+            {reasonText}
+            {language && unsupported.reason !== "outOfBounds" ? (
+              <span
+                className="ml-1 text-text_default_tertiary"
+                data-testid="file-preview-error-language"
+              >
+                [{language}]
+              </span>
+            ) : null}
+          </span>
+        </div>
+      </div>
+      <div
+        className="flex flex-wrap items-center gap-2"
+        data-testid="file-preview-error-actions"
+      >
+        <button
+          type="button"
+          onClick={() => void fireAction("open-default")}
+          disabled={
+            !unsupported.actionsAvailable ||
+            busy !== null ||
+            disabledByServer.openDefault
+          }
+          title={
+            disabledByServer.openDefault
+              ? tFileOpen(locale, "fileOpen.button.disabledHint")
+              : tFileOpen(locale, "fileOpen.action.openDefault.aria")
+          }
+          aria-label={tFileOpen(locale, "fileOpen.action.openDefault.aria")}
+          data-testid="file-preview-error-open-default"
+          data-disabled-reason={
+            disabledByServer.openDefault ? "no-opener" : undefined
+          }
+          className="flex h-7 items-center gap-1 rounded-[8px] border border-border_default bg-bg_default_scrim px-2 text-caption-small-strong text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_hover disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-bg_default_scrim"
+        >
+          {busy === "open-default" ? (
+            <span aria-hidden>…</span>
+          ) : null}
+          <span>{tFileOpen(locale, "fileOpen.action.openDefault")}</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => void fireAction("reveal")}
+          disabled={
+            !unsupported.actionsAvailable ||
+            busy !== null ||
+            disabledByServer.reveal
+          }
+          title={
+            disabledByServer.reveal
+              ? tFileOpen(locale, "fileOpen.button.disabledHint")
+              : tFileOpen(locale, "fileOpen.action.reveal.aria")
+          }
+          aria-label={tFileOpen(locale, "fileOpen.action.reveal.aria")}
+          data-testid="file-preview-error-reveal"
+          data-disabled-reason={
+            disabledByServer.reveal ? "no-opener" : undefined
+          }
+          className="flex h-7 items-center gap-1 rounded-[8px] border border-border_default bg-bg_default_scrim px-2 text-caption-small-strong text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_hover disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-bg_default_scrim"
+        >
+          {busy === "reveal" ? <span aria-hidden>…</span> : null}
+          <span>{tFileOpen(locale, "fileOpen.action.reveal")}</span>
+        </button>
+        {!unsupported.actionsAvailable ? (
+          <span
+            className="text-caption-small-strong text-text_default_tertiary"
+            data-testid="file-preview-error-actions-disabled-hint"
+          >
+            {tFileOpen(locale, "fileOpen.button.disabledHint")}
+          </span>
         ) : null}
+      </div>
+      {failure ? (
+        <p
+          className="rounded-[8px] bg-bg_grouped_tertiary px-2 py-1 text-caption-small-strong text-text_status_error"
+          data-testid="file-preview-error-failure"
+          data-failure-kind={failure.key}
+          role="status"
+        >
+          {tFileOpen(
+            locale,
+            failure.key === "open-default"
+              ? "fileOpen.failure.openDefault"
+              : "fileOpen.failure.reveal",
+            { error: failure.message },
+          )}
+        </p>
+      ) : null}
+      {/* fileName stays in scope for any future header line — kept in
+          the props list deliberately so the next contributor does not
+          have to re-thread it through the call site. */}
+      <span data-testid="file-preview-error-filename" hidden>
+        {fileName}
       </span>
     </div>
   );
+}
+
+/**
+ * Resolve the user-facing reason copy through the slice-14 i18n module.
+ *
+ * Pulled out so the JSX above is a flat layout and the substitution is
+ * testable. The classifier (`lib/file-open-reason.ts`) is responsible
+ * for the reason key; this helper is responsible for the copy.
+ */
+function reasonCopy(
+  locale: Locale,
+  reason: UnsupportedReason,
+  params: { mime?: string; error?: string },
+): string {
+  switch (reason) {
+    case "binary":
+      return tFileOpen(locale, "fileOpen.reason.binary", params);
+    case "oversize":
+      return tFileOpen(locale, "fileOpen.reason.oversize", params);
+    case "outOfBounds":
+      return tFileOpen(locale, "fileOpen.reason.outOfBounds", params);
+    case "unknown":
+    default:
+      return tFileOpen(locale, "fileOpen.reason.unknown", params);
+  }
 }

@@ -236,35 +236,37 @@ describe("open.file.in.web — source-level single-source", () => {
     assert.equal(definitionCount, 1, "openFileInWeb must be defined exactly once");
   });
 
-  test("only the panels tree and the chat tool-card import the action", () => {
-    // Entry points the ticket pins: file tree + turn summary.
-    // The action itself, the preview pane, and the page-level
-    // handler also import it — those are wiring, not entry points.
+  test("only the page handler imports the action (slice 14 collapsed panels' import into the page)", () => {
+    // Slice 14 widened the click surface so every non-HTML row opens
+    // the right panel. The funnel is the page-level `onOpenFile`
+    // callback: it calls `openFileInWeb(path)` AND `setPanel("files")`
+    // in one place. Panels + chat therefore do NOT import
+    // `openFileInWeb` directly any more — the page owns the action
+    // and the side-effect together. This test pins the new shape.
     const importers: Record<string, string[]> = {
       "lib/open-file.ts": [],
       "components/file-preview-pane.tsx": ["subscribeOpenFile", "closeOpenFile"],
-      "components/panels.tsx": ["openFileInWeb"],
+      "components/panels.tsx": [],
       "components/chat.tsx": [],
       "app/page.tsx": ["openFileInWeb"],
     };
 
     for (const [relative, expected] of Object.entries(importers)) {
       const src = readWebappSource(relative);
-      for (const symbol of ["openFileInWeb", "closeOpenFile", "subscribeOpenFile", "getOpenFilePath"]) {
-        const imported = src.includes(`} from "@/lib/open-file"`);
-        if (expected.includes(symbol)) {
-          assert.ok(imported, `${relative} must import from @/lib/open-file`);
-        }
+      const imported = src.includes(`} from "@/lib/open-file"`);
+      if (expected.length > 0) {
+        assert.ok(imported, `${relative} must import from @/lib/open-file`);
       }
     }
   });
 
   test("the page handler is the only place that decides to open the files panel on click", () => {
-    // The page-level callback funnels both entry points through
-    // `setPanel("files")` — if a future change wires that side
-    // effect from anywhere else (e.g. the chat reading panel state
-    // directly) the source tree would have a second "open the
-    // preview surface" path.
+    // The page-level `onOpenFile` callback funnels both entry
+    // points (file tree + turn summary) through one action that
+    // publishes the path AND opens the right panel. If a future
+    // change wires that side effect from anywhere else (e.g. the
+    // chat reading panel state directly) the source tree would have
+    // a second "open the preview surface" path.
     const page = readWebappSource("app/page.tsx");
     const chat = readWebappSource("components/chat.tsx");
     const panels = readWebappSource("components/panels.tsx");
@@ -277,9 +279,16 @@ describe("open.file.in.web — source-level single-source", () => {
       !chat.includes("setPanel"),
       "chat.tsx must NOT mutate the panel state directly",
     );
-    assert.ok(
-      !panels.includes("setPanel"),
-      "panels.tsx must NOT mutate the panel state directly",
+    // `setPanel` may appear in panels.tsx comments (the slice-14
+    // header explains why we delegate the click to a page-level
+    // callback). The real tripwire is whether panels.tsx CALLS
+    // `setPanel(` — a substring search on the bare token would
+    // false-positive on the documentation comment.
+    const panelsCallCount = (panels.match(/setPanel\(/g) || []).length;
+    assert.equal(
+      panelsCallCount,
+      0,
+      "panels.tsx must NOT call setPanel (the click surface delegates to the page-level callback)",
     );
   });
 });

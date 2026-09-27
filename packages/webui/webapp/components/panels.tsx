@@ -26,7 +26,6 @@ import { InboxList } from "./inbox";
 import { useSessionContext } from "@/lib/store";
 import { applyTheme, currentTheme } from "@/lib/theme";
 import { matchFilter } from "@/lib/workspace-filter";
-import { openFileInWeb } from "@/lib/open-file";
 import { splitFilesByBucket, formatStatusTags, previewDiff } from "@/lib/git-panel";
 import { BrowserPanel } from "@/components/browser-panel";
 import { isHtmlPath } from "@/lib/browser-nav";
@@ -72,6 +71,7 @@ export function RightPanel({
   browserPath,
   onBrowserNavigate,
   onOpenInBrowser,
+  onOpenFile,
 }: {
   kind: PanelKind;
   /** Used by the search panel for its own Esc/blanket/close affordance. The
@@ -102,6 +102,13 @@ export function RightPanel({
    *  they triggered. Only the file tree calls this; the panel
    *  itself never re-enters via this funnel. */
   onOpenInBrowser: (path: string) => void;
+  /** The file-tree "click any other file" handler — slice 14 widens
+   *  the click surface so every row (not just HTML) opens the right
+   *  panel. Same plumbing as `onOpenInBrowser` minus the panel-
+   *  specific destination: this one always opens the `files` panel
+   *  so the preview pane (with its open-with / show-in buttons for
+   *  unsupported types) actually appears. */
+  onOpenFile: (path: string) => void;
 }) {
   return (
     <aside
@@ -134,6 +141,7 @@ export function RightPanel({
               t={t}
               locale={locale}
               onOpenInBrowser={onOpenInBrowser}
+              onOpenFile={onOpenFile}
             />
           ) : null}
           {kind === "git" ? <GitPanel t={t} /> : null}
@@ -578,15 +586,27 @@ function FilesPanel({
   t,
   locale,
   onOpenInBrowser,
+  onOpenFile,
 }: {
   t: (key: MessageKey) => string;
   locale: Locale;
   /** Called when the user clicks an `.html` / `.htm` row. Page.tsx
    *  uses this to route the same file into the browser panel AND
    *  open that panel (rather than into the text/image preview
-   *  pane). Non-HTML rows still call `openFileInWeb` so the
-   *  preview pane keeps its existing single-source contract. */
+   *  pane). Non-HTML rows call `onOpenFile` so the preview pane
+   *  keeps its existing single-source contract AND the user actually
+   *  sees the right-hand panel — slice 14 widens the click surface
+   *  so every row opens the panel, not just the HTML ones. */
   onOpenInBrowser: (path: string) => void;
+  /** Called when the user clicks any non-HTML row. Page.tsx wires
+   *  this to `openFileInWeb(path)` plus a panel-open side effect so
+   *  the click triggers the preview AND opens the right panel — the
+   *  previous "click for a non-HTML row did nothing if the panel was
+   *  closed" failure mode is exactly what slice 14 fixes. The
+   *  side-effect call lives in page.tsx, not here — keeping the
+   *  panels surface passive is the tripwire `open-file.test.ts`
+   *  pins. */
+  onOpenFile: (path: string) => void;
 }) {
   const { state } = useSessionContext();
   const workspaceDir = state?.workspace.dir ?? "";
@@ -1051,9 +1071,11 @@ function FilesPanel({
           const isCopied = copiedPath === row.path;
           // Routing: HTML/HTM files go to the browser panel (via the
           // page-level callback so the panel auto-opens). Everything
-          // else continues to use the slice-12 single-source
-          // `openFileInWeb` so the preview pane still sees its
-          // existing call sites. `isHtmlPath` lives in
+          // else goes through the page-level `onOpenFile` callback,
+          // which publishes the path AND opens the right panel —
+          // slice 14 widens the click surface so every row opens the
+          // panel, never "click and nothing happened" for an
+          // unsupported type. `isHtmlPath` lives in
           // `lib/browser-nav.ts` to keep the extension allow-list in
           // one place (the iframe src type-check does the same).
           const isHtml = isHtmlPath(row.entry.name);
@@ -1065,7 +1087,7 @@ function FilesPanel({
               now={now}
               copied={isCopied}
               onOpen={() =>
-                isHtml ? onOpenInBrowser(row.path) : openFileInWeb(row.path)
+                isHtml ? onOpenInBrowser(row.path) : onOpenFile(row.path)
               }
               onCopy={() => copyPath(row.path)}
             />

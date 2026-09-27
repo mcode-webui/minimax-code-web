@@ -888,6 +888,88 @@ export function fsRawUrl(path: string): string {
   );
 }
 
+// --- file-open actions (slice 14) ----------------------------------------
+//
+// The two endpoints below turn the right-hand preview panel from a dead
+// end into an actionable surface for files the in-product preview cannot
+// render (binary blobs, oversized payloads, MIME-mapped but unsupported
+// formats). The server already returns a structured `code` so the UI
+// can branch on the failure mode without parsing free-form text.
+//
+// `request()` throws on non-OK responses and would lose the `code`
+// field, so these two callers go straight through `fetch` and parse
+// the JSON either way — same shape as `getFsFile` above.
+
+export type FileOpenCode =
+  | "missing-path"
+  | "out-of-bounds"
+  | "not-a-regular-file"
+  | "no-opener"
+  | "spawn-failed"
+  | "BODY_TOO_LARGE";
+
+export interface FileOpenResult {
+  ok: boolean;
+  /** Structured rejection code (only present when `ok === false`). */
+  code?: FileOpenCode;
+  /** Human-readable error message — surfacing hint for the UI banner. */
+  error?: string;
+}
+
+/**
+ * POST /api/fs/open-default — hand a path to the OS default application.
+ *
+ * Server-side containment + per-node realpath gating is shared with the
+ * other /api/fs/* routes (see server/lib/open-target.js). The function
+ * resolves with a `FileOpenResult` regardless of HTTP status; the caller
+ * branches on `result.code` to decide whether to disable the button
+ * (no-opener), show an inline error (spawn-failed), or surface the
+ * containment refusal (out-of-bounds / not-a-regular-file).
+ */
+export async function openFileWithDefault(path: string): Promise<FileOpenResult> {
+  const response = await fetch(withClientQuery("/api/fs/open-default"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({ path }),
+  });
+  return parseFileOpenResponse(response);
+}
+
+/**
+ * POST /api/fs/reveal — open the file manager pointed at the path.
+ *
+ * macOS / Windows select the row in the file manager; Linux opens the
+ * parent directory (no portable "select" command on the freedesktop
+ * side). Same wire shape and error-code vocabulary as
+ * `openFileWithDefault`.
+ */
+export async function revealInFileManager(path: string): Promise<FileOpenResult> {
+  const response = await fetch(withClientQuery("/api/fs/reveal"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({ path }),
+  });
+  return parseFileOpenResponse(response);
+}
+
+async function parseFileOpenResponse(response: Response): Promise<FileOpenResult> {
+  const text = await response.text();
+  let parsed: FileOpenResult | null = null;
+  try {
+    parsed = text ? (JSON.parse(text) as FileOpenResult) : null;
+  } catch {
+    parsed = null;
+  }
+  if (!parsed) {
+    return {
+      ok: false,
+      code: "spawn-failed",
+      error: response.ok ? "unexpected non-JSON response" : `HTTP ${response.status}`,
+    };
+  }
+  return parsed;
+}
+
 /** Absolute URL for a session export; `download` makes the browser save it. */
 export function sessionExportUrl(id: string, format: "md" | "json" = "md"): string {
   return withClientQuery(
