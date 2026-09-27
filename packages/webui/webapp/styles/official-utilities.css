@@ -2203,3 +2203,105 @@
 
 .animate-shimmer{animation:shimmer var(--shimmer-duration) linear infinite}
 
+/* File preview (slice 02 — components/file-preview.tsx).
+ *
+ * The component is rendered inside the right-hand `files` panel, so its
+ * surface is narrow. We lean on the existing typography tokens and keep
+ * the prose rules small — this is not chat, it is a documentation reader.
+ *
+ * The `codeblock-pre` and `inline-code` class names used by lib/markdown.ts
+ * already ship their own styles (the renderer overrides in markdown.ts
+ * emit them), so this rule set covers only the structural Markdown
+ * elements: headings, paragraphs, lists, blockquote, table, hr. The
+ * sanitiser in lib/markdown.ts#sanitize restricts what reaches the DOM,
+ * so every selector here maps to a tag the allow-list admits. */
+.file-preview-markdown {
+  color:var(--text_default_primary);
+  font-size:14px;
+  line-height:22px;
+  word-break:break-word
+}
+.file-preview-markdown>:first-child {
+  margin-top:0
+}
+.file-preview-markdown>:last-child {
+  margin-bottom:0
+}
+.file-preview-markdown h1 {
+  font-size:24px;
+  line-height:32px;
+  font-weight:600;
+  letter-spacing:-0.2px;
+  margin:16px 0 8px
+}
+.file-preview-markdown h2 {
+  font-size:18px;
+  line-height:26px;
+  font-weight:600;
+  margin:14px 0 6px
+}
+.file-preview-markdown h3 {
+  font-size:16px;
+  line-height:24px;
+  font-weight:600;
+  margin:12px 0 4px
+}
+.file-preview-markdown h4,.file-preview-markdown h5,.file-preview-markdown h6 {
+  font-size:14px;
+  line-height:22px;
+  font-weight:600;
+  margin:10px 0 4px
+}
+.file-preview-markdown p {
+  margin:6px 0
+}
+.file-preview-markdown a {
+  color:var(--text_default_accent);
+  text-decoration:underline;
+  text-underline-offset:2px
+}
+.file-preview-markdown strong {
+  font-weight:600
+}
+.file-preview-markdown ul,.file-preview-markdown ol {
+  margin:6px 0;
+  padding-inline-start:22px
+}
+.file-preview-markdown ul li,.file-preview-markdown ol li {
+  margin:2px 0
+}
+.file-preview-markdown blockquote {
+  border-inline-start:2px solid var(--border_default);
+  padding-inline-start:10px;
+  color:var(--text_default_secondary);
+  margin:8px 0
+}
+.file-preview-markdown hr {
+  border:none;
+  border-top:1px solid var(--border_light);
+  margin:12px 0
+}
+.file-preview-markdown table {
+  border-collapse:collapse;
+  margin:8px 0;
+  width:100%
+}
+.file-preview-markdown th,.file-preview-markdown td {
+  border:1px solid var(--border_light);
+  padding:6px 10px;
+  text-align:start
+}
+.file-preview-markdown th {
+  background:var(--bg_grouped_secondary_elevated);
+  font-weight:600
+}
+
+/* File-preview codeblock — distinct from the chat's .codeblock-pre so the
+ * chat shell styles (toolbar, copy button, transparent pre override) do
+ * not leak into the file viewer. */
+.file-preview-codeblock {
+  font-family:var(--font_family_code);
+  white-space:pre;
+  tab-size:2
+}
+
