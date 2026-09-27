@@ -596,6 +596,96 @@ describe("add-provider bridge — ticket 09", () => {
 });
 
 // ============================================================
+// Ticket 09-02 — model grouping attribution.
+//
+// Pure helper that mirrors the route's webui id construction. The
+// route always builds the catalogue entry's id as
+// `<providerKey>/<engineModelKey>`, so the composer's grouping
+// derivation (which keys off `model.provider` rather than the id
+// string) lands every model in its configured provider's bucket.
+//
+// This test pins the id-construction helper independently of the
+// route, so the composer's grouping can be reasoned about from the
+// shape of its inputs alone. The live self-check (dev server with a
+// synthetic engine config) exercises the integration.
+// ============================================================
+
+interface CatalogueEntry {
+  id: string;
+  label: string;
+  provider?: string;
+}
+
+/**
+ * Mirror of `routes/model.js#webuiFullModelId`: build the catalogue
+ * entry's id as `<providerKey>/<engineModelKey>`. The engine model
+ * key may itself contain `/` (upstream-namespace ids).
+ */
+function webuiFullModelId(providerKey: string, modelId: string): string {
+  return `${providerKey}/${modelId}`;
+}
+
+describe("webui id construction — ticket 09-02", () => {
+  test("always prefixes with the provider key (no `/`-skip)", () => {
+    // The pre-fix bug: `m.id.includes("/") ? m.id : ${p.id}/${m.id}`
+    // skipped the prefix when the model id already contained `/`,
+    // so a model id `deepseek/x` lived in the catalogue as
+    // `deepseek/x` (no provider prefix). The post-fix contract:
+    // always `<providerKey>/<engineModelKey>`.
+    assert.equal(webuiFullModelId("nousresearch", "deepseek/x"), "nousresearch/deepseek/x");
+    assert.equal(webuiFullModelId("nousresearch", "z-ai/glm-5.3"), "nousresearch/z-ai/glm-5.3");
+    assert.equal(webuiFullModelId("zai-max", "glm-5.3"), "zai-max/glm-5.3");
+    assert.equal(webuiFullModelId("minimax_api", "MiniMax-M3"), "minimax_api/MiniMax-M3");
+  });
+
+  test("engine model keys with multiple `/` segments stay whole", () => {
+    // The wire form `<providerId>/<modelId>` uses `/` as the
+    // structural separator; `parseSourceQualifiedModelKey` splits
+    // on the FIRST `/`, so a model id with `/` inside is preserved
+    // as a single string after the split. Pin the segment count.
+    const id = webuiFullModelId("nousresearch", "deepseek/deepseek-v4.1-flash");
+    assert.equal(id.split("/").length, 3, "engine model key with `/` keeps all segments");
+    assert.equal(id, "nousresearch/deepseek/deepseek-v4.1-flash");
+  });
+
+  test("two sibling providers with overlapping engine model ids stay distinct", () => {
+    // The dedupe key is the full prefixed id, so `nousresearch/x`
+    // and `zai-max/x` are different ids. The pre-fix bug: the bare
+    // form `x` (or the bare-prefix form) collided.
+    const a = webuiFullModelId("nousresearch", "z-ai/glm-5.3");
+    const b = webuiFullModelId("zai-max", "glm-5.3");
+    assert.notEqual(a, b, "per-provider prefix keeps overlapping ids distinct");
+    assert.equal(a, "nousresearch/z-ai/glm-5.3");
+    assert.equal(b, "zai-max/glm-5.3");
+  });
+
+  test("derived grouping key uses entry.provider, not the id's first segment", () => {
+    // Mirror the composer's `model.provider ?? "__other"` grouping.
+    // The first segment of the (now-prefixed) id equals the
+    // explicit provider field, so the bug-state where `providerOf`
+    // returned the wrong first segment can't recur — the grouping
+    // anchor is the directory-layer metadata.
+    const entries: CatalogueEntry[] = [
+      { id: webuiFullModelId("nousresearch", "deepseek/deepseek-v4.1-flash"), label: "DeepSeek V4.1 Flash", provider: "nousresearch" },
+      { id: webuiFullModelId("zai-max", "glm-5.3"), label: "GLM-5.3", provider: "zai-max" },
+    ];
+    const buckets = new Map<string, CatalogueEntry[]>();
+    for (const m of entries) {
+      const key = m.provider ?? "__other";
+      if (!buckets.has(key)) buckets.set(key, []);
+      buckets.get(key)!.push(m);
+    }
+    assert.equal(buckets.get("nousresearch")!.length, 1);
+    assert.equal(buckets.get("zai-max")!.length, 1);
+    // Cross-check: even though `nousresearch/deepseek/...`'s first
+    // segment is `nousresearch` (not `deepseek`), the explicit
+    // `provider` field is the authoritative anchor — the
+    // grouping derivation ignores the id string entirely.
+    assert.equal(buckets.get("deepseek"), undefined, "no `deepseek` bucket — provider metadata is the source of truth");
+  });
+});
+
+// ============================================================
 // Ticket 07 — quick-add provider validation.
 //
 // The management panel's "add provider" main path runs through three

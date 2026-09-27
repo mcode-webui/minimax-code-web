@@ -471,6 +471,140 @@ describe("resolveModelId — recorded id → engine option.value", () => {
     // the wrong one.
     assert.equal(resolveModelId("MiniMax-M3", ambiguous), null);
   });
+  // Ticket 09-02: the webui id for an engine-sourced model is
+  // `<providerKey>/<engineModelKey>` where `engineModelKey` may itself
+  // contain `/` (upstream-namespace ids). The engine populates
+  // `option.name` from `displayName ?? modelId`, so for models
+  // without a separate displayName `option.name === engineModelKey`
+  // verbatim — including the `/`. The resolution must extract the
+  // engine model key as the segment-after-FIRST-`/`, not the
+  // segment-after-LAST-`/` (the pre-fix `lastSegment` returned just
+  // the last segment, missing multi-segment keys).
+  test("multi-segment webui id (`<providerKey>/<a>/<b>`) resolves via the segment-after-first-`/`", () => {
+    const upstreamIds = {
+      ...MODEL_OPTION,
+      options: [
+        ...MODEL_OPTION.options,
+        {
+          value: "m:custom_provider%3Anousresearch:deepseek%2Fdeepseek-v4.1-flash:u",
+          name: "deepseek/deepseek-v4.1-flash",
+        },
+        {
+          value: "m:custom_provider%3Anousresearch:z-ai%2Fglm-5.3:u",
+          name: "z-ai/glm-5.3",
+        },
+      ],
+    };
+    // The pre-fix `lastSegment("nousresearch/deepseek/deepseek-v4.1-flash")`
+    // returns `"deepseek-v4.1-flash"` — which does NOT match the
+    // engine's `option.name = "deepseek/deepseek-v4.1-flash"`. The
+    // fix extracts the segment-after-FIRST-`/` (the engine model
+    // key, with `/` preserved) and matches against `option.name`.
+    assert.equal(
+      resolveModelId("nousresearch/deepseek/deepseek-v4.1-flash", upstreamIds),
+      "m:custom_provider%3Anousresearch:deepseek%2Fdeepseek-v4.1-flash:u",
+    );
+    assert.equal(
+      resolveModelId("nousresearch/z-ai/glm-5.3", upstreamIds),
+      "m:custom_provider%3Anousresearch:z-ai%2Fglm-5.3:u",
+    );
+  });
+  test("legacy `custom_provider:<key>/<model>` form still resolves (last-segment fallback)", () => {
+    // The pre-ticket-09-02 form — the webui recorded `cs.model.name`
+    // as `custom_provider:byok-zhipu/glm-5.3`. `resolveModelId` must
+    // keep resolving this for backward compat; the last-segment
+    // path (`glm-5.3`) lands on the same engine option as before.
+    assert.equal(
+      resolveModelId("custom_provider:byok-zhipu/glm-5.3", MODEL_OPTION),
+      "m:custom_provider%3Abyok-zhipu:glm-5.3:u",
+    );
+  });
+  test("legacy `minimax_api/MiniMax-M3` form still resolves", () => {
+    // Pin the `MiniMax-M3` option's actual wire value — the model
+    // option set in MODEL_OPTION is the variant form
+    // (`m:minimax:MiniMax-M3:v:`), not the `:u` form. The legacy
+    // resolution must match the engine's first option carrying that
+    // name.
+    assert.equal(
+      resolveModelId("minimax_api/MiniMax-M3", MODEL_OPTION),
+      "m:minimax:MiniMax-M3:v:",
+    );
+  });
+  // The engine composes `option.name` as
+  // `${displayName ?? modelId}${variant ? " · " + variant : ""}`
+  // (packages/tui/src/acp/control-state.ts#uniqueModelValues). A
+  // recorded webui id carries the bare model id only — it doesn't
+  // surface the variant. When the engine is offering only the
+  // variant form of a model (no bare form), the resolver must
+  // strip the suffix before matching. The exact-match pass wins
+  // first so a model that has both forms prefers the bare form
+  // (the engine's default).
+  test("variant-only form: suffix is stripped to match the bare webui id", () => {
+    const variantOnly = {
+      ...MODEL_OPTION,
+      options: [
+        // The engine only advertises the variant form. The bare
+        // form is gone (engine upstream lost it). The recorded
+        // webui id is the bare name; the resolver must find the
+        // variant option by stripping ` · thinking`.
+        { value: "m:custom_provider%3Anousresearch:deepseek%2Fx:v:thinking", name: "deepseek/x · thinking" },
+      ],
+    };
+    assert.equal(
+      resolveModelId("nousresearch/deepseek/x", variantOnly),
+      "m:custom_provider%3Anousresearch:deepseek%2Fx:v:thinking",
+    );
+  });
+  test("bare + variant: exact match wins (engine's default)", () => {
+    // The engine offers BOTH forms. The bare form is the default;
+    // a recorded bare webui id must land on the bare option, not
+    // get collapsed into an ambiguous answer. (The resolver used
+    // to collapse via the suffix strip — that made the engine's
+    // variant pair ambiguous.)
+    const both = {
+      ...MODEL_OPTION,
+      options: [
+        { value: "m:custom_provider%3Anousresearch:x:v:", name: "x" },
+        { value: "m:custom_provider%3Anousresearch:x:v:thinking", name: "x · thinking" },
+      ],
+    };
+    assert.equal(
+      resolveModelId("nousresearch/x", both),
+      "m:custom_provider%3Anousresearch:x:v:",
+    );
+  });
+  // Ticket 09-02: the engine populates `option.name` as
+  // `displayName ?? modelId`. Upstream catalogues commonly carry
+  // both — a router-style model id (`deepseek/deepseek-v4.1-flash`)
+  // and a separate friendly display name (`DeepSeek V4.1 Flash`).
+  // The webui records the model id verbatim (the wire form's
+  // segment-after-FIRST-`/`), so the bare-name match against the
+  // friendly `option.name` fails. The third pass recovers the
+  // model id by URL-decoding the wire value — the segment the
+  // engine carries in `m:<encodedProvider>:<encodedModel>:u|v:<v>`.
+  test("wire-decode fallback: displayName differs from model id", () => {
+    // The engine advertises a model whose `option.name` is the
+    // displayName (with friendly spaces + capitalisation) and
+    // whose wire value's encoded model segment is the router-style
+    // upstream id. The webui form `nousresearch/deepseek/deepseek-v4.1-flash`
+    // matches the wire-decode segment (after URL decoding) — the
+    // third-pass fallback recovers it.
+    const engine = {
+      type: "select",
+      id: "model",
+      currentValue: "m:custom_provider%3Anousresearch:deepseek%2Fdeepseek-v4.1-flash:v:thinking",
+      options: [
+        {
+          value: "m:custom_provider%3Anousresearch:deepseek%2Fdeepseek-v4.1-flash:v:thinking",
+          name: "DeepSeek V4.1 Flash · thinking",
+        },
+      ],
+    };
+    assert.equal(
+      resolveModelId("nousresearch/deepseek/deepseek-v4.1-flash", engine),
+      "m:custom_provider%3Anousresearch:deepseek%2Fdeepseek-v4.1-flash:v:thinking",
+    );
+  });
 });
 
 describe("applyRecordedModel — integration with a fake acp client", () => {

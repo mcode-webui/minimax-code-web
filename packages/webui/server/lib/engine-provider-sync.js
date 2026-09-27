@@ -189,15 +189,40 @@ export function providerKeyFromId(id) {
   return trimmed;
 }
 
-/** Pure: webui model id → engine-safe model key. */
+/**
+ * Pure: webui model id → engine-safe model key.
+ *
+ * The engine accepts `/` inside model keys (the wire form
+ * `formatModelKey(<providerId>, <modelId>) = <providerId>/<modelId>`
+ * uses `/` only as the *structural* separator between provider and
+ * model — `parseSourceQualifiedModelKey` splits on the FIRST `/`, so a
+ * model id that contains `/` is preserved as a single string after
+ * the split). Upstream catalogues commonly carry namespace-style model
+ * ids like `deepseek/x` or `z-ai/glm-5.3`; rejecting them here would
+ * drop the model from the engine sync and leave the engine unable to
+ * match the user's pre-session pick on session boot.
+ *
+ * Ticket 09-02: the previous `^[A-Za-z0-9][A-Za-z0-9_.-]*$` rejected
+ * every model id containing `/`, which silently dropped those entries
+ * from the sync. The actual engine constraints are weaker (any
+ * non-empty trimmed string is accepted as a Record key in the YAML
+ * custom_provider tree) so we widen to allow `/`.
+ *
+ * Other unsafe characters (whitespace, control codes, YAML structural
+ * tokens like `:`, `{}`, `[]`, `#`, `&`, `*`, `!`, `|`, `>`, `'`,
+ * `"`, `%`, `@`, `\``) still cause the engine's YAML parser or its
+ * custom_provider lookup to fail — those are rejected here so the
+ * sync never lands an unparseable entry on disk.
+ */
 export function modelKeyFromId(id) {
   const trimmed = (id || "").trim();
   if (!trimmed) return "";
-  // Engine model keys are even less constrained than provider keys (they
-  // appear inside a per-provider record), but the same alphanumeric
-  // character class keeps the keys safe to serialise into the runtime
-  // id `custom_provider:<key>/<modelKey>` without URL-escaping.
-  if (!PROVIDER_KEY_REGEX.test(trimmed)) return "";
+  // Reject whitespace, YAML structural tokens, and anything else
+  // the engine's byok-config parser would misinterpret. `/` is the
+  // only "extra" character we allow (the wire-form separator).
+  if (/[\s:#{}\[\]@&*!|>'"%`,]/.test(trimmed)) return "";
+  // The model key must not start with `-` (YAML lists) or `&`/`*` (anchors)
+  if (/^[-&*]/.test(trimmed)) return "";
   return trimmed;
 }
 

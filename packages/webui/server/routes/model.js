@@ -17,6 +17,7 @@ import {
   readEngineCatalogue,
   mergeEngineAndWebuiProviders,
 } from "../lib/engine-catalogue.js";
+import { resolveModelId } from "../lib/mcode-acp.js";
 import { webuiModeToLabel } from "../lib/interaction/permission-presets.js";
 import { readJson } from "../lib/read-json.js";
 
@@ -89,12 +90,69 @@ function readProvidersConfigForModels() {
  * `minimax_api/MiniMax-M3` → `minimax_api`. Bare `MiniMax-M3` falls back to
  * `minimax_api` (the engine's only shipping builtin provider) so a user-typed
  * short id still resolves to a known group instead of orphaning itself.
+ *
+ * Used only for engine session entries (their ids are the engine's wire
+ * form `m:<encodedProvider>:<model>:u`); webui-side entries now carry the
+ * provider as an explicit `entry.provider = p.id` field, and the multi-segment
+ * model id stays whole (see `webuiFullModelId`).
  */
 function providerOf(modelId, fallback = "minimax_api") {
   if (!modelId) return fallback;
   const i = modelId.indexOf("/");
   if (i <= 0) return fallback;
   return modelId.slice(0, i);
+}
+
+/**
+ * Build the webui internal id for a catalogue entry: `<providerKey>/<modelId>`.
+ *
+ * The webui id is always two segments where the first is the provider key
+ * and the second is the engine-side model id verbatim (the engine allows
+ * `/` inside model ids — see engine-catalogue.js; the wire form
+ * `formatModelKey(<providerId>, <modelId>) = <providerId>/<modelId>` uses
+ * `/` as the only structural separator, so a downstream `<provider>/<model>`
+ * webui form survives the round-trip through `resolveModelId`).
+ *
+ * Ticket 09-02 (grouping attribution): the previous implementation
+ * skipped the prefix when `m.id.includes("/")` and let the bare upstream
+ * id stand. That pushed the picker into the wrong group (the id's first
+ * segment was used as a fallback for `providerOf`) and let two providers
+ * with overlapping upstream ids collide on the `seen` dedupe (e.g.
+ * `z-ai/glm-5.3` in `nousresearch` ate the sibling `zai-max/glm-5.3`).
+ * Always prefixing — even when the model id already contains `/` —
+ * keys every entry by `(providerKey, modelId)` and the dedupe is per
+ * provider, as the ticket requires.
+ */
+function webuiFullModelId(providerKey, modelId) {
+  return `${providerKey}/${modelId}`;
+}
+
+/**
+ * Translate a webui-recorded model id to the engine's wire form.
+ *
+ * The webui records `cs.model.name` in `<providerKey>/<engineModelKey>`
+ * form (see `webuiFullModelId`). The engine's `set_config_option` for
+ * `configId: "model"` rejects anything that isn't the wire form
+ * `m:<encodedProvider>:<encodedModel>:u` (see
+ * packages/tui/src/acp/control-state.ts#modelConfigValue / agent.ts
+ * `parseModelConfigValue`). Without this translation a mid-session
+ * pick of a multi-segment model id (`nousresearch/deepseek/x`) would
+ * 400 from the engine.
+ *
+ * `resolveModelId` (in `lib/mcode-acp.js`) owns the resolver — it is
+ * the same code path `applyRecordedModel` uses on session boot, so the
+ * mid-session push and the boot-time replay share one source of
+ * truth. Returns `null` when the engine has no matching option yet
+ * (the engine configOptions list is empty before the first session
+ * event lands); the caller falls back to the recorded id and the
+ * next session event re-attempts the apply via `applyRecordedModel`.
+ */
+function translateWebuiModelIdToEngineValue(cs, modelId) {
+  if (!modelId || typeof modelId !== "string") return null;
+  const opts = Array.isArray(cs && cs.configOptions) ? cs.configOptions : [];
+  const modelOption = opts.find((o) => o && o.id === "model");
+  if (!modelOption) return null;
+  return resolveModelId(modelId, modelOption);
 }
 
 /**
@@ -186,7 +244,15 @@ export function handleGetModels(_req, res, ctx) {
       const models = [];
       for (const m of Array.isArray(p.models) ? p.models : []) {
         if (!m || typeof m.id !== "string" || !m.id) continue;
-        const fullId = m.id.includes("/") ? m.id : `${p.id}/${m.id}`;
+        // Ticket 09-02: always prefix the webui id with `<p.id>`. The
+        // upstream-style model id (`deepseek/x`, `z-ai/glm-5.3`,
+        // `openai/gpt-5.6-sol`) is kept verbatim inside the model id
+        // portion — the engine allows `/` inside model keys, the wire
+        // form `<provider>/<model>` uses `/` only as the structural
+        // separator, and the `seen` dedupe is per provider (so two
+        // sibling providers with overlapping upstream ids stay
+        // distinct instead of one swallowing the other).
+        const fullId = webuiFullModelId(p.id, m.id);
         if (seen.has(fullId)) continue;
         seen.add(fullId);
         const entry = {
@@ -392,7 +458,16 @@ export async function handleSetModel(req, res, ctx) {
   // selected model's effortOptions and reject unknown values.
   if (sid) {
     if (modelId) {
-      const r = await setConfigOption(sid, "model", modelId, ctx.cid);
+      // The engine wire form is `m:<encodedProvider>:<encodedModel>:u`
+      // (see packages/tui/src/acp/control-state.ts#modelConfigValue).
+      // The webui id is `<providerKey>/<engineModelKey>` — translate it
+      // to the engine wire form so `parseModelConfigValue` accepts it.
+      // The same resolver used by `applyRecordedModel` lives in
+      // `lib/mcode-acp.js#resolveModelId` and exports the helper we
+      // need; the route layer keeps the apply path's reasoning
+      // (single source of truth for "recorded → engine option.value").
+      const engineValue = translateWebuiModelIdToEngineValue(cs, modelId) ?? modelId;
+      const r = await setConfigOption(sid, "model", engineValue, ctx.cid);
       mcodeSynced = r.ok;
       if (!r.ok) warning = r.error;
     }
