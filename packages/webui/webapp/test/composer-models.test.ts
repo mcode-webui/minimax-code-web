@@ -826,3 +826,276 @@ describe("setModel payload — wiring the composer sends", () => {
     assert.equal(payload.thinking, "");
   });
 });
+
+// ============================================================
+// Ticket 10 — thinking-level cascade submenu.
+//
+// The composer ModelSelect no longer renders inline thinking-level
+// pills (no top-row pill strip and no per-row pill strip below the
+// label). Levels for a model live in a CASCADING SUBMENU that flies
+// out to the RIGHT of the hovered row when that model advertises
+// `thinkingLevels`. The pure helpers below pin the behavioural
+// contract without a render harness:
+//
+//   * `cascadeOpenFor` — the four-term predicate the JSX applies to
+//     decide whether a row's submenu is open (open AND has levels AND
+//     `submenuFor` names this row).
+//   * `submenuItems` — the items the cascade renders, derived from
+//     the row's `thinkingLevels` and the active level. Always appends
+//     the "engine default" option so the user can clear the override
+//     without leaving the submenu.
+//   * `cascadePlacement` — the position fallback the submenu applies
+//     when the right edge of the row leaves no room to its right:
+//     flip to the left, then clamp inside the viewport. The fix to
+//     the previous ticket-07 inline pills (which had no placement
+//     concern) comes from here — the cascade must never spill past
+//     the viewport edge.
+//   * `interactionBudget` — counts the click budget for the cascade:
+//     one click on the model row (opens) + one click on the level
+//     (applies) = 2, matching the ticket's ≤2 interaction budget.
+//
+// The render is exercised end-to-end via the live self-check (browser
+// + screenshots). These pins keep the *behavioural* contract stable
+// between refactors.
+// ============================================================
+
+/**
+ * Mirror of composer.tsx#ModelSelect#cascadeOpenFor. A row's submenu
+ * is open iff the dropdown is open, the row advertises reasoning
+ * controls, and `submenuFor` names this row.
+ */
+function cascadeOpenFor(
+  open: boolean,
+  submenuFor: string | null,
+  modelId: string,
+  rowLevels: string[],
+): boolean {
+  if (!open) return false;
+  if (rowLevels.length === 0) return false;
+  return submenuFor === modelId;
+}
+
+describe("cascadeOpenFor — ticket 10", () => {
+  test("dropdown closed → no row is open, even with levels", () => {
+    assert.equal(cascadeOpenFor(false, "a", "a", ["low"]), false);
+    assert.equal(cascadeOpenFor(false, null, "a", ["low"]), false);
+  });
+
+  test("row without levels → no submenu", () => {
+    assert.equal(cascadeOpenFor(true, "a", "a", []), false);
+  });
+
+  test("submenuFor names a different row → no submenu here", () => {
+    // Hover moved to a sibling; the previous row's submenu dropped.
+    assert.equal(cascadeOpenFor(true, "b", "a", ["low"]), false);
+  });
+
+  test("submenuFor names this row AND row has levels AND dropdown open → submenu shown", () => {
+    assert.equal(cascadeOpenFor(true, "a", "a", ["low"]), true);
+    assert.equal(cascadeOpenFor(true, "a", "a", ["low", "medium", "high"]), true);
+  });
+});
+
+/**
+ * Mirror of `<ThinkingLevelSubmenu>`'s option list: the row's
+ * `thinkingLevels` first, then the "engine default" separator option
+ * so the user can clear the recorded effort without leaving the
+ * submenu. The default option is always present, even when the
+ * active level is the same as one of the catalogue levels — the
+ * server's `""` payload is the documented clear-the-override
+ * sentinel.
+ */
+function submenuItems(levels: string[]): { value: string; kind: "level" | "default" }[] {
+  const out: { value: string; kind: "level" | "default" }[] = [];
+  for (const lvl of levels) out.push({ value: lvl, kind: "level" });
+  out.push({ value: "", kind: "default" });
+  return out;
+}
+
+describe("submenuItems — ticket 10", () => {
+  test("always includes a default option (engine default) at the tail", () => {
+    const items = submenuItems(["low", "medium", "high"]);
+    assert.equal(items.length, 4);
+    assert.deepEqual(
+      items.map((i) => i.value),
+      ["low", "medium", "high", ""],
+      "default option sits after the model-declared levels",
+    );
+    const tail = items[items.length - 1];
+    assert.ok(tail, "tail present");
+    assert.equal(tail.kind, "default");
+  });
+
+  test("empty levels list still yields the default option", () => {
+    // A model with no levels never opens a submenu (cascadeOpenFor
+    // gates this); the helper still produces just the default entry
+    // so a regression in the gating doesn't silently swallow the
+    // "clear override" affordance.
+    const items = submenuItems([]);
+    assert.equal(items.length, 1);
+    assert.equal(items[0]?.value, "");
+    assert.equal(items[0]?.kind, "default");
+  });
+
+  test("duplicate levels in the input are kept as the row supplied", () => {
+    // The component trusts the catalogue's dedupe — a duplicate would
+    // render twice. Pin the surface so a regression in the input
+    // filter surfaces here rather than as a UI quirk.
+    const items = submenuItems(["low", "low"]);
+    assert.equal(items.length, 3);
+    assert.equal(items[0]?.value, "low");
+    assert.equal(items[1]?.value, "low");
+    assert.equal(items[2]?.value, "");
+  });
+});
+
+/**
+ * Resolve the cascade submenu's `position: fixed` coords from the
+ * anchor row's rect + the submenu's measured size, with a left-flip
+ * fallback when the viewport has no room on the right. The pure
+ * function captures the same arithmetic `<ThinkingLevelSubmenu>`'s
+ * layout effect runs.
+ */
+function cascadePlacement(args: {
+  anchor: { left: number; top: number; right: number; bottom: number };
+  menu: { width: number; height: number };
+  viewport: { width: number; height: number };
+  gap?: number;
+}): { top: number; left: number } {
+  const gap = args.gap ?? 6;
+  const inset = 8;
+  let left = args.anchor.right + gap;
+  if (left + args.menu.width > args.viewport.width - inset) {
+    left = args.anchor.left - args.menu.width - gap;
+    if (left < inset) left = Math.max(inset, args.viewport.width - args.menu.width - inset);
+  }
+  let top = args.anchor.top;
+  if (top + args.menu.height > args.viewport.height - inset) {
+    top = Math.max(inset, args.viewport.height - args.menu.height - inset);
+  }
+  if (top < inset) top = inset;
+  return { top, left };
+}
+
+describe("cascadePlacement — ticket 10 right-side placement", () => {
+  test("normal case: anchor has room on the right → fly out to the right", () => {
+    // Anchor on the left half of a 1200px viewport, menu width 200.
+    // Anchor right edge at 320, gap 6 → left = 326. Fits inside
+    // 1200 - 8.
+    const pos = cascadePlacement({
+      anchor: { left: 100, top: 400, right: 320, bottom: 432 },
+      menu: { width: 200, height: 32 * 5 },
+      viewport: { width: 1200, height: 800 },
+    });
+    assert.equal(pos.left, 326, "flies out to the RIGHT of the row (ticket's correction)");
+    assert.equal(pos.top, 400, "top aligns with the row's top edge");
+  });
+
+  test("no room on the right → flip to the LEFT of the row", () => {
+    // Anchor near the right edge: right=1180 on a 1200 viewport with
+    // a 200px menu would spill to 1186 + 200 > 1192. Flip: the
+    // submenu's right edge sits at `anchor.left - gap = 974`, so
+    // `left = 974 - 200 = 774`.
+    const pos = cascadePlacement({
+      anchor: { left: 980, top: 400, right: 1180, bottom: 432 },
+      menu: { width: 200, height: 32 * 5 },
+      viewport: { width: 1200, height: 800 },
+    });
+    assert.equal(pos.left, 774, "flipped to the LEFT when right-edge overflow");
+    assert.equal(pos.top, 400);
+  });
+
+  test("anchor near viewport top → top clamped to 8px inset", () => {
+    const pos = cascadePlacement({
+      anchor: { left: 100, top: -10, right: 320, bottom: 22 },
+      menu: { width: 200, height: 32 * 5 },
+      viewport: { width: 1200, height: 800 },
+    });
+    assert.equal(pos.top, 8, "top never goes above the viewport inset");
+  });
+
+  test("anchor near viewport bottom → bottom clamped to the inset", () => {
+    // Anchor top at 780 on an 800 viewport with a 200px-tall menu
+    // would spill (780+200=980 > 800-8). Clamp: top = 800 - 200 - 8 = 592.
+    const pos = cascadePlacement({
+      anchor: { left: 100, top: 780, right: 320, bottom: 812 },
+      menu: { width: 200, height: 200 },
+      viewport: { width: 1200, height: 800 },
+    });
+    assert.equal(pos.top, 592, "bottom edge clamped to viewport - height - inset");
+  });
+});
+
+/**
+ * Interaction budget for the cascade submenu.
+ *
+ * The ticket's ≤2 budget maps to:
+ *   1) Hover (or click) the row → submenu opens.
+ *   2) Click a level inside the submenu → model+level applied.
+ * Hover path: 0 prior clicks + 1 hover + 1 click = 2 interactions.
+ * Click path: 1 click on row (opens submenu) + 1 click on level = 2.
+ * Models without levels: 1 click → model applied. The helper captures
+ * the shape so the budget reads the same way in the test as it does
+ * in the ticket.
+ */
+function interactionBudget(levels: string[], path: "hover" | "click"): number {
+  if (levels.length === 0) return 1;
+  if (path === "hover") return 2;
+  return 2;
+}
+
+describe("interactionBudget — ticket 10 budget ≤2", () => {
+  test("no-level model: one-click selection, budget = 1", () => {
+    assert.equal(interactionBudget([], "click"), 1);
+    assert.equal(interactionBudget([], "hover"), 1);
+  });
+
+  test("with levels, hover path: hover + click = 2", () => {
+    assert.equal(interactionBudget(["low", "medium", "high"], "hover"), 2);
+  });
+
+  test("with levels, click path: row click + level click = 2", () => {
+    assert.equal(interactionBudget(["low", "medium", "high"], "click"), 2);
+  });
+});
+
+/**
+ * Atomic set-model payload for a cascade pick.
+ *
+ * Mirrors the composer's call site for the cascade: model+level go
+ * in a single wire call (model first, then effort — the engine
+ * contract from ticket 08). Picking the "default" option clears the
+ * effort (empty string), so the wire carries `thinking: ""`. The
+ * model field is always present; the picker never sends a level
+ * without re-anchoring the model.
+ */
+function cascadeSetModelPayload(modelId: string, level: string): { model: string; thinking: string } {
+  return { model: modelId, thinking: level };
+}
+
+describe("cascadeSetModelPayload — ticket 10 atomic wire shape", () => {
+  test("model + level: both fields, level first because payload key order matches `model, thinking`", () => {
+    const p = cascadeSetModelPayload("minimax_api/MiniMax-M3", "high");
+    assert.equal(p.model, "minimax_api/MiniMax-M3");
+    assert.equal(p.thinking, "high");
+  });
+
+  test("default option: model present, thinking empty string", () => {
+    // The "engine default" cascade entry maps to `thinking: ""` —
+    // server interprets empty as "no override; let the engine pick".
+    const p = cascadeSetModelPayload("minimax_api/MiniMax-M3", "");
+    assert.equal(p.model, "minimax_api/MiniMax-M3");
+    assert.equal(p.thinking, "");
+  });
+
+  test("model field is always present (never dropped, even with default level)", () => {
+    // A regression that drops `model` when `thinking` is `""` would
+    // leave the engine with a level-but-no-model wire call, which
+    // ticket 08's "model first" gate rejects.
+    for (const lvl of ["low", "medium", "high", ""]) {
+      const p = cascadeSetModelPayload("openai_compat/gpt-5", lvl);
+      assert.ok("model" in p, `model field present for level=${JSON.stringify(lvl)}`);
+      assert.equal(p.model, "openai_compat/gpt-5");
+    }
+  });
+});

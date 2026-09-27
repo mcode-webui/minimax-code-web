@@ -2,8 +2,10 @@
 
 import { Dropdown } from "antd";
 import {
+  forwardRef,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -899,8 +901,8 @@ function ModelSelect({
   /** Currently recorded thinking-effort level (`""` means "engine default"). */
   thinking: string;
   /** Active model's thinking levels (only present when the active
-   *  model advertises reasoning controls). Drives the inline level
-   *  pill row rendered at the top of the panel. */
+   *  model advertises reasoning controls). Drives the cascade
+   *  submenu that flies out to the right of the active row. */
   thinkingLevels: string[];
   onPick: (id: string) => void;
   /** Apply a thinking level alongside (or instead of) a model pick.
@@ -917,18 +919,74 @@ function ModelSelect({
   onAddProvider?: () => void;
 }) {
   const [open, setOpen] = useState(false);
-  // Model id whose row is currently expanded to show its level pills.
-  // Defaults to the active model so the user can change level without
-  // scrolling; hovering a row overrides the expansion to that row.
-  const [expandedModelId, setExpandedModelId] = useState<string | null>(value ?? null);
-  /** Ref to the inner scrollable list — used by the "scroll selected
-   *  into view" effect after the dropdown opens. The ref is captured
-   *  on the `div` that wraps the group list (NOT on the panel itself,
-   *  which has the chrome and a sticky header on top). */
-  const listScrollRef = useRef<HTMLDivElement | null>(null);
+  // Model id whose row's cascade submenu is currently open. `null` when
+  // the dropdown is closed or no row is hovered/focused. The submenu
+  // is a classic cascading fly-out — when this id changes, the
+  // rendered submenu element re-anchors to the new row. The cascade
+  // is right-side-only by the ticket's "右侧二级不是下面弹出来"
+  // correction: the submenu is `position: fixed` so it escapes the
+  // scrolling list (the list's `overflow-y: auto` would clip an
+  // absolutely-positioned descendant).
+  const [submenuFor, setSubmenuFor] = useState<string | null>(null);
+  /** Ref to the row that owns the open submenu. Captured so the
+   *  submenu can position itself against the row's bounding rect
+   *  (and flip to the left when the viewport has no room on the
+   *  right). Reset when `submenuFor` changes. */
+  const submenuAnchorRef = useRef<HTMLDivElement | null>(null);
   /** Ref to the row that the current selection points at, so the
    *  scroll-into-view effect has a stable target. */
   const selectedRowRef = useRef<HTMLDivElement | null>(null);
+  /** Ref to the inner scrollable list — used by the "scroll selected
+   *  into view" effect after the dropdown opens. */
+  const listScrollRef = useRef<HTMLDivElement | null>(null);
+  /** Pending close timer — set when the cursor leaves the row, so a
+   *  brief traversal into the submenu keeps it open. Cleared when
+   *  the cursor re-enters the row OR the submenu. The constant is a
+   *  small value (120ms) so the close feels responsive while still
+   *  forgiving a fast cursor crossing the row/submenu gap. */
+  const submenuCloseTimerRef = useRef<number | null>(null);
+  /** Ref to the submenu element. Used by keyboard nav to focus the
+   *  first menuitem on activation and to navigate between menuitems
+   *  with arrow keys. */
+  const submenuRef = useRef<HTMLDivElement | null>(null);
+
+  const cancelSubmenuClose = useCallback(() => {
+    if (submenuCloseTimerRef.current != null) {
+      window.clearTimeout(submenuCloseTimerRef.current);
+      submenuCloseTimerRef.current = null;
+    }
+  }, []);
+
+  const scheduleSubmenuClose = useCallback(() => {
+    cancelSubmenuClose();
+    submenuCloseTimerRef.current = window.setTimeout(() => {
+      setSubmenuFor(null);
+      submenuCloseTimerRef.current = null;
+    }, 120);
+  }, [cancelSubmenuClose]);
+
+  /**
+   * Cascade open predicate.
+   *
+   * A row's submenu is open iff:
+   *   1. The dropdown itself is open (otherwise nothing shows), AND
+   *   2. The row advertises `thinkingLevels` (a row without levels
+   *      has no submenu — the click goes straight through), AND
+   *   3. `submenuFor` names this row.
+   *
+   * Disabled rows (no-key provider) are never opened: their click is
+   * blocked at the row level so the predicate does not need an
+   * extra gate. The helper exists so the JSX does not have to repeat
+   * the four-term conjunction inline.
+   */
+  const cascadeOpenFor = useCallback(
+    (modelId: string, rowLevels: string[]): boolean => {
+      if (!open) return false;
+      if (rowLevels.length === 0) return false;
+      return submenuFor === modelId;
+    },
+    [open, submenuFor],
+  );
 
   // Group by provider, preserving the catalogue order. A provider-less entry
   // (engine-encoded ids whose prefix wasn't coerced) falls into "Other" so it
@@ -960,12 +1018,13 @@ function ModelSelect({
     return order.map((key) => buckets.get(key)!);
   }, [models, groups, t]);
 
-  // Re-sync the expanded row when the active model changes (e.g. after
-  // a session reset). Falling back to `null` shows no expansion; the
-  // active row's pills then disappear until the user hovers or picks.
+  // Drop any open cascade when the active model changes (e.g. after
+  // a session reset). The next hover/click on a row will re-open a
+  // fresh submenu anchored to that row.
   useEffect(() => {
-    setExpandedModelId(value ?? null);
-  }, [value]);
+    setSubmenuFor(null);
+    cancelSubmenuClose();
+  }, [value, cancelSubmenuClose]);
 
   /**
    * Scroll the active model row into view when the dropdown opens.
@@ -1012,7 +1071,14 @@ function ModelSelect({
       open={open}
       onOpenChange={(next) => {
         setOpen(next);
-        if (!next) setExpandedModelId(value ?? null);
+        // Drop any open cascade + pending close timer when the
+        // dropdown itself closes — the next open starts from a clean
+        // slate. Without this, a stale submenu could render against
+        // an unmounted anchor on the next open.
+        if (!next) {
+          setSubmenuFor(null);
+          cancelSubmenuClose();
+        }
       }}
       trigger={["click"]}
       placement="bottomRight"
@@ -1043,49 +1109,6 @@ function ModelSelect({
                   <span>{t("modelSelector.addProvider")}</span>
                 </button>
               ) : null}
-              {/* Inline thinking-effort row — when the active model advertises
-                  reasoning controls, the level pills render at the top of the
-                  panel so the user can change effort without picking a new
-                  model. Clicking a pill applies both the model (kept as the
-                  active model) and the new level atomically. Hovering a row
-                  in the list below re-targets the pills to that row's levels
-                  so a model+level change costs a single click. */}
-              {thinkingLevels.length > 0 ? (
-                <div
-                  data-testid="model-select-level-row"
-                  className="mx-1 mb-1 mt-1 flex flex-col gap-1 rounded-[8px] bg-bg_grouped_secondary px-2 py-1.5"
-                >
-                  <span className="text-caption-small-strong uppercase tracking-wide text-text_default_tertiary">
-                    {t("modelSelector.level")}
-                  </span>
-                  <div className="flex flex-wrap gap-1">
-                    {thinkingLevels.map((level) => {
-                      const isActive = thinking === level;
-                      return (
-                        <button
-                          key={level}
-                          type="button"
-                          data-testid={`model-select-level-${level}`}
-                          data-active={isActive ? "true" : "false"}
-                          aria-pressed={isActive}
-                          onClick={() => {
-                            setOpen(false);
-                            onPickThinking(level);
-                          }}
-                          className={[
-                            "h-6 rounded-md border px-2 text-caption-small-strong transition-colors",
-                            isActive
-                              ? "border-border_heavy bg-bg_interaction_tertiary_selected text-text_default_primary"
-                              : "border-border_default text-text_default_secondary hover:bg-bg_interaction_tertiary_hover hover:text-text_default_primary",
-                          ].join(" ")}
-                        >
-                          {thinkingLevelLabel(t, level)}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              ) : null}
               {/*
                 Scrollable list. `max-h-[60vh]` caps the panel at ~60%
                 of the viewport (the ticket's "60-70%" range; 60% is
@@ -1095,6 +1118,15 @@ function ModelSelect({
                 internal padding (mt-1 / border-t / pt-1 on each group)
                 stays inside the scroll, so sticky headers anchor at
                 the top of THIS container, not the panel chrome.
+
+                Ticket 10 cascade: a model's thinking levels no longer
+                render inline at the top of the panel or as a per-row
+                pill strip. They live in a SECOND-LEVEL MENU that flies
+                out to the RIGHT of the hovered row (see
+                `cascadeOpenFor` + `<ThinkingLevelSubmenu>`). The list
+                stays scroll-clean: the submenu escapes via
+                `position: fixed` so the scroller's `overflow-y` does
+                not clip it.
               */}
               <div
                 ref={listScrollRef}
@@ -1139,26 +1171,61 @@ function ModelSelect({
                     </div>
                     {group.models.map((model) => {
                       const rowLevels = model.thinkingLevels ?? [];
-                      const showLevels = !disabled && rowLevels.length > 0 &&
-                        (expandedModelId === model.id ||
-                          (expandedModelId == null && model.id === value));
                       const isSelected = model.id === value;
+                      const activeLevel = isSelected ? thinking : "";
+                      const submenuOpen = cascadeOpenFor(model.id, rowLevels);
                       return (
                         <div
                           key={model.id}
-                          ref={isSelected ? selectedRowRef : null}
+                          ref={(node) => {
+                            // The cascade anchor follows the open row,
+                            // so the submenu positions against the
+                            // right rect. `selectedRowRef` keeps its
+                            // own slot for the scroll-into-view effect.
+                            if (isSelected) selectedRowRef.current = node;
+                            if (submenuOpen) submenuAnchorRef.current = node;
+                          }}
                           data-testid={`model-select-row-wrap-${modelSlug(model.id)}`}
                           data-selected={isSelected ? "true" : "false"}
+                          data-submenu-open={submenuOpen ? "true" : "false"}
+                          data-has-levels={rowLevels.length > 0 ? "true" : "false"}
                           onMouseEnter={() => {
-                            if (rowLevels.length > 0) setExpandedModelId(model.id);
+                            if (!disabled && rowLevels.length > 0) {
+                              // Hovering a row with levels opens its
+                              // submenu. Hover without levels is a
+                              // no-op (the row's click selects
+                              // directly). The close timer is
+                              // cancelled so a fast cursor crossing
+                              // into the submenu doesn't drop it.
+                              cancelSubmenuClose();
+                              setSubmenuFor(model.id);
+                            }
                           }}
                           onMouseLeave={() => {
-                            // Collapse back to the active model when the cursor
-                            // leaves the row so the inline pills follow focus
-                            // instead of getting stuck on the last hovered row.
-                            if (expandedModelId === model.id) {
-                              setExpandedModelId(value ?? null);
-                            }
+                            // Schedule a deferred close so the user
+                            // can cross the gap into the submenu
+                            // without losing it. The submenu cancels
+                            // the timer on its own mouseenter.
+                            if (submenuOpen) scheduleSubmenuClose();
+                          }}
+                          onKeyDown={(event) => {
+                            // Keyboard activation: ArrowRight (or
+                            // Enter/Space on a row with levels)
+                            // opens the cascade and moves focus to
+                            // the first menuitem. Without levels the
+                            // default Enter/Space handler in
+                            // SelectRow still picks the model.
+                            if (event.key !== "ArrowRight") return;
+                            if (disabled || rowLevels.length === 0) return;
+                            event.preventDefault();
+                            cancelSubmenuClose();
+                            setSubmenuFor(model.id);
+                            requestAnimationFrame(() => {
+                              const first = submenuRef.current?.querySelector<HTMLElement>(
+                                '[role="menuitemradio"]',
+                              );
+                              first?.focus();
+                            });
                           }}
                           className="rounded-[8px]"
                         >
@@ -1166,56 +1233,92 @@ function ModelSelect({
                             testId={`model-select-option-${modelSlug(model.id)}`}
                             label={modelDisplayName(model.label)}
                             rightAdornment={
-                              model.modalities && model.modalities.length > 0 ? (
-                                <ModalityBadges
-                                  t={t}
-                                  modalities={model.modalities}
-                                />
-                              ) : null
+                              <>
+                                {model.modalities && model.modalities.length > 0 ? (
+                                  <ModalityBadges
+                                    t={t}
+                                    modalities={model.modalities}
+                                  />
+                                ) : null}
+                                {/* Level badge — surfaces the active
+                                    reasoning level on the selected
+                                    model so the user sees the
+                                    pair at a glance (Model · 高). It
+                                    only renders when the row is
+                                    selected AND the model has a
+                                    non-empty thinkingLevels list, so
+                                    models without reasoning controls
+                                    never show a dangling badge. */}
+                                {isSelected && activeLevel && rowLevels.length > 0 ? (
+                                  <span
+                                    data-testid={`model-select-row-level-badge-${modelSlug(model.id)}`}
+                                    className="rounded-md border border-border_default px-1 py-0.5 text-[10px] uppercase tracking-wide text-text_default_tertiary"
+                                  >
+                                    {thinkingLevelLabel(t, activeLevel)}
+                                  </span>
+                                ) : null}
+                                {rowLevels.length > 0 && !disabled ? (
+                                  // Trailing chevron on rows with a
+                                  // cascade — the universal visual
+                                  // affordance for "this opens a
+                                  // submenu". Hidden from the
+                                  // accessibility tree (aria-hidden)
+                                  // so it doesn't compete with the
+                                  // level badge for AT users.
+                                  <Icon
+                                    name="chevronRight"
+                                    size={14}
+                                    aria-hidden="true"
+                                    className="text-icon_default_tertiary"
+                                  />
+                                ) : null}
+                              </>
                             }
                             selected={isSelected}
                             disabled={disabled}
                             onClick={() => {
                               if (disabled) return;
-                              setOpen(false);
-                              onPick(model.id);
+                              // Models without levels: one-click
+                              // selection, no submenu. Models with
+                              // levels: click opens the cascade (a
+                              // second click on the level inside the
+                              // submenu applies the pair). The
+                              // ticket's interaction budget: ≤2.
+                              if (rowLevels.length === 0) {
+                                setOpen(false);
+                                onPick(model.id);
+                                return;
+                              }
+                              cancelSubmenuClose();
+                              setSubmenuFor(model.id);
                             }}
                           />
-                          {showLevels ? (
-                            <div
-                              data-testid={`model-select-row-levels-${modelSlug(model.id)}`}
-                              className="mx-1 mb-0.5 flex flex-wrap gap-1 rounded-[8px] px-2 pb-1"
-                            >
-                              {rowLevels.map((level) => {
-                                const isActive =
-                                  model.id === value && thinking === level;
-                                return (
-                                  <button
-                                    key={level}
-                                    type="button"
-                                    data-testid={`model-select-row-level-${modelSlug(model.id)}-${level}`}
-                                    data-active={isActive ? "true" : "false"}
-                                    aria-pressed={isActive}
-                                    onClick={() => {
-                                      setOpen(false);
-                                      // Pass the model id so the server
-                                      // re-anchors the model+effort pair
-                                      // atomically; the level is applied
-                                      // alongside.
-                                      onPickThinking(level, model.id);
-                                    }}
-                                    className={[
-                                      "h-6 rounded-md border px-2 text-caption-small-strong transition-colors",
-                                      isActive
-                                        ? "border-border_heavy bg-bg_interaction_tertiary_selected text-text_default_primary"
-                                        : "border-border_default text-text_default_secondary hover:bg-bg_interaction_tertiary_hover hover:text-text_default_primary",
-                                    ].join(" ")}
-                                  >
-                                    {thinkingLevelLabel(t, level)}
-                                  </button>
-                                );
-                              })}
-                            </div>
+                          {submenuOpen ? (
+                            <ThinkingLevelSubmenu
+                              t={t}
+                              ref={submenuRef}
+                              modelId={model.id}
+                              levels={rowLevels}
+                              activeLevel={activeLevel}
+                              anchorRef={submenuAnchorRef}
+                              onMouseEnter={cancelSubmenuClose}
+                              onMouseLeave={scheduleSubmenuClose}
+                              onPick={(level) => {
+                                setOpen(false);
+                                setSubmenuFor(null);
+                                cancelSubmenuClose();
+                                // Atomic model+level. Empty string
+                                // clears the recorded effort (engine
+                                // default stands).
+                                onPickThinking(level, model.id);
+                              }}
+                              onBack={() => {
+                                setSubmenuFor(null);
+                                cancelSubmenuClose();
+                                const row = submenuAnchorRef.current;
+                                row?.querySelector<HTMLElement>("button")?.focus();
+                              }}
+                            />
                           ) : null}
                         </div>
                       );
@@ -1374,6 +1477,235 @@ function ModalityBadges({
     </>
   );
 }
+
+/**
+ * The cascade submenu for a single model's thinking levels.
+ *
+ * A classic cascading fly-out: rendered with `position: fixed` so it
+ * escapes the scroller's `overflow-y: auto` (an absolutely-positioned
+ * descendant would be clipped), positioned to the RIGHT of the row
+ * by default — the ticket's "右侧二级不是下面弹出来" correction —
+ * with a left-flip fallback when the viewport has no room on the
+ * right. The submenu mirrors the main panel's chrome (same border,
+ * radius, shadow) so it reads as the same surface, one tier deeper.
+ *
+ * Rendered only when the parent decides the row's cascade is open
+ * (`cascadeOpenFor`). The parent owns hover / focus / close-timer
+ * state; this component is purely presentational + position-tracking.
+ *
+ * Keyboard:
+ *   - ArrowDown / ArrowUp cycle through menuitems (with wraparound).
+ *   - ArrowLeft / Escape hand focus back to the row's primary button
+ *     via the parent's `onBack` (the parent owns the row ref).
+ *   - Tab continues to the next focusable element on the page — the
+ *     submenu is a leaf of the dropdown, not a trap.
+ *
+ * `prefers-reduced-motion`: no animation is applied by default; the
+ * `motion-safe:` Tailwind guards would only enable the optional
+ * fade-in, which is left off entirely so reduced-motion users see no
+ * difference.
+ */
+const ThinkingLevelSubmenu = forwardRef<
+  HTMLDivElement,
+  {
+    t: (key: MessageKey) => string;
+    modelId: string;
+    levels: string[];
+    activeLevel: string;
+    anchorRef: React.RefObject<HTMLDivElement>;
+    onMouseEnter: () => void;
+    onMouseLeave: () => void;
+    onPick: (level: string) => void;
+    onBack: () => void;
+  }
+>(function ThinkingLevelSubmenu(
+  { t, modelId, levels, activeLevel, anchorRef, onMouseEnter, onMouseLeave, onPick, onBack },
+  ref,
+) {
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  // Combine the forwarded ref and our local ref so the parent's
+  // keyboard handler can reach the element from outside while the
+  // internal nav can read measured bounds.
+  const setRefs = useCallback(
+    (node: HTMLDivElement | null) => {
+      menuRef.current = node;
+      if (typeof ref === "function") ref(node);
+      else if (ref) (ref as React.MutableRefObject<HTMLDivElement | null>).current = node;
+    },
+    [ref],
+  );
+  // Fixed-position measurements (the row's getBoundingClientRect +
+  // the submenu's measured size). Recomputed on every render so a
+  // font / locale swap doesn't strand the panel mid-layout.
+  useLayoutEffect(() => {
+    const anchor = anchorRef.current;
+    const menu = menuRef.current;
+    if (!anchor || !menu) return;
+    const update = () => {
+      const anchorRect = anchor.getBoundingClientRect();
+      const menuRect = menu.getBoundingClientRect();
+      const gap = 6;
+      let left = anchorRect.right + gap;
+      // Flip to the left side when the right edge would spill past
+      // the viewport. Classic desktop fly-out behaviour: the panel
+      // hugs the side that has room.
+      if (left + menuRect.width > window.innerWidth - 8) {
+        left = anchorRect.left - menuRect.width - gap;
+        if (left < 8) left = Math.max(8, window.innerWidth - menuRect.width - 8);
+      }
+      let top = anchorRect.top;
+      // Clamp vertically so the submenu never extends past the
+      // viewport — a model near the bottom of a long catalogue would
+      // otherwise push levels off-screen.
+      if (top + menuRect.height > window.innerHeight - 8) {
+        top = Math.max(8, window.innerHeight - menuRect.height - 8);
+      }
+      if (top < 8) top = 8;
+      setPos({ top, left });
+    };
+    update();
+    // Recompute on scroll (inside the list, on the page, or on the
+    // scrollbar) and on resize. Capture-phase scroll listener so a
+    // scroll inside any ancestor still triggers an update.
+    window.addEventListener("resize", update);
+    window.addEventListener("scroll", update, true);
+    // ResizeObserver catches the submenu's own size changes (a new
+    // locale can grow the menu), so the second measurement pass lands
+    // a stable `pos`.
+    let ro: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== "undefined") {
+      ro = new ResizeObserver(() => update());
+      ro.observe(menu);
+    }
+    return () => {
+      window.removeEventListener("resize", update);
+      window.removeEventListener("scroll", update, true);
+      if (ro) ro.disconnect();
+    };
+  }, [anchorRef, levels.length]);
+
+  const moveFocus = useCallback((delta: number) => {
+    const menu = menuRef.current;
+    if (!menu) return;
+    const items = Array.from(
+      menu.querySelectorAll<HTMLElement>('[role="menuitemradio"]'),
+    );
+    if (items.length === 0) return;
+    const current = items.indexOf(document.activeElement as HTMLElement);
+    const base = current >= 0 ? current : 0;
+    const target = ((base + delta) % items.length + items.length) % items.length;
+    items[target]?.focus();
+  }, []);
+
+  return (
+    <div
+      ref={setRefs}
+      data-testid={`model-select-submenu-${modelSlug(modelId)}`}
+      role="menu"
+      aria-label={t("modelSelector.thinkingLevels")}
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={onMouseLeave}
+      onKeyDown={(event) => {
+        if (event.key === "Escape" || event.key === "ArrowLeft") {
+          event.preventDefault();
+          onBack();
+          return;
+        }
+        if (event.key === "ArrowDown") {
+          event.preventDefault();
+          moveFocus(1);
+          return;
+        }
+        if (event.key === "ArrowUp") {
+          event.preventDefault();
+          moveFocus(-1);
+          return;
+        }
+        if (event.key === "Home") {
+          event.preventDefault();
+          const first = menuRef.current?.querySelector<HTMLElement>(
+            '[role="menuitemradio"]',
+          );
+          first?.focus();
+          return;
+        }
+        if (event.key === "End") {
+          event.preventDefault();
+          const items = menuRef.current?.querySelectorAll<HTMLElement>(
+            '[role="menuitemradio"]',
+          );
+          const last = items ? items[items.length - 1] : null;
+          last?.focus();
+          return;
+        }
+      }}
+      style={
+        pos
+          ? { position: "fixed", top: `${pos.top}px`, left: `${pos.left}px`, zIndex: 1100 }
+          : { position: "fixed", top: 0, left: 0, opacity: 0, pointerEvents: "none", zIndex: 1100 }
+      }
+      className="min-w-[160px] rounded-[12px] border border-border_default bg-bg_grouped_secondary_elevated p-1 shadow-[0_0_20px_rgba(10,10,10,0.08)]"
+    >
+      {levels.map((level) => {
+        const isActive = activeLevel === level;
+        return (
+          <button
+            key={level}
+            type="button"
+            role="menuitemradio"
+            aria-checked={isActive}
+            data-testid={`model-select-submenu-option-${modelSlug(modelId)}-${level}`}
+            data-active={isActive ? "true" : "false"}
+            onClick={() => onPick(level)}
+            className={[
+              "flex w-full items-center gap-2 rounded-[8px] px-2 py-1 text-left transition-colors",
+              "hover:bg-bg_interaction_tertiary_hover",
+              "focus:bg-bg_interaction_tertiary_hover focus:outline-none",
+            ].join(" ")}
+          >
+            <span className="min-w-0 flex-1 truncate text-sm font-normal leading-5 text-text_default_primary">
+              {thinkingLevelLabel(t, level)}
+            </span>
+            <span className="w-3.5 flex-shrink-0">
+              {isActive ? (
+                <Icon name="checkSmall" size={14} className="text-text_default_primary" />
+              ) : null}
+            </span>
+          </button>
+        );
+      })}
+      {/* "Engine default" option — separated from the model-declared
+          levels so the divider makes the boundary obvious. Selecting
+          this clears the recorded effort (the server maps `""` to
+          "no override; let the engine pick"). */}
+      <div className="mt-1 border-t border-border_default pt-1">
+        <button
+          type="button"
+          role="menuitemradio"
+          aria-checked={!activeLevel}
+          data-testid={`model-select-submenu-option-${modelSlug(modelId)}-default`}
+          data-active={!activeLevel ? "true" : "false"}
+          onClick={() => onPick("")}
+          className={[
+            "flex w-full items-center gap-2 rounded-[8px] px-2 py-1 text-left transition-colors",
+            "hover:bg-bg_interaction_tertiary_hover",
+            "focus:bg-bg_interaction_tertiary_hover focus:outline-none",
+          ].join(" ")}
+        >
+          <span className="min-w-0 flex-1 truncate text-sm font-normal leading-5 text-text_default_secondary">
+            {t("thinkingPicker.none")}
+          </span>
+          <span className="w-3.5 flex-shrink-0">
+            {!activeLevel ? (
+              <Icon name="checkSmall" size={14} className="text-text_default_primary" />
+            ) : null}
+          </span>
+        </button>
+      </div>
+    </div>
+  );
+});
 
 /**
  * Map a server-supplied modality string to its i18n key.
