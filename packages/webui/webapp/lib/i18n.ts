@@ -478,6 +478,61 @@ const en = {
   "providers.presets.unavailable": "Preset catalogue not available in this build",
   "providers.presets.enable": "Enable",
   "providers.presets.enabling": "Enabling…",
+
+  // Slice 15 — Sidebar workspace tabs.
+  // Tab strip + launcher labels. The aria variants power the close-X
+  // affordance so screen readers announce "Close Files tab" rather
+  // than just the kind name.
+  "workspaceTabs.tab.files": "Files",
+  "workspaceTabs.tab.files.aria": "Close Files tab",
+  "workspaceTabs.tab.git": "Changes",
+  "workspaceTabs.tab.git.aria": "Close Changes tab",
+  "workspaceTabs.tab.browser": "Browser",
+  "workspaceTabs.tab.browser.aria": "Close Browser tab",
+  "workspaceTabs.tab.tasks": "Tasks",
+  "workspaceTabs.tab.tasks.aria": "Close Tasks tab",
+  "workspaceTabs.tab.filePrefix": "File",
+  "workspaceTabs.launcher.files": "Files",
+  "workspaceTabs.launcher.git": "Changes",
+  "workspaceTabs.launcher.tasks": "Tasks",
+  "workspaceTabs.launcher.btw": "Side chat (beta)",
+  "workspaceTabs.launcher.btw.disabledHint":
+    "Side chat is not implemented yet. The tab slot is reserved for a future slice that wires it to a /btw-style side conversation.",
+  "workspaceTabs.launcher.terminal": "Terminal",
+  "workspaceTabs.launcher.terminal.disabledHint":
+    "Terminal is not implemented yet. The tab slot is reserved for a future slice that wires it to the engine's terminal sandbox.",
+  "workspaceTabs.launcher.browser": "Browser",
+  "workspaceTabs.addTab.aria": "Add a new tab",
+  "workspaceTabs.tabs.aria": "Workspace tabs",
+  "workspaceTabs.tabs.empty": "No tabs open",
+  // File-tab close label. The file name flows in as `{name}`;
+  // a per-file render of this label is what the screen reader
+  // announces ("Close file README.md"). The earlier version
+  // reused the surface-tab close label and leaked the wrong
+  // kind.
+  "workspaceTabs.tab.file.aria": "Close file {name}",
+  "workspaceTabs.empty.heading": "Open a surface",
+  "workspaceTabs.empty.subtitle":
+    "Pick a tab from the launcher. Files, Changes, Tasks, and Browser are wired. Side chat and Terminal are reserved for future slices.",
+  "workspaceTabs.fileTab.pathAria": "Open file {path}",
+  "workspaceTabs.fileTab.revealInTree": "Reveal in files",
+  "workspaceTabs.fileTab.copyPath": "Copy path",
+  "workspaceTabs.tasks.title": "Tasks",
+  "workspaceTabs.tasks.subtitle": "Subagents the active session has dispatched.",
+  "workspaceTabs.tasks.empty":
+    "No subagents yet. They will appear here as the session dispatches them.",
+  "workspaceTabs.tasks.jump": "Open session",
+  "workspaceTabs.tasks.toolCall": "Tool call",
+  "workspaceTabs.tasks.sinceAgo": "{n}s ago",
+  "workspaceTabs.tasks.minutesAgo": "{n}m ago",
+  "workspaceTabs.tasks.hoursAgo": "{n}h ago",
+  "workspaceTabs.tasks.jumpError": "Failed to switch to the subagent session.",
+  "workspaceTabs.column.resizeAria": "Resize column",
+  "workspaceTabs.column.resetAria": "Reset column width",
+  "workspaceTabs.column.conversationAria": "Resize conversation column",
+  "workspaceTabs.column.panelAria": "Resize panel column",
+  "workspaceTabs.column.secondaryAria": "Resize secondary column",
+  "workspaceTabs.column.closedAllTabs": "All tabs closed. The panel column has been collapsed.",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -889,6 +944,55 @@ const zh: Record<MessageKey, string> = {
   "providers.presets.unavailable": "当前版本未提供预置目录",
   "providers.presets.enable": "启用",
   "providers.presets.enabling": "正在启用…",
+
+  // Slice 15 — Sidebar workspace tabs (zh mirror of the en block
+  // above). Every key MUST exist in both locales — the runtime
+  // fallback in `translate` ships en copy on a missing zh entry,
+  // which is the regression slice 06 caught.
+  "workspaceTabs.tab.files": "文件",
+  "workspaceTabs.tab.files.aria": "关闭文件标签",
+  "workspaceTabs.tab.git": "文件变动",
+  "workspaceTabs.tab.git.aria": "关闭文件变动标签",
+  "workspaceTabs.tab.browser": "浏览器",
+  "workspaceTabs.tab.browser.aria": "关闭浏览器标签",
+  "workspaceTabs.tab.tasks": "任务管理",
+  "workspaceTabs.tab.tasks.aria": "关闭任务管理标签",
+  "workspaceTabs.tab.filePrefix": "文件",
+  "workspaceTabs.launcher.files": "文件",
+  "workspaceTabs.launcher.git": "文件变动",
+  "workspaceTabs.launcher.tasks": "任务管理",
+  "workspaceTabs.launcher.btw": "侧边对话(beta)",
+  "workspaceTabs.launcher.btw.disabledHint":
+    "侧边对话尚未实装。标签位为后续片预留，落地后会接 TUI /btw 风格的旁路提问。",
+  "workspaceTabs.launcher.terminal": "终端",
+  "workspaceTabs.launcher.terminal.disabledHint":
+    "终端尚未实装。标签位为后续片预留，落地后会接引擎的终端沙箱。",
+  "workspaceTabs.launcher.browser": "浏览器",
+  "workspaceTabs.addTab.aria": "新增标签",
+  "workspaceTabs.tab.file.aria": "关闭文件 {name}",
+  "workspaceTabs.tabs.aria": "工作区标签",
+  "workspaceTabs.tabs.empty": "暂无打开的标签",
+  "workspaceTabs.empty.heading": "打开一个表面",
+  "workspaceTabs.empty.subtitle":
+    "从下方启动器中选择一个标签。文件 / 文件变动 / 任务管理 / 浏览器已就绪；侧边对话与终端为后续片预留。",
+  "workspaceTabs.fileTab.pathAria": "打开文件 {path}",
+  "workspaceTabs.fileTab.revealInTree": "在文件树中定位",
+  "workspaceTabs.fileTab.copyPath": "复制路径",
+  "workspaceTabs.tasks.title": "任务管理",
+  "workspaceTabs.tasks.subtitle": "当前会话已派发的子 Agent。",
+  "workspaceTabs.tasks.empty": "暂无子 Agent，会话派发后会在此处显示。",
+  "workspaceTabs.tasks.jump": "打开会话",
+  "workspaceTabs.tasks.toolCall": "工具调用",
+  "workspaceTabs.tasks.sinceAgo": "{n} 秒前",
+  "workspaceTabs.tasks.minutesAgo": "{n} 分钟前",
+  "workspaceTabs.tasks.hoursAgo": "{n} 小时前",
+  "workspaceTabs.tasks.jumpError": "跳转到子 Agent 会话失败。",
+  "workspaceTabs.column.resizeAria": "调整列宽",
+  "workspaceTabs.column.resetAria": "恢复列默认宽度",
+  "workspaceTabs.column.conversationAria": "调整对话区宽度",
+  "workspaceTabs.column.panelAria": "调整面板栏宽度",
+  "workspaceTabs.column.secondaryAria": "调整次级栏宽度",
+  "workspaceTabs.column.closedAllTabs": "已关闭全部标签，面板栏已收起。",
 };
 
 const DICTIONARIES: Record<Locale, Record<MessageKey, string>> = { zh, en };

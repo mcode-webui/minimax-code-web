@@ -60,9 +60,17 @@ interface ShellProps {
   onOpenSettings?: () => void;
   /** Unread alert count, shown on the account menu's Alerts row. */
   alertCount?: number;
+  /**
+   * Slice 15 — when the conversation column lives inside the new
+   * workspace-columns shell (the `panel` slot), the children
+   * column is empty and the disclaimer should not render there.
+   * When false (home screen), the children column is the
+   * conversation column and the disclaimer appears below it.
+   */
+  hasConversation?: boolean;
 }
 
-export function AppShell({ t, children, toolbar, panel, onOpenPanel, onOpenSettings, alertCount = 0 }: ShellProps) {
+export function AppShell({ t, children, toolbar, panel, onOpenPanel, onOpenSettings, alertCount = 0, hasConversation = false }: ShellProps) {
   // The sidebar is collapsible from the button in its own top strip. The state
   // lives here rather than in `Sidebar` because the expand affordance has to be
   // rendered by the content column once the sidebar is clipped away.
@@ -122,15 +130,24 @@ export function AppShell({ t, children, toolbar, panel, onOpenPanel, onOpenSetti
                 width, so `text-center` centred it across the drawer as well and
                 it read as sitting under the drawer. It stays outside the
                 transcript's scroll container so it does not scroll away with
-                the messages, and it is rendered on the home screen too. */}
+                the messages, and it is rendered on the home screen too.
+                Slice 15 hides it on the conversation screen because
+                the conversation column now lives INSIDE the new
+                workspace-columns shell (the `panel` slot), which
+                renders its own disclaimer copy at the bottom of the
+                chat column. On the home screen the conversation
+                column is the children area, so the disclaimer still
+                appears here. */}
             <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
               {children}
-              <p
-                data-testid="app-disclaimer"
-                className="flex-none px-4 pt-1 pb-2 text-center text-caption-small-strong text-text_default_secondary"
-              >
-                {t("home.disclaimer")}
-              </p>
+              {!hasConversation ? (
+                <p
+                  data-testid="app-disclaimer"
+                  className="flex-none px-4 pt-1 pb-2 text-center text-caption-small-strong text-text_default_secondary"
+                >
+                  {t("home.disclaimer")}
+                </p>
+              ) : null}
             </div>
             {panel}
           </div>
