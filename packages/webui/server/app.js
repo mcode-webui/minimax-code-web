@@ -497,7 +497,11 @@ export function createHonoApp() {
     const url = new URL(c.req.url, "http://localhost");
     const path = url.searchParams.get("path") || "";
     const download = url.searchParams.get("download") === "1";
-    return fsRoute.rawStreamToWebResponse(path, { download });
+    // Slice 16 — second-confirmation override for credential-shaped
+    // files. The flag is opt-in: the panel sends it only after the
+    // user clicks "open anyway". The server is still the real gate.
+    const confirm = url.searchParams.get("confirm") === "1";
+    return fsRoute.rawStreamToWebResponse(path, { download, confirm });
   });
   app.post("/api/fs/mkdir", (c) =>
     invokeHandler(c, c.get(CAPTURE_KEY), fsRoute.handleFsMkdir),

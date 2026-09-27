@@ -61,17 +61,29 @@ describe("i18n-file-open — bilingual symmetry (no orphan keys)", () => {
       "fileOpen.reason.oversize",
       "fileOpen.reason.outOfBounds",
       "fileOpen.reason.unknown",
+      "fileOpen.reason.credential",
+      "fileOpen.reason.credential.subReason.dotenv",
+      "fileOpen.reason.credential.subReason.key-file",
+      "fileOpen.reason.credential.subReason.ssh-key",
+      "fileOpen.reason.credential.subReason.credentials",
+      "fileOpen.reason.credential.subReason.ssh-meta",
       "fileOpen.action.openDefault",
       "fileOpen.action.openDefault.aria",
       "fileOpen.action.reveal",
       "fileOpen.action.reveal.aria",
       "fileOpen.action.download",
       "fileOpen.action.download.aria",
+      "fileOpen.action.openAnyway",
+      "fileOpen.action.openAnyway.aria",
       "fileOpen.failure.openDefault",
       "fileOpen.failure.reveal",
+      "fileOpen.failure.openAnyway",
       "fileOpen.button.disabledHint.outOfBounds",
       "fileOpen.button.disabledHint.noOpener",
       "fileOpen.header.unsupported",
+      "fileOpen.confirm.title",
+      "fileOpen.confirm.label",
+      "fileOpen.confirm.detail",
     ];
     for (const key of visibleKeys) {
       assert.notEqual(
@@ -160,6 +172,19 @@ describe("tFileOpen — placeholder interpolation", () => {
     assert.equal(
       tFileOpen("zh", "fileOpen.failure.openDefault", { error: "spawn failed" }),
       "打开文件失败：spawn failed",
+    );
+  });
+
+  test("replaces the {{subReason}} placeholder in the credential reason", () => {
+    // Slice 16 — the credential reason carries a sub-reason label
+    // (e.g. "env file" / "env 文件"). Both locales interpolate it.
+    assert.match(
+      tFileOpen("en", "fileOpen.reason.credential", { subReason: "env file" }),
+      /env file/,
+    );
+    assert.match(
+      tFileOpen("zh", "fileOpen.reason.credential", { subReason: "env 文件" }),
+      /env 文件/,
     );
   });
 

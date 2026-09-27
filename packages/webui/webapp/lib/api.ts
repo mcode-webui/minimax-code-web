@@ -845,6 +845,29 @@ export interface FsFilePayload {
   encoding?: "utf-8";
   content?: string;
   error?: string;
+  /**
+   * Slice 16 — structured server-side code (independent of HTTP
+   * status). Today the webapp reads it to detect the credential
+   * refusal (so the second confirmation can render); future codes
+   * (e.g. "rate-limited") can land here without changing the status
+   * mapping. The UI branches on this string, not on HTTP status.
+   */
+  code?:
+    | "credential"
+    | "out-of-bounds"
+    | "binary"
+    | "oversize"
+    | "missing-path"
+    | "not-a-regular-file"
+    | string;
+  /**
+   * Slice 16 — credential sub-reason (`dotenv` / `key-file` /
+   * `ssh-key` / `credentials` / `ssh-meta`). Populated only when
+   * `code === "credential"`. The panel may use it to render a more
+   * specific refusal message ("env file" vs "private key") without
+   * branching on free-form text.
+   */
+  credentialReason?: "dotenv" | "key-file" | "ssh-key" | "credentials" | "ssh-meta";
 }
 
 /**
@@ -852,7 +875,10 @@ export interface FsFilePayload {
  * here as `ok:false` with the same shape the server emitted — there is no
  * exception to catch, the preview component just branches on `ok`.
  */
-export const getFsFile = async (path: string): Promise<FsFilePayload> => {
+export const getFsFile = async (
+  path: string,
+  opts: { confirmCredential?: boolean } = {},
+): Promise<FsFilePayload> => {
   // The /api/fs/read-file endpoint answers 4xx with a JSON error body
   // that *also* carries mime / language / binary — the preview component
   // reads mime to route images through /api/fs/raw and language for the
@@ -860,8 +886,16 @@ export const getFsFile = async (path: string): Promise<FsFilePayload> => {
   // responses and would discard that body, so this caller uses raw fetch
   // and reads the JSON either way (it is always JSON — the route is
   // `application/json`).
+  //
+  // Slice 16 — `confirmCredential=1` opts into the second-confirmation
+  // override for credential-shaped files. The server is still the real
+  // gate (it requires the explicit flag to release the bytes); the webapp
+  // sends the flag only after the user clicks "open anyway".
+  const confirm = opts.confirmCredential ? "&confirm=1" : "";
   const response = await fetch(
-    withClientQuery(`/api/fs/read-file?path=${encodeURIComponent(path)}`),
+    withClientQuery(
+      `/api/fs/read-file?path=${encodeURIComponent(path)}${confirm}`,
+    ),
     { headers: { Accept: "application/json" } },
   );
   const text = await response.text();

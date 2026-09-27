@@ -124,6 +124,123 @@ describe("classifyUnsupported — outOfBounds", () => {
   }
 });
 
+describe("classifyUnsupported — credential (slice 16)", () => {
+  test("payload.code='credential' → reason:credential, confirmable, actions enabled", () => {
+    const view = classifyUnsupported(
+      "credential file — preview disabled",
+      payload({ code: "credential", credentialReason: "dotenv" }),
+      "/some/workspace/.env",
+    );
+    assert.equal(view.reason, "credential");
+    assert.equal(view.actionsAvailable, true);
+    assert.equal(view.confirmable, true);
+    assert.equal(view.credentialSubReason, "dotenv");
+    assert.equal(view.params.error, "credential file — preview disabled");
+    assert.equal(view.params.subReason, "dotenv");
+  });
+
+  test("credential reason is detected even without payload.code when the path matches and the error matches", () => {
+    // Defensive: if a future server response drops `code` but the
+    // path matches the credential predicate AND the error carries the
+    // refusal string, the classifier still routes the panel to the
+    // credential branch.
+    const view = classifyUnsupported(
+      "credential file — preview disabled",
+      payload({}),
+      "/home/user/.ssh/id_rsa",
+    );
+    assert.equal(view.reason, "credential");
+    assert.equal(view.confirmable, true);
+    assert.equal(view.credentialSubReason, "ssh-key");
+  });
+
+  test("credential reason surfaces the ssh-meta sub-reason for known_hosts", () => {
+    const view = classifyUnsupported(
+      "credential file — preview disabled",
+      payload({ code: "credential" }),
+      "/home/user/.ssh/known_hosts",
+    );
+    assert.equal(view.reason, "credential");
+    assert.equal(view.credentialSubReason, "ssh-meta");
+  });
+
+  test("credential reason surfaces the key-file sub-reason for *.pem", () => {
+    const view = classifyUnsupported(
+      "credential file — preview disabled",
+      payload({ code: "credential" }),
+      "/etc/ssl/server.pem",
+    );
+    assert.equal(view.reason, "credential");
+    assert.equal(view.credentialSubReason, "key-file");
+  });
+
+  test("path-based defensive fallback ONLY fires when the server's code field is missing", () => {
+    // The classifier has two routes to "credential":
+    //   1. payload.code === "credential" (authoritative)
+    //   2. (defensive) path matches AND error string matches
+    // The defensive route MUST NOT overrule the server's structured
+    // code — `environment.ts` matching the credential predicate would
+    // be a false positive that breaks every workspace that uses one,
+    // so the predicate must not flag it. With the server's
+    // `code: "credential"` set, the classifier correctly routes to
+    // credential regardless of the path. The path-based check is only
+    // there for version-skew resilience, not as a primary signal.
+    const serverSaysCredential = classifyUnsupported(
+      "credential file — preview disabled",
+      payload({ code: "credential" }),
+      "/work/environment.ts",
+    );
+    assert.equal(serverSaysCredential.reason, "credential");
+    // Path-based defensive branch fires only when the server did NOT
+    // emit code but the path + error string both match.
+    const pathSaysCredential = classifyUnsupported(
+      "credential file — preview disabled",
+      payload({ /* code omitted */ }),
+      "/home/user/.env",
+    );
+    assert.equal(pathSaysCredential.reason, "credential");
+    // And the path alone (no error match) does NOT route to credential.
+    const pathNoError = classifyUnsupported(
+      "some other error",
+      payload({ /* code omitted */ }),
+      "/home/user/.env",
+    );
+    assert.equal(pathNoError.reason, "unknown");
+    // And the error alone (no path match) does NOT route to credential.
+    const errorNoPath = classifyUnsupported(
+      "credential file — preview disabled",
+      payload({ /* code omitted */ }),
+      "/work/environment.ts",
+    );
+    assert.equal(errorNoPath.reason, "unknown");
+  });
+
+  test("environment.ts does NOT match the credential predicate itself", () => {
+    // Direct check on the predicate: it must not flag files whose
+    // names happen to contain "env" without the leading dot pattern.
+    // This is the legibility check the fixture table also pins.
+    const view = classifyUnsupported(
+      "credential file — preview disabled",
+      payload({ /* code omitted */ }),
+      "/work/environment.ts",
+    );
+    assert.equal(view.reason, "unknown");
+  });
+
+  test("credential priority beats binary (defensive)", () => {
+    // If the server reports both code:"credential" and binary:true, the
+    // credential branch wins — the server already refused the path,
+    // the binary flag is informational at that point.
+    const view = classifyUnsupported(
+      "credential file — preview disabled",
+      payload({ code: "credential", binary: true }),
+      "/home/user/.npmrc",
+    );
+    assert.equal(view.reason, "credential");
+    assert.equal(view.confirmable, true);
+  });
+});
+
 describe("classifyUnsupported — unknown (catch-all)", () => {
   test("unrecognised error string → reason:unknown, actions enabled", () => {
     const view = classifyUnsupported("HTTP 500", payload({}));
