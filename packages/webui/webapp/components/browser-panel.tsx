@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import type { Locale } from "@/lib/i18n";
+import type { Locale, MessageKey } from "@/lib/i18n";
 import { Icon } from "@/components/icons";
 import {
   buildSandboxUrl,
@@ -45,46 +45,80 @@ import { tBrowser } from "@/lib/i18n-browser";
  *      (pinned by `browser-nav.test.ts` — `coerceAddress` returns
  *      `{ok:false, reason:"absolute"}`).
  *
- * Not mounted by this slice — the wiring into `components/panels.tsx`
- * is the follow-up slice (the file is owned by slice 03 / git-panel
- * and is out of scope for the concurrent slices). The component is
- * exported as `BrowserPanel` with the props documented below; the
- * wiring slice should:
+ * Wiring-slice (04b) note: the panel was deliberately left unmounted
+ * in slice 04 because `components/panels.tsx` was owned by slice 03.
+ * slice 03 has merged, so this follow-up slice mounts the panel and
+ * fixes the two functional defects the acceptance surfaced:
  *
- *   import { BrowserPanel } from "@/components/browser-panel";
+ *   F1 — The controlled-sync effect unconditionally rebuilt the
+ *        back/forward history stack on EVERY `controlledPath` change.
+ *        Under the natural round-trip wiring
+ *        (`onNavigate` → parent state → `currentPath` prop), the
+ *        Go button pushed once and then the effect wiped the back
+ *        stack (back never enabled); under decoupled wiring (parent
+ *        stores `controlledPath` separately) the address-bar draft
+ *        went stale after back. The fix below distinguishes an
+ *        echo of the panel's own navigation (keep the stack) from
+ *        an external change (file-tree click → re-seed the stack).
  *
- *   // inside the right-hand panel registry:
- *   <BrowserPanel
- *     locale={locale}
- *     t={(key) => translate(locale, key)}  // any t() shape works
- *   />
+ *   F2 — The address bar accepted workspace-relative paths but the
+ *        `buildSandboxUrl` builder emitted them verbatim to the
+ *        wire (`/api/fs/raw?path=public%2Findex.html`). The server
+ *        route resolves a relative `path` against its OWN CWD, which
+ *        is almost never an allowed root, so a workspace-relative
+ *        entry landed on a 403 / ENOENT instead of an iframe render.
+ *        Absolute in-root paths worked; everything else did not. The
+ *        component now carries a real `workspaceDir` prop and a new
+ *        helper in `lib/browser-nav.ts#resolveWorkspacePath`
+ *        stitches the two halves BEFORE building the URL.
  *
- * The mount is intentionally agnostic to which workspace is active
- * today — `workspaceDir` is a prop, not read from context, so the
- * wiring slice can drive it from `useSessionContext().state.workspace.dir`.
- * The wiring slice will also own the bridge that maps "click an HTML
- * file in the file tree" → `BrowserPanel.setCurrentPath(path)`. The
- * single-source tripwire in `open-file.test.ts` pins the existing
- * preview pane; this panel will get the same kind of test once the
- * bridge is wired.
+ * The panel is still controlled — `currentPath`/`onNavigate` are the
+ * parent-facing surface, mirroring the slice-02 preview pane —
+ * because the parent owns the active panel and renders the
+ * toolbar launcher. Two funnels feed it now: the address-bar Go
+ * button (this file, internal) and the file-tree's HTML row
+ * (`components/panels.tsx#FileRow`, external via the page-level
+ * `onOpenInBrowser` callback). The same `currentPath` prop drives
+ * both.
  */
 
 export interface BrowserPanelProps {
   /** Active locale, used to resolve bilingual strings. */
   locale: Locale;
-  /** Project-relative translator — same shape as the rest of the panels. */
-  t: (key: string) => string;
+  /**
+   * Project-relative translator — same shape as the rest of the
+   * panels. The component itself only reads slice-04 keys via
+   * `tBrowser()`; `t` is exposed mainly so the wiring surface
+   * (toolbar / settings modal that escalates to the panel) keeps
+   * the same prop shape.
+   */
+  t: (key: MessageKey) => string;
   /**
    * Currently-open path (workspace-relative). `null` renders the
    * empty state. The wiring slice owns this state — the component
    * is controlled, mirroring the slice-02 preview pane.
    */
   currentPath: string | null;
+  /**
+   * Absolute path of the active workspace. The component resolves
+   * workspace-relative entries against this directory BEFORE
+   * constructing the iframe src; absolute in-root paths flow
+   * through unchanged. Pass `""` when no workspace is active —
+   * the empty state has no iframe, so the unresolved path cannot
+   * reach the wire.
+   */
+  workspaceDir?: string;
   /** Called when the user picks a path in the address bar. */
   onNavigate: (path: string) => void;
 }
 
-export function BrowserPanel({ locale, t, currentPath: controlledPath, onNavigate }: BrowserPanelProps) {
+export function BrowserPanel({
+  locale,
+  t,
+  currentPath: controlledPath,
+  workspaceDir = "",
+  onNavigate,
+}: BrowserPanelProps) {
   // Per-panel history stack — see `lib/browser-nav.ts#createHistory`
   // for the rationale (independent from the document history).
   const [history, setHistory] = useState<BrowserHistory>(() => createHistory(controlledPath));
@@ -92,16 +126,50 @@ export function BrowserPanel({ locale, t, currentPath: controlledPath, onNavigat
   const [refreshNonce, setRefreshNonce] = useState<number>(0);
   const [error, setError] = useState<string | null>(null);
 
-  // Sync the controlled prop into local state. When the parent
-  // switches the open path externally (file-tree click), the panel
-  // mounts a fresh history stack on top of the new current path —
-  // a `controlledPath → history` sync rather than a `push` so the
-  // external change never accidentally wipes the back-stack the
-  // user has been building.
+  // Sync the controlled prop into local state.
+  //
+  // The controlled-and-acks-the-parent shape can mean two different
+  // things on every `controlledPath` change:
+  //
+  //   (a) ECHO — the parent updated `controlledPath` because WE
+  //       pushed (Go / Back / Forward). The internal history already
+  //       carries the new entry, so re-seeding it from scratch would
+  //       silently drop every back stack the user had built.
+  //
+  //   (b) EXTERNAL — the parent updated `controlledPath` because an
+  //       outside action pointed at a new file (a file-tree HTML
+  //       click, an open-file event from chat). The internal history
+  //       does NOT carry this entry yet; we must re-seed.
+  //
+  // We disambiguate by comparing the new `controlledPath` to the
+  // internal `currentPath(history)`. If they match, the change is
+  // an echo of our own navigation — keep the stack and only sync the
+  // address-bar draft + clear stale errors. If they differ, treat the
+  // change as external and re-seed the stack with the new path on top
+  // of it (the same shape `useState` would have produced on a first
+  // mount). The functional `setHistory` updater returns `prev`
+  // unchanged on echo, so React skips a re-render for the stack itself.
+  //
+  // We deliberately do NOT bump the `refreshNonce` on echo — the
+  // iframe `src` is already pointed at the new path (it comes from
+  // `currentPath(history)` and changes via the key on `iframeKey`),
+  // and a refresh now would discard the just-loaded document mid-render.
   useEffect(() => {
-    setHistory(createHistory(controlledPath));
+    const controlled = controlledPath ?? null;
+    setHistory((prev) => {
+      if (controlled === currentPath(prev)) return prev;
+      return createHistory(controlledPath);
+    });
+    // The address bar must mirror the controlled path even on echo
+    // (back/forward from the panel buttons drives `controlledPath` via
+    // the same `onNavigate` callback the user types into). Sync
+    // unconditionally — it's cheap and matches what the user sees.
     setDraft(controlledPath ?? "");
-    setRefreshNonce((value) => value + 1);
+    // Errors only apply to the navigation that produced them; a
+    // brand-new navigation (echo or external) wipes the error so it
+    // cannot outlive the input that caused it. The same controlledPath
+    // arriving twice (e.g. parent re-renders) hits the echo branch
+    // above and the `setError(null)` here is a no-op visually.
     setError(null);
   }, [controlledPath]);
 
@@ -120,32 +188,34 @@ export function BrowserPanel({ locale, t, currentPath: controlledPath, onNavigat
     }
     setError(null);
     setHistory((prev) => pushHistory(prev, coerced.path));
-    setRefreshNonce((value) => value + 1);
     onNavigate(coerced.path);
   }, [draft, onNavigate, locale]);
 
-  // Back / forward / refresh — all forward through the history stack
-  // and surface the resulting current path back to the parent. The
-  // parent does not need to know which button was clicked; it just
-  // gets the path the user landed on.
+  // Back / forward — purely internal state transitions; the resulting
+  // current path is forwarded to the parent so the address bar
+  // drafts match what the iframe renders. Refresh is a remount of the
+  // iframe via a nonce bump — no URL change needed.
   const goBack = useCallback(() => {
     setHistory((prev) => {
       const next = backHistory(prev);
       const nextPath = currentPath(next);
-      if (nextPath) onNavigate(nextPath);
+      // Skip the `onNavigate` round-trip when the back-step is a no-op
+      // (`backHistory` is idempotent at the bottom). Surfacing a stale
+      // echo of the same controlledPath would re-fire the sync effect
+      // needlessly — and could trip a future regression that bumps
+      // refreshNonce on echo.
+      if (nextPath && nextPath !== currentPath(prev)) onNavigate(nextPath);
       return next;
     });
-    setRefreshNonce((value) => value + 1);
   }, [onNavigate]);
 
   const goForward = useCallback(() => {
     setHistory((prev) => {
       const next = forwardHistory(prev);
       const nextPath = currentPath(next);
-      if (nextPath) onNavigate(nextPath);
+      if (nextPath && nextPath !== currentPath(prev)) onNavigate(nextPath);
       return next;
     });
-    setRefreshNonce((value) => value + 1);
   }, [onNavigate]);
 
   const refresh = useCallback(() => {
@@ -173,7 +243,15 @@ export function BrowserPanel({ locale, t, currentPath: controlledPath, onNavigat
   const path = currentPath(history);
   const back = canGoBack(history);
   const forward = canGoForward(history);
-  const url = useMemo(() => (path ? buildSandboxUrl(path) : null), [path]);
+  // Workspace-relative entries are pre-resolved against `workspaceDir`
+  // inside `buildSandboxUrl` (see lib/browser-nav.ts#resolveWorkspacePath)
+  // so the server-side `/api/fs/raw` sees an absolute in-root path and
+  // its containment gate lets it through. Absolute entries flow through
+  // unchanged.
+  const url = useMemo(
+    () => (path ? buildSandboxUrl(path, workspaceDir) : null),
+    [path, workspaceDir],
+  );
 
   return (
     <div

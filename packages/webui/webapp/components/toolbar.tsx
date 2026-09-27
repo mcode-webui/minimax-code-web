@@ -25,11 +25,11 @@ import { Icon } from "./icons";
  * notifications live in the account menu (see `SidebarFooter`), which is also
  * where upstream keeps them.
  *
- * The browser button is still rendered, disabled: the upstream command is part
- * of the bar's contract, and the disabled state is what tells the user the
- * feature exists without wiring a no-op. `files` is the tab this server backs —
- * the directory tree comes from `GET /api/fs/read?path=<dir>` (a `scandir`,
- * not a file reader).
+ * Slice 04b: the browser button now opens the slice-04 browser panel
+ * instead of staying disabled — the upstream command `browser_open` is
+ * part of the bar's contract, and the panel it now opens is the
+ * sandboxed iframe preview over `/api/fs/raw` (see
+ * `components/browser-panel.tsx`).
  */
 
 interface ToolbarProps {
@@ -38,8 +38,10 @@ interface ToolbarProps {
   onOpenFiles: () => void;
   /** Open the right-hand Git panel (slice 03 of webui-parity). */
   onOpenGit?: () => void;
+  /** Open the built-in browser panel (slice 04b of webui-parity). */
+  onOpenBrowser: () => void;
   /** Which panel is currently open, so its launcher can show the active state. */
-  activePanel?: "workspace" | "files" | "git" | null;
+  activePanel?: "workspace" | "files" | "git" | "browser" | null;
 }
 
 export function ConversationToolbar({
@@ -47,6 +49,7 @@ export function ConversationToolbar({
   onOpenWorkspace,
   onOpenFiles,
   onOpenGit,
+  onOpenBrowser,
   activePanel = null,
 }: ToolbarProps) {
   const { state } = useSessionContext();
@@ -99,14 +102,15 @@ export function ConversationToolbar({
 
       {/* Panel launchers — the right extension area's tab list. Upstream pins
           this cluster with `fixed` so it floats over the scroll area; the flex
-          row above therefore reserves its width (`pr-20` = `right-4` + two
+          row above therefore reserves its width (`pr-20` = `right-4` + three
           `size-[30px]` buttons + `gap-1`) so the trailing workspace name can
           never slide underneath it at a narrow viewport. */}
       <div className="fixed right-4 top-[15px] z-[80] flex items-center gap-1">
         <ToolbarButton
           label={t("toolbar.browser")}
-          disabled
-          title={`${t("toolbar.browser")} — ${t("common.unsupported")}`}
+          onClick={onOpenBrowser}
+          active={activePanel === "browser"}
+          title={t("toolbar.browser")}
         >
           <Icon name="browser" size={16} />
         </ToolbarButton>

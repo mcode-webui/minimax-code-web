@@ -52,6 +52,7 @@ import {
   iframeKey,
   isHtmlPath,
   pushHistory,
+  resolveWorkspacePath,
 } from "../lib/browser-nav";
 
 describe("browser-nav — iframe sandbox attribute", () => {
@@ -238,6 +239,121 @@ describe("browser-nav — iframe src construction", () => {
     assert.ok(url.startsWith("/"), `must be a same-origin relative URL, got ${url}`);
   });
 
+  test("buildSandboxUrl with no workspaceDir passes the path verbatim (legacy callers)", () => {
+    // The single-argument call is still a valid contract — slice-04
+    // callers, unit tests, and any future code that has no workspace
+    // in scope must keep working without a positional second arg.
+    // The lack of a workspace means the iframe src is whatever the
+    // path argument already looks like; the server containment gate
+    // remains the source of truth on top of that.
+    assert.equal(buildSandboxUrl("public/index.html"), "/api/fs/raw?path=public%2Findex.html");
+  });
+
+  test("buildSandboxUrl with workspaceDir stitches a relative path into an absolute one", () => {
+    // F2 — the wire shape that lands in `/api/fs/raw?path=…` is now
+    // an absolute, in-root path. The server's containment gate
+    // (which resolves relative paths against `process.cwd()` and
+    // would have 403'd) lets the absolute form through unchanged.
+    const url = buildSandboxUrl("public/index.html", "/home/acer09/projects/foo");
+    assert.equal(url, "/api/fs/raw?path=%2Fhome%2Facer09%2Fprojects%2Ffoo%2Fpublic%2Findex.html");
+  });
+
+  test("buildSandboxUrl with workspaceDir passes an absolute path through unchanged", () => {
+    // Absolute in-root paths (the only kind the slice-04 code path
+    // can produce today) flow through the helper untouched. Pin that
+    // the helper never prepends a workspace when the path already
+    // looks absolute — a regression there would corrupt the URL
+    // into a `workspace + abs` doubling.
+    const abs = "/home/acer09/projects/foo/index.html";
+    const url = buildSandboxUrl(abs, "/home/acer09/projects/foo");
+    // Forward-slash prefix and the absence of a doubled workspace
+    // are the two assertions here. The exact percent-encoding of the
+    // path is covered by the round-trip test above.
+    assert.ok(url.startsWith("/api/fs/raw?path=%2Fhome%2Facer09%2Fprojects%2Ffoo%2Findex.html"),
+      `absolute path must not be doubled; got ${url}`);
+  });
+});
+
+describe("browser-nav — workspace-relative resolution (F2)", () => {
+  test("resolveWorkspacePath: empty workspaceDir passes through", () => {
+    // The empty-state guard mirrors the component's empty-state
+    // contract — the panel renders no iframe when workspaceDir is
+    // empty, so a path cannot reach the wire from this branch.
+    for (const ws of [null, undefined, ""]) {
+      assert.equal(resolveWorkspacePath("public/index.html", ws), "public/index.html");
+    }
+  });
+
+  test("resolveWorkspacePath: POSIX-absolute paths pass through", () => {
+    // A path that already starts with `/` is treated as absolute —
+    // the helper must NEVER prepend the workspace on top of it
+    // (the doubling would corrupt the URL and fall outside the
+    // workspace).
+    const abs = "/home/acer09/projects/foo/index.html";
+    assert.equal(resolveWorkspacePath(abs, "/home/acer09/projects/foo"), abs);
+    assert.equal(resolveWorkspacePath(abs, "/some/other/root"), abs);
+  });
+
+  test("resolveWorkspacePath: relative path joins the workspace dir", () => {
+    // The happy-path fix — `public/index.html` anchored at
+    // `/home/acer09/projects/foo` becomes the absolute in-root
+    // path the server's containment gate accepts.
+    assert.equal(
+      resolveWorkspacePath("public/index.html", "/home/acer09/projects/foo"),
+      "/home/acer09/projects/foo/public/index.html",
+    );
+    // Nested workspace-relative entries stitch the same way.
+    assert.equal(
+      resolveWorkspacePath("docs/welcome.html", "/home/acer09/projects/foo"),
+      "/home/acer09/projects/foo/docs/welcome.html",
+    );
+  });
+
+  test("resolveWorkspacePath: collapses inner './' segments", () => {
+    // A user-pasted `./public/index.html` after the leading dot
+    // becomes a clean absolute path; `posix.join` semantics here
+    // match what the eventual server-side resolution expects.
+    assert.equal(
+      resolveWorkspacePath("./public/index.html", "/home/acer09/projects/foo"),
+      "/home/acer09/projects/foo/public/index.html",
+    );
+  });
+
+  test("resolveWorkspacePath: trailing separators on either side are stripped", () => {
+    // Picker cells / clipboards tend to append a trailing slash;
+    // pinning the stripping here keeps `joined` output well-formed
+    // without dragging in `node:path`.
+    assert.equal(
+      resolveWorkspacePath("public/index.html", "/home/acer09/projects/foo/"),
+      "/home/acer09/projects/foo/public/index.html",
+    );
+  });
+
+  test("resolveWorkspacePath: `..` segments are NOT pre-emptively rewritten", () => {
+    // The helper explicitly preserves `..` segments so the
+    // server-side containment gate can reject them with a 403 — a
+    // pre-emptive rewrite would mask containment failures. Same
+    // rationale as `coerceAddress` (cross-referenced in the
+    // helper's doc comment).
+    assert.equal(
+      resolveWorkspacePath("../etc/passwd", "/home/acer09/projects/foo"),
+      "/home/acer09/projects/foo/../etc/passwd",
+    );
+  });
+
+  test("resolveWorkspacePath: Windows-drive paths pass through", () => {
+    // The helper recognises Windows drive-letter absolutes (`C:\…`
+    // or `C:/…`). A future Windows build does not lose the path
+    // because the join is skipped. The exact POSIT test harness is
+    // POSIX, so we assert the value unchanged regardless.
+    const winPath = "C:\\Users\\foo\\index.html";
+    assert.equal(resolveWorkspacePath(winPath, "/home/acer09/projects/foo"), winPath);
+    const winPathFwd = "C:/Users/foo/index.html";
+    assert.equal(resolveWorkspacePath(winPathFwd, "/home/acer09/projects/foo"), winPathFwd);
+  });
+});
+
+describe("browser-nav — iframe src path whitelist (ext allow-list)", () => {
   test("isHtmlPath: true for .html / .htm (case-insensitive)", () => {
     for (const ext of [".html", ".htm", ".HTML", ".HTM"]) {
       assert.ok(isHtmlPath(`foo${ext}`), `must accept foo${ext}`);
