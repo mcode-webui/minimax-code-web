@@ -823,6 +823,71 @@ export const postAuthDecision = (requestId: string, approve: boolean) =>
 export const mkdir = (path: string) =>
   request<{ ok: boolean; path?: string }>("/api/fs/mkdir", { method: "POST", json: { path } });
 
+// --- file preview (slice 02) ----------------------------------------------
+//
+// The right-panel preview (`components/file-preview.tsx`) is a small
+// type→renderer router over these two endpoints. The server returns text
+// for `/api/fs/read-file` (≤512 KiB, with mime + language + binary flag so
+// the UI can route without a second round-trip) and raw bytes for
+// `/api/fs/raw` (≤20 MiB, mime mapped from extension). Both share the
+// containment boundary of `/api/fs/read` — the parent agent's panels.tsx
+// wiring is the only thing still TODO at this slice boundary.
+
+export interface FsFilePayload {
+  ok: boolean;
+  path?: string;
+  size?: number;
+  /** Best-effort extension-based guess (markdown / typescript / …). */
+  language?: string;
+  /** Best-effort extension-based guess (image/png, text/markdown; charset=utf-8, …). */
+  mime?: string;
+  binary?: boolean;
+  encoding?: "utf-8";
+  content?: string;
+  error?: string;
+}
+
+/**
+ * Read a single file's text content. The server's failure modes come back
+ * here as `ok:false` with the same shape the server emitted — there is no
+ * exception to catch, the preview component just branches on `ok`.
+ */
+export const getFsFile = async (path: string): Promise<FsFilePayload> => {
+  // The /api/fs/read-file endpoint answers 4xx with a JSON error body
+  // that *also* carries mime / language / binary — the preview component
+  // reads mime to route images through /api/fs/raw and language for the
+  // code view's badge. The shared request() helper throws on non-OK
+  // responses and would discard that body, so this caller uses raw fetch
+  // and reads the JSON either way (it is always JSON — the route is
+  // `application/json`).
+  const response = await fetch(
+    withClientQuery(`/api/fs/read-file?path=${encodeURIComponent(path)}`),
+    { headers: { Accept: "application/json" } },
+  );
+  const text = await response.text();
+  let parsed: FsFilePayload | null = null;
+  try {
+    parsed = text ? (JSON.parse(text) as FsFilePayload) : null;
+  } catch {
+    parsed = null;
+  }
+  if (!parsed) {
+    throw new Error(response.ok ? "unexpected non-JSON response" : `HTTP ${response.status}`);
+  }
+  return parsed;
+};
+
+/**
+ * Absolute URL for the raw bytes of a file (used as `<img src>` for
+ * previews of images, fonts, etc.). The server attaches the right
+ * `Content-Type` from the extension and caps at 20 MiB.
+ */
+export function fsRawUrl(path: string): string {
+  return withClientQuery(
+    `/api/fs/raw?path=${encodeURIComponent(path)}`,
+  );
+}
+
 /** Absolute URL for a session export; `download` makes the browser save it. */
 export function sessionExportUrl(id: string, format: "md" | "json" = "md"): string {
   return withClientQuery(

@@ -118,6 +118,8 @@ export const OWNED_ROUTES = new Set([
   "GET /api/workspace/recent",
   // Native-style fs picker.
   "GET /api/fs/read",
+  "GET /api/fs/read-file",
+  "GET /api/fs/raw",
   "POST /api/fs/mkdir",
   // Settings.
   "GET /api/settings",
@@ -464,6 +466,22 @@ export function createHonoApp() {
   app.get("/api/fs/read", (c) =>
     invokeHandler(c, c.get(CAPTURE_KEY), fsRoute.handleFsRead),
   );
+  // File preview endpoints (slice 02). Same containment gate as /api/fs/read;
+  // the only difference is the body — read-file is JSON text (≤512 KiB cap),
+  // raw streams bytes (≤20 MiB cap, mime from extension map).
+  app.get("/api/fs/read-file", (c) =>
+    invokeHandler(c, c.get(CAPTURE_KEY), fsRoute.handleFsReadFile),
+  );
+  // `/api/fs/raw` needs a streaming body — incompatible with the
+  // createResponseCapture buffer (which only models writeHead/end). The
+  // route's `rawStreamToWebResponse` returns a fetch-API Response with a
+  // Web ReadableStream body, so we hand it back to Hono directly and skip
+  // invokeHandler entirely.
+  app.get("/api/fs/raw", (c) => {
+    const url = new URL(c.req.url, "http://localhost");
+    const path = url.searchParams.get("path") || "";
+    return fsRoute.rawStreamToWebResponse(path);
+  });
   app.post("/api/fs/mkdir", (c) =>
     invokeHandler(c, c.get(CAPTURE_KEY), fsRoute.handleFsMkdir),
   );

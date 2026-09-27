@@ -670,6 +670,71 @@ before creating.
 **Errors** — 400 invalid JSON; 403 parent out-of-root; 409 already
 exists.
 
+### `GET /api/fs/read-file?path=<file>`
+
+Read the contents of a single regular file as text. Drives the right-panel
+file preview (slice 02 — `webapp/components/file-preview.tsx`). Same
+containment boundary as `/api/fs/read`; the gate runs first, so an
+out-of-root path is rejected before the file is even stat'd.
+
+Files over **512 KiB** are rejected with `413` rather than silently
+truncated — the caller (the webapp preview) renders a "too large" state
+and points the user at a real editor. The body still carries the file's
+detected `mime` / `language` so the UI can route it to the right
+renderer without a second round-trip.
+
+Binary detection scans the first 4 KiB for a NUL byte. A binary file is
+returned with `ok:false, error:"binary file not supported"` and a 415
+status; the webapp renders an "无法预览" placeholder. The error path
+still carries `mime` / `language` so the UI can hint at why (e.g.
+"image, use the raw endpoint" for `.png`).
+
+**Response 200**
+```json
+{
+  "ok": true,
+  "path": "C:\\Users\\you\\README.md",
+  "size": 2400,
+  "mime": "text/markdown; charset=utf-8",
+  "language": "markdown",
+  "binary": false,
+  "encoding": "utf-8",
+  "content": "# Title\n\n…"
+}
+```
+
+`encoding` is `"utf-8"` on success (with the BOM stripped); `language` is
+one of `markdown` / `typescript` / `javascript` / `json` / `yaml` / `css`
+/ `html` / `python` / `go` / `rust` / `bash` / `sql` / `dockerfile` /
+`plain` (informational — the renderer is allowed to ignore it).
+
+**Errors** — 400 missing `path`; 403 out-of-root; 413 over the 512 KiB
+cap; 415 binary file or non-regular file (directory / device / socket);
+500 stat failure (file vanished mid-request).
+
+### `GET /api/fs/raw?path=<file>`
+
+Stream raw bytes for a file. Used by `<img>` and download affordances in
+the preview (slice 02). Same containment boundary as `/api/fs/read`;
+**20 MiB** hard cap (matches the pr-22 reference).
+
+`Content-Type` is mapped from the extension; unknown extensions fall
+through to `application/octet-stream`. `Cache-Control: no-store` — local
+files have no immutable hash, the cache must not lie about freshness.
+
+**Response 200** — binary stream. Examples:
+
+| extension | Content-Type |
+|---|---|
+| `.png` / `.jpg` / `.jpeg` / `.gif` / `.webp` / `.ico` / `.pdf` | as listed |
+| `.svg` | `image/svg+xml` |
+| `.html` / `.htm` / `.css` / `.js` / `.mjs` / `.json` / `.md` / `.txt` | `text/...; charset=utf-8` |
+| `.woff2` | `font/woff2` |
+| (anything else) | `application/octet-stream` |
+
+**Errors** — 400 missing `path`; 403 out-of-root; 404 not found; 400 not
+a regular file; 413 over the 20 MiB cap.
+
 ---
 
 ## Settings

@@ -1,7 +1,7 @@
 // server/lib/fs-util.js — 文件系统工具类（feat-workspace-lhl)
 //
-// 提供目录浏览、条目详情、创建目录等功能。
-// 后续可用于 sidebar 文件树管理。
+// 提供目录浏览、条目详情、创建目录、文件读取（feat-file-preview slice 02）等功能。
+// 后续可用于 sidebar 文件树管理 / 右栏文件预览。
 
 import { readdirSync, statSync, mkdirSync, readFileSync, existsSync } from 'node:fs'
 import { join, resolve, extname, basename } from 'node:path'
@@ -162,5 +162,144 @@ export function createDirectory(targetPath) {
     return { ok: true, path: absPath }
   } catch (e) {
     return { ok: false, error: e.message, path: absPath }
+  }
+}
+
+// v2.4 (file preview, slice 02):
+//   `readFileContent` — read-only content fetch used by /api/fs/read-file and
+//   the right-panel preview (webapp/components/file-preview.tsx).
+//   Containment is the caller's job (routes/fs.js#handleFsReadFile runs
+//   assertWorkspacePath first), so this module just does the file-level
+//   checks:
+//     - regular file (not directory / device / socket);
+//     - size cap (DEFAULT_FILE_READ_MAX), oversize → error, never truncate;
+//     - binary detection (NUL byte in the first BINARY_SNIFF_BYTES);
+//     - UTF-8 BOM stripped on success.
+//
+//   Response shape is JSON-friendly so the route can serialize it as-is:
+//     { ok:true,  path, size, encoding:'utf-8', binary:false,
+//       mime, language, content }
+//     { ok:false, path, error }
+//
+//   `language` is an extension-based hint the webapp's syntax renderer uses
+//   to pick a token dictionary. It is informational — a guess — not a
+//   contract; `unknown` is returned for anything not in the table.
+export const DEFAULT_FILE_READ_MAX = 512 * 1024 // 512 KiB — same as pr-22
+const BINARY_SNIFF_BYTES = 4096
+
+// Minimum extension → language-id map the webapp renderer branches on.
+// Anything missing falls back to "plain" (no highlighting beyond the monospace
+// view). Adding a language here is a one-liner; the goal is to keep the
+// surface small and predictable so the renderer stays single-file.
+const EXT_LANGUAGE = {
+  '.ts': 'typescript', '.tsx': 'typescript', '.cts': 'typescript', '.mts': 'typescript',
+  '.js': 'javascript', '.jsx': 'javascript', '.mjs': 'javascript', '.cjs': 'javascript',
+  '.json': 'json',
+  '.jsonc': 'jsonc',
+  '.css': 'css', '.scss': 'scss', '.less': 'less',
+  '.html': 'html', '.htm': 'html',
+  '.md': 'markdown', '.markdown': 'markdown',
+  '.py': 'python', '.rb': 'ruby', '.go': 'go', '.rs': 'rust',
+  '.java': 'java', '.kt': 'kotlin', '.swift': 'swift',
+  '.c': 'c', '.h': 'c', '.cpp': 'cpp', '.cc': 'cpp', '.cxx': 'cpp', '.hpp': 'cpp',
+  '.sh': 'bash', '.bash': 'bash', '.zsh': 'bash',
+  '.yaml': 'yaml', '.yml': 'yaml',
+  '.toml': 'toml',
+  '.xml': 'xml',
+  '.sql': 'sql',
+  '.dockerfile': 'dockerfile',
+}
+
+// Inline MIME guess (also used by /api/fs/raw). Returns null for unknown so
+// the caller can substitute `application/octet-stream`.
+function mimeForExtension(ext) {
+  switch (ext) {
+    case '.html': case '.htm': return 'text/html; charset=utf-8'
+    case '.css': return 'text/css; charset=utf-8'
+    case '.js': case '.mjs': return 'text/javascript; charset=utf-8'
+    case '.json': return 'application/json; charset=utf-8'
+    case '.svg': return 'image/svg+xml'
+    case '.png': return 'image/png'
+    case '.jpg': case '.jpeg': return 'image/jpeg'
+    case '.gif': return 'image/gif'
+    case '.webp': return 'image/webp'
+    case '.ico': return 'image/x-icon'
+    case '.md': case '.markdown': return 'text/markdown; charset=utf-8'
+    case '.txt': return 'text/plain; charset=utf-8'
+    case '.pdf': return 'application/pdf'
+    case '.woff2': return 'font/woff2'
+    default: return null
+  }
+}
+
+export function languageForExtension(ext) {
+  return EXT_LANGUAGE[ext] ?? 'plain'
+}
+
+export function readFileContent(targetPath, opts = {}) {
+  const max = opts.max ?? DEFAULT_FILE_READ_MAX
+  const absPath = resolve(resolveTarget(targetPath))
+  const ext = extname(absPath).toLowerCase()
+  const language = languageForExtension(ext)
+  const mime = mimeForExtension(ext) ?? 'application/octet-stream'
+
+  let st
+  try {
+    st = statSync(absPath)
+  } catch (e) {
+    return { ok: false, path: absPath, error: e.message }
+  }
+  if (!st.isFile()) {
+    return { ok: false, path: absPath, error: 'not a regular file' }
+  }
+  if (st.size > max) {
+    return {
+      ok: false,
+      path: absPath,
+      size: st.size,
+      error: `file too large (max ${max} bytes)`,
+      mime,
+      language,
+    }
+  }
+
+  // Sniff binary before reading the full file — saves memory on a 512 KiB
+  // blob of a Windows DLL the user happened to click. The Buffer#includes
+  // scan is O(sniffBytes) not O(size), so it never grows with the cap.
+  let buf
+  try {
+    buf = readFileSync(absPath)
+  } catch (e) {
+    return { ok: false, path: absPath, error: e.message }
+  }
+  const sniffEnd = Math.min(BINARY_SNIFF_BYTES, buf.length)
+  let binary = false
+  for (let i = 0; i < sniffEnd; i++) {
+    if (buf[i] === 0) { binary = true; break }
+  }
+
+  if (binary) {
+    return {
+      ok: false,
+      path: absPath,
+      size: st.size,
+      error: 'binary file not supported',
+      mime,
+      language,
+      binary: true,
+    }
+  }
+
+  return {
+    ok: true,
+    path: absPath,
+    size: st.size,
+    mime,
+    language,
+    binary: false,
+    encoding: 'utf-8',
+    // Strip UTF-8 BOM; keep line endings as-is (the renderer is what
+    // chooses to soften them).
+    content: buf.toString('utf8').replace(/^\uFEFF/, ''),
   }
 }
