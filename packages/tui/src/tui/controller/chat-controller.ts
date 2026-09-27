@@ -254,6 +254,7 @@ export class TuiChatController {
         getMessages(current.sessionId),
       ]);
       if (projectionSequence !== this.sessionProjectionSequence) return;
+      this.turnProjection.clearTodos();
       this.transcript.replaceDurableProjection(() => this.turnProjection.hydrateHistory(messages));
       this.durableMessageAnchor = latestHistoryMessageId(messages);
       if (projectionSequence !== this.sessionProjectionSequence) return;
@@ -435,6 +436,7 @@ export class TuiChatController {
           turnId,
           session,
           content,
+          ...(options.displayContent !== undefined ? { displayContent } : {}),
           workspace: this.workspaceDir,
           version: this.version,
           ...(attachments.length > 0 ? { attachments } : {}),
@@ -644,6 +646,15 @@ export class TuiChatController {
 
   hasInProcessRun(): boolean {
     return Boolean(this.activeTurn || this.runCoordinator.activeTurnId());
+  }
+
+  getTerminalDurationId(): string | undefined {
+    return this.transcript.snapshot().find((cell) => cell.kind === 'turn-duration')?.id;
+  }
+
+  dismissTerminalDuration(id: string | undefined): void {
+    if (!id || this.transcript.get(id)?.kind !== 'turn-duration') return;
+    if (this.transcript.remove(id)) this.notify();
   }
 
   beginRuntimeTurn(turnId: string, timestamp: number): void {

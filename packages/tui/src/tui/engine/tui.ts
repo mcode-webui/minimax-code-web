@@ -28,6 +28,13 @@ export interface Component {
 	render(width: number): string[];
 
 	/**
+	 * Opt into preserving native scrolling when only background content shrinks.
+	 * Return a key for the last rendered transient layout (menus, editor, banners).
+	 * A changed or missing key restores exposed document rows instead of padding.
+	 */
+	getViewportLayoutKey?(): string | undefined;
+
+	/**
 	 * Optional handler for keyboard input when component has focus
 	 */
 	handleInput?(data: string): void;

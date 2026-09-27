@@ -338,6 +338,9 @@ importers:
       '@mavis/config':
         specifier: workspace:^
         version: link:../../config
+      '@mavis/shared':
+        specifier: workspace:^
+        version: link:../../shared
       '@types/node':
         specifier: ^20
         version: 20.19.43

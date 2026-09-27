@@ -220,7 +220,7 @@ describe('child Bash lifecycle', () => {
 });
 
 describe('real child Bash boundaries', () => {
-  it('uses the actual 15 second LocalBashTool soft yield and then recovers output', async () => {
+  it('keeps the 3600 second command deadline across the actual 60 second soft yield', async () => {
     const { dataDir, host, lifecycle, service, controller } = await fixture();
     const session = {
       ...parentSessionRecord(dataDir),
@@ -238,23 +238,39 @@ describe('real child Bash boundaries', () => {
     const startedAt = Date.now();
     try {
       const receipt = await tool.execute(
-        toolContext('child'),
+        { ...toolContext('child'), canConsumeBackgroundBashOutput: true },
         {
-          command: nodeCommand("setTimeout(() => console.log('after-real-soft-yield'), 16500)"),
+          command: nodeCommand("setTimeout(() => console.log('after-real-soft-yield'), 61500)"),
         },
         controller.signal,
       );
       expect(receipt.details).toMatchObject({ status: 'auto_promoted' });
-      expect(Date.now() - startedAt).toBeGreaterThanOrEqual(15000);
+      expect(Date.now() - startedAt).toBeGreaterThanOrEqual(60000);
+      const timing = receipt.details?.timing as {
+        commandTimeoutSeconds: number;
+        commandTimerStartedAt: number;
+        commandDeadlineAt: number;
+      };
+      expect(timing.commandTimeoutSeconds).toBe(3600);
+      expect(timing.commandTimerStartedAt).toBeGreaterThanOrEqual(startedAt);
+      expect(timing.commandDeadlineAt - timing.commandTimerStartedAt).toBe(3_600_000);
+      expect(timing.commandDeadlineAt - Date.now()).toBeLessThan(3_550_000);
       const taskId = String(receipt.details?.task_id);
       expect(await lifecycle.poll({ ...poll, wait: true })).toContain(taskId);
       expect((await service.readOutput(toolContext('child'), taskId)).content).toContain(
         'after-real-soft-yield',
       );
+      expect((await service.get(taskId))?.metadata?.bashDetails).toMatchObject({
+        timing: {
+          commandTimeoutSeconds: 3600,
+          commandTimerStartedAt: timing.commandTimerStartedAt,
+          commandDeadlineAt: timing.commandDeadlineAt,
+        },
+      });
     } finally {
       await lifecycle.close();
     }
-  }, 30000);
+  }, 90000);
   it.each(['failure', 'timeout', 'cancel'] as const)(
     'preserves real shell %s and cleans up the process',
     async (mode) => {
