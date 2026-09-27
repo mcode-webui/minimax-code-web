@@ -1305,4 +1305,71 @@ describe("handleGetModels — ticket 09-02: grouping attribution", () => {
       },
     );
   });
+
+  test("builtins stay under `minimax_api` even when the recorded pick's first segment is another provider (acceptance replay)", () => {
+    // Ticket 09-02 acceptance replay: a recorded pick of
+    // `nousresearch/openai/gpt-5.6-sol` previously dragged the
+    // builtin MiniMax shell into the `nousresearch` group (the
+    // derived `currentProvider = currentName.split("/")[0]` keyed
+    // the builtin shell by the pick's first segment). The fix keys
+    // the builtin shell by the BUILTIN_PROVIDER (`minimax_api`)
+    // unconditionally — the builtins belong to the cli-bundle
+    // extraction and are not the user's recorded pick.
+    setBuiltinModelsMock(["MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.5"]);
+    return withEngineConfig(
+      {
+        nousresearch: {
+          name: "Nous Research",
+          kind: "custom",
+          enabled: true,
+          api: "openai-completions",
+          options: { apiKey: "sk-nous", baseURL: "https://x/v1" },
+          models: {
+            "deepseek/deepseek-v4.1-flash": {},
+            "openai/gpt-5.6-sol": {},
+            "qwen/qwen3.8-max-0902": {},
+            "z-ai/glm-5.3": {},
+          },
+        },
+      },
+      () => {
+        const cs = fakeCs("nousresearch/openai/gpt-5.6-sol");
+        const res = fakeRes();
+        modelRoute.handleGetModels(null, res, { cs, cid: "cid-0902-builtins" });
+        const body = JSON.parse(res._body);
+        // The `nousresearch` group must carry ONLY its configured
+        // models — the 3 builtins stay under `minimax_api`.
+        const ns = body.groups.find((g) => g.id === "nousresearch");
+        assert.ok(ns, "nousresearch group present");
+        assert.equal(ns.models.length, 4, "nousresearch shows exactly its 4 config models");
+        for (const m of ns.models) {
+          assert.ok(
+            m.id.startsWith("nousresearch/"),
+            `nousresearch model id must start with 'nousresearch/'; got: ${m.id}`,
+          );
+          assert.ok(
+            !m.source || m.source !== "builtin",
+            `nousresearch must not contain any builtin-sourced model; got: ${m.id} source=${m.source}`,
+          );
+        }
+        // The `minimax_api` group carries the builtin shell (3
+        // models). The count depends on the mock — the loader can
+        // add additional builtins via the bundled cli.js; pin the
+        // minimum count + presence.
+        const builtin = body.groups.find((g) => g.id === "minimax_api");
+        assert.ok(builtin, "minimax_api builtin group present");
+        assert.ok(
+          builtin.models.length >= 3,
+          `minimax_api must carry the 3+ builtin models; got: ${builtin.models.length}`,
+        );
+        for (const m of builtin.models) {
+          assert.equal(m.source, "builtin", "builtin group models must be source=builtin");
+          assert.ok(
+            m.id.startsWith("minimax_api/"),
+            `builtin id must start with 'minimax_api/'; got: ${m.id}`,
+          );
+        }
+      },
+    );
+  });
 });

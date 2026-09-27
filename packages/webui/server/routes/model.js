@@ -305,27 +305,37 @@ export function handleGetModels(_req, res, ctx) {
   }
 
   // 3) Builtin catalogue (extracted from mcode's cli.js bundle). The
-  //    "current provider" is the one recorded in cs.model.name; falling
-  //    back to minimax_api keeps a brand-new session from looking empty.
+  //    builtins all belong to the engine's `minimax_api` provider
+  //    (see `lib/models.js#getBuiltinModelsFromMcode` — the cli.js
+  //    extraction regex targets `MiniMax-M*`). The builtin shell is
+  //    keyed by `minimax_api` regardless of the recorded pick, so a
+  //    pick of `nousresearch/openai/gpt-5.6-sol` doesn't drag the
+  //    MiniMax builtins into the `nousresearch` group. The previous
+  //    behaviour derived the builtin group's id from
+  //    `currentName.split("/")[0]`, which landed the builtins under
+  //    whichever provider the user happened to have picked (the
+  //    ticket 09-02 acceptance replay caught this as "8 config + 6
+  //    misplaced MiniMax builtins = 14 in `nousresearch`").
   const builtins = getBuiltinModelsFromMcode();
+  const BUILTIN_PROVIDER = "minimax_api";
+  // The recorded pre-session pick — used below for `current`, NOT for
+  // builtin-group attribution (the builtin shell is keyed by
+  // BUILTIN_PROVIDER above).
   const currentName =
     (cs.model && typeof cs.model.name === "string" && cs.model.name) || "";
-  const currentProvider = currentName.includes("/")
-    ? currentName.split("/")[0]
-    : "minimax_api";
-  let builtinGroup = groups.find((g) => g.id === currentProvider);
+  let builtinGroup = groups.find((g) => g.id === BUILTIN_PROVIDER);
   if (!builtinGroup) {
-    builtinGroup = { id: currentProvider, label: currentProvider, models: [] };
+    builtinGroup = { id: BUILTIN_PROVIDER, label: BUILTIN_PROVIDER, models: [] };
     groups.push(builtinGroup);
   }
   for (const m of builtins) {
-    const fullId = `${currentProvider}/${m}`;
+    const fullId = `${BUILTIN_PROVIDER}/${m}`;
     if (seen.has(fullId)) continue;
     seen.add(fullId);
     const entry = {
       id: fullId,
       label: m,
-      provider: currentProvider,
+      provider: BUILTIN_PROVIDER,
       source: "builtin",
     };
     list.push(entry);
