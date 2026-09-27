@@ -152,6 +152,25 @@ export function Composer({
   const [slashIndex, setSlashIndex] = useState(0);
   const editorRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  // Live mirror of `state` for the catch branch. The `useCallback`
+  // for `submit` is rebuilt when `state?.sessionId` changes, but the
+  // in-flight promise was created in an older closure — by the time
+  // the catch handler runs, the user may have switched sessions and
+  // the closure's `state` snapshot is stale. The ref is updated on
+  // every render so the catch handler can read the LIVE session id
+  // and decide whether the failure belongs to the active context.
+  // Without this, the cid+sessionId restore-gate compares dispatch-
+  // time values against themselves and is dead code — ticket 13
+  // acceptance caught this: session-A's failure was being pasted
+  // into session-B's composer because both calls read from the same
+  // closure.
+  const liveStateRef = useRef(state);
+  // Update the ref synchronously during render so the catch branch
+  // always reads the latest session id (including on the same render
+  // that produced the rotation). useEffect runs AFTER the render
+  // commits, so a catch that fires from a microtask after the render
+  // but before the effect commits would still see the stale value.
+  liveStateRef.current = state;
   // Drag-and-drop overlay state. The counter lives in a ref so that the
   // dragenter/dragleave sequence can update it without scheduling a
   // re-render on every event — only the visible overlay (driven by
@@ -322,13 +341,12 @@ export function Composer({
   const submit = useCallback(async () => {
     const content = value.trim();
     if ((!content && attachments.length === 0) || readOnly || sending) return;
-    // Capture the dispatch context NOW. The outbox is keyed by
-    // (cid, sessionId), and the session id in `state` can rotate
-    // between this line and the catch handler's call — the catch
-    // branch restores only when the values still match the ones we
-    // stashed.
-    const cid = clientId();
-    const sessionId = state?.sessionId ?? null;
+    // Capture the dispatch context — what session this send was FOR.
+    // The outbox record stores these, so a later failure can identify
+    // its owner. They are NOT the values the catch branch compares
+    // against; the catch branch reads the LIVE context (see below).
+    const dispatchCid = clientId();
+    const dispatchSessionId = state?.sessionId ?? null;
     setSending(true);
     setComposerDraft({ error: null });
     // Ticket 13 — optimistic clear. The backend does session
@@ -342,8 +360,8 @@ export function Composer({
     // into the composer — see the design note at the top of
     // `lib/composer-sent.ts`.
     startComposerSent({
-      cid,
-      sessionId,
+      cid: dispatchCid,
+      sessionId: dispatchSessionId,
       content,
       attachments,
     });
@@ -357,20 +375,55 @@ export function Composer({
       completeComposerSent();
     } catch (cause) {
       const errorMessage = cause instanceof Error ? cause.message : String(cause);
-      // failComposerSent returns the restore payload only when
-      // (cid, sessionId) still match — a session switch mid-flight
-      // must never paste the old session's text into the new
-      // session's composer.
-      const restored = failComposerSent({ cid, sessionId, error: errorMessage });
-      // Always set the error banner. When we have a payload, put the
-      // text back into the composer too: "Nothing may vanish" — a
-      // failed send must not look like a silent vanish (the intent
-      // `composer-draft.ts` was written to preserve). The text wins
-      // over anything the user typed since; the banner explains why
-      // the previous message bounced, and the original text is right
-      // there to edit and resend.
+      // Read the LIVE context at catch time. The dispatch-side
+      // closure has the session id from when the user pressed
+      // Enter; if the user has since switched sessions (e.g. via the
+      // sidebar), the active session id is now different and the
+      // failure belongs to the old session, not the one currently
+      // rendered. Comparing against the captured `dispatchSessionId`
+      // would always succeed (dispatch vs dispatch) — that was the
+      // first wiring bug acceptance caught. `liveStateRef` is
+      // updated synchronously on every render (see the comment at
+      // the ref declaration), so this read always sees the live
+      // session id, including on the same render that handled the
+      // session rotation.
+      const liveCid = clientId();
+      const liveSessionId = liveStateRef.current?.sessionId ?? null;
+      // failComposerSent returns the restore payload only when the
+      // LIVE context still matches the dispatch context — a session
+      // switch mid-flight must never paste the old session's text
+      // into the new session's composer.
+      const restored = failComposerSent({
+        cid: liveCid,
+        sessionId: liveSessionId,
+        error: errorMessage,
+      });
+      // Always set the error banner — the failure is real even when
+      // the active session no longer matches the record (the banner
+      // is in the module-scope draft store too, so it outlives a
+      // session switch).
       if (restored) {
-        setComposerDraft({ value: restored.content, attachments: restored.attachments });
+        // The user may have typed INTERIM text during the in-flight
+        // window. We must not clobber it — "Nothing may vanish"
+        // applies to both the failed message and whatever the user
+        // typed since. Merge: put the restored text after the
+        // current draft with a blank-line separator. The error
+        // banner explains why the original bounced; both messages
+        // remain editable.
+        const current = getComposerDraft();
+        const interim = current.value.trim();
+        const mergedValue =
+          interim.length > 0
+            ? `${current.value}\n\n${restored.content}`
+            : restored.content;
+        // Restored attachments come first so the chip list reads in
+        // the order the user assembled it (the failed message's
+        // attachments, then any new attachments added meanwhile).
+        const mergedAttachments = [
+          ...restored.attachments,
+          ...current.attachments,
+        ];
+        setComposerDraft({ value: mergedValue, attachments: mergedAttachments });
       }
       setComposerDraft({ error: errorMessage });
     } finally {

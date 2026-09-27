@@ -246,6 +246,14 @@ describe("failSend — failure path with cid + sessionId scoping", () => {
     // browser) but the session is different. Restoring here would
     // paste session-1's text into session-2's composer — the bug
     // the scoping exists to prevent.
+    //
+    // This is the test that would have caught acceptance's first-
+    // pass regression: if the caller wired `failComposerSent` to
+    // receive the DISPATCH-time sessionId (the same value already
+    // on the record), this assertion would still hold because the
+    // reducer is correct — the bug was in the CALLER, not the
+    // reducer. The composer's tripwire test pins the wiring; this
+    // test pins the reducer's behaviour when given the right input.
     const result = failSend(dispatched, {
       cid: CID_A,
       sessionId: SESSION_2,
@@ -254,6 +262,43 @@ describe("failSend — failure path with cid + sessionId scoping", () => {
     });
     assert.equal(result, null);
     assert.equal(dispatched.status, "in-flight");
+  });
+
+  test("live-context semantics: args are the LIVE catch-time context", () => {
+    // The contract the composer's catch branch relies on: the
+    // second argument to failSend is the LIVE context — what the
+    // user is currently looking at — and is checked against the
+    // DISPATCH context stored in the record. A rotation between
+    // dispatch and catch (session switch, cid rotation) is exactly
+    // what the gate exists to catch. The composer's tripwire pins
+    // the wiring (the caller reads the live context at catch
+    // time); this test pins the reducer's contract.
+    const dispatched = dispatchSend({
+      cid: CID_A,
+      sessionId: SESSION_1,
+      content: "msg in session 1",
+      attachments: ["@uploads/a.txt"],
+      timestamp: 1,
+    });
+    // Catch time: user has switched to session 2 (same cid).
+    const liveResult = failSend(dispatched, {
+      cid: CID_A,
+      sessionId: SESSION_2,
+      error: "x",
+      timestamp: 2,
+    });
+    assert.equal(liveResult, null, "session rotation must abort the restore");
+    // And when the active session matches the dispatch session,
+    // the same record IS restored — the gate is symmetric.
+    const sameSessionResult = failSend(dispatched, {
+      cid: CID_A,
+      sessionId: SESSION_1,
+      error: "x",
+      timestamp: 3,
+    });
+    assert.ok(sameSessionResult);
+    assert.equal(sameSessionResult!.record.status, "failed");
+    assert.deepEqual(sameSessionResult!.payload.attachments, ["@uploads/a.txt"]);
   });
 
   test("null record -> null (defensive: store wrapper already guards this)", () => {
