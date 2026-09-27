@@ -169,6 +169,22 @@ export interface WebuiState {
   plan: PlanState;
   running: RunningState;
   /**
+   * Subagent references the current session has spawned (slice 06).
+   * The chat renderer reads this to attach a jumpable child-session
+   * link to each parent's `→ task` tool line and to render the live
+   * running badge; the sidebar tree always re-fetches from the runtime
+   * db rather than reading this array.
+   *
+   * `status` is the UI vocabulary (`running`/`done`/`failed`/`stopped`),
+   * never a raw db string — see `lib/agent-team-status.ts` on the
+   * server. The polling cadence (2s default, override via
+   * `MCODE_WEBUI_SUBAGENT_POLL_MS`) keeps this list fresh while a
+   * subagent is mid-turn.
+   *
+   * Optional in the type so legacy snapshots and fixtures stay legal.
+   */
+  recentSubagents?: RecentSubagent[];
+  /**
    * Slash-command catalogue reported by mcode over ACP. The server's wire shape
    * is a dict of command groups, e.g. `{ mcode: [{ name, description }, ...] }`,
    * which the composer flattens into a `string[]` of `name` values before
@@ -195,6 +211,19 @@ export interface WebuiState {
    */
   revision?: number;
   [key: string]: unknown;
+}
+
+/**
+ * One subagent the parent session has spawned. See `WebuiState.recentSubagents`.
+ */
+export interface RecentSubagent {
+  toolCallId: string;
+  sessionId: string;
+  agentName: string | null;
+  /** UI vocabulary only — `running`/`done`/`failed`/`stopped`. */
+  status: string | null;
+  createdAtMs?: number;
+  updatedAtMs?: number;
 }
 
 /** Named SSE events the server emits alongside the state snapshots. */

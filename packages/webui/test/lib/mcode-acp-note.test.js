@@ -100,8 +100,12 @@ describe("applyToolUpdate — synthetic header when the tool_call never arrived 
       title: "Read",
       status: "in_progress",
     });
-    assert.deepEqual(cs.chat, ["› hi", "→ Read", "  [in_progress]"]);
-    assert.equal(r.toolIndexById.get("tc-orphan"), 1);
+    // Slice 06: applyToolUpdate emits a `##tc:<toolCallId>` marker
+    // immediately before the synthetic `→ name` header so the
+    // decoder can correlate the block with its recentSubagents[].
+    // The marker is the +1 shift relative to the pre-slice-06 shape.
+    assert.deepEqual(cs.chat, ["› hi", "##tc:tc-orphan", "→ Read", "  [in_progress]"]);
+    assert.equal(r.toolIndexById.get("tc-orphan"), 2);
   });
 
   test("a second update for the same orphan toolCallId appends after the synthesized header", () => {
@@ -114,11 +118,13 @@ describe("applyToolUpdate — synthetic header when the tool_call never arrived 
       status: "completed",
       locations: [{ path: "/home/u/.agents/rule.md" }],
     });
-    // Header is written once; subsequent bodies insert at insertAfter+1, so
-    // each new body's status line lands right after the header and pushes
-    // the prior body deeper. This matches the existing known-tool behaviour
-    // and pins it for the synthetic-header path.
+    // Header is written once (slice 06 also wrote the `##tc:` marker
+    // on the synthetic path; subsequent updates insert body lines
+    // AFTER the marker+header pair). The marker carries no UI weight —
+    // the decoder consumes it - so its only effect is a +1 line
+    // shift relative to the pre-slice-06 shape.
     assert.deepEqual(cs.chat, [
+      "##tc:tc-1",
       "→ Bash",
       "  [completed]",
       "  @ /home/u/.agents/rule.md",
@@ -132,11 +138,11 @@ describe("applyToolUpdate — synthetic header when the tool_call never arrived 
       status: "completed",
       locations: [{ path: "/home/u/.agents/rule.md" }],
     });
-    // The newly-added body landed at index 1 (right after the header). The
-    // prior body lines (the duplicate path, the prior "ok" output) shifted
-    // by two positions.
-    assert.equal(cs.chat[1], "  [completed]");
-    assert.equal(cs.chat[2], "  @ /home/u/.agents/rule.md");
+    // The newly-added body landed at index 2 (right after the
+    // marker+header pair). The prior body lines (the duplicate path,
+    // the prior "ok" output) shifted by two positions.
+    assert.equal(cs.chat[2], "  [completed]");
+    assert.equal(cs.chat[3], "  @ /home/u/.agents/rule.md");
   });
 
   test("a known toolCallId (prior tool_call arrived) inserts after the existing header", () => {
@@ -158,7 +164,12 @@ describe("applyToolUpdate — synthetic header when the tool_call never arrived 
     const cs = { chat: [] };
     const r = {};
     applyToolUpdate(r, cs, { toolCallId: "tc-x", status: "completed" });
-    assert.equal(cs.chat[0], "→ tool");
+    // Slice 06: applyToolUpdate emits a `##tc:<toolCallId>` marker
+    // immediately before the `→ name` header so the decoder can
+    // correlate the block with the matching recentSubagents[] entry.
+    // cs.chat[0] is now the marker; the header lands at cs.chat[1].
+    assert.equal(cs.chat[0], "##tc:tc-x");
+    assert.equal(cs.chat[1], "→ tool");
   });
 });
 

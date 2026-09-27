@@ -8,6 +8,7 @@ import { streamUpdateLine } from "./chat-line.js";
 import {
   createRunChat,
   runChatLinesFor,
+  recordSubagentForCid,
 } from "./state-bus.js";
 import {
   bindDraftToMcodeSid,
@@ -32,6 +33,11 @@ import {
 import { getMcodeModelLimit } from "./models.js";
 import { buildPromptBlocks, promptTextFor } from "./attachments.js";
 import { loadSessions, saveSessions } from "./sessions.js";
+import {
+  parseTaskResult,
+  isSubagentDispatch,
+  readSubagentStatusForToolCall,
+} from "./agent-team-detect.js";
 
 // runMcodeAcp / streamAcpPrompt — mcode acp protocol streaming.
 //
@@ -678,7 +684,23 @@ export { PICK_DEFER_WINDOW_MS };
 // `system` block (the transcript row the user reported as labelled
 // `系统`). The synthesized header is registered in `r.toolIndexById`
 // so subsequent updates for the same `toolCallId` insert after it.
-export function applyToolUpdate(r, cs, update) {
+//
+// Slice 06 (Agent Team): also performs the two cross-stream wirings
+// the dispatcher described in
+//   .tickets/webui-parity/06-agent-team-panel.md
+//
+//   • when the tool call's name (or the body) signals a subagent
+//     dispatch, the body's `<task_result ... session_id="...">` tag is
+//     parsed and the (toolCallId, childSessionId) pair is recorded on
+//     the cid's `cs.recentSubagents` so the parent's tool line can
+//     carry a jumpable subagent reference and the sidebar can
+//     re-fetch its tree.
+//
+//   • the live `local_runtime_background_tasks.status` (read-only) is
+//     polled right away for the just-recorded toolCallId and stashed
+//     on the entry's `status` field; the UI's running badge reads
+//     this from the snapshot. Subsequent updates refresh it.
+export function applyToolUpdate(r, cs, update, ctx = {}) {
   const u = update || {};
   if (!r.toolIndexById) r.toolIndexById = new Map();
   // session-isolation/02: route tool-update writes into the runChat
@@ -689,6 +711,20 @@ export function applyToolUpdate(r, cs, update) {
   let insertAfter = r.toolIndexById.get(u.toolCallId);
   if (insertAfter == null) {
     const name = u.title || u.name || u.toolName || "tool";
+    // Slice 06 (Agent Team): emit a `##tc:<toolCallId>` marker line
+    // BEFORE the `→ name` header so the chat renderer can correlate
+    // the tool block with the matching `recentSubagents[]` entry.
+    // The decoder consumes the marker (it never reaches the chat body)
+    // and attaches the id to the tool block; the ToolCard then uses
+    // it to look up the precise subagent for THIS dispatch. A parent
+    // session that spawns multiple subagents has one recentSubagents
+    // entry per toolCallId — matching by tool NAME instead would badge
+    // every `→ task` line with the newest child, which is wrong.
+    // Older sessions whose chat was written before this marker shipped
+    // simply lack it; the lookup falls back to the newest entry.
+    if (u.toolCallId) {
+      chat.push(`##tc:${u.toolCallId}`);
+    }
     chat.push(`→ ${name}`);
     insertAfter = chat.length - 1;
     r.toolIndexById.set(u.toolCallId, insertAfter);
@@ -703,6 +739,29 @@ export function applyToolUpdate(r, cs, update) {
           .map((c) => c.text)
           .join("\n")
       : "";
+
+  // Slice 06: subagent wiring — see header.
+  // The cid is optional (applyToolUpdate is also called from
+  // transcript-only fixtures); we record only when one is present so a
+  // unit test can drive the helper without standing up a client.
+  if (ctx.cid && typeof u.toolCallId === "string" && u.toolCallId) {
+    if (isSubagentDispatch(u.title || u.name || u.toolName || "", outText)) {
+      const parsed = parseTaskResult(outText);
+      if (parsed && parsed.sessionId) {
+        // Live task status (read-only): the engine writes the row
+        // BEFORE the result body arrives in the parent stream, so this
+        // projection is rarely empty here. `null` is a normal state for
+        // mid-stream attach races; recordSubagentForCid accepts it.
+        const live = readSubagentStatusForToolCall(u.toolCallId);
+        recordSubagentForCid(ctx.cid, {
+          toolCallId: u.toolCallId,
+          sessionId: parsed.sessionId,
+          agentName: parsed.agentName || (live && live.agentName) || null,
+          status: live && live.status ? live.status : null,
+        });
+      }
+    }
+  }
 
   const newLines = [];
   newLines.push(`  [${status}]`);
@@ -1176,8 +1235,20 @@ function streamAcpPrompt(
           // cs.chat) when in a turn. The viewing-session sees no
           // cross-contamination when the user switches mid-run.
           const tcChat = r && typeof r.chatArray === "function" ? r.chatArray() : cs.chat;
+          // Slice 06 (Agent Team): emit `##tc:<toolCallId>` BEFORE the
+          // `→ name` header so the chat renderer can correlate this
+          // tool block with its `recentSubagents[]` entry by id
+          // (matching by tool NAME would badge every `→ task` line
+          // with the newest child, which is wrong for sessions that
+          // spawn more than one subagent). The decoder consumes the
+          // marker; it never appears in the rendered chat body.
+          if (u.toolCallId) {
+            tcChat.push(`##tc:${u.toolCallId}`);
+          }
           tcChat.push(line);
           // 记下这行在 chat 里的位置（之后 tool_update 用来在它后面插输出）
+          // — index points at the `→ name` line, which is the header
+          // the decoder attaches the toolCallId to.
           if (!r.toolIndexById) r.toolIndexById = new Map();
           r.toolIndexById.set(u.toolCallId, tcChat.length - 1);
           // session-isolation/06: tool_call (and tool_update,
@@ -1192,7 +1263,10 @@ function streamAcpPrompt(
           // result.answer).
           r.lastChunkKind = "tool_call";
         } else if (c.kind === "tool_update" && c.update) {
-          applyToolUpdate(r, cs, c.update);
+          // Slice 06: pass `{ cid }` so applyToolUpdate can record the
+          // (toolCallId, childSessionId) pair for subagent dispatches
+          // and refresh the live task status on the recorded entry.
+          applyToolUpdate(r, cs, c.update, { cid });
         } else if (c.kind === "plan_update" && c.update) {
           // plan_update event
           const u = c.update;

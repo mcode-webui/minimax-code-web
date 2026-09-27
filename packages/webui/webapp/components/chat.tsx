@@ -2,8 +2,12 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import * as api from "@/lib/api";
 import { renderMarkdown } from "@/lib/markdown";
 import { reportActionError } from "@/lib/action-errors";
+import { findSubagentForBlock } from "@/lib/agent-team-lookup";
+import { badgeLabelAndGlyph, agentLabel } from "@/lib/i18n-agent-team";
+import { useLocale } from "@/lib/use-locale";
 import {
   decodeTranscript,
   groupActivity,
@@ -1005,6 +1009,19 @@ function ToolCard({ block, t }: { block: TranscriptBlock; t: (key: MessageKey) =
   const paths = block.toolPaths ?? [];
   const hasBody = output.length > 0 || paths.length > 0;
   const iconType = iconByName(block.toolName);
+  // Slice 06 — Agent Team: when this tool is the parent of a subagent
+  // dispatch, attach the live status badge + jump reference from the
+  // server's `recentSubagents` array. The match is by `toolCallId`
+  // (carried on the block by the `##tc:` marker the decoder
+  // consumes) so a session that spawned multiple subagents badges
+  // each `→ task` line with its OWN child — matching by tool NAME
+  // would badge every line with the newest child, which is wrong.
+  // See `lib/agent-team-lookup.ts#findSubagentForBlock` for the
+  // matching rule and its unit tests.
+  const store = useSessionContext();
+  const { locale } = useLocale();
+  const recent = store?.state?.recentSubagents;
+  const subagent = findSubagentForBlock(recent, block);
 
   const statusKey =
     block.toolStatus === "failed"
@@ -1012,6 +1029,16 @@ function ToolCard({ block, t }: { block: TranscriptBlock; t: (key: MessageKey) =
       : block.toolStatus === "in_progress"
         ? "tool.status.in_progress"
         : "tool.status.completed";
+
+  // Subagent badge — label and glyph are resolved through i18n so
+  // both locales actually differ (the previous slice hardcoded English
+  // glyphs here, leaving the file orphaned — the acceptance fix wires
+  // the keys through `tAgentTeam` / `agentLabel`).
+  const badge = subagent ? badgeLabelAndGlyph(locale, subagent.status) : null;
+  const agentNameLabel = subagent ? agentLabel(locale, subagent.agentName) : null;
+  const subagentLabel = badge && agentNameLabel
+    ? `${badge.glyph} ${agentNameLabel}`
+    : null;
 
   return (
     <div className="rounded-xl border border-border_default bg-bg_grouped_tertiary">
@@ -1045,6 +1072,31 @@ function ToolCard({ block, t }: { block: TranscriptBlock; t: (key: MessageKey) =
         >
           {t(statusKey)}
         </span>
+        {subagent ? (
+          <button
+            type="button"
+            title={subagent.sessionId}
+            data-testid="tool-card-subagent-badge"
+            data-subagent-session={subagent.sessionId}
+            data-subagent-status={subagent.status}
+            onClick={(event) => {
+              event.stopPropagation();
+              if (subagent.sessionId) {
+                void api.switchSession(subagent.sessionId).catch(() => {});
+              }
+            }}
+            className={[
+              "flex-none cursor-pointer rounded-md px-1.5 py-px text-caption-small-strong transition-colors",
+              subagent.status === "running"
+                ? "bg-bg_status_accent text-text_default_accent hover:bg-bg_interaction_tertiary_hover"
+                : subagent.status === "failed"
+                  ? "bg-bg_status_error text-text_status_error hover:bg-bg_interaction_tertiary_hover"
+                  : "bg-bg_grouped_tertiary_elevated text-text_default_secondary hover:bg-bg_interaction_tertiary_hover",
+            ].join(" ")}
+          >
+            {subagentLabel}
+          </button>
+        ) : null}
         {block.toolArgs ? (
           <span className="min-w-0 flex-1 truncate text-caption-small-strong text-text_default_tertiary">
             {block.toolArgs}

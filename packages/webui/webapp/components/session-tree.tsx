@@ -45,7 +45,8 @@ const SESSION_VISIBLE_LIMIT = 6;
 const UNTITLED: MessageKey = "sidebar.untitled";
 
 export function SessionTree({ t }: { t: (key: MessageKey) => string }) {
-  const { state } = useSessionContext();
+  const store = useSessionContext();
+  const state = store.state;
   const activeId = state?.mcodeSessionId ?? null;
   // Live, from the SSE snapshot — unlike `session.status` in the payload below,
   // which the server reads from the engine's database through a 15s cache.
@@ -97,6 +98,19 @@ export function SessionTree({ t }: { t: (key: MessageKey) => string }) {
     }
     void refresh(true);
   }, [refresh, running]);
+
+  // Slice 06 — Agent Team. The server emits a `session-tree-changed` SSE
+  // frame the moment a subagent row lands in the runtime db. The store
+  // bumps `treeRevision` on every frame; we react by forcing a re-read
+  // past the 15s cache. Skipped on mount: the initial fetch already runs.
+  const sawTreeChange = useRef(false);
+  useEffect(() => {
+    if (!sawTreeChange.current) {
+      sawTreeChange.current = true;
+      return;
+    }
+    void refresh(true);
+  }, [refresh, store.treeRevision]);
 
   // Open the active session's chain on first sight so "where am I" is answered
   // without a click. Cheap to re-run: the three updates are no-ops once open.

@@ -260,10 +260,17 @@ function recordBy(id) {
   return sessions.loadSessions().find((s) => s && s.id === id) || null;
 }
 
-// §§ marker lines carry a variable duration — filter them for chat
-// assertions that pin stable lines only.
+// Metadata marker lines — both the existing `§§ processed_duration=Nms`
+// (turn-process disclosure) and the slice-06 `##tc:<toolCallId>`
+// marker the decoder consumes — are stripped before comparing chat
+// content. The markers carry runtime-only metadata that must NEVER
+// appear in user-visible chat, so a stable comparison means
+// stable + marker-free.
 const stable = (chat) =>
-  (chat || []).filter((line) => !String(line).startsWith("§§"));
+  (chat || []).filter((line) => {
+    const s = String(line);
+    return !s.startsWith("§§") && !s.startsWith("##tc:");
+  });
 
 before(async (t) => {
   await setupMocks(t);
@@ -350,7 +357,15 @@ describe("run-mirror — mid-run switch keeps views and records isolated", () =>
     emitToolAndAnswer();
     buf = sb.runChatLinesFor(cid, sidA);
     assert.equal(buf[0], "▲ pondering", "message stream strips the ▲ cursor");
-    assert.equal(buf[1], "→ Bash  {\"cmd\":\"ls\"}");
+    // Slice 06 (Agent Team): the tool_call path emits a `##tc:tc-1`
+    // marker immediately before the `→ Bash` header so the chat
+    // renderer can correlate the block with its `recentSubagents[]`
+    // entry. The marker is consumed by `decodeTranscript` (it never
+    // appears in the rendered chat) so the deepEqual checks below
+    // are unaffected — the `stable()` helper strips it the same
+    // way it strips `§§ processed_duration`.
+    assert.equal(buf[1], "##tc:tc-1", "toolCallId marker precedes the → name header");
+    assert.equal(buf[2], "→ Bash  {\"cmd\":\"ls\"}");
     assert.ok(buf.includes("  [completed]"));
     assert.ok(buf.includes("  file.txt"));
     assert.match(buf[buf.length - 1], /^● part one/);
@@ -381,7 +396,13 @@ describe("run-mirror — mid-run switch keeps views and records isolated", () =>
       "owning view keeps its running indicator after switch-back",
     );
     // base (3 persisted lines) + the 6 buffered stream lines so far
-    assert.equal(backSnap.chat.length, 9);
+    // (▲ pondering, → Bash header, status line, output line, ● line)
+    // — plus the slice-06 `##tc:<id>` marker that precedes the tool
+    // header. The marker is consumed by the decoder and never
+    // appears in the rendered chat body; it only inflates the raw
+    // buffer length. Filtering it via `stable()` would drop it
+    // here too — see `stable()`'s docstring.
+    assert.equal(backSnap.chat.length, 10);
     assert.deepEqual(
       stable(backSnap.chat).slice(0, 3),
       ["› hello", "● ok", "› run A2"],
