@@ -3675,7 +3675,6 @@
     "packages/webui/webapp/styles/official-utilities.css",
     "packages/webui/webapp/styles/tokens.css",
     "packages/webui/webapp/tailwind.config.mjs",
-    "packages/webui/webapp/test-page-credential.tsx",
     "packages/webui/webapp/test/agent-team-i18n.test.ts",
     "packages/webui/webapp/test/agent-team-lookup.test.ts",
     "packages/webui/webapp/test/alerts.test.ts",
