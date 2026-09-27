@@ -4,13 +4,16 @@
 // GET  /api/fs/read-file?path=xxx          读取单文件内容（slice 02，右栏预览）
 // GET  /api/fs/raw?path=xxx                原样返回（image / html，slice 02 预览）
 // POST /api/fs/mkdir                       创建目录 { path }
+// POST /api/fs/open-default { path }       用系统默认应用打开（slice 14）
+// POST /api/fs/reveal { path }             在文件管理器中定位（slice 14）
 
 import { readDirectory, createDirectory, resolveTarget, readFileContent } from '../lib/fs-util.js'
 import { readJson, BodyTooLargeError } from '../lib/read-json.js'
 import { assertWorkspacePath, assertWorkspaceParentPath, expandTilde } from '../lib/workspace.js'
+import { openWithDefault, revealInFileManager } from '../lib/open-target.js'
 import { createReadStream, statSync } from 'node:fs'
 import { Readable } from 'node:stream'
-import { extname } from 'node:path'
+import { extname, basename } from 'node:path'
 
 // v2.2 (in-product): containment 门 — 目录浏览/创建与 browseWorkspace 同边界，
 //   只允许落在允许根（默认 home + 默认工作区 + tmp，MCODE_WEBUI_WORKSPACE_ROOTS
@@ -141,8 +144,16 @@ const RAW_CONTENT_TYPES = {
  * The stream is a Node Readable; the Hono registration converts it with
  * `Readable.toWeb()` (the Web Streams adapter is the standard fetch-API
  * shape @hono/node-server accepts on the body slot).
+ *
+ * `opts.download` flips the response into "save as" mode by adding a
+ * `Content-Disposition: attachment` header — slice 14's third action
+ * ("下载查看") reuses this route rather than introducing a second
+ * streaming endpoint, so the same containment gate, the same 20 MiB
+ * cap, and the same regular-file check all stay in one place.
+ * `opts.downloadFilename` overrides the basename used in the
+ * disposition (default: the realpath'd leaf).
  */
-export function handleFsRawStream(rawPath) {
+export function handleFsRawStream(rawPath, opts = {}) {
   if (!rawPath) {
     return {
       ok: false,
@@ -187,14 +198,24 @@ export function handleFsRawStream(rawPath) {
 
   const ext = extname(path).toLowerCase()
   const type = RAW_CONTENT_TYPES[ext] || 'application/octet-stream'
+  const headers = {
+    'Content-Type': type,
+    'Content-Length': String(st.size),
+    'Cache-Control': 'no-store',
+  }
+  if (opts.download) {
+    // The filename is quoted per RFC 6266 so a space, comma, or
+    // semicolon in the leaf does not break the header parser; the
+    // fallback (`fallback`) tells the browser what to use when the
+    // server-supplied value cannot be turned into a usable filename.
+    const leaf = opts.downloadFilename || basename(path)
+    headers['Content-Disposition'] =
+      `attachment; filename="${leaf.replace(/"/g, '')}"`
+  }
   return {
     ok: true,
     status: 200,
-    headers: {
-      'Content-Type': type,
-      'Content-Length': String(st.size),
-      'Cache-Control': 'no-store',
-    },
+    headers,
     stream: createReadStream(path),
   }
 }
@@ -202,7 +223,8 @@ export function handleFsRawStream(rawPath) {
 export function handleFsRaw(req, res) {
   const url = new URL(req.url, `http://localhost`)
   const rawPath = url.searchParams.get('path') || ''
-  const result = handleFsRawStream(rawPath)
+  const download = url.searchParams.get('download') === '1'
+  const result = handleFsRawStream(rawPath, { download })
   if (!result.ok) {
     res.writeHead(result.status, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify(result.json))
@@ -215,8 +237,8 @@ export function handleFsRaw(req, res) {
 /** Hono-friendly bridge: turns the tuple above into a fetch-API Response
  *  by adapting the Node Readable to a Web ReadableStream. Exposed for the
  *  Hono registration in server/app.js. */
-export function rawStreamToWebResponse(rawPath) {
-  const result = handleFsRawStream(rawPath)
+export function rawStreamToWebResponse(rawPath, opts = {}) {
+  const result = handleFsRawStream(rawPath, opts)
   if (!result.ok) {
     return new Response(JSON.stringify(result.json), {
       status: result.status,
@@ -257,4 +279,101 @@ export async function handleFsMkdir(req, res) {
   const result = createDirectory(gate.path)
   res.writeHead(200, { 'Content-Type': 'application/json' })
   res.end(JSON.stringify(result))
+}
+
+// POST /api/fs/open-default { path }
+//   Hand the path to the OS default application. The shared
+//   `assertWorkspacePath` + per-node realpath containment gate inside
+//   `openWithDefault` (lib/open-target.js) is what enforces the
+//   boundary — the route's job is to JSON-decode the body and turn the
+//   helper's structured codes into HTTP status codes the webapp can
+//   branch on without parsing free-form text.
+//
+//   Wire codes:
+//     ok (200)        — opener spawned cleanly
+//     missing-path    — 400, no body
+//     out-of-bounds   — 403, containment rejected
+//     not-a-regular-file — 400, gate refused (directory / non-existent / symlink escape)
+//     no-opener       — 503, host has no GUI binary on PATH; the UI
+//                       disables the button on this answer so a click
+//                       never produces a silent no-op
+//     spawn-failed    — 502, binary ENOENTed between probe and exec
+export async function handleFsOpenDefault(req, res) {
+  let data
+  try {
+    data = await readJson(req)
+  } catch (cause) {
+    if (cause instanceof BodyTooLargeError) {
+      res.writeHead(413, { 'Content-Type': 'application/json; charset=utf-8', Connection: 'close' })
+      res.end(JSON.stringify({ ok: false, error: cause.message, code: 'BODY_TOO_LARGE' }))
+      return
+    }
+    throw cause
+  }
+
+  const result = await openWithDefault(data.path)
+  if (result.ok) {
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ ok: true }))
+    return
+  }
+
+  // Map structured codes to HTTP status. The component reads `code`
+  // for the button-disable / message branches, so the wire shape is
+  // stable across 200 / 4xx / 5xx answers.
+  const status = codeToStatus(result.code)
+  res.writeHead(status, { 'Content-Type': 'application/json' })
+  res.end(JSON.stringify({ ok: false, code: result.code, error: result.error }))
+}
+
+// POST /api/fs/reveal { path }
+//   Open the file manager pointed at the path. Wire model and gate are
+//   the same as `handleFsOpenDefault`; macOS / Windows select the
+//   specific row, Linux opens the parent directory (the freedesktop side
+//   has no portable "select" command).
+export async function handleFsReveal(req, res) {
+  let data
+  try {
+    data = await readJson(req)
+  } catch (cause) {
+    if (cause instanceof BodyTooLargeError) {
+      res.writeHead(413, { 'Content-Type': 'application/json; charset=utf-8', Connection: 'close' })
+      res.end(JSON.stringify({ ok: false, error: cause.message, code: 'BODY_TOO_LARGE' }))
+      return
+    }
+    throw cause
+  }
+
+  const result = await revealInFileManager(data.path)
+  if (result.ok) {
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ ok: true }))
+    return
+  }
+  const status = codeToStatus(result.code)
+  res.writeHead(status, { 'Content-Type': 'application/json' })
+  res.end(JSON.stringify({ ok: false, code: result.code, error: result.error }))
+}
+
+// Translate the structured error codes from `lib/open-target.js` to HTTP
+// status codes. The component branches on `code`, so the wire shape is
+// what matters most; the status is the conventional mapping.
+function codeToStatus(code) {
+  switch (code) {
+    case 'missing-path':
+      return 400
+    case 'out-of-bounds':
+      return 403
+    case 'not-a-regular-file':
+      return 400
+    case 'no-opener':
+      // 503 Service Unavailable — the host literally has no opener to
+      // serve. The UI disables the button on this answer so the user
+      // never gets a silent click.
+      return 503
+    case 'spawn-failed':
+      return 502
+    default:
+      return 500
+  }
 }

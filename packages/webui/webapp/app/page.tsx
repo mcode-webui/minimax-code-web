@@ -353,6 +353,7 @@ function App() {
               browserPath={browserPath}
               onBrowserNavigate={onBrowserNavigate}
               onOpenInBrowser={onOpenInBrowser}
+              onOpenFile={onOpenFile}
             />
           ) : null
         }

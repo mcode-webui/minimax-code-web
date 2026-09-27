@@ -72,6 +72,8 @@ describe("app.js — migration ledger", () => {
       "GET /api/fs/read-file",
       "GET /api/fs/raw",
       "POST /api/fs/mkdir",
+      "POST /api/fs/open-default",
+      "POST /api/fs/reveal",
       "GET /api/git/status",
       "GET /api/git/branches",
       "GET /api/git/diff",
