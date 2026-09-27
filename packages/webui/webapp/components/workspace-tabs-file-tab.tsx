@@ -7,15 +7,32 @@
  * breadcrumb row + the existing `FilePreview` component + the
  * reveal-in-tree / copy-path affordances the 08 reference shows.
  *
- * The component owns its own scroll container (the breadcrumb row
- * is fixed, the body scrolls). Scroll position is reported up via
- * `onScrollPersist` so a refresh restores the user's place in a
- * long file. The scroll position is persisted in
- * `lib/workspace-tabs-state.ts#recordFileTabScroll` and shipped
- * back through the workspace-tabs payload on next cold load.
+ * Scroll handling.
+ *
+ * The visible scroll container is `FilePreview`'s inner
+ * `.file-preview-body` div — NOT this component's wrapper. The
+ * wrapper used to host a scroll handler on a div that never
+ * actually scrolled, so the persisted `fileScrolls` entry was
+ * always 0 (the regression the acceptance run caught). The
+ * `FilePreview` component owns the scroll persistence:
+ *
+ *   - On mount, `initialScrollTop` restores the persisted offset
+ *     via a rAF loop that waits for the inner scrollHeight to
+ *     settle.
+ *   - On every scroll of the inner div, `onScrollPersist` fires
+ *     with the new `scrollTop`; the page-level wiring debounces
+ *     the value into the `recordFileTabScroll` reducer.
+ *
+ * Per-tab independence.
+ *
+ * The page-level `ActiveBody` keys the active body by
+ * `tab.id`, so a tab switch unmounts and remounts this entire
+ * component. The new mount calls `FilePreview` with a fresh
+ * `initialScrollTop` from THIS tab's persisted state — no scroll
+ * bleeds across tabs.
  */
 
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useMemo } from "react";
 
 import { FilePreview } from "@/components/file-preview";
 import { basenameOf } from "@/lib/file-preview";
@@ -25,6 +42,12 @@ import { tWorkspaceTab } from "@/lib/i18n-workspace-tabs";
 import { Icon } from "./icons";
 
 export interface WorkspaceTabsFileTabProps {
+  /** Stable id of the tab this body belongs to. Used as the
+   *  React key on `FilePreview` so a tab switch unmounts the
+   *  previous preview and remounts a fresh one — that is the
+   *  single-source fix for "switching tabs carries the scroll
+   *  over" the acceptance run pinned. */
+  tabId: string;
   /** Absolute path being previewed. */
   path: string;
   /** Locale (used for the breadcrumb's aria + disabled hint copy). */
@@ -43,6 +66,7 @@ export interface WorkspaceTabsFileTabProps {
 }
 
 export function WorkspaceTabsFileTab({
+  tabId,
   path,
   locale,
   t,
@@ -50,29 +74,6 @@ export function WorkspaceTabsFileTab({
   onScrollPersist,
   onRevealInTree,
 }: WorkspaceTabsFileTabProps) {
-  const scrollerRef = useRef<HTMLDivElement | null>(null);
-  const lastReportedRef = useRef<number>(initialScrollTop);
-
-  // Restore the persisted scroll position. The preview body's own
-  // content takes a render to mount its inner scrollers; we apply
-  // the offset on a microtask + on every load.
-  useEffect(() => {
-    if (!scrollerRef.current) return;
-    if (initialScrollTop <= 0) return;
-    scrollerRef.current.scrollTop = initialScrollTop;
-    lastReportedRef.current = initialScrollTop;
-  }, [path, initialScrollTop]);
-
-  const handleScroll = useCallback(
-    (event: React.UIEvent<HTMLDivElement>) => {
-      const next = event.currentTarget.scrollTop;
-      if (next === lastReportedRef.current) return;
-      lastReportedRef.current = next;
-      onScrollPersist?.(next);
-    },
-    [onScrollPersist],
-  );
-
   const fileName = useMemo(() => basenameOf(path), [path]);
   const dir = useMemo(() => parentDir(path), [path]);
 
@@ -127,18 +128,25 @@ export function WorkspaceTabsFileTab({
         </button>
       </div>
 
-      {/* Scrollable preview body. `FilePreview` itself owns an
-          inner scroll region for long markdown / code files; the
-          outer wrapper here only scrolls when the inner content
-          overflows the viewport. */}
+      {/* File body. The wrapper around FilePreview has
+          `overflow-hidden` so the breadcrumb stays pinned and the
+          preview fills the rest. `FilePreview` owns its own
+          scroll position; we key it by tab id so a tab switch
+          remounts the inner view and the previous tab's scroll
+          stays on the previous tab. */}
       <div
-        ref={scrollerRef}
-        onScroll={handleScroll}
-        className="thin-scrollbar min-h-0 flex-1 overflow-auto"
+        className="min-h-0 flex-1 overflow-hidden"
         data-testid="workspace-tabs-file-tab-scroll"
         aria-label={tWorkspaceTab(locale, "workspaceTabs.fileTab.pathAria").replace("{path}", path)}
       >
-        <FilePreview path={path} t={t} locale={locale} />
+        <FilePreview
+          key={tabId}
+          path={path}
+          t={t}
+          locale={locale}
+          initialScrollTop={initialScrollTop}
+          onScrollPersist={onScrollPersist}
+        />
       </div>
     </div>
   );

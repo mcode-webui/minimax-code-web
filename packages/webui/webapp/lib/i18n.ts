@@ -505,6 +505,12 @@ const en = {
   "workspaceTabs.addTab.aria": "Add a new tab",
   "workspaceTabs.tabs.aria": "Workspace tabs",
   "workspaceTabs.tabs.empty": "No tabs open",
+  // File-tab close label. The file name flows in as `{name}`;
+  // a per-file render of this label is what the screen reader
+  // announces ("Close file README.md"). The earlier version
+  // reused the surface-tab close label and leaked the wrong
+  // kind.
+  "workspaceTabs.tab.file.aria": "Close file {name}",
   "workspaceTabs.empty.heading": "Open a surface",
   "workspaceTabs.empty.subtitle":
     "Pick a tab from the launcher. Files, Changes, Tasks, and Browser are wired. Side chat and Terminal are reserved for future slices.",
@@ -963,6 +969,7 @@ const zh: Record<MessageKey, string> = {
     "终端尚未实装。标签位为后续片预留，落地后会接引擎的终端沙箱。",
   "workspaceTabs.launcher.browser": "浏览器",
   "workspaceTabs.addTab.aria": "新增标签",
+  "workspaceTabs.tab.file.aria": "关闭文件 {name}",
   "workspaceTabs.tabs.aria": "工作区标签",
   "workspaceTabs.tabs.empty": "暂无打开的标签",
   "workspaceTabs.empty.heading": "打开一个表面",

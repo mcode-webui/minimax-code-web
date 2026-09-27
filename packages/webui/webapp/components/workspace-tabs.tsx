@@ -216,9 +216,13 @@ function tabVisual(
         icon: "workspace",
       };
     case "file":
+      // File tabs get their own close label so screen readers
+      // announce "Close file <name>" rather than the generic
+      // "Close Files tab" — the previous reuse leaked the kind
+      // across tab variants.
       return {
         label: tab.name,
-        ariaCloseLabel: t("workspaceTabs.tab.files.aria"),
+        ariaCloseLabel: t("workspaceTabs.tab.file.aria").replace("{name}", tab.name),
         icon: "file",
       };
   }
@@ -301,6 +305,7 @@ function ActiveBody(props: ActiveBodyProps) {
       return (
         <div className="flex h-full min-h-0 flex-col" data-testid="workspace-tab-body-file">
           <WorkspaceTabsFileTab
+            tabId={tab.id}
             path={tab.path}
             locale={props.locale}
             t={props.t}

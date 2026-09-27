@@ -71,15 +71,19 @@ export function WorkspaceTabsLauncher({
   locale: _locale,
   t,
   onPick,
-  onDisabledHint,
+  onDisabledHint: _onDisabledHint,
   mode: _mode,
 }: WorkspaceTabsLauncherProps) {
   // `_locale` and `_mode` are reserved for a future locale-aware
   // branch (e.g. an RTL toggle) and a popover-vs-inline style
-  // tweak respectively. The renderer does not need them today, so
-  // they are still in the signature (callers do not need to
-  // re-thread) but unused at the call site.
+  // tweak respectively. `_onDisabledHint` is the legacy callback
+  // for "not implemented" rows — a `disabled` button never
+  // fires `onClick`, so the handler is unreachable; the real
+  // affordance is the `title` tooltip + `aria-label` on the
+  // disabled row. Kept in the signature so a future ticket can
+  // restore the callback without re-threading the caller.
   void _locale;
+  void _onDisabledHint;
   void _mode;
   return (
     <div
@@ -118,6 +122,12 @@ export function WorkspaceTabsLauncher({
             : "workspaceTabs.launcher.terminal.disabledHint";
         const hint = t(hintKey);
         return (
+          // The button stays in the tab order so a keyboard
+          // user can focus it and reach the `title` tooltip.
+          // Click handlers are intentionally absent: a
+          // `disabled` button does not fire `onClick`, so the
+          // prop is the affordance. `aria-disabled` + a real
+          // `title` keep the surface accessible.
           <button
             key={row.kind}
             type="button"
@@ -126,8 +136,7 @@ export function WorkspaceTabsLauncher({
             title={hint}
             aria-label={`${t(row.labelKey)} — ${hint}`}
             disabled
-            onClick={() => onDisabledHint?.(disabledKind)}
-            className="flex h-[34px] w-full cursor-not-allowed items-center gap-2 rounded-[10px] px-3 text-sm text-text_default_tertiary opacity-50"
+            className="flex h-[34px] w-full cursor-not-allowed items-center gap-2 rounded-[10px] px-3 text-sm text-text_default_tertiary opacity-50 focus-visible:opacity-80 focus-visible:outline focus-visible:outline-1 focus-visible:outline-border_accent"
           >
             <span className="flex size-4 flex-shrink-0 items-center justify-center">
               <Icon name={row.icon} size={16} />

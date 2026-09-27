@@ -36,9 +36,12 @@ import {
 
 export interface WorkspaceColumnsProps {
   layout: ColumnLayoutState;
-  /** Total available width for the column row (typically the
-   *  container width — the page measures this on mount + resize). */
-  containerWidth: number;
+  /** Total available width for the column row. When `null` the
+   *  wrapper measures its own element via ResizeObserver — this
+   *  is the production path (the AppShell owns the sidebar
+   *  chrome, so subtracting the sidebar from `window.innerWidth`
+   *  is approximate; measuring the actual element is exact). */
+  containerWidth: number | null;
   /** The current viewport width (typically `window.innerWidth`).
    *  Reserved for the future auto-collapse ladder; slice 15 does
    *  not currently fold on viewport width (the panel column closes
@@ -62,7 +65,31 @@ export function WorkspaceColumns({
   onColumnReset,
   children,
 }: WorkspaceColumnsProps) {
-  const summary = computeColumnLayout(layout, containerWidth, viewportWidth);
+  // Self-measure the row's actual width. When the caller passes
+  // `containerWidth={null}` (the production path), the
+  // ResizeObserver below gives us the exact pixel count — the
+  // AppShell's sidebar + chrome are accounted for automatically,
+  // so dragging can never push a column off-window. When the
+  // caller passes an explicit number (the test path), we trust
+  // it and skip the observer.
+  const selfRef = useRef<HTMLDivElement | null>(null);
+  const [measuredWidth, setMeasuredWidth] = useState<number>(1280);
+  useEffect(() => {
+    if (containerWidth !== null) return;
+    if (typeof ResizeObserver === "undefined") return;
+    const node = selfRef.current;
+    if (!node) return;
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) return;
+      const next = Math.round(entry.contentRect.width);
+      setMeasuredWidth((prev) => (prev === next ? prev : next));
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [containerWidth]);
+  const effectiveWidth = containerWidth ?? measuredWidth;
+  const summary = computeColumnLayout(layout, effectiveWidth, viewportWidth);
   const visibleSegments = summary.segments.filter((segment) => segment.visible);
 
   // Per-divider drag state. Two dividers can be live at once (a
@@ -120,10 +147,12 @@ export function WorkspaceColumns({
 
   return (
     <div
+      ref={selfRef}
       className="flex h-full min-h-0 min-w-0 flex-1"
       data-testid="workspace-columns"
       data-secondary-open={layout.secondaryOpen ? "true" : "false"}
       data-narrowed={summary.narrowed ? "true" : "false"}
+      data-container-width={effectiveWidth}
     >
       {visibleSegments.map((segment, index) => {
         const isLast = index === visibleSegments.length - 1;

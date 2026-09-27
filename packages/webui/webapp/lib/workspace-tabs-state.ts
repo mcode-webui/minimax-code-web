@@ -462,9 +462,17 @@ export function computeColumnLayout(
 
   let total = initial.sidebar + initial.conversation + initial.panel + initial.secondary;
   let narrowed = false;
+  // Fold priority: when the secondary column is open, fold it
+  // first (it is the optional 4th column and the user can
+  // dismiss it). When the secondary is closed, the sidebar is
+  // the only elastic chrome — but the conversation column is
+  // also elastic on the lower bound, so we always include
+  // sidebar in the fold chain. The conversation column is the
+  // last to fold because it is content-bearing (the chat
+  // surface) and a fold there is the most disruptive.
   const foldPriority: ColumnId[] = layout.secondaryOpen
-    ? ["secondary", "sidebar"]
-    : [];
+    ? ["secondary", "sidebar", "conversation"]
+    : ["sidebar", "conversation"];
 
   for (const column of foldPriority) {
     if (total <= containerWidth) break;
@@ -478,19 +486,20 @@ export function computeColumnLayout(
   }
 
   // Hard overflow: even after the priority fold the row is too wide
-  // (e.g. a 360px viewport forcing the conversation column to its
-  // minimum while every other column is at its minimum too). Fold
-  // the conversation column down to its minimum and then to zero;
-  // the renderer treats zero-width conversation as "hide the chat
-  // column" — it should never reach here in practice because the
-  // auto-collapse ladder in shell.tsx collapses the sidebar below
-  // 980px, but the hard fallback keeps the layout finite.
+  // (e.g. a 360px viewport forcing every column to its minimum).
+  // The remaining overflow must be shed somewhere or the row
+  // overflows horizontally. The fold chain above already drives
+  // every column to its minimum; the residual must therefore
+  // hide the conversation column entirely (zero-width). The
+  // renderer treats zero-width conversation as "hide the chat
+  // column" — a graceful degradation rather than horizontal
+  // overflow.
   if (total > containerWidth) {
     const overflow = total - containerWidth;
-    const convMin = spec("conversation").minWidth;
-    const newConv = Math.max(0, initial.conversation - overflow);
-    total = total - initial.conversation + Math.max(convMin, newConv);
-    initial.conversation = Math.max(convMin, newConv);
+    const current = initial.conversation;
+    const next = Math.max(0, current - overflow);
+    total = total - current;
+    initial.conversation = next;
     narrowed = true;
   }
 

@@ -402,6 +402,64 @@ describe("computeColumnLayout", () => {
       .reduce((sum, segment) => sum + segment.width, 0);
     assert.ok(totalVisibleWidth <= 2400, `total ${totalVisibleWidth} > 2400`);
   });
+
+  test("drag-overshoot shrinks the conversation column (panel stays on-screen)", () => {
+    // Pin the regression the acceptance run caught: a wide
+    // conversation width against a tight container must not
+    // push the panel column off-screen. With secondaryOpen=
+    // false the fold priority is [sidebar, conversation], so
+    // the conversation takes the residual fold first.
+    const layout: typeof DEFAULT_COLUMN_LAYOUT = {
+      ...DEFAULT_COLUMN_LAYOUT,
+      collapsed: {
+        sidebar: false,
+        conversation: false,
+        panel: false,
+        secondary: false,
+      },
+      widths: { ...DEFAULT_COLUMN_LAYOUT.widths, conversation: 1280 },
+    };
+    const summary = computeColumnLayout(layout, 1280, 1280);
+    const totalVisibleWidth = summary.segments
+      .filter((s) => s.visible)
+      .reduce((sum, segment) => sum + segment.width, 0);
+    assert.ok(totalVisibleWidth <= 1280, `total ${totalVisibleWidth} > 1280`);
+    const panel = summary.segments.find((s) => s.id === "panel");
+    assert.ok(panel);
+    assert.ok(panel.width >= COLUMN_SPECS.panel.minWidth, `panel ${panel.width} < ${COLUMN_SPECS.panel.minWidth}`);
+    // The conversation column absorbed the overflow.
+    const conversation = summary.segments.find((s) => s.id === "conversation");
+    assert.ok(conversation);
+    assert.ok(conversation.width < 1280);
+  });
+
+  test("double-click reset brings the row back to its default within the container", () => {
+    // The acceptance run reported "drag wider → reset does not
+    // repair". The repair path is: the persisted widths revert
+    // to the defaults, then computeColumnLayout folds any
+    // residual overflow into the elastic columns. After the
+    // fold the row fits inside the container.
+    const layout: typeof DEFAULT_COLUMN_LAYOUT = {
+      ...DEFAULT_COLUMN_LAYOUT,
+      collapsed: {
+        sidebar: false,
+        conversation: false,
+        panel: false,
+        secondary: false,
+      },
+      widths: {
+        sidebar: COLUMN_SPECS.sidebar.defaultWidth,
+        conversation: COLUMN_SPECS.conversation.defaultWidth,
+        panel: COLUMN_SPECS.panel.defaultWidth,
+        secondary: COLUMN_SPECS.secondary.defaultWidth,
+      },
+    };
+    const summary = computeColumnLayout(layout, 1280, 1280);
+    const totalVisibleWidth = summary.segments
+      .filter((s) => s.visible)
+      .reduce((sum, segment) => sum + segment.width, 0);
+    assert.ok(totalVisibleWidth <= 1280, `total ${totalVisibleWidth} > 1280`);
+  });
 });
 
 describe("serializeWorkspaceTabs / deserializeWorkspaceTabs", () => {

@@ -31,4 +31,18 @@ describe("tWorkspaceTab — locale resolution", () => {
     assert.equal(tWorkspaceTab("en", "workspaceTabs.tab.files"), "Files");
     assert.equal(tWorkspaceTab("zh", "workspaceTabs.tab.files"), "文件");
   });
+
+  test("file-tab close aria carries the file name placeholder", () => {
+    // The previous version reused the surface-tab close label
+    // and leaked "Close Files tab" on a file tab. The slice-15
+    // acceptance flagged that — the file variant now owns its
+    // own label and the {name} placeholder is what the renderer
+    // substitutes.
+    const en = tWorkspaceTab("en", "workspaceTabs.tab.file.aria");
+    const zh = tWorkspaceTab("zh", "workspaceTabs.tab.file.aria");
+    assert.ok(en.includes("file"));
+    assert.ok(zh.includes("文件"));
+    assert.ok(en.includes("{name}"));
+    assert.ok(zh.includes("{name}"));
+  });
 });

@@ -10,7 +10,7 @@ import { ActionErrorBanner } from "@/components/action-error-banner";
 import { SettingsModal } from "@/components/panels";
 import { AppShell } from "@/components/shell";
 import { ConversationToolbar, useAlertCount } from "@/components/toolbar";
-import { WorkspaceColumns, useContainerWidth } from "@/components/workspace-columns";
+import { WorkspaceColumns } from "@/components/workspace-columns";
 import { WorkspaceTabsPanel } from "@/components/workspace-tabs";
 import { runAction } from "@/lib/action-errors";
 import { SessionProvider, useSessionContext } from "@/lib/store";
@@ -107,7 +107,11 @@ function App() {
   // `lib/persist.ts` storage.
   const [tabState, setTabState] = useState<TabStripState>(workspaceTabs.tabStrip);
   const [columnState, setColumnState] = useState<typeof DEFAULT_COLUMN_LAYOUT>(workspaceTabs.columnLayout);
-  const containerWidth = useContainerWidth();
+  // Slice 15 — WorkspaceColumns self-measures via
+  // ResizeObserver, so the page does not need to feed
+  // containerWidth anymore. viewportWidth is still threaded
+  // through for the future auto-collapse ladder; today it is
+  // accepted but unused inside computeColumnLayout.
   const viewportWidth = typeof window !== "undefined" ? window.innerWidth : 1280;
 
   // Mirror panel changes into localStorage. The write helper is
@@ -540,13 +544,24 @@ function App() {
   );
 
   const conversationColumn = hasConversation ? (
+    // Slice 15 — the conversation column carries the chat
+    // transcript + the composer. Both live INSIDE the new
+    // workspace shell so the panel column can sit beside them.
+    // The previous wiring had the composer outside the shell
+    // (AppShell rendered it after the children flex row), which
+    // is what the reload regression exposed: a restored payload
+    // made the new shell mount, but the composer's mount path
+    // was outside it.
     <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-      <ScrollRestoredChat
-        t={t}
-        locale={locale}
-        sessionId={state.mcodeSessionId ?? null}
-        onOpenFile={onOpenFile}
-      />
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+        <ScrollRestoredChat
+          t={t}
+          locale={locale}
+          sessionId={state.mcodeSessionId ?? null}
+          onOpenFile={onOpenFile}
+        />
+      </div>
+      <Composer t={t} onAddProvider={openProviderAdd} />
       <p
         data-testid="app-disclaimer"
         className="flex-none px-4 pt-1 pb-2 text-center text-caption-small-strong text-text_default_secondary"
@@ -560,16 +575,23 @@ function App() {
     </HomeState>
   );
 
-  // Slice 15 — the new 4-column shell composes inside the
-  // existing AppShell's panel prop. The shell keeps its own
-  // sidebar (with drag-resize + collapse from slice 07), and the
-  // right-hand panel slot hosts a 3-up flex row (conversation
-  // + panel + secondary). The conversation column carries the
-  // chat + composer; the panel column carries the multi-tab
-  // workspace; the secondary column mirrors the panel column
-  // when open. The home screen keeps the inline composer
-  // layout and renders the conversation column without a
-  // panel — the AppShell's panel slot is empty in that case.
+  // Slice 15 — the new 4-column shell mounts INSIDE the
+  // AppShell's `children` slot, NOT the `panel` slot. The
+  // earlier wiring (passing WorkspaceColumns through `panel`)
+  // caused the AppShell to render BOTH its own conversation-
+  // area and the new shell side-by-side: the AppShell's
+  // conversation-area came up empty (children=null), and the
+  // new shell's conversation column pushed the composer out
+  // of view. Reload surfaced the bug because the restored
+  // `webui:workspace-tabs:v1:<cid>` payload made the new shell
+  // mount again — and the dead conversation-area stole the
+  // composer.
+  //
+  // The fix is single-source: WorkspaceColumns IS the content
+  // area, so it lives as `children`. The AppShell's panel slot
+  // stays null. The home-screen conversation (inline composer
+  // + greeting) also passes as `children` so the AppShell still
+  // owns the rendering surface on every screen.
   const columnChildren = {
     sidebar: null,
     conversation: conversationColumn,
@@ -577,20 +599,20 @@ function App() {
     secondary: columnState.secondaryOpen ? secondaryColumn : null,
   };
 
-  // The right-hand panel slot hosts a 4-column layout when
-  // there is a conversation (the multi-tab workspace is part of
-  // the same flex row as the chat), and nothing on the home
-  // screen (where the composer is inline and there is no panel
-  // to show).
   const newShell = hasConversation ? (
     <WorkspaceColumns
       layout={columnState}
-      containerWidth={containerWidth}
+      // Self-measure via ResizeObserver — the AppShell's
+      // sidebar + chrome are accounted for automatically, so
+      // dragging can never push a column off-window.
+      containerWidth={null}
       viewportWidth={viewportWidth}
       onColumnResize={(column, width) =>
         setColumnState((current) => setColumnWidth(current, column, width))
       }
-      onColumnReset={(column) => setColumnState((current) => resetColumnWidth(current, column))}
+      onColumnReset={(column) =>
+        setColumnState((current) => resetColumnWidth(current, column))
+      }
     >
       {columnChildren}
     </WorkspaceColumns>
@@ -612,23 +634,18 @@ function App() {
             />
           ) : null
         }
-        // Slice 15 — the legacy `panel` slot now hosts the new
-        // 4-column workspace layout. AppShell wraps it with the
-        // same shadow / border the right panel had before, so the
-        // visual frame matches.
-        panel={newShell}
+        panel={null}
         onOpenPanel={openPanel}
         onOpenSettings={openSettings}
         alertCount={alertCount}
         hasConversation={hasConversation}
       >
-        {/* The conversation column lives INSIDE the new shell —
-            AppShell renders children as the "conversation
-            column" area, but slice 15 routes the chat + composer
-            through the column-children system above. The home
-            screen still wants the inline composer + greeting,
-            so we pass that as the children. */}
-        {!hasConversation ? conversationColumn : null}
+        {/* Slice 15 — WorkspaceColumns is the entire content
+            area on the conversation screen, and the inline
+            home state on the home screen. AppShell no longer
+            hosts a second conversation-area; that double-mount
+            was the reload regression. */}
+        {hasConversation ? newShell : conversationColumn}
       </AppShell>
       <SettingsModal
         open={settingsOpen}

@@ -29,6 +29,7 @@ export const WORKSPACE_TAB_KEYS = [
   "workspaceTabs.tab.browser.aria",
   "workspaceTabs.tab.tasks",
   "workspaceTabs.tab.tasks.aria",
+  "workspaceTabs.tab.file.aria",
   "workspaceTabs.tab.filePrefix",
   "workspaceTabs.launcher.files",
   "workspaceTabs.launcher.git",

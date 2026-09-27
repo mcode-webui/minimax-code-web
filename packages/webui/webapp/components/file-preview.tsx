@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Locale, MessageKey } from "@/lib/i18n";
 import {
   fsRawUrl,
@@ -57,12 +57,40 @@ export interface FilePreviewProps {
   /** Translation function — same shape as the rest of the panels. */
   t: (key: MessageKey) => string;
   locale: Locale;
+  /**
+   * Slice 15 — initial scroll position for the inner scroll
+   * container. Applied once on mount and again whenever `path`
+   * changes (a file-tab switch re-mounts the inner view via the
+   * caller's `key={tab.id}`, so this only fires once per tab).
+   * Set to 0 (the default) to disable restoration. */
+  initialScrollTop?: number;
+  /**
+   * Slice 15 — fired on every scroll of the inner body, with
+   * the new scrollTop. The wrapper (file-tab body) debounces
+   * and persists through the workspace-tabs reducer so a
+   * refresh restores the user's place in a long file. */
+  onScrollPersist?: (scrollTop: number) => void;
 }
 
-export function FilePreview({ path, t, locale }: FilePreviewProps) {
+export function FilePreview({
+  path,
+  t,
+  locale,
+  initialScrollTop = 0,
+  onScrollPersist,
+}: FilePreviewProps) {
   const [payload, setPayload] = useState<FsFilePayload | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Ref to the inner scrollable container — `.file-preview-body`.
+  // The outer wrapper does NOT scroll (the wrapper's `overflow`
+  // is `hidden`); only this inner div scrolls, so the scroll
+  // handler belongs here. The wrapper above used to attach the
+  // handler to its own (non-scrolling) div, which silently
+  // produced `fileScrolls: {}` — the regression the acceptance
+  // run flagged.
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+  const restoredRef = useRef<boolean>(false);
 
   // Last-write-wins: a quick `a → b → a` switch (e.g. user clicks through
   // the tree) should not let the older `a` payload land after the newer
@@ -90,6 +118,46 @@ export function FilePreview({ path, t, locale }: FilePreviewProps) {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Restore the persisted scroll position. The restore fires
+  // once per (path, initialScrollTop) pair: after the body has
+  // had a chance to render its inner content (the file-preview-
+  // body div's `scrollHeight` only settles once the async
+  // `load()` resolves and `kind` resolves to a known renderer),
+  // we apply the persisted offset. A subsequent paint would be
+  // a no-op because `restoredRef.current` already flipped.
+  useEffect(() => {
+    restoredRef.current = false;
+    if (initialScrollTop <= 0) {
+      restoredRef.current = true;
+      return;
+    }
+    let cancelled = false;
+    const apply = () => {
+      if (cancelled) return;
+      const node = bodyRef.current;
+      if (!node) {
+        // Body not yet in the DOM (still loading). Re-attempt on
+        // the next animation frame.
+        requestAnimationFrame(apply);
+        return;
+      }
+      if (node.scrollHeight <= node.clientHeight) {
+        // File fits on screen — there's nothing to scroll.
+        restoredRef.current = true;
+        return;
+      }
+      node.scrollTop = initialScrollTop;
+      restoredRef.current = true;
+    };
+    // Defer the first attempt so the inner content has a chance
+    // to render. FilesPanel's `getFsFile` is fast (≤ 512 KiB) but
+    // is still async; a single rAF is enough on average.
+    requestAnimationFrame(apply);
+    return () => {
+      cancelled = true;
+    };
+  }, [path, initialScrollTop]);
 
   const fileName = basenameOf(path);
   // The read-file endpoint rejects binary (mime-stripped NUL byte) but still
@@ -145,7 +213,19 @@ export function FilePreview({ path, t, locale }: FilePreviewProps) {
       ) : null}
 
       {showImage || (kind && payload && payload.ok) ? (
-        <div className="file-preview-body min-h-0 flex-1 overflow-auto">
+        <div
+          ref={bodyRef}
+          onScroll={onScrollPersist ? (event) => {
+            // Throttle by skipping equal consecutive values —
+            // a redundant scroll handler can otherwise bounce
+            // through the persistence layer at the browser's
+            // scroll-event rate.
+            const next = event.currentTarget.scrollTop;
+            if (typeof next === "number") onScrollPersist(next);
+          } : undefined}
+          className="file-preview-body min-h-0 flex-1 overflow-auto"
+          data-testid="file-preview-body-scroller"
+        >
           {showImage ? (
             <ImageView path={path} />
           ) : (
