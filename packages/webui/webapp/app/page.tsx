@@ -41,6 +41,17 @@ function App() {
   const [panel, setPanel] = useState<PanelKind | null>(null);
   // Settings is a dialog rather than a drawer panel, so it has its own state.
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // The section the modal should land on. The modal owns its own
+  // `active` state for ordinary navigation; this external value seeds
+  // that state only on open transitions (see SettingsModal below) so
+  // a deep-link from outside the modal still works.
+  const [settingsSection, setSettingsSection] = useState<"general" | "appearance" | "connection" | "providers">("general");
+  // One-shot flag consumed by ProviderManagementPanel. When true,
+  // the management panel fires its `addProvider()` callback on mount,
+  // so the user lands in Settings → Providers with a fresh draft
+  // and the id input focused. Cleared after consumption so a later
+  // open (e.g. from the sidebar) does not re-fire.
+  const [pendingProviderAdd, setPendingProviderAdd] = useState(false);
   const alertCount = useAlertCount();
 
   // Drawer panels are opened from the toolbar and the sidebar's nav rows; the two
@@ -49,7 +60,29 @@ function App() {
     setPanel((current) => (current === kind ? null : kind));
   }, []);
 
-  const openSettings = useCallback(() => setSettingsOpen(true), []);
+  const openSettings = useCallback(() => {
+    setSettingsSection("general");
+    setPendingProviderAdd(false);
+    setSettingsOpen(true);
+  }, []);
+
+  /**
+   * Open the settings modal directly on the providers section, with
+   * the management panel's add flow armed.
+   *
+   * Triggered by the model selector's top "Add provider" row. The
+   * flag is one-shot — the panel reads it on its mount and clears it,
+   * so re-opening the settings modal from the sidebar does not
+   * re-fire the add. The state lives at page scope (rather than on
+   * the modal) so a deep-link from anywhere — model selector, a
+   * future "add from empty catalogue" affordance — all funnel through
+   * the same path.
+   */
+  const openProviderAdd = useCallback(() => {
+    setSettingsSection("providers");
+    setPendingProviderAdd(true);
+    setSettingsOpen(true);
+  }, []);
 
   // Ctrl+N / Ctrl+K mirror the shortcuts the sidebar advertises. Ctrl+N is only
   // bound when the shell is mounted (i.e. a session exists), matching the
@@ -116,11 +149,11 @@ function App() {
         {hasConversation ? (
           <>
             <Chat t={t} locale={locale} />
-            <Composer t={t} />
+            <Composer t={t} onAddProvider={openProviderAdd} />
           </>
         ) : (
           <HomeState t={t} locale={locale}>
-            <Composer t={t} inline />
+            <Composer t={t} inline onAddProvider={openProviderAdd} />
           </HomeState>
         )}
       </AppShell>
@@ -130,6 +163,9 @@ function App() {
         t={t}
         locale={locale}
         setLocale={setLocale}
+        initialSection={settingsSection}
+        autoAddProvider={pendingProviderAdd}
+        onAutoAddConsumed={() => setPendingProviderAdd(false)}
       />
       <ActionErrorBanner t={t} />
       <Modals t={t} />

@@ -95,6 +95,13 @@ const en = {
      heading is always present when at least one level is offered. */
   "modelSelector.level": "Thinking effort",
   "modelSelector.levelHint": "Picking a level here also re-anchors the model",
+  /* Model selector — ticket 09. The "Add provider" row at the top of
+     the dropdown deep-links into Settings → Providers with a fresh
+     draft and the id input focused. The label is bilingual-friendly:
+     the dashboard already uses "供应商" for the providers section,
+     so this wording lands as one phrase rather than two stacked
+     words. */
+  "modelSelector.addProvider": "Add model / provider",
   "modelSelector.modalityBadge.text": "text",
   "modelSelector.modalityBadge.image": "image",
   "modelSelector.modalityBadge.audio": "audio",
@@ -451,6 +458,9 @@ const zh: Record<MessageKey, string> = {
   /* 模型选择器 — ticket 07。下拉顶部新增的思考等级行标题与提示。 */
   "modelSelector.level": "思考等级",
   "modelSelector.levelHint": "点等级会同时绑定当前模型",
+  /* 模型选择器 — ticket 09。下拉顶部的「添加供应商」入口直跳到设置 → 模型供应商，
+     自动新建草稿并把焦点放到 id 输入框。沿用侧栏的「模型供应商」命名。 */
+  "modelSelector.addProvider": "添加模型 / 供应商",
   "modelSelector.modalityBadge.text": "文本",
   "modelSelector.modalityBadge.image": "图像",
   "modelSelector.modalityBadge.audio": "音频",

@@ -93,7 +93,19 @@ const PERMISSION_MODES: { id: string; key: MessageKey; icon?: IconName; selectab
   { id: "off", key: "permission.off", selectable: false },
 ];
 
-export function Composer({ t, inline = false }: { t: (key: MessageKey) => string; inline?: boolean }) {
+export function Composer({
+  t,
+  inline = false,
+  onAddProvider,
+}: {
+  t: (key: MessageKey) => string;
+  inline?: boolean;
+  /** Open the provider management flow with a fresh draft already
+   *  created. The model selector's top "Add provider" row triggers
+   *  this; it lands the user in the settings modal on the providers
+   *  section, with the id input focused so they can start typing. */
+  onAddProvider?: () => void;
+}) {
   const { state, providersRevision } = useSessionContext();
   // Text, attachments, and the error banner live in the module-scope draft
   // store (lib/composer-draft.ts) rather than useState: page.tsx swaps this
@@ -546,6 +558,7 @@ export function Composer({ t, inline = false }: { t: (key: MessageKey) => string
                 label={currentModelLabel}
                 thinking={state?.model?.thinking ?? ""}
                 thinkingLevels={thinkingLevelsForActive}
+                onAddProvider={onAddProvider}
                 onPick={(id) => {
                   // The composer hands the picker an id; we send the
                   // same `thinking` we already recorded so the engine's
@@ -863,6 +876,7 @@ function ModelSelect({
   thinkingLevels,
   onPick,
   onPickThinking,
+  onAddProvider,
 }: {
   t: (key: MessageKey) => string;
   models: {
@@ -897,12 +911,24 @@ function ModelSelect({
    *  enforces "model first, then effort" so the engine never sees
    *  an effort without a model anchor). */
   onPickThinking: (level: string, modelId?: string) => void;
+  /** Open the provider management flow with a fresh draft already
+   *  created. Triggered by the top "Add provider" row. The page owns
+   *  the route — the selector just hands the intent up. */
+  onAddProvider?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   // Model id whose row is currently expanded to show its level pills.
   // Defaults to the active model so the user can change level without
   // scrolling; hovering a row overrides the expansion to that row.
   const [expandedModelId, setExpandedModelId] = useState<string | null>(value ?? null);
+  /** Ref to the inner scrollable list — used by the "scroll selected
+   *  into view" effect after the dropdown opens. The ref is captured
+   *  on the `div` that wraps the group list (NOT on the panel itself,
+   *  which has the chrome and a sticky header on top). */
+  const listScrollRef = useRef<HTMLDivElement | null>(null);
+  /** Ref to the row that the current selection points at, so the
+   *  scroll-into-view effect has a stable target. */
+  const selectedRowRef = useRef<HTMLDivElement | null>(null);
 
   // Group by provider, preserving the catalogue order. A provider-less entry
   // (engine-encoded ids whose prefix wasn't coerced) falls into "Other" so it
@@ -941,6 +967,46 @@ function ModelSelect({
     setExpandedModelId(value ?? null);
   }, [value]);
 
+  /**
+   * Scroll the active model row into view when the dropdown opens.
+   *
+   * The list now caps at ~60vh (see `max-h-[60vh]` below), so a long
+   * catalogue puts the active row out of frame. A `requestAnimationFrame`
+   * deferral keeps the effect from racing the dropdown's portal mount —
+   * `selectedRowRef.current` is null until the layout effect has run.
+   *
+   * `prefers-reduced-motion` skips the smooth scroll: the user opted
+   * out of animation, so the scroll snaps instead. This is the same
+   * approach the rest of the app uses for scroll behaviour.
+   */
+  useEffect(() => {
+    if (!open) return;
+    if (!listScrollRef.current || !selectedRowRef.current) return;
+    const container = listScrollRef.current;
+    const row = selectedRowRef.current;
+    // Defer to the next frame so antd has finished positioning the
+    // portal — without this, `container.scrollHeight` reports the
+    // pre-paint height and the scroll lands on the wrong offset.
+    const handleId = window.requestAnimationFrame(() => {
+      const rowTop = row.offsetTop;
+      const rowBottom = rowTop + row.offsetHeight;
+      const viewTop = container.scrollTop;
+      const viewBottom = viewTop + container.clientHeight;
+      if (rowTop < viewTop) {
+        container.scrollTo({
+          top: rowTop - 8,
+          behavior: prefersReducedMotion() ? "auto" : "smooth",
+        });
+      } else if (rowBottom > viewBottom) {
+        container.scrollTo({
+          top: rowBottom - container.clientHeight + 8,
+          behavior: prefersReducedMotion() ? "auto" : "smooth",
+        });
+      }
+    });
+    return () => window.cancelAnimationFrame(handleId);
+  }, [open, value]);
+
   return (
     <Dropdown
       open={open}
@@ -957,6 +1023,26 @@ function ModelSelect({
             <SelectRow testId="model-select-empty" label={t("composer.noModels")} />
           ) : (
             <div className="flex flex-col">
+              {/* Top "Add provider" affordance (ticket 09). One-click
+                  jump to the management panel's add flow — the user
+                  lands in Settings → Providers with a fresh draft and
+                  the id input focused. Renders ABOVE the inline level
+                  row so the affordance is always at the top, even when
+                  thinking-effort pills are present. */}
+              {onAddProvider ? (
+                <button
+                  type="button"
+                  data-testid="model-select-add-provider"
+                  onClick={() => {
+                    setOpen(false);
+                    onAddProvider();
+                  }}
+                  className="mx-1 mt-0.5 flex h-7 items-center gap-1.5 rounded-[8px] border border-dashed border-border_default px-2 text-caption-small-strong text-text_default_secondary transition-colors hover:border-border_heavy hover:bg-bg_interaction_tertiary_hover hover:text-text_default_primary"
+                >
+                  <Icon name="plusSmall" size={14} className="text-icon_default_secondary" />
+                  <span>{t("modelSelector.addProvider")}</span>
+                </button>
+              ) : null}
               {/* Inline thinking-effort row — when the active model advertises
                   reasoning controls, the level pills render at the top of the
                   panel so the user can change effort without picking a new
@@ -967,7 +1053,7 @@ function ModelSelect({
               {thinkingLevels.length > 0 ? (
                 <div
                   data-testid="model-select-level-row"
-                  className="mx-1 mb-1 mt-0.5 flex flex-col gap-1 rounded-[8px] bg-bg_grouped_secondary px-2 py-1.5"
+                  className="mx-1 mb-1 mt-1 flex flex-col gap-1 rounded-[8px] bg-bg_grouped_secondary px-2 py-1.5"
                 >
                   <span className="text-caption-small-strong uppercase tracking-wide text-text_default_tertiary">
                     {t("modelSelector.level")}
@@ -1000,6 +1086,21 @@ function ModelSelect({
                   </div>
                 </div>
               ) : null}
+              {/*
+                Scrollable list. `max-h-[60vh]` caps the panel at ~60%
+                of the viewport (the ticket's "60-70%" range; 60% is
+                the lower end so the panel doesn't swallow the
+                transcript on a short window). `thin-scrollbar` styles
+                the scrollbar to match the rest of the app. The
+                internal padding (mt-1 / border-t / pt-1 on each group)
+                stays inside the scroll, so sticky headers anchor at
+                the top of THIS container, not the panel chrome.
+              */}
+              <div
+                ref={listScrollRef}
+                data-testid="model-select-list"
+                className="thin-scrollbar max-h-[60vh] overflow-y-auto"
+              >
               {grouped.map((group, groupIndex) => {
                 const disabled = isGroupDisabled(group);
                 return (
@@ -1009,9 +1110,21 @@ function ModelSelect({
                     data-disabled={disabled ? "true" : "false"}
                     className={groupIndex === 0 ? "" : "mt-1 border-t border-border_default pt-1"}
                   >
+                    {/*
+                      Sticky group header. `sticky top-0` keeps the
+                      label visible while the user scrolls inside the
+                      list — a 60vh cap means long catalogues scroll
+                      the active provider's label off the top, and
+                      sticky re-anchors it. The background matches the
+                      panel so the header doesn't bleed through the
+                      rows below. The z-10 keeps the header above the
+                      rows that scroll beneath it (without it, the
+                      hover background bleeds through during fast
+                      scrolls).
+                    */}
                     <div
                       data-testid={`model-select-group-label-${group.id}`}
-                      className="flex items-center justify-between px-2 pb-0.5 pt-1 text-caption-small-strong uppercase tracking-wide text-text_default_tertiary"
+                      className="sticky top-0 z-10 flex items-center justify-between bg-bg_grouped_secondary_elevated px-2 pb-0.5 pt-1 text-caption-small-strong uppercase tracking-wide text-text_default_tertiary"
                     >
                       <span>{group.label}</span>
                       {disabled ? (
@@ -1029,10 +1142,13 @@ function ModelSelect({
                       const showLevels = !disabled && rowLevels.length > 0 &&
                         (expandedModelId === model.id ||
                           (expandedModelId == null && model.id === value));
+                      const isSelected = model.id === value;
                       return (
                         <div
                           key={model.id}
+                          ref={isSelected ? selectedRowRef : null}
                           data-testid={`model-select-row-wrap-${modelSlug(model.id)}`}
+                          data-selected={isSelected ? "true" : "false"}
                           onMouseEnter={() => {
                             if (rowLevels.length > 0) setExpandedModelId(model.id);
                           }}
@@ -1057,7 +1173,7 @@ function ModelSelect({
                                 />
                               ) : null
                             }
-                            selected={model.id === value}
+                            selected={isSelected}
                             disabled={disabled}
                             onClick={() => {
                               if (disabled) return;
@@ -1107,6 +1223,7 @@ function ModelSelect({
                   </div>
                 );
               })}
+              </div>
             </div>
           )}
         </SelectPanel>
@@ -1131,6 +1248,24 @@ function ModelSelect({
       </button>
     </Dropdown>
   );
+}
+
+/**
+ * True when the user has requested reduced motion in the OS settings.
+ *
+ * The selector uses this to swap `behavior: "smooth"` scroll calls for
+ * `behavior: "auto"` — a smooth-scroll into view is a nice touch on
+ * most systems, but on a long catalogue the animation is the slowest
+ * part of the open transition. `prefers-reduced-motion: reduce` should
+ * snap the scroll instead, matching every other animation in the app.
+ */
+function prefersReducedMotion(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  } catch {
+    return false;
+  }
 }
 
 /**
