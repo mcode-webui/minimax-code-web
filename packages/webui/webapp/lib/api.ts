@@ -895,3 +895,93 @@ export function sessionExportUrl(id: string, format: "md" | "json" = "md"): stri
   );
 }
 
+// --- git panel (slice 03) -------------------------------------------------
+
+/**
+ * Wire shape returned by `GET /api/git/status`. `isRepo:false` is the
+ * normal answer for a non-git directory — the panel renders an empty
+ * state rather than a red toast, so the helper does NOT throw on it.
+ */
+export interface GitStatusFile {
+  /** Porcelain index status (e.g. "M", "A", "?", " " when only the worktree differs). */
+  x: string;
+  /** Porcelain worktree status (e.g. "M", "?", " " when only the index differs). */
+  y: string;
+  /** Path relative to the workspace root, as `git status --porcelain` emits it. */
+  path: string;
+  /** Pre-rename path for rename entries; `null` otherwise. */
+  origPath: string | null;
+  /** True when the index side carries a change (`x !== ' ' && x !== '?'`). */
+  staged: boolean;
+}
+
+export interface GitStatusPayload {
+  ok: boolean;
+  /** `false` when the directory is not inside a git working tree. */
+  isRepo?: boolean;
+  branch?: string | null;
+  upstream?: string | null;
+  ahead?: number;
+  behind?: number;
+  files?: GitStatusFile[];
+  error?: string;
+}
+
+export interface GitBranch {
+  name: string;
+  current: boolean;
+}
+
+export interface GitBranchesPayload {
+  ok: boolean;
+  branches?: GitBranch[];
+  error?: string;
+}
+
+export interface GitDiffPayload {
+  ok: boolean;
+  diff?: string;
+  error?: string;
+}
+
+export interface GitCheckoutPayload {
+  ok: boolean;
+  error?: string;
+}
+
+/**
+ * Workspace status — read by the right-panel Git panel and (via the
+ * same server helper) by the `/review` slash command. `dir` is the
+ * `state.workspace.dir` value; the server gates containment, so an
+ * out-of-root `dir` answers `{ok:false, isRepo:false}`.
+ */
+export function getGitStatus(dir: string): Promise<GitStatusPayload> {
+  return request<GitStatusPayload>(
+    `/api/git/status?dir=${encodeURIComponent(dir)}`,
+  );
+}
+
+export function getGitBranches(dir: string): Promise<GitBranchesPayload> {
+  return request<GitBranchesPayload>(
+    `/api/git/branches?dir=${encodeURIComponent(dir)}`,
+  );
+}
+
+export function getGitDiff(dir: string, file: string): Promise<GitDiffPayload> {
+  return request<GitDiffPayload>(
+    `/api/git/diff?dir=${encodeURIComponent(dir)}&file=${encodeURIComponent(file)}`,
+  );
+}
+
+/**
+ * Destructive — the panel must gate this behind a confirmation prompt.
+ * The branch name is allow-list gated on the server, so a forged
+ * request cannot smuggle an option through (see `server/lib/git.js`).
+ */
+export function gitCheckout(dir: string, branch: string): Promise<GitCheckoutPayload> {
+  return request<GitCheckoutPayload>("/api/git/checkout", {
+    method: "POST",
+    json: { dir, branch },
+  });
+}
+

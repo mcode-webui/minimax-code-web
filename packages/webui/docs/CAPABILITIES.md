@@ -36,6 +36,7 @@ doc where the feature is broken down by status.
 | `bilingual-ui` | §10 UI / UX |
 | `lan-sharing` | §11 Network & access control |
 | `token-auth` | §11 Network & access control |
+| `git-panel` | §12 Git panel |
 | `mobile-responsive` | §10 UI / UX |
 
 CI asserts on every one of these names appearing in this document
@@ -189,7 +190,21 @@ single index that satisfies the check.
 | mTLS / client cert | ❌ | same as above; documentation in `docs/HTTPS-REVERSE-PROXY.md` |
 | Rate limiting | ✅ | v2.0.0 (lease C03): `server/lib/rate-limit.js` (252 lines) — token-bucket per-ip with 60/min default + 100 burst + 2× multiplier for token holders. Router gate 4 returns 429 when exceeded. `lib-rate-limit.test.js` (339 lines, 21 unit tests). |
 
-## 12. Operations
+## 12. Git panel
+
+| Feature | Status | Why / where |
+|---|---|---|
+| Workspace status (`git status --porcelain=v1 -b`) | ✅ | `GET /api/git/status` — `server/lib/git.js#gitStatus`. Returns branch + upstream + ahead/behind + per-file `{x, y, path, origPath, staged}`. Non-git directories answer `{ok:false, isRepo:false}` and the panel renders an empty state, not a red toast. |
+| Local-branch list + current marker | ✅ | `GET /api/git/branches` — `server/lib/git.js#gitBranches`. `branch --list --format=%(refname:short)`; the leading `* ` (the default `--list` marker) becomes the `current` flag. |
+| Single-file diff against HEAD | ✅ | `GET /api/git/diff?dir=&file=` — `server/lib/git.js#gitDiff`. Tries `git diff HEAD -- <file>` first; falls back to `git diff --no-index -- /dev/null <file>` for untracked files (synthetic all-add diff). The `--` separator is the option-injection boundary. |
+| Branch switch (destructive, confirmed client-side) | ✅ | `POST /api/git/checkout {dir, branch}` — `server/lib/git.js#gitCheckout`. Branch name matched against `^[A-Za-z0-9._/-]+$` and rejected when it starts with `-`; containment gate enforces an allowed root; `execFile` keeps `git`'s argv literal. |
+| Right-panel Git surface (`GitPanel`) | ✅ | `webapp/components/panels.tsx#GitPanel` (slice 03). Current branch + changed-file list with click-to-preview diff; branch switcher with a confirmation prompt; non-git or out-of-root directory shows an empty state. |
+| `/review` slash command (TUI parity) | ✅ | `server/lib/interaction/commands.js#bodyReview` + `handleLocalSlash`/`handleCmdCommand`. Emits a `staged / unstaged / untracked` overview into the chat, sourced from the shared `gitStatus` helper. |
+| Containment gate shared with `/api/fs/*` | ✅ | `assertWorkspacePath` (server/lib/workspace.js). Every git entry point funnels the requested `dir` through it; out-of-root answers `{ok:false, error:"…不在允许根内…"}` and the panel reads `ok` rather than the HTTP code. |
+| execFile, no shell | ✅ | `run(dir, args)` in `lib/git.js` uses `execFile('git', ['-C', dir, ...args], …)` so every argv element is a literal child argv. No shell, no metacharacter surface. |
+| Local-branch allow-list (regex + leading-dash guard) | ✅ | `BRANCH_RE` and `branch.startsWith('-')` in `gitCheckout`. The panel only offers branches from the server's `/api/git/branches` list; the server-side allow-list is the defence-in-depth that survives a forged request. |
+
+## 13. Operations
 
 | Feature | Status | Why / where |
 |---|---|---|
@@ -208,7 +223,7 @@ single index that satisfies the check.
 | SBOM + local CVE gates | ✅ | `pnpm --filter @mavis/webui sbom` → CycloneDX 1.5 (`scripts/gen-sbom.mjs`) + `pnpm audit --omit=dev` + the repo-level `docs/verification.md` matrix. The webui itself has no plugin-level CI workflow; the only enforcement is `pnpm --filter @mavis/webui check` (the docs-alignment gate) plus the monorepo `pnpm verify`. |
 | `token.first_run` SSE event | ✅ | `server/lib/state-bus.js#pushTokenFirstRun` broadcasts `{event: "token.first_run", data: {token, persistPath}}` to all `sseByCid` on first boot. Replay-guarded by `auth.js#isFirstRun()` + persistent `tokenAcknowledged` flag. |
 
-## 13. What mcode would need to add to enable the ❌ rows
+## 14. What mcode would need to add to enable the ❌ rows
 
 - `set_mode` / `set_config_option` → mid-session permission switch in the UI
 - `cancel` → true mid-flight cancellation, not just SIGTERM

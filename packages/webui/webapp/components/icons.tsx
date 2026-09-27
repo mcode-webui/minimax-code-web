@@ -55,6 +55,7 @@ export type IconName =
   | "fork"
   | "workspace"
   | "terminal"
+  | "git"
   | "chevronDown"
   | "chevronRight"
   | "chevronUp"
@@ -612,6 +613,22 @@ const ICONS: Record<string, IconSpec> = {
       <>
         <path d="M2.5 5.83331C2.5 4.4526 3.61929 3.33331 5 3.33331H15C16.3807 3.33331 17.5 4.4526 17.5 5.83331V14.1666C17.5 15.5474 16.3807 16.6666 15 16.6666H5C3.61929 16.6666 2.5 15.5474 2.5 14.1666V5.83331Z" stroke="currentColor" strokeWidth="1.2" />
         <path d="M6 9L8 11L6 13M11 13H14" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+      </>
+    ),
+  },
+  // git branch glyph — used by the right-panel Git panel (slice 03).
+  // Stylised branch / merge so the toolbar reads as "git view" without
+  // needing a real GitHub mark; currentColor inherits the toolbar tint.
+  git: {
+    viewBox: "0 0 20 20",
+    size: 14,
+    body: (
+      <>
+        <circle cx="5" cy="4" r="1.6" stroke="currentColor" strokeWidth="1.2" fill="none" />
+        <circle cx="5" cy="16" r="1.6" stroke="currentColor" strokeWidth="1.2" fill="none" />
+        <circle cx="15" cy="9" r="1.6" stroke="currentColor" strokeWidth="1.2" fill="none" />
+        <path d="M5 5.6V14.4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+        <path d="M5 9C5 7.5 6.5 7.5 8 7.5H13.4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" fill="none" />
       </>
     ),
   },

@@ -737,6 +737,128 @@ a regular file; 413 over the 20 MiB cap.
 
 ---
 
+## Git
+
+The git endpoints drive the right-panel Git panel (slice 03 —
+`webapp/components/panels.tsx#GitPanel`) and the `/review` slash
+command. They share the same containment boundary as the fs endpoints
+(`/api/fs/*`): a candidate `dir` is `resolve()`d, symlink-resolved
+(`realpath`), and must land within an allowed workspace root (default
+home + default workspace + tmp; `MCODE_WEBUI_WORKSPACE_ROOTS` fully
+replaces the set). Out-of-root directories are answered with a
+`{ok:false, error:"…不在允许根内…"}` payload — the panel surfaces
+that as an empty state rather than as a red toast.
+
+Security invariants (pinned by `test/routes/git.test.js`):
+
+* `git` is invoked through `execFile` with `['-C', dir, ...args]` —
+  no shell, no metacharacter surface.
+* `gitCheckout` matches the branch name against `^[A-Za-z0-9._/-]+$`
+  and additionally rejects names that start with `-` (a branch named
+  `--upload-pack=…` would otherwise be re-interpreted as a `git
+  checkout` option by the binary itself).
+* `gitDiff` always passes the user-supplied file after a `--` token,
+  so a filename like `--output=/etc/x` cannot be re-interpreted as a
+  `git diff` option. The same input is rejected up front by an
+  explicit `startsWith('-')` guard.
+
+### `GET /api/git/status?dir=<workspace>`
+
+Workspace status for the panel header. `dir` is required.
+
+`status --porcelain=v1 -b` gives a deterministic stream: one header
+line (`## <branch>[...<upstream>] [ahead N, behind M]`) followed by
+the per-file entries. The route parses both halves; a detached HEAD
+or a branch with no upstream simply produces a `null` upstream /
+zero ahead/behind without an error.
+
+**Response 200**
+```json
+{
+  "ok": true,
+  "isRepo": true,
+  "branch": "feat/git-panel",
+  "upstream": "origin/feat/git-panel",
+  "ahead": 0,
+  "behind": 0,
+  "files": [
+    { "x": "M", "y": " ", "path": "README.md", "origPath": null, "staged": true },
+    { "x": "?", "y": "?", "path": "untracked.txt", "origPath": null, "staged": false }
+  ]
+}
+```
+
+`x` / `y` are the raw porcelain status codes (see `git status --help`
+§ "porcelain v1 format"); `staged` is `x !== ' ' && x !== '?'`
+(includes `M`, `A`, `D`, `R`, `C` in the index position). Renames
+carry `origPath` (the pre-rename path) alongside `path` (the new
+path). `isRepo:false` answers a non-git directory without an error.
+
+**Errors** — 400 missing `dir`; the body is `{ok:false, error}` and
+the status stays `200` (the panel reads `ok` rather than the HTTP
+code, so a non-git directory is a normal state).
+
+### `GET /api/git/branches?dir=<workspace>`
+
+Local branches plus a `current` marker. The panel renders this list
+as the branch switcher — `gitCheckout` requires the picked name to
+match the same set, so the switcher never has a choice it cannot
+honour.
+
+**Response 200**
+```json
+{
+  "ok": true,
+  "branches": [
+    { "name": "feat/git-panel", "current": true },
+    { "name": "main", "current": false }
+  ]
+}
+```
+
+**Errors** — 400 missing `dir`; `{ok:false, error}` on git failure.
+
+### `GET /api/git/diff?dir=<workspace>&file=<path>`
+
+Single-file diff against `HEAD`. Untracked files (`?` in porcelain)
+fall back to `git diff --no-index -- /dev/null <file>`, which
+produces a synthetic all-add diff so the panel can preview them too.
+The fallback returns `{ok:true, diff}` (never an error) when the
+input file exists; an `ok:false` is reserved for the gate rejection
+or for a `git` invocation failure.
+
+**Response 200**
+```json
+{ "ok": true, "diff": "diff --git a/README.md b/README.md\n…" }
+```
+
+**Errors** — 400 missing `dir`/`file`; `{ok:false, error}` for
+containment or invalid path. The HTTP status stays `200` for
+soft-fail paths; the panel reads `ok`.
+
+### `POST /api/git/checkout`
+
+Switch to a local branch. **Destructive** — the panel gates the
+button behind a confirmation prompt before sending. Server-side
+defence in depth: the branch name is matched against
+`^[A-Za-z0-9._/-]+$` and rejected if it starts with `-`, so a
+forged client cannot smuggle an option through.
+
+**Request**
+```json
+{ "dir": "C:\\Users\\you\\projects\\foo", "branch": "feat/git-panel" }
+```
+
+**Response 200** `{ok:true}` on success; `{ok:false, error}` on
+gate / allow-list rejection or `git` failure. The HTTP status
+stays `200`; the panel reads `ok`.
+
+**Errors** — 400 missing `dir`/`branch`, invalid JSON;
+`{ok:false, error:"非法分支名"}` on allow-list rejection;
+`{ok:false, error}` on `git` failure.
+
+---
+
 ## Settings
 
 ### `GET /api/settings`

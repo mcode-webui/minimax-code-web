@@ -95,6 +95,10 @@
         "description": "When `TOKEN` env is set (or the server auto-generates a 32-hex token on first start with no env set), all non-local requests to `/api/*` must include `?token=<value>` or `Authorization: Bearer <value>`. Local requests always bypass. The token can be rotated live from the settings card."
       },
       {
+        "name": "git-panel",
+        "description": "Right-panel Git surface (slice 03 of webui-parity): workspace status (branch + upstream + per-file porcelain), local-branch list, single-file diff against HEAD with a no-index fallback for untracked files, and a destructive branch switch gated by a local-branch allow-list. All `git` invocations go through `execFile` (no shell) and every `dir` is checked by the shared `assertWorkspacePath` containment gate; an out-of-root directory answers `{ok:false, isRepo:false}` and the panel renders an empty state rather than an error."
+      },
+      {
         "name": "mobile-responsive",
         "description": "Layout adapts at <900px (drawer pattern for the sidebar and right panel) and collapses to a single column at <600px. Dark mode follows `prefers-color-system` at boot. Touch targets and font sizes are tuned for phone use."
       }
@@ -111,6 +115,7 @@
       "model": "GET /api/models, POST /api/set-model|permissions|answer",
       "providers": "GET|PUT /api/providers, POST /api/providers/test, GET /api/providers/presets, POST /api/providers/preset/:id/enable",
       "usage": "GET|POST /api/usage[-real|-trigger|/refresh]",
+      "git": "GET /api/git/status|branches|diff, POST /api/git/checkout",
       "protocol": "GET|POST /api/protocol/* (acp shim)",
       "debug": "GET|POST /api/debug/* (DEBUG_INJECT gated)"
     }
