@@ -363,6 +363,28 @@ const en = {
   "panel.plugins.title": "Plugins",
   "panel.plugins.placeholder": "Plugin marketplace is in progress. The engine's install contract is not exposed by this server yet, so the desktop's category tabs + grid view will land once the contract is wired through.",
 
+  /* Re-open state parity (webui-parity 07). The "session id is gone"
+     hint fires when the URL deep-links to a session id the server no
+     longer recognises (a deleted conversation or a different cid).
+     Shown briefly so the user knows they were just routed home
+     intentionally, then auto-dismissed. */
+  "session.hint.notFound": "That session is no longer available. Returned to the home screen.",
+  "session.hint.notFound.dismiss": "Dismiss",
+  "session.hint.notFound.reset": "Go home",
+  /* Error boundary copy — error.tsx and global-error.tsx share the
+     same labels. The page-level copy uses the regular i18n dict; the
+     global boundary inlines its bilingual copy because Next refuses
+     to render the shared layout around a fatal crash, so it cannot
+     resolve `t(...)` from a provider. */
+  "webui.errorBoundary.title": "Something went wrong",
+  "webui.errorBoundary.subtitle": "Reload, or go back home — your sidebar state has been kept on this device.",
+  "webui.errorBoundary.reload": "Reload",
+  "webui.errorBoundary.home": "Go home",
+  "webui.errorBoundary.copy": "Copy diagnostics",
+  "webui.errorBoundary.copied": "Copied",
+  "webui.errorBoundary.details": "Diagnostics",
+  "webui.errorBoundary.messageFallback": "The page failed to render.",
+
   /* Provider management (ticket 03) — the settings section that
      lists, edits, tests and persists the v2 providers catalogue.
      Bilingual by contract: every key has both an English and a
@@ -731,6 +753,19 @@ const zh: Record<MessageKey, string> = {
   // 插件面板 stub —— 等后端装好 plugin install 合约再接上。
   "panel.plugins.title": "插件",
   "panel.plugins.placeholder": "插件市场正在做。后端尚未暴露 plugin install 合约，桌面端的类别 tabs + 卡片网格会在合约打通后实装。",
+  /* 07 — 重开页面状态一致：URL 深链跳到的会话 ID 已不存在时的提示；
+     短暂展示让用户知道是有意回到首页，不是静默丢失上下文。 */
+  "session.hint.notFound": "该会话已不可用，已返回首页。",
+  "session.hint.notFound.dismiss": "知道了",
+  "session.hint.notFound.reset": "回到首页",
+  "webui.errorBoundary.title": "页面出错",
+  "webui.errorBoundary.subtitle": "刷新或回首页试试。侧栏状态已保存在本机。",
+  "webui.errorBoundary.reload": "重新加载",
+  "webui.errorBoundary.home": "回到首页",
+  "webui.errorBoundary.copy": "复制诊断信息",
+  "webui.errorBoundary.copied": "已复制",
+  "webui.errorBoundary.details": "诊断信息",
+  "webui.errorBoundary.messageFallback": "页面未能完成渲染。",
   /* 供应商管理（ticket 03）—— 设置里的供应商列表 / 编辑 / 连测 / 持久化面板。
      双语齐全；新增键请同步补全英文与中文。 */
   "providers.title": "模型供应商",

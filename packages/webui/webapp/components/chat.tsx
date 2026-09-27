@@ -15,6 +15,7 @@ import { Icon } from "./icons";
 import { useChatVirtualization } from "./chat-virtual-list";
 import { useSessionContext } from "@/lib/store";
 import { iconByName, type SummaryIconType } from "@/lib/transcript";
+import { readScrollPosition as readPersistedScroll } from "@/lib/persist";
 import type { Locale, MessageKey } from "@/lib/i18n";
 import { WorkspaceChipDropdown } from "./workspace-picker";
 
@@ -38,9 +39,31 @@ import { WorkspaceChipDropdown } from "./workspace-picker";
 interface ChatProps {
   t: (key: MessageKey) => string;
   locale: Locale;
+  /**
+   * Optional webui-parity 07 hook: the page tells the chat about the
+   * scroll position to restore and receives scroll updates to persist.
+   *
+   * Both directions are optional and disabled by default — slice 12 owns
+   * this file, so the wiring is additive only. The page wires
+   * `onScrollPersist` to its `lib/persist.ts` scroll key, and supplies
+   * the remembered top via `initialScrollTop` when the active session
+   * id actually changes.
+   */
+  initialScrollTop?: number;
+  onScrollPersist?: (scrollTop: number) => void;
+  /**
+   * The session id this Chat belongs to. Used to re-read the saved
+   * scroll position when the SSE snapshot delivers the active
+   * session AFTER the component first mounted (the cold-load
+   * sequence is: page mounts with state=null → SSE arrives →
+   * sessionId becomes non-null). Without this hook, the
+   * `initialScrollTop` useState initializer only runs once and
+   * captures `0` from the no-active-session pre-SSE render.
+   */
+  sessionKey?: string | null;
 }
 
-export function Chat({ t, locale }: ChatProps) {
+export function Chat({ t, locale, initialScrollTop, onScrollPersist, sessionKey }: ChatProps) {
   const { state } = useSessionContext();
   const scrollerRef = useRef<HTMLDivElement>(null);
   // Decode, then fold each run of thinking/tool blocks into one activity group so
@@ -72,6 +95,83 @@ export function Chat({ t, locale }: ChatProps) {
     if (!el) return;
     el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
   }, []);
+
+  // Webui-parity 07 — scroll position save (additive; slice 12 owns
+  // this file). The page supplies `onScrollPersist`; we forward every
+  // scroll event with a debounce so a long scroll does not flood
+  // localStorage. The same debounce also covers the resize-driven
+  // recompute path: when the virtual window moves because the
+  // viewport resized (not the user), scrollTop is unchanged so the
+  // write coalesces anyway.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const persist = onScrollPersist;
+    if (!persist) return;
+    const el = scrollerRef.current;
+    if (!el) return;
+    let timer: number | null = null;
+    const onScroll = () => {
+      if (timer !== null) return;
+      timer = window.setTimeout(() => {
+        timer = null;
+        const target = scrollerRef.current;
+        if (!target) return;
+        persist(target.scrollTop);
+      }, 100);
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      if (timer !== null) {
+        window.clearTimeout(timer);
+        timer = null;
+      }
+    };
+  }, [onScrollPersist]);
+
+  // Webui-parity 07 — scroll position restore. Re-runs whenever:
+  //   1. The active session id changes (the page supplies `sessionKey`).
+  //   2. The visible unit count changes — we wait for the transcript to
+  //      settle before jumping, otherwise the scroller clamps a too-
+  //      large scrollTop to its (smaller) scrollHeight and ends up at
+  //      the bottom.
+  //
+  // The persisted position is read from localStorage on every session
+  // id change, NOT from the `initialScrollTop` useState initializer,
+  // because the SSE snapshot delivers the active session AFTER Chat
+  // mounts — the initializer would capture `0` from a state=null
+  // first render and never re-fire.
+  const restoredRef = useRef<string | null>(null);
+  const targetScrollRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!sessionKey) {
+      targetScrollRef.current = null;
+      restoredRef.current = null;
+      return;
+    }
+    const explicit = typeof initialScrollTop === "number" && Number.isFinite(initialScrollTop) ? initialScrollTop : null;
+    const saved = readPersistedScroll(sessionKey);
+    const best = explicit !== null && explicit > 0 ? explicit : saved;
+    targetScrollRef.current = best > 0 ? best : null;
+    restoredRef.current = null;
+  }, [sessionKey, initialScrollTop]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const target = targetScrollRef.current;
+    if (target === null) return;
+    if (restoredRef.current === sessionKey) return;
+    const raf = window.requestAnimationFrame(() => {
+      const el = scrollerRef.current;
+      if (!el) return;
+      const clamped = Math.min(target, el.scrollHeight);
+      if (clamped <= 0) return;
+      el.scrollTo({ top: clamped, behavior: "auto" });
+      restoredRef.current = sessionKey ?? null;
+    });
+    return () => window.cancelAnimationFrame(raf);
+  }, [units.length, sessionKey]);
 
   // The action row lives ONCE at the tail of the transcript, not inside every
   // block. It reveals when the chat has any assistant content AND the session

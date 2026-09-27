@@ -11,6 +11,10 @@ import { Icon } from "./icons";
 import { InboxFlyout } from "./inbox";
 import { SessionTree } from "./session-tree";
 import { runAction } from "@/lib/action-errors";
+import {
+  readShellCollapsedFromPersistedState,
+  writePersistedShellCollapsed,
+} from "@/lib/persist";
 import type { PanelKind } from "./panels";
 
 /**
@@ -62,8 +66,22 @@ export function AppShell({ t, children, toolbar, panel, onOpenPanel, onOpenSetti
   // The sidebar is collapsible from the button in its own top strip. The state
   // lives here rather than in `Sidebar` because the expand affordance has to be
   // rendered by the content column once the sidebar is clipped away.
-  const [collapsed, setCollapsed] = useState(false);
+  //
+  // Webui-parity 07 — additive: seed `collapsed` from the persisted UI state
+  // (see webapp/lib/persist.ts: same keyspace and version guard as
+  // slice 01's files-tree slice). The existing onResize handler still
+  // wins on narrow viewports, so a mobile user opening the page narrow
+  // sees the auto-collapsed rail rather than their saved desktop
+  // preference — that is the same upstream trade-off. The save effect
+  // below writes the user's toggles back into the same payload.
+  const [collapsed, setCollapsed] = useState<boolean>(() => readShellCollapsedFromPersistedState());
   const toggleCollapsed = useCallback(() => setCollapsed((value) => !value), []);
+
+  // Mirror the toggle back into the persisted UI-state payload. Best-
+  // effort, debounced inside `writePersistedShellCollapsed`.
+  useEffect(() => {
+    writePersistedShellCollapsed(collapsed);
+  }, [collapsed]);
 
   // Narrow viewports collapse on their own (desktop: `innerWidth < 980`). It never
   // auto-expands — that is the user's call once they have widened the window.
