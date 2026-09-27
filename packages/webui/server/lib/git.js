@@ -85,14 +85,39 @@ function runRaw(dir, args) {
   })
 }
 
-// Containment gate. `assertWorkspacePath` resolves symlinks and refuses
-// any path that lands outside an allowed workspace root (default = home +
-// default workspace + tmp, overridable via MCODE_WEBUI_WORKSPACE_ROOTS).
-// Returns the absolute path the route should pass to `git`, or null
-// when containment rejects the input.
+// Containment gate. `assertWorkspacePath` does the realpath-based
+// containment check internally (see `lib/workspace.js#resolveWithinRoots`)
+// but returns the *literal* request path as `path` — that is the right
+// shape for `/api/fs/*` (their handlers pass the path to `statSync` /
+// `readdirSync`, which realpath themselves). For the git routes we
+// want a SINGLE canonical spelling of the dir: we want `git -C <dir>`
+// and the file-axis containment comparison to talk about the same
+// string, so a symlinked root cannot produce two different spellings
+// of the same directory (macOS's `/var` → `/private/var` is the canonical
+// case where this matters — without this canonicalisation, the literal
+// request path would be passed to `git -C` while the realpath was
+// used for the gateFile comparison, and any platform where the
+// temp root traverses a symlink could produce a mismatch the test
+// could not catch).
+//
+// Returns the realpath'd dir on success, or null when containment
+// rejects the input. The route uses this single canonical string
+// for `git -C` AND the file-axis comparison AND the containment
+// check — they cannot diverge, regardless of the platform's temp
+// symlink layout.
 function gate(dir) {
   const gateResult = assertWorkspacePath(dir)
-  return gateResult.ok ? gateResult.path : null
+  if (!gateResult.ok) return null
+  try {
+    return realpathSync(gateResult.path)
+  } catch {
+    // The containment check inside `assertWorkspacePath` already
+    // realpath'd the path; if it succeeded there, `realpathSync`
+    // here should not fail. Fall back to the literal only as a
+    // last resort — better to keep serving the request than to
+    // reject it on a transient FS hiccup.
+    return gateResult.path
+  }
 }
 
 // Resolve a user-supplied `file` against the contained workspace dir
