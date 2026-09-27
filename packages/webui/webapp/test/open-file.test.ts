@@ -28,6 +28,17 @@ import {
 // Node test runner has no DOM by default, so we install a minimal
 // in-memory stand-in before the tests run and tear it down between
 // tests so a stale value cannot leak across cases.
+//
+// `window` is a real DOM-lib global with the wide type `Window &
+// typeof globalThis`, so redeclaring it (e.g. `declare global { var
+// window: ... }`) and reassigning it through TypeScript would surface
+// as TS2403 / TS2322 errors under `webapp:typecheck` (the CI gate
+// that the local environment had resolved differently). The polyfill
+// is therefore installed via `Object.defineProperty`, which writes
+// through the runtime instead of through the type-checker; reads
+// stay coherent because the test reads via the same property the
+// production module reads (i.e. `window` resolves to the polyfill
+// for the duration of the test).
 function makeLocalStorage(): Storage {
   const data = new Map<string, string>();
   return {
@@ -52,24 +63,36 @@ function makeLocalStorage(): Storage {
   };
 }
 
-// Declare `window` as a real global so the production module's
-// `typeof window === "undefined"` guard sees an actual object rather
-// than a ReferenceError. We also bind the same reference onto
-// `globalThis` so reads via `window.localStorage` and via
-// `globalThis.localStorage` both resolve to the test stand-in.
-declare global {
-  // eslint-disable-next-line no-var
-  var window: { localStorage: Storage } | undefined;
+/** Narrow shape the production module actually touches. */
+interface TestWindow {
+  localStorage: Storage;
 }
-const g = globalThis as unknown as {
-  window: { localStorage: Storage } | undefined;
-};
-const hadWindow = "window" in g;
-const previousWindow = g.window;
+
+/**
+ * Install `window` on `globalThis` as a configurable property.
+ *
+ * `Object.defineProperty` writes the property at runtime regardless
+ * of how TypeScript has typed `globalThis.window` — that matters
+ * because under the DOM lib the global is the wide `Window & typeof
+ * globalThis`, and a `g.window = { localStorage }` assignment is
+ * exactly what trips TS2322 in CI.
+ */
+function setWindow(value: TestWindow | undefined): void {
+  Object.defineProperty(globalThis, "window", {
+    value,
+    configurable: true,
+    writable: true,
+    enumerable: true,
+  });
+}
+
+const hadWindow = "window" in globalThis;
+const previousWindow: unknown = hadWindow
+  ? (globalThis as { window?: unknown }).window
+  : undefined;
 
 beforeEach(() => {
-  g.window = { localStorage: makeLocalStorage() };
-  globalThis.window = g.window;
+  setWindow({ localStorage: makeLocalStorage() });
   __testReset();
 });
 
@@ -89,7 +112,12 @@ describe("open.file.in.web — basic behaviour", () => {
 
     assert.deepEqual(seen, ["/repo/README.md"]);
     assert.equal(getOpenFilePath(), "/repo/README.md");
-    assert.equal(g.window?.localStorage.getItem("webui:open-file:path"), "/repo/README.md");
+    assert.equal(
+      (globalThis as { window?: TestWindow }).window?.localStorage.getItem(
+        "webui:open-file:path",
+      ),
+      "/repo/README.md",
+    );
     unsubscribe();
   });
 
@@ -103,7 +131,12 @@ describe("open.file.in.web — basic behaviour", () => {
 
     assert.deepEqual(seen, [null]);
     assert.equal(getOpenFilePath(), null);
-    assert.equal(g.window?.localStorage.getItem("webui:open-file:path"), null);
+    assert.equal(
+      (globalThis as { window?: TestWindow }).window?.localStorage.getItem(
+        "webui:open-file:path",
+      ),
+      null,
+    );
     unsubscribe();
   });
 
@@ -130,13 +163,17 @@ describe("open.file.in.web — basic behaviour", () => {
 describe("open.file.in.web — persistence restore on mount", () => {
   test("getOpenFilePath reads the persisted value before any subscriber runs", () => {
     // Simulate a previous page's last write surviving the refresh.
-    g.window!.localStorage.setItem("webui:open-file:path", "/repo/old.md");
+    (
+      globalThis as { window?: TestWindow }
+    ).window!.localStorage.setItem("webui:open-file:path", "/repo/old.md");
 
     assert.equal(getOpenFilePath(), "/repo/old.md");
   });
 
   test("subscriber seeded with the persisted value on subscribe", () => {
-    g.window!.localStorage.setItem("webui:open-file:path", "/repo/old.md");
+    (
+      globalThis as { window?: TestWindow }
+    ).window!.localStorage.setItem("webui:open-file:path", "/repo/old.md");
 
     const seen: (string | null)[] = [];
     const unsubscribe = subscribeOpenFile((value) => seen.push(value));
@@ -148,14 +185,15 @@ describe("open.file.in.web — persistence restore on mount", () => {
   test("disabled storage (no window) does not throw", () => {
     // Mirror the SSR / disabled-storage case: the module has to
     // degrade gracefully without `window.localStorage` being usable.
-    g.window = undefined;
-    globalThis.window = undefined;
+    // `defineProperty(..., { value: undefined, configurable: true })`
+    // exposes the property as `typeof window === "undefined"` from
+    // the production module's perspective.
+    setWindow(undefined);
     assert.doesNotThrow(() => openFileInWeb("/x/y.md"));
     assert.equal(getOpenFilePath(), "/x/y.md");
     assert.doesNotThrow(() => closeOpenFile());
     // Restore for subsequent tests in the file.
-    g.window = { localStorage: makeLocalStorage() };
-    globalThis.window = g.window;
+    setWindow({ localStorage: makeLocalStorage() });
   });
 });
 
@@ -248,5 +286,5 @@ describe("open.file.in.web — source-level single-source", () => {
 
 // Restore the test environment for any tests that run after this file.
 process.on("exit", () => {
-  if (hadWindow) g.window = previousWindow;
+  setWindow(previousWindow as TestWindow | undefined);
 });
