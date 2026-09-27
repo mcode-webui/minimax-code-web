@@ -216,6 +216,9 @@ const en = {
   "files.tree.mtime.weeksAgo": "{n}w ago",
   "files.tree.mtime.monthsAgo": "{n}mo ago",
   "files.tree.mtime.yearsAgo": "{n}y ago",
+  // 12 — open.file.in.web preview pane (right column).
+  "files.preview.empty": "Select a file in the tree or a path in a turn summary to preview it.",
+  "files.preview.close": "Close preview",
   "panel.close": "Close",
   "settings.security": "Network and access",
   "settings.lan": "Share over LAN",
@@ -618,6 +621,9 @@ const zh: Record<MessageKey, string> = {
   "files.tree.mtime.weeksAgo": "{n} 周前",
   "files.tree.mtime.monthsAgo": "{n} 月前",
   "files.tree.mtime.yearsAgo": "{n} 年前",
+  // 12 — open.file.in.web preview pane (right column).
+  "files.preview.empty": "在文件树或轮次总结中点击文件路径以预览。",
+  "files.preview.close": "关闭预览",
   "panel.close": "关闭",
   "settings.security": "网络与访问",
   "settings.lan": "局域网共享",

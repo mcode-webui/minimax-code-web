@@ -29,6 +29,7 @@ import {
   writeSessionToUrl,
   type SessionRestoreOutcome,
 } from "@/lib/url-restore";
+import { openFileInWeb } from "@/lib/open-file";
 
 /**
  * The application root.
@@ -119,6 +120,18 @@ function App() {
     setSettingsSection("providers");
     setPendingProviderAdd(true);
     setSettingsOpen(true);
+  }, []);
+
+  // Single-source "open.file.in.web" — fired from the turn summary's
+  // file paths (`ActivityGroup` → `ToolCard` in `components/chat.tsx`).
+  // The action in `lib/open-file.ts` is also called from the file tree
+  // (`components/panels.tsx#FileRow`); both entry points converge on the
+  // same `FilePreviewPane`. When the right panel is closed we open it
+  // here so the user actually sees the preview they triggered — the
+  // pane only renders inside `FilesPanel`.
+  const onOpenFile = useCallback((path: string) => {
+    openFileInWeb(path);
+    setPanel((current) => (current === "files" ? current : "files"));
   }, []);
 
   // Ctrl+N / Ctrl+K mirror the shortcuts the sidebar advertises. Ctrl+N is only
@@ -283,7 +296,7 @@ function App() {
             />
           ) : null
         }
-        panel={panel ? <RightPanel kind={panel} onClose={() => setPanel(null)} t={t} /> : null}
+        panel={panel ? <RightPanel kind={panel} onClose={() => setPanel(null)} t={t} locale={locale} /> : null}
         onOpenPanel={openPanel}
         onOpenSettings={openSettings}
         alertCount={alertCount}
@@ -294,6 +307,7 @@ function App() {
               t={t}
               locale={locale}
               sessionId={state.mcodeSessionId ?? null}
+              onOpenFile={onOpenFile}
             />
             <Composer t={t} onAddProvider={openProviderAdd} />
           </>
@@ -361,10 +375,12 @@ function ScrollRestoredChat({
   t,
   locale,
   sessionId,
+  onOpenFile,
 }: {
   t: (key: import("@/lib/i18n").MessageKey) => string;
   locale: import("@/lib/i18n").Locale;
   sessionId: string | null;
+  onOpenFile?: (path: string) => void;
 }) {
   const initial = sessionId ? readScrollPosition(sessionId) : 0;
   return (
@@ -377,6 +393,7 @@ function ScrollRestoredChat({
         if (!sessionId) return;
         writeScrollPosition(sessionId, top);
       }}
+      onOpenFile={onOpenFile}
     />
   );
 }

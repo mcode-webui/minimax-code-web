@@ -65,9 +65,29 @@ interface ChatProps {
    * captures `0` from the no-active-session pre-SSE render.
    */
   sessionKey?: string | null;
+  /**
+   * Open a file in the right-hand preview pane (`open.file.in.web`,
+   * webui-parity 12). Called from the turn-summary's per-file paths
+   * surfaced inside the `ActivityGroup` body — the tree entry point
+   * calls the same action from `components/panels.tsx#FileRow`. The
+   * page-level handler is responsible for opening the right panel
+   * when it is currently closed.
+   *
+   * Optional because the home screen (`HomeState`) does not render a
+   * transcript with tool cards; the default no-op keeps the surface
+   * trivial there.
+   */
+  onOpenFile?: (path: string) => void;
 }
 
-export function Chat({ t, locale, initialScrollTop, onScrollPersist, sessionKey }: ChatProps) {
+export function Chat({
+  t,
+  locale,
+  initialScrollTop,
+  onScrollPersist,
+  sessionKey,
+  onOpenFile = () => {},
+}: ChatProps) {
   const { state } = useSessionContext();
   const scrollerRef = useRef<HTMLDivElement>(null);
   // Decode, then fold each run of thinking/tool blocks into one activity group so
@@ -229,6 +249,7 @@ export function Chat({ t, locale, initialScrollTop, onScrollPersist, sessionKey 
                   blocks={unit.blocks}
                   summary={unit.summary}
                   t={t}
+                  onOpenFile={onOpenFile}
                 />
               ) : (
                 <Block key={originalIndex} block={unit.block} t={t} />
@@ -819,10 +840,12 @@ function ActivityGroup({
   blocks,
   summary,
   t,
+  onOpenFile,
 }: {
   blocks: TranscriptBlock[];
   summary: ActivitySummary;
   t: (key: MessageKey) => string;
+  onOpenFile: (path: string) => void;
 }) {
   const [open, setOpen] = useState(false);
 
@@ -899,7 +922,7 @@ function ActivityGroup({
                 block.role === "thinking" ? (
                   <ThinkingRow key={index} block={block} t={t} />
                 ) : (
-                  <ToolCard key={index} block={block} t={t} />
+                  <ToolCard key={index} block={block} t={t} onOpenFile={onOpenFile} />
                 ),
               )}
             </div>
@@ -1003,7 +1026,7 @@ const CATEGORY_GLYPH: Record<SummaryIconType, string> = {
  * beneath it. Output collapses by default — a tool can emit thousands of lines, and
  * upstream keeps it behind a disclosure for the same reason.
  */
-function ToolCard({ block, t }: { block: TranscriptBlock; t: (key: MessageKey) => string }) {
+function ToolCard({ block, t, onOpenFile }: { block: TranscriptBlock; t: (key: MessageKey) => string; onOpenFile: (path: string) => void }) {
   const [open, setOpen] = useState(false);
   const output = block.toolOutput ?? [];
   const paths = block.toolPaths ?? [];
@@ -1111,13 +1134,17 @@ function ToolCard({ block, t }: { block: TranscriptBlock; t: (key: MessageKey) =
           {paths.length > 0 ? (
             <div className="mb-1 flex flex-wrap gap-1">
               {paths.map((path) => (
-                <span
+                <button
                   key={path}
+                  type="button"
                   title={path}
-                  className="tool-resource-reference max-w-[260px] truncate rounded-md bg-bg_grouped_tertiary_elevated px-1.5 py-0.5 text-caption-small-strong text-text_default_secondary"
+                  data-testid="tool-card-path"
+                  data-path={path}
+                  onClick={() => onOpenFile(path)}
+                  className="tool-resource-reference max-w-[260px] truncate rounded-md bg-bg_grouped_tertiary_elevated px-1.5 py-0.5 text-caption-small-strong text-text_default_secondary transition-colors hover:bg-bg_interaction_tertiary_hover hover:text-text_default_primary focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-border_accent"
                 >
                   {path}
-                </span>
+                </button>
               ))}
             </div>
           ) : null}

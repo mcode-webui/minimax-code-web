@@ -26,10 +26,12 @@ import { InboxList } from "./inbox";
 import { useSessionContext } from "@/lib/store";
 import { applyTheme, currentTheme } from "@/lib/theme";
 import { matchFilter } from "@/lib/workspace-filter";
+import { openFileInWeb } from "@/lib/open-file";
 import type { Locale, MessageKey } from "@/lib/i18n";
 import type { ThemeName } from "@/lib/types";
 import { Icon } from "./icons";
 import { ProviderManagementPanel } from "./provider-management";
+import { FilePreviewPane } from "./file-preview-pane";
 
 /**
  * Right-hand drawer.
@@ -54,6 +56,7 @@ export function RightPanel({
   kind,
   onClose,
   t,
+  locale,
 }: {
   kind: PanelKind;
   /** Used by the search panel for its own Esc/blanket/close affordance. The
@@ -61,6 +64,7 @@ export function RightPanel({
    *  no title row, see 反编译 eK in 36705 chunk). */
   onClose: () => void;
   t: (key: MessageKey) => string;
+  locale: Locale;
 }) {
   return (
     <aside
@@ -87,7 +91,7 @@ export function RightPanel({
             one-line change — but do not read them as ported surfaces.
           */}
           {kind === "workspace" ? <WorkspacePanel t={t} /> : null}
-          {kind === "files" ? <FilesPanel t={t} /> : null}
+          {kind === "files" ? <FilesPanel t={t} locale={locale} /> : null}
           {kind === "alerts" ? <AlertsPanel t={t} /> : null}
           {kind === "search" ? <SearchPanel onClose={onClose} t={t} /> : null}
           {kind === "progress" ? <ProgressPanel t={t} /> : null}
@@ -516,7 +520,7 @@ function PluginsPanel({ t }: { t: (key: MessageKey) => string }) {
  *    `assertWorkspacePath`; the panel surfaces the failure as an
  *    inline hint on the affected row, not as a modal / toast.
  */
-function FilesPanel({ t }: { t: (key: MessageKey) => string }) {
+function FilesPanel({ t, locale }: { t: (key: MessageKey) => string; locale: Locale }) {
   const { state } = useSessionContext();
   const workspaceDir = state?.workspace.dir ?? "";
 
@@ -985,6 +989,7 @@ function FilesPanel({ t }: { t: (key: MessageKey) => string }) {
               t={t}
               now={now}
               copied={isCopied}
+              onOpen={() => openFileInWeb(row.path)}
               onCopy={() => copyPath(row.path)}
             />
           );
@@ -1019,6 +1024,14 @@ function FilesPanel({ t }: { t: (key: MessageKey) => string }) {
           </p>
         ) : null}
       </div>
+
+      {/* Preview pane — subscribes to `open.file.in.web` so the tree
+          entry point (`FileRow` below) and the turn-summary entry
+          point (`components/chat.tsx#ToolCard`) land on the same
+          surface. Lives inside FilesPanel because the target desktop
+          UI keeps the tree + preview in the same right column (see
+          `refs/ui/02-workspace-shell.jpg`). */}
+      <FilePreviewPane t={t} locale={locale} />
     </div>
   );
 }
@@ -1213,20 +1226,25 @@ function DirRow({
 /**
  * File row — coloured type chip + name + size / mtime + hover copy.
  *
- * Preview is ticket 02's job; this slice's file affordance is the
- * `复制绝对路径` action.
+ * The row is the entry point for the `open.file.in.web` action (slice
+ * 12): clicking the icon + name area fires the single-source action in
+ * `lib/open-file.ts`, which routes through the same `FilePreviewPane`
+ * the turn summary uses. The hover-only "复制绝对路径" button stays as
+ * its own target so a copy action never opens the preview by accident.
  */
 function FileRow({
   row,
   t,
   now,
   copied,
+  onOpen,
   onCopy,
 }: {
   row: TreeFileRow;
   t: (key: MessageKey) => string;
   now: number;
   copied: boolean;
+  onOpen: () => void;
   onCopy: () => void;
 }) {
   const indent = row.depth * 12;
@@ -1254,21 +1272,25 @@ function FileRow({
           position (the dir row uses a 16px chevron + 4px icon). The
           file row has no chevron, so we add 16px of leading space. */}
       <span className="w-4 flex-shrink-0" />
-      <span
-        className={[
-          "flex size-4 flex-shrink-0 items-center justify-center",
-          fileTypeColor(entry.name),
-        ].join(" ")}
-        aria-hidden
-      >
-        <Icon name="file" size={13} />
-      </span>
-      <span
+      <button
+        type="button"
+        onClick={onOpen}
+        aria-label={t("files.tree.fileAria").replace("{name}", entry.name)}
         title={entry.path}
-        className="min-w-0 flex-1 truncate text-sm text-text_default_primary"
+        data-testid="files-tree-file-open"
+        className="flex min-w-0 flex-1 items-center gap-1.5 truncate rounded text-left text-text_default_primary hover:text-text_default_primary focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-border_accent"
       >
-        {entry.name}
-      </span>
+        <span
+          className={[
+            "flex size-4 flex-shrink-0 items-center justify-center",
+            fileTypeColor(entry.name),
+          ].join(" ")}
+          aria-hidden
+        >
+          <Icon name="file" size={13} />
+        </span>
+        <span className="min-w-0 truncate text-sm">{entry.name}</span>
+      </button>
       <span className="flex-shrink-0 text-caption-small-strong text-text_default_tertiary">
         {entry.size > 0 ? formatSize(entry.size) : ""}
       </span>
