@@ -26,6 +26,7 @@ import { InboxList } from "./inbox";
 import { useSessionContext } from "@/lib/store";
 import { applyTheme, currentTheme } from "@/lib/theme";
 import { matchFilter } from "@/lib/workspace-filter";
+import { openFileInWeb } from "@/lib/open-file";
 import { splitFilesByBucket, formatStatusTags, previewDiff } from "@/lib/git-panel";
 import type { Locale, MessageKey } from "@/lib/i18n";
 import type { ThemeName } from "@/lib/types";
@@ -91,7 +92,7 @@ export function RightPanel({
             one-line change — but do not read them as ported surfaces.
           */}
           {kind === "workspace" ? <WorkspacePanel t={t} /> : null}
-          {kind === "files" ? <FilesPanel t={t} /> : null}
+          {kind === "files" ? <FilesPanel t={t} locale={locale} /> : null}
           {kind === "git" ? <GitPanel t={t} /> : null}
           {kind === "alerts" ? <AlertsPanel t={t} /> : null}
           {kind === "search" ? <SearchPanel onClose={onClose} t={t} /> : null}
@@ -1670,7 +1671,7 @@ function GitPanel({ t }: { t: (key: MessageKey) => string }) {
               {diff.text}
               {diff.truncated ? (
                 <span className="block pt-1 text-text_default_tertiary">
-                  …{t("git.file.diff.empty")}
+                  …{t("git.file.diff.truncated")}
                 </span>
               ) : null}
             </pre>

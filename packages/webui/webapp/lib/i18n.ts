@@ -140,6 +140,7 @@ const en = {
   "error.session": "Could not load sessions",
   "toolbar.workspace": "Workspace",
   "toolbar.browser": "Browser",
+  "toolbar.git": "Git",
   /* The bell opens 站内信 (the inbox), not a warning list — upstream keeps system
      messages and product notices here. The underlying feed is still this server's
      alert ring buffer; see the inbox note in components/panels.tsx. */
@@ -383,6 +384,7 @@ const en = {
   "git.files.untracked": "untracked",
   "git.file.openDiff": "View diff",
   "git.file.diff.empty": "No diff for this file",
+  "git.file.diff.truncated": "Diff truncated — full diff available on the engine",
   "git.file.diff.loading": "Loading diff…",
   "git.file.diff.failed": "Could not load diff",
   "git.refresh": "Refresh",
@@ -579,6 +581,7 @@ const zh: Record<MessageKey, string> = {
   "error.session": "会话列表加载失败",
   "toolbar.workspace": "工作区",
   "toolbar.browser": "网页",
+  "toolbar.git": "Git",
   /* 铃铛打开的是站内信, 不是告警列表 —— 上游把系统消息与产品通知都放这里。 */
   "toolbar.alerts": "站内信",
   "common.unsupported": "暂不支持",
@@ -804,6 +807,7 @@ const zh: Record<MessageKey, string> = {
   "git.files.untracked": "未跟踪",
   "git.file.openDiff": "查看 diff",
   "git.file.diff.empty": "该文件无 diff",
+  "git.file.diff.truncated": "diff 已截断 — 完整内容请在引擎中查看",
   "git.file.diff.loading": "加载 diff 中…",
   "git.file.diff.failed": "diff 加载失败",
   "git.refresh": "刷新",

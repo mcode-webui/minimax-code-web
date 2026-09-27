@@ -253,7 +253,6 @@ async function bodyReview(cs, cid) {
           : "";
       lines.push(`● 变更概览 — ${branchLabel}${tracking}`);
       const staged = files.filter((f) => f.staged);
-      const unstaged = files.filter((f) => !f.staged && (f.x === " " || f.x === "?") === false);
       // git porcelain semantics: x === ' ' means "unstaged only",
       // x === '?' means "untracked" — keep the two buckets separate
       // so the report matches what `git status -s` would print.

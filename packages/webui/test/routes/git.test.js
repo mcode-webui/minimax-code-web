@@ -1,6 +1,6 @@
 // webui/test/routes/git.test.js
 // Regression: `/api/git/*` (slice 03 — right-panel Git panel + `/review`
-// slash command). Pins the three security invariants the ticket names:
+// slash command). Pins the security invariants the ticket names:
 //
 //   1. Containment: an out-of-root `dir` is rejected by the shared
 //      `assertWorkspacePath` gate before `git` is even invoked. The
@@ -13,6 +13,14 @@
 //      or contains `..` is rejected up front by `gitDiff`. The `--`
 //      separator in the `execFile` argv is the in-binary boundary; this
 //      test pins the up-front gate so the separator is ungameable.
+//   4. File-axis containment: an absolute file path (e.g. `/etc/hostname`)
+//      is rejected by `gitDiff` even though it starts with neither `-`
+//      nor `..` — without this gate, `git diff --no-index -- /dev/null
+//      <abs>` would happily read any server-readable file. The new
+//      gate is `gateFile`, which `realpath`s the resolved path and
+//      refuses any escape outside the contained dir.
+//   5. Body cap: the checkout body goes through `readJson` (1 MiB
+//      cap, 413 on overflow), not a hand-rolled buffer.
 //
 // Plus the success-path smoke tests so a regression in the parser is
 // loud rather than silent.
@@ -23,6 +31,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { execSync } from "node:child_process";
+import { Readable } from "node:stream";
 import { pathToFileURL } from "node:url";
 
 const absPath = (rel) => pathToFileURL(join(import.meta.dirname, "..", "..", "server", rel)).href;
@@ -53,26 +62,16 @@ function readReq(url) {
   return { url };
 }
 
-// Build a fake request that delivers a single JSON body chunk on end.
-// Mirrors the small `(req, res)` style the route uses (the route calls
-// `req.on('data', …)` then `req.on('end', …)`). Tests drive the end
-// event by awaiting `req.flush()` so the assertions can read the body
-// after the route's `end` handler runs.
-function fakeJsonReq(url, payload) {
+// Build a fake POST request whose body is the JSON-encoded `payload`.
+// `readJson` consumes the body through `for await (const chunk of req)`,
+// so the fake must be a Node `Readable`, not an event-emitter. The
+// route does not need any GET URL, but the handler only checks `req.url`
+// for `handleGitCheckout`; pass an empty string.
+function fakeJsonReq(payload) {
   const body = typeof payload === "string" ? payload : JSON.stringify(payload);
-  const listeners = { data: [], end: [] };
-  return {
-    url,
-    on(event, cb) {
-      if (event === "data") listeners.data.push(cb);
-      else if (event === "end") listeners.end.push(cb);
-    },
-    // Drive the events: emit `data` with the body once, then `end`.
-    flush() {
-      for (const cb of listeners.data) cb(body);
-      for (const cb of listeners.end) cb();
-    },
-  };
+  // `Readable.from([chunk])` is the standard pattern for a finite stream.
+  // Encoding the body as UTF-8 mirrors what `readJson` does.
+  return Readable.from([Buffer.from(body, "utf8")]);
 }
 
 async function readBody(res) {
@@ -267,6 +266,47 @@ describe("git routes — /api/git/diff", () => {
     assert.match(body.error, /非法路径/);
   });
 
+  test("an absolute file path is rejected (file-axis escape)", async () => {
+    // Without the file-axis containment, `git diff --no-index --
+    // /dev/null <abs>` would happily read any server-readable file.
+    // Pin that this surface refuses absolute paths regardless of
+    // whether the resolved realpath is inside the workspace.
+    for (const abs of ["/etc/hostname", "/etc/passwd", "/tmp/anything"]) {
+      const res = fakeRes();
+      gitRoute.handleGitDiff(readReq(
+        `/api/git/diff?dir=${encodeURIComponent(repoDir)}&file=${encodeURIComponent(abs)}`,
+      ), res);
+      const body = await readBody(res);
+      assert.equal(body.ok, false, `expected reject for ${abs}`);
+      assert.match(body.error, /非法路径/, `expected 非法路径 for ${abs}, got: ${body.error}`);
+    }
+  });
+
+  test("a symlink pointing outside the workspace is rejected", async () => {
+    // Create a symlink inside the repo that points to /etc/hostname.
+    // realpath containment must refuse to follow it through the
+    // diff file parameter.
+    const linkPath = `${repoDir}/evil-link`;
+    try {
+      const { symlinkSync } = await import("node:fs");
+      symlinkSync("/etc/hostname", linkPath);
+    } catch (cause) {
+      // Some platforms (Windows without priv) refuse symlink creation
+      // — skip rather than fail. The containment behaviour itself is
+      // covered by the absolute-path test above; the symlink case is
+      // the "best-effort coverage" layer.
+      console.warn(`[skip] symlink test: ${cause.message}`);
+      return;
+    }
+    const res = fakeRes();
+    gitRoute.handleGitDiff(readReq(
+      `/api/git/diff?dir=${encodeURIComponent(repoDir)}&file=${encodeURIComponent("evil-link")}`,
+    ), res);
+    const body = await readBody(res);
+    assert.equal(body.ok, false);
+    assert.match(body.error, /非法路径/);
+  });
+
   test("a filename containing '..' is rejected", async () => {
     const res = fakeRes();
     gitRoute.handleGitDiff(readReq(
@@ -279,21 +319,25 @@ describe("git routes — /api/git/diff", () => {
 });
 
 describe("git routes — /api/git/checkout", () => {
-  test("invalid JSON returns 400 invalid json", async () => {
+  test("a malformed JSON body answers 'missing dir/branch' (not 500)", async () => {
+    // The shared `readJson` helper swallows parse errors and returns
+    // `{}`. The route then sees no `dir` / `branch` and answers 400
+    // with the normal "missing dir/branch" message — same shape as
+    // a request that sends an empty JSON body. The point is that
+    // no exception escapes the route, the body cap is honoured, and
+    // the panel gets a coherent error message to render.
     const res = fakeRes();
-    const fakeReq = fakeJsonReq("/api/git/checkout", "not-json-{");
-    gitRoute.handleGitCheckout(fakeReq, res);
-    fakeReq.flush();
+    const fakeReq = fakeJsonReq("not-json-{");
+    await gitRoute.handleGitCheckout(fakeReq, res);
     const body = await readBody(res);
     assert.equal(res.status, 400);
-    assert.equal(body.error, "invalid json");
+    assert.match(body.error, /missing dir/);
   });
 
   test("missing dir/branch returns 400", async () => {
     const res = fakeRes();
-    const fakeReq = fakeJsonReq("/api/git/checkout", { branch: "main" });
-    gitRoute.handleGitCheckout(fakeReq, res);
-    fakeReq.flush();
+    const fakeReq = fakeJsonReq({ branch: "main" });
+    await gitRoute.handleGitCheckout(fakeReq, res);
     const body = await readBody(res);
     assert.equal(res.status, 400);
     assert.match(body.error, /missing dir/);
@@ -304,9 +348,8 @@ describe("git routes — /api/git/checkout", () => {
       ? process.env.SystemRoot || "C:\\Windows"
       : "/etc";
     const res = fakeRes();
-    const fakeReq = fakeJsonReq("/api/git/checkout", { dir: outsideRoot, branch: "main" });
-    gitRoute.handleGitCheckout(fakeReq, res);
-    fakeReq.flush();
+    const fakeReq = fakeJsonReq({ dir: outsideRoot, branch: "main" });
+    await gitRoute.handleGitCheckout(fakeReq, res);
     const body = await readBody(res);
     assert.equal(res.status, 200);
     assert.equal(body.ok, false);
@@ -319,9 +362,8 @@ describe("git routes — /api/git/checkout", () => {
     // checkout` itself reads argv and would interpret `--upload-pack=…`
     // as its own option. The regex + leading-dash guard stops that.
     const res = fakeRes();
-    const fakeReq = fakeJsonReq("/api/git/checkout", { dir: repoDir, branch: "--upload-pack=evil" });
-    gitRoute.handleGitCheckout(fakeReq, res);
-    fakeReq.flush();
+    const fakeReq = fakeJsonReq({ dir: repoDir, branch: "--upload-pack=evil" });
+    await gitRoute.handleGitCheckout(fakeReq, res);
     const body = await readBody(res);
     assert.equal(body.ok, false);
     assert.match(body.error, /非法分支名/);
@@ -339,9 +381,8 @@ describe("git routes — /api/git/checkout", () => {
     // the input.
     for (const bad of ["main; rm -rf /", "main && curl evil", "main|whoami"]) {
       const res = fakeRes();
-      const fakeReq = fakeJsonReq("/api/git/checkout", { dir: repoDir, branch: bad });
-      gitRoute.handleGitCheckout(fakeReq, res);
-      fakeReq.flush();
+      const fakeReq = fakeJsonReq({ dir: repoDir, branch: bad });
+      await gitRoute.handleGitCheckout(fakeReq, res);
       const body = await readBody(res);
       assert.equal(body.ok, false, `expected reject for ${JSON.stringify(bad)}`);
       assert.match(body.error, /非法分支名/);
@@ -350,9 +391,8 @@ describe("git routes — /api/git/checkout", () => {
     // `ok:false` answer (from git itself), never a successful
     // checkout. The panel surfaces this verbatim.
     const traversalRes = fakeRes();
-    const traversalReq = fakeJsonReq("/api/git/checkout", { dir: repoDir, branch: "../etc" });
-    gitRoute.handleGitCheckout(traversalReq, traversalRes);
-    traversalReq.flush();
+    const traversalReq = fakeJsonReq({ dir: repoDir, branch: "../etc" });
+    await gitRoute.handleGitCheckout(traversalReq, traversalRes);
     const traversalBody = await readBody(traversalRes);
     assert.equal(traversalBody.ok, false);
     // Either the regex layer or the git layer rejected it — the
@@ -368,9 +408,8 @@ describe("git routes — /api/git/checkout", () => {
     // name must surface the underlying git error verbatim — the panel
     // shows that as a transient inline message, not a toast.
     const res = fakeRes();
-    const fakeReq = fakeJsonReq("/api/git/checkout", { dir: repoDir, branch: "definitely-not-a-branch" });
-    gitRoute.handleGitCheckout(fakeReq, res);
-    fakeReq.flush();
+    const fakeReq = fakeJsonReq({ dir: repoDir, branch: "definitely-not-a-branch" });
+    await gitRoute.handleGitCheckout(fakeReq, res);
     const body = await readBody(res);
     assert.equal(body.ok, false);
     assert.ok(typeof body.error === "string" && body.error.length > 0);

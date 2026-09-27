@@ -33,8 +33,18 @@
 //      is additionally rejected by the explicit `startsWith('-')`
 //      guard so we never even try to invoke `git` with a name that
 //      starts with a dash.
+//
+//   5. **File-axis containment.** `gitDiff` resolves `file` against
+//      the contained `dir` and requires the result's realpath to stay
+//      inside the directory's realpath. Absolute paths, `..`-prefixed
+//      paths, and symlink escapes are all rejected — without this an
+//      attacker could pass `?file=/etc/hostname` and read any
+//      server-readable file through the `--no-index -- /dev/null <file>`
+//      fallback (the ticket invariant "file 参数不得逃逸工作区").
 
 import { execFile } from 'node:child_process'
+import { realpathSync } from 'node:fs'
+import { isAbsolute, relative, resolve, sep } from 'node:path'
 import { assertWorkspacePath } from './workspace.js'
 
 const TIMEOUT_MS = 10000
@@ -83,6 +93,57 @@ function runRaw(dir, args) {
 function gate(dir) {
   const gateResult = assertWorkspacePath(dir)
   return gateResult.ok ? gateResult.path : null
+}
+
+// Resolve a user-supplied `file` against the contained workspace dir
+// and verify the result's realpath stays inside the dir's realpath.
+// Three classes of escape are rejected:
+//
+//   - absolute paths (`/etc/hostname`, `C:\\Windows\\…`) — `git diff
+//     -C <dir> -- /etc/hostname` would be re-anchored to <dir>, but
+//     `git diff --no-index -- /dev/null /etc/hostname` would read the
+//     absolute path verbatim. We forbid these up front.
+//   - `..`-prefixed paths — covered by the relative() check.
+//   - symlinks that resolve outside the dir — covered by the
+//     realpath + relative() check.
+//
+// Returns the resolved file path on success, null on any escape. The
+// caller treats null as "reject the request before invoking git".
+function gateFile(dir, file) {
+  if (typeof file !== 'string' || file.length === 0) return null
+  // Absolute path — reject. This is the surface the acceptance
+  // findings flagged: a request like
+  //   GET /api/git/diff?dir=<workspace>&file=/etc/hostname
+  // would otherwise let `--no-index -- /dev/null /etc/hostname`
+  // read any server-readable file.
+  if (isAbsolute(file)) return null
+  // Up-front belt-and-braces guards: leading `-` (option injection
+  // through `git diff` argv) and `..` (traversal that the relative()
+  // check below already catches but we deny earlier for clarity).
+  if (file.startsWith('-') || file.includes('..')) return null
+  let absDir
+  try {
+    absDir = realpathSync(dir)
+  } catch {
+    return null
+  }
+  const resolved = resolve(absDir, file)
+  let realFile
+  try {
+    realFile = realpathSync(resolved)
+  } catch {
+    // File does not yet exist (untracked) — fall back to the resolved
+    // path WITHOUT realpath so the `git diff --no-index -- /dev/null
+    // <file>` call can still surface a synthetic diff. The
+    // realpath-containment of the parent dir is what matters here;
+    // a non-existent absolute path would have been rejected above.
+    realFile = resolved
+  }
+  const rel = relative(absDir, realFile)
+  if (rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel))) {
+    return realFile
+  }
+  return null
 }
 
 // Workspace status: branch + upstream + ahead/behind + changed files.
@@ -189,6 +250,12 @@ export async function gitCheckout(dir, branch) {
 // `startsWith('-')` is the belt-and-braces guard that makes the
 // separator ungameable from the HTTP layer.
 //
+// The `file` argument is also containerised via `gateFile` (absolute
+// paths rejected, `..` rejected, realpath must stay inside the dir) —
+// without this an absolute path would slip through `--no-index --
+// /dev/null <file>` and read any server-readable file. See invariant
+// (5) in the header.
+//
 // `git diff --no-index` exits with code 1 when the two paths differ,
 // which is the documented "diff was found" code (see `man git-diff`).
 // `run()` treats any non-zero exit as a generic error, so the
@@ -199,14 +266,18 @@ export async function gitCheckout(dir, branch) {
 export async function gitDiff(dir, file) {
   const abs = gate(dir)
   if (!abs) return { ok: false, diff: '', error: '目录不在允许范围内' }
-  if (file.includes('..') || file.startsWith('-')) return { ok: false, diff: '', error: '非法路径' }
-  const headDiff = await runRaw(abs, ['diff', 'HEAD', '--', file])
+  const safeFile = gateFile(abs, file)
+  if (!safeFile) return { ok: false, diff: '', error: '非法路径' }
+  // Pass the contained, resolved path so the post-containment file
+  // is what `git` actually reads. The `--` separator is the argv-side
+  // boundary; `gateFile` is the path-side boundary.
+  const headDiff = await runRaw(abs, ['diff', 'HEAD', '--', safeFile])
   if (headDiff.code === 0 && headDiff.stdout.trim() !== '') {
     return { ok: true, diff: headDiff.stdout }
   }
   // HEAD diff produced nothing (file is untracked or matches HEAD).
   // Try no-index vs /dev/null to get a synthetic all-add diff.
-  const noIndex = await runRaw(abs, ['diff', '--no-index', '--', '/dev/null', file])
+  const noIndex = await runRaw(abs, ['diff', '--no-index', '--', '/dev/null', safeFile])
   if (noIndex.code === 0 || noIndex.code === 1) {
     // exit 1 means "files differ" — that IS the success case for
     // no-index (it has no working tree to compare against).
