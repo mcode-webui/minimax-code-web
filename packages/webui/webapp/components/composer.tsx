@@ -14,11 +14,17 @@ import {
 import { createPortal } from "react-dom";
 
 import * as api from "@/lib/api";
+import { clientId } from "@/lib/cid";
 import {
   getComposerDraft,
   setComposerDraft,
   subscribeComposerDraft,
 } from "@/lib/composer-draft";
+import {
+  completeComposerSent,
+  failComposerSent,
+  startComposerSent,
+} from "@/lib/composer-sent";
 import { useSessionContext } from "@/lib/store";
 import { decodeTranscript } from "@/lib/transcript";
 import { translate, type Locale, type MessageKey } from "@/lib/i18n";
@@ -316,20 +322,61 @@ export function Composer({
   const submit = useCallback(async () => {
     const content = value.trim();
     if ((!content && attachments.length === 0) || readOnly || sending) return;
+    // Capture the dispatch context NOW. The outbox is keyed by
+    // (cid, sessionId), and the session id in `state` can rotate
+    // between this line and the catch handler's call — the catch
+    // branch restores only when the values still match the ones we
+    // stashed.
+    const cid = clientId();
+    const sessionId = state?.sessionId ?? null;
     setSending(true);
     setComposerDraft({ error: null });
+    // Ticket 13 — optimistic clear. The backend does session
+    // switching and transcript backfill before its ack, so waiting
+    // for the await leaves the text sitting in the box for the whole
+    // in-flight window. Park the message in the outbox (a sibling
+    // module-scope store to `composer-draft.ts`, see `lib/composer-
+    // sent.ts`) and clear the composer immediately. On success the
+    // outbox flips to `delivered` and the SSE stream renders the user
+    // bubble; on failure the catch branch reads the stashed text back
+    // into the composer — see the design note at the top of
+    // `lib/composer-sent.ts`.
+    startComposerSent({
+      cid,
+      sessionId,
+      content,
+      attachments,
+    });
+    setComposerDraft({ value: "", attachments: [] });
     try {
       // A leading slash is a command, not a message: mcode parses those, and the
-      // webui's own slash commands are handled server-side too.
+      // webui's own slash commands are handled server-side too. The same
+      // record/clear/restore semantics apply to both branches.
       if (content.startsWith("/")) await api.sendCommand(content);
       else await api.sendMessage({ content, attachments });
-      setComposerDraft({ value: "", attachments: [] });
+      completeComposerSent();
     } catch (cause) {
-      setComposerDraft({ error: cause instanceof Error ? cause.message : String(cause) });
+      const errorMessage = cause instanceof Error ? cause.message : String(cause);
+      // failComposerSent returns the restore payload only when
+      // (cid, sessionId) still match — a session switch mid-flight
+      // must never paste the old session's text into the new
+      // session's composer.
+      const restored = failComposerSent({ cid, sessionId, error: errorMessage });
+      // Always set the error banner. When we have a payload, put the
+      // text back into the composer too: "Nothing may vanish" — a
+      // failed send must not look like a silent vanish (the intent
+      // `composer-draft.ts` was written to preserve). The text wins
+      // over anything the user typed since; the banner explains why
+      // the previous message bounced, and the original text is right
+      // there to edit and resend.
+      if (restored) {
+        setComposerDraft({ value: restored.content, attachments: restored.attachments });
+      }
+      setComposerDraft({ error: errorMessage });
     } finally {
       setSending(false);
     }
-  }, [value, attachments, readOnly, sending]);
+  }, [value, attachments, readOnly, sending, state?.sessionId]);
 
   const onPickFiles = useCallback(async (files: FileList | null) => {
     if (!files?.length) return;
