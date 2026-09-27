@@ -139,6 +139,87 @@ export function coerceAddress(raw: string): CoercedAddress {
 }
 
 /**
+ * Resolve a workspace-relative path against the active workspace
+ * directory, returning an absolute path string suitable for handing
+ * to the containment-gated `/api/fs/raw` route.
+ *
+ * Slice 04 landed the panel with a single-argument `buildSandboxUrl`
+ * that fed the user-entered path verbatim to `/api/fs/raw?path=…`.
+ * The server-side route resolves *any* relative `path` against
+ * `process.cwd()`, not against the user's active workspace —
+ * so a workspace-relative entry like `public/index.html` resolved
+ * to `<serverCwd>/public/index.html` and was rejected by the
+ * containment gate (the cwd is not, by default, an allowed root).
+ * Absolute in-root paths worked; everything else did not.
+ *
+ * The fix is the panel's responsibility: a workspace-relative entry
+ * arrives from the address bar / file-tree with the workspace dir
+ * already known to the parent (slice 07's persisted UI state carries
+ * `state.workspace.dir`); we pre-resolve relative → absolute HERE so
+ * the server route just has to enforce containment on the result.
+ *
+ * Rules:
+ *   - Empty / null `workspaceDir`  → return `path` unchanged. The
+ *     empty state renders without an iframe so the unresolved path
+ *     cannot reach the wire; this branch exists for callers that
+ *     pass-through (tests, non-mounted call sites).
+ *   - Absolute `path` (POSIX `/` or any `X:\` / `X:/` Windows form)
+ *     → return `path` unchanged. The server's containment gate
+ *     still rejects out-of-root absolute paths with a 403.
+ *   - Relative `path`            → return `path.join(workspaceDir, path)`
+ *     after collapsing `./` segments. The component owns
+ *     `coerceAddress`'s backslash→forward normalisation already, so
+ *     this layer just stitches the two halves with `posix.join` so
+ *     any backslash that slips past (Windows clipboard paste + a
+ *     future regression in `coerceAddress`) still produces a
+ *     POSIX-style absolute path.
+ *
+ * Path-segment validation (`..` past the workspace, escape attempts)
+ * is delegated to the server gate. Pre-emptively rewriting here would
+ * mask containment failures in tests, in line with the
+ * `coerceAddress` contract.
+ */
+export function resolveWorkspacePath(path: string, workspaceDir: string | null | undefined): string {
+  if (!workspaceDir) return path;
+  // POSIX-absolute (starts with `/`) OR Windows-drive-absolute
+  // (`C:\` or `C:/` — case-insensitive drive letter). Anything else
+  // is relative and joined against the workspace dir.
+  const looksAbsolute =
+    path.startsWith("/") || /^[a-z]:[\\/]/i.test(path);
+  if (looksAbsolute) return path;
+  // Normalise a leading `./` so a clipboard artifact doesn't smuggle
+  // a single dot into the joined path. `posix.join` collapses inner
+  // `./` itself but we keep the leading-strip rule here for
+  // symmetry with `coerceAddress`.
+  const stripped = path.replace(/^\.\//, "");
+  return posixJoin(workspaceDir, stripped);
+}
+
+/**
+ * Tiny `path.posix.join` polyfill that ALSO collapses internal `./`
+ * segments — keeps the helper free of a Node `path` import so the
+ * pure-logic module can be unit-tested without `node:path`.
+ *
+ * Trailing slashes on either input are stripped before the join so
+ * `/home/acer09/codes` + `foo/index.html` produces the same
+ * well-formed absolute path the server route would build itself.
+ */
+function posixJoin(...parts: string[]): string {
+  const cleaned: string[] = [];
+  for (const part of parts) {
+    if (!part) continue;
+    cleaned.push(part.replace(/\/+$/, ""));
+  }
+  let joined = cleaned.join("/");
+  // Collapse `./` segments without rewriting `..` — we deliberately
+  // forward `..` to the server gate (matches the `coerceAddress`
+  // rationale documented above).
+  joined = joined.replace(/\/\.\//g, "/");
+  if (joined.startsWith("./")) joined = joined.slice(2);
+  return joined;
+}
+
+/**
  * Build the iframe `src` for a validated path.
  *
  * The iframe MUST always point at the containment-gated `/api/fs/raw`
@@ -147,9 +228,15 @@ export function coerceAddress(raw: string): CoercedAddress {
  * is the ONLY place this URL is constructed, so a grep for
  * `fsRawUrl` in the component is the tripwire that catches any
  * future "open in iframe via filesystem" regression.
+ *
+ * `workspaceDir` (wiring slice 04b) is the absolute directory the
+ * user's session is anchored to. Workspace-relative entries are
+ * resolved against it BEFORE the URL is built; absolute paths flow
+ * through unchanged. See `resolveWorkspacePath` for the rules.
  */
-export function buildSandboxUrl(path: string): string {
-  return fsRawUrl(path);
+export function buildSandboxUrl(path: string, workspaceDir?: string | null): string {
+  const resolved = resolveWorkspacePath(path, workspaceDir);
+  return fsRawUrl(resolved);
 }
 
 /**

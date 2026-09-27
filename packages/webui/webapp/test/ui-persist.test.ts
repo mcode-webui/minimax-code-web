@@ -120,6 +120,16 @@ describe("deserializeUiState", () => {
     assert.equal(out.panel, null);
   });
 
+  test("accepts the slice-04 browser panel kind so a refresh restores it", () => {
+    // The slice-04 wiring adds "browser" to the panel registry;
+    // a refresh must round-trip the choice through the persisted
+    // payload, otherwise the right column reverts to its default
+    // and the user loses their browser-panel context.
+    const raw = validPayload({ panel: "browser" });
+    const out = deserializeUiState(raw, cid);
+    assert.equal(out.panel, "browser");
+  });
+
   test("preserves lastSessionId and panelTab fields", () => {
     const raw = validPayload({
       panel: "search",

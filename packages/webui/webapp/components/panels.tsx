@@ -28,6 +28,8 @@ import { applyTheme, currentTheme } from "@/lib/theme";
 import { matchFilter } from "@/lib/workspace-filter";
 import { openFileInWeb } from "@/lib/open-file";
 import { splitFilesByBucket, formatStatusTags, previewDiff } from "@/lib/git-panel";
+import { BrowserPanel } from "@/components/browser-panel";
+import { isHtmlPath } from "@/lib/browser-nav";
 import type { Locale, MessageKey } from "@/lib/i18n";
 import type { ThemeName } from "@/lib/types";
 import { Icon } from "./icons";
@@ -51,13 +53,25 @@ import { FilePreviewPane } from "./file-preview-pane";
  * surface.
  */
 
-export type PanelKind = "workspace" | "files" | "git" | "alerts" | "search" | "progress" | "plugins";
+export type PanelKind =
+  | "workspace"
+  | "files"
+  | "git"
+  | "alerts"
+  | "search"
+  | "progress"
+  | "plugins"
+  | "browser";
 
 export function RightPanel({
   kind,
   onClose,
   t,
   locale,
+  workspaceDir,
+  browserPath,
+  onBrowserNavigate,
+  onOpenInBrowser,
 }: {
   kind: PanelKind;
   /** Used by the search panel for its own Esc/blanket/close affordance. The
@@ -66,6 +80,28 @@ export function RightPanel({
   onClose: () => void;
   t: (key: MessageKey) => string;
   locale: Locale;
+  /** Active workspace dir (slice 04b wiring). Forwarded into
+   *  `BrowserPanel` so workspace-relative entries resolve against it
+   *  before reaching `/api/fs/raw`. Empty string means "no workspace
+   *  yet" — the panel renders its empty state, no iframe. */
+  workspaceDir: string;
+  /** Currently-open browser-panel path (workspace-relative). Drives
+   *  `BrowserPanel`'s controlled `currentPath`. Mirrors how the
+   *  slice-12 file preview owns its open-file state. */
+  browserPath: string | null;
+  /** The browser panel's internal navigation handler — address-bar
+   *  Go, back / forward, and any future in-app navigator. Sets the
+   *  `browserPath` but does NOT open the panel (the panel already
+   *  owns the path being navigated). The two callbacks intentionally
+   *  diverge so the file-tree's "click an HTML row" case can use a
+   *  single setter that does both, while the in-panel case stays
+   *  one-way. */
+  onBrowserNavigate: (path: string | null) => void;
+  /** The file-tree "click an HTML row" handler — sets the path AND
+   *  opens the browser panel so the user actually sees the preview
+   *  they triggered. Only the file tree calls this; the panel
+   *  itself never re-enters via this funnel. */
+  onOpenInBrowser: (path: string) => void;
 }) {
   return (
     <aside
@@ -84,16 +120,32 @@ export function RightPanel({
           {/*
             `alerts` and `progress` are rendered but no launcher can reach them:
             every `openPanel(...)` call in the app passes one of `workspace`,
-            `files`, `search` or `plugins`, and the bell opens the inbox
-            flyout (components/inbox.tsx), not this panel. Neither kind has a
-            counterpart in the desktop's right panel, whose tab registry is
-            exactly `changes` / `terminal` / `browser` / `files`. See the
-            ProgressPanel comment. Kept, not deleted, so a future launcher is a
-            one-line change — but do not read them as ported surfaces.
+            `files`, `search`, `plugins` or `browser`, and the bell opens the
+            inbox flyout (components/inbox.tsx), not this panel. Neither kind
+            has a counterpart in the desktop's right panel, whose tab
+            registry is exactly `changes` / `terminal` / `browser` / `files`.
+            See the ProgressPanel comment. Kept, not deleted, so a future
+            launcher is a one-line change — but do not read them as ported
+            surfaces.
           */}
           {kind === "workspace" ? <WorkspacePanel t={t} /> : null}
-          {kind === "files" ? <FilesPanel t={t} locale={locale} /> : null}
+          {kind === "files" ? (
+            <FilesPanel
+              t={t}
+              locale={locale}
+              onOpenInBrowser={onOpenInBrowser}
+            />
+          ) : null}
           {kind === "git" ? <GitPanel t={t} /> : null}
+          {kind === "browser" ? (
+            <BrowserPanel
+              t={t}
+              locale={locale}
+              workspaceDir={workspaceDir}
+              currentPath={browserPath}
+              onNavigate={onBrowserNavigate}
+            />
+          ) : null}
           {kind === "alerts" ? <AlertsPanel t={t} /> : null}
           {kind === "search" ? <SearchPanel onClose={onClose} t={t} /> : null}
           {kind === "progress" ? <ProgressPanel t={t} /> : null}
@@ -522,7 +574,20 @@ function PluginsPanel({ t }: { t: (key: MessageKey) => string }) {
  *    `assertWorkspacePath`; the panel surfaces the failure as an
  *    inline hint on the affected row, not as a modal / toast.
  */
-function FilesPanel({ t, locale }: { t: (key: MessageKey) => string; locale: Locale }) {
+function FilesPanel({
+  t,
+  locale,
+  onOpenInBrowser,
+}: {
+  t: (key: MessageKey) => string;
+  locale: Locale;
+  /** Called when the user clicks an `.html` / `.htm` row. Page.tsx
+   *  uses this to route the same file into the browser panel AND
+   *  open that panel (rather than into the text/image preview
+   *  pane). Non-HTML rows still call `openFileInWeb` so the
+   *  preview pane keeps its existing single-source contract. */
+  onOpenInBrowser: (path: string) => void;
+}) {
   const { state } = useSessionContext();
   const workspaceDir = state?.workspace.dir ?? "";
 
@@ -984,6 +1049,14 @@ function FilesPanel({ t, locale }: { t: (key: MessageKey) => string; locale: Loc
             );
           }
           const isCopied = copiedPath === row.path;
+          // Routing: HTML/HTM files go to the browser panel (via the
+          // page-level callback so the panel auto-opens). Everything
+          // else continues to use the slice-12 single-source
+          // `openFileInWeb` so the preview pane still sees its
+          // existing call sites. `isHtmlPath` lives in
+          // `lib/browser-nav.ts` to keep the extension allow-list in
+          // one place (the iframe src type-check does the same).
+          const isHtml = isHtmlPath(row.entry.name);
           return (
             <FileRow
               key={`file:${row.path}`}
@@ -991,7 +1064,9 @@ function FilesPanel({ t, locale }: { t: (key: MessageKey) => string; locale: Loc
               t={t}
               now={now}
               copied={isCopied}
-              onOpen={() => openFileInWeb(row.path)}
+              onOpen={() =>
+                isHtml ? onOpenInBrowser(row.path) : openFileInWeb(row.path)
+              }
               onCopy={() => copyPath(row.path)}
             />
           );

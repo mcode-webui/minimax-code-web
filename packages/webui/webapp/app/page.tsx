@@ -72,6 +72,12 @@ function App() {
   // and the id input focused. Cleared after consumption so a later
   // open (e.g. from the sidebar) does not re-fire.
   const [pendingProviderAdd, setPendingProviderAdd] = useState(false);
+  // Browser-panel open path (workspace-relative) — owned by page.tsx
+  // so a workspace switch can clear it (the relative path's anchor
+  // changed) and so the toolbar launcher can hand the panel a path
+  // it intends to preview. The component stays controlled; this is
+  // the source of truth.
+  const [browserPath, setBrowserPath] = useState<string | null>(null);
   // URL-restore hint: when the URL names a session id the server no
   // longer has, we briefly surface this banner before clearing the
   // URL. Self-dismisses after a few seconds and on user dismiss.
@@ -133,6 +139,37 @@ function App() {
     openFileInWeb(path);
     setPanel((current) => (current === "files" ? current : "files"));
   }, []);
+
+  // Open an HTML file directly in the slice-04 browser panel. The
+  // file tree (FilesPanel) calls this for `.html` / `.htm` rows; it
+  // both records the path AND opens the panel so the user actually
+  // sees the preview they triggered. The panel itself is controlled —
+  // we own the state here so we can also clear it on workspace switch.
+  const onOpenInBrowser = useCallback((path: string) => {
+    setBrowserPath(path);
+    setPanel((current) => (current === "browser" ? current : "browser"));
+  }, []);
+
+  // Browser-panel navigation handler — fires from address-bar Go,
+  // back / forward on the panel itself, and any future in-app
+  // navigator (e.g. a turn summary "open in browser" chip). The
+  // panel never owns the path itself; this is the single sink.
+  const onBrowserNavigate = useCallback((path: string | null) => {
+    setBrowserPath(path);
+  }, []);
+
+  // Workspace switch → reset the browser panel's relative path. A
+  // workspace-relative string like `public/index.html` anchored at
+  // a different workspace dir resolves to a different absolute file;
+  // keeping the same string would silently preview the wrong project.
+  // The first mount (`"" → ""`) is a no-op because there's nothing to
+  // clear; subsequent real switches (`/old → /new`) drop the stale
+  // anchor and let the next user gesture re-open the panel from the
+  // file tree.
+  const workspaceDir = state?.workspace.dir ?? "";
+  useEffect(() => {
+    setBrowserPath(null);
+  }, [workspaceDir]);
 
   // Ctrl+N / Ctrl+K mirror the shortcuts the sidebar advertises. Ctrl+N is only
   // bound when the shell is mounted (i.e. a session exists), matching the
@@ -293,11 +330,32 @@ function App() {
               onOpenWorkspace={() => openPanel("workspace")}
               onOpenFiles={() => openPanel("files")}
               onOpenGit={() => openPanel("git")}
-              activePanel={panel === "workspace" || panel === "files" || panel === "git" ? panel : null}
+              onOpenBrowser={() => openPanel("browser")}
+              activePanel={
+                panel === "workspace" ||
+                panel === "files" ||
+                panel === "git" ||
+                panel === "browser"
+                  ? panel
+                  : null
+              }
             />
           ) : null
         }
-        panel={panel ? <RightPanel kind={panel} onClose={() => setPanel(null)} t={t} locale={locale} /> : null}
+        panel={
+          panel ? (
+            <RightPanel
+              kind={panel}
+              onClose={() => setPanel(null)}
+              t={t}
+              locale={locale}
+              workspaceDir={workspaceDir}
+              browserPath={browserPath}
+              onBrowserNavigate={onBrowserNavigate}
+              onOpenInBrowser={onOpenInBrowser}
+            />
+          ) : null
+        }
         onOpenPanel={openPanel}
         onOpenSettings={openSettings}
         alertCount={alertCount}
