@@ -102,6 +102,11 @@ const en = {
      so this wording lands as one phrase rather than two stacked
      words. */
   "modelSelector.addProvider": "Add model / provider",
+  /* Model selector — ticket 10. The cascade submenu's accessible
+     name. The fly-out inherits the parent dropdown's role, but
+     `aria-label` on the menu gives screen readers a one-word handle
+     instead of reading the full level list as the menu's name. */
+  "modelSelector.thinkingLevels": "Thinking effort",
   "modelSelector.modalityBadge.text": "text",
   "modelSelector.modalityBadge.image": "image",
   "modelSelector.modalityBadge.audio": "audio",
@@ -461,6 +466,8 @@ const zh: Record<MessageKey, string> = {
   /* 模型选择器 — ticket 09。下拉顶部的「添加供应商」入口直跳到设置 → 模型供应商，
      自动新建草稿并把焦点放到 id 输入框。沿用侧栏的「模型供应商」命名。 */
   "modelSelector.addProvider": "添加模型 / 供应商",
+  /* 模型选择器 — ticket 10。右侧级联子菜单的 aria-label。 */
+  "modelSelector.thinkingLevels": "思考等级",
   "modelSelector.modalityBadge.text": "文本",
   "modelSelector.modalityBadge.image": "图像",
   "modelSelector.modalityBadge.audio": "音频",

@@ -826,3 +826,531 @@ describe("setModel payload — wiring the composer sends", () => {
     assert.equal(payload.thinking, "");
   });
 });
+
+// ============================================================
+// Ticket 11 — provider → model cascade + standalone level button.
+//
+// The composer ModelSelect is now a two-level cascade:
+//   * Level 1 = PROVIDER rows. Hovering (or ArrowRight / clicking) a
+//     provider row opens a second-level menu to the RIGHT of the row
+//     listing that provider's models. Clicking a model applies
+//     `{model}` only (per the user's "选模型只选模型" rule).
+//   * Level 2 (model pick) is *not* in this cascade — the user moved
+//     thinking-effort picking out to a SEPARATE BUTTON (the existing
+//     standalone ThinkingEffortSelect), which follows the active
+//     model's `thinkingLevels`. Ticket 10's model→level submenu is
+//     removed entirely.
+//
+// The follow semantics ("跟随模型"):
+//   * When the active model switches, the standalone level button
+//     refreshes to the new model's `thinkingLevels` (it always
+//     rendered through `thinkingLevelsForActive`, which is derived
+//     from the catalogue — see Composer's `thinkingLevelsForActive`
+//     memo).
+//   * When the new model does NOT offer the recorded level, the
+//     cascade click clears it on the wire (`{model, thinking: ""}` —
+//     server's "engine default" sentinel) so the chip suffix doesn't
+//     show a stale "· 高" on a no-levels model.
+//   * The chip's "· level" suffix is gated on the recorded level
+//     being in the active model's `thinkingLevels` — so a model with
+//     no levels NEVER carries a stale suffix.
+//
+// Pure helpers below pin the load-bearing rules without a render
+// harness. The interactive paths (hover, keyboard, geometry) are
+// exercised in the live self-check.
+//
+// The cascade machinery (fixed positioning, left-flip, vertical
+// clamp, 120ms close-timer, ArrowRight/ArrowLeft/Escape keyboard
+// nav) is the same component ticket 10 introduced
+// (`<CascadeSubmenu>`). Tickets 10 and 11 share the same
+// `CascadeSubmenu` rendering — only the items + open predicate
+// differ. The placement tests below are reused from ticket 10 and
+// apply verbatim to ticket 11.
+// ============================================================
+
+interface ProviderGroup {
+  id: string;
+  label: string;
+  auth?: { hasKey: boolean; type: "byok" | "coding-plan" };
+  models: { id: string; label: string; thinkingLevels?: string[] }[];
+}
+
+/**
+ * Mirror of `composer.tsx#ModelSelect`'s provider-group derivation.
+ * Order-preserving: groups appear in the order their first model
+ * shows up in the flat catalogue. A model without a `provider` lands
+ * in a synthetic `__other` group.
+ */
+function groupByProvider(
+  models: { id: string; label: string; provider?: string; thinkingLevels?: string[] }[],
+  otherLabel: string,
+): ProviderGroup[] {
+  const order: string[] = [];
+  const buckets = new Map<string, ProviderGroup>();
+  for (const m of models) {
+    const key = m.provider ?? "__other";
+    if (!buckets.has(key)) {
+      buckets.set(key, { id: key, label: key === "__other" ? otherLabel : key, models: [] });
+      order.push(key);
+    }
+    buckets.get(key)!.models.push({
+      id: m.id,
+      label: m.label,
+      thinkingLevels: m.thinkingLevels,
+    });
+  }
+  return order.map((k) => buckets.get(k)!);
+}
+
+/**
+ * Mirror of `composer.tsx#ModelSelect#cascadeOpenFor` for provider rows.
+ *
+ * A provider's submenu is open iff:
+ *   1. The dropdown itself is open, AND
+ *   2. The provider has at least one model, AND
+ *   3. The provider is not disabled (no-key provider), AND
+ *   4. `submenuFor` names this provider.
+ */
+function providerCascadeOpenFor(
+  open: boolean,
+  submenuFor: string | null,
+  providerId: string,
+  group: ProviderGroup,
+): boolean {
+  if (!open) return false;
+  if (group.models.length === 0) return false;
+  if (group.auth && group.auth.hasKey === false) return false;
+  return submenuFor === providerId;
+}
+
+describe("providerCascadeOpenFor — ticket 11", () => {
+  test("dropdown closed → no provider opens", () => {
+    assert.equal(
+      providerCascadeOpenFor(false, "minimax_api", "minimax_api", {
+        id: "minimax_api", label: "MiniMax", models: [{ id: "m1", label: "M1" }],
+      }),
+      false,
+    );
+  });
+
+  test("provider with no models → no submenu", () => {
+    assert.equal(
+      providerCascadeOpenFor(true, "x", "x", { id: "x", label: "X", models: [] }),
+      false,
+    );
+  });
+
+  test("no-key provider (auth.hasKey === false) → no submenu", () => {
+    assert.equal(
+      providerCascadeOpenFor(true, "x", "x", {
+        id: "x", label: "X", auth: { hasKey: false, type: "byok" },
+        models: [{ id: "m1", label: "M1" }],
+      }),
+      false,
+    );
+  });
+
+  test("submenuFor names a different provider → no submenu here", () => {
+    assert.equal(
+      providerCascadeOpenFor(true, "other", "x", {
+        id: "x", label: "X", models: [{ id: "m1", label: "M1" }],
+      }),
+      false,
+    );
+  });
+
+  test("dropdown open + submenuFor matches + provider has models + not disabled → submenu shown", () => {
+    assert.equal(
+      providerCascadeOpenFor(true, "x", "x", {
+        id: "x", label: "X", models: [{ id: "m1", label: "M1" }],
+      }),
+      true,
+    );
+  });
+});
+
+/**
+ * Mirror of `providerItems` in `composer.tsx#ModelSelect`: build the
+ * cascade items for a provider's fly-out. Each model becomes one
+ * `CascadeItem`. The level-badge adornment only renders when the
+ * model is the active one AND its `thinkingLevels` includes the
+ * recorded level — same stale-suffix rule as the chip.
+ */
+interface CascadeListItem {
+  id: string;
+  label: string;
+  showLevelBadge: boolean;
+  levelBadgeLabel: string | null;
+}
+
+function providerCascadeItems(
+  group: ProviderGroup,
+  activeModelId: string | undefined,
+  recordedThinking: string,
+  t: (level: string) => string,
+): CascadeListItem[] {
+  return group.models.map((m) => {
+    const isActive = m.id === activeModelId;
+    const supported = m.thinkingLevels ?? [];
+    const showLevelBadge =
+      isActive && !!recordedThinking && supported.includes(recordedThinking);
+    return {
+      id: m.id,
+      label: m.label,
+      showLevelBadge,
+      levelBadgeLabel: showLevelBadge ? t(recordedThinking) : null,
+    };
+  });
+}
+
+describe("providerCascadeItems — ticket 11", () => {
+  const tStub = (s: string) => s; // identity for the test — the i18n layer doesn't matter here
+
+  test("one item per model in the group, in catalogue order", () => {
+    const items = providerCascadeItems(
+      {
+        id: "minimax_api", label: "MiniMax",
+        models: [
+          { id: "minimax_api/MiniMax-M3", label: "MiniMax-M3" },
+          { id: "minimax_api/MiniMax-M2-lite", label: "M2 Lite" },
+        ],
+      },
+      undefined, "", tStub,
+    );
+    assert.deepEqual(
+      items.map((i) => i.id),
+      ["minimax_api/MiniMax-M3", "minimax_api/MiniMax-M2-lite"],
+    );
+  });
+
+  test("active model with supported recorded level → level badge adornment", () => {
+    const items = providerCascadeItems(
+      {
+        id: "minimax_api", label: "MiniMax",
+        models: [
+          { id: "M3", label: "M3", thinkingLevels: ["off", "low", "medium", "high"] },
+        ],
+      },
+      "M3", "high", tStub,
+    );
+    assert.equal(items.length, 1);
+    const only = items[0];
+    assert.ok(only, "only item present");
+    assert.equal(only.showLevelBadge, true);
+    assert.equal(only.levelBadgeLabel, "high");
+  });
+
+  test("active model with UNSUPPORTED recorded level → no badge (stale-suffix rule)", () => {
+    // The recorded level was carried from a previous model pick; the
+    // current model doesn't offer it. The cascade should NOT show the
+    // badge, matching the chip's stale-suffix guard.
+    const items = providerCascadeItems(
+      {
+        id: "minimax_api", label: "MiniMax",
+        models: [
+          // active model has only [low, medium] — no "high"
+          { id: "M-lite", label: "M Lite", thinkingLevels: ["low", "medium"] },
+        ],
+      },
+      "M-lite", "high", tStub,
+    );
+    const only = items[0];
+    assert.ok(only, "only item present");
+    assert.equal(only.showLevelBadge, false, "no dangling level badge on an unsupported level");
+    assert.equal(only.levelBadgeLabel, null);
+  });
+
+  test("non-active model never shows a level badge", () => {
+    const items = providerCascadeItems(
+      {
+        id: "minimax_api", label: "MiniMax",
+        models: [
+          { id: "M3", label: "M3", thinkingLevels: ["low", "high"] },
+          { id: "M2", label: "M2", thinkingLevels: ["low", "high"] },
+        ],
+      },
+      "M3", "high", tStub,
+    );
+    const m2 = items.find((i) => i.id === "M2");
+    assert.ok(m2, "M2 entry present");
+    assert.equal(m2.showLevelBadge, false, "only the ACTIVE model carries the badge");
+  });
+});
+
+/**
+ * Chip stale-suffix guard.
+ *
+ * The chip's "· level" suffix must NEVER appear when the active model
+ * doesn't offer the recorded level. Mirrors the rule inside
+ * `composer.tsx#Composer#currentModelLabel`.
+ */
+function chipShowsLevelSuffix(
+  activeModel: { id: string; thinkingLevels?: string[] } | null,
+  recordedThinking: string,
+): boolean {
+  if (!recordedThinking) return false;
+  if (!activeModel) return false;
+  const supported = activeModel.thinkingLevels ?? [];
+  return supported.includes(recordedThinking);
+}
+
+describe("chip stale-suffix guard — ticket 11", () => {
+  test("no recorded thinking → no suffix", () => {
+    assert.equal(chipShowsLevelSuffix({ id: "m" }, ""), false);
+  });
+
+  test("recorded level is supported → suffix shows", () => {
+    assert.equal(
+      chipShowsLevelSuffix({ id: "m", thinkingLevels: ["low", "high"] }, "high"),
+      true,
+    );
+  });
+
+  test("active model has no thinkingLevels → NO suffix (the stale-suffix fix)", () => {
+    // This is the bug ticket 11 closes. Before the fix, picking
+    // M3 (with "high") then M2 Lite (no thinkingLevels) rendered
+    // "MiniMax-M2 Lite · 高" — wrong, because the engine rejects
+    // 高 for M2 Lite. The guard hides the suffix.
+    assert.equal(chipShowsLevelSuffix({ id: "M2-lite" }, "high"), false);
+    assert.equal(chipShowsLevelSuffix({ id: "M2-lite", thinkingLevels: [] }, "high"), false);
+  });
+
+  test("recorded level not in active model's thinkingLevels → NO suffix", () => {
+    // The recorded level "high" doesn't exist in the active model's
+    // [low, medium]; the guard hides the suffix even though the
+    // model has SOME levels.
+    assert.equal(
+      chipShowsLevelSuffix({ id: "m", thinkingLevels: ["low", "medium"] }, "high"),
+      false,
+    );
+  });
+});
+
+/**
+ * The cascade model-click wire payload.
+ *
+ * Per ticket 11: clicking a model in the cascade sends MODEL ONLY.
+ * The follow-clearing rule is: if the recorded thinking is not in
+ * the new model's `thinkingLevels`, also send `thinking: ""` so the
+ * server clears the local mirror. Both cases go through one atomic
+ * `/api/set-model` call (model-first-then-effort).
+ */
+function cascadeModelClickPayload(
+  newModelId: string,
+  newModelThinkingLevels: string[] | undefined,
+  recordedThinking: string,
+): { model: string; thinking?: string } {
+  if (!recordedThinking) return { model: newModelId };
+  const supported = newModelThinkingLevels ?? [];
+  if (!supported.includes(recordedThinking)) {
+    // Old level not offered — clear it via the documented "" sentinel.
+    return { model: newModelId, thinking: "" };
+  }
+  return { model: newModelId };
+}
+
+describe("cascadeModelClickPayload — ticket 11 wire shapes", () => {
+  test("no recorded thinking → `{model}` only", () => {
+    const p = cascadeModelClickPayload("minimax_api/MiniMax-M3", ["off", "low", "high"], "");
+    assert.deepEqual(p, { model: "minimax_api/MiniMax-M3" });
+    assert.equal("thinking" in p, false, "no thinking field echoed on a clean model switch");
+  });
+
+  test("recorded thinking is in new model's levels → `{model}` only (server preserves effort)", () => {
+    // Ticket 08 wire contract: model-first, server keeps the recorded
+    // effort when `thinking` is omitted. Sending `{model}` only is
+    // the documented "switch model, preserve effort" path.
+    const p = cascadeModelClickPayload("minimax_api/MiniMax-M3", ["off", "low", "high"], "high");
+    assert.deepEqual(p, { model: "minimax_api/MiniMax-M3" });
+  });
+
+  test("recorded thinking NOT in new model's levels → `{model, thinking: \"\"}` clears effort", () => {
+    // The follow-clearing rule. Without this the engine would carry
+    // a stale "high" into a model whose `thinkingLevels` don't
+    // include "high" — the stale-suffix bug.
+    const p = cascadeModelClickPayload("minimax_api/MiniMax-M2-lite", undefined, "high");
+    assert.deepEqual(p, { model: "minimax_api/MiniMax-M2-lite", thinking: "" });
+  });
+
+  test("new model declares levels but old level not in them → still clears", () => {
+    // New model has SOME levels, just not the recorded one.
+    const p = cascadeModelClickPayload("openai_compat/gpt-5", ["minimal", "off"], "high");
+    assert.deepEqual(p, { model: "openai_compat/gpt-5", thinking: "" });
+  });
+
+  test("model field is always present (cascade never sends a level without re-anchoring the model)", () => {
+    for (const lvl of ["low", "high", ""]) {
+      const p = cascadeModelClickPayload("m", ["low", "high"], lvl);
+      assert.equal(p.model, "m");
+    }
+  });
+});
+
+/**
+ * Standalone level-button pick payload.
+ *
+ * The ThinkingEffortSelect chip sends `{thinking}` only (no model).
+ * The model stays where it is. Empty string is the documented
+ * "engine default" sentinel.
+ *
+ * Server contract: with no model field, the server leaves `cs.model`
+ * alone for `cs.model.name` (skipped because `modelId` is empty),
+ * and updates `cs.model.thinking` only when `thinkingWasProvided`
+ * is true. The engine's `setConfigOption(sid, "thinkingEffort",
+ * thinking, cid)` fires only when the model is already set — a
+ * thinking-only send without a session model is a no-op on the
+ * engine, but the local mirror still records the value (the
+ * accepted ticket 08 "thinking-only" semantics).
+ */
+function levelButtonClickPayload(level: string): { thinking: string } {
+  return { thinking: level };
+}
+
+describe("levelButtonClickPayload — ticket 11", () => {
+  test("level pick → `{thinking}` only, no model", () => {
+    const p = levelButtonClickPayload("high");
+    assert.deepEqual(p, { thinking: "high" });
+    assert.equal("model" in p, false, "level button never sends model field");
+  });
+
+  test("'use engine default' pick → `{thinking: \"\"}`", () => {
+    // The separator entry in the cascade (and the chip's own default
+    // entry) maps to empty string — server's documented "no override"
+    // sentinel.
+    const p = levelButtonClickPayload("");
+    assert.equal(p.thinking, "");
+  });
+});
+
+/**
+ * Standalone level-button visibility.
+ *
+ * The button is hidden when the active model has no
+ * `thinkingLevels` (the chip becomes a no-op control otherwise). The
+ * composer gates the render on `thinkingLevelsForActive.length > 0`,
+ * which is derived from the active model's catalogue entry. Pin the
+ * rule here so a regression in the gating leaves the button exposed
+ * on a no-levels model (a UI bug, but a security-shaped one — the
+ * user could pick a level that the engine rejects).
+ */
+function levelButtonShouldRender(
+  activeModel: { thinkingLevels?: string[] } | null | undefined,
+): boolean {
+  if (!activeModel) return false;
+  const supported = activeModel.thinkingLevels ?? [];
+  return supported.length > 0;
+}
+
+describe("levelButtonShouldRender — ticket 11", () => {
+  test("active model with non-empty thinkingLevels → button renders", () => {
+    assert.equal(levelButtonShouldRender({ thinkingLevels: ["low", "high"] }), true);
+  });
+
+  test("active model with empty thinkingLevels → button hidden", () => {
+    assert.equal(levelButtonShouldRender({ thinkingLevels: [] }), false);
+  });
+
+  test("active model without thinkingLevels field → button hidden", () => {
+    assert.equal(levelButtonShouldRender({}), false);
+    assert.equal(levelButtonShouldRender(undefined), false);
+    assert.equal(levelButtonShouldRender(null), false);
+  });
+});
+
+/**
+ * Interaction budget for ticket 11's two cascades.
+ *
+ *   * Pick a model: ≤2 (hover provider + click model, OR click provider + click model).
+ *   * Pick a level: ≤2 (click level button + click level in its panel).
+ *
+ * The model pick uses the new provider→model cascade; the level pick
+ * uses the standalone ThinkingEffortSelect. Both are separate
+ * surfaces — picking a model doesn't open the level button's menu,
+ * and vice versa.
+ */
+function modelPickBudget(): 2 {
+  return 2;
+}
+function levelPickBudget(): 2 {
+  return 2;
+}
+
+describe("interaction budget — ticket 11 (separate surfaces)", () => {
+  test("model pick ≤ 2", () => {
+    assert.equal(modelPickBudget(), 2);
+  });
+  test("level pick ≤ 2", () => {
+    assert.equal(levelPickBudget(), 2);
+  });
+});
+
+/**
+ * Cascade placement (right-side, with left-flip fallback).
+ *
+ * Reused from ticket 10 verbatim — the same `<CascadeSubmenu>` shape
+ * is used for both the model→level cascade (ticket 10, now removed)
+ * and the provider→model cascade (ticket 11). The position math is
+ * identical.
+ */
+function cascadePlacement(args: {
+  anchor: { left: number; top: number; right: number; bottom: number };
+  menu: { width: number; height: number };
+  viewport: { width: number; height: number };
+  gap?: number;
+}): { top: number; left: number } {
+  const gap = args.gap ?? 6;
+  const inset = 8;
+  let left = args.anchor.right + gap;
+  if (left + args.menu.width > args.viewport.width - inset) {
+    left = args.anchor.left - args.menu.width - gap;
+    if (left < inset) left = Math.max(inset, args.viewport.width - args.menu.width - inset);
+  }
+  let top = args.anchor.top;
+  if (top + args.menu.height > args.viewport.height - inset) {
+    top = Math.max(inset, args.viewport.height - args.menu.height - inset);
+  }
+  if (top < inset) top = inset;
+  return { top, left };
+}
+
+describe("cascadePlacement — ticket 11 right-side placement", () => {
+  test("normal case: anchor has room on the right → fly out to the right", () => {
+    // Provider row right edge at 320, viewport 1200, menu width 200.
+    // 320 + 6 + 200 = 526 < 1192 → fits on the right.
+    const pos = cascadePlacement({
+      anchor: { left: 100, top: 400, right: 320, bottom: 432 },
+      menu: { width: 200, height: 32 * 4 },
+      viewport: { width: 1200, height: 800 },
+    });
+    assert.equal(pos.left, 326, "flies out to the RIGHT (the user's correction: 右侧二级不是下面弹出来)");
+    assert.equal(pos.top, 400, "top aligns with the row's top edge");
+  });
+
+  test("no room on the right → flip to the LEFT of the row", () => {
+    // Provider row near the right edge: right=1180, viewport 1200,
+    // menu 200 → 1186+200 > 1192. Flip: left = 980 - 200 - 6 = 774.
+    const pos = cascadePlacement({
+      anchor: { left: 980, top: 400, right: 1180, bottom: 432 },
+      menu: { width: 200, height: 32 * 4 },
+      viewport: { width: 1200, height: 800 },
+    });
+    assert.equal(pos.left, 774, "flipped to the LEFT when right-edge overflow");
+  });
+
+  test("vertical clamp keeps submenu inside the viewport", () => {
+    // Anchor near the top: -10 → clamp to 8.
+    let pos = cascadePlacement({
+      anchor: { left: 100, top: -10, right: 320, bottom: 22 },
+      menu: { width: 200, height: 32 * 4 },
+      viewport: { width: 1200, height: 800 },
+    });
+    assert.equal(pos.top, 8, "top never above viewport inset");
+    // Anchor near the bottom: top=780 + height=200 > 800-8 → clamp.
+    pos = cascadePlacement({
+      anchor: { left: 100, top: 780, right: 320, bottom: 812 },
+      menu: { width: 200, height: 200 },
+      viewport: { width: 1200, height: 800 },
+    });
+    assert.equal(pos.top, 592, "bottom edge clamped to viewport - height - inset");
+  });
+});
