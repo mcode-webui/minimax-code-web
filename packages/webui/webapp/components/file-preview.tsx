@@ -665,7 +665,18 @@ function PreviewError({
           // cap. aria-disabled reflects the actionsAvailable flag:
           // out-of-bounds paths the server would 403, so the link
           // must not look clickable.
-          href={fsRawDownloadUrl(path)}
+          //
+          // Slice 16 — on a credential refusal, the URL carries
+          // `confirm=1` so the server releases the bytes. Without
+          // the flag the user would download the 403 JSON error
+          // body, which is confusing AND a security smell (the
+          // file is still on disk; we just gave them the gate's
+          // error envelope instead). The credential refusal is
+          // the user's explicit "I see this is sensitive" moment;
+          // clicking download is the second confirmation.
+          href={fsRawDownloadUrl(path, {
+            confirm: unsupported.reason === "credential",
+          })}
           download
           aria-disabled={!unsupported.actionsAvailable}
           aria-label={tFileOpen(locale, "fileOpen.action.download.aria")}

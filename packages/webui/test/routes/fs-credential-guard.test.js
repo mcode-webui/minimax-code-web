@@ -21,7 +21,7 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -244,6 +244,266 @@ describe("fs routes — credential preview guard (slice 16)", () => {
         const names = (parsed.entries || []).map((e) => e.name);
         assert.ok(names.includes(".env"), "credential files must remain visible in the tree");
       } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  // v2.5 (slice 16 fix): symlink aliasing. A workspace symlink
+  // `innocent.txt → id_rsa` used to pass the gate with the link's
+  // basename (innocent.txt), bypassing the credential predicate.
+  // The fix is to make `safePath` return the realpath, so the
+  // basename check sees the target's name. Hardlinks are an
+  // inherent limit of any name-based predicate and are NOT
+  // covered by these tests.
+  describe("symlink aliasing — credential must see through to the target", () => {
+    test("innocent.txt → id_rsa: read-file returns 403 credential", () => {
+      const dir = mkdtempSync(join(tmpdir(), "fs-cred-symlink-read-"));
+      try {
+        const target = join(dir, "id_rsa");
+        writeFileSync(
+          target,
+          "cred_canary_symlink_target_one\n",
+          "utf8",
+        );
+        const link = join(dir, "innocent.txt");
+        symlinkSync(target, link);
+        const res = fakeRes();
+        fsRoute.handleFsReadFile(readFileReq(link), res);
+        assert.equal(res.status, 403, `symlink must be refused, got ${res.status}`);
+        const body = JSON.parse(res.body);
+        assert.equal(body.code, "credential");
+        assert.equal(body.credentialReason, "ssh-key");
+        assert.equal(
+          res.body.includes("cred_canary_symlink_target_one"),
+          false,
+          "symlink response must not include the target's plaintext",
+        );
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    test("notes.md → .env: read-file returns 403 credential", () => {
+      const dir = mkdtempSync(join(tmpdir(), "fs-cred-symlink-env-"));
+      try {
+        const target = join(dir, ".env");
+        writeFileSync(target, "cred_canary_symlink_env_target\n", "utf8");
+        const link = join(dir, "notes.md");
+        symlinkSync(target, link);
+        const res = fakeRes();
+        fsRoute.handleFsReadFile(readFileReq(link), res);
+        assert.equal(res.status, 403);
+        const body = JSON.parse(res.body);
+        assert.equal(body.code, "credential");
+        assert.equal(body.credentialReason, "dotenv");
+        assert.equal(res.body.includes("cred_canary_symlink_env_target"), false);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    test("page.html → .env: raw route refuses credential (browser panel must not render)", async () => {
+      // The built-in browser panel (slice 04) loads HTML files via
+      // `/api/fs/raw`. If a workspace symlink points an .html file
+      // at a credential, the panel would otherwise render the
+      // secret as a webpage. The raw route has the same gate.
+      const dir = mkdtempSync(join(tmpdir(), "fs-cred-symlink-html-"));
+      try {
+        const target = join(dir, ".env");
+        writeFileSync(target, "cred_canary_browser_panel_secret\n", "utf8");
+        const link = join(dir, "page.html");
+        symlinkSync(target, link);
+        const res = fakeRes();
+        fsRoute.handleFsRaw(rawReq(link), res);
+        await res.done;
+        assert.equal(res.status, 403);
+        const body = JSON.parse(res.body);
+        assert.equal(body.code, "credential");
+        assert.equal(res.body.includes("cred_canary_browser_panel_secret"), false);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    test("innocent.txt → server.pem: raw route refuses credential", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "fs-cred-symlink-pem-"));
+      try {
+        const target = join(dir, "server.pem");
+        writeFileSync(target, "cred_canary_symlink_pem_target\n", "utf8");
+        const link = join(dir, "innocent.txt");
+        symlinkSync(target, link);
+        const res = fakeRes();
+        fsRoute.handleFsRaw(rawReq(link), res);
+        await res.done;
+        assert.equal(res.status, 403);
+        const body = JSON.parse(res.body);
+        assert.equal(body.code, "credential");
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    test("symlink with confirm=1 releases bytes (the override is end-to-end)", () => {
+      const dir = mkdtempSync(join(tmpdir(), "fs-cred-symlink-override-"));
+      try {
+        const target = join(dir, "id_rsa");
+        writeFileSync(target, "cred_canary_symlink_override_target\n", "utf8");
+        const link = join(dir, "innocent.txt");
+        symlinkSync(target, link);
+        const res = fakeRes();
+        fsRoute.handleFsReadFile(readFileReq(link, /* confirm */ true), res);
+        assert.equal(res.status, 200);
+        const parsed = JSON.parse(res.body);
+        assert.equal(parsed.ok, true);
+        assert.match(parsed.content, /cred_canary_symlink_override_target/);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  // v2.5 (slice 16 fix): backup-suffix shapes (`.bak` / `.old` /
+  // `.orig` / `.backup` / `.save` / `.swp`) applied to credential
+  // stems. An operator who saves a backup of `.env` next to
+  // itself does NOT remove the credential risk — the file is still
+  // a credential.
+  describe("backup-suffix shapes", () => {
+    for (const file of [
+      "id_rsa.bak", "id_rsa.old", "id_rsa.orig", "id_rsa.backup", "id_rsa.save",
+      "known_hosts.bak", "known_hosts.old",
+      "server.pem.bak", "server.pem.old",
+      ".env.bak", ".env.old", ".env.orig",
+      "credentials.bak", "credentials.old",
+      ".npmrc.bak", ".pypirc.old",
+    ]) {
+      test(`${file} → 403 credential (no prompt at all is a leak)`, () => {
+        const dir = mkdtempSync(join(tmpdir(), "fs-cred-backup-"));
+        try {
+          const fullPath = join(dir, file);
+          writeFileSync(fullPath, "cred_canary_backup_target\n", "utf8");
+          const res = fakeRes();
+          fsRoute.handleFsReadFile(readFileReq(fullPath), res);
+          assert.equal(res.status, 403, `${file}: must refuse, got ${res.status}`);
+          const body = JSON.parse(res.body);
+          assert.equal(body.code, "credential");
+          assert.equal(res.body.includes("cred_canary_backup_target"), false);
+          assert.equal(res.body.includes("token"), false);
+        } finally {
+          rmSync(dir, { recursive: true, force: true });
+        }
+      });
+    }
+
+    // Negative: backup suffix on a NON-credential basename stays
+    // previewable. The suffix alone is not enough; the predicate
+    // strips the suffix and re-tests the stem.
+    for (const file of ["readme.md.bak", "notes.txt.bak", "package.json.bak"]) {
+      test(`${file} previews normally (suffix alone is not credential)`, () => {
+        const dir = mkdtempSync(join(tmpdir(), "fs-cred-backup-miss-"));
+        try {
+          const fullPath = join(dir, file);
+          writeFileSync(fullPath, "no secrets here\n", "utf8");
+          const res = fakeRes();
+          fsRoute.handleFsReadFile(readFileReq(fullPath), res);
+          assert.equal(res.status, 200, `${file}: must preview, got ${res.status}: ${res.body}`);
+          const parsed = JSON.parse(res.body);
+          assert.equal(parsed.ok, true);
+        } finally {
+          rmSync(dir, { recursive: true, force: true });
+        }
+      });
+    }
+  });
+
+  // v2.5 (slice 16 fix): the credential audit log. When the user
+  // explicitly confirms (`confirm=1` on a credential-shaped path),
+  // the server writes one JSON line to stderr. A path that is NOT
+  // credential-shaped does NOT produce noise; the log is end-to-end
+  // for both read-file and raw routes.
+  describe("audit log of override use", () => {
+    test("confirm=1 on .env writes one audit line to stderr", () => {
+      const dir = mkdtempSync(join(tmpdir(), "fs-cred-audit-"));
+      const origWrite = process.stderr.write.bind(process.stderr);
+      let captured = "";
+      process.stderr.write = (chunk) => {
+        captured += String(chunk);
+        return true;
+      };
+      try {
+        const file = join(dir, ".env");
+        writeFileSync(file, "cred_canary_audit_target\n", "utf8");
+        const res = fakeRes();
+        fsRoute.handleFsReadFile(readFileReq(file, /* confirm */ true), res);
+        assert.equal(res.status, 200);
+        // The audit line is one JSON object ending with `\n`.
+        const line = captured
+          .split("\n")
+          .filter((l) => l.includes("credential.override"))
+          .pop();
+        assert.ok(line, `expected audit line, got: ${captured}`);
+        const parsed = JSON.parse(line);
+        assert.equal(parsed.event, "credential.override");
+        assert.match(parsed.path, /\.env$/);
+        assert.equal(parsed.reason, "dotenv");
+        assert.equal(parsed.endpoint, "read-file");
+        assert.ok(parsed.ts);
+      } finally {
+        process.stderr.write = origWrite;
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    test("confirm=1 on a NON-credential file does NOT write an audit line", () => {
+      // Confirm on a normal file is a no-op; the audit log
+      // specifically tracks the override of a credential gate.
+      const dir = mkdtempSync(join(tmpdir(), "fs-cred-audit-miss-"));
+      const origWrite = process.stderr.write.bind(process.stderr);
+      let captured = "";
+      process.stderr.write = (chunk) => {
+        captured += String(chunk);
+        return true;
+      };
+      try {
+        const file = join(dir, "note.md");
+        writeFileSync(file, "# normal\n", "utf8");
+        const res = fakeRes();
+        fsRoute.handleFsReadFile(readFileReq(file, /* confirm */ true), res);
+        assert.equal(res.status, 200);
+        assert.equal(
+          captured.includes("credential.override"),
+          false,
+          `non-credential confirm must not produce audit noise; got: ${captured}`,
+        );
+      } finally {
+        process.stderr.write = origWrite;
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    test("confirm=1 on .env via raw route writes raw-download audit line", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "fs-cred-audit-raw-"));
+      const origWrite = process.stderr.write.bind(process.stderr);
+      let captured = "";
+      process.stderr.write = (chunk) => {
+        captured += String(chunk);
+        return true;
+      };
+      try {
+        const file = join(dir, ".env");
+        writeFileSync(file, "cred_canary_raw_audit_target\n", "utf8");
+        const res = fakeRes();
+        fsRoute.handleFsRaw(rawReq(file, { confirm: true, download: true }), res);
+        await res.done;
+        const line = captured
+          .split("\n")
+          .filter((l) => l.includes("credential.override"))
+          .pop();
+        assert.ok(line, `expected raw audit line, got: ${captured}`);
+        const parsed = JSON.parse(line);
+        assert.equal(parsed.endpoint, "raw-download");
+      } finally {
+        process.stderr.write = origWrite;
         rmSync(dir, { recursive: true, force: true });
       }
     });

@@ -929,10 +929,25 @@ export function fsRawUrl(path: string): string {
  * action reuses the raw stream with a query flag rather than adding a
  * second streaming route, so the same containment gate + 20 MiB cap
  * stay in one place.
+ *
+ * Slice 16 — `opts.confirm === true` adds the explicit override
+ * flag the credential gate (slice 16) requires before releasing the
+ * bytes. The PreviewError download link calls this with
+ * `confirm: true` when the classifier set `reason: "credential"`
+ * — the user has clicked into a refusal and now clicks "download";
+ * we propagate the explicit confirm so the server releases the
+ * bytes rather than serving the JSON error body. Without this
+ * flag the user would download the 403 error JSON, which is
+ * confusing AND a security smell (the credential is still on disk;
+ * we just gave them the gate's response instead of the file).
  */
-export function fsRawDownloadUrl(path: string): string {
+export function fsRawDownloadUrl(
+  path: string,
+  opts: { confirm?: boolean } = {},
+): string {
+  const confirm = opts.confirm === true ? "&confirm=1" : "";
   return withClientQuery(
-    `/api/fs/raw?path=${encodeURIComponent(path)}&download=1`,
+    `/api/fs/raw?path=${encodeURIComponent(path)}&download=1${confirm}`,
   );
 }
 

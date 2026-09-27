@@ -20,12 +20,28 @@ import { extname, basename } from 'node:path'
 //   只允许落在允许根（默认 home + 默认工作区 + tmp，MCODE_WEBUI_WORKSPACE_ROOTS
 //   可整体替换）内的路径。'~' 前缀先展开再校验。独立仓版本的 safePath 只挡
 //   '..'，在产品包里收紧为允许根边界。
+//
+//   v2.5 (slice 16 fix): safePath now returns the **realpath** form,
+//   not the link path. The credential-shaped-file predicate (slice 16)
+//   matches by basename; a workspace symlink `innocent.txt → id_rsa`
+//   would otherwise pass containment with `innocent.txt` as the
+//   basename and the gate would never see the target's name. The
+//   shared gate (`assertWorkspacePath`) already runs realpathSync
+//   inside `resolveWithinRoots`; we now surface that value as
+//   `gate.real` so the credential check below sees the right
+//   basename. Hardlinks are an inherent limit — a basename check
+//   cannot follow an inode alias; that case is documented in
+//   `lib/credential-file.js`.
 function safePath(rawPath) {
   // v2.2: resolveTarget first — the picker's default start is the
   //   'documents' keyword (XDG dir → ~/Documents → home fallback); gating
   //   the raw keyword would resolve it cwd-relative and ENOENT.
   const gate = assertWorkspacePath(resolveTarget(expandTilde(rawPath)))
-  return gate.ok ? gate.path : null
+  // `gate.real` is the symlink-resolved form (always set when
+  // `gate.ok === true`; falls back to the unresolved path on the
+  // older error shape). Use it so the credential check sees the
+  // *target*'s basename, not the link's.
+  return gate.ok ? (gate.real ?? gate.path) : null
 }
 
 function gateError(res, rawPath) {
@@ -104,9 +120,15 @@ export function handleFsReadFile(req, res) {
   }
 
   // Credential gate (slice 16). Default-refuse, explicit-override.
-  // The basename of `path` (post-realpath) is the only thing the
-  // predicate looks at — the directory does not matter, which keeps
-  // the rule consistent regardless of workspace layout.
+  // The basename of `path` is the only thing the predicate looks
+  // at — the directory does not matter, which keeps the rule
+  // consistent regardless of workspace layout. `path` here is the
+  // realpath (safePath now surfaces `gate.real`); a workspace
+  // symlink `innocent.txt → id_rsa` therefore reaches the
+  // predicate with basename `id_rsa` and is correctly refused.
+  // Hardlinks are an inherent limit (same inode, different name,
+  // no kernel hook for basename to follow) — see the
+  // `lib/credential-file.js` comment.
   if (!confirmed) {
     const classification = classifyCredential(path)
     if (classification) {
@@ -126,6 +148,38 @@ export function handleFsReadFile(req, res) {
         }),
       )
       return
+    }
+  }
+
+  // Slice 16 audit log — when the user explicitly confirmed
+  // (`confirm=1` on a credential-shaped path), record one line on
+  // stderr so an operator can grep /var/log or the process output
+  // for "secret opened" events. Format is JSON-shaped for
+  // log-aggregator ingestion:
+  //   {"event":"credential.override","ts":...,"path":"...","reason":"..."}
+  // We log AFTER the credential check so a path that is NOT
+  // credential-shaped (where `confirm=1` is a no-op) does not
+  // produce noise. The audit line intentionally does NOT include
+  // the file content — only the basename + sub-reason.
+  if (confirmed) {
+    const classification = classifyCredential(path)
+    if (classification) {
+      // Best-effort: write to stderr. We don't fail the request
+      // if stderr is closed (e.g. a piped consumer that closed
+      // early); the audit is best-effort, not transactional.
+      try {
+        process.stderr.write(
+          JSON.stringify({
+            event: 'credential.override',
+            ts: new Date().toISOString(),
+            path,
+            reason: classification.reason,
+            endpoint: 'read-file',
+          }) + '\n',
+        )
+      } catch {
+        // never throw from the audit log path
+      }
     }
   }
 
@@ -239,6 +293,30 @@ export function handleFsRawStream(rawPath, opts = {}) {
           credentialReason: classification.reason,
           path,
         },
+      }
+    }
+  }
+
+  // Slice 16 audit log — same shape as the read-file route. Logs
+  // only when the override was actually used (confirm on a
+  // credential-shaped path); a confirm on a non-credential file is
+  // a no-op and does not produce noise. `endpoint` distinguishes
+  // raw-stream from read-file so a forensic search can group them.
+  if (opts.confirm === true) {
+    const classification = classifyCredential(path)
+    if (classification) {
+      try {
+        process.stderr.write(
+          JSON.stringify({
+            event: 'credential.override',
+            ts: new Date().toISOString(),
+            path,
+            reason: classification.reason,
+            endpoint: opts.download ? 'raw-download' : 'raw',
+          }) + '\n',
+        )
+      } catch {
+        // never throw from the audit log path
       }
     }
   }

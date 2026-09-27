@@ -624,6 +624,18 @@ export function getRecentWorkspaces({ search = "", limit = 5 } = {}) {
 // the route handlers only see { ok:true, path } or
 // { ok:false, error, roots } so the UI can render "must be under: …"
 // with the actual allowed roots when containment rejects.
+//
+// v2.5 (slice 16 fix): the result now also carries `real` — the
+// path AFTER full symlink resolution (realpathSync). The basename
+// check that guards credential-shaped files (slice 16) must see
+// the target's name, not the link's: a workspace symlink
+// `innocent.txt → id_rsa` would otherwise bypass the predicate.
+// `real` is set whenever `ok === true`; `path` is kept for
+// back-compat with the directory-listing and file-reading routes
+// (they all `resolve()` their result, which is idempotent on a
+// realpath). HARDLINKS are an inherent limit of a name-based
+// predicate (two names, one inode, no kernel-level way for a
+// basename check to follow) — see the credential-file comment.
 export function assertWorkspacePath(rawPath) {
   if (!rawPath || typeof rawPath !== "string") {
     return { ok: false, error: "path 不能为空" };
@@ -637,7 +649,11 @@ export function assertWorkspacePath(rawPath) {
   if (!contained.ok) {
     return { ok: false, error: contained.error, roots: contained.roots };
   }
-  return { ok: true, path: absDir };
+  // `contained.real` is the symlink-resolved form; if absent
+  // (legacy callers / a path that did not realpath-resolve), fall
+  // back to `absDir` so existing call sites that ignore `real`
+  // still see a contained absolute path.
+  return { ok: true, path: contained.real ?? absDir, real: contained.real };
 }
 
 // assertWorkspaceParentPath — mkdir-specific: target directory does not
