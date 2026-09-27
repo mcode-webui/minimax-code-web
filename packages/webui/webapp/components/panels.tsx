@@ -12,6 +12,16 @@ import {
 
 import * as api from "@/lib/api";
 import { useAlerts } from "@/lib/alerts";
+import {
+  deserializeExpansion,
+  fileTypeColor,
+  filterAncestors,
+  formatSize,
+  relativeMtimeBucket,
+  serializeExpansion,
+  shouldShowDirLoadingSuffix,
+  sortEntries,
+} from "@/lib/files-tree";
 import { InboxList } from "./inbox";
 import { useSessionContext } from "@/lib/store";
 import { applyTheme, currentTheme } from "@/lib/theme";
@@ -464,129 +474,451 @@ function PluginsPanel({ t }: { t: (key: MessageKey) => string }) {
 
 // --- workspace --------------------------------------------------------------
 
-// How many directory entries the files panel lists before truncating.
-const FILES_VISIBLE_LIMIT = 200;
-
 /**
- * Files panel — upstream's 文件 tab in its right-hand extension area.
+ * Files panel — collapsible file tree (webui-parity 01).
  *
- * Backed by `GET /api/fs/read`, which is a **scandir**: it lists a directory and
- * refuses a file with `ENOTDIR`. So this is a navigator, not a viewer — there is
- * no file-content endpoint to render a preview from, and rather than fake one the
- * panel stays a directory browser. Directories are drillable; files are listed
- * with their size and left non-interactive, because a row that looks clickable
- * and opens nothing is the failure mode this frontend keeps having to fix.
+ * Upstream's `文件` tab in the right-hand extension area shows a single
+ * folder at a time, with breadcrumb navigation. This panel keeps the
+ * upstream's purpose (it is still a navigator, not a viewer — see
+ * `api.ts#getFsDir`'s docs) but upgrades the surface to a lazy,
+ * collapsible tree so a deep workspace can be eyeballed without
+ * drilling.
  *
- * Navigation state is the filesystem itself (`path` + the `parent` the server
- * returns), so there is no client-side stack that can drift from reality.
+ * Contract:
+ *
+ *  * The tree is rooted at the current workspace directory. The
+ *    workspace dir is owned by `state.workspace.dir`; when the user
+ *    switches project, this panel re-roots to the new dir and the
+ *    persisted expansion slice for the previous project is dropped
+ *    (see sessionStorage keys below).
+ *
+ *  * Each directory's children are fetched lazily via
+ *    `GET /api/fs/read?path=<node>` on first expand. No recursive
+ *    prefetch — see ticket 01 ("不做递归预取"). When a node's
+ *    response would have been cut by the per-node cap, the panel
+ *    renders an explicit "还有 N 项未显示" footer.
+ *
+ *  * Per-node race safety: every node carries a generation counter
+ *    in a ref; an older in-flight response for that exact node must
+ *    not overwrite a newer one. The counter is per-node (not
+ *    per-panel), so two concurrent expands of two different nodes
+ *    don't fight.
+ *
+ *  * Filter (glob) + showHidden + the (per-workspace) `expanded`
+ *    set are persisted in `sessionStorage` under
+ *    `webui:files-tree:<workspaceDir>` so a page refresh restores
+ *    them. Channel chosen per ticket 01: sessionStorage satisfies
+ *    "across refresh" (the slice's own acceptance criterion);
+ *    ticket 07 owns the cross-restart durability channel and will
+ *    promote this slice's wire format when its policy lands.
+ *
+ *  * Out-of-bounds directories are gated server-side by
+ *    `assertWorkspacePath`; the panel surfaces the failure as an
+ *    inline hint on the affected row, not as a modal / toast.
  */
 function FilesPanel({ t }: { t: (key: MessageKey) => string }) {
   const { state } = useSessionContext();
-  const [path, setPath] = useState<string>(state?.workspace.dir ?? "");
-  const [listing, setListing] = useState<api.FsListing | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-  // Filter over the listing — case-insensitive, `*` / `?` globs, applied AFTER
-  // the server returns the scandir listing. The FILES_VISIBLE_LIMIT cap below
-  // still bounds what is rendered. See `lib/workspace-filter.ts` for the matcher
-  // and the promise its placeholder makes.
-  const [filter, setFilter] = useState("");
+  const workspaceDir = state?.workspace.dir ?? "";
 
-  // Last-write-wins. Without this, clicking `/a` then `/a/b` lets the older
-  // `/a` listing land after the newer `/a/b` one and overwrite it, leaving the
-  // breadcrumb saying `/a/b` above `/a`'s contents. A generation counter is
-  // enough: the newest `load` owns the result, and anything older is dropped
-  // when it finally arrives.
-  const loadGen = useRef(0);
-  const load = useCallback(async (target: string) => {
-    const gen = ++loadGen.current;
-    setLoading(true);
-    try {
-      const next = await api.getFsDir(target);
-      if (gen !== loadGen.current) return; // a newer navigation won
-      if (next.ok) {
-        setListing(next);
-        setError(null);
-      } else {
-        setError(next.error ?? "unreadable");
-      }
-    } catch (cause) {
-      if (gen !== loadGen.current) return;
-      setError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      // Only the newest load clears the spinner; an older one finishing late
-      // must not claim the panel is idle while a newer read is still running.
-      if (gen === loadGen.current) setLoading(false);
-    }
-  }, []);
+  // Hydrate persisted slice once per workspace change. We keep the
+  // three slices (expanded set, filter string, hidden flag) in one
+  // payload so the wire format is shared with ticket 07's future
+  // cross-restart migration.
+  const [hydratedWorkspace, setHydratedWorkspace] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<string[]>([]);
+  const [filter, setFilter] = useState("");
+  const [showHidden, setShowHidden] = useState(false);
 
   useEffect(() => {
-    void load(path);
-  }, [load, path]);
-
-  const entries = listing?.entries ?? [];
-  // Directories first, then files; each group alphabetical. This is how a file
-  // browser is expected to read, and the server returns raw scandir order.
-  const dirs = entries.filter((e) => e.type === "dir");
-  const files = entries.filter((e) => e.type !== "dir");
-  // The cap is reported rather than silent, so a truncated list never looks like
-  // the whole directory.
-  const ordered = [...dirs, ...files];
-  // Filter first, then cap: the cap must bound the *matches*, not the directory.
-  // Capping first would let a filter on a large directory render nothing at all,
-  // because the rows the user is looking for were cut before the filter ran.
-  const matched = filter ? ordered.filter((entry) => matchFilter(entry.name, filter)) : ordered;
-  const visible = matched.slice(0, FILES_VISIBLE_LIMIT);
-  const hidden = matched.length - visible.length;
-
-  const formatSize = (bytes: number) => {
-    if (!Number.isFinite(bytes) || bytes <= 0) return "";
-    const units = ["B", "KB", "MB", "GB"];
-    let value = bytes;
-    let unit = 0;
-    while (value >= 1024 && unit < units.length - 1) {
-      value /= 1024;
-      unit += 1;
+    if (!workspaceDir) {
+      setExpanded([]);
+      setFilter("");
+      setShowHidden(false);
+      setHydratedWorkspace(null);
+      return;
     }
-    return `${value < 10 && unit > 0 ? value.toFixed(1) : Math.round(value)}${units[unit]}`;
-  };
+    if (hydratedWorkspace === workspaceDir) return;
+    if (typeof window === "undefined") return;
+    try {
+      const raw = window.sessionStorage.getItem(persistKey(workspaceDir));
+      const slice = deserializeExpansion(raw, workspaceDir);
+      setExpanded(slice.expanded);
+      setFilter(slice.filter);
+      setShowHidden(slice.showHidden);
+    } catch {
+      // sessionStorage is best-effort — a quota / disabled-storage
+      // environment must not break the panel. The default empty
+      // slice is what we get on every load, and that is correct
+      // behaviour for a user without persistence.
+      setExpanded([]);
+      setFilter("");
+      setShowHidden(false);
+    }
+    setHydratedWorkspace(workspaceDir);
+  }, [workspaceDir, hydratedWorkspace]);
+
+  // Persist on every change. Debounced so a stream of keyboard edits
+  // does not flood sessionStorage (one write per coalesced batch).
+  useEffect(() => {
+    if (hydratedWorkspace !== workspaceDir) return;
+    if (typeof window === "undefined") return;
+    const handle = window.setTimeout(() => {
+      try {
+        window.sessionStorage.setItem(
+          persistKey(workspaceDir),
+          serializeExpansion({ expanded, filter, showHidden }, workspaceDir),
+        );
+      } catch {
+        // same best-effort contract as hydrate
+      }
+    }, 150);
+    return () => window.clearTimeout(handle);
+  }, [expanded, filter, showHidden, workspaceDir, hydratedWorkspace]);
+
+  // Map from path → node state. Holds the cache so re-collapsing
+  // and re-expanding the same node is instant and never re-fires
+  // the request. Each value also carries `loading` and `gen` so a
+  // user-driven refresh can race against a stale in-flight request.
+  const [nodes, setNodes] = useState<Record<string, TreeNodeState>>({});
+  const [rootError, setRootError] = useState<string | null>(null);
+
+  // Filter auto-expansion: when the user types a filter, compute
+  // the set of ancestors of every matching loaded entry and union
+  // it with the user's explicit expansion set. Unloaded ancestors
+  // are still added — they will lazy-fetch on next render. This is
+  // NOT recursive prefetch: only the ancestor chains of MATCHES
+  // that live in ALREADY-LOADED directories get fetched, never the
+  // full subtree of every directory the user happens to see.
+  const expandedSet = useMemo(() => new Set(expanded), [expanded]);
+  const filterExpanded = useMemo(() => {
+    if (!filter.trim()) return expandedSet;
+    const loaded: Record<string, api.FsEntry[]> = {};
+    for (const [path, node] of Object.entries(nodes)) {
+      if (node.entries) loaded[path] = node.entries;
+    }
+    return filterAncestors(loaded, filter, workspaceDir, expandedSet);
+  }, [filter, nodes, expandedSet, workspaceDir]);
+
+  // Per-node fetch with race-safety. `gen` is the local counter; the
+  // result handler drops anything whose gen does not match the latest
+  // value for that exact path.
+  const fetchNode = useCallback(
+    async (path: string, opts: { force?: boolean } = {}) => {
+      // Optimistic state: mark loading, increment gen, capture local
+      // gen so the result handler can verify it.
+      let capturedGen = 0;
+      setNodes((current) => {
+        const previous = current[path];
+        const next = previous ? { ...previous } : { entries: undefined, error: null, loading: true, gen: 0, total: 0, skipped: 0 };
+        const incomingGen = (previous?.gen ?? 0) + 1;
+        next.gen = incomingGen;
+        next.loading = true;
+        capturedGen = incomingGen;
+        return { ...current, [path]: next };
+      });
+      // Skip the round-trip when we already have a fresh listing and
+      // the caller is not forcing a refresh. The `force` path is the
+      // hover-action refresh button — even an up-to-date cache must
+      // be re-fetched because the user explicitly asked.
+      const fresh = !opts.force && nodes[path]?.entries && !nodes[path]?.error;
+      if (fresh && !opts.force) {
+        setNodes((current) => {
+          if (!current[path]) return current;
+          if (current[path].gen !== capturedGen) return current;
+          return { ...current, [path]: { ...current[path], loading: false } };
+        });
+        return;
+      }
+      try {
+        const result = await api.getFsDir(path, showHidden);
+        setNodes((current) => {
+          if (!current[path]) return current;
+          if (current[path].gen !== capturedGen) return current;
+          if (result.ok && result.entries) {
+            return {
+              ...current,
+              [path]: {
+                entries: result.entries,
+                error: null,
+                loading: false,
+                gen: capturedGen,
+                total: result.entries.length,
+                skipped: result.skipped ?? 0,
+              },
+            };
+          }
+          return {
+            ...current,
+            [path]: {
+              entries: current[path].entries ?? [],
+              error: result.error ?? t("files.tree.outOfBounds"),
+              loading: false,
+              gen: capturedGen,
+              total: 0,
+              skipped: 0,
+            },
+          };
+        });
+      } catch (cause) {
+        setNodes((current) => {
+          if (!current[path]) return current;
+          if (current[path].gen !== capturedGen) return current;
+          return {
+            ...current,
+            [path]: {
+              entries: current[path].entries ?? [],
+              error: cause instanceof Error ? cause.message : String(cause),
+              loading: false,
+              gen: capturedGen,
+              total: 0,
+              skipped: 0,
+            },
+          };
+        });
+      }
+    },
+    [nodes, showHidden, t],
+  );
+
+  // When the workspace dir changes (user switches project) drop every
+  // cached node — the previous tree does not belong to the new
+  // workspace. Without this, the persisted `expanded` slice is the
+  // only thing that resets and the cache would carry stale paths.
+  useEffect(() => {
+    setNodes({});
+    setRootError(null);
+    if (workspaceDir) void fetchNode(workspaceDir, { force: true });
+    // we deliberately exclude fetchNode from deps: it captures nodes at
+    // mount time and a workspace change should not retroactively rerun
+    // against the previous workspace's data.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspaceDir]);
+
+  // After the persisted `expanded` slice is hydrated for a workspace,
+  // re-issue fetches for every path in the slice. Without this, a
+  // page refresh would mark dirs as expanded but show no children
+  // because no node has been loaded yet — the user would have to
+  // click every parent to re-discover what was open. This is still
+  // lazy in the ticket's sense: only the user-explicit chain is
+  // fetched, never the full tree.
+  const rehydratedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!workspaceDir) return;
+    if (hydratedWorkspace !== workspaceDir) return;
+    if (rehydratedRef.current === workspaceDir) return;
+    rehydratedRef.current = workspaceDir;
+    for (const path of expanded) {
+      if (path === workspaceDir) continue;
+      void fetchNode(path);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hydratedWorkspace, workspaceDir, expanded]);
+
+  // Always reflect showHidden in the root listing — every refetch uses
+  // the latest value via the fetchNode closure dependency.
+  useEffect(() => {
+    if (!workspaceDir) return;
+    void fetchNode(workspaceDir, { force: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showHidden]);
+
+  // Expand / collapse handlers. Both are no-ops if the path is
+  // already in the requested state — a redundant setState would
+  // still trigger a re-render, so we guard.
+  const expandPath = useCallback((path: string) => {
+    setExpanded((current) => (current.includes(path) ? current : [...current, path]));
+    void fetchNode(path);
+  }, [fetchNode]);
+
+  const collapsePath = useCallback((path: string) => {
+    setExpanded((current) => current.filter((p) => p !== path));
+  }, []);
+
+  const togglePath = useCallback((path: string) => {
+    setExpanded((current) =>
+      current.includes(path) ? current.filter((p) => p !== path) : [...current, path],
+    );
+    // Only kick a fetch on the expand branch; collapsing is local.
+    if (!nodes[path]?.entries) {
+      void fetchNode(path);
+    }
+  }, [fetchNode, nodes]);
+
+  const refreshPath = useCallback((path: string) => {
+    void fetchNode(path, { force: true });
+  }, [fetchNode]);
+
+  // New folder: prompt for name, mkdir, then refresh the parent.
+  // Mirrors the legacy browse tab's mkdir pattern.
+  const mkdirInPath = useCallback(
+    async (parent: string) => {
+      const name = window.prompt(t("files.tree.newFolderPrompt"), "");
+      if (!name) return;
+      const trimmed = name.trim();
+      if (!trimmed) return;
+      const target = `${parent.replace(/\/+$/, "")}/${trimmed}`;
+      try {
+        const result = await api.mkdir(target);
+        if (!result.ok) {
+          setRootError(result.path ? "mkdir failed" : "mkdir failed");
+          return;
+        }
+        await fetchNode(parent, { force: true });
+      } catch (cause) {
+        setRootError(cause instanceof Error ? cause.message : String(cause));
+      }
+    },
+    [fetchNode, t],
+  );
+
+  // Copy absolute path of a file row to the clipboard. The ticket
+  // pins "复制绝对路径" as the file-row hover affordance; preview is
+  // ticket 02. Transient confirmation is row-scoped (a state key
+  // per path) so two rows near each other can confirm independently.
+  const [copiedPath, setCopiedPath] = useState<string | null>(null);
+  const copyPath = useCallback(
+    async (path: string) => {
+      try {
+        if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(path);
+        } else {
+          // Fallback for browsers / contexts without async clipboard
+          // (the WebUI serves itself on a non-secure origin in dev).
+          const textarea = document.createElement("textarea");
+          textarea.value = path;
+          textarea.setAttribute("readonly", "");
+          textarea.style.position = "absolute";
+          textarea.style.left = "-9999px";
+          document.body.appendChild(textarea);
+          textarea.select();
+          document.execCommand("copy");
+          document.body.removeChild(textarea);
+        }
+        setCopiedPath(path);
+        window.setTimeout(() => {
+          setCopiedPath((current) => (current === path ? null : current));
+        }, 1500);
+      } catch (cause) {
+        setRootError(t("files.tree.copyFailed"));
+      }
+    },
+    [t],
+  );
+
+  // The visible rows: walk the tree top-down from the workspace
+  // root, only descending into expanded directories. Each emitted
+  // row carries everything the renderer needs to draw + the depth
+  // it lives at (used for the indentation chevron gutter).
+  //
+  // The workspace root is always expanded — there is no point in
+  // rendering a tree whose top level is collapsed (the user came
+  // here to see files). Non-root dirs honour the `expanded` set.
+  //
+  // A child directory whose listing has not been fetched yet still
+  // gets a row — the chevron says "click to load" — but the row
+  // is flagged `placeholder: true` so the renderer does NOT show a
+  // "加载中…" suffix. The suffix is reserved for an in-flight
+  // fetch on a node that already has cache state. Without the
+  // distinction, a tree of 30 collapsed dirs would render 30
+  // copies of "加载中…" that look like 30 active requests — the
+  // exact failure mode the target desktop UI avoids.
+  const rows = useMemo<TreeRow[]>(() => {
+    const out: TreeRow[] = [];
+    if (!workspaceDir) return out;
+    const rootNode = nodes[workspaceDir];
+    if (!rootNode) return out;
+    const visit = (path: string, depth: number) => {
+      const node = nodes[path];
+      const isRoot = path === workspaceDir;
+      const isExpanded = isRoot || filterExpanded.has(path);
+      if (!node) {
+        // Never-fetched dir: render a row so the user can see what
+        // will expand when they click, but mark it `placeholder` so
+        // the renderer suppresses the loading suffix.
+        out.push({
+          path,
+          depth,
+          kind: "dir",
+          expanded: isExpanded,
+          loading: false,
+          placeholder: true,
+          error: null,
+          skipped: 0,
+        });
+        return;
+      }
+      out.push({
+        path,
+        depth,
+        kind: "dir",
+        expanded: isExpanded,
+        loading: node.loading,
+        placeholder: false,
+        error: node.error,
+        skipped: node.skipped,
+      });
+      if (!isExpanded) return;
+      const entries = sortEntries(node.entries ?? []);
+      for (const entry of entries) {
+        if (entry.type === "dir") {
+          visit(entry.path, depth + 1);
+        } else {
+          out.push({ path: entry.path, depth: depth + 1, kind: "file", entry });
+        }
+      }
+    };
+    visit(workspaceDir, 0);
+    return out;
+  }, [nodes, filterExpanded, workspaceDir]);
+
+  // Apply the per-row filter so the panel hides non-matching files.
+  // Directories are kept (otherwise a hit nested deeper is invisible
+  // even after auto-expansion). The per-row filter applies to FILE
+  // rows only — the ancestor-of-match logic already filters out
+  // non-matching directories at the lookup level.
+  const filteredRows = useMemo(() => {
+    if (!filter.trim()) return rows;
+    return rows.filter((row) => {
+      if (row.kind === "dir") return true;
+      return matchFilter(row.entry!.name, filter);
+    });
+  }, [rows, filter]);
+
+  // mtime is rendered as "just now / Nm / Nh / …" — recompute once
+  // per render so a panel left open for hours does not show stale
+  // relative times. Cheap; cheaper than the fetch itself.
+  const now = Date.now();
 
   return (
-    <div className="flex flex-col gap-2">
-      {/* Up one level, plus the current directory. The path is the identity of
-          this view, so it is shown rather than only breadcrumbed. */}
+    <div className="flex flex-col gap-2" data-testid="files-tree-root">
+      {/* Toolbar: the workspace root path + filter + showHidden + refresh. */}
       <div className="flex items-center gap-1">
+        <span
+          data-testid="files-tree-workspace"
+          title={workspaceDir}
+          className="min-w-0 flex-1 truncate text-caption-small-strong text-text_default_tertiary"
+        >
+          {workspaceDir || t("workspace.picker.noWorkspace")}
+        </span>
         <button
           type="button"
-          disabled={!listing?.parent}
-          onClick={() => listing?.parent && setPath(listing.parent)}
-          aria-label={t("files.parent")}
-          title={t("files.parent")}
-          data-testid="files-up"
-          className="flex size-7 flex-shrink-0 items-center justify-center rounded-[8px] text-icon_default_tertiary transition-colors hover:bg-bg_interaction_tertiary_hover hover:text-icon_default_primary disabled:opacity-40"
+          onClick={() => workspaceDir && refreshPath(workspaceDir)}
+          aria-label={t("files.tree.refreshAria")}
+          title={t("files.tree.refresh")}
+          data-testid="files-tree-refresh"
+          className="flex size-7 flex-shrink-0 items-center justify-center rounded-[8px] text-icon_default_tertiary transition-colors hover:bg-bg_interaction_tertiary_hover hover:text-icon_default_primary"
         >
-          <Icon name="chevronRight" size={14} className="rotate-180" />
+          <Icon name="refresh" size={14} />
         </button>
-        <span
-          data-testid="files-path"
-          className="min-w-0 flex-1 truncate text-caption-small-strong text-text_default_tertiary"
-          title={listing?.path ?? path}
-        >
-          {listing?.path ?? path}
-        </span>
       </div>
 
-      {/* Filter over this directory's entries. It sits below the path row on
-          purpose: that row is navigation (which directory am I in), the filter
-          narrows that directory's contents. Case-insensitive, with `*` / `?`
-          globs, exactly what the placeholder promises. */}
       <div className="flex items-center gap-1">
         <AntInput
           value={filter}
           onChange={(event) => setFilter(event.target.value)}
           placeholder={t("files.filterPlaceholder")}
           aria-label={t("files.filterPlaceholder")}
-          data-testid="files-filter"
+          data-testid="files-tree-filter"
           className="mavis-input min-w-0 flex-1"
         />
         {filter ? (
@@ -595,78 +927,92 @@ function FilesPanel({ t }: { t: (key: MessageKey) => string }) {
             onClick={() => setFilter("")}
             aria-label={t("files.clearFilter")}
             title={t("files.clearFilter")}
-            data-testid="files-filter-clear"
-            className="flex size-8 flex-shrink-0 items-center justify-center rounded-[8px] text-icon_default_tertiary transition-colors hover:bg-bg_interaction_tertiary_hover hover:text-icon_default_primary"
+            data-testid="files-tree-filter-clear"
+            className="flex size-7 flex-shrink-0 items-center justify-center rounded-[8px] text-icon_default_tertiary transition-colors hover:bg-bg_interaction_tertiary_hover hover:text-icon_default_primary"
           >
-            <Icon name="close" size={15} />
+            <Icon name="close" size={14} />
           </button>
         ) : null}
+        <button
+          type="button"
+          onClick={() => setShowHidden((v) => !v)}
+          aria-label={showHidden ? t("files.tree.shown") : t("files.tree.hidden")}
+          title={showHidden ? t("files.tree.shown") : t("files.tree.hidden")}
+          aria-pressed={showHidden}
+          data-testid="files-tree-hidden-toggle"
+          data-checked={showHidden ? "true" : "false"}
+          className={[
+            "flex size-7 flex-shrink-0 items-center justify-center rounded-[8px] transition-colors",
+            showHidden
+              ? "bg-bg_interaction_tertiary_selected text-text_default_primary"
+              : "text-icon_default_tertiary hover:bg-bg_interaction_tertiary_hover hover:text-icon_default_primary",
+          ].join(" ")}
+        >
+          {/* small inline glyph: an "eye" outline so the toggle is
+              readable without adding a new icon registry entry */}
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden>
+            <path d="M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8s-2.5 4.5-6.5 4.5S1.5 8 1.5 8z" stroke="currentColor" strokeWidth="1.2" />
+            <circle cx="8" cy="8" r="1.6" fill="currentColor" />
+          </svg>
+        </button>
       </div>
 
-      {error ? (
-        <p className="text-caption-small-strong text-text_status_error">{error}</p>
-      ) : null}
-      {loading && entries.length === 0 ? (
-        <p className="text-caption-small-strong text-text_default_tertiary">{t("app.connecting")}</p>
+      {rootError ? (
+        <p className="text-caption-small-strong text-text_status_error">{rootError}</p>
       ) : null}
 
       <div className="flex flex-col">
-        {visible.map((entry) => {
-          const isDir = entry.type === "dir";
-          const row = (
-            <>
-              <span className="flex size-4 flex-shrink-0 items-center justify-center text-icon_default_secondary">
-                <Icon name={isDir ? "folder" : "file"} size={15} />
-              </span>
-              <span className="min-w-0 flex-1 truncate text-sm text-text_default_primary">
-                {entry.name}
-              </span>
-              {!isDir && entry.size > 0 ? (
-                <span className="flex-shrink-0 text-caption-small-strong text-text_default_tertiary">
-                  {formatSize(entry.size)}
-                </span>
-              ) : null}
-            </>
-          );
-          return isDir ? (
-            <button
-              key={entry.path}
-              type="button"
-              data-testid="files-dir-row"
-              data-path={entry.path}
-              onClick={() => setPath(entry.path)}
-              className="flex h-[28px] w-full items-center gap-2 rounded-lg px-1.5 text-left transition-colors hover:bg-bg_interaction_tertiary_hover"
-            >
-              {row}
-            </button>
-          ) : (
-            <div
-              key={entry.path}
-              data-testid="files-file-row"
-              className="flex h-[28px] w-full items-center gap-2 rounded-lg px-1.5"
-            >
-              {row}
-            </div>
+        {filteredRows.map((row) => {
+          if (row.kind === "dir") {
+            const isRoot = row.path === workspaceDir;
+            return (
+              <DirRow
+                key={`dir:${row.path}`}
+                row={row}
+                isRoot={isRoot}
+                t={t}
+                onToggle={() => togglePath(row.path)}
+                onRefresh={() => refreshPath(row.path)}
+                onMkdir={() => mkdirInPath(row.path)}
+              />
+            );
+          }
+          const isCopied = copiedPath === row.path;
+          return (
+            <FileRow
+              key={`file:${row.path}`}
+              row={row}
+              t={t}
+              now={now}
+              copied={isCopied}
+              onCopy={() => copyPath(row.path)}
+            />
           );
         })}
-        {hidden > 0 ? (
+
+        {/* Below-the-fold states. */}
+        {rows.length === 0 && nodes[workspaceDir]?.loading ? (
           <p
-            data-testid="files-truncated"
+            data-testid="files-tree-loading"
             className="px-1.5 py-1 text-caption-small-strong text-text_default_tertiary"
           >
-            {t("files.showing")} {visible.length} / {ordered.length}
+            {t("files.tree.loading")}
           </p>
         ) : null}
-        {!loading && entries.length === 0 && !error ? (
-          <p className="px-1.5 py-1 text-caption-small-strong text-text_default_tertiary">
-            {t("files.empty")}
-          </p>
-        ) : null}
-        {/* A non-empty directory whose rows were all filtered out is a different
-            state from an empty directory — "Empty folder" would be a lie. */}
-        {!loading && entries.length > 0 && matched.length === 0 ? (
+        {rows.length === 0 && !nodes[workspaceDir]?.loading && !rootError ? (
           <p
-            data-testid="files-no-match"
+            data-testid="files-tree-empty"
+            className="px-1.5 py-1 text-caption-small-strong text-text_default_tertiary"
+          >
+            {t("files.tree.empty")}
+          </p>
+        ) : null}
+        {/* Filter narrows everything out — every loaded row failed the
+            glob. Show a dedicated hint so the user knows the tree
+            itself is fine. */}
+        {rows.length > 0 && filteredRows.length === 0 ? (
+          <p
+            data-testid="files-tree-no-match"
             className="px-1.5 py-1 text-caption-small-strong text-text_default_tertiary"
           >
             {t("files.noMatch")}
@@ -676,6 +1022,288 @@ function FilesPanel({ t }: { t: (key: MessageKey) => string }) {
     </div>
   );
 }
+
+interface TreeNodeState {
+  entries: api.FsEntry[] | undefined;
+  error: string | null;
+  loading: boolean;
+  /** Per-node generation counter — race safety on a per-path basis. */
+  gen: number;
+  total: number;
+  /** Number of entries the server cut due to FILES_VISIBLE_LIMIT. */
+  skipped: number;
+}
+
+interface TreeRowBase {
+  path: string;
+  depth: number;
+}
+
+interface TreeDirRow extends TreeRowBase {
+  kind: "dir";
+  expanded: boolean;
+  loading: boolean;
+  /**
+   * `true` when the row exists in the tree because its parent
+   * listing told us there was a directory here, but we have NOT
+   * fetched its contents yet. Placeholder rows render the chevron
+   * and folder name but NO loading suffix — the suffix is reserved
+   * for an actual in-flight request. See `shouldShowDirLoadingSuffix`
+   * in `lib/files-tree.ts` for the predicate this drives.
+   */
+  placeholder: boolean;
+  error: string | null;
+  /** Pre-truncation count of entries the server cut off. */
+  skipped: number;
+}
+
+interface TreeFileRow extends TreeRowBase {
+  kind: "file";
+  entry: api.FsEntry;
+}
+
+type TreeRow = TreeDirRow | TreeFileRow;
+
+function persistKey(workspaceDir: string): string {
+  return `webui:files-tree:${workspaceDir}`;
+}
+
+/**
+ * Directory row — chevron + name + hover actions.
+ *
+ * Hovering reveals the per-directory actions (`新建子目录` / `刷新`).
+ * Keyboard support: Enter / ArrowRight expand, ArrowLeft collapse.
+ * These are the keyboard ops the ticket pins; full arrow navigation
+ * across rows is out of scope for this slice.
+ */
+function DirRow({
+  row,
+  isRoot,
+  t,
+  onToggle,
+  onRefresh,
+  onMkdir,
+}: {
+  row: TreeDirRow;
+  isRoot: boolean;
+  t: (key: MessageKey) => string;
+  onToggle: () => void;
+  onRefresh: () => void;
+  onMkdir: () => void;
+}) {
+  const indent = row.depth * 12;
+  return (
+    <div
+      className="group/dir flex h-[26px] items-center gap-1 rounded-lg px-1 transition-colors hover:bg-bg_interaction_tertiary_hover"
+      style={{ paddingLeft: 4 + indent }}
+      data-testid="files-tree-dir-row"
+      data-path={row.path}
+      data-depth={row.depth}
+      data-expanded={row.expanded ? "true" : "false"}
+      data-error={row.error ? "true" : "false"}
+    >
+      <button
+        type="button"
+        onClick={onToggle}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            onToggle();
+          } else if (event.key === "ArrowRight") {
+            event.preventDefault();
+            if (!row.expanded) onToggle();
+          } else if (event.key === "ArrowLeft") {
+            event.preventDefault();
+            if (row.expanded) onToggle();
+          }
+        }}
+        aria-label={row.expanded ? t("files.tree.collapse") : t("files.tree.expand")}
+        aria-expanded={row.expanded}
+        data-testid="files-tree-dir-toggle"
+        className="flex size-4 flex-shrink-0 items-center justify-center rounded text-icon_default_tertiary transition-transform"
+      >
+        <Icon
+          name="chevronRight"
+          size={11}
+          className={["transition-transform", row.expanded ? "rotate-90" : ""].join(" ")}
+        />
+      </button>
+      <button
+        type="button"
+        onClick={onToggle}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowRight" && !row.expanded) {
+            event.preventDefault();
+            onToggle();
+          } else if (event.key === "ArrowLeft" && row.expanded) {
+            event.preventDefault();
+            onToggle();
+          }
+        }}
+        title={row.path}
+        className="flex min-w-0 flex-1 items-center gap-1.5 truncate text-left text-sm text-text_default_primary"
+      >
+        <span className="flex size-4 flex-shrink-0 items-center justify-center text-icon_default_secondary">
+          <Icon name={isRoot ? "folder" : "folderEmpty"} size={14} />
+        </span>
+        <span className="min-w-0 truncate">
+          {isRoot ? baseName(row.path) || row.path : baseName(row.path)}
+        </span>
+        {shouldShowDirLoadingSuffix(row.loading, row.placeholder) ? (
+          <span className="flex-shrink-0 text-caption-small-strong text-text_default_tertiary">
+            {t("files.tree.loading")}
+          </span>
+        ) : null}
+      </button>
+      {/* Hover-only actions — the parent group/dir makes them
+          visible on hover via Tailwind's `group-hover/dir`. Hidden
+          by default so the row itself stays uncluttered. */}
+      <div className="hidden flex-shrink-0 items-center gap-0.5 group-hover/dir:flex">
+        {!isRoot && !row.error ? (
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              void onMkdir();
+            }}
+            aria-label={t("files.tree.newFolder")}
+            title={t("files.tree.newFolder")}
+            data-testid="files-tree-dir-mkdir"
+            className="flex size-5 items-center justify-center rounded text-icon_default_tertiary hover:bg-bg_interaction_tertiary_selected hover:text-icon_default_primary"
+          >
+            <Icon name="plusSmall" size={12} />
+          </button>
+        ) : null}
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            onRefresh();
+          }}
+          aria-label={t("files.tree.refreshAria")}
+          title={t("files.tree.refresh")}
+          data-testid="files-tree-dir-refresh"
+          className="flex size-5 items-center justify-center rounded text-icon_default_tertiary hover:bg-bg_interaction_tertiary_selected hover:text-icon_default_primary"
+        >
+          <Icon name="refresh" size={12} />
+        </button>
+      </div>
+      {row.error ? (
+        <span
+          data-testid="files-tree-dir-error"
+          className="ml-1 truncate text-caption-small-strong text-text_status_warning"
+          title={row.error}
+        >
+          {t("files.tree.outOfBounds")}
+        </span>
+      ) : null}
+      {row.skipped > 0 ? (
+        <span
+          data-testid="files-tree-dir-truncated"
+          className="ml-1 flex-shrink-0 text-caption-small-strong text-text_default_tertiary"
+          title={t("files.tree.truncated").replace("{n}", String(row.skipped))}
+        >
+          {t("files.tree.truncated").replace("{n}", String(row.skipped))}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * File row — coloured type chip + name + size / mtime + hover copy.
+ *
+ * Preview is ticket 02's job; this slice's file affordance is the
+ * `复制绝对路径` action.
+ */
+function FileRow({
+  row,
+  t,
+  now,
+  copied,
+  onCopy,
+}: {
+  row: TreeFileRow;
+  t: (key: MessageKey) => string;
+  now: number;
+  copied: boolean;
+  onCopy: () => void;
+}) {
+  const indent = row.depth * 12;
+  const entry = row.entry;
+  const bucket = relativeMtimeBucket(now, entry.mtime);
+  const mtimeLabel = bucket === "now"
+    ? t("files.tree.mtime.now")
+    : bucket === ""
+      ? ""
+      : (() => {
+          const [kind, raw] = bucket.split(":");
+          const n = Number(raw);
+          const safe = Number.isFinite(n) ? Math.max(1, Math.floor(n)) : 0;
+          return t(`files.tree.mtime.${kind}` as MessageKey).replace("{n}", String(safe));
+        })();
+  return (
+    <div
+      className="group/file flex h-[26px] items-center gap-1 rounded-lg px-1 transition-colors hover:bg-bg_interaction_tertiary_hover"
+      style={{ paddingLeft: 4 + indent }}
+      data-testid="files-tree-file-row"
+      data-path={entry.path}
+      data-depth={row.depth}
+    >
+      {/* Spacer to keep the file name aligned with the dir row's text
+          position (the dir row uses a 16px chevron + 4px icon). The
+          file row has no chevron, so we add 16px of leading space. */}
+      <span className="w-4 flex-shrink-0" />
+      <span
+        className={[
+          "flex size-4 flex-shrink-0 items-center justify-center",
+          fileTypeColor(entry.name),
+        ].join(" ")}
+        aria-hidden
+      >
+        <Icon name="file" size={13} />
+      </span>
+      <span
+        title={entry.path}
+        className="min-w-0 flex-1 truncate text-sm text-text_default_primary"
+      >
+        {entry.name}
+      </span>
+      <span className="flex-shrink-0 text-caption-small-strong text-text_default_tertiary">
+        {entry.size > 0 ? formatSize(entry.size) : ""}
+      </span>
+      {mtimeLabel ? (
+        <span className="flex-shrink-0 text-caption-small-strong text-text_default_tertiary">
+          {mtimeLabel}
+        </span>
+      ) : null}
+      <div className="hidden flex-shrink-0 items-center group-hover/file:flex">
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            onCopy();
+          }}
+          aria-label={t("files.tree.copyPath")}
+          title={t("files.tree.copyPath")}
+          data-testid="files-tree-file-copy"
+          className="flex h-5 items-center gap-1 rounded px-1.5 text-caption-small-strong text-icon_default_tertiary hover:bg-bg_interaction_tertiary_selected hover:text-icon_default_primary"
+        >
+          {copied ? <Icon name="check" size={12} /> : <Icon name="copy" size={12} />}
+          <span>{copied ? t("files.tree.copied") : t("files.tree.copyPath")}</span>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function baseName(path: string): string {
+  if (!path) return "";
+  const stripped = path.length > 1 && path.endsWith("/") ? path.slice(0, -1) : path;
+  const i = stripped.lastIndexOf("/");
+  return i === -1 ? stripped : stripped.slice(i + 1);
+}
+
 
 function WorkspacePanel({ t }: { t: (key: MessageKey) => string }) {
   const { state } = useSessionContext();
