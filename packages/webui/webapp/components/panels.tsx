@@ -582,7 +582,7 @@ function PluginsPanel({ t }: { t: (key: MessageKey) => string }) {
  *    `assertWorkspacePath`; the panel surfaces the failure as an
  *    inline hint on the affected row, not as a modal / toast.
  */
-function FilesPanel({
+export function FilesPanel({
   t,
   locale,
   onOpenInBrowser,
@@ -1450,7 +1450,7 @@ function baseName(path: string): string {
  * payload and renders the empty state for `ok:false` answers rather
  * than showing a red toast.
  */
-function GitPanel({ t }: { t: (key: MessageKey) => string }) {
+export function GitPanel({ t }: { t: (key: MessageKey) => string }) {
   const { state } = useSessionContext();
   const workspaceDir = state?.workspace.dir ?? "";
 
