@@ -1,7 +1,12 @@
 // webui/server/lib/state-bus.js
 // Per-cid state + SSE channel management.
 
-import { DEFAULT_WORKSPACE, DEFAULT_MODEL, MAX_CONCURRENT } from "./config.js";
+import { existsSync } from "node:fs";
+import { DEFAULT_WORKSPACE, DEFAULT_MODEL, MAX_CONCURRENT, MCODE_RUNTIME_DB } from "./config.js";
+import {
+  findSubagentTaskByToolCallId as _findSubagentTaskByToolCallId,
+} from "./agent-team-tasks.js";
+import { invalidateSessionTree as _invalidateSessionTree } from "./session-tree.js";
 import { isFirstRun } from "./auth.js";
 import { loadSessions } from "./sessions.js";
 import {
@@ -109,6 +114,25 @@ export function makeClientState() {
       lastDeltaAt: null,
       tps: 0,
     },
+    // Agent Team (slice 06): every (toolCallId → childSessionId) pair the
+    // current session has spawned. Surfaced on the wire so the parent's
+    // `→ task` tool line can carry a jumpable subagent reference and the
+    // running badge can match it back to the live background_tasks row.
+    //
+    //   toolCallId     — the parent's `→ task` tool call id (the engine
+    //                    emits it on every `tool_update` line). Stable for
+    //                    the lifetime of one task dispatch.
+    //   sessionId      — the child session id parsed from the engine's
+    //                    `<task_result ... session_id="...">` body. Looks
+    //                    like `mvs_<32 hex>`.
+    //   agentName      — best-effort hint from the live task row; used for
+    //                    badge color, not as identity.
+    //   status         — UI vocabulary (running/done/failed/stopped),
+    //                    NEVER a raw db string.
+    //   createdAtMs    — when the entry was first observed; lets the UI
+    //                    drop entries that have been terminal for a long
+    //                    time without flooding the wire.
+    recentSubagents: [],
   };
 }
 
@@ -1195,4 +1219,245 @@ export function pushAuthDecision({ requestId, approved, decidedBy }) {
   const frame = `event: authorization_decided\ndata: ${payload}\n\n`;
   // broadcast — every connected tab should mirror modal close
   _writeAuthFrame("", frame);
+}
+
+// ============================================================
+// Agent Team (slice 06) — subagent references + tree refresh.
+//
+// The runtime does not emit a dedicated subagent event in the parent's
+// stream: a `→ task` tool call is just another tool_call, and the
+// subagent row materialises in `local_runtime_sessions` (and the matching
+// row in `local_runtime_background_tasks`) without a per-subagent
+// notification on the SSE channel. Three small wirings land here so the
+// UI can render that lifecycle correctly:
+//
+//   1. pushSessionTreeChanged — broadcast a named `session-tree-changed`
+//      frame. The sidebar's session tree reads it and re-fetches
+//      `GET /api/session-tree`, picking up the new subagent row the
+//      runtime just wrote. Cheap: the named frame carries no payload,
+//      the listener decides when to re-read.
+//
+//   2. recordSubagentForCid — append a `(toolCallId, sessionId, …)`
+//      entry to the calling cid's `cs.recentSubagents`. Surfaced on the
+//      wire as part of every snapshot; the chat renderer reads it to
+//      turn the parent's `→ task` tool line into a jumpable subagent
+//      reference and to render the running badge.
+//
+//   3. pruneRecentSubagents — drop entries that have been terminal for
+//      longer than `RECENT_SUBAGENT_TTL_MS` so the array does not grow
+//      unbounded across a long-lived cid. Runs lazily from
+//      `recordSubagentForCid` rather than on a timer — there is no
+//      per-second churn to defend against.
+// ============================================================
+
+// 5 minutes — the chat renderer's jumpable badge only matters while the
+// turn is on screen. After this, the sidebar tree is the source of truth
+// (it always re-fetches from the runtime db) and the in-memory entry
+// just clutters the wire.
+const RECENT_SUBAGENT_TTL_MS = 5 * 60 * 1000;
+
+const RECENT_SUBAGENT_CAP = 32;
+
+/**
+ * Broadcast a `session-tree-changed` frame on every connected cid's SSE
+ * channel so the sidebar can re-read `GET /api/session-tree`.
+ *
+ * No payload — the listener decides when to re-fetch. This matches the
+ * convention used by `providers-updated` (see lib/sse.ts NAMED_EVENTS).
+ * Bypasses the coalescer: tree refreshes are sparse, never flood, and a
+ * dropped frame is a stale sidebar. Using the coalescer here would
+ * defeat the named-event contract.
+ */
+export function pushSessionTreeChanged() {
+  const frame = "event: session-tree-changed\ndata: {}\n\n";
+  for (const [, res] of sseByCid) {
+    if (!res || res.writableEnded || res.destroyed) continue;
+    try {
+      res.write(frame);
+    } catch {}
+  }
+}
+
+/**
+ * Append (or refresh) a subagent entry for `cid`. Idempotent on
+ * `toolCallId` — a second call with the same id updates `status` and
+ * `updatedAtMs` rather than appending a duplicate.
+ *
+ * Side-effect: emits a `session-tree-changed` SSE frame so the sidebar
+ * refreshes. The chat renderer sees the new entry on the next state
+ * push (which `pushStateFor` triggers implicitly via the caller's normal
+ * flow — if the caller wants an immediate state push, it calls
+ * `pushStateFor(cid)` itself).
+ *
+ * @param {string} cid
+ * @param {{ toolCallId: string, sessionId: string, agentName?: string|null, status?: string }} entry
+ */
+export function recordSubagentForCid(cid, entry) {
+  if (!cid) return;
+  if (!entry || typeof entry !== "object") return;
+  const toolCallId = typeof entry.toolCallId === "string" ? entry.toolCallId.trim() : "";
+  const sessionId = typeof entry.sessionId === "string" ? entry.sessionId.trim() : "";
+  if (!toolCallId || !sessionId) return;
+  const cs = clients.get(cid) || clients.get("default");
+  if (!cs) return;
+  if (!Array.isArray(cs.recentSubagents)) cs.recentSubagents = [];
+  const now = Date.now();
+  const status = typeof entry.status === "string" ? entry.status : null;
+  const existingIdx = cs.recentSubagents.findIndex((r) => r && r.toolCallId === toolCallId);
+  const next = {
+    toolCallId,
+    sessionId,
+    agentName: entry.agentName ?? null,
+    status,
+    createdAtMs: existingIdx >= 0 ? cs.recentSubagents[existingIdx].createdAtMs || now : now,
+    updatedAtMs: now,
+  };
+  if (existingIdx >= 0) {
+    cs.recentSubagents[existingIdx] = next;
+  } else {
+    cs.recentSubagents.push(next);
+  }
+  pruneRecentSubagents(cs, now);
+  // Cap size — newest entries win.
+  if (cs.recentSubagents.length > RECENT_SUBAGENT_CAP) {
+    cs.recentSubagents = cs.recentSubagents.slice(-RECENT_SUBAGENT_CAP);
+  }
+  // Side-effect: invalidate the session-tree cache so the next read picks
+  // up the new subagent row the runtime just wrote (and broadcast the
+  // named event so connected tabs re-fetch).
+  try {
+    // dynamic import — lib/state-bus.js must not introduce a hard dep
+    // cycle through session-tree.js (which loads nothing here today,
+    // but the tree cache invalidation belongs with the cache owner).
+    invalidateSessionTreeFromStateBus();
+  } catch {}
+  pushSessionTreeChanged();
+}
+
+/** Drop entries that have been terminal for longer than the TTL. */
+function pruneRecentSubagents(cs, now) {
+  if (!Array.isArray(cs.recentSubagents) || cs.recentSubagents.length === 0) return;
+  const terminal = new Set(["done", "failed", "stopped"]);
+  const cutoff = now - RECENT_SUBAGENT_TTL_MS;
+  cs.recentSubagents = cs.recentSubagents.filter((r) => {
+    if (!r) return false;
+    if (terminal.has(r.status)) {
+      // Use updatedAtMs so a long-running task isn't pruned just because
+      // its create timestamp is old; it keeps getting refreshed until it
+      // settles, then ages out cleanly.
+      return (r.updatedAtMs || 0) >= cutoff;
+    }
+    return true;
+  });
+}
+
+/**
+ * Indirect dependency on session-tree.js — broken out so the import is
+ * deferred and circular-free (state-bus → session-tree would otherwise
+ * form a cycle if session-tree ever decides to use state-bus).
+ *
+ * The function is intentionally tiny: it calls the cache invalidator and
+ * ignores any failure (the cache is best-effort; a failed invalidation
+ * means the next read is a stale read for up to 15s, which the sidebar
+ * already documents as a normal soft failure).
+ */
+function invalidateSessionTreeFromStateBus() {
+  try {
+    if (typeof _invalidateSessionTree === "function") {
+      _invalidateSessionTree();
+    }
+  } catch {
+    /* best-effort */
+  }
+}
+
+// ============================================================
+// Polling — keep the live task status fresh on every recorded entry.
+//
+// Slice 06 dispatcher requires the parent's `→ task` tool line to show
+// a running badge while the subagent is busy. The runtime does NOT push
+// a per-task progress event on the parent stream; the only way to know
+// "still running / done / failed / stopped" is to re-read the
+// `local_runtime_background_tasks` row. We poll at a low cadence
+// (default 2s) so the badge updates without flooding the wire.
+//
+// `refreshRecentSubagentStatuses` walks every connected cid, opens a
+// single read-only db handle, and refreshes the `status` field on
+// `cs.recentSubagents[].status` for any entry whose task row exists. It
+// pushes an SSE state snapshot ONLY when at least one entry changed —
+// a no-op tick is silent (matches the diff-gate contract in
+// `_schedulePush`). The function is exposed so server.js can wire it
+// into the existing periodic-job loop; tests drive it directly.
+// ============================================================
+
+const SUBAGENT_POLL_MS = Math.max(
+  250,
+  Number(process.env.MCODE_WEBUI_SUBAGENT_POLL_MS) || 2000,
+);
+
+let _subagentPollTimer = null;
+
+/**
+ * Poll every connected cid's recorded subagents and refresh the live
+ * status. Cheap: one read-only db handle per tick, one SQL query, no
+ * per-cid overhead beyond iterating `clients`.
+ */
+export function refreshRecentSubagentStatuses() {
+  if (clients.size === 0) return;
+  // Collect every (cid, toolCallId) pair we need to look up. Most cids
+  // will have zero recorded entries; bail early if so.
+  const probe = [];
+  for (const [cid, cs] of clients) {
+    if (!Array.isArray(cs.recentSubagents) || cs.recentSubagents.length === 0) continue;
+    for (const r of cs.recentSubagents) {
+      if (r && r.toolCallId) probe.push({ cid, cs, entry: r });
+    }
+  }
+  if (probe.length === 0) return;
+  const dirty = new Set();
+  for (const { cid, cs, entry } of probe) {
+    const live = _findSubagentTaskByToolCallId(entry.toolCallId);
+    if (!live) continue;
+    if (entry.status === live.status && entry.sessionId === live.childSessionId) continue;
+    entry.status = live.status;
+    if (live.childSessionId) entry.sessionId = live.childSessionId;
+    if (live.agentName) entry.agentName = live.agentName;
+    entry.updatedAtMs = Date.now();
+    dirty.add(cid);
+  }
+  for (const cid of dirty) {
+    pushStateFor(cid);
+  }
+}
+
+/**
+ * Start the periodic poll if it is not already running. Idempotent.
+ * Called from server.js's bootstrap once the SSE channel is up so a
+ * client that connects before any subagent was recorded pays zero cost.
+ */
+export function startSubagentStatusPolling() {
+  if (_subagentPollTimer !== null) return;
+  if (typeof setInterval !== "function") return;
+  // Refuse to poll if there is no runtime db at all — keeps the noise
+  // floor down for environments without an mcode install.
+  if (!MCODE_RUNTIME_DB || !existsSync(MCODE_RUNTIME_DB)) return;
+  _subagentPollTimer = setInterval(refreshRecentSubagentStatuses, SUBAGENT_POLL_MS);
+  if (typeof _subagentPollTimer.unref === "function") _subagentPollTimer.unref();
+}
+
+/**
+ * Stop the periodic poll. Used by tests that need deterministic
+ * tick boundaries; production never calls it.
+ */
+export function stopSubagentStatusPolling() {
+  if (_subagentPollTimer === null) return;
+  try {
+    clearInterval(_subagentPollTimer);
+  } catch {}
+  _subagentPollTimer = null;
+}
+
+/** Test-only: read the current poll cadence. */
+export function getSubagentPollIntervalMs() {
+  return SUBAGENT_POLL_MS;
 }

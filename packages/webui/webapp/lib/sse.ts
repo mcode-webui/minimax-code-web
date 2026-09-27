@@ -28,6 +28,11 @@ export type SseAction =
    *  refresh the management panel and re-fetch /api/models so the
    *  composer selector shows new groups without a page reload. */
   | { kind: "providers-updated"; providers: unknown[] }
+  /** Slice 06 — a subagent was just born or settled. The sidebar
+   *  session tree refetches; the chat renderer's `recentSubagents`
+   *  list is updated through the next state push. The payload is
+   *  empty — the listener decides when to re-read. */
+  | { kind: "tree-changed" }
   /** Keepalive; nothing to render. */
   | { kind: "heartbeat" }
   /** A frame we recognise but intentionally do not act on. */
@@ -46,6 +51,10 @@ export const NAMED_EVENTS = [
   // model selector refresh without polling. The data payload carries
   // the masked providers list — apiKey NEVER plaintext on this path.
   "providers.updated",
+  // Slice 06 — Agent Team. The server fires this when a subagent row
+  // lands in the runtime db (tool_call → background_tasks.kind =
+  // "subagent"), so the sidebar session tree can re-read its cache.
+  "session-tree-changed",
   "heartbeat",
 ] as const;
 
@@ -101,6 +110,16 @@ export function parseSseFrame(event: string, data: string): SseAction {
       if (!parsed.ok) return { kind: "malformed", event, detail: parsed.detail };
       const providers = Array.isArray(parsed.value.providers) ? parsed.value.providers : [];
       return { kind: "providers-updated", providers };
+    }
+    case "session-tree-changed": {
+      // Slice 06: no payload — the sidebar decides when to re-fetch.
+      // The body is `{}` so JSON parsing is a safe no-op; malformed
+      // payloads are surfaced so the connection stays live.
+      if (data && data.trim() !== "" && data.trim() !== "{}") {
+        const parsed = parseJson<unknown>(data);
+        if (!parsed.ok) return { kind: "malformed", event, detail: parsed.detail };
+      }
+      return { kind: "tree-changed" };
     }
     default:
       return { kind: "ignored", reason: `unknown event: ${event || "(none)"}` };

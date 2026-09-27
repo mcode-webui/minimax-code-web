@@ -40,7 +40,7 @@ import { shutdownMcodeAcpSingleton } from './lib/acp-client.js'
 import { installGracefulShutdown } from './lib/graceful-shutdown.js'
 import { init as initSettings, getPersistPath, getTokenEnabled } from './lib/settings.js'
 import { setTokenAuthEnabled as setAuthTokenEnabled } from './lib/auth.js'
-import { pushTokenFirstRun } from './lib/state-bus.js'
+import { pushTokenFirstRun, startSubagentStatusPolling } from './lib/state-bus.js'
 
 installGlobalErrorHandlers()
 
@@ -126,6 +126,12 @@ listenWithPortFallback(server, {
   onListening: (boundPort) => {
     setServingPort(boundPort)
     stopTranscriptSync = startTranscriptSync()
+    // Slice 06 (Agent Team): start polling `local_runtime_background_tasks`
+    // so the parent's `→ task` tool line carries a live running badge
+    // while a subagent is busy. The poller is a no-op when no runtime db
+    // is present (e.g. a freshly-installed machine that hasn't run mcode
+    // yet), so we always call it; it returns early on its own.
+    startSubagentStatusPolling()
     console.log(`[webui] listening on http://${HOST}:${boundPort}`)
     console.log(`[webui] http layer: ${SERVER_IMPL}`)
     console.log(`[webui] LAN url: http://${LAN_IP}:${boundPort}`)

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import * as api from "@/lib/api";
 import { renderMarkdown } from "@/lib/markdown";
 import { reportActionError } from "@/lib/action-errors";
 import {
@@ -905,6 +906,23 @@ function ToolCard({ block, t }: { block: TranscriptBlock; t: (key: MessageKey) =
   const paths = block.toolPaths ?? [];
   const hasBody = output.length > 0 || paths.length > 0;
   const iconType = iconByName(block.toolName);
+  // Slice 06 — Agent Team: when this tool is the parent of a subagent
+  // dispatch, attach the live status badge + jump reference from the
+  // server's `recentSubagents` array. The match is by tool name: the
+  // engine emits a `→ task` (or `→ delegate` / `→ delegatetask`) header
+  // for every subagent dispatch, and `recentSubagents` records the
+  // newest subagent the session spawned. When a single turn spawns
+  // more than one subagent we surface the most recent — the older
+  // entries are visible in the sidebar's Agent Team section.
+  const store = useSessionContext();
+  const recent = store?.state?.recentSubagents;
+  const subagent = (() => {
+    if (!Array.isArray(recent) || recent.length === 0) return null;
+    const name = String(block.toolName || "").toLowerCase().replace(/[^a-z]/g, "");
+    if (name !== "task" && name !== "delegate" && name !== "delegatetask") return null;
+    // Most recent first
+    return recent[recent.length - 1];
+  })();
 
   const statusKey =
     block.toolStatus === "failed"
@@ -912,6 +930,19 @@ function ToolCard({ block, t }: { block: TranscriptBlock; t: (key: MessageKey) =
       : block.toolStatus === "in_progress"
         ? "tool.status.in_progress"
         : "tool.status.completed";
+
+  // Subagent status: project the server's UI vocabulary into a label.
+  const subagentLabel = subagent
+    ? subagent.status === "running"
+      ? "▶ " + (subagent.agentName || "subagent")
+      : subagent.status === "done"
+        ? "✓ " + (subagent.agentName || "subagent")
+        : subagent.status === "failed"
+          ? "✗ " + (subagent.agentName || "subagent")
+          : subagent.status === "stopped"
+            ? "■ " + (subagent.agentName || "subagent")
+            : "· " + (subagent.agentName || "subagent")
+    : null;
 
   return (
     <div className="rounded-xl border border-border_default bg-bg_grouped_tertiary">
@@ -945,6 +976,31 @@ function ToolCard({ block, t }: { block: TranscriptBlock; t: (key: MessageKey) =
         >
           {t(statusKey)}
         </span>
+        {subagent ? (
+          <button
+            type="button"
+            title={subagent.sessionId}
+            data-testid="tool-card-subagent-badge"
+            data-subagent-session={subagent.sessionId}
+            data-subagent-status={subagent.status}
+            onClick={(event) => {
+              event.stopPropagation();
+              if (subagent.sessionId) {
+                void api.switchSession(subagent.sessionId).catch(() => {});
+              }
+            }}
+            className={[
+              "flex-none cursor-pointer rounded-md px-1.5 py-px text-caption-small-strong transition-colors",
+              subagent.status === "running"
+                ? "bg-bg_status_accent text-text_default_accent hover:bg-bg_interaction_tertiary_hover"
+                : subagent.status === "failed"
+                  ? "bg-bg_status_error text-text_status_error hover:bg-bg_interaction_tertiary_hover"
+                  : "bg-bg_grouped_tertiary_elevated text-text_default_secondary hover:bg-bg_interaction_tertiary_hover",
+            ].join(" ")}
+          >
+            {subagentLabel}
+          </button>
+        ) : null}
         {block.toolArgs ? (
           <span className="min-w-0 flex-1 truncate text-caption-small-strong text-text_default_tertiary">
             {block.toolArgs}

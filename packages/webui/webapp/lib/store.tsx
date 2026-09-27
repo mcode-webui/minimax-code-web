@@ -67,6 +67,16 @@ export interface StoreSnapshot {
    * always passes the guard.
    */
   stateRevision: number;
+  /**
+   * Slice 06 — Agent Team. Bumped every time the server emits a
+   * `session-tree-changed` SSE frame. Consumers (the sidebar session
+   * tree, the agent-team panel) listen for the bump and re-fetch
+   * `GET /api/session-tree` to pick up newly-spawned subagent rows.
+   * Same shape as `providersRevision`: a counter is enough to trigger
+   * an effect; re-fetching through the typed API client keeps the
+   * response handling consistent across the app.
+   */
+  treeRevision: number;
 }
 
 const INITIAL: StoreSnapshot = {
@@ -80,6 +90,7 @@ const INITIAL: StoreSnapshot = {
   quotaError: null,
   providersRevision: 0,
   stateRevision: -1,
+  treeRevision: 0,
 };
 
 let snapshot: StoreSnapshot = INITIAL;
@@ -135,6 +146,12 @@ export function __testApplyAction(action: SseAction | { kind: "connected"; value
       return snapshot;
     case "providers-updated":
       setSnapshot({ providersRevision: snapshot.providersRevision + 1 });
+      return snapshot;
+    case "tree-changed":
+      // Slice 06: bump the revision so the sidebar session tree refetches.
+      // The masked payload carried by the SSE frame is NOT stored — the
+      // consumers re-read through the typed API client.
+      setSnapshot({ treeRevision: snapshot.treeRevision + 1 });
       return snapshot;
     case "malformed":
       setSnapshot({ error: `malformed ${action.event || "message"} frame` });
@@ -233,6 +250,12 @@ export function connect(): () => void {
           // again, which keeps the masking and auth headers consistent
           // across the app (and lets us drop a frame-shaped buffer).
           setSnapshot({ providersRevision: snapshot.providersRevision + 1 });
+          break;
+        case "tree-changed":
+          // Slice 06: bump the revision so the sidebar session tree
+          // re-fetches. The server fires this on every subagent row
+          // insertion (applyToolUpdate → recordSubagentForCid).
+          setSnapshot({ treeRevision: snapshot.treeRevision + 1 });
           break;
         case "malformed":
           setSnapshot({ error: `malformed ${action.event || "message"} frame` });
