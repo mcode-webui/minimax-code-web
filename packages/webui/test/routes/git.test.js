@@ -27,7 +27,7 @@
 
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { execSync } from "node:child_process";
@@ -83,9 +83,18 @@ async function readBody(res) {
 // `git init` it once per suite so the porcelain parser has a real
 // repo to talk to (not a fake — the parser walks real `git status`
 // output).
+//
+// The path is realpath'd on creation so the fixture's `dir` string
+// matches what `assertWorkspacePath` / `gateFile` resolve against.
+// On macOS `tmpdir()` returns a path under `/var/folders/…`, and
+// `/var` is itself a symlink to `/private/var` — without realpath, the
+// suite's "this path is outside the workspace" assertion would no
+// longer hold the way the test assumes (the symlink escape test in
+// particular fails because the contained dir's realpath is `/private/
+// var/folders/…`, not the `repoDir` literal the request carries).
 let repoDir;
 before(() => {
-  repoDir = mkdtempSync(join(tmpdir(), "git-panel-repo-"));
+  repoDir = realpathSync(mkdtempSync(join(tmpdir(), "git-panel-repo-")));
   // `-b main` for cross-platform determinism (no "master" surprise on
   // older git installs); `--initial-branch` would also work but is
   // git-2.28+ only and we want this to run on any host.
