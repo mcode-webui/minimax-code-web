@@ -122,12 +122,19 @@ export function WorkspaceTabsLauncher({
             : "workspaceTabs.launcher.terminal.disabledHint";
         const hint = t(hintKey);
         return (
-          // The button stays in the tab order so a keyboard
-          // user can focus it and reach the `title` tooltip.
-          // Click handlers are intentionally absent: a
-          // `disabled` button does not fire `onClick`, so the
-          // prop is the affordance. `aria-disabled` + a real
-          // `title` keep the surface accessible.
+          // `aria-disabled` (NOT the HTML `disabled` attribute)
+          // keeps the row focusable so a keyboard user can Tab
+          // to it and reach the `title` tooltip via the focus
+          // outline + screen-reader announcement. The HTML
+          // `disabled` attribute would have made the row
+          // unfocusable — the exact dead-end this row was
+          // avoiding. The click handler is intentionally a
+          // no-op (`event.preventDefault()`) so a mouse click
+          // cannot silently do nothing: the user lands back on
+          // the same hint copy on click that they would on
+          // focus. The `data-disabled="true"` attribute is the
+          // static tripwire the i18n-workspace-tabs test reads
+          // to verify the affordance is in place.
           <button
             key={row.kind}
             type="button"
@@ -135,8 +142,11 @@ export function WorkspaceTabsLauncher({
             data-disabled="true"
             title={hint}
             aria-label={`${t(row.labelKey)} — ${hint}`}
-            disabled
-            className="flex h-[34px] w-full cursor-not-allowed items-center gap-2 rounded-[10px] px-3 text-sm text-text_default_tertiary opacity-50 focus-visible:opacity-80 focus-visible:outline focus-visible:outline-1 focus-visible:outline-border_accent"
+            aria-disabled="true"
+            onClick={(event) => {
+              event.preventDefault();
+            }}
+            className="flex h-[34px] w-full cursor-not-allowed items-center gap-2 rounded-[10px] px-3 text-sm text-text_default_tertiary opacity-50 focus-visible:opacity-100 focus-visible:outline focus-visible:outline-1 focus-visible:outline-border_accent"
           >
             <span className="flex size-4 flex-shrink-0 items-center justify-center">
               <Icon name={row.icon} size={16} />
