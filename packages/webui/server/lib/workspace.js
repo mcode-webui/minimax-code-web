@@ -287,9 +287,19 @@ export function handleWorkspaceChange(cs, cid, payload) {
   // and yield an actionable error on miss instead of silent passthrough.
   const contained = resolveWithinRoots(absDir);
   if (!contained.ok) return { ok: false, error: contained.error };
-  // Store the resolve() form (matches existing behavior + tests; the
-  // containment check above is the real enforcement line).
-  cs.workspace = { dir: absDir, branch: null, tree: null };
+  // v2.5 (slice 16 followup): the canonical stored form is the
+  // realpath (containment.real). The realpath form is platform-stable
+  // (macOS /var → /private/var would otherwise surface two spellings
+  // for the same directory), survives symlinks in the tempdir, and is
+  // the same form `assertWorkspacePath` returns to the fs routes
+  // (so the credential guard sees the basename of the resolved
+  // path, not the basename of a link the user happened to click
+  // through). Pre-slice-16 the stored form was `resolve()` — the
+  // /api/fs/read and /api/fs/read-file routes re-resolve internally,
+  // so the visible behavior was unchanged for non-credential reads;
+  // the credential gate (slice 16) is the reason the canonical form
+  // is now pinned everywhere.
+  cs.workspace = { dir: contained.real ?? absDir, branch: null, tree: null };
   if (payload.syncTui) {
     try {
       const cwdFile = join(homedir(), ".minimax", "runtime", "cwd.json");
@@ -368,8 +378,16 @@ export function browseWorkspace(rawPath) {
   // "must be under: …" hint instead of a bare "非法".
   const contained = resolveWithinRoots(target);
   if (!contained.ok) return { ok: false, error: contained.error, roots: contained.roots };
-  const parentPath = dirname(target);
-  parent = parentPath === target ? null : parentPath;
+  // v2.5 (slice 16 followup): the response carries the realpath
+  // form as the canonical `dir` so the picker UI never has to deal
+  // with two spellings of the same target (the macOS /var ↔
+  // /private/var case is the canonical example). Pre-slice-16
+  // this was the `resolve()` form, which the consumer re-resolved
+  // through `safePath` on every read — that resolution is now done
+  // once here.
+  const canonical = contained.real ?? target;
+  const parentPath = dirname(canonical);
+  parent = parentPath === canonical ? null : parentPath;
   if (parent !== null && !resolveWithinRoots(parent).ok) {
     // 上级已在允许根外 → 导航到顶（前端 up 按钮不再引导越界请求）
     parent = null;
@@ -392,7 +410,9 @@ export function browseWorkspace(rawPath) {
       if (ent.isDirectory()) {
         dirs.push({
           name: ent.name,
-          path: join(target, ent.name),
+          // Realpath form (canonical) so the picker UI cannot be
+          // fooled by the macOS /var ↔ /private/var aliasing.
+          path: join(canonical, ent.name),
           // browseWorkspace only enumerates directories (the filter
           // above) — files are deliberately omitted so the picker
           // navigates workspaces rather than reads them. `isDir: true`
@@ -410,7 +430,7 @@ export function browseWorkspace(rawPath) {
   children.push(...dirs);
   return {
     ok: true,
-    dir: target,
+    dir: canonical,
     parent,
     children,
     skipped,

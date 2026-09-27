@@ -21,7 +21,7 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, rmSync, writeFileSync, symlinkSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, symlinkSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -505,6 +505,102 @@ describe("fs routes — credential preview guard (slice 16)", () => {
       } finally {
         process.stderr.write = origWrite;
         rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  // v2.5 (slice 16 followup): the credential guard must work
+  // regardless of which spelling of the path the caller passes —
+  // the macOS /var ↔ /private/var case is the canonical example,
+  // but a Linux bind-mount or a tempdir on a symlink can produce
+  // the same two-spelling shape. The canonical form the server
+  // uses internally is the realpath; this block pins that the
+  // gate produces the same refusal when handed either spelling.
+  describe("canonical-form (macOS /var↔/private/var shape on Linux)", () => {
+    test("realpath input vs literal-symlink input produce the same refusal", () => {
+      const realRoot = mkdtempSync(join(tmpdir(), "fs-cred-can-real-"));
+      const linkRoot = join(tmpdir(), `fs-cred-can-link-${Date.now()}`);
+      try {
+        symlinkSync(realRoot, linkRoot);
+        // Create a credential file under the REAL root.
+        const realFile = join(realRoot, "id_rsa");
+        writeFileSync(
+          realFile,
+          "cred_canary_canonical_form_target\n",
+          "utf8",
+        );
+        const canonical = realpathSync(realFile);
+
+        // 1) Request via the canonical (realpath) spelling — must
+        // be refused as a credential.
+        const res1 = fakeRes();
+        fsRoute.handleFsReadFile(readFileReq(canonical), res1);
+        assert.equal(res1.status, 403);
+        const body1 = JSON.parse(res1.body);
+        assert.equal(body1.code, "credential");
+        assert.equal(body1.credentialReason, "ssh-key");
+        // The audit log records the canonical form.
+        assert.equal(body1.path, canonical);
+
+        // 2) Request via the literal-symlink spelling — same
+        // refusal, same credentialReason, same canonical path in
+        // the audit log. (This is the macOS /var ↔ /private/var
+        // shape reproduced on Linux.)
+        const spelledInput = join(linkRoot, "id_rsa");
+        const res2 = fakeRes();
+        fsRoute.handleFsReadFile(readFileReq(spelledInput), res2);
+        assert.equal(res2.status, 403);
+        const body2 = JSON.parse(res2.body);
+        assert.equal(body2.code, "credential");
+        assert.equal(body2.credentialReason, "ssh-key");
+        // CRITICAL: both spellings must resolve to the same
+        // canonical path in the audit log — otherwise an
+        // operator grep'ing the log for the canonical path
+        // could miss the literal-spelling call.
+        assert.equal(body2.path, canonical);
+
+        // 3) Both responses must contain no plaintext — the
+        // content is identical across both spellings of the
+        // credential, so the tripwire holds in either case.
+        assert.equal(res1.body.includes("cred_canary_canonical_form_target"), false);
+        assert.equal(res2.body.includes("cred_canary_canonical_form_target"), false);
+      } finally {
+        rmSync(realRoot, { recursive: true, force: true });
+        try { rmSync(linkRoot, { recursive: true, force: true }); } catch {}
+      }
+    });
+
+    test("a credential behind a symlink-spelled dir is still refused (innocent.txt → id_rsa through a symlink root)", () => {
+      // Reproduces: macOS /var/folders/.../proj (symlink) with a
+      // credential symlink inside. Both the dir and the file
+      // symlink must be resolved, and the credential must still
+      // be refused.
+      const realRoot = mkdtempSync(join(tmpdir(), "fs-cred-dbl-real-"));
+      const linkRoot = join(tmpdir(), `fs-cred-dbl-link-${Date.now()}`);
+      try {
+        symlinkSync(realRoot, linkRoot);
+        const target = join(realRoot, "id_rsa");
+        writeFileSync(target, "cred_canary_double_symlink_root\n", "utf8");
+        // Inside the symlink root, create a credential symlink
+        // pointing at the target.
+        const linkInDir = join(realRoot, "innocent.txt");
+        symlinkSync(target, linkInDir);
+        // Use the LITERAL symlink-root spelling of the dir to
+        // reach the credential link.
+        const spelledInput = join(linkRoot, "innocent.txt");
+        const res = fakeRes();
+        fsRoute.handleFsReadFile(readFileReq(spelledInput), res);
+        assert.equal(res.status, 403);
+        const body = JSON.parse(res.body);
+        assert.equal(body.code, "credential");
+        assert.equal(body.credentialReason, "ssh-key");
+        // Audit path is the realpath of the credential file,
+        // not the spelled input.
+        assert.equal(body.path, realpathSync(target));
+        assert.equal(res.body.includes("cred_canary_double_symlink_root"), false);
+      } finally {
+        rmSync(realRoot, { recursive: true, force: true });
+        try { rmSync(linkRoot, { recursive: true, force: true }); } catch {}
       }
     });
   });

@@ -195,7 +195,13 @@ describe("handleWorkspaceChange — containment", () => {
         dir: join(root, "lnk-in"),
       });
       assert.equal(r.ok, true);
-      assert.equal(cs.workspace.dir, join(root, "lnk-in"));
+      // v2.5 (slice 16 followup): the canonical stored form is
+      // the realpath, not the literal-symlink spelling. The
+      // contract is "what the user typed resolves to the same
+      // canonical path regardless of spelling" — `lnk-in` and
+      // `proj` are the same directory on disk, so both forms
+      // must store `proj`.
+      assert.equal(cs.workspace.dir, join(root, "proj"));
     },
   );
 
