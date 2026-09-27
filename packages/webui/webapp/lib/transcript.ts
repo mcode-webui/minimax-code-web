@@ -49,6 +49,16 @@ export interface TranscriptBlock {
   /** Tool blocks only: local paths the tool touched (the server's `@ path` lines). */
   toolPaths?: string[];
   /**
+   * Tool blocks only: the runtime tool call id attached by the decoder
+   * when it sees a `##tc:<id>` marker line immediately before the
+   * `→ name` header. The ToolCard uses this to look up the precise
+   * `recentSubagents[]` entry for THIS dispatch (matching by tool
+   * NAME alone would badge every `→ task` line with the newest
+   * child). Optional for older sessions whose chat predates the
+   * marker; the renderer falls back to the newest entry in that case.
+   */
+  toolCallId?: string;
+  /**
    * Assistant blocks only: total turn wall-clock duration in milliseconds, attached
    * by `decodeTranscript` when it encounters a `§§ processed_duration=Nms` marker
    * line in the transcript (server writes the marker at prompt finalise in
@@ -96,6 +106,22 @@ const TODO_LINE = /^([✓✔○◌◯✗✘×])\s+(.+)$/;
  * the block stream.
  */
 const TURN_PROCESS_LINE = /^§§\s+processed_duration=(\d+)(ms)?$/;
+/**
+ * Slice 06 (Agent Team): server-written toolCallId marker.
+ *
+ * `server/lib/mcode-acp.js#applyToolUpdate` (and the tool_call branch of
+ * the stream callback) writes `##tc:<toolCallId>` as a separate chat
+ * line immediately BEFORE the `→ name` header. The decoder consumes it
+ * and attaches the id to the following tool block, so the ToolCard can
+ * match the block against `recentSubagents[]` by id (NOT by tool name)
+ * — a session with multiple subagent dispatches would otherwise badge
+ * every `→ task` line with the newest child, which is wrong.
+ *
+ * Older sessions written before this marker shipped simply lack it;
+ * `ToolCard` falls back to the newest `recentSubagents` entry when
+ * `toolCallId` is missing.
+ */
+const TOOL_CALL_ID_LINE = /^##tc:(\S+)$/;
 
 /** Server text that is really a system notice, even under a todo glyph. */
 const SYSTEM_NOTICE = /^(?:\[(?:error|warning|info|system)\]\s*)|(?:Questionnaire|requires.*(?:user input|interactive))/i;
@@ -152,6 +178,13 @@ function collectContinuation(
 export function decodeTranscript(lines: readonly TranscriptLine[]): TranscriptBlock[] {
   const blocks: TranscriptBlock[] = [];
   let current: TranscriptBlock | null = null;
+  // Slice 06 (Agent Team): carry the most recently seen `##tc:<id>`
+  // marker until the next tool block picks it up. The marker is
+  // emitted by the server on every `→ name` line whose `toolCallId`
+  // is known — without it the ToolCard cannot correlate a tool block
+  // with its `recentSubagents[]` entry by id (matching by tool name
+  // alone would badge every `→ task` line with the newest child).
+  let pendingToolCallId: string | undefined;
 
   const flush = () => {
     if (current) {
@@ -207,6 +240,21 @@ export function decodeTranscript(lines: readonly TranscriptLine[]): TranscriptBl
           }
         }
       }
+      i += 1;
+      continue;
+    }
+
+    // --- slice 06 toolCallId marker (`##tc:<id>`).
+    //
+    // Consumed (it never appears in the rendered chat body) and the id
+    // is parked into `pendingToolCallId` until the next tool block
+    // opens — that block picks it up and exposes it as `toolCallId`.
+    // Older sessions whose chat was written before this marker shipped
+    // simply lack the line; `pendingToolCallId` stays undefined and
+    // the ToolCard falls back to the newest `recentSubagents` entry.
+    const tcMarker = TOOL_CALL_ID_LINE.exec(line);
+    if (tcMarker) {
+      pendingToolCallId = tcMarker[1];
       i += 1;
       continue;
     }
@@ -294,7 +342,13 @@ export function decodeTranscript(lines: readonly TranscriptLine[]): TranscriptBl
         toolArgs: (tool[2] ?? "").trim(),
         toolOutput: [],
         toolPaths: [],
+        // Slice 06: attach the parked toolCallId marker (cleared so the
+        // next tool block starts fresh — a marker that never picked up
+        // its block on the way through a malformed transcript is
+        // intentionally not retained).
+        ...(pendingToolCallId ? { toolCallId: pendingToolCallId } : {}),
       };
+      pendingToolCallId = undefined;
       let j = i + 1;
       while (j < lines.length) {
         const body = lines[j];

@@ -711,6 +711,20 @@ export function applyToolUpdate(r, cs, update, ctx = {}) {
   let insertAfter = r.toolIndexById.get(u.toolCallId);
   if (insertAfter == null) {
     const name = u.title || u.name || u.toolName || "tool";
+    // Slice 06 (Agent Team): emit a `##tc:<toolCallId>` marker line
+    // BEFORE the `→ name` header so the chat renderer can correlate
+    // the tool block with the matching `recentSubagents[]` entry.
+    // The decoder consumes the marker (it never reaches the chat body)
+    // and attaches the id to the tool block; the ToolCard then uses
+    // it to look up the precise subagent for THIS dispatch. A parent
+    // session that spawns multiple subagents has one recentSubagents
+    // entry per toolCallId — matching by tool NAME instead would badge
+    // every `→ task` line with the newest child, which is wrong.
+    // Older sessions whose chat was written before this marker shipped
+    // simply lack it; the lookup falls back to the newest entry.
+    if (u.toolCallId) {
+      chat.push(`##tc:${u.toolCallId}`);
+    }
     chat.push(`→ ${name}`);
     insertAfter = chat.length - 1;
     r.toolIndexById.set(u.toolCallId, insertAfter);
@@ -1221,8 +1235,20 @@ function streamAcpPrompt(
           // cs.chat) when in a turn. The viewing-session sees no
           // cross-contamination when the user switches mid-run.
           const tcChat = r && typeof r.chatArray === "function" ? r.chatArray() : cs.chat;
+          // Slice 06 (Agent Team): emit `##tc:<toolCallId>` BEFORE the
+          // `→ name` header so the chat renderer can correlate this
+          // tool block with its `recentSubagents[]` entry by id
+          // (matching by tool NAME would badge every `→ task` line
+          // with the newest child, which is wrong for sessions that
+          // spawn more than one subagent). The decoder consumes the
+          // marker; it never appears in the rendered chat body.
+          if (u.toolCallId) {
+            tcChat.push(`##tc:${u.toolCallId}`);
+          }
           tcChat.push(line);
           // 记下这行在 chat 里的位置（之后 tool_update 用来在它后面插输出）
+          // — index points at the `→ name` line, which is the header
+          // the decoder attaches the toolCallId to.
           if (!r.toolIndexById) r.toolIndexById = new Map();
           r.toolIndexById.set(u.toolCallId, tcChat.length - 1);
           // session-isolation/06: tool_call (and tool_update,

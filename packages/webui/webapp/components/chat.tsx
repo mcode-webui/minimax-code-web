@@ -5,6 +5,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as api from "@/lib/api";
 import { renderMarkdown } from "@/lib/markdown";
 import { reportActionError } from "@/lib/action-errors";
+import { findSubagentForBlock } from "@/lib/agent-team-lookup";
+import { badgeLabelAndGlyph, agentLabel } from "@/lib/i18n-agent-team";
+import { useLocale } from "@/lib/use-locale";
 import {
   decodeTranscript,
   groupActivity,
@@ -908,21 +911,17 @@ function ToolCard({ block, t }: { block: TranscriptBlock; t: (key: MessageKey) =
   const iconType = iconByName(block.toolName);
   // Slice 06 — Agent Team: when this tool is the parent of a subagent
   // dispatch, attach the live status badge + jump reference from the
-  // server's `recentSubagents` array. The match is by tool name: the
-  // engine emits a `→ task` (or `→ delegate` / `→ delegatetask`) header
-  // for every subagent dispatch, and `recentSubagents` records the
-  // newest subagent the session spawned. When a single turn spawns
-  // more than one subagent we surface the most recent — the older
-  // entries are visible in the sidebar's Agent Team section.
+  // server's `recentSubagents` array. The match is by `toolCallId`
+  // (carried on the block by the `##tc:` marker the decoder
+  // consumes) so a session that spawned multiple subagents badges
+  // each `→ task` line with its OWN child — matching by tool NAME
+  // would badge every line with the newest child, which is wrong.
+  // See `lib/agent-team-lookup.ts#findSubagentForBlock` for the
+  // matching rule and its unit tests.
   const store = useSessionContext();
+  const { locale } = useLocale();
   const recent = store?.state?.recentSubagents;
-  const subagent = (() => {
-    if (!Array.isArray(recent) || recent.length === 0) return null;
-    const name = String(block.toolName || "").toLowerCase().replace(/[^a-z]/g, "");
-    if (name !== "task" && name !== "delegate" && name !== "delegatetask") return null;
-    // Most recent first
-    return recent[recent.length - 1];
-  })();
+  const subagent = findSubagentForBlock(recent, block);
 
   const statusKey =
     block.toolStatus === "failed"
@@ -931,17 +930,14 @@ function ToolCard({ block, t }: { block: TranscriptBlock; t: (key: MessageKey) =
         ? "tool.status.in_progress"
         : "tool.status.completed";
 
-  // Subagent status: project the server's UI vocabulary into a label.
-  const subagentLabel = subagent
-    ? subagent.status === "running"
-      ? "▶ " + (subagent.agentName || "subagent")
-      : subagent.status === "done"
-        ? "✓ " + (subagent.agentName || "subagent")
-        : subagent.status === "failed"
-          ? "✗ " + (subagent.agentName || "subagent")
-          : subagent.status === "stopped"
-            ? "■ " + (subagent.agentName || "subagent")
-            : "· " + (subagent.agentName || "subagent")
+  // Subagent badge — label and glyph are resolved through i18n so
+  // both locales actually differ (the previous slice hardcoded English
+  // glyphs here, leaving the file orphaned — the acceptance fix wires
+  // the keys through `tAgentTeam` / `agentLabel`).
+  const badge = subagent ? badgeLabelAndGlyph(locale, subagent.status) : null;
+  const agentNameLabel = subagent ? agentLabel(locale, subagent.agentName) : null;
+  const subagentLabel = badge && agentNameLabel
+    ? `${badge.glyph} ${agentNameLabel}`
     : null;
 
   return (
