@@ -36,11 +36,19 @@ interface ToolbarProps {
   t: (key: MessageKey) => string;
   onOpenWorkspace: () => void;
   onOpenFiles: () => void;
+  /** Open the right-hand Git panel (slice 03 of webui-parity). */
+  onOpenGit?: () => void;
   /** Which panel is currently open, so its launcher can show the active state. */
-  activePanel?: "workspace" | "files" | null;
+  activePanel?: "workspace" | "files" | "git" | null;
 }
 
-export function ConversationToolbar({ t, onOpenWorkspace, onOpenFiles, activePanel = null }: ToolbarProps) {
+export function ConversationToolbar({
+  t,
+  onOpenWorkspace,
+  onOpenFiles,
+  onOpenGit,
+  activePanel = null,
+}: ToolbarProps) {
   const { state } = useSessionContext();
   // `running` is the live half of the session's state: the server sets it when a
   // turn starts and clears it when the turn ends, and it arrives over SSE. The
@@ -105,6 +113,21 @@ export function ConversationToolbar({ t, onOpenWorkspace, onOpenFiles, activePan
         <ToolbarButton label={t("toolbar.files")} onClick={onOpenFiles} active={activePanel === "files"}>
           <Icon name="folder" size={16} />
         </ToolbarButton>
+        {/* Git panel (slice 03): right-panel surface mirroring the
+            desktop's `changes` tab. The button is hidden if `onOpenGit`
+            is not provided (defensive — older callers that haven't been
+            updated to pass it still work). The active state lights up
+            when the right-panel is currently showing the GitPanel. */}
+        {onOpenGit ? (
+          <ToolbarButton
+            label={t("toolbar.git")}
+            onClick={onOpenGit}
+            active={activePanel === "git"}
+            data-testid="toolbar-git-button"
+          >
+            <Icon name="git" size={16} />
+          </ToolbarButton>
+        ) : null}
         <ToolbarButton
           label={t("toolbar.workspace")}
           onClick={onOpenWorkspace}

@@ -52,7 +52,7 @@ export const UI_STATE_VERSION = 1;
 export const SCROLL_VERSION = 1;
 
 /** Right-panel kinds. Mirrors `components/panels.tsx#PanelKind`. */
-export type PanelKind = "workspace" | "files" | "alerts" | "search" | "progress" | "plugins";
+export type PanelKind = "workspace" | "files" | "git" | "alerts" | "search" | "progress" | "plugins";
 
 export interface UiState {
   panel: PanelKind | null;
@@ -138,7 +138,7 @@ export function deserializeUiState(raw: string | null | undefined, cid: string |
   const s = obj.state;
   if (!s || typeof s !== "object") return { ...DEFAULT_UI_STATE };
   const so = s as Record<string, unknown>;
-  const validKinds: ReadonlySet<PanelKind> = new Set(["workspace", "files", "alerts", "search", "progress", "plugins"]);
+  const validKinds: ReadonlySet<PanelKind> = new Set(["workspace", "files", "git", "alerts", "search", "progress", "plugins"]);
   const panel = typeof so.panel === "string" && validKinds.has(so.panel as PanelKind) ? (so.panel as PanelKind) : null;
   const panelTab = typeof so.panelTab === "string" ? (so.panelTab as string) : null;
   const sidebarCollapsed = so.sidebarCollapsed === true;

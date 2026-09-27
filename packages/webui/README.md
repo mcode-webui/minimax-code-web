@@ -92,6 +92,7 @@ IDE integrations match on these strings.
 | `bilingual-ui` | zh-CN / en locale toggle via typed `t(MessageKey)` lookup |
 | `lan-sharing` | Loopback default; LAN exposure via explicit opt-in (`HOST` env / `lanBind` setting) + runtime on/off toggle |
 | `token-auth` | `?token=` / `Authorization: Bearer` for non-local requests |
+| `git-panel` | Right-panel git surface: status + branches + diff + destructive-confirmed branch switch |
 | `mobile-responsive` | Drawer at <900px, single column at <600px |
 
 CI asserts every one of these names is mentioned in this README and in

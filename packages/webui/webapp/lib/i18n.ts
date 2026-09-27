@@ -140,6 +140,7 @@ const en = {
   "error.session": "Could not load sessions",
   "toolbar.workspace": "Workspace",
   "toolbar.browser": "Browser",
+  "toolbar.git": "Git",
   /* The bell opens 站内信 (the inbox), not a warning list — upstream keeps system
      messages and product notices here. The underlying feed is still this server's
      alert ring buffer; see the inbox note in components/panels.tsx. */
@@ -365,6 +366,37 @@ const en = {
   // earlier settings-tab route was a misread of the desktop layout).
   "panel.plugins.title": "Plugins",
   "panel.plugins.placeholder": "Plugin marketplace is in progress. The engine's install contract is not exposed by this server yet, so the desktop's category tabs + grid view will land once the contract is wired through.",
+  /* Git panel (slice 03) — right-panel surface that mirrors the
+     desktop's right-tab Git view: branch + changed-file list +
+     click-to-diff + branch switch. Empty-state and destructive-
+     action copy live here so the panel can stay renderer-only. */
+  "git.title": "Git",
+  "git.empty.notRepo": "This folder is not a git repository",
+  "git.empty.clean": "Working tree clean — no staged, unstaged, or untracked changes",
+  "git.empty.noWorkspace": "No workspace selected",
+  "git.branch.label": "Branch",
+  "git.branch.tracking": "{{branch}} tracking {{upstream}} (ahead {{ahead}}, behind {{behind}})",
+  "git.branch.tracking.noUpstream": "{{branch}} (no upstream)",
+  "git.files.title": "Changed files",
+  "git.files.empty": "No changed files",
+  "git.files.staged": "staged",
+  "git.files.unstaged": "unstaged",
+  "git.files.untracked": "untracked",
+  "git.file.openDiff": "View diff",
+  "git.file.diff.empty": "No diff for this file",
+  "git.file.diff.truncated": "Diff truncated — full diff available on the engine",
+  "git.file.diff.loading": "Loading diff…",
+  "git.file.diff.failed": "Could not load diff",
+  "git.refresh": "Refresh",
+  "git.refreshAria": "Refresh git status",
+  "git.switch.confirm.title": "Switch branch?",
+  "git.switch.confirm.body": "Switching to \"{{branch}}\" will discard uncommitted changes in your working tree. Continue?",
+  "git.switch.confirm.ok": "Switch",
+  "git.switch.confirm.cancel": "Cancel",
+  "git.switch.success": "Switched to {{branch}}",
+  "git.switch.failed": "Could not switch branch: {{error}}",
+  "git.switcher.title": "Switch branch",
+  "git.switcher.empty": "No local branches",
 
   /* Re-open state parity (webui-parity 07). The "session id is gone"
      hint fires when the URL deep-links to a session id the server no
@@ -549,6 +581,7 @@ const zh: Record<MessageKey, string> = {
   "error.session": "会话列表加载失败",
   "toolbar.workspace": "工作区",
   "toolbar.browser": "网页",
+  "toolbar.git": "Git",
   /* 铃铛打开的是站内信, 不是告警列表 —— 上游把系统消息与产品通知都放这里。 */
   "toolbar.alerts": "站内信",
   "common.unsupported": "暂不支持",
@@ -759,6 +792,34 @@ const zh: Record<MessageKey, string> = {
   // 插件面板 stub —— 等后端装好 plugin install 合约再接上。
   "panel.plugins.title": "插件",
   "panel.plugins.placeholder": "插件市场正在做。后端尚未暴露 plugin install 合约，桌面端的类别 tabs + 卡片网格会在合约打通后实装。",
+  /* Git 面板（slice 03）— 右栏对应桌面端右栏 Git 视图：分支 + 变更文件 + 点击查看 diff + 切换分支。空态和破坏性操作文案集中在这里。 */
+  "git.title": "Git",
+  "git.empty.notRepo": "当前目录不是 git 仓库",
+  "git.empty.clean": "工作区干净 — 无 staged / unstaged / untracked 变更",
+  "git.empty.noWorkspace": "未选择工作区",
+  "git.branch.label": "分支",
+  "git.branch.tracking": "{{branch}} 跟踪 {{upstream}} (ahead {{ahead}}, behind {{behind}})",
+  "git.branch.tracking.noUpstream": "{{branch}}（无 upstream）",
+  "git.files.title": "变更文件",
+  "git.files.empty": "无变更文件",
+  "git.files.staged": "已暂存",
+  "git.files.unstaged": "未暂存",
+  "git.files.untracked": "未跟踪",
+  "git.file.openDiff": "查看 diff",
+  "git.file.diff.empty": "该文件无 diff",
+  "git.file.diff.truncated": "diff 已截断 — 完整内容请在引擎中查看",
+  "git.file.diff.loading": "加载 diff 中…",
+  "git.file.diff.failed": "diff 加载失败",
+  "git.refresh": "刷新",
+  "git.refreshAria": "刷新 git 状态",
+  "git.switch.confirm.title": "确认切换分支？",
+  "git.switch.confirm.body": "切换到 \"{{branch}}\" 会丢弃工作区中未提交的变更，是否继续？",
+  "git.switch.confirm.ok": "切换",
+  "git.switch.confirm.cancel": "取消",
+  "git.switch.success": "已切换到 {{branch}}",
+  "git.switch.failed": "切换分支失败：{{error}}",
+  "git.switcher.title": "切换分支",
+  "git.switcher.empty": "无本地分支",
   /* 07 — 重开页面状态一致：URL 深链跳到的会话 ID 已不存在时的提示；
      短暂展示让用户知道是有意回到首页，不是静默丢失上下文。 */
   "session.hint.notFound": "该会话已不可用，已返回首页。",

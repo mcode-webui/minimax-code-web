@@ -81,6 +81,39 @@ describe("deserializeUiState", () => {
     assert.equal(out.lastSessionId, null);
   });
 
+  test("restores 'git' as a valid persisted panel kind (slice 03)", () => {
+    // The right-panel GitPanel (webui-parity slice 03) is reachable
+    // through the toolbar launcher — the launcher writes `panel: 'git'`
+    // to the persisted UI state on toggle, and the next page mount
+    // reads it back. If this kind falls through to DEFAULT_UI_STATE
+    // (i.e. the renderer does not know about it), the user opens the
+    // SPA, clicks the Git toolbar button, refreshes, and the panel
+    // silently closes — the kind has to round-trip end to end.
+    const raw = validPayload({ panel: "git", sidebarCollapsed: false });
+    const out = deserializeUiState(raw, cid);
+    assert.equal(out.panel, "git");
+  });
+
+  test("accepts every supported panel kind from a previous session", () => {
+    // Belt-and-braces: enumerate the full PanelKind set so adding a
+    // new kind in panels.tsx without mirroring it in persist.ts's
+    // validKinds set trips this assertion.
+    const kinds = [
+      "workspace",
+      "files",
+      "git",
+      "alerts",
+      "search",
+      "progress",
+      "plugins",
+    ] as const;
+    for (const kind of kinds) {
+      const raw = validPayload({ panel: kind });
+      const out = deserializeUiState(raw, cid);
+      assert.equal(out.panel, kind, `expected ${kind} to round-trip`);
+    }
+  });
+
   test("drops a panel kind that the renderer does not know", () => {
     const raw = validPayload({ panel: "made-up-panel" as unknown as UiState["panel"] });
     const out = deserializeUiState(raw, cid);

@@ -22,6 +22,7 @@ import {
 import { ensureMcodeCommands } from "../acp-client.js";
 import { runUsageQuery } from "../usage.js";
 import { pushStateFor, getActiveChild } from "../state-bus.js";
+import { gitStatus } from "../git.js";
 
 // 列出 webui 支持的 slash 命令前缀（字母数字 + 连字符 + 下划线）
 const SLASH_REGEX = /^\/([a-zA-Z][\w-]*)\b\s*(.*)/;
@@ -42,6 +43,7 @@ const LOCAL_HELP_FALLBACK = [
   { name: "clear", desc: "清空当前对话" },
   { name: "status", desc: "查看当前状态" },
   { name: "sessions", desc: "查看最近会话" },
+  { name: "review", desc: "审查工作区变更 (TUI /review)" },
   { name: "help", desc: "可用命令" },
   { name: "usage", desc: "查询用量" },
   { name: "stop", desc: "停止当前任务" },
@@ -224,6 +226,69 @@ async function bodyStop(cs, cid) {
   return { handled: true };
 }
 
+// `/review` — TUI parity: print a `staged / unstaged / untracked`
+// overview of the current workspace into the chat. Sourced from the
+// same `gitStatus` helper the right-panel Git panel uses (so a
+// non-git or out-of-containment workspace renders the same empty
+// state the panel does, not a red toast).
+async function bodyReview(cs, cid) {
+  const dir = (cs && cs.workspace && cs.workspace.dir) || "";
+  const lines = [`› /review`];
+  if (!dir) {
+    lines.push(`● 没有工作区，无法审查变更`);
+  } else {
+    const status = await gitStatus(dir);
+    if (!status.ok && !status.isRepo) {
+      lines.push(`● ${dir} 不是 git 仓库`);
+    } else if (!status.ok) {
+      lines.push(`● 读取 git 状态失败：${status.error || "未知错误"}`);
+    } else {
+      const files = Array.isArray(status.files) ? status.files : [];
+      const branchLabel = status.upstream
+        ? `${status.branch}…${status.upstream}`
+        : status.branch || "(no branch)";
+      const tracking =
+        status.ahead || status.behind
+          ? ` (ahead ${status.ahead}, behind ${status.behind})`
+          : "";
+      lines.push(`● 变更概览 — ${branchLabel}${tracking}`);
+      const staged = files.filter((f) => f.staged);
+      // git porcelain semantics: x === ' ' means "unstaged only",
+      // x === '?' means "untracked" — keep the two buckets separate
+      // so the report matches what `git status -s` would print.
+      const unstagedOnly = files.filter((f) => !f.staged && f.x === " ");
+      const untracked = files.filter((f) => f.x === "?" && f.y === "?");
+      // `staged` may include entries whose unstaged half is also
+      // non-space (e.g. `MM` for staged-and-modified). Show those
+      // under "staged" — that's what `git diff --cached` would emit.
+      const stagedBucket = staged.filter((f) => f.x !== " ");
+      const formatOne = (f) => {
+        const tag = `${f.x}${f.y}`;
+        const path = f.origPath ? `${f.origPath} → ${f.path}` : f.path;
+        return `  ${tag}  ${path}`;
+      };
+      const renderBucket = (label, items) => {
+        if (items.length === 0) {
+          lines.push(`  ${label}: 无`);
+          return;
+        }
+        lines.push(`  ${label}: ${items.length}`);
+        for (const f of items) lines.push(formatOne(f));
+      };
+      renderBucket("staged", stagedBucket);
+      renderBucket("unstaged", unstagedOnly);
+      renderBucket("untracked", untracked);
+      if (stagedBucket.length + unstagedOnly.length + untracked.length === 0) {
+        lines.push(`● 工作区干净 — 无 staged/unstaged/untracked 变更`);
+      }
+    }
+  }
+  cs.chat = [...(cs.chat || []), lines.join("\n")];
+  pushStateFor(cid);
+  persistCurrentChat(cs);
+  return { handled: true, continueMcode: false };
+}
+
 // ----- public dispatchers -----
 
 // handleLocalSlash: /api/send path (user typed /cmd in chat input).
@@ -249,6 +314,8 @@ export async function handleLocalSlash(content, cs, cid) {
       return bodyNew(cs, cid);
     case "status":
       return bodyStatus(cs, cid);
+    case "review":
+      return await bodyReview(cs, cid);
     case "help":
       return await bodyHelp(cs, cid);
     case "usage":
@@ -291,6 +358,8 @@ export async function handleCmdCommand(cmd, cs, cid) {
   switch (name) {
     case "status":
       return bodyStatus(cs, cid);
+    case "review":
+      return await bodyReview(cs, cid);
     case "clear":
       return bodyClear(cs, cid);
     case "sessions":

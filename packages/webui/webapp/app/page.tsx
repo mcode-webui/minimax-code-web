@@ -292,7 +292,8 @@ function App() {
               t={t}
               onOpenWorkspace={() => openPanel("workspace")}
               onOpenFiles={() => openPanel("files")}
-              activePanel={panel === "workspace" || panel === "files" ? panel : null}
+              onOpenGit={() => openPanel("git")}
+              activePanel={panel === "workspace" || panel === "files" || panel === "git" ? panel : null}
             />
           ) : null
         }

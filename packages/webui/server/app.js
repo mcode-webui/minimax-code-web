@@ -62,6 +62,7 @@ import * as modelRoute from "./routes/model.js";
 import * as debugRoute from "./routes/debug.js";
 import * as protocolRoute from "./routes/protocol.js";
 import * as providersRoute from "./routes/providers.js";
+import * as gitRoute from "./routes/git.js";
 import * as authorizeRoute from "./lib/authorize.js";
 
 /**
@@ -121,6 +122,13 @@ export const OWNED_ROUTES = new Set([
   "GET /api/fs/read-file",
   "GET /api/fs/raw",
   "POST /api/fs/mkdir",
+  // Git panel (slice 03): right-panel git surface + `/review` parity
+  // surfaces. Containment-gated; execFile (no shell); branch
+  // checkout is allow-list gated. See lib/git.js header.
+  "GET /api/git/status",
+  "GET /api/git/branches",
+  "GET /api/git/diff",
+  "POST /api/git/checkout",
   // Settings.
   "GET /api/settings",
   "POST /api/settings",
@@ -484,6 +492,20 @@ export function createHonoApp() {
   });
   app.post("/api/fs/mkdir", (c) =>
     invokeHandler(c, c.get(CAPTURE_KEY), fsRoute.handleFsMkdir),
+  );
+
+  // ----- Git panel (slice 03) -----
+  app.get("/api/git/status", (c) =>
+    invokeHandler(c, c.get(CAPTURE_KEY), gitRoute.handleGitStatus),
+  );
+  app.get("/api/git/branches", (c) =>
+    invokeHandler(c, c.get(CAPTURE_KEY), gitRoute.handleGitBranches),
+  );
+  app.get("/api/git/diff", (c) =>
+    invokeHandler(c, c.get(CAPTURE_KEY), gitRoute.handleGitDiff),
+  );
+  app.post("/api/git/checkout", (c) =>
+    invokeHandler(c, c.get(CAPTURE_KEY), gitRoute.handleGitCheckout),
   );
 
   // ----- Settings -----

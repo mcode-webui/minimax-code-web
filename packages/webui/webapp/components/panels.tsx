@@ -27,6 +27,7 @@ import { useSessionContext } from "@/lib/store";
 import { applyTheme, currentTheme } from "@/lib/theme";
 import { matchFilter } from "@/lib/workspace-filter";
 import { openFileInWeb } from "@/lib/open-file";
+import { splitFilesByBucket, formatStatusTags, previewDiff } from "@/lib/git-panel";
 import type { Locale, MessageKey } from "@/lib/i18n";
 import type { ThemeName } from "@/lib/types";
 import { Icon } from "./icons";
@@ -50,7 +51,7 @@ import { FilePreviewPane } from "./file-preview-pane";
  * surface.
  */
 
-export type PanelKind = "workspace" | "files" | "alerts" | "search" | "progress" | "plugins";
+export type PanelKind = "workspace" | "files" | "git" | "alerts" | "search" | "progress" | "plugins";
 
 export function RightPanel({
   kind,
@@ -92,6 +93,7 @@ export function RightPanel({
           */}
           {kind === "workspace" ? <WorkspacePanel t={t} /> : null}
           {kind === "files" ? <FilesPanel t={t} locale={locale} /> : null}
+          {kind === "git" ? <GitPanel t={t} /> : null}
           {kind === "alerts" ? <AlertsPanel t={t} /> : null}
           {kind === "search" ? <SearchPanel onClose={onClose} t={t} /> : null}
           {kind === "progress" ? <ProgressPanel t={t} /> : null}
@@ -1326,6 +1328,435 @@ function baseName(path: string): string {
   return i === -1 ? stripped : stripped.slice(i + 1);
 }
 
+
+/**
+ * Git panel — right-panel git surface (slice 03 of webui-parity).
+ *
+ * Drives three things:
+ *
+ *   - Workspace status: current branch + ahead/behind + changed files
+ *     (staged / unstaged / untracked). Source = `GET /api/git/status`.
+ *   - Per-file diff: clicking a file row fetches its diff via
+ *     `GET /api/git/diff` and renders it inline.
+ *   - Branch switch: a dropdown of local branches
+ *     (`GET /api/git/branches`) plus a confirmation-gated destructive
+ *     `POST /api/git/checkout`. The panel never sends a switch
+ *     without an explicit user OK.
+ *
+ * Empty states are explicit, not error toasts:
+ *
+ *   - no workspace      → `t("git.empty.noWorkspace")`
+ *   - non-git directory → `t("git.empty.notRepo")`
+ *   - clean working tree → `t("git.empty.clean")`
+ *
+ * Containment is enforced server-side; the panel reads `ok` from the
+ * payload and renders the empty state for `ok:false` answers rather
+ * than showing a red toast.
+ */
+function GitPanel({ t }: { t: (key: MessageKey) => string }) {
+  const { state } = useSessionContext();
+  const workspaceDir = state?.workspace.dir ?? "";
+
+  const [status, setStatus] = useState<api.GitStatusPayload | null>(null);
+  const [branches, setBranches] = useState<api.GitBranch[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [selectedFile, setSelectedFile] = useState<string | null>(null);
+  const [diff, setDiff] = useState<{ text: string; truncated: boolean } | null>(null);
+  const [diffLoading, setDiffLoading] = useState(false);
+  const [diffError, setDiffError] = useState<string | null>(null);
+  // Branch-switch confirmation. The destructive confirmation lives
+  // here (the panel) rather than in a global modal because the
+  // confirmation must be tied to the very branch that was clicked —
+  // a single confirmation modal per switch is what the ticket pins.
+  const [pendingBranch, setPendingBranch] = useState<string | null>(null);
+  const [switchBusy, setSwitchBusy] = useState(false);
+  const [switchResult, setSwitchResult] = useState<{ ok: boolean; message: string } | null>(null);
+
+  // Per-request generation counter — race safety so an in-flight
+  // workspace switch never overwrites a fresher status response.
+  const loadGen = useRef(0);
+  const diffGen = useRef(0);
+
+  const refreshStatus = useCallback(async () => {
+    if (!workspaceDir) {
+      setStatus(null);
+      setBranches(null);
+      return;
+    }
+    const gen = ++loadGen.current;
+    setLoading(true);
+    setError(null);
+    try {
+      const [statusResult, branchesResult] = await Promise.all([
+        api.getGitStatus(workspaceDir),
+        api.getGitBranches(workspaceDir),
+      ]);
+      if (gen !== loadGen.current) return;
+      setStatus(statusResult);
+      setBranches(Array.isArray(branchesResult.branches) ? branchesResult.branches : []);
+    } catch (cause) {
+      if (gen !== loadGen.current) return;
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      if (gen === loadGen.current) setLoading(false);
+    }
+  }, [workspaceDir]);
+
+  // Re-fetch on workspace change + manual refresh. The status helper
+  // itself does not poll — the panel only refreshes on user request
+  // (the Refresh button) or when the workspace dir changes.
+  useEffect(() => {
+    void refreshStatus();
+    setSelectedFile(null);
+    setDiff(null);
+    setSwitchResult(null);
+  }, [refreshStatus]);
+
+  const loadDiff = useCallback(
+    async (file: string) => {
+      const gen = ++diffGen.current;
+      setSelectedFile(file);
+      setDiffLoading(true);
+      setDiffError(null);
+      setDiff(null);
+      try {
+        const result = await api.getGitDiff(workspaceDir, file);
+        if (gen !== diffGen.current) return;
+        if (!result.ok) {
+          setDiffError(result.error || "diff failed");
+          return;
+        }
+        setDiff(previewDiff(result.diff, 400));
+      } catch (cause) {
+        if (gen !== diffGen.current) return;
+        setDiffError(cause instanceof Error ? cause.message : String(cause));
+      } finally {
+        if (gen === diffGen.current) setDiffLoading(false);
+      }
+    },
+    [workspaceDir],
+  );
+
+  const confirmSwitch = useCallback(async () => {
+    if (!pendingBranch || !workspaceDir) return;
+    setSwitchBusy(true);
+    try {
+      const result = await api.gitCheckout(workspaceDir, pendingBranch);
+      if (result.ok) {
+        setSwitchResult({ ok: true, message: t("git.switch.success").replace("{{branch}}", pendingBranch) });
+      } else {
+        setSwitchResult({
+          ok: false,
+          message: t("git.switch.failed").replace("{{error}}", result.error || "unknown"),
+        });
+      }
+      setPendingBranch(null);
+      // Refresh status — branch may have changed; old files list is stale.
+      void refreshStatus();
+      setSelectedFile(null);
+      setDiff(null);
+    } catch (cause) {
+      setSwitchResult({
+        ok: false,
+        message: t("git.switch.failed").replace("{{error}}", cause instanceof Error ? cause.message : String(cause)),
+      });
+      setPendingBranch(null);
+    } finally {
+      setSwitchBusy(false);
+    }
+  }, [pendingBranch, workspaceDir, t, refreshStatus]);
+
+  if (!workspaceDir) {
+    return (
+      <div className="flex flex-col gap-2" data-testid="git-panel-empty-no-workspace">
+        <span className="desktop-text-dialog-medium flex items-center gap-2 text-base font-medium leading-6 text-text_default_primary">
+          <Icon name="git" size={16} />
+          {t("git.title")}
+        </span>
+        <p className="rounded-[8px] bg-bg_grouped_secondary_elevated px-2 py-2 text-caption-small-strong text-text_default_tertiary">
+          {t("git.empty.noWorkspace")}
+        </p>
+      </div>
+    );
+  }
+
+  const notRepo =
+    status &&
+    ((status.ok && status.isRepo === false) ||
+      (!status.ok && status.isRepo === false));
+
+  if (notRepo) {
+    return (
+      <div className="flex flex-col gap-2" data-testid="git-panel-empty-not-repo">
+        <span className="desktop-text-dialog-medium flex items-center gap-2 text-base font-medium leading-6 text-text_default_primary">
+          <Icon name="git" size={16} />
+          {t("git.title")}
+        </span>
+        <p className="rounded-[8px] bg-bg_grouped_secondary_elevated px-2 py-2 text-caption-small-strong text-text_default_tertiary">
+          {t("git.empty.notRepo")}
+        </p>
+        <button
+          type="button"
+          onClick={() => void refreshStatus()}
+          disabled={loading}
+          aria-label={t("git.refreshAria")}
+          data-testid="git-panel-refresh"
+          className="flex h-7 w-fit items-center gap-1 rounded-[8px] border border-border_default px-2 text-caption-small-strong text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_hover disabled:opacity-50"
+        >
+          <Icon name="refresh" size={12} />
+          {t("git.refresh")}
+        </button>
+      </div>
+    );
+  }
+
+  const buckets = splitFilesByBucket(status?.files);
+  const hasFiles =
+    buckets.staged.length + buckets.unstaged.length + buckets.untracked.length > 0;
+  const currentBranch = branches?.find((b) => b.current)?.name ?? status?.branch ?? null;
+  const upstream = status?.upstream ?? null;
+
+  return (
+    <div className="flex flex-col gap-3" data-testid="git-panel">
+      {/* Header: title + refresh + branch switcher. */}
+      <div className="flex items-center gap-1">
+        <span className="desktop-text-dialog-medium flex flex-1 items-center gap-2 text-base font-medium leading-6 text-text_default_primary">
+          <Icon name="git" size={16} />
+          {t("git.title")}
+        </span>
+        <button
+          type="button"
+          onClick={() => void refreshStatus()}
+          disabled={loading}
+          aria-label={t("git.refreshAria")}
+          title={t("git.refresh")}
+          data-testid="git-panel-refresh"
+          className="flex size-7 flex-shrink-0 items-center justify-center rounded-[8px] text-icon_default_tertiary transition-colors hover:bg-bg_interaction_tertiary_hover hover:text-icon_default_primary disabled:opacity-50"
+        >
+          <Icon name="refresh" size={14} />
+        </button>
+      </div>
+
+      {/* Branch summary + switcher. */}
+      <div className="flex flex-col gap-1">
+        <span className="desktop-text-ui-assist text-text_default_tertiary">
+          {t("git.branch.label")}
+        </span>
+        {currentBranch ? (
+          upstream ? (
+            <span
+              className="font-family-code text-caption-small-strong text-text_default_secondary"
+              data-testid="git-panel-branch-label"
+              title={`${currentBranch} tracking ${upstream} (ahead ${status?.ahead ?? 0}, behind ${status?.behind ?? 0})`}
+            >
+              {t("git.branch.tracking")
+                .replace("{{branch}}", currentBranch)
+                .replace("{{upstream}}", upstream)
+                .replace("{{ahead}}", String(status?.ahead ?? 0))
+                .replace("{{behind}}", String(status?.behind ?? 0))}
+            </span>
+          ) : (
+            <span
+              className="font-family-code text-caption-small-strong text-text_default_secondary"
+              data-testid="git-panel-branch-label"
+              title={currentBranch}
+            >
+              {t("git.branch.tracking.noUpstream").replace("{{branch}}", currentBranch)}
+            </span>
+          )
+        ) : (
+          <span className="text-caption-small-strong text-text_default_tertiary">—</span>
+        )}
+        {branches && branches.length > 0 ? (
+          <select
+            value={currentBranch ?? ""}
+            onChange={(event) => {
+              const next = event.target.value;
+              if (next && next !== currentBranch) setPendingBranch(next);
+              // Always reset the select to the current branch — the
+              // real change happens only after the user confirms.
+              event.currentTarget.value = currentBranch ?? "";
+            }}
+            disabled={switchBusy}
+            data-testid="git-panel-branch-switcher"
+            className="mavis-input mt-1"
+          >
+            {(branches ?? []).map((branch) => (
+              <option key={branch.name} value={branch.name}>
+                {branch.name}
+              </option>
+            ))}
+          </select>
+        ) : null}
+      </div>
+
+      {/* Changed files. Empty state when the working tree is clean. */}
+      <div className="flex flex-col gap-1">
+        <span className="desktop-text-ui-assist text-text_default_tertiary">
+          {t("git.files.title")}
+        </span>
+        {!hasFiles ? (
+          <p
+            data-testid="git-panel-clean"
+            className="rounded-[8px] bg-bg_grouped_secondary_elevated px-2 py-2 text-caption-small-strong text-text_default_tertiary"
+          >
+            {t("git.empty.clean")}
+          </p>
+        ) : (
+          <ul className="flex flex-col gap-px" data-testid="git-panel-files">
+            {[...buckets.staged, ...buckets.unstaged, ...buckets.untracked].map((file) => {
+              const isSelected = file.path === selectedFile;
+              const bucketLabel = file.staged
+                ? t("git.files.staged")
+                : file.x === "?" && file.y === "?"
+                  ? t("git.files.untracked")
+                  : t("git.files.unstaged");
+              return (
+                <li key={`${file.x}${file.y}:${file.path}`}>
+                  <button
+                    type="button"
+                    onClick={() => void loadDiff(file.path)}
+                    aria-label={t("git.file.openDiff")}
+                    title={file.path}
+                    data-testid={`git-panel-file-${file.path}`}
+                    data-bucket={file.staged ? "staged" : file.x === "?" ? "untracked" : "unstaged"}
+                    data-selected={isSelected ? "true" : "false"}
+                    className={[
+                      "flex h-7 w-full items-center gap-1 rounded-lg px-1.5 text-left transition-colors",
+                      isSelected
+                        ? "bg-bg_interaction_tertiary_selected"
+                        : "hover:bg-bg_interaction_tertiary_hover",
+                    ].join(" ")}
+                  >
+                    <span
+                      className="min-w-[28px] flex-none font-family-code text-caption-small-strong text-text_default_tertiary"
+                      data-testid={`git-panel-file-tags-${file.path}`}
+                    >
+                      {formatStatusTags(file)}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate text-sm text-text_default_primary">
+                      {file.origPath ? `${file.origPath} → ${file.path}` : file.path}
+                    </span>
+                    <span className="flex-none text-caption-small-strong text-text_default_tertiary">
+                      {bucketLabel}
+                    </span>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+
+      {/* Inline diff preview. */}
+      {selectedFile ? (
+        <div className="flex flex-col gap-1" data-testid="git-panel-diff">
+          <span className="desktop-text-ui-assist truncate text-text_default_tertiary" title={selectedFile}>
+            {selectedFile}
+          </span>
+          {diffLoading ? (
+            <p className="text-caption-small-strong text-text_default_tertiary">
+              {t("git.file.diff.loading")}
+            </p>
+          ) : diffError ? (
+            <p
+              data-testid="git-panel-diff-error"
+              className="text-caption-small-strong text-text_status_error"
+            >
+              {t("git.file.diff.failed")}: {diffError}
+            </p>
+          ) : diff && diff.text ? (
+            <pre className="thin-scrollbar max-h-[280px] overflow-auto rounded-[8px] bg-bg_grouped_secondary_elevated p-2 font-family-code text-caption-small-strong text-text_default_secondary">
+              {diff.text}
+              {diff.truncated ? (
+                <span className="block pt-1 text-text_default_tertiary">
+                  …{t("git.file.diff.truncated")}
+                </span>
+              ) : null}
+            </pre>
+          ) : (
+            <p className="text-caption-small-strong text-text_default_tertiary">
+              {t("git.file.diff.empty")}
+            </p>
+          )}
+        </div>
+      ) : null}
+
+      {/* Switch outcome (transient). A success means the branch /
+          file list re-fetched; a failure stays visible until the
+          next action. */}
+      {switchResult ? (
+        <p
+          data-testid={switchResult.ok ? "git-panel-switch-success" : "git-panel-switch-error"}
+          className={[
+            "rounded-[8px] px-2 py-1.5 text-caption-small-strong",
+            switchResult.ok
+              ? "bg-bg_grouped_secondary_elevated text-text_default_secondary"
+              : "bg-bg_grouped_secondary_elevated text-text_status_error",
+          ].join(" ")}
+        >
+          {switchResult.message}
+        </p>
+      ) : null}
+
+      {/* Surface unexpected errors that are neither a non-git dir nor
+          a containment rejection (those render their own empty state). */}
+      {error ? (
+        <p
+          data-testid="git-panel-error"
+          className="rounded-[8px] bg-bg_grouped_secondary_elevated px-2 py-1.5 text-caption-small-strong text-text_status_error"
+        >
+          {error}
+        </p>
+      ) : null}
+
+      {/* Destructive branch switch — confirmed client-side. */}
+      <AntModal
+        open={pendingBranch !== null}
+        onCancel={() => !switchBusy && setPendingBranch(null)}
+        footer={null}
+        width={420}
+        rootClassName="mavis-confirm-modal-compact"
+        classNames={{
+          mask: "mavis-confirm-modal-compact-mask",
+          content: "mavis-confirm-modal-compact-surface",
+        }}
+        title={
+          <span className="mavis-confirm-modal-compact-title text-heading3 text-text_default_primary">
+            {t("git.switch.confirm.title")}
+          </span>
+        }
+      >
+        <div className="flex flex-col gap-3" data-testid="git-switch-confirm">
+          <p className="text-sm leading-5 text-text_default_secondary">
+            {t("git.switch.confirm.body").replace("{{branch}}", pendingBranch ?? "")}
+          </p>
+          <div className="flex items-center justify-end gap-2 pt-1">
+            <button
+              type="button"
+              disabled={switchBusy}
+              onClick={() => setPendingBranch(null)}
+              data-testid="git-switch-cancel"
+              className="h-8 rounded-lg border border-border_default px-3 text-sm text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_hover disabled:opacity-50"
+            >
+              {t("git.switch.confirm.cancel")}
+            </button>
+            <button
+              type="button"
+              disabled={switchBusy}
+              onClick={() => void confirmSwitch()}
+              data-testid="git-switch-ok"
+              className="h-8 rounded-lg bg-bg_status_positive px-3 text-sm font-medium text-text_inverse transition-opacity hover:opacity-90 disabled:opacity-50"
+            >
+              {t("git.switch.confirm.ok")}
+            </button>
+          </div>
+        </div>
+      </AntModal>
+    </div>
+  );
+}
 
 function WorkspacePanel({ t }: { t: (key: MessageKey) => string }) {
   const { state } = useSessionContext();
