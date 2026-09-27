@@ -490,11 +490,14 @@ export function createHonoApp() {
   // createResponseCapture buffer (which only models writeHead/end). The
   // route's `rawStreamToWebResponse` returns a fetch-API Response with a
   // Web ReadableStream body, so we hand it back to Hono directly and skip
-  // invokeHandler entirely.
+  // invokeHandler entirely. `?download=1` flips the response into
+  // "save as" mode (slice 14's third action); the same containment
+  // gate, size cap, and regular-file check still apply.
   app.get("/api/fs/raw", (c) => {
     const url = new URL(c.req.url, "http://localhost");
     const path = url.searchParams.get("path") || "";
-    return fsRoute.rawStreamToWebResponse(path);
+    const download = url.searchParams.get("download") === "1";
+    return fsRoute.rawStreamToWebResponse(path, { download });
   });
   app.post("/api/fs/mkdir", (c) =>
     invokeHandler(c, c.get(CAPTURE_KEY), fsRoute.handleFsMkdir),

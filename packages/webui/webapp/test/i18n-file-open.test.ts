@@ -65,9 +65,12 @@ describe("i18n-file-open — bilingual symmetry (no orphan keys)", () => {
       "fileOpen.action.openDefault.aria",
       "fileOpen.action.reveal",
       "fileOpen.action.reveal.aria",
+      "fileOpen.action.download",
+      "fileOpen.action.download.aria",
       "fileOpen.failure.openDefault",
       "fileOpen.failure.reveal",
-      "fileOpen.button.disabledHint",
+      "fileOpen.button.disabledHint.outOfBounds",
+      "fileOpen.button.disabledHint.noOpener",
       "fileOpen.header.unsupported",
     ];
     for (const key of visibleKeys) {
@@ -77,6 +80,22 @@ describe("i18n-file-open — bilingual symmetry (no orphan keys)", () => {
         `${key} must differ between en and zh`,
       );
     }
+  });
+
+  test("the two disabledHint keys are distinct (one per reason)", () => {
+    // The acceptance criterion: each reason must map to its own
+    // disabled-state copy. Reusing the "no GUI opener" message for
+    // an out-of-bounds path misleads the user about why the button
+    // is dead — the path is unreachable regardless of the host. The
+    // two keys MUST disagree in both locales.
+    assert.notEqual(
+      FILE_OPEN_STRINGS.en["fileOpen.button.disabledHint.outOfBounds"],
+      FILE_OPEN_STRINGS.en["fileOpen.button.disabledHint.noOpener"],
+    );
+    assert.notEqual(
+      FILE_OPEN_STRINGS.zh["fileOpen.button.disabledHint.outOfBounds"],
+      FILE_OPEN_STRINGS.zh["fileOpen.button.disabledHint.noOpener"],
+    );
   });
 });
 

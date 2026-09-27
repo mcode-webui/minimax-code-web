@@ -38,6 +38,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { EventEmitter } from "node:events";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { Readable } from "node:stream";
@@ -416,6 +417,127 @@ describe("POST /api/fs/reveal — containment and argv safety", () => {
       // either shape.
       assert.ok(argv.length >= 1);
     });
+  });
+});
+
+// ============================================================
+// Download path — the slice-14 third action reuses /api/fs/raw with
+// `?download=1` so the same containment gate + 20 MiB cap + regular-
+// file check all stay in one place. The wire shape is just an extra
+// Content-Disposition header; the same refusal codes apply.
+// ============================================================
+
+describe("GET /api/fs/raw?download=1 — save-as download", () => {
+  // The Hono registration reads the query param; we exercise the
+  // legacy (req, res) path through handleFsRaw to keep the test
+  // boundary narrow. Both call paths share handleFsRawStream, which
+  // is what produces the headers, so a green test here proves the
+  // Hono bridge wires the same header set.
+
+  // Fake res that can handle the streaming pipe — EventEmitter + the
+  // writeHead/write/end trio `createReadStream(...).pipe(res)` expects.
+  // Lowercases header names on the way in so case-insensitive HTTP
+  // semantics match what the Hono registry / createResponseCapture do.
+  function streamingFakeRes() {
+    let resolveDone;
+    const done = new Promise((r) => (resolveDone = r));
+    const res = Object.assign(new EventEmitter(), {
+      status: 0,
+      body: Buffer.alloc(0),
+      headers: {},
+      writeHead(status, headers) {
+        this.status = status;
+        if (headers) {
+          for (const [k, v] of Object.entries(headers)) {
+            this.headers[String(k).toLowerCase()] = v;
+          }
+        }
+      },
+      end(chunk) {
+        if (chunk !== undefined) {
+          this.body = Buffer.concat([this.body, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)]);
+        }
+        resolveDone();
+      },
+      write(chunk) {
+        this.body = Buffer.concat([this.body, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)]);
+      },
+      done,
+    });
+    return res;
+  }
+
+  test("a regular file inside an allowed root returns 200 with attachment disposition", async () => {
+    const file = join(workDir, "downloadable.bin");
+    writeFileSync(file, "binary stub\n");
+
+    const res = streamingFakeRes();
+    fsRoute.handleFsRaw(
+      { url: `/api/fs/raw?path=${encodeURIComponent(file)}&download=1` },
+      res,
+    );
+    await res.done;
+    assert.equal(res.status, 200);
+    const disposition = res.headers["content-disposition"];
+    assert.ok(disposition, "download=1 must set Content-Disposition");
+    assert.match(disposition, /^attachment;/);
+    assert.match(disposition, /filename="downloadable\.bin"/);
+    // The body bytes round-trip — the download is real bytes, not
+    // a stream-of-zeros. This is the assertion that proves the
+    // `?download=1` flag didn't accidentally trigger an early end.
+    assert.ok(res.body.length > 0);
+  });
+
+  test("an out-of-root path is 403 even when download=1", () => {
+    const res = fakeRes();
+    fsRoute.handleFsRaw(
+      {
+        url: `/api/fs/raw?path=${encodeURIComponent(outsideRoot)}&download=1`,
+      },
+      res,
+    );
+    assert.equal(res.status, 403);
+    // No file bytes leaked: the body is the JSON error payload,
+    // never the binary stream.
+    assert.match(
+      res.body,
+      /不在允许范围内|越界|allowed root|MCODE_WEBUI_WORKSPACE_ROOTS/,
+    );
+  });
+
+  test("a directory is 400 not-a-regular-file even when download=1", () => {
+    const res = fakeRes();
+    fsRoute.handleFsRaw(
+      { url: `/api/fs/raw?path=${encodeURIComponent(workDir)}&download=1` },
+      res,
+    );
+    assert.equal(res.status, 400);
+    assert.match(res.body, /not a regular file/);
+  });
+
+  test("missing path returns 400 even when download=1", () => {
+    const res = fakeRes();
+    fsRoute.handleFsRaw({ url: "/api/fs/raw?download=1" }, res);
+    assert.equal(res.status, 400);
+    assert.match(res.body, /missing path/);
+  });
+
+  test("download=0 keeps the raw response (no Content-Disposition)", async () => {
+    // Belt-and-braces: the wire contract treats anything other than
+    // the literal "1" as "do not add the disposition header". A
+    // future regression that reads `?download` truthily would break
+    // the existing image preview path.
+    const file = join(workDir, "preview-only.bin");
+    writeFileSync(file, "binary stub\n");
+
+    const res = streamingFakeRes();
+    fsRoute.handleFsRaw(
+      { url: `/api/fs/raw?path=${encodeURIComponent(file)}` },
+      res,
+    );
+    await res.done;
+    assert.equal(res.status, 200);
+    assert.equal(res.headers["content-disposition"], undefined);
   });
 });
 

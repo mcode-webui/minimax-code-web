@@ -13,7 +13,7 @@ import { assertWorkspacePath, assertWorkspaceParentPath, expandTilde } from '../
 import { openWithDefault, revealInFileManager } from '../lib/open-target.js'
 import { createReadStream, statSync } from 'node:fs'
 import { Readable } from 'node:stream'
-import { extname } from 'node:path'
+import { extname, basename } from 'node:path'
 
 // v2.2 (in-product): containment 门 — 目录浏览/创建与 browseWorkspace 同边界，
 //   只允许落在允许根（默认 home + 默认工作区 + tmp，MCODE_WEBUI_WORKSPACE_ROOTS
@@ -144,8 +144,16 @@ const RAW_CONTENT_TYPES = {
  * The stream is a Node Readable; the Hono registration converts it with
  * `Readable.toWeb()` (the Web Streams adapter is the standard fetch-API
  * shape @hono/node-server accepts on the body slot).
+ *
+ * `opts.download` flips the response into "save as" mode by adding a
+ * `Content-Disposition: attachment` header — slice 14's third action
+ * ("下载查看") reuses this route rather than introducing a second
+ * streaming endpoint, so the same containment gate, the same 20 MiB
+ * cap, and the same regular-file check all stay in one place.
+ * `opts.downloadFilename` overrides the basename used in the
+ * disposition (default: the realpath'd leaf).
  */
-export function handleFsRawStream(rawPath) {
+export function handleFsRawStream(rawPath, opts = {}) {
   if (!rawPath) {
     return {
       ok: false,
@@ -190,14 +198,24 @@ export function handleFsRawStream(rawPath) {
 
   const ext = extname(path).toLowerCase()
   const type = RAW_CONTENT_TYPES[ext] || 'application/octet-stream'
+  const headers = {
+    'Content-Type': type,
+    'Content-Length': String(st.size),
+    'Cache-Control': 'no-store',
+  }
+  if (opts.download) {
+    // The filename is quoted per RFC 6266 so a space, comma, or
+    // semicolon in the leaf does not break the header parser; the
+    // fallback (`fallback`) tells the browser what to use when the
+    // server-supplied value cannot be turned into a usable filename.
+    const leaf = opts.downloadFilename || basename(path)
+    headers['Content-Disposition'] =
+      `attachment; filename="${leaf.replace(/"/g, '')}"`
+  }
   return {
     ok: true,
     status: 200,
-    headers: {
-      'Content-Type': type,
-      'Content-Length': String(st.size),
-      'Cache-Control': 'no-store',
-    },
+    headers,
     stream: createReadStream(path),
   }
 }
@@ -205,7 +223,8 @@ export function handleFsRawStream(rawPath) {
 export function handleFsRaw(req, res) {
   const url = new URL(req.url, `http://localhost`)
   const rawPath = url.searchParams.get('path') || ''
-  const result = handleFsRawStream(rawPath)
+  const download = url.searchParams.get('download') === '1'
+  const result = handleFsRawStream(rawPath, { download })
   if (!result.ok) {
     res.writeHead(result.status, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify(result.json))
@@ -218,8 +237,8 @@ export function handleFsRaw(req, res) {
 /** Hono-friendly bridge: turns the tuple above into a fetch-API Response
  *  by adapting the Node Readable to a Web ReadableStream. Exposed for the
  *  Hono registration in server/app.js. */
-export function rawStreamToWebResponse(rawPath) {
-  const result = handleFsRawStream(rawPath)
+export function rawStreamToWebResponse(rawPath, opts = {}) {
+  const result = handleFsRawStream(rawPath, opts)
   if (!result.ok) {
     return new Response(JSON.stringify(result.json), {
       status: result.status,

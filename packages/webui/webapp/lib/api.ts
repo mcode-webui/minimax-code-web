@@ -888,6 +888,20 @@ export function fsRawUrl(path: string): string {
   );
 }
 
+/**
+ * Absolute URL that asks the same `/api/fs/raw` endpoint to attach
+ * `Content-Disposition: attachment` so the browser saves the bytes
+ * instead of rendering them. Slice 14 R207 — the third "下载查看"
+ * action reuses the raw stream with a query flag rather than adding a
+ * second streaming route, so the same containment gate + 20 MiB cap
+ * stay in one place.
+ */
+export function fsRawDownloadUrl(path: string): string {
+  return withClientQuery(
+    `/api/fs/raw?path=${encodeURIComponent(path)}&download=1`,
+  );
+}
+
 // --- file-open actions (slice 14) ----------------------------------------
 //
 // The two endpoints below turn the right-hand preview panel from a dead

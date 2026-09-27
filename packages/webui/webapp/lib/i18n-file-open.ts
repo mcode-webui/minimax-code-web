@@ -16,15 +16,22 @@
  *     explanation that drives the panel body. Each variant maps to one
  *     of the four unsupported categories the read-file endpoint emits
  *     (binary / over-size / out-of-bounds / unknown).
- *   - action.* — the two button labels (open-default / reveal). One pair
- *     each so a future affordance does not have to share copy with the
- *     other.
- *   - failure.* — error copy the buttons render when the server answer
- *     is `ok:false`. These are short, the toast / banner stays short.
- *   - button.disabledHint — the "why is this disabled" tooltip when the
- *     host has no opener (`code === "no-opener"`). The ticket pins this
- *     as part of graceful degradation: a disabled button must explain
- *     itself, never silently do nothing.
+ *   - action.* — the button labels. One pair each (open-default /
+ *     reveal / download) so a future affordance does not have to share
+ *     copy with the others. The download action (slice 14 R207) is the
+ *     third button the user-facing ticket asks for; it is always
+ *     enabled because the browser handles the save directly.
+ *   - failure.* — error copy the buttons render when a button click
+ *     comes back with `ok:false`. Short; the toast / banner stays short.
+ *   - button.disabledHint.* — the "why is this disabled" tooltip. Two
+ *     distinct reasons live here, picked by the classifier the panel
+ *     uses:
+ *       outOfBounds  — the panel knows the path is unreachable; opening
+ *                       it would just bounce off the gate again.
+ *       noOpener     — the host has no GUI binary; the action is honest
+ *                       but unrunnable.
+ *     Each carries its own message so the disabled state never lies about
+ *     the cause.
  */
 
 import type { Locale } from "./i18n";
@@ -45,17 +52,30 @@ const FILE_OPEN_STRINGS = {
     "fileOpen.action.openDefault.aria": "Open this file with the system's default application",
     "fileOpen.action.reveal": "Show in file manager",
     "fileOpen.action.reveal.aria": "Open the file manager and point at this file",
+    /* Slice 14 R207 — the third "下载查看" action reuses the
+       /api/fs/raw?download=1 endpoint. It is always enabled (no
+       opener / file-manager dependency), so no disable-hint copy. */
+    "fileOpen.action.download": "Download to view",
+    "fileOpen.action.download.aria": "Download this file to your computer",
     /* Failure copy — the banner the panel renders when a button click
        comes back with `ok:false`. Keep it bilingual-friendly; the server
        already says what went wrong in `error`, this string is the
-       framing. */
+       framing. The download path has no failure banner — the browser
+       either saves the file or the network layer surfaces its own
+       error. */
     "fileOpen.failure.openDefault": "Could not open the file: {{error}}",
     "fileOpen.failure.reveal": "Could not open the file manager: {{error}}",
-    /* Disabled tooltip — the reason the button is disabled. Today the
-       only trigger is the server's `code: "no-opener"` answer, but
-       keeping a separate key lets us add new disable reasons without
-       re-touching the component. */
-    "fileOpen.button.disabledHint": "This environment has no GUI opener; the action is unavailable.",
+    /* Disabled tooltip — the reason the button is disabled. Two distinct
+       reasons live here, picked by the classifier the panel uses:
+         outOfBounds  — the panel knows the path is unreachable, opening
+                         it would just bounce off the gate again
+         noOpener     — the host has no GUI binary, the action is
+                         honest but unrunnable
+       Each carries its own message; reusing the "no GUI opener" copy
+       for an out-of-bounds path misleads the user about why the button
+       is dead. */
+    "fileOpen.button.disabledHint.outOfBounds": "This path is outside the workspace; the action is unavailable.",
+    "fileOpen.button.disabledHint.noOpener": "This environment has no GUI opener; the action is unavailable.",
     /* Header — shown at the top of the panel when the file is not
        previewable. Long-form, no ellipsis, because the body explains
        why. */
@@ -70,9 +90,12 @@ const FILE_OPEN_STRINGS = {
     "fileOpen.action.openDefault.aria": "用系统默认应用程序打开该文件",
     "fileOpen.action.reveal": "在文件管理器中显示",
     "fileOpen.action.reveal.aria": "打开文件管理器并定位到该文件",
+    "fileOpen.action.download": "下载查看",
+    "fileOpen.action.download.aria": "将该文件下载到本地",
     "fileOpen.failure.openDefault": "打开文件失败：{{error}}",
     "fileOpen.failure.reveal": "打开文件管理器失败：{{error}}",
-    "fileOpen.button.disabledHint": "当前环境没有 GUI opener，该操作不可用。",
+    "fileOpen.button.disabledHint.outOfBounds": "该路径不在工作区允许范围内，该操作不可用。",
+    "fileOpen.button.disabledHint.noOpener": "当前环境没有 GUI opener，该操作不可用。",
     "fileOpen.header.unsupported": "该文件类型无法在面板中预览。",
   },
 } as const;

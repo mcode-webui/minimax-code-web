@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Locale, MessageKey } from "@/lib/i18n";
 import {
   fsRawUrl,
+  fsRawDownloadUrl,
   getFsFile,
   openFileWithDefault,
   revealInFileManager,
@@ -261,21 +262,25 @@ function PreviewError({
     [error, payload],
   );
 
-  // Local state for the two actions: which one is currently firing
-  // (so the spinner / disable lives on the button, not on the whole
-  // panel), and which one last failed (the panel renders the failure
-  // copy inline so a click never silently no-ops).
+  // Local state for the two actions that go through the OS opener:
+  // which one is currently firing (so the spinner / disable lives on
+  // the button, not on the whole panel), and which one last failed
+  // (the panel renders the failure copy inline so a click never
+  // silently no-ops).
   const [busy, setBusy] = useState<"open-default" | "reveal" | null>(null);
   const [failure, setFailure] = useState<{ key: "open-default" | "reveal"; message: string } | null>(null);
   // Disabled-by-server: when the server has already answered a previous
   // click with `code === "no-opener"`, we know the host cannot run the
   // action at all — the button stays disabled for the lifetime of this
-  // open file, with the disabledHint tooltip explaining why. A "fresh"
-  // navigation to a different file clears this back to enabled.
+  // open file, with the dedicated hint tooltip explaining why. Each
+  // action carries its own disable flag: a server that can `reveal`
+  // but not `open-default` (or vice versa) is possible on Linux
+  // desktop distros where `xdg-open` is missing but the file manager
+  // is still around. A "fresh" navigation to a different file clears
+  // both flags back to enabled.
   const [disabledByServer, setDisabledByServer] = useState<{
     openDefault: boolean;
     reveal: boolean;
-    reason?: string;
   }>({ openDefault: false, reveal: false });
 
   // Reset per-file state when the panel re-mounts onto a different
@@ -289,7 +294,12 @@ function PreviewError({
   const fireAction = useCallback(
     async (kind: "open-default" | "reveal") => {
       if (!unsupported.actionsAvailable) return;
-      if (disabledByServer.openDefault || disabledByServer.reveal) return;
+      // Guard each action independently. The earlier single check
+      // (`openDefault || reveal`) blocked BOTH actions when only one
+      // was disabled — the regression ticket called this out: an
+      // open-default no-opener must not silence a still-working reveal.
+      if (kind === "open-default" && disabledByServer.openDefault) return;
+      if (kind === "reveal" && disabledByServer.reveal) return;
       setBusy(kind);
       setFailure(null);
       let result: FileOpenResult;
@@ -314,12 +324,12 @@ function PreviewError({
       // `no-opener` is a permanent disable — the host cannot run the
       // action, so the button stays disabled with the dedicated hint.
       // Other failures (spawn-failed, network) stay transient so a
-      // retry is still possible.
+      // retry is still possible. Only the matching key flips — the
+      // other action's disable state is preserved untouched.
       if (result.code === "no-opener") {
         setDisabledByServer((current) => ({
           ...current,
-          openDefault: kind === "open-default" ? true : current.openDefault,
-          reveal: kind === "reveal" ? true : current.reveal,
+          [kind === "open-default" ? "openDefault" : "reveal"]: true,
         }));
       }
       setFailure({
@@ -335,20 +345,33 @@ function PreviewError({
   const reasonText = reasonCopy(locale, unsupported.reason, unsupported.params);
   const language = payload?.language ?? "";
 
+  // The hint copy the buttons render when disabled matches the
+  // classifier, not the previous "no GUI opener" catch-all. Out of
+  // bounds says "this path is outside the workspace"; no-opener
+  // says "this environment has no GUI opener". Each reason gets its
+  // own message so the user sees the actual reason for the dead
+  // button.
+  const disabledHintKey: "fileOpen.button.disabledHint.outOfBounds" | "fileOpen.button.disabledHint.noOpener" =
+    unsupported.reason === "outOfBounds"
+      ? "fileOpen.button.disabledHint.outOfBounds"
+      : "fileOpen.button.disabledHint.noOpener";
+
   return (
     <div
-      className="flex flex-col gap-3 rounded-[10px] border border-border_default bg-bg_grouped_secondary_elevated px-3 py-3 text-text_default_secondary"
+      className="flex h-full min-h-0 w-full flex-col items-center justify-center gap-4 px-3 py-6 text-center text-text_default_secondary"
       data-testid="file-preview-error"
       data-reason={unsupported.reason}
     >
-      <div className="flex items-start gap-2">
+      {/* Centred header — the warning glyph + the title + the reason
+          copy, all stacked and centred. The icon stays inline so the
+          row keeps its visual rhythm; the wrap ensures the icon does
+          not pull the text out of alignment. */}
+      <div className="flex max-w-[260px] flex-col items-center gap-2">
         <span
-          className="flex size-4 flex-shrink-0 items-center justify-center text-icon_default_secondary"
+          className="flex size-5 flex-shrink-0 items-center justify-center text-icon_default_secondary"
           aria-hidden
         >
-          {/* Inline glyph keeps the row height stable without pulling in
-              a new icon registration — a small "warning" style square. */}
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
             <path
               d="M8 1.5L1.5 13.5h13L8 1.5z"
               stroke="currentColor"
@@ -364,31 +387,35 @@ function PreviewError({
             <circle cx="8" cy="11.5" r="0.6" fill="currentColor" />
           </svg>
         </span>
-        <div className="flex min-w-0 flex-1 flex-col gap-1">
-          <span
-            className="text-caption-small-strong font-medium text-text_default_primary"
-            data-testid="file-preview-error-title"
-          >
-            {tFileOpen(locale, "fileOpen.header.unsupported")}
-          </span>
-          <span
-            className="text-sm"
-            data-testid="file-preview-error-reason"
-          >
-            {reasonText}
-            {language && unsupported.reason !== "outOfBounds" ? (
-              <span
-                className="ml-1 text-text_default_tertiary"
-                data-testid="file-preview-error-language"
-              >
-                [{language}]
-              </span>
-            ) : null}
-          </span>
-        </div>
+        <span
+          className="text-sm font-medium text-text_default_primary"
+          data-testid="file-preview-error-title"
+        >
+          {tFileOpen(locale, "fileOpen.header.unsupported")}
+        </span>
+        <span
+          className="text-caption-small-strong leading-5 text-text_default_secondary"
+          data-testid="file-preview-error-reason"
+        >
+          {reasonText}
+          {language && unsupported.reason !== "outOfBounds" ? (
+            <span
+              className="ml-1 text-text_default_tertiary"
+              data-testid="file-preview-error-language"
+            >
+              [{language}]
+            </span>
+          ) : null}
+        </span>
       </div>
+      {/* Centred actions row — three buttons laid out in a wrap so the
+          288px panel never overflows. The download action is always
+          enabled (the browser handles the save directly through the
+          `/api/fs/raw?download=1` URL), so the download button does
+          not enter the disabled-by-server state. The other two are
+          gated on the host's opener + file-manager availability. */}
       <div
-        className="flex flex-wrap items-center gap-2"
+        className="flex flex-wrap items-center justify-center gap-2"
         data-testid="file-preview-error-actions"
       >
         <button
@@ -401,7 +428,7 @@ function PreviewError({
           }
           title={
             disabledByServer.openDefault
-              ? tFileOpen(locale, "fileOpen.button.disabledHint")
+              ? tFileOpen(locale, disabledHintKey)
               : tFileOpen(locale, "fileOpen.action.openDefault.aria")
           }
           aria-label={tFileOpen(locale, "fileOpen.action.openDefault.aria")}
@@ -426,7 +453,7 @@ function PreviewError({
           }
           title={
             disabledByServer.reveal
-              ? tFileOpen(locale, "fileOpen.button.disabledHint")
+              ? tFileOpen(locale, disabledHintKey)
               : tFileOpen(locale, "fileOpen.action.reveal.aria")
           }
           aria-label={tFileOpen(locale, "fileOpen.action.reveal.aria")}
@@ -439,18 +466,42 @@ function PreviewError({
           {busy === "reveal" ? <span aria-hidden>…</span> : null}
           <span>{tFileOpen(locale, "fileOpen.action.reveal")}</span>
         </button>
-        {!unsupported.actionsAvailable ? (
-          <span
-            className="text-caption-small-strong text-text_default_tertiary"
-            data-testid="file-preview-error-actions-disabled-hint"
-          >
-            {tFileOpen(locale, "fileOpen.button.disabledHint")}
-          </span>
-        ) : null}
+        <a
+          // The download button is an anchor with the `download`
+          // attribute — the browser saves the response locally
+          // without leaving the panel. Same `/api/fs/raw` endpoint as
+          // the image preview, gated by the same containment + size
+          // cap. aria-disabled reflects the actionsAvailable flag:
+          // out-of-bounds paths the server would 403, so the link
+          // must not look clickable.
+          href={fsRawDownloadUrl(path)}
+          download
+          aria-disabled={!unsupported.actionsAvailable}
+          aria-label={tFileOpen(locale, "fileOpen.action.download.aria")}
+          title={tFileOpen(locale, "fileOpen.action.download.aria")}
+          data-testid="file-preview-error-download"
+          data-disabled-reason={
+            !unsupported.actionsAvailable ? "out-of-bounds" : undefined
+          }
+          onClick={(event) => {
+            // An `<a download>` on an out-of-bounds path would still
+            // issue the GET (the browser does not know the URL is
+            // gated). Stop the click when the classifier says the
+            // path is unreachable.
+            if (!unsupported.actionsAvailable) event.preventDefault();
+          }}
+          className={
+            unsupported.actionsAvailable
+              ? "flex h-7 items-center gap-1 rounded-[8px] border border-border_default bg-bg_default_scrim px-2 text-caption-small-strong text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_hover"
+              : "flex h-7 cursor-not-allowed items-center gap-1 rounded-[8px] border border-border_default bg-bg_default_scrim px-2 text-caption-small-strong text-text_default_primary opacity-50"
+          }
+        >
+          <span>{tFileOpen(locale, "fileOpen.action.download")}</span>
+        </a>
       </div>
       {failure ? (
         <p
-          className="rounded-[8px] bg-bg_grouped_tertiary px-2 py-1 text-caption-small-strong text-text_status_error"
+          className="max-w-[260px] rounded-[8px] bg-bg_grouped_tertiary px-2 py-1 text-caption-small-strong text-text_status_error"
           data-testid="file-preview-error-failure"
           data-failure-kind={failure.key}
           role="status"
