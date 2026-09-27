@@ -27,7 +27,7 @@
 
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { execSync } from "node:child_process";
@@ -313,6 +313,48 @@ describe("git routes — /api/git/diff", () => {
     ), res);
     const body = await readBody(res);
     assert.equal(body.ok, false);
+    assert.match(body.error, /非法路径/);
+  });
+
+  test("a DANGLING symlink (target does not exist) is rejected", async () => {
+    // The previous "symlink escape" test created a symlink whose
+    // target DID exist (e.g. /etc/hostname on Linux), so realpathSync
+    // succeeded and the realpath-containment check correctly rejected.
+    // A *dangling* symlink — one whose target does not exist anywhere
+    // on the filesystem — used to slip past: realpathSync threw
+    // ENOENT, the lib substituted the unresolved (still-inside-dir)
+    // path, and the containment check passed. The macOS CI caught
+    // this because `/etc/hostname` does not exist on macOS runners,
+    // making every `/etc/hostname`-pointing symlink a dangling one.
+    // The fix is to require the symlink to resolve; a dangling link
+    // is treated as an escape attempt and rejected.
+    //
+    // Note: this test fails on the OLD lib regardless of platform —
+    // it just happens that on Linux /etc/hostname exists so the
+    // previous "symlink" test did not exercise this branch.
+    const linkPath = `${repoDir}/dangling-link`;
+    const target = `${repoDir}/nonexistent-target-${Math.random().toString(36).slice(2)}`;
+    try {
+      const { symlinkSync } = await import("node:fs");
+      symlinkSync(target, linkPath);
+    } catch (cause) {
+      console.warn(`[skip] dangling symlink test: ${cause.message}`);
+      return;
+    }
+    const res = fakeRes();
+    gitRoute.handleGitDiff(readReq(
+      `/api/git/diff?dir=${encodeURIComponent(repoDir)}&file=${encodeURIComponent("dangling-link")}`,
+    ), res);
+    const body = await readBody(res);
+    // Belt-and-braces: make sure the target really does not exist
+    // (otherwise the test would not actually exercise the dangling
+    // branch and would silently cover the non-dangling case).
+    assert.equal(
+      existsSync(target),
+      false,
+      `precondition: target ${target} must NOT exist for the dangling branch to be exercised`,
+    );
+    assert.equal(body.ok, false, `dangling symlink must be rejected; got body=${JSON.stringify(body)}`);
     assert.match(body.error, /非法路径/);
   });
 

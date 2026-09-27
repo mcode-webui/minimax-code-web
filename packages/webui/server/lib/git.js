@@ -43,8 +43,8 @@
 //      fallback (the ticket invariant "file 参数不得逃逸工作区").
 
 import { execFile } from 'node:child_process'
-import { realpathSync } from 'node:fs'
-import { isAbsolute, relative, resolve, sep } from 'node:path'
+import { lstatSync, realpathSync } from 'node:fs'
+import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 import { assertWorkspacePath } from './workspace.js'
 
 const TIMEOUT_MS = 10000
@@ -122,15 +122,25 @@ function gate(dir) {
 
 // Resolve a user-supplied `file` against the contained workspace dir
 // and verify the result's realpath stays inside the dir's realpath.
-// Three classes of escape are rejected:
+// Four classes of escape are rejected:
 //
 //   - absolute paths (`/etc/hostname`, `C:\\Windows\\…`) — `git diff
 //     -C <dir> -- /etc/hostname` would be re-anchored to <dir>, but
-//     `git diff --no-index -- /dev/null /etc/hostname` would read the
+//     `git diff --no-index -- /dev/null /file` would read the
 //     absolute path verbatim. We forbid these up front.
 //   - `..`-prefixed paths — covered by the relative() check.
-//   - symlinks that resolve outside the dir — covered by the
-//     realpath + relative() check.
+//   - symlinks (live OR dangling) that resolve outside the dir —
+//     the lstatSync + realpathSync pair below catches both. The
+//     previous "fall back to the unresolved path on realpathSync
+//     error" was a real hole: a dangling symlink like
+//     `repoDir/dangling-link → /etc/whatever-does-not-exist` would
+//     throw ENOENT on realpathSync, the fallback would substitute
+//     the unresolved path (which is by construction inside repoDir),
+//     and the request would be admitted. The macOS CI caught this
+//     because `/etc/hostname` does not exist on macOS runners
+//     (Linux has it; macOS dropped it years ago).
+//   - a parent directory outside the workspace — proved up front by
+//     `realpathSync(resolve(absDir, dirname(file)))`.
 //
 // Returns the resolved file path on success, null on any escape. The
 // caller treats null as "reject the request before invoking git".
@@ -153,16 +163,66 @@ function gateFile(dir, file) {
     return null
   }
   const resolved = resolve(absDir, file)
+  // Prove the parent directory is inside the workspace — that
+  // is the real containment invariant. The parent MUST resolve
+  // (it must exist; `git diff` cannot stat a file whose parent
+  // does not exist). A file path whose parent realpath's outside
+  // the workspace is rejected even if the leaf itself does not
+  // exist yet.
+  const parentResolved = dirname(resolved)
+  let parentReal
+  try {
+    parentReal = realpathSync(parentResolved)
+  } catch {
+    // Parent does not exist — the file cannot be in any tracked
+    // or untracked state, so this is not a workspace file at all.
+    return null
+  }
+  const parentRel = relative(absDir, parentReal)
+  if (parentRel === '..' || parentRel.startsWith(`..${sep}`) || isAbsolute(parentRel)) {
+    return null
+  }
+  // The parent is contained. Now decide the leaf:
+  //   - regular file / directory on disk → contained-leaf check
+  //     (realpath must stay inside repoDir).
+  //   - symlink (live or dangling) → resolve it; if realpath fails,
+  //     the link is dangling and the request is rejected (a dangling
+  //     symlink could be created at any moment to point at an
+  //     arbitrary target — admitting it would re-open the
+  //     containment hole that the symlink test was supposed to pin).
+  //   - does not exist → allow (legitimate "brand-new untracked
+  //     file" case; the parent has already been proven contained).
+  let st
+  try {
+    st = lstatSync(resolved)
+  } catch (e) {
+    if (e && e.code === 'ENOENT') return resolved
+    return null
+  }
+  if (st.isSymbolicLink()) {
+    // Symlink — resolve and re-check. A dangling symlink fails
+    // here; that is the desired rejection.
+    let realFile
+    try {
+      realFile = realpathSync(resolved)
+    } catch {
+      return null
+    }
+    const rel = relative(absDir, realFile)
+    if (rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel))) {
+      return realFile
+    }
+    return null
+  }
+  // Regular file or directory: realpath must stay inside the
+  // workspace. A hard link to outside the workspace would still
+  // resolve inside (realpath follows hard links to their target
+  // inode), so the containment check is the right final guard.
   let realFile
   try {
     realFile = realpathSync(resolved)
   } catch {
-    // File does not yet exist (untracked) — fall back to the resolved
-    // path WITHOUT realpath so the `git diff --no-index -- /dev/null
-    // <file>` call can still surface a synthetic diff. The
-    // realpath-containment of the parent dir is what matters here;
-    // a non-existent absolute path would have been rejected above.
-    realFile = resolved
+    return null
   }
   const rel = relative(absDir, realFile)
   if (rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel))) {
