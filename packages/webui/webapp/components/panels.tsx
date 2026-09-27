@@ -19,6 +19,7 @@ import {
   formatSize,
   relativeMtimeBucket,
   serializeExpansion,
+  shouldShowDirLoadingSuffix,
   sortEntries,
 } from "@/lib/files-tree";
 import { InboxList } from "./inbox";
@@ -814,10 +815,13 @@ function FilesPanel({ t }: { t: (key: MessageKey) => string }) {
   // here to see files). Non-root dirs honour the `expanded` set.
   //
   // A child directory whose listing has not been fetched yet still
-  // gets a row — the chevron says "click to load" and the body
-  // shows the loading hint. Without this, the user would have to
-  // click every parent dir blind, which is the failure mode this
-  // tree exists to fix.
+  // gets a row — the chevron says "click to load" — but the row
+  // is flagged `placeholder: true` so the renderer does NOT show a
+  // "加载中…" suffix. The suffix is reserved for an in-flight
+  // fetch on a node that already has cache state. Without the
+  // distinction, a tree of 30 collapsed dirs would render 30
+  // copies of "加载中…" that look like 30 active requests — the
+  // exact failure mode the target desktop UI avoids.
   const rows = useMemo<TreeRow[]>(() => {
     const out: TreeRow[] = [];
     if (!workspaceDir) return out;
@@ -827,16 +831,17 @@ function FilesPanel({ t }: { t: (key: MessageKey) => string }) {
       const node = nodes[path];
       const isRoot = path === workspaceDir;
       const isExpanded = isRoot || filterExpanded.has(path);
-      // For nodes without a cache entry, render a placeholder dir
-      // row (loading=true) so the user can see what *will* expand
-      // there. The chevron click is what triggers the fetch.
       if (!node) {
+        // Never-fetched dir: render a row so the user can see what
+        // will expand when they click, but mark it `placeholder` so
+        // the renderer suppresses the loading suffix.
         out.push({
           path,
           depth,
           kind: "dir",
           expanded: isExpanded,
-          loading: true,
+          loading: false,
+          placeholder: true,
           error: null,
           skipped: 0,
         });
@@ -848,6 +853,7 @@ function FilesPanel({ t }: { t: (key: MessageKey) => string }) {
         kind: "dir",
         expanded: isExpanded,
         loading: node.loading,
+        placeholder: false,
         error: node.error,
         skipped: node.skipped,
       });
@@ -1037,6 +1043,15 @@ interface TreeDirRow extends TreeRowBase {
   kind: "dir";
   expanded: boolean;
   loading: boolean;
+  /**
+   * `true` when the row exists in the tree because its parent
+   * listing told us there was a directory here, but we have NOT
+   * fetched its contents yet. Placeholder rows render the chevron
+   * and folder name but NO loading suffix — the suffix is reserved
+   * for an actual in-flight request. See `shouldShowDirLoadingSuffix`
+   * in `lib/files-tree.ts` for the predicate this drives.
+   */
+  placeholder: boolean;
   error: string | null;
   /** Pre-truncation count of entries the server cut off. */
   skipped: number;
@@ -1134,7 +1149,7 @@ function DirRow({
         <span className="min-w-0 truncate">
           {isRoot ? baseName(row.path) || row.path : baseName(row.path)}
         </span>
-        {row.loading ? (
+        {shouldShowDirLoadingSuffix(row.loading, row.placeholder) ? (
           <span className="flex-shrink-0 text-caption-small-strong text-text_default_tertiary">
             {t("files.tree.loading")}
           </span>

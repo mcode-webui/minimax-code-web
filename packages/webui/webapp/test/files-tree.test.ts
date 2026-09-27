@@ -21,6 +21,13 @@
 //     (md/env/json/lock/yaml/images/code/log) and an unknown default.
 //   * Relative-mtime bucketing: pins the bucket key the component
 //     reads from `t(...)`.
+//   * shouldShowDirLoadingSuffix: the dir-row "加载中…" suffix must
+//     appear only for an in-flight fetch on a node that already has
+//     cache state. A collapsed, never-fetched placeholder row must
+//     render NO suffix — the target desktop UI shows only the folder
+//     name in that case, and rendering 30 copies of "加载中…" for 30
+//     collapsed dirs would mislead the user into thinking 30
+//     requests were in flight.
 //
 // The component itself (lazy fetch, race-safe gen counter, keyboard,
 // sessionStorage hydrate/save) lives in
@@ -44,6 +51,7 @@ import {
   formatSize,
   relativeMtimeBucket,
   serializeExpansion,
+  shouldShowDirLoadingSuffix,
   sortEntries,
 } from "../lib/files-tree";
 
@@ -340,5 +348,35 @@ describe("formatSize", () => {
     assert.equal(formatSize(15 * 1024), "15KB");
     assert.equal(formatSize(1024 * 1024), "1.0MB");
     assert.equal(formatSize(50 * 1024 * 1024), "50MB");
+  });
+});
+
+describe("shouldShowDirLoadingSuffix", () => {
+  test("suppresses the suffix for a collapsed, never-fetched placeholder row", () => {
+    // The regression case from acceptance concern 2: a dir row whose
+    // node is missing from the cache must not advertise "loading…".
+    // The target desktop UI shows only the folder name; a sidebar of
+    // 30 such rows must render 30 plain folder rows.
+    assert.equal(shouldShowDirLoadingSuffix(false, true), false);
+  });
+
+  test("shows the suffix for an in-flight fetch on a node that has cache state", () => {
+    // The user clicked refresh (or auto-rehydration re-fired the
+    // persisted expansion chain); there is real work in progress and
+    // the suffix tells the user so.
+    assert.equal(shouldShowDirLoadingSuffix(true, false), true);
+  });
+
+  test("suppresses the suffix for an idle node that has cache state", () => {
+    assert.equal(shouldShowDirLoadingSuffix(false, false), false);
+  });
+
+  test("never shows both loading + placeholder at once (defensive)", () => {
+    // The visit() walker never emits a row with both flags true —
+    // either the row has cache state (placeholder=false) or it
+    // doesn't (placeholder=true). If a future refactor accidentally
+    // produced that combination the suffix would still render, which
+    // is exactly what the predicate must guard against.
+    assert.equal(shouldShowDirLoadingSuffix(true, true), false);
   });
 });

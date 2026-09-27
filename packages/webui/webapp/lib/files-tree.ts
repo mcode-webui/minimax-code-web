@@ -279,6 +279,39 @@ export function fileTypeColor(name: string): string {
 }
 
 /**
+ * Should the directory row render its "加载中…" suffix?
+ *
+ * Two states look superficially the same on screen — a row exists
+ * for a dir but its body text is empty / light — but they must be
+ * rendered differently:
+ *
+ *   - **placeholder**: the row exists because its parent told us
+ *     there was a directory here, but we have NOT issued a fetch
+ *     yet. The target desktop UI shows only the folder name; no
+ *     spinner, no "loading…" text. A sidebar of 30 collapsed dirs
+ *     therefore renders 30 plain folder rows, not 30 "loading…"
+ *     labels.
+ *
+ *   - **fetching**: a fetch IS in flight for a node that already
+ *     has cache state (a refresh, or the auto-rehydration on
+ *     page-load that re-issues requests for persisted `expanded`
+ *     paths). The "加载中…" suffix is rendered so the user knows
+ *     the action they triggered is still in progress.
+ *
+ * The rule is therefore: show the suffix only when `loading` is
+ * true AND `placeholder` is false. Everything else (idle, errored,
+ * or placeholder for a never-fetched dir) renders no suffix.
+ *
+ * Pinned in `webapp/test/files-tree.test.ts#shouldShowDirLoadingSuffix`.
+ */
+export function shouldShowDirLoadingSuffix(
+  loading: boolean,
+  placeholder: boolean,
+): boolean {
+  return loading === true && placeholder !== true;
+}
+
+/**
  * Render an mtime (ms epoch) as a coarse relative-time string. The
  * component uses the i18n strings; this helper returns the untranslated
  * bucket key so the component can interpolate `t(...)` itself.
