@@ -25,7 +25,7 @@ import {
   failComposerSent,
   startComposerSent,
 } from "@/lib/composer-sent";
-import { useSessionContext } from "@/lib/store";
+import { getActiveSessionId, useSessionContext } from "@/lib/store";
 import { decodeTranscript } from "@/lib/transcript";
 import { translate, type Locale, type MessageKey } from "@/lib/i18n";
 import { ContextMeter } from "./context-meter";
@@ -152,25 +152,19 @@ export function Composer({
   const [slashIndex, setSlashIndex] = useState(0);
   const editorRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
-  // Live mirror of `state` for the catch branch. The `useCallback`
-  // for `submit` is rebuilt when `state?.sessionId` changes, but the
-  // in-flight promise was created in an older closure — by the time
-  // the catch handler runs, the user may have switched sessions and
-  // the closure's `state` snapshot is stale. The ref is updated on
-  // every render so the catch handler can read the LIVE session id
-  // and decide whether the failure belongs to the active context.
-  // Without this, the cid+sessionId restore-gate compares dispatch-
-  // time values against themselves and is dead code — ticket 13
-  // acceptance caught this: session-A's failure was being pasted
-  // into session-B's composer because both calls read from the same
-  // closure.
-  const liveStateRef = useRef(state);
-  // Update the ref synchronously during render so the catch branch
-  // always reads the latest session id (including on the same render
-  // that produced the rotation). useEffect runs AFTER the render
-  // commits, so a catch that fires from a microtask after the render
-  // but before the effect commits would still see the stale value.
-  liveStateRef.current = state;
+  // The live session id used to live on a per-instance ref here.
+  // That was correct for chat→chat switching (the instance survives)
+  // but wrong for the home↔chat boundary: page.tsx swaps the
+  // composer between two tree positions when `hasConversation`
+  // flips, and creating a fresh session clears `chat`, which can
+  // unmount the composer mid-flight. The in-flight closure keeps a
+  // ref frozen at the dispatch-time session id and never sees the
+  // rotation. Reading from `getActiveSessionId()` at catch time
+  // resolves the live session id from the module-scope snapshot
+  // the SSE handler writes — the same store `composer-draft.ts`
+  // and `composer-sent.ts` already use to survive remounts.
+  // See lib/store.tsx#getActiveSessionId and the tripwire test
+  // `composer-submit-tripwire.test.ts` for the wiring pin.
   // Drag-and-drop overlay state. The counter lives in a ref so that the
   // dragenter/dragleave sequence can update it without scheduling a
   // re-render on every event — only the visible overlay (driven by
@@ -382,13 +376,19 @@ export function Composer({
       // failure belongs to the old session, not the one currently
       // rendered. Comparing against the captured `dispatchSessionId`
       // would always succeed (dispatch vs dispatch) — that was the
-      // first wiring bug acceptance caught. `liveStateRef` is
-      // updated synchronously on every render (see the comment at
-      // the ref declaration), so this read always sees the live
-      // session id, including on the same render that handled the
-      // session rotation.
+      // first wiring bug acceptance caught. The live context is
+      // resolved from the MODULE-scope store snapshot (lib/store.tsx
+      // #getActiveSessionId), not from a per-instance ref. The
+      // composer's `submit` can outlive its own React tree —
+      // page.tsx swaps the composer between two positions when
+      // `hasConversation` flips, and creating a fresh session
+      // clears it. An instance-scoped ref frozen at dispatch time
+      // never sees the rotation; the module snapshot is the same
+      // store the SSE handler writes, so it always reflects the
+      // current session. `clientId()` is module-scope too
+      // (lib/cid.ts), so the cid side has always been correct.
       const liveCid = clientId();
-      const liveSessionId = liveStateRef.current?.sessionId ?? null;
+      const liveSessionId = getActiveSessionId();
       // failComposerSent returns the restore payload only when the
       // LIVE context still matches the dispatch context — a session
       // switch mid-flight must never paste the old session's text

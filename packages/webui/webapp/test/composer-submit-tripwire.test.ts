@@ -20,8 +20,23 @@
 // DISPATCH context. The first version of the fix passed the
 // closure-captured dispatch values to BOTH calls and acceptance
 // caught the resulting leak: a session-A failure pasted A's text
-// into session-B's composer. This file pins the LIVE-context wiring
-// so the same regression cannot return.
+// into session-B's composer. v2 moved to a per-instance ref
+// (`liveStateRef.current`); that worked for chat→chat switches but
+// not for the 新建会话 → fresh empty B flow, because page.tsx swaps
+// the composer between the inline and chat-tree positions when
+// `hasConversation` flips. The current fix reads from the
+// MODULE-scope store snapshot (lib/store.tsx#getActiveSessionId)
+// so the live session id outlives any composer remount.
+//
+// The tripwire is intentionally tight: every assertion checks the
+// call site (that an identifier appears AT THE CALL with the right
+// meaning), not just that the identifier exists somewhere in the
+// file. A plausible revert that passes `dispatchSessionId` to
+// `failComposerSent` while still importing `getActiveSessionId`
+// fails the live-context assertion; a refactor that moves the
+// `await api.sendMessage` ahead of `setComposerDraft({ value: "",
+// attachments: [] })` fails the ordering assertion. A tripwire
+// that cannot fail on a plausible revert is decoration.
 
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
@@ -41,6 +56,15 @@ function indexOfOrThrow(haystack: string, needle: string, label: string): number
     throw new Error(`tripwire missing in composer.tsx: ${label}`);
   }
   return idx;
+}
+
+/**
+ * Slice the source from a marker to the next `};` or end-of-file.
+ * Returns just enough context for the call-site assertion below.
+ */
+function sliceAfter(haystack: string, marker: string, label: string, maxLen = 1200): string {
+  const idx = indexOfOrThrow(haystack, marker, label);
+  return haystack.slice(idx, idx + maxLen);
 }
 
 describe("composer submit ordering — ticket 13 wiring tripwire", () => {
@@ -90,45 +114,111 @@ describe("composer submit ordering — ticket 13 wiring tripwire", () => {
     );
   });
 
-  test("the catch branch reads the LIVE session context, not the captured one", () => {
+  test("the catch branch passes LIVE module-scope values to failComposerSent", () => {
     // The cid + sessionId restore-gate compares the LIVE context
     // against the record. If `submit` passes the closure-captured
     // `dispatchSessionId` to `failComposerSent`, the gate compares
     // dispatch-time values against themselves and always passes —
     // session-A failures leak into session-B's composer (the bug
-    // acceptance caught). The fix reads the live `sessionId` from
-    // a ref that mirrors `state` on every render.
-    const catchIdx = indexOfOrThrow(
+    // both rounds of acceptance caught).
+    //
+    // The fix reads the live session id from the MODULE-scope
+    // store snapshot (`getActiveSessionId()` from lib/store.tsx).
+    // The cid side has always been module-scope (`clientId()` from
+    // lib/cid.ts).
+    //
+    // The assertions below are on the CATCH BLOCK as a whole, not
+    // the identifier presence. A plausible revert that keeps the
+    // live-context identifier somewhere in the file but passes
+    // closure constants to `failComposerSent` will trip this —
+    // the catch branch must call `clientId()` AND
+    // `getActiveSessionId()`, and the dispatch-time constants must
+    // NOT appear at the call site.
+
+    // Slice the catch block: from `} catch (cause) {` to the end of
+    // file, then take just the call-site argument window. Use a
+    // generous window so the surrounding `liveCid = clientId()`
+    // assignments are still in the slice (a refactor that reads
+    // `clientId()` inline at the call site would also pass; the
+    // important property is that the call uses the module-scope
+    // accessor, not a closure constant).
+    const catchStartIdx = indexOfOrThrow(
       composerSource,
       "} catch (cause) {",
       "} catch (cause) {",
     );
-    const failComposerIdx = indexOfOrThrow(
+    const callIdx = indexOfOrThrow(
       composerSource,
       "failComposerSent({",
       "failComposerSent({",
     );
     assert.ok(
-      failComposerIdx > catchIdx,
-      `failComposerSent must be called inside the catch branch ` +
-        `(catch=${catchIdx}, failComposerSent=${failComposerIdx})`,
+      callIdx > catchStartIdx,
+      "failComposerSent must be called inside the catch branch",
+    );
+    // Slice the catch block from `} catch (cause) {` through the
+    // failComposerSent call (and a little beyond). This captures
+    // both the live-value definitions and the call site.
+    const catchSlice = composerSource.slice(catchStartIdx, callIdx + 600);
+
+    // The live module-scope accessors must appear in the catch
+    // block. Both `clientId()` (lib/cid.ts) and
+    // `getActiveSessionId()` (lib/store.tsx) are module-scope —
+    // they survive any composer remount and reflect the SSE-driven
+    // state pushes. The cid side has always been module-scope; the
+    // sessionId side moved from a per-instance ref to this accessor
+    // because the per-instance ref froze at dispatch time when
+    // page.tsx swapped the composer between the inline and chat-tree
+    // positions on a fresh-session switch.
+    assert.ok(
+      /clientId\s*\(\s*\)/.test(catchSlice),
+      "the catch block must call clientId() — cid is module-scope and a " +
+        "closure constant cid breaks cross-tab isolation",
+    );
+    assert.ok(
+      /getActiveSessionId\s*\(\s*\)/.test(catchSlice),
+      "the catch block must call getActiveSessionId() — the live session id " +
+        "must come from the module-scope store snapshot, not from a per-" +
+        "instance ref or closure constant. Per-instance refs die with the " +
+        "composer (page.tsx swaps the composer between two tree positions " +
+        "when hasConversation flips), which is exactly what the 新建会话 → " +
+        "fresh empty B scenario does.",
     );
 
-    // The live-state ref must be declared somewhere — searching the
-    // whole file is the cheap way to assert it exists without having
-    // to parse TypeScript. The ref's identity is checked again at
-    // runtime in the live-context test below.
-    const liveStateRefIdx = composerSource.indexOf("liveStateRef");
-    assert.ok(
-      liveStateRefIdx >= 0,
-      "a liveStateRef must be declared so the catch branch can read the current state",
+    // The dispatch-time constants must NOT appear inside the
+    // failComposerSent argument list. They MAY appear elsewhere in
+    // the catch block (the cid might still be re-read for logging),
+    // but they must not be the values fed to the gate.
+    const callArgs = composerSource.slice(
+      callIdx,
+      composerSource.indexOf("});", callIdx) + 3,
     );
-    // The catch branch must reference the ref. Slice from the
-    // catch block to the end of file and look for the identifier.
-    const afterCatch = composerSource.slice(catchIdx);
     assert.ok(
-      /liveStateRef\.current/.test(afterCatch),
-      "the catch branch must read liveStateRef.current (not the captured closure value)",
+      !/\bdispatchSessionId\b/.test(callArgs),
+      "failComposerSent must not be passed dispatchSessionId — that was " +
+        "the v1 bug. The arg must be the LIVE value (getActiveSessionId()).",
+    );
+    assert.ok(
+      !/\bdispatchCid\b/.test(callArgs),
+      "failComposerSent must not be passed dispatchCid — cid is module-scope " +
+        "via clientId() and must be read at catch time, not reused from " +
+        "dispatch.",
+    );
+  });
+
+  test("the live accessor is imported into the composer module", () => {
+    // A plausible revert could remove the import and pass closure
+    // constants — the call site check above would still catch it
+    // (the call site would lack `getActiveSessionId()`), but
+    // belt-and-braces: the import must be present at the top of
+    // the module.
+    assert.ok(
+      /import\s+\{[^}]*\bgetActiveSessionId\b[^}]*\}\s+from\s+["']@\/lib\/store["']/.test(
+        composerSource,
+      ),
+      "getActiveSessionId must be imported from @/lib/store at the top of " +
+        "the composer module — the catch branch needs the module-scope " +
+        "accessor.",
     );
   });
 
