@@ -371,6 +371,16 @@ export async function handleSetModel(req, res, ctx) {
   if (thinkingWasProvided) {
     cs.model.thinking = thinking;
   }
+  // ticket 08 (set-model SSE race): stamp a per-field `*PickedAt`
+  //   timestamp so `applyConfigOptionUpdate`'s ownership-aware mirror
+  //   (server/lib/mcode-acp.js) defers the engine's response inside a
+  //   4s window. Without this marker, the engine's `config_option_update`
+  //   would re-assert its wire-form `currentValue` over the user's
+  //   recorded pick a few ms after the optimistic write, causing the
+  //   chip to flicker between user-friendly form and engine wire form.
+  const pickAt = Date.now();
+  if (modelId) cs.model.modelPickedAt = pickAt;
+  if (thinkingWasProvided) cs.model.thinkingPickedAt = pickAt;
   const sid = cs.mcodeSessionId;
   let mcodeSynced = false;
   let thinkingSynced = false;

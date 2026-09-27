@@ -420,6 +420,27 @@ export function buildEmptyTurnNote(stopReason, answer) {
 // When the model option is absent or its currentValue is empty,
 // `cs.model` is left untouched — this branch is only a reflection of the
 // engine's authoritative state.
+//
+// ticket 08 (set-model SSE race): the mirror is now ownership-aware.
+// `cs.model.modelPickedAt` / `cs.model.thinkingPickedAt` (millisecond
+// timestamps set by `routes/model.js#handleSetModel`) mark recent local
+// user picks. While a field's pick is FRESH (within
+// PICK_DEFER_WINDOW_MS), the engine mirror does NOT overwrite that
+// field — the two writers race in different encodings (user-friendly
+// form vs engine wire form) and the alternation would land an engine
+// wire form on the chip a few ms after the user's choice. Past the
+// window, the mirror reflects the engine's actual state (cross-client
+// / background changes).
+//
+// Per-field timestamps keep independent picks independent: a
+// thinkingEffort-only update does not block a later cross-client model
+// pick from mirroring, and vice versa.
+//
+// The window is a defense-in-depth; the per-cid `revision` stamped on
+// every snapshot is the primary guard against wire reordering (see
+// `lib/state-bus.js`). With both fixes a single local pick converges to
+// the chip within ~1s even when an engine notification races an
+// optimistic write.
 export function applyConfigOptionUpdate(cs, update) {
   const opts =
     update && Array.isArray(update.configOptions) ? update.configOptions : null;
@@ -431,7 +452,9 @@ export function applyConfigOptionUpdate(cs, update) {
   }
   const model = opts.find((o) => o && o.id === "model");
   if (model && model.currentValue) {
-    cs.model = { ...(cs.model || {}), name: model.currentValue };
+    if (shouldMirrorToModelName(cs, model)) {
+      cs.model = { ...(cs.model || {}), name: model.currentValue };
+    }
   }
   const thinking = opts.find((o) => o && o.id === "thinkingEffort");
   if (thinking) {
@@ -440,7 +463,9 @@ export function applyConfigOptionUpdate(cs, update) {
     // than a stale level. The field is dropped when the option is
     // missing altogether (model without an effort dimension).
     if (typeof thinking.currentValue === "string" && thinking.currentValue) {
-      cs.model = { ...(cs.model || {}), thinking: thinking.currentValue };
+      if (shouldMirrorToThinkingField(cs)) {
+        cs.model = { ...(cs.model || {}), thinking: thinking.currentValue };
+      }
     } else if (cs.model && "thinking" in cs.model) {
       const { thinking: _drop, ...rest } = cs.model;
       void _drop;
@@ -448,6 +473,63 @@ export function applyConfigOptionUpdate(cs, update) {
     }
   }
 }
+
+// ticket 08: ownership-aware mirror helpers. Exported for tests
+// (test/lib/mcode-acp-ownership.check.mjs pins the corner cases).
+//
+// Window rationale: handleSetModel does
+//   cs.model.name = user pick
+//   await setConfigOption(...)  // ~10s of ms in practice, can spike
+//                                // to ~hundreds of ms on a slow host
+//   pushStateFor(cid)           // user-friendly form on the wire
+// and the engine fires config_option_update shortly after the RPC
+// settles. 4s comfortably covers a sluggish engine while still
+// passing through cross-client pick events that arrive seconds later
+// (e.g. another tab flipped the model 10s ago).
+const PICK_DEFER_WINDOW_MS = 4000;
+
+/**
+ * True when the engine's `config_option_update` should re-assert
+ * `model.currentValue` into `cs.model.name`. False inside the local
+ * pick window (the user's recorded pick is authoritative for the chip
+ * during the race) and when the recorded pick already matches the
+ * engine's value (the mirror is a no-op either way, but skipping it
+ * keeps `cs.model` untouched for downstream readers).
+ */
+export function shouldMirrorToModelName(cs, modelOption) {
+  if (!modelOption || typeof modelOption.currentValue !== "string") return false;
+  if (isInsidePickWindow(cs, "modelPickedAt")) {
+    // Engine's response to a local pick — engine currentValue is in
+    // wire form, the recorded pick is in user form. Keep recorded.
+    return false;
+  }
+  // No recent local pick: this is either a fresh session bootstrap
+  // (engine reporting its default) or a cross-client change. Either
+  // way mirror.
+  return true;
+}
+
+/**
+ * True when the engine's `config_option_update` should re-assert
+ * `thinkingEffort.currentValue` into `cs.model.thinking`. Symmetric to
+ * the model mirror — same PICK_DEFER_WINDOW_MS rules.
+ */
+export function shouldMirrorToThinkingField(cs) {
+  if (isInsidePickWindow(cs, "thinkingPickedAt")) return false;
+  return true;
+}
+
+function isInsidePickWindow(cs, key) {
+  const last =
+    cs && cs.model && typeof cs.model[key] === "number"
+      ? cs.model[key]
+      : 0;
+  if (!last) return false;
+  return Date.now() - last < PICK_DEFER_WINDOW_MS;
+}
+
+// Exposed for tests + documentation, not for runtime callers.
+export { PICK_DEFER_WINDOW_MS };
 
 // applyToolUpdate — handle a `tool_update` (a.k.a. `tool_call_update`)
 // session event. Writes the indented body (status, output, `@ path`,

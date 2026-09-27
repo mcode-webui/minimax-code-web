@@ -12,6 +12,7 @@ import {
   setSseClient,
   endSseClient,
   sessionsListForSnapshot,
+  nextRevisionFor,
 } from "../lib/state-bus.js";
 import {
   getMcodeSessionsForWorkspace,
@@ -42,6 +43,12 @@ export async function handleEvents(req, res, ctx) {
   // v1.0: 首推也必须带 mcodeSessions 字段 (之前缺, 侧栏先渲染 webui 本地条目再闪回全量)
   // v1.0.1: 首推也必须带 settings fields (readOnly / tokenEnabled / currentToken
   //   conditional on acknowledged, etc) — 否则 sub-card 第一次 render 时是空的
+  // ticket 08 (set-model SSE race): bump the per-cid revision so the first
+  //   frame carries the same monotonic-counter the push path stamps. The
+  //   counter starts fresh on a new connection — the previous connection's
+  //   endSseClient deleted its entry, or this is the very first push for
+  //   the cid.
+  const firstFrameRevision = nextRevisionFor(cid);
   const snapshot = {
     ...cs,
     sessions: sessionsListForSnapshot(),
@@ -57,6 +64,7 @@ export async function handleEvents(req, res, ctx) {
     currentToken: getTokenAcknowledged() ? "" : getCurrentToken(),
     tokenAcknowledged: getTokenAcknowledged(),
     tokenRotatedAt: getTokenRotatedAt(),
+    revision: firstFrameRevision,
   };
   res.write(`data: ${JSON.stringify(snapshot)}\n\n`);
   setSseClient(cid, res);
@@ -115,6 +123,10 @@ export async function handleState(req, res, ctx) {
       /* keep estimate */
     }
   }
+  // ticket 08 (set-model SSE race): /api/state body also carries the
+  //   per-cid revision so a caller that polls this endpoint sees the
+  //   same monotonic sequence the SSE push emits.
+  const stateRevision = nextRevisionFor(ctx.cid);
   return res.end(
     JSON.stringify({
       ...cs,
@@ -135,6 +147,7 @@ export async function handleState(req, res, ctx) {
       currentToken: getTokenAcknowledged() ? "" : getCurrentToken(),
       tokenAcknowledged: getTokenAcknowledged(),
       tokenRotatedAt: getTokenRotatedAt(),
+      revision: stateRevision,
     }),
   );
 }

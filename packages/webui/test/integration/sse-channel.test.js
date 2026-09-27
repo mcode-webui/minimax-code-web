@@ -360,13 +360,25 @@ describe("sse-channel: /api/alerts", () => {
 // Test 3: B04 60Hz coalescing.
 //
 // Set STATE_PUSH_THROTTLE_MS=16 (≈60Hz) for the server process. POST
-// /api/settings three rapid changes (lanBroadcast → readOnly → tokenEnabled),
-// then drain the SSE stream and count `state` frames. With coalescing,
-// N settings changes produce AT MOST ~1 wire frame per throttle window
-// for the same cid. The exact count depends on flush timing, so we
-// use an upper bound (≤ 3 wire frames for 3 changes that should be
-// compressed to 1 or 2 depending on flush ordering) — what we really
-// assert is that the per-cid wire rate is BELOW the call rate.
+// /api/settings several rapid changes, then drain the SSE stream
+// and count `state` frames. With coalescing, N settings changes
+// produce AT MOST ~1 wire frame per throttle window for the same
+// cid.
+//
+// Important: ticket 08 changed the diff gate's contract. Identical
+// payloads now legitimately carry a fresh `revision` (the diff
+// gate is now a static-source tripwire — see
+// test/lib/state-bus-coalesce.check.mjs). The "collapse" assertion
+// is now strictly TIME-BASED, so the test fires its POSTs in
+// parallel (Promise.all) so they hit the server within the 16ms
+// throttle window regardless of CI RTT. Sequential awaits made the
+// test deterministic on localhost but flake-prone on slower CI
+// runners where each round-trip exceeded the throttle window.
+//
+// Each POST toggles a different setting field (readOnly /
+// lanBroadcast / tokenEnabled), guaranteeing the settings handler's
+// change-detection guard fires for every POST regardless of the
+// order in which Node.js event-loop processes them.
 // -----------------------------------------------------------------------
 describe("sse-channel: 60Hz coalescing (STATE_PUSH_THROTTLE_MS=16)", () => {
     let server;
@@ -382,45 +394,107 @@ describe("sse-channel: 60Hz coalescing (STATE_PUSH_THROTTLE_MS=16)", () => {
         const ssePromise = openSse({
             port: server.port,
             path: "/api/events?cid=cid-coalesce",
-            ms: 1200,
+            ms: 1500,
         });
-        // Let the SSE connect first.
+        // Let the SSE connect + the server's pushOnlineCount broadcast
+        // land before the test's POST burst.
         await new Promise((r) => setTimeout(r, 200));
-        // 5 rapid changes inside ~50ms — each toggles a setting and
-        // calls pushStateFor("__broadcast__"). With a 16ms throttle,
-        // these should coalesce to ≤ 3 wire frames.
-        for (let i = 0; i < 5; i++) {
-            const v = i % 2 === 0;
-            await postJson({
-                port: server.port,
-                path: "/api/settings",
-                body: { readOnly: v },
-            });
-        }
+
+        // Fire N changes in PARALLEL. They hit the server within
+        // microseconds of each other, well inside the 16ms throttle
+        // window — every server-side pushStateFor reservation inside
+        // that window lands on the SAME wire frame (last-call-wins).
+        //
+        // Each POST toggles a value OPPOSITE to its default so the
+        // settings handler's `if (value !== current) pushStateFor`
+        // guard always fires. The defaults (server/lib/settings.js
+        // #defaultState) are `lanBroadcast: true` (LAN gate stays
+        // open across reboots), `readOnly: false`, `tokenEnabled:
+        // true` — a body matching the default is a no-op and the
+        // handler does NOT call pushStateFor. The earlier version
+        // of this test used sequential `await postJson` and depended
+        // on localhost RTT being < 16ms so the 16ms throttle could
+        // coalesce — which failed on slower CI runners (PR #42).
+        //
+        // Distinct fields per POST keep every push live even when
+        // the parallel POSTs interleave on the server: each handler
+        // reads the current state at its moment of execution and finds
+        // a difference on the field it owns.
+        const N = 5;
+        const posts = [
+            // lanBroadcast default = true → toggle to false
+            postJson({
+                port: server.port, path: "/api/settings",
+                body: { lanBroadcast: false },
+            }),
+            // lanBroadcast back to true
+            postJson({
+                port: server.port, path: "/api/settings",
+                body: { lanBroadcast: true },
+            }),
+            // readOnly default = false → toggle to true
+            postJson({
+                port: server.port, path: "/api/settings",
+                body: { readOnly: true },
+            }),
+            // readOnly back to false
+            postJson({
+                port: server.port, path: "/api/settings",
+                body: { readOnly: false },
+            }),
+            // tokenEnabled default = true → toggle to false
+            postJson({
+                port: server.port, path: "/api/settings",
+                body: { tokenEnabled: false },
+            }),
+        ];
+        await Promise.all(posts);
+
         const res = await ssePromise;
-        // Count state frames (data-only frames, event=message, with
-        // a JSON object that has `onlineCount`).
         const frames = parseSse(res.body);
         let stateFrames = 0;
+        let maxRevision = -1;
         for (const f of frames) {
             if (f.event === "message" && f.data && typeof f.data === "object"
                 && typeof f.data.onlineCount === "number") {
                 stateFrames++;
+                if (typeof f.data.revision === "number"
+                    && f.data.revision > maxRevision) {
+                    maxRevision = f.data.revision;
+                }
             }
         }
-        // Subtract the initial snapshot from the count — coalescing
-        // assertion is about subsequent pushes only.
-        const subsequent = Math.max(0, stateFrames - 1);
+        // Subtract the initial SSE frame AND the server's
+        // pushOnlineCount broadcast (which lands right after the
+        // client connects). The two pre-burst frames are not part
+        // of the test's N-POST assertion.
+        const subsequent = Math.max(0, stateFrames - 2);
         assert.ok(
-            subsequent <= 4,
-            `5 rapid changes should coalesce to ≤ 4 subsequent frames, ` +
+            subsequent <= N - 1,
+            `${N} parallel changes should coalesce to ≤ ${N - 1} subsequent frames, ` +
             `got ${subsequent}. body: ${res.body.slice(0, 600)}`,
         );
-        // And we got AT LEAST one subsequent frame (otherwise coalescing
-        // would have eaten everything — that's also a bug).
+        // And we got AT LEAST one subsequent frame (otherwise
+        // coalescing would have eaten everything — that's also a bug).
         assert.ok(
             subsequent >= 1,
-            `5 rapid changes should produce ≥ 1 subsequent frame, got ${subsequent}`,
+            `${N} parallel changes should produce ≥ 1 subsequent frame, ` +
+            `got ${subsequent}`,
+        );
+
+        // ticket 08 invariant: every pushStateFor reservation
+        // increments the per-cid revision BEFORE the snapshot is
+        // stringified. A coalesced wire frame therefore carries the
+        // LAST reserved revision (the LAST pre-write bump). With the
+        // initial frame (rev=1) + pushOnlineCount broadcast (rev=2)
+        // + N POST broadcasts, the LAST wire frame's revision must
+        // be ≥ N+2 even when many of the POSTs coalesced into a
+        // single frame.
+        assert.ok(
+            maxRevision >= N + 2,
+            `coalesced frame's revision must reflect every pushStateFor ` +
+            `reservation (LAST wins). expected ≥ ${N + 2}, got ${maxRevision}. ` +
+            `body: ${res.body.slice(0, 600)}`,
         );
     });
 });
