@@ -72,6 +72,9 @@ describe("app.js — migration ledger", () => {
       "GET /api/fs/read-file",
       "GET /api/fs/raw",
       "POST /api/fs/mkdir",
+      // Slice 27 — preview-editor save; same containment gate + the
+      // slice-16 credential predicate on the write side.
+      "POST /api/fs/write",
       "POST /api/fs/open-default",
       "POST /api/fs/reveal",
       "GET /api/fs/search",

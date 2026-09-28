@@ -695,6 +695,7 @@ still carries `mime` / `language` so the UI can hint at why (e.g.
   "ok": true,
   "path": "C:\\Users\\you\\README.md",
   "size": 2400,
+  "mtime": 1790609123912.887,
   "mime": "text/markdown; charset=utf-8",
   "language": "markdown",
   "binary": false,
@@ -706,7 +707,11 @@ still carries `mime` / `language` so the UI can hint at why (e.g.
 `encoding` is `"utf-8"` on success (with the BOM stripped); `language` is
 one of `markdown` / `typescript` / `javascript` / `json` / `yaml` / `css`
 / `html` / `python` / `go` / `rust` / `bash` / `sql` / `dockerfile` /
-`plain` (informational — the renderer is allowed to ignore it).
+`plain` (informational — the renderer is allowed to ignore it). `mtime`
+is the file's `stat().mtimeMs` at read time (slice 27): the preview
+editor records it together with `size` as the conflict-detection baseline
+and sends both back on save — `POST /api/fs/write` answers `409` when
+the disk has moved on in the meantime.
 
 **Errors** — 400 missing `path`; 403 out-of-root; 403 `{code:"credential"}`
 on a credential-shaped basename (unless `?confirm=1`); 413 over the 512 KiB
@@ -747,6 +752,79 @@ files have no immutable hash, the cache must not lie about freshness.
 
 **Errors** — 400 missing `path`; 403 out-of-root; 404 not found; 400 not
 a regular file; 413 over the 20 MiB cap.
+
+---
+
+### `POST /api/fs/write` — save the preview editor's buffer (slice 27)
+
+The preview toolbar's save button lands here. This is the ONLY write
+surface the file preview opens, and every boundary below is enforced
+server-side — the webapp is a presenter over the structured answer.
+
+**Request**
+```json
+{
+  "path": "C:\\Users\\you\\README.md",
+  "content": "# Title\n\nedited in the preview panel\n",
+  "expectedMtime": 1790609123912.887,
+  "expectedSize": 2400,
+  "confirm": false
+}
+```
+
+| Field | Required | Meaning |
+|---|---|---|
+| `path` | yes | absolute path (or `~/...`); through the SAME `safePath` → `assertWorkspacePath` gate as every other `/api/fs/*` route — realpath-resolved, symlink-aware, out-of-root = 403 |
+| `content` | yes | the full file body as a UTF-8 string; non-string = 400 `invalid-content` |
+| `expectedMtime` | no | the `mtime` `GET /api/fs/read-file` returned when the file was opened |
+| `expectedSize` | no | the `size` from the same read |
+| `confirm` | no | `true` = the user passed the credential confirmation card (see below) |
+
+**Conflict detection.** When either baseline field is present and no
+longer matches the live stat, the route answers `409` and writes
+NOTHING — an external edit must surface as a conflict the user resolves,
+never a silent overwrite. A body with NO baseline fields is the
+explicit-overwrite shape; the panel only sends it after the user
+answered the conflict card ("覆盖磁盘版本").
+
+**Credential guard (slice 16 alignment).** Credential-shaped basenames
+(`.env` / `*.pem` / `id_rsa` / `credentials*` / … — the same
+`classifyCredential` predicate the read routes use) default-refuse with
+`403 {code:"credential", credentialReason}` and the file is untouched.
+`confirm:true` releases the write AND emits the same `credential.override`
+stderr audit line as the read override, with `endpoint:"write"`. Rationale:
+the server broadcasts a LAN URL, and a web-editable `.env` makes every
+LAN peer an author of the local machine's config.
+
+**Controlled write.** The handler is a bare `writeFileSync(path, content,
+'utf8')` on the gated path — no shell, no exec, no command interpolation
+anywhere on this path. The editor edits EXISTING files only; there is no
+create-through-the-web path.
+
+**Response 200** — the fresh baseline the next save should conflict-check
+against:
+```json
+{
+  "ok": true,
+  "path": "C:\\Users\\you\\README.md",
+  "size": 40,
+  "mtime": 1790609400000.5
+}
+```
+
+**Errors** — 400 `missing-path` / `missing-content` / `invalid-content` /
+`not-a-regular-file`; 403 out-of-root (shared gate; a missing path
+normally fails containment here with the realpath error — the read route
+documents the same behaviour); 403 `credential` (unconfirmed credential
+shape); 404 `not-found` (file vanished between gate and stat — TOCTOU
+guard); 409 `conflict` (`{diskMtime, diskSize}` on the body); 413
+`too-large` (content over `WRITE_MAX_BYTES` = the read's 512 KiB — you
+cannot save what you could never have loaded); 413 `BODY_TOO_LARGE`
+(JSON body over the shared 1 MiB reader cap); 500 `write-failed` (the
+`writeFileSync` itself threw — e.g. `EACCES`; the disk file is untouched).
+
+**Credential predicate is name-based — hardlink aliasing is NOT covered**,
+exactly as documented under `GET /api/fs/read-file`.
 
 ---
 

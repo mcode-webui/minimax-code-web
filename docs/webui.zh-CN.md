@@ -100,6 +100,13 @@ node dist/cli.js webui --host 0.0.0.0 --no-open   # PORT defaults to 18080
 
 正式的披露文档是 [`packages/webui/references/SECURITY-NOTES.md`](../packages/webui/references/SECURITY-NOTES.md)。
 
+slice 27 把同一姿态延伸到写入侧：`POST /api/fs/write` 走完全相同的
+containment 闸门、套用完全相同的凭据判断（默认拒绝；`confirm:true`
+放行写入并输出 `endpoint:"write"` 的 `credential.override` 审计行），
+并在写盘前比对调用方携带的（修改时间、大小）基线——磁盘已变则
+`409 {code:"conflict"}`，外部修改不会被静默覆盖。写入本身是对围栏
+内路径的裸 `writeFileSync`：无 shell、无 exec、无命令拼接。
+
 ## 传输选择（ACP、exec 或 runtime）
 
 发出的每条消息由三种传输之一送达引擎：长驻的 ACP 子进程（`mcode acp`）、一次性的 exec 子进程（`mcode exec`），或——S2 新增的——**进程内 runtime 宿主**（`packages/webui/server/lib/runtime-host.js`），它拥有与 TUI 同一份 `CliService`。选择发生在服务端、按回合进行，页面上**没有任何提示**。本节记录当前源码的实际行为，不是长期不变的契约。
@@ -417,10 +424,72 @@ flowchart LR
   器缓存，不重复下载。
 - **不进目录大纲**：图不产生标题。围栏渲染为 `<pre>`/`<div>` 占位
   元素而不是 `h1`-`h6`（`webapp/lib/mermaid-renderer.ts:44-57`），
-  因此图永远不会出现在按标题组织的大纲或导航里（webui 目前的
-  Markdown 渲染本身也不生成大纲）。
+  因此图永远不会出现在按标题组织的大纲里——预览面板的目录
+  （见下节）只从渲染后的 `h1`-`h6` 提取条目，占位元素天然不满足。
 
 依赖：`mermaid` 11.12.1（MIT），已登记于 `release/dependency-licenses.json`。
+
+## 文件预览工具栏与 Markdown 大纲（slice 27）
+
+预览组件顶栏新增三个控件，Markdown 预览增加大纲面板。这也是
+webui 第一次开放**写文件**的路径，因此下面的边界是产品决策，
+不是实现细节。
+
+**工具栏能做什么**
+
+| 控件 | 作用 | 什么时候会用到 |
+| --- | --- | --- |
+| ↻ 刷新 | 从磁盘重新读取当前文件并重新渲染，滚动位置保留 | 你在编辑器里改了文件，切回面板点一下就看到新内容 |
+| 预览/编辑 | 把文本类预览（Markdown、代码）切换成编辑器，编辑器内容就是磁盘上的字节；再点切回预览 | 想在网页里顺手改一个字、补一段话 |
+| ✓ 保存 | 把编辑内容写回磁盘文件，成功后提示"已保存 HH:MM"并按保存后的内容重新渲染 | 改完了，明确保存；**没有自动保存**，写盘只在你点这一下时发生 |
+
+**坏了会怎样（每种失败都有交代）**
+
+- **刷新时文件已删除/改名**：面板不空白——保留最后一次读到的
+  内容，顶部出现一条提示，写明"刷新失败：无法解析路径 …"和
+  "文件可能已被删除、移动或路径已变化"。
+- **保存失败**（磁盘满、权限不足等）：编辑内容**原样保留**在
+  编辑器里，并显示失败原因（如 `EACCES: permission denied`）。
+  你不会因为一次失败的保存丢掉刚打的字。
+- **文件在你打开之后被别人改了**：保存时出现**冲突提示卡**
+  （"文件在磁盘上已被修改"，附磁盘版本的时间和字节数），
+  保存被拒绝，磁盘上的外部修改**不会被覆盖**。卡片给两个明确
+  出路：覆盖磁盘版本，或载入磁盘版本（后者丢弃你的编辑，卡片
+  上写清楚了）。检测依据是打开文件时记录的修改时间与大小，
+  保存前服务端逐一比对，不一致即拒绝。
+
+**凭据形状的文件默认只读**
+
+`.env`、`id_rsa`、`*.pem`、`credentials*` 这类文件名，在网页里
+**默认不能编辑**：点"编辑"先出一张确认卡，说明文件形状和拒绝
+原因，你点"仍要编辑"才进入编辑态，保存时再带确认标志。原因和
+slice 16 的预览守卫一致：服务会向局域网广播地址，能在网页里改
+`.env` 的能力，等于把局域网里任何人都变成本机配置的写入者。
+确认路径会在服务端留一条 `credential.override` 审计日志
+（含时间、路径、原因），运维可以 grep 追溯。
+
+**写路径的边界（服务端强制，前端只是呈现）**
+
+- 写入目标和读取走**同一套**工作区围栏（允许根 + 符号链接解析），
+  越界一律 403；没有新增任何逃逸面。
+- 保存端点只做一件事：把请求体里的文本写进围栏内的那一个文件。
+  全程无 shell、无命令拼接。
+- 写入上限与读取一致（512 KiB）；只能编辑已存在的文件，不能借
+  保存新建文件。
+- 保存请求携带打开时记录的（修改时间、大小）基线；磁盘已变则
+  409 冲突，不写盘。
+
+**Markdown 大纲**
+
+- Markdown 预览的右侧出现"大纲"面板：按标题层级列出 `h1`-`h6`，
+  点击跳转，滚动时当前章节高亮。
+- 大纲条目从**渲染后的页面 DOM** 提取——列出的一定是页面上真
+  实渲染的标题，而不是对源码的第二次解析（两种解析各走各路就
+  会出现"大纲和正文对不上"）。
+- 没有标题的文档不显示大纲面板（不留空壳）；Mermaid 图不是
+  章节，永远不进大纲；浅色/深色主题下都可读。
+- 预览列特别窄（内容宽度低于约 300px）时大纲自动隐藏，避免把
+  正文挤得没法读；预览列自身的最小宽度（320px）下大纲仍可见。
 
 ## 持久化键（客户端 `localStorage` / `sessionStorage`）
 
@@ -440,7 +509,7 @@ flowchart LR
 
 ## 端点清单（依据当前源码）
 
-下表覆盖全部已注册的 `/api/*` 路由。`OWNED_ROUTES`（Hono，60 条）
+下表覆盖全部已注册的 `/api/*` 路由。`OWNED_ROUTES`（Hono，62 条）
 是直观的清单；旧派发器仅保留两条 SSE（`/api/events`、`/api/alerts`）
 以及静态与 trajectory 挂载。
 
@@ -476,9 +545,10 @@ flowchart LR
 | `GET` | `/api/workspace/resolve` | `routes/workspace.js#handleWorkspaceResolve` | `?name=<folder>` → 候选绝对路径 |
 | `GET` | `/api/workspace/recent` | `routes/workspace.js#handleWorkspaceRecent` | `?search=&limit=`（limit 上限 20） |
 | `GET` | `/api/fs/read` | `routes/fs.js#handleFsRead` | `?path=&showHidden=1`；containment 守门；缺参 → `400` |
-| `GET` | `/api/fs/read-file` | `routes/fs.js#handleFsReadFile` | `?path=&confirm=1`；`200`；凭据形路径（未带 `confirm=1`） → `403 {code:"credential"}`；超过 fs-util `DEFAULT_FILE_READ_MAX = 512 KiB` → `413`；二进制 / 非常规文件 → `415` |
+| `GET` | `/api/fs/read-file` | `routes/fs.js#handleFsReadFile` | `?path=&confirm=1`；`200`（成功体携带 `mtime`——`POST /api/fs/write` 冲突检测的基线）；凭据形路径（未带 `confirm=1`） → `403 {code:"credential"}`；超过 fs-util `DEFAULT_FILE_READ_MAX = 512 KiB` → `413`；二进制 / 非常规文件 → `415` |
 | `GET` | `/api/fs/raw` | `routes/fs.js#rawStreamToWebResponse` | `?path=&download=1&confirm=1`；20 MiB 上限的流式响应；同样的凭据守门；按扩展名映射 mime，含 `.html/.htm`、`.svg`、`.png/.jpg/.gif/.webp`、`.js/.mjs/.css/.json` |
 | `POST` | `/api/fs/mkdir` | `routes/fs.js#handleFsMkdir` | `{path}`；父目录必须在允许根内；containment 失败 → `403` |
+| `POST` | `/api/fs/write` | `routes/fs.js#handleFsWrite` | `{path, content, expectedMtime?, expectedSize?, confirm?}`——预览编辑器的保存端点（slice 27）。`200 {ok, path, size, mtime}`（返回新基线）；`400 {code:"missing-path"\|"missing-content"\|"invalid-content"\|"not-a-regular-file"}`；containment → `403`；凭据形路径未确认 → `403 {code:"credential", credentialReason}`；文件消失 → `404 {code:"not-found"}`（TOCTOU 兜底——缺失路径通常先被共享闸门拦下，与读取行为一致）；基线过期 → `409 {code:"conflict", diskMtime, diskSize}`（不写盘）；超上限 → `413 {code:"too-large"}`（写入上限与读取同为 512 KiB）。实现是对围栏内路径的裸 `writeFileSync`——全程无 shell。凭据形路径带 `confirm:true` 时输出 `endpoint:"write"` 的 `credential.override` 审计行。 |
 | `POST` | `/api/fs/open-default` | `routes/fs.js#handleFsOpenDefault` | `{path}`；`400 {code:"missing-path"}` / `403 {code:"out-of-bounds"}` / `400 {code:"not-a-regular-file"}` / `503 {code:"no-opener"}` / `502 {code:"spawn-failed"}` |
 | `POST` | `/api/fs/reveal` | `routes/fs.js#handleFsReveal` | `{path}`；`code` → status 映射与 `open-default` 相同 |
 | `GET` | `/api/fs/search` | `routes/fs.js#handleFsSearch` | `?root=&q=&depth=&maxNodes=&wallMs=&limit=&includeHidden=1`；`400 {code:"missing-root"\|"missing-q"\|"not-a-directory"\|"stat-failed"}`；成功时返回 `{ok, root, q, matches:[{path,name,type,ancestors,credential?,credentialReason?}], scanned:{dirs,files,total}, skipped:{node_modules,n,.git,n,credential,n,huge,n,optional:{dist,build,…}}, truncated, truncatedReason: null\|"depth"\|"nodes"\|"wallClock"\|"matches", elapsedMs, budgets}`。默认预算 `maxDepth=8 / maxNodes=5000 / wallMs=1500 / maxMatches=200`；绝对上限 `16 / 50_000 / 5_000 / 1_000`（`packages/webui/server/lib/fs-search.js`）；`node_modules` 与 `.git` 不可被覆盖。 |

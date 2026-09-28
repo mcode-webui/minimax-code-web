@@ -16,7 +16,7 @@
 
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -91,6 +91,26 @@ describe("fs routes — /api/fs/read-file", () => {
       assert.equal(parsed.mime, "text/markdown; charset=utf-8");
       assert.equal(parsed.content, body.replace(/^\uFEFF/, ""));
       assert.equal(parsed.size, Buffer.byteLength(body, "utf8"));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("success payload carries the mtime baseline the write path conflicts on (slice 27)", () => {
+    // The preview editor records (mtime, size) when a file is opened and
+    // sends them back on save; /api/fs/write refuses with 409 when the
+    // disk no longer matches. The baseline travels on THIS read, so the
+    // client never needs a second round-trip (and cannot race one).
+    const dir = mkdtempSync(join(tmpdir(), "fs-read-file-mtime-"));
+    try {
+      const file = join(dir, "note.md");
+      writeFileSync(file, "baseline\n", "utf8");
+      const res = fakeRes();
+      fsRoute.handleFsReadFile(readReq(file), res);
+      assert.equal(res.status, 200);
+      const parsed = JSON.parse(res.body);
+      assert.equal(typeof parsed.mtime, "number", "payload.mtime must be a number");
+      assert.equal(parsed.mtime, statSync(file).mtimeMs);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

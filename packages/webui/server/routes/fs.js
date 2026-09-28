@@ -4,15 +4,16 @@
 // GET  /api/fs/read-file?path=xxx          读取单文件内容（slice 02，右栏预览）
 // GET  /api/fs/raw?path=xxx                原样返回（image / html，slice 02 预览）
 // POST /api/fs/mkdir                       创建目录 { path }
+// POST /api/fs/write                       保存预览编辑内容（slice 27，见 handleFsWrite）
 // POST /api/fs/open-default { path }       用系统默认应用打开（slice 14）
 // POST /api/fs/reveal { path }             在文件管理器中定位（slice 14）
 
-import { readDirectory, createDirectory, resolveTarget, readFileContent } from '../lib/fs-util.js'
+import { readDirectory, createDirectory, resolveTarget, readFileContent, DEFAULT_FILE_READ_MAX } from '../lib/fs-util.js'
 import { readJson, BodyTooLargeError } from '../lib/read-json.js'
 import { assertWorkspacePath, assertWorkspaceParentPath, expandTilde } from '../lib/workspace.js'
 import { openWithDefault, revealInFileManager } from '../lib/open-target.js'
 import { classifyCredential } from '../lib/credential-file.js'
-import { createReadStream, statSync } from 'node:fs'
+import { createReadStream, statSync, writeFileSync } from 'node:fs'
 import { Readable } from 'node:stream'
 import { extname, basename } from 'node:path'
 import { searchWorkspace, DEFAULTS as SEARCH_DEFAULTS, ABSOLUTE_LIMITS as SEARCH_LIMITS } from '../lib/fs-search.js'
@@ -401,6 +402,209 @@ export function rawStreamToWebResponse(rawPath, opts = {}) {
     status: result.status,
     headers: result.headers,
   })
+}
+
+// POST /api/fs/write { path, content, expectedMtime?, expectedSize?, confirm? }
+//   Save the preview editor's buffer back to disk (slice 27 — preview
+//   toolbar edit path). This is the ONLY write path the webapp's file
+//   preview opens, and its boundary is deliberately identical to the
+//   read path's:
+//
+//   Containment — same `safePath` (assertWorkspacePath + realpath)
+//   gate every other /api/fs/* route funnels through. Out-of-root
+//   answers 403 with the same actionable message; a symlink whose
+//   realpath escapes is caught by the same gate. No new escape hatch.
+//
+//   Credential guard (slice 16 alignment) — credential-shaped
+//   basenames (`.env` / `*.pem` / `id_rsa` / `credentials*` / …, the
+//   `lib/credential-file.js` predicate) are default-READ-ONLY on the
+//   write side too: without `confirm:true` the route answers 403
+//   `{code:'credential', credentialReason}` and the file is untouched.
+//   The reasoning carries over from the preview guard verbatim: the
+//   server broadcasts a LAN URL, and a web-editable `.env` makes every
+//   LAN peer an author of the local machine's config. `confirm:true`
+//   releases the write AND emits the same stderr audit line the read
+//   override does (`endpoint:'write'`), so an operator can grep who
+//   overrode the guard.
+//
+//   Conflict detection — the client sends the (mtime, size) baseline it
+//   read when the file was opened (`expectedMtime` / `expectedSize`,
+//   both optional). When either no longer matches the live stat, the
+//   route answers 409 `{code:'conflict', diskMtime, diskSize}` and does
+//   NOT write: an external edit must surface as a conflict the user
+//   resolves, never a silent overwrite. A save that omits the baseline
+//   is an explicit overwrite (the panel only sends that shape after the
+//   user answered the conflict card).
+//
+//   Controlled write — the handler calls `writeFileSync(path, content)`
+//   with the decoded JSON string. No shell, no exec, no command
+//   interpolation anywhere on this path; the only filesystem effect is
+//   the one file, byte-for-byte.
+//
+//   Wire codes:
+//     ok (200)              — written; body carries the fresh (size,
+//                             mtime) baseline for the next save
+//     missing-path          — 400, no `path` in the body
+//     missing-content       — 400, no `content`
+//     invalid-content       — 400, `content` is not a string
+//     (gate error)          — 403, containment refused
+//     credential            — 403, credential-shaped and unconfirmed
+//     not-found             — 404, the file no longer exists (the
+//                             editor edits existing files only — no
+//                             create-through-the-web path)
+//     not-a-regular-file    — 400, path is a directory / device
+//     conflict              — 409, disk baseline differs from expected
+//     too-large             — 413, body content over the write cap
+//                             (WRITE_MAX_BYTES, same 512 KiB figure the
+//                             read path caps at — you cannot save what
+//                             you could never have loaded)
+export const WRITE_MAX_BYTES = DEFAULT_FILE_READ_MAX
+
+export async function handleFsWrite(req, res) {
+  let data
+  try {
+    data = await readJson(req)
+  } catch (cause) {
+    if (cause instanceof BodyTooLargeError) {
+      res.writeHead(413, { 'Content-Type': 'application/json', Connection: 'close' })
+      res.end(JSON.stringify({ ok: false, error: cause.message, code: 'BODY_TOO_LARGE' }))
+      return
+    }
+    throw cause
+  }
+
+  if (!data.path || typeof data.path !== 'string') {
+    res.writeHead(400, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ ok: false, code: 'missing-path', error: 'missing path' }))
+    return
+  }
+  if (data.content === undefined) {
+    res.writeHead(400, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ ok: false, code: 'missing-content', error: 'missing content' }))
+    return
+  }
+  if (typeof data.content !== 'string') {
+    res.writeHead(400, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ ok: false, code: 'invalid-content', error: 'content must be a string' }))
+    return
+  }
+
+  const path = safePath(data.path)
+  if (!path) {
+    gateError(res, data.path)
+    return
+  }
+
+  // Credential gate (slice 16 alignment) — same predicate, same
+  // default-refuse posture, same audit line shape as the read-file
+  // override. `path` is the realpath form (safePath surfaces
+  // `gate.real`), so a symlink `innocent.txt → .env` reaches the
+  // predicate with basename `.env` and is correctly refused.
+  const classification = classifyCredential(path)
+  if (classification && data.confirm !== true) {
+    res.writeHead(403, { 'Content-Type': 'application/json' })
+    res.end(
+      JSON.stringify({
+        ok: false,
+        code: 'credential',
+        error: 'credential file — write disabled',
+        credentialReason: classification.reason,
+        path,
+      }),
+    )
+    return
+  }
+  if (classification && data.confirm === true) {
+    try {
+      process.stderr.write(
+        JSON.stringify({
+          event: 'credential.override',
+          ts: new Date().toISOString(),
+          path,
+          reason: classification.reason,
+          endpoint: 'write',
+        }) + '\n',
+      )
+    } catch {
+      // never throw from the audit log path
+    }
+  }
+
+  // The editor edits EXISTING files — a vanished file is surfaced, not
+  // created. (Through the shared gate a missing path normally fails
+  // containment first with the realpath error — the read route
+  // documents the same behaviour; this branch covers the window where
+  // the file vanishes between gate and stat.)
+  let st
+  try {
+    st = statSync(path)
+  } catch {
+    res.writeHead(404, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ ok: false, code: 'not-found', error: 'file not found', path }))
+    return
+  }
+  if (!st.isFile()) {
+    res.writeHead(400, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ ok: false, code: 'not-a-regular-file', error: 'not a regular file', path }))
+    return
+  }
+
+  const contentBytes = Buffer.byteLength(data.content, 'utf8')
+  if (contentBytes > WRITE_MAX_BYTES) {
+    res.writeHead(413, { 'Content-Type': 'application/json' })
+    res.end(
+      JSON.stringify({
+        ok: false,
+        code: 'too-large',
+        error: `content too large (max ${WRITE_MAX_BYTES} bytes)`,
+        path,
+      }),
+    )
+    return
+  }
+
+  // Conflict check — only when the caller sent a baseline. Both the
+  // mtime AND the size must match; either drift means the disk version
+  // is not the one the editor started from, and the save stops here.
+  // The write below is the only place the file changes.
+  if (
+    (typeof data.expectedMtime === 'number' && data.expectedMtime !== st.mtimeMs) ||
+    (typeof data.expectedSize === 'number' && data.expectedSize !== st.size)
+  ) {
+    res.writeHead(409, { 'Content-Type': 'application/json' })
+    res.end(
+      JSON.stringify({
+        ok: false,
+        code: 'conflict',
+        error: 'file changed on disk since it was opened',
+        path,
+        diskMtime: st.mtimeMs,
+        diskSize: st.size,
+      }),
+    )
+    return
+  }
+
+  try {
+    writeFileSync(path, data.content, 'utf8')
+  } catch (e) {
+    res.writeHead(500, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ ok: false, code: 'write-failed', error: e.message, path }))
+    return
+  }
+
+  // Re-stat after the write so the returned baseline is the one the
+  // NEXT save should conflict-check against.
+  const after = statSync(path)
+  res.writeHead(200, { 'Content-Type': 'application/json' })
+  res.end(
+    JSON.stringify({
+      ok: true,
+      path,
+      size: after.size,
+      mtime: after.mtimeMs,
+    }),
+  )
 }
 
 export async function handleFsMkdir(req, res) {

@@ -294,6 +294,13 @@ export function readFileContent(targetPath, opts = {}) {
     ok: true,
     path: absPath,
     size: st.size,
+    // Slice 27 — the conflict-detection baseline. The preview editor
+    // records (mtime, size) when a file is opened and sends them back
+    // on save; `POST /api/fs/write` compares against the live stat and
+    // refuses with 409 when the disk moved. Carrying it here means the
+    // client never needs a second round-trip (and cannot race one
+    // between read and edit).
+    mtime: st.mtimeMs,
     mime,
     language,
     binary: false,
