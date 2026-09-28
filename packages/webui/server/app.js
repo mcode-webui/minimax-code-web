@@ -128,6 +128,11 @@ export const OWNED_ROUTES = new Set([
   // touches a shell.
   "POST /api/fs/open-default",
   "POST /api/fs/reveal",
+  // Slice 19a — bounded workspace search. Same containment gate
+  // as /api/fs/read (via assertWorkspacePath inside the route);
+  // the parameter shape is the documented contract the panel uses
+  // to populate "searched N, skipped M" footers.
+  "GET /api/fs/search",
   // Git panel (slice 03): right-panel git surface + `/review` parity
   // surfaces. Containment-gated; execFile (no shell); branch
   // checkout is allow-list gated. See lib/git.js header.
@@ -514,6 +519,14 @@ export function createHonoApp() {
   );
   app.post("/api/fs/reveal", (c) =>
     invokeHandler(c, c.get(CAPTURE_KEY), fsRoute.handleFsReveal),
+  );
+  // Slice 19a — bounded workspace search. Same `assertWorkspacePath`
+  // gate as /api/fs/read; recursive walker with hard budgets in
+  // lib/fs-search.js. The walker clamps each budget to its absolute
+  // limit so a hostile query cannot pin the server; exceeding any
+  // budget returns `truncated: true` with a `truncatedReason`.
+  app.get("/api/fs/search", (c) =>
+    invokeHandler(c, c.get(CAPTURE_KEY), fsRoute.handleFsSearch),
   );
 
   // ----- Git panel (slice 03) -----

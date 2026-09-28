@@ -115,6 +115,7 @@ single index that satisfies the check.
 | Per-workspace git status (branch, dirty) | ⚠ | best-effort; the server shells out to `git status` once on workspace change. Errors are silently swallowed → the chip shows "—". |
 | Symlink resolution in the directory browser | ❌ | `fs.readdir(..., {withFileTypes:true})` returns symlinks as `Dirent`; webui shows them as files. No symlink-follow option yet. |
 | WSL path support | ❌ | `/api/workspace/browse` uses `path.join`, which on Windows is `\\`-aware but doesn't translate WSL `\\wsl$\…` paths |
+| Bounded workspace search (slice 19a) | ✅ | `GET /api/fs/search` — `server/lib/fs-search.js#searchWorkspace`. Same containment gate as the other `/api/fs/*` routes; budgets (depth / nodes / wall-clock / matches) are clamped to absolute limits and exceeding one returns `truncated: true` with a `truncatedReason` rather than silently. `node_modules` and `.git` are non-overridable skips; the build/cache set is overridable. Credential predicate re-uses `lib/credential-file.js` (slice 16) — matches are flagged with `credential: true`, never omitted, never content. The response carries paths and types only — no body, no `size` sample, no `mtime`. |
 
 ## 7. Sessions
 
