@@ -161,17 +161,18 @@ const en = {
   /* Account menu rows — 1:1 with the upstream account-menu entry set. */
   "userMenu.checkin": "Daily check-in",
   "userMenu.signOut": "Sign out",
-  /* Account-menu usage popover (hover Tooltip on the `用量` row). Quota data
-     comes from `api.getQuota()` (5h-style snapshot: remaining %, resetAt,
-     weeklyResetAt). The popover renders whatever is in the snapshot. */
-  "usagePopover.title": "Usage",
-  "usagePopover.fiveHour": "5-hour limit",
-  "usagePopover.weekly": "Weekly limit",
+  /* Usage strings — the settings page's 用量 card (ticket 37). The user-menu
+     hover flyout that used to own these was deleted; the card reads the same
+     `api.getQuota()` snapshot (remaining %, resetAt, weeklyResetAt) through
+     the store. `usage.used` / `usage.reset` predate the card and stay. */
+  "usage.title": "Usage",
+  "usage.fiveHour": "5-hour limit",
+  "usage.weekly": "Weekly limit",
   "usage.used": "Used",
-  "usagePopover.unavailable": "Quota data not available",
-  "usagePopover.refresh": "Refresh",
-  "usagePopover.errorTitle": "Failed to load usage",
-  "usagePopover.errorBody": "Try again in a moment.",
+  "usage.unavailable": "Quota data not available",
+  "usage.refresh": "Refresh",
+  "usage.errorTitle": "Failed to load usage",
+  "usage.errorBody": "Try again in a moment.",
   "toolbar.files": "Files",
   "toolbar.usage": "Usage",
   "plan.agree": "Agree",
@@ -369,6 +370,9 @@ const en = {
   "settings.group.coding": "Coding",
   "settings.group.archived": "Archived",
   "settings.tab.general": "General",
+  // Ticket 37 — the desktop reference's management-group name. The section
+  // stacks the usage quota card above the provider management panel.
+  "settings.tab.usageModels": "Usage & models",
   "settings.tab.voice": "Voice",
   "settings.tab.shortcuts": "Shortcuts",
   "settings.tab.personalization": "Personalization",
@@ -385,6 +389,10 @@ const en = {
   "settings.themeLight": "Light",
   "settings.themeDark": "Dark",
   "settings.language": "Language",
+  // Row hints in the general section's 应用 card — the desktop reference
+  // shows a grey one-line description under each row title.
+  "settings.appearanceHint": "Choose the display theme",
+  "settings.languageHint": "Set the application language",
   "home.suggestions": "Suggested",
   "home.chooseFolder": "Pick a folder",
   "home.local": "Local",
@@ -778,16 +786,18 @@ const zh: Record<MessageKey, string> = {
   /* 帐号菜单条目 — 与上游 account-menu 1:1 对齐。 */
   "userMenu.checkin": "每日签到",
   "userMenu.signOut": "退出登录",
-  /* 帐号菜单的「用量」hover Tooltip popover。配额数据来自 `api.getQuota()`
-     （5h 风格快照：remaining %、resetAt、weeklyResetAt）。 */
-  "usagePopover.title": "用量",
-  "usagePopover.fiveHour": "5 小时限额",
-  "usagePopover.weekly": "每周限额",
+  /* 用量文案 — 设置页「用量与模型」节里的用量卡片（工单 37）。原先挂这些
+     文案的帐号菜单 hover 弹层已删除；卡片经由 store 读同一个
+     `api.getQuota()` 快照（remaining %、resetAt、weeklyResetAt）。
+     `usage.used` / `usage.reset` 早于本卡片存在，保留。 */
+  "usage.title": "用量",
+  "usage.fiveHour": "5 小时限额",
+  "usage.weekly": "每周限额",
   "usage.used": "已用",
-  "usagePopover.unavailable": "暂无用量数据",
-  "usagePopover.refresh": "刷新",
-  "usagePopover.errorTitle": "用量加载失败",
-  "usagePopover.errorBody": "请稍后再试",
+  "usage.unavailable": "暂无用量数据",
+  "usage.refresh": "刷新",
+  "usage.errorTitle": "用量加载失败",
+  "usage.errorBody": "请稍后再试",
   "toolbar.files": "文件",
   "toolbar.usage": "用量",
   "plan.agree": "同意",
@@ -963,6 +973,8 @@ const zh: Record<MessageKey, string> = {
   "settings.group.coding": "编码",
   "settings.group.archived": "归档",
   "settings.tab.general": "通用",
+  // 工单 37 — 桌面版参照图管理组的命名。该节自上而下是用量卡片与模型供应商面板。
+  "settings.tab.usageModels": "用量与模型",
   "settings.tab.voice": "语音",
   "settings.tab.shortcuts": "快捷键",
   "settings.tab.personalization": "个性化",
@@ -979,6 +991,9 @@ const zh: Record<MessageKey, string> = {
   "settings.themeLight": "浅色",
   "settings.themeDark": "深色",
   "settings.language": "语言",
+  // 通用节「应用」卡片的行说明 — 桌面版参照图里每行标题下有一行灰色说明。
+  "settings.appearanceHint": "选择应用的显示主题",
+  "settings.languageHint": "设置应用语言",
   "home.suggestions": "推荐",
   "home.chooseFolder": "选择文件夹",
   "home.local": "本地",

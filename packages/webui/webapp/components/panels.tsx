@@ -30,7 +30,7 @@ import {
 import { useFsTreeRevealSubscriber } from "@/lib/fs-tree-reveal";
 import { classifyCredentialPath } from "@/lib/credential-file";
 import { InboxList } from "./inbox";
-import { useSessionContext } from "@/lib/store";
+import { refreshQuota, useSessionContext } from "@/lib/store";
 import { applyTheme, currentTheme } from "@/lib/theme";
 import { matchFilter } from "@/lib/workspace-filter";
 import { splitFilesByBucket, formatStatusTags, previewDiff } from "@/lib/git-panel";
@@ -181,21 +181,21 @@ export function RightPanel({
  * sidebar carrying a back affordance and a search box, and a content column capped at
  * 704px on the grouped-secondary background.
  *
- * The sidebar's category tree is upstream's, names included (`偏好/管理/编码/归档`
- * groups over `通用/外观/语音/快捷键/个性化/浏览器`, `用量与模型/连接/账户`,
- * `代码审查/工作树`, `已归档任务`). Only the categories this server can actually drive
- * are enabled; the rest are rendered disabled with the standing 暂不支持 marker rather
- * than hidden, so the surface still reads as the desktop's and nobody has to guess
- * whether a category is missing or unsupported.
+ * The sidebar's category tree follows the desktop reference: `偏好/管理/编码/归档`
+ * groups over `通用/语音/快捷键/个性化/浏览器`, `用量与模型/连接/账户`,
+ * `代码审查/工作树`, `已归档任务`. Two placements differ from an earlier revision,
+ * both by user decision (2026-09-28): appearance is no longer its own tab —
+ * the picker and the language switch live inside 通用 (`04-settings-general.jpg`)
+ * — and the usage quota lives in 用量与模型 rather than a user-menu flyout
+ * (`03-settings-usage-models.jpg`). Only the categories this server can actually
+ * drive are enabled; the rest are rendered disabled with the standing 暂不支持
+ * marker rather than hidden, so the surface still reads as the desktop's and
+ * nobody has to guess whether a category is missing or unsupported.
  *
  * The body is the same `SettingsPanel` the drawer hosts, now told which section to
  * render — the settings contract itself did not move.
  */
-type SettingsSection =
-  | "general"
-  | "appearance"
-  | "connection"
-  | "providers";
+type SettingsSection = "general" | "connection" | "providers";
 
 const SETTINGS_NAV: {
   group: MessageKey;
@@ -205,7 +205,10 @@ const SETTINGS_NAV: {
     group: "settings.group.preferences",
     items: [
       { id: "general", key: "settings.tab.general", section: "general" },
-      { id: "appearance", key: "settings.appearance", section: "appearance" },
+      // No standalone appearance tab: the three-state picker and the
+      // language switch render inside 通用 (user decision 2026-09-28),
+      // matching the desktop reference `refs/ui/04-settings-general.jpg`,
+      // where appearance is the first row of the 应用 card.
       { id: "voice", key: "settings.tab.voice" },
       { id: "shortcuts", key: "settings.tab.shortcuts" },
       { id: "personalization", key: "settings.tab.personalization" },
@@ -215,11 +218,13 @@ const SETTINGS_NAV: {
   {
     group: "settings.group.management",
     items: [
+      // Desktop reference (`refs/ui/03-settings-usage-models.jpg`): the
+      // management group is 用量与模型 → 连接 → 账户, with the usage
+      // card above the provider panel inside the section. The id stays
+      // "providers" — the model selector's "Add provider" deep-link
+      // (page.tsx#openProviderAdd) targets it, and only the label moved.
+      { id: "providers", key: "settings.tab.usageModels", section: "providers" },
       { id: "connection", key: "settings.tab.connection", section: "connection" },
-      // Provider management (ticket 03) — model providers surface lives
-      // in the management group, below connection, and is the only
-      // server-driven section the desktop "用量与模型" group also covers.
-      { id: "providers", key: "providers.title", section: "providers" },
       { id: "account", key: "settings.tab.account" },
     ],
   },
@@ -253,10 +258,9 @@ export function SettingsModal({
   setLocale: (locale: Locale) => void;
   /** Section the modal should land on when it next opens. The page
    *  sets this when the model selector's "Add provider" row is
-   *  clicked; the modal reads it as its initial state on each open
-   *  transition (a normal settings open from the sidebar passes
-   *  "general" and reuses the default). */
-  initialSection?: "general" | "appearance" | "connection" | "providers";
+   *  clicked, when the user menu's usage row opens the usage card,
+   *  or not at all; the default is "general". */
+  initialSection?: "general" | "connection" | "providers";
   /** One-shot flag consumed by `ProviderManagementPanel`. When true,
    *  the panel fires its add-provider flow on mount and calls
    *  `onAutoAddConsumed`. The page sets this so a deep-link from the
@@ -3157,7 +3161,7 @@ function SettingsPanel({
   locale: Locale;
   setLocale: (locale: Locale) => void;
   /** Which category to render; undefined means a disabled (unsupported) one. */
-  section?: "general" | "appearance" | "connection" | "providers";
+  section?: "general" | "connection" | "providers";
   /** Forwarded to `ProviderManagementPanel` when `section === "providers"`. */
   autoAddProvider?: boolean;
   onAutoAddConsumed?: () => void;
@@ -3229,33 +3233,47 @@ function SettingsPanel({
   const body = {
     general: (
       <>
-        <Field label={t("settings.engine")}>
-          <div className="break-all text-caption-small-strong text-text_default_secondary">
-            {snapshot.mcodeVersion ?? "—"}
-          </div>
-          <div className="text-caption-small-strong text-text_default_tertiary">
-            {snapshot.defaultModel ?? ""}
-          </div>
-        </Field>
-        <Field label={t("settings.localUrl")}>
-          <div className="break-all text-text_default_secondary">{snapshot.localUrl ?? "—"}</div>
-        </Field>
-        <Field label={t("settings.lanUrl")}>
-          <div className="break-all text-text_default_secondary">{snapshot.lanUrl ?? "—"}</div>
-        </Field>
+        {/* Card 1 — engine facts (version, default model, serving URLs).
+         * Kept here rather than moved to 连接: no desktop reference shows
+         * these fields, so there is no evidence for a different home, and
+         * the webui needs them visible somewhere. */}
+        <SectionCard>
+          <Field label={t("settings.engine")}>
+            <div className="break-all text-caption-small-strong text-text_default_secondary">
+              {snapshot.mcodeVersion ?? "—"}
+            </div>
+            <div className="text-caption-small-strong text-text_default_tertiary">
+              {snapshot.defaultModel ?? ""}
+            </div>
+          </Field>
+          <Field label={t("settings.localUrl")}>
+            <div className="break-all text-text_default_secondary">{snapshot.localUrl ?? "—"}</div>
+          </Field>
+          <Field label={t("settings.lanUrl")}>
+            <div className="break-all text-text_default_secondary">{snapshot.lanUrl ?? "—"}</div>
+          </Field>
+        </SectionCard>
+        {/* Card 2 — the 应用 card. The desktop reference's first two rows
+         * that this server can actually drive: appearance (a client-side
+         * theme persisted in the UI-state envelope) and language (a
+         * client-side locale). The reference's other rows — menu-bar icon,
+         * launch-at-login, desktop notifications, accelerated indexing,
+         * data directory — have no backend here and are deliberately NOT
+         * rendered as placeholders (ticket 37: the capability table stays
+         * honest). */}
+        <SectionCard>
+          <Field label={t("settings.appearance")} hint={t("settings.appearanceHint")}>
+            <AppearanceCardPicker locale={locale} />
+          </Field>
+          <div className="mx-3 h-[0.5px] bg-border_default" aria-hidden />
+          <Field label={t("settings.language")} hint={t("settings.languageHint")}>
+            <LanguageSwitch t={t} locale={locale} setLocale={setLocale} />
+          </Field>
+        </SectionCard>
       </>
     ),
-    appearance: (
-      /* Appearance — theme and language switches folded into settings. */
-      <Field label={t("settings.appearance")}>
-        <div className="flex flex-col gap-2">
-          <ThemeSwitch t={t} locale={locale} />
-          <LanguageSwitch t={t} locale={locale} setLocale={setLocale} />
-        </div>
-      </Field>
-    ),
     connection: (
-      <>
+      <SectionCard>
         <Field label={t("settings.security")}>
           <div className="flex flex-col gap-2">
             <Toggle
@@ -3310,31 +3328,152 @@ function SettingsPanel({
             {t("settings.resetToken")}
           </button>
         </div>
-      </>
+      </SectionCard>
     ),
     providers: (
-      // The provider management panel owns its own loading / saving
-      // state — wrapping it in a card here keeps the section chrome
-      // consistent with the rest of SettingsPanel. The autoAdd flag
-      // and its consumer callback are forwarded so the model's
-      // "Add provider" deep-link can land the user mid-add.
-      <ProviderManagementPanel
-        t={t}
-        autoAddProvider={autoAddProvider}
-        onAutoAddConsumed={onAutoAddConsumed}
-      />
+      // The desktop's 用量与模型 page stacks the usage card above the
+      // provider management panel. The usage card reads the same store
+      // the deleted user-menu flyout did; the panel owns its own
+      // loading / saving state, so wrapping it in a card here keeps the
+      // section chrome consistent with the rest of SettingsPanel. The
+      // autoAdd flag and its consumer callback are forwarded so the
+      // model's "Add provider" deep-link can land the user mid-add.
+      <>
+        <SectionCard>
+          <UsageCard t={t} />
+        </SectionCard>
+        <SectionCard>
+          <ProviderManagementPanel
+            t={t}
+            autoAddProvider={autoAddProvider}
+            onAutoAddConsumed={onAutoAddConsumed}
+          />
+        </SectionCard>
+      </>
     ),
   }[section];
 
   return (
-    /* Upstream's section shell: a `gap-3` column of cards. */
+    /* Upstream's section shell: a `gap-3` column of cards. Each section
+     * body carries its own SectionCard elements, because general and
+     * usage-models are two-card sections. */
     <div className="flex w-full flex-col gap-3">
-      <section className="flex w-full flex-col gap-3">
-        <div className="rounded-[16px] bg-bg_grouped_tertiary p-1">{body}</div>
-      </section>
+      <section className="flex w-full flex-col gap-3">{body}</section>
 
       {notice ? <p className="text-caption-small-strong text-text_status_success">{notice}</p> : null}
       {error ? <p className="text-caption-small-strong text-text_status_error">{error}</p> : null}
+    </div>
+  );
+}
+
+/**
+ * One card of a settings section — upstream's grouped-tertiary surface with
+ * the 16px radius. Extracted when `general` became a two-card section; every
+ * section body now stacks these so the spacing (`gap-3` above) is uniform.
+ */
+function SectionCard({ children }: { children: React.ReactNode }) {
+  return <div className="rounded-[16px] bg-bg_grouped_tertiary p-1">{children}</div>;
+}
+
+/**
+ * The usage card (用量) of the 用量与模型 section.
+ *
+ * Ported from the user menu's hover flyout (shell.tsx#UsagePopover), which
+ * this rework deletes: the figures are the plan quota the store already
+ * polls (`startQuotaPolling`, 2-minute cadence), and the refresh button is
+ * the deliberate-read path — `refreshQuota(true)` also appends the reading
+ * to the forecast history, so a landing refresh is a measurement while the
+ * background poll stays a plain read.
+ *
+ * Rendered rows: the engine reports two windows — one rolling over 5 hours,
+ * one weekly. A window with no figure is dropped rather than drawn as 0%,
+ * and a quota payload that is neither ok nor carrying any window shows the
+ * unavailable line instead of an empty card.
+ */
+function UsageCard({ t }: { t: (key: MessageKey) => string }) {
+  const { quota, quotaBusy, quotaError } = useSessionContext();
+
+  // Landing on the card is a read, matching the flyout's mount behaviour:
+  // the store is usually warm from the poll, this refresh closes the gap
+  // when it is not (e.g. the page loaded with the tab hidden).
+  useEffect(() => {
+    void refreshQuota();
+  }, []);
+
+  const windows = [
+    {
+      key: "fiveHour",
+      label: t("usage.fiveHour"),
+      remaining: quota?.remaining,
+      resetAt: quota?.resetAt,
+    },
+    {
+      key: "weekly",
+      label: t("usage.weekly"),
+      remaining: quota?.weeklyRemaining,
+      resetAt: quota?.weeklyResetAt,
+    },
+  ].filter((w) => typeof w.remaining === "number");
+
+  return (
+    <div data-testid="settings-usage-card" className="flex w-full flex-col gap-2">
+      <div className="flex items-center justify-between px-3 pt-2">
+        <span className="desktop-text-ui-body text-text_default_primary">{t("usage.title")}</span>
+        <button
+          type="button"
+          // `record` — the user asked for fresh figures, so this reading is
+          // also a forecast sample.
+          onClick={() => void refreshQuota(true)}
+          disabled={quotaBusy}
+          className="flex size-5 items-center justify-center rounded text-text_default_tertiary transition-colors hover:bg-bg_interaction_tertiary_hover disabled:opacity-50"
+          title={t("usage.refresh")}
+          aria-label={t("usage.refresh")}
+        >
+          <Icon name="refresh" size={12} />
+        </button>
+      </div>
+      {quotaError ? (
+        <div className="flex flex-col gap-1 px-3 pb-2">
+          <span className="text-sm text-text_default_primary">{t("usage.errorTitle")}</span>
+          <span className="text-caption-small-strong text-text_default_secondary">
+            {t("usage.errorBody")}
+          </span>
+        </div>
+      ) : quota?.ok && windows.length > 0 ? (
+        <div className="flex flex-col gap-2 px-3 pb-3">
+          {windows.map((w) => {
+            // `remaining` is what is left; the row reports what was used.
+            const used = Math.max(0, Math.min(100, 100 - (w.remaining as number)));
+            const reset = w.resetAt
+              ? new Date(w.resetAt > 1e12 ? w.resetAt : w.resetAt * 1000).toLocaleString()
+              : null;
+            return (
+              <div key={w.key} className="flex flex-col gap-1 overflow-hidden rounded-[8px]">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm font-normal text-text_default_primary">{w.label}</span>
+                  <span className="text-sm font-normal text-text_default_primary">
+                    {t("usage.used")} {used}%
+                  </span>
+                </div>
+                {reset ? (
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-caption-small-strong text-text_default_secondary">
+                      {t("usage.reset")}
+                    </span>
+                    <span className="text-caption-small-strong text-text_default_secondary">
+                      {reset}
+                    </span>
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <span className="px-3 pb-3 text-caption-small-strong text-text_default_secondary">
+          {t("usage.unavailable")}
+        </span>
+      )}
     </div>
   );
 }
@@ -3355,12 +3494,25 @@ function AlertsPanel({ t }: { t: (key: MessageKey) => string }) {
  *
  * Upstream's row component is a 14px label with the control beside or beneath it,
  * inside a card whose padding provides the inset — so the padding lives here rather
- * than on the card, which keeps a row's hit area continuous.
+ * than on the card, which keeps a row's hit area continuous. `hint` is the
+ * reference's grey one-line description under the title (e.g. 选择应用的显示主题);
+ * omitted for rows the reference shows bare (engine facts, connection toggles).
  */
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({
+  label,
+  hint,
+  children,
+}: {
+  label: string;
+  hint?: string;
+  children: React.ReactNode;
+}) {
   return (
     <div className="flex flex-col gap-1 px-3 py-2">
       <span className="desktop-text-ui-body text-text_default_primary">{label}</span>
+      {hint ? (
+        <span className="text-caption-small-strong text-text_default_tertiary">{hint}</span>
+      ) : null}
       {children}
     </div>
   );
@@ -3393,23 +3545,16 @@ function Toggle({
 /**
  * Theme picker.
  *
- * The document owns the applied theme (see lib/theme.ts), and the class on <html>
- * is not reactive state, so this reads it on mount and keeps a local mirror to
- * re-render the selected segment immediately after a write.
- *
- * Slice 18 swapped the prior 2-option Segmented for the three-state
- * `AppearanceCardPicker` (see components/appearance-card-picker.tsx). The
- * `t` prop is still threaded in for callers that pass it; the picker reads
- * its own labels via `tAppearance`. The locale prop is forwarded so the
- * card labels render in the user's selected language.
+ * The general section renders `AppearanceCardPicker` directly (ticket 37);
+ * the `ThemeSwitch` indirection that used to sit here only forwarded the
+ * locale prop after slice 18, so it was folded away.
  */
-function ThemeSwitch({ t: _t, locale }: { t: (key: MessageKey) => string; locale: Locale }) {
-  return <AppearanceCardPicker locale={locale} />;
-}
 
-/** Language picker. Writes through the same store the rest of the UI reads. */
+/** Language picker. Writes through the same store the rest of the UI reads.
+ * The row's label comes from the surrounding `Field` (general section), so
+ * the control itself renders bare. */
 function LanguageSwitch({
-  t,
+  t: _t,
   locale,
   setLocale,
 }: {
@@ -3419,7 +3564,6 @@ function LanguageSwitch({
 }) {
   return (
     <Segmented
-      label={t("settings.language")}
       value={locale}
       options={[
         { id: "zh", label: "中文" },
@@ -3430,26 +3574,26 @@ function LanguageSwitch({
   );
 }
 
-/** A labelled two-or-more-way pill switch. */
+/** A two-or-more-way pill switch. Label optional — the row label may live
+ * on the surrounding `Field` instead (general section's language row). */
 function Segmented({
   label,
   value,
   options,
   onChange,
 }: {
-  label: string;
+  label?: string;
   value: string;
   options: { id: string; label: string }[];
   onChange: (id: string) => void;
 }) {
   return (
-    <div className="flex items-center justify-between gap-2">
-      <span className="text-sm text-text_default_primary">{label}</span>
+    <div className={label ? "flex items-center justify-between gap-2" : "flex justify-end"}>
+      {label ? <span className="text-sm text-text_default_primary">{label}</span> : null}
       <AntSegmented
         className="mavis-segmented"
         // antd's options carry {label, value}; we accept {id, label} from
-        // callers for backwards compatibility (see ThemeSwitch /
-        // LanguageSwitch).
+        // callers for backwards compatibility (see LanguageSwitch).
         options={options.map((option) => ({
           label: option.label,
           value: option.id,

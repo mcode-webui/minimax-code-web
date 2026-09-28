@@ -180,7 +180,7 @@ exec 回合的代价——以下都是当前真实存在的行为，选择权限
 | --- | --- | --- |
 | 侧栏（rail） | `components/shell.tsx` | `sidebar-scroll-viewport` |
 | 侧栏会话树 | `components/session-tree.tsx` | `sidebar-session-row` |
-| 侧栏上下文/用量弹出层 | `components/shell.tsx` | `sidebar-user-usage-popover` |
+| 侧栏用户菜单（设置 / 每日签到 / 用量 / 退出登录） | `components/shell.tsx#SidebarFooter` | `sidebar-user-menu` |
 | 侧栏 inbox（告警浮层） | `components/inbox.tsx` | `inbox-flyout` |
 | 顶栏（带模型选择器） | `components/toolbar.tsx` | `toolbar-session-status` |
 | 录入区与拖放浮层 | `components/composer.tsx` | `composer-drop-overlay`、`composer-send-button` |
@@ -192,13 +192,14 @@ exec 回合的代价——以下都是当前真实存在的行为，选择权限
 | 文件树搜索（服务端，slice 19a；slice 19b 联调） | `components/panels.tsx` | `files-tree-filter` |
 | 侧栏树列「搜索」表面（slice 19b） | `components/workspace-tree-column.tsx#SearchSurface` | `tree-surface-search-input` |
 | 代码预览（slice 22 IDE 级：行号槽 + 按语言懒加载高亮 + 字节保真复制） | `components/code-view.tsx` | `code-view`（内嵌于 `file-preview`） |
-| 三态外观选择器（slice 18） | `components/appearance-card-picker.tsx` | `appearance-card-picker` |
+| 三态外观选择器（slice 18；工单 37 起挂在设置页「通用」内） | `components/appearance-card-picker.tsx` | `appearance-card-picker` |
 | Git 面板（slice 03） | `components/panels.tsx#GitPanel` | `git-panel` |
 | 浏览器面板（slice 04，沙箱化 iframe over `/api/fs/raw`） | `components/browser-panel.tsx` | `browser-panel` |
 | 工作区选择器（模态） | `components/workspace-picker.tsx` | `workspace-picker` |
 | Provider 配置 | `components/provider-management.tsx` | `providers-panel` |
 | 上下文窗口 | `components/context-meter.tsx` | `context-meter` |
 | 设置模态 | `components/panels.tsx#SettingsModal` | `settings-modal` |
+| 设置页「用量与模型」节的用量卡（工单 37） | `components/panels.tsx#UsageCard` | `settings-usage-card` |
 | 错误边界（全局 + 路由级） | `app/error.tsx` + `app/global-error.tsx` | `global-error-page` |
 
 ## 四列工作区（当前主线，slice 17 + slice 21）
@@ -307,6 +308,46 @@ slice 22 增强：
   在 highlight → split → copy 全链路被追踪，使剪贴板里的文本与
   文件字节互为往返 ——`cp file.js file.js.bak; 在面板里复制; 粘回去`），
   且绝不让行号槽混入复制文本。
+
+## 设置页（工单 37）
+
+入口在侧栏底部头像的用户菜单里。设置是一个全屏模态：左侧是分组导航（带搜索），右侧是限宽 704px 的内容列。本节说明每个分组里能改什么、影响什么、改了什么时候生效。
+
+**导航结构与可用性**
+
+| 分组 | 条目 | 状态 |
+| --- | --- | --- |
+| 偏好 | 通用 | 可用 |
+| 偏好 | 语音 · 快捷键 · 个性化 · 浏览器 | 标注「暂不支持」 |
+| 管理 | 用量与模型 · 连接 | 可用 |
+| 管理 | 账户 | 标注「暂不支持」 |
+| 编码 | 代码审查 · 工作树 | 标注「暂不支持」 |
+| 归档 | 已归档任务 | 标注「暂不支持」 |
+
+「暂不支持」共 8 条，是桌面版有而本服务端没有对应能力的既有事实，保留展示是为了让页面读起来和桌面版一致。反过来，桌面版「通用」页里的模式卡片、菜单栏图标、开机自启、桌面通知、加速索引、数据目录，本服务端**没有**对应能力，因此**不出现**——不为了页面好看而摆占位。
+
+**通用**
+
+两张卡片。第一张是引擎信息（版本、默认模型、本地地址、局域网地址），只读。第二张是可改的：
+
+| 项目 | 能改什么 | 什么时候生效 |
+| --- | --- | --- |
+| 外观 | 浅色 / 深色 / 跟随系统 三选一卡片 | 点击立即生效，无需刷新；写入浏览器本地存储，刷新后保持 |
+| 语言 | 中文 / English 分段切换 | 点击立即生效，整个界面（含本设置页）切换 |
+
+外观跟随系统时，操作系统明暗切换页面实时跟随，无需刷新。
+
+**用量与模型**
+
+上方是用量卡片：5 小时限额与每周限额两个窗口，各显示已用百分比和重置时间，右上角有手动刷新。数据来自引擎（`POST /api/usage`），页面每 2 分钟自动读一次；手动刷新会把这次读数计入用量预测的历史采样。引擎未连接或账户无配额时，卡片显示「暂无用量数据」而不是 0%。
+
+下方是模型供应商面板（配置 API Key、协议和模型清单），行为不变。
+
+**用户菜单的「用量」行**
+
+原来悬停会弹出一个配额浮层；现在改为点击后直接跳到设置页的「用量与模型」节，浮层组件与其文案键已移除。配额数据不再有两处入口。
+
+
 
 ## Markdown 里的 Mermaid 图（slice 23）
 

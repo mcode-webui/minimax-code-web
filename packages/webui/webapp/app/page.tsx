@@ -94,7 +94,7 @@ function App() {
   const [panel, setPanel] = useState<typeof persisted.panel>(persisted.panel);
   // Settings is a dialog rather than a drawer panel, so it has its own state.
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsSection, setSettingsSection] = useState<"general" | "appearance" | "connection" | "providers">("general");
+  const [settingsSection, setSettingsSection] = useState<"general" | "connection" | "providers">("general");
   const [pendingProviderAdd, setPendingProviderAdd] = useState(false);
   const [browserPath, setBrowserPath] = useState<string | null>(null);
   const [sessionHint, setSessionHint] = useState<{ kind: "not-found"; sessionId: string } | null>(null);
@@ -326,6 +326,15 @@ function App() {
 
   const openSettings = useCallback(() => {
     setSettingsSection("general");
+    setPendingProviderAdd(false);
+    setSettingsOpen(true);
+  }, []);
+
+  // The user menu's usage row lands here (ticket 37): the quota figures live
+  // in the settings page's 用量与模型 section, so the entry jumps to that
+  // section instead of opening a flyout of its own.
+  const openUsage = useCallback(() => {
+    setSettingsSection("providers");
     setPendingProviderAdd(false);
     setSettingsOpen(true);
   }, []);
@@ -631,6 +640,7 @@ function App() {
         onOpenPanel={openPanel}
         onOpenSurfaceTab={openSurfaceTab}
         onOpenSettings={openSettings}
+        onOpenUsage={openUsage}
         alertCount={alertCount}
         hasConversation={hasConversation}
       >
