@@ -260,13 +260,18 @@ The TUI palette values are drawn from the same numeric scale as the desktop clie
 The Web UI is **not** a second desktop client and **not** a browser skin over the TUI. It is
 a third frontend on the same runtime, and the ACP integration already exists:
 
-- `docs/webui.md` — "It uses the same engine as the TUI — the CLI's ACP server (`mcode acp`,
-  JSON-RPC 2.0 over stdio) — so terminal, browser, and desktop clients run against one runtime."
+- `docs/webui.md` — the transport section (`Transport selection (ACP, exec, or
+  runtime)`) records a three-branch decision, not one fixed path: `MCODE_USE_ACP=0`
+  forces the `exec` escape hatch, `MCODE_WEBUI_TRANSPORT` selects `exec` / `runtime` /
+  `acp` (default `acp`). The engine is the CLI's ACP server (`mcode acp`, JSON-RPC 2.0
+  over stdio), shared with the TUI.
 - `packages/webui/docs/ARCHITECTURE.md` §3 — `acp-client.js` (`McodeAcpClient`,
   `getMcodeAcpClient()`), `mcode-rpc.js`, `mcode-acp.js` vs `mcode-exec.js`.
-- `packages/webui/package.json` — one `mcode acp` subprocess per active browser tab.
+- `packages/webui/server/lib/mcode-acp.js` — a single `mcode acp` subprocess
+  (singleton) plus a per-turn client, **not** one subprocess per active browser tab.
 
-So there is no transport decision left to make here. What this document adds is the
+So the transport is a decision to make, not a given — see the three branches above.
+What this document adds is the
 **desktop-facing contract** that the Web UI does not yet satisfy:
 
 | Inherited | Source | Status in the Web UI |

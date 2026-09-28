@@ -177,6 +177,13 @@ channel, the same wording the engine uses is written to stdin instead.
 **Response 200** `{ok: true}` immediately. The actual response is streamed
 via `/api/events`.
 
+**Run watchdog.** A run that stays silent for `MCODE_WEBUI_PROMPT_IDLE_TIMEOUT`
+seconds (default 120) is aborted — every acp/exec stream event resets the
+timer, so a run that keeps emitting never times out. The value is in
+**seconds** and is exported as `PROMPT_IDLE_TIMEOUT_MS` (`server/lib/config.js`);
+non-positive or non-finite values fall back to 120 s. This is a silence budget,
+not a total-turn ceiling.
+
 **Errors**
 - 400 when `content` is empty **and** no attachment survives validation
 - 409 when a turn is already in flight — `reason: "cid-busy"` (this client is
