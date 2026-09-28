@@ -231,12 +231,24 @@ export function FilePreview({
   }, [path]);
 
   // Restore the persisted scroll position. The restore fires
-  // once per (path, initialScrollTop) pair: after the body has
-  // had a chance to render its inner content (the file-preview-
-  // body div's `scrollHeight` only settles once the async
-  // `load()` resolves and `kind` resolves to a known renderer),
-  // we apply the persisted offset. A subsequent paint would be
-  // a no-op because `restoredRef.current` already flipped.
+  // once per mount / file switch: after the body has had a chance
+  // to render its inner content (the file-preview-body div's
+  // `scrollHeight` only settles once the async `load()` resolves
+  // and `kind` resolves to a known renderer), we apply the
+  // persisted offset.
+  //
+  // The effect deliberately does NOT depend on `initialScrollTop`.
+  // That prop is LIVE: the file-tab wiring feeds every scroll back
+  // through `onScrollPersist` → reducer → props, so a smooth scroll
+  // (an outline jump, `scrollIntoView({behavior:"smooth"})`) updates
+  // it mid-flight — the first scroll event lands the animation's
+  // interim offset (24px, say) in the prop, and an effect keyed on
+  // it would re-run and write that offset back to `scrollTop`,
+  // killing the animation at 24px instead of the target heading
+  // (the acceptance-run regression this slice 27 fix pins). The
+  // mount-time value is captured by this effect's closure instead:
+  // the effect only runs for a `path` change, and the render that
+  // carries a new `path` carries the tab's persisted offset.
   useEffect(() => {
     restoredRef.current = false;
     if (initialScrollTop <= 0) {
@@ -265,7 +277,10 @@ export function FilePreview({
     return () => {
       cancelled = true;
     };
-  }, [path, initialScrollTop]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- see the
+    // block comment above: re-running on initialScrollTop re-arms the
+    // restore mid-scroll and aborts smooth jumps.
+  }, [path]);
 
   const fileName = basenameOf(path);
   // The read-file endpoint rejects binary (mime-stripped NUL byte) but still

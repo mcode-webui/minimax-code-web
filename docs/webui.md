@@ -548,14 +548,18 @@ structured answer:
 The outline is derived from the **rendered DOM** — never a second parse
 of the markdown source — so the outline lists, by construction, what the
 page shows. Heading ids are assigned onto those DOM nodes (stable slugs,
-`-2`/`-3` suffixes on duplicates) and clicks jump via the browser's own
-anchor scrolling. The panel tracks the scroll position and highlights
-the current section. Documents without headings render no panel (no
-empty box), Mermaid diagrams never enter the outline (a diagram is not a
-chapter), and entries are readable in both themes through the design
-tokens. Below ~300px of content width the outline hides rather than
-squeezing the document — the preview column's own minimum (320px) still
-shows it.
+`-2`/`-3` suffixes on duplicates); a click `preventDefault`s the anchor
+and smooth-scrolls the heading into view via `scrollIntoView`, so the
+jump animates and the scroll position still persists through the tab's
+usual channel. The panel is sticky within the scroll viewport (its
+max-height pinned to the viewport's height, so a long outline cannot
+outgrow the pane it floats in) and tracks the scroll position to
+highlight the current section. Documents without headings render no
+panel (no empty box), Mermaid diagrams never enter the outline (a
+diagram is not a chapter), and entries are readable in both themes
+through the design tokens. Below ~300px of content width the outline
+hides rather than squeezing the document — the preview column's own
+minimum (320px) still shows it.
 
 ## Persistence keys (client-side `localStorage` / `sessionStorage`)
 

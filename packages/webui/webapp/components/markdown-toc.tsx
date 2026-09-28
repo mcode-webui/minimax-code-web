@@ -86,22 +86,33 @@ export function MarkdownToc({ contentRef, renderKey, locale }: MarkdownTocProps)
     // under contentRef has been re-committed with that html.
   }, [renderKey, contentRef]);
 
-  // Track the width the outline will SHARE with the document. The
+  // Track the geometry the outline SHARES with the document. The
   // observed element is the scroll container (`.file-preview-body`),
   // NOT the markdown host: the host's own width changes by exactly the
   // outline's width when the outline mounts, so watching the host
   // creates a feedback loop (outline shows → host shrinks below the
   // threshold → outline hides → host widens → outline shows …). The
   // scroller's width is set by the column layout alone.
+  //
+  // The scroller's clientHeight is ALSO captured (as `maxPanelPx`):
+  // sticky positioning only has room to move when the panel is
+  // shorter than the scroll viewport, so the panel's max-height is
+  // pinned to the scroller's visible height — a 40-heading document
+  // must not grow an outline taller than the pane it floats in.
+  const [maxPanelPx, setMaxPanelPx] = useState<number | null>(null);
   useEffect(() => {
     const host = contentRef.current;
     if (!host || typeof ResizeObserver === "undefined") return;
     const observed = host.closest<HTMLElement>(".file-preview-body") ?? host;
-    const observer = new ResizeObserver((entries) => {
-      const width = entries[0]?.contentRect.width ?? 0;
+    const read = () => {
+      const width = observed.clientWidth;
       setHostTooNarrow(width > 0 && width < OUTLINE_MIN_HOST_PX);
-    });
+      const height = (observed as HTMLElement).clientHeight;
+      if (height > 0) setMaxPanelPx(height);
+    };
+    const observer = new ResizeObserver(read);
     observer.observe(observed);
+    read();
     return () => observer.disconnect();
   }, [contentRef]);
 
@@ -150,7 +161,16 @@ export function MarkdownToc({ contentRef, renderKey, locale }: MarkdownTocProps)
       aria-label={tPreviewToolbar(locale, "previewToolbar.toc.title")}
       data-testid="file-preview-toc"
       data-count={outline.length}
-      className="file-preview-toc flex-none self-stretch"
+      // No `self-stretch` on purpose: stretching the panel to the
+      // document's height (the flex row's tallest item) leaves sticky
+      // positioning no room to move — the panel scrolled out of view
+      // with the document, taking the active highlight with it (the
+      // acceptance-run regression this fix pins). The panel keeps its
+      // natural (content) height and `max-height` is pinned to the
+      // scroll viewport's clientHeight so a long outline stays inside
+      // the pane it floats in.
+      className="file-preview-toc flex-none"
+      style={maxPanelPx !== null ? { maxHeight: `${maxPanelPx}px` } : undefined}
     >
       <p className="file-preview-toc-title" data-testid="file-preview-toc-title">
         {tPreviewToolbar(locale, "previewToolbar.toc.title")}
