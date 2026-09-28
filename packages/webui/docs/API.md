@@ -708,9 +708,22 @@ one of `markdown` / `typescript` / `javascript` / `json` / `yaml` / `css`
 / `html` / `python` / `go` / `rust` / `bash` / `sql` / `dockerfile` /
 `plain` (informational — the renderer is allowed to ignore it).
 
-**Errors** — 400 missing `path`; 403 out-of-root; 413 over the 512 KiB
+**Errors** — 400 missing `path`; 403 out-of-root; 403 `{code:"credential"}`
+on a credential-shaped basename (unless `?confirm=1`); 413 over the 512 KiB
 cap; 415 binary file or non-regular file (directory / device / socket);
 500 stat failure (file vanished mid-request).
+
+**Credential predicate is name-based — hardlink aliasing is NOT covered.**
+`classifyCredential` (`server/lib/credential-file.js`, mirrored verbatim in
+`webapp/lib/credential-file.ts`) compares the **basename** of the request
+path against the credential shape table. The defence therefore covers
+symlinks (resolved by `realpathSync` before the read) but not hardlinks —
+two names that share an inode (`config.txt → .env`) are indistinguishable
+by basename, since the kernel does not expose the "primary" name from
+the inode alone. Operators concerned about hardlink aliasing must keep
+the workspace tree uncluttered. The same predicate is reused in streaming
+form by `/api/fs/raw` and is re-applied by `/api/fs/search` (where
+matches are flagged `credential: true` but never content-stripped).
 
 ### `GET /api/fs/raw?path=<file>`
 

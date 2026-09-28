@@ -108,7 +108,7 @@ node dist/cli.js webui --host 0.0.0.0 --no-open   # PORT defaults to 18080
 - Trusted-origin CORS + a browser Origin/CSRF gate that applies even to loopback requests.
 - Token auth (`?token=` / `Authorization: Bearer`) for non-local requests; local requests bypass.
 - Read-only mode for non-local sessions; per-request `authorize()` gate with fail-closed audit; rate limiting; workspace containment; bounded uploads; no telemetry.
-- **Credential-shaped file previews are refused by default.** A basename match against `.env`, `*.pem`, `*.key`, `id_rsa`, `id_*`, `known_hosts`, `authorized_keys`, `.npmrc`, `.pypirc`, `.netrc`, `.pgpass`, `credentials*` and `.env.*` returns HTTP `403 {code: "credential"}` from `GET /api/fs/read-file` (slice 16). The webapp renders a "仍要打开？" second-confirmation; reopening the same URL with `?confirm=1` gets the plaintext. The shared predicate lives in `packages/webui/server/lib/credential-file.js` and is mirrored verbatim in `packages/webui/webapp/lib/credential-file.ts`; the test suite (`packages/webui/webapp/test/credential-file.test.ts`) walks both implementations on the same fixtures so they cannot drift. Tree listing and OS-default open/reveal do not bypass the gate, but they are not plaintext previews and remain available.
+- **Credential-shaped file previews are refused by default** (slice 16). A basename match against `.env` / `.env.*`, `*.pem` / `*.key`, `id_rsa` / `id_ed25519` / `id_ecdsa` / `id_dsa`, `known_hosts`, `authorized_keys`, `.npmrc`, `.pypirc`, `.netrc`, `.pgpass`, `credentials*`, plus the backup-suffix set (`.bak` / `.old` / `.orig` / `.backup` / `.save` / `.swp`) returns HTTP `403 {code: "credential"}` from `GET /api/fs/read-file`. The webapp renders a "仍要打开？" second-confirmation; reopening the same URL with `?confirm=1` gets the plaintext. The shared predicate lives in `packages/webui/server/lib/credential-file.js` and is mirrored verbatim in `packages/webui/webapp/lib/credential-file.ts`; the test suite (`packages/webui/webapp/test/credential-file.test.ts`) walks both implementations on the same fixtures so they cannot drift. Tree listing, `/api/fs/search`, and OS-default open/reveal do not bypass the gate, but they are not plaintext previews and remain available — search flags matches (`credential: true`) but never returns contents. The predicate is name-based and therefore **does not defend against hardlink aliasing** (two names that share an inode — e.g. `config.txt → .env` — are indistinguishable by basename; the kernel does not expose the "primary" name from the inode). The defence covers symlinks (resolved by `realpathSync`) but not hardlinks — operators concerned about hardlink aliasing must keep the workspace tree uncluttered.
 
 The canonical disclosure is [`packages/webui/references/SECURITY-NOTES.md`](../packages/webui/references/SECURITY-NOTES.md).
 
@@ -130,7 +130,10 @@ below cites the component file and one `data-testid` per surface.
 | Activity group (collapsible tool turns) | `components/chat.tsx` | `activity-group-header` |
 | File preview (right preview column body) | `components/file-preview.tsx` + `file-preview-pane.tsx` | `file-preview` |
 | File tree column (column 4) | `components/workspace-tree-column.tsx` + `panels.tsx#FilesPanel` | `files-tree-root` |
-| File tree search (server-driven, slice 19a) | `components/panels.tsx` | `files-tree-filter` |
+| File tree search (server-driven, slice 19a; wired in 19b) | `components/panels.tsx` | `files-tree-filter` |
+| Sidebar tree-column "搜索" surface (slice 19b) | `components/workspace-tree-column.tsx#SearchSurface` | `tree-surface-search-input` |
+| Code preview (slice 22 IDE-grade: gutter + lazy hljs + byte-faithful copy) | `components/code-view.tsx` | `code-view` (rendered inside `file-preview`) |
+| Three-state appearance picker (slice 18) | `components/appearance-card-picker.tsx` | `appearance-card-picker` |
 | Git panel (slice 03) | `components/panels.tsx#GitPanel` | `git-panel` |
 | Browser panel (slice 04, sandboxed iframe over `/api/fs/raw`) | `components/browser-panel.tsx` | `browser-panel` |
 | Workspace picker (modal) | `components/workspace-picker.tsx` | `workspace-picker` |
@@ -139,38 +142,55 @@ below cites the component file and one `data-testid` per surface.
 | Settings modal | `components/panels.tsx#SettingsModal` | `settings-modal` |
 | Error boundaries (global + per-route) | `app/error.tsx` + `app/global-error.tsx` | `global-error-page` |
 
-## Four-column workspace (main, slice 17)
+## Four-column workspace (main, slices 17 + 21)
 
-On the right side of the sidebar, the shell renders a flex row of three
-**visible columns**: `conversation | preview | tree` (the sidebar is owned by
-`AppShell`, lives outside the row, and is allocated zero width inside it).
+On the right side of the sidebar, the shell renders a flex row that can
+hold up to three **visible columns**: `conversation | preview | tree` (the
+sidebar is owned by `AppShell`, lives outside the row, and is allocated
+zero width inside it).
 
 | Column | Role | Default / min / max width | Mounted by |
 | --- | --- | --- | --- |
-| `conversation` | Fluid (absorbs leftover) | 720 / **280** / **768** px | `components/chat.tsx` |
-| `preview` | Fixed — viewing surface (`file:<path>`, `browser`) | 400 / 320 / 720 px | `components/file-preview-pane.tsx`, `browser-panel.tsx` |
-| `tree` | Fixed — navigation surface (`files`, `git`, `tasks`, `search`, `plugins`) | 340 / 320 / 600 px | `components/workspace-tree-column.tsx` |
+| `conversation` | Fluid (absorbs leftover) | 720 / **280** / **768** px (idle lifted) | `components/chat.tsx` |
+| `preview` | On demand — viewing surface (`file:<path>`, `browser`) | 400 / 320 / 720 px | `components/file-preview-pane.tsx`, `browser-panel.tsx` |
+| `tree` | On demand — navigation surface (`files`, `git`, `tasks`, `search`, `plugins`) | 340 / 320 / 600 px | `components/workspace-tree-column.tsx` |
 
-The conversation column is **elastic in `[280, 768]`** — at a wide
-viewport it sits at the user's preferred 720 px (capped at 768 so the chat
-content does not balloon beyond its native `max-w-[768px]`); at a narrow
-viewport the fixed columns stay at their minimums (`320 + 320`) and the
-conversation column absorbs the residual down to 280 px before the row
-overflows. The numbers live in `packages/webui/webapp/lib/workspace-tabs-state.ts#COLUMN_SPECS`.
+**Preview and tree columns are on demand as of slice 21**: each column
+appears when at least one matching-role tab is open, and **auto-closes**
+when the last tab in that role closes. The deserializer normalises a
+stale "column open but empty" payload to closed so a stale disk write
+cannot conjure an empty column on hydration. The persistence layer +
+the page-level reducer wrappers re-derive each column's visibility from
+the tab strip on every change via
+`syncColumnVisibility(tabStrip, layout)` in
+`packages/webui/webapp/lib/workspace-tabs-state.ts`. **Idle costs no
+width**: when both on-demand columns are closed, the conversation
+column takes the whole remainder. At 1280 viewport (240 px AppShell
+chrome) the conversation column measures **1040 px**; at 1920 it
+measures **1680 px**. Both numbers are pinned by
+`packages/webui/webapp/test/workspace-tabs-state.test.ts#computeColumnLayout — slice 21 idle state`.
+When at least one fixed column is visible, conversation caps at 768
+(slice 17's dead-gutter defence survives — the new idle widening
+fires only when both fixed columns are folded).
 
-**Preview and tree columns are persistent as of main**: each column hosts
-its own independent `activeId` (`previewActiveId`, `treeActiveId`) so opening
-a tree surface does not steal focus from the preview column, and vice versa.
-The surface vocabulary (`SurfaceTabKind`) is six values — `files | git |
-tasks | search | plugins` on the tree side, `browser | file:<path>` on the
-preview side — and is the single source of truth in
-`lib/workspace-tabs-state.ts#SURFACE_TAB_KINDS`. **The sidebar's "搜索"
-nav entry currently lands on a placeholder surface** (`SearchSurface` in
-`workspace-tree-column.tsx`) whose backend wire-up is out of scope for
-shipped webui-parity; a follow-up ticket is expected to connect the input
-to a real search transport. **The "插件" nav entry** is also a
-placeholder (`PluginsSurface`) — the engine has not yet shipped the
-plugin-install contract.
+Each column hosts its own independent `activeId` (`previewActiveId`,
+`treeActiveId`) so opening a tree surface does not steal focus from the
+preview column, and vice versa. The surface vocabulary
+(`SurfaceTabKind`) is six values — `files | git | tasks | search |
+plugins` on the tree side, `browser | file:<path>` on the preview side
+— and is the single source of truth in
+`lib/workspace-tabs-state.ts#SURFACE_TAB_KINDS`. **The sidebar's
+"搜索" surface is real as of slice 19b** — the
+`SearchSurface` component in `workspace-tree-column.tsx` wires a
+200 ms-debounced request to `GET /api/fs/search` (`api.searchFs`),
+reuses the same `searchFootSegments` footer as the file-tree filter
+(scanned / matches / skipped / truncated / budget), and on click
+sends an expand-to-hit request through the shared `fs-tree-reveal`
+channel so the file tree panel applies the same expand + highlight.
+**The "插件" surface is still a placeholder** (`PluginsSurface`) —
+the engine has not yet shipped the plugin-install contract; the
+surface renders an i18n "this is coming" card rather than a silent
+no-op.
 
 Surface kinds go through `openSurfaceTab("…")`; the right-panel kinds
 (`PanelKind`) are a separately-trimmed union: `"workspace" | "files" |
@@ -183,11 +203,42 @@ entry point at all.
 Dividers between columns are 8 px wide and support drag-resize (clamped
 to `[minWidth, maxWidth]` per column) and double-click reset.
 
+### Code preview (slice 22, IDE-grade)
+
+The file preview tab uses `components/code-view.tsx` (`data-testid`
+`file-preview`). It layers three slice-22 affordances on top of the
+plain `<pre>` view that shipped in slice 02:
+
+- **Line-number gutter**, aligned to code lines and independent of
+  horizontal scroll — line numbers never move when the user scrolls
+  right on a long line. `splitHighlightedLines` (`webapp/lib/code-highlight.ts`)
+  walks the highlight.js HTML output and balances any `<span>` that
+  crossed a line boundary, so each line is hover-stable and copy-faithful.
+- **Per-language lazy syntax highlighting**. The grammar for the open
+  file's language is the only grammar loaded — `loadHljsLanguage` is
+  a switch / if-ladder of literal `import("highlight.js/lib/languages/<name>.js")`
+  branches so webpack code-splits each grammar into its own chunk (the
+  alternative — a Record-driven dynamic import — would have bundled
+  all 191 grammars). Unknown or unloaded languages fall through to a
+  plain monospace view (the contract is total: bad inputs must not
+  blow up). The hard byte cap is **32 KiB** with a **1500-line**
+  cap; larger files are truncated before the highlight step so a
+  multi-megabyte file cannot freeze the tab, and the UI renders an
+  honest `truncated` notice. The map is in `LANGUAGE_TO_HLJS` —
+  `html` is an alias of `xml`, `jsonc` shares `json`, and `toml` /
+  `plain` deliberately have no entry (the caller treats them as plain
+  monospace).
+- **Byte-faithful copy**. The copy path restores the trailing
+  newline (`endsWithNewline` is tracked across the highlight → split
+  → copy chain so the clipboard text round-trips to the file bytes
+  for `cp file.js file.js.bak; copy in panel; paste back`) and never
+  leaks the gutter line numbers into the copied text.
+
 ## Persistence keys (client-side `localStorage` / `sessionStorage`)
 
 | Key | Channel | Owner | Introduced by | Shape |
 | --- | --- | --- | --- | --- |
-| `webui:ui:v1:<cid>` | `localStorage` | `webapp/lib/persist.ts#uiStateKey` | slice 07 (reopen state) | `{version:1, cid, state:{panel, panelTab, sidebarCollapsed, lastSessionId}}` |
+| `webui:ui:v1:<cid>` | `localStorage` | `webapp/lib/persist.ts#uiStateKey` | slice 07 (reopen state) | `{version:1, cid, state:{panel, panelTab, sidebarCollapsed, lastSessionId, appearance}}` — `appearance` (slice 18) is the three-state picker choice (`"light" \| "dark" \| "system"`); `applyAppearance` writes through this envelope |
 | `webui:scroll:v1:<cid>:<sessionId>` | `localStorage` | `webapp/lib/persist.ts#scrollKey` | slice 07 | `{version:1, cid, sessionId, scrollTop, savedAt}` |
 | `webui:workspace-tabs:v1:<cid>` | `localStorage` | `webapp/lib/persist.ts#workspaceTabsKey` | slice 15 (workspace columns) | version-discriminated state (`WORKSPACE_TABS_VERSION`) — see `lib/workspace-tabs-state.ts` |
 | `webui:open-file:path` | `localStorage` | `webapp/lib/open-file.ts#STORAGE_KEY` | slice 12 (file preview) | bare path string or absent |
