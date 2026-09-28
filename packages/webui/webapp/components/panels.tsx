@@ -41,7 +41,6 @@ import type { ThemeName } from "@/lib/types";
 import { Icon } from "./icons";
 import { AppearanceCardPicker } from "./appearance-card-picker";
 import { ProviderManagementPanel } from "./provider-management";
-import { FilePreviewPane } from "./file-preview-pane";
 
 /**
  * Right-hand drawer.
@@ -1525,13 +1524,16 @@ export function FilesPanel({
         />
       ) : null}
 
-      {/* Preview pane — subscribes to `open.file.in.web` so the tree
-          entry point (`FileRow` below) and the turn-summary entry
-          point (`components/chat.tsx#ToolCard`) land on the same
-          surface. Lives inside FilesPanel because the target desktop
-          UI keeps the tree + preview in the same right column (see
-          `refs/ui/02-workspace-shell.jpg`). */}
-      <FilePreviewPane t={t} locale={locale} />
+      {/* Slice 26 — the dedicated preview column (column 3, mounted by
+          `WorkspaceTabs`) is the SINGLE surface that hosts
+          `<FilePreviewPane>`. The legacy copy that used to live
+          here was a leftover from the slice 02/12 era design where
+          the preview sat under the tree; the four-column layout
+          (slice 17) added a dedicated preview column and never
+          removed the in-tree copy, so the same file rendered twice.
+          Clicking a row still fires `onOpenFile` / `onOpenInBrowser`
+          (slice 17 wiring), which routes through
+          `lib/open-file.ts#openFileInWeb` and the column-3 preview. */}
     </div>
   );
 }
@@ -1728,9 +1730,10 @@ function DirRow({
  *
  * The row is the entry point for the `open.file.in.web` action (slice
  * 12): clicking the icon + name area fires the single-source action in
- * `lib/open-file.ts`, which routes through the same `FilePreviewPane`
- * the turn summary uses. The hover-only "复制绝对路径" button stays as
- * its own target so a copy action never opens the preview by accident.
+ * `lib/open-file.ts`, which routes through the dedicated preview
+ * column (slice 17 + 26) the turn summary also targets. The hover-only
+ * "复制绝对路径" button stays as its own target so a copy action never
+ * opens the preview by accident.
  */
 function FileRow({
   row,
