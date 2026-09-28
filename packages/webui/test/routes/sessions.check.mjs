@@ -11,7 +11,7 @@ import { test, describe, before, beforeEach, afterEach, after } from "node:test"
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, realpathSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -869,12 +869,22 @@ describe("handleRenameSession — CRUD rename (改)", () => {
 describe("handleNewSession — workspace containment gate", () => {
   let root;
   let inside;
+  let insideCanonical;
   let outside;
 
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), "webui-ws-gate-"));
     inside = join(root, "proj");
     mkdirSync(inside, { recursive: true });
+    // v2.5 (slice 16 followup): the canonical stored form is the
+    // realpath. On macOS `os.tmpdir()` resolves under /var, which is
+    // itself a symlink to /private/var; on Linux a `/tmp` symlink or a
+    // bind-mounted tmpfs can produce the same two-spelling problem.
+    // The test asserts the contract (realpath form), not the
+    // platform spelling — `realpathSync` here normalises both
+    // shapes to the same canonical path so the assertion holds
+    // everywhere.
+    insideCanonical = realpathSync(inside);
     outside = mkdtempSync(join(tmpdir(), "webui-ws-out-"));
     process.env.MCODE_WEBUI_WORKSPACE_ROOTS = root;
   });
@@ -884,7 +894,7 @@ describe("handleNewSession — workspace containment gate", () => {
     try { rmSync(outside, { recursive: true, force: true }); } catch {}
   });
 
-  test("workspace inside the allowed roots → 200 and stored resolved", async () => {
+  test("workspace inside the allowed roots → 200 and stored as canonical (realpath) form", async () => {
     const cs = makeClientState();
     cs.workspace = { dir: null, branch: null, tree: null };
     clients.set("cid-1", cs);
@@ -897,8 +907,55 @@ describe("handleNewSession — workspace containment gate", () => {
     assert.equal(res._status, 200);
     const body = JSON.parse(res._body);
     assert.equal(body.ok, true);
-    assert.equal(body.session.workspace, inside, "workspace stored");
-    assert.equal(cs.workspace.dir, inside, "cs.workspace switched");
+    // The stored form is the canonical (realpath) form, regardless
+    // of which spelling the user typed. On macOS this collapses
+    // /var/folders/.../proj and /private/var/folders/.../proj to
+    // the same value; on Linux the assertion is the same.
+    assert.equal(
+      body.session.workspace,
+      insideCanonical,
+      `workspace stored as realpath (${insideCanonical}), not literal (${inside})`,
+    );
+    assert.equal(cs.workspace.dir, insideCanonical, "cs.workspace switched");
+  });
+
+  test("workspace behind a symlink (reproduces macOS /var→/private/var shape on Linux) → canonical", async () => {
+    // Reproduces the macOS temp-dir shape on Linux: the tempdir
+    // resolves under a symlink (here we create it explicitly). The
+    // user types the symlink spelling; the server must store the
+    // canonical realpath. Without the slice-16-followup fix the
+    // session stored the literal symlink spelling, which then
+    // disagreed with the fs gate's realpath output — two spellings
+    // for one directory.
+    const realRoot = mkdtempSync(join(tmpdir(), "webui-ws-symlink-real-"));
+    const linkRoot = join(tmpdir(), `webui-ws-symlink-link-${Date.now()}`);
+    try {
+      symlinkSync(realRoot, linkRoot);
+      // Both the typed-spelling and the canonical-spelling inputs
+      // must round-trip to the same stored value.
+      const insideViaLink = join(linkRoot, "proj");
+      mkdirSync(insideViaLink, { recursive: true });
+      const canonical = realpathSync(insideViaLink);
+      process.env.MCODE_WEBUI_WORKSPACE_ROOTS = linkRoot;
+
+      const cs = makeClientState();
+      cs.workspace = { dir: null, branch: null, tree: null };
+      clients.set("cid-2", cs);
+      const res = fakeRes();
+      await handleNewSession(fakeReq({ workspace: insideViaLink }), res, {
+        cs,
+        cid: "cid-2",
+        pathname: "",
+      });
+      assert.equal(res._status, 200);
+      const body = JSON.parse(res._body);
+      assert.equal(body.ok, true);
+      assert.equal(body.session.workspace, canonical, "symlink-spelled input stored as canonical realpath");
+      assert.equal(cs.workspace.dir, canonical);
+    } finally {
+      try { rmSync(realRoot, { recursive: true, force: true }); } catch {}
+      try { rmSync(linkRoot, { recursive: true, force: true }); } catch {}
+    }
   });
 
   test("workspace OUTSIDE the allowed roots → 400, nothing created", async () => {

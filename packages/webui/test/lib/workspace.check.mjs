@@ -15,7 +15,7 @@
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { tmpdir, homedir } from "node:os";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { setupMocks, absPath } from "../helpers/_setup.js";
 
@@ -38,21 +38,28 @@ function fakeCs(workspaceDir = "/some/default") {
 }
 
 describe("handleWorkspaceChange — action: 'set'", () => {
-  test("changes cs.workspace.dir to the provided dir", () => {
+  test("changes cs.workspace.dir to the canonical (realpath) form of the provided dir", () => {
     const tmp = mkdtempSync(join(tmpdir(), "webui-ws-test-"));
+    // v2.5 (slice 16 followup): canonical stored form is the
+    // realpath. On macOS `os.tmpdir()` lives under /var which is a
+    // symlink to /private/var; on Linux a /tmp symlink or bind mount
+    // produces the same two-spelling shape. The test asserts the
+    // contract (realpath form), not the platform spelling.
+    const tmpCanonical = realpathSync(tmp);
     try {
       const cs = fakeCs("/old");
       const r = ws.handleWorkspaceChange(cs, "cid-1", { action: "set", dir: tmp });
       assert.equal(r.ok, true);
-      assert.equal(cs.workspace.dir, tmp);
-      assert.ok(r.workspace.dir === tmp);
+      assert.equal(cs.workspace.dir, tmpCanonical);
+      assert.equal(r.workspace.dir, tmpCanonical);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
   });
 
-  test("resolves the path to absolute", () => {
+  test("resolves the path to absolute (realpath form)", () => {
     const tmp = mkdtempSync(join(tmpdir(), "webui-ws-test-"));
+    const tmpCanonical = realpathSync(tmp);
     try {
       const cs = fakeCs();
       const r = ws.handleWorkspaceChange(cs, "cid-1", {
@@ -60,7 +67,11 @@ describe("handleWorkspaceChange — action: 'set'", () => {
         dir: join(tmp, "..", tmp.split(/[\\/]/).pop()),
       });
       assert.equal(r.ok, true);
-      assert.ok(cs.workspace.dir.startsWith(tmpdir()) || cs.workspace.dir === tmp);
+      // The contract is "stored form is the canonical (realpath)
+      // form, regardless of which spelling the user typed". The
+      // input was `tmp/../<basename>` which realpath-resolves to
+      // `tmp` — both spellings collapse to `tmpCanonical`.
+      assert.equal(cs.workspace.dir, tmpCanonical);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -130,6 +141,7 @@ describe("handleWorkspaceChange — missing dir", () => {
 describe("handleWorkspaceChange — syncTui flag", () => {
   test("writes ~/.minimax/runtime/cwd.json when syncTui=true", () => {
     const tmp = mkdtempSync(join(tmpdir(), "webui-ws-test-"));
+    const tmpCanonical = realpathSync(tmp);
     // v1.0: 测试卫生 — 本用例写的是真实 ~/.minimax/runtime/cwd.json (mcode TUI 的状态文件)。
     //   之前不恢复, 每次跑完测试, 下次服务器启动的默认工作区就成了临时目录
     //   (侧栏工作区 chip 显示 webui-ws-test-xxx, 命令探测会话也建在那里)
@@ -143,7 +155,7 @@ describe("handleWorkspaceChange — syncTui flag", () => {
       assert.doesNotThrow(() => {
         ws.handleWorkspaceChange(cs, "cid-1", { action: "set", dir: tmp, syncTui: true });
       });
-      assert.equal(cs.workspace.dir, tmp);
+      assert.equal(cs.workspace.dir, tmpCanonical);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
       try {
@@ -168,13 +180,14 @@ describe("handleWorkspaceChange — syncTui flag", () => {
 describe("browseWorkspace — happy path", () => {
   test("lists subdirectories of an existing dir", () => {
     const tmp = mkdtempSync(join(tmpdir(), "webui-ws-browse-"));
+    const tmpCanonical = realpathSync(tmp);
     try {
       mkdirSync(join(tmp, "subdir-a"));
       mkdirSync(join(tmp, "subdir-b"));
       writeFileSync(join(tmp, "a-file.txt"), "x");
       const r = ws.browseWorkspace(tmp);
       assert.equal(r.ok, true);
-      assert.equal(r.dir, tmp);
+      assert.equal(r.dir, tmpCanonical);
       assert.ok(Array.isArray(r.children));
       assert.equal(r.children.length, 2);
       assert.ok(r.children.some((c) => c.name === "subdir-a"));
@@ -203,14 +216,17 @@ describe("browseWorkspace — happy path", () => {
     }
   });
 
-  test("returns parent path when target is not the root", () => {
+  test("returns parent path (realpath form) when target is not the root", () => {
     const tmp = mkdtempSync(join(tmpdir(), "webui-ws-browse-"));
+    const tmpCanonical = realpathSync(tmp);
     try {
       const sub = join(tmp, "sub");
       mkdirSync(sub);
       const r = ws.browseWorkspace(sub);
       assert.equal(r.ok, true);
-      assert.equal(r.parent, tmp);
+      // The parent is the realpath of the parent directory — the
+      // canonical form is consistent with the dir contract.
+      assert.equal(r.parent, tmpCanonical);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -259,8 +275,10 @@ const { registerSessionsStore } = await import("../helpers/_setup.js");
 
 describe("resolveWorkspaceCandidates — 零弹窗目录名 → 绝对路径候选", () => {
   let home;
+  let homeCanonical;
   before(() => {
     home = mkdtempSync(join(tmpdir(), "webui-resolve-home-"));
+    homeCanonical = realpathSync(home);
     mkdirSync(join(home, "myproj"));
     mkdirSync(join(home, "projects", "myproj"), { recursive: true });
     mkdirSync(join(home, "other"));
@@ -270,23 +288,23 @@ describe("resolveWorkspaceCandidates — 零弹窗目录名 → 绝对路径候�
   });
 
   test("finds both the home-sub and home-deep match, deduped", () => {
-    const r = ws.resolveWorkspaceCandidates("myproj", { home, platform: "linux", user: "nobody" });
+    const r = ws.resolveWorkspaceCandidates("myproj", { home: homeCanonical, platform: "linux", user: "nobody" });
     assert.equal(r.ok, true);
     const paths = r.candidates.map((c) => c.path);
-    assert.ok(paths.includes(join(home, "myproj")), "home-sub hit");
-    assert.ok(paths.includes(join(home, "projects", "myproj")), "home-deep hit (COMMON_PROJECT_PARENTS)");
+    assert.ok(paths.includes(join(homeCanonical, "myproj")), "home-sub hit");
+    assert.ok(paths.includes(join(homeCanonical, "projects", "myproj")), "home-deep hit (COMMON_PROJECT_PARENTS)");
     assert.equal(new Set(paths).size, paths.length, "no duplicates");
   });
 
   test("no match → ok with empty candidates (client falls back to browse)", () => {
-    const r = ws.resolveWorkspaceCandidates("definitely-not-here-xyz", { home, platform: "linux", user: "nobody" });
+    const r = ws.resolveWorkspaceCandidates("definitely-not-here-xyz", { home: homeCanonical, platform: "linux", user: "nobody" });
     assert.equal(r.ok, true);
     assert.equal(r.candidates.length, 0);
   });
 
   test("rejects names with path separators / dot segments (injection guard)", () => {
     for (const bad of ["", ".", "..", "a/b", "a\\b", "x".repeat(256)]) {
-      const r = ws.resolveWorkspaceCandidates(bad, { home, platform: "linux" });
+      const r = ws.resolveWorkspaceCandidates(bad, { home: homeCanonical, platform: "linux" });
       assert.equal(r.ok, false, `should reject: ${JSON.stringify(bad)}`);
       assert.equal(r.candidates.length, 0);
     }

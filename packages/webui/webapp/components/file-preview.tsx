@@ -22,7 +22,10 @@ import {
   classifyUnsupported,
   type UnsupportedReason,
 } from "@/lib/file-open-reason";
-import { tFileOpen } from "@/lib/i18n-file-open";
+import {
+  credentialSubReasonLabel,
+  tFileOpen,
+} from "@/lib/i18n-file-open";
 
 /**
  * File preview (slice 02 of the webui-parity program).
@@ -97,23 +100,28 @@ export function FilePreview({
   // `b`. The FilesPanel uses the same trick — keeping the discipline
   // uniform across panels makes the regression case obvious.
   const loadGen = useMemo(() => ({ current: 0 }), []);
-  const load = useCallback(async () => {
-    const gen = ++loadGen.current;
-    setLoading(true);
-    setError(null);
-    try {
-      const next = await getFsFile(path);
-      if (gen !== loadGen.current) return;
-      setPayload(next);
-      if (!next.ok) setError(next.error ?? "unreadable");
-    } catch (cause) {
-      if (gen !== loadGen.current) return;
-      setError(cause instanceof Error ? cause.message : String(cause));
-      setPayload(null);
-    } finally {
-      if (gen === loadGen.current) setLoading(false);
-    }
-  }, [path, loadGen]);
+  const load = useCallback(
+    async (opts: { confirmCredential?: boolean } = {}) => {
+      const gen = ++loadGen.current;
+      setLoading(true);
+      setError(null);
+      try {
+        const next = await getFsFile(path, {
+          confirmCredential: opts.confirmCredential === true,
+        });
+        if (gen !== loadGen.current) return;
+        setPayload(next);
+        if (!next.ok) setError(next.error ?? "unreadable");
+      } catch (cause) {
+        if (gen !== loadGen.current) return;
+        setError(cause instanceof Error ? cause.message : String(cause));
+        setPayload(null);
+      } finally {
+        if (gen === loadGen.current) setLoading(false);
+      }
+    },
+    [path, loadGen],
+  );
 
   useEffect(() => {
     void load();
@@ -209,6 +217,7 @@ export function FilePreview({
           fileName={fileName}
           path={path}
           locale={locale}
+          onConfirmCredential={() => void load({ confirmCredential: true })}
         />
       ) : null}
 
@@ -326,20 +335,31 @@ function PreviewError({
   fileName,
   path,
   locale,
+  onConfirmCredential,
 }: {
   error: string;
   payload: FsFilePayload | null;
   fileName: string;
   path: string;
   locale: Locale;
+  /**
+   * Slice 16 — fired when the user clicks the "open anyway" button on
+   * the credential refusal card. The parent re-fetches the file with
+   * `confirmCredential: true` (server then releases the bytes). The
+   * prop is optional so the existing call sites that don't want the
+   * second confirmation still typecheck.
+   */
+  onConfirmCredential?: () => void;
 }) {
   // The classification lives in lib/file-open-reason.ts so the
   // component does not re-implement the regex / prefix split. The
   // result also drives which buttons are enabled (the `actionsAvailable`
   // flag — false for out-of-bounds, where the OS opener cannot help).
+  // Slice 16: pass the path so the classifier can also pick the
+  // `credential` reason defensively if the server omits `code`.
   const unsupported = useMemo(
-    () => classifyUnsupported(error, payload),
-    [error, payload],
+    () => classifyUnsupported(error, payload, path),
+    [error, payload, path],
   );
 
   // Local state for the two actions that go through the OS opener:
@@ -347,7 +367,9 @@ function PreviewError({
   // the button, not on the whole panel), and which one last failed
   // (the panel renders the failure copy inline so a click never
   // silently no-ops).
-  const [busy, setBusy] = useState<"open-default" | "reveal" | null>(null);
+  const [busy, setBusy] = useState<
+    "open-default" | "reveal" | "open-anyway" | null
+  >(null);
   const [failure, setFailure] = useState<{ key: "open-default" | "reveal"; message: string } | null>(null);
   // Disabled-by-server: when the server has already answered a previous
   // click with `code === "no-opener"`, we know the host cannot run the
@@ -422,7 +444,46 @@ function PreviewError({
     [path, unsupported.actionsAvailable, disabledByServer],
   );
 
-  const reasonText = reasonCopy(locale, unsupported.reason, unsupported.params);
+  // Slice 16 — the credential override. The button is enabled only
+  // when the classifier set `confirmable: true` (i.e. the server
+  // emitted `code: "credential"`). The parent decides what to do
+  // (re-fetch with the override flag); the component just surfaces
+  // the click. The button lives next to the existing three actions
+  // so the user does not need to scroll, and its label matches the
+  // i18n copy (zh: "仍要打开", en: "Open anyway").
+  const fireOpenAnyway = useCallback(() => {
+    if (!unsupported.confirmable) return;
+    if (!onConfirmCredential) return;
+    setBusy("open-anyway");
+    try {
+      onConfirmCredential();
+    } finally {
+      // The parent owns the load() lifecycle — `busy` flips back when
+      // the new payload arrives. We don't block on it here.
+      setBusy((current) => (current === "open-anyway" ? null : current));
+    }
+  }, [unsupported.confirmable, onConfirmCredential]);
+
+  // Slice 16 — credential sub-reason label. The panel substitutes it
+  // into the reason copy via {{subReason}}; the helper returns "" when
+  // the classifier did not pick a sub-reason, which falls back to the
+  // generic "credential file" wording. The label is the localised
+  // string (e.g. "env file" / "env 文件"), not the raw enum.
+  const subReasonLabel =
+    unsupported.reason === "credential"
+      ? credentialSubReasonLabel(locale, unsupported.credentialSubReason)
+      : "";
+
+  const reasonText = reasonCopy(locale, unsupported.reason, {
+    ...unsupported.params,
+    // For the credential reason, override the raw enum with the
+    // localised label so the {{subReason}} placeholder shows "env file"
+    // / "env 文件" instead of "dotenv". The classifier owns the
+    // enum; this layer owns the display string.
+    ...(unsupported.reason === "credential"
+      ? { subReason: subReasonLabel }
+      : {}),
+  });
   const language = payload?.language ?? "";
 
   // The hint copy the buttons render when disabled matches the
@@ -435,6 +496,17 @@ function PreviewError({
     unsupported.reason === "outOfBounds"
       ? "fileOpen.button.disabledHint.outOfBounds"
       : "fileOpen.button.disabledHint.noOpener";
+
+  // Slice 16 — credential-specific copy. The detail line explains the
+  // LAN-reachable rationale (so the user understands why we refuse by
+  // default) and tells them the action is reversible only by reloading.
+  const showCredentialActions = unsupported.reason === "credential";
+  const credentialDetail = showCredentialActions
+    ? tFileOpen(locale, "fileOpen.confirm.detail")
+    : "";
+  const credentialTitle = showCredentialActions
+    ? tFileOpen(locale, "fileOpen.confirm.title")
+    : "";
 
   return (
     <div
@@ -471,7 +543,9 @@ function PreviewError({
           className="text-sm font-medium text-text_default_primary"
           data-testid="file-preview-error-title"
         >
-          {tFileOpen(locale, "fileOpen.header.unsupported")}
+          {showCredentialActions && credentialTitle
+            ? credentialTitle
+            : tFileOpen(locale, "fileOpen.header.unsupported")}
         </span>
         <span
           className="text-caption-small-strong leading-5 text-text_default_secondary"
@@ -487,17 +561,54 @@ function PreviewError({
             </span>
           ) : null}
         </span>
+        {/* Slice 16 — credential-specific detail line. Explains the LAN
+            rationale + reversibility, sits just below the reason so
+            the user sees it before deciding to override. */}
+        {showCredentialActions && credentialDetail ? (
+          <span
+            className="mt-1 max-w-[260px] text-caption-small-strong leading-5 text-text_default_tertiary"
+            data-testid="file-preview-error-credential-detail"
+          >
+            {credentialDetail}
+          </span>
+        ) : null}
       </div>
       {/* Centred actions row — three buttons laid out in a wrap so the
           288px panel never overflows. The download action is always
           enabled (the browser handles the save directly through the
           `/api/fs/raw?download=1` URL), so the download button does
           not enter the disabled-by-server state. The other two are
-          gated on the host's opener + file-manager availability. */}
+          gated on the host's opener + file-manager availability.
+          Slice 16 — for the credential reason, a fourth "open anyway"
+          button is added that re-fetches the file with the explicit
+          override flag. It is positioned first so the eye catches it
+          immediately, with a stronger border so the override affordance
+          is unmissable (reversibility is the headline of the user's
+          decision; the button must look deliberate). */}
       <div
         className="flex flex-wrap items-center justify-center gap-2"
         data-testid="file-preview-error-actions"
       >
+        {showCredentialActions ? (
+          <button
+            type="button"
+            onClick={fireOpenAnyway}
+            disabled={busy !== null || !onConfirmCredential}
+            title={
+              !onConfirmCredential
+                ? tFileOpen(locale, "fileOpen.action.openAnyway.aria")
+                : tFileOpen(locale, "fileOpen.action.openAnyway.aria")
+            }
+            aria-label={tFileOpen(locale, "fileOpen.action.openAnyway.aria")}
+            data-testid="file-preview-error-open-anyway"
+            className="flex h-7 items-center gap-1 rounded-[8px] border border-border_status_warning bg-bg_default_scrim px-2 text-caption-small-strong text-text_status_warning transition-colors hover:bg-bg_interaction_tertiary_hover disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-bg_default_scrim"
+          >
+            {busy === "open-anyway" ? (
+              <span aria-hidden>…</span>
+            ) : null}
+            <span>{tFileOpen(locale, "fileOpen.action.openAnyway")}</span>
+          </button>
+        ) : null}
         <button
           type="button"
           onClick={() => void fireAction("open-default")}
@@ -554,7 +665,18 @@ function PreviewError({
           // cap. aria-disabled reflects the actionsAvailable flag:
           // out-of-bounds paths the server would 403, so the link
           // must not look clickable.
-          href={fsRawDownloadUrl(path)}
+          //
+          // Slice 16 — on a credential refusal, the URL carries
+          // `confirm=1` so the server releases the bytes. Without
+          // the flag the user would download the 403 JSON error
+          // body, which is confusing AND a security smell (the
+          // file is still on disk; we just gave them the gate's
+          // error envelope instead). The credential refusal is
+          // the user's explicit "I see this is sensitive" moment;
+          // clicking download is the second confirmation.
+          href={fsRawDownloadUrl(path, {
+            confirm: unsupported.reason === "credential",
+          })}
           download
           aria-disabled={!unsupported.actionsAvailable}
           aria-label={tFileOpen(locale, "fileOpen.action.download.aria")}
@@ -615,7 +737,7 @@ function PreviewError({
 function reasonCopy(
   locale: Locale,
   reason: UnsupportedReason,
-  params: { mime?: string; error?: string },
+  params: { mime?: string; error?: string; subReason?: string },
 ): string {
   switch (reason) {
     case "binary":
@@ -624,6 +746,17 @@ function reasonCopy(
       return tFileOpen(locale, "fileOpen.reason.oversize", params);
     case "outOfBounds":
       return tFileOpen(locale, "fileOpen.reason.outOfBounds", params);
+    case "credential":
+      // The sub-reason is a localised label (e.g. "env file" / "私钥文件"),
+      // not the raw enum; the classifier passes the raw enum via
+      // `params.subReason`, the helper resolves it through the i18n
+      // module when present. The empty-string fallback is intentional —
+      // it leaves the sentence "credential file" readable, not
+      // "( )".
+      return tFileOpen(locale, "fileOpen.reason.credential", {
+        ...params,
+        subReason: params.subReason || "",
+      });
     case "unknown":
     default:
       return tFileOpen(locale, "fileOpen.reason.unknown", params);

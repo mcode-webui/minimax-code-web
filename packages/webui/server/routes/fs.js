@@ -11,6 +11,7 @@ import { readDirectory, createDirectory, resolveTarget, readFileContent } from '
 import { readJson, BodyTooLargeError } from '../lib/read-json.js'
 import { assertWorkspacePath, assertWorkspaceParentPath, expandTilde } from '../lib/workspace.js'
 import { openWithDefault, revealInFileManager } from '../lib/open-target.js'
+import { classifyCredential } from '../lib/credential-file.js'
 import { createReadStream, statSync } from 'node:fs'
 import { Readable } from 'node:stream'
 import { extname, basename } from 'node:path'
@@ -19,12 +20,28 @@ import { extname, basename } from 'node:path'
 //   只允许落在允许根（默认 home + 默认工作区 + tmp，MCODE_WEBUI_WORKSPACE_ROOTS
 //   可整体替换）内的路径。'~' 前缀先展开再校验。独立仓版本的 safePath 只挡
 //   '..'，在产品包里收紧为允许根边界。
+//
+//   v2.5 (slice 16 fix): safePath now returns the **realpath** form,
+//   not the link path. The credential-shaped-file predicate (slice 16)
+//   matches by basename; a workspace symlink `innocent.txt → id_rsa`
+//   would otherwise pass containment with `innocent.txt` as the
+//   basename and the gate would never see the target's name. The
+//   shared gate (`assertWorkspacePath`) already runs realpathSync
+//   inside `resolveWithinRoots`; we now surface that value as
+//   `gate.real` so the credential check below sees the right
+//   basename. Hardlinks are an inherent limit — a basename check
+//   cannot follow an inode alias; that case is documented in
+//   `lib/credential-file.js`.
 function safePath(rawPath) {
   // v2.2: resolveTarget first — the picker's default start is the
   //   'documents' keyword (XDG dir → ~/Documents → home fallback); gating
   //   the raw keyword would resolve it cwd-relative and ENOENT.
   const gate = assertWorkspacePath(resolveTarget(expandTilde(rawPath)))
-  return gate.ok ? gate.path : null
+  // `gate.real` is the symlink-resolved form (always set when
+  // `gate.ok === true`; falls back to the unresolved path on the
+  // older error shape). Use it so the credential check sees the
+  // *target*'s basename, not the link's.
+  return gate.ok ? (gate.real ?? gate.path) : null
 }
 
 function gateError(res, rawPath) {
@@ -63,19 +80,36 @@ export function handleFsRead(req, res) {
   res.end(JSON.stringify(result))
 }
 
-// GET /api/fs/read-file?path=xxx
+// GET /api/fs/read-file?path=xxx[&confirm=1]
 //   读单个文件内容（slice 02 右栏预览用）。
 //   containment 同 read/mkdir（safePath 门），不绕过；
 //   超 512 KiB（fs-util 的 DEFAULT_FILE_READ_MAX）显式拒绝而非截断；
 //   检测到 NUL 字节视为二进制拒读。返回里带 language/mime
 //   让前端做 type→renderer 路由时少一次 round-trip。
+//
+//   v2.5 (slice 16 — credential file preview guard):
+//   文件名命中凭据模式（`.env` / `*.pem` / `id_rsa` 等，详见
+//   lib/credential-file.js）时，默认拒绝 plaintext 渲染，明文返回
+//   `{ ok:false, code:'credential', error:'credential file — preview
+//   disabled', credentialReason, mime, language }`，HTTP 403。客户端
+//   在拒绝态展示"已阻止预览"+ "仍要打开？"二次确认；用户确认后用
+//   `confirm=1` 重发请求，服务器才下发原文。文件树 / 默认应用 /
+//   文件管理器 / 下载等动作不受影响——它们走别的端点。
+//
+//   The credential predicate is the single source of truth
+//   (`lib/credential-file.js`); the webapp re-imports the same table
+//   (`webapp/lib/credential-file.ts`) so the server gate and the
+//   client classifier cannot drift. The shared fixture test
+//   (`webapp/test/credential-file.test.ts`) walks both with the
+//   same inputs.
 export function handleFsReadFile(req, res) {
   const url = new URL(req.url, `http://localhost`)
   const rawPath = url.searchParams.get('path') || ''
+  const confirmed = url.searchParams.get('confirm') === '1'
 
   if (!rawPath) {
     res.writeHead(400, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify({ ok: false, error: 'missing path' }))
+    res.end(JSON.stringify({ ok: false, code: 'missing-path', error: 'missing path' }))
     return
   }
 
@@ -83,6 +117,70 @@ export function handleFsReadFile(req, res) {
   if (!path) {
     gateError(res, rawPath)
     return
+  }
+
+  // Credential gate (slice 16). Default-refuse, explicit-override.
+  // The basename of `path` is the only thing the predicate looks
+  // at — the directory does not matter, which keeps the rule
+  // consistent regardless of workspace layout. `path` here is the
+  // realpath (safePath now surfaces `gate.real`); a workspace
+  // symlink `innocent.txt → id_rsa` therefore reaches the
+  // predicate with basename `id_rsa` and is correctly refused.
+  // Hardlinks are an inherent limit (same inode, different name,
+  // no kernel hook for basename to follow) — see the
+  // `lib/credential-file.js` comment.
+  if (!confirmed) {
+    const classification = classifyCredential(path)
+    if (classification) {
+      res.writeHead(403, { 'Content-Type': 'application/json' })
+      res.end(
+        JSON.stringify({
+          ok: false,
+          code: 'credential',
+          error: 'credential file — preview disabled',
+          credentialReason: classification.reason,
+          path,
+          // mime / language stay populated so the UI's PreviewError can
+          // render a meaningful state without a second round-trip
+          // (mirrors the shape used for binary / oversize refusals).
+          language: 'plain',
+          binary: false,
+        }),
+      )
+      return
+    }
+  }
+
+  // Slice 16 audit log — when the user explicitly confirmed
+  // (`confirm=1` on a credential-shaped path), record one line on
+  // stderr so an operator can grep /var/log or the process output
+  // for "secret opened" events. Format is JSON-shaped for
+  // log-aggregator ingestion:
+  //   {"event":"credential.override","ts":...,"path":"...","reason":"..."}
+  // We log AFTER the credential check so a path that is NOT
+  // credential-shaped (where `confirm=1` is a no-op) does not
+  // produce noise. The audit line intentionally does NOT include
+  // the file content — only the basename + sub-reason.
+  if (confirmed) {
+    const classification = classifyCredential(path)
+    if (classification) {
+      // Best-effort: write to stderr. We don't fail the request
+      // if stderr is closed (e.g. a piped consumer that closed
+      // early); the audit is best-effort, not transactional.
+      try {
+        process.stderr.write(
+          JSON.stringify({
+            event: 'credential.override',
+            ts: new Date().toISOString(),
+            path,
+            reason: classification.reason,
+            endpoint: 'read-file',
+          }) + '\n',
+        )
+      } catch {
+        // never throw from the audit log path
+      }
+    }
   }
 
   const result = readFileContent(path)
@@ -152,13 +250,21 @@ const RAW_CONTENT_TYPES = {
  * cap, and the same regular-file check all stay in one place.
  * `opts.downloadFilename` overrides the basename used in the
  * disposition (default: the realpath'd leaf).
+ *
+ * v2.5 (slice 16 — credential file preview guard): credential-shaped
+ * paths are refused here too, with the same override affordance as
+ * `/api/fs/read-file` (`opts.confirm === true`). The image / font /
+ * html extensions this route serves should never overlap with the
+ * credential predicate, but defending the endpoint is cheap and keeps
+ * the rule uniform. The "下载查看" action (`download=1`) is itself a
+ * legitimate way out of the preview — the server does not strip it.
  */
 export function handleFsRawStream(rawPath, opts = {}) {
   if (!rawPath) {
     return {
       ok: false,
       status: 400,
-      json: { ok: false, error: 'missing path' },
+      json: { ok: false, code: 'missing-path', error: 'missing path' },
     }
   }
   const path = safePath(rawPath)
@@ -168,6 +274,50 @@ export function handleFsRawStream(rawPath, opts = {}) {
       ok: false,
       status: 403,
       json: { ok: false, error: gate.ok ? 'invalid path' : gate.error },
+    }
+  }
+
+  // Credential gate — same predicate, same override knob. The image
+  // extensions this route serves (png / jpg / webp / svg / pdf / …)
+  // should never hit it in practice, but the rule stays in one place.
+  if (opts.confirm !== true) {
+    const classification = classifyCredential(path)
+    if (classification) {
+      return {
+        ok: false,
+        status: 403,
+        json: {
+          ok: false,
+          code: 'credential',
+          error: 'credential file — preview disabled',
+          credentialReason: classification.reason,
+          path,
+        },
+      }
+    }
+  }
+
+  // Slice 16 audit log — same shape as the read-file route. Logs
+  // only when the override was actually used (confirm on a
+  // credential-shaped path); a confirm on a non-credential file is
+  // a no-op and does not produce noise. `endpoint` distinguishes
+  // raw-stream from read-file so a forensic search can group them.
+  if (opts.confirm === true) {
+    const classification = classifyCredential(path)
+    if (classification) {
+      try {
+        process.stderr.write(
+          JSON.stringify({
+            event: 'credential.override',
+            ts: new Date().toISOString(),
+            path,
+            reason: classification.reason,
+            endpoint: opts.download ? 'raw-download' : 'raw',
+          }) + '\n',
+        )
+      } catch {
+        // never throw from the audit log path
+      }
     }
   }
 
@@ -224,7 +374,8 @@ export function handleFsRaw(req, res) {
   const url = new URL(req.url, `http://localhost`)
   const rawPath = url.searchParams.get('path') || ''
   const download = url.searchParams.get('download') === '1'
-  const result = handleFsRawStream(rawPath, { download })
+  const confirm = url.searchParams.get('confirm') === '1'
+  const result = handleFsRawStream(rawPath, { download, confirm })
   if (!result.ok) {
     res.writeHead(result.status, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify(result.json))

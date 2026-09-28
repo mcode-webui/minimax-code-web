@@ -64,7 +64,13 @@ function fakeCs(workspaceDir = "/some/default") {
 // 每用例的隔离场地: root = 允许根（本次用例唯一）, outside = 允许根外目录。
 function makeArena(t) {
   const root = mkdtempSync(join(tmpdir(), "webui-wsroot-"));
+  // v2.5 (slice 16 followup): the canonical stored form is the
+  // realpath. The arena exposes both spellings (`root` and
+  // `rootCanonical`) so tests can pin the contract rather than the
+  // platform — macOS /var ↔ /private/var, Linux bind mounts, etc.
+  const rootCanonical = realpathSync(root);
   const outside = mkdtempSync(join(tmpdir(), "webui-wsout-"));
+  const outsideCanonical = realpathSync(outside);
   mkdirSync(join(root, "proj"));
   mkdirSync(join(outside, "secret"));
   process.env[ROOTS_ENV] = root; // 单根面（完全替换默认面）
@@ -73,7 +79,7 @@ function makeArena(t) {
     rmSync(root, { recursive: true, force: true });
     rmSync(outside, { recursive: true, force: true });
   });
-  return { root, outside };
+  return { root, rootCanonical, outside, outsideCanonical };
 }
 
 describe("getAllowedWorkspaceRoots", () => {
@@ -108,20 +114,26 @@ describe("getAllowedWorkspaceRoots", () => {
 });
 
 describe("handleWorkspaceChange — containment", () => {
-  test("set inside allowed root: ok, cs.workspace.dir keeps the resolve() form", (t) => {
-    const { root } = makeArena(t);
+  test("set inside allowed root: ok, cs.workspace.dir is the canonical (realpath) form", (t) => {
+    const { rootCanonical } = makeArena(t);
     const cs = fakeCs("/old");
     const r = ws.handleWorkspaceChange(cs, "cid-1", {
       action: "set",
-      dir: join(root, "proj"),
+      dir: join(rootCanonical, "proj"),
     });
     assert.equal(r.ok, true);
-    assert.equal(cs.workspace.dir, join(root, "proj"));
+    // The canonical stored form is the realpath. The input was
+    // already the realpath form here, so the round-trip equals
+    // the input; the contract this pins is "stored form is the
+    // realpath" — see the canonical-form test below for the
+    // literal-symlink variant.
+    assert.equal(cs.workspace.dir, join(rootCanonical, "proj"));
   });
 
   test("default face zero regression: a fresh tmp workspace stays settable (env unset)", (t) => {
     delete process.env[ROOTS_ENV];
     const scratch = mkdtempSync(join(tmpdir(), "webui-wsscratch-"));
+    const scratchCanonical = realpathSync(scratch);
     t.after(() => rmSync(scratch, { recursive: true, force: true }));
     const cs = fakeCs("/old");
     const r = ws.handleWorkspaceChange(cs, "cid-1", {
@@ -129,7 +141,7 @@ describe("handleWorkspaceChange — containment", () => {
       dir: scratch,
     });
     assert.equal(r.ok, true);
-    assert.equal(cs.workspace.dir, scratch);
+    assert.equal(cs.workspace.dir, scratchCanonical);
   });
 
   test("set outside allowed root: rejected with actionable error, cs untouched", (t) => {
@@ -159,6 +171,9 @@ describe("handleWorkspaceChange — containment", () => {
     });
     assert.equal(r.ok, false);
     assert.ok(r.error.includes("越界"));
+    // cs.workspace not mutated on rejection — the "old" value
+    // is what we set before the call, no canonicalisation runs
+    // because the call was rejected.
     assert.equal(cs.workspace.dir, "/old");
   });
 
@@ -166,8 +181,8 @@ describe("handleWorkspaceChange — containment", () => {
     "symlink escape: link inside the root pointing outside is rejected via realpath",
     { skip: process.platform === "win32" },
     (t) => {
-      const { root, outside } = makeArena(t);
-      symlinkSync(outside, join(root, "lnk-out"));
+      const { root, outsideCanonical } = makeArena(t);
+      symlinkSync(outsideCanonical, join(root, "lnk-out"));
       const cs = fakeCs("/old");
       const r = ws.handleWorkspaceChange(cs, "cid-1", {
         action: "set",
@@ -176,7 +191,7 @@ describe("handleWorkspaceChange — containment", () => {
       assert.equal(r.ok, false);
       assert.ok(r.error.includes("越界"), "rejected as out-of-bounds");
       assert.ok(
-        r.error.includes(realpathSync(outside)),
+        r.error.includes(outsideCanonical),
         "error shows the realpath-resolved target",
       );
       assert.equal(cs.workspace.dir, "/old");
@@ -184,10 +199,13 @@ describe("handleWorkspaceChange — containment", () => {
   );
 
   test(
-    "benign symlink: link inside the root pointing INSIDE the root still works",
+    "benign symlink: link inside the root pointing INSIDE the root still works (realpath form)",
     { skip: process.platform === "win32" },
     (t) => {
-      const { root } = makeArena(t);
+      const { root, rootCanonical } = makeArena(t);
+      // The symlink target and link live under the literal root;
+      // the canonical stored form (realpath) collapses both to
+      // `join(rootCanonical, "proj")`.
       symlinkSync(join(root, "proj"), join(root, "lnk-in"));
       const cs = fakeCs("/old");
       const r = ws.handleWorkspaceChange(cs, "cid-1", {
@@ -195,7 +213,9 @@ describe("handleWorkspaceChange — containment", () => {
         dir: join(root, "lnk-in"),
       });
       assert.equal(r.ok, true);
-      assert.equal(cs.workspace.dir, join(root, "lnk-in"));
+      // Canonical form: realpath of `lnk-in` = `proj` (under the
+      // realpath root).
+      assert.equal(cs.workspace.dir, join(rootCanonical, "proj"));
     },
   );
 
@@ -213,7 +233,9 @@ describe("handleWorkspaceChange — containment", () => {
         action: "reset",
       });
       assert.equal(ok.ok, true);
-      assert.equal(ok.workspace.dir, config.DEFAULT_WORKSPACE);
+      // DEFAULT_WORKSPACE may also be a symlink-aliased dir; the
+      // canonical stored form is the realpath.
+      assert.equal(ok.workspace.dir, realpathSync(config.DEFAULT_WORKSPACE));
     } finally {
       delete process.env[ROOTS_ENV];
     }
@@ -222,10 +244,10 @@ describe("handleWorkspaceChange — containment", () => {
 
 describe("browseWorkspace — containment", () => {
   test("browse inside allowed root: children listed as before", (t) => {
-    const { root } = makeArena(t);
+    const { root, rootCanonical } = makeArena(t);
     const r = ws.browseWorkspace(root);
     assert.equal(r.ok, true);
-    assert.equal(r.dir, root);
+    assert.equal(r.dir, rootCanonical);
     assert.ok(r.children.some((c) => c.name === "proj"));
   });
 
@@ -250,11 +272,11 @@ describe("browseWorkspace — containment", () => {
   );
 
   test("no-path root view: exposes ONLY the allowed roots (enumeration oracle closed)", (t) => {
-    const { root } = makeArena(t);
+    const { rootCanonical } = makeArena(t);
     const r = ws.browseWorkspace("");
     assert.equal(r.ok, true);
     assert.ok(Array.isArray(r.roots));
-    assert.deepEqual(r.roots, [realpathSync(root)]);
+    assert.deepEqual(r.roots, [rootCanonical]);
     assert.deepEqual(r.children, []);
     if (process.platform !== "win32") {
       assert.equal(r.dir, "/"); // POSIX root-view shape kept for compatibility
@@ -272,13 +294,13 @@ describe("browseWorkspace — containment", () => {
   });
 
   test("parent above the allowed root is nulled (up-nav stops at the boundary)", (t) => {
-    const { root } = makeArena(t);
+    const { root, rootCanonical } = makeArena(t);
     const r = ws.browseWorkspace(root);
     assert.equal(r.ok, true);
     assert.equal(r.parent, null, "parent (tmpdir) is outside the single root");
-    // 根内子目录的 parent 正常保留
+    // 根内子目录的 parent 正常保留（canonical form: realpath）。
     const sub = ws.browseWorkspace(join(root, "proj"));
     assert.equal(sub.ok, true);
-    assert.equal(sub.parent, root);
+    assert.equal(sub.parent, rootCanonical);
   });
 });
