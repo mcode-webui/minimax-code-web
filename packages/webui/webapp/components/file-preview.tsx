@@ -12,6 +12,8 @@ import {
   type FsFilePayload,
 } from "@/lib/api";
 import { renderMarkdown } from "@/lib/markdown";
+import "@/lib/mermaid-renderer"; // registers the mermaid language renderer
+import { MarkdownHtml } from "@/components/markdown-html";
 import { CodeView as IdeCodeView } from "@/components/code-view";
 import {
   basenameOf,
@@ -295,14 +297,19 @@ function MarkdownView({ content }: { content: string }) {
   // lib/markdown.ts#sanitize) — the same policy used by chat.tsx for
   // assistant output. Reusing it keeps the threat model and allow-list
   // identical across surfaces.
+  //
+  // Slice 23 — the markdown is no longer injected directly. The
+  // MarkdownHtml component walks the rendered DOM, finds the
+  // mermaid-block placeholders, and mounts the lazy mermaid
+  // component into each one. The seam (the language → renderer
+  // registry in lib/markdown.ts) means the renderer used here is
+  // plugin-extensible without an `if (lang === "mermaid")` inside
+  // this component.
   const html = useMemo(() => renderMarkdown(content), [content]);
   return (
-    <div
-      className="file-preview-markdown"
-      data-testid="file-preview-markdown"
-      // eslint-disable-next-line react/no-danger
-      dangerouslySetInnerHTML={{ __html: html }}
-    />
+    <div className="file-preview-markdown" data-testid="file-preview-markdown">
+      <MarkdownHtml html={html} />
+    </div>
   );
 }
 

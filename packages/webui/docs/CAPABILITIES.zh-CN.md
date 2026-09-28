@@ -52,6 +52,7 @@ CI 会对上述每一个名称是否出现在本文档中进行断言
 | 长聊天列表虚拟化（≥ 200 条消息） | ✅ | `webapp/lib/transcript.ts` 虚拟窗口分支（N ≥ 200），带滚动/缩放 rAF 处理器；由 `webapp/test/transcript.test.ts` 覆盖。 |
 | Markdown 渲染（标题、列表、代码） | ✅ | `lib/marked.min.js` 本地内置（不走 CDN） |
 | 代码块语法高亮 | ✅ | highlight.js（本地副本） |
+| Markdown 内 Mermaid 图渲染（slice 23） | ✅ | 代码围栏语言写 `mermaid` 即渲染为图，而非代码块。围栏语言经"语言→渲染器"注册表分发（`webapp/lib/markdown.ts` 的 `registerLanguageRenderer`，107-113 行）；mermaid 在模块导入时自注册（`webapp/lib/mermaid-renderer.ts:64-71`），其他语言的渲染器可经同一接缝接入——markdown 主流程不针对语言名写分支。图表库在页面首张图出现时才动态加载（`components/mermaid-block.tsx:62-66`），该文件带一年 immutable 强缓存（`server/lib/static.js:66`）；没有 mermaid 围栏的页面完全不加载。图跟随浅色/深色主题（`components/markdown-html.tsx:52-66` 监听 `<html>` class；`components/mermaid-block.tsx:156-166、223-229` 按主题重新初始化）。语法错误时渲染可读的失败卡片——错误信息 + 可复制的原始源码（`components/mermaid-block.tsx:285-307`）——文档其余部分照常渲染。限制：图按列宽缩放、超宽时在卡片内横向滚动（`webapp/styles/mermaid.css:62-80`）；中文标签经字体栈正常显示（`components/mermaid-block.tsx:109`）；图不产生标题，因此不会进入任何按标题组织的大纲（围栏只产出 `<pre>`/`<div>` 占位对，不产出 `h1`-`h6`，见 `lib/mermaid-renderer.ts:44-57`）。依赖 `mermaid` 11.12.1（MIT）已登记于 `release/dependency-licenses.json`。 |
 | 运行中取消 | ✅ | acp `session/cancel` 以 notification 形式发送，并钉在该 cid 的活动子进程上（`/api/protocol/cancel` → `server/lib/mcode-rpc.js#cancelSession`）。只有当 notification 无法投递时，才会走硬杀兜底（`/api/stop` → SIGTERM/SIGKILL）。acp 会话在排空前可能还会再发出几个事件。 |
 | 回退 / 分叉某条消息 | ⚠ | 引擎已实现 `session/fork` 和 `session/resume`（`MCODE_ACP_CAPABILITIES.fork / .resume = true`），但目前 webui 还没有路由暴露它们——参见 [§13](CAPABILITIES.zh-CN.md#13-要启用--行-mcode-需要增加什么)。 |
 | 编辑已发送的消息并重新发送 | ❌ | acp 协议未暴露 |
