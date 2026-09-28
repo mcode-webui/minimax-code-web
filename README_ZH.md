@@ -265,7 +265,7 @@ mcode webui --port 8123     # 自定义端口，启动后打印访问地址
 18090 被占用就换下一个空闲端口，并打印实际绑定的地址；显式传入的 `--port`
 会被钉住，不会自动后移。
 
-Web UI 通过四列浏览器外壳（侧栏 · 对话 · 预览 · 树）暴露同一引擎。对话通过 SSE（`GET /api/events`，按 cid 划分）流式输出；工具调用、权限确认、ask-user 提示、plan-mode 模态均原生渲染。右侧分为弹性对话列（`[280, 768]` px 区间）、固定预览列（文件预览 + 走 `GET /api/fs/raw` 的沙箱浏览器）以及固定树列（文件树、Git 面板、任务列表，以及产品内搜索与插件入口的两个占位表面）。会话、工作区（`POST /api/workspace`）、工作区选择器（基于受限的 `/api/fs/*` API）、模型选择器、Provider 画廊、上下文面板、告警浮层和只读的会话**轨迹工作室**（`/trajectory/`，含 7 个 MCP 工具，也可独立运行）一应俱全。凭据形态的文件预览默认被拒（`.env` / `*.pem` / `id_rsa` 等），需要显式 `?confirm=1` 才下发明文；同一条判断函数也与 `GET /api/fs/search` 共用，搜索命中只打标记、永不下发明文。默认仅绑定回环地址；局域网暴露需显式开启并通过令牌鉴权。详见 [packages/webui](packages/webui/README.md) 与 [docs/webui.md](docs/webui.md)。
+Web UI 通过四列浏览器外壳（侧栏 · 对话 · 预览 · 树）暴露同一引擎。对话通过 SSE（`GET /api/events`，按 cid 划分）流式输出；工具调用、权限确认、ask-user 提示、plan-mode 模态均原生渲染。右侧分为弹性对话列（只要有任一固定列可见就夹在 `[280, 768]` px 区间；空闲态取消上限——1280 视口下实测 1040 px，1920 视口下 1680 px）、**按需**预览列（文件预览走 slice 22 的 IDE 级方案——行号槽、按语言懒加载的语法高亮、字节保真复制；并附带跑在 `GET /api/fs/raw` 之上的沙箱浏览器）以及**按需**树列（文件树、Git 面板、任务，以及接入 `GET /api/fs/search` 的「搜索」表面；插件表面仍是占位，需等引擎发布插件安装协议）。会话、工作区（`POST /api/workspace`）、工作区选择器（基于受限的 `/api/fs/*` API）、模型选择器、Provider 画廊、上下文面板、三态外观选择器（浅色 / 深色 / 跟随系统，slice 18——系统选项会实时跟随 `prefers-color-scheme`）、告警浮层和只读的会话**轨迹工作室**（`/trajectory/`，含 7 个 MCP 工具，也可独立运行）一应俱全。凭据形态的文件预览默认被拒（`.env` / `*.pem` / `id_rsa` 等，并附带备份后缀集），需要显式 `?confirm=1` 才下发明文；同一条判断函数也与 `GET /api/fs/search` 共用，搜索命中只打标记、永不下发明文。该判断基于文件名，**因此无法防御硬链接别名攻击**——`config.txt → .env` 这类指向同一 inode 的不同名字在文件名层面无法区分；担心硬链接别名的运维必须保持工作区目录整洁。默认仅绑定回环地址；局域网暴露需显式开启并通过令牌鉴权。详见 [packages/webui](packages/webui/README.md) 与 [docs/webui.md](docs/webui.md)。
 
 Web UI 源自社区的 **mcode-webui** 插件，现已作为一等公民包迁入本仓库——其人员与历史脉络记录于 [co-builders.md](co-builders.md)。
 

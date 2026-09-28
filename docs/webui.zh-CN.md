@@ -96,7 +96,7 @@ node dist/cli.js webui --host 0.0.0.0 --no-open   # PORT defaults to 18080
 - 受信源 CORS + 浏览器 Origin/CSRF 门禁，即使对回环请求也生效。
 - 非本地请求使用令牌认证（`?token=` / `Authorization: Bearer`）；本地请求绕过。
 - 非本地会话为只读模式；逐请求的 `authorize()` 门禁，失败即关闭并审计；速率限制；工作区隔离；上传大小有界；无遥测。
-- **凭据形态的文件默认拒绝预览**。文件名命中 `.env`、`*.pem`、`*.key`、`id_rsa`、`id_*`、`known_hosts`、`authorized_keys`、`.npmrc`、`.pypirc`、`.netrc`、`.pgpass`、`credentials*`、`.env.*` 时，`GET /api/fs/read-file` 返回 HTTP `403 {code: "credential"}`（slice 16）。Webapp 在拒绝态展示「仍要打开？」二次确认；用户确认后用 `?confirm=1` 重发请求拿到明文。唯一的判断函数位于 `packages/webui/server/lib/credential-file.js`，并在 `packages/webui/webapp/lib/credential-file.ts` 字面镜像；测试套件 `packages/webui/webapp/test/credential-file.test.ts` 同时驱动两侧，使它们无法漂移。文件树与 OS 默认打开/定位不受此门禁影响（它们都是树形显示或 OS 调用，不读取明文）。
+- **凭据形态的文件默认拒绝预览**（slice 16）。文件名命中 `.env` / `.env.*`、`*.pem` / `*.key`、`id_rsa` / `id_ed25519` / `id_ecdsa` / `id_dsa`、`known_hosts`、`authorized_keys`、`.npmrc`、`.pypirc`、`.netrc`、`.pgpass`、`credentials*`，以及备份后缀集（`.bak` / `.old` / `.orig` / `.backup` / `.save` / `.swp`）时，`GET /api/fs/read-file` 返回 HTTP `403 {code: "credential"}`。Webapp 在拒绝态展示「仍要打开？」二次确认；用户确认后用 `?confirm=1` 重发请求拿到明文。唯一的判断函数位于 `packages/webui/server/lib/credential-file.js`，并在 `packages/webui/webapp/lib/credential-file.ts` 字面镜像；测试套件 `packages/webui/webapp/test/credential-file.test.ts` 同时驱动两侧，使它们无法漂移。文件树、`/api/fs/search` 与 OS 默认打开/定位不受此门禁影响（它们都是树形显示、搜索或 OS 调用，不读取明文）—— 搜索只会给命中打 `credential: true` 标记，永不下发内容。该判断函数基于文件名，**因此无法防御硬链接别名攻击**（两个指向同一 inode 的不同名字，例如 `config.txt → .env`——内核无法从 inode 还原"主"名字）。它能覆盖符号链接（由 `realpathSync` 解析），但不能覆盖硬链接——担心硬链接别名的运维必须保持工作区目录整洁。
 
 正式的披露文档是 [`packages/webui/references/SECURITY-NOTES.md`](../packages/webui/references/SECURITY-NOTES.md)。
 
@@ -118,7 +118,10 @@ node dist/cli.js webui --host 0.0.0.0 --no-open   # PORT defaults to 18080
 | 活动组（可折叠的工具轮次） | `components/chat.tsx` | `activity-group-header` |
 | 文件预览（右预览列主体） | `components/file-preview.tsx` + `file-preview-pane.tsx` | `file-preview` |
 | 文件树列（列 4） | `components/workspace-tree-column.tsx` + `panels.tsx#FilesPanel` | `files-tree-root` |
-| 文件树搜索（服务端，slice 19a） | `components/panels.tsx` | `files-tree-filter` |
+| 文件树搜索（服务端，slice 19a；slice 19b 联调） | `components/panels.tsx` | `files-tree-filter` |
+| 侧栏树列「搜索」表面（slice 19b） | `components/workspace-tree-column.tsx#SearchSurface` | `tree-surface-search-input` |
+| 代码预览（slice 22 IDE 级：行号槽 + 按语言懒加载高亮 + 字节保真复制） | `components/code-view.tsx` | `code-view`（内嵌于 `file-preview`） |
+| 三态外观选择器（slice 18） | `components/appearance-card-picker.tsx` | `appearance-card-picker` |
 | Git 面板（slice 03） | `components/panels.tsx#GitPanel` | `git-panel` |
 | 浏览器面板（slice 04，沙箱化 iframe over `/api/fs/raw`） | `components/browser-panel.tsx` | `browser-panel` |
 | 工作区选择器（模态） | `components/workspace-picker.tsx` | `workspace-picker` |
@@ -127,33 +130,45 @@ node dist/cli.js webui --host 0.0.0.0 --no-open   # PORT defaults to 18080
 | 设置模态 | `components/panels.tsx#SettingsModal` | `settings-modal` |
 | 错误边界（全局 + 路由级） | `app/error.tsx` + `app/global-error.tsx` | `global-error-page` |
 
-## 四列工作区（当前主线，slice 17）
+## 四列工作区（当前主线，slice 17 + slice 21）
 
-在侧栏右侧，外壳渲染一个三列可见的 flex 行：`conversation | preview |
-tree`（侧栏由 `AppShell` 拥有，在该行之外，在行内宽度视为 0）。
+在侧栏右侧，外壳渲染一个最多容纳三列**可见列**的 flex 行：`conversation | preview | tree`（侧栏由 `AppShell` 拥有，在该行之外，在行内宽度视为 0）。
 
 | 列 | 角色 | 默认 / 最小 / 最大宽度 | 由谁挂载 |
 | --- | --- | --- | --- |
-| `conversation` | 弹性（吸收剩余空间） | 720 / **280** / **768** px | `components/chat.tsx` |
-| `preview` | 固定 — 查看面（`file:<path>`、`browser`） | 400 / 320 / 720 px | `components/file-preview-pane.tsx`、`browser-panel.tsx` |
-| `tree` | 固定 — 导航面（`files`、`git`、`tasks`、`search`、`plugins`） | 340 / 320 / 600 px | `components/workspace-tree-column.tsx` |
+| `conversation` | 弹性（吸收剩余空间，空闲时撑满） | 720 / **280** / **768** px（空闲态上限解除） | `components/chat.tsx` |
+| `preview` | 按需 — 查看面（`file:<path>`、`browser`） | 400 / 320 / 720 px | `components/file-preview-pane.tsx`、`browser-panel.tsx` |
+| `tree` | 按需 — 导航面（`files`、`git`、`tasks`、`search`、`plugins`） | 340 / 320 / 600 px | `components/workspace-tree-column.tsx` |
 
-`conversation` 列是**`[280, 768]` 区间内的弹性列**：宽视口下停在用户
-偏好的 720 px（上限 768，避免超过聊天内容自身的 `max-w-[768px]`）；窄
-视口下两列固定列保留最小宽度（`320 + 320`），`conversation` 列吸收
-剩余空间到 280 px 后才溢出。数值定义在
-`packages/webui/webapp/lib/workspace-tabs-state.ts#COLUMN_SPECS`。
+**slice 21 起 `preview` 与 `tree` 两列均为按需列**：每列在至少有
+一个匹配角色的标签页打开时出现，在该角色最后一个标签页关闭时
+**自动收起**。反序列化器会把陈旧的"列已开但空"载荷规范化为收起，
+从而陈旧的磁盘写入无法在 hydration 时召出一个空列。持久化层 +
+页面级 reducer 包装器每次都通过
+`syncColumnVisibility(tabStrip, layout)`（位于
+`packages/webui/webapp/lib/workspace-tabs-state.ts`）从标签页列表
+重新派生每列的可见性。**空闲不占宽度**：两个按需列都关闭时，
+`conversation` 列独占全部剩余空间。在 1280 视口下（240 px AppShell
+chrome）`conversation` 列实测 **1040 px**；1920 视口下为 **1680 px**。
+两个数值均由
+`packages/webui/webapp/test/workspace-tabs-state.test.ts#computeColumnLayout — slice 21 idle state`
+锁定。只要至少有一个固定列可见，`conversation` 就保持在 768 px
+上限（slice 17 的"反死区"防御保留不变 —— 新增的空闲放宽只在
+两个固定列都折叠时才生效）。
 
-**主线版本中 `preview` 与 `tree` 两列均为持续可见列**：每列持有
-自己的 `activeId`（`previewActiveId`、`treeActiveId`），因此打开
-一个 tree 表面不会夺走 preview 列的焦点，反之亦然。表面字典
+每列持有自己的 `activeId`（`previewActiveId`、`treeActiveId`），因此
+打开一个 tree 表面不会夺走 preview 列的焦点，反之亦然。表面字典
 （`SurfaceTabKind`）共六个取值 —— tree 一侧 `files | git | tasks |
 search | plugins`，preview 一侧 `browser | file:<path>`，其定义位于
 `lib/workspace-tabs-state.ts#SURFACE_TAB_KINDS`。**侧栏的「搜索」
-入口当前落在一个占位表面**（`workspace-tree-column.tsx` 里的
-`SearchSurface`），其后端联调尚未并入当前发布的 webui-parity，需要
-后续 ticket 接入真正的搜索传输层。**「插件」入口也是占位**
-（`PluginsSurface`），因为引擎尚未发布插件安装协议。
+入口自 slice 19b 起已可用** —— `workspace-tree-column.tsx` 中的
+`SearchSurface` 把一个 200 ms 防抖请求接到 `GET /api/fs/search`
+（`api.searchFs`），复用文件树筛选器相同的 `searchFootSegments`
+页脚（扫描数 / 命中数 / 跳过数 / 截断 / 预算），并通过共享的
+`fs-tree-reveal` 通道把点击行为接成"展开到命中"——文件树面板应用
+与自身服务端搜索相同的展开 + 高亮。**「插件」入口仍是占位**
+（`PluginsSurface`），因为引擎尚未发布插件安装协议；该表面渲染
+一个 i18n "敬请期待"卡片而非静默空操作。
 
 表面种类统一通过 `openSurfaceTab("…")` 触发；右栏种类
 （`PanelKind`）是单独收紧的并集：`"workspace" | "files" | "git" |
@@ -165,11 +180,36 @@ search | plugins`，preview 一侧 `browser | file:<path>`，其定义位于
 列间分隔条宽 8 px，支持拖拽改宽（夹在 `[minWidth, maxWidth]` 内）
 和双击重置。
 
+### 代码预览（slice 22，IDE 级）
+
+文件预览标签页使用 `components/code-view.tsx`（`data-testid`
+`file-preview`）。它在 slice 02 的纯 `<pre>` 视图之上叠加了三层
+slice 22 增强：
+
+- **行号槽**，与代码行对齐且独立于横向滚动——用户在一行长
+  代码上向右滚动时，行号不会移动。`splitHighlightedLines`
+  （`webapp/lib/code-highlight.ts`）遍历 highlight.js 的 HTML 输出，
+  平衡跨行 `<span>`，使每行都是 hover 稳定且复制可靠的。
+- **按语言懒加载语法高亮**。只加载打开文件对应的那一种语法
+  —— `loadHljsLanguage` 是一串字面量 `import("highlight.js/lib/languages/<name>.js")`
+  分支，让 webpack 把每种语法单独拆 chunk（若改用 Record 驱动的
+  动态 import，会把全部 191 种语法打进同一 chunk）。未识别或未
+  加载的语言回退为纯等宽视图（契约是全的：坏输入不得崩溃）。
+  字节上限为 **32 KiB**，行数上限为 **1500 行**；更大的文件在
+  高亮步骤前被截断，使巨型文件也不会卡住 tab，同时 UI 渲染一个
+  诚实的 `truncated` 提示。映射表位于 `LANGUAGE_TO_HLJS`——
+  `html` 是 `xml` 的别名，`jsonc` 共用 `json`，`toml` / `plain`
+  故意没有条目（调用方按纯等宽处理）。
+- **字节保真复制**。复制路径会还原尾部换行（`endsWithNewline`
+  在 highlight → split → copy 全链路被追踪，使剪贴板里的文本与
+  文件字节互为往返 ——`cp file.js file.js.bak; 在面板里复制; 粘回去`），
+  且绝不让行号槽混入复制文本。
+
 ## 持久化键（客户端 `localStorage` / `sessionStorage`）
 
 | 键 | 通道 | 归属 | 引入 ticket | 数据形态 |
 | --- | --- | --- | --- | --- |
-| `webui:ui:v1:<cid>` | `localStorage` | `webapp/lib/persist.ts#uiStateKey` | slice 07（重启状态） | `{version:1, cid, state:{panel, panelTab, sidebarCollapsed, lastSessionId}}` |
+| `webui:ui:v1:<cid>` | `localStorage` | `webapp/lib/persist.ts#uiStateKey` | slice 07（重启状态） | `{version:1, cid, state:{panel, panelTab, sidebarCollapsed, lastSessionId, appearance}}` ——`appearance`（slice 18）是三态外观选择器的选择（`"light" \| "dark" \| "system"`），`applyAppearance` 走这个 envelope 写入 |
 | `webui:scroll:v1:<cid>:<sessionId>` | `localStorage` | `webapp/lib/persist.ts#scrollKey` | slice 07 | `{version:1, cid, sessionId, scrollTop, savedAt}` |
 | `webui:workspace-tabs:v1:<cid>` | `localStorage` | `webapp/lib/persist.ts#workspaceTabsKey` | slice 15（工作区列） | 由 `WORKSPACE_TABS_VERSION` 区分版本的 payload，见 `lib/workspace-tabs-state.ts` |
 | `webui:open-file:path` | `localStorage` | `webapp/lib/open-file.ts#STORAGE_KEY` | slice 12（文件预览） | 纯路径字符串或缺失 |
