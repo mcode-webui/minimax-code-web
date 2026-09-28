@@ -91,6 +91,24 @@ Discipline learned the hard way — apply in every round:
 - **Test hygiene.** Tests that spawn `server.js` must set `MCODE_WEBUI_{SETTINGS_PATH,EVENTS_PATH,SESSIONS_DB,UPLOAD_DIR}` to per-test temporary paths — enforced by `scripts/test-isolation-lint.check.mjs` in the `test:release-tools` gate. Close every server/socket in teardown; one leaked handle hangs an entire gate (this failed CI twice).
 - **Run the gates the way CI runs them.** Local green with CI red keeps happening, and it is always gate hygiene rather than a product defect: a *targeted* server-test subset that skipped an unrelated route test, and a narrower typecheck invocation than the one CI invokes. Before reporting done, run the full applicable server test suite — not only the suites you touched — and invoke typecheck through the same entry CI uses (`pnpm --filter <pkg> webapp:typecheck`, plus the repo-level `pnpm typecheck`). When a change adds a line-level marker to a stream other code parses, expect existing assertions on that stream to shift: sweep for them instead of assuming your own tests are the only consumers.
 - **Do not re-declare ambient globals in tests.** Declaring `var window` (or any DOM global) with a structural type narrower than the lib's fails `tsc` with TS2403/TS2322. Stub an ambient global through a typed alias or `Object.defineProperty` on `globalThis` instead.
+- **Never write to a checkout that a running instance serves from.** This is a hard constraint, not a preference. The live dev instance watches its checkout, so *any* transient state in a tracked file — a merge conflict marker, a half-applied edit, a branch switch — reaches the running server within seconds. A conflict marker in one server module crashed the backend, the launcher took the frontend down with it, and the user's instance went dark until it was restarted by hand.
+
+  Concretely, while an instance runs from a checkout:
+  - **Never** `git checkout`, `git switch`, `git merge`, `git rebase`, `git reset`, or `git cherry-pick` in it.
+  - **Never** edit a tracked file in it.
+  - Resolve merges, branch work, and conflict resolution in a **separate worktree**: `git worktree add <path> -b <branch> <base>`.
+
+  The orchestrating agent is not exempt. It resolved a merge in the primary checkout and took the instance down; the branch work belonged in a worktree all along.
+
+- **Restarting the live instance is a checklist, not a command.** A merge that adds a dependency, a generated artifact, or product code leaves the instance silently stale or broken. Before restarting:
+  1. Read whether the merge added a **new dependency** (`*package.json`, `pnpm-lock.yaml`).
+  2. If it did, run `pnpm install --frozen-lockfile` **while the instance is stopped**. Skipping this makes the dev server fail with `Module not found` — CI is green because CI always installs; a local checkout does not.
+  3. Stop by reading the PID from the **port**, confirm it with `ps` **and** `readlink /proc/<pid>/cwd`, then `TERM` and **poll until the port is free**.
+  4. Start detached so it outlives the harness: `setsid nohup pnpm webui:dev > /tmp/<service>-<HHMM>.log 2>&1 < /dev/null &`.
+  5. Check **every** port the instance serves, not just one.
+
+  A merge that touches only `.md` needs no restart — restarting interrupts an in-session for nothing. Say so in the record rather than skipping it silently.
+
 - **Model routes.** Verify route availability in the session's model catalog before dispatching. Development: `minimax-cn/MiniMax-M3`, with `zai-pro/GLM-5.3` preferred for backend work and `zai-pro/GLM-5.3-Flash` for frontend work when those routes are allowed. Acceptance: the configured reviewer route (e.g. `mimo-pro/mimo-v2.6-pro`), falling back to `zai-coding-cn/GLM-5.3-Flash` — always an instance that did not write the code. A route that fails mid-task is swapped immediately and the work handed over with explicit context; the orchestrator recovers wedged dev-server processes by verified PID only.
 
 ## Boundaries
