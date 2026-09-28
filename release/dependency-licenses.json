@@ -2890,6 +2890,14 @@
       "homepage": "https://github.com/brianloveswords/node-jws#readme"
     },
     {
+      "name": "katex",
+      "versions": [
+        "0.18.7"
+      ],
+      "license": "MIT",
+      "homepage": "https://github.com/KaTeX/KaTeX"
+    },
+    {
       "name": "kleur",
       "versions": [
         "3.0.3"

@@ -6,6 +6,7 @@ import * as api from "@/lib/api";
 import { renderMarkdown } from "@/lib/markdown";
 import { MarkdownHtml } from "./markdown-html";
 import "../lib/mermaid-renderer"; // registers the mermaid language renderer
+import "../lib/math-renderer"; // registers KaTeX (inline $…$, $$…$$, ```math fences)
 import { reportActionError } from "@/lib/action-errors";
 import { findSubagentForBlock } from "@/lib/agent-team-lookup";
 import { badgeLabelAndGlyph, agentLabel } from "@/lib/i18n-agent-team";
