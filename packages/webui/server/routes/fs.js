@@ -15,6 +15,7 @@ import { classifyCredential } from '../lib/credential-file.js'
 import { createReadStream, statSync } from 'node:fs'
 import { Readable } from 'node:stream'
 import { extname, basename } from 'node:path'
+import { searchWorkspace, DEFAULTS as SEARCH_DEFAULTS, ABSOLUTE_LIMITS as SEARCH_LIMITS } from '../lib/fs-search.js'
 
 // v2.2 (in-product): containment 门 — 目录浏览/创建与 browseWorkspace 同边界，
 //   只允许落在允许根（默认 home + 默认工作区 + tmp，MCODE_WEBUI_WORKSPACE_ROOTS
@@ -528,3 +529,146 @@ function codeToStatus(code) {
       return 500
   }
 }
+
+// GET /api/fs/search?root=<abs>&q=<glob>[&depth=&maxNodes=&wallMs=&limit=&includeHidden=1]
+//
+//   Bounded workspace search (slice 19a). The shipped file-tree
+//   filter (slice 01) matches only already-expanded nodes, so a
+//   `package.json` three directories deep is invisible until the
+//   user manually opens every intermediate directory. This route
+//   fixes that by walking the workspace behind the same
+//   `assertWorkspacePath` gate the other `/api/fs/*` routes use,
+//   with hard budgets so a hostile or pathological request cannot
+//   pin the server.
+//
+//   Why a separate endpoint, not a flag on `/api/fs/read`. The
+//   tree read returns the immediate children of one directory;
+//   adding recursion + budgets + a glob predicate on top would
+//   complicate that contract for callers that still depend on
+//   its current shape (the right-panel preview footer, the
+//   browse view, the recents list). A new endpoint keeps the
+//   shipped tree behaviour stable for callers that do not
+//   need it and gives the panel a focused search surface.
+//
+//   Containment. The `root` parameter goes through the SAME
+//   `assertWorkspacePath` gate as `/api/fs/read` — out-of-root
+//   answers 403 with the same actionable error message. The
+//   walker is then called with the gate's realpath as its root;
+//   symlinks that escape get caught at the gate, not deeper
+//   into the walk.
+//
+//   Wire parameters — every one is optional except `root` and
+//   `q`. Defaults come from `lib/fs-search.js#DEFAULTS`; each
+//   is also clamped to `ABSOLUTE_LIMITS` so `?maxNodes=999999`
+//   cannot pin a core.
+//
+//     root          (required)  — absolute path or '~'/'$HOME'/…
+//                                   (same expansion as the other
+//                                   fs routes)
+//     q             (required)  — glob pattern; `*` any run,
+//                                   `?` one char, case-insensitive,
+//                                   anchored (re-used from
+//                                   workspace-filter semantics).
+//                                   Empty / whitespace-only → 400
+//     depth         (optional)  — default 8, max 16
+//     maxNodes      (optional)  — default 5000, max 50000
+//     wallMs        (optional)  — default 1500, max 5000
+//     limit         (optional)  — default 200, max 1000 (alias
+//                                   for `maxMatches`)
+//     includeHidden (optional)  — `1` to include dotfile entries
+//
+//   Credential decision (slice 16 alignment — DECIDED, see below).
+//   The slice ticket asks: "Decide explicitly whether
+//   credential-shaped files should be omitted from results
+//   entirely, included as paths, or flagged". The decision here
+//   is "flag, never omit, never read":
+//
+//     - Credential-shaped matches ARE returned, so the user can
+//       see the file exists in their workspace (mirrors the
+//       behaviour of `/api/fs/read` which keeps them visible in
+//       the tree listing).
+//     - Each credential match carries `credential: true` and a
+//       stable `credentialReason` (one of 'dotenv', 'key-file',
+//       'ssh-key', 'credentials', 'ssh-meta') the webapp reuses
+//       from the right-panel preview classifier.
+//     - The path itself is the realpath form (same canonical
+//       spelling the route stores), so the existing
+//       `/api/fs/read-file` containment + credential guard kicks
+//       in on the user-initiated click — the search response
+//       cannot leak plaintext even when the user typed a
+//       credential-shaped `q` like `*.env`.
+//     - `skipped.credential` is incremented for each match that
+//       hit the predicate, so the UI can render a credible
+//       "searched N, skipped M credentials" footer.
+//
+//   The predicate (`classifyCredential` from
+//   `lib/credential-file.js`) is the same one slice 16 wired
+//   into the read-file/raw routes, so the search transport and
+//   the preview guard cannot drift.
+//
+//   The endpoint NEVER returns file contents. `matches[i]` is
+//   `{ path, name, type, ancestors, credential?, credentialReason? }`
+//   and nothing else — no `content`, no `size` sample, no
+//   `mtime`. Anything else would weaken slice 16.
+export function handleFsSearch(req, res) {
+  const url = new URL(req.url, 'http://localhost')
+  const rawRoot = (url.searchParams.get('root') || '').trim()
+  const q = (url.searchParams.get('q') || '').trim()
+
+  if (!rawRoot) {
+    res.writeHead(400, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ ok: false, code: 'missing-root', error: 'missing root' }))
+    return
+  }
+  if (!q) {
+    res.writeHead(400, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ ok: false, code: 'missing-q', error: 'missing q' }))
+    return
+  }
+
+  // Same containment as /api/fs/read — no new escape surface.
+  // `safePath` returns the realpath form so the matched entries
+  // the walker returns line up byte-for-byte with what other
+  // fs routes consider "this file".
+  const root = safePath(rawRoot)
+  if (!root) {
+    gateError(res, rawRoot)
+    return
+  }
+  // The path must point at a directory — a `root=<file>` would
+  // produce zero matches and waste budget; surface the error.
+  try {
+    if (!statSync(root).isDirectory()) {
+      res.writeHead(400, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ ok: false, code: 'not-a-directory', error: 'root is not a directory', root }))
+      return
+    }
+  } catch (e) {
+    res.writeHead(400, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ ok: false, code: 'stat-failed', error: e.message, root }))
+    return
+  }
+
+  // Collect the budgets the caller pinned. The walker clamps
+  // each to the absolute limit, so a malicious or buggy client
+  // cannot side-step the budget contract.
+  const opts = {
+    maxDepth: url.searchParams.get('depth'),
+    maxNodes: url.searchParams.get('maxNodes'),
+    wallMs: url.searchParams.get('wallMs'),
+    maxMatches: url.searchParams.get('limit') ?? url.searchParams.get('maxMatches'),
+    includeHidden: url.searchParams.get('includeHidden') === '1',
+  }
+
+  const result = searchWorkspace(root, q, opts)
+  // Echo the requested q + root for the UI to confirm what it
+  // actually searched; useful when the user typed a glob they
+  // thought was absolute but was a basename match.
+  res.writeHead(200, { 'Content-Type': 'application/json' })
+  res.end(JSON.stringify({ ok: true, ...result }))
+}
+
+// Re-exported so the docs and tests can import the same numbers
+// the route hands the walker, without going through the URL.
+export { SEARCH_DEFAULTS, SEARCH_LIMITS }
+
