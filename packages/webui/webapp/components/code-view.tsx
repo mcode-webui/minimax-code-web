@@ -57,6 +57,8 @@ interface CodeViewState {
         truncated: boolean;
         originalLineCount?: number;
         visibleLineCount: number;
+        /** Source ended with `\n` — copy path restores it for round-trip. */
+        trailingNewline: boolean;
       }
     | null;
   /** Error message from the highlight step (rare — grammar load failure). */
@@ -96,6 +98,9 @@ export function CodeView({ content, language, size, t, locale }: CodeViewProps) 
             language: language || null,
             truncated: false,
             visibleLineCount: content.split("\n").length,
+            trailingNewline:
+              content.length > 0 &&
+              content.charCodeAt(content.length - 1) === 10,
           },
           error: cause instanceof Error ? cause.message : String(cause),
         });
@@ -210,12 +215,22 @@ function CodeTable({
   t: (key: MessageKey) => string;
   locale: Locale;
 }) {
-  // Copy button: selecting the gutter is impossible (its own DOM
-  // subtree), and the code area's textContent contains only the
-  // source (no gutter digits). `clipboard.writeText` over the whole
-  // code subtree is therefore safe.
+  // Copy button: the rendered DOM subtree contains gutter digits
+  // AND code — a naive `textContent` would include both, leaking
+  // numbers into the clipboard. Instead, the split records carry
+  // the raw source per line; joining with `\n` reconstructs the
+  // exact source text (interior blanks are preserved because each
+  // blank line is an empty `text`, not a missing line). We also
+  // preserve a trailing newline so the source round-trips
+  // byte-for-byte: a file ending in `\n` produces N lines whose
+  // joined form is `line 1\n...\nline N-1` (no trailing `\n`) — the
+  // split marks `trailingNewline: true` when the source had one,
+  // and the copy path appends it back. Without this the user could
+  // `cp file.js file.js.bak; view in panel; cp clipboard file.js` and
+  // lose the final newline — a real annoyance for scripts.
   const onCopy = async () => {
-    const text = split.lines.map((line) => line.text).join("\n");
+    let text = split.lines.map((line) => line.text).join("\n");
+    if (split.trailingNewline) text += "\n";
     if (typeof navigator !== "undefined" && navigator.clipboard) {
       try {
         await navigator.clipboard.writeText(text);

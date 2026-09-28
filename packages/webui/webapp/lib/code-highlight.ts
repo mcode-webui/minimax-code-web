@@ -386,6 +386,19 @@ export interface SplitHighlightedLines {
   originalLineCount?: number;
   visibleLineCount: number;
   language: string | null;
+  /**
+   * Whether the SOURCE content (read-through) ended with a `\n`.
+   * The copy path uses this to restore the trailing newline so
+   * `cp file.js file.js.bak; copy in panel; paste back` round-trips
+   * byte-for-byte. The library's `splitSourceLines` strips the
+   * trailing empty entry (so the gutter doesn't show a phantom
+   * empty last row), so without this flag the join would silently
+   * drop the final newline. Truncation REPLACES `rawContent`'s tail
+   * with the truncated slice — for truncated content the flag is
+   * always `false` because we don't know if the truncated slice had
+   * a trailing newline.
+   */
+  trailingNewline: boolean;
 }
 
 /**
@@ -418,6 +431,9 @@ export function splitHighlightedLines(
   if (highlighted.html === null) {
     // Plain monospace path — no highlighting, but we still need
     // per-line records for the gutter. Each line is escaped raw text.
+    // `trailingNewline` is computed against the ORIGINAL `rawContent`
+    // because the highlight step may not have run; we still want the
+    // copy round-trip to be exact.
     return {
       lines: sourceLines.map((text, i) => ({
         number: i + 1,
@@ -428,6 +444,7 @@ export function splitHighlightedLines(
       originalLineCount: highlighted.originalLineCount,
       visibleLineCount: highlighted.visibleLineCount,
       language: highlighted.language,
+      trailingNewline: endsWithNewline(rawContent),
     };
   }
 
@@ -490,7 +507,20 @@ export function splitHighlightedLines(
     originalLineCount: highlighted.originalLineCount,
     visibleLineCount: highlighted.visibleLineCount,
     language: highlighted.language,
+    // `trailingNewline` reflects whether the source content (NOT the
+    // truncated slice) ended with a `\n`. The copy path appends one
+    // newline so the clipboard text round-trips to the file bytes.
+    trailingNewline: endsWithNewline(rawContent),
   };
+}
+
+/**
+ * Whether the input ends with a `\n`. Used to preserve a trailing
+ * newline across the highlight → split → copy chain so the user's
+ * clipboard text matches the file bytes.
+ */
+export function endsWithNewline(content: string): boolean {
+  return content.length > 0 && content.charCodeAt(content.length - 1) === 10;
 }
 
 // ---------------------------------------------------------------------

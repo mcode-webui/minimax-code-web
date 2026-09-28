@@ -297,6 +297,23 @@ describe("splitHighlightedLines — gutter alignment", () => {
     assert.equal(split.lines.length, split.visibleLineCount);
   });
 
+  test("trailingNewline: flagged when source content ends with \\n", async () => {
+    // The copy path uses `trailingNewline` to restore the file's
+    // final newline so the clipboard is byte-exact with the source.
+    // A file without the flag would silently drop it on copy, which
+    // the user notices the moment they `cp file.js file.js.bak` and
+    // paste back.
+    const withNl = "const x = 1;\nconst y = 2;\n";
+    const resultWith = await highlightCode("javascript", withNl);
+    const splitWith = splitHighlightedLines(resultWith, withNl);
+    assert.equal(splitWith.trailingNewline, true);
+
+    const withoutNl = "const x = 1;\nconst y = 2;";
+    const resultWithout = await highlightCode("javascript", withoutNl);
+    const splitWithout = splitHighlightedLines(resultWithout, withoutNl);
+    assert.equal(splitWithout.trailingNewline, false);
+  });
+
   test("plain-monospace path produces escaped HTML for every line", async () => {
     const content = "a & b\n<c>";
     const result = await highlightCode("plain", content);

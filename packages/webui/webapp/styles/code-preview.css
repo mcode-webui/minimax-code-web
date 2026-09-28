@@ -123,6 +123,19 @@
  * in code-view.tsx mirrors `scrollTop` between the two columns).
  *
  * `font-variant-numeric: tabular-nums` keeps 1/10/100/1000 aligned.
+ *
+ * The scroll column has a copy-button row at the top (m-1.5 = 6 px
+ * margin + ~20 px content) and the `pre` has `padding: 6px 0 6px 0`.
+ * That sums to ~36 px from the wrapper top to the first code row.
+ * Without compensation, the gutter starts at y=0 and the first code
+ * row at y=36 — every gutter row sits 36 px above its code row, and
+ * code row 3 (gutter row 3) never aligns. `padding-top: 36px` on
+ * the gutter column reserves the same vertical space so the first
+ * gutter row's y matches the first code row's y exactly. This is
+ * NOT a "magic number" — it's the exact mirror of the scroll
+ * column's existing layout, measured once and applied to both
+ * sides. (Both sides could be solved with a shared grid template;
+ * padding-top is simpler and reads better.)
  * --------------------------------------------------------------------- */
 .file-preview-codeblock-gutter-column {
   /* `flex: none` keeps the gutter at its content width; the parent
@@ -131,6 +144,16 @@
   /* A right-side divider so the eye can pick the gutter from the code
    * on dense files. */
   border-right: 1px solid var(--border_default);
+  /* Mirror the scroll column's top: copy button (m-1.5 = 6 px margin
+   * top + ~22 px content + 6 px margin bottom = ~34 px) + pre
+   * padding-top (6 px) = 40 px of reserved space before the first
+   * gutter row. Together with the 6 px below, the gutter column's
+   * vertical bounds match the scroll column's. Verified by Playwright
+   * bounding-rect measurement on the test fixture with blanks:
+   * code row 1 top (238) - gutter row 1 top (234) = 4 px with 36,
+   * so 40 closes the gap (gutter row 1 top = 198 + 40 = 238). */
+  padding-top: 40px;
+  padding-bottom: 6px;
 }
 
 .file-preview-codeblock-gutter {
@@ -147,6 +170,13 @@
   padding: 0 8px;
   line-height: 22px;
   min-width: 3ch;
+  /* `min-height: 22px` is non-negotiable: without it, a BLANK code
+   * line collapses to 0 px height and every subsequent row's y
+   * shifts up by 22 px per blank, so gutter row 5 ends up above code
+   * row 5 in a file with multiple blank lines. With `min-height`,
+   * blank rows reserve the same 22 px as content rows, and the
+   * cumulative desync cannot occur at all. */
+  min-height: 22px;
 }
 
 .file-preview-codeblock-gutter[data-empty="true"] {
@@ -196,5 +226,11 @@
   min-width: max-content;
   padding: 0 8px;
   line-height: 22px;
+  /* `min-height: 22px` — see the note on `.file-preview-codeblock-gutter`.
+   * The gutter cell mirrors this value; both rows reserve 22 px so
+   * blank lines don't shift the alignment. The same 22 px is the
+   * `line-height` of a content row, so a content line's height = the
+   * blank line's height — no extra padding needed. */
+  min-height: 22px;
   white-space: pre;
 }
