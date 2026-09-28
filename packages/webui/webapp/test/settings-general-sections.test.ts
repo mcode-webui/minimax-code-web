@@ -25,6 +25,11 @@
 //     branch in page.tsx are render-critical wiring no unit test can
 //     drive (no render harness), so they are pinned as static sources
 //     like settings-parity-nav.test.ts does.
+//   - Acceptance I-3 tightened two of those pins: the rows' onChange
+//     bodies now route through the exported `commit*` helpers in
+//     lib/settings-local.ts, which are behaviour-tested here (persist
+//     before setState, verbatim forward), and the page.tsx case also
+//     pins the `active?.kind === "file"` guard the reuse branch needs.
 
 import { test, describe, beforeEach } from "node:test";
 import assert from "node:assert/strict";
@@ -47,6 +52,10 @@ Object.defineProperty(globalThis, "window", {
 });
 
 import {
+  commitContextWindowUsage,
+  commitFileLineWrap,
+  commitFileOpenInNewTab,
+  commitFollowUpBehavior,
   CONTEXT_WINDOW_USAGE_KEY,
   FILE_LINE_WRAP_KEY,
   FILE_OPEN_IN_NEW_TAB_KEY,
@@ -117,6 +126,57 @@ describe("settings-local keys (ticket 48)", () => {
   });
 });
 
+describe("row commit helpers (ticket 48, acceptance I-3)", () => {
+  beforeEach(() => {
+    storage.clear();
+  });
+
+  test("commitFileOpenInNewTab persists BEFORE the setState forward", () => {
+    // The setState callback reads the key: if the write had not landed
+    // first, it would observe the stale/unset value and this fails.
+    let observed: string | undefined;
+    commitFileOpenInNewTab(() => {
+      observed = storage.get(FILE_OPEN_IN_NEW_TAB_KEY);
+    }, false);
+    assert.equal(observed, "false");
+    assert.equal(readFileOpenInNewTab(), false);
+  });
+
+  test("commitFileLineWrap persists before the setState forward", () => {
+    let observed: string | undefined;
+    commitFileLineWrap(() => {
+      observed = storage.get(FILE_LINE_WRAP_KEY);
+    }, false);
+    assert.equal(observed, "false");
+    assert.equal(readFileLineWrap(), false);
+  });
+
+  test("commitContextWindowUsage persists before the setState forward", () => {
+    let observed: string | undefined;
+    commitContextWindowUsage(() => {
+      observed = storage.get(CONTEXT_WINDOW_USAGE_KEY);
+    }, true);
+    assert.equal(observed, "true");
+    assert.equal(readContextWindowUsage(), true);
+  });
+
+  test("commitFollowUpBehavior persists the narrowed union value", () => {
+    let observed: string | undefined;
+    commitFollowUpBehavior(() => {
+      observed = storage.get(FOLLOW_UP_BEHAVIOR_KEY);
+    }, "steer");
+    assert.equal(observed, "steer");
+    assert.equal(readFollowUpBehavior(), "steer");
+  });
+
+  test("the forwarded value reaches the setState callback verbatim", () => {
+    const seen: boolean[] = [];
+    commitFileOpenInNewTab((value) => seen.push(value), true);
+    commitFileOpenInNewTab((value) => seen.push(value), false);
+    assert.deepEqual(seen, [true, false], "the UI state must mirror what was persisted");
+  });
+});
+
 describe("consumer wiring (static-source pins)", () => {
   test("code-view applies the wrap class from readFileLineWrap()", () => {
     assert.ok(
@@ -140,14 +200,29 @@ describe("consumer wiring (static-source pins)", () => {
     );
   });
 
-  test("the General page writes every switch through settings-local", () => {
-    for (const fn of [
-      "writeFileOpenInNewTab",
-      "writeFileLineWrap",
-      "writeContextWindowUsage",
-      "writeFollowUpBehavior",
-    ]) {
-      assert.ok(panelsSource.includes(`${fn}(`), `${fn} must be called from the settings rows`);
+  test("the General page routes every onChange through its matching commit helper", () => {
+    // Pair assertions: each row's handler must call the commit helper
+    // bound to the SAME preference's setter. The helpers themselves are
+    // behaviour-tested above; this pin is what catches a swap (e.g. the
+    // line-wrap row committing into the new-tab setter).
+    const pairs: ReadonlyArray<readonly [string, string]> = [
+      ["commitFileOpenInNewTab(setFileNewTab", "file-open-in-new-tab-switch"],
+      ["commitFileLineWrap(setFileLineWrap", "file-line-wrap-switch"],
+      ["commitContextWindowUsage(setContextUsage", "context-window-usage-switch"],
+      ["commitFollowUpBehavior(setFollowUp", "preference-settings"],
+    ];
+    for (const [call, rowMarker] of pairs) {
+      assert.ok(
+        panelsSource.includes(call),
+        `the row carrying ${rowMarker} must commit via ${call.split("(")[0]}(…)`,
+      );
     }
+  });
+
+  test("the reuse branch guards on the active tab being a file tab", () => {
+    assert.ok(
+      pageSource.includes('active?.kind === "file"'),
+      "without the kind guard the branch would replace a surface tab (tree/launcher) with a file tab",
+    );
   });
 });

@@ -268,6 +268,13 @@ describe("settings visuals and search (ticket 48)", () => {
     );
   });
 
+  test("General-page sections sit 32px apart; other pages keep the 12px stack", () => {
+    assert.ok(
+      panelsSource.includes('section === "general" ? "gap-8" : "gap-3"'),
+      "the General column follows the reference's .webui-generic-page 32px rhythm (acceptance I-1); usage/connection keep gap-3",
+    );
+  });
+
   test("sidebar geometry: 46px top padding, h3 group titles, 30px nav rows", () => {
     assert.ok(panelsSource.includes("pt-[46px]"), "sidebar top padding is 46px (V13)");
     assert.ok(

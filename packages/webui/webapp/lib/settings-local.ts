@@ -110,3 +110,49 @@ export function writeFollowUpBehavior(value: FollowUpBehavior): void {
     // best-effort, see writeFlag
   }
 }
+
+// --- commit helpers (the settings rows' onChange bodies) -------------------
+
+/**
+ * The exact body of one General-page row's `onChange`: persist first,
+ * then forward to the row's setState.
+ *
+ * Split out as named functions (acceptance I-3) so "setState and the
+ * localStorage write land together" is a drivable code path rather
+ * than a source-string pin. The write happens BEFORE the state
+ * forward on purpose: a persistence failure (quota / private mode)
+ * must not leave the UI showing a value the storage never received —
+ * the tests pin that ordering by reading the key from inside the
+ * setState callback.
+ */
+export function commitFileOpenInNewTab(
+  setState: (value: boolean) => void,
+  value: boolean,
+): void {
+  writeFileOpenInNewTab(value);
+  setState(value);
+}
+
+export function commitFileLineWrap(
+  setState: (value: boolean) => void,
+  value: boolean,
+): void {
+  writeFileLineWrap(value);
+  setState(value);
+}
+
+export function commitContextWindowUsage(
+  setState: (value: boolean) => void,
+  value: boolean,
+): void {
+  writeContextWindowUsage(value);
+  setState(value);
+}
+
+export function commitFollowUpBehavior(
+  setState: (value: FollowUpBehavior) => void,
+  value: FollowUpBehavior,
+): void {
+  writeFollowUpBehavior(value);
+  setState(value);
+}

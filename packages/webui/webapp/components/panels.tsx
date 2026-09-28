@@ -29,14 +29,14 @@ import {
 } from "@/lib/fs-search";
 import { useFsTreeRevealSubscriber } from "@/lib/fs-tree-reveal";
 import {
+  commitContextWindowUsage,
+  commitFileLineWrap,
+  commitFileOpenInNewTab,
+  commitFollowUpBehavior,
   readContextWindowUsage,
   readFileLineWrap,
   readFileOpenInNewTab,
   readFollowUpBehavior,
-  writeContextWindowUsage,
-  writeFileLineWrap,
-  writeFileOpenInNewTab,
-  writeFollowUpBehavior,
 } from "@/lib/settings-local";
 import { classifyCredentialPath } from "@/lib/credential-file";
 import { InboxList } from "./inbox";
@@ -3352,10 +3352,7 @@ function SettingsPanel({
             <Switch
               checked={fileNewTab}
               aria-label={t("settings.file.openInNewTab")}
-              onChange={(value) => {
-                setFileNewTab(value);
-                writeFileOpenInNewTab(value);
-              }}
+              onChange={(value) => commitFileOpenInNewTab(setFileNewTab, value)}
             />
           </SettingRow>
           <RowDivider />
@@ -3367,10 +3364,7 @@ function SettingsPanel({
             <Switch
               checked={fileLineWrap}
               aria-label={t("settings.file.lineWrap")}
-              onChange={(value) => {
-                setFileLineWrap(value);
-                writeFileLineWrap(value);
-              }}
+              onChange={(value) => commitFileLineWrap(setFileLineWrap, value)}
             />
           </SettingRow>
         </SettingsSection>
@@ -3388,10 +3382,7 @@ function SettingsPanel({
             <Switch
               checked={contextUsage}
               aria-label={t("settings.session.contextWindowUsage")}
-              onChange={(value) => {
-                setContextUsage(value);
-                writeContextWindowUsage(value);
-              }}
+              onChange={(value) => commitContextWindowUsage(setContextUsage, value)}
             />
           </SettingRow>
         </SettingsSection>
@@ -3415,11 +3406,9 @@ function SettingsPanel({
                 { id: "queue", label: t("settings.followUp.queue") },
                 { id: "steer", label: t("settings.followUp.steer") },
               ]}
-              onChange={(id) => {
-                const next = id === "steer" ? "steer" : "queue";
-                setFollowUp(next);
-                writeFollowUpBehavior(next);
-              }}
+              onChange={(id) =>
+                commitFollowUpBehavior(setFollowUp, id === "steer" ? "steer" : "queue")
+              }
             />
           </SettingRow>
         </SettingsSection>
@@ -3509,9 +3498,16 @@ function SettingsPanel({
   return (
     /* Upstream's section shell: a `gap-3` column of cards. Each section
      * body carries its own SectionCard elements, because general and
-     * usage-models are two-card sections. */
+     * usage-models are two-card sections. The General page is the one
+     * exception (acceptance I-1): its sections follow the reference's
+     * `.webui-generic-page` rhythm — 32px between sections — while the
+     * usage page keeps the 12px card stack. */
     <div className="flex w-full flex-col gap-3">
-      <section className="flex w-full flex-col gap-3">{body}</section>
+      <section
+        className={`flex w-full flex-col ${section === "general" ? "gap-8" : "gap-3"}`}
+      >
+        {body}
+      </section>
 
       {notice ? <p className="text-caption-small-strong text-text_status_success">{notice}</p> : null}
       {error ? <p className="text-caption-small-strong text-text_status_error">{error}</p> : null}
