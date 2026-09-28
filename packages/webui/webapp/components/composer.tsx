@@ -1096,6 +1096,13 @@ function ModelSelect({
   // component ticket 10 introduced for the model → level cascade;
   // the positioning / flip / clamp / keyboard engine is shared.
   const [submenuFor, setSubmenuFor] = useState<string | null>(null);
+  /** Ticket 49 — the model row the detail area follows. Hover or
+   *  keyboard focus inside a cascade submenu sets it; closing the
+   *  submenu (hover-out grace, ArrowLeft/Escape, a model pick) or
+   *  the dropdown itself clears it, at which point the detail area
+   *  falls back to the active model. `null` never means "the active
+   *  model" — the fallback is explicit in `detailTarget`. */
+  const [focusedModelId, setFocusedModelId] = useState<string | null>(null);
   /** Ref to the provider row that owns the open submenu. */
   const submenuAnchorRef = useRef<HTMLDivElement | null>(null);
   /** Ref to the provider row that contains the active model, so the
@@ -1123,6 +1130,10 @@ function ModelSelect({
     cancelSubmenuClose();
     submenuCloseTimerRef.current = window.setTimeout(() => {
       setSubmenuFor(null);
+      // Ticket 49: the grace period lapsed — the cursor really left
+      // the submenu, so the detail area stops previewing the last
+      // hovered row and falls back to the active model.
+      setFocusedModelId(null);
       submenuCloseTimerRef.current = null;
     }, 120);
   }, [cancelSubmenuClose]);
@@ -1166,9 +1177,36 @@ function ModelSelect({
   }, [models, value]);
 
   /**
-   * U6 — the detail area's derivation.
+   * Ticket 49 — the model the detail area describes.
    *
-   * The active model's `contextWindowOptions`, normalised the same way
+   * The hovered/keyboard-focused row wins (A2: preview any model's
+   * adjustable settings without picking it); with nothing focused
+   * the detail area falls back to the active model, so opening the
+   * dropdown still shows the live settings. A focused id that fell
+   * out of the catalogue (mid-refresh) degrades to the fallback
+   * instead of rendering a detail for a ghost row.
+   */
+  const detailTarget = useMemo(() => {
+    if (focusedModelId != null) {
+      const hovered = models.find((m) => m.id === focusedModelId);
+      if (hovered) return hovered;
+    }
+    return models.find((m) => m.id === value) ?? null;
+  }, [models, focusedModelId, value]);
+
+  /** Ticket 49 — the detail area describes a model the user has NOT
+   *  picked. Its options render as a read-only preview: no recorded
+   *  pick is highlighted (the record belongs to the active model)
+   *  and the radio group is disabled — committing a window for a
+   *  non-active model has no wire meaning under the current
+   *  `/api/set-model` contract, which this batch must not change. */
+  const isDetailPreview = detailTarget != null && detailTarget.id !== value;
+
+  /**
+   * U6 — the detail area's derivation, now over `detailTarget`
+   * (ticket 49) instead of the active model.
+   *
+   * The target model's `contextWindowOptions`, normalised the same way
    * the engine's own picker normalises them (dedupe, safe positive
    * integers, engine order — packages/tui
    * src/tui/features/model/context-window.ts). The control mounts only
@@ -1179,27 +1217,38 @@ function ModelSelect({
    *
    * A stale `contextWindow` (recorded before a model switch the radio
    * didn't follow) is NOT highlighted: the radio claims only windows
-   * the active model actually advertises.
+   * the target model actually advertises — and a previewed (non-active)
+   * model highlights nothing at all.
    */
   const contextDetail = useMemo(() => {
-    const active = models.find((m) => m.id === value);
-    const options = normalizeContextWindowOptions(active?.contextWindowOptions);
+    const options = normalizeContextWindowOptions(detailTarget?.contextWindowOptions);
     if (options.length < 2) return null;
     return {
       options,
-      hints: active?.contextWindowOptionHints,
+      hints: detailTarget?.contextWindowOptionHints,
       current:
-        typeof contextWindow === "number" && options.includes(contextWindow)
+        !isDetailPreview && typeof contextWindow === "number" && options.includes(contextWindow)
           ? contextWindow
           : null,
     };
-  }, [models, value, contextWindow]);
+  }, [detailTarget, isDetailPreview, contextWindow]);
+
+  /**
+   * Ticket 49 — the focused model's thinking levels, shown in the
+   * detail area as read-only badges. This is a DISPLAY only: the
+   * editable control stays outside the picker (B2 red line), and the
+   * badges never claim a current level for a previewed model. An
+   * empty list renders nothing — the "no adjustable settings" empty
+   * state covers it.
+   */
+  const detailLevels = detailTarget?.thinkingLevels ?? [];
 
   // Drop any open cascade when the active model changes (e.g. after
   // a session reset). The next hover/click on a provider row will
   // re-open a fresh submenu anchored to that row.
   useEffect(() => {
     setSubmenuFor(null);
+    setFocusedModelId(null);
     cancelSubmenuClose();
   }, [value, cancelSubmenuClose]);
 
@@ -1317,6 +1366,7 @@ function ModelSelect({
         setOpen(next);
         if (!next) {
           setSubmenuFor(null);
+          setFocusedModelId(null);
           cancelSubmenuClose();
         }
       }}
@@ -1415,6 +1465,12 @@ function ModelSelect({
                       onMouseEnter={() => {
                         if (disabled || group.models.length === 0) return;
                         cancelSubmenuClose();
+                        // Ticket 49: crossing into a different
+                        // provider's row ends the previous preview —
+                        // the detail area falls back to the active
+                        // model until a row in THIS submenu is
+                        // hovered/focused.
+                        setFocusedModelId(null);
                         setSubmenuFor(group.id);
                       }}
                       onMouseLeave={() => {
@@ -1486,6 +1542,7 @@ function ModelSelect({
                           anchorRef={submenuAnchorRef}
                           onMouseEnter={cancelSubmenuClose}
                           onMouseLeave={scheduleSubmenuClose}
+                          onItemFocus={setFocusedModelId}
                           onPick={(modelId) => {
                             // ticket 11: cascade click selects MODEL
                             // only. The parent's onPick handler decides
@@ -1496,11 +1553,13 @@ function ModelSelect({
                             // "" clears the local mirror.
                             setOpen(false);
                             setSubmenuFor(null);
+                            setFocusedModelId(null);
                             cancelSubmenuClose();
                             onPick(modelId);
                           }}
                           onBack={() => {
                             setSubmenuFor(null);
+                            setFocusedModelId(null);
                             cancelSubmenuClose();
                             const row = submenuAnchorRef.current;
                             row?.querySelector<HTMLElement>("button")?.focus();
@@ -1513,71 +1572,161 @@ function ModelSelect({
               })}
               </div>
               {/*
-                U6 detail area — the ACTIVE model's context-window
-                radio group. Sits below the provider list so it never
-                disturbs the grouping or the thinking cascade, and
-                mounts only for models advertising >= 2 options (see
-                `contextDetail`), so models without options leave no
-                blank block behind.
+                Ticket 49 detail area — the settings column that
+                FOLLOWS the focused row. Sits below the provider list
+                (U6 placement kept) so it never disturbs the grouping
+                or the cascade. Always mounted while the catalogue is
+                non-empty; three render branches:
+
+                  - nothing to describe (no focused row, no active
+                    model) → the "select a model" empty hint;
+                  - the target model has nothing adjustable (no
+                    context options, no thinking levels) → the
+                    per-model empty hint;
+                  - otherwise the target's model name, its thinking
+                    levels as read-only badges (current level
+                    highlighted only for the ACTIVE model), and its
+                context-window radio group (U6 control, `contextDetail`
+                still gates on >= 2 options).
+
+                `aria-live="polite"` (A6) announces the target switch
+                as the cursor/keyboard focus moves between rows. A
+                previewed (focused-but-not-picked) model renders the
+                radio group disabled — picks stay meaningful only for
+                the active model under the unchanged
+                `/api/set-model` contract.
               */}
-              {contextDetail ? (
-                <div
-                  data-testid="model-context-detail"
-                  className="mt-1 border-t border-border_default px-1 pb-1 pt-1"
-                >
-                  <div className="px-1 pb-1 text-caption-small-strong uppercase tracking-wide text-text_default_tertiary">
-                    {t("modelSelector.contextWindow")}
-                  </div>
+              <div
+                data-testid="model-context-detail"
+                aria-live="polite"
+                className="mt-1 border-t border-border_default px-1 pb-1 pt-1"
+              >
+                {!detailTarget ? (
                   <div
-                    role="radiogroup"
-                    aria-label={t("modelSelector.contextWindow")}
-                    data-testid="model-context-group"
-                    className="flex flex-wrap gap-1 px-1"
+                    data-testid="model-select-detail-empty"
+                    className="px-1 py-1 text-caption-small text-text_default_tertiary"
                   >
-                    {contextDetail.options.map((windowValue) => {
-                      const active = contextDetail.current === windowValue;
-                      const higherUsage =
-                        contextDetail.hints?.[String(windowValue)] === "higher_usage";
-                      return (
-                        <button
-                          key={windowValue}
-                          type="button"
-                          role="radio"
-                          aria-checked={active}
-                          data-testid={`model-context-option-${windowValue}`}
-                          onClick={() => onContextPick?.(windowValue)}
-                          className={[
-                            "flex items-center gap-1.5 rounded-[8px] border px-2 py-1 text-caption-small transition-colors",
-                            active
-                              ? "border-border_heavy bg-bg_interaction_tertiary_hover text-text_default_primary"
-                              : "border-border_default text-text_default_secondary hover:bg-bg_interaction_tertiary_hover",
-                          ].join(" ")}
-                        >
-                          <span data-testid={`model-context-value-${windowValue}`}>
-                            {formatContextWindow(windowValue)}
-                          </span>
-                          {higherUsage ? (
-                            <span
-                              data-testid="model-context-hint-higher-usage"
-                              className="text-text_default_tertiary"
-                            >
-                              {t("modelSelector.contextWindowHigherUsage")}
-                            </span>
-                          ) : null}
-                          {active ? (
-                            <Icon
-                              name="checkSmall"
-                              size={14}
-                              aria-hidden="true"
-                              className="text-text_default_primary"
-                            />
-                          ) : null}
-                        </button>
-                      );
-                    })}
+                    {t("modelSelector.detailEmpty")}
                   </div>
-                </div>
-              ) : null}
+                ) : contextDetail == null && detailLevels.length === 0 ? (
+                  <div
+                    data-testid="model-select-detail-no-settings"
+                    className="px-1 py-1 text-caption-small text-text_default_tertiary"
+                  >
+                    {t("modelSelector.detailNoSettings")}
+                  </div>
+                ) : (
+                  <>
+                    <div className="flex min-w-0 items-baseline gap-1.5 px-1 pb-1">
+                      <span
+                        data-testid="model-select-detail-model"
+                        className="truncate text-caption-small-strong uppercase tracking-wide text-text_default_tertiary"
+                      >
+                        {modelDisplayName(detailTarget.label) || detailTarget.id}
+                      </span>
+                      {isDetailPreview ? (
+                        <span
+                          data-testid="model-select-detail-preview"
+                          className="shrink-0 text-[10px] text-text_default_tertiary"
+                        >
+                          {t("modelSelector.detailPreview")}
+                        </span>
+                      ) : null}
+                    </div>
+                    {detailLevels.length > 0 ? (
+                      <div data-testid="model-select-detail-levels" className="px-1 pb-1">
+                        <div className="pb-0.5 text-caption-small-strong uppercase tracking-wide text-text_default_tertiary">
+                          {t("modelSelector.thinkingLevels")}
+                        </div>
+                        <div className="flex flex-wrap gap-1">
+                          {detailLevels.map((level) => {
+                            const isCurrent =
+                              !isDetailPreview && detailTarget.id === value && thinking === level;
+                            return (
+                              <span
+                                key={level}
+                                data-testid={`model-select-detail-level-${level}`}
+                                className={[
+                                  "rounded-md border px-1 py-0.5 text-[10px] uppercase tracking-wide",
+                                  isCurrent
+                                    ? "border-border_heavy bg-bg_interaction_tertiary_hover text-text_default_primary"
+                                    : "border-border_default text-text_default_tertiary",
+                                ].join(" ")}
+                              >
+                                {thinkingLevelLabel(t, level)}
+                              </span>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ) : null}
+                    {contextDetail ? (
+                      <div className="px-1">
+                        <div className="pb-0.5 text-caption-small-strong uppercase tracking-wide text-text_default_tertiary">
+                          {t("modelSelector.contextWindow")}
+                        </div>
+                        <div
+                          role="radiogroup"
+                          aria-label={t("modelSelector.contextWindow")}
+                          data-testid="model-context-group"
+                          className="flex flex-wrap gap-1"
+                        >
+                          {contextDetail.options.map((windowValue) => {
+                            const active = contextDetail.current === windowValue;
+                            const higherUsage =
+                              contextDetail.hints?.[String(windowValue)] === "higher_usage";
+                            return (
+                              <button
+                                key={windowValue}
+                                type="button"
+                                role="radio"
+                                aria-checked={active}
+                                disabled={isDetailPreview}
+                                title={
+                                  isDetailPreview
+                                    ? t("modelSelector.detailPreviewHint")
+                                    : undefined
+                                }
+                                data-testid={`model-context-option-${windowValue}`}
+                                onClick={() => onContextPick?.(windowValue)}
+                                className={[
+                                  "flex items-center gap-1.5 rounded-[8px] border px-2 py-1 text-caption-small transition-colors",
+                                  active
+                                    ? "border-border_heavy bg-bg_interaction_tertiary_hover text-text_default_primary"
+                                    : "border-border_default text-text_default_secondary",
+                                  isDetailPreview
+                                    ? "cursor-not-allowed"
+                                    : "hover:bg-bg_interaction_tertiary_hover",
+                                ].join(" ")}
+                              >
+                                <span data-testid={`model-context-value-${windowValue}`}>
+                                  {formatContextWindow(windowValue)}
+                                </span>
+                                {higherUsage ? (
+                                  <span
+                                    data-testid="model-context-hint-higher-usage"
+                                    className="text-text_default_tertiary"
+                                  >
+                                    {t("modelSelector.contextWindowHigherUsage")}
+                                  </span>
+                                ) : null}
+                                {active ? (
+                                  <Icon
+                                    name="checkSmall"
+                                    size={14}
+                                    aria-hidden="true"
+                                    className="text-text_default_primary"
+                                  />
+                                ) : null}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ) : null}
+                  </>
+                )}
+              </div>
             </div>
           )}
         </SelectPanel>
@@ -1586,7 +1735,7 @@ function ModelSelect({
       <button
         type="button"
         data-testid="model-selector-trigger"
-        aria-haspopup="menu"
+        aria-haspopup="dialog"
         aria-expanded={open}
         className="flex h-8 min-w-0 items-center gap-1 rounded-[10px] pl-2.5 pr-2 text-sm text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_hover"
       >
@@ -1778,11 +1927,18 @@ const CascadeSubmenu = forwardRef<
     anchorRef: React.RefObject<HTMLDivElement>;
     onMouseEnter: () => void;
     onMouseLeave: () => void;
+    /** Ticket 49 — report the hovered/keyboard-focused item so the
+     *  caller's detail area can follow the cursor through the
+     *  submenu. Fires on `onMouseEnter` and `onFocus` of each row
+     *  button, mirroring the reference picker's focused-key sync
+     *  (no custom arrow navigation is added; the existing keyboard
+     *  engine already moves focus, which is what triggers this). */
+    onItemFocus?: (id: string) => void;
     onPick: (id: string) => void;
     onBack: () => void;
   }
 >(function CascadeSubmenu(
-  { testId, ariaLabel, items, activeId, defaultItem, anchorRef, onMouseEnter, onMouseLeave, onPick, onBack },
+  { testId, ariaLabel, items, activeId, defaultItem, anchorRef, onMouseEnter, onMouseLeave, onItemFocus, onPick, onBack },
   ref,
 ) {
   const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
@@ -1860,6 +2016,8 @@ const CascadeSubmenu = forwardRef<
         data-disabled={item.disabled ? "true" : "false"}
         disabled={item.disabled}
         onClick={() => { if (!item.disabled) onPick(item.id); }}
+        onMouseEnter={() => { if (!item.disabled) onItemFocus?.(item.id); }}
+        onFocus={() => { if (!item.disabled) onItemFocus?.(item.id); }}
         className={[
           "flex w-full items-center gap-2 rounded-[8px] px-2 py-1 text-left transition-colors",
           item.disabled

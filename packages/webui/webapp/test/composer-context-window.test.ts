@@ -46,18 +46,24 @@ function formatContextWindow(value: number): string {
  * Mirror of the detail-area mount decision (composer.tsx
  * `contextDetail`): normalised options, `>= 2` distinct entries, and
  * the stale-pick rule (a current value outside the options is not
- * highlighted).
+ * highlighted). Ticket 49 adds the follow-focus dimension: when the
+ * detail area describes a model that is NOT the active one
+ * (`interactive === false`, the hover preview), no recorded pick is
+ * highlighted either — the record belongs to the active model.
  */
 function contextDetail(
   options: unknown,
   current: number | null | undefined,
+  interactive = true,
 ): { options: number[]; current: number | null } | null {
   const normalized = normalizeContextWindowOptions(options);
   if (normalized.length < 2) return null;
   return {
     options: normalized,
     current:
-      typeof current === "number" && normalized.includes(current) ? current : null,
+      interactive && typeof current === "number" && normalized.includes(current)
+        ? current
+        : null,
   };
 }
 
@@ -116,6 +122,15 @@ describe("contextDetail — render-branch decision table", () => {
     const detail = contextDetail([512000, 1000000], null);
     assert.ok(detail);
     assert.equal(detail.current, null);
+  });
+
+  test("ticket 49 preview (focused ≠ active): options show, nothing highlighted", () => {
+    // The recorded 512000 belongs to the ACTIVE model; the previewed
+    // model's radio group renders its own options with no highlight.
+    const detail = contextDetail([512000, 1000000], 512000, false);
+    assert.ok(detail, "preview mounts the control for its options");
+    assert.deepEqual(detail.options, [512000, 1000000]);
+    assert.equal(detail.current, null, "a preview never claims the active record");
   });
 });
 
@@ -199,5 +214,138 @@ describe("U6 wiring tripwires — composer.tsx / api.ts / i18n.ts", () => {
     const zh = i18nSource.match(/"modelSelector\.contextWindow": "([^"]+)"/g) ?? [];
     assert.equal(zh.length, 2);
     assert.notEqual(zh[0], zh[1], "en and zh values must differ (hand-written, not copied)");
+  });
+});
+
+describe("ticket 49 batch 1 — follow-focus detail area wiring tripwires", () => {
+  test("the detail container is a polite live region (A6)", () => {
+    assert.match(
+      composerSource,
+      /data-testid="model-context-detail"\s*\n\s*aria-live="polite"/,
+      "the detail container must carry aria-live=polite for SR announcements",
+    );
+  });
+
+  test("the model selector trigger claims dialog semantics (A8)", () => {
+    assert.match(
+      composerSource,
+      /data-testid="model-selector-trigger"\s*\n\s*aria-haspopup="dialog"/,
+      "the two-area picker trigger must advertise aria-haspopup=dialog",
+    );
+  });
+
+  test("hover/keyboard focus on a cascade row feeds the detail area (A2)", () => {
+    assert.match(
+      composerSource,
+      /const \[focusedModelId, setFocusedModelId\] = useState<string \| null>\(null\);/,
+      "ModelSelect keeps a focused-row state",
+    );
+    assert.match(
+      composerSource,
+      /onItemFocus\?: \(id: string\) => void;/,
+      "CascadeSubmenu accepts an optional onItemFocus prop",
+    );
+    assert.match(
+      composerSource,
+      /onMouseEnter=\{\(\) => \{ if \(!item\.disabled\) onItemFocus\?\.\(item\.id\); \}\}/,
+      "row mouseenter reports the hovered item",
+    );
+    assert.match(
+      composerSource,
+      /onFocus=\{\(\) => \{ if \(!item\.disabled\) onItemFocus\?\.\(item\.id\); \}\}/,
+      "row focus reports the keyboard-focused item",
+    );
+    assert.match(
+      composerSource,
+      /onItemFocus=\{setFocusedModelId\}/,
+      "the model cascade hands focus reports to the focused-row state",
+    );
+  });
+
+  test("previewed (focused ≠ active) radios render disabled, picks stay active-model-only", () => {
+    assert.match(
+      composerSource,
+      /const isDetailPreview = detailTarget != null && detailTarget\.id !== value;/,
+      "the preview predicate must compare the detail target to the active id",
+    );
+    assert.match(
+      composerSource,
+      /disabled=\{isDetailPreview\}/,
+      "context radios are disabled while previewing a non-active model",
+    );
+    assert.match(
+      composerSource,
+      /onContextPick\?\.\(windowValue\)/,
+      "the active-model pick path is unchanged",
+    );
+  });
+
+  test("empty states carry testids (A5): no-target and no-adjustable-settings", () => {
+    assert.match(composerSource, /data-testid="model-select-detail-empty"/);
+    assert.match(composerSource, /data-testid="model-select-detail-no-settings"/);
+    assert.match(
+      composerSource,
+      /t\("modelSelector\.detailEmpty"\)/,
+      "the no-target hint reads its copy from i18n",
+    );
+    assert.match(
+      composerSource,
+      /t\("modelSelector\.detailNoSettings"\)/,
+      "the per-model hint reads its copy from i18n",
+    );
+  });
+
+  test("the focused model's thinking levels render as read-only badges in the detail area", () => {
+    assert.match(
+      composerSource,
+      /const detailLevels = detailTarget\?\.thinkingLevels \?\? \[\];/,
+      "the detail levels derive from the focused model, not the active one",
+    );
+    assert.match(
+      composerSource,
+      /data-testid=\{`model-select-detail-level-\$\{level\}`\}/,
+      "each level badge carries a per-level testid",
+    );
+    assert.match(
+      composerSource,
+      /!isDetailPreview && detailTarget\.id === value && thinking === level/,
+      "a level is highlighted only for the active model with a supported record",
+    );
+  });
+
+  test("i18n carries the four ticket-49 keys in BOTH language buckets", () => {
+    for (const key of [
+      "modelSelector.detailEmpty",
+      "modelSelector.detailNoSettings",
+      "modelSelector.detailPreview",
+      "modelSelector.detailPreviewHint",
+    ]) {
+      const hits = i18nSource.match(new RegExp(`"${key}":`, "g")) ?? [];
+      assert.equal(
+        hits.length,
+        2,
+        `${key} must appear exactly twice (en + zh); found ${hits.length}`,
+      );
+    }
+  });
+
+  test("red lines intact: provider grouping and all three thinking displays survive", () => {
+    // B1 — provider grouping with sticky headers and the Other bucket.
+    assert.match(composerSource, /model\.provider \?\? "__other"/);
+    assert.match(composerSource, /data-testid=\{`model-select-group-label-\$\{group\.id\}`\}/);
+    assert.match(composerSource, /sticky top-0 z-10/);
+    // B2 ① — the active model row's level badge.
+    assert.match(composerSource, /data-testid=\{`model-select-row-level-badge-\$\{modelSlug\(m\.id\)\}`\}/);
+    // B2 ③ — the editable control stays outside the picker.
+    assert.match(composerSource, /data-testid="thinking-effort-trigger"/);
+    // B10 — the untouched U6 testids.
+    for (const anchor of [
+      'data-testid="model-context-group"',
+      "model-context-option-${windowValue}",
+      "model-context-value-${windowValue}",
+      'data-testid="model-context-hint-higher-usage"',
+    ]) {
+      assert.ok(composerSource.includes(anchor), `anchor must survive: ${anchor}`);
+    }
   });
 });
