@@ -23,7 +23,7 @@
 import { test, describe, before, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -70,10 +70,16 @@ before(async (t) => {
   // below). Must live inside _tmpWorkspaceRoot so containment accepts it.
   // assertWorkspacePath's realpathSync requires the path to exist, so we
   // mkdir it (and every other workspace dir the tests use) here.
-  DEFAULT_DIR = join(_tmpWorkspaceRoot, "default-workspace");
-  mkdirSync(DEFAULT_DIR, { recursive: true });
+  //
+  // macOS /tmp is a symlink to /private/tmp — resolve once so the
+  // env var AND the assertion constants use the SAME form
+  // assertWorkspacePath normalizes to (see fs-write.test.js / #81
+  // commit 7ac8f07 — the macOS CI fix the acceptance review cited).
+  // mkdirSync first because realpathSync needs the target to exist.
+  mkdirSync(join(_tmpWorkspaceRoot, "default-workspace"), { recursive: true });
   mkdirSync(join(_tmpWorkspaceRoot, "projectA"), { recursive: true });
   mkdirSync(join(_tmpWorkspaceRoot, "projectB"), { recursive: true });
+  DEFAULT_DIR = realpathSync(join(_tmpWorkspaceRoot, "default-workspace"));
   process.env.MCODE_WORKSPACE = DEFAULT_DIR;
   // Allowed roots — only the test temp dir. DEFAULT_WORKSPACE lives
   // inside it (set just above); every per-test ws is also inside it;
@@ -167,8 +173,15 @@ const A_WS = "/ws-current/projectA"; // same prefix as current — irrelevant fo
 // roots we just created. Pin absolute paths to the temp root so the
 // containment gate passes for projectA / projectB but rejects everything
 // else.
+//
+// macOS /tmp is a symlink to /private/tmp — on Linux the joined
+// `/tmp/<...>` form equals the realpath form, on macOS they differ.
+// Every assertion must compare against the SAME form
+// assertWorkspacePath returns, so build the constants through
+// realpathSync after the dirs exist (mirrors fs-write.test.js / #81
+// commit 7ac8f07 — the macOS CI fix the acceptance review cited).
 function realWs(name) {
-  return join(_tmpWorkspaceRoot, name);
+  return realpathSync(join(_tmpWorkspaceRoot, name));
 }
 const A_REAL = realWs("projectA");
 const B_REAL = realWs("projectB");

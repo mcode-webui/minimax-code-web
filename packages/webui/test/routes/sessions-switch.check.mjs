@@ -37,7 +37,7 @@
 import { test, describe, before, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -100,24 +100,19 @@ let _tmpEventsDir;
 let _tmpDbDir;
 // s39 (webui-parity ticket 39): assertWorkspacePath's realpathSync
 // requires the workspace path to exist on disk. Pre-existing tests
-// use "/tmp/webui-test-A" as a placeholder. Each test file that needs
-// it creates its OWN copy (cross-file mkdir ordering is not a stable
-// contract under node --test's file-level parallelism — that was the
-// CI red the acceptance pass flagged). Cleanup is best-effort in
-// `after()` so a stale /tmp dir does not leak across runs.
-const TEST_WORKSPACE_DIRS = [
-  "/tmp/webui-test-A",
-  "/tmp/webui-test-B",
-];
+// need workspace fixture paths — built via mkdtempSync under
+// os.tmpdir() and immediately realpath'd so every assertion compares
+// against the same form the server returns (Linux /tmp vs macOS
+// /private/tmp symlink — see fs-write.test.js, #81 commit 7ac8f07).
+// Each file builds its own pair so cross-file collision is impossible.
+const WS_A = realpathSync(mkdtempSync(join(tmpdir(), "webui-test-A-")));
+const WS_B = realpathSync(mkdtempSync(join(tmpdir(), "webui-test-B-")));
 before(async (t) => {
   _tmpEventsDir = mkdtempSync(join(tmpdir(), "webui-switch-test-events-"));
   process.env.MCODE_WEBUI_EVENTS_PATH = join(_tmpEventsDir, "events.ndjson");
   _tmpDbDir = mkdtempSync(join(tmpdir(), "webui-switch-test-db-"));
   process.env.MCODE_RUNTIME_DB = join(_tmpDbDir, "runtime-state.sqlite");
   writeFileSync(process.env.MCODE_RUNTIME_DB, "");
-  for (const d of TEST_WORKSPACE_DIRS) {
-    try { mkdirSync(d, { recursive: true }); } catch {}
-  }
 
   await setupMocks(t, {
     mavis: { applyMavisUsageToCs: async () => {} }, // no spawn in switch path
@@ -158,11 +153,11 @@ after(() => {
   if (_tmpDbDir) {
     try { rmSync(_tmpDbDir, { recursive: true, force: true }); } catch {}
   }
-  // Cleanup is best-effort: this file's own before() created both
-  // dirs, but another test file in the same gate might still be using
-  // them. Leaving them on disk is the safer choice; the owning
-  // fixture (sessions.check.mjs) cleans them up too on its own path.
-  // force:true so a leaked file inside does not block teardown.
+  // WS_A / WS_B are unique to this file's load (mkdtempSync) — safe
+  // to remove here. force:true in case a test wrote content into them.
+  for (const d of [WS_A, WS_B]) {
+    try { rmSync(d, { recursive: true, force: true }); } catch {}
+  }
 });
 
 function fakeReq(body) {
@@ -186,7 +181,7 @@ function fakeRes() {
   };
 }
 
-function newCs(ws = "/tmp/webui-test-A") {
+function newCs(ws = WS_A) {
   const cs = makeClientState();
   cs.workspace = { dir: ws, branch: null, tree: null };
   return cs;
@@ -274,7 +269,7 @@ describe("handleSwitchSession — v2 title fast path", () => {
           id: "webui-ph",
           mcodeSessionId: MVS_T,
           title: "Mcode session", // placeholder created by the broken-title era
-          workspace: "/tmp/webui-test-A",
+          workspace: WS_A,
           createdAt: 1,
           updatedAt: 1,
           chat: ["● existing history"],
@@ -369,7 +364,7 @@ describe("handleSwitchSession — v2 transcript backfill", () => {
           id: "webui-empty",
           mcodeSessionId: MVS_R,
           title: "Has mcode sid, no chat",
-          workspace: "/tmp/webui-test-A",
+          workspace: WS_A,
           createdAt: 1,
           updatedAt: 1,
           chat: [],
@@ -392,7 +387,7 @@ describe("handleSwitchSession — v2 transcript backfill", () => {
           id: "webui-keep",
           mcodeSessionId: MVS_R,
           title: "Keep my chat",
-          workspace: "/tmp/webui-test-A",
+          workspace: WS_A,
           createdAt: 1,
           updatedAt: 1,
           chat: ["● mine already"],
