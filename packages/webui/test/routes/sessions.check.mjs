@@ -72,15 +72,36 @@ const DB_FIXTURE_SKIP = !SQLITE3_CLI_OK
 // intent + outcome events (fail-closed) on every gated delete — these
 // must never land in the operator's real ~/.mcode-webui/events.ndjson.
 let _tmpEventsDir;
+// s39 (webui-parity ticket 39): handleSwitchSession now runs the
+// target session's stored workspace through assertWorkspacePath's
+// realpathSync, which only succeeds for paths that exist on disk.
+// Pre-existing tests use "/tmp/webui-test-A" / "/tmp/webui-test-B" as
+// placeholder workspaces — node --test runs files in parallel
+// subprocesses; cross-file mkdir is not a stable contract, so this
+// file creates BOTH dirs in its own before(). sessions-switch.check.mjs
+// ALSO creates them in its before() (race-safe). after() does NOT
+// remove them — that races with sibling test files still using them.
+const TEST_WORKSPACE_DIRS = [
+  "/tmp/webui-test-A",
+  "/tmp/webui-test-B",
+];
 before(async (t) => {
   _tmpEventsDir = mkdtempSync(join(tmpdir(), "webui-sessions-test-events-"));
   process.env.MCODE_WEBUI_EVENTS_PATH = join(_tmpEventsDir, "events.ndjson");
+  for (const d of TEST_WORKSPACE_DIRS) {
+    try { mkdirSync(d, { recursive: true }); } catch {}
+  }
 });
 after(async () => {
   delete process.env.MCODE_WEBUI_EVENTS_PATH;
   if (_tmpEventsDir) {
     try { rmSync(_tmpEventsDir, { recursive: true, force: true }); } catch {}
   }
+  // Do NOT rmSync the test workspace dirs here: node --test runs
+  // files in parallel subprocesses, and sessions-switch.check.mjs
+  // also depends on /tmp/webui-test-A existing for the duration of
+  // its run. Removing the dirs in this file's after() races with
+  // that file's tests. The dirs are tiny and harmless; leave them.
 });
 
 let deleteMcodeSessionFromDb, SQLITE3_BIN;

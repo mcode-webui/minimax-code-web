@@ -98,18 +98,26 @@ let _acpTitleCalls = 0;
 // module-load time.
 let _tmpEventsDir;
 let _tmpDbDir;
+// s39 (webui-parity ticket 39): assertWorkspacePath's realpathSync
+// requires the workspace path to exist on disk. Pre-existing tests
+// use "/tmp/webui-test-A" as a placeholder. Each test file that needs
+// it creates its OWN copy (cross-file mkdir ordering is not a stable
+// contract under node --test's file-level parallelism — that was the
+// CI red the acceptance pass flagged). Cleanup is best-effort in
+// `after()` so a stale /tmp dir does not leak across runs.
+const TEST_WORKSPACE_DIRS = [
+  "/tmp/webui-test-A",
+  "/tmp/webui-test-B",
+];
 before(async (t) => {
   _tmpEventsDir = mkdtempSync(join(tmpdir(), "webui-switch-test-events-"));
   process.env.MCODE_WEBUI_EVENTS_PATH = join(_tmpEventsDir, "events.ndjson");
   _tmpDbDir = mkdtempSync(join(tmpdir(), "webui-switch-test-db-"));
   process.env.MCODE_RUNTIME_DB = join(_tmpDbDir, "runtime-state.sqlite");
   writeFileSync(process.env.MCODE_RUNTIME_DB, "");
-  // s39 (webui-parity ticket 39): the switch path now runs the target
-  // session's stored workspace through assertWorkspacePath's realpathSync,
-  // which only succeeds when the directory exists. Pre-existing tests
-  // use /tmp/webui-test-A as a placeholder workspace — pin a real dir on
-  // disk so containment accepts it.
-  mkdirSync("/tmp/webui-test-A", { recursive: true });
+  for (const d of TEST_WORKSPACE_DIRS) {
+    try { mkdirSync(d, { recursive: true }); } catch {}
+  }
 
   await setupMocks(t, {
     mavis: { applyMavisUsageToCs: async () => {} }, // no spawn in switch path
@@ -150,6 +158,11 @@ after(() => {
   if (_tmpDbDir) {
     try { rmSync(_tmpDbDir, { recursive: true, force: true }); } catch {}
   }
+  // Cleanup is best-effort: this file's own before() created both
+  // dirs, but another test file in the same gate might still be using
+  // them. Leaving them on disk is the safer choice; the owning
+  // fixture (sessions.check.mjs) cleans them up too on its own path.
+  // force:true so a leaked file inside does not block teardown.
 });
 
 function fakeReq(body) {
