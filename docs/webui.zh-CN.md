@@ -171,6 +171,41 @@ exec 回合的代价——以下都是当前真实存在的行为，选择权限
 
 接口契约（字段、两条下发通道、会话启动时的重放规则）见 [`webui.md`](webui.md) 的 Thinking levels 一节。
 
+## 切换会话会带工作区一起切（webui-parity ticket 39）
+
+切换到另一个会话时，当前工作区会跟到目标会话上次所在的工作区。文件树（slice 01）在新目录下重新取根；旧项目在 `sessionStorage` 里的 `webui:files-tree:<workspaceDir>` 展开态保留不动，所以切回去仍是同一份展开。
+
+### 契约
+
+`POST /api/sessions/switch`（`routes/sessions.js#handleSwitchSession`）按以下顺序解析工作区：
+
+1. **目标会话存的 `workspace`**——即该会话上一次被打开时所在的工作区。该字段在旧的实现里被污染过，所以这里读出来就是用户上次看到的样子。
+2. **`DEFAULT_WORKSPACE`**（环境变量 `MCODE_WORKSPACE` > mcode TUI 的 `cwd.json` > `homedir()`），当存的值为空字符串时。空值是老会话、或被 ticket 39 标记为 ② 污染过的记录会出现的形状。
+3. **解析得到的路径无法通过 `assertWorkspacePath` 围栏**时（例如会话记录的工作区落在用户后续收窄的 `MCODE_WEBUI_WORKSPACE_ROOTS` 之外），**400 拒绝**，不让用户带着非法工作区进入路径。
+
+选定的路径走的是工作区选择器（`/api/workspace`）、`browseWorkspace`（`/api/workspace/browse`）、新建会话 POST、`/api/fs/*` 共用的同一道 `assertWorkspacePath` 围栏——拒绝切到越界路径，与选择器拒绝落在越界位置是同一条边界。
+
+切换**永远不会**用前一个 `cs.workspace.dir` 覆盖目标会话存的 `workspace`。那是旧代码的行为（ticket 39 的 ② 污染路径）：在项目 A 首次打开某个 `mvs_` 会话时，新建的壳记录被印上 A 的路径，于是按项目分组的会话表里把 A 的目录复制给了每一个从 A 打开的会话。修复后，新建壳的 `workspace: ""`，由后续的「读目标，缺失则 DEFAULT_WORKSPACE」逻辑接管。
+
+切换**不会**更新 `cs.lastUsedWorkspace`。侧栏"最近"排序（slice 07）只由 `handleSend` 写——切换是浏览，不是创作；旧版"点哪个会话哪个就置顶"的用户反馈已经把那条契约钉死了。
+
+### Mid-run 安全
+
+回合正在跑的时候切换会话**不会**打断这个回合。回合的所有权和流缓冲以 `(cid, mcodeSessionId)` 为键存在 `lib/state-bus.js#runChatByCid`，与工作区无关。引擎子进程持有回合开始时的 cwd，新的 `cs.workspace.dir` 只是"接下来要在哪个工作区里看"。终态时（`routes/chat.js` finalize drain）的行为保持不变——仍在查看就写进 `cs.chat`，已切走就走 `appendChatToSession(owningSid, lines)`。
+
+### 用户能看到什么
+
+- **侧效**：文件树面板在新工作区下重新取根；旧工作区的展开/过滤/显示隐藏项仍存在 `sessionStorage` 里，新工作区从它自己存过的展开态（若从未打开则为空）开始。
+- **失败形态**：越界的工作区返回 `400`，带围栏的明确文案（`工作区越界: <path> 不在任何允许根内。允许根: …`）。`cs.workspace.dir` 不会被改，前一个工作区继续生效。
+- **历史上被污染过的会话**（修复之前被打上过错误工作区路径的记录）：新规则会原样读出存的值。用户看到的是被污染过的目录的文件树，需要打开工作区选择器重选一次预期目录；那一次重选会把存的值改写成 canonical realpath。
+
+### 改动落在哪里（给后续维护者）
+
+- `routes/sessions.js#handleSwitchSession` 新增 `_resolveSwitchWorkspace(target, currentWs)`，在 target 解析完成、`resetContext` 之前写入 `cs.workspace = { dir: switchWs.dir, branch: null, tree: null }`。
+- `routes/sessions.js#handleSwitchSession` 不再向 `ensureOverlayForMcodeSid` 传 `workspace: ws`——新建壳的 `workspace: ""`，由读路径在首次 `mvs_` 接触时回退到 `DEFAULT_WORKSPACE`。
+- 响应负载多了 `session.workspace` 和 `session.workspaceFallback`；尾部 `pushStateFor(cid)` 推 SSE 时原样带上新的 `cs.workspace.dir`，`FilesPanel` 通过 `useSessionContext()` 订阅自然重新渲染，前端**不**需要为了这次修复改动任何接线。
+- `routes/sessions.js#_eventsAppend("session.switch", …)` 写入 `workspace` 和 `workspaceFallback`，事后追查"为什么文件树跳了"时可以从审计链里直接定位。
+
 ## 文件树（已发布的 UI）
 
 下方每个已发布的文件树、面板与列都给出组件文件锚点与一个

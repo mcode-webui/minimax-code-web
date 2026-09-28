@@ -167,6 +167,96 @@ Contract details:
 
 The operator-facing view — which models show what control, and why MiniMax-M3 only has on/off — is the thinking section of [`webui.zh-CN.md`](webui.zh-CN.md).
 
+## Session switch follows workspace (webui-parity ticket 39)
+
+Switching to another session re-points the active workspace to the
+session's stored workspace. The file tree (slice 01) re-roots under
+the new directory; the old project's `webui:files-tree:<workspaceDir>`
+key is left intact in `sessionStorage` so the user returns to the
+same expanded set if they switch back.
+
+### Contract
+
+`POST /api/sessions/switch` (`routes/sessions.js#handleSwitchSession`)
+resolves the workspace in this order:
+
+1. **Target session's stored `workspace`** — that is the workspace the
+   user was in when they last had this session open, modulo any
+   pollution a previous code path introduced.
+2. **`DEFAULT_WORKSPACE`** (env `MCODE_WORKSPACE` > mcode TUI
+   `cwd.json` > `homedir()`) when the stored value is empty. Empty
+   is the shape legacy sessions or `②`-polluted records carry.
+3. **Refuse with `400`** if the resolved path fails
+   `assertWorkspacePath` containment (e.g. the user tightened
+   `MCODE_WEBUI_WORKSPACE_ROOTS` since the session was last opened).
+
+The chosen path runs through the same `assertWorkspacePath` gate that
+the workspace picker (`/api/workspace`),
+`browseWorkspace` (`/api/workspace/browse`), the new-session POST, and
+`/api/fs/*` all funnel through — refusing to switch into an
+out-of-bounds path is the same boundary the picker refuses to land on.
+
+The switch NEVER overwrites the target session's stored `workspace`
+with the previous `cs.workspace.dir`. That was the pre-fix behaviour
+(ticket 39's ② pollution path): every first-touch of an `mvs_`
+session from project A inherited A's path, so the per-project
+session grouping ended up duplicating A's directory for every
+session the user opened from A. Newly-created overlays now start with
+`workspace: ""`; the target-first read picks `DEFAULT_WORKSPACE` for
+them.
+
+The switch does NOT update `cs.lastUsedWorkspace`. The session bar's
+"recent" sort (slice 07) is written only by `handleSend`; switching is
+browsing, not authoring, and the previous "click any session and the
+session jumps to the top" behaviour was the report that pinned that
+contract.
+
+### Mid-run safety
+
+Switching mid-run does NOT abort the in-flight turn. The run's
+ownership and stream buffer are keyed by `(cid, mcodeSessionId)` in
+`lib/state-bus.js#runChatByCid`, not by workspace. The engine child
+process holds its own cwd from when the turn started; the new
+`cs.workspace.dir` is purely the next-viewing surface. Finalize-time
+behaviour (`routes/chat.js` finalize drain) is unchanged: still-viewing
+writes into `cs.chat`; switched-away writes via
+`appendChatToSession(owningSid, lines)`.
+
+### What the user sees
+
+- **Side effect**: the file-tree panel re-roots under the new
+  workspace's root; expansion / filter / showHidden for the old
+  workspace stay preserved in `sessionStorage`, the new workspace
+  starts at its own stored expansion (or empty if never opened).
+- **Failure mode**: an out-of-bounds stored workspace returns `400`
+  with the gate's actionable message
+  (`工作区越界: <path> 不在任何允许根内。允许根: …`). `cs.workspace.dir`
+  is NOT re-pointed; the previous workspace stays active.
+- **Pre-existing polluted sessions** (recorded before this fix carried
+  the previous project's path): the new rule reads the stored value
+  verbatim. The user sees the polluted path's file tree until they
+  open the workspace picker and re-pick the intended directory; that
+  one re-pick rewrites the stored value to the canonical realpath.
+
+### What contributors will change
+
+- `routes/sessions.js#handleSwitchSession` adds
+  `_resolveSwitchWorkspace(target, currentWs)` and writes
+  `cs.workspace = { dir: switchWs.dir, branch: null, tree: null }`
+  after the target is resolved and before `resetContext`.
+- `routes/sessions.js#handleSwitchSession` no longer passes
+  `workspace: ws` to `ensureOverlayForMcodeSid` — new overlays start
+  with `workspace: ""`; the read picks `DEFAULT_WORKSPACE` for
+  first-touch `mvs_` switches.
+- The response payload gains `session.workspace` and
+  `session.workspaceFallback`; the SSE state push (handled by
+  `pushStateFor(cid)` at the end) carries the new `cs.workspace.dir`
+  verbatim, so `FilesPanel`'s `useSessionContext()` subscription
+  re-renders without any client-side wiring change.
+- `routes/sessions.js#_eventsAppend("session.switch", …)` records
+  `workspace` and `workspaceFallback` so post-mortems can answer
+  "why did the file tree jump".
+
 ## File tree (delivered UI)
 
 Every shipped file tree, panel and column evidence is `grep`-able. The list

@@ -33,7 +33,7 @@ import {
   clients,
   runChatViewChat,
 } from "../lib/state-bus.js";
-import { MCODE_RUNTIME_DB } from "../lib/config.js";
+import { MCODE_RUNTIME_DB, DEFAULT_WORKSPACE } from "../lib/config.js";
 import { getSessionTree, invalidateSessionTree } from "../lib/session-tree.js";
 import { authorize } from "../lib/authorize.js";
 import { pushAlert } from "../lib/alerts.js";
@@ -45,6 +45,55 @@ import { append as _eventsAppend } from "../lib/events.js";
 // funnel through lib/workspace.js). Reuse assertWorkspacePath so every
 // workspace write lands on the same boundary.
 import { assertWorkspacePath } from "../lib/workspace.js";
+
+// _resolveSwitchWorkspace — pick the workspace the switched-into session
+// "belongs to" and run it through the same containment gate that the
+// workspace picker / handleNewSession / browseWorkspace all funnel through.
+//
+// Source priority (s39 — webui-parity ticket 39: file tree must follow the
+// switched session):
+//
+//   1. The target session's stored `workspace` field — that IS the
+//      workspace the user was in when they last had it open, modulo any
+//      pollution the old code introduced. Real existence + containment
+//      are checked; an out-of-bounds or stale value surfaces as a 400
+//      so the user can either widen the allowed roots or pick a fresh
+//      workspace, instead of silently landing on the previous project.
+//
+//   2. DEFAULT_WORKSPACE (env MCODE_WORKSPACE > mcode TUI cwd.json > homedir)
+//      when the stored value is empty. Empty is also the value seen for
+//      (a) records created by the old code that polled freshly-typed mvs
+//      sessions with the current cs.workspace (the data-corruption bug
+//      this ticket fixes), and (b) older sessions that pre-date the
+//      workspace field. DEFAULT_WORKSPACE is already in the default
+//      allowed-roots surface (see getAllowedWorkspaceRoots), so the
+//      containment check accepts it without env setup.
+//
+// Critical invariants:
+//   - The switch NEVER keeps cs.workspace on the prior project. The
+//     user-reported symptom was exactly that: "the file tree still
+//     shows the previous project's files". Falling back to current ws
+//     when target.workspace is empty is the bug we are removing.
+//   - The switch NEVER writes cs.workspace.dir to a path the
+//     containment gate rejected. A 400 with the gate's actionable
+//     error is the only acceptable outcome.
+//   - The switch NEVER overwrites a target session's stored workspace
+//     with the current cs.workspace. That was the ② pollution path —
+//     re-introducing it would re-break the regression we just fixed.
+//     New overlay records (mvs_ first-touch) get workspace:"" here; the
+//     target-first read picks DEFAULT_WORKSPACE for them.
+function _resolveSwitchWorkspace(target, currentWs) {
+  const raw = target && typeof target.workspace === "string" ? target.workspace.trim() : "";
+  // Empty / non-string / null → DEFAULT_WORKSPACE. Never the current cs
+  // workspace — that's the user-reported "stays on the old project"
+  // failure mode this fix removes.
+  const candidate = raw || DEFAULT_WORKSPACE;
+  const gate = assertWorkspacePath(candidate);
+  if (!gate.ok) {
+    return { ok: false, error: gate.error, attempted: candidate };
+  }
+  return { ok: true, dir: gate.path, real: gate.real, fallback: !raw };
+}
 
 /**
  * Detect the cumulative-render pollution pattern in a stored chat
@@ -305,8 +354,21 @@ export async function handleSwitchSession(req, res, ctx) {
       // uuid wrapper → the same conversation had two identities, the
       // direct cause of the "extra untitled entry" sidebar confusion.
       // Repeated switches now hit the same record.
+      //
+      // s39 (webui-parity ticket 39): the workspace argument is GONE.
+      // The old `workspace: ws` here stamped the freshly-created overlay
+      // with the CURRENT cs.workspace, so every first-touch of an mvs_
+      // session from project A inherited project A's path. Switching
+      // back to that mvs_ session from project B then either (a) was
+      // ignored by the read-only switch path, leaving the file tree
+      // stuck on B, or (b) — under the prior mutation — overwrote the
+      // overlay's workspace with B's path, polluting every per-project
+      // grouping. New overlays start with workspace:"" (set inside
+      // ensureOverlayForMcodeSid when no value is passed); the
+      // target-first read below then lands on DEFAULT_WORKSPACE for
+      // first-touch mvs_ switches, with no per-session pollution.
       const existed = findOverlayForMcodeSid(all, id);
-      target = ensureOverlayForMcodeSid(all, id, { title, workspace: ws });
+      target = ensureOverlayForMcodeSid(all, id, { title });
       target.updatedAt = Date.now();
       saveSessions(all);
       console.log(
@@ -418,6 +480,39 @@ export async function handleSwitchSession(req, res, ctx) {
     }
   }
   const prevSid = cs.sessionId;
+  // s39 (webui-parity ticket 39): resolve the target session's workspace
+  // and re-point cs.workspace.dir to it BEFORE any other cs mutation,
+  // so the SSE state push (pushStateFor at the end) and the response
+  // session payload both carry the new workspace in lockstep with the
+  // session-id switch. The pre-fix behaviour read cs.workspace without
+  // writing it, which left the file tree bound to the previous project;
+  // this is the user-reported defect the ticket fixes.
+  //
+  // Containment gate is mandatory (s39 boundary): session-stored
+  // workspace is historical input — it may point to a directory the
+  // user removed from the allowed roots since the session was last
+  // opened, or to a path that was legal at the time but no longer is.
+  // assertWorkspacePath runs the same boundary the workspace picker,
+  // browseWorkspace, and the new-session POST funnel through; refusing
+  // here keeps that boundary singular.
+  const currentWs = (cs && cs.workspace && cs.workspace.dir) || "";
+  const switchWs = _resolveSwitchWorkspace(target, currentWs);
+  if (!switchWs.ok) {
+    console.log(
+      `[switch] cid=${cid} REFUSED id=${id.substring(0, 12)}… reason=workspace_containment attempted="${switchWs.attempted}"`,
+    );
+    res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
+    return res.end(JSON.stringify({
+      ok: false,
+      error: switchWs.error,
+      attempted: switchWs.attempted,
+    }));
+  }
+  // cs.sessionId / mcodeSessionId / title / chat come first; the
+  // workspace write is paired with the session-id swap. Last-used-ws
+  // is intentionally untouched (a switch is browsing, not a workspace
+  // change — see the comment on handleWorkspaceChange for the same
+  // reasoning that protects lastUsedWorkspace from the switch path).
   cs.sessionId = target.id;
   cs.mcodeSessionId = target.mcodeSessionId || null;
   cs.sessionTitle = target.title || "Untitled";
@@ -428,12 +523,21 @@ export async function handleSwitchSession(req, res, ctx) {
     sessionOutput: 0,
     sessionTotal: 0,
   };
-  // Switching session must NOT mutate cs.workspace.dir or
-  // cs.lastUsedWorkspace — both are written only by their own flows
-  // (workspace change / send prompt). Switching is browsing; pinning
-  // the browsed workspace to the top of the sidebar was the
-  // user-reported "click any session in C and C auto-sorts first"
-  // behavior.
+  cs.workspace = {
+    dir: switchWs.dir,
+    branch: null,
+    tree: null,
+  };
+  if (switchWs.fallback) {
+    console.log(
+      `[switch] cid=${cid} target ${target.id.substring(0, 8)}… had no workspace — fell back to DEFAULT_WORKSPACE=${switchWs.dir}`,
+    );
+  }
+  // Switching session must NOT mutate cs.lastUsedWorkspace — last-used
+  // is written only by handleSend (workspace change / send prompt);
+  // switching is browsing; pinning the browsed workspace to the top of
+  // the sidebar was the user-reported "click any session in C and C
+  // auto-sorts first" behavior.
   resetContext(cs);
   // Sync real token usage from mavis db on switch to a historical session
   if (cs.mcodeSessionId) {
@@ -460,6 +564,13 @@ export async function handleSwitchSession(req, res, ctx) {
         matchKind: matchKind || "new_from_mcode",
         mcodeSessionId: cs.mcodeSessionId || "",
         title: cs.sessionTitle,
+        // s39 (webui-parity ticket 39): record which workspace the
+        // switch landed on, plus whether it was a fallback to
+        // DEFAULT_WORKSPACE. Both pieces are useful when auditing
+        // "why did the file tree change" or "why is the sidebar
+        // sorting by a directory I never opened".
+        workspace: switchWs.dir,
+        workspaceFallback: !!switchWs.fallback,
       },
     });
   } catch (e) {
@@ -467,7 +578,7 @@ export async function handleSwitchSession(req, res, ctx) {
   }
   pushStateFor(cid);
   console.log(
-    `[switch] cid=${cid} OK prev.sessionId=${prevSid ? prevSid.substring(0, 8) : "null"}… → new.sessionId=${cs.sessionId.substring(0, 8)}… title="${cs.sessionTitle}" chatLen=${cs.chat.length}`,
+    `[switch] cid=${cid} OK prev.sessionId=${prevSid ? prevSid.substring(0, 8) : "null"}… → new.sessionId=${cs.sessionId.substring(0, 8)}… title="${cs.sessionTitle}" chatLen=${cs.chat.length} workspace=${switchWs.dir}${switchWs.fallback ? " (DEFAULT_WORKSPACE fallback)" : ""}`,
   );
   res.writeHead(200, { "Content-Type": "application/json" });
   return res.end(
@@ -477,6 +588,13 @@ export async function handleSwitchSession(req, res, ctx) {
         id: target.id,
         mcodeSessionId: cs.mcodeSessionId,
         title: cs.sessionTitle,
+        // s39 (webui-parity ticket 39): surface the new workspace in
+        // the response so the client (url-restore + session-tree) can
+        // update its in-memory state without waiting for the SSE
+        // state-bus push to land — important for the file-tree panel
+        // that re-roots under the new workspaceDir on first render.
+        workspace: switchWs.dir,
+        workspaceFallback: !!switchWs.fallback,
         // session-isolation/02 (run-mirror): switching back to the
         // session that is mid-run must show what it produced so far.
         // cs.chat holds the record's lines; the live turn's output is

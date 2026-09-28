@@ -37,7 +37,7 @@
 import { test, describe, before, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -104,6 +104,12 @@ before(async (t) => {
   _tmpDbDir = mkdtempSync(join(tmpdir(), "webui-switch-test-db-"));
   process.env.MCODE_RUNTIME_DB = join(_tmpDbDir, "runtime-state.sqlite");
   writeFileSync(process.env.MCODE_RUNTIME_DB, "");
+  // s39 (webui-parity ticket 39): the switch path now runs the target
+  // session's stored workspace through assertWorkspacePath's realpathSync,
+  // which only succeeds when the directory exists. Pre-existing tests
+  // use /tmp/webui-test-A as a placeholder workspace — pin a real dir on
+  // disk so containment accepts it.
+  mkdirSync("/tmp/webui-test-A", { recursive: true });
 
   await setupMocks(t, {
     mavis: { applyMavisUsageToCs: async () => {} }, // no spawn in switch path
@@ -167,7 +173,7 @@ function fakeRes() {
   };
 }
 
-function newCs(ws = "/ws-A") {
+function newCs(ws = "/tmp/webui-test-A") {
   const cs = makeClientState();
   cs.workspace = { dir: ws, branch: null, tree: null };
   return cs;
@@ -255,7 +261,7 @@ describe("handleSwitchSession — v2 title fast path", () => {
           id: "webui-ph",
           mcodeSessionId: MVS_T,
           title: "Mcode session", // placeholder created by the broken-title era
-          workspace: "/ws-A",
+          workspace: "/tmp/webui-test-A",
           createdAt: 1,
           updatedAt: 1,
           chat: ["● existing history"],
@@ -350,7 +356,7 @@ describe("handleSwitchSession — v2 transcript backfill", () => {
           id: "webui-empty",
           mcodeSessionId: MVS_R,
           title: "Has mcode sid, no chat",
-          workspace: "/ws-A",
+          workspace: "/tmp/webui-test-A",
           createdAt: 1,
           updatedAt: 1,
           chat: [],
@@ -373,7 +379,7 @@ describe("handleSwitchSession — v2 transcript backfill", () => {
           id: "webui-keep",
           mcodeSessionId: MVS_R,
           title: "Keep my chat",
-          workspace: "/ws-A",
+          workspace: "/tmp/webui-test-A",
           createdAt: 1,
           updatedAt: 1,
           chat: ["● mine already"],

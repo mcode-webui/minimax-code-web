@@ -3608,6 +3608,7 @@
     "packages/webui/test/routes/provider-presets.check.mjs",
     "packages/webui/test/routes/providers.check.mjs",
     "packages/webui/test/routes/sessions-search.check.mjs",
+    "packages/webui/test/routes/sessions-switch-workspace-follow.check.mjs",
     "packages/webui/test/routes/sessions-switch.check.mjs",
     "packages/webui/test/routes/sessions.check.mjs",
     "packages/webui/test/routes/settings.check.mjs",
