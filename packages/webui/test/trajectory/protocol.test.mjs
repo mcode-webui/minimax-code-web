@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { rm } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 
 import { createFixtureProjection } from './tools/fixture.mjs';
+import { mkTmpDirAsync } from '../helpers/tmp.js';
 
 /**
  * The protocol surface, against the real process.
@@ -30,7 +30,7 @@ const CALL_TIMEOUT_MS = 10_000;
 const SECRET = `ghp_${'q'.repeat(32)}`;
 
 async function makeFixture() {
-  const dataDir = await mkdtemp(path.join(tmpdir(), 'trajectory-protocol-'));
+  const dataDir = await mkTmpDirAsync('trajectory-protocol-');
   const projection = await createFixtureProjection(dataDir);
   const now = 1_700_000_000_000;
 

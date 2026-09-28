@@ -23,8 +23,8 @@
 import { test, describe, before, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import {rmSync} from "node:fs";
+
 import { join } from "node:path";
 import {
   setupMocks,
@@ -32,6 +32,7 @@ import {
   registerSessionsStore,
   withDecisions,
 } from "../helpers/_setup.js";
+import { mkTmpDir } from "../helpers/tmp.js";
 
 // Audit hygiene: every search crosses the REAL authorize("session.search")
 // gate, whose decisions are audit-written to events.ndjson via the real
@@ -39,7 +40,7 @@ import {
 // Redirect to a per-run tmp file so the operator's real
 // ~/.mcode-webui/events.ndjson stays clean (same pattern as
 // test/lib/alerts.check.mjs).
-const _tmpAuditDir = mkdtempSync(join(tmpdir(), "webui-sessions-search-check-"));
+const _tmpAuditDir = mkTmpDir("webui-sessions-search-check-");
 process.env.MCODE_WEBUI_EVENTS_PATH = join(_tmpAuditDir, "events.ndjson");
 
 let handleSearchSessions;

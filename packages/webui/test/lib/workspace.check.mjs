@@ -15,9 +15,10 @@
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { tmpdir, homedir } from "node:os";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, realpathSync } from "node:fs";
+import {mkdirSync, writeFileSync, readFileSync, rmSync, realpathSync} from "node:fs";
 import { join } from "node:path";
 import { setupMocks, absPath } from "../helpers/_setup.js";
+import { mkTmpDir } from "../helpers/tmp.js";
 
 let ws;
 before(async (t) => {
@@ -39,7 +40,7 @@ function fakeCs(workspaceDir = "/some/default") {
 
 describe("handleWorkspaceChange — action: 'set'", () => {
   test("changes cs.workspace.dir to the canonical (realpath) form of the provided dir", () => {
-    const tmp = mkdtempSync(join(tmpdir(), "webui-ws-test-"));
+    const tmp = mkTmpDir("webui-ws-test-");
     // v2.5 (slice 16 followup): canonical stored form is the
     // realpath. On macOS `os.tmpdir()` lives under /var which is a
     // symlink to /private/var; on Linux a /tmp symlink or bind mount
@@ -58,7 +59,7 @@ describe("handleWorkspaceChange — action: 'set'", () => {
   });
 
   test("resolves the path to absolute (realpath form)", () => {
-    const tmp = mkdtempSync(join(tmpdir(), "webui-ws-test-"));
+    const tmp = mkTmpDir("webui-ws-test-");
     const tmpCanonical = realpathSync(tmp);
     try {
       const cs = fakeCs();
@@ -88,7 +89,7 @@ describe("handleWorkspaceChange — action: 'set'", () => {
   });
 
   test("returns {ok:false, error:'目录不存在'} when target is a file, not a dir", () => {
-    const tmp = mkdtempSync(join(tmpdir(), "webui-ws-test-"));
+    const tmp = mkTmpDir("webui-ws-test-");
     try {
       const file = join(tmp, "not-a-dir.txt");
       writeFileSync(file, "x");
@@ -140,7 +141,7 @@ describe("handleWorkspaceChange — missing dir", () => {
 
 describe("handleWorkspaceChange — syncTui flag", () => {
   test("writes ~/.minimax/runtime/cwd.json when syncTui=true", () => {
-    const tmp = mkdtempSync(join(tmpdir(), "webui-ws-test-"));
+    const tmp = mkTmpDir("webui-ws-test-");
     const tmpCanonical = realpathSync(tmp);
     // v1.0: 测试卫生 — 本用例写的是真实 ~/.minimax/runtime/cwd.json (mcode TUI 的状态文件)。
     //   之前不恢复, 每次跑完测试, 下次服务器启动的默认工作区就成了临时目录
@@ -166,7 +167,7 @@ describe("handleWorkspaceChange — syncTui flag", () => {
   });
 
   test("does not write cwd.json when syncTui is omitted (default false)", () => {
-    const tmp = mkdtempSync(join(tmpdir(), "webui-ws-test-"));
+    const tmp = mkTmpDir("webui-ws-test-");
     try {
       const cs = fakeCs();
       const r = ws.handleWorkspaceChange(cs, "cid-1", { action: "set", dir: tmp });
@@ -179,7 +180,7 @@ describe("handleWorkspaceChange — syncTui flag", () => {
 
 describe("browseWorkspace — happy path", () => {
   test("lists subdirectories of an existing dir", () => {
-    const tmp = mkdtempSync(join(tmpdir(), "webui-ws-browse-"));
+    const tmp = mkTmpDir("webui-ws-browse-");
     const tmpCanonical = realpathSync(tmp);
     try {
       mkdirSync(join(tmp, "subdir-a"));
@@ -205,7 +206,7 @@ describe("browseWorkspace — happy path", () => {
   });
 
   test("returns empty children list for an existing empty dir", () => {
-    const tmp = mkdtempSync(join(tmpdir(), "webui-ws-browse-"));
+    const tmp = mkTmpDir("webui-ws-browse-");
     try {
       const r = ws.browseWorkspace(tmp);
       assert.equal(r.ok, true);
@@ -217,7 +218,7 @@ describe("browseWorkspace — happy path", () => {
   });
 
   test("returns parent path (realpath form) when target is not the root", () => {
-    const tmp = mkdtempSync(join(tmpdir(), "webui-ws-browse-"));
+    const tmp = mkTmpDir("webui-ws-browse-");
     const tmpCanonical = realpathSync(tmp);
     try {
       const sub = join(tmp, "sub");
@@ -251,7 +252,7 @@ describe("browseWorkspace — empty path (drive letter / root listing)", () => {
 
 describe("browseWorkspace — MAX 500 truncation", () => {
   test("truncates to 500 children and reports skipped count", () => {
-    const tmp = mkdtempSync(join(tmpdir(), "webui-ws-max-"));
+    const tmp = mkTmpDir("webui-ws-max-");
     try {
       for (let i = 0; i < 510; i++) {
         mkdirSync(join(tmp, `d${i.toString().padStart(4, "0")}`));
@@ -277,7 +278,7 @@ describe("resolveWorkspaceCandidates — 零弹窗目录名 → 绝对路径候�
   let home;
   let homeCanonical;
   before(() => {
-    home = mkdtempSync(join(tmpdir(), "webui-resolve-home-"));
+    home = mkTmpDir("webui-resolve-home-");
     homeCanonical = realpathSync(home);
     mkdirSync(join(home, "myproj"));
     mkdirSync(join(home, "projects", "myproj"), { recursive: true });
@@ -364,8 +365,8 @@ describe("expandTilde — 手动输入路径展开", () => {
 
 describe("assertWorkspaceParentPath — mkdir 落点围栏", () => {
   test("parent inside roots → ok; parent outside → rejected", () => {
-    const root = mkdtempSync(join(tmpdir(), "webui-parent-root-"));
-    const out = mkdtempSync(join(tmpdir(), "webui-parent-out-"));
+    const root = mkTmpDir("webui-parent-root-");
+    const out = mkTmpDir("webui-parent-out-");
     process.env.MCODE_WEBUI_WORKSPACE_ROOTS = root;
     try {
       const ok = ws.assertWorkspaceParentPath(join(root, "newdir"));

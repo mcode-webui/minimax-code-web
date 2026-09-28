@@ -17,15 +17,15 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import {mkdirSync, rmSync} from "node:fs";
 
 import { readDirectory } from "../../server/lib/fs-util.js";
+import { mkTmpDir } from "../helpers/tmp.js";
 
 const HOME = resolve(homedir());
 
 test("readDirectory — parent is null at a root the predicate rejects", (t) => {
-  const dir = mkdtempSync(resolve(tmpdir(), "fs-parent-"));
+  const dir = mkTmpDir("fs-parent-");
   t.after(() => rmSync(dir, { recursive: true, force: true }));
 
   // A predicate that only accepts paths under `dir` — so `dir`'s own parent
@@ -50,7 +50,7 @@ test("readDirectory — parent is null at a root the predicate rejects", (t) => 
 });
 
 test("readDirectory — parent is kept when the predicate accepts it", (t) => {
-  const dir = mkdtempSync(resolve(tmpdir(), "fs-parent-ok-"));
+  const dir = mkTmpDir("fs-parent-ok-");
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const inner = resolve(dir, "child");
   mkdirSync(inner, { recursive: true });
@@ -63,7 +63,7 @@ test("readDirectory — parent is kept when the predicate accepts it", (t) => {
 });
 
 test("readDirectory — behaviour is unchanged when no predicate is supplied", (t) => {
-  const dir = mkdtempSync(resolve(tmpdir(), "fs-parent-legacy-"));
+  const dir = mkTmpDir("fs-parent-legacy-");
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const listing = readDirectory(dir, {});
   assert.equal(listing.parent, dirname(dir), "callers that pass no predicate still get a parent");

@@ -24,17 +24,15 @@
 //   - Override MCODE_WEBUI_EVENTS_PATH so the audit append doesn't touch
 //     the user's real events file.
 
-import { test, describe, before, after, beforeEach } from "node:test";
+import { test, describe, before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import {
-  mkdtempSync,
-  rmSync,
   readFileSync,
   existsSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setupMocks, absPath, registerSessionsStore, withDecisions } from "../helpers/_setup.js";
+import { mkTmpDir, rmTmpDir } from "../helpers/tmp.js";
 
 let exportRoute;
 let markdown;
@@ -81,16 +79,15 @@ let tmpDir;
 let tmpEventsPath;
 
 beforeEach(() => {
-  tmpDir = mkdtempSync(join(tmpdir(), "webui-export-test-"));
+  tmpDir = mkTmpDir("webui-export-test-");
   tmpEventsPath = join(tmpDir, "events.ndjson");
   process.env.MCODE_WEBUI_EVENTS_PATH = tmpEventsPath;
 });
 
-after(() => {
+afterEach(() => {
   if (tmpDir) {
-    try {
-      rmSync(tmpDir, { recursive: true, force: true });
-    } catch {}
+    rmTmpDir(tmpDir);
+    tmpDir = null;
   }
   delete process.env.MCODE_WEBUI_EVENTS_PATH;
 });

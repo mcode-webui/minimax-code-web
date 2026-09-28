@@ -21,8 +21,8 @@
 
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import {realpathSync, rmSync, symlinkSync, writeFileSync} from "node:fs";
+
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -84,7 +84,7 @@ describe("fs routes — /api/fs/search (slice 19a)", () => {
   });
 
   test("root that is a regular file → 400 not-a-directory", () => {
-    const dir = mkdtempSync(join(tmpdir(), "fs-search-file-"));
+    const dir = mkTmpDir("fs-search-file-");
     try {
       const file = join(dir, "input.txt");
       writeFileSync(file, "");
@@ -103,7 +103,7 @@ describe("fs routes — /api/fs/search (slice 19a)", () => {
     // Reproduces the user's ~/文档/demo002 shape: a file three
     // levels down in a collapsed-equivalent directory shows up
     // in matches even though the client has not loaded anything.
-    const root = mkdtempSync(join(tmpdir(), "fs-search-happy-"));
+    const root = mkTmpDir("fs-search-happy-");
     try {
       mkdirp(join(root, "codersday"));
       writeFileSync(join(root, "codersday", "package.json"), "{}");
@@ -136,7 +136,7 @@ describe("fs routes — /api/fs/search (slice 19a)", () => {
   });
 
   test("node_modules is skipped + reported in skipped counts", () => {
-    const root = mkdtempSync(join(tmpdir(), "fs-search-skip-"));
+    const root = mkTmpDir("fs-search-skip-");
     try {
       mkdirp(join(root, "node_modules"));
       for (let i = 0; i < 10; i += 1) {
@@ -160,7 +160,7 @@ describe("fs routes — /api/fs/search (slice 19a)", () => {
   });
 
   test("truncation honesty: oversized budget reports truncated:true with a reason", () => {
-    const root = mkdtempSync(join(tmpdir(), "fs-search-trunc-"));
+    const root = mkTmpDir("fs-search-trunc-");
     try {
       mkdirp(join(root, "a", "b", "c", "d", "e", "f", "g", "h", "i"));
       writeFileSync(join(root, "a", "b", "c", "d", "e", "f", "g", "h", "i", "target.md"), "");
@@ -181,7 +181,7 @@ describe("fs routes — /api/fs/search (slice 19a)", () => {
   });
 
   test("hostile budget (maxNodes=999999) is clamped, not honoured", () => {
-    const root = mkdtempSync(join(tmpdir(), "fs-search-clamp-"));
+    const root = mkTmpDir("fs-search-clamp-");
     try {
       mkdirp(join(root, "a", "b", "c", "d", "e", "f", "g", "h", "i"));
       writeFileSync(join(root, "a", "b", "c", "d", "e", "f", "g", "h", "i", "target.md"), "");
@@ -201,7 +201,7 @@ describe("fs routes — /api/fs/search (slice 19a)", () => {
   });
 
   test("response body NEVER contains file content — plaintext tripwire", () => {
-    const root = mkdtempSync(join(tmpdir(), "fs-search-plaintext-"));
+    const root = mkTmpDir("fs-search-plaintext-");
     try {
       // includeHidden so .env (a dotfile credential) is visible
       // — the tripwire here is "search must never leak content
@@ -247,7 +247,7 @@ describe("fs routes — /api/fs/search (slice 19a)", () => {
     // against the literal would platform-split the assertion
     // (slice 16 hit the same trap; the fix there was to compare
     // against realpath). We do the same here.
-    const root = mkdtempSync(join(tmpdir(), "fs-search-sym-"));
+    const root = mkTmpDir("fs-search-sym-");
     try {
       const target = join(root, "id_rsa");
       writeFileSync(target, "cred_canary_symlink_search_target\n");
@@ -280,7 +280,7 @@ describe("fs routes — /api/fs/search (slice 19a)", () => {
   });
 
   test("the 'q' alias is also accepted (limit / maxMatches)", () => {
-    const root = mkdtempSync(join(tmpdir(), "fs-search-limit-"));
+    const root = mkTmpDir("fs-search-limit-");
     try {
       for (let i = 0; i < 5; i += 1) writeFileSync(join(root, `note${i}.md`), "");
       const res = fakeRes();
@@ -302,6 +302,7 @@ describe("fs routes — /api/fs/search (slice 19a)", () => {
 // at the bottom so the tests above read top-down without helpers
 // breaking the flow.
 import { mkdirSync } from "node:fs";
+import { mkTmpDir } from "../helpers/tmp.js";
 function mkdirp(...parts) {
   const full = join(...parts);
   mkdirSync(full, { recursive: true });

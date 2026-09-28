@@ -21,9 +21,10 @@ import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
 import { join } from "node:path";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import {rmSync} from "node:fs";
+
 import { pathToFileURL } from "node:url";
+import { mkTmpDir } from "../helpers/tmp.js";
 
 const absPath = (rel) => pathToFileURL(join(import.meta.dirname, "..", "..", "server", rel)).href;
 
@@ -37,8 +38,8 @@ let _tmpSettings;
 let _tmpEvents;
 before(async () => {
   process.env.PORT = String(PORT);
-  _tmpSettings = mkdtempSync(join(tmpdir(), "webui-origingate-settings-"));
-  _tmpEvents = mkdtempSync(join(tmpdir(), "webui-origingate-events-"));
+  _tmpSettings = mkTmpDir("webui-origingate-settings-");
+  _tmpEvents = mkTmpDir("webui-origingate-events-");
   process.env.MCODE_WEBUI_SETTINGS_PATH = join(_tmpSettings, "settings.json");
   process.env.MCODE_WEBUI_EVENTS_PATH = join(_tmpEvents, "events.ndjson");
   delete process.env.TOKEN;

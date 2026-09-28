@@ -22,13 +22,14 @@
 import { test, describe } from "node:test";
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import {rmSync} from "node:fs";
+
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import http from "node:http";
 import { decideNextAuthorization } from "../helpers/_setup.js";
 import { findFreePort, parseListeningPort } from "../helpers/free-port.js";
+import { mkTmpDir } from "../helpers/tmp.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const serverJsPath = join(__dirname, "..", "..", "server.js");
@@ -44,7 +45,7 @@ const serverJsPath = join(__dirname, "..", "..", "server.js");
 // stderr }. Pass opts.throttleMs to set STATE_PUSH_THROTTLE_MS for
 // 60Hz coalescing tests.
 async function spawnServer(opts = {}) {
-    const tmpDir = mkdtempSync(join(tmpdir(), "mcode-webui-d02-sse-"));
+    const tmpDir = mkTmpDir("mcode-webui-d02-sse-");
     const settingsPath = join(tmpDir, "settings.json");
     const eventsPath = join(tmpDir, "events.ndjson");
     const requestedPort = opts.port || await findFreePort();

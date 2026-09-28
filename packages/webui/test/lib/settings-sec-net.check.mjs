@@ -16,19 +16,20 @@
 import { test, describe, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
-import { readFileSync } from "node:fs";
+import {readFileSync} from "node:fs";
 import { join } from "node:path";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
+
 import { pathToFileURL } from "node:url";
+import { mkTmpDir } from "../helpers/tmp.js";
 
 const absPath = (rel) => pathToFileURL(join(import.meta.dirname, "..", "..", "server", rel)).href;
 
 let _tmpA;
 let _tmpB;
 before(async () => {
-  _tmpA = mkdtempSync(join(tmpdir(), "webui-sec-net-settings-"));
-  _tmpB = mkdtempSync(join(tmpdir(), "webui-sec-net-events-"));
+  _tmpA = mkTmpDir("webui-sec-net-settings-");
+  _tmpB = mkTmpDir("webui-sec-net-events-");
   process.env.MCODE_WEBUI_SETTINGS_PATH = join(_tmpA, "settings.json");
   process.env.MCODE_WEBUI_EVENTS_PATH = join(_tmpB, "events.ndjson");
   // Determinism: neither env token nor env bind may shadow the

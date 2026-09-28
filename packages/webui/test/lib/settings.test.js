@@ -19,8 +19,8 @@ import { test, describe, beforeEach, afterEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { mkdtempSync, writeFileSync, existsSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import {writeFileSync, existsSync, readFileSync, rmSync} from "node:fs";
+import { mkTmpDir } from "../helpers/tmp.js";
 
 const absPath = (rel) => pathToFileURL(join(import.meta.dirname, "..", "..", "server", rel)).href;
 
@@ -43,7 +43,7 @@ const absPath = (rel) => pathToFileURL(join(import.meta.dirname, "..", "..", "se
 //
 // Both resolvers are lazy env reads, so a module-scope assignment
 // covers every write regardless of import order.
-const _isoTmpDir = mkdtempSync(join(tmpdir(), "mcode-webui-libsettings-iso-"));
+const _isoTmpDir = mkTmpDir("mcode-webui-libsettings-iso-");
 const _origEventsPath = process.env.MCODE_WEBUI_EVENTS_PATH;
 const _origSettingsPath = process.env.MCODE_WEBUI_SETTINGS_PATH;
 process.env.MCODE_WEBUI_EVENTS_PATH = join(_isoTmpDir, "events.ndjson");
@@ -313,7 +313,7 @@ describe("settings — persistence (MCODE_WEBUI_SETTINGS_PATH override)", () => 
   let origPath;
   let settingsFile;
   beforeEach(() => {
-    tempDir = mkdtempSync(join(tmpdir(), "mcode-webui-test-"));
+    tempDir = mkTmpDir("mcode-webui-test-");
     origPath = process.env.MCODE_WEBUI_SETTINGS_PATH;
     settingsFile = join(tempDir, "settings.json");
     process.env.MCODE_WEBUI_SETTINGS_PATH = settingsFile;

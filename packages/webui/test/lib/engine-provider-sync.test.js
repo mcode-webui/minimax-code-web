@@ -20,10 +20,11 @@
 
 import { test, describe, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import {rmSync, existsSync, readFileSync} from "node:fs";
+
 import { join } from "node:path";
 import yaml from "js-yaml";
+import { mkTmpDir } from "../helpers/tmp.js";
 
 const absPath = (rel) =>
   import.meta.resolve
@@ -49,7 +50,7 @@ const {
 // safest contract.
 const _origMinimax = process.env.MINIMAX_DATA_DIR;
 const _origMavis = process.env.MAVIS_DATA_DIR;
-const _tmpDataDir = mkdtempSync(join(tmpdir(), "minimax-code-engine-sync-"));
+const _tmpDataDir = mkTmpDir("minimax-code-engine-sync-");
 process.env.MINIMAX_DATA_DIR = _tmpDataDir;
 delete process.env.MAVIS_DATA_DIR;
 

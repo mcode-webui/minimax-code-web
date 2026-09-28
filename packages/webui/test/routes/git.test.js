@@ -27,12 +27,13 @@
 
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import {existsSync, mkdirSync, realpathSync, rmSync, writeFileSync} from "node:fs";
+
 import { join, resolve } from "node:path";
 import { execSync } from "node:child_process";
 import { Readable } from "node:stream";
 import { pathToFileURL } from "node:url";
+import { mkTmpDir } from "../helpers/tmp.js";
 
 const absPath = (rel) => pathToFileURL(join(import.meta.dirname, "..", "..", "server", rel)).href;
 const gitRoute = await import(absPath("routes/git.js"));
@@ -94,7 +95,7 @@ async function readBody(res) {
 // var/folders/…`, not the `repoDir` literal the request carries).
 let repoDir;
 before(() => {
-  repoDir = realpathSync(mkdtempSync(join(tmpdir(), "git-panel-repo-")));
+  repoDir = realpathSync(mkTmpDir("git-panel-repo-"));
   // `-b main` for cross-platform determinism (no "master" surprise on
   // older git installs); `--initial-branch` would also work but is
   // git-2.28+ only and we want this to run on any host.
@@ -159,7 +160,7 @@ describe("git routes — /api/git/status", () => {
   });
 
   test("a non-git directory inside an allowed root answers isRepo=false", async () => {
-    const plain = mkdtempSync(join(tmpdir(), "git-panel-plain-"));
+    const plain = mkTmpDir("git-panel-plain-");
     try {
       const res = fakeRes();
       gitRoute.handleGitStatus(readReq(`/api/git/status?dir=${encodeURIComponent(plain)}`), res);

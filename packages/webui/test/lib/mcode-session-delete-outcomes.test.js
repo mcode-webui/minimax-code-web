@@ -24,10 +24,11 @@
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import {rmSync, readFileSync, writeFileSync} from "node:fs";
+
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { mkTmpDir } from "../helpers/tmp.js";
 
 const absPath = (rel) =>
   pathToFileURL(join(import.meta.dirname, "..", "..", "server", rel)).href;
@@ -77,7 +78,10 @@ const VALID_SID = "mvs_deadbeef00000000000000000000aaaa";
 const OTHER_SID = "mvs_0000000000000000000000000000bb00";
 
 // Redirect the audit stream BEFORE any delete call can append to it.
-const EVENTS_TMP = join(tmpdir(), `webui-db-outcomes-events-${process.pid}.ndjson`);
+// Place the events file inside an isolated tmpdir tracked by helpers/tmp.js
+// so the process-exit hook removes it.
+const _eventsTmpDir = mkTmpDir("webui-db-outcomes-events-");
+const EVENTS_TMP = join(_eventsTmpDir, "events.ndjson");
 writeFileSync(EVENTS_TMP, "");
 process.env.MCODE_WEBUI_EVENTS_PATH = EVENTS_TMP;
 
@@ -108,7 +112,7 @@ describe("deleteMcodeSessionFromDb — outcome: deleted (real delete)", { skip: 
   let dbPath;
 
   before(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), "webui-db-out-del-"));
+    tmpDir = mkTmpDir("webui-db-out-del-");
     dbPath = join(tmpDir, "del.db");
     sql(dbPath, SESSIONS_DDL);
     sql(
@@ -155,7 +159,7 @@ describe("deleteMcodeSessionFromDb — outcome: deleted (real delete)", { skip: 
 
 describe("deleteMcodeSessionFromDb — outcome: already_absent", { skip: DB_FIXTURE_SKIP }, () => {
   test("all delete-list tables missing → ok:true, outcome:'already_absent', full tablesAbsent count", () => {
-    const tmpDir = mkdtempSync(join(tmpdir(), "webui-db-out-absent-"));
+    const tmpDir = mkTmpDir("webui-db-out-absent-");
     try {
       const dbPath = join(tmpDir, "absent.db");
       sql(dbPath, "CREATE TABLE unrelated (x INT)");
@@ -175,7 +179,7 @@ describe("deleteMcodeSessionFromDb — outcome: already_absent", { skip: DB_FIXT
   });
 
   test("tables present but zero rows for sid → ok:true, outcome:'already_absent', other rows untouched", () => {
-    const tmpDir = mkdtempSync(join(tmpdir(), "webui-db-out-zero-"));
+    const tmpDir = mkTmpDir("webui-db-out-zero-");
     try {
       const dbPath = join(tmpDir, "zero.db");
       sql(dbPath, SESSIONS_DDL);
@@ -208,7 +212,7 @@ describe("deleteMcodeSessionFromDb — unsupported schema aborts + rolls back (n
   let dbPath;
 
   before(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), "webui-db-out-schema-"));
+    tmpDir = mkTmpDir("webui-db-out-schema-");
     dbPath = join(tmpDir, "schema.db");
     // local_runtime_sessions is FIRST in the delete list and holds the
     // row; local_runtime_messages (later in the list) exists WITHOUT a
@@ -260,7 +264,7 @@ describe("deleteMcodeSessionFromDb — unsupported schema aborts + rolls back (n
 
 describe("deleteMcodeSessionFromDb — lock conflict aborts (no fake success)", { skip: DB_FIXTURE_SKIP }, () => {
   test("SQLITE_BUSY from a concurrent writer → {ok:false, reason:'db_error'}, row survives, then clean retry succeeds", () => {
-    const tmpDir = mkdtempSync(join(tmpdir(), "webui-db-out-lock-"));
+    const tmpDir = mkTmpDir("webui-db-out-lock-");
     const Mod = resolver.getMcodeBetterSqlite3();
     let blocker;
     try {

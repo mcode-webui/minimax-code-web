@@ -22,10 +22,11 @@
 import { test, describe, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
-import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import {rmSync, writeFileSync, existsSync, readFileSync} from "node:fs";
+
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { mkTmpDir } from "../helpers/tmp.js";
 
 const absPath = (rel) =>
   pathToFileURL(join(import.meta.dirname, "..", "..", "server", rel)).href;
@@ -40,8 +41,8 @@ let _origCwdEnv;
 let _origCwd;
 
 before(async () => {
-  _tmpDataDir = mkdtempSync(join(tmpdir(), "webui-providers-route-"));
-  _tmpCwd = mkdtempSync(join(tmpdir(), "webui-providers-route-cwd-"));
+  _tmpDataDir = mkTmpDir("webui-providers-route-");
+  _tmpCwd = mkTmpDir("webui-providers-route-cwd-");
   _origDataDir = process.env.MCODE_WEBUI_DATA_DIR;
   _origCwdEnv = process.env.MCODE_WEBUI_MODELS_CONFIG;
   _origCwd = process.cwd();

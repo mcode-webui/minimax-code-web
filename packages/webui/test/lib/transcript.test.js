@@ -25,10 +25,12 @@
 
 import { test, describe, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, existsSync, writeFileSync } from "node:fs";
+import {rmSync, existsSync, writeFileSync} from "node:fs";
+
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { mkTmpDir } from "../helpers/tmp.js";
 
 const absPath = (rel) =>
   pathToFileURL(join(import.meta.dirname, "..", "..", "server", rel)).href;
@@ -70,7 +72,7 @@ function makeFakeDb({ rowsBySql = {}, constructThrows = false } = {}) {
 // the fake Db ignores the path).
 let _tmpDir;
 function realDbPath(name = "runtime-state.sqlite") {
-  if (!_tmpDir) _tmpDir = mkdtempSync(join(tmpdir(), "webui-transcript-test-"));
+  if (!_tmpDir) _tmpDir = mkTmpDir("webui-transcript-test-");
   const p = join(_tmpDir, name);
   if (!existsSync(p)) writeFileSync(p, "sqlite fixture placeholder");
   return p;
@@ -97,7 +99,12 @@ describe("readMcodeTranscript — gate order (must match export.js exactly)", ()
   });
 
   test("missing db file → mcode_db_not_found (checked BEFORE better-sqlite3)", () => {
-    const missing = join(tmpdir(), "webui-no-such-" + Date.now(), "x.sqlite");
+    // Synthesize a path that DOES NOT exist on disk. We do not mkdir the
+    // parent — readMcodeTranscript must report mcode_db_not_found before
+    // it ever touches better-sqlite3, so creating the parent would
+    // defeat the assertion.
+    const missingParent = join(tmpdir(), "webui-no-such-" + Date.now() + "-" + Math.random().toString(16).slice(2, 8));
+    const missing = join(missingParent, "x.sqlite");
     const r = readMcodeTranscript(SID, { dbPath: missing, getDb: () => null });
     assert.equal(r.ok, false);
     assert.equal(r.reason, "mcode_db_not_found");

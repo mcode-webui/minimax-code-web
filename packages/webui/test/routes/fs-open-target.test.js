@@ -29,20 +29,13 @@
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import {
-  chmodSync,
-  existsSync,
-  mkdtempSync,
-  realpathSync,
-  rmSync,
-  symlinkSync,
-  writeFileSync,
-} from "node:fs";
+import {chmodSync, existsSync, realpathSync, rmSync, symlinkSync, writeFileSync} from "node:fs";
 import { EventEmitter } from "node:events";
-import { tmpdir } from "node:os";
+
 import { dirname, join, resolve } from "node:path";
 import { Readable } from "node:stream";
 import { pathToFileURL } from "node:url";
+import { mkTmpDir } from "../helpers/tmp.js";
 
 const absPath = (rel) =>
   pathToFileURL(join(import.meta.dirname, "..", "..", "server", rel)).href;
@@ -164,8 +157,8 @@ let fakeBinDir;
 let outsideRoot;
 
 before(() => {
-  workDir = realpathSyncSafe(mkdtempSync(join(tmpdir(), "fs-open-target-")));
-  fakeBinDir = realpathSyncSafe(mkdtempSync(join(tmpdir(), "fs-open-target-bin-")));
+  workDir = realpathSyncSafe(mkTmpDir("fs-open-target-"));
+  fakeBinDir = realpathSyncSafe(mkTmpDir("fs-open-target-bin-"));
   buildFakeOpener(fakeBinDir);
   outsideRoot = process.platform === "win32"
     ? process.env.SystemRoot || "C:\\Windows"

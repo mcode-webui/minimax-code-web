@@ -10,12 +10,13 @@
 
 import { test, describe, before } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import {writeFileSync} from "node:fs";
+
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { mkTmpDir } from "../helpers/tmp.js";
 
-const dir = mkdtempSync(join(tmpdir(), "state-bus-restore-"));
+const dir = mkTmpDir("state-bus-restore-");
 process.env.MCODE_WEBUI_SESSIONS_DB = join(dir, "sessions.json");
 process.env.MCODE_WEBUI_UPLOAD_DIR = join(dir, "uploads");
 

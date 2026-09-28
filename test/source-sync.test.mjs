@@ -22,6 +22,7 @@ import { compareRuns, exitCodeForStatus, renderReport, spread, validateRun, vali
 import { copyMcodeToolsArtifact, downloadMcodeToolsArtifact, MCODE_TOOLS_ARTIFACT } from '../scripts/lib/mcode-tools-artifact.mjs';
 import { checkWindowsSourceLocation, runWindowsSourceLocationCheck } from '../scripts/check-windows-source-location.mjs';
 import { collectTestIsolationViolations, formatTestIsolationViolations } from '../scripts/test-isolation-lint.check.mjs';
+import { scanTmpLeaks, formatTmpLeaks } from '../scripts/test-tmp-leak.check.mjs';
 
 test('Windows source preflight accepts localized fsutil labels', () => {
   const result = checkWindowsSourceLocation({
@@ -1167,4 +1168,54 @@ test('test isolation lint detects a violating spawn and clears a compliant one',
   assert.doesNotMatch(formatTestIsolationViolations(violations), /compliant\.test\.mjs/);
   rmSync(path.join(root, 'nested'), { recursive: true, force: true });
   assert.deepEqual(collectTestIsolationViolations({ roots: [root] }), []);
+});
+
+// Session-isolation/06: the test-tmp-leak lint runs in the same gate as the
+// isolation lint. Two-direction verification — clean run must report zero
+// leaks AND a known synthetic leak must be flagged. The earlier
+// `test-isolation-lint` block documented why this lives here (cwd-sensitive
+// repo-root globs were the failure mode that historically turned the gate
+// into a silent no-op; routing through the release-tools gate keeps it
+// honest).
+//
+// The lint scans the active TMPDIR. To prove the lint without contaminating
+// the host /tmp (which on a busy CI runner may already carry ~30k entries
+// from prior runs that this ticket is itself trying to retire), every scan
+// here uses an isolated TMPDIR — a freshly mkdtemp'd directory the test
+// owns end-to-end. The fixture-tree assertion proves the positive case
+// (a well-known-prefix entry IS detected); the empty-tree assertion proves
+// the negative case (no false positives).
+test('test-tmp-leak lint: an empty fixture tree reports zero leaks', (t) => {
+  const fixture = mkdtempSync(path.join(tmpdir(), `leak-lint-clean-${Date.now()}-`));
+  t.after(() => rmSync(fixture, { recursive: true, force: true }));
+  const leaks = scanTmpLeaks({ under: fixture });
+  assert.deepEqual(leaks, [], formatTmpLeaks(leaks));
+});
+
+test('test-tmp-leak lint: a synthetic well-known-prefix directory is detected', (t) => {
+  // Seed a directory under one of the KNOWN_PREFIXES. The fixture uses
+  // a unique random suffix so concurrent CI runs cannot collide.
+  const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  const fixture = mkdtempSync(path.join(tmpdir(), `leak-lint-fixture-${stamp}-`));
+  const target = path.join(fixture, `webui-leak-lint-canary-${stamp}`);
+  mkdirSync(target, { recursive: true });
+  t.after(() => rmSync(fixture, { recursive: true, force: true }));
+  try {
+    const leaks = scanTmpLeaks({ under: fixture });
+    // The synthetic fixture is the only well-known-prefix entry inside
+    // its own directory. scanTmpLeaks walks every entry under `under`,
+    // so the parent (`leak-lint-fixture-…`) is ignored but the inner
+    // `webui-leak-lint-canary-…` is matched.
+    assert.equal(
+      leaks.length,
+      1,
+      `expected exactly one leak, got ${leaks.length}: ${formatTmpLeaks(leaks)}`,
+    );
+    assert.match(leaks[0], /webui-leak-lint-canary-/);
+    assert.match(formatTmpLeaks(leaks), /webui-leak-lint-canary-/);
+  } finally {
+    // The above t.after() runs at suite end, so the fixture is removed
+    // before any other test in this file can scan.
+    rmSync(fixture, { recursive: true, force: true });
+  }
 });

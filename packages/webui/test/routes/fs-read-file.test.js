@@ -16,10 +16,10 @@
 
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { mkTmpDir } from "../helpers/tmp.js";
 
 const absPath = (rel) => pathToFileURL(join(import.meta.dirname, "..", "..", "server", rel)).href;
 const fsRoute = await import(absPath("routes/fs.js"));
@@ -71,7 +71,7 @@ describe("fs routes — /api/fs/read-file", () => {
   });
 
   test("a regular text file inside an allowed root returns the documented shape", () => {
-    const dir = mkdtempSync(join(tmpdir(), "fs-read-file-ok-"));
+    const dir = mkTmpDir("fs-read-file-ok-");
     try {
       const file = join(dir, "note.md");
       // Include a NUL-suspicious byte in the tail to confirm the binary
@@ -101,7 +101,7 @@ describe("fs routes — /api/fs/read-file", () => {
     // sends them back on save; /api/fs/write refuses with 409 when the
     // disk no longer matches. The baseline travels on THIS read, so the
     // client never needs a second round-trip (and cannot race one).
-    const dir = mkdtempSync(join(tmpdir(), "fs-read-file-mtime-"));
+    const dir = mkTmpDir("fs-read-file-mtime-");
     try {
       const file = join(dir, "note.md");
       writeFileSync(file, "baseline\n", "utf8");
@@ -123,7 +123,7 @@ describe("fs routes — /api/fs/read-file", () => {
     // is by design — the gate wants to resolve symlinks before opening,
     // and the webapp only ever opens paths it just got from a listing,
     // so a missing path here is a user-after-free and should be loud.
-    const dir = mkdtempSync(join(tmpdir(), "fs-read-file-missing-"));
+    const dir = mkTmpDir("fs-read-file-missing-");
     try {
       const file = join(dir, "nope.md");
       const res = fakeRes();
@@ -138,7 +138,7 @@ describe("fs routes — /api/fs/read-file", () => {
   });
 
   test("a binary file is rejected with 415 and the mime hint", () => {
-    const dir = mkdtempSync(join(tmpdir(), "fs-read-file-binary-"));
+    const dir = mkTmpDir("fs-read-file-binary-");
     try {
       const file = join(dir, "blob.bin");
       // 16 KiB of NUL bytes — past the 4 KiB sniff window so the
@@ -160,7 +160,7 @@ describe("fs routes — /api/fs/read-file", () => {
   });
 
   test("a directory is rejected with 415 (not a regular file)", () => {
-    const dir = mkdtempSync(join(tmpdir(), "fs-read-file-dir-"));
+    const dir = mkTmpDir("fs-read-file-dir-");
     try {
       const sub = join(dir, "subdir");
       mkdirSync(sub, { recursive: true });
@@ -174,7 +174,7 @@ describe("fs routes — /api/fs/read-file", () => {
   });
 
   test("an oversize file is rejected with 413 and the cap is reported", () => {
-    const dir = mkdtempSync(join(tmpdir(), "fs-read-file-big-"));
+    const dir = mkTmpDir("fs-read-file-big-");
     try {
       const file = join(dir, "big.md");
       // 600 KiB — comfortably past the 512 KiB cap. Use a single

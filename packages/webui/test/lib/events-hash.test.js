@@ -13,18 +13,16 @@
 //     (Node is single-threaded; no real concurrency but we exercise
 //     the path).
 
-import { test, describe, before, beforeEach, after } from "node:test";
+import { test, describe, before, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import {
-  mkdtempSync,
-  rmSync,
   readFileSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
+import { mkTmpDir, rmTmpDir } from "../helpers/tmp.js";
 
 const absPath = (rel) =>
   pathToFileURL(join(import.meta.dirname, "..", "..", "server", rel)).href;
@@ -38,17 +36,16 @@ before(async () => {
 });
 
 beforeEach(() => {
-  tmpDir = mkdtempSync(join(tmpdir(), "webui-events-hash-test-"));
+  tmpDir = mkTmpDir("webui-events-hash-test-");
   tmpEventsPath = join(tmpDir, "events.ndjson");
   process.env.MCODE_WEBUI_EVENTS_PATH = tmpEventsPath;
   events._resetForTests();
 });
 
-after(() => {
+afterEach(() => {
   if (tmpDir) {
-    try {
-      rmSync(tmpDir, { recursive: true, force: true });
-    } catch {}
+    rmTmpDir(tmpDir);
+    tmpDir = null;
   }
   delete process.env.MCODE_WEBUI_EVENTS_PATH;
 });

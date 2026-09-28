@@ -14,8 +14,8 @@ import { test, describe, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { pathToFileURL } from "node:url";
 import { join } from "node:path";
-import { mkdtempSync, rmSync, readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import {rmSync, readFileSync} from "node:fs";
+import { mkTmpDir } from "../helpers/tmp.js";
 
 // pushAlert audit-writes every unique alert to events.ndjson via the REAL
 // lib/events.js (static import inside alerts.js). Most cases below push
@@ -23,7 +23,7 @@ import { tmpdir } from "node:os";
 // a junk `alert.info` line to the operator's real ~/.mcode-webui/events.ndjson.
 // Same pattern as test/routes/chat-failed-send.check.mjs — env override only,
 // production behavior untouched (events.js resolves the path lazily per append).
-const _tmpAuditDir = mkdtempSync(join(tmpdir(), "webui-alerts-check-"));
+const _tmpAuditDir = mkTmpDir("webui-alerts-check-");
 process.env.MCODE_WEBUI_EVENTS_PATH = join(_tmpAuditDir, "events.ndjson");
 
 const absPath = (rel) =>
@@ -296,7 +296,7 @@ describe("pushAlert — event-stream emission (B01 dependency)", () => {
         // events.append() only hoists {target, cid, actor}; every
         // other top-level field is silently dropped.
 
-        const tmpDir = mkdtempSync(join(tmpdir(), "webui-alerts-audit-"));
+        const tmpDir = mkTmpDir("webui-alerts-audit-");
         const tmpEventsPath = join(tmpDir, "events.ndjson");
         process.env.MCODE_WEBUI_EVENTS_PATH = tmpEventsPath;
 

@@ -17,11 +17,12 @@ import { test, describe, before, after } from "node:test";
 // passes, zero failures, and the job is killed at the timeout. Stop
 // the child in `after()` so the runner settles cleanly.
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, rmSync, existsSync } from "node:fs";
-import { tmpdir } from "node:os";
+import {writeFileSync, rmSync, existsSync} from "node:fs";
+
 import { join } from "node:path";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
+import { mkTmpDir } from "../helpers/tmp.js";
 
 const require = createRequire(import.meta.url);
 const absPath = (rel) =>
@@ -32,7 +33,7 @@ let dbPath;
 let stateBus;
 
 before(async () => {
-  tmpDir = mkdtempSync(join(tmpdir(), "agent-team-state-bus-"));
+  tmpDir = mkTmpDir("agent-team-state-bus-");
   dbPath = join(tmpDir, "runtime-state.sqlite");
   process.env.MCODE_WEBUI_SESSIONS_DB = join(tmpDir, "sessions.json");
   process.env.MCODE_WEBUI_UPLOAD_DIR = join(tmpDir, "uploads");

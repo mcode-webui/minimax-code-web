@@ -13,13 +13,14 @@
 import { test, describe, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync, readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import {rmSync, readFileSync} from "node:fs";
+
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import http from "node:http";
 import { absPath, decideNextAuthorization } from "../helpers/_setup.js";
 import { findFreePort, parseListeningPort } from "../helpers/free-port.js";
+import { mkTmpDir } from "../helpers/tmp.js";
 
 const PLUGIN_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const SERVER_JS = join(PLUGIN_ROOT, "server.js");
@@ -40,7 +41,7 @@ describe("chat route production wiring — /clear must pass the slash.js gate", 
     // for — server/lib/port.js#listenWithPortFallback walks forward
     // on EADDRINUSE, and a fallback makes the test POST to a
     // wrong/stale socket (see test/helpers/free-port.js).
-    const tmpDir = mkdtempSync(join(tmpdir(), "mcode-webui-w2-gate-"));
+    const tmpDir = mkTmpDir("mcode-webui-w2-gate-");
     const requestedPort = await findFreePort();
     const env = {
       ...process.env,

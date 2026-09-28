@@ -20,10 +20,11 @@
 
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import {mkdirSync, readFileSync, writeFileSync} from "node:fs";
+
 import { dirname, delimiter, isAbsolute, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { mkTmpDir } from "../helpers/tmp.js";
 
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
 const absPath = (rel) => pathToFileURL(join(TEST_DIR, "..", "..", "server", rel)).href;
@@ -35,7 +36,7 @@ const { resolveMcodeSpawn, buildExecArgs } = mcodeExec;
 // sibling node_modules/@minimax-ai/code/cli.js entry that real mcode
 // shims live next to. Returns absolute paths for both.
 function makeFakeInstall(shimName = "mcode.cmd") {
-  const root = mkdtempSync(join(tmpdir(), "mcode-exec-test-"));
+  const root = mkTmpDir("mcode-exec-test-");
   writeFileSync(join(root, shimName), "@echo off\r\nrem fake shim\r\n");
   const entry = join(root, "node_modules", "@minimax-ai", "code", "cli.js");
   mkdirSync(dirname(entry), { recursive: true });
@@ -128,7 +129,7 @@ describe("resolveMcodeSpawn — direct paths (config.js layouts)", () => {
   });
 
   test("absolute path to a plain (non-shim) binary spawns it directly", () => {
-    const root = mkdtempSync(join(tmpdir(), "mcode-exec-plain-"));
+    const root = mkTmpDir("mcode-exec-plain-");
     const bin = join(root, "mcode");
     writeFileSync(bin, "#!/bin/sh\nexit 0\n");
     const r = resolveMcodeSpawn(bin, { platform: "linux", env: {} });
@@ -140,7 +141,7 @@ describe("resolveMcodeSpawn — direct paths (config.js layouts)", () => {
 
 describe("resolveMcodeSpawn — POSIX bare name", () => {
   test("resolves to the PATH file itself, no entry rewriting", () => {
-    const root = mkdtempSync(join(tmpdir(), "mcode-exec-posix-"));
+    const root = mkTmpDir("mcode-exec-posix-");
     writeFileSync(join(root, "mcode"), "#!/bin/sh\nexec node entry \"$@\"\n");
     // U5 (fork-preview run 35495306680): resolveMcodeSpawn splits PATH on
     // the HOST delimiter when the injected platform is not win32, so the
@@ -161,7 +162,7 @@ describe("resolveMcodeSpawn — POSIX bare name", () => {
 
 describe("resolveMcodeSpawn — fail-closed", () => {
   test("bare name not on PATH throws (no shell fallback)", () => {
-    const empty = mkdtempSync(join(tmpdir(), "mcode-exec-empty-"));
+    const empty = mkTmpDir("mcode-exec-empty-");
     assert.throws(
       () =>
         resolveMcodeSpawn("mcode", { platform: "linux", env: { PATH: empty } }),
@@ -177,7 +178,7 @@ describe("resolveMcodeSpawn — fail-closed", () => {
   });
 
   test(".cmd shim without sibling cli.js throws (broken install)", () => {
-    const root = mkdtempSync(join(tmpdir(), "mcode-exec-nosibling-"));
+    const root = mkTmpDir("mcode-exec-nosibling-");
     writeFileSync(join(root, "mcode.cmd"), "@echo off\r\n");
     assert.throws(
       () => resolveMcodeSpawn(join(root, "mcode.cmd"), { platform: "win32", env: {} }),
@@ -186,7 +187,7 @@ describe("resolveMcodeSpawn — fail-closed", () => {
   });
 
   test("win32 bare name with nothing on PATH throws", () => {
-    const empty = mkdtempSync(join(tmpdir(), "mcode-exec-emptywin-"));
+    const empty = mkTmpDir("mcode-exec-emptywin-");
     assert.throws(
       () =>
         resolveMcodeSpawn("mcode", {

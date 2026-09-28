@@ -20,14 +20,15 @@
 
 import { test, describe, before, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import {rmSync} from "node:fs";
+
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { mkTmpDir } from "../helpers/tmp.js";
 
 // Isolation FIRST — lib/config.js resolves SESSIONS_DB from
 // MCODE_WEBUI_DATA_DIR at import time.
-const _tmpDataDir = mkdtempSync(join(tmpdir(), "webui-acp-answer-"));
+const _tmpDataDir = mkTmpDir("webui-acp-answer-");
 process.env.MCODE_WEBUI_DATA_DIR = _tmpDataDir;
 
 const WEBUI_DIR = resolve(import.meta.dirname, "..", "..");

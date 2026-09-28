@@ -15,10 +15,11 @@
 import { test, describe, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import {rmSync} from "node:fs";
+
 import { pathToFileURL } from "node:url";
 import { join } from "node:path";
+import { mkTmpDir } from "../helpers/tmp.js";
 
 const absPath = (rel) =>
     pathToFileURL(join(import.meta.dirname, "..", "..", "server", rel)).href;
@@ -27,7 +28,7 @@ const absPath = (rel) =>
 // via the REAL lib/events.js (static import inside alerts.js). Redirect to a
 // per-run tmp file so the operator's real ~/.mcode-webui/events.ndjson stays
 // clean (same pattern as test/lib/alerts.check.mjs).
-const _tmpAuditDir = mkdtempSync(join(tmpdir(), "webui-routes-alerts-check-"));
+const _tmpAuditDir = mkTmpDir("webui-routes-alerts-check-");
 process.env.MCODE_WEBUI_EVENTS_PATH = join(_tmpAuditDir, "events.ndjson");
 
 const alertsRoute = await import(absPath("routes/alerts.js"));

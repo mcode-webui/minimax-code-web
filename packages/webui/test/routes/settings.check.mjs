@@ -13,10 +13,11 @@ import { test, describe, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
 import { join } from "node:path";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import {rmSync} from "node:fs";
+
 import { pathToFileURL } from "node:url";
 import { withDecisions } from "../helpers/_setup.js";
+import { mkTmpDir } from "../helpers/tmp.js";
 
 const absPath = (rel) => pathToFileURL(join(import.meta.dirname, "..", "..", "server", rel)).href;
 
@@ -25,7 +26,7 @@ const absPath = (rel) => pathToFileURL(join(import.meta.dirname, "..", "..", "se
 // the operator's real ~/.mcode-webui/events.ndjson.
 let _tmpEventsDir;
 before(async () => {
-  _tmpEventsDir = mkdtempSync(join(tmpdir(), "webui-settings-test-events-"));
+  _tmpEventsDir = mkTmpDir("webui-settings-test-events-");
   process.env.MCODE_WEBUI_EVENTS_PATH = join(_tmpEventsDir, "events.ndjson");
 });
 after(async () => {

@@ -5,11 +5,12 @@
 
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
+
+
 import { join } from "node:path";
 import { EventEmitter } from "node:events";
 import { pathToFileURL } from "node:url";
+import { mkTmpDir } from "../helpers/tmp.js";
 
 const absPath = (rel) => pathToFileURL(join(import.meta.dirname, "..", "..", "server", rel)).href;
 
@@ -85,7 +86,7 @@ describe("fs routes — workspace containment (v2.2)", () => {
   });
 
   test("read of a tmpdir scratch path inside the allowed roots is served", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "fs-contain-"));
+    const dir = mkTmpDir("fs-contain-");
     const res = fakeRes();
     fsRoute.handleFsRead(readReq(dir), res);
     assert.equal(res.status, 200);
@@ -118,7 +119,7 @@ describe("fs routes — workspace containment (v2.2)", () => {
   });
 
   test("mkdir inside the allowed roots succeeds", async () => {
-    const base = mkdtempSync(join(tmpdir(), "fs-mkdir-"));
+    const base = mkTmpDir("fs-mkdir-");
     const res = fakeRes();
     fsRoute.handleFsMkdir(mkdirReq(join(base, "child")), res);
     await res.done;

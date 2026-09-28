@@ -22,14 +22,15 @@
 import { test, describe } from "node:test";
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import {rmSync, readFileSync, writeFileSync} from "node:fs";
+
 import { join, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import http from "node:http";
 import { createHash } from "node:crypto";
 import { decideNextAuthorization } from "../helpers/_setup.js";
 import { findFreePort, parseListeningPort } from "../helpers/free-port.js";
+import { mkTmpDir } from "../helpers/tmp.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const serverJsPath = join(__dirname, "..", "..", "server.js");
@@ -43,7 +44,7 @@ const absPath = (rel) => pathToFileURL(join(SERVER_DIR, rel)).href;
 //   bound port, never the one they requested (see test/helpers/free-
 //   port.js).
 async function spawnServer(opts = {}) {
-    const tmpDir = mkdtempSync(join(tmpdir(), "mcode-webui-d02-chain-"));
+    const tmpDir = mkTmpDir("mcode-webui-d02-chain-");
     const settingsPath = join(tmpDir, "settings.json");
     const eventsPath = join(tmpDir, "events.ndjson");
     const requestedPort = opts.port || await findFreePort();

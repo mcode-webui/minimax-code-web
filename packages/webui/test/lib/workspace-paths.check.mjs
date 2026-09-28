@@ -18,15 +18,10 @@
 import { test, describe, before } from "node:test";
 import assert from "node:assert/strict";
 import { tmpdir, homedir } from "node:os";
-import {
-  mkdtempSync,
-  mkdirSync,
-  rmSync,
-  realpathSync,
-  writeFileSync,
-} from "node:fs";
+import {mkdirSync, rmSync, realpathSync, writeFileSync} from "node:fs";
 import { join, sep, basename } from "node:path";
 import { setupMocks, absPath } from "../helpers/_setup.js";
+import { mkTmpDir } from "../helpers/tmp.js";
 
 let ws;
 before(async (t) => {
@@ -43,7 +38,7 @@ before(async (t) => {
 const ROOTS_ENV = "MCODE_WEBUI_WORKSPACE_ROOTS";
 
 function withSingleRoot(t, body) {
-  const arena = mkdtempSync(join(tmpdir(), "webui-paths-"));
+  const arena = mkTmpDir("webui-paths-");
   t.after(() => rmSync(arena, { recursive: true, force: true }));
   const prev = process.env[ROOTS_ENV];
   process.env[ROOTS_ENV] = arena;

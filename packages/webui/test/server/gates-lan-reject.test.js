@@ -17,8 +17,8 @@
 
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import {rmSync} from "node:fs";
+
 import { join } from "node:path";
 
 import { createHonoApp } from "../../server/app.js";
@@ -28,6 +28,7 @@ import {
   setReadOnly,
 } from "../../server/lib/settings.js";
 import { setupMocks } from "../helpers/_setup.js";
+import { mkTmpDir } from "../helpers/tmp.js";
 
 // Isolate the audit stream. The gate chain records audit events, and
 // lib/events.js defaults to `~/.mcode-webui/events.ndjson` — so without this
@@ -42,7 +43,7 @@ import { setupMocks } from "../helpers/_setup.js";
 // test/routes/sessions.check.mjs.
 let _tmpEventsDir;
 before(async (t) => {
-  _tmpEventsDir = mkdtempSync(join(tmpdir(), "webui-lan-gate-test-events-"));
+  _tmpEventsDir = mkTmpDir("webui-lan-gate-test-events-");
   process.env.MCODE_WEBUI_EVENTS_PATH = join(_tmpEventsDir, "events.ndjson");
   await setupMocks(t, {});
 });

@@ -37,8 +37,9 @@
 import { test, describe, before, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
-import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { mkTmpDir } from "../helpers/tmp.js";
 import { join } from "node:path";
 import {
   setupMocks,
@@ -48,6 +49,7 @@ import {
   registerAcpMock,
   withDecisions,
 } from "../helpers/_setup.js";
+import { mkTmpDir } from "../helpers/tmp.js";
 
 // The v2 probe SQL from lib/transcript.js (keyed lookup in the fake Db).
 const V2_SQL =
@@ -108,9 +110,9 @@ let _tmpDbDir;
 const WS_A = realpathSync(mkdtempSync(join(tmpdir(), "webui-test-A-")));
 const WS_B = realpathSync(mkdtempSync(join(tmpdir(), "webui-test-B-")));
 before(async (t) => {
-  _tmpEventsDir = mkdtempSync(join(tmpdir(), "webui-switch-test-events-"));
+  _tmpEventsDir = mkTmpDir("webui-switch-test-events-");
   process.env.MCODE_WEBUI_EVENTS_PATH = join(_tmpEventsDir, "events.ndjson");
-  _tmpDbDir = mkdtempSync(join(tmpdir(), "webui-switch-test-db-"));
+  _tmpDbDir = mkTmpDir("webui-switch-test-db-");
   process.env.MCODE_RUNTIME_DB = join(_tmpDbDir, "runtime-state.sqlite");
   writeFileSync(process.env.MCODE_RUNTIME_DB, "");
 

@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import test, { after } from 'node:test';
@@ -12,6 +11,7 @@ import { redactValue, redactText, redactPath } from '../../server/trajectory/red
 import { TOOLS, handleRpcMessage } from '../../server/trajectory/mcp.mjs';
 import { ftsModuleAvailable } from '../../server/trajectory/sqlite.mjs';
 import { getMcodeAcpClient, shutdownMcodeAcpSingleton } from '../../server/lib/acp-client.js';
+import { mkTmpDirAsync } from '../helpers/tmp.js';
 
 // The trajectory store's import graph reaches server/lib/state-bus.js, whose
 // mcode-sessions cache warm-up spawns the resident mcode ACP engine child
@@ -60,7 +60,7 @@ const FIXTURE_HOME = '/tmp/trajectory-fixture-home';
 const FIXTURE_WORKSPACE = `${FIXTURE_HOME}/ws`;
 
 async function makeDataDir({ withSqlite = true, withJsonl = true } = {}) {
-  const dataDir = await mkdtemp(path.join(tmpdir(), 'trajectory-studio-'));
+  const dataDir = await mkTmpDirAsync('trajectory-studio-');
   const sqliteDir = path.join(dataDir, 'v2', 'sqlite');
   await mkdir(sqliteDir, { recursive: true });
 
@@ -607,7 +607,7 @@ test('agent definition exposes model, capabilities and prompt', async (t) => {
 });
 
 test('workspaces group by git repository so worktrees merge', async (t) => {
-  const root = await mkdtemp(path.join(tmpdir(), 'trajectory-git-'));
+  const root = await mkTmpDirAsync('trajectory-git-');
   t.after(() => rm(root, { recursive: true, force: true }));
 
   const repo = path.join(root, 'repo');

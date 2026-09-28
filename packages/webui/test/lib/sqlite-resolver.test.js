@@ -15,18 +15,14 @@
 import { test, describe, before, after } from "node:test";
 import { strict as assert } from "node:assert";
 import { join, dirname, sep } from "node:path";
-import {
-    mkdtempSync,
-    mkdirSync,
-    writeFileSync,
-    rmSync,
-} from "node:fs";
+import {mkdirSync, writeFileSync, rmSync} from "node:fs";
 import { tmpdir, homedir } from "node:os";
 import {
     _getBetterSqlite3Candidates,
     _loadUserResolverConfig,
 } from "../../server/lib/sqlite-resolver.js";
 import { MCODE_CMD } from "../../server/lib/config.js";
+import { mkTmpDir } from "../helpers/tmp.js";
 
 describe("sqlite-resolver.js — better-sqlite3 resolver candidates (v1.0.1 round 4)", () => {
   let savedEnv;
@@ -311,7 +307,7 @@ describe("sqlite-resolver.js — C01 install-layout scenarios (user resolver con
     delete process.env.MCODE_BETTER_SQLITE3;
     delete process.env.MCODE_WEBUI_RESOLVER_JSON;
     if (tmpHome) rmSync(tmpHome, { recursive: true, force: true });
-    tmpHome = mkdtempSync(join(tmpdir(), "mcode-resolver-mac-"));
+    tmpHome = mkTmpDir("mcode-resolver-mac-");
     // Real fs write: ~/<tmp>/.mcode-webui/db-resolver.json
     const cfgDir = join(tmpHome, ".mcode-webui");
     mkdirSync(cfgDir, { recursive: true });
@@ -391,7 +387,7 @@ describe("sqlite-resolver.js — C01 install-layout scenarios (user resolver con
   test("Windows: $MCODE_BETTER_SQLITE3 env wins over MCODE_CMD + user resolver (tier 1)", () => {
     // Inject a user resolver config too, to prove env beats it.
     if (tmpHome) rmSync(tmpHome, { recursive: true, force: true });
-    tmpHome = mkdtempSync(join(tmpdir(), "mcode-resolver-win-"));
+    tmpHome = mkTmpDir("mcode-resolver-win-");
     const cfgDir = join(tmpHome, ".mcode-webui");
     mkdirSync(cfgDir, { recursive: true });
     // The user-pinned path lives inside tmpHome so the resolver.json
@@ -429,7 +425,7 @@ describe("sqlite-resolver.js — C01 install-layout scenarios (user resolver con
   // "fail open" semantics of the loader.
   test("_loadUserResolverConfig: missing file → [], valid → paths, malformed → []", () => {
     // Missing: fresh tmp home with no .mcode-webui
-    const freshHome = mkdtempSync(join(tmpdir(), "mcode-resolver-empty-"));
+    const freshHome = mkTmpDir("mcode-resolver-empty-");
     try {
       assert.deepEqual(
         _loadUserResolverConfig({ home: freshHome }),
@@ -440,7 +436,7 @@ describe("sqlite-resolver.js — C01 install-layout scenarios (user resolver con
       rmSync(freshHome, { recursive: true, force: true });
     }
     // Valid: write a json with 2 entries
-    const cfgHome = mkdtempSync(join(tmpdir(), "mcode-resolver-valid-"));
+    const cfgHome = mkTmpDir("mcode-resolver-valid-");
     try {
       mkdirSync(join(cfgHome, ".mcode-webui"), { recursive: true });
       writeFileSync(
@@ -459,7 +455,7 @@ describe("sqlite-resolver.js — C01 install-layout scenarios (user resolver con
       rmSync(cfgHome, { recursive: true, force: true });
     }
     // Malformed: bad JSON
-    const badHome = mkdtempSync(join(tmpdir(), "mcode-resolver-bad-"));
+    const badHome = mkTmpDir("mcode-resolver-bad-");
     try {
       mkdirSync(join(badHome, ".mcode-webui"), { recursive: true });
       writeFileSync(

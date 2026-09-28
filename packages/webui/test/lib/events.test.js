@@ -23,19 +23,17 @@
 //     a single after_hash, calling verify(), and asserting
 //     { ok: false, error: "hash_mismatch", line: N }.
 
-import { test, describe, before, after, beforeEach } from "node:test";
+import { test, describe, before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import {
-  mkdtempSync,
-  rmSync,
   existsSync,
   readFileSync,
   writeFileSync,
   chmodSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { mkTmpDir, rmTmpDir } from "../helpers/tmp.js";
 
 const absPath = (rel) =>
   pathToFileURL(join(import.meta.dirname, "..", "..", "server", rel)).href;
@@ -52,7 +50,7 @@ beforeEach(() => {
   // Fresh tmp dir per test → fresh events.ndjson. Override the path
   // BEFORE the module's lazy resolvers see it, so the seq counter
   // initializes from a non-existent file (max(seq) = 0 → starts at 1).
-  tmpDir = mkdtempSync(join(tmpdir(), "webui-events-test-"));
+  tmpDir = mkTmpDir("webui-events-test-");
   tmpEventsPath = join(tmpDir, "events.ndjson");
   process.env.MCODE_WEBUI_EVENTS_PATH = tmpEventsPath;
   // Reset the in-memory seq + last-hash cache so each test starts
@@ -60,11 +58,10 @@ beforeEach(() => {
   events._resetForTests();
 });
 
-after(() => {
+afterEach(() => {
   if (tmpDir) {
-    try {
-      rmSync(tmpDir, { recursive: true, force: true });
-    } catch {}
+    rmTmpDir(tmpDir);
+    tmpDir = null;
   }
   // Clean up env override for any subsequent test in the same process
   delete process.env.MCODE_WEBUI_EVENTS_PATH;
@@ -234,7 +231,7 @@ describe("events — error resilience (fail-closed)", () => {
     // Point the events path inside a read-only directory. append()
     // must throw (2026-09-20 rigor fix) — the caller aborts the gated
     // action instead of completing it unaudited.
-    const roDir = mkdtempSync(join(tmpdir(), "webui-events-ro-"));
+    const roDir = mkTmpDir("webui-events-ro-");
     try {
       chmodSync(roDir, 0o555); // r-x — no write for owner
       const roPath = join(roDir, "events.ndjson");
@@ -252,7 +249,7 @@ describe("events — error resilience (fail-closed)", () => {
       assert.equal(existsSync(roPath), false, "no file in read-only dir");
     } finally {
       try { chmodSync(roDir, 0o755); } catch {}
-      try { rmSync(roDir, { recursive: true, force: true }); } catch {}
+      rmTmpDir(roDir);
       // Restore the per-test override set by beforeEach.
       process.env.MCODE_WEBUI_EVENTS_PATH = tmpEventsPath;
       events._resetForTests();

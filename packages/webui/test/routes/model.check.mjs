@@ -14,7 +14,9 @@
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
+import { tmpdir } from "node:os";
 import { setupMocks, absPath } from "../helpers/_setup.js";
+import { mkTmpDir } from "../helpers/tmp.js";
 import yaml from "js-yaml";
 
 // Engine data dir isolation (ticket 06). The /api/models route reads
@@ -36,8 +38,8 @@ const _origMinimax = process.env.MINIMAX_DATA_DIR;
 const _origMavis = process.env.MAVIS_DATA_DIR;
 const _origWebuiDataDir = process.env.MCODE_WEBUI_DATA_DIR;
 const _origModelsConfig = process.env.MCODE_WEBUI_MODELS_CONFIG;
-const _engineDataDir = mkdtempSync(join(tmpdir(), "webui-model-engine-cat-"));
-const _webuiDataDir = mkdtempSync(join(tmpdir(), "webui-model-user-level-"));
+const _engineDataDir = mkTmpDir("webui-model-engine-cat-");
+const _webuiDataDir = mkTmpDir("webui-model-user-level-");
 process.env.MINIMAX_DATA_DIR = _engineDataDir;
 delete process.env.MAVIS_DATA_DIR;
 process.env.MCODE_WEBUI_DATA_DIR = _webuiDataDir;
@@ -502,12 +504,12 @@ describe("handleAnswer — /api/answer (legacy no-op)", () => {
 import {
   setBuiltinModelsMock,
 } from "../helpers/_setup.js";
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
-import { tmpdir } from "node:os";
+import {writeFileSync, rmSync, mkdirSync} from "node:fs";
+
 import { join } from "node:path";
 
 function withModelsConfig(contents, body) {
-  const dir = mkdtempSync(join(tmpdir(), "webui-models-merge-"));
+  const dir = mkTmpDir("webui-models-merge-");
   const file = join(dir, "models.json");
   writeFileSync(file, JSON.stringify(contents));
   const prev = process.env.MCODE_WEBUI_MODELS_CONFIG;

@@ -35,9 +35,10 @@ import { test, describe } from "node:test";
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
 import http from "node:http";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import {rmSync, writeFileSync} from "node:fs";
+
 import { join } from "node:path";
+import { mkTmpDir } from "../helpers/tmp.js";
 
 const __dirname = join(import.meta.url.replace(/^file:\/\//, "").replace(/\/[^/]*$/, ""));
 
@@ -50,7 +51,7 @@ describe("matrix: stdio transport (line-delimited stream-json)", () => {
         // 3 stream-json frames to stdout, and exits 0. The script
         // lives in the OS temp dir so a real mcode install on PATH
         // never collides.
-        const tmpDir = mkdtempSync(join(tmpdir(), "mcode-webui-mock-"));
+        const tmpDir = mkTmpDir("mcode-webui-mock-");
         const mockPath = join(tmpDir, "mock-mcode-stdio.mjs");
         writeFileSync(
             mockPath,
