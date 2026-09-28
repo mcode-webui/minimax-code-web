@@ -142,7 +142,7 @@ Remove `L024` when the selected Pi baseline natively matches legacy-terminal `Ct
 ## L038: Preserve native scrolling during visible content shrink
 
 - Product contract: settling visible activity rows must not clear native scrollback or pin a scrolled host viewport to the top. The Composer and status remain at the bottom, and historical content remains unique.
-- Minimal difference: when terminal geometry and the text already in scrollback are unchanged, absorb visible text-only shrink with blank rows at the current screen boundary before cursor extraction and differential rendering. Subsequent output consumes the space before advancing native history. Ignore redundant same-size resize notifications without cancelling a genuine pending resize replay.
+- Minimal difference: when terminal geometry, the text already in scrollback and the declared transient layout keys are unchanged, absorb visible text-only shrink with blank rows at the current screen boundary before cursor extraction and differential rendering. L041 makes this an explicit background-content policy; unclassified layouts restore exposed rows. Subsequent output consumes the space before advancing native history. Ignore redundant same-size resize notifications without cancelling a genuine pending resize replay.
 - Boundary: padding is confined to the active screen. Historical text replacement/removal, real resize, overlays and image reflow retain the structural reconstruction path. Blank rows can temporarily separate native history from the visible tail; this is preferable to clearing and replaying the terminal's scrollback during ordinary completion. No mouse capture is enabled in regular mode.
 - Evidence: local-delta tests use xterm's host scroll API independently of the hardware cursor, reproduce the pre-fix jump to line zero, and verify stable scrolling, Composer position, unique history, reclaimed space, corrected-history reconstruction and resize behavior. The product queue/feature tests continue to cover canonical history replacement. Native Windows Terminal and UU Remote acceptance remain separate.
 - Removal condition: the selected Pi baseline preserves host scrolling and unique history through visible shrink.
@@ -162,3 +162,25 @@ Remove `L024` when the selected Pi baseline natively matches legacy-terminal `Ct
 - User impact: the previous interrupted footer disappears with the submitted message, and the extra no-op render after Enter is avoided.
 - Evidence: `tui-app.test.ts` checks every presented frame across interrupt and resend; `tui-engine-local-deltas.test.ts` checks that a synchronous input render has no second pass.
 - Removal condition: the selected Pi baseline coalesces synchronous input renders while preserving immediate key rendering.
+
+## L041: Restore chat rows after transient layout shrink
+
+- Product contract: shrinking a transient UI region restores the conversation instead of leaving released rows blank above it. Background activity shrink with unchanged transient layout retains L038's native scrolling behavior.
+- Minimal difference: components may expose the layout key of their last rendered frame. MainScreen permits L038 padding only when every root explicitly supplies the same key and no overlay was present. ChatLayout includes every transient section's height and interaction state, while SurfaceHost includes the active feature. Unknown or changed layouts use L034 reconstruction only when scrolled rows must return. Keys are captured with native render state and cleared on reset. This replaces the earlier completion-specific resize callback and full-viewport close exception.
+- Evidence: application tests replay `/theme`, `/settings`, prompt-history search, image-preview dismissal, multi-line draft clearing and completion filtering. Engine tests repeatedly expand/shrink each transient section under xterm and an ED 2 clear-to-scrollback model, compare the complete viewport, verify unique history, and retain positive background-activity scroll preservation. Short documents avoid unnecessary clearing.
+- Boundary: full history reconstruction retains L034's shell-scrollback tradeoff. Emulator tests do not establish native terminal or live-service acceptance.
+- Removal condition: the selected Pi baseline distinguishes transient UI layout shrink from ordinary background content shrink.
+
+## L042: Preserve product mention bindings in prompt history
+
+- Product contract: plugin labels retain their exact identities while browsing history, including restoration of the working draft.
+- Minimal difference: expose a generic history-text decoder and capture/restore the existing undo extension state alongside the history draft. Plugin parsing and identity ownership stay in the product Editor.
+- Evidence: `tui-plugin-mentions.test.ts` covers repeated history navigation, identical display labels with different IDs, working-draft restoration, atomic deletion and undo.
+- Removal condition: the selected Pi baseline supports durable history decoding and draft extension state.
+
+## L043: Preserve detached scrolling across layout changes
+
+- Product contract: a detached fullscreen transcript remains detached when the viewport grows or content shrinks.
+- Minimal difference: `ScrollView.updateLayout` clamps the scroll position without changing follow state. Explicit scrolling and follow requests retain their existing behavior.
+- Evidence: `tui-scrollbar-interaction.test.ts` covers wheel detachment, viewport growth, footer/content shrink, temporarily fitting all content, subsequent output and re-arming with End.
+- Removal condition: the selected Pi baseline preserves follow state through layout clamping.

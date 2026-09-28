@@ -11,7 +11,13 @@ import {
   type TUI,
   visibleWidth,
 } from '../../src/tui/engine/public.js';
+import { TuiChatLayout, type TuiChatLayoutParts } from '../../src/tui/shell/chat-layout.js';
 import { VirtualTerminal } from '../pi-084-upstream/virtual-terminal.js';
+
+import { TuiInlinePanelHost } from '../../src/tui/shell/inline-panel.js';
+import { TuiPermissionModePicker } from '../../src/tui/features/interaction/permission-mode-picker.js';
+import { TranscriptView } from '../../src/tui/transcript/view.js';
+import { createTranscriptCell } from '../../src/tui/transcript/model.js';
 
 const passthrough = (value: string): string => value;
 const selectListTheme = {
@@ -47,6 +53,11 @@ class ClearToScrollbackTerminal extends RecordingVirtualTerminal {
 
 class MutableLines implements Component {
   lines: string[] = [];
+  viewportLayoutKey: string | undefined;
+
+  getViewportLayoutKey(): string | undefined {
+    return this.viewportLayoutKey;
+  }
 
   render(): string[] {
     return [...this.lines];
@@ -55,7 +66,113 @@ class MutableLines implements Component {
   invalidate(): void {}
 }
 
+function createMutableChatParts(surface: 'welcome' | 'conversation') {
+  const parts = {
+    surface: () => surface,
+    welcome: new MutableLines(),
+    notice: new MutableLines(),
+    transcript: new MutableLines(),
+    interaction: new MutableLines(),
+    activity: new MutableLines(),
+    goal: new MutableLines(),
+    followUp: new MutableLines(),
+    tasks: new MutableLines(),
+    composer: new MutableLines(),
+    status: new MutableLines(),
+  } satisfies TuiChatLayoutParts;
+  parts.composer.lines = [`composer${CURSOR_MARKER}`];
+  parts.status.lines = ['status'];
+  return parts;
+}
+
 describe('MCode Pi Engine local deltas', () => {
+  describe.each([
+    ['xterm', RecordingVirtualTerminal],
+    ['clear-to-scrollback host', ClearToScrollbackTerminal],
+  ] as const)('%s permission table redraw', (_name, Terminal) => {
+    it.each([
+      [60, '\r'],
+      [100, '\r'],
+      [60, '\x1b'],
+      [100, '\x1b'],
+    ])('keeps tables contiguous at width %i after closing with %j', async (width, key) => {
+      const terminal = new Terminal(width, 24);
+      const tui = new TuiMainScreen(terminal);
+      const interaction = new TuiInlinePanelHost();
+      const cell = createTranscriptCell({
+        id: 'table',
+        kind: 'assistant',
+        status: 'succeeded',
+        createdAtMs: 1,
+        content: [
+          '## Cookbook',
+          '',
+          '| Cookbook | Description |',
+          '| --- | --- |',
+          ...Array.from({ length: 14 }, (_, index) => `| recipe-${index} | Example ${index} |`),
+        ].join('\n'),
+      });
+      const transcript = new TranscriptView(() => [cell]);
+      const empty = new MutableLines();
+      const composer = new MutableLines();
+      composer.lines = [`composer${CURSOR_MARKER}`];
+      const status = new MutableLines();
+      status.lines = ['status'];
+      const layout = new TuiChatLayout(terminal, {
+        surface: () => 'conversation',
+        welcome: empty,
+        transcript,
+        interaction,
+        activity: empty,
+        followUp: empty,
+        composer,
+        status,
+      });
+      tui.addChild(layout);
+      tui.renderNow();
+      await terminal.flush();
+      const original = terminal.getScrollBuffer();
+      const picker = new TuiPermissionModePicker(
+        'default',
+        () => interaction.close(),
+        () => interaction.close(),
+      );
+      interaction.show(picker);
+      tui.renderNow();
+      await terminal.flush();
+      terminal.scrollLines(-5);
+      terminal.takeWrites();
+      picker.handleInput(key);
+      tui.renderNow();
+      await terminal.flush();
+      const after = terminal.getScrollBuffer();
+      expect(after).toEqual(original);
+      expect(terminal.getCursorPosition().y).toBe(22);
+      const tableStart = original.findIndex((line) => line.includes('┌'));
+      const tableEnd = original.findIndex((line) => line.includes('└'));
+      expect(tableStart).toBeGreaterThanOrEqual(0);
+      expect(tableEnd).toBeGreaterThan(tableStart);
+      expect(after.slice(tableStart, tableEnd + 1)).toEqual(
+        original.slice(tableStart, tableEnd + 1),
+      );
+      expect(after.filter((line) => line.trim())).toEqual(original.filter((line) => line.trim()));
+      tui.renderNow();
+      await terminal.flush();
+      expect(terminal.getScrollBuffer()).toEqual(after);
+      // Continue streaming the same table while the freed panel rows are reused.
+      cell.content += '\n| recipe-14 | Example 14 |';
+      tui.renderNow();
+      await terminal.flush();
+      const grown = terminal.getScrollBuffer();
+      const grownEnd = grown.findIndex((line) => line.includes('└'));
+      expect(grown.filter((line) => line.includes('recipe-14'))).toHaveLength(1);
+      expect(grownEnd).toBeGreaterThan(tableEnd);
+      expect(grown.slice(tableStart, grownEnd + 1).every((line) => line.trim().length > 0)).toBe(
+        true,
+      );
+    });
+  });
+
   it('does not replay a submitted input frame after a synchronous render', async () => {
     const terminal = new RecordingVirtualTerminal(60, 12);
     const tui = new TuiMainScreen(terminal);
@@ -168,6 +285,7 @@ describe('MCode Pi Engine local deltas', () => {
     const terminal = new RecordingVirtualTerminal(60, 44);
     const tui = new TuiMainScreen(terminal);
     const component = new MutableLines();
+    component.viewportLayoutKey = 'stable-footer';
     const answer = Array.from({ length: 80 }, (_, index) => `Answer ${index}`);
     component.lines = [
       ...answer,
@@ -203,6 +321,194 @@ describe('MCode Pi Engine local deltas', () => {
     expect(terminal.getViewport().slice(-2)).toEqual(['composer', 'idle']);
   });
 
+  describe.each([
+    ['xterm', RecordingVirtualTerminal],
+    ['clear-to-scrollback host', ClearToScrollbackTerminal],
+  ] as const)('%s transient layout restoration', (_name, Terminal) => {
+    const transientParts = ['welcome', 'interaction', 'composer', 'notice', 'followUp', 'goal', 'tasks', 'status'] as const;
+
+    it.each(transientParts)('restores the document tail after repeated %s collapses', async (part) => {
+      const terminal = new Terminal(60, 16);
+      const tui = new TuiMainScreen(terminal);
+      const parts = createMutableChatParts(part === 'notice' || part === 'welcome' ? 'welcome' : 'conversation');
+      const history = Array.from({ length: 40 }, (_, index) => `History ${index}`);
+      (part === 'notice' || part === 'welcome' ? parts.welcome : parts.transcript).lines = history;
+      const layout = new TuiChatLayout(terminal, parts);
+      tui.addChild(layout);
+      tui.renderNow();
+      await terminal.flush();
+      const expected = terminal.getScrollBuffer();
+      const baseline = [...parts[part].lines];
+
+      for (let cycle = 0; cycle < 3; cycle++) {
+        parts[part].lines = [
+          ...(part === 'welcome' ? baseline : []),
+          ...Array.from({ length: 8 }, (_, index) => `${part} ${cycle}-${index}`),
+        ];
+        tui.renderNow();
+        await terminal.flush();
+        parts[part].lines = [...baseline];
+        tui.renderNow();
+        await terminal.flush();
+
+        const logicalDocument = layout.render(terminal.columns).map((line) => line.replace(CURSOR_MARKER, ''));
+        expect(terminal.getViewport()).toEqual(logicalDocument.slice(-terminal.rows));
+        expect(terminal.getScrollBuffer()).toEqual(expected);
+        for (const line of history) {
+          expect(terminal.getScrollBuffer().filter((row) => row.trim() === line)).toHaveLength(1);
+        }
+      }
+    });
+
+    it.each(transientParts)('erases a short %s without clearing host history', async (part) => {
+      const terminal = new Terminal(60, 16);
+      const tui = new TuiMainScreen(terminal);
+      const parts = createMutableChatParts(part === 'notice' || part === 'welcome' ? 'welcome' : 'conversation');
+      (part === 'notice' || part === 'welcome' ? parts.welcome : parts.transcript).lines = ['Short answer'];
+      const layout = new TuiChatLayout(terminal, parts);
+      tui.addChild(layout);
+      tui.renderNow();
+      await terminal.flush();
+      const expected = terminal.getScrollBuffer();
+      const baseline = [...parts[part].lines];
+      parts[part].lines = [
+        ...(part === 'welcome' ? baseline : []),
+        ...Array.from({ length: 8 }, (_, index) => `${part} ${index}`),
+      ];
+      tui.renderNow();
+      await terminal.flush();
+      terminal.takeWrites();
+      parts[part].lines = baseline;
+      tui.renderNow();
+      await terminal.flush();
+
+      expect(terminal.getScrollBuffer()).toEqual(expected);
+      expect(terminal.takeWrites()).not.toContain('\x1b[3J');
+    });
+
+    it.each([
+      ['hide', 2],
+      ['hide', 40],
+      ['setHidden', 2],
+      ['setHidden', 40],
+    ] as const)('restores %s overlays after activity settles with %i history rows', async (close, historyRows) => {
+      const terminal = new Terminal(60, 16);
+      const tui = new TuiMainScreen(terminal);
+      const parts = createMutableChatParts('conversation');
+      parts.transcript.lines = Array.from({ length: historyRows }, (_, index) => `History ${index}`);
+      const layout = new TuiChatLayout(terminal, parts);
+      tui.addChild(layout);
+      tui.renderNow();
+      await terminal.flush();
+      const expected = terminal.getScrollBuffer();
+      const overlay = new MutableLines();
+      overlay.lines = ['Overlay contents'];
+
+      for (let cycle = 0; cycle < 2; cycle++) {
+        // Background activity changes do not alter the chat's transient layout key.
+        // The previous overlay frame must still prevent padding after it disappears.
+        parts.activity.lines = Array.from({ length: 5 }, (_, index) => `Activity ${index}`);
+        const handle = tui.showOverlay(overlay, { width: 24 });
+        tui.renderNow();
+        await terminal.flush();
+        expect(terminal.getViewport().join('\n')).toContain('Overlay contents');
+        terminal.takeWrites();
+        if (close === 'hide') handle.hide();
+        else handle.setHidden(true);
+        parts.activity.lines = [];
+        tui.renderNow();
+        await terminal.flush();
+
+        expect(terminal.getScrollBuffer()).toEqual(expected);
+        expect(terminal.getViewport().join('\n')).not.toContain('Overlay contents');
+        if (historyRows < terminal.rows) expect(terminal.takeWrites()).not.toContain('\x1b[3J');
+        // Hidden overlays remain registered; removing one must keep the restored frame.
+        handle.hide();
+        tui.renderNow();
+        await terminal.flush();
+        expect(terminal.getScrollBuffer()).toEqual(expected);
+      }
+    });
+
+    it.each([false, true])('reconstructs when any root lacks a layout key (mixed roots: %s)', async (mixedRoots) => {
+      const terminal = new Terminal(60, 16);
+      const tui = new TuiMainScreen(terminal);
+      const component = new MutableLines();
+      const history = Array.from({ length: 40 }, (_, index) => `History ${index}`);
+      component.lines = [...history, 'composer', 'status'];
+      tui.addChild(component);
+      if (mixedRoots) {
+        component.viewportLayoutKey = 'stable-footer';
+        tui.addChild(new MutableLines());
+      }
+      tui.renderNow();
+      await terminal.flush();
+      const expected = terminal.getScrollBuffer();
+      component.lines.splice(-2, 0, ...Array.from({ length: 8 }, (_, index) => `Transient ${index}`));
+      tui.renderNow();
+      await terminal.flush();
+      component.lines = [...history, 'composer', 'status'];
+      tui.renderNow();
+      await terminal.flush();
+
+      expect(terminal.getScrollBuffer()).toEqual(expected);
+      expect(terminal.getViewport()).toEqual(component.lines.slice(-terminal.rows));
+    });
+
+    it('tracks layout changes even when they produce an identical frame', async () => {
+      const terminal = new Terminal(60, 16);
+      const tui = new TuiMainScreen(terminal);
+      const component = new MutableLines();
+      const history = Array.from({ length: 40 }, (_, index) => `History ${index}`);
+      component.viewportLayoutKey = 'closed';
+      component.lines = [...history, 'composer', 'status'];
+      tui.addChild(component);
+      tui.renderNow();
+      await terminal.flush();
+      const expected = terminal.getScrollBuffer();
+      component.lines.splice(-2, 0, ...Array.from({ length: 8 }, (_, index) => `Transient ${index}`));
+      tui.renderNow();
+      await terminal.flush();
+
+      // A selector can replace a same-height footer without changing any rows.
+      component.viewportLayoutKey = 'open';
+      tui.renderNow();
+      await terminal.flush();
+      component.viewportLayoutKey = 'closed';
+      component.lines = [...history, 'composer', 'status'];
+      tui.renderNow();
+      await terminal.flush();
+
+      expect(terminal.getScrollBuffer()).toEqual(expected);
+      expect(terminal.getViewport()).toEqual(component.lines.slice(-terminal.rows));
+    });
+
+    it('preserves a scrolled host viewport when only chat activity settles', async () => {
+      const terminal = new Terminal(60, 16);
+      const tui = new TuiMainScreen(terminal);
+      const parts = createMutableChatParts('conversation');
+      parts.transcript.lines = Array.from({ length: 40 }, (_, index) => `History ${index}`);
+      parts.activity.lines = ['Activity 1', 'Activity 2', 'Activity 3'];
+      const layout = new TuiChatLayout(terminal, parts);
+      tui.addChild(layout);
+      tui.renderNow();
+      await terminal.flush();
+      terminal.scrollLines(-10);
+      const before = terminal.getScrollPosition();
+      terminal.takeWrites();
+      parts.activity.lines = [];
+      tui.renderNow();
+      await terminal.flush();
+
+      expect(terminal.getScrollPosition()).toEqual(before);
+      expect(terminal.takeWrites()).not.toContain('\x1b[3J');
+      expect(terminal.getScrollBuffer().filter((line) => line.trim().startsWith('History ')))
+        .toHaveLength(40);
+      terminal.scrollLines(1000);
+      expect(terminal.getViewport().slice(-2).map((line) => line.trim())).toEqual(['composer', 'status']);
+    });
+  });
+
   it('ignores same-size resize notifications while the host is scrolled up', async () => {
     const terminal = new RecordingVirtualTerminal(60, 12);
     const tui = new TuiMainScreen(terminal);
@@ -232,6 +538,7 @@ describe('MCode Pi Engine local deltas', () => {
     const terminal = new RecordingVirtualTerminal(60, 12);
     const tui = new TuiMainScreen(terminal);
     const component = new MutableLines();
+    component.viewportLayoutKey = 'stable-footer';
     const answer = Array.from({ length: 80 }, (_, index) => `Answer ${index}`);
     component.lines = [...answer, 'activity', `composer${CURSOR_MARKER}`, 'status'];
     tui.addChild(component);
@@ -296,6 +603,7 @@ describe('MCode Pi Engine local deltas', () => {
     const terminal = new RecordingVirtualTerminal(67, 44);
     const tui = new TuiMainScreen(terminal);
     const component = new MutableLines();
+    component.viewportLayoutKey = 'stable-footer';
     const answer = Array.from({ length: 80 }, (_, index) => `Answer line ${index}`);
     component.lines = [...answer, 'activity', `composer${CURSOR_MARKER}`, 'status'];
     tui.addChild(component);
@@ -338,6 +646,7 @@ describe('MCode Pi Engine local deltas', () => {
       const terminal = new RecordingVirtualTerminal(60, 44);
       const tui = new TuiMainScreen(terminal);
       const component = new MutableLines();
+      component.viewportLayoutKey = 'stable-footer';
       const answer = Array.from({ length: 80 }, (_, index) => `Answer ${index}`);
       component.lines = [
         ...answer,

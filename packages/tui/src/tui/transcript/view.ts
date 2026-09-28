@@ -1,3 +1,4 @@
+import { formatTokensPerSecond } from '../rendering/output-rate.js';
 import { Markdown, Text } from '../engine/public.js';
 import { projectAssistantContentForTerminal } from '../../application/assistant-content.js';
 import { formatTuiDuration } from '../rendering/duration.js';
@@ -578,7 +579,7 @@ function renderCell(
   if (cell.kind === 'turn-duration') {
     const label = cell.status === 'cancelled' ? 'Interrupted after' : 'Completed in';
     const outputRate = isPositiveFinite(cell.outputTokensPerSecond)
-      ? ` · ⚡ ${cell.outputTokensPerSecondEstimated === true ? '~' : ''}${cell.outputTokensPerSecond.toFixed(1)} tok/s`
+      ? ` · ⚡ ${cell.outputTokensPerSecondEstimated === true ? '~' : ''}${formatTokensPerSecond(cell.outputTokensPerSecond)} tok/s`
       : '';
     const summary = chalk.hex(colors.muted)(
       `  └ ${label} ${formatTuiDuration((cell.durationMs ?? 0) / 1_000)}${outputRate}`,
@@ -655,7 +656,7 @@ function renderCell(
             toolSummary,
             width,
             visibleWidth(`${marker} ${title}`),
-            !backgroundBash,
+            backgroundBash ? 'background' : (evidence.summaryKind ?? 'command'),
           )}`
         : chalk.hex(colors.muted)(
             definition?.summaryStyle === 'dot' ? ` · ${toolSummary}` : ` (${toolSummary})`,
@@ -966,16 +967,15 @@ function styleShellSummary(
   summary: string,
   width: number,
   usedWidth: number,
-  highlightCommand: boolean,
+  kind: 'description' | 'command' | 'background',
 ): string {
   const fitted = fitShellSummary(summary, width, usedWidth);
-  if (!highlightCommand) return chalk.hex(colors.muted)(fitted);
+  if (kind === 'background') return chalk.hex(colors.muted)(fitted);
+  const styleSubject = kind === 'command' ? highlightTuiShellCommand : chalk.hex(colors.text);
 
   const index = shellOutputSummaryIndex(fitted);
-  if (index <= 0) return highlightTuiShellCommand(fitted);
-  return `${highlightTuiShellCommand(fitted.slice(0, index))}${chalk.hex(colors.muted)(
-    fitted.slice(index),
-  )}`;
+  if (index <= 0) return styleSubject(fitted);
+  return `${styleSubject(fitted.slice(0, index))}${chalk.hex(colors.muted)(fitted.slice(index))}`;
 }
 
 function shellOutputSummaryIndex(summary: string): number {

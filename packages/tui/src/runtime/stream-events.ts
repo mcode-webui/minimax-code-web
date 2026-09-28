@@ -44,6 +44,7 @@ export type TuiMessagePart =
     };
 
 export interface TuiMessage {
+  editContent?: string;
   id?: string;
   turnId?: string;
   role: TuiMessageRole;
@@ -85,6 +86,7 @@ export interface TuiTokenUsage {
   outputTokens?: number;
   reasoningTokens?: number;
   requestDurationMs?: number;
+  decodeDurationMs?: number;
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
 }
@@ -333,6 +335,7 @@ function normalizeMessage(message: Record<string, unknown>, fallbackTurnId?: str
     tokensBefore: readNumber(message, ['tokensBefore', 'tokens_before']),
     tokensAfter: readNumber(message, ['tokensAfter', 'tokens_after']),
     content: readString(message, ['msg_content', 'msgContent', 'content']),
+    editContent: readString(message, ['editContent']),
     thinking: readString(message, ['thinking_content', 'thinkingContent', 'thinking']),
     thinkingDurationMs: readNumber(message, ['thinking_duration_ms', 'thinkingDurationMs']),
     toolCalls: normalizeToolCalls(readArray(message, ['tool_calls', 'toolCalls'])),
@@ -367,6 +370,7 @@ function normalizeTokenUsage(
     outputTokens: readNumber(usage, ['output_tokens', 'outputTokens']),
     reasoningTokens: readNumber(usage, ['reasoning', 'reasoning_tokens', 'reasoningTokens']),
     requestDurationMs: readNumber(usage, ['request_duration_ms', 'requestDurationMs']),
+    decodeDurationMs: readNumber(usage, ['decode_duration_ms', 'decodeDurationMs']),
     cacheReadTokens: readNumber(usage, ['cache_read', 'cacheRead', 'cache_read_tokens']),
     cacheWriteTokens: readNumber(usage, ['cache_write', 'cacheWrite', 'cache_write_tokens']),
   });
