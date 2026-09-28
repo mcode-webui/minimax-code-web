@@ -63,14 +63,43 @@ export const SCROLL_VERSION = 1;
  *  registration in one file. */
 export { WORKSPACE_TABS_VERSION, DEFAULT_WORKSPACE_TABS_STATE };
 
-/** Right-panel kinds. Mirrors `components/panels.tsx#PanelKind`. */
+/**
+ * Right-panel kinds. Mirrors the toolbar / sidebar nav entry
+ * points' route targets. Slice 17 trimmed this union to the
+ * four kinds that actually have a landing surface in the new
+ * four-column shell:
+ *
+ *   - `workspace`  → opens the Files tab (closest analog) in
+ *                    the tree column (no dedicated workspace
+ *                    surface in slice 17 — toolbar highlight stays
+ *                    on)
+ *   - `files`      → Files tab in the tree column
+ *   - `git`        → Git tab in the tree column
+ *   - `plugins`    → Plugins placeholder in the tree column
+ *                    (engine contract not yet landed)
+ *   - `browser`    → Browser tab in the preview column
+ *
+ * `search` was a PanelKind in slice 14 but is reached through
+ * `Ctrl+K` and the sidebar's nav entry, both of which now route
+ * through `openSurfaceTab("search")` (a SurfaceTabKind, not a
+ * PanelKind). Removing it from the union prevents routing
+ * through a kind that does not have a dedicated page-level
+ * surface.
+ *
+ * Slice 17 also removed `alerts` and `progress` — neither had
+ * a live entry point. `alerts` is reached via the sidebar's
+ * 站内信 bell icon (AppShell#InboxFlyout, a separate
+ * component); `progress` had no UI entry point at all.
+ * Keeping them in the union with no consumer meant a test
+ * could assert they are not surfaces, but the UI would
+ * silently no-op on a stale persisted payload. Removing them
+ * makes the contract explicit: a kind that is not in the union
+ * cannot be opened.
+ */
 export type PanelKind =
   | "workspace"
   | "files"
   | "git"
-  | "alerts"
-  | "search"
-  | "progress"
   | "plugins"
   | "browser";
 
@@ -162,9 +191,6 @@ export function deserializeUiState(raw: string | null | undefined, cid: string |
     "workspace",
     "files",
     "git",
-    "alerts",
-    "search",
-    "progress",
     "plugins",
     "browser",
   ]);

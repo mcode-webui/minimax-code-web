@@ -98,14 +98,19 @@ describe("deserializeUiState", () => {
     // Belt-and-braces: enumerate the full PanelKind set so adding a
     // new kind in panels.tsx without mirroring it in persist.ts's
     // validKinds set trips this assertion.
+    //
+    // Slice 17 — `alerts` / `search` / `progress` were removed
+    // from the union. They are still in the wire-shape for
+    // forward-compat (a payload that names them reads back as
+    // `panel: null`, the deserializer's silent drop is the
+    // graceful-degradation contract), but they are NOT in the
+    // supported set any more.
     const kinds = [
       "workspace",
       "files",
       "git",
-      "alerts",
-      "search",
-      "progress",
       "plugins",
+      "browser",
     ] as const;
     for (const kind of kinds) {
       const raw = validPayload({ panel: kind });
@@ -120,6 +125,23 @@ describe("deserializeUiState", () => {
     assert.equal(out.panel, null);
   });
 
+  test("drops the slice-14 'search' / 'progress' / 'alerts' kinds gracefully (slice-17 removal)", () => {
+    // Slice 17 removed these from the PanelKind union because
+    // none had a live entry point in the four-column shell.
+    // Forward-compat: a stale payload that names one of them
+    // must read back as `panel: null` rather than crashing or
+    // silently rendering nothing.
+    for (const removed of ["alerts", "search", "progress"] as const) {
+      // The test uses `unknown` because these values are not
+      // members of the (slice-17) `PanelKind` union any more.
+      // The deserializer must still drop them rather than
+      // treating them as a malformed but valid kind.
+      const raw = validPayload({ panel: removed as unknown as UiState["panel"] });
+      const out = deserializeUiState(raw, cid);
+      assert.equal(out.panel, null, `expected ${removed} to drop to null`);
+    }
+  });
+
   test("accepts the slice-04 browser panel kind so a refresh restores it", () => {
     // The slice-04 wiring adds "browser" to the panel registry;
     // a refresh must round-trip the choice through the persisted
@@ -132,12 +154,12 @@ describe("deserializeUiState", () => {
 
   test("preserves lastSessionId and panelTab fields", () => {
     const raw = validPayload({
-      panel: "search",
+      panel: "files",
       panelTab: "advanced",
       lastSessionId: "mvs_deadbeefdeadbeefdeadbeefdeadbeef",
     });
     const out = deserializeUiState(raw, cid);
-    assert.equal(out.panel, "search");
+    assert.equal(out.panel, "files");
     assert.equal(out.panelTab, "advanced");
     assert.equal(out.lastSessionId, "mvs_deadbeefdeadbeefdeadbeefdeadbeef");
   });
