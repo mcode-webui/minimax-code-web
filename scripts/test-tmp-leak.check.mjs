@@ -56,10 +56,9 @@
 // the repo's tests use one of these prefixes for every per-test tmpdir,
 // and adding a new prefix requires a deliberate code change here.
 
-import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { tmpdir } from "node:os";
 
 /**
@@ -85,6 +84,55 @@ function pathExists(path) {
 }
 
 const repoRoot = fileURLToPath(new URL("../", import.meta.url));
+
+/**
+ * Recursively yield every file under `dir` whose name ends with one of
+ * `extensions` (e.g. [".js", ".mjs"]). Directories named `node_modules`
+ * are skipped, and symbolic links are never followed — matching the
+ * recursive-scan semantics this script used to get from `grep -r`.
+ *
+ * Why not shell out to grep: the patterns this lint needs (`\(`, `\s`,
+ * `\b`) are GNU/BSD dialect extensions whose escaping differs between
+ * grep implementations — the Windows runner's grep rejected the escaped
+ * paren outright (PR #86 CI). A pure-Node walk plus `RegExp` behaves
+ * identically on every platform Node itself runs on, so the gate can
+ * never again differ between ubuntu, macOS and windows (three prior
+ * cross-platform assertion regressions were caused by exactly this
+ * class of system-tool dialect dependency).
+ *
+ * @param {string} dir
+ * @param {string[]} extensions
+ * @returns {Generator<string>} absolute file paths, in readdir order
+ */
+function* walkSourceFiles(dir, extensions) {
+  let entries;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return; // unreadable subtree — same as grep skipping it
+  }
+  for (const entry of entries) {
+    if (entry.name === "node_modules") continue;
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      yield* walkSourceFiles(full, extensions);
+    } else if (entry.isFile() && extensions.some((ext) => entry.name.endsWith(ext))) {
+      yield full;
+    }
+  }
+}
+
+/**
+ * Read a source file and return its lines with the trailing carriage
+ * return stripped, so a CRLF checkout on Windows produces the same line
+ * content an LF checkout does.
+ *
+ * @param {string} file
+ * @returns {string[]}
+ */
+function readSourceLines(file) {
+  return readFileSync(file, "utf8").split("\n").map((l) => l.replace(/\r$/, ""));
+}
 
 // Every prefix the repo's tests use. Keep the list narrow: each entry is
 // a code change AND a contract — every new prefix needs the same exit
@@ -314,44 +362,35 @@ export function collectActualPrefixes() {
   // The helper's documented prefix convention is `<family>-<sub>-`:
   // lowercase letters, digits, and hyphens. We use a strict whitelist
   // character class so the regex never matches past the closing quote
-  // — POSIX ERE cannot reliably exclude newlines inside a character
-  // class (`\n` is treated as the literal two-character sequence, and
-  // raw newlines break the class), so we limit ourselves to the
-  // characters that prefixes can actually contain. Anything more exotic
-  // (e.g. a prefix containing a quote) is a deliberate exception the
-  // author should have escaped by then, and the registry check would
-  // surface the missing entry on the next run anyway.
+  // — the class admits only the characters prefixes can actually
+  // contain. Anything more exotic (e.g. a prefix containing a quote)
+  // is a deliberate exception the author should have escaped by then,
+  // and the registry check would surface the missing entry on the
+  // next run anyway.
   const PREFIX_CHAR = `[a-zA-Z0-9_-]`;
-  const pattern = [
-    `mkTmpDir\\(\\s*["${BACKTICK}"]${PREFIX_CHAR}*["${BACKTICK}"]`,
-    `mkTmpDirAsync\\(\\s*["${BACKTICK}"]${PREFIX_CHAR}*["${BACKTICK}"]`,
-    `mkSubTmpDir\\([^,]+,\\s*["${BACKTICK}"]${PREFIX_CHAR}*["${BACKTICK}"]`,
-  ].join("|");
-  let out = "";
-  try {
-    out = execFileSync(
-      "grep",
-      [
-        "-rEoh",
-        "--include=*.js",
-        "--include=*.mjs",
-        pattern,
-        join(repoRoot, "packages", "webui", "test"),
-      ],
-      { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
-    );
-  } catch (e) {
-    if (e.status !== 1) throw e;
-    out = "";
-  }
+  const QUOTED_PREFIX = `["${BACKTICK}"]${PREFIX_CHAR}*["${BACKTICK}"]`;
+  // Same shapes the grep-era pattern matched, as a native RegExp tested
+  // line-by-line: helper calls with a literal quoted first (or second,
+  // for mkSubTmpDir) argument.
+  const CALL_SITES = new RegExp(
+    [
+      `mkTmpDir\\(\\s*${QUOTED_PREFIX}`,
+      `mkTmpDirAsync\\(\\s*${QUOTED_PREFIX}`,
+      `mkSubTmpDir\\([^,]+,\\s*${QUOTED_PREFIX}`,
+    ].join("|"),
+    "g",
+  );
   const set = new Set();
-  for (const line of out.split("\n")) {
-    if (!line) continue;
-    const matches = line.match(/["`][^"`\n]+["`]/g);
-    if (!matches) continue;
-    const last = matches[matches.length - 1].slice(1, -1);
-    if (EXAMPLE_PREFIXES.has(last)) continue;
-    set.add(last);
+  for (const file of walkSourceFiles(join(repoRoot, "packages", "webui", "test"), [".js", ".mjs"])) {
+    for (const line of readSourceLines(file)) {
+      for (const match of line.matchAll(CALL_SITES)) {
+        const quoted = match[0].match(/["`][^"`\n]+["`]/g);
+        if (!quoted) continue;
+        const last = quoted[quoted.length - 1].slice(1, -1);
+        if (EXAMPLE_PREFIXES.has(last)) continue;
+        set.add(last);
+      }
+    }
   }
   return set;
 }
@@ -522,54 +561,34 @@ export function formatPrefixRegistry({ unregistered, stale, bare = [] }) {
  * by verifyPrefixRegistry().
  */
 function collectBareMkdtemp() {
-  let out = "";
-  try {
-    out = execFileSync(
-      "grep",
-      [
-        "-rEn",
-        "--include=*.js",
-        "--include=*.mjs",
-        "--include=*.ts",
-        // Match the two call shapes the helper supports:
-        //   mkdtempSync(path.join(tmpdir(), "<prefix>-"))
-        //   await mkdtemp(path.join(tmpdir(), "<prefix>-"))
-        // The helper itself (packages/webui/test/helpers/tmp.js) is
-        // excluded by --exclude — it MUST call mkdtempSync / mkdtemp,
-        // that is its purpose, and we do not want the gate to flag
-        // the implementation as a leak.
-        "--exclude=tmp.js",
-        "\\bmkdtempSync\\s*\\(|\\bawait\\s+mkdtemp\\s*\\(",
-        join(repoRoot, "packages", "webui", "test"),
-      ],
-      { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
-    );
-  } catch (e) {
-    if (e.status !== 1) throw e;
-    out = "";
+  // Match the two call shapes the helper supports:
+  //   mkdtempSync(path.join(tmpdir(), "<prefix>-"))
+  //   await mkdtemp(path.join(tmpdir(), "<prefix>-"))
+  // The helper itself (packages/webui/test/helpers/tmp.js) is excluded
+  // by basename below — it MUST call mkdtempSync / mkdtemp, that is its
+  // purpose, and we do not want the gate to flag the implementation as
+  // a leak.
+  const BARE_CALL = /\bmkdtempSync\s*\(|\bawait\s+mkdtemp\s*\(/;
+  // BARE_EXEMPTIONS paths are repo-relative with forward slashes; match
+  // by basename via path.basename so the exemption holds on every
+  // platform (path separators differ on Windows).
+  const exemptNames = new Set(Array.from(BARE_EXEMPTIONS).map((p) => basename(p)));
+  const hits = [];
+  for (const file of walkSourceFiles(join(repoRoot, "packages", "webui", "test"), [".js", ".mjs", ".ts"])) {
+    if (basename(file) === "tmp.js") continue;
+    if (exemptNames.has(basename(file))) continue;
+    const lines = readSourceLines(file);
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (!BARE_CALL.test(line)) continue;
+      // Comment lines are documentation, not code — they describe the
+      // helper's contract by quoting its name. Skip them so the lint
+      // does not false-positive on `// ... mkdtempSync ...`.
+      if (/^\s*(?:\/\/|\*|\/\*)/.test(line)) continue;
+      hits.push(`${file}:${i + 1}:${line}`.trim());
+    }
   }
-  return out
-    .split("\n")
-    .map((l) => l.trim())
-    .filter((l) => l.length > 0)
-    // Comment lines are documentation, not code — they describe the
-    // helper's contract by quoting its name. Strip them so the lint
-    // does not false-positive on `// ... mkdtempSync ...`.
-    .filter((l) => !/^[^\s]+:\d+:\s*(?:\/\/|\*|\/\*)/.test(l))
-    .filter((l) => !l.includes("node_modules"))
-    // Filter lines that come from a BARE_EXEMPTIONS file path. The
-    // grep output format is "<absolute-path>:<line>:<text>"; we match
-    // by basename so the exemption works whether the lint runs from the
-    // worktree root or a CI checkout.
-    .filter((l) => {
-      const exemptNames = new Set(
-        Array.from(BARE_EXEMPTIONS).map((p) => p.split("/").pop()),
-      );
-      const m = l.match(/^([^:]+):\d+:/);
-      if (!m) return true;
-      const base = m[1].split("/").pop();
-      return !exemptNames.has(base);
-    });
+  return hits;
 }
 
 function snapshot(outPath) {
