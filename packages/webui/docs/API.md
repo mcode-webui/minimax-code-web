@@ -737,6 +737,45 @@ a regular file; 413 over the 20 MiB cap.
 
 ---
 
+### `POST /api/fs/open-default` — open with OS default app (slice 14)
+
+Hands `path` to the platform's default opener (`open` / `xdg-open` /
+`cmd` / `Start-Process`). Containment gate is the same `assertWorkspacePath`
++ per-node realpath check used by `/api/fs/read`; the route's job is to
+JSON-decode the body and map the helper's structured codes to HTTP status.
+
+**Request**
+```json
+{ "path": "/home/you/repo/README.md" }
+```
+
+**Response 200** `{ ok: true }`
+
+**Errors** (sourced from `routes/fs.js#codeToStatus`):
+- `400 {code:"missing-path"}` — no `path` in body
+- `403 {code:"out-of-bounds"}` — containment rejected
+- `400 {code:"not-a-regular-file"}` — directory / non-existent / symlink escape
+- `503 {code:"no-opener"}` — host has no GUI binary on `PATH`; the UI
+  disables the button on this answer so a click never silently no-ops
+- `502 {code:"spawn-failed"}` — binary ENOENTed between probe and exec
+
+### `POST /api/fs/reveal` — reveal in file manager (slice 14)
+
+Same wire model as `/api/fs/open-default`; macOS / Windows select the file's
+row, Linux opens the parent directory (no portable "select" command exists
+under freedesktop).
+
+**Request**
+```json
+{ "path": "/home/you/repo/README.md" }
+```
+
+**Response 200** `{ ok: true }`
+
+**Errors** — identical code → status map to `open-default`.
+
+---
+
 ## Git
 
 The git endpoints drive the right-panel Git panel (slice 03 —
