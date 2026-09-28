@@ -176,13 +176,21 @@
  * Ticket U8: the transcript skeleton shimmer and the loading dots get
  * explicit static rules (not just the generic catch-all below) — a
  * user who opted out of motion must never see the sweep, even if the
- * catch-all's duration hack is ever retuned. */
+ * catch-all's duration hack is ever retuned. The dots' rule carries
+ * !important because official-utilities.css (imported after this file
+ * in app/layout.tsx) re-declares the dots' animation-name at equal
+ * specificity — see the inline note below. */
 @media (prefers-reduced-motion: reduce) {
   .mavis-skeleton-bar {
     animation: none;
   }
+  /* !important, not a more specific selector: official-utilities.css
+   * loads after this file and re-declares `animation-name` on
+   * `.mavis-dot-a/b/c` at the same specificity (0,2,0), so a plain
+   * `animation: none` here loses the cascade and the dots would only
+   * look still through the catch-all's duration hack below. */
   .mavis-loading .mavis-dot {
-    animation: none;
+    animation: none !important;
   }
   *,
   *::before,

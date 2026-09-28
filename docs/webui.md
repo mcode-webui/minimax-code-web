@@ -710,7 +710,11 @@ Invariants worth keeping when touching either branch:
   it stands in for. No per-theme rules exist.
 - `prefers-reduced-motion: reduce` switches every animated class off
   explicitly (`.mavis-skeleton-bar`, `.mavis-loading .mavis-dot`) in
-  `app/globals.css`, on top of the generic duration catch-all. The label text
+  `app/globals.css`, on top of the generic duration catch-all. The dots' rule
+  carries `!important`: `styles/official-utilities.css` loads after
+  `globals.css` and re-declares `animation-name` on `.mavis-dot-a/b/c` at the
+  same specificity, so a plain declaration would lose the cascade and the
+  dots would only look still through the duration hack. The label text
   survives with the motion removed.
 - Session *switching* does not show the skeleton: `POST /api/sessions/switch`
   resolves the full transcript before responding and the next SSE snapshot

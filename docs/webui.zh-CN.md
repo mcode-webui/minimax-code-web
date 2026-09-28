@@ -600,7 +600,10 @@ slice 16 的预览守卫一致：服务会向局域网广播地址，能在网�
   同一色系，不存在按主题写死颜色。
 - `prefers-reduced-motion: reduce` 下，`app/globals.css` 对每个动画类
   （`.mavis-skeleton-bar`、`.mavis-loading .mavis-dot`）显式关闭动画，
-  不只依赖通用的时长覆盖；关掉动效后文案仍然可见。
+  不只依赖通用的时长覆盖；dots 的规则带 `!important`，因为
+  `styles/official-utilities.css` 在 `globals.css` 之后加载，且以同特异性
+  重定义了 `.mavis-dot-a/b/c` 的 `animation-name`，普通声明会在级联中
+  落败，dots 只能靠时长覆盖假装静止。关掉动效后文案仍然可见。
 - 会话**切换**不出现骨架屏：`POST /api/sessions/switch` 在响应前就备好
   完整 transcript，下一份 SSE 快照整体替换旧内容。骨架唯一的触发条件
   是"快照缺失"，也就是冷启动那条路径。
