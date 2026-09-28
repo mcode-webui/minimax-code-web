@@ -1,13 +1,13 @@
 "use client";
 
 /**
- * Preview column (slice 17).
+ * Preview column (slice 17; on-demand refit in slice 21).
  *
  * Renders the right-side **preview** column of the four-column
  * shell:
  *
  *   ┌──────────────────────────────────────────────────────────┐
- *   │  README.md ×   other-file.md ×    +                    │  ← Tab strip (preview tabs only)
+ *   │  README.md ×   other-file.md ×                           │  ← Tab strip (preview tabs only)
  *   ├──────────────────────────────────────────────────────────┤
  *   │  vmaker › README.md                                       │  ← Breadcrumb (file tabs only)
  *   ├──────────────────────────────────────────────────────────┤
@@ -19,13 +19,23 @@
  *   │                                                            │
  *   └──────────────────────────────────────────────────────────┘
  *
+ * Slice 21 — on-demand column. The preview column is only
+ * rendered when at least one preview-role tab (file:<path> /
+ * browser) is open. With no tabs the wrapper hides the whole
+ * column (its width collapses to 0 and its divider disappears),
+ * so the conversation column fills the remaining width. The
+ * "click a file to open it" entry points are the file-tree rows
+ * in the tree column (Files / 搜索 / etc.) and the chat
+ * transcript's file chips.
+ *
  * Two visual modes:
  *   - Tabs open     → tab strip + active body (with breadcrumb row
  *                     for file tabs)
- *   - No tabs open  → the column renders an empty hint that
- *                     mirrors the desktop reference (no launcher
- *                     popover; the "+" pill on the strip is the
- *                     affordance for adding a file tab)
+ *   - No tabs open  → the wrapper hides the column entirely;
+ *                     an empty hint only mounts transiently when
+ *                     a stale payload briefly survives hydration
+ *                     and the sync reducer closes the column on
+ *                     the next render.
  *
  * Slice-17 mental model: this column is **the viewing surface**.
  * It hosts file previews and the built-in browser. The tree
@@ -62,7 +72,6 @@ interface TabStripProps {
   activeId: string | null;
   onActivate: (id: string) => void;
   onClose: (id: string) => void;
-  onAddFile?: () => void;
   t: (key: MessageKey) => string;
 }
 
@@ -73,16 +82,24 @@ export interface ColumnControlsApi {
 
 /**
  * The tab strip itself: one pill per tab, the active one styled,
- * each with a close ×. The far-right has an "+" pill that triggers
- * the caller-supplied `onAddFile` (a file picker — out of scope
- * for this slice, so the wiring defaults to a no-op).
+ * each with a close ×.
+ *
+ * Slice 21 — the previous "+" pill (a dead file-picker
+ * affordance) was removed. The reporter's complaint is
+ * unambiguous: rendering a control that does nothing on click
+ * is not acceptable. The supported entry points are the file
+ * tree rows in the tree column (which route through
+ * `onOpenFile` / `onOpenInBrowser` on the page) and the chat
+ * transcript's file chips. The i18n key for the removed aria
+ * label (`workspaceTabs.addTab.aria`) is intentionally left in
+ * the dictionary — removing it would invalidate the key in the
+ * central translator — but the component no longer references it.
  */
 function TabStrip({
   tabs,
   activeId,
   onActivate,
   onClose,
-  onAddFile,
   t,
 }: TabStripProps) {
   return (
@@ -102,16 +119,6 @@ function TabStrip({
           t={t}
         />
       ))}
-      <button
-        type="button"
-        onClick={onAddFile}
-        aria-label={t("workspaceTabs.addTab.aria")}
-        title={t("workspaceTabs.addTab.aria")}
-        data-testid="workspace-tabs-add"
-        className="flex h-7 flex-shrink-0 items-center gap-1 rounded-[8px] px-1.5 text-caption-small-strong text-icon_default_tertiary transition-colors hover:bg-bg_interaction_tertiary_hover hover:text-icon_default_primary"
-      >
-        <Icon name="plusSmall" size={12} />
-      </button>
     </div>
   );
 }
@@ -290,10 +297,6 @@ export interface PreviewColumnProps {
   onBrowserNavigate: (path: string | null) => void;
   onActivate: (id: string) => void;
   onClose: (id: string) => void;
-  /** Optional callback for the "+" pill on the strip — wired
-   *  to a file picker by the page. Out of scope for slice 17;
-   *  defaults to a no-op so the column still renders. */
-  onAddFile?: () => void;
   onRecordFileScroll: (id: string, scrollTop: number) => void;
   onRevealInTree?: (path: string) => void;
   /** Translator. Same shape as the rest of the panels. */
@@ -308,6 +311,14 @@ export interface PreviewColumnProps {
  * preview tab is open the column renders the empty hint copy
  * (no launcher popover — the tree column is where users pick
  * the surfaces they want to see).
+ *
+ * Slice 21 — on-demand. The `WorkspaceColumns` wrapper hides
+ * this widget via `visible:false` when the tab strip has no
+ * preview tabs, so the user does not see an empty column
+ * take up ~330px. The empty hint only renders briefly during
+ * hydration races where a stale payload briefly survives the
+ * sync reducer (the deserializer normalises the payload, so
+ * the column is hidden again on the next render).
  */
 export function PreviewColumn(props: PreviewColumnProps) {
   const { locale } = useLocale();
@@ -327,7 +338,6 @@ export function PreviewColumn(props: PreviewColumnProps) {
         activeId={previewActiveId}
         onActivate={props.onActivate}
         onClose={props.onClose}
-        onAddFile={props.onAddFile}
         t={props.t}
       />
 

@@ -1,6 +1,6 @@
 // webapp/lib/workspace-tabs-state.ts
 //
-// Slice 17 — four-column shell model.
+// Slice 17 — four-column shell model. Slice 21 — on-demand columns.
 //
 // Two state slices share this module so the reducers can be
 // reasoned about in one place and unit-tested without rendering:
@@ -29,6 +29,23 @@
 //      `computeColumnLayout` that folds the layout down to a list
 //      of `{ column, width }` segments that drive the page-level
 //      flex row.
+//
+// Slice 21 changes the visibility model:
+//   - The preview column is **on demand** — it appears when at
+//     least one preview-role tab (file:<path> / browser) is open,
+//     and **auto-closes** when no preview tab remains.
+//   - The tree column is **on demand** — it appears when at least
+//     one tree-role surface (files / git / tasks / search /
+//     plugins) is open, and auto-closes when none remain.
+//   - "Idle costs no width": when both columns are closed the
+//     conversation column takes the whole remainder. The
+//     `computeColumnLayout` algorithm honours this by lifting
+//     the conversation max only when both fixed columns are
+//     folded (otherwise slice 17's dead-gutter defence applies).
+//   - The persistence layer normalises a stored "column open but
+//     empty" payload to closed (slice 17's closely-related
+//     ghost-column bug, re-fixed here) so a stale disk write can
+//     never conjure an empty column on hydration.
 //
 // Why this lives in its own module. Every reducer here is a pure
 // function on plain objects — no React, no DOM, no localStorage.
@@ -431,7 +448,15 @@ export interface ColumnLayoutState {
    *  claimed theirs. */
   widths: Record<ColumnId, number>;
   /** Collapsed flags. `true` means the column is hidden from the
-   *  flex row (the column's space collapses to 0). */
+   *  flex row (the column's space collapses to 0).
+   *
+   *  Slice 21 — on-demand columns. The `preview` and `tree`
+   *  flags are derived from the tab strip state at runtime (a
+   *  column is open iff at least one tab in the matching role
+   *  exists). The page wraps every tab reducer so a column
+   *  auto-closes when its last tab closes and reopens when a
+   *  tab is opened in it. The deserializer normalises a stale
+   *  "column open but empty" payload to closed. */
   collapsed: Record<ColumnId, boolean>;
 }
 
@@ -451,13 +476,16 @@ export const DEFAULT_COLUMN_LAYOUT: ColumnLayoutState = {
     // screen because it is rendered outside this wrapper.
     sidebar: true,
     conversation: false,
-    // Preview and tree are visible from the start — the user
-    // expects to see all four columns on first paint (the
-    // reference shows preview with the empty `+` tab strip and
-    // tree with the search box, both rendered). A tab opens
-    // inside them on demand.
-    preview: false,
-    tree: false,
+    // Slice 21 — preview and tree start **closed**. The
+    // on-demand model says a column appears only when it has
+    // content; on first paint (no tabs) both are empty, so
+    // both are hidden. `syncColumnVisibility` is the source
+    // of truth: the deserializer + the page reducer wrappers
+    // re-derive these flags from the tab strip on every
+    // change, so a stale payload cannot resurrect an empty
+    // column.
+    preview: true,
+    tree: true,
   },
 };
 
@@ -511,12 +539,87 @@ export function resetAllColumnWidths(state: ColumnLayoutState): ColumnLayoutStat
  * state is mirrored from shell.tsx (slice 07 owns the persisted
  * source of truth); slice 17 only writes it through to keep the
  * layout payload self-consistent.
+ *
+ * Slice 21 — the `preview` and `tree` flags are normally driven
+ * by `syncColumnVisibility` from the tab strip. This setter is
+ * kept exported so a test can pin the flag directly, but the
+ * page-level reducer wrappers do not call it.
  */
 export function setColumnCollapsed(state: ColumnLayoutState, column: ColumnId, collapsed: boolean): ColumnLayoutState {
   if (state.collapsed[column] === collapsed) return state;
   return {
     ...state,
     collapsed: { ...state.collapsed, [column]: collapsed },
+  };
+}
+
+/**
+ * Slice 21 — does the given tab strip have at least one tab that
+ * belongs to the preview column? (file:<path> + browser)
+ *
+ * Pure predicate; the page-level reducer wrappers read this to
+ * decide whether the preview column should be visible.
+ */
+export function hasPreviewTabs(state: TabStripState): boolean {
+  for (const tab of state.tabs) {
+    if (columnRoleForKind(tab.kind) === "preview") return true;
+  }
+  return false;
+}
+
+/**
+ * Slice 21 — does the given tab strip have at least one tab that
+ * belongs to the tree column? (files / git / tasks / search /
+ * plugins)
+ *
+ * Pure predicate; the page-level reducer wrappers read this to
+ * decide whether the tree column should be visible.
+ */
+export function hasTreeTabs(state: TabStripState): boolean {
+  for (const tab of state.tabs) {
+    if (columnRoleForKind(tab.kind) === "tree") return true;
+  }
+  return false;
+}
+
+/**
+ * Slice 21 — sync a column layout to match the tab strip.
+ *
+ * Rules:
+ *   - The preview column is visible iff the tab strip has at
+ *     least one preview-role tab (file:<path> / browser).
+ *   - The tree column is visible iff the tab strip has at least
+ *     one tree-role tab (files / git / tasks / search / plugins).
+ *   - The sidebar's collapsed flag is owned by AppShell — we
+ *     never touch it.
+ *   - The conversation column never folds.
+ *   - The stored widths stay as the user set them so a column
+ *     that was closed and then reopens restores the prior drag.
+ *
+ * Pure reducer: returns the input unchanged if the flags already
+ * match, otherwise a new layout object with the matching flags.
+ */
+export function syncColumnVisibility(
+  tabStrip: TabStripState,
+  layout: ColumnLayoutState,
+): ColumnLayoutState {
+  const previewOpen = hasPreviewTabs(tabStrip);
+  const treeOpen = hasTreeTabs(tabStrip);
+  const nextPreviewCollapsed = !previewOpen;
+  const nextTreeCollapsed = !treeOpen;
+  if (
+    layout.collapsed.preview === nextPreviewCollapsed &&
+    layout.collapsed.tree === nextTreeCollapsed
+  ) {
+    return layout;
+  }
+  return {
+    ...layout,
+    collapsed: {
+      ...layout.collapsed,
+      preview: nextPreviewCollapsed,
+      tree: nextTreeCollapsed,
+    },
   };
 }
 
@@ -575,10 +678,21 @@ export interface ColumnLayoutSummary {
  *      is the most elastic — it can read at 280px and gracefully
  *      degrades below that.
  *   4. If the row has leftover after every column hits its
- *      stored width, conversation grows up to its max (768) and
- *      any remaining room distributes to the fixed columns in
- *      priority **tree → preview → sidebar**.
- *   5. Last resort: when the sum of every column's minimum is
+ *      stored width, fixed columns grow toward their maximums
+ *      in the priority **tree → preview** (the fold priority
+ *      reversed). A *collapsed* fixed column does NOT absorb
+ *      leftover — it stays at 0 and the leftover flows past it
+ *      so the conversation column can grow instead.
+ *   5. After the fixed columns have absorbed what they can, the
+ *      conversation column absorbs whatever leftover remains.
+ *      Slice 21 — when **both** fixed columns are collapsed,
+ *      conversation's effective max is lifted (the row is
+ *      otherwise empty, so capping conversation at 768 would
+ *      leave ~320px of dead space at 1280). When at least one
+ *      fixed column is visible, conversation caps at its
+ *      `COLUMN_SPECS.conversation.maxWidth` (768) — slice 17's
+ *      dead-gutter defence at wider viewports.
+ *   6. Last resort: when the sum of every column's minimum is
  *      still bigger than the container (e.g. 360px viewport),
  *      conversation shrinks toward 0. The renderer hides
  *      zero-width conversation so the chat content disappears
@@ -645,22 +759,46 @@ export function computeColumnLayout(
     total = sidebar + conversation + preview + tree;
   }
 
-  // 3. Has leftover. The conversation column keeps its stored
-  //    target — auto-growing it back up to max would defeat the
-  //    user's drag. Distribute leftover to the fixed columns in
-  //    priority tree → preview (the fold priority in reverse).
+  // 3. Has leftover. Fixed columns grow toward their maxes in
+  //    the priority **tree → preview** (the fold priority
+  //    reversed). A collapsed fixed column is a no-op here —
+  //    its width stays at 0 and the leftover flows past it so
+  //    the conversation column can absorb it instead. This is
+  //    the slice-21 idle path: at 1280 with both columns
+  //    folded, the conversation column takes the whole
+  //    remainder (1040 = 1280 − 240) rather than being pinned
+  //    at its 768 max with 320px of dead space.
   if (total < containerWidth) {
     let leftover = containerWidth - total;
-    const treeGrow = growTowardMaximum("tree", tree, leftover);
-    tree += treeGrow;
-    leftover -= treeGrow;
-    if (leftover > 0) {
+    if (!layout.collapsed.tree) {
+      const treeGrow = growTowardMaximum("tree", tree, leftover);
+      tree += treeGrow;
+      leftover -= treeGrow;
+    }
+    if (!layout.collapsed.preview) {
       const previewGrow = growTowardMaximum("preview", preview, leftover);
       preview += previewGrow;
       leftover -= previewGrow;
     }
+    if (leftover > 0) {
+      // Conversation absorbs whatever remains. When **both**
+      // fixed columns are collapsed, lift conversation's
+      // effective max so it fills the row — otherwise the
+      // 1280-viewport idle state would cap conversation at
+      // 768 with ~272px of empty area next to it. When at least
+      // one fixed column is visible, honour the slice-17
+      // 768 max (slice-21 widens the reporting on this).
+      const convMax =
+        layout.collapsed.preview && layout.collapsed.tree
+          ? conversation + leftover
+          : COLUMN_SPECS.conversation.maxWidth;
+      const convGrow = Math.max(0, Math.min(convMax - conversation, leftover));
+      conversation += convGrow;
+      leftover -= convGrow;
+    }
     // Any remaining leftover is shed (the row centres rather
-    // than overflows).
+    // than overflows). At very large viewports this happens
+    // when every column is at its max.
   }
 
   // 4. Sort segment order to match DOM order regardless of which
@@ -862,19 +1000,27 @@ export function deserializeWorkspaceTabs(
     return cloneDefaultWorkspaceTabsState();
   }
   const tabStrip = deserializeTabStrip(obj.tabs);
-  const columnLayout = deserializeColumnLayout(obj.layout);
+  const columnLayout = syncColumnVisibility(tabStrip, deserializeColumnLayout(obj.layout));
   return { tabStrip, columnLayout };
 }
 
 function cloneDefaultWorkspaceTabsState(): WorkspaceTabsState {
+  // Slice 21 — sync the default layout against the empty tab
+  // strip so a fresh install lands in the slice-21 idle state
+  // (both on-demand columns hidden). Without this, the
+  // defaults would carry the stale slice-17 `preview:false,
+  // tree:false` flags until the next tab reducer re-synced them
+  // — and on first paint the page would briefly show two
+  // empty columns before the sync kicked in.
+  const tabStrip: TabStripState = {
+    tabs: [...DEFAULT_TAB_STRIP.tabs],
+    previewActiveId: DEFAULT_TAB_STRIP.previewActiveId,
+    treeActiveId: DEFAULT_TAB_STRIP.treeActiveId,
+    launcherOpen: DEFAULT_TAB_STRIP.launcherOpen,
+  };
   return {
-    tabStrip: {
-      tabs: [...DEFAULT_TAB_STRIP.tabs],
-      previewActiveId: DEFAULT_TAB_STRIP.previewActiveId,
-      treeActiveId: DEFAULT_TAB_STRIP.treeActiveId,
-      launcherOpen: DEFAULT_TAB_STRIP.launcherOpen,
-    },
-    columnLayout: cloneDefaultColumnLayout(),
+    tabStrip,
+    columnLayout: syncColumnVisibility(tabStrip, cloneDefaultColumnLayout()),
   };
 }
 
