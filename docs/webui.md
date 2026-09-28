@@ -354,8 +354,14 @@ They remain a product decision (see HANDOVER's 18094 fusion list).
 
 - Selected rows (`sidebar-session-row`, `sidebar-subagent-row`) paint with
   `bg-bg_interaction_tertiary_selected`; hover uses
-  `bg_interaction_tertiary_hover`. The two tokens differ — sharing one made
-  the open session indistinguishable from any hovered row.
+  `bg_interaction_tertiary_hover`. Before ticket 47 both states wrote the
+  hover token, which made the open session indistinguishable from any
+  hovered row. Honest boundary: upstream defines the two tokens as the
+  **same value in the light theme** (both resolve to `--opacity_black_1_4`,
+  see `tokens.css`), so the visual distinction holds only in the **dark
+  theme** (hover `opacity_white_0_4` vs selected `opacity_white_0_8`); the
+  light-theme equality is the upstream token set's current state, not a
+  regression introduced here.
 - Session and subagent rows are `<a href={sessionHref(id)}>` deep links over
   the **`?session=` query grammar** (`lib/url-restore.ts#sessionHref`), not
   the reference's `#session=` fragment: the restore pipeline (cold load,
