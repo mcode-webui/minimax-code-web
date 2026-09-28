@@ -38,7 +38,7 @@
  * selector appears and the column body shows it.
  */
 
-import { useCallback } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { Locale, MessageKey } from "@/lib/i18n";
 import { Icon, type IconName } from "./icons";
@@ -49,6 +49,9 @@ import {
   type SurfaceTabKind,
   type WorkspaceTab,
 } from "@/lib/workspace-tabs-state";
+import * as api from "@/lib/api";
+import { searchFootSegments } from "@/lib/fs-search";
+import { useSessionContext } from "@/lib/store";
 
 /**
  * The five surfaces the tree column hosts. The selector pill
@@ -167,7 +170,12 @@ export function TreeColumn(props: TreeColumnProps) {
         ) : activeTab && activeKind === "tasks" ? (
           <WorkspaceTabsTasks t={t} locale={locale} />
         ) : activeTab && activeKind === "search" ? (
-          <SearchSurface t={t} locale={locale} />
+          <SearchSurface
+            t={t}
+            locale={locale}
+            onOpenFile={props.onOpenFile}
+            onPickSurface={onPickSurface}
+          />
         ) : activeTab && activeKind === "plugins" ? (
           <PluginsSurface t={t} />
         ) : (
@@ -290,21 +298,123 @@ function surfaceIcon(kind: SurfaceTabKind): IconName {
 }
 
 /**
- * The search surface (column 4, "search" tab). Slice 17 ships a
- * placeholder: a centred input box with a results region. The
- * search backend wire-up is out of scope for this slice — the
- * sidebar's 搜索 entry is now a no-network landing surface, not a
- * silent no-op. A future slice can wire `/api/...` behind the
- * submit handler.
+ * The search surface (column 4, "search" tab). Slice 19b wires
+ * this to the same `/api/fs/search` endpoint the file-tree's
+ * filter box uses (slice 19a). The two surfaces share the same
+ * debounce + cancel + footer pattern so the sidebar 搜索 entry is
+ * a first-class surface rather than the slice-17 placeholder.
+ *
+ * Clicking a result calls `onOpenFile(path)` (page wires this to
+ * `openFileTab`) and `onPickSurface("files")` (page wires this to
+ * switch the active surface) so the user lands inside the file
+ * tree with the match highlighted via the panel's expand-to-hit
+ * effect.
  */
 function SearchSurface({
   t,
   locale: _locale,
+  onOpenFile,
+  onPickSurface,
 }: {
   t: (key: MessageKey) => string;
   locale: Locale;
+  /** Forwarded so a click reveals the match in the file tree. */
+  onOpenFile: (path: string) => void;
+  /** Used to switch the active surface to "files" once a result is
+   *  clicked, so the user sees the expanded tree with the hit. */
+  onPickSurface: (kind: SurfaceTabKind) => void;
 }) {
   void _locale;
+  const { state } = useSessionContext();
+  const workspaceDir = state?.workspace.dir ?? "";
+
+  const [query, setQuery] = useState("");
+  const [serverSearch, setServerSearch] = useState<{
+    result: api.FsSearchResult | null;
+    loading: boolean;
+    error: string | null;
+  }>({ result: null, loading: false, error: null });
+  const abortRef = useRef<AbortController | null>(null);
+  const genRef = useRef(0);
+
+  useEffect(() => {
+    const trimmed = query.trim();
+    if (!trimmed || !workspaceDir) {
+      abortRef.current?.abort();
+      abortRef.current = null;
+      genRef.current = -1;
+      setServerSearch({ result: null, loading: false, error: null });
+      return;
+    }
+    // 200ms debounce — same as the file-tree filter, so the two
+    // surfaces feel consistent for a fast typist.
+    const handle = window.setTimeout(() => {
+      const gen = ++genRef.current;
+      const controller = new AbortController();
+      abortRef.current?.abort();
+      abortRef.current = controller;
+      setServerSearch((prev) => ({ ...prev, loading: true, error: null }));
+      void api
+        .searchFs(workspaceDir, trimmed, { signal: controller.signal })
+        .then((result) => {
+          if (gen !== genRef.current) return;
+          setServerSearch({ result, loading: false, error: null });
+        })
+        .catch((cause) => {
+          if (gen !== genRef.current) return;
+          if (cause instanceof Error && cause.name === "AbortError") return;
+          setServerSearch({
+            result: null,
+            loading: false,
+            error: cause instanceof Error ? cause.message : String(cause),
+          });
+        });
+    }, 200);
+    return () => window.clearTimeout(handle);
+  }, [query, workspaceDir]);
+
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+    };
+  }, []);
+
+  const onPickMatch = useCallback(
+    (path: string) => {
+      onOpenFile(path);
+      onPickSurface("files");
+    },
+    [onOpenFile, onPickSurface],
+  );
+
+  const footerSegments = useMemo(
+    () =>
+      searchFootSegments(serverSearch.result, {
+        templates: {
+          scanned: t("files.search.footer.scanned"),
+          matches: t("files.search.footer.matches"),
+          "skipped-node_modules": t("files.search.footer.skipped.node_modules"),
+          "skipped-git": t("files.search.footer.skipped.git"),
+          "skipped-credential": t("files.search.footer.skipped.credential"),
+          "skipped-huge": t("files.search.footer.skipped.huge"),
+          "skipped-optional": t("files.search.footer.skipped.optional"),
+          truncated: t("files.search.footer.truncated"),
+          elapsed: t("files.search.footer.elapsed"),
+        },
+        budgetLabels: {
+          depth: t("files.search.footer.budget.depth"),
+          nodes: t("files.search.footer.budget.nodes"),
+          wallClock: t("files.search.footer.budget.wallClock"),
+          matches: t("files.search.footer.budget.matches"),
+        },
+        formatElapsed: (ms) =>
+          t("files.search.footer.elapsedValue").replace("{ms}", String(ms)),
+      }),
+    [serverSearch.result, t],
+  );
+
+  const matches = serverSearch.result?.matches ?? [];
+
   return (
     <div
       className="flex h-full min-h-0 flex-col gap-2 px-2 py-2"
@@ -315,18 +425,105 @@ function SearchSurface({
         <Icon name="search" size={12} />
         <input
           type="search"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
           data-testid="tree-surface-search-input"
           placeholder={t("workspaceTabs.search.placeholder")}
           aria-label={t("workspaceTabs.search.placeholder")}
           className="min-w-0 flex-1 bg-transparent text-sm text-text_default_primary placeholder:text-text_default_tertiary focus:outline-none"
         />
+        {serverSearch.loading ? (
+          <span
+            data-testid="tree-surface-search-loading"
+            className="text-caption-small-strong text-text_default_tertiary"
+          >
+            {t("files.search.loading")}
+          </span>
+        ) : null}
       </div>
       <p
-        data-testid="tree-surface-search-empty"
-        className="rounded-[8px] bg-bg_grouped_secondary_elevated px-2 py-2 text-caption-small-strong text-text_default_tertiary"
+        data-testid="tree-surface-search-tip"
+        className="rounded-[8px] bg-bg_grouped_secondary_elevated px-2 py-1.5 text-caption-small-strong text-text_default_tertiary"
       >
-        {t("workspaceTabs.search.empty")}
+        {query.trim()
+          ? t("workspaceTabs.search.tipExhaustive")
+          : t("workspaceTabs.search.tip")}
       </p>
+      {serverSearch.error ? (
+        <p
+          data-testid="tree-surface-search-error"
+          className="text-caption-small-strong text-text_status_error"
+        >
+          {t("files.search.error").replace("{{error}}", serverSearch.error)}
+        </p>
+      ) : null}
+      {serverSearch.result && matches.length === 0 && !serverSearch.loading ? (
+        <p
+          data-testid="tree-surface-search-empty"
+          className="rounded-[8px] bg-bg_grouped_secondary_elevated px-2 py-2 text-caption-small-strong text-text_default_tertiary"
+        >
+          {t("workspaceTabs.search.empty")}
+        </p>
+      ) : null}
+      {matches.length > 0 ? (
+        <ul
+          data-testid="tree-surface-search-results"
+          className="flex flex-col gap-px"
+        >
+          {matches.map((match) => {
+            const isCredential = !!match.credential;
+            return (
+              <li key={match.path}>
+                <button
+                  type="button"
+                  onClick={() => onPickMatch(match.path)}
+                  data-testid={`tree-surface-search-hit-${match.path}`}
+                  data-credential={isCredential ? "true" : "false"}
+                  className="flex w-full items-center gap-2 rounded-lg px-2 py-1 text-left transition-colors hover:bg-bg_interaction_tertiary_hover"
+                >
+                  <Icon
+                    name={match.type === "dir" ? "folder" : "file"}
+                    size={12}
+                    className="flex-shrink-0 text-icon_default_secondary"
+                  />
+                  <span className="min-w-0 flex-1 truncate text-sm text-text_default_primary">
+                    {match.name}
+                  </span>
+                  <span className="min-w-0 flex-shrink truncate text-caption-small-strong text-text_default_tertiary">
+                    {match.ancestors.length > 0
+                      ? `…/${match.ancestors.slice(-2).join("/")}/`
+                      : ""}
+                  </span>
+                  {isCredential ? (
+                    <span
+                      data-testid={`tree-surface-search-hit-credential-${match.path}`}
+                      className="flex-shrink-0 rounded bg-bg_grouped_tertiary px-1 py-0.5 text-caption-small-strong text-text_status_warning"
+                    >
+                      {t("files.search.credential")}
+                    </span>
+                  ) : null}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      ) : null}
+      {footerSegments.length > 0 ? (
+        <p
+          data-testid="tree-surface-search-footer"
+          data-truncated={serverSearch.result?.truncated ? "true" : "false"}
+          className="flex flex-wrap gap-x-1 gap-y-0.5 px-1 py-1 text-caption-small-strong text-text_default_tertiary"
+        >
+          {footerSegments.map((segment, index) => (
+            <span
+              key={`${segment.kind}:${index}`}
+              data-testid={`tree-surface-search-footer-${segment.kind}`}
+            >
+              {segment.text}
+            </span>
+          ))}
+        </p>
+      ) : null}
     </div>
   );
 }

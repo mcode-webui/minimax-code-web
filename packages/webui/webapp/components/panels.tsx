@@ -22,6 +22,11 @@ import {
   shouldShowDirLoadingSuffix,
   sortEntries,
 } from "@/lib/files-tree";
+import {
+  ancestorChain,
+  pathsToExpand,
+  searchFootSegments,
+} from "@/lib/fs-search";
 import { InboxList } from "./inbox";
 import { useSessionContext } from "@/lib/store";
 import { applyTheme, currentTheme } from "@/lib/theme";
@@ -675,6 +680,40 @@ export function FilesPanel({
   const [nodes, setNodes] = useState<Record<string, TreeNodeState>>({});
   const [rootError, setRootError] = useState<string | null>(null);
 
+  // Slice 19b — bounded server search. Holds the most recent
+  // server-side search result for the current workspace. The result
+  //   - drives the "expand to the hit" effect (we union its ancestor
+  //     paths into `expanded` so the match becomes visible),
+  //   - is the source of the footer numbers (scanned / skipped /
+  //     truncated / matches),
+  //   - and is the source of the highlight set.
+  //
+  // The server search runs AFTER the in-tree filter reports zero
+  // hits — a 200ms debounce keeps a fast typist from flooding the
+  // network, and an AbortController drops a stale response if a
+  // newer keystroke has already started a fresher one. The same
+  // pattern is used by the SearchPanel (session search) and the
+  // workspace picker recents tab — see how each use a generation
+  // counter as a belt-and-braces guard on top of `AbortController`,
+  // because a slow request can land AFTER its own abort and would
+  // otherwise race past the cancellation.
+  const [serverSearch, setServerSearch] = useState<{
+    query: string;
+    result: api.FsSearchResult | null;
+    loading: boolean;
+    error: string | null;
+  }>({ query: "", result: null, loading: false, error: null });
+  const serverSearchGen = useRef(0);
+  const serverSearchAbort = useRef<AbortController | null>(null);
+
+  // Paths the panel should highlight once the server result has
+  // been "materialised" (i.e. the ancestors are loaded and the hit
+  // is rendered). The set lives across re-renders and is cleared
+  // by the auto-clear timer so a stale highlight does not stick
+  // around when the user moves on.
+  const [highlightedPaths, setHighlightedPaths] = useState<Set<string>>(new Set());
+  const highlightClearTimer = useRef<number | null>(null);
+
   // Filter auto-expansion: when the user types a filter, compute
   // the set of ancestors of every matching loaded entry and union
   // it with the user's explicit expansion set. Unloaded ancestors
@@ -691,6 +730,188 @@ export function FilesPanel({
     }
     return filterAncestors(loaded, filter, workspaceDir, expandedSet);
   }, [filter, nodes, expandedSet, workspaceDir]);
+
+  // Slice 19b — server-search trigger. Three things to keep straight
+  // here:
+  //
+  //  1. **Loaded-first**: the in-tree filter already surfaces
+  //     matches from `nodes` (via `filterAncestors`). The server
+  //     request fires ONLY when the loaded set has zero hits — a
+  //     typing user never pays the network round-trip for
+  //     "package.json" if it's already expanded in the tree.
+  //     Implemented as the `loadedHasMatch` memo above the effect.
+  //
+  //  2. **Debounce + cancel**: every keystroke bumps the generation
+  //     counter, the cleanup function aborts the previous
+  //     AbortController, and the response handler checks the
+  //     captured generation so a stale response cannot overwrite
+  //     the latest result. The debounce is 200ms — long enough to
+  //     coalesce a fast typing burst, short enough that an idle
+  //     user sees results in a single tick.
+  //
+  //  3. **Server result → expand-to-hit**: when a fresh result
+  //     arrives, we union its ancestor paths into the `expanded`
+  //     set and kick off `fetchNode` for each. The lazy tree then
+  //     loads those nodes on the next render so the match becomes
+  //     visible without the user clicking every parent. Matches
+  //     not yet visible after the chain is loaded (rare — the
+  //     match's parent is normally an ancestor) are appended to
+  //     the visible rows via `serverMatchRows`.
+  const loadedHasMatch = useMemo(() => {
+    const trimmed = filter.trim();
+    if (!trimmed) return true; // no filter → no "missing" to look for
+    for (const [, node] of Object.entries(nodes)) {
+      if (!node.entries) continue;
+      for (const entry of node.entries) {
+        if (entry.type === "dir") continue;
+        if (matchFilter(entry.name, trimmed)) return true;
+      }
+    }
+    return false;
+  }, [filter, nodes]);
+
+  useEffect(() => {
+    const trimmed = filter.trim();
+    // Empty filter → no server search, no stale result.
+    if (!trimmed) {
+      serverSearchAbort.current?.abort();
+      serverSearchAbort.current = null;
+      if (serverSearchGen.current !== -1) {
+        serverSearchGen.current = -1;
+        setServerSearch({ query: "", result: null, loading: false, error: null });
+      }
+      setHighlightedPaths(new Set());
+      if (highlightClearTimer.current !== null) {
+        window.clearTimeout(highlightClearTimer.current);
+        highlightClearTimer.current = null;
+      }
+      return;
+    }
+    // Loaded-first: if the user already has hits in the expanded
+    // tree AND we have NOT already returned a server result for
+    // this query, skip the server. The "AND we have not already
+    // returned" guard is what keeps the footer visible after
+    // expand-to-hit: the auto-expanded dir's children get fetched
+    // and the loaded set now contains matches, but the user still
+    // needs to see the server footer's scanned / skipped numbers.
+    // Cancels any in-flight request so a stale response cannot
+    // overwrite later state.
+    if (loadedHasMatch) {
+      setServerSearch((current) =>
+        current.result && current.query === trimmed
+          ? current
+          : { query: trimmed, result: null, loading: false, error: null },
+      );
+      serverSearchAbort.current?.abort();
+      serverSearchAbort.current = null;
+      serverSearchGen.current = -1;
+      return;
+    }
+    if (!workspaceDir) return;
+
+    // Debounce 200ms. The session-search panel uses 180ms; this is
+    // slightly longer because each request is potentially more
+    // expensive than a title substring match, and a fast typist
+    // who pauses will fire one request, not seven.
+    const handle = window.setTimeout(() => {
+      const gen = ++serverSearchGen.current;
+      const controller = new AbortController();
+      serverSearchAbort.current?.abort();
+      serverSearchAbort.current = controller;
+      setServerSearch((prev) => ({ ...prev, query: trimmed, loading: true, error: null }));
+      void api
+        .searchFs(workspaceDir, trimmed, {
+          signal: controller.signal,
+          includeHidden: showHidden,
+        })
+        .then((result) => {
+          // Generation guard — even with AbortController, a response
+          // can land after the abort if the server already started
+          // writing it. Drop the stale result.
+          if (gen !== serverSearchGen.current) return;
+          setServerSearch({
+            query: trimmed,
+            result,
+            loading: false,
+            error: null,
+          });
+          // Expand-to-hit: union every ancestor chain into the
+          // expanded set, kick off lazy fetches for each path. The
+          // tree walker will surface the match on the next render.
+          const toExpand = pathsToExpand(result.matches, workspaceDir);
+          if (toExpand.length > 0) {
+            setExpanded((current) => Array.from(new Set([...current, ...toExpand])));
+            for (const path of toExpand) {
+              void fetchNode(path);
+            }
+          }
+          // Highlight every match for a few seconds so the user's
+          // eye lands on the right row(s). The auto-clear timer is
+          // reset per result so the highlight does not vanish mid-
+          // typing.
+          if (result.matches.length > 0) {
+            const next = new Set(result.matches.map((m) => m.path));
+            setHighlightedPaths(next);
+            if (highlightClearTimer.current !== null) {
+              window.clearTimeout(highlightClearTimer.current);
+            }
+            highlightClearTimer.current = window.setTimeout(() => {
+              setHighlightedPaths(new Set());
+              highlightClearTimer.current = null;
+            }, 4000);
+          } else {
+            setHighlightedPaths(new Set());
+          }
+        })
+        .catch((cause) => {
+          if (gen !== serverSearchGen.current) return;
+          // An aborted request throws `AbortError` — silently
+          // ignore it; a newer generation will produce the real
+          // answer. Anything else is a real failure and gets
+          // surfaced inline.
+          const name = cause instanceof Error ? cause.name : "";
+          if (name === "AbortError") return;
+          setServerSearch({
+            query: trimmed,
+            result: null,
+            loading: false,
+            error: cause instanceof Error ? cause.message : String(cause),
+          });
+        });
+    }, 200);
+
+    return () => {
+      window.clearTimeout(handle);
+    };
+    // We deliberately exclude `fetchNode` from deps — it captures
+    // `nodes` at hook definition time, and the expand-to-hit call
+    // only matters on result arrival, not on every keystroke.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filter, loadedHasMatch, workspaceDir, showHidden]);
+
+  // Workspace switch clears the search state — the previous
+  // workspace's results are not meaningful on the new tree.
+  useEffect(() => {
+    serverSearchAbort.current?.abort();
+    serverSearchAbort.current = null;
+    serverSearchGen.current = -1;
+    setServerSearch({ query: "", result: null, loading: false, error: null });
+    setHighlightedPaths(new Set());
+    if (highlightClearTimer.current !== null) {
+      window.clearTimeout(highlightClearTimer.current);
+      highlightClearTimer.current = null;
+    }
+  }, [workspaceDir]);
+
+  // Teardown on unmount.
+  useEffect(() => {
+    return () => {
+      serverSearchAbort.current?.abort();
+      if (highlightClearTimer.current !== null) {
+        window.clearTimeout(highlightClearTimer.current);
+      }
+    };
+  }, []);
 
   // Per-node fetch with race-safety. `gen` is the local counter; the
   // result handler drops anything whose gen does not match the latest
@@ -977,6 +1198,53 @@ export function FilesPanel({
     });
   }, [rows, filter]);
 
+  // Slice 19b — server matches that did not appear in `rows`
+  // because their parent directories are not loaded yet (the
+  // ancestors are still being lazy-fetched). The expand-to-hit
+  // effect kicks off those fetches in parallel; while they are
+  // in flight we still want the user to see the matches and
+  // click them, so we render them as a "server match" row at
+  // the bottom of the listing. Each row is built from a
+  // synthesised `FsEntry` so the existing `FileRow` renderer
+  // can render it without branching.
+  const serverMatchRows = useMemo<TreeFileRow[]>(() => {
+    if (!filter.trim()) return [];
+    const trimmed = filter.trim();
+    if (!serverSearch.result) return [];
+    const result = serverSearch.result;
+    if (result.q !== trimmed) return [];
+    // Dedupe against rows already shown so a match that has been
+    // resolved through the expand-to-hit path does not render
+    // twice.
+    const visiblePaths = new Set(rows.map((r) => r.path));
+    const out: TreeFileRow[] = [];
+    for (const match of result.matches) {
+      if (match.type !== "file") continue;
+      if (visiblePaths.has(match.path)) continue;
+      // Synthesised entry — the server only returns path / name /
+      // type / ancestors, so size / mtime / mode / icon are absent
+      // from the wire. Render them as zeros; FileRow already
+      // tolerates that (size 0 → blank label, mtime 0 → blank
+      // label).
+      const entry: api.FsEntry = {
+        name: match.name,
+        path: match.path,
+        type: "file",
+        size: 0,
+        mtime: 0,
+        mode: "",
+        icon: "",
+      };
+      out.push({
+        path: match.path,
+        depth: (match.ancestors?.length ?? 0) + 1,
+        kind: "file",
+        entry,
+      });
+    }
+    return out;
+  }, [filter, serverSearch, rows]);
+
   // mtime is rendered as "just now / Nm / Nh / …" — recompute once
   // per render so a panel left open for hours does not show stale
   // relative times. Cheap; cheaper than the fetch itself.
@@ -1081,6 +1349,7 @@ export function FilesPanel({
           // `lib/browser-nav.ts` to keep the extension allow-list in
           // one place (the iframe src type-check does the same).
           const isHtml = isHtmlPath(row.entry.name);
+          const isHighlighted = highlightedPaths.has(row.path);
           return (
             <FileRow
               key={`file:${row.path}`}
@@ -1088,6 +1357,36 @@ export function FilesPanel({
               t={t}
               now={now}
               copied={isCopied}
+              highlighted={isHighlighted}
+              onOpen={() =>
+                isHtml ? onOpenInBrowser(row.path) : onOpenFile(row.path)
+              }
+              onCopy={() => copyPath(row.path)}
+            />
+          );
+        })}
+
+        {/* Slice 19b — server-search matches that are not yet
+            reachable through the lazy tree. Each row renders as a
+            file row with a depth derived from the match's ancestor
+            chain. `data-source="server"` distinguishes them from
+            the loaded-tree rows in the test harness. */}
+        {serverMatchRows.map((row) => {
+          const isCopied = copiedPath === row.path;
+          const isHtml = isHtmlPath(row.entry.name);
+          const isHighlighted = highlightedPaths.has(row.path);
+          const credential =
+            serverSearch.result?.matches.find((m) => m.path === row.path)?.credential ?? false;
+          return (
+            <FileRow
+              key={`server:${row.path}`}
+              row={row}
+              t={t}
+              now={now}
+              copied={isCopied}
+              highlighted={isHighlighted}
+              credential={credential}
+              source="server"
               onOpen={() =>
                 isHtml ? onOpenInBrowser(row.path) : onOpenFile(row.path)
               }
@@ -1116,7 +1415,7 @@ export function FilesPanel({
         {/* Filter narrows everything out — every loaded row failed the
             glob. Show a dedicated hint so the user knows the tree
             itself is fine. */}
-        {rows.length > 0 && filteredRows.length === 0 ? (
+        {rows.length > 0 && filteredRows.length === 0 && serverMatchRows.length === 0 ? (
           <p
             data-testid="files-tree-no-match"
             className="px-1.5 py-1 text-caption-small-strong text-text_default_tertiary"
@@ -1125,6 +1424,37 @@ export function FilesPanel({
           </p>
         ) : null}
       </div>
+
+      {/* Slice 19b — server-search status row. The footer only
+          renders once a server request has actually fired (so the
+          panel does not look different from the pre-19b version
+          when the user has not typed anything that needed a
+          server search). The `loading` row is the spinner; the
+          `error` row surfaces the failure message; the
+          `result` row carries the footer segments (scanned,
+          skipped, truncated, …). */}
+      {serverSearch.loading ? (
+        <p
+          data-testid="files-tree-server-searching"
+          className="px-1.5 py-1 text-caption-small-strong text-text_default_tertiary"
+        >
+          {t("files.search.loading")}
+        </p>
+      ) : null}
+      {serverSearch.error ? (
+        <p
+          data-testid="files-tree-server-error"
+          className="px-1.5 py-1 text-caption-small-strong text-text_status_error"
+        >
+          {t("files.search.error").replace("{{error}}", serverSearch.error)}
+        </p>
+      ) : null}
+      {serverSearch.result && !serverSearch.loading && !serverSearch.error ? (
+        <SearchFooter
+          result={serverSearch.result}
+          t={t}
+        />
+      ) : null}
 
       {/* Preview pane — subscribes to `open.file.in.web` so the tree
           entry point (`FileRow` below) and the turn-summary entry
@@ -1338,6 +1668,9 @@ function FileRow({
   t,
   now,
   copied,
+  highlighted = false,
+  credential = false,
+  source = "loaded",
   onOpen,
   onCopy,
 }: {
@@ -1345,6 +1678,21 @@ function FileRow({
   t: (key: MessageKey) => string;
   now: number;
   copied: boolean;
+  /** Server-search hit highlight — applied for a few seconds after
+   *  a server result lands. Renders a left-edge accent so the
+   *  user's eye lands on the row. */
+  highlighted?: boolean;
+  /** Slice 16 alignment — when the server marks this row as
+   *  credential-shaped the panel renders an inline "已阻止预览"
+   *  affordance next to the name. Clicking still routes through
+   *  `onOpen`; the slice-16 read-file gate refuses by default and
+   *  shows the second confirmation. */
+  credential?: boolean;
+  /** Origin of the row — `"loaded"` means the panel walked the
+   *  tree normally, `"server"` means the row came from a server
+   *  search and may live in an unloaded directory. Exposed via
+   *  `data-source` so tests can pin the wiring without a DOM. */
+  source?: "loaded" | "server";
   onOpen: () => void;
   onCopy: () => void;
 }) {
@@ -1363,11 +1711,17 @@ function FileRow({
         })();
   return (
     <div
-      className="group/file flex h-[26px] items-center gap-1 rounded-lg px-1 transition-colors hover:bg-bg_interaction_tertiary_hover"
+      className={[
+        "group/file flex h-[26px] items-center gap-1 rounded-lg px-1 transition-colors hover:bg-bg_interaction_tertiary_hover",
+        highlighted ? "bg-bg_interaction_tertiary_selected" : "",
+      ].join(" ")}
       style={{ paddingLeft: 4 + indent }}
       data-testid="files-tree-file-row"
       data-path={entry.path}
       data-depth={row.depth}
+      data-highlighted={highlighted ? "true" : "false"}
+      data-source={source}
+      data-credential={credential ? "true" : "false"}
     >
       {/* Spacer to keep the file name aligned with the dir row's text
           position (the dir row uses a 16px chevron + 4px icon). The
@@ -1391,6 +1745,14 @@ function FileRow({
           <Icon name="file" size={13} />
         </span>
         <span className="min-w-0 truncate text-sm">{entry.name}</span>
+        {credential ? (
+          <span
+            data-testid="files-tree-file-credential"
+            className="flex flex-shrink-0 items-center gap-1 rounded bg-bg_grouped_tertiary px-1 py-0.5 text-caption-small-strong text-text_status_warning"
+          >
+            <span>{t("files.search.credential")}</span>
+          </span>
+        ) : null}
       </button>
       <span className="flex-shrink-0 text-caption-small-strong text-text_default_tertiary">
         {entry.size > 0 ? formatSize(entry.size) : ""}
@@ -1417,6 +1779,73 @@ function FileRow({
         </button>
       </div>
     </div>
+  );
+}
+
+/**
+ * Server-search footer (slice 19b). Renders the structured list of
+ * segments produced by `searchFootSegments`. The footer is the
+ * "honest" copy — it always tells the user what was skipped and,
+ * when truncated, which budget fired. Acceptance pinned
+ * `skipped.huge` as a mandatory segment even when `truncated` is
+ * false; the helper never drops that signal.
+ */
+function SearchFooter({
+  result,
+  t,
+}: {
+  result: api.FsSearchResult;
+  t: (key: MessageKey) => string;
+}) {
+  const segments = searchFootSegments(result, {
+    templates: {
+      scanned: t("files.search.footer.scanned"),
+      matches: t("files.search.footer.matches"),
+      "skipped-node_modules": t("files.search.footer.skipped.node_modules"),
+      "skipped-git": t("files.search.footer.skipped.git"),
+      "skipped-credential": t("files.search.footer.skipped.credential"),
+      "skipped-huge": t("files.search.footer.skipped.huge"),
+      "skipped-optional": t("files.search.footer.skipped.optional"),
+      truncated: t("files.search.footer.truncated"),
+      elapsed: t("files.search.footer.elapsed"),
+    },
+    budgetLabels: {
+      depth: t("files.search.footer.budget.depth"),
+      nodes: t("files.search.footer.budget.nodes"),
+      wallClock: t("files.search.footer.budget.wallClock"),
+      matches: t("files.search.footer.budget.matches"),
+    },
+    formatElapsed: (ms) => t("files.search.footer.elapsedValue").replace("{ms}", String(ms)),
+  });
+  if (segments.length === 0) return null;
+  // Render with a middot separator so the row reads as a single
+  // meta line, not a stack of pills. The footer is intentionally
+  // small — its job is "trust the result is honest", not "explain
+  // every line".
+  const optionalDetail = Object.entries(result.skipped?.optional ?? {})
+    .filter(([, count]) => count > 0)
+    .map(([name, count]) => `${name} ${count}`)
+    .join(", ");
+  return (
+    <p
+      data-testid="files-tree-server-footer"
+      data-truncated={result.truncated ? "true" : "false"}
+      className="flex flex-wrap gap-x-1 gap-y-0.5 px-1.5 py-1 text-caption-small-strong text-text_default_tertiary"
+      title={
+        optionalDetail
+          ? `${t("files.search.footer.skipped.optional")} (${optionalDetail})`
+          : undefined
+      }
+    >
+      {segments.map((segment, index) => (
+        <span
+          key={`${segment.kind}:${index}`}
+          data-testid={`files-tree-server-footer-segment-${segment.kind}`}
+        >
+          {segment.text}
+        </span>
+      ))}
+    </p>
   );
 }
 
