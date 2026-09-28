@@ -179,35 +179,54 @@ function htmlToReact(html: string, theme: "light" | "dark"): ReactNode {
  * `<pre class="mermaid-source" hidden>SOURCE</pre>` immediately
  * before each `<div class="mermaid-block">`. We walk the previous
  * siblings of `placeholder` to find the source.
+ *
+ * IMPORTANT: read `pre.textContent`, not `pre.innerHTML`.
+ *
+ * The renderer escapes the source via `escapeHtml` (`&`→`&amp;`,
+ * `<`→`&lt;`, `>`→`&gt;`, `"`→`&quot;`, `'`→`&#39;`) so a hostile
+ * fence cannot smuggle markup through the placeholder. By the time
+ * DOMParser has parsed the sanitised HTML, the entity references
+ * have already been decoded back into literal characters — that is
+ * what `textContent` returns.
+ *
+ * `pre.innerHTML`, by contrast, **re-serialises** the text content
+ * and re-emits entities (`<` → `&lt;`). A naive `.replace(/</g,
+ * "<")` over that string is therefore a no-op against the literal
+ * character (`<` never appears in `innerHTML`) and silently leaves
+ * `--&gt;` in the source handed to mermaid, which then refuses to
+ * parse every flowchart that uses `-->|label|` edge syntax and
+ * corrupts the failure-state "copy source" button (the user copies
+ * `A --&gt;|是| B`, not `A -->|是| B`).
+ *
+ * Exported under a test-only name so the markdown-html-render test
+ * suite can assert this contract without booting a full DOM (the
+ * suite has no jsdom / happy-dom and the walker lives in client
+ * code). The element contract is the small DOM Level 1 surface the
+ * function actually touches: `nodeType`, `tagName`, `classList`,
+ * `textContent`, `previousSibling`.
  */
-function findMermaidSourceBefore(placeholder: Element): string {
-  let cur: ChildNode | null = placeholder.previousSibling;
+export function findMermaidSourceBefore(placeholder: {
+  previousSibling: unknown;
+}): string {
+  let cur: unknown = placeholder.previousSibling;
   while (cur) {
+    const node = cur as {
+      nodeType?: number;
+      tagName?: string;
+      classList?: { contains(c: string): boolean };
+      textContent?: string | null;
+    };
     if (
-      cur.nodeType === 1 &&
-      (cur as Element).tagName.toLowerCase() === "pre" &&
-      (cur as Element).classList.contains("mermaid-source")
+      node.nodeType === 1 &&
+      typeof node.tagName === "string" &&
+      node.tagName.toLowerCase() === "pre" &&
+      node.classList?.contains("mermaid-source")
     ) {
-      const pre = cur as Element;
-      // The renderer escaped the source via `escapeHtml` so the
-      // entities are HTML-safe. Reverse them before handing the
-      // source to MermaidBlock (which passes it straight to
-      // mermaid.render).
-      return decodeEscapes(pre.innerHTML);
+      return node.textContent ?? "";
     }
-    cur = cur.previousSibling;
+    cur = (cur as { previousSibling?: unknown }).previousSibling;
   }
   return "";
-}
-
-/** Reverse the four-character HTML escape applied in the renderer. */
-function decodeEscapes(value: string): string {
-  return value
-    .replace(/</g, "<")
-    .replace(/>/g, ">")
-    .replace(/"/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&/g, "&");
 }
 
 /**

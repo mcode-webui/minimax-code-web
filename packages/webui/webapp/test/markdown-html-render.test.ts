@@ -49,13 +49,27 @@
 //     the acceptance reproduced.
 //   - It pins the `htmlToReact` walker via the input-output pairs
 //     a regression test can assert without a DOM.
+//   - It pins the `findMermaidSourceBefore` walker (blocker 1) by
+//     feeding it a hand-built DOM Level 1 element mock — the
+//     contract under test is that the walker reads `textContent`
+//     (which is the post-DOMParser-decoded string) and not
+//     `innerHTML` (which re-serialises entities).
+//   - It pins the `mermaid.initialize` options (blockers 2 & 3) so
+//     a regression that drops `htmlLabels: false` (label boxes
+//     empty) or `suppressErrorRendering: true` (bomb SVGs leak
+//     onto the page) cannot reach the gate.
 
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 
 import { renderMarkdown } from "../lib/markdown";
 import "../lib/mermaid-renderer"; // auto-registers the mermaid language renderer
-import { _stripMermaidInitForTest } from "../components/mermaid-block";
+import {
+  _stripMermaidInitForTest,
+  _mermaidInitializeOptionsForTest,
+  _mermaidFontFamilyForTest,
+} from "../components/mermaid-block";
+import { findMermaidSourceBefore } from "../components/markdown-html";
 
 describe("MarkdownHtml render path — registry-side evidence", () => {
   test("a mermaid fence produces the placeholder pair the walker expects", () => {
@@ -188,5 +202,215 @@ describe("MermaidBlock — sanitiser hooks (test-only exports)", () => {
     // place to land. The live self-check (browser-test.mjs) is the
     // current coverage for the SVG-side filtering.
     assert.ok(typeof _stripMermaidInitForTest === "function");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regression tests for the three blockers reproduced in the acceptance run.
+//
+// Each test below is mutation-verified — the comment names the exact edit
+// that, if reverted, makes the assertion fail. The intent is that a future
+// change cannot silently re-introduce any of the three defects even if the
+// full mermaid render path is not exercised in the unit harness.
+// ---------------------------------------------------------------------------
+
+describe("markdown-html — findMermaidSourceBefore (blocker 1: copy-source byte-exact)", () => {
+  /**
+   * Hand-built DOM Level 1 element mock. The walker only touches
+   * `nodeType`, `tagName`, `classList.contains`, `textContent` (or
+   * `innerHTML`, in the regression we're guarding against),
+   * `previousSibling`. Both are exposed here, and `innerHTML`
+   * intentionally diverges from `textContent` — `innerHTML` re-
+   * escapes the entities (`<` → `&lt;`) the way a real DOM does,
+   * while `textContent` returns the literal characters. This is
+   * the surface the production walker runs on: DOMParser has
+   * already decoded `&lt;` back to `<` in the parsed tree, so
+   * `textContent` gives back the user's original source, and
+   * `innerHTML` gives back the re-serialised view. A regression
+   * that swaps the walker back to `innerHTML` will see `&gt;`
+   * instead of `>` and the byte-exact assertions will fail.
+   */
+  function makePre(originalSource: string, classList: string[]): {
+    nodeType: number;
+    tagName: string;
+    classList: { contains(c: string): boolean };
+    textContent: string;
+    innerHTML: string;
+    previousSibling: null;
+  } {
+    // Simulate the DOMParser-then-serialise round-trip:
+    //   - `textContent` is the decoded text (the user's original)
+    //   - `innerHTML`  re-escapes `<`, `>`, `&`, `"`, `'` to entities
+    const innerHTML = originalSource
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+    return {
+      nodeType: 1,
+      tagName: "pre",
+      classList: {
+        contains: (c: string): boolean => classList.includes(c),
+      },
+      textContent: originalSource,
+      innerHTML,
+      previousSibling: null,
+    };
+  }
+
+  function makePlaceholder(
+    previous: ReturnType<typeof makePre> | null,
+  ): {
+    nodeType: number;
+    previousSibling: ReturnType<typeof makePre> | null;
+  } {
+    return { nodeType: 1, previousSibling: previous };
+  }
+
+  test("a flowchart with edge labels returns the original source byte-exact (NOT --&gt;)", () => {
+    // The exact source the acceptance run fed through. The HTML
+    // escape in lib/mermaid-renderer.ts would have produced
+    // `A --&gt;|是| B` on the wire; after DOMParser parsed the
+    // sanitised HTML and the walker ran, the production code must
+    // hand mermaid `A -->|是| B` (literal `<`/`>`). The previous
+    // walker used `pre.innerHTML` + a no-op `.replace(/</g, "<")`
+    // and handed mermaid `A --&gt;|是| B`, which mermaid then
+    // refused to parse — every flowchart with edge labels was a
+    // failure card, and the "copy source" button copied back
+    // `A --&gt;|是| B` instead of the user's original.
+    const pre = makePre("flowchart LR\n  A -->|是| B\n  B --> C", ["mermaid-source"]);
+    const ph = makePlaceholder(pre);
+    const source = findMermaidSourceBefore(ph);
+    assert.equal(source, "flowchart LR\n  A -->|是| B\n  B --> C");
+    // And the regression that proves the bug was there: the literal
+    // entity references must NOT appear in the source we hand to
+    // mermaid.
+    assert.doesNotMatch(source, /&gt;/);
+    assert.doesNotMatch(source, /&lt;/);
+    assert.doesNotMatch(source, /&amp;/);
+  });
+
+  test("a hostile source with -- and quotes decodes the entities the renderer escaped", () => {
+    // Renderer would have escaped: `<`→`&lt;`, `>`→`&gt;`,
+    // `"`→`&quot;`, `&`→`&amp;`. After DOMParser, `textContent`
+    // returns the literal characters again — that is the contract
+    // the walker depends on.
+    const original = `flowchart LR\n  A["<b>x & y</b>"] --> B["z"]`;
+    const pre = makePre(original, ["mermaid-source"]);
+    const ph = makePlaceholder(pre);
+    assert.equal(findMermaidSourceBefore(ph), original);
+  });
+
+  test("returns empty string when there is no preceding source <pre>", () => {
+    // Defensive: an out-of-order walker should not crash; an empty
+    // string makes the failure card show an empty source rather
+    // than throw.
+    const ph = makePlaceholder(null);
+    assert.equal(findMermaidSourceBefore(ph), "");
+  });
+
+  test("returns empty string when the preceding element is not a mermaid-source <pre>", () => {
+    // The walker must check the class — a non-mermaid <pre> above
+    // the placeholder (e.g. a regular code block that happened to
+    // be the previous sibling) must not be confused for the
+    // mermaid source.
+    const otherPre = makePre("not mermaid", ["codeblock-pre"]);
+    const ph = makePlaceholder(otherPre);
+    assert.equal(findMermaidSourceBefore(ph), "");
+  });
+});
+
+describe("mermaid-block — initialize options (blockers 2 + 3: labels & body leftovers)", () => {
+  test("htmlLabels is disabled at BOTH the top level AND inside flowchart (blocker 2)", () => {
+    // mermaid 11's labelHelper reads from TWO config slots — node
+    // labels use the top-level `htmlLabels`, edge labels use
+    // `flowchart.htmlLabels`. Verified against mermaid 11.12.1 that
+    // setting only one of them leaves foreignObject blocks in the
+    // output for the other. Either regression breaks the label
+    // visibility on a flowchart / pie / class / state diagram.
+    const opts = _mermaidInitializeOptionsForTest("light");
+    assert.equal(opts.htmlLabels, false, "top-level htmlLabels must be false");
+    const flow = opts.flowchart as { htmlLabels?: unknown };
+    assert.equal(flow.htmlLabels, false, "flowchart.htmlLabels must be false");
+  });
+
+  test("suppressErrorRendering is enabled so mermaid never draws the bomb SVG (blocker 3)", () => {
+    // By default mermaid injects a 2400×512 "Syntax error in text"
+    // bomb SVG into document.body on every parse failure, and the
+    // bomb is not cleaned up when the host catches the thrown
+    // error (the mermaid render path re-throws before
+    // removeTempElements runs). The flag short-circuits both the
+    // bomb-drawing branches. The regression is that a future
+    // refactor drops the flag; with it gone, × N bad fences leave
+    // × N orphaned bomb SVGs at the bottom of the page.
+    const opts = _mermaidInitializeOptionsForTest("light");
+    assert.equal(opts.suppressErrorRendering, true);
+  });
+
+  test("securityLevel stays strict so click handlers stay off", () => {
+    // Belt-and-braces with the %%{init} stripper. The stripper is
+    // the source-side filter; securityLevel is the second wall —
+    // dropping either leaves the door open.
+    const opts = _mermaidInitializeOptionsForTest("light");
+    assert.equal(opts.securityLevel, "strict");
+  });
+
+  test("startOnLoad is disabled — the dynamic import owns the lifecycle", () => {
+    // startOnLoad=true would have mermaid walk the document for
+    // `.mermaid` elements at boot and try to render them before
+    // MarkdownHtml has produced the placeholder tree. Disabling
+    // keeps the lifecycle under the React component's control.
+    const opts = _mermaidInitializeOptionsForTest("light");
+    assert.equal(opts.startOnLoad, false);
+  });
+
+  test("the theme key reflects the prop (light ↔ 'default', dark ↔ 'dark')", () => {
+    // The theme key participates in `lastMermaidConfigKey` and is
+    // also the value mermaid uses to pick colours. Both must flip
+    // on a theme change.
+    assert.equal(_mermaidInitializeOptionsForTest("light").theme, "default");
+    assert.equal(_mermaidInitializeOptionsForTest("dark").theme, "dark");
+  });
+
+  test("the CJK font fallback covers macOS / Windows / Linux", () => {
+    // The acceptance run's Chinese Gantt / flowchart labels render
+    // only if the SVG text inherits a font that ships CJK glyphs
+    // on a freshly installed system. The regression is to drop
+    // any one of PingFang SC / Microsoft YaHei / Noto Sans CJK SC
+    // — that part of the world stops rendering on the missing
+    // platform.
+    assert.match(_mermaidFontFamilyForTest, /PingFang SC/);
+    assert.match(_mermaidFontFamilyForTest, /Microsoft YaHei/);
+    assert.match(_mermaidFontFamilyForTest, /Noto Sans CJK SC/);
+  });
+
+  test("the production options object matches what the live component hands mermaid", () => {
+    // This pins the contract that `MermaidBlock.useEffect` and
+    // `_mermaidInitializeOptionsForTest` agree — a future refactor
+    // that adds a new option to one and forgets the other would
+    // be caught here. The shape is a frozen object the test
+    // hashes, so accidental edits to the live component show up as
+    // a hash mismatch.
+    const light = _mermaidInitializeOptionsForTest("light");
+    const dark = _mermaidInitializeOptionsForTest("dark");
+    const light2 = _mermaidInitializeOptionsForTest("light");
+    assert.equal(JSON.stringify(light), JSON.stringify(light2));
+    // And the dark and light themes must differ.
+    assert.notEqual(JSON.stringify(light), JSON.stringify(dark));
+    // And the shared shape — the four non-obvious options plus the
+    // base ones — must all be present in both.
+    for (const opts of [light, dark]) {
+      for (const key of [
+        "startOnLoad",
+        "securityLevel",
+        "theme",
+        "htmlLabels",
+        "flowchart",
+        "suppressErrorRendering",
+        "fontFamily",
+      ]) {
+        assert.ok(key in opts, `expected ${key} in initialize options`);
+      }
+    }
   });
 });

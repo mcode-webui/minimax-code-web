@@ -75,6 +75,14 @@ export function _resetMermaidForTest(): void {
  * detect a theme flip without re-running the parser. The
  * `MutationObserver` in the component fires on `<html>` class changes
  * and triggers a re-render when the value differs.
+ *
+ * The key MUST include every configuration value that affects the
+ * emitted SVG — adding a new flag to the `mermaid.initialize` call
+ * below without also bumping this key would silently leave a stale
+ * config in mermaid's internal state on a theme flip. The key
+ * previously read `${theme}|${source.length}|${theme}` (which had
+ * `theme` duplicated and ignored the htmlLabels/suppressErrorRendering
+ * overrides), so this version hashes the live config object.
  */
 let lastMermaidConfigKey: string | null = null;
 
@@ -89,6 +97,72 @@ interface MermaidBlockProps {
 
 export function _stripMermaidInitForTest(source: string): string {
   return stripMermaidInit(source);
+}
+
+/**
+ * The font stack we hand to mermaid as `fontFamily`. CJK fallback —
+ * PingFang SC (macOS), Microsoft YaHei (Windows), Noto Sans CJK SC
+ * (Linux distros without the Apple/Microsoft fonts). Exported so the
+ * test suite can assert the stack survived a refactor of
+ * `mermaid.initialize`.
+ */
+export const _mermaidFontFamilyForTest = "-apple-system, BlinkMacSystemFont, Segoe UI, PingFang SC, Hiragino Sans GB, Microsoft YaHei, Noto Sans CJK SC, Source Han Sans SC, sans-serif";
+
+/**
+ * Build the `mermaid.initialize` argument for the production
+ * `MermaidBlock`. Exported so the test suite can assert every option
+ * the production code passes — a regression that drops
+ * `htmlLabels: false` or `suppressErrorRendering: true` would let
+ * foreignObject labels / bomb SVGs back into the DOM, and that
+ * regression must be caught by the unit harness even though the
+ * full mermaid path requires a browser.
+ *
+ * The four non-obvious options, each of which has caused a real
+ * acceptance failure and is tested in `markdown-html-render.test.ts`:
+ *
+ *   - `htmlLabels: false` (top-level) + `flowchart: { htmlLabels:
+ *     false }`. mermaid 11 ships `htmlLabels: true` as the global
+ *     default, which puts node labels and edge labels inside
+ *     `<foreignObject>` blocks. The sanitiser has to drop
+ *     `<foreignObject>` wholesale (allowing it would re-introduce
+ *     the same HTML-injection surface `securityLevel: "strict"` is
+ *     supposed to close), so every flowchart / pie / class / state
+ *     diagram rendered as an empty box until we disabled the
+ *     html-label path here. The mermaid 11 labelHelper reads from
+ *     TWO config slots — node labels read the top-level
+ *     `htmlLabels`, edge labels read `flowchart.htmlLabels`. Both
+ *     must be set to false; one alone leaves foreignObjects behind
+ *     (verified against mermaid 11.12.1).
+ *
+ *   - `suppressErrorRendering: true`. Stop mermaid from injecting
+ *     the "Syntax error in text" bomb SVG into `document.body` on
+ *     every parse failure. By default mermaid appends a 2400×512
+ *     error SVG to the page even when the host caller (us) catches
+ *     the thrown error and renders a legible failure UI; the bomb
+ *     is then left orphaned at the bottom of the document, outside
+ *     any mermaid card, × N where N is the number of bad fences in
+ *     the markdown. With this flag, mermaid calls its internal
+ *     `removeTempElements()` on every error path, so `document.body`
+ *     is left clean.
+ *
+ *   - `securityLevel: "strict"`. The mermaid preset that disables
+ *     click handlers and inline HTML. Combined with the `%%{init}`
+ *     stripper and the sanitiser, this is the third wall that keeps
+ *     a hostile fence from triggering an external request beacon.
+ *
+ *   - The CJK font fallback on `fontFamily` so Chinese Gantt and
+ *     flowchart labels render on a freshly installed system.
+ */
+export function _mermaidInitializeOptionsForTest(theme: "light" | "dark"): Record<string, unknown> {
+  return {
+    startOnLoad: false,
+    securityLevel: "strict",
+    theme: theme === "dark" ? "dark" : "default",
+    htmlLabels: false,
+    flowchart: { htmlLabels: false },
+    suppressErrorRendering: true,
+    fontFamily: _mermaidFontFamilyForTest,
+  };
 }
 
 export function MermaidBlock({ source, theme, _loadMermaid }: MermaidBlockProps) {
@@ -107,28 +181,19 @@ export function MermaidBlock({ source, theme, _loadMermaid }: MermaidBlockProps)
       try {
         const mermaid = await loader();
         if (cancelled || gen !== genRef.current) return;
-        const configKey = `${theme}|${source.length}|${theme}`;
+        // The configKey includes EVERY value passed to mermaid.initialize
+        // (theme, htmlLabels, suppressErrorRendering, fontFamily). Adding a
+        // new option to the shared `_mermaidInitializeOptionsForTest` builder
+        // below without also extending this key would silently leave mermaid
+        // running with a stale config across a theme flip. Source length does
+        // not participate — `source` is consumed by the render call, not the
+        // initialize call. Hashing the actual options (rather than a brittle
+        // human-typed signature) makes that drift impossible: if the options
+        // shape changes, the hash changes, and mermaid re-initialises.
+        const options = _mermaidInitializeOptionsForTest(theme);
+        const configKey = `${theme}|${JSON.stringify(options)}`;
         if (lastMermaidConfigKey !== configKey) {
-          mermaid.initialize({
-            startOnLoad: false,
-            securityLevel: "strict",
-            theme: theme === "dark" ? "dark" : "default",
-            // CJK font fallback — picked up by mermaid's default theme
-            // for any text it renders. The stack is intentionally
-            // broad so the reporter's Chinese Gantt / flowchart labels
-            // render even on a freshly installed system.
-            fontFamily: [
-              "-apple-system",
-              "BlinkMacSystemFont",
-              "Segoe UI",
-              "PingFang SC",
-              "Hiragino Sans GB",
-              "Microsoft YaHei",
-              "Noto Sans CJK SC",
-              "Source Han Sans SC",
-              "sans-serif",
-            ].join(", "),
-          });
+          mermaid.initialize(options);
           lastMermaidConfigKey = configKey;
         }
         // Hardening: strip `%%{init:{...}}` directives before passing
@@ -319,9 +384,13 @@ function stripMermaidInit(source: string): string {
  *   3. **Drop the rest of the DROP set.** Scripts, iframes, objects,
  *      embeds, forms, inputs, foreignObjects, metas, links — these
  *      carry the same XSS risk in SVG as they do in HTML and are
- *      removed whole. (`<foreignObject>` is dropped because mermaid
- *      ships its own SVG labels; allowing foreignObject would let an
- *      attacker smuggle in raw HTML at the SVG level.)
+ *      removed whole. (`<foreignObject>` is dropped as defence in
+ *      depth even though mermaid is initialised with
+ *      `htmlLabels: false` and so does not emit it: allowing
+ *      foreignObject would re-open an HTML-injection vector inside the
+ *      SVG, which is exactly what `securityLevel: "strict"` is
+ *      supposed to close. The cost of dropping it is zero now that
+ *      labels render as native SVG `<text>`.)
  *
  * Event handlers (`onclick`, `onload`, `onerror`, …) on surviving
  * elements are stripped; `href` / `xlink:href` is kept only for the
