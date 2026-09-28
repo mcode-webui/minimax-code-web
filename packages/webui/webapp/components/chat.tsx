@@ -19,6 +19,7 @@ import {
 } from "@/lib/transcript";
 import { Icon } from "./icons";
 import { useChatVirtualization } from "./chat-virtual-list";
+import { ActivityPulse, isSessionActivityActive } from "./loading-states";
 import { useSessionContext } from "@/lib/store";
 import { iconByName, type SummaryIconType } from "@/lib/transcript";
 import { readScrollPosition as readPersistedScroll } from "@/lib/persist";
@@ -664,7 +665,11 @@ function NoticeBlock({ block, t }: { block: TranscriptBlock; t: (key: MessageKey
 
 function ThinkingIndicator({ t }: { t: (key: MessageKey) => string }) {
   const { state } = useSessionContext();
-  if (!(state?.running.active ?? false)) return null;
+  // Ticket U8: the gate is the exported pure function (unit-tested in
+  // webapp/test/loading-skeleton.test.ts); the indicator itself lives in
+  // components/loading-states.tsx so the streaming state stays renderable
+  // without the chat module's heavier import graph.
+  if (!isSessionActivityActive(state)) return null;
   // The server reports `thinkingStatus` as a free-form string. We only branch
   // on the four canonical phases the desktop uses (working / planning /
   // wiring / checking); anything else falls through to the default "thinking"
@@ -680,16 +685,7 @@ function ThinkingIndicator({ t }: { t: (key: MessageKey) => string }) {
           : phase === "checking"
             ? t("chat.thinkingStatus.checking")
             : t("chat.thinking");
-  return (
-    <div className="flex items-center gap-2 py-2 text-text_default_tertiary">
-      <span className="mavis-loading">
-        <span className="mavis-dot mavis-dot-a" />
-        <span className="mavis-dot mavis-dot-b" />
-        <span className="mavis-dot mavis-dot-c" />
-      </span>
-      <span className="text-activity-body-small">{label}</span>
-    </div>
-  );
+  return <ActivityPulse label={label} />;
 }
 
 /**

@@ -168,6 +168,7 @@ CI 会对上述每一个名称是否出现在本文档中进行断言
 | 键盘快捷键（Ctrl+K 聚焦、Esc 关闭、…） | ✅ | `webapp/components/shell.tsx` 中的全局 keydown 处理器 |
 | 斜杠命令键盘导航（↑↓ Enter Tab） | ✅ | composer 的斜杠浮层使用 keydown 监听器 |
 | 尊重操作系统偏好的深色模式 | ✅ | 启动时的 `prefers-color-scheme` 媒体查询 |
+| 会话骨架屏 + 流式活动指示（工单 U8） | ✅ | 冷启动 `!state` 分支渲染 `TranscriptSkeleton`（按真实消息行形状铺 shimmer 占位条，`webapp/components/loading-states.tsx`）；流式尾部的活动指示（`ActivityPulse`）在 `running.active` 期间显示三点加载动画加一条 shimmer 条；`prefers-reduced-motion: reduce` 下所有动画类显式静止（`webapp/app/globals.css`）。测试：`webapp/test/loading-skeleton.test.ts`。 |
 | 自定义 CSS 主题 | ❌ | 没有主题加载器；需要一套 CSS 变量系统 |
 | 用户自定义热键 | ❌ | 快捷键是硬编码的 |
 

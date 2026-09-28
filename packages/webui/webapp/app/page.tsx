@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as api from "@/lib/api";
 import { Chat, HomeState } from "@/components/chat";
 import { Composer } from "@/components/composer";
+import { TranscriptSkeleton } from "@/components/loading-states";
 import { Modals } from "@/components/modals";
 import { ActionErrorBanner } from "@/components/action-error-banner";
 import { SettingsModal } from "@/components/panels";
@@ -496,15 +497,19 @@ function App() {
   );
 
   // Upstream shows a centred three-dot loader while the renderer waits for its
-  // first state push; same treatment here.
+  // first state push; webui ticket U8 replaces it with the transcript-shaped
+  // shimmer skeleton — a bare spinner gives no hint of the layout that is
+  // about to land, and the blank column reads as "broken" on a slow engine
+  // boot. The skeleton sits inside the same 960px content cap the conversation
+  // uses, so the first real paint does not reflow sideways. The connection
+  // copy stays: it is the only part of this screen that says WHY it is
+  // loading (connecting vs disconnected).
   if (!state) {
     return (
       <div className="flex h-screen w-screen flex-col items-center justify-center gap-4 bg-bg_grouped_secondary text-text_default_secondary">
-        <span className="mavis-loading">
-          <span className="mavis-dot mavis-dot-a" />
-          <span className="mavis-dot mavis-dot-b" />
-          <span className="mavis-dot mavis-dot-c" />
-        </span>
+        <div className="w-full max-w-[960px] px-6">
+          <TranscriptSkeleton />
+        </div>
         <p className="text-caption-small-strong">
           {connected || !error ? t("app.connecting") : t("app.disconnected")}
         </p>
