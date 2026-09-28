@@ -112,6 +112,15 @@ node dist/cli.js webui --host 0.0.0.0 --no-open   # PORT defaults to 18080
 
 The canonical disclosure is [`packages/webui/references/SECURITY-NOTES.md`](../packages/webui/references/SECURITY-NOTES.md).
 
+Slice 27 extends the same posture to the write side: `POST /api/fs/write`
+runs the identical containment gate, applies the identical credential
+predicate (default-refuse; `confirm:true` releases the write and emits a
+`credential.override` audit line with `endpoint:"write"`), and
+conflict-checks the caller's `(mtime, size)` baseline so an external edit
+surfaces as `409 {code:"conflict"}` instead of being overwritten. The
+write itself is a bare `writeFileSync` on the gated path — no shell, no
+exec, no command interpolation.
+
 ## Transport selection (ACP, exec, or runtime)
 
 Every turn is sent to the engine over one of three transports: the long-lived ACP subprocess (`mcode acp`), the one-shot exec subprocess (`mcode exec`), or — added in slice S2 — an **in-process runtime host** (`packages/webui/server/lib/runtime-host.js`) that owns the same `CliService` the TUI does. The choice is made server-side, per turn, before the engine spawns — and it is decided in two different places, evaluated in this order:
@@ -486,10 +495,71 @@ implementation accident:
 | Sizing | Diagrams scale to the column width; a diagram wider than its card scrolls inside the card | `webapp/styles/mermaid.css:62-80` |
 | CJK labels | Node and edge labels render through a font stack with PingFang SC / Microsoft YaHei / Noto Sans CJK SC fallbacks, so Chinese text does not come out as tofu | `components/mermaid-block.tsx:109` |
 | Loading | The chart library is several megabytes and is `import()`-ed when the **first** diagram of a page mounts; the chunk ships with a one-year immutable cache, so later page loads fetch it from the browser cache. A page with no mermaid fence never requests the chunk | `components/mermaid-block.tsx:54-66`, `server/lib/static.js:64-66` |
-| Outline | A diagram is never a heading: the fence emits a `<pre>`/`<div>` placeholder pair, not `h1`–`h6`, so diagrams appear in no heading-derived outline (the webui itself renders no Markdown outline today) | `webapp/lib/mermaid-renderer.ts:44-57` |
+| Outline | A diagram is never a heading: the fence emits a `<pre>`/`<div>` placeholder pair, not `h1`–`h6`, so diagrams appear in no heading-derived outline (the outline the preview renders since slice 27 walks the rendered DOM's `h1`–`h6`, which the placeholder pair never produces) | `webapp/lib/mermaid-renderer.ts:44-57`, `webapp/lib/markdown-toc.ts` |
 
 The `mermaid` dependency (11.12.1, MIT) is recorded in
 `release/dependency-licenses.json`.
+
+## File preview toolbar and Markdown outline (slice 27)
+
+The preview component's header carries three controls, and the Markdown
+preview grows an outline panel. This slice also opens the webapp's first
+**write** path, so its boundary decisions are contracts, not defaults:
+
+| Control | What it does | What it never does |
+| --- | --- | --- |
+| ↻ refresh | Re-reads the file from disk, re-renders, and restores the scroll position. An external edit shows up on the next click | Never blanks on failure: a deleted/renamed file keeps the last content and shows a banner naming the likely cause |
+| 预览/编辑 toggle | Flips a text preview (markdown, code) into a plain editor seeded with the disk bytes. Image and unsupported previews offer no editor | Never offered for credential-shaped paths without an explicit confirmation card (see below) |
+| ✓ save | Writes the editor buffer through `POST /api/fs/write`, then shows "saved at HH:MM" and re-renders the preview from the saved bytes | Never automatic, never silent-on-failure: the buffer survives a failed save and the server's reason is shown |
+
+### Write-path invariants (`POST /api/fs/write`)
+
+The endpoint is the only write surface the preview opens, and each
+invariant is enforced server-side — the webapp is a presenter over the
+structured answer:
+
+- **Containment** — the same `assertWorkspacePath` gate every other
+  `/api/fs/*` route funnels through (realpath-resolved, symlink-aware).
+  The write path adds no escape hatch.
+- **Credential guard (slice 16 alignment)** — `.env` / `*.pem` /
+  `id_rsa` / `credentials*` … default-refuse with
+  `403 {code:"credential", credentialReason}`. `confirm:true` releases
+  the write and emits the same `credential.override` stderr audit line
+  as the read override (`endpoint:"write"`). Reason: the server
+  broadcasts a LAN URL, and a web-editable `.env` makes every LAN peer
+  an author of the local machine's config.
+- **Conflict detection** — the read (`GET /api/fs/read-file`) carries
+  the file's `mtime`; the save sends the `(expectedMtime, expectedSize)`
+  pair it recorded when the file was opened. Either value drifting from
+  the live stat answers `409 {code:"conflict", diskMtime, diskSize}`
+  and **nothing is written**. The panel shows a conflict card with two
+  explicit exits: overwrite the disk version, or load the disk version.
+  A save that omits the baseline is the explicit-overwrite shape the
+  panel only sends after the user answered that card.
+- **Controlled write** — the handler is a bare
+  `writeFileSync(path, content)` on the gated path. No shell, no exec,
+  no command interpolation anywhere on the path.
+- **Caps** — bodies over 512 KiB (the same figure the read caps at)
+  answer `413 {code:"too-large"}`; the editor edits existing files
+  only (a vanished file is surfaced, never created).
+
+### Markdown outline
+
+The outline is derived from the **rendered DOM** — never a second parse
+of the markdown source — so the outline lists, by construction, what the
+page shows. Heading ids are assigned onto those DOM nodes (stable slugs,
+`-2`/`-3` suffixes on duplicates); a click `preventDefault`s the anchor
+and smooth-scrolls the heading into view via `scrollIntoView`, so the
+jump animates and the scroll position still persists through the tab's
+usual channel. The panel is sticky within the scroll viewport (its
+max-height pinned to the viewport's height, so a long outline cannot
+outgrow the pane it floats in) and tracks the scroll position to
+highlight the current section. Documents without headings render no
+panel (no empty box), Mermaid diagrams never enter the outline (a
+diagram is not a chapter), and entries are readable in both themes
+through the design tokens. Below ~300px of content width the outline
+hides rather than squeezing the document — the preview column's own
+minimum (320px) still shows it.
 
 ## Persistence keys (client-side `localStorage` / `sessionStorage`)
 
@@ -513,7 +583,7 @@ the user's place in each conversation independently.
 Every `/api/*` endpoint listed below is registered either by Hono
 (`packages/webui/server/app.js`) or by the legacy dispatcher
 (`packages/webui/server/router.js`); the file path is the implementation
-of record. `OWNED_ROUTES` (Hono) is the ledger (60 routes), and the legacy
+of record. `OWNED_ROUTES` (Hono) is the ledger (62 routes), and the legacy
 dispatcher owns the two SSE channels (`/api/events`, `/api/alerts`) plus
 the static + trajectory mounts.
 
@@ -549,9 +619,10 @@ the static + trajectory mounts.
 | `GET` | `/api/workspace/resolve` | `routes/workspace.js#handleWorkspaceResolve` | `?name=<folder>` → candidate absolute paths |
 | `GET` | `/api/workspace/recent` | `routes/workspace.js#handleWorkspaceRecent` | `?search=&limit=` (limit clamped ≤ 20) |
 | `GET` | `/api/fs/read` | `routes/fs.js#handleFsRead` | `?path=&showHidden=1`; containment gate; `400` missing path |
-| `GET` | `/api/fs/read-file` | `routes/fs.js#handleFsReadFile` | `?path=&confirm=1`; `200` text/JSON; `403 {code:"credential"}` on a credential shape (unless `confirm=1`); `413` oversize (fs-util `DEFAULT_FILE_READ_MAX = 512 KiB`); `415` binary / non-regular |
+| `GET` | `/api/fs/read-file` | `routes/fs.js#handleFsReadFile` | `?path=&confirm=1`; `200` text/JSON (success carries `mtime`, the conflict-detection baseline for `POST /api/fs/write`); `403 {code:"credential"}` on a credential shape (unless `confirm=1`); `413` oversize (fs-util `DEFAULT_FILE_READ_MAX = 512 KiB`); `415` binary / non-regular |
 | `GET` | `/api/fs/raw` | `routes/fs.js#rawStreamToWebResponse` | `?path=&download=1&confirm=1`; streaming 20 MiB cap; same credential gate; mime-by-extension table including `.html/.htm`, `.svg`, `.png/.jpg/.gif/.webp`, `.js/.mjs/.css/.json` |
 | `POST` | `/api/fs/mkdir` | `routes/fs.js#handleFsMkdir` | `{path}`; parent in allowed roots; `403` on containment fail |
+| `POST` | `/api/fs/write` | `routes/fs.js#handleFsWrite` | `{path, content, expectedMtime?, expectedSize?, confirm?}` — the preview editor's save (slice 27). `200 {ok, path, size, mtime}` (fresh baseline); `400 {code:"missing-path"\|"missing-content"\|"invalid-content"\|"not-a-regular-file"}`; `403` containment / `403 {code:"credential", credentialReason}` (slice-16 shapes without `confirm:true`); `404 {code:"not-found"}` (vanished file — TOCTOU guard; a missing path normally fails the gate first, same as reads); `409 {code:"conflict", diskMtime, diskSize}` (stale baseline, nothing written); `413 {code:"too-large"}` (write cap = the read's 512 KiB). Bare `writeFileSync` on the gated path — no shell anywhere. `confirm:true` on a credential shape emits the `credential.override` audit line with `endpoint:"write"`. |
 | `POST` | `/api/fs/open-default` | `routes/fs.js#handleFsOpenDefault` | `{path}`; `400 {code:"missing-path"}` / `403 {code:"out-of-bounds"}` / `400 {code:"not-a-regular-file"}` / `503 {code:"no-opener"}` / `502 {code:"spawn-failed"}` |
 | `POST` | `/api/fs/reveal` | `routes/fs.js#handleFsReveal` | `{path}`; same code → status map as `open-default` |
 | `GET` | `/api/fs/search` | `routes/fs.js#handleFsSearch` | `?root=&q=&depth=&maxNodes=&wallMs=&limit=&includeHidden=1`; `400 {code:"missing-root"\|"missing-q"\|"not-a-directory"\|"stat-failed"}`; success envelope: `{ok, root, q, matches:[{path,name,type,ancestors,credential?,credentialReason?}], scanned:{dirs,files,total}, skipped:{node_modules,n,.git,n,credential,n,huge,n,optional:{dist,build,…}}, truncated, truncatedReason: null\|"depth"\|"nodes"\|"wallClock"\|"matches", elapsedMs, budgets}`. Walker defaults: `maxDepth=8`, `maxNodes=5000`, `wallMs=1500`, `maxMatches=200`; absolute limits: `16/50_000/5_000/1_000` (`packages/webui/server/lib/fs-search.js`). `node_modules` and `.git` are non-overridable skips. |

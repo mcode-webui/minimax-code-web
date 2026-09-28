@@ -122,6 +122,13 @@ export const OWNED_ROUTES = new Set([
   "GET /api/fs/read-file",
   "GET /api/fs/raw",
   "POST /api/fs/mkdir",
+  // Slice 27 — save the preview editor's buffer back to the workspace
+  // file. Same containment gate (safePath → assertWorkspacePath), the
+  // slice-16 credential predicate default-refusing writes, and a
+  // mtime/size conflict check so an external edit surfaces as a 409
+  // the panel must resolve — never a silent overwrite. The write is a
+  // bare writeFileSync on the gated path: no shell anywhere.
+  "POST /api/fs/write",
   // Slice 14 — open / reveal in OS file manager. Same containment
   // gate as the other /api/fs/* routes (lib/open-target.js); the
   // execFile boundary is the only new attack surface, and it never
@@ -510,6 +517,12 @@ export function createHonoApp() {
   });
   app.post("/api/fs/mkdir", (c) =>
     invokeHandler(c, c.get(CAPTURE_KEY), fsRoute.handleFsMkdir),
+  );
+  // Slice 27 — preview-editor save. Containment + credential guard +
+  // mtime/size conflict check all live in the handler (see
+  // routes/fs.js#handleFsWrite for the wire contract).
+  app.post("/api/fs/write", (c) =>
+    invokeHandler(c, c.get(CAPTURE_KEY), fsRoute.handleFsWrite),
   );
   // Slice 14 — open with OS default / reveal in file manager. Containment
   // + per-node realpath gated inside lib/open-target.js; the route only

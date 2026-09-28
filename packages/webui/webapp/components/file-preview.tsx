@@ -8,8 +8,10 @@ import {
   getFsFile,
   openFileWithDefault,
   revealInFileManager,
+  saveFsFile,
   type FileOpenResult,
   type FsFilePayload,
+  type FsSaveResult,
 } from "@/lib/api";
 import { renderMarkdown } from "@/lib/markdown";
 import "@/lib/mermaid-renderer"; // registers the mermaid language renderer
@@ -22,6 +24,13 @@ import {
   type PreviewKind,
 } from "@/lib/file-preview";
 import {
+  canEditPreview,
+  editRequiresCredentialConfirm,
+  formatSaveClock,
+} from "@/lib/preview-edit";
+import { MarkdownToc } from "@/components/markdown-toc";
+import { tPreviewToolbar } from "@/lib/i18n-preview-toolbar";
+import {
   classifyUnsupported,
   type UnsupportedReason,
 } from "@/lib/file-open-reason";
@@ -31,32 +40,42 @@ import {
 } from "@/lib/i18n-file-open";
 
 /**
- * File preview (slice 02 of the webui-parity program, slice 22 upgrades).
+ * File preview (slice 02 of the webui-parity program, slices 15/16/22
+ * upgrades, slice 27 toolbar).
  *
- * A read-only viewer that the right-hand `files` panel opens on click. It is
- * a small type→renderer router over `/api/fs/read-file` (text, ≤512 KiB)
- * and `/api/fs/raw` (bytes, ≤20 MiB); the parent agent's `panels.tsx`
- * wiring is the follow-up that mounts this component into the tree (out of
- * scope for this slice, by design).
+ * A viewer + (slice 27) editor that the right-hand `files` panel opens
+ * on click. It is a small type→renderer router over
+ * `/api/fs/read-file` (text, ≤512 KiB) and `/api/fs/raw` (bytes,
+ * ≤20 MiB).
  *
  * Routing rules — what gets which renderer:
- *   `.md` / `.markdown`   rendered markdown (via lib/markdown.ts)
+ *   `.md` / `.markdown`   rendered markdown (via lib/markdown.ts) with
+ *                          the outline panel (slice 27)
  *   image extensions      <img src="/api/fs/raw?path=…">
  *   source / data files    IDE-grade preview (gutter + line numbers +
  *                          syntax highlighting + copy) — see
- *                          `components/code-view.tsx`. The legacy
- *                          "monospace pre, language badge" path was
- *                          superseded in slice 22.
+ *                          `components/code-view.tsx`.
  *   anything else         "无法预览" placeholder
  *
- * The component never truncates the response. Oversize reads return
- * `413` and the component surfaces the server's message verbatim; binary
- * detection returns `415` and the placeholder names the mime type so the
- * user knows what they tried to open.
+ * Toolbar (slice 27, every preview header):
+ *   ↻  refresh     — re-read from disk, keep the scroll position, keep
+ *                    the panel open. A failed refresh keeps the last
+ *                    content and shows an explicit banner (a deleted
+ *                    file is named, never a silent blank).
+ *   预览/编辑       — flip the text preview into a plain editor
+ *                    (markdown + code kinds only). Credential-shaped
+ *                    paths (the slice-16 predicate) must pass an
+ *                    explicit confirmation card first; the SERVER
+ *                    re-checks on every save.
+ *   ✓  save        — edit mode only. Never automatic. The save carries
+ *                    the (mtime, size) baseline recorded at load; a
+ *                    changed disk answers a conflict card (overwrite /
+ *                    reload) instead of a silent overwrite. Failures
+ *                    keep the buffer and state the reason.
  *
  * Containment: every fetch hits the server's shared `assertWorkspacePath`
- * gate, so an out-of-root path is rejected before bytes leave the box. No
- * new escape hatch was added in this slice.
+ * gate, and the save endpoint runs the SAME gate — the write path adds
+ * no escape surface.
  */
 
 export interface FilePreviewProps {
@@ -82,6 +101,13 @@ export interface FilePreviewProps {
   onScrollPersist?: (scrollTop: number) => void;
 }
 
+/** The disk state an editor buffer was seeded from. */
+interface EditBaseline {
+  content: string;
+  mtime?: number;
+  size?: number;
+}
+
 export function FilePreview({
   path,
   t,
@@ -92,55 +118,137 @@ export function FilePreview({
   const [payload, setPayload] = useState<FsFilePayload | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Slice 27 — toolbar state.
+  const [mode, setMode] = useState<"preview" | "edit">("preview");
+  const [draft, setDraft] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saveFeedback, setSaveFeedback] = useState<
+    { kind: "saved"; at: string } | { kind: "error"; message: string } | null
+  >(null);
+  const [conflict, setConflict] = useState<{ diskMtime: number; diskSize: number } | null>(null);
+  const [showCredentialGate, setShowCredentialGate] = useState(false);
+  const [credentialConfirmed, setCredentialConfirmed] = useState(false);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
   // Ref to the inner scrollable container — `.file-preview-body`.
   // The outer wrapper does NOT scroll (the wrapper's `overflow`
   // is `hidden`); only this inner div scrolls, so the scroll
-  // handler belongs here. The wrapper above used to attach the
-  // handler to its own (non-scrolling) div, which silently
-  // produced `fileScrolls: {}` — the regression the acceptance
-  // run flagged.
+  // handler belongs here.
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const restoredRef = useRef<boolean>(false);
+  // The baseline the editor's buffer was seeded from. Updated on every
+  // successful load AND every successful save (the fresh pair the
+  // server returns). NOT updated by a refresh while a dirty draft
+  // exists — the draft's origin is what a save must conflict-check
+  // against (see the refresh handler).
+  const baselineRef = useRef<EditBaseline | null>(null);
 
   // Last-write-wins: a quick `a → b → a` switch (e.g. user clicks through
   // the tree) should not let the older `a` payload land after the newer
   // `b`. The FilesPanel uses the same trick — keeping the discipline
   // uniform across panels makes the regression case obvious.
   const loadGen = useMemo(() => ({ current: 0 }), []);
+
+  const resetToolbarState = useCallback(() => {
+    setMode("preview");
+    setDraft(null);
+    setSaving(false);
+    setSaveFeedback(null);
+    setConflict(null);
+    setShowCredentialGate(false);
+    setCredentialConfirmed(false);
+    setRefreshError(null);
+    baselineRef.current = null;
+  }, []);
+
   const load = useCallback(
-    async (opts: { confirmCredential?: boolean } = {}) => {
+    async (opts: { confirmCredential?: boolean; isRefresh?: boolean } = {}) => {
       const gen = ++loadGen.current;
       setLoading(true);
-      setError(null);
+      if (opts.isRefresh) setRefreshError(null);
+      else setError(null);
+      // A refresh preserves the scroll position across the re-render
+      // (ticket A1: 不丢滚动位置). Capture before the await; restore
+      // after the new content has had a frame to lay out.
+      const scrollTop = opts.isRefresh ? bodyRef.current?.scrollTop ?? 0 : null;
       try {
         const next = await getFsFile(path, {
           confirmCredential: opts.confirmCredential === true,
         });
         if (gen !== loadGen.current) return;
+        if (!next.ok) {
+          if (opts.isRefresh) {
+            // Honesty on refresh (ticket A1): keep the last content on
+            // screen and NAME the failure — a deleted / moved file is a
+            // banner, never a silent blank.
+            setRefreshError(next.error ?? "unreadable");
+          } else {
+            setPayload(next);
+            setError(next.error ?? "unreadable");
+          }
+          return;
+        }
         setPayload(next);
-        if (!next.ok) setError(next.error ?? "unreadable");
+        setError(null);
+        // The baseline follows the fresh read only when no dirty draft
+        // is open — a dirty draft keeps its origin baseline so a later
+        // save still conflict-checks against the version it was seeded
+        // from (an external edit must surface as a conflict, never be
+        // silently absorbed by a refresh).
+        if (draft === null || draft === baselineRef.current?.content) {
+          baselineRef.current = {
+            content: next.content ?? "",
+            mtime: next.mtime,
+            size: next.size,
+          };
+        }
+        if (opts.isRefresh && scrollTop !== null) {
+          requestAnimationFrame(() => {
+            const node = bodyRef.current;
+            if (node) node.scrollTop = scrollTop;
+          });
+        }
       } catch (cause) {
         if (gen !== loadGen.current) return;
-        setError(cause instanceof Error ? cause.message : String(cause));
-        setPayload(null);
+        const message = cause instanceof Error ? cause.message : String(cause);
+        if (opts.isRefresh) setRefreshError(message);
+        else {
+          setError(message);
+          setPayload(null);
+        }
       } finally {
         if (gen === loadGen.current) setLoading(false);
       }
     },
-    [path, loadGen],
+    [path, loadGen, draft],
   );
 
   useEffect(() => {
+    resetToolbarState();
     void load();
-  }, [load]);
+    // load identity changes with `draft` (baseline bookkeeping); the
+    // initial read must run once per path, hence the separate effect.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [path]);
 
   // Restore the persisted scroll position. The restore fires
-  // once per (path, initialScrollTop) pair: after the body has
-  // had a chance to render its inner content (the file-preview-
-  // body div's `scrollHeight` only settles once the async
-  // `load()` resolves and `kind` resolves to a known renderer),
-  // we apply the persisted offset. A subsequent paint would be
-  // a no-op because `restoredRef.current` already flipped.
+  // once per mount / file switch: after the body has had a chance
+  // to render its inner content (the file-preview-body div's
+  // `scrollHeight` only settles once the async `load()` resolves
+  // and `kind` resolves to a known renderer), we apply the
+  // persisted offset.
+  //
+  // The effect deliberately does NOT depend on `initialScrollTop`.
+  // That prop is LIVE: the file-tab wiring feeds every scroll back
+  // through `onScrollPersist` → reducer → props, so a smooth scroll
+  // (an outline jump, `scrollIntoView({behavior:"smooth"})`) updates
+  // it mid-flight — the first scroll event lands the animation's
+  // interim offset (24px, say) in the prop, and an effect keyed on
+  // it would re-run and write that offset back to `scrollTop`,
+  // killing the animation at 24px instead of the target heading
+  // (the acceptance-run regression this slice 27 fix pins). The
+  // mount-time value is captured by this effect's closure instead:
+  // the effect only runs for a `path` change, and the render that
+  // carries a new `path` carries the tab's persisted offset.
   useEffect(() => {
     restoredRef.current = false;
     if (initialScrollTop <= 0) {
@@ -165,14 +273,14 @@ export function FilePreview({
       node.scrollTop = initialScrollTop;
       restoredRef.current = true;
     };
-    // Defer the first attempt so the inner content has a chance
-    // to render. FilesPanel's `getFsFile` is fast (≤ 512 KiB) but
-    // is still async; a single rAF is enough on average.
     requestAnimationFrame(apply);
     return () => {
       cancelled = true;
     };
-  }, [path, initialScrollTop]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- see the
+    // block comment above: re-running on initialScrollTop re-arms the
+    // restore mid-scroll and aborts smooth jumps.
+  }, [path]);
 
   const fileName = basenameOf(path);
   // The read-file endpoint rejects binary (mime-stripped NUL byte) but still
@@ -188,11 +296,107 @@ export function FilePreview({
       ? pickPreviewKind(payload, path)
       : null;
 
+  // --- slice 27 toolbar handlers -----------------------------------------
+
+  const editable = canEditPreview(kind) && !!payload?.ok;
+  const dirty = draft !== null && draft !== baselineRef.current?.content;
+
+  const enterEdit = useCallback(() => {
+    if (!editable) return;
+    if (editRequiresCredentialConfirm(path) && !credentialConfirmed) {
+      // Write-side credential gate (ticket C2): default-refuse editing,
+      // explicit confirm card — same posture as the slice-16 preview
+      // guard, same predicate, and the server re-checks on save.
+      setShowCredentialGate(true);
+      return;
+    }
+    setDraft(baselineRef.current?.content ?? payload?.content ?? "");
+    setMode("edit");
+    setConflict(null);
+    setSaveFeedback(null);
+  }, [editable, path, credentialConfirmed, payload]);
+
+  const exitEdit = useCallback(() => {
+    // The draft is deliberately KEPT: switching to preview is a view
+    // change, not a discard — switching back returns the buffer, and a
+    // failed save never destroys what the user typed.
+    setMode("preview");
+    setConflict(null);
+  }, []);
+
+  const performSave = useCallback(
+    async (opts: { explicitOverwrite?: boolean } = {}) => {
+      if (draft === null || saving) return;
+      const baseline = baselineRef.current;
+      setSaving(true);
+      setSaveFeedback(null);
+      let result: FsSaveResult;
+      try {
+        result = await saveFsFile(path, draft, {
+          expectedMtime: opts.explicitOverwrite ? undefined : baseline?.mtime,
+          expectedSize: opts.explicitOverwrite ? undefined : baseline?.size,
+          confirmCredential: editRequiresCredentialConfirm(path),
+        });
+      } catch (cause) {
+        result = {
+          ok: false,
+          code: "write-failed",
+          error: cause instanceof Error ? cause.message : String(cause),
+        };
+      } finally {
+        setSaving(false);
+      }
+      if (result.ok) {
+        // Adopt the saved state: the visible preview re-renders from the
+        // saved bytes and the next save conflicts against the fresh pair.
+        const nextPayload: FsFilePayload = { ...payload, ok: true, content: draft, size: result.size, mtime: result.mtime };
+        setPayload(nextPayload);
+        baselineRef.current = {
+          content: draft,
+          mtime: result.mtime,
+          size: result.size,
+        };
+        setConflict(null);
+        setSaveFeedback({ kind: "saved", at: formatSaveClock(new Date()) });
+        setMode("preview");
+        return;
+      }
+      if (result.code === "conflict") {
+        // Ticket C3: prompt, never overwrite. The buffer stays; the card
+        // offers both explicit resolutions.
+        setConflict({
+          diskMtime: result.diskMtime ?? 0,
+          diskSize: result.diskSize ?? 0,
+        });
+        return;
+      }
+      setSaveFeedback({
+        kind: "error",
+        message: result.error ?? result.code ?? "unknown error",
+      });
+    },
+    [draft, saving, path, payload],
+  );
+
+  const loadDiskVersion = useCallback(() => {
+    // The conflict card's second exit: drop the buffer, re-read from
+    // disk. The card copy already states this discards the user's edit,
+    // so the click is the explicit decision.
+    setDraft(null);
+    setConflict(null);
+    setSaveFeedback(null);
+    void load({ isRefresh: true });
+    setMode("preview");
+  }, [load]);
+
+  // -----------------------------------------------------------------------
+
   return (
     <div
       className="flex h-full min-h-0 w-full flex-col gap-2"
       data-testid="file-preview"
       data-path={path}
+      data-preview-mode={mode}
     >
       <header className="flex min-w-0 items-center gap-2">
         <span className="min-w-0 flex-1 truncate text-sm font-medium text-text_default_primary" title={path}>
@@ -206,7 +410,205 @@ export function FilePreview({
             {formatBytes(payload.size)}
           </span>
         ) : null}
+        {/* Slice 27 toolbar. Refresh is always available; the edit
+            toggle appears for text previews; save exists only in edit
+            mode (never automatic). All buttons carry aria-labels. */}
+        <div
+          className="flex flex-none items-center gap-1"
+          data-testid="file-preview-toolbar"
+          role="toolbar"
+          aria-label={tPreviewToolbar(locale, "previewToolbar.toolbar.aria")}
+        >
+          <button
+            type="button"
+            onClick={() => void load({ isRefresh: true })}
+            disabled={loading}
+            aria-label={tPreviewToolbar(locale, "previewToolbar.refresh.aria")}
+            title={tPreviewToolbar(locale, "previewToolbar.refresh.aria")}
+            data-testid="file-preview-refresh"
+            className="flex size-6 items-center justify-center rounded-[6px] text-icon_default_secondary transition-colors hover:bg-bg_interaction_tertiary_hover hover:text-icon_default_primary disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden>
+              <path
+                d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9"
+                stroke="currentColor"
+                strokeWidth="1.4"
+                strokeLinecap="round"
+              />
+              <path
+                d="M13.8 1.8v2.7h-2.7"
+                stroke="currentColor"
+                strokeWidth="1.4"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </button>
+          {editable ? (
+            <>
+              <button
+                type="button"
+                onClick={mode === "preview" ? enterEdit : exitEdit}
+                aria-label={
+                  mode === "preview"
+                    ? tPreviewToolbar(locale, "previewToolbar.edit.aria")
+                    : tPreviewToolbar(locale, "previewToolbar.preview.aria")
+                }
+                title={
+                  mode === "preview"
+                    ? tPreviewToolbar(locale, "previewToolbar.edit.aria")
+                    : tPreviewToolbar(locale, "previewToolbar.preview.aria")
+                }
+                aria-pressed={mode === "edit"}
+                data-testid="file-preview-mode-toggle"
+                data-mode={mode}
+                className="flex h-6 items-center gap-1 rounded-[6px] border border-border_default px-1.5 text-caption-small-strong text-text_default_secondary transition-colors hover:bg-bg_interaction_tertiary_hover hover:text-icon_default_primary"
+              >
+                <span>
+                  {mode === "preview"
+                    ? tPreviewToolbar(locale, "previewToolbar.edit")
+                    : tPreviewToolbar(locale, "previewToolbar.preview")}
+                </span>
+              </button>
+              {mode === "edit" ? (
+                <button
+                  type="button"
+                  onClick={() => void performSave()}
+                  disabled={!dirty || saving}
+                  aria-label={tPreviewToolbar(locale, "previewToolbar.save.aria")}
+                  title={tPreviewToolbar(locale, "previewToolbar.save.aria")}
+                  data-testid="file-preview-save"
+                  data-dirty={dirty ? "true" : "false"}
+                  className="flex h-6 items-center gap-1 rounded-[6px] border border-border_default px-1.5 text-caption-small-strong text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_hover disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden>
+                    <path
+                      d="M2.5 8.5l3.5 3.5 7.5-8"
+                      stroke="currentColor"
+                      strokeWidth="1.6"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                  <span>{tPreviewToolbar(locale, "previewToolbar.save")}</span>
+                </button>
+              ) : null}
+            </>
+          ) : null}
+        </div>
       </header>
+
+      {/* Slice 27 — refresh honesty: a failed refresh keeps the last
+          content and names the failure; the deleted-file case is called
+          out explicitly (ticket A1). */}
+      {refreshError ? (
+        <div
+          className="rounded-[8px] border border-border_status_warning bg-bg_default_scrim px-2 py-1.5 text-caption-small-strong text-text_status_warning"
+          data-testid="file-preview-refresh-error"
+          role="status"
+        >
+          <p>{tPreviewToolbar(locale, "previewToolbar.refreshFailed", { error: refreshError })}</p>
+          <p className="mt-0.5 opacity-80">{tPreviewToolbar(locale, "previewToolbar.fileGone")}</p>
+        </div>
+      ) : null}
+
+      {/* Slice 27 — save feedback. Success states the clock time;
+          failure keeps the buffer (always — the draft is only cleared
+          by an explicit action) and states the server's reason. */}
+      {saveFeedback ? (
+        <p
+          className={
+            saveFeedback.kind === "saved"
+              ? "rounded-[8px] bg-bg_grouped_secondary_elevated px-2 py-1 text-caption-small-strong text-text_default_secondary"
+              : "rounded-[8px] border border-border_status_error bg-bg_default_scrim px-2 py-1 text-caption-small-strong text-text_status_error"
+          }
+          data-testid="file-preview-save-feedback"
+          data-feedback-kind={saveFeedback.kind}
+          role="status"
+        >
+          {saveFeedback.kind === "saved"
+            ? tPreviewToolbar(locale, "previewToolbar.savedAt", { time: saveFeedback.at })
+            : tPreviewToolbar(locale, "previewToolbar.saveFailed", { error: saveFeedback.message })}
+        </p>
+      ) : null}
+
+      {/* Slice 27 — write-side credential gate. Same posture as the
+          slice-16 preview guard: default-refuse, explicit override, the
+          server re-checks on save. */}
+      {showCredentialGate ? (
+        <div
+          className="rounded-[10px] border border-border_status_warning bg-bg_default_scrim px-3 py-2.5"
+          data-testid="file-preview-credential-gate"
+        >
+          <p className="text-sm font-medium text-text_default_primary">
+            {tPreviewToolbar(locale, "previewToolbar.credential.title")}
+          </p>
+          <p className="mt-1 text-caption-small-strong leading-5 text-text_default_secondary">
+            {tPreviewToolbar(locale, "previewToolbar.credential.detail", { name: fileName })}
+          </p>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setCredentialConfirmed(true);
+                setShowCredentialGate(false);
+                setDraft(baselineRef.current?.content ?? payload?.content ?? "");
+                setMode("edit");
+              }}
+              className="flex h-7 items-center rounded-[8px] border border-border_status_warning px-2 text-caption-small-strong text-text_status_warning transition-colors hover:bg-bg_interaction_tertiary_hover"
+              data-testid="file-preview-credential-edit-anyway"
+            >
+              {tPreviewToolbar(locale, "previewToolbar.credential.editAnyway")}
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowCredentialGate(false)}
+              className="flex h-7 items-center rounded-[8px] border border-border_default px-2 text-caption-small-strong text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_hover"
+              data-testid="file-preview-credential-cancel"
+            >
+              {tPreviewToolbar(locale, "previewToolbar.credential.cancel")}
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {/* Slice 27 — external-modification conflict. The save stopped;
+          nothing was written. Both exits are explicit. */}
+      {conflict ? (
+        <div
+          className="rounded-[10px] border border-border_status_warning bg-bg_default_scrim px-3 py-2.5"
+          data-testid="file-preview-conflict"
+        >
+          <p className="text-sm font-medium text-text_default_primary">
+            {tPreviewToolbar(locale, "previewToolbar.conflict.title")}
+          </p>
+          <p className="mt-1 text-caption-small-strong leading-5 text-text_default_secondary">
+            {tPreviewToolbar(locale, "previewToolbar.conflict.detail", {
+              time: formatSaveClock(new Date(conflict.diskMtime || Date.now())),
+              size: conflict.diskSize,
+            })}
+          </p>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void performSave({ explicitOverwrite: true })}
+              disabled={saving}
+              className="flex h-7 items-center rounded-[8px] border border-border_status_warning px-2 text-caption-small-strong text-text_status_warning transition-colors hover:bg-bg_interaction_tertiary_hover disabled:opacity-50"
+              data-testid="file-preview-conflict-overwrite"
+            >
+              {tPreviewToolbar(locale, "previewToolbar.conflict.overwrite")}
+            </button>
+            <button
+              type="button"
+              onClick={loadDiskVersion}
+              className="flex h-7 items-center rounded-[8px] border border-border_default px-2 text-caption-small-strong text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_hover"
+              data-testid="file-preview-conflict-reload"
+            >
+              {tPreviewToolbar(locale, "previewToolbar.conflict.reload")}
+            </button>
+          </div>
+        </div>
+      ) : null}
 
       {loading && !payload ? (
         <p
@@ -232,17 +634,22 @@ export function FilePreview({
         <div
           ref={bodyRef}
           onScroll={onScrollPersist ? (event) => {
-            // Throttle by skipping equal consecutive values —
-            // a redundant scroll handler can otherwise bounce
-            // through the persistence layer at the browser's
-            // scroll-event rate.
             const next = event.currentTarget.scrollTop;
             if (typeof next === "number") onScrollPersist(next);
           } : undefined}
           className="file-preview-body min-h-0 flex-1 overflow-auto"
           data-testid="file-preview-body-scroller"
         >
-          {showImage ? (
+          {mode === "edit" && draft !== null ? (
+            <textarea
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              spellCheck={false}
+              aria-label={tPreviewToolbar(locale, "previewToolbar.editorAria")}
+              data-testid="file-preview-editor"
+              className="file-preview-editor h-full min-h-[240px] w-full resize-none"
+            />
+          ) : showImage ? (
             <ImageView path={path} />
           ) : (
             <PreviewBody kind={kind as PreviewKind} payload={payload} path={path} t={t} locale={locale} />
@@ -268,14 +675,11 @@ function PreviewBody({
 }) {
   switch (kind) {
     case "markdown":
-      return <MarkdownView content={payload.content ?? ""} />;
+      return <MarkdownView content={payload.content ?? ""} locale={locale} />;
     case "image":
       return <ImageView path={path} />;
     case "code":
-      // Slice 22 — delegate to the IDE-grade renderer. The legacy
-      // `<pre><code>` is gone; the renderer owns its own loading
-      // state, truncation policy, and copy affordance, so the
-      // router here only forwards the payload.
+      // Slice 22 — delegate to the IDE-grade renderer.
       return (
         <IdeCodeView
           content={payload.content ?? ""}
@@ -292,23 +696,29 @@ function PreviewBody({
   }
 }
 
-function MarkdownView({ content }: { content: string }) {
+function MarkdownView({ content, locale }: { content: string; locale: Locale }) {
   // renderMarkdown() sanitises the parsed HTML on the browser side (see
   // lib/markdown.ts#sanitize) — the same policy used by chat.tsx for
   // assistant output. Reusing it keeps the threat model and allow-list
   // identical across surfaces.
   //
-  // Slice 23 — the markdown is no longer injected directly. The
-  // MarkdownHtml component walks the rendered DOM, finds the
-  // mermaid-block placeholders, and mounts the lazy mermaid
-  // component into each one. The seam (the language → renderer
-  // registry in lib/markdown.ts) means the renderer used here is
-  // plugin-extensible without an `if (lang === "mermaid")` inside
-  // this component.
+  // Slice 23 — the markdown is not injected directly; MarkdownHtml
+  // converts the sanitised HTML to a React tree and mounts the mermaid
+  // components. Slice 27 — the outline panel (components/markdown-toc)
+  // walks THAT rendered DOM, so the outline lists what the page shows;
+  // heading ids are assigned on those very nodes for the anchor jumps.
   const html = useMemo(() => renderMarkdown(content), [content]);
+  const hostRef = useRef<HTMLDivElement | null>(null);
   return (
-    <div className="file-preview-markdown" data-testid="file-preview-markdown">
-      <MarkdownHtml html={html} />
+    <div className="flex min-h-0 w-full items-start gap-3" data-testid="file-preview-markdown-row">
+      <div
+        ref={hostRef}
+        className="file-preview-markdown min-w-0 flex-1"
+        data-testid="file-preview-markdown"
+      >
+        <MarkdownHtml html={html} />
+      </div>
+      <MarkdownToc contentRef={hostRef} renderKey={html} locale={locale} />
     </div>
   );
 }
@@ -355,48 +765,26 @@ function PreviewError({
   /**
    * Slice 16 — fired when the user clicks the "open anyway" button on
    * the credential refusal card. The parent re-fetches the file with
-   * `confirmCredential: true` (server then releases the bytes). The
-   * prop is optional so the existing call sites that don't want the
-   * second confirmation still typecheck.
+   * `confirmCredential: true` (server then releases the bytes).
    */
   onConfirmCredential?: () => void;
 }) {
   // The classification lives in lib/file-open-reason.ts so the
-  // component does not re-implement the regex / prefix split. The
-  // result also drives which buttons are enabled (the `actionsAvailable`
-  // flag — false for out-of-bounds, where the OS opener cannot help).
-  // Slice 16: pass the path so the classifier can also pick the
-  // `credential` reason defensively if the server omits `code`.
+  // component does not re-implement the regex / prefix split.
   const unsupported = useMemo(
     () => classifyUnsupported(error, payload, path),
     [error, payload, path],
   );
 
-  // Local state for the two actions that go through the OS opener:
-  // which one is currently firing (so the spinner / disable lives on
-  // the button, not on the whole panel), and which one last failed
-  // (the panel renders the failure copy inline so a click never
-  // silently no-ops).
   const [busy, setBusy] = useState<
     "open-default" | "reveal" | "open-anyway" | null
   >(null);
   const [failure, setFailure] = useState<{ key: "open-default" | "reveal"; message: string } | null>(null);
-  // Disabled-by-server: when the server has already answered a previous
-  // click with `code === "no-opener"`, we know the host cannot run the
-  // action at all — the button stays disabled for the lifetime of this
-  // open file, with the dedicated hint tooltip explaining why. Each
-  // action carries its own disable flag: a server that can `reveal`
-  // but not `open-default` (or vice versa) is possible on Linux
-  // desktop distros where `xdg-open` is missing but the file manager
-  // is still around. A "fresh" navigation to a different file clears
-  // both flags back to enabled.
   const [disabledByServer, setDisabledByServer] = useState<{
     openDefault: boolean;
     reveal: boolean;
   }>({ openDefault: false, reveal: false });
 
-  // Reset per-file state when the panel re-mounts onto a different
-  // path (the React component re-uses between file switches).
   useEffect(() => {
     setBusy(null);
     setFailure(null);
@@ -406,10 +794,6 @@ function PreviewError({
   const fireAction = useCallback(
     async (kind: "open-default" | "reveal") => {
       if (!unsupported.actionsAvailable) return;
-      // Guard each action independently. The earlier single check
-      // (`openDefault || reveal`) blocked BOTH actions when only one
-      // was disabled — the regression ticket called this out: an
-      // open-default no-opener must not silence a still-working reveal.
       if (kind === "open-default" && disabledByServer.openDefault) return;
       if (kind === "reveal" && disabledByServer.reveal) return;
       setBusy(kind);
@@ -433,11 +817,6 @@ function PreviewError({
         setFailure(null);
         return;
       }
-      // `no-opener` is a permanent disable — the host cannot run the
-      // action, so the button stays disabled with the dedicated hint.
-      // Other failures (spawn-failed, network) stay transient so a
-      // retry is still possible. Only the matching key flips — the
-      // other action's disable state is preserved untouched.
       if (result.code === "no-opener") {
         setDisabledByServer((current) => ({
           ...current,
@@ -454,13 +833,6 @@ function PreviewError({
     [path, unsupported.actionsAvailable, disabledByServer],
   );
 
-  // Slice 16 — the credential override. The button is enabled only
-  // when the classifier set `confirmable: true` (i.e. the server
-  // emitted `code: "credential"`). The parent decides what to do
-  // (re-fetch with the override flag); the component just surfaces
-  // the click. The button lives next to the existing three actions
-  // so the user does not need to scroll, and its label matches the
-  // i18n copy (zh: "仍要打开", en: "Open anyway").
   const fireOpenAnyway = useCallback(() => {
     if (!unsupported.confirmable) return;
     if (!onConfirmCredential) return;
@@ -468,17 +840,10 @@ function PreviewError({
     try {
       onConfirmCredential();
     } finally {
-      // The parent owns the load() lifecycle — `busy` flips back when
-      // the new payload arrives. We don't block on it here.
       setBusy((current) => (current === "open-anyway" ? null : current));
     }
   }, [unsupported.confirmable, onConfirmCredential]);
 
-  // Slice 16 — credential sub-reason label. The panel substitutes it
-  // into the reason copy via {{subReason}}; the helper returns "" when
-  // the classifier did not pick a sub-reason, which falls back to the
-  // generic "credential file" wording. The label is the localised
-  // string (e.g. "env file" / "env 文件"), not the raw enum.
   const subReasonLabel =
     unsupported.reason === "credential"
       ? credentialSubReasonLabel(locale, unsupported.credentialSubReason)
@@ -486,30 +851,17 @@ function PreviewError({
 
   const reasonText = reasonCopy(locale, unsupported.reason, {
     ...unsupported.params,
-    // For the credential reason, override the raw enum with the
-    // localised label so the {{subReason}} placeholder shows "env file"
-    // / "env 文件" instead of "dotenv". The classifier owns the
-    // enum; this layer owns the display string.
     ...(unsupported.reason === "credential"
       ? { subReason: subReasonLabel }
       : {}),
   });
   const language = payload?.language ?? "";
 
-  // The hint copy the buttons render when disabled matches the
-  // classifier, not the previous "no GUI opener" catch-all. Out of
-  // bounds says "this path is outside the workspace"; no-opener
-  // says "this environment has no GUI opener". Each reason gets its
-  // own message so the user sees the actual reason for the dead
-  // button.
   const disabledHintKey: "fileOpen.button.disabledHint.outOfBounds" | "fileOpen.button.disabledHint.noOpener" =
     unsupported.reason === "outOfBounds"
       ? "fileOpen.button.disabledHint.outOfBounds"
       : "fileOpen.button.disabledHint.noOpener";
 
-  // Slice 16 — credential-specific copy. The detail line explains the
-  // LAN-reachable rationale (so the user understands why we refuse by
-  // default) and tells them the action is reversible only by reloading.
   const showCredentialActions = unsupported.reason === "credential";
   const credentialDetail = showCredentialActions
     ? tFileOpen(locale, "fileOpen.confirm.detail")
@@ -524,10 +876,6 @@ function PreviewError({
       data-testid="file-preview-error"
       data-reason={unsupported.reason}
     >
-      {/* Centred header — the warning glyph + the title + the reason
-          copy, all stacked and centred. The icon stays inline so the
-          row keeps its visual rhythm; the wrap ensures the icon does
-          not pull the text out of alignment. */}
       <div className="flex max-w-[260px] flex-col items-center gap-2">
         <span
           className="flex size-5 flex-shrink-0 items-center justify-center text-icon_default_secondary"
@@ -571,9 +919,6 @@ function PreviewError({
             </span>
           ) : null}
         </span>
-        {/* Slice 16 — credential-specific detail line. Explains the LAN
-            rationale + reversibility, sits just below the reason so
-            the user sees it before deciding to override. */}
         {showCredentialActions && credentialDetail ? (
           <span
             className="mt-1 max-w-[260px] text-caption-small-strong leading-5 text-text_default_tertiary"
@@ -583,18 +928,6 @@ function PreviewError({
           </span>
         ) : null}
       </div>
-      {/* Centred actions row — three buttons laid out in a wrap so the
-          288px panel never overflows. The download action is always
-          enabled (the browser handles the save directly through the
-          `/api/fs/raw?download=1` URL), so the download button does
-          not enter the disabled-by-server state. The other two are
-          gated on the host's opener + file-manager availability.
-          Slice 16 — for the credential reason, a fourth "open anyway"
-          button is added that re-fetches the file with the explicit
-          override flag. It is positioned first so the eye catches it
-          immediately, with a stronger border so the override affordance
-          is unmissable (reversibility is the headline of the user's
-          decision; the button must look deliberate). */}
       <div
         className="flex flex-wrap items-center justify-center gap-2"
         data-testid="file-preview-error-actions"
@@ -668,22 +1001,6 @@ function PreviewError({
           <span>{tFileOpen(locale, "fileOpen.action.reveal")}</span>
         </button>
         <a
-          // The download button is an anchor with the `download`
-          // attribute — the browser saves the response locally
-          // without leaving the panel. Same `/api/fs/raw` endpoint as
-          // the image preview, gated by the same containment + size
-          // cap. aria-disabled reflects the actionsAvailable flag:
-          // out-of-bounds paths the server would 403, so the link
-          // must not look clickable.
-          //
-          // Slice 16 — on a credential refusal, the URL carries
-          // `confirm=1` so the server releases the bytes. Without
-          // the flag the user would download the 403 JSON error
-          // body, which is confusing AND a security smell (the
-          // file is still on disk; we just gave them the gate's
-          // error envelope instead). The credential refusal is
-          // the user's explicit "I see this is sensitive" moment;
-          // clicking download is the second confirmation.
           href={fsRawDownloadUrl(path, {
             confirm: unsupported.reason === "credential",
           })}
@@ -696,10 +1013,6 @@ function PreviewError({
             !unsupported.actionsAvailable ? "out-of-bounds" : undefined
           }
           onClick={(event) => {
-            // An `<a download>` on an out-of-bounds path would still
-            // issue the GET (the browser does not know the URL is
-            // gated). Stop the click when the classifier says the
-            // path is unreachable.
             if (!unsupported.actionsAvailable) event.preventDefault();
           }}
           className={
@@ -727,9 +1040,6 @@ function PreviewError({
           )}
         </p>
       ) : null}
-      {/* fileName stays in scope for any future header line — kept in
-          the props list deliberately so the next contributor does not
-          have to re-thread it through the call site. */}
       <span data-testid="file-preview-error-filename" hidden>
         {fileName}
       </span>
@@ -739,10 +1049,6 @@ function PreviewError({
 
 /**
  * Resolve the user-facing reason copy through the slice-14 i18n module.
- *
- * Pulled out so the JSX above is a flat layout and the substitution is
- * testable. The classifier (`lib/file-open-reason.ts`) is responsible
- * for the reason key; this helper is responsible for the copy.
  */
 function reasonCopy(
   locale: Locale,
@@ -757,12 +1063,6 @@ function reasonCopy(
     case "outOfBounds":
       return tFileOpen(locale, "fileOpen.reason.outOfBounds", params);
     case "credential":
-      // The sub-reason is a localised label (e.g. "env file" / "私钥文件"),
-      // not the raw enum; the classifier passes the raw enum via
-      // `params.subReason`, the helper resolves it through the i18n
-      // module when present. The empty-string fallback is intentional —
-      // it leaves the sentence "credential file" readable, not
-      // "( )".
       return tFileOpen(locale, "fileOpen.reason.credential", {
         ...params,
         subReason: params.subReason || "",

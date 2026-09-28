@@ -2305,3 +2305,91 @@
   tab-size:2
 }
 
+/* --- Preview editor (slice 27 — preview toolbar edit mode) --------------
+ * A plain, honest buffer: monospace, no wrap-fighting, full height of
+ * the scroll container. Colour comes from the design tokens so the
+ * light and dark themes both stay readable; the focus ring is the
+ * shared accent border, not a browser default. */
+.file-preview-editor {
+  font-family:var(--font_family_code);
+  font-size:12.5px;
+  line-height:20px;
+  color:var(--text_default_primary);
+  background:transparent;
+  border:1px solid var(--border_default);
+  border-radius:8px;
+  padding:8px 10px;
+  outline:none;
+  white-space:pre;
+  tab-size:2
+}
+.file-preview-editor:focus {
+  border-color:var(--text_default_accent)
+}
+
+/* --- Markdown outline panel (slice 27 — preview TOC) ---------------------
+ * Rendered document on the left, outline on the right. The panel is
+ * sticky within the scroll container so it stays in view while the
+ * document scrolls; entries indent by heading level and the active
+ * entry carries the accent colour + left bar. Tokens only — readable
+ * in both themes. Anchored headings get scroll-margin so a jump lands
+ * below the panel's top edge instead of flush against it. */
+.file-preview-toc {
+  position:sticky;
+  top:0;
+  width:140px;
+  max-height:100%;
+  overflow-y:auto;
+  border-left:1px solid var(--border_default);
+  padding-left:8px
+}
+.file-preview-toc-title {
+  font-size:11px;
+  line-height:16px;
+  font-weight:600;
+  color:var(--text_default_tertiary);
+  margin:0 0 4px;
+  text-transform:uppercase;
+  letter-spacing:0.4px
+}
+.file-preview-toc-list {
+  list-style:none;
+  margin:0;
+  padding:0;
+  display:flex;
+  flex-direction:column;
+  gap:1px
+}
+.file-preview-toc-link {
+  display:block;
+  max-width:100%;
+  color:var(--text_default_secondary);
+  text-decoration:none;
+  font-size:12px;
+  line-height:18px;
+  border-left:2px solid transparent;
+  padding:1px 6px;
+  border-radius:0 4px 4px 0;
+  transition:color .12s ease,border-color .12s ease,background-color .12s ease
+}
+.file-preview-toc-link:hover {
+  color:var(--text_default_primary);
+  background:var(--bg_interaction_tertiary_hover)
+}
+.file-preview-toc-link[data-active="true"] {
+  color:var(--text_default_accent);
+  border-left-color:var(--text_default_accent);
+  background:var(--bg_interaction_tertiary_hover)
+}
+.file-preview-toc-text {
+  display:block;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap
+}
+.file-preview-markdown h1,.file-preview-markdown h2,.file-preview-markdown h3,
+.file-preview-markdown h4,.file-preview-markdown h5,.file-preview-markdown h6 {
+  scroll-margin-top:8px
+}
+
+

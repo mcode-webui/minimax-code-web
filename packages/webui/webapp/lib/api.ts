@@ -955,6 +955,13 @@ export interface FsFilePayload {
   ok: boolean;
   path?: string;
   size?: number;
+  /**
+   * Slice 27 — the file's mtime (ms) at read time. The preview editor
+   * records it together with `size` as the conflict-detection baseline
+   * and sends it back on save; `/api/fs/write` answers 409 when the
+   * disk has moved on in the meantime.
+   */
+  mtime?: number;
   /** Best-effort extension-based guess (markdown / typescript / …). */
   language?: string;
   /** Best-effort extension-based guess (image/png, text/markdown; charset=utf-8, …). */
@@ -1067,6 +1074,96 @@ export function fsRawDownloadUrl(
   return withClientQuery(
     `/api/fs/raw?path=${encodeURIComponent(path)}&download=1${confirm}`,
   );
+}
+
+// --- preview editor save (slice 27) --------------------------------------
+//
+// POST /api/fs/write is the preview toolbar's ONLY write path. The
+// server re-runs the same containment gate as the read, refuses
+// credential-shaped basenames without the explicit confirm flag, and
+// conflict-checks the (mtime, size) baseline recorded when the file
+// was opened — a stale baseline answers 409 and the disk file is
+// untouched.
+
+/** Structured result of `POST /api/fs/write`. `code` carries the
+ *  failure vocabulary the toolbar branches on; the HTTP status is the
+ *  conventional mapping (403 gate/credential, 404 gone, 409 conflict,
+ *  413 over the write cap). */
+export interface FsSaveResult {
+  ok: boolean;
+  code?:
+    | "conflict"
+    | "credential"
+    | "not-found"
+    | "not-a-regular-file"
+    | "too-large"
+    | "missing-path"
+    | "missing-content"
+    | "invalid-content"
+    | "write-failed"
+    | "BODY_TOO_LARGE"
+    | string;
+  error?: string;
+  path?: string;
+  /** Fresh baseline after a successful write (the next save's
+   *  `expectedMtime` / `expectedSize`). */
+  size?: number;
+  mtime?: number;
+  /** Live disk baseline on a 409 — the conflict card shows when the
+   *  external edit landed. */
+  diskMtime?: number;
+  diskSize?: number;
+  credentialReason?: string;
+}
+
+/**
+ * Save the editor buffer back to the workspace file.
+ *
+ * - `expectedMtime` / `expectedSize`: the baseline from the load that
+ *   seeded the editor. Send both; a save WITHOUT them is an explicit
+ *   overwrite (the panel only does that after the user answered the
+ *   conflict card).
+ * - `confirmCredential`: the slice-16 override flag. Send only after
+ *   the user passed the credential confirmation card.
+ *
+ * Like `getFsFile`, this goes through raw fetch — the 4xx bodies carry
+ * structured `code` fields the toolbar needs, which the throwing
+ * `request()` helper would discard.
+ */
+export async function saveFsFile(
+  path: string,
+  content: string,
+  opts: {
+    expectedMtime?: number;
+    expectedSize?: number;
+    confirmCredential?: boolean;
+  } = {},
+): Promise<FsSaveResult> {
+  const body: Record<string, unknown> = { path, content };
+  if (opts.expectedMtime !== undefined) body.expectedMtime = opts.expectedMtime;
+  if (opts.expectedSize !== undefined) body.expectedSize = opts.expectedSize;
+
+  if (opts.confirmCredential) body.confirm = true;
+  const response = await fetch(withClientQuery("/api/fs/write"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify(body),
+  });
+  const text = await response.text();
+  let parsed: FsSaveResult | null = null;
+  try {
+    parsed = text ? (JSON.parse(text) as FsSaveResult) : null;
+  } catch {
+    parsed = null;
+  }
+  if (!parsed) {
+    return {
+      ok: false,
+      code: "write-failed",
+      error: response.ok ? "unexpected non-JSON response" : `HTTP ${response.status}`,
+    };
+  }
+  return parsed;
 }
 
 // --- file-open actions (slice 14) ----------------------------------------
