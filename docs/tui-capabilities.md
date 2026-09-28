@@ -4,6 +4,10 @@ The current capability target is **TUI 0.4.12**; see [version and evidence basel
 
 The evidence column summarizes the historical TUI 0.3.11 restoration record from 2026-09-11. It does not claim fresh TUI 0.4.12 live-service acceptance. Use [current verification status](verification.md#current-source-verification-status) for checks run against the updated source and explicit NOT RUN boundaries.
 
+## Capability matrix
+
+Status legend: ✅ supported · ⚠ partial · ❌ unsupported · 🚧 requires engine-side support.
+
 | Capability | Implementation | Evidence |
 | --- | --- | --- |
 | MiniMax login, logout, Token Plan, quota, check-in | OAuth Core, account clients, and TUI / CLI entry points restored | Login-state, auth-command, check-in, provider, and ACP tests; production Token Plan session and resume passed |
@@ -21,6 +25,68 @@ The evidence column summarizes the historical TUI 0.3.11 restoration record from
 | Files, shell, subagents, sessions, headless, ACP | Actual runtime retained | BYOK, file reads, session resume, ACP, sandbox, and status protocol tests |
 | Built-in skills, MCP, plugin tools | Original TUI assets and activation conditions retained | Asset build, plugin, and MCP tests; no claim that every skill has passed a real task |
 
+## Slash-command parity (TUI ↔ Web UI)
+
+The webui talks to the same engine, but it only handles a **strict subset
+of TUI slash commands itself** (its `LIB/local` commands sourced from the
+mcode engine pass-through). `MCODE_ACP_CAPABILITIES` =
+`{set_mode, set_config_option, cancel, activate, fork, resume, delete=false, load, close, list, new, prompt}` (`packages/webui/server/lib/mcode-rpc.js`).
+
+### TUI built-in slash commands (`packages/tui/src/application/command-descriptors.ts`)
+
+These appear in TUI's `/help` and are sent as `prompt` content over acp:
+
+- `/help` — Show available commands
+- `/new` — Start a fresh session in the current workspace
+- `/model [provider/model[#variant]]` — Choose a model
+- `/status` — Show account and model status
+- `/doctor` — Check the local config file
+- `/context` — Show the Runtime-owned context snapshot
+- `/skills [filter]` — List built-in and user Skills
+- `/mcp [filter]` — Inspect MCP capabilities and project configuration
+- `/usage` — Show session usage
+- `/compact [instructions]` — Shorten the active conversation
+- `/export` — Export the current Session as Markdown
+
+### WebUI-local commands (`packages/webui/server/lib/interaction/commands.js#LOCAL_HELP_FALLBACK`)
+
+The webui ships its own local slash handler in
+`server/lib/interaction/commands.js#LOCAL_HELP_FALLBACK` and a local
+`/help` fallback; commands flow through
+`server/lib/slash.js#handleLocalSlash` → `handleCmdCommand`:
+
+- `/new`, `/clear`, `/status`, `/sessions`, `/review`, `/help`, `/usage`, `/stop`, and the goal commands `/goal`, `/goal-done`, `/goal-blocked`.
+- `/review` is the TUI parity path — it reads the current `git status` via `server/lib/git.js#gitStatus` and prints a `staged / unstaged / untracked` overview.
+- `/clear` and `/new` are destructive: they go through the `authorize("slash.clear")` gate (5-minute default timeout, fail-closed) before the underlying mutation runs.
+- The full catalogue of `mcode`-sourced pass-through commands is fetched via acp on session connect; the webui flattens `{mcode:[…], extra:[…]}` into the slash palette (`webapp/test/slash-commands.test.ts`).
+
+### Side-by-side command parity
+
+Status legend: ✅ wired · ⚠ partial / path differs · ❌ no path · 🚧 requires engine-side support · — n/a.
+
+| Command | TUI | Web UI | Notes |
+| --- | --- | --- | --- |
+| `/help` | ✅ | ✅ | Web UI: `bodyHelp` lists webui-local + acp pass-through; falls back to `LOCAL_HELP_FALLBACK` if `ensureMcodeCommands()` is still pending. |
+| `/new` | ✅ | ✅ | Web UI: B03 authorize gate (`slash.clear`); clears chat and rebinds the session. |
+| `/clear` | ✅ | ✅ | Web UI: B03 authorize gate; clears chat without touching mcode. |
+| `/status` | ✅ | ✅ | Web UI: `bodyStatus` prints account / model / quota via `runUsageQuery`. |
+| `/sessions` | ⚠ | ✅ | Web UI exposes a sidebar session tree (`webapp/components/session-tree.tsx`) backed by `GET /api/sessions`. TUI's `/sessions` resumes the chosen session. |
+| `/model` | ✅ | ⚠ | Web UI has a model selector in the toolbar (`composer.tsx` `data-testid="model-selector-trigger"`) that posts to `/api/set-model`; no dedicated `/model` slash command in the webui local handler. |
+| `/doctor` | ✅ | 🚧 | Reads the local config file; webui has no equivalent routine. |
+| `/context` | ✅ | ⚠ | Web UI shows the context meter (`components/context-meter.tsx`) live; no slash command — the `state.context` snapshot is the only API. |
+| `/skills` | ✅ | ⚠ | Skill autocomplete shows up in acp pass-through via `flattenAvailableCommands`; no webui `/skills` slash body. |
+| `/mcp` | ✅ | 🚧 | Web UI has no equivalent. |
+| `/usage` | ✅ | ✅ | Web UI: `runUsageQuery` (`server/lib/usage.js`); also surfaces a forecast at `GET /api/usage/forecast`. |
+| `/compact` | ✅ | 🚧 | Web UI has no equivalent. |
+| `/export` | ✅ | ✅ | Web UI: `GET /api/sessions/:id/export?format=md\|json[&download=true]` (B03 authorize-gated, written-ahead audit). |
+| `/stop` | ⚠ | ✅ | Web UI: dedicated `POST /api/stop` (gentle acp cancel + SIGTERM/2 s SIGKILL fallback); also exposed via toolbar Stop button. |
+| `/review` | ✅ | ✅ | Web UI: `bodyReview` → `gitStatus` → emits a staged/unstaged/untracked overview into chat. TUI parity. |
+| `/goal` and `/goal-*` family | 🚧 | ✅ | Webui-only (`cs.goal = {active, text, status, duration, startTs}`); sets a session goal and forwards to mcode via `rewriteContent`. |
+
+The webui does not yet expose `/fork`, `/resume`, or a "rewind last turn"
+action — those acp methods (`fork`, `resume`) are reported by
+`MCODE_ACP_CAPABILITIES` but no webui route wraps them.
+
 ## ACP Skill commands
 
 ACP clients receive enabled Skills alongside built-in slash commands when a session
@@ -35,6 +101,35 @@ duplicate, and invalid command names are omitted. If Skill discovery fails,
 built-in commands remain available. Reopen the session after installing or enabling
 Skills to refresh its command menu. Protocol tests cover command discovery and
 prompt forwarding; this does not establish live Zed or model acceptance.
+
+The webui tests the `flattenAvailableCommands` /
+`filterCommands` pipeline against the same engine-supplied shape
+(`webapp/test/slash-commands.test.ts`); the palette is capped at 8
+entries by default.
+
+## Engine capability surface (`/api/protocol/capabilities`)
+
+`GET /api/protocol/capabilities` returns:
+
+```
+{
+  ok: true,
+  mcodeVersion,
+  mcodeName?,
+  mcodeTitle?,
+  capabilities: MCODE_ACP_CAPABILITIES,   // see packages/webui/server/lib/mcode-rpc.js
+  notes: {
+    set_mode, set_config_option, cancel, activate, fork,
+    load, list, close, new, prompt,
+    session.delete → false (no engine handler; uses SQL on local_runtime_*)
+  }
+}
+```
+
+The webui uses the `set_mode` and `set_config_option` capabilities
+through the toolbar's permission-mode selector; `cancel` is what
+`POST /api/stop` sends first (with SIGTERM/SIGKILL only as a fallback
+when the notification cannot be delivered).
 
 ## Desktop boundary
 
