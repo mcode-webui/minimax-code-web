@@ -1,0 +1,249 @@
+/* Code preview (slice 22 of webui-parity).
+ *
+ * Three concerns live here, in three layers:
+ *
+ *   1. hljs token colours — every `.hljs-<role>` class is mapped to a
+ *      `--code-theme-*` token in `styles/tokens.css`. Because those
+ *      tokens flip with the `.dark` class on <html> (set by the theme
+ *      bootstrap in app/layout.tsx), the highlight palette auto-themes
+ *      without a per-theme override block in this file. Both light and
+ *      dark themes are supported by construction.
+ *
+ *   2. The gutter — a separate fixed-width column OUTSIDE the
+ *      horizontal scroll wrapper (`.file-preview-codeblock-gutter-column`
+ *      sibling of `.file-preview-codeblock-scroll`). Horizontal scroll
+ *      on a long line moves only the scroll column; the gutter's
+ *      `bounding rect` left edge stays put. Vertical scroll syncs both
+ *      columns via a `scroll` handler in code-view.tsx.
+ *
+ *   3. The shell — copy-button row, truncation notice banner. None of
+ *      these have a token; values are direct.
+ *
+ * Naming convention: every selector is namespaced under
+ * `.file-preview-codeblock` so the chat markdown's `.codeblock-pre`
+ * shell (which lives in `styles/official-utilities.css`) is unaffected
+ * by this file. The file-preview surface uses a separate class on
+ * purpose: chat and file preview are different products with different
+ * shells, and they should not share their cascade by accident.
+ */
+
+/* ---------------------------------------------------------------------
+ * Layer 1 — hljs token colours.
+ * --------------------------------------------------------------------- */
+.file-preview-codeblock .hljs {
+  color: var(--code-theme-default);
+}
+
+.file-preview-codeblock .hljs-keyword,
+.file-preview-codeblock .hljs-tag,
+.file-preview-codeblock .hljs-selector-tag {
+  color: var(--code-theme-keyword);
+}
+
+.file-preview-codeblock .hljs-string,
+.file-preview-codeblock .hljs-quote,
+.file-preview-codeblock .hljs-meta-string {
+  color: var(--code-theme-string);
+}
+
+.file-preview-codeblock .hljs-number,
+.file-preview-codeblock .hljs-literal {
+  color: var(--code-theme-number);
+}
+
+.file-preview-codeblock .hljs-comment,
+.file-preview-codeblock .hljs-doctag {
+  color: var(--code-theme-comment);
+  font-style: italic;
+}
+
+.file-preview-codeblock .hljs-function,
+.file-preview-codeblock .hljs-title,
+.file-preview-codeblock .hljs-title.function_,
+.file-preview-codeblock .hljs-method {
+  color: var(--code-theme-function);
+}
+
+.file-preview-codeblock .hljs-class .hljs-title,
+.file-preview-codeblock .hljs-title.class_,
+.file-preview-codeblock .hljs-type {
+  color: var(--code-theme-type);
+}
+
+.file-preview-codeblock .hljs-attr,
+.file-preview-codeblock .hljs-attribute {
+  color: var(--code-theme-attribute);
+}
+
+.file-preview-codeblock .hljs-built_in,
+.file-preview-codeblock .hljs-builtin-name {
+  color: var(--code-theme-builtin);
+}
+
+.file-preview-codeblock .hljs-symbol,
+.file-preview-codeblock .hljs-bullet,
+.file-preview-codeblock .hljs-meta {
+  color: var(--code-theme-constant);
+}
+
+.file-preview-codeblock .hljs-params,
+.file-preview-codeblock .hljs-variable,
+.file-preview-codeblock .hljs-template-variable,
+.file-preview-codeblock .hljs-property {
+  color: var(--code-theme-property);
+}
+
+.file-preview-codeblock .hljs-regexp,
+.file-preview-codeblock .hljs-selector-attr,
+.file-preview-codeblock .hljs-selector-pseudo {
+  color: var(--code-theme-regex);
+}
+
+.file-preview-codeblock .hljs-meta-keyword,
+.file-preview-codeblock .hljs-decorator {
+  color: var(--code-theme-decorator);
+}
+
+.file-preview-codeblock .hljs-emphasis { font-style: italic; }
+.file-preview-codeblock .hljs-strong { font-weight: 600; }
+
+/* ---------------------------------------------------------------------
+ * Layer 2 — gutter column.
+ *
+ * The gutter lives as its own flex sibling of the scroll column; both
+ * are children of `.file-preview-codeblock` (which sets `display:
+ * flex; overflow: hidden` so the gutter is *not* inside any scroll
+ * container). The scroll column has `overflow: auto` and is the only
+ * element with horizontal overflow.
+ *
+ * Each gutter cell mirrors the height of its corresponding code cell;
+ * the row height (22px) comes from `.file-preview-codeblock-line` (the
+ * code row) and the gutter cell has the same `line-height` so the two
+ * stay aligned when the user scrolls vertically (the `scroll` handler
+ * in code-view.tsx mirrors `scrollTop` between the two columns).
+ *
+ * `font-variant-numeric: tabular-nums` keeps 1/10/100/1000 aligned.
+ *
+ * Row geometry is structural: `.file-preview-codeblock` is a grid
+ * whose row 1 (`.file-preview-codeblock-header`, the copy button)
+ * SPANS BOTH columns. Whatever height the header takes — a longer
+ * localized label that wraps, a narrower window — pushes the gutter
+ * and the code down by the same amount, so the two columns cannot
+ * drift apart by construction. (An earlier revision mirrored the
+ * header height as `padding-top: 40px` here and drifted 1:1 with
+ * every header-height change: +22 px of header padding moved every
+ * row's dy to 22.) Both row-2 containers start at the same y —
+ * header bottom + the grid's 6 px row gap, which is what the pre's
+ * old `padding-top: 6px` used to provide — so the gutter column
+ * carries NO vertical padding of its own.
+ * --------------------------------------------------------------------- */
+.file-preview-codeblock {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  /* The 6 px the pre used to pad above its rows now lives here, so it
+   * applies to BOTH row-2 columns identically. */
+  row-gap: 6px;
+}
+
+.file-preview-codeblock-gutter-column {
+  /* `flex: none` keeps the gutter at its content width; the parent
+   * is a flex row so the scroll column picks up the remainder. */
+  flex: none;
+  /* A right-side divider so the eye can pick the gutter from the code
+   * on dense files. */
+  border-right: 1px solid var(--border_default);
+  /* NO vertical padding here: the first gutter row must start at the
+   * exact y of the first code row. The shared header row plus the
+   * grid row gap place both columns' rows, so any padding on this
+   * column would re-introduce a one-sided offset. */
+}
+
+.file-preview-codeblock-gutter {
+  /* Right-align digits; `text-align: end` is RTL-safe. */
+  text-align: end;
+  user-select: none;
+  /* Tabular numerals so 1, 10, 100, 1000 all sit at the same x. */
+  font-variant-numeric: tabular-nums;
+  color: var(--text_default_quaternary);
+  /* Match the code row's line-height so vertical scroll stays
+   * aligned between the two columns. The horizontal padding
+   * matches the code column's padding so the right edge of the
+   * number sits flush against the divider. */
+  padding: 0 8px;
+  line-height: 22px;
+  min-width: 3ch;
+  /* `min-height: 22px` is non-negotiable: without it, a BLANK code
+   * line collapses to 0 px height and every subsequent row's y
+   * shifts up by 22 px per blank, so gutter row 5 ends up above code
+   * row 5 in a file with multiple blank lines. With `min-height`,
+   * blank rows reserve the same 22 px as content rows, and the
+   * cumulative desync cannot occur at all. */
+  min-height: 22px;
+}
+
+.file-preview-codeblock-gutter[data-empty="true"] {
+  /* Empty line: keep the height without rendering any number. The
+   * line above and below stay aligned because the gutter cell still
+   * occupies 22px. */
+  visibility: hidden;
+}
+
+/* ---------------------------------------------------------------------
+ * Layer 3 — scroll column and code rows.
+ *
+ * `.file-preview-codeblock-scroll` is the ONLY element with
+ * `overflow-x: auto`. The `pre.file-preview-codeblock-pre` inside it
+ * contains the code rows; its `min-width: max-content` makes the row
+ * grow with the longest line, which triggers the parent's horizontal
+ * scroll. The gutter column does NOT inherit this scroll — it lives
+ * in the parent grid, not inside this scroll container.
+ *
+ * Padding on the pre matches the gutter's horizontal padding (8px on
+ * each side) so the first character of each code line aligns with
+ * the right edge of the gutter numbers.
+ * --------------------------------------------------------------------- */
+.file-preview-codeblock-scroll {
+  min-width: 0;
+  /* The grid's `minmax(0, 1fr)` column sizes this to the remaining
+   * space after the gutter's intrinsic width; `min-width: 0` lets a
+   * wide row overflow into a scrollbar instead of stretching the
+   * column. */
+}
+
+.file-preview-codeblock-pre {
+  margin: 0;
+  /* No top padding: the grid row gap between the shared header row
+   * and the columns provides the 6 px, identically for the gutter.
+   * Only the bottom stays, for breathing room under the last row. */
+  padding: 0 0 6px 0;
+}
+
+.file-preview-codeblock-header {
+  /* Row 1 of the `.file-preview-codeblock` grid, spanning both
+   * columns (`col-span-2` in code-view.tsx). Its height is shared
+   * by construction: the gutter and the code start below it. */
+  grid-column: 1 / -1;
+}
+
+.file-preview-codeblock-pre > code {
+  /* `display: block` so each line takes its own row (one line = one
+   * `<div>`) — gives us a reliable layout grid without `inline-block`
+   * surprises on multi-line strings. */
+  display: block;
+}
+
+.file-preview-codeblock-line {
+  /* A line gets `min-width: max-content` so it grows with its own
+   * content. When the longest line is wider than the scroll column,
+   * the parent's horizontal scroll exposes the overflow. */
+  min-width: max-content;
+  padding: 0 8px;
+  line-height: 22px;
+  /* `min-height: 22px` — see the note on `.file-preview-codeblock-gutter`.
+   * The gutter cell mirrors this value; both rows reserve 22 px so
+   * blank lines don't shift the alignment. The same 22 px is the
+   * `line-height` of a content row, so a content line's height = the
+   * blank line's height — no extra padding needed. */
+  min-height: 22px;
+  white-space: pre;
+}

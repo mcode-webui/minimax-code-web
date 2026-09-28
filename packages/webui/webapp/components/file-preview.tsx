@@ -12,6 +12,7 @@ import {
   type FsFilePayload,
 } from "@/lib/api";
 import { renderMarkdown } from "@/lib/markdown";
+import { CodeView as IdeCodeView } from "@/components/code-view";
 import {
   basenameOf,
   formatBytes,
@@ -28,7 +29,7 @@ import {
 } from "@/lib/i18n-file-open";
 
 /**
- * File preview (slice 02 of the webui-parity program).
+ * File preview (slice 02 of the webui-parity program, slice 22 upgrades).
  *
  * A read-only viewer that the right-hand `files` panel opens on click. It is
  * a small type→renderer router over `/api/fs/read-file` (text, ≤512 KiB)
@@ -39,7 +40,11 @@ import {
  * Routing rules — what gets which renderer:
  *   `.md` / `.markdown`   rendered markdown (via lib/markdown.ts)
  *   image extensions      <img src="/api/fs/raw?path=…">
- *   source / data files    monospace pre, light "language" badge in the header
+ *   source / data files    IDE-grade preview (gutter + line numbers +
+ *                          syntax highlighting + copy) — see
+ *                          `components/code-view.tsx`. The legacy
+ *                          "monospace pre, language badge" path was
+ *                          superseded in slice 22.
  *   anything else         "无法预览" placeholder
  *
  * The component never truncates the response. Oversize reads return
@@ -238,7 +243,7 @@ export function FilePreview({
           {showImage ? (
             <ImageView path={path} />
           ) : (
-            <PreviewBody kind={kind as PreviewKind} payload={payload} path={path} />
+            <PreviewBody kind={kind as PreviewKind} payload={payload} path={path} t={t} locale={locale} />
           )}
         </div>
       ) : null}
@@ -250,10 +255,14 @@ function PreviewBody({
   kind,
   payload,
   path,
+  t,
+  locale,
 }: {
   kind: PreviewKind;
   payload: FsFilePayload;
   path: string;
+  t: (key: MessageKey) => string;
+  locale: Locale;
 }) {
   switch (kind) {
     case "markdown":
@@ -261,7 +270,19 @@ function PreviewBody({
     case "image":
       return <ImageView path={path} />;
     case "code":
-      return <CodeView content={payload.content ?? ""} language={payload.language ?? "plain"} />;
+      // Slice 22 — delegate to the IDE-grade renderer. The legacy
+      // `<pre><code>` is gone; the renderer owns its own loading
+      // state, truncation policy, and copy affordance, so the
+      // router here only forwards the payload.
+      return (
+        <IdeCodeView
+          content={payload.content ?? ""}
+          language={payload.language ?? "plain"}
+          size={payload.size}
+          t={t}
+          locale={locale}
+        />
+      );
     default:
       // pickPreviewKind() never returns "unsupported" today; kept as an
       // escape hatch so the call-site exhaustiveness check stays honest.
@@ -296,24 +317,6 @@ function ImageView({ path }: { path: string }) {
         alt={basenameOf(path)}
         className="max-w-full rounded-[8px] border border-border_default"
       />
-    </div>
-  );
-}
-
-function CodeView({ content, language }: { content: string; language: string }) {
-  return (
-    <div className="flex flex-col gap-1" data-testid="file-preview-code">
-      <div className="flex items-center gap-2 text-caption-small-strong text-text_default_tertiary">
-        <span data-testid="file-preview-language">{language}</span>
-      </div>
-      <pre
-        className="file-preview-codeblock thin-scrollbar max-w-full overflow-auto rounded-[8px] bg-bg_grouped_secondary_elevated p-3 font-family-code text-caption-small-strong text-text_default_primary"
-        // Plain <pre>, NOT .codeblock-pre: that selector carries the chat
-        // codeblock shell (toolbar, copy button) which is meaningless for
-        // a file preview, and would otherwise override our padding to 0.
-      >
-        <code>{content}</code>
-      </pre>
     </div>
   );
 }
