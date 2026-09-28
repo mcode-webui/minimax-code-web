@@ -16,6 +16,7 @@ import {
   type HighlightedLine,
 } from "@/lib/code-highlight";
 import { formatBytes } from "@/lib/file-preview";
+import { readFileLineWrap } from "@/lib/settings-local";
 import type { Locale, MessageKey } from "@/lib/i18n";
 import { tFileOpen } from "@/lib/i18n-file-open";
 
@@ -324,6 +325,10 @@ function CodeTable({
     if (source === "gutter") g.scrollTop = s.scrollTop;
     else s.scrollTop = g.scrollTop;
   }, []);
+  // Soft-wrap preference (ticket 48, `file_line_wrap`): read once per
+  // mount, matching the reference's behaviour — toggling the switch in
+  // settings affects previews opened afterwards, not the one on screen.
+  const [lineWrap] = useState(() => readFileLineWrap());
   return (
     <>
       <div className="file-preview-codeblock-header col-span-2 flex justify-end bg-transparent">
@@ -359,7 +364,7 @@ function CodeTable({
           ref={scrollRef}
           onScroll={() => syncScroll("scroll")}
           onCopy={onSelectionCopy}
-          className="file-preview-codeblock-pre m-0"
+          className={`file-preview-codeblock-pre m-0${lineWrap ? " file-preview-codeblock-wrap" : ""}`}
           data-testid="file-preview-code-pre"
         >
           <code className={split.language ? `hljs language-${split.language}` : "hljs"}>

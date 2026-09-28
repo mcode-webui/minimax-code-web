@@ -37,6 +37,7 @@ import {
   type SessionRestoreOutcome,
 } from "@/lib/url-restore";
 import { openFileInWeb, closeOpenFile } from "@/lib/open-file";
+import { readFileOpenInNewTab } from "@/lib/settings-local";
 import {
   closeTab,
   openTab,
@@ -178,15 +179,41 @@ function App() {
    * path is already open, just activate it. Also calls
    `openFileInWeb` so any legacy subscriber (the FilesPanel
    preview pane) stays in sync.
+   *
+   * Ticket 48 (`file_open_in_new_tab`, default ON): when the switch
+   * is off, opening a different file REPLACES the active file tab
+   * rather than adding one — the webui analogue of the desktop's
+   * "reuse the unpinned tab". The strip has no pinned-tab concept
+   * (see `lib/workspace-tabs-state.ts`), so the active file tab is
+   * the reuse target; when no file tab exists the open-a-new-tab
+   * path applies. The default stays ON so existing users keep the
+   * one-tab-per-file behaviour this strip has always had.
    */
   const openFileTab = useCallback((path: string) => {
     if (!path) return;
+    const reuseActiveTab = !readFileOpenInNewTab();
     applyTabs((current) => {
       const existing = current.tabs.find(
         (tab) => tab.kind === "file" && tab.path === path,
       );
       if (existing) {
         return openTab(current, existing);
+      }
+      if (reuseActiveTab && current.previewActiveId) {
+        const active = current.tabs.find(
+          (tab) => tab.id === current.previewActiveId,
+        );
+        if (active?.kind === "file") {
+          const replacement = fileTabFromPath(path, 0);
+          return {
+            ...current,
+            tabs: current.tabs.map((tab) =>
+              tab.id === active.id ? replacement : tab,
+            ),
+            previewActiveId: replacement.id,
+            launcherOpen: false,
+          };
+        }
       }
       return openTab(current, fileTabFromPath(path, 0));
     });

@@ -390,7 +390,10 @@ const en = {
   "settings.tab.archived": "Archived tasks",
   "settings.searchPlaceholder": "Search settings...",
   "settings.searchNoResults": "No matching settings",
-  "settings.back": "Back",
+  "settings.clearSearch": "Clear settings search",
+  // Ticket 48 — the back affordance carries the reference's "Back to app"
+  // label, not a bare icon.
+  "settings.back": "Back to app",
   "settings.theme": "Theme",
   "settings.themeLight": "Light",
   "settings.themeDark": "Dark",
@@ -399,6 +402,25 @@ const en = {
   // shows a grey one-line description under each row title.
   "settings.appearanceHint": "Choose the display theme",
   "settings.languageHint": "Set the application language",
+  // Ticket 48 — General-page section titles and the localStorage-backed
+  // rows (files / session management / follow-up behaviour). Wording
+  // follows the desktop reference's General page.
+  "settings.section.application": "Application",
+  "settings.section.file": "Files",
+  "settings.section.sessionManagement": "Session management",
+  "settings.section.preference": "Preference settings",
+  "settings.file.openInNewTab": "Open files in a new tab",
+  "settings.file.openInNewTabHint":
+    "When off, opening a file replaces the active preview tab instead of adding one.",
+  "settings.file.lineWrap": "Wrap long lines in file previews",
+  "settings.file.lineWrapHint":
+    "When on, text wider than the preview wraps; when off, it scrolls horizontally. File contents are unchanged.",
+  "settings.session.contextWindowUsage": "Show context window usage",
+  "settings.followUp.title": "Follow-up message behaviour",
+  "settings.followUp.hint":
+    "Pressing Enter while a task is running either queues the follow-up or sends it to the running task immediately.",
+  "settings.followUp.queue": "Queue",
+  "settings.followUp.steer": "Send now",
   "home.suggestions": "Suggested",
   "home.chooseFolder": "Pick a folder",
   "home.local": "Local",
@@ -997,7 +1019,9 @@ const zh: Record<MessageKey, string> = {
   "settings.tab.archived": "已归档任务",
   "settings.searchPlaceholder": "搜索设置...",
   "settings.searchNoResults": "没有匹配的设置",
-  "settings.back": "返回",
+  "settings.clearSearch": "清空设置搜索",
+  // 工单 48 — 返回按钮带参照的「返回应用」文案，不再是纯图标。
+  "settings.back": "返回应用",
   "settings.theme": "主题",
   "settings.themeLight": "浅色",
   "settings.themeDark": "深色",
@@ -1005,6 +1029,23 @@ const zh: Record<MessageKey, string> = {
   // 通用节「应用」卡片的行说明 — 桌面版参照图里每行标题下有一行灰色说明。
   "settings.appearanceHint": "选择应用的显示主题",
   "settings.languageHint": "设置应用语言",
+  // 工单 48 — 通用页分区标题与本地存储-backed 的行（文件 / 会话管理 / 跟进消息行为）。
+  // 文案跟随桌面版参照的通用页。
+  "settings.section.application": "应用",
+  "settings.section.file": "文件",
+  "settings.section.sessionManagement": "会话管理",
+  "settings.section.preference": "偏好设置",
+  "settings.file.openInNewTab": "在新的标签页打开文件",
+  "settings.file.openInNewTabHint": "关闭后，打开文件会替换当前预览标签页，而不是新增一个。",
+  "settings.file.lineWrap": "文件预览自动换行",
+  "settings.file.lineWrapHint":
+    "开启后，超出预览区域宽度的文本和代码会自动折行；关闭后可横向滚动查看。不修改文件内容。",
+  "settings.session.contextWindowUsage": "显示上下文窗口使用情况",
+  "settings.followUp.title": "跟进消息行为",
+  "settings.followUp.hint":
+    "任务运行中按 Enter 发送跟进消息时：排队等待，或立即发送到当前任务。",
+  "settings.followUp.queue": "排队",
+  "settings.followUp.steer": "立即发送",
   "home.suggestions": "推荐",
   "home.chooseFolder": "选择文件夹",
   "home.local": "本地",

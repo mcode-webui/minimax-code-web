@@ -49,6 +49,8 @@ const pageSource = readFileSync(resolve(here, "../app/page.tsx"), "utf8");
 interface ParsedNavItem {
   id: string;
   key: string;
+  icon: string | null;
+  alias: string | null;
   section: string | null;
 }
 interface ParsedNavGroup {
@@ -60,8 +62,8 @@ interface ParsedNavGroup {
  * Parse the SETTINGS_NAV literal out of panels.tsx.
  *
  * The literal is formatted one item per line, so a per-item regex over
- * each group's slice recovers id / key / optional section. Parsing
- * (rather than counting matches of "section:") is what makes the
+ * each group's slice recovers id / key / optional icon / alias / section.
+ * Parsing (rather than counting matches of "section:") is what makes the
  * no-new-placeholders pin exact: every item is accounted for by id.
  */
 function parseSettingsNav(source: string): ParsedNavGroup[] {
@@ -87,12 +89,14 @@ function parseSettingsNav(source: string): ParsedNavGroup[] {
     const slice = body.slice(from, to);
     const items: ParsedNavItem[] = [];
     const itemRe =
-      /\{\s*id:\s*"([a-z-]+)",\s*key:\s*"([^"]+)"(?:,\s*section:\s*"([a-z]+)")?\s*\}/g;
+      /\{\s*id:\s*"([a-z-]+)",\s*key:\s*"([^"]+)"(?:,\s*icon:\s*"([a-zA-Z]+)")?(?:,\s*alias:\s*"([a-z-]+)")?(?:,\s*section:\s*"([a-z]+)")?\s*\}/g;
     for (const match of slice.matchAll(itemRe)) {
       items.push({
         id: match[1] as string,
         key: match[2] as string,
-        section: match[3] ?? null,
+        icon: match[3] ?? null,
+        alias: match[4] ?? null,
+        section: match[5] ?? null,
       });
     }
     assert.ok(items.length > 0, `group ${mark.key} parsed with zero items`);
@@ -219,5 +223,122 @@ describe("settings nav parity (ticket 37)", () => {
     );
     assert.ok(region.includes("setSettingsOpen(true)"), "openUsage must open the settings modal");
     assert.ok(pageSource.includes("onOpenUsage={openUsage}"), "the shell must receive onOpenUsage");
+  });
+});
+
+describe("settings visuals and search (ticket 48)", () => {
+  const groups = parseSettingsNav(panelsSource);
+  const all = groups.flatMap((g) => g.items);
+
+  test("every nav item carries an icon — the 18×18 reference glyph slot", () => {
+    for (const item of all) {
+      assert.ok(item.icon, `${item.id} must declare an icon (ticket 48, V3)`);
+    }
+  });
+
+  test("reference key aliases cover the renamed tabs so search finds them", () => {
+    const byId = new Map(all.map((item) => [item.id, item]));
+    assert.equal(byId.get("general")?.alias, "desktop");
+    assert.equal(byId.get("personalization")?.alias, "custom-instructions");
+    assert.equal(byId.get("providers")?.alias, "usage");
+    assert.equal(byId.get("code-review")?.alias, "coding");
+  });
+
+  test("the search filter matches label AND alias/id, not label alone", () => {
+    assert.ok(
+      panelsSource.includes("${t(item.key)} ${item.alias ?? item.id}"),
+      "the filter must concatenate the localized label with the alias-or-id (V11)",
+    );
+  });
+
+  test("content column: keyed re-mount, fade-in class, and an <h2> header", () => {
+    assert.ok(
+      panelsSource.includes("key={active}"),
+      "the content scroll container re-mounts per tab so the transition replays (V2)",
+    );
+    assert.ok(
+      panelsSource.includes("webui-settings-content-animate"),
+      "the 180ms fade-in class must be applied (V1/V2)",
+    );
+    const h2At = panelsSource.indexOf("<h2 className=\"m-0 text-base font-medium leading-[26px]");
+    assert.ok(h2At >= 0, "the content header carries the reference's <h2> (V1)");
+    assert.ok(
+      panelsSource.includes("max-w-[840px]") && panelsSource.includes("max-w-[760px]"),
+      "General page is 840px, other panels 760px (V9)",
+    );
+  });
+
+  test("sidebar geometry: 46px top padding, h3 group titles, 30px nav rows", () => {
+    assert.ok(panelsSource.includes("pt-[46px]"), "sidebar top padding is 46px (V13)");
+    assert.ok(
+      panelsSource.includes('<h3 className="px-2 pt-4 pb-1.5 text-sm font-medium leading-5'),
+      "group titles are <h3> with the reference's 16/6px padding (V4)",
+    );
+    assert.ok(
+      panelsSource.includes("flex min-h-[30px] w-full items-center gap-2 rounded-[8px] px-2.5"),
+      "nav rows use the reference's 8px gap / 30px height / 10px padding (V5)",
+    );
+  });
+
+  test("general body renders the ticket-48 sections in the reference's order", () => {
+    const bodyStart = panelsSource.indexOf("const body = {");
+    const generalAt = panelsSource.indexOf("general: (", bodyStart);
+    const connectionAt = panelsSource.indexOf("connection: (", bodyStart);
+    const generalBody = panelsSource.slice(generalAt, connectionAt);
+    const order = [
+      'testId="application-section"',
+      'testId="file-section"',
+      'testId="session-management-section"',
+      'testId="preference-settings"',
+    ];
+    let cursor = -1;
+    for (const marker of order) {
+      const at = generalBody.indexOf(marker);
+      assert.ok(at > cursor, `${marker} must appear, in reference order (engine card first)`);
+      cursor = at;
+    }
+    // The horizontal row + divider geometry the reference pins (V6/V7).
+    assert.ok(
+      generalBody.includes("<SettingRow"),
+      "the General page renders rows through the horizontal SettingRow (V6)",
+    );
+    assert.ok(
+      panelsSource.includes("min-h-[56px]"),
+      "SettingRow carries the reference's 56px minimum height (V6)",
+    );
+    assert.ok(
+      generalBody.includes("<RowDivider />"),
+      "adjacent rows are separated by RowDivider (V7)",
+    );
+    // The four localStorage-backed switches / radios (G4/G5/G7).
+    assert.ok(generalBody.includes("file-open-in-new-tab-switch"));
+    assert.ok(generalBody.includes("file-line-wrap-switch"));
+    assert.ok(generalBody.includes("context-window-usage-switch"));
+  });
+
+  test("the unreachable no-section fallback is gone", () => {
+    assert.ok(
+      !panelsSource.includes("if (!section) {"),
+      "ticket 48 removed the dead branch; the section prop is now required",
+    );
+  });
+
+  test("reverse-parity survivors stay: engine card, connection body, unsupported badge", () => {
+    const bodyStart = panelsSource.indexOf("const body = {");
+    const generalAt = panelsSource.indexOf("general: (", bodyStart);
+    const connectionAt = panelsSource.indexOf("connection: (", bodyStart);
+    const generalBody = panelsSource.slice(generalAt, connectionAt);
+    // R2 — engine facts card stays the first card of the General page.
+    assert.ok(generalBody.includes('label={t("settings.engine")}'), "engine facts rows stay (R2)");
+    assert.ok(generalBody.includes('label={t("settings.localUrl")}'));
+    assert.ok(generalBody.includes('label={t("settings.lanUrl")}'));
+    // R1 — the connection body keeps its real toggles + token actions.
+    const providersAt = panelsSource.indexOf("providers: (", bodyStart);
+    const connectionBody = panelsSource.slice(connectionAt, providersAt);
+    for (const key of ["settings.readOnly", "settings.lan", "settings.lanBind", "settings.tokenEnabled", "settings.resetToken"]) {
+      assert.ok(connectionBody.includes(key), `connection row ${key} stays (R1)`);
+    }
+    // R3 — disabled tabs still carry the 暂不支持 badge.
+    assert.ok(panelsSource.includes('title={disabled ? t("common.unsupported") : undefined}'));
   });
 });
