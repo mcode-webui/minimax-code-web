@@ -39,8 +39,8 @@ import assert from "node:assert/strict";
 import { Readable } from "node:stream";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { mkTmpDir } from "../helpers/tmp.js";
 import { join } from "node:path";
+import { mkTmpDir } from "../helpers/tmp.js";
 import {
   setupMocks,
   absPath,
@@ -49,7 +49,6 @@ import {
   registerAcpMock,
   withDecisions,
 } from "../helpers/_setup.js";
-import { mkTmpDir } from "../helpers/tmp.js";
 
 // The v2 probe SQL from lib/transcript.js (keyed lookup in the fake Db).
 const V2_SQL =

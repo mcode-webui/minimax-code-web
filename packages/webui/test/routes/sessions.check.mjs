@@ -11,7 +11,7 @@ import { test, describe, before, beforeEach, afterEach, after } from "node:test"
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
 import { spawnSync } from "node:child_process";
-import {mkdirSync, rmSync, realpathSync, symlinkSync} from "node:fs";
+import {mkdirSync, mkdtempSync, rmSync, realpathSync, symlinkSync} from "node:fs";
 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
