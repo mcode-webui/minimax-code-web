@@ -13,12 +13,44 @@
 //   { sessionId: string,
 //     cwd:       string|null,
 //     title:     string|null,
-//     updatedAt: number|string|undefined,   // optional; ACP does not guarantee
+//     updatedAt: string,                     // ISO 8601; omitted when the
+//                                             // runtime has no timestamp
 //     ... }
+//
+// The ACP adapter builds the same shape in `toAcpSessionInfo`
+// (packages/tui/src/acp/agent.ts): epoch-ms `TuiSession.updatedAt`
+// becomes an ISO string, and the key is omitted entirely when no
+// finite timestamp exists. The projection below mirrors that
+// conversion so the two paths are field-for-field identical — the
+// S3 acceptance criterion is a zero-diff sidebar list.
 //
 // `acp-client.js` calls these helpers when the catalogue host is
 // enabled, and falls back to the ACP path on any throw so the sidebar
 // still works when the runtime is unavailable (R1 acceptance target).
+
+/**
+ * Convert a `TuiSession` timestamp to the ISO string the ACP wire
+ * format carries. Mirrors `toIsoTimestamp` in packages/tui/src/acp/
+ * agent.ts: numbers are epoch ms; strings are tried as numeric first,
+ * then as a parseable date; anything unparseable yields `undefined`
+ * (the key is then omitted, matching the ACP adapter).
+ *
+ * @param {number|string|null|undefined} value
+ * @returns {string|undefined}
+ */
+function tuiUpdatedAtToIso(value) {
+  if (value === undefined || value === null) return undefined;
+  const numeric =
+    typeof value === "string" && value.trim() ? Number(value) : Number.NaN;
+  const timestamp =
+    typeof value === "number"
+      ? value
+      : Number.isFinite(numeric)
+        ? numeric
+        : Date.parse(value);
+  if (!Number.isFinite(timestamp)) return undefined;
+  return new Date(timestamp).toISOString();
+}
 
 /**
  * Project a `TuiSession` (catalogue host) onto the ACP list shape.
@@ -29,7 +61,7 @@
  * accident.
  *
  * @param {object} tui  A TuiSession from `host.adapter.listSessions()`.
- * @returns {{sessionId: string, cwd: string|null, title: string|null}}
+ * @returns {{sessionId: string, cwd: string|null, title: string|null, updatedAt?: string}}
  */
 export function projectTuiSessionToAcp(tui) {
   if (!tui || typeof tui.sessionId !== "string") {
@@ -37,10 +69,12 @@ export function projectTuiSessionToAcp(tui) {
       "projectTuiSessionToAcp: invalid TuiSession (missing sessionId)",
     );
   }
+  const updatedAt = tuiUpdatedAtToIso(tui.updatedAt);
   return {
     sessionId: tui.sessionId,
     cwd: tui.workspaceDir || null,
     title: tui.title || null,
+    ...(updatedAt ? { updatedAt } : {}),
   };
 }
 
@@ -52,7 +86,7 @@ export function projectTuiSessionToAcp(tui) {
  * ForWorkspace` behaviour).
  *
  * @param {object} catalogueHost  Object returned by `createCatalogueHost`.
- * @returns {Promise<Array<{sessionId, cwd, title}>>}
+ * @returns {Promise<Array<{sessionId, cwd, title, updatedAt?}>>}
  */
 export async function listMcodeSessionsViaRuntime(catalogueHost) {
   if (!catalogueHost || !catalogueHost.adapter) {

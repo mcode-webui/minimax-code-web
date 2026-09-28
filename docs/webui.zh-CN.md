@@ -115,7 +115,7 @@ containment 闸门、套用完全相同的凭据判断（默认拒绝；`confirm
 
 - **ACP**（默认）：与 TUI 相同的协议通道（`mcode acp` 子进程）。工具调用过程、会话标题、思考等级等事件都从这条通道回传。
 - **exec**：一次性 `mcode exec` 命令行子进程。回合结束进程即退出，只有思考与正文文本回传。
-- **runtime**（S2 起提供，路由尚未接入）：进程内 runtime 宿主。它没有子进程边界，与 `mcode` CLI 共用同一份 SQLite；S3-S6 才会逐步把路由接到它上面，S7 才把默认值翻过来。S2 阶段开关设为 `runtime` 仍是 no-op——只是把宿主骨架建好。
+- **runtime**（S2 起提供）：进程内 runtime 宿主。它没有子进程边界，与 `mcode` CLI 共用同一份 SQLite；S3 已把目录类流量（会话列表/标题）接到它上面，S4-S6 逐步接其余路由，S7 才把默认值翻过来。开关设为 `runtime` 只影响目录类流量——活跃回合今天仍走 ACP。
 
 S2（runtime-first 改造第二步）新增了一个开关与 `MCODE_USE_ACP` 并存：
 
@@ -143,7 +143,7 @@ S2（runtime-first 改造第二步）新增了一个开关与 `MCODE_USE_ACP` �
 S2 不变量（后续切片必须继续守住）：
 
 - **缺省 `MCODE_WEBUI_TRANSPORT=acp` 与 `main` 字段级一致。** 现有任一端点的响应都不能偏移；进程内不能多出新的子进程。每次提交都用完整 webui node:test 套件在无 env 覆盖的情况下跑一遍来验证。
-- **S2 只建骨架、不接线。** `createCatalogueHost` 与 `createTurnHost` 都从 `server/lib/runtime-host.js` 导出，但没有生产路由 import 它们。S3 接目录类流量（list/title），S4 接回合（`runMcodeRuntime`），S5 接模型，S6 接交互与账户。S7 才把缺省翻为 `runtime`。
+- **S2 只建宿主骨架。** `createCatalogueHost` 与 `createTurnHost` 从 `server/lib/runtime-host.js` 导出。**S3 已把目录类路径（list/title）接进 `acp-client.js`**；S4 接活跃回合，S5 接模型，S6 接交互与账户。S7 才把缺省翻为 `runtime`。
 - **目录类流量由 `MCODE_WEBUI_TRANSPORT=runtime` 选择性接管。** 该开关点亮列表/标题走 catalogue 宿主；单次调用遇错（boot 失败、`adapter.listSessions`/`adapter.getSession` 抛错）就回退 ACP——单点 runtime 故障不会让侧栏黑屏。`mcodeSessionsCache` 两条路径共用，一次填充后任何一侧都能读到，所以目录里看到的会话列表不依赖某条特定路径。
 - **R1 缓解（进程隔离丧失）落在回合宿主里。** 任何对 `adapter.sendMessage` 的调用都被包在边界内——runtime 侧抛出转为流式 error 帧，**永远不会冒泡出回合**。`packages/webui/test/server/runtime-host.test.js` 用一处删掉内层 try/catch 的变异验证这条边界——边界没了测试就红。
 - **R2 缓解（取消语义）落在 `createTurnHost#abortSession`。** 它在最多 5 秒内等待流归位，然后返回 `{success:true, elapsedMs}`；**不依赖子进程 kill**，因为已经没有子进程。超时上限保证即便 runtime 卡死也不会拖累优雅停机。

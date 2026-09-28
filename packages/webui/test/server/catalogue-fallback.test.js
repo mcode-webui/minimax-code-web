@@ -197,3 +197,53 @@ test("S3-FB-04: listAllMcodeSessions falls back to ACP when catalogue listSessio
   );
   assert.equal(sessions[0].title, FAKE_SESSIONS[0].title);
 });
+
+// ============================================================
+// S3 happy path: when the catalogue host is healthy, the data comes
+// from the catalogue side and the ACP client is never consulted.
+//
+// This is the success-branch twin of the fallback tests above: every
+// other case in this file proves a failure falls THROUGH to ACP; this
+// one proves the catalogue branch is actually taken. Without it,
+// deleting the entire catalogue branch from acp-client.js leaves
+// every test in this file green (the ACP mock returns the same
+// FAKE_SESSIONS the catalogue mock serves), so `listCalls === 0` is
+// the only honest discriminator. It must run after FB-04: the
+// catalogue host singleton inside acp-client.js is cached across
+// tests in this file, and the cached host's adapter reads
+// `failureMode` at call time.
+// ============================================================
+
+test("S3-FB-05: healthy catalogue host serves list/title without touching ACP", async () => {
+  failureMode = "ok";
+  listCalls = 0;
+  const { listAllMcodeSessions, getMcodeSessionTitle } = await import(
+    "../../server/lib/acp-client.js"
+  );
+
+  const sessions = await listAllMcodeSessions();
+  assert.ok(Array.isArray(sessions), "catalogue path returns an array");
+  assert.equal(
+    sessions.length,
+    FAKE_SESSIONS.length,
+    "catalogue path returns the full page",
+  );
+  assert.equal(
+    sessions[0].sessionId,
+    FAKE_SESSIONS[0].sessionId,
+    "catalogue path returns the catalogue-side data",
+  );
+
+  const title = await getMcodeSessionTitle(FAKE_SESSIONS[0].sessionId);
+  assert.equal(
+    title,
+    FAKE_SESSIONS[0].title,
+    "title comes from the catalogue-side getSession, not from an ACP relist",
+  );
+
+  assert.equal(
+    listCalls,
+    0,
+    "ACP listSessions must never be called when the catalogue host is healthy",
+  );
+});

@@ -64,9 +64,7 @@ if (markerHits.length === 0)
 // like `import { Router as IttyRouter } from 'itty-router'`. The regexes below
 // avoid matching those by anchoring to actual statements.
 //
-// Three shapes are scanned; each lives in a real bundle and the dev's
-// probe (scripts/s3-gate-probe.mjs) exercises every shape against a
-// synthetic artifact to keep this comment honest:
+// Three shapes are scanned; each lives in a real bundle:
 //
 //   1. Static import with `from`: `import x from "y"`, `import { a } from "y"`,
 //      `export { a } from "y"`. Anchored to start-of-line so a `* import ... from`
@@ -78,12 +76,16 @@ if (markerHits.length === 0)
 //      MUST catch those — otherwise an undeclared npm dep can ship silently.
 //   3. Dynamic `import("...")` expression: not line-anchored (real runtime
 //      expression). Lines beginning with `//`, `/*`, or `*` are skipped so
-//      inlined comments can't false-positive. The line filter accepts both
-//      `await import("...")` and `await (import("..."))` — both forms appear
-//      in real inlined vendor source. Lines whose captured specifier is a
-//      template-literal expression (`` await import("${x}") ``) are skipped
-//      because the regex captures the bare `${x}` substring — that string is
-//      not an ESM specifier.
+//      inlined comments can't false-positive. Every syntactic form is
+//      scanned — `await import("...")`, `await (import("..."))`, and the
+//      non-await forms (`const p = import("...")`, `return import("...")`,
+//      `.then(() => import("..."))`) all load the module at runtime and all
+//      must be caught. Lines whose captured specifier is a template-literal
+//      expression (`` await import(`${x}`) ``) are skipped because the regex
+//      captures the bare `${x}` substring — that string is not an ESM
+//      specifier. Verified against the real 29 MB bundle: dropping the old
+//      `await` anchor produces zero false positives on the real artifact
+//      while the non-await shapes become catchable.
 //
 // Node builtins are excluded from the offender set: they do not need to ship
 // with the published archive because Node provides them at runtime. The bare
@@ -212,13 +214,10 @@ for (const match of artifact.matchAll(dynamicImportPattern)) {
   if (trimmed.startsWith("//") || trimmed.startsWith("/*") || trimmed.startsWith("*"))
     continue;
   // Skip lines whose captured specifier is a template-literal
-  // expression (`` await import("${x}") ``, `` let x = import(`p/${id}`) ``).
-  // Two conditions:
-  //   - line contains `await import(` (optionally wrapped in parens);
-  //     this filters dynamic imports to the actually-used form
-  //   - captured specifier does NOT look like a template expression
-  //     (no leading `$`, no `${`, no backticks)
-  if (!/await\s*\(?\s*import\(/.test(line)) continue;
+  // expression (`` await import("${x}") ``, `` let x = import(`p/${id}`) ``):
+  // the captured specifier must not look like a template expression
+  // (no leading `$`, no `${`, no backticks). There is deliberately NO
+  // `await` anchor here — see the shape-3 note above.
   if (
     specifier.startsWith("$") ||
     specifier.includes("${") ||
@@ -227,7 +226,8 @@ for (const match of artifact.matchAll(dynamicImportPattern)) {
   if (specifier.startsWith(".") || specifier.startsWith("/")) continue;
   if (isNodeBuiltin(specifier)) continue;
   if (!externals.has(specifier)) offenders.add(specifier);
-}if (offenders.size) {
+}
+if (offenders.size) {
   const offenderList = [...offenders].sort().join("\n");
   throw new Error(
     "Web UI server bundle imports bare external modules that are not declared in cliExternalModules:\n" +
