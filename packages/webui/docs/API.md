@@ -1299,6 +1299,16 @@ target), each model carries `protocol` / `thinkingLevels` /
 `auth: {hasKey, type}` (no `apiKey`, no `baseURL` — those exist
 only on the `/api/providers` surface where the key is masked).
 
+**Context-window fields (U6).** Minimax_api builtin entries whose
+engine-materialised tree declares `contextWindowOptions` carry three
+extra fields — `contextWindowOptions` (token counts, engine order),
+`contextWindowOptionHints` (today only `{"1000000": "higher_usage"}`),
+and `contextLimit` (the engine's current effective window, also the
+highlight fallback). Models without options stay field-free. The
+response top level adds `currentContextWindow`: the recorded
+`cs.model.contextWindow`, falling back to the current model's
+`contextLimit`, or `null`.
+
 ### `POST /api/set-model`
 
 Change the model for the current CID. Persists into `cs.model` so the
@@ -1309,13 +1319,29 @@ for the next one.
 
 **Request**
 ```json
-{ "model": "minimax_api/MiniMax-M3" }
+{ "model": "minimax_api/MiniMax-M3", "contextWindow": 1000000 }
 ```
+
+- `model` (string, optional together with the other fields — at least
+  one field must be present) — the model id.
+- `thinking` (string, optional; `""` clears) — the recorded effort.
+- `contextWindow` (number, optional; `null` clears) — U6. A safe
+  positive integer, one of the model's `contextWindowOptions`; any
+  other value is a `400 {"ok": false, "error": "invalid contextWindow"}`.
+  **Recorded only, not engine-applied today**: the engine's ACP
+  `set_config_option` has no config id or wire slot for a context
+  choice, so the route validates → records `cs.model.contextWindow`
+  → echoes the value back. The picker highlights it via
+  `/api/models`' `currentContextWindow`. See `docs/webui.md`
+  "Context window" for the verified engine-side boundary.
 
 **Response 200** (engine accepted)
 ```json
-{ "ok": true, "model": "minimax_api/MiniMax-M3", "mcodeSynced": true }
+{ "ok": true, "model": "minimax_api/MiniMax-M3", "contextWindow": 1000000, "mcodeSynced": true }
 ```
+
+The response echoes each provided field (`model`, `thinking`,
+`contextWindow`) alongside `mcodeSynced` / `thinkingSynced`.
 
 Without an `mcodeSessionId` yet: `{ok: true, model: "...", mcodeSynced: false, warning: "no mcode session yet — recorded for the next one"}`.
 

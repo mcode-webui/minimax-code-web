@@ -292,6 +292,14 @@ writes into `cs.chat`; switched-away writes via
   `workspace` and `workspaceFallback` so post-mortems can answer
   "why did the file tree jump".
 
+## Context window (what the picker shows, and what a pick does today)
+
+The model picker's detail area (below the provider list) mounts a context-window radio group only for the active model, and only when its `/api/models` entry carries at least two `contextWindowOptions`. A model without the field — or with a single option, which would be a no-op choice — renders no control and no placeholder. Today that is exactly `MiniMax-M3` and `MiniMax-M3.1-Flash-Preview` (`[512000, 1000000]`); every other catalogue entry stays field-free. Each option label is a compact token count (`512K`, `1M`), and an option the engine hints as `higher_usage` (`contextWindowOptionHints`) carries a "higher usage" tag.
+
+Where the metadata comes from: the same engine-materialised builtin tree as the thinking projection (`provider.minimax.models` in `<engine data dir>/config.yaml`, keys `contextWindowOptions` / `contextWindowOptionHints` / `limit.context`). `GET /api/models` reads it on every request (`readEngineBuiltinContextWindows`, `server/lib/engine-catalogue.js`) and annotates both the builtin shell entries and the engine-session wire-form minimax_api entries; the highlighted value resolves to the recorded pick first and the model's `contextLimit` (the engine's current effective window) second, and is reported as `currentContextWindow`.
+
+Honest boundary — a pick is recorded, not yet engine-applied. `POST /api/set-model` accepts `contextWindow` (tokens; `null` clears), validates it, records it in `cs.model.contextWindow`, and echoes it in the response. The engine's ACP surface has no channel for it: `session/set_config_option` accepts exactly three config ids, and the `model` value's wire encoding (`m:<provider>:<model>:u|v:<variant>`, packages/tui `control-state.ts#modelConfigValue`) has no context segment — verified against the shipped engine bundle (0.5.5) as well as this repo's source, whose runtime `models.select` does accept a `contextLimit` but is reachable only from the TUI/runtime clients. The recorded pick is therefore a webui-side preference the picker reflects immediately; the model switch that always accompanies it does reach the engine through the existing `set_config_option{configId:"model"}` push. Wiring the value into an engine-side apply is the engine ticket's work, and the route's shape (validate → record → echo) is the seam it plugs into. The same follow-the-model rule as thinking applies: switching to a model that does not list the recorded window clears it (`contextWindow: null`) in the same request.
+
 ## File tree (delivered UI)
 
 Every shipped file tree, panel and column evidence is `grep`-able. The list

@@ -107,6 +107,12 @@ const en = {
      `aria-label` on the menu gives screen readers a one-word handle
      instead of reading the full level list as the menu's name. */
   "modelSelector.thinkingLevels": "Thinking effort",
+  /* Model selector — U6 context window. The detail-area heading and
+     the per-option usage hint. `higher_usage` is the only hint value
+     the engine emits today (contextWindowOptionHints in the
+     materialised builtin tree). */
+  "modelSelector.contextWindow": "Context window",
+  "modelSelector.contextWindowHigherUsage": "higher usage",
   "modelSelector.modalityBadge.text": "text",
   "modelSelector.modalityBadge.image": "image",
   "modelSelector.modalityBadge.audio": "audio",
@@ -737,6 +743,11 @@ const zh: Record<MessageKey, string> = {
   "modelSelector.addProvider": "添加模型 / 供应商",
   /* 模型选择器 — ticket 10。右侧级联子菜单的 aria-label。 */
   "modelSelector.thinkingLevels": "思考等级",
+  /* 模型选择器 — U6 上下文窗口。详情区标题与单个选项的用量提示。
+     `higher_usage` 是引擎目前唯一的提示值（物化内置树中的
+     contextWindowOptionHints）。 */
+  "modelSelector.contextWindow": "上下文窗口",
+  "modelSelector.contextWindowHigherUsage": "用量较高",
   "modelSelector.modalityBadge.text": "文本",
   "modelSelector.modalityBadge.image": "图像",
   "modelSelector.modalityBadge.audio": "音频",

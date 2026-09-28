@@ -59,6 +59,18 @@ export interface ModelState {
    */
   modelPickedAt?: number;
   thinkingPickedAt?: number;
+  /**
+   * U6 — the recorded context-window choice in tokens (one of the
+   * active model's `contextWindowOptions`), written by `handleSetModel`
+   * when the picker's radio fires. Absent when the user has not picked
+   * one (the model's engine-reported `contextLimit` stands). The
+   * engine's ACP surface has no context channel yet, so no
+   * `config_option_update` ever mirrors this field — it is a
+   * webui-recorded preference (see server/routes/model.js).
+   * Optional for the same fixture reason as the pick timestamps.
+   */
+  contextWindow?: number;
+  contextWindowPickedAt?: number;
 }
 
 export interface ContextState {

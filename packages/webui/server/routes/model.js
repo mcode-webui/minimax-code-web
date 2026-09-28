@@ -16,6 +16,7 @@ import { loadProvidersConfig } from "../lib/providers-config.js";
 import {
   readEngineCatalogue,
   readEngineBuiltinThinking,
+  readEngineBuiltinContextWindows,
   parseEngineModelWireValue,
   variantChannelFor,
   resolveModelId,
@@ -28,6 +29,37 @@ import { readJson } from "../lib/read-json.js";
 function configOption(cs, id) {
   const options = Array.isArray(cs && cs.configOptions) ? cs.configOptions : [];
   return options.find((o) => o && o.id === id) || null;
+}
+
+/**
+ * Attach the engine's context-window metadata (U6) onto a builtin
+ * `minimax_api` catalogue entry, mutating `entry`.
+ *
+ * `contextWindowOptions` / `contextWindowOptionHints` come from the
+ * engine's materialised builtin tree (same read as the thinking
+ * projection — see `lib/engine-catalogue.js`). Only the minimax_api
+ * builtin entries carry them today: the engine's ACP `model` config
+ * option (the engine-session entries' source) does not advertise the
+ * metadata, so those entries are annotated through the same builtin
+ * projection keyed by the wire form's model id. Custom-provider /
+ * config-layer entries never get the fields — a model without options
+ * must stay field-free so the composer mounts no control.
+ *
+ * `contextLimit` (the CURRENT effective window, from the engine tree's
+ * `limit.context`) is attached when the entry has none yet — a config
+ * layer entry keeps its own value; builtin shell entries get the
+ * engine's current window so the picker can show the active radio
+ * before the user's first in-webui pick.
+ */
+function attachContextWindowOptions(entry, projection) {
+  if (!projection) return;
+  entry.contextWindowOptions = [...projection.options];
+  if (projection.hints) {
+    entry.contextWindowOptionHints = { ...projection.hints };
+  }
+  if (entry.contextLimit === undefined && projection.currentLimit !== undefined) {
+    entry.contextLimit = projection.currentLimit;
+  }
 }
 
 /**
@@ -206,6 +238,10 @@ export function handleGetModels(_req, res, ctx) {
   // One read serves both annotation sites below (engine-session
   // entries and the builtin shell).
   const builtinThinking = readEngineBuiltinThinking();
+  // U6 — same tree, context-window projection. One read serves both
+  // annotation sites below (engine-session entries and the builtin
+  // shell), exactly like `builtinThinking`.
+  const builtinContextWindows = readEngineBuiltinContextWindows();
 
   // 1) Engine session config option — authoritative when present. We keep
   //    its encoded ids verbatim so /api/set-model round-trips. Both `name`
@@ -241,6 +277,11 @@ export function handleGetModels(_req, res, ctx) {
       if (wire && wire.providerId === "minimax_api") {
         const proj = builtinThinking.get(wire.modelId);
         if (proj) entry.thinkingLevels = [...proj.levels];
+        // U6: annotate the wire-form entries with the engine's
+        // context-window options too, so the picker's detail area
+        // survives a cross-client model change (same reasoning as the
+        // thinkingLevels annotation above).
+        attachContextWindowOptions(entry, builtinContextWindows.get(wire.modelId));
       }
       engineGroup.models.push(entry);
       list.push(entry);
@@ -373,6 +414,9 @@ export function handleGetModels(_req, res, ctx) {
     // operator's config wins wholesale, unchanged rule.
     const proj = builtinThinking.get(m);
     if (proj) entry.thinkingLevels = [...proj.levels];
+    // U6: the engine's context-window options for this builtin, plus
+    // its current effective window as the `contextLimit` fallback.
+    attachContextWindowOptions(entry, builtinContextWindows.get(m));
     list.push(entry);
     builtinGroup.models.push(entry);
   }
@@ -415,6 +459,30 @@ export function handleGetModels(_req, res, ctx) {
     (cs && cs.model && typeof cs.model.thinking === "string" && cs.model.thinking) ||
     null;
 
+  // U6 — the recorded context-window choice (`handleSetModel` writes
+  // `cs.model.contextWindow`). There is no engine config option behind
+  // it (the engine's ACP surface has no context channel — see the
+  // handleSetModel header), so unlike `currentThinking` there is no
+  // engine-value branch: the recorded pick is the only source. A
+  // recorded value the current model no longer advertises is still
+  // reported verbatim — the stale-pick display rule lives in the
+  // composer (same split as the thinking level's stale-suffix guard).
+  const recordedContextWindow =
+    cs && cs.model && Number.isSafeInteger(cs.model.contextWindow) && cs.model.contextWindow > 0
+      ? cs.model.contextWindow
+      : null;
+  // Fallback: the current model's catalogue `contextLimit` (the
+  // engine's current effective window), so the picker can highlight
+  // the active radio before the user's first in-webui pick.
+  const currentModelEntry = current ? list.find((m) => m.id === current) : null;
+  const currentContextWindow =
+    recordedContextWindow ??
+    (currentModelEntry &&
+    Number.isSafeInteger(currentModelEntry.contextLimit) &&
+    currentModelEntry.contextLimit > 0
+      ? currentModelEntry.contextLimit
+      : null);
+
   const source =
     option && Array.isArray(option.options) && option.options.length > 0
       ? "acp-session-config"
@@ -430,6 +498,7 @@ export function handleGetModels(_req, res, ctx) {
       groups,
       current,
       currentThinking,
+      currentContextWindow,
       source,
       // Backwards-compat: surface the same soft-failure marker the older
       // engine-only build did when nothing could be sourced. With the
@@ -446,10 +515,10 @@ export function handleGetModels(_req, res, ctx) {
 // POST /api/set-model — only updates cs.model; with a session the same value
 // is also pushed to the engine via session/set_config_option.
 //
-// Body: `{ model: string, thinking?: string }`. `thinking` is the
-// reasoning-effort level the engine accepts on its `thinkingEffort`
-// config option (`low` / `medium` / `high`, plus `off` / `none` for
-// models that disable reasoning — see the engine's control-state.ts
+// Body: `{ model?: string, thinking?: string, contextWindow?: number|null }`.
+// `thinking` is the reasoning-effort level the engine accepts on its
+// `thinkingEffort` config option (`low` / `medium` / `high`, plus `off` / `none`
+// for models that disable reasoning — see the engine's control-state.ts
 // `thinkingEffortOption`). Per the engine's contract, the
 // `thinkingEffort` set is rejected when no model is selected
 // (`Select a Session model before changing thinking effort.`,
@@ -461,6 +530,25 @@ export function handleGetModels(_req, res, ctx) {
 // `applyRecordedModel`); an effort-only update leaves the model alone.
 // An empty string clears the recorded effort, signalling "no override
 // — let the engine's default stand".
+//
+// `contextWindow` (U6) is the context-window choice in TOKENS, one of
+// the model's `contextWindowOptions` from /api/models. `null` clears
+// the recorded choice ("engine default stands"). It is RECORDED in
+// `cs.model.contextWindow` and echoed back through /api/models'
+// `currentContextWindow`, but NOT carried to the engine: the engine's
+// ACP surface has no channel for it — `session/set_config_option`
+// accepts exactly three config ids (permissionMode / model /
+// thinkingEffort) and the `model` value's wire encoding
+// (`m:<provider>:<model>:u|v:<variant>`, packages/tui/src/acp/
+// control-state.ts#modelConfigValue) has no context segment; the
+// engine's own runtime `models.select` accepts a `contextLimit` but
+// is reachable only from the TUI/runtime clients today. Verified
+// against the shipped engine bundle (0.5.5) as well as this repo's
+// source: the ACP chunk carries no contextLimit anywhere. The
+// recorded pick is therefore a webui-side preference that the picker
+// reflects immediately; wiring it into an engine-side apply is the
+// engine ticket's work, and this route's shape (validate → record →
+// echo) is the seam that work plugs into.
 export async function handleSetModel(req, res, ctx) {
   const cs = ctx.cs;
   const cid = ctx.cid;
@@ -473,7 +561,21 @@ export async function handleSetModel(req, res, ctx) {
   // distinction is encoded by `thinkingWasProvided`.
   const thinkingWasProvided = Object.prototype.hasOwnProperty.call(payload, "thinking");
   const thinking = thinkingWasProvided ? (rawThinking || "") : undefined;
-  if (!modelId && !thinkingWasProvided) {
+  // U6: same provided/absent split for the context window. `null` is
+  // the documented clear sentinel (a number sets, null clears, absent
+  // leaves alone); anything else is a 400 — a silent drop would leave
+  // the picker claiming a window the server never recorded.
+  const contextWindowWasProvided = Object.prototype.hasOwnProperty.call(payload, "contextWindow");
+  let contextWindow;
+  if (contextWindowWasProvided && payload.contextWindow !== null) {
+    const v = payload.contextWindow;
+    if (typeof v !== "number" || !Number.isSafeInteger(v) || v <= 0) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ ok: false, error: "invalid contextWindow" }));
+    }
+    contextWindow = v;
+  }
+  if (!modelId && !thinkingWasProvided && !contextWindowWasProvided) {
     res.writeHead(400, { "Content-Type": "application/json" });
     return res.end(JSON.stringify({ ok: false, error: "model required" }));
   }
@@ -481,6 +583,10 @@ export async function handleSetModel(req, res, ctx) {
   if (modelId) cs.model.name = modelId;
   if (thinkingWasProvided) {
     cs.model.thinking = thinking;
+  }
+  if (contextWindowWasProvided) {
+    if (contextWindow === undefined) delete cs.model.contextWindow;
+    else cs.model.contextWindow = contextWindow;
   }
   // ticket 08 (set-model SSE race): stamp a per-field `*PickedAt`
   //   timestamp so `applyConfigOptionUpdate`'s ownership-aware mirror
@@ -492,6 +598,7 @@ export async function handleSetModel(req, res, ctx) {
   const pickAt = Date.now();
   if (modelId) cs.model.modelPickedAt = pickAt;
   if (thinkingWasProvided) cs.model.thinkingPickedAt = pickAt;
+  if (contextWindowWasProvided) cs.model.contextWindowPickedAt = pickAt;
   const sid = cs.mcodeSessionId;
   let mcodeSynced = false;
   let thinkingSynced = false;
@@ -581,6 +688,7 @@ export async function handleSetModel(req, res, ctx) {
       ok: true,
       ...(modelId ? { model: modelId } : {}),
       ...(thinkingWasProvided ? { thinking } : {}),
+      ...(contextWindowWasProvided ? { contextWindow: contextWindow ?? null } : {}),
       mcodeSynced,
       thinkingSynced,
       ...(warning ? { warning } : {}),

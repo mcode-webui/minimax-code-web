@@ -209,6 +209,44 @@ export function thinkingFromEngineBuiltinModel(modelConfig) {
 }
 
 /**
+ * Read the engine's materialised builtin model tree
+ * (`provider.minimax.models` in the engine config.yaml), verbatim.
+ *
+ * Shared file reader for the per-feature builtin projections
+ * (`readEngineBuiltinThinking`, `readEngineBuiltinContextWindows`) so
+ * the yaml parse and the tree walk live in exactly one place. Returns
+ * `null` when the file is missing, unparseable, or the tree is the
+ * wrong shape — callers treat that as "no builtin metadata", matching
+ * the best-effort contract documented on each projection.
+ *
+ * Security: the record is the raw `provider.minimax.models` subtree.
+ * It carries no key material, and the feature projections below only
+ * read their own fields out of it.
+ */
+function readEngineBuiltinModelsRecord(configPath) {
+  if (!existsSync(configPath)) return null;
+  let parsed;
+  try {
+    const raw = readFileSync(configPath, "utf8");
+    const doc = yaml.load(raw);
+    parsed = doc && typeof doc === "object" && !Array.isArray(doc) ? doc : {};
+  } catch {
+    return null;
+  }
+  const provider = parsed.provider;
+  const minimax =
+    provider && typeof provider === "object" && !Array.isArray(provider)
+      ? provider.minimax
+      : null;
+  const models =
+    minimax && typeof minimax === "object" && !Array.isArray(minimax)
+      ? minimax.models
+      : null;
+  if (!models || typeof models !== "object" || Array.isArray(models)) return null;
+  return models;
+}
+
+/**
  * Read the engine's materialised builtin catalogue
  * (`provider.minimax.models` in the engine config.yaml) and project
  * each model's thinking schema. Returns a Map keyed by the BARE
@@ -227,30 +265,112 @@ export function thinkingFromEngineBuiltinModel(modelConfig) {
  * anything outside `provider.minimax.models` anyway.
  */
 export function readEngineBuiltinThinking(opts = {}) {
-  const configPath = opts.configPath || getEngineConfigPath();
   const out = new Map();
-  if (!existsSync(configPath)) return out;
-  let parsed;
-  try {
-    const raw = readFileSync(configPath, "utf8");
-    const doc = yaml.load(raw);
-    parsed = doc && typeof doc === "object" && !Array.isArray(doc) ? doc : {};
-  } catch {
-    return out;
-  }
-  const provider = parsed.provider;
-  const minimax =
-    provider && typeof provider === "object" && !Array.isArray(provider)
-      ? provider.minimax
-      : null;
-  const models =
-    minimax && typeof minimax === "object" && !Array.isArray(minimax)
-      ? minimax.models
-      : null;
-  if (!models || typeof models !== "object" || Array.isArray(models)) return out;
+  const models = readEngineBuiltinModelsRecord(
+    opts.configPath || getEngineConfigPath(),
+  );
+  if (!models) return out;
   for (const [modelId, modelConfig] of Object.entries(models)) {
     if (typeof modelConfig !== "object" || modelConfig === null) continue;
     out.set(modelId, thinkingFromEngineBuiltinModel(modelConfig));
+  }
+  return out;
+}
+
+// =====================================================================
+// Context-window options (U6) — builtin projection, same tree as the
+// thinking projection above.
+// =====================================================================
+
+/**
+ * Project one engine builtin model config onto the webui context-window
+ * vocabulary. Pure.
+ *
+ * The engine materialises two optional keys per builtin model
+ * (`provider.minimax.models.<id>` in the engine config.yaml):
+ *
+ *   contextWindowOptions:       [512000, 1000000]
+ *   contextWindowOptionHints:   { "1000000": "higher_usage" }
+ *
+ * Hygiene rules, mirroring the engine's own `contextWindowOptions()`
+ * helper (packages/tui/src/tui/features/model/context-window.ts):
+ *
+ *   - Options are Set-deduped in engine order, keeping only safe
+ *     positive integers. Engine order is presentation order — do not
+ *     sort.
+ *   - Hints survive only for keys that name a KEPT option and only
+ *     for the one value the engine emits today (`higher_usage`);
+ *     anything else is dropped rather than passed through verbatim.
+ *   - Fewer than two distinct options means the engine's own pickers
+ *     mount no control (the TUI requires `length > 1`); the projection
+ *     still reports what the tree says and lets the route/UI apply
+ *     that gate, so the data and the gating rule stay separable.
+ *   - `limit.context`, when a safe positive integer, rides along as
+ *     `currentLimit`: the engine's CURRENT window for the model (its
+ *     catalog default or an applied override). The /api/models route
+ *     uses it as the radio's fallback active value so the picker shows
+ *     the truth before the user's first in-webui pick.
+ *
+ * Returns `null` when the model advertises no usable options.
+ */
+export function contextWindowFromEngineBuiltinModel(modelConfig) {
+  if (!modelConfig || typeof modelConfig !== "object") return null;
+  const rawOptions = Array.isArray(modelConfig.contextWindowOptions)
+    ? modelConfig.contextWindowOptions
+    : [];
+  const options = [
+    ...new Set(
+      rawOptions.filter(
+        (v) => Number.isSafeInteger(v) && v > 0,
+      ),
+    ),
+  ];
+  if (options.length === 0) return null;
+  const rawHints =
+    modelConfig.contextWindowOptionHints &&
+    typeof modelConfig.contextWindowOptionHints === "object" &&
+    !Array.isArray(modelConfig.contextWindowOptionHints)
+      ? modelConfig.contextWindowOptionHints
+      : {};
+  const hints = {};
+  for (const value of options) {
+    if (rawHints[String(value)] === "higher_usage") {
+      hints[String(value)] = "higher_usage";
+    }
+  }
+  const currentLimit =
+    modelConfig.limit &&
+    typeof modelConfig.limit === "object" &&
+    Number.isSafeInteger(modelConfig.limit.context) &&
+    modelConfig.limit.context > 0
+      ? modelConfig.limit.context
+      : undefined;
+  return {
+    options,
+    ...(Object.keys(hints).length > 0 ? { hints } : {}),
+    ...(currentLimit !== undefined ? { currentLimit } : {}),
+  };
+}
+
+/**
+ * Read the engine's materialised builtin catalogue and project each
+ * model's context-window options. Same file, same best-effort contract
+ * and security envelope as `readEngineBuiltinThinking` — see there.
+ *
+ * Returns a Map keyed by the BARE model id → `{ options, hints? }` for
+ * models that advertise usable options; models without any stay keyed
+ * with a `null` value (same "engine says no control" vs "unknown
+ * model" distinction as the thinking reader).
+ */
+export function readEngineBuiltinContextWindows(opts = {}) {
+  const out = new Map();
+  const models = readEngineBuiltinModelsRecord(
+    opts.configPath || getEngineConfigPath(),
+  );
+  if (!models) return out;
+  for (const [modelId, modelConfig] of Object.entries(models)) {
+    if (typeof modelConfig !== "object" || modelConfig === null) continue;
+    out.set(modelId, contextWindowFromEngineBuiltinModel(modelConfig));
   }
   return out;
 }
