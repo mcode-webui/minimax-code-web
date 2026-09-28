@@ -520,7 +520,14 @@ export function Composer({
       onDragLeave={onDragLeave}
       onDrop={onDrop}
     >
-      <div className="mx-auto w-full max-w-[743px]">
+      {/* Slice 25 — match the column by removing the inner content
+          cap. The conversation column's `maxWidth = 1400` (slice 25,
+          raised from the slice-17 768) is the only bound on width;
+          when the column itself caps at 1400 the composer fills it,
+          and when the column grows past 1400 (both fixed columns
+          folded) the composer follows. Long lines are accepted at
+          wide viewports. */}
+      <div className="w-full">
         {/* Upstream's message-input card. Its class string is
             `mavis-message-input-card w-full border border-border_default
              bg-bg_grouped_secondary_elevated px-2.5 pt-2.5 pb-2 rounded-[20px]

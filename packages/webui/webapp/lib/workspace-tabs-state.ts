@@ -421,11 +421,21 @@ export const COLUMN_SPECS: Record<ColumnId, ColumnSpec> = {
   // columns (preview + tree) fully visible. The reference image
   // (`refs/ui/02-workspace-shell.jpg` at 1384 viewport) shows
   // the chat column at ~322 — narrow but the user is reading a
-  // file, not chatting. The max of 768 mirrors the chat
-  // content's own max-w-[768px] so the row cannot create a
-  // 250–280px dead gutter on each side at wider viewports
-  // (defect A).
-  conversation: { id: "conversation", defaultWidth: 720, minWidth: 280, maxWidth: 768, flow: "fluid" },
+  // file, not chatting.
+  //
+  // Slice 25 — the slice-17 cap of 768 produced a 250–280px
+  // dead band on every viewport above ~1500px because the chat
+  // content carried the same 768 cap. The reporter judged this
+  // unacceptable; the column now absorbs ALL leftover up to a
+  // high absolute ceiling (1400px) so typical viewports
+  // (1280–1920) leave no dead band. 1400 is the chosen ceiling
+  // because it sits well above the 768 default — every common
+  // desktop viewport fills the row — while still bounding line
+  // length at the edge of readability; the user accepted long
+  // lines (~1000px+) as a consequence. Above ~1640 container
+  // width the ceiling bites and a residual dead band remains;
+  // that is the cost of the bound.
+  conversation: { id: "conversation", defaultWidth: 720, minWidth: 280, maxWidth: 1400, flow: "fluid" },
   // Preview column — file preview + browser. Per user direction
   // (preview ≪ tree ≪ chat in importance, but preview > chat
   // when the row truly has no room), the preview column folds
@@ -685,13 +695,19 @@ export interface ColumnLayoutSummary {
  *      so the conversation column can grow instead.
  *   5. After the fixed columns have absorbed what they can, the
  *      conversation column absorbs whatever leftover remains.
- *      Slice 21 — when **both** fixed columns are collapsed,
- *      conversation's effective max is lifted (the row is
- *      otherwise empty, so capping conversation at 768 would
- *      leave ~320px of dead space at 1280). When at least one
- *      fixed column is visible, conversation caps at its
- *      `COLUMN_SPECS.conversation.maxWidth` (768) — slice 17's
- *      dead-gutter defence at wider viewports.
+ *      Slice 25 — the column always absorbs all leftover; the
+ *      effective max is `COLUMN_SPECS.conversation.maxWidth`
+ *      (1400px) when at least one fixed column is visible, and
+ *      is lifted to `conversation + leftover` (unbounded in this
+ *      branch) when **both** fixed columns are folded so the
+ *      idle row fills the container even on extreme viewports.
+ *      1400 is the absolute ceiling chosen to bound line length
+ *      at the edge of readability; above ~1640 container width
+ *      a residual dead band remains at the row's right edge —
+ *      the cost of the bound. Slice 17's 768 cap was the
+ *      original dead-gutter defence; slice 25 raises the bound
+ *      so typical desktop viewports (1280–1920) leave no dead
+ *      band.
  *   6. Last resort: when the sum of every column's minimum is
  *      still bigger than the container (e.g. 360px viewport),
  *      conversation shrinks toward 0. The renderer hides
@@ -707,7 +723,7 @@ export function computeColumnLayout(
 
   // 1. Each column starts at its stored width. Conversation's
   //    stored width is the user's drag target; the algorithm
-  //    honours it within the [280, 768] band and re-distributes
+  //    honours it within the [280, 1400] band and re-distributes
   //    any overflow / leftover to / from the fixed columns.
   let conversation = clampToConversation(layout.widths.conversation);
   let preview = layout.collapsed.preview ? 0 : clampWidth("preview", layout.widths.preview);
@@ -766,8 +782,7 @@ export function computeColumnLayout(
   //    the conversation column can absorb it instead. This is
   //    the slice-21 idle path: at 1280 with both columns
   //    folded, the conversation column takes the whole
-  //    remainder (1040 = 1280 − 240) rather than being pinned
-  //    at its 768 max with 320px of dead space.
+  //    remainder (1040 = 1280 − 240).
   if (total < containerWidth) {
     let leftover = containerWidth - total;
     if (!layout.collapsed.tree) {
@@ -781,13 +796,16 @@ export function computeColumnLayout(
       leftover -= previewGrow;
     }
     if (leftover > 0) {
-      // Conversation absorbs whatever remains. When **both**
-      // fixed columns are collapsed, lift conversation's
-      // effective max so it fills the row — otherwise the
-      // 1280-viewport idle state would cap conversation at
-      // 768 with ~272px of empty area next to it. When at least
-      // one fixed column is visible, honour the slice-17
-      // 768 max (slice-21 widens the reporting on this).
+      // Slice 25 — conversation absorbs ALL leftover. When at
+      // least one fixed column is visible, the absorption is
+      // capped at `COLUMN_SPECS.conversation.maxWidth` (1400),
+      // the absolute ceiling chosen for this slice. When both
+      // fixed columns are folded, conversation's effective max
+      // is lifted to `conversation + leftover` so the idle row
+      // always fills the container — even at extreme viewports
+      // where the bounded branch would leave a residual dead
+      // band. Long line length is an accepted consequence at
+      // wide viewports.
       const convMax =
         layout.collapsed.preview && layout.collapsed.tree
           ? conversation + leftover
@@ -797,8 +815,10 @@ export function computeColumnLayout(
       leftover -= convGrow;
     }
     // Any remaining leftover is shed (the row centres rather
-    // than overflows). At very large viewports this happens
-    // when every column is at its max.
+    // than overflows). At very large viewports with at least
+    // one fixed column visible this happens when conversation
+    // hits its 1400 ceiling — a residual dead band, the cost
+    // of bounding line length.
   }
 
   // 4. Sort segment order to match DOM order regardless of which

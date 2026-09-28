@@ -35,9 +35,20 @@ import { WorkspaceChipDropdown } from "./workspace-picker";
  *   assistant  no bubble at all — a collapsible activity summary line followed by
  *              markdown rendered through `.matrix-markdown`
  *
- * The transcript scroller and column also come from upstream: the column is
- * `max-w-[768px]` (the 743px figure belongs to the home screen, not the
- * conversation).
+ * The transcript scroller and column also come from upstream: the column was
+ * `max-w-[768px]` until slice 25. Slice 25 raises the COLUMN cap to
+ * `maxWidth = 1400` (see `lib/workspace-tabs-state.ts#COLUMN_SPECS.conversation`)
+ * and drops the inner content cap so the content fills the column at every
+ * viewport. The slice-17 768 cap reproduced the original dead band because
+ * the column cap mirrored the content cap: at any viewport wider than ~1500px
+ * the content centred at 768 with a 250–280px empty strip on each side. With
+ * the inner cap removed, the column's own 1400 ceiling is the only bound on
+ * line length — and only when at least one fixed column is visible. When
+ * both fixed columns are folded the column grows past 1400 to fill the row
+ * (slice-21 widening), so line length grows with the viewport. Long lines
+ * above ~1000px are an accepted consequence of the reporter's "conversation
+ * absorbs all leftover" choice. The 743px figure belongs to the home screen,
+ * not the conversation.
  */
 
 interface ChatProps {
@@ -231,7 +242,20 @@ export function Chat({
           ref={scrollerRef}
           className="scrollbar-hide relative h-full w-full overflow-x-hidden overflow-y-scroll"
         >
-          <div className="message-container-chat-content mx-auto max-w-[768px] px-4">
+          {/* Slice 25 — the slice-17 `max-w-[1400px]` here produced
+              the original dead band: when the conversation column
+              widened beyond 1400, the content centred at 1400 and
+              left a horizontal empty strip on each side. Now that
+              the column's own `maxWidth` (1400) bounds line length,
+              the inner cap is dropped so the content fills the
+              column at every viewport. (When the column itself is
+              capped — at least one fixed column visible — the cap
+              hits at the column level; when both are folded the
+              column grows past 1400 and the content follows.)
+              Long line length above ~1000px is an accepted
+              consequence of the reporter's "conversation absorbs
+              all leftover" choice. */}
+          <div className="message-container-chat-content w-full px-4">
             <div className="min-h-[10px] w-full" />
             {units.length === 0 ? (
               <p className="py-6 text-center text-caption-small-strong text-text_default_tertiary">
