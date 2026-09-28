@@ -3026,6 +3026,14 @@
       "homepage": "https://github.com/es-shims/math-intrinsics#readme"
     },
     {
+      "name": "mermaid",
+      "versions": [
+        "11.12.1"
+      ],
+      "license": "MIT",
+      "homepage": "https://github.com/mermaid-js/mermaid"
+    },
+    {
       "name": "media-typer",
       "versions": [
         "1.1.1"

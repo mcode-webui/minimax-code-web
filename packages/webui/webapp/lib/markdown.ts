@@ -1,7 +1,7 @@
 import { marked } from "marked";
 
 /**
- * Markdown rendering for assistant messages.
+ * Markdown rendering for assistant messages and markdown file previews.
  *
  * The parser is `marked`, which the workspace already depends on
  * (`packages/tui` uses it) — it is therefore already in the lockfile and already
@@ -33,6 +33,138 @@ function escapeHtml(value: string): string {
 }
 
 /**
+ * Escape text for embedding in an HTML attribute value (single-quoted).
+ *
+ * The marked renderer's `code` callback hands us `text` (the source inside
+ * the fence) and `lang` (the language token after ```). Both are interpolated
+ * into HTML attributes or text nodes, so the escapes here are what keep a
+ * markdown author with no script context from injecting markup via the fence
+ * itself. Note this is the static parser escape — the sanitiser is the second
+ * wall, and either side alone is not sufficient.
+ */
+function escapeAttribute(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+/**
+ * Language → renderer registry.
+ *
+ * This is the seam that future minimax-code-plugin renderers will hook into.
+ * A code fence's `lang` token is matched against this map; the matching
+ * renderer owns the HTML the parser emits for that fence.
+ *
+ * Design rules (so the registry stays extensible without rewrites):
+ *
+ *   - **No `if (lang === "mermaid")` inside the marked renderer.** The marked
+ *     code-callback below dispatches via `languageRenderers.get(lang)`, so a
+ *     third-party renderer just calls `registerLanguageRenderer(...)` once and
+ *     is wired in. The main flow never branches on a particular language.
+ *
+ *   - **Renderers are pure functions.** They receive `(source, lang)` and
+ *     return the HTML fragment the parser should splice in. No side effects,
+ *     no DOM access — `parseMarkdown` runs in Node during the prerender
+ *     static export and would explode on a renderer that touches
+ *     `document`.
+ *
+ *   - **The default code renderer stays the fallback.** When a language is
+ *     unknown, the built-in fenced-block shell is emitted exactly as before.
+ *     A language that is registered but throws stays in the fallback path
+ *     too, so a broken third-party renderer cannot blank the document — see
+ *     `safeLanguageRenderer` below.
+ *
+ *   - **Renderers emit sanitised HTML.** The sanitiser after marked drops
+ *     everything that is not on the allowlist. Renderers must therefore
+ *     escape their own source text — `escapeHtml` is exported below for that.
+ *
+ * To add a new renderer:
+ *   ```ts
+ *   registerLanguageRenderer("my-format", (source) => `<div>...</div>`);
+ *   ```
+ * That single call is enough; no main-flow edits, no plugin imports in the
+ * parser file.
+ */
+export type LanguageRenderer = (source: string, lang: string) => string;
+
+const languageRenderers = new Map<string, LanguageRenderer>();
+
+/**
+ * Register a renderer for a fence language. The renderer is called with the
+ * raw fence body and the lang token and returns the HTML fragment the parser
+ * should splice in. Re-registering the same language replaces the previous
+ * renderer; this is the documented plugin-extension path.
+ *
+ * Plugin code typically calls this once at module-init time:
+ *   ```ts
+ *   import { registerLanguageRenderer } from "@/lib/markdown";
+ *   registerLanguageRenderer("vega-lite", vegaLiteRenderer);
+ *   ```
+ */
+export function registerLanguageRenderer(lang: string, renderer: LanguageRenderer): void {
+  if (!lang) throw new Error("registerLanguageRenderer: lang must be non-empty");
+  if (typeof renderer !== "function") {
+    throw new Error("registerLanguageRenderer: renderer must be a function");
+  }
+  languageRenderers.set(lang.toLowerCase().trim(), renderer);
+}
+
+/** Test-only escape hatch — clears the registry. Never called in production. */
+export function _clearLanguageRenderersForTest(): void {
+  languageRenderers.clear();
+}
+
+/** Test-only — list the registered language tokens. */
+export function _registeredLanguageRenderersForTest(): string[] {
+  return [...languageRenderers.keys()];
+}
+
+/**
+ * Extract the bare language token from a marked `lang` field.
+ *
+ * marked passes through everything after the fence opener up to the
+ * first newline; metadata like `` ```mermaid {theme: dark} `` arrives
+ * as `"mermaid {theme: dark}"`. The registry keys on the bare token,
+ * so we split on whitespace and lower-case.
+ */
+function bareLanguage(lang: string): string {
+  const head = (lang ?? "").trim().split(/\s+/)[0] ?? "";
+  return head.toLowerCase();
+}
+
+/**
+ * Run a registered renderer with a guarantee it cannot break the document.
+ *
+ * If a third-party renderer throws, returns undefined, or returns a fragment
+ * that contains nothing parseable, the fence falls back to the plain
+ * codeblock shell. The thrown error is re-thrown through the wrapper's
+ * caller so the dev console still surfaces it, but the markdown continues to
+ * render — the next fence, the headings, the prose — exactly as before. This
+ * is the property the acceptance criteria call "整篇文档其余部分正常渲染":
+ * one bad renderer does not blank the page.
+ */
+function safeLanguageRenderer(lang: string, source: string): string | null {
+  const key = bareLanguage(lang);
+  if (!key) return null;
+  const renderer = languageRenderers.get(key);
+  if (!renderer) return null;
+  try {
+    const out = renderer(source, lang);
+    if (typeof out !== "string" || out.length === 0) return null;
+    return out;
+  } catch (cause) {
+    // Surface in dev console; never let it propagate.
+    if (typeof console !== "undefined") {
+      console.warn(`[markdown] language renderer for "${key}" threw`, cause);
+    }
+    return null;
+  }
+}
+
+/**
  * Emit upstream's code-block and inline-code markup.
  *
  * This matters because upstream neutralises the browser default on bare blocks —
@@ -46,8 +178,15 @@ function escapeHtml(value: string): string {
 marked.use({
   renderer: {
     code({ text, lang }: { text: string; lang?: string }) {
-      const language = (lang ?? "").trim().split(/\s+/)[0] ?? "";
+      const language = bareLanguage(lang ?? "");
+      // Language-aware path: dispatch to the registered renderer (the seam
+      // future plugins attach to). The match is on the bare language token
+      // — `mermaid` matches but `mermaid-foo` does not.
       const label = language ? `<span class="codeblock-lang">${escapeHtml(language)}</span>` : "";
+      if (language) {
+        const custom = safeLanguageRenderer(lang ?? language, text);
+        if (custom !== null) return custom;
+      }
       return [
         `<div class="codeblock-shell">`,
         `<div class="codeblock-toolbar">${label}</div>`,
@@ -171,3 +310,9 @@ export function parseMarkdown(source: string): string {
 export function renderMarkdown(source: string): string {
   return sanitize(parseMarkdown(source));
 }
+
+// Re-export escape helpers so a third-party renderer does not have to ship its
+// own — the parser path's escape rules and the sanitiser's escape rules have
+// to stay in sync, and giving the registry a one-stop import is the cheapest
+// way to keep that contract honest.
+export { escapeHtml, escapeAttribute };

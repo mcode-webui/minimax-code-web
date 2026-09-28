@@ -4,6 +4,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import * as api from "@/lib/api";
 import { renderMarkdown } from "@/lib/markdown";
+import { MarkdownHtml } from "./markdown-html";
+import "../lib/mermaid-renderer"; // registers the mermaid language renderer
 import { reportActionError } from "@/lib/action-errors";
 import { findSubagentForBlock } from "@/lib/agent-team-lookup";
 import { badgeLabelAndGlyph, agentLabel } from "@/lib/i18n-agent-team";
@@ -510,12 +512,14 @@ function MarkdownBody({ text, streaming }: { text: string; streaming?: boolean }
   const html = useMemo(() => renderMarkdown(text), [text]);
   return (
     <div className="matrix-markdown message-content relative max-w-full flex-1 overflow-hidden text-pretty">
-      <div
-        className="matrix-markdown matrix-markdown--shifted mavis-chat-markdown-flow"
-        // Sanitised by lib/markdown.ts: only a small allowlist of tags and
-        // attributes survives, and only http(s)/mailto/#/relative hrefs.
-        dangerouslySetInnerHTML={{ __html: html }}
-      />
+      <div className="matrix-markdown matrix-markdown--shifted mavis-chat-markdown-flow">
+        {/* Slice 23 — MarkdownHtml walks the rendered DOM, finds the
+            mermaid-block placeholders, and mounts the lazy mermaid
+            component into each one. The parser seam
+            (`registerLanguageRenderer` in lib/markdown.ts) means
+            third-party diagram renderers can attach here too. */}
+        <MarkdownHtml html={html} />
+      </div>
       {streaming ? (
         <span className="ml-[2px] inline-block animate-pulse text-text_default_accent">▍</span>
       ) : null}
