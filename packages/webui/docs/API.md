@@ -812,6 +812,11 @@ against:
 }
 ```
 
+`path` is the **realpath-normalised absolute form** (the shared gate
+resolves symlinks before anything else — the same slice-16 form every
+`/api/fs/*` route returns; on macOS, a write to `/var/folders/…`
+answers `/private/var/folders/…`).
+
 **Errors** — 400 `missing-path` / `missing-content` / `invalid-content` /
 `not-a-regular-file`; 403 out-of-root (shared gate; a missing path
 normally fails containment here with the realpath error — the read route

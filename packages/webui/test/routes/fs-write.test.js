@@ -20,7 +20,7 @@
 
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -148,7 +148,13 @@ describe("fs routes — POST /api/fs/write", () => {
       assert.equal(res.status, 200);
       const parsed = JSON.parse(res.body);
       assert.equal(parsed.ok, true);
-      assert.equal(parsed.path, file);
+      // The gate answers with the REALPATH form (safePath surfaces
+      // gate.real — the same slice-16 behaviour every /api/fs/* route
+      // has). On macOS `os.tmpdir()` lives under /var, which is a
+      // symlink to /private/var, so the joined fixture path and the
+      // realpath answer differ. Compare against the resolved form —
+      // the server behaviour is correct and stays untouched.
+      assert.equal(parsed.path, realpathSync(file));
       assert.equal(readFileSync(file, "utf8"), "# new heading\n");
       assert.equal(parsed.size, Buffer.byteLength("# new heading\n", "utf8"));
       assert.equal(typeof parsed.mtime, "number");
