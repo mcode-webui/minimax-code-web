@@ -25,6 +25,8 @@
 
 import { test, describe, beforeEach } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 import {
   highlightCode,
@@ -400,3 +402,45 @@ describe("_languageToHljsForTest — server label → hljs module", () => {
 function _lineRecordsToStrings(lines: HighlightedLine[]): string[] {
   return lines.map((l) => l.text);
 }
+
+// ---------------------------------------------------------------------
+// Static-source tripwire: the code view has no render harness in this
+// suite (node --test, no DOM), so the two alignment/copy invariants
+// that acceptance keeps catching are pinned against the component and
+// stylesheet sources directly.
+//   1. Selection copy is intercepted on the <pre> — Chromium's
+//      Selection serialisation drops blank lines (empty blocks emit no
+//      newline), so the handler must rewrite the clipboard from the
+//      split's line texts.
+//   2. The gutter/code columns are aligned by a SHARED header grid
+//      row, not by a mirrored padding constant — the constant drifted
+//      1:1 with every header-height change.
+// ---------------------------------------------------------------------
+describe("code view — copy + alignment tripwires", () => {
+  const component = readFileSync(join(import.meta.dirname, "../components/code-view.tsx"), "utf8");
+  const css = readFileSync(join(import.meta.dirname, "../styles/code-preview.css"), "utf8");
+
+  test("selection copy is intercepted on the pre and rewritten from line texts", () => {
+    assert.match(component, /onCopy=\{onSelectionCopy\}/);
+    assert.match(component, /clipboardData\.setData\("text\/plain", text\)/);
+    assert.match(component, /event\.preventDefault\(\)/);
+    assert.match(component, /trailingNewline\) text \+= "\\n"/);
+  });
+
+  test("columns align via the shared header grid row, not a padding mirror", () => {
+    assert.match(css, /\.file-preview-codeblock \{[\s\S]*?display: grid;/);
+    assert.match(css, /\.file-preview-codeblock-header \{[\s\S]*?grid-column: 1 \/ -1;/);
+    // Match the RULE, not the prose: the comment above explains why
+    // the mirror is gone and mentions the old constant by name.
+    const gutterRule = css.match(/\.file-preview-codeblock-gutter-column \{[^}]*\}/);
+    assert.ok(gutterRule, "gutter column rule exists");
+    assert.doesNotMatch(gutterRule[0], /padding-top/, "gutter column must carry no top padding");
+    assert.match(css, /row-gap:\s*6px/);
+    // The header must NOT be inside the horizontal scroller: it has to
+    // span both grid columns.
+    const headerIdx = component.indexOf("file-preview-codeblock-header");
+    const scrollIdx = component.indexOf("file-preview-codeblock-scroll");
+    assert.ok(headerIdx >= 0 && scrollIdx > headerIdx, "header renders before the scroll column");
+    assert.doesNotMatch(component, /sticky right-0 top-0[^"]*file-preview-codeblock-scroll/);
+  });
+});

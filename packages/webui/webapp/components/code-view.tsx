@@ -1,6 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ClipboardEvent as ReactClipboardEvent,
+} from "react";
 
 import {
   highlightCode,
@@ -186,15 +193,17 @@ function CodeBody({
   t: (key: MessageKey) => string;
   locale: Locale;
 }) {
-  // The outer wrapper is a flex row with the gutter as a fixed-width
-  // child and the scroll area as a flex-1 sibling. ONLY the scroll
-  // area scrolls horizontally — the gutter is outside that wrapper,
-  // so it never moves with the code. (An earlier design used a single
-  // grid inside one scrolling div; the gutter scrolled with the code
-  // because it shared the scroll context. Acceptance caught it.)
+  // The outer wrapper is a two-column grid whose HEADER ROW SPANS BOTH
+  // columns (see `.file-preview-codeblock` in the stylesheet): the copy
+  // button row is one shared grid row, so whatever height it takes — a
+  // longer localized label, a narrower window — pushes the gutter and
+  // the code down by the same amount. Only the code column scrolls
+  // horizontally; the gutter stays pinned. (The pre-grid design put a
+  // `padding-top: 40px` mirror on the gutter, which drifted 1:1 with
+  // every header-height change: +22 px of header → dy 22 on all rows.)
   return (
     <div
-      className="file-preview-codeblock flex min-w-0 overflow-hidden rounded-[8px] bg-bg_grouped_secondary_elevated font-family-code text-caption-small-strong text-text_default_primary"
+      className="file-preview-codeblock min-w-0 overflow-hidden rounded-[8px] bg-bg_grouped_secondary_elevated font-family-code text-caption-small-strong text-text_default_primary"
       data-testid="file-preview-codeblock"
     >
       {!split ? (
@@ -254,19 +263,58 @@ function CodeTable({
     }
   };
 
-  // The two children of `file-preview-codeblock`:
-  //   1. <aside class="file-preview-codeblock-gutter-column"> — fixed-width,
-  //      vertically scrollable, gutter column. Lives OUTSIDE the
-  //      horizontal scroll wrapper. Numbers in `font-variant-numeric:
-  //      tabular-nums` so 1/10/100 all sit at the same x.
-  //   2. <div class="file-preview-codeblock-scroll"> — the only element
-  //      with `overflow-x: auto`. Contains the copy button row + the
-  //      pre with the code rows. Horizontal scroll on a long line
-  //      scrolls ONLY this child, exactly the IDE behaviour.
-  //
-  // Vertically, both columns scroll together because the outer wrapper
-  // does NOT have overflow-y set; the inner scroll column gets its own
-  // vertical scroll that drives the gutter's via a sync handler below.
+  // Selection copy: Chromium's Selection serialisation skips a block
+  // whose only child is empty, so a blank line contributes NO newline
+  // and a plain Ctrl+C silently drops every blank line (measured: a
+  // 148-byte source with 4 blanks → 143 chars). Zero-width characters
+  // are not a fix — they would land in the clipboard as invisible
+  // junk, and U+00A0 is what this feature just got rid of. So the
+  // copy event is intercepted and the clipboard is written from the
+  // split's recorded line texts — the same source of truth the Copy
+  // button uses — so a selection round-trips the source bytes:
+  // interior blanks, tabs and (when the selection reaches the last
+  // rendered row of a file that ends with `\n`) the trailing newline.
+  // Line granularity is deliberate: a partial-line selection copies
+  // the whole line, never a truncation of it.
+  const onSelectionCopy = useCallback(
+    (event: ReactClipboardEvent<HTMLPreElement>) => {
+      const sel = window.getSelection();
+      if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return;
+      const rows = event.currentTarget.querySelectorAll<HTMLElement>("[data-line]");
+      if (rows.length === 0) return;
+      const range = sel.getRangeAt(0);
+      let first = -1;
+      let last = -1;
+      rows.forEach((row, i) => {
+        if (range.intersectsNode(row)) {
+          if (first < 0) first = i;
+          last = i;
+        }
+      });
+      if (first < 0) return;
+      let text = split.lines
+        .slice(first, last + 1)
+        .map((line) => line.text)
+        .join("\n");
+      if (last === split.lines.length - 1 && split.trailingNewline) text += "\n";
+      event.clipboardData.setData("text/plain", text);
+      event.preventDefault();
+    },
+    [split],
+  );
+
+  // The grid children of `file-preview-codeblock` (see the stylesheet):
+  //   row 1 — `file-preview-codeblock-header`, spanning BOTH columns.
+  //     The copy button lives here, outside the horizontal scroller,
+  //     so its height is ONE shared grid row: whatever height it
+  //     takes pushes the gutter and the code down by the same amount.
+  //   row 2, column 1 — <aside class="file-preview-codeblock-gutter-column">:
+  //     fixed-width gutter, OUTSIDE the horizontal scroll wrapper.
+  //   row 2, column 2 — <div class="file-preview-codeblock-scroll">:
+  //     the only element with `overflow-x: auto`; holds the pre.
+  // Both row-2 containers start at the same y (header bottom + the
+  // shared row gap) and their rows share the same 22 px min-height,
+  // so gutter row k and code row k cannot drift — no shared constant.
   const gutterRef = useRef<HTMLDivElement | null>(null);
   const scrollRef = useRef<HTMLPreElement | null>(null);
   const syncScroll = useCallback((source: "gutter" | "scroll") => {
@@ -278,10 +326,21 @@ function CodeTable({
   }, []);
   return (
     <>
+      <div className="file-preview-codeblock-header col-span-2 flex justify-end bg-transparent">
+        <button
+          type="button"
+          onClick={() => void onCopy()}
+          aria-label={tFileOpen(locale, "fileOpen.code.copy.aria")}
+          data-testid="file-preview-code-copy"
+          className="m-1.5 rounded-[6px] border border-border_default bg-bg_default_scrim px-2 py-0.5 text-caption-small-strong text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_hover"
+        >
+          {tFileOpen(locale, "fileOpen.code.copy")}
+        </button>
+      </div>
       <aside
         ref={gutterRef}
         onScroll={() => syncScroll("gutter")}
-        className="file-preview-codeblock-gutter-column thin-scrollbar flex-none overflow-y-auto overflow-x-hidden border-r border-border_default bg-bg_grouped_secondary py-1 font-variant-numeric tabular-nums text-text_default_quaternary"
+        className="file-preview-codeblock-gutter-column thin-scrollbar flex-none overflow-y-auto overflow-x-hidden border-r border-border_default bg-bg_grouped_secondary font-variant-numeric tabular-nums text-text_default_quaternary"
         data-testid="file-preview-codeblock-gutter-column"
         aria-hidden
       >
@@ -295,21 +354,11 @@ function CodeTable({
           </div>
         ))}
       </aside>
-      <div className="file-preview-codeblock-scroll min-w-0 flex-1 overflow-auto">
-        <div className="sticky right-0 top-0 z-10 flex justify-end bg-transparent">
-          <button
-            type="button"
-            onClick={() => void onCopy()}
-            aria-label={tFileOpen(locale, "fileOpen.code.copy.aria")}
-            data-testid="file-preview-code-copy"
-            className="m-1.5 rounded-[6px] border border-border_default bg-bg_default_scrim px-2 py-0.5 text-caption-small-strong text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_hover"
-          >
-            {tFileOpen(locale, "fileOpen.code.copy")}
-          </button>
-        </div>
+      <div className="file-preview-codeblock-scroll min-w-0 overflow-auto">
         <pre
           ref={scrollRef}
           onScroll={() => syncScroll("scroll")}
+          onCopy={onSelectionCopy}
           className="file-preview-codeblock-pre m-0"
           data-testid="file-preview-code-pre"
         >

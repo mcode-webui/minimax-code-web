@@ -124,19 +124,27 @@
  *
  * `font-variant-numeric: tabular-nums` keeps 1/10/100/1000 aligned.
  *
- * The scroll column has a copy-button row at the top (m-1.5 = 6 px
- * margin + ~20 px content) and the `pre` has `padding: 6px 0 6px 0`.
- * That sums to ~36 px from the wrapper top to the first code row.
- * Without compensation, the gutter starts at y=0 and the first code
- * row at y=36 — every gutter row sits 36 px above its code row, and
- * code row 3 (gutter row 3) never aligns. `padding-top: 36px` on
- * the gutter column reserves the same vertical space so the first
- * gutter row's y matches the first code row's y exactly. This is
- * NOT a "magic number" — it's the exact mirror of the scroll
- * column's existing layout, measured once and applied to both
- * sides. (Both sides could be solved with a shared grid template;
- * padding-top is simpler and reads better.)
+ * Row geometry is structural: `.file-preview-codeblock` is a grid
+ * whose row 1 (`.file-preview-codeblock-header`, the copy button)
+ * SPANS BOTH columns. Whatever height the header takes — a longer
+ * localized label that wraps, a narrower window — pushes the gutter
+ * and the code down by the same amount, so the two columns cannot
+ * drift apart by construction. (An earlier revision mirrored the
+ * header height as `padding-top: 40px` here and drifted 1:1 with
+ * every header-height change: +22 px of header padding moved every
+ * row's dy to 22.) Both row-2 containers start at the same y —
+ * header bottom + the grid's 6 px row gap, which is what the pre's
+ * old `padding-top: 6px` used to provide — so the gutter column
+ * carries NO vertical padding of its own.
  * --------------------------------------------------------------------- */
+.file-preview-codeblock {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  /* The 6 px the pre used to pad above its rows now lives here, so it
+   * applies to BOTH row-2 columns identically. */
+  row-gap: 6px;
+}
+
 .file-preview-codeblock-gutter-column {
   /* `flex: none` keeps the gutter at its content width; the parent
    * is a flex row so the scroll column picks up the remainder. */
@@ -144,16 +152,10 @@
   /* A right-side divider so the eye can pick the gutter from the code
    * on dense files. */
   border-right: 1px solid var(--border_default);
-  /* Mirror the scroll column's top: copy button (m-1.5 = 6 px margin
-   * top + ~22 px content + 6 px margin bottom = ~34 px) + pre
-   * padding-top (6 px) = 40 px of reserved space before the first
-   * gutter row. Together with the 6 px below, the gutter column's
-   * vertical bounds match the scroll column's. Verified by Playwright
-   * bounding-rect measurement on the test fixture with blanks:
-   * code row 1 top (238) - gutter row 1 top (234) = 4 px with 36,
-   * so 40 closes the gap (gutter row 1 top = 198 + 40 = 238). */
-  padding-top: 40px;
-  padding-bottom: 6px;
+  /* NO vertical padding here: the first gutter row must start at the
+   * exact y of the first code row. The shared header row plus the
+   * grid row gap place both columns' rows, so any padding on this
+   * column would re-introduce a one-sided offset. */
 }
 
 .file-preview-codeblock-gutter {
@@ -194,7 +196,7 @@
  * contains the code rows; its `min-width: max-content` makes the row
  * grow with the longest line, which triggers the parent's horizontal
  * scroll. The gutter column does NOT inherit this scroll — it lives
- * in the parent flex row, not inside this scroll container.
+ * in the parent grid, not inside this scroll container.
  *
  * Padding on the pre matches the gutter's horizontal padding (8px on
  * each side) so the first character of each code line aligns with
@@ -202,14 +204,25 @@
  * --------------------------------------------------------------------- */
 .file-preview-codeblock-scroll {
   min-width: 0;
-  /* `flex: 1 1 0` makes this column take the remaining space after
-   * the gutter's intrinsic width is satisfied. */
-  flex: 1 1 0;
+  /* The grid's `minmax(0, 1fr)` column sizes this to the remaining
+   * space after the gutter's intrinsic width; `min-width: 0` lets a
+   * wide row overflow into a scrollbar instead of stretching the
+   * column. */
 }
 
 .file-preview-codeblock-pre {
   margin: 0;
-  padding: 6px 0 6px 0;
+  /* No top padding: the grid row gap between the shared header row
+   * and the columns provides the 6 px, identically for the gutter.
+   * Only the bottom stays, for breathing room under the last row. */
+  padding: 0 0 6px 0;
+}
+
+.file-preview-codeblock-header {
+  /* Row 1 of the `.file-preview-codeblock` grid, spanning both
+   * columns (`col-span-2` in code-view.tsx). Its height is shared
+   * by construction: the gutter and the code start below it. */
+  grid-column: 1 / -1;
 }
 
 .file-preview-codeblock-pre > code {
