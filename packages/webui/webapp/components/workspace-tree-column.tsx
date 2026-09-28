@@ -51,6 +51,7 @@ import {
 } from "@/lib/workspace-tabs-state";
 import * as api from "@/lib/api";
 import { searchFootSegments } from "@/lib/fs-search";
+import { useFsTreeReveal, FsTreeRevealProvider } from "@/lib/fs-tree-reveal";
 import { useSessionContext } from "@/lib/store";
 
 /**
@@ -108,6 +109,18 @@ export interface TreeColumnProps {
  *                          will render the file tree.
  */
 export function TreeColumn(props: TreeColumnProps) {
+  // Wrap the column body in the reveal provider so the sidebar
+  // 搜索 surface and the file-tree panel share the cross-surface
+  // expand-to-hit channel. Single instance per column; harmless
+  // to nest, but unnecessary.
+  return (
+    <FsTreeRevealProvider>
+      <TreeColumnInner {...props} />
+    </FsTreeRevealProvider>
+  );
+}
+
+function TreeColumnInner(props: TreeColumnProps) {
   const { tabs, treeActiveId, workspaceDir, locale, t, onPickSurface } = props;
   const treeTabs = tabs.filter((tab) => columnRoleForKind(tab.kind) === "tree");
   const activeTab = treeTabs.find((tab) => tab.id === treeActiveId) ?? null;
@@ -379,12 +392,37 @@ function SearchSurface({
     };
   }, []);
 
+  // Slice 19b follow-up — sidebar click reveals the match in the
+  // file tree. We use the shared `fs-tree-reveal` channel so the
+  // tree panel applies the same expand-to-hit + highlight it
+  // already uses for its own server search. Order matters: we
+  // request the reveal BEFORE switching surface, so when the
+  // files surface mounts it can immediately consume the request
+  // (the channel is fire-and-forget — if no subscriber is mounted
+  // yet the request is dropped, which is fine because the user is
+  // moving to the surface that owns the panel). The reveal channel
+  // keeps the latest `serverSearch.result` accessible via a ref
+  // so the click handler does not need to close over the result.
+  const latestResultRef = useRef(serverSearch.result);
+  latestResultRef.current = serverSearch.result;
+  const { requestReveal } = useFsTreeReveal();
   const onPickMatch = useCallback(
     (path: string) => {
+      // Find the match in the most recent result so the panel can
+      // expand-to-hit using the same `ancestors` chain the in-panel
+      // search uses. If the panel subscriber is not mounted yet
+      // (we are still on the search surface), the request is
+      // dropped — switching to files surface is what activates
+      // the panel.
+      const result = latestResultRef.current;
+      const match = result?.matches.find((m) => m.path === path);
+      if (match && workspaceDir) {
+        requestReveal({ matches: [match], root: workspaceDir });
+      }
       onOpenFile(path);
       onPickSurface("files");
     },
-    [onOpenFile, onPickSurface],
+    [onOpenFile, onPickSurface, requestReveal, workspaceDir],
   );
 
   const footerSegments = useMemo(

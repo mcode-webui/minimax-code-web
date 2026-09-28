@@ -27,6 +27,8 @@ import {
   pathsToExpand,
   searchFootSegments,
 } from "@/lib/fs-search";
+import { useFsTreeRevealSubscriber } from "@/lib/fs-tree-reveal";
+import { classifyCredentialPath } from "@/lib/credential-file";
 import { InboxList } from "./inbox";
 import { useSessionContext } from "@/lib/store";
 import { applyTheme, currentTheme } from "@/lib/theme";
@@ -618,6 +620,50 @@ export function FilesPanel({
   const { state } = useSessionContext();
   const workspaceDir = state?.workspace.dir ?? "";
 
+  // Slice 19b follow-up — sidebar 搜索 → click → reveal. The
+  // sidebar search surface fires a request on this channel;
+  // FilesPanel applies the same expand-to-hit + highlight it
+  // already uses for its own server search. `fetchNodeRef` keeps
+  // a live ref to the current `fetchNode` so the subscriber
+  // (registered once at mount) always calls the latest closure
+  // without re-subscribing.
+  const fetchNodeRef = useRef<
+    ((path: string, opts?: { force?: boolean }) => Promise<void> | void) | null
+  >(null);
+  useFsTreeRevealSubscriber((req) => {
+    // Drop the request if the user has since switched workspaces.
+    if (!workspaceDir || req.root !== workspaceDir) return;
+    const toExpand = pathsToExpand(req.matches, workspaceDir);
+    // Defer to the next microtask so the panel's hydration effect
+    // (which runs in the same commit and sets `expanded` from
+    // sessionStorage) settles first. Without this, the hydration
+    // effect's `setExpanded([])` runs AFTER the subscriber's
+    // `setExpanded([codersday])` in the same React commit batch,
+    // and React keeps the last write — the reveal gets dropped.
+    // queueMicrotask schedules the call after the current render
+    // commit completes but before any paint, so the visible state
+    // is correct on the very next frame.
+    queueMicrotask(() => {
+      if (toExpand.length > 0) {
+        setExpanded((current) => Array.from(new Set([...current, ...toExpand])));
+        for (const path of toExpand) {
+          if (fetchNodeRef.current) void fetchNodeRef.current(path);
+        }
+      }
+      const paths = req.matches.map((m) => m.path);
+      if (paths.length > 0) {
+        setHighlightedPaths(new Set(paths));
+        if (highlightClearTimer.current !== null) {
+          window.clearTimeout(highlightClearTimer.current);
+        }
+        highlightClearTimer.current = window.setTimeout(() => {
+          setHighlightedPaths(new Set());
+          highlightClearTimer.current = null;
+        }, 4000);
+      }
+    });
+  });
+
   // Hydrate persisted slice once per workspace change. We keep the
   // three slices (expanded set, filter string, hidden flag) in one
   // payload so the wire format is shared with ticket 07's future
@@ -994,6 +1040,11 @@ export function FilesPanel({
     [nodes, showHidden, t],
   );
 
+  // Keep the reveal-subscriber closure (registered once at mount)
+  // pointed at the latest `fetchNode` so a sidebar click can call
+  // through without re-subscribing every render.
+  fetchNodeRef.current = fetchNode;
+
   // When the workspace dir changes (user switches project) drop every
   // cached node — the previous tree does not belong to the new
   // workspace. Without this, the persisted `expanded` slice is the
@@ -1350,6 +1401,13 @@ export function FilesPanel({
           // one place (the iframe src type-check does the same).
           const isHtml = isHtmlPath(row.entry.name);
           const isHighlighted = highlightedPaths.has(row.path);
+          // Re-classify the basename against the slice-16 credential
+          // predicate on every render so the badge survives the
+          // loaded transition (a server match whose parent dir gets
+          // fetched flips `source` from "server" to "loaded" — without
+          // this re-classification the credential affordance would
+          // vanish when the row stops being a server-source row).
+          const credential = !!classifyCredentialPath(row.entry.name);
           return (
             <FileRow
               key={`file:${row.path}`}
@@ -1358,6 +1416,7 @@ export function FilesPanel({
               now={now}
               copied={isCopied}
               highlighted={isHighlighted}
+              credential={credential}
               onOpen={() =>
                 isHtml ? onOpenInBrowser(row.path) : onOpenFile(row.path)
               }
@@ -1375,8 +1434,17 @@ export function FilesPanel({
           const isCopied = copiedPath === row.path;
           const isHtml = isHtmlPath(row.entry.name);
           const isHighlighted = highlightedPaths.has(row.path);
-          const credential =
+          // Same re-classification as the loaded rows above: the
+          // server-supplied `credential` flag is the source of
+          // truth, but the basename predicate is what survives a
+          // future re-render after this row's parent dir has been
+          // fetched (the row will transition from "server" to
+          // "loaded" and the server result will eventually be
+          // dropped — we want the affordance to stay).
+          const serverCredential =
             serverSearch.result?.matches.find((m) => m.path === row.path)?.credential ?? false;
+          const credential =
+            serverCredential || !!classifyCredentialPath(row.entry.name);
           return (
             <FileRow
               key={`server:${row.path}`}
