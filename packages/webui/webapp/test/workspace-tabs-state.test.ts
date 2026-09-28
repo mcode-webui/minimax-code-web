@@ -502,59 +502,87 @@ describe("computeColumnLayout — defect A (no dead gutter)", () => {
       `conversation ${conversation.width} outside the expected band`);
   });
 
-  test("shrinking the preview column (via stored width) widens conversation — visible reflow", () => {
-    // The drag-resize on the divider between conversation and
-    // preview updates `widths.preview`. After the drag, the
-    // conversation column visibly reflows because conversation
-    // is elastic and absorbs the released space.
+  test("the conversation divider drives the layout (defect A — no write-only control)", () => {
+    // The conversation divider is a draggable control. A drag
+    // updates `widths.conversation`; the algorithm must read
+    // that stored value and re-distribute the overflow to
+    // preview/tree. Previously (slice 15) the algorithm
+    // computed conversation as a pure leftover of the fixed
+    // columns, making the divider a write-only control that
+    // stored a gesture and moved nothing — the original
+    // "调整右侧边栏的宽度表现不正常" defect. Slice 17 makes
+    // conversation a real stored width: the algorithm honours
+    // the user's drag within the [280, 768] band, and folds
+    // the fixed columns first when the row overflows.
+    //
+    // At 1920 (room to grow) the drag to 720 is honoured
+    // exactly — preview/tree absorb the leftover up to their
+    // own maxes and conversation stays at 720.
+    const dragged = setColumnWidth(DEFAULT_COLUMN_LAYOUT, "conversation", 720);
+    const summary = computeColumnLayout(dragged, 1920, 1920);
+    const conversation = summary.segments.find((s) => s.id === "conversation")!;
+    // Conversation sits at the user's stored 720 — the
+    // algorithm honoured the drag instead of recomputing it
+    // as a leftover.
+    assert.equal(conversation.width, 720,
+      `conversation ${conversation.width} should be the stored 720`);
+  });
+
+  test("dragging the conversation divider at 1280 visibly narrows conversation", () => {
+    // The earlier "elastic fill" model computed conversation as
+    // pure leftover of the fixed columns, so a drag produced
+    // no visible change on the conv column itself — the divider
+    // was a write-only control. Slice 17 honours the stored
+    // drag: dragging the conv/preview divider narrower visibly
+    // narrows conversation AND grows preview/tree (visible on
+    // both surfaces, not a write-only gesture).
+    //
+    // The user's narrowing drag (conv 640 → 280): conv stored
+    // hits the floor; preview/tree absorb the released 360px
+    // (preview grows to its default 400, tree grows to its
+    // max 600).
     const before = computeColumnLayout(DEFAULT_COLUMN_LAYOUT, 1280, 1280);
     const conversationBefore = before.segments.find((s) => s.id === "conversation")!.width;
     const previewBefore = before.segments.find((s) => s.id === "preview")!.width;
-    // The page wires the drag as `setColumnWidth(layout, "preview", preview - 120)`.
-    const dragged = setColumnWidth(DEFAULT_COLUMN_LAYOUT, "preview", previewBefore - 120);
+    const treeBefore = before.segments.find((s) => s.id === "tree")!.width;
+    const dragged = setColumnWidth(DEFAULT_COLUMN_LAYOUT, "conversation", 280);
     const after = computeColumnLayout(dragged, 1280, 1280);
     const conversationAfter = after.segments.find((s) => s.id === "conversation")!.width;
     const previewAfter = after.segments.find((s) => s.id === "preview")!.width;
-    // Preview is narrower after the drag (the user's gesture).
-    assert.ok(previewAfter < previewBefore,
-      `preview should narrow: ${previewBefore} -> ${previewAfter}`);
-    // Conversation widens because it absorbs the released 120px
-    // (the elastic-column fix for defect A).
-    assert.ok(conversationAfter > conversationBefore,
-      `conversation should widen: ${conversationBefore} -> ${conversationAfter}`);
-    // Tree column stays visible — preview folds first, tree is the
-    // user-pinned feature column.
-    const tree = after.segments.find((s) => s.id === "tree")!;
-    assert.ok(tree.visible && tree.width >= COLUMN_SPECS.tree.minWidth);
+    const treeAfter = after.segments.find((s) => s.id === "tree")!.width;
+    // Conversation narrowed visibly.
+    assert.ok(conversationAfter < conversationBefore,
+      `conversation should narrow: ${conversationBefore} -> ${conversationAfter}`);
+    assert.equal(conversationAfter, 280,
+      `conversation ${conversationAfter} should clamp at the stored min`);
+    // The released width went to the fixed columns — preview
+    // grew, tree grew. The visible reflow on both surfaces is
+    // what the user sees when they drag.
+    assert.ok(previewAfter > previewBefore,
+      `preview should grow as conversation releases width: ${previewBefore} -> ${previewAfter}`);
+    assert.ok(treeAfter > treeBefore,
+      `tree should grow as conversation releases width: ${treeBefore} -> ${treeAfter}`);
   });
 
-  test("a stored conversation width outside bounds clamps; rendered width is the elastic fill", () => {
-    // Edge case: a buggy stored width of 1500 on the conversation
-    // column must clamp to [minWidth, maxWidth] (the
+  test("a stored conversation width above max clamps to maxWidth", () => {
+    // Edge case: a buggy stored width of 1500 on the
+    // conversation column must clamp to maxWidth (the
     // drag-resize handler clamps on every move so this is a
-    // static-source tripwire for the clampWidth path). The
-    // rendered width is the elastic fill — at 1280 the row
-    // does not have enough room to grant maxWidth, so the fill
-    // lands at the leftover.
+    // static-source tripwire for the clampWidth path).
     const layout = setColumnWidth(DEFAULT_COLUMN_LAYOUT, "conversation", 1500);
-    const summary = computeColumnLayout(layout, 1280, 1280);
+    const summary = computeColumnLayout(layout, 1920, 1920);
     const conversation = summary.segments.find((s) => s.id === "conversation")!;
-    assert.ok(conversation.width <= COLUMN_SPECS.conversation.maxWidth);
-    assert.ok(conversation.width >= COLUMN_SPECS.conversation.minWidth);
-    // Specifically: the rendered width equals the elastic fill.
-    // Slice 17 collapsed the sidebar in WorkspaceColumns (the
-    // AppShell owns it), so the wrapper sees only preview +
-    // tree as fixed siblings — the leftover is
-    // 1280 - (preview + tree).
-    assert.equal(conversation.width, 1280 - (COLUMN_SPECS.preview.defaultWidth + COLUMN_SPECS.tree.defaultWidth));
+    assert.equal(conversation.width, COLUMN_SPECS.conversation.maxWidth);
   });
 
-  test("fold priority: preview folds first, then tree, never sidebar", () => {
+  test("fold priority: preview folds first, then tree (conversation last)", () => {
     // Tight container forces the fix to fold feature columns.
-    // Preview folds before tree (the user's priority); sidebar
-    // never folds. Conversation drops toward 0 only when the sum
-    // of fixed minimums still exceeds the container — graceful
-    // last-resort degradation rather than horizontal overflow.
+    // Preview folds before tree (the user's priority); the
+    // conversation column folds as a last resort (only when
+    // preview + tree + conversation min still exceed the
+    // container). Sidebar is AppShell chrome and the wrapper
+    // always sees it as 0 — the fold priority applies to the
+    // three wrapper-owned columns.
     const layout: typeof DEFAULT_COLUMN_LAYOUT = {
       ...DEFAULT_COLUMN_LAYOUT,
       widths: {
@@ -566,12 +594,8 @@ describe("computeColumnLayout — defect A (no dead gutter)", () => {
       collapsed: { sidebar: false, conversation: false, preview: false, tree: false },
     };
     const summary = computeColumnLayout(layout, 600, 600);
-    const sidebar = summary.segments.find((s) => s.id === "sidebar")!;
     const tree = summary.segments.find((s) => s.id === "tree")!;
     const preview = summary.segments.find((s) => s.id === "preview")!;
-    // Sidebar (chrome) is always at least at its minWidth.
-    assert.ok(sidebar.width >= COLUMN_SPECS.sidebar.minWidth,
-      `sidebar ${sidebar.width} < min ${COLUMN_SPECS.sidebar.minWidth}`);
     // Preview folds before tree (the user's policy).
     assert.ok(preview.width <= tree.width,
       `preview ${preview.width} > tree ${tree.width} — fold priority violated`);
@@ -725,5 +749,37 @@ test("FORWARD-COMPAT: a slice-15 payload (single activeId + panel/secondary colu
     assert.equal(out.tabStrip.treeActiveId, "git");
     // The scroll position survived.
     assert.equal((out.tabStrip.tabs[3] as { scrollTop: number }).scrollTop, 240);
+  });
+
+  test("FORWARD-COMPAT: a slice-15 payload forces collapsed.sidebar=true so AppShell owns the chrome cleanly", () => {
+    // Slice 15 stored `collapsed.sidebar:false` (its own
+    // default). Slice 17 made AppShell the owner of the
+    // session sidebar — the WorkspaceColumns wrapper must NOT
+    // allocate ~220-400px for a slot that renders `null`. A
+    // legacy payload that says `collapsed.sidebar:false` would
+    // otherwise conjure a ghost column and crush the chat
+    // column below its minimum on upgrade. The deserializer
+    // forces `collapsed.sidebar=true` on read regardless of what
+    // the payload says.
+    const legacyPayload = JSON.stringify({
+      version: WORKSPACE_TABS_VERSION,
+      cid,
+      tabs: { tabs: [], previewActiveId: null, treeActiveId: null, activeId: null, fileScrolls: {} },
+      layout: {
+        widths: { sidebar: 240, conversation: 720, preview: 400, tree: 340 },
+        // `collapsed.sidebar:false` was slice 15's own default.
+        collapsed: { sidebar: false, conversation: false, preview: false, tree: false },
+      },
+    });
+    const out = deserializeWorkspaceTabs(legacyPayload, cid);
+    assert.equal(out.columnLayout.collapsed.sidebar, true,
+      "collapsed.sidebar must be forced to true on read — AppShell owns the sidebar");
+    // The chat column still gets its sensible width at 1280
+    // (the legacy payload's conversation=720 lands at whatever
+    // fits after preview/tree folded to their minimums).
+    const summary = computeColumnLayout(out.columnLayout, 1040, 1280);
+    const conversation = summary.segments.find((s) => s.id === "conversation")!;
+    assert.ok(conversation.width >= COLUMN_SPECS.conversation.minWidth,
+      `conversation ${conversation.width} below min — ghost sidebar would be the cause`);
   });
 });

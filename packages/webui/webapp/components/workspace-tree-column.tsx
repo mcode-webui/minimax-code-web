@@ -79,6 +79,16 @@ export interface TreeColumnProps {
   onPickSurface: (kind: SurfaceTabKind) => void;
   /** Called when the user clicks the close button on a tree tab. */
   onClose: (id: string) => void;
+  /** Called when the user clicks a non-HTML file row. Wired by
+   *  the page to `openFileTab(path)` so a click opens a preview
+   *  tab in the preview column. Slice 17 — this is the path the
+   *  reference flow uses ("click `README.md` in the tree →
+   *  preview opens"); the no-op wiring here would sever it. */
+  onOpenFile: (path: string) => void;
+  /** Called when the user clicks an `.html` / `.htm` row. Wired
+   *  by the page to `openBrowserTab(path)` so a click opens a
+   *  browser tab in the preview column. */
+  onOpenInBrowser: (path: string) => void;
 }
 
 /**
@@ -142,18 +152,15 @@ export function TreeColumn(props: TreeColumnProps) {
           <FilesPanel
             t={t}
             locale={locale}
-            // The tree column owns the file tree. The slice-12
-            // `onOpenFile` callback opens a preview tab in the
-            // preview column; the slice-12 `onOpenInBrowser`
-            // callback opens a browser tab in the preview
-            // column. Both are wired through the page so the
-            // preview column updates in lockstep.
-            onOpenFile={() => {
-              /* wired by the page via the FilesPanel callback in the active body wrapper */
-            }}
-            onOpenInBrowser={() => {
-              /* wired by the page via the FilesPanel callback in the active body wrapper */
-            }}
+            // The tree column owns the file tree. The page-level
+            // callbacks route file rows through `openFileTab` /
+            // `openBrowserTab`, which open a preview tab (or
+            // browser tab) in the preview column. Slice 17 wired
+            // these back in after a regression that left them as
+            // no-ops and severed the click-a-file-to-preview-it
+            // reference flow.
+            onOpenFile={props.onOpenFile}
+            onOpenInBrowser={props.onOpenInBrowser}
           />
         ) : activeTab && activeKind === "git" ? (
           <GitPanel t={t} />

@@ -18,14 +18,17 @@
 //
 //   2. **Column layout** — four columns in DOM order:
 //        sidebar | conversation | preview | tree
-//      `conversation` is the fluid column (the chat content
-//      absorbs the leftover space and never grows past its
-//      [minWidth, maxWidth] band). The other three are fixed-pixel
-//      columns. Reducers are `setColumnWidth`, `resetColumnWidth`,
-//      `setColumnCollapsed`, `setFluidColumnTarget`, and the pure
-//      predicate `computeColumnLayout` that folds the layout down
-//      to a list of `{ column, width }` segments that drive the
-//      page-level flex row.
+//      `conversation` is the user-draggable column whose stored
+//      width (clamped to [minWidth, maxWidth]) the
+//      `computeColumnLayout` algorithm honours — it re-distributes
+//      overflow among the fixed columns (preview, tree) and only
+//      folds conversation as a last resort. The other three are
+//      fixed-pixel columns whose stored widths also feed the
+//      algorithm. Reducers are `setColumnWidth`, `resetColumnWidth`,
+//      `setColumnCollapsed`, and the pure predicate
+//      `computeColumnLayout` that folds the layout down to a list
+//      of `{ column, width }` segments that drive the page-level
+//      flex row.
 //
 // Why this lives in its own module. Every reducer here is a pure
 // function on plain objects — no React, no DOM, no localStorage.
@@ -361,11 +364,12 @@ export function resetTabs(): TabStripState {
  *   preview      — file preview / browser (the "viewing surface")
  *   tree         — file tree / git / tasks (the "navigation surface")
  *
- * Each column has its own width slot. The conversation column's
- * stored width is the **target / preferred** width — the
- * renderer clamps it to `[minWidth, maxWidth]` and gives the
- * leftover to whichever of the four columns is fluid (currently
- * only `conversation`).
+ * Each column has its own width slot. Conversation carries a
+ * user-draggable stored width (the divider that the user can
+ * resize); the algorithm honours it within the [minWidth,
+ * maxWidth] band and re-distributes overflow to the fixed
+ * columns (preview, tree) before folding conversation as a
+ * last resort.
  */
 export type ColumnId = "sidebar" | "conversation" | "preview" | "tree";
 
@@ -373,7 +377,10 @@ export type ColumnId = "sidebar" | "conversation" | "preview" | "tree";
  * Whether a column is fluid. Fluid columns absorb the leftover
  * width after the fixed-pixel columns have claimed their
  * stored widths. Today only `conversation` is fluid; the others
- * are fixed-pixel.
+ * are fixed-pixel. The column layout algorithm in
+ * `computeColumnLayout` reads each column's stored width,
+ * clamps to its [min, max] band, then re-distributes overflow
+ * / leftover across the row.
  */
 export type ColumnFlow = "fixed" | "fluid";
 
@@ -537,23 +544,7 @@ export interface ColumnLayoutSummary {
   narrowed: boolean;
 }
 
-interface FixedColumnWidths {
-  sidebar: number;
-  preview: number;
-  tree: number;
-}
-
-/**
- * Compute the live widths of the fixed-pixel columns, honouring
- * the collapse flags. A collapsed column contributes 0; a visible
- * column contributes its clamped stored width.
- */
-function computeFixedWidths(layout: ColumnLayoutState): FixedColumnWidths {
-  const sidebar = layout.collapsed.sidebar ? 0 : clampWidth("sidebar", layout.widths.sidebar);
-  const preview = layout.collapsed.preview ? 0 : clampWidth("preview", layout.widths.preview);
-  const tree = layout.collapsed.tree ? 0 : clampWidth("tree", layout.widths.tree);
-  return { sidebar, preview, tree };
-}
+// --- layout compute ---------------------------------------------------------
 
 /**
  * Pure layout fold.
@@ -566,26 +557,32 @@ function computeFixedWidths(layout: ColumnLayoutState): FixedColumnWidths {
  * Policy (slice 17, per user direction — preview and tree stay
  * on screen even at 1280):
  *
- *   1. The conversation column is **elastic** — it absorbs the
- *      slack between the fixed columns and the container, clamped
- *      to [280, 768]. At 1280 with the new defaults (sidebar 240,
- *      preview 400, tree 340) the elastic fill leaves 300px for
- *      conversation; at 1920 conversation caps at 768.
- *   2. If conversation would drop below 280 with the user-set
- *      fixed widths, the fixed columns shrink toward their
- *      minimums in the order **preview → tree** (per user
- *      direction; never fold the tree while preview still has
- *      slack). Sidebar is chrome — never folded.
- *   3. Only when every fixed column is at its minimum AND
- *      conversation is at its minimum AND the row is still too
- *      wide, the conversation column shrinks toward 0 as a
- *      graceful last resort. The renderer hides zero-width
- *      conversation so the chat content disappears rather than
- *      overflowing.
- *   4. At wider viewports where conversation caps at 768, any
- *      leftover goes back to the fixed columns in priority
- *      **tree → preview → sidebar** (mirror of the fold
- *      priority), each clamped to its own max.
+ *   1. Each column starts at its stored width (clamped to its
+ *      [min, max] band). The conversation column is *not* a
+ *      pure leftover of the fixed columns; it carries a stored
+ *      width the user can drag (this is what slice 15's
+ *      "write-only divider" bug was about). The drag now
+ *      genuinely drives the layout: dragging the conversation
+ *      divider changes `widths.conversation`, and the algorithm
+ *      below re-distributes the slack among all four columns.
+ *   2. If the row would overflow after honouring every stored
+ *      width, fixed columns shrink toward their minimums in the
+ *      order **preview → tree**. The tree is the user's pinned
+ *      feature column and folds LAST (after preview). Sidebar is
+ *      AppShell chrome and never folds inside the wrapper.
+ *   3. If still overflow after fixed folds, the conversation
+ *      column shrinks toward its minimum (280). The chat content
+ *      is the most elastic — it can read at 280px and gracefully
+ *      degrades below that.
+ *   4. If the row has leftover after every column hits its
+ *      stored width, conversation grows up to its max (768) and
+ *      any remaining room distributes to the fixed columns in
+ *      priority **tree → preview → sidebar**.
+ *   5. Last resort: when the sum of every column's minimum is
+ *      still bigger than the container (e.g. 360px viewport),
+ *      conversation shrinks toward 0. The renderer hides
+ *      zero-width conversation so the chat content disappears
+ *      rather than overflowing.
  */
 export function computeColumnLayout(
   layout: ColumnLayoutState,
@@ -594,100 +591,79 @@ export function computeColumnLayout(
 ): ColumnLayoutSummary {
   void viewportWidth; // reserved for future auto-collapse ladder
 
-  // 1. Compute the fixed columns at their clamped stored widths.
-  const fixed = computeFixedWidths(layout);
+  // 1. Each column starts at its stored width. Conversation's
+  //    stored width is the user's drag target; the algorithm
+  //    honours it within the [280, 768] band and re-distributes
+  //    any overflow / leftover to / from the fixed columns.
+  let conversation = clampToConversation(layout.widths.conversation);
+  let preview = layout.collapsed.preview ? 0 : clampWidth("preview", layout.widths.preview);
+  let tree = layout.collapsed.tree ? 0 : clampWidth("tree", layout.widths.tree);
+  // The sidebar lives in AppShell, not WorkspaceColumns. The
+  // wrapper always sees 0 here so its algorithm does not
+  // re-allocate chrome width that the shell owns. (The
+  // `collapsed.sidebar` flag is forced to true on deserialize
+  // — see `deserializeColumnLayout` — and AppShell reads its own
+  // width from its own state.)
+  const sidebar = 0;
   let narrowed = false;
 
-  // 2. Conversation's ideal = leftover after fixed, clamped into
-  //    [minWidth, maxWidth].
-  let conversation = clampToConversation(containerWidth - (fixed.sidebar + fixed.preview + fixed.tree));
-
-  // 3. If conversation dropped below minWidth, free up room by
-  //    shrinking the fixed columns in priority order preview →
-  //    tree. Sidebar is chrome and stays put.
-  if (conversation < COLUMN_SPECS.conversation.minWidth) {
-    const slack = COLUMN_SPECS.conversation.minWidth - conversation;
-    let remaining = slack;
-
-    const fromPreview = shrinkTowardMinimum("preview", fixed, remaining);
-    fixed.preview -= fromPreview;
-    remaining -= fromPreview;
-
-    if (remaining > 0) {
-      const fromTree = shrinkTowardMinimum("tree", fixed, remaining);
-      fixed.tree -= fromTree;
-      remaining -= fromTree;
-    }
-
-    if (remaining > 0) {
-      // Last-resort: shrink sidebar too (very narrow viewport).
-      const fromSidebar = shrinkTowardMinimum("sidebar", fixed, remaining);
-      fixed.sidebar -= fromSidebar;
-      remaining -= fromSidebar;
-    }
-
-    narrowed = true;
-    conversation = clampToConversation(
-      containerWidth - (fixed.sidebar + fixed.preview + fixed.tree),
-    );
-  }
-
-  // 4. Hard overflow — only triggers on the smallest viewports
-  //    (e.g. 360px) or when the user has dragged fixed columns
-  //    wide enough to keep the row over-budget even after
-  //    conversation hits its minimum. The fold priority is the
-  //    same as step 3: preview → tree → sidebar (chrome last) →
-  //    conversation toward 0 (graceful last resort).
-  let total = fixed.sidebar + fixed.preview + fixed.tree + conversation;
+  // 2. Fold fixed columns preview → tree if the row overflows.
+  //    The user's drag on the conversation divider may have
+  //    pushed conv wide; we honour that target by squeezing
+  //    preview/tree first.
+  let total = sidebar + conversation + preview + tree;
   if (total > containerWidth) {
     let remaining = total - containerWidth;
-    const fromPreview = shrinkTowardMinimum("preview", fixed, remaining);
-    fixed.preview -= fromPreview;
+    const fromPreview = shrinkTowardMinimum("preview", preview, remaining);
+    preview -= fromPreview;
     remaining -= fromPreview;
     if (remaining > 0) {
-      const fromTree = shrinkTowardMinimum("tree", fixed, remaining);
-      fixed.tree -= fromTree;
+      const fromTree = shrinkTowardMinimum("tree", tree, remaining);
+      tree -= fromTree;
       remaining -= fromTree;
     }
     if (remaining > 0) {
-      const fromSidebar = shrinkTowardMinimum("sidebar", fixed, remaining);
-      fixed.sidebar -= fromSidebar;
-      remaining -= fromSidebar;
+      // Last resort for the fixed columns: shrink conversation
+      // toward its minimum. Honour the user's conv target if
+      // there's room; only fold conv below min as a final
+      // overflow shed.
+      const fromConv = Math.min(
+        conversation - COLUMN_SPECS.conversation.minWidth,
+        remaining,
+      );
+      conversation -= Math.max(0, fromConv);
+      remaining -= Math.max(0, fromConv);
     }
     if (remaining > 0) {
-      const fromConv = Math.min(conversation, remaining);
-      conversation -= fromConv;
-      remaining -= fromConv;
+      // Last resort: conversation shrinks below its minimum.
+      // The renderer hides zero-width conversation so the chat
+      // content disappears rather than overflowing.
+      conversation = Math.max(0, conversation - remaining);
+      remaining = 0;
     }
     narrowed = true;
-    total = fixed.sidebar + fixed.preview + fixed.tree + conversation;
+    total = sidebar + conversation + preview + tree;
   }
 
-  // 5. Leftover (conversation capped at max). The fold priority
-  //    is preview → tree; the grow priority is the mirror:
-  //    tree → preview → sidebar. Tree absorbs leftover first.
-  if (conversation >= COLUMN_SPECS.conversation.maxWidth) {
-    let leftover = containerWidth - (fixed.sidebar + fixed.preview + fixed.tree + conversation);
+  // 3. Has leftover. The conversation column keeps its stored
+  //    target — auto-growing it back up to max would defeat the
+  //    user's drag. Distribute leftover to the fixed columns in
+  //    priority tree → preview (the fold priority in reverse).
+  if (total < containerWidth) {
+    let leftover = containerWidth - total;
+    const treeGrow = growTowardMaximum("tree", tree, leftover);
+    tree += treeGrow;
+    leftover -= treeGrow;
     if (leftover > 0) {
-      const toTree = growTowardMaximum("tree", fixed, leftover);
-      fixed.tree += toTree;
-      leftover -= toTree;
+      const previewGrow = growTowardMaximum("preview", preview, leftover);
+      preview += previewGrow;
+      leftover -= previewGrow;
     }
-    if (leftover > 0) {
-      const toPreview = growTowardMaximum("preview", fixed, leftover);
-      fixed.preview += toPreview;
-      leftover -= toPreview;
-    }
-    if (leftover > 0) {
-      const toSidebar = growTowardMaximum("sidebar", fixed, leftover);
-      fixed.sidebar += toSidebar;
-      leftover -= toSidebar;
-    }
-    // Any leftover beyond every column's max is shed — the
-    // flex row centres rather than overflows.
+    // Any remaining leftover is shed (the row centres rather
+    // than overflows).
   }
 
-  // 6. Sort segment order to match DOM order regardless of which
+  // 4. Sort segment order to match DOM order regardless of which
   //    columns are visible. The renderer walks this array
   //    top-down.
   const segmentIds: ColumnId[] = ["sidebar", "conversation", "preview", "tree"];
@@ -701,13 +677,13 @@ export function computeColumnLayout(
     id,
     width:
       id === "sidebar"
-        ? fixed.sidebar
+        ? sidebar
         : id === "preview"
-          ? fixed.preview
+          ? preview
           : id === "tree"
-            ? fixed.tree
+            ? tree
             : conversation,
-    visible: visibleMap[id] && widthOf(id, fixed, conversation) > 0,
+    visible: visibleMap[id] && widthOf(id, preview, tree, conversation) > 0,
   }));
 
   return { segments, narrowed };
@@ -720,22 +696,20 @@ function clampToConversation(width: number): number {
   );
 }
 
-function shrinkTowardMinimum(column: ColumnId, fixed: FixedColumnWidths, requested: number): number {
+function shrinkTowardMinimum(column: ColumnId, current: number, requested: number): number {
   const spec = COLUMN_SPECS[column];
-  const current = column === "tree" ? fixed.tree : column === "preview" ? fixed.preview : fixed.sidebar;
   return Math.max(0, Math.min(current - spec.minWidth, requested));
 }
 
-function growTowardMaximum(column: ColumnId, fixed: FixedColumnWidths, requested: number): number {
+function growTowardMaximum(column: ColumnId, current: number, requested: number): number {
   const spec = COLUMN_SPECS[column];
-  const current = column === "tree" ? fixed.tree : column === "preview" ? fixed.preview : fixed.sidebar;
   return Math.max(0, Math.min(spec.maxWidth - current, requested));
 }
 
-function widthOf(id: ColumnId, fixed: FixedColumnWidths, conversation: number): number {
-  if (id === "sidebar") return fixed.sidebar;
-  if (id === "preview") return fixed.preview;
-  if (id === "tree") return fixed.tree;
+function widthOf(id: ColumnId, preview: number, tree: number, conversation: number): number {
+  if (id === "sidebar") return 0;
+  if (id === "preview") return preview;
+  if (id === "tree") return tree;
   return conversation;
 }
 
@@ -981,6 +955,17 @@ function deserializeColumnLayout(raw: unknown): ColumnLayoutState {
   const obj = raw as Record<string, unknown>;
   const widths = rawWidths(obj.widths);
   const collapsed = rawCollapsed(obj.collapsed);
+  // Force `collapsed.sidebar = true` regardless of what the
+  // payload says. Slice 17 made AppShell the owner of the
+  // session sidebar (it renders outside WorkspaceColumns); a
+  // stale payload that names `sidebar` with `collapsed:false`
+  // — which was slice 15's own default — would otherwise reserve
+  // ~220px in the wrapper for a column that renders `null`,
+  // crushing the chat column below its minimum and producing a
+  // broken-looking window on upgrade. The persisted flag is
+  // meaningless while AppShell owns the sidebar; clamp it on
+  // read so legacy payloads cannot conjure a ghost column.
+  collapsed.sidebar = true;
   return { widths, collapsed };
 }
 

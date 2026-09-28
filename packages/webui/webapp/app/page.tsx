@@ -555,6 +555,14 @@ function App() {
       t={t}
       onPickSurface={openSurfaceTab}
       onClose={closeOneTab}
+      // File-row clicks from the tree column route through the
+      // page's tab openers: `onOpenFile` opens a preview tab in
+      // the preview column; `onOpenInBrowser` opens a browser
+      // tab. Slice 17 re-wired these after a regression that
+      // left them as no-ops (the previous code shipped empty
+      // arrow bodies here).
+      onOpenFile={onOpenFile}
+      onOpenInBrowser={onOpenInBrowser}
     />
   );
 
