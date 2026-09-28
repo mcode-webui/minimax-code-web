@@ -95,6 +95,453 @@ import yaml from "js-yaml";
 import { getEngineConfigPath } from "./engine-provider-sync.js";
 
 // =====================================================================
+// Builtin-model thinking projection (ticket 36 — builtin-thinking-levels).
+// =====================================================================
+//
+// Background — the bug ticket 36 pins:
+//
+//   The engine keeps TWO thinking schemas. Custom providers use the
+//   effort shape (`thinking: { effortOptions: [...] }`) and the
+//   projection above handles it. The builtin MiniMax catalogue uses
+//   the variant shape, which the engine materialises into the SAME
+//   config.yaml under `provider.minimax.models`:
+//
+//     MiniMax-M3:
+//       thinking_config:
+//         mode: switchable          # switchable | forced_on | forced_off | hidden
+//         default_value: 'true'
+//       variants:
+//         none-thinking: { thinking: { type: disabled } }
+//         thinking:        { thinking: { type: adaptive } }
+//       thinking:                    # effort shape — M3.1-Flash carries
+//         effortOptions: [...]       # BOTH (forced_on + real depths)
+//
+//   The catalogue only projected the effort shape, so every
+//   `minimax_api` builtin — including MiniMax-M3 — surfaced with no
+//   `thinkingLevels` and the composer never mounted the thinking
+//   control for MiniMax's own models.
+//
+// Honesty rules this projection is pinned to:
+//
+//   - A switchable model with off+on variants is a TWO-STATE toggle.
+//     It projects to exactly ["off","on"] — never a fabricated
+//     off/low/medium/high scale. The depth vocabulary belongs to the
+//     effort schema only.
+//   - `forced_on` with no effortOptions has nothing user-settable
+//     (thinking cannot be turned off, no depth to pick) → null. No
+//     control. Same for `forced_off` / `hidden` / no thinking keys.
+//   - `effortOptions`, when present, wins regardless of mode: those
+//     are the engine's real effort values, passed through verbatim
+//     (same hygiene as the custom_provider path).
+//   - The level→variant map is DERIVED from the engine's variant
+//     tree (the disabled side vs the adaptive side), not from
+//     hard-coded variant names.
+
+/**
+ * Project one engine builtin model config (`provider.minimax.models`
+ * entry) onto the webui thinking vocabulary. Pure.
+ *
+ * Returns `null` when the model exposes nothing user-settable.
+ * Otherwise:
+ *   - effort channel:  `{ levels: string[] }`
+ *     (`levels` is `thinking.effortOptions`, filtered and verbatim;
+ *     sync happens through the engine's `thinkingEffort` option)
+ *   - variant channel: `{ levels: ["off","on"],
+ *                        variant: { off: string, on: string },
+ *                        defaultLevel: "off" | "on" }`
+ *     (`variant` maps the webui level to the engine's variant name,
+ *     derived from which variant disables thinking; `defaultLevel`
+ *     mirrors the engine's `defaultThinkingVariant` — default_value
+ *     'true' → "on", anything else → "off". Sync happens through a
+ *     model selection that carries the variant, because the engine
+ *     rejects `thinkingEffort` for models without effortOptions.)
+ */
+export function thinkingFromEngineBuiltinModel(modelConfig) {
+  if (!modelConfig || typeof modelConfig !== "object") return null;
+  // Effort shape first — it is the engine's own depth vocabulary and
+  // takes precedence over the variant dimension whenever present.
+  const thinking =
+    modelConfig.thinking && typeof modelConfig.thinking === "object"
+      ? modelConfig.thinking
+      : null;
+  if (thinking && Array.isArray(thinking.effortOptions)) {
+    const levels = thinking.effortOptions.filter(
+      (x) => typeof x === "string" && x.length > 0,
+    );
+    if (levels.length > 0) return { levels };
+  }
+  // Variant shape — only a switchable mode gives the user a choice.
+  const config =
+    modelConfig.thinking_config &&
+    typeof modelConfig.thinking_config === "object"
+      ? modelConfig.thinking_config
+      : null;
+  if (!config || config.mode !== "switchable") return null;
+  const variants =
+    modelConfig.variants && typeof modelConfig.variants === "object"
+      ? modelConfig.variants
+      : null;
+  if (!variants) return null;
+  // The engine's variant tree names the disabled side "none-thinking"
+  // and the enabled side "thinking" — but we derive the map from the
+  // shape (which variant DISABLES thinking), so a renamed or extra
+  // variant still lands on the right side.
+  let offVariant = null;
+  let onVariant = null;
+  for (const [name, v] of Object.entries(variants)) {
+    if (!v || typeof v !== "object") continue;
+    const t = v.thinking && typeof v.thinking === "object" ? v.thinking : null;
+    if (t && t.type === "disabled") {
+      if (offVariant === null) offVariant = name;
+    } else if (onVariant === null) {
+      onVariant = name;
+    }
+  }
+  // Half a toggle is not a toggle — require both sides.
+  if (offVariant === null || onVariant === null) return null;
+  return {
+    levels: ["off", "on"],
+    variant: { off: offVariant, on: onVariant },
+    // Mirror the engine's defaultThinkingVariant: only the literal
+    // 'true' enables thinking by default.
+    defaultLevel: config.default_value === "true" ? "on" : "off",
+  };
+}
+
+/**
+ * Read the engine's materialised builtin catalogue
+ * (`provider.minimax.models` in the engine config.yaml) and project
+ * each model's thinking schema. Returns a Map keyed by the BARE
+ * model id (e.g. "MiniMax-M3") → projection-or-null. Models with
+ * nothing user-settable stay keyed with a null value so callers can
+ * distinguish "the engine says no control" from "unknown model".
+ *
+ * Best-effort like readEngineCatalogue: missing file, parse error,
+ * or a wrong-shape tree all yield an empty Map — the route treats
+ * that as "no builtin thinking metadata" (the pre-ticket-36
+ * behaviour), never a 500. Reads the file once per call so an
+ * operator's hand edit shows up on the next /api/models request.
+ *
+ * Security: only the thinking-related subtrees are projected; the
+ * builtin tree carries no key material, but the reader never touches
+ * anything outside `provider.minimax.models` anyway.
+ */
+export function readEngineBuiltinThinking(opts = {}) {
+  const configPath = opts.configPath || getEngineConfigPath();
+  const out = new Map();
+  if (!existsSync(configPath)) return out;
+  let parsed;
+  try {
+    const raw = readFileSync(configPath, "utf8");
+    const doc = yaml.load(raw);
+    parsed = doc && typeof doc === "object" && !Array.isArray(doc) ? doc : {};
+  } catch {
+    return out;
+  }
+  const provider = parsed.provider;
+  const minimax =
+    provider && typeof provider === "object" && !Array.isArray(provider)
+      ? provider.minimax
+      : null;
+  const models =
+    minimax && typeof minimax === "object" && !Array.isArray(minimax)
+      ? minimax.models
+      : null;
+  if (!models || typeof models !== "object" || Array.isArray(models)) return out;
+  for (const [modelId, modelConfig] of Object.entries(models)) {
+    if (typeof modelConfig !== "object" || modelConfig === null) continue;
+    out.set(modelId, thinkingFromEngineBuiltinModel(modelConfig));
+  }
+  return out;
+}
+
+// =====================================================================
+// Variant channel (ticket 36) — wire translation for switchable builtins.
+// =====================================================================
+
+/** The builtin provider prefix the webui catalogue uses for engine builtins. */
+const BUILTIN_PROVIDER_PREFIX = "minimax_api/";
+
+/**
+ * Parse the engine's model wire value
+ * (`m:<encodedProvider>:<encodedModel>:u` or
+ * `m:<encodedProvider>:<encodedModel>:v:<encodedVariant>`) into its
+ * parts, URL-decoding each segment.
+ *
+ * Returns `{ providerId, modelId, variant }` (variant `undefined`
+ * for the unqualified `:u` form) or `null` when the value isn't in
+ * the wire shape. Mirrors the engine's `parseModelConfigValue`
+ * (packages/tui/src/acp/control-state.ts) for the shapes the engine
+ * actually emits. Colons inside the encoded segments are
+ * URL-encoded away by the engine's `modelConfigValue`, so a plain
+ * split is structurally safe.
+ *
+ * Lives here (not in mcode-acp.js) because it is pure engine-shape
+ * knowledge with no runtime-graph dependency — the /api/models route
+ * annotates engine entries with it without pulling the acp client.
+ */
+export function parseEngineModelWireValue(wireValue) {
+  if (typeof wireValue !== "string" || !wireValue) return null;
+  // Two shapes: `m:<provider>:<model>:u` (4 parts, unqualified) and
+  // `m:<provider>:<model>:v:<variant>` (5 parts). Anything longer is
+  // not a shape the engine emits (its parseModelConfigValue rejects
+  // trailing extra segments) — treat it as a non-match.
+  const parts = wireValue.split(":");
+  if (parts[0] !== "m") return null;
+  const decode = (segment) => {
+    try {
+      return decodeURIComponent(segment);
+    } catch {
+      return segment;
+    }
+  };
+  const providerId = parts[1];
+  const modelId = parts[2];
+  if (typeof providerId !== "string" || !providerId) return null;
+  if (typeof modelId !== "string" || !modelId) return null;
+  if (parts.length === 4 && parts[3] === "u") {
+    return { providerId: decode(providerId), modelId: decode(modelId), variant: undefined };
+  }
+  if (parts.length === 5 && parts[3] === "v" && parts[4]) {
+    return {
+      providerId: decode(providerId),
+      modelId: decode(modelId),
+      variant: decode(parts[4]),
+    };
+  }
+  return null;
+}
+
+/**
+ * The engine model key from a webui id — everything after the first
+ * `/` (`minimax_api/MiniMax-M3` → `MiniMax-M3`; a bare name stays
+ * whole). Local twin of mcode-acp.js#engineModelKeyFromId so this
+ * helper stays dependency-free.
+ */
+function engineModelKey(id) {
+  if (typeof id !== "string" || !id) return id;
+  const slash = id.indexOf("/");
+  return slash >= 0 ? id.slice(slash + 1) : id;
+}
+
+/**
+ * Variant-channel plan for a model id (ticket 36), or null.
+ *
+ * The plan exists only when the engine's materialised builtin tree
+ * (`provider.minimax.models`) describes a switchable variant toggle
+ * for the model AND the id belongs to the builtin provider
+ * (`minimax_api/<model>` or a bare `<model>` name). A custom
+ * provider's model that merely shares a model id never rides this
+ * channel.
+ *
+ * Shape: `{ variant: { off, on }, defaultLevel, level(thinking) }`
+ * where `level()` normalises a recorded thinking string ("on"/"off"
+ * case-insensitive; anything stale falls back to the engine default)
+ * to one of the two webui levels.
+ */
+export function variantChannelFor(modelId) {
+  if (typeof modelId !== "string" || !modelId) return null;
+  if (modelId.includes("/") && !modelId.startsWith(BUILTIN_PROVIDER_PREFIX)) {
+    return null;
+  }
+  const bare = engineModelKey(modelId);
+  const projection = readEngineBuiltinThinking().get(bare);
+  if (!projection || !projection.variant) return null;
+  return {
+    variant: projection.variant,
+    defaultLevel: projection.defaultLevel,
+    level(thinking) {
+      const t = typeof thinking === "string" ? thinking.trim().toLowerCase() : "";
+      if (t === "on" || t === "off") return t;
+      return this.defaultLevel;
+    },
+  };
+}
+
+
+// =====================================================================
+// Webui id → engine option.value resolution (moved from mcode-acp.js,
+// ticket 36: pure id translation with no runtime-graph dependency, so
+// the /api/models route can resolve variant wire forms without pulling
+// the acp client).
+// =====================================================================
+
+/**
+ * Resolve the recorded id to one of the engine's option.values.
+ *
+ * Three match paths, in order:
+ *
+ *   1. Exact `option.value` match. Covers the engine wire form
+ *      (`m:minimax:MiniMax-M3:u`, `m:custom_provider%3A<key>:<model>:u`)
+ *      and any webui-recorded form that happens to equal the engine
+ *      wire value verbatim.
+ *
+ *   2. Webui `<providerKey>/<engineModelKey>` → engine-model-key match.
+ *      The webui id is structurally `<providerKey>/<engineModelKey>`
+ *      where `engineModelKey` may itself contain `/` (the engine
+ *      allows `/` inside model keys; the wire form's `/` is the
+ *      structural separator between provider and model). The engine
+ *      populates `option.name` from `displayName ?? modelId`, so for
+ *      models without a separate displayName `option.name === engineModelKey`
+ *      and the recorded id's segment-after-first-`/` matches it.
+ *      This is the case ticket 09-02 ships for (upstream catalogue
+ *      ids like `nousresearch/deepseek/x` → engine model key `deepseek/x`).
+ *
+ *   3. Last-segment fallback for legacy forms. `lastSegment(recorded)`
+ *      returns the segment after the LAST `/` or `:`. This is the
+ *      pre-ticket-09-02 fallback path and is preserved for callers
+ *      that recorded `custom_provider:byok-zhipu/glm-5.3` or
+ *      `minimax_api/MiniMax-M3` — those resolve to the bare model
+ *      name `glm-5.3` / `MiniMax-M3`, which the engine's `option.name`
+ *      carries.
+ *
+ * The match is case-insensitive (ticket 05). Multiple matches return
+ * null — ambiguity is ambiguity, and the caller skips rather than
+ * pick the wrong option.
+ *
+ * `opts.preferVariant` (ticket 36): when the caller knows which
+ * thinking variant it wants (the variant channel for switchable
+ * builtins), a multi-match candidate set is narrowed to the options
+ * whose wire value carries exactly that variant. This collapses the
+ * deliberate ambiguity of a variant model — the engine advertises
+ * `m:...:v:thinking` AND `m:...:v:none-thinking`, both resolving to
+ * the same bare name — without changing any outcome for models the
+ * engine advertises in bare form only. A preferVariant that matches
+ * nothing advertised falls through to the normal resolution.
+ */
+export function resolveModelId(recorded, modelOption, opts = {}) {
+  if (!modelOption || !Array.isArray(modelOption.options)) return null;
+  const options = modelOption.options.filter(
+    (o) => o && typeof o === "object" && typeof o.value === "string",
+  );
+  // (1) Direct value match — engine wire form, or a webui id that
+  // happens to equal an `option.value` verbatim.
+  for (const o of options) {
+    if (o.value === recorded) return o.value;
+  }
+  const preferVariant =
+    typeof opts.preferVariant === "string" && opts.preferVariant
+      ? opts.preferVariant
+      : null;
+  // Variant-aware narrowing (ticket 36): among an ambiguous candidate
+  // set, keep the one option whose wire value carries the wanted
+  // variant. Returns null when preferVariant is unset or narrows to
+  // nothing/ambiguous — the caller then follows the pre-ticket-36
+  // outcome for that pass.
+  const byPreferredVariant = (candidates) => {
+    if (!preferVariant) return null;
+    const picked = candidates.filter((o) => {
+      const wire = parseEngineModelWireValue(o.value);
+      return wire !== null && wire.variant === preferVariant;
+    });
+    return picked.length === 1 ? picked[0].value : null;
+  };
+  // Branch on the structural shape of `recorded`. The webui id
+  // form (ticket 09-02) is `<providerKey>/<engineModelKey>` — the
+  // engine model key is everything after the FIRST `/`. Legacy
+  // forms (`minimax_api/MiniMax-M3`, `custom_provider:byok-zhipu/glm-5.3`)
+  // and bare names fall back to the last-segment match.
+  const slash = typeof recorded === "string" ? recorded.indexOf("/") : -1;
+  let bareName = null;
+  if (slash >= 0) {
+    // `<providerKey>/<engineModelKey>` form (engineModelKey may
+    // itself contain `/`). The engine populates `option.name` from
+    // `displayName ?? modelId` and appends ` · <variant>` when the
+    // option advertises a variant (see packages/tui/src/acp/
+    // control-state.ts#uniqueModelValues). The webui doesn't
+    // surface variant in its id — the variant is a separate
+    // concept the engine carries. We try the raw name first
+    // (most options have no variant suffix), then fall back to
+    // the variant-suffix-stripped name — so a recorded webui id
+    // lands on the option whether the engine is offering the bare
+    // or the variant form, and prefers the bare form when both
+    // are advertised (the engine's default).
+    bareName = recorded.slice(slash + 1);
+  } else if (typeof recorded === "string" && recorded) {
+    // Bare name or legacy colon form. `lastSegment` covers both.
+    bareName = lastSegment(recorded);
+  }
+  if (!bareName) return null;
+  const bareLower = bareName.toLowerCase();
+  // First pass: prefer options whose name matches the bare form
+  // exactly (covers `displayName === bareName`, no variant).
+  const exact = options.filter(
+    (o) => typeof o.name === "string" && o.name.toLowerCase() === bareLower,
+  );
+  if (exact.length === 1) return exact[0].value;
+  if (exact.length > 1) {
+    // Ticket 36: a variant model's options share the bare name —
+    // narrow by the wanted variant before declaring ambiguity.
+    const v = byPreferredVariant(exact);
+    if (v !== null) return v;
+    return null;
+  }
+  // Second pass: options whose name has the engine's ` · <variant>`
+  // suffix stripped to bare. Only kicks in when no exact match
+  // exists — so a multi-variant engine option set doesn't get
+  // collapsed to an ambiguous answer.
+  const stripped = options.filter(
+    (o) =>
+      typeof o.name === "string" &&
+      stripVariantSuffix(o.name).toLowerCase() === bareLower,
+  );
+  if (stripped.length === 1) return stripped[0].value;
+  if (stripped.length > 1) {
+    const v = byPreferredVariant(stripped);
+    if (v !== null) return v;
+  }
+  // Third pass: URL-decode the `option.value` (the engine wire
+  // form is `m:<encodedProvider>:<encodedModel>:u|v:<variant>`)
+  // and compare the engine model id verbatim. This catches the
+  // case where `option.name` is the engine's `displayName` and
+  // differs from the model id — e.g. an upstream catalogue
+  // carries a router-style model id (`deepseek/deepseek-v4.1-flash`)
+  // with a separate display name (`DeepSeek V4.1 Flash`); the
+  // webui records the model id verbatim, but the engine's
+  // `option.name` is the display name. The wire-form decode
+  // recovers the model id and matches it.
+  const decoded = options.filter((o) => {
+    const wire = parseEngineModelWireValue(o.value);
+    return wire !== null && wire.modelId.toLowerCase() === bareLower;
+  });
+  if (decoded.length === 1) return decoded[0].value;
+  if (decoded.length > 1) {
+    const v = byPreferredVariant(decoded);
+    if (v !== null) return v;
+  }
+  return null;
+}
+
+/**
+ * Strip the engine's ` · <variant>` suffix from an `option.name`.
+ *
+ * The engine composes `option.name` as
+ * `${displayName ?? modelId}${variant ? " · " + variant : ""}`
+ * (packages/tui/src/acp/control-state.ts#uniqueModelValues). The
+ * webui doesn't track variants in its id — they're a runtime-only
+ * concern — so a bare webui id never carries the suffix. Stripping
+ * before matching keeps the webui→engine translation round-trip
+ * alive even when the engine is offering only the variant form.
+ */
+function stripVariantSuffix(name) {
+  const i = name.indexOf(" · ");
+  return i >= 0 ? name.slice(0, i) : name;
+}
+
+/** Last segment after `/` or `:` — `minimax_api/MiniMax-M3` → `MiniMax-M3`.
+ *
+ * Legacy fallback for callers that recorded a form where the model id
+ * is the segment after the LAST separator. Kept for backward
+ * compatibility (and pinned by `lastSegment` tests); ticket 09-02
+ * prefers `engineModelKeyFromId` for the new `<providerKey>/<modelId>`
+ * webui form.
+ */
+export function lastSegment(id) {
+  const i = Math.max(id.lastIndexOf("/"), id.lastIndexOf(":"));
+  return i >= 0 ? id.slice(i + 1) : id;
+}
+
+// =====================================================================
 // Engine api → webui protocol mapping.
 // =====================================================================
 

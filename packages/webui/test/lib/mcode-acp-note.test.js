@@ -11,10 +11,13 @@
 //     propagating both permissionMode and model from the engine's
 //     authoritative state (defect #2).
 
-import { test, describe, after } from "node:test";
+import { test, describe, after, before } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import yaml from "js-yaml";
 
 const absPath = (rel) => pathToFileURL(join(import.meta.dirname, "..", "..", "server", rel)).href;
 const {
@@ -28,6 +31,13 @@ const {
   lastSegment,
   applyRecordedModel,
 } = await import(absPath("lib/mcode-acp.js"));
+// Ticket 36: the wire-form decoder lives with the other pure
+// engine-shape helpers in engine-catalogue.js (no runtime-graph
+// dependency, so the /api/models route can use it without pulling
+// the acp client).
+const { parseEngineModelWireValue } = await import(
+  absPath("lib/engine-catalogue.js")
+);
 // Same module instance the runtime graph uses — see the teardown below.
 const { getMcodeAcpClient, shutdownMcodeAcpSingleton } = await import(
   absPath("lib/acp-client.js")
@@ -818,5 +828,219 @@ describe("applyRecordedModel — thinkingEffort pre-session apply (ticket 04)", 
     assert.ok(warnings.some((w) => /turbo/.test(w)));
     // Local mirror not updated on the failed effort.
     assert.equal(cs.configOptions[1].currentValue, "low");
+  });
+});
+
+// ---------------------------------------------------------------------
+// resolveModelId — preferVariant (ticket 36)
+//
+// For switchable builtin models the engine advertises ONLY variant
+// wire forms (`m:<p>:<m>:v:thinking` / `v:none-thinking`) — the bare
+// form is never in the option list. The bare-name passes in
+// resolveModelId therefore match BOTH options and return null
+// (ambiguity). The variant channel needs a variant-aware resolution:
+// when the caller knows which variant it wants (from the recorded
+// thinking level), the ambiguity collapses to the one option whose
+// wire value carries that variant.
+// ---------------------------------------------------------------------
+
+describe("resolveModelId — preferVariant option (ticket 36)", () => {
+  const VARIANT_OPTION = {
+    type: "select",
+    id: "model",
+    currentValue: "m:minimax_api:MiniMax-M3:v:thinking",
+    options: [
+      { value: "m:minimax_api:MiniMax-M3:v:thinking", name: "MiniMax-M3 · thinking" },
+      { value: "m:minimax_api:MiniMax-M3:v:none-thinking", name: "MiniMax-M3 · none-thinking" },
+      { value: "m:minimax_api:MiniMax-M2.7:u", name: "MiniMax-M2.7" },
+    ],
+  };
+
+  test("bare recorded id + preferVariant collapses the ambiguity to the wanted variant", () => {
+    assert.equal(
+      resolveModelId("minimax_api/MiniMax-M3", VARIANT_OPTION, { preferVariant: "none-thinking" }),
+      "m:minimax_api:MiniMax-M3:v:none-thinking",
+    );
+    assert.equal(
+      resolveModelId("minimax_api/MiniMax-M3", VARIANT_OPTION, { preferVariant: "thinking" }),
+      "m:minimax_api:MiniMax-M3:v:thinking",
+    );
+  });
+
+  test("without preferVariant the two variant options stay ambiguous (pre-existing behaviour)", () => {
+    assert.equal(resolveModelId("minimax_api/MiniMax-M3", VARIANT_OPTION), null);
+  });
+
+  test("preferVariant never breaks unique matches: a model with one option resolves as before", () => {
+    assert.equal(
+      resolveModelId("minimax_api/MiniMax-M2.7", VARIANT_OPTION, { preferVariant: "thinking" }),
+      "m:minimax_api:MiniMax-M2.7:u",
+    );
+  });
+
+  test("preferVariant that matches no advertised option falls back to the bare resolution", () => {
+    // Defensive: an engine that advertises only the bare form while
+    // the config tree still describes variants. The pick must resolve
+    // to the bare form, not fail.
+    const BARE_ONLY = {
+      type: "select",
+      id: "model",
+      currentValue: "m:minimax_api:MiniMax-M3:u",
+      options: [{ value: "m:minimax_api:MiniMax-M3:u", name: "MiniMax-M3" }],
+    };
+    assert.equal(
+      resolveModelId("minimax_api/MiniMax-M3", BARE_ONLY, { preferVariant: "thinking" }),
+      "m:minimax_api:MiniMax-M3:u",
+    );
+  });
+
+  test("preferVariant with a direct wire-value match still wins first (pass 1 untouched)", () => {
+    assert.equal(
+      resolveModelId("m:minimax_api:MiniMax-M3:v:thinking", VARIANT_OPTION, {
+        preferVariant: "none-thinking",
+      }),
+      "m:minimax_api:MiniMax-M3:v:thinking",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------
+// parseEngineModelWireValue (ticket 36)
+// ---------------------------------------------------------------------
+
+describe("parseEngineModelWireValue — wire form decoder", () => {
+  test("decodes the variant wire form into provider / model / variant", () => {
+    assert.deepEqual(parseEngineModelWireValue("m:minimax_api:MiniMax-M3:v:none-thinking"), {
+      providerId: "minimax_api",
+      modelId: "MiniMax-M3",
+      variant: "none-thinking",
+    });
+  });
+
+  test("decodes the unqualified wire form (variant undefined)", () => {
+    assert.deepEqual(parseEngineModelWireValue("m:minimax_api:MiniMax-M2.7:u"), {
+      providerId: "minimax_api",
+      modelId: "MiniMax-M2.7",
+      variant: undefined,
+    });
+  });
+
+  test("URL-encoded segments decode (custom_provider colon form)", () => {
+    assert.deepEqual(parseEngineModelWireValue("m:custom_provider%3Abyok-zhipu:glm-5.3:u"), {
+      providerId: "custom_provider:byok-zhipu",
+      modelId: "glm-5.3",
+      variant: undefined,
+    });
+  });
+
+  test("non-wire values return null", () => {
+    assert.equal(parseEngineModelWireValue("minimax_api:MiniMax-M3"), null);
+    assert.equal(parseEngineModelWireValue("minimax_api/MiniMax-M3"), null);
+    assert.equal(parseEngineModelWireValue(""), null);
+    assert.equal(parseEngineModelWireValue(42), null);
+  });
+});
+
+// ---------------------------------------------------------------------
+// applyRecordedModel — variant channel for switchable builtins (ticket 36)
+//
+// On session boot a recorded `minimax_api/MiniMax-M3` pick must land on
+// the engine's variant wire form (carrying the recorded on/off level,
+// or the engine's default variant when no level was recorded), and the
+// recorded "on"/"off" level must NOT be pushed through thinkingEffort
+// (the engine rejects it: "Thinking effort is not advertised").
+// These tests point MINIMAX_DATA_DIR at a tmp dir with a synthetic
+// provider.minimax.models tree — no host config is ever read.
+// ---------------------------------------------------------------------
+
+describe("applyRecordedModel — variant channel (ticket 36)", () => {
+  const VARIANT_OPTION = {
+    type: "select",
+    id: "model",
+    currentValue: "m:minimax_api:MiniMax-M2.7:u",
+    options: [
+      { value: "m:minimax_api:MiniMax-M3:v:thinking", name: "MiniMax-M3 · thinking" },
+      { value: "m:minimax_api:MiniMax-M3:v:none-thinking", name: "MiniMax-M3 · none-thinking" },
+      { value: "m:minimax_api:MiniMax-M2.7:u", name: "MiniMax-M2.7" },
+    ],
+  };
+
+  let _tmpEngine;
+  let _prevMinimax;
+  before(() => {
+    _tmpEngine = mkdtempSync(join(tmpdir(), "webui-t36-engine-"));
+    _prevMinimax = process.env.MINIMAX_DATA_DIR;
+    process.env.MINIMAX_DATA_DIR = _tmpEngine;
+    writeFileSync(
+      join(_tmpEngine, "config.yaml"),
+      yaml.dump({
+        provider: {
+          minimax: {
+            models: {
+              "MiniMax-M3": {
+                thinking_config: { mode: "switchable", default_value: "true" },
+                variants: {
+                  "none-thinking": { thinking: { type: "disabled" } },
+                  thinking: { thinking: { type: "adaptive" } },
+                },
+              },
+            },
+          },
+        },
+      }),
+      "utf8",
+    );
+  });
+  after(() => {
+    if (_prevMinimax === undefined) delete process.env.MINIMAX_DATA_DIR;
+    else process.env.MINIMAX_DATA_DIR = _prevMinimax;
+    if (_tmpEngine) rmSync(_tmpEngine, { recursive: true, force: true });
+  });
+
+  test("recorded pick + recorded 'off' → model push carries the none-thinking variant, no thinkingEffort push", async () => {
+    const calls = [];
+    const fakeClient = {
+      request: async (m, p) => { calls.push([m, p]); return {}; },
+    };
+    const cs = {
+      model: { name: "minimax_api/MiniMax-M3", thinking: "off" },
+      configOptions: [{ ...VARIANT_OPTION, currentValue: "m:minimax_api:MiniMax-M3:v:thinking" }],
+    };
+    await applyRecordedModel(fakeClient, "sid-t36", cs, "cid-t36");
+    assert.equal(calls.length, 1, "thinking folds into the single model push");
+    assert.equal(calls[0][0], "session/set_config_option");
+    assert.deepEqual(calls[0][1], {
+      sessionId: "sid-t36",
+      configId: "model",
+      value: "m:minimax_api:MiniMax-M3:v:none-thinking",
+    });
+    assert.equal(cs.configOptions[0].currentValue, "m:minimax_api:MiniMax-M3:v:none-thinking");
+  });
+
+  test("recorded pick without a level → engine default variant (default_value 'true' → thinking)", async () => {
+    const calls = [];
+    const fakeClient = {
+      request: async (m, p) => { calls.push([m, p]); return {}; },
+    };
+    const cs = {
+      model: { name: "minimax_api/MiniMax-M3" },
+      configOptions: [VARIANT_OPTION],
+    };
+    await applyRecordedModel(fakeClient, "sid-t36", cs, "cid-t36");
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0][1].value, "m:minimax_api:MiniMax-M3:v:thinking");
+  });
+
+  test("skips the push when the engine already runs the target variant", async () => {
+    const calls = [];
+    const fakeClient = {
+      request: async (m, p) => { calls.push([m, p]); return {}; },
+    };
+    const cs = {
+      model: { name: "minimax_api/MiniMax-M3", thinking: "on" },
+      configOptions: [{ ...VARIANT_OPTION, currentValue: "m:minimax_api:MiniMax-M3:v:thinking" }],
+    };
+    await applyRecordedModel(fakeClient, "sid-t36", cs, "cid-t36");
+    assert.deepEqual(calls, [], "already on thinking — no reapply, no effort push");
   });
 });

@@ -26,6 +26,12 @@ import {
 import { applyMavisUsageToCs } from "./mavis-usage.js";
 import { mcodePermissionToWebui } from "./mcode-rpc.js";
 import {
+  parseEngineModelWireValue,
+  variantChannelFor,
+  resolveModelId,
+  lastSegment,
+} from "./engine-catalogue.js";
+import {
   getMcodeSessionTitle,
   invalidateMcodeSessionsCache,
   getMcodeSessionsForWorkspace,
@@ -79,6 +85,7 @@ import {
  * Errors are swallowed: a fresh session with the engine's default is
  * better than a failed session start; the user can re-pick on the chip.
  */
+
 async function applyRecordedModel(client, sid, cs, cid) {
   const recorded = cs && cs.model && typeof cs.model.name === "string"
     ? cs.model.name.trim()
@@ -88,6 +95,16 @@ async function applyRecordedModel(client, sid, cs, cid) {
     : "";
 
   let modelApplied = false;
+  // Ticket 36 — variant channel. A switchable builtin (MiniMax-M3)
+  // is advertised by the engine ONLY in variant wire form
+  // (`m:...:v:thinking` / `m:...:v:none-thinking`); the bare name
+  // matches both options and resolveModelId alone would bail on the
+  // ambiguity. When the engine's builtin tree describes a variant
+  // toggle for this model, fold the recorded level (or the engine's
+  // default) into the model selection and skip the thinkingEffort
+  // push — the engine rejects effort values for models without
+  // effortOptions ("Thinking effort is not advertised").
+  const variantPlan = variantChannelFor(recorded);
   if (recorded) {
     const modelOption = findModelOption(cs);
     if (!modelOption) {
@@ -99,11 +116,20 @@ async function applyRecordedModel(client, sid, cs, cid) {
     }
     const engineCurrent = modelOption.currentValue;
     if (!matchesModelId(recorded, engineCurrent, modelOption)) {
-      const resolved = resolveModelId(recorded, modelOption);
+      const resolved = resolveModelId(recorded, modelOption, {
+        preferVariant: variantPlan
+          ? variantPlan.variant[variantPlan.level(recordedThinking)] ??
+            variantPlan.variant[variantPlan.defaultLevel]
+          : undefined,
+      });
       if (!resolved) {
         console.warn(
           `[webui] applyRecordedModel: recorded id "${recorded}" does not match any engine option; skipping`,
         );
+      } else if (resolved === engineCurrent) {
+        // Already running exactly the wanted (model, variant) — the
+        // local snapshot stays as-is; nothing to push.
+        modelApplied = true;
       } else {
         await client.request("session/set_config_option", {
           sessionId: sid,
@@ -133,7 +159,11 @@ async function applyRecordedModel(client, sid, cs, cid) {
   // validates the level against the selected model's effortOptions; a
   // rejection is logged and otherwise ignored — the engine's default
   // stands, and the next /api/models reflects that.
-  if (recordedThinking) {
+  //
+  // Ticket 36: variant-channel models skip this push — their
+  // "on"/"off" level rides the model selection above and is NOT part
+  // of the engine's effort vocabulary.
+  if (recordedThinking && !variantPlan) {
     if (!recorded && !modelApplied) {
       // No recorded model and the engine's current model is unknown to
       // us; we have no anchor for the effort. Skip.
@@ -186,155 +216,8 @@ function matchesModelId(recorded, engineCurrent, modelOption) {
   return false;
 }
 
-/**
- * Resolve the recorded id to one of the engine's option.values.
- *
- * Three match paths, in order:
- *
- *   1. Exact `option.value` match. Covers the engine wire form
- *      (`m:minimax:MiniMax-M3:u`, `m:custom_provider%3A<key>:<model>:u`)
- *      and any webui-recorded form that happens to equal the engine
- *      wire value verbatim.
- *
- *   2. Webui `<providerKey>/<engineModelKey>` → engine-model-key match.
- *      The webui id is structurally `<providerKey>/<engineModelKey>`
- *      where `engineModelKey` may itself contain `/` (the engine
- *      allows `/` inside model keys; the wire form's `/` is the
- *      structural separator between provider and model). The engine
- *      populates `option.name` from `displayName ?? modelId`, so for
- *      models without a separate displayName `option.name === engineModelKey`
- *      and the recorded id's segment-after-first-`/` matches it.
- *      This is the case ticket 09-02 ships for (upstream catalogue
- *      ids like `nousresearch/deepseek/x` → engine model key `deepseek/x`).
- *
- *   3. Last-segment fallback for legacy forms. `lastSegment(recorded)`
- *      returns the segment after the LAST `/` or `:`. This is the
- *      pre-ticket-09-02 fallback path and is preserved for callers
- *      that recorded `custom_provider:byok-zhipu/glm-5.3` or
- *      `minimax_api/MiniMax-M3` — those resolve to the bare model
- *      name `glm-5.3` / `MiniMax-M3`, which the engine's `option.name`
- *      carries.
- *
- * The match is case-insensitive (ticket 05). Multiple matches return
- * null — ambiguity is ambiguity, and the caller skips rather than
- * pick the wrong option.
- */
-function resolveModelId(recorded, modelOption) {
-  if (!modelOption || !Array.isArray(modelOption.options)) return null;
-  const options = modelOption.options.filter(
-    (o) => o && typeof o === "object" && typeof o.value === "string",
-  );
-  // (1) Direct value match — engine wire form, or a webui id that
-  // happens to equal an `option.value` verbatim.
-  for (const o of options) {
-    if (o.value === recorded) return o.value;
-  }
-  // Branch on the structural shape of `recorded`. The webui id
-  // form (ticket 09-02) is `<providerKey>/<engineModelKey>` — the
-  // engine model key is everything after the FIRST `/`. Legacy
-  // forms (`minimax_api/MiniMax-M3`, `custom_provider:byok-zhipu/glm-5.3`)
-  // and bare names fall back to the last-segment match.
-  const slash = typeof recorded === "string" ? recorded.indexOf("/") : -1;
-  let bareName = null;
-  if (slash >= 0) {
-    // `<providerKey>/<engineModelKey>` form (engineModelKey may
-    // itself contain `/`). The engine populates `option.name` from
-    // `displayName ?? modelId` and appends ` · <variant>` when the
-    // option advertises a variant (see packages/tui/src/acp/
-    // control-state.ts#uniqueModelValues). The webui doesn't
-    // surface variant in its id — the variant is a separate
-    // concept the engine carries. We try the raw name first
-    // (most options have no variant suffix), then fall back to
-    // the variant-suffix-stripped name — so a recorded webui id
-    // lands on the option whether the engine is offering the bare
-    // or the variant form, and prefers the bare form when both
-    // are advertised (the engine's default).
-    bareName = recorded.slice(slash + 1);
-  } else if (typeof recorded === "string" && recorded) {
-    // Bare name or legacy colon form. `lastSegment` covers both.
-    bareName = lastSegment(recorded);
-  }
-  if (!bareName) return null;
-  const bareLower = bareName.toLowerCase();
-  // First pass: prefer options whose name matches the bare form
-  // exactly (covers `displayName === bareName`, no variant).
-  const exact = options.filter(
-    (o) => typeof o.name === "string" && o.name.toLowerCase() === bareLower,
-  );
-  if (exact.length === 1) return exact[0].value;
-  if (exact.length > 1) return null;
-  // Second pass: options whose name has the engine's ` · <variant>`
-  // suffix stripped to bare. Only kicks in when no exact match
-  // exists — so a multi-variant engine option set doesn't get
-  // collapsed to an ambiguous answer.
-  const stripped = options.filter(
-    (o) =>
-      typeof o.name === "string" &&
-      stripVariantSuffix(o.name).toLowerCase() === bareLower,
-  );
-  if (stripped.length === 1) return stripped[0].value;
-  // Third pass: URL-decode the `option.value` (the engine wire
-  // form is `m:<encodedProvider>:<encodedModel>:u|v:<variant>`)
-  // and compare the engine model id verbatim. This catches the
-  // case where `option.name` is the engine's `displayName` and
-  // differs from the model id — e.g. an upstream catalogue
-  // carries a router-style model id (`deepseek/deepseek-v4.1-flash`)
-  // with a separate display name (`DeepSeek V4.1 Flash`); the
-  // webui records the model id verbatim, but the engine's
-  // `option.name` is the display name. The wire-form decode
-  // recovers the model id and matches it.
-  const decoded = options.filter((o) => {
-    const modelId = engineModelIdFromWireValue(o.value);
-    return modelId !== null && modelId.toLowerCase() === bareLower;
-  });
-  if (decoded.length === 1) return decoded[0].value;
-  return null;
-}
 
-/**
- * Extract the engine model id from an `option.value` wire form.
- *
- * The engine wire form is `m:<encodedProvider>:<encodedModel>:u`
- * (no variant) or `m:<encodedProvider>:<encodedModel>:v:<variant>`
- * (with variant) — see packages/tui/src/acp/control-state.ts
- * #modelConfigValue and #parseModelConfigValue. The provider
- * and model segments are both URL-encoded. We split on `:`
- * (skipping the leading `m:`), decode each segment, and
- * return the model id. Returns `null` when the value isn't in
- * the expected wire shape — the caller treats that as a non-match.
- */
-function engineModelIdFromWireValue(wireValue) {
-  if (typeof wireValue !== "string") return null;
-  // `m:<provider>:<model>:<variantKind>[:<variant>]` — five or
-  // six segments. Split with a limit so colons inside the
-  // encoded model (rare but possible if upstream id has `:`) are
-  // contained; then take the third element as the model segment.
-  const parts = wireValue.split(":");
-  if (parts.length < 5 || parts[0] !== "m") return null;
-  const encodedModel = parts[2];
-  if (typeof encodedModel !== "string") return null;
-  try {
-    return decodeURIComponent(encodedModel);
-  } catch {
-    return encodedModel;
-  }
-}
 
-/**
- * Strip the engine's ` · <variant>` suffix from an `option.name`.
- *
- * The engine composes `option.name` as
- * `${displayName ?? modelId}${variant ? " · " + variant : ""}`
- * (packages/tui/src/acp/control-state.ts#uniqueModelValues). The
- * webui doesn't track variants in its id — they're a runtime-only
- * concern — so a bare webui id never carries the suffix. Stripping
- * before matching keeps the webui→engine translation round-trip
- * alive even when the engine is offering only the variant form.
- */
-function stripVariantSuffix(name) {
-  const i = name.indexOf(" · ");
-  return i >= 0 ? name.slice(0, i) : name;
-}
 
 /**
  * Engine model key from a webui id — everything after the first `/`.
@@ -351,18 +234,6 @@ function engineModelKeyFromId(id) {
   return slash >= 0 ? id.slice(slash + 1) : id;
 }
 
-/** Last segment after `/` or `:` — `minimax_api/MiniMax-M3` → `MiniMax-M3`.
- *
- * Legacy fallback for callers that recorded a form where the model id
- * is the segment after the LAST separator. Kept for backward
- * compatibility (and pinned by `lastSegment` tests); ticket 09-02
- * prefers `engineModelKeyFromId` for the new `<providerKey>/<modelId>`
- * webui form.
- */
-function lastSegment(id) {
-  const i = Math.max(id.lastIndexOf("/"), id.lastIndexOf(":"));
-  return i >= 0 ? id.slice(i + 1) : id;
-}
 
 // Exported for unit tests (test/lib/mcode-acp-note.test.js extends to
 // cover applyRecordedModel's resolution logic). The pre-session model
@@ -373,9 +244,12 @@ export {
   applyRecordedModel,
   findModelOption,
   matchesModelId,
-  resolveModelId,
-  lastSegment,
 };
+
+// Ticket 36: pure id-translation helpers moved to engine-catalogue.js
+// (the /api/models route needs them without pulling the acp runtime
+// graph). Re-exported for existing importers and tests.
+export { resolveModelId, lastSegment, variantChannelFor };
 
 export async function runMcodeAcp(content, opts = {}) {
   const label = opts.label || "prompt";

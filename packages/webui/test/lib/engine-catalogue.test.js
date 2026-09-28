@@ -42,6 +42,8 @@ const {
   fromEngineCustomProviderEntry,
   readEngineCatalogue,
   mergeEngineAndWebuiProviders,
+  thinkingFromEngineBuiltinModel,
+  readEngineBuiltinThinking,
 } = await import(
   new URL("../../server/lib/engine-catalogue.js", import.meta.url).href
 );
@@ -547,5 +549,200 @@ describe("mergeEngineAndWebuiProviders", () => {
     assert.equal(m.models[0].contextLimit, 1000000);
     assert.deepEqual(m.models[0].thinkingLevels, ["max", "high", "medium", "low"]);
     assert.deepEqual(m.models[0].modalities, ["text"]);
+  });
+});
+
+// ---------------------------------------------------------------------
+// thinkingFromEngineBuiltinModel / readEngineBuiltinThinking (ticket 36)
+//
+// The engine materialises its builtin MiniMax catalogue into
+// `<engine data dir>/config.yaml` under `provider.minimax.models`,
+// carrying the variant-style thinking schema:
+//
+//   thinking_config: { mode: switchable | forced_on | forced_off | hidden,
+//                      default_value?: "true" | "false" }
+//   variants: { "none-thinking": { thinking: { type: disabled } },
+//               thinking:        { thinking: { type: adaptive  } } }
+//   thinking:  { effortOptions: [...], defaultEffort: ... }   (effort path)
+//
+// These tests pin the projection of that schema onto the webui
+// `thinkingLevels` vocabulary. The fixtures mirror the shapes the
+// engine ACTUALLY writes (verified against a materialised
+// config.yaml): M3 = switchable with two variants, M3.1-Flash =
+// forced_on + effortOptions, M2.7 = forced_on with no effort
+// dimension and no variants.
+// ---------------------------------------------------------------------
+
+describe("thinkingFromEngineBuiltinModel — variant/effort schema → thinkingLevels", () => {
+  // The engine's materialised M3 entry, verbatim shape.
+  const M3_SWITCHABLE = {
+    name: "MiniMax-M3",
+    reasoning: true,
+    thinking_config: { mode: "switchable", default_value: "true" },
+    variants: {
+      "none-thinking": { thinking: { type: "disabled" } },
+      thinking: { thinking: { type: "adaptive" } },
+    },
+  };
+
+  test("switchable with off+on variants → two levels [off, on], never a fabricated depth scale", () => {
+    const out = thinkingFromEngineBuiltinModel(M3_SWITCHABLE);
+    assert.ok(out, "switchable models must project");
+    assert.deepEqual(out.levels, ["off", "on"]);
+    // The level→variant map is derived from the engine's own variant
+    // tree — item-by-item, not invented names.
+    assert.deepEqual(out.variant, { off: "none-thinking", on: "thinking" });
+    assert.equal(out.defaultLevel, "on", "default_value 'true' → thinking on");
+  });
+
+  test("switchable with default_value 'false' → defaultLevel off", () => {
+    const out = thinkingFromEngineBuiltinModel({
+      ...M3_SWITCHABLE,
+      thinking_config: { mode: "switchable", default_value: "false" },
+    });
+    assert.ok(out);
+    assert.equal(out.defaultLevel, "off");
+  });
+
+  test("switchable without default_value → defaultLevel off (engine defaultThinkingVariant: non-'true' → '')", () => {
+    const out = thinkingFromEngineBuiltinModel({
+      ...M3_SWITCHABLE,
+      thinking_config: { mode: "switchable" },
+    });
+    assert.ok(out);
+    assert.equal(out.defaultLevel, "off");
+  });
+
+  test("effortOptions wins when present: forced_on + effortOptions (M3.1-Flash) → levels verbatim, no variant channel", () => {
+    const out = thinkingFromEngineBuiltinModel({
+      name: "M3.1-Flash-Preview",
+      reasoning: true,
+      thinking_config: { mode: "forced_on" },
+      thinking: {
+        effortOptions: ["default", "low", "medium", "high", "xhigh", "max"],
+        defaultEffort: "default",
+      },
+      variants: {
+        "none-thinking": { thinking: { type: "disabled" } },
+        thinking: { thinking: { type: "adaptive" } },
+      },
+    });
+    assert.ok(out);
+    // Verbatim, item-by-item — the engine's effort vocabulary, not a
+    // webui-normalised one.
+    assert.deepEqual(out.levels, ["default", "low", "medium", "high", "xhigh", "max"]);
+    assert.equal(out.variant, undefined, "effort models sync via thinkingEffort, not variants");
+    assert.equal(out.defaultLevel, undefined);
+  });
+
+  test("forced_on with no effort dimension and no variants (M2.7 on a materialised host) → null (no control)", () => {
+    // forced_on means the user cannot switch thinking off; with no
+    // effortOptions there is nothing left to choose. A control here
+    // would be a no-op — the projection must refuse to fabricate one.
+    assert.equal(
+      thinkingFromEngineBuiltinModel({ name: "MiniMax-M2.7", reasoning: true, thinking_config: { mode: "forced_on" } }),
+      null,
+    );
+  });
+
+  test("forced_off and hidden modes → null (no control)", () => {
+    assert.equal(
+      thinkingFromEngineBuiltinModel({ thinking_config: { mode: "forced_off" }, variants: { thinking: { thinking: { type: "adaptive" } } } }),
+      null,
+    );
+    assert.equal(
+      thinkingFromEngineBuiltinModel({ thinking_config: { mode: "hidden" }, variants: { thinking: { thinking: { type: "adaptive" } } } }),
+      null,
+    );
+  });
+
+  test("a model with no thinking keys at all → null", () => {
+    assert.equal(thinkingFromEngineBuiltinModel({ name: "MiniMax-M2.7", reasoning: true }), null);
+    assert.equal(thinkingFromEngineBuiltinModel(null), null);
+    assert.equal(thinkingFromEngineBuiltinModel("not-an-object"), null);
+  });
+
+  test("switchable with an incomplete variant pair (no disabled side) → null — half a toggle is not a toggle", () => {
+    const out = thinkingFromEngineBuiltinModel({
+      thinking_config: { mode: "switchable", default_value: "true" },
+      variants: { thinking: { thinking: { type: "adaptive" } } },
+    });
+    assert.equal(out, null);
+  });
+
+  test("effortOptions filtering: non-string / empty entries are dropped (same hygiene as the custom_provider path)", () => {
+    const out = thinkingFromEngineBuiltinModel({
+      thinking_config: { mode: "forced_on" },
+      thinking: { effortOptions: ["low", "", 42, "high"] },
+    });
+    assert.ok(out);
+    assert.deepEqual(out.levels, ["low", "high"]);
+  });
+
+  test("effortOptions that filter to empty → null", () => {
+    assert.equal(
+      thinkingFromEngineBuiltinModel({ thinking_config: { mode: "forced_on" }, thinking: { effortOptions: ["", 7] } }),
+      null,
+    );
+  });
+});
+
+describe("readEngineBuiltinThinking — provider.minimax.models file read", () => {
+  test("projects every model in the builtin tree, keyed by bare model id", () => {
+    const path = writeConfig({
+      provider: {
+        minimax: {
+          models: {
+            "MiniMax-M3": {
+              thinking_config: { mode: "switchable", default_value: "true" },
+              variants: {
+                "none-thinking": { thinking: { type: "disabled" } },
+                thinking: { thinking: { type: "adaptive" } },
+              },
+            },
+            "MiniMax-M2.7": { thinking_config: { mode: "forced_on" } },
+          },
+        },
+      },
+    });
+    const map = readEngineBuiltinThinking({ configPath: path });
+    assert.ok(map instanceof Map);
+    assert.equal(map.size, 2, "both models keyed, projection or not");
+    const m3 = map.get("MiniMax-M3");
+    assert.ok(m3);
+    assert.deepEqual(m3.levels, ["off", "on"]);
+    assert.equal(map.get("MiniMax-M2.7"), null, "forced_on-no-dimension projects to null but stays keyed");
+  });
+
+  test("missing file / no provider.minimax tree → empty map, never a throw", () => {
+    assert.equal(readEngineBuiltinThinking({ configPath: join(_tmpDataDir, "definitely-missing.yaml") }).size, 0);
+    const path = writeConfig({ custom_provider: { "some-provider": { models: {} } } });
+    assert.equal(readEngineBuiltinThinking({ configPath: path }).size, 0);
+  });
+
+  test("malformed provider.minimax.models entries are skipped, not fatal", () => {
+    const path = writeConfig({
+      provider: { minimax: { models: { "MiniMax-M3": "garbage-string", "MiniMax-M2.7": 3 } } },
+    });
+    const map = readEngineBuiltinThinking({ configPath: path });
+    assert.equal(map.size, 0);
+  });
+
+  test("custom_provider entries never bleed into the builtin thinking map", () => {
+    // The two schemas live in the same file; the builtin reader must
+    // read ONLY provider.minimax.models. A custom_provider model that
+    // happens to share a model id must not be picked up.
+    const path = writeConfig({
+      custom_provider: {
+        "evil-twin": {
+          kind: "custom",
+          api: "openai-completions",
+          options: { apiKey: "sk-x" },
+          models: { "MiniMax-M3": { thinking: { effortOptions: ["low"] } } },
+        },
+      },
+    });
+    const map = readEngineBuiltinThinking({ configPath: path });
+    assert.equal(map.size, 0);
   });
 });

@@ -163,6 +163,8 @@ function thinkingLevelKey(level: string): string | null {
     case "off":
     case "none":
       return "thinkingPicker.off";
+    case "on":
+      return "thinkingPicker.on";
     case "low":
       return "thinkingPicker.low";
     case "minimal":
@@ -236,6 +238,14 @@ describe("thinkingLevelKey — engine effort → i18n key", () => {
     assert.equal(thinkingLevelKey("xhigh"), "thinkingPicker.xhigh");
     assert.equal(thinkingLevelKey("minimal"), "thinkingPicker.minimal");
     assert.equal(thinkingLevelKey("none"), "thinkingPicker.off");
+  });
+
+  test("variant-channel 'on' maps to its own key — a two-state toggle, not a depth", () => {
+    // Ticket 36: switchable builtin MiniMax models (MiniMax-M3) carry
+    // thinkingLevels ["off","on"] projected from the engine's variant
+    // schema. "on" is the pair of "off" — it must render with a real
+    // label, never as a raw English glyph in a zh UI.
+    assert.equal(thinkingLevelKey("on"), "thinkingPicker.on");
   });
 
   test("unknown levels return null so the chip label stays clean", () => {
