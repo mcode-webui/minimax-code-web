@@ -199,6 +199,44 @@ export const MCODE_WEBUI_SETTINGS_PATH = process.env.MCODE_WEBUI_SETTINGS_PATH |
 export const MCODE_BETTER_SQLITE3 = process.env.MCODE_BETTER_SQLITE3 || null;
 export const DEBUG_INJECT = process.env.DEBUG_INJECT || null;
 
+// MCODE_WEBUI_TRANSPORT — S2 (runtime-first migration step 2).
+//
+// Selects the engine transport that webui uses for every turn. The
+// default `acp` matches today's behaviour exactly (no observable
+// change). The new value `runtime` opts routes into the in-process
+// runtime host landed in S2; wiring is staged — S3-S6 light up
+// catalogue/turn paths incrementally, S7 flips the default.
+//
+//   MCODE_WEBUI_TRANSPORT=acp     → today's behaviour (default)
+//   MCODE_WEBUI_TRANSPORT=exec    → escape hatch; routes/chat.js exec
+//                                   path, identical to MCODE_USE_ACP=0
+//   MCODE_WEBUI_TRANSPORT=runtime → opt-in to the S2 in-process host
+//
+// Interaction with MCODE_USE_ACP (kept for backwards compatibility):
+//   MCODE_USE_ACP=0  ⇒  transport=exec  (regardless of MCODE_WEBUI_TRANSPORT)
+//   MCODE_USE_ACP=1  ⇒  transport honours MCODE_WEBUI_TRANSPORT
+//   MCODE_USE_ACP unset ⇒ transport honours MCODE_WEBUI_TRANSPORT
+//                        (today's behaviour is `acp`)
+//
+// S2 reads MCODE_WEBUI_TRANSPORT for diagnostic introspection but does
+// NOT yet route any handler through it. See docs/webui.md "Transport
+// selection" for the full table and the S3+ rollout.
+const VALID_TRANSPORTS = new Set(["acp", "exec", "runtime"]);
+function resolveTransport() {
+  const raw = (process.env.MCODE_WEBUI_TRANSPORT || "").trim().toLowerCase();
+  if (raw && !VALID_TRANSPORTS.has(raw)) {
+    console.warn(
+      `[webui] MCODE_WEBUI_TRANSPORT=${raw} is not a known value; valid choices are acp, exec, runtime — falling back to acp`,
+    );
+    return "acp";
+  }
+  return raw || "acp";
+}
+export const MCODE_WEBUI_TRANSPORT = resolveTransport();
+// Raw env value for diagnostic and doc-aligned introspection
+// (scripts/check-docs-alignment.mjs reads this name verbatim).
+export const MCODE_WEBUI_TRANSPORT_ENV = process.env.MCODE_WEBUI_TRANSPORT || null;
+
 // Platform-specific fallback paths to try when probing for the
 // sqlite3 binary. Pure function for testability — no FS / process
 // side effects.

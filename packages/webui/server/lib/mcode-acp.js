@@ -228,12 +228,6 @@ function matchesModelId(recorded, engineCurrent, modelOption) {
  * (engine wire form, no `/`) → the whole string — direct-match in
  * `resolveModelId` covers this case before the name-match runs.
  */
-function engineModelKeyFromId(id) {
-  if (typeof id !== "string" || !id) return id;
-  const slash = id.indexOf("/");
-  return slash >= 0 ? id.slice(slash + 1) : id;
-}
-
 
 // Exported for unit tests (test/lib/mcode-acp-note.test.js extends to
 // cover applyRecordedModel's resolution logic). The pre-session model
