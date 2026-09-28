@@ -453,10 +453,12 @@ describe("computeColumnLayout — defect A (no dead gutter)", () => {
   // The desktop reference image (`refs/ui/02-workspace-shell.jpg`,
   // 1384 viewport) shows all four columns with the chat column
   // at ~322px wide. The fix: conversation is the elastic column;
-  // its rendered width tracks the leftover after the fixed
-  // columns claim their widths, clamped to [min, max]. The chat
-  // content's own max-w-[768px] fills the column at every
-  // comfortable width — no 250-280px dead gutter.
+  // its rendered width absorbs whatever is left over after the
+  // fixed columns claim their widths (no growth-path ceiling —
+  // see slice 25; the [min, max] clamp only bounds the stored
+  // user drag). The chat content's own max-w-[960px] fills the
+  // column at every comfortable width — no 250-280px dead
+  // gutter.
 
   test("at 1280 the conversation column is elastic, not 1040 with a centred content box", () => {
     // Slice 21 — DEFAULT_COLUMN_LAYOUT starts both on-demand
@@ -476,12 +478,23 @@ describe("computeColumnLayout — defect A (no dead gutter)", () => {
     assert.ok(conversation.visible);
     assert.ok(preview.visible);
     assert.ok(tree.visible);
-    // The bug: a 1040px conversation column with the chat
-    // content's max-w-[768px] centred = ~136px gutter each side.
-    // The fix: the column itself caps at maxWidth (768); no
-    // wide-gutter state is reachable.
-    assert.ok(conversation.width <= COLUMN_SPECS.conversation.maxWidth,
-      `conversation ${conversation.width} > max ${COLUMN_SPECS.conversation.maxWidth}`);
+    // The slice-17 bug: the column itself capped at maxWidth
+    // (768) — when the stored conversation width was below the
+    // cap, leftover above it piled at the row's right edge as a
+    // dead band. Slice 25 removed the column ceiling; the
+    // conversation column now absorbs the full leftover. The
+    // readable measure cap lives on the CONTENT (chat.tsx +
+    // composer.tsx both use max-w-[960px]) and is centred inside
+    // the column, so any slack above the measure splits evenly
+    // left/right instead of dumping on one side. The dead-gutter
+    // defence is now the **fixed columns stay visible** plus the
+    // total-accounting assertion below — not a column ceiling.
+    //
+    // (The previously-shared assertion `conversation.width <=
+    // COLUMN_SPECS.conversation.maxWidth` was structurally dead:
+    // the algorithm already bounds conv by the container, and
+    // the test's container (1280) is below the spec maxWidth
+    // (2400), so the comparison was always true.)
     // The four visible widths sum to exactly the container (or
     // less when a column collapsed). No unexplained remainder.
     const total = sidebar.width + conversation.width + preview.width + tree.width;
@@ -499,11 +512,15 @@ describe("computeColumnLayout — defect A (no dead gutter)", () => {
     const summary = computeColumnLayout(layout, 1920, 1920);
     const conversation = summary.segments.find((s) => s.id === "conversation")!;
     assert.ok(conversation.visible);
-    assert.ok(conversation.width <= COLUMN_SPECS.conversation.maxWidth,
-      `conversation ${conversation.width} > max ${COLUMN_SPECS.conversation.maxWidth}`);
-    // Conversation fills its max; the leftover distributes to
-    // tree first, then preview, then sidebar. The row sums to
-    // exactly the container.
+    // Slice 25 — conversation has no growth-path ceiling; the
+    // column absorbs the entire residual after the fixed
+    // columns claim their maxes (preview 720, tree 600). The
+    // total = 1920 assertion below pins that the row sums to
+    // exactly the container — the dead-gutter defence. The
+    // previously-shared `conversation.width <= COLUMN_SPECS.
+    // conversation.maxWidth` assertion was structurally dead:
+    // the container is < container.maxWidth (2400), so the
+    // comparison was always true.
     const total = summary.segments.reduce((sum, s) => sum + s.width, 0);
     assert.equal(total, 1920, `total ${total} != 1920`);
   });
