@@ -717,6 +717,22 @@ reads like "Thought 1 time, ran 1 command"):
   group carries `data-active="true"` and cannot be collapsed — a click
   during the run snaps straight back open; only a settled turn folds. The
   predicate `isActivityGroupActive` is an exported pure function.
+- **Reachability of `data-active` (stated plainly)**: protocol-level probes
+  (live engine turns, 120ms sampling, including a `sleep 15` tool and a
+  15-second streaming-output tool) show that under the current ACP
+  transport the tool's `→ name` header and its `  [completed]` status line
+  land in the SAME frame — the engine emits the `tool_call` notification
+  (carrying `update`) only at completion, with no incremental
+  `tool_update` in between, and the server's `applyToolUpdate`
+  (`mcode-acp.js`) defaults an update without a status field to
+  `[completed]`. The "running tool block" intermediate state therefore
+  does NOT occur under the current engine transport: `data-active`
+  forced-open is a capability reserved for the engine emitting tool-start
+  events / non-terminal intermediate updates in the future. The decode
+  contract (no status line = running), the front-end predicate and the
+  snap-back logic are all in place and pinned by unit tests, so the
+  behaviour activates the moment the engine sends the events. The SSE
+  snapshot coalescing window (default 16ms) is not the masking cause.
 - Default-open follows the upstream orchestration (`AssistantBody`'s
   `expandProcessByDefault` + `renderActivityParts`): a mixed run (thoughts
   AND tools) opens expanded; a pure-tool run starts collapsed; thinking
@@ -746,6 +762,26 @@ frozen total is the turn-elapsed value at the moment that thought settled
 — NOT an engine-measured per-thought duration (the engine does not expose
 one). A cold-loaded historical thought has no anchor and omits the seconds
 rather than inventing them.
+
+Showing the seconds additionally requires the thought's streaming window
+("the tail block is a thought") to be exposed in at least one SSE snapshot
+frame. Two boundaries confirmed on the live instance:
+
+1. **Swallowed streaming window**: a very short thought, or one that lands
+   in the same frame as the turn's end, may never appear as the tail block
+   in any snapshot frame; that thought then freezes with no seconds
+   (「已完成推理」 with no number). The data was already merged at the
+   transport layer — the renderer cannot reconstruct it afterwards.
+2. **Row remounting (the fixed primary cause)**: mid-turn, tool headers
+   land only at completion and prose lines stream in between, so the
+   activity runs are re-cut frame by frame; the thinking rows originally
+   keyed by their within-group position remounted on every re-cut, wiping
+   the elapsed state exactly as the turn settled (reproduced live: ticking
+   1s→4s, zeroed at finalize). Fix: `assignActivityBlockKeys` (an exported
+   pure function in `activity-group.tsx`) assigns global birth-order keys,
+   and the same scenario now keeps its seconds. Rare line reorderings
+   (e.g. a block displaced by a late-arriving prose line) can still drop
+   an individual thought's seconds.
 
 The streaming verdict itself is derived, not signalled: the tail unit of
 the transcript is an activity run whose last block is a thought

@@ -25,6 +25,7 @@ import {
   SUMMARY_CATEGORY_KEY,
   iconByName,
   type ActivitySummary,
+  type RenderUnit,
   type SummaryIconType,
   type TranscriptBlock,
 } from "../lib/transcript";
@@ -63,6 +64,44 @@ export function isActivityGroupActive(blocks: readonly TranscriptBlock[]): boole
 }
 
 /**
+ * Assign each block of each activity unit a stable React key: its global
+ * birth order across the whole decoded transcript (P3-1 fix).
+ *
+ * Why not the within-group index: the wire writes a tool's `→ name` header
+ * only when the tool COMPLETES (verified against the live engine — see the
+ * P2-1 probe in ticket 46), and assistant prose lines stream in between.
+ * During a turn the same thought therefore moves between groups and shifts
+ * within them as runs are re-cut frame by frame; a key that encodes the
+ * within-group position remounts the row on every re-cut, wiping the
+ * ThinkingRow's elapsed-seconds state exactly at the moment the turn
+ * settles (observed: a thought ticking 1s→4s loses its seconds at
+ * finalize). The birth order is stable instead: decoding is deterministic
+ * and append-only — a block's predecessors never reorder or vanish, so its
+ * ordinal never changes even when the group boundaries around it do.
+ *
+ * Non-activity units consume an ordinal too, so the numbering stays aligned
+ * with the decoded block sequence (block N of the decode always gets key
+ * `bN`).
+ */
+export function assignActivityBlockKeys(
+  units: readonly RenderUnit[],
+): Map<number, string[]> {
+  const keys = new Map<number, string[]>();
+  let ordinal = 0;
+  units.forEach((unit, unitIndex) => {
+    if (unit.kind === "activity") {
+      keys.set(
+        unitIndex,
+        unit.blocks.map(() => `b${ordinal++}`),
+      );
+    } else {
+      ordinal += 1;
+    }
+  });
+  return keys;
+}
+
+/**
  * A folded run of thinking/tool steps (ticket 46 — D3).
  *
  * Upstream (`WebuiActivityGroup`) renders this as ONE native `<details>`:
@@ -82,6 +121,7 @@ export function isActivityGroupActive(blocks: readonly TranscriptBlock[]): boole
  */
 export function ActivityGroup({
   blocks,
+  blockKeys,
   summary,
   t,
   onOpenFile,
@@ -89,6 +129,10 @@ export function ActivityGroup({
   startedAtMs,
 }: {
   blocks: TranscriptBlock[];
+  /** Per-block stable React keys from `assignActivityBlockKeys` (see its
+   *  docblock for why the within-group index is not stable mid-turn).
+   *  Optional: falls back to the index for hand-built fixtures. */
+  blockKeys?: string[];
   summary: ActivitySummary;
   t: (key: MessageKey) => string;
   onOpenFile: (path: string) => void;
@@ -182,7 +226,7 @@ export function ActivityGroup({
                 {blocks.map((block, index) =>
                   block.role === "thinking" ? (
                     <ThinkingRow
-                      key={index}
+                      key={blockKeys?.[index] ?? index}
                       block={block}
                       t={t}
                       // Only the trailing thought streams; earlier ones in the
@@ -192,7 +236,7 @@ export function ActivityGroup({
                       initiallyOpen={!hasTools}
                     />
                   ) : (
-                    <ToolCard key={index} block={block} t={t} onOpenFile={onOpenFile} />
+                    <ToolCard key={blockKeys?.[index] ?? index} block={block} t={t} onOpenFile={onOpenFile} />
                   ),
                 )}
               </div>

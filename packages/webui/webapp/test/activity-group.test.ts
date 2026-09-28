@@ -57,11 +57,12 @@ import type { ActivitySummary, TranscriptBlock } from "../lib/transcript";
   });
 }
 
-const { ActivityGroup, isActivityGroupActive } = await import(
+const { ActivityGroup, isActivityGroupActive, assignActivityBlockKeys } = await import(
   "../components/activity-group"
 );
 const { SessionProvider } = await import("../lib/store");
 const { translate } = await import("../lib/i18n");
+const { groupActivity, decodeTranscript: realDecode } = await import("../lib/transcript");
 
 const here = dirname(fileURLToPath(import.meta.url));
 const chatSource = readFileSync(resolve(here, "../components/chat.tsx"), "utf8");
@@ -303,7 +304,7 @@ describe("chat.tsx wiring — the streaming derivation stays put", () => {
   });
 
   test("the moved components are imported, not duplicated", () => {
-    assert.match(chatSource, /import \{ ActivityGroup \} from "\.\/activity-group"/);
+    assert.match(chatSource, /import \{ ActivityGroup, assignActivityBlockKeys \} from "\.\/activity-group"/);
     assert.doesNotMatch(chatSource, /function ActivityGroup\(/);
     assert.doesNotMatch(chatSource, /function ThinkingRow\(/);
     assert.doesNotMatch(chatSource, /function ToolCard\(/);
@@ -312,7 +313,71 @@ describe("chat.tsx wiring — the streaming derivation stays put", () => {
   test("the turn-process disclosure is untouched", () => {
     assert.match(chatSource, /data-testid="turn-process-disclosure"/);
   });
+
+  test("the stable block keys are assigned once per units pass and forwarded (P3-1)", () => {
+    assert.match(chatSource, /const activityBlockKeys = useMemo\(\(\) => assignActivityBlockKeys\(units\), \[units\]\)/);
+    assert.match(chatSource, /blockKeys=\{activityBlockKeys\.get\(originalIndex\)\}/);
+    // The rows consume the stable key, not their within-group position.
+    assert.match(activitySource, /key=\{blockKeys\?\.\[index\] \?\? index\}/);
+  });
 });
+
+describe("assignActivityBlockKeys — stable birth-order keys (P3-1)", () => {
+  // Frames replay the mid-turn reality the fix targets: a tool header only
+  // lands when the tool completes (verified against the live engine in the
+  // P2-1 probe), and prose lines stream in between, so consecutive frames
+  // of the SAME turn re-cut the activity runs. The keys must not move a
+  // block when the groups around it do.
+  const decodeUnits = (lines: readonly string[]) => groupActivity(realDecode(lines, {}));
+
+  test("append-only growth keeps every existing block's key", () => {
+    const before = decodeUnits(["› q", "▲ think one", "  [completed]"]);
+    const after = decodeUnits(["› q", "▲ think one", "  [completed]", "● answer"]);
+    const kb = assignActivityBlockKeys(before);
+    const ka = assignActivityBlockKeys(after);
+    const keysBefore = [...kb.values()][0] ?? [];
+    const keysAfter = [...ka.values()][0] ?? [];
+    assert.deepEqual(keysAfter.slice(0, keysBefore.length), keysBefore);
+  });
+
+  test("re-cutting the runs (tool header lands late) moves no key", () => {
+    // Frame A: the thought streams, tool header not yet written.
+    const frameA = ["› q", "▲ think step"];
+    // Frame B: the tool completed (header + status land together) and prose
+    // follows, so the run is re-cut into [thought, tool] + prose.
+    const frameB = ["› q", "▲ think step", "→ bash  {}", "  [completed]", "● done"];
+    const keysA = [...assignActivityBlockKeys(decodeUnits(frameA)).values()][0] ?? [];
+    const keysB = [...assignActivityBlockKeys(decodeUnits(frameB)).values()][0] ?? [];
+    // The thought is decode-block 1 in both frames → key b1 in both; the
+    // late-landing tool becomes b2 without disturbing it.
+    assert.deepEqual(keysA, ["b1"]);
+    assert.deepEqual(keysB, ["b1", "b2"]);
+  });
+
+  test("a prose line between thoughts keeps each thought's key stable", () => {
+    const frameA = ["› q", "▲ one", "→ bash  {}", "  [completed]"];
+    // Frame B: prose streamed in after the tool and a second thought began,
+    // re-cutting into [thought, tool] | prose | [thought].
+    const frameB = ["› q", "▲ one", "→ bash  {}", "  [completed]", "● mid", "▲ two"];
+    const unitsB = decodeUnits(frameB);
+    const mapB = [...assignActivityBlockKeys(unitsB).entries()];
+    // Frame A: one activity unit [b1(thought), b2(tool)].
+    assert.deepEqual([...assignActivityBlockKeys(decodeUnits(frameA)).values()][0], ["b1", "b2"]);
+    // Frame B: the first unit is unchanged; the new thought is b4 (the
+    // prose line consumed b3 in birth order).
+    assert.deepEqual(mapB[0]?.[1], ["b1", "b2"]);
+    assert.deepEqual(mapB[mapB.length - 1]?.[1], ["b4"]);
+  });
+});
+
+
+// Known test boundary (acceptance P3-2): the elapsed-seconds rendering has
+// no positive assertion in this suite. `renderToStaticMarkup` never runs
+// effects, so the interval-driven `elapsed` state is always null in SSR
+// output — the existing assertions can only pin its absence. The behaviour
+// is covered by the live-instance evidence (ticking 1s→4s captured in the
+// acceptance run) and by the key-stability tests above, which protect the
+// state that carries the frozen total.
 
 describe("globals.css — spine, clamp, marker suppression, pulse", () => {
   test("the timeline spine rule exists with the upstream offsets", () => {

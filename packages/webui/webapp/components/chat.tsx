@@ -15,7 +15,7 @@ import {
 import { Icon } from "./icons";
 import { useChatVirtualization } from "./chat-virtual-list";
 import { ActivityPulse, isSessionActivityActive } from "./loading-states";
-import { ActivityGroup } from "./activity-group";
+import { ActivityGroup, assignActivityBlockKeys } from "./activity-group";
 import { useSessionContext } from "@/lib/store";
 import { readScrollPosition as readPersistedScroll } from "@/lib/persist";
 import type { Locale, MessageKey } from "@/lib/i18n";
@@ -137,6 +137,15 @@ export function Chat({
   // `WebuiThinkingBlock` as `processingStartedAtMs`). Null once the turn
   // settles, absent on a cold-loaded session.
   const runningStartedAt = state?.running.startedAt ?? null;
+
+  // Ticket 46 (P3-1 fix) — stable per-block React keys, keyed by global birth
+  // order in the decoded transcript. During a turn the tool headers arrive
+  // only at completion and prose lines stream in between, so the activity
+  // runs are re-cut frame by frame; a within-group-index key would remount
+  // the thinking rows on every re-cut and wipe their elapsed-seconds state
+  // at exactly the moment the turn settles. See
+  // `assignActivityBlockKeys`'s docblock.
+  const activityBlockKeys = useMemo(() => assignActivityBlockKeys(units), [units]);
 
   // Windowed rendering: above VIRTUAL_LIST_THRESHOLD (200) units we slice the
   // transcript to a visible window around the user's scroll position. The hook
@@ -294,6 +303,7 @@ export function Chat({
                 <ActivityGroup
                   key={originalIndex}
                   blocks={unit.blocks}
+                  blockKeys={activityBlockKeys.get(originalIndex)}
                   summary={unit.summary}
                   t={t}
                   onOpenFile={onOpenFile}
