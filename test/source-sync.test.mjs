@@ -1226,11 +1226,17 @@ test('test-tmp-leak lint: a synthetic well-known-prefix directory is detected', 
 // mkSubTmpDir. A future test author who introduces a new prefix must add
 // it here AND update KNOWN_PREFIXES — verifyPrefixRegistry() makes the
 // "I added a new test prefix but forgot to register it" footgun loud.
-test('test-tmp-leak registry: KNOWN_PREFIXES covers every prefix the test tree uses', () => {
+// Round-3 B6.3 extended the verdict with `bare` (direct mkdtempSync /
+// `await mkdtemp()` call sites the helper cannot sweep) and added a
+// trailing set of catch-all prefixes (`webui-`, `trajectory-`, `mcode-`,
+// `fs-`, `git-panel-`) that serve as a runtime backstop for any prefix
+// not in the precise list above. The test asserts all three verdict
+// classes are empty.
+test('test-tmp-leak registry: KNOWN_PREFIXES covers every prefix the test tree uses, no stale precise entries, no bare mkdtemp', () => {
   const verdict = verifyPrefixRegistry();
   assert.deepEqual(
     verdict,
-    { unregistered: [], stale: [] },
+    { unregistered: [], stale: [], bare: [] },
     formatPrefixRegistry(verdict),
   );
 });

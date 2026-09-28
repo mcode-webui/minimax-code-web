@@ -241,6 +241,32 @@ const KNOWN_PREFIXES = [
   "webui-wsroot-",
   "webui-wsroots-a-",
   "webui-wsscratch-",
+  // Catch-all prefixes (last — matching stops on the first prefix that
+  // matches, so every entry above this point wins over these). Round-3
+  // B6.3 added them back after round-2's exact-only list created three
+  // blind spots:
+  //   * `webui-no-such-`     — never actually created (test code
+  //                            synthesises the string but does not
+  //                            mkdir); kept out of the list and
+  //                            exempt by the catch-all.
+  //   * `webui-ws-symlink-link-` — same shape: a path string for the
+  //                            symlink target, never an actual
+  //                            directory. Caught by `webui-`.
+  //   * `mcode-tools-tui-`    — used by `packages/tui/` (NOT a webui
+  //                            test prefix). The lint scope is
+  //                            `packages/webui/test/` so the tui
+  //                            prefix is outside the registry; the
+  //                            catch-all catches it if a tui test
+  //                            ever leaves a leak on this host.
+  // The catch-all does not affect verify-registry's reverse check —
+  // collectActualPrefixes() still scans for literal `mkTmpDir(prefix)`
+  // call sites and reports any prefix not in the precise list above.
+  // These three are best-effort backstops, not a primary contract.
+  "webui-",
+  "trajectory-",
+  "mcode-",
+  "fs-",
+  "git-panel-",
 ];
 
 /**
@@ -309,19 +335,30 @@ export function verifyPrefixRegistry() {
   const actual = collectActualPrefixes();
   const known = new Set(KNOWN_PREFIXES);
   // Stale entries: in KNOWN_PREFIXES but no test code uses them any more.
-  // (We tolerate KNOWN_PREFIXES entries that are catch-alls subsumed by a
-  // sibling entry, e.g. a wider "fs-" would still be stale if no test
-  // calls it directly. Same rule for both sides.)
-  const stale = KNOWN_PREFIXES.filter((p) => !actual.has(p));
+  // The 5 trailing catch-all entries (`webui-`, `trajectory-`, `mcode-`,
+  // `fs-`, `git-panel-`) are always stale under this definition because
+  // no test calls `mkTmpDir("webui-")` literally — collectActualPrefixes
+  // extracts only the literal arguments passed to the helper, and tests
+  // always pass longer sub-prefixes like `webui-events-test-`. The
+  // catch-alls are intentionally a runtime backstop for missing
+  // registrations, NOT a forward contract for the test tree. Filter
+  // them out before computing stale.
+  const CATCHALL = new Set(["webui-", "trajectory-", "mcode-", "fs-", "git-panel-"]);
+  const stale = KNOWN_PREFIXES.filter((p) => !actual.has(p) && !CATCHALL.has(p));
   // Unregistered: actual prefixes not present in KNOWN_PREFIXES. The
   // helper order matters here — `webui-events-test-` should match before
-  // a hypothetical `webui-` catch-all; we treat any actual prefix that
-  // has no exact entry as unregistered.
+  // the `webui-` catch-all; we treat any actual prefix that has no exact
+  // entry as unregistered.
   const unregistered = [];
   for (const p of actual) {
     if (!known.has(p)) unregistered.push(p);
   }
-  return { unregistered, stale };
+  // Bare-mkdtemp check: any test that calls `mkdtempSync(...)` or
+  // `await mkdtemp(...)` directly is a leak vector the helper cannot
+  // sweep. Surface those call sites as a third verdict class so the
+  // gate also catches "added a new test but bypassed the helper".
+  const bare = collectBareMkdtemp();
+  return { unregistered, stale, bare };
 }
 
 function scan(under) {
@@ -378,7 +415,7 @@ export function formatTmpLeaks(leaks) {
  * Render the prefix-registry verdict the same way — for `assert.match`
  * assertions in test/source-sync.test.mjs.
  */
-export function formatPrefixRegistry({ unregistered, stale }) {
+export function formatPrefixRegistry({ unregistered, stale, bare = [] }) {
   const lines = [];
   if (unregistered.length) {
     lines.push("test-tmp-leak prefix registry: UNREGISTERED (test uses a prefix the lint does not know about):");
@@ -388,8 +425,59 @@ export function formatPrefixRegistry({ unregistered, stale }) {
     lines.push("test-tmp-leak prefix registry: STALE (lint knows a prefix no test uses any more):");
     for (const p of stale) lines.push(`  - ${p}`);
   }
+  if (bare.length) {
+    lines.push("test-tmp-leak prefix registry: BARE mkdtemp call sites (bypass the helper — the exit hook cannot sweep these):");
+    for (const p of bare) lines.push(`  ! ${p}`);
+  }
   if (lines.length === 0) lines.push("test-tmp-leak prefix registry: clean");
   return lines.join("\n");
+}
+
+/**
+ * Scan the test tree for any DIRECT call to mkdtempSync / await
+ * mkdtemp() — i.e. tests that bypass the helper. Returns an array of
+ * "<file>:<line>: <call>" entries, one per offending call site. The
+ * helper's exit-hook only cleans directories registered through it,
+ * so any bare mkdtemp call IS a leak vector that the lint cannot
+ * close by design. This surface is the third verdict class returned
+ * by verifyPrefixRegistry().
+ */
+function collectBareMkdtemp() {
+  let out = "";
+  try {
+    out = execFileSync(
+      "grep",
+      [
+        "-rEn",
+        "--include=*.js",
+        "--include=*.mjs",
+        "--include=*.ts",
+        // Match the two call shapes the helper supports:
+        //   mkdtempSync(path.join(tmpdir(), "<prefix>-"))
+        //   await mkdtemp(path.join(tmpdir(), "<prefix>-"))
+        // The helper itself (packages/webui/test/helpers/tmp.js) is
+        // excluded by --exclude — it MUST call mkdtempSync / mkdtemp,
+        // that is its purpose, and we do not want the gate to flag
+        // the implementation as a leak.
+        "--exclude=tmp.js",
+        "\\bmkdtempSync\\s*\\(|\\bawait\\s+mkdtemp\\s*\\(",
+        join(repoRoot, "packages", "webui", "test"),
+      ],
+      { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
+    );
+  } catch (e) {
+    if (e.status !== 1) throw e;
+    out = "";
+  }
+  return out
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0)
+    // Comment lines are documentation, not code — they describe the
+    // helper's contract by quoting its name. Strip them so the lint
+    // does not false-positive on `// ... mkdtempSync ...`.
+    .filter((l) => !/^[^\s]+:\d+:\s*(?:\/\/|\*|\/\*)/.test(l))
+    .filter((l) => !l.includes("node_modules"));
 }
 
 function snapshot(outPath) {
@@ -449,7 +537,7 @@ if (cmd === "snapshot") {
   diff(prev);
 } else if (cmd === "verify-registry") {
   const verdict = verifyPrefixRegistry();
-  if (verdict.unregistered.length === 0 && verdict.stale.length === 0) {
+  if (verdict.unregistered.length === 0 && verdict.stale.length === 0 && verdict.bare.length === 0) {
     console.log(`prefix registry: clean (${KNOWN_PREFIXES.length} entries, all referenced by test code)`);
   } else {
     console.error(formatPrefixRegistry(verdict));

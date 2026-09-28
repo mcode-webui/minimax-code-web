@@ -25,12 +25,16 @@
 //   1. `process.on('exit')` — synchronous; runs on normal exit AND after
 //      process.exit() / uncaughtException / unhandledRejection trigger
 //      exit. This is the LAST line of defence.
-//   2. `process.on('SIGINT')` and `process.on('SIGTERM')` — wrap the
-//      cleanup, then re-raise the signal so the parent shell / CI runner
-//      sees the correct exit code. Without this, `kill <pid>` left the
-//      tracked directories behind (B6 evidence: SIGTERM left 1 leak).
-//      SIGKILL is not handled (kernel-only, no userland hook); that path
-//      relies on OS-level tmp-cleanup, same as before this helper existed.
+//   2. `process.on('SIGINT')` and `process.on('SIGTERM')` — the handler
+//      runs the cleanup synchronously, removes ITSELF from the listener
+//      list, then `process.kill(process.pid, sig)` re-raises the signal.
+//      Without the `removeListener` step the same listener catches the
+//      re-raised signal and the handler runs again — an infinite loop
+//      that prevents the process from ever exiting (round-3 B6.1
+//      evidence: SIGTERM left the process alive, only SIGKILL killed it
+//      with exit 137). SIGKILL is intentionally not handled — kernel-
+//      only, no userland hook, OS-level tmp cleanup is the only
+//      defence.
 //
 // `node --test` runs each `after()` hook before process exit, so the normal
 // path is "test code rm's via `rmTmpDir`", and the three hooks only fire
@@ -102,20 +106,27 @@ function flushTracked() {
 
 /**
  * Install the synchronous `process.on('exit')` flush hook plus SIGINT /
- * SIGTERM handlers that clean up THEN re-raise the signal. Idempotent.
+ * SIGTERM handlers that clean up, remove themselves, and re-raise the
+ * signal so the default disposition kills the process. Idempotent.
  *
  * Why synchronous? `process.on('exit')` listeners only run sync code, and
  * we want the rm to actually finish before the process goes away — an
  * async-rm registered through `process.on('beforeExit')` can race a fast
  * exit and strand the directory again.
  *
- * Why re-raise the signal? A SIGINT/SIGTERM handler that does not call
- * `process.kill(process.pid, sig)` would swallow the signal, leaving the
- * parent (CI runner, watch process, operator) thinking the suite exited
- * normally — exit code 0 — when it should report the signal's expected
- * 130/143. The handler therefore (a) runs the cleanup, (b) re-raises the
- * signal so the default disposition kills the process. process.exit()
- * inside the handler would also work but bypasses the signal exit code.
+ * Why remove the listener before re-raising? Round-3 B6.1 caught this:
+ * the round-2 handler ran `process.kill(process.pid, sig)` while the
+ * same handler was still registered. Node delivered the re-raised
+ * signal back to the listener, the listener ran cleanup again, and the
+ * loop only ended when SIGKILL killed the process with exit code 137.
+ * `process.removeListener` BEFORE `process.kill` is what makes the
+ * re-raise a one-shot: the second signal delivery hits no listener and
+ * the default disposition kills the process with the signal's natural
+ * exit code (130 for SIGINT, 143 for SIGTERM).
+ *
+ * Safety net: if `process.kill` somehow does not kill us (e.g. some
+ * future Node behaviour), `process.exit(128 + signum)` is a hard
+ * fallback that cannot loop — Node tears down the event loop on exit.
  */
 function installExitHook() {
   if (_hookInstalled) return;
@@ -123,18 +134,38 @@ function installExitHook() {
   process.on("exit", () => {
     flushTracked();
   });
-  // SIGINT (Ctrl-C / `kill -INT <pid>`): cleanup then re-raise.
-  process.on("SIGINT", () => {
+  // SIGINT (Ctrl-C / `kill -INT <pid>`): cleanup → removeListener →
+  // re-raise so default disposition kills with exit code 130.
+  const onSigint = () => {
     flushTracked();
-    process.kill(process.pid, "SIGINT");
-  });
+    process.removeListener("SIGINT", onSigint);
+    try {
+      process.kill(process.pid, "SIGINT");
+    } catch {
+      // Defensive: if the kill fails for any reason, force-exit with
+      // the signal's expected exit code.
+      process.exit(130);
+    }
+    // If process.kill succeeded but didn't take effect (it should
+    // synchronously raise the default disposition once no listener
+    // remains), exit hard.
+    process.exit(130);
+  };
+  process.on("SIGINT", onSigint);
   // SIGTERM (CI runner timeout / `kill <pid>` / `kill -TERM <pid>`):
-  // cleanup then re-raise. The default SIGTERM disposition is to kill
-  // the process; we honour that contract.
-  process.on("SIGTERM", () => {
+  // cleanup → removeListener → re-raise so default disposition kills
+  // with exit code 143.
+  const onSigterm = () => {
     flushTracked();
-    process.kill(process.pid, "SIGTERM");
-  });
+    process.removeListener("SIGTERM", onSigterm);
+    try {
+      process.kill(process.pid, "SIGTERM");
+    } catch {
+      process.exit(143);
+    }
+    process.exit(143);
+  };
+  process.on("SIGTERM", onSigterm);
   // SIGKILL is intentionally NOT handled — kernel-only, no userland hook.
   // The OS's regular tmp cleanup (mtime-based) is the only line of
   // defence for that path. Same as before this helper existed.
