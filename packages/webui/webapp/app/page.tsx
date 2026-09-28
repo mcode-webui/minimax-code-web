@@ -502,6 +502,19 @@ function App() {
     return null;
   }, [tabState.previewActiveId, tabState.treeActiveId, tabState.tabs]);
 
+  // webui-parity 47 (N2) — which sidebar nav row reads as active. The tab
+  // strip is owned by this page, so the shell cannot derive the signal
+  // itself: the tree column's active tab being search / plugins lights the
+  // matching sidebar row, and `panel === "plugins"` keeps the legacy mirror
+  // (set by openPanel) in agreement with openSurfaceTab.
+  const activeNavSurface: "search" | "plugins" | null = useMemo(() => {
+    const treeTab = tabState.tabs.find((tab) => tab.id === tabState.treeActiveId);
+    if (treeTab && (treeTab.kind === "search" || treeTab.kind === "plugins")) {
+      return treeTab.kind;
+    }
+    return panel === "plugins" ? "plugins" : null;
+  }, [tabState.tabs, tabState.treeActiveId, panel]);
+
   // ============================================================
   // Reveal-in-tree handler. Defined BEFORE the early return for
   // `!state` because hooks must be called in the same order on
@@ -671,6 +684,7 @@ function App() {
         panel={null}
         onOpenPanel={openPanel}
         onOpenSurfaceTab={openSurfaceTab}
+        activeNavSurface={activeNavSurface}
         onOpenSettings={openSettings}
         onOpenUsage={openUsage}
         alertCount={alertCount}

@@ -375,7 +375,14 @@ const en = {
   "sidebar.projects": "Projects",
   "action.failed": "failed",
   "sidebar.openSession": "Open session",
-  "sidebar.collapse": "Collapse sidebar",
+  // webui-parity 47 (C3): the rail toggle's label flips with its state,
+  // mirroring the reference shell's 展开/收起 pair. "navigation bar", not
+  // "sidebar", because that is what the reference copy names.
+  "sidebar.collapse": "Collapse navigation bar",
+  "sidebar.expand": "Expand navigation bar",
+  // webui-parity 47 (S4): the session-tree error state names the live cause,
+  // so the string ends with a colon and the error text follows it at render.
+  "sidebar.loadError": "Unable to load sessions: ",
   "sidebar.menu": "Account menu",
   "settings.appearance": "Appearance",
   "settings.group.preferences": "Preferences",
@@ -1009,7 +1016,9 @@ const zh: Record<MessageKey, string> = {
   "sidebar.projects": "项目",
   "action.failed": "失败",
   "sidebar.openSession": "打开会话",
-  "sidebar.collapse": "折叠侧栏",
+  "sidebar.collapse": "收起导航栏",
+  "sidebar.expand": "展开导航栏",
+  "sidebar.loadError": "无法加载会话：",
   "sidebar.menu": "账户菜单",
   "settings.appearance": "外观",
   "settings.group.preferences": "偏好",

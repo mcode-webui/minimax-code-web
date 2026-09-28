@@ -7,6 +7,7 @@ import * as api from "@/lib/api";
 import { reportActionError, runAction } from "@/lib/action-errors";
 import { useSessionContext } from "@/lib/store";
 import type { MessageKey } from "@/lib/i18n";
+import { sessionHref } from "@/lib/url-restore";
 import { Icon } from "./icons";
 import { ProjectRowSwitchAction } from "./workspace-picker";
 
@@ -35,6 +36,14 @@ import { ProjectRowSwitchAction } from "./workspace-picker";
  *     the pin is omitted.
  *   - Upstream's per-row actions are pin / rename / delete. Rename, delete and
  *     export all have endpoints and are rendered; pinning has none, so it is not.
+ *
+ * webui-parity 47 aligned the interaction layer with the reference: selected
+ * rows paint with the `tertiary_selected` token (hover keeps `tertiary_hover`),
+ * the section header is a plain div, disclosures animate through `Expandable`
+ * (the reference's `.webui-expandable-motion`), the empty and error states
+ * carry the reference's card face and `role="alert"` respectively, and
+ * session/subagent rows are `<a>` deep links over the app's own `?session=`
+ * grammar (`lib/url-restore.ts#sessionHref`).
  */
 
 // How many sessions a directory shows before the rest go behind `更多`. Upstream
@@ -43,6 +52,35 @@ const SESSION_VISIBLE_LIMIT = 6;
 
 /** Upstream's `placeholder` treatment for a session with no title yet. */
 const UNTITLED: MessageKey = "sidebar.untitled";
+
+/**
+ * The disclosure wrapper (webui-parity 47, S5).
+ *
+ * The reference animates every sidebar disclosure with its
+ * `.webui-expandable-motion` rule: `grid-template-rows 0fr → 1fr` (height
+ * interpolates without measuring any row) plus a 140ms opacity crossfade;
+ * `globals.css` carries the rule verbatim under the same class name, with a
+ * `prefers-reduced-motion` branch that drops the transition but keeps the
+ * open/closed state.
+ *
+ * The children stay MOUNTED while collapsed — that is what keeps the session
+ * tree's loaded state and (in the shell) scroll position intact through a
+ * collapse cycle — and the wrapper is `inert` + `aria-hidden` while closed so
+ * the hidden rows are neither focusable nor announced.
+ */
+function Expandable({ open, children }: { open: boolean; children: React.ReactNode }) {
+  return (
+    <div
+      className={`webui-expandable-motion${open ? " is-open" : ""}`}
+      aria-hidden={!open}
+      ref={(element) => {
+        element?.toggleAttribute("inert", !open);
+      }}
+    >
+      <div>{children}</div>
+    </div>
+  );
+}
 
 export function SessionTree({ t }: { t: (key: MessageKey) => string }) {
   const store = useSessionContext();
@@ -162,12 +200,24 @@ export function SessionTree({ t }: { t: (key: MessageKey) => string }) {
       style={{ scrollbarGutter: "stable" }}
     >
       {error ? (
-        <p className="px-2 py-1 text-caption-small-strong text-text_status_error">
-          {t("error.session")}
+        /* webui-parity 47 (S4): `role="alert"` so screen readers announce the
+           failure, and the live reason follows the localized prefix — a bare
+           generic string left the user unable to tell a dead engine from a
+           500. */
+        <p
+          role="alert"
+          data-testid="sidebar-tree-error"
+          className="px-2 pb-1 text-caption-small-strong text-text_status_error"
+        >
+          {t("sidebar.loadError")}
+          {error}
         </p>
       ) : null}
       {!error && projects.length === 0 ? (
-        <p className="px-2 py-1 text-caption-small-strong text-text_default_tertiary">
+        /* webui-parity 47 (S3): the empty state gets the reference's card
+           face (`.webui-empty-state`: radius, grouped background, padding)
+           instead of bare floating text. */
+        <p className="webui-empty-state mx-1 text-caption-small-strong text-text_default_secondary">
           {t("sidebar.empty")}
         </p>
       ) : null}
@@ -205,21 +255,20 @@ export function SessionTree({ t }: { t: (key: MessageKey) => string }) {
 /**
  * Upstream's `group/section` header row.
  *
- * The chevron is `opacity-0` until the header is hovered — upstream shows the
- * disclose affordance only on hover, keeping the resting list quiet.
+ * webui-parity 47 (S2): a plain `div`, matching the reference's section
+ * header (`.webui-rail-section-header`: `h-7` / `px-2` / tertiary label, no
+ * arrow, not interactive). The previous markup rendered a `<button>` with no
+ * `onClick` — focusable, announced as a control, and dead on click. If the
+ * header ever gains a real behaviour, the control comes back together with
+ * that behaviour, not before.
  */
-function SectionHeader({ label, actions }: { label: string; actions?: React.ReactNode }) {
+function SectionHeader({ label }: { label: string }) {
   return (
-    <div className="group/section flex h-[30px] items-center gap-1 pl-2 pr-0.5 bg-transparent">
-      <button type="button" aria-expanded data-sidebar-keep-open className="flex items-center gap-1 flex-1 min-w-0 text-left">
-        <span className="text-sm font-normal leading-5 text-text_default_tertiary truncate">
-          {label}
-        </span>
-        <span className="flex-shrink-0 transition-[opacity,transform] duration-200 opacity-0 group-hover/section:opacity-100">
-          <Icon name="chevronDown" size={12} className="text-icon_default_tertiary" />
-        </span>
-      </button>
-      {actions}
+    <div
+      data-testid="sidebar-section-header"
+      className="flex h-7 items-center px-2 text-sm font-normal leading-5 text-text_default_tertiary"
+    >
+      <span className="truncate">{label}</span>
     </div>
   );
 }
@@ -364,24 +413,24 @@ function ProjectNode({
         </div>
       </div>
 
-      {open
-        ? project.directories.map((directory) => (
-            <DirectoryNode
-              key={directory.path}
-              directory={directory}
-              activeId={activeId}
-              headerless={project.directories.length === 1}
-              open={openDirs.includes(directory.path)}
-              onToggle={onToggleDir}
-              openSessions={openSessions}
-              onToggleSession={onToggleSession}
-              revealed={revealed}
-              onReveal={onReveal}
-              onChanged={onChanged}
-              t={t}
-            />
-          ))
-        : null}
+      <Expandable open={open}>
+        {project.directories.map((directory) => (
+          <DirectoryNode
+            key={directory.path}
+            directory={directory}
+            activeId={activeId}
+            headerless={project.directories.length === 1}
+            open={openDirs.includes(directory.path)}
+            onToggle={onToggleDir}
+            openSessions={openSessions}
+            onToggleSession={onToggleSession}
+            revealed={revealed}
+            onReveal={onReveal}
+            onChanged={onChanged}
+            t={t}
+          />
+        ))}
+      </Expandable>
     </>
   );
 }
@@ -514,13 +563,16 @@ function DirectoryNode({
       )}
 
       {/* A headerless (single-directory) project is governed by the project's
-          own disclosure, so its sessions are shown whenever the project is
-          open, one indent in from the project row. */}
-      {headerless || open
-        ? headerless
-          ? <div className="pl-4">{rows}</div>
-          : rows
-        : null}
+          own disclosure (the Expandable that wraps every directory), so its
+          sessions render unconditionally and are hidden by that wrapper, one
+          indent in from the project row. A multi-directory project gates its
+          session rows on the directory's own disclosure, animated the same
+          way. */}
+      {headerless ? (
+        <div className="pl-4">{rows}</div>
+      ) : (
+        <Expandable open={open}>{rows}</Expandable>
+      )}
     </>
   );
 }
@@ -630,22 +682,24 @@ function SessionNode({
     }
   }, [draft, session.id, session.title, onChanged, t]);
 
-  // Row geometry. `pl-2` lives on the OUTER container, not on the button, so
-  // that the disclosure — now a sibling of the button rather than a child of
+  // Row geometry. `pl-2` lives on the OUTER container, not on the row, so
+  // that the disclosure — now a sibling of the row rather than a child of
   // it — keeps the same left inset it had while nested.
+  // webui-parity 47 (S1): the selected row uses `tertiary_selected`, not the
+  // hover fill. The two sharing a token made "which session am I in"
+  // invisible — hovering any row painted it exactly like the active one.
   const rowSurface = [
     "w-full flex items-center gap-2 pl-2 pr-0.5 h-[30px] transition-colors rounded-lg",
     active
-      ? "bg-bg_interaction_tertiary_hover text-text_default_primary"
+      ? "bg-bg_interaction_tertiary_selected text-text_default_primary"
       : "text-text_default_primary hover:bg-bg_interaction_tertiary_hover",
   ].join(" ");
 
-  // A real `<button>` cannot contain another interactive element, and the
-  // previous markup put this `role="button"` span inside the row button. That
-  // is invalid HTML and puts two tab stops inside one control, so assistive
-  // tech and keyboard users get an ambiguous target. It is rendered as a
-  // SIBLING of the row button instead — which is what the comment here used
-  // to claim it was.
+  // The disclosure is a `<button>` SIBLING of the row, not a child of it: an
+  // interactive element cannot nest inside another one (the row itself is an
+  // `<a>` since webui-parity 47), and nesting would put two tab stops inside
+  // one control, giving assistive tech and keyboard users an ambiguous
+  // target.
   const caretToggle = hasChildren ? (
     <button
       type="button"
@@ -738,15 +792,38 @@ function SessionNode({
         ) : (
           <div className={rowSurface}>
             {caretToggle}
-            <button
-              type="button"
-              onClick={onOpen}
+            {/* webui-parity 47 (S8): the row is an `<a>` whose href carries
+                the app's own deep-link grammar (`?session=<id>`, see
+                lib/url-restore.ts — NOT the reference's `#session=` fragment:
+                the restore pipeline is keyed on the query string, and a
+                second grammar would fight the live "reopen where I was"
+                flow). A plain left click is intercepted and routed through
+                the same switchSession call as before; modified clicks
+                (middle / cmd / ctrl / shift) fall through to the browser, so
+                "open in new tab" lands on a URL the cold-load path already
+                knows how to restore. */}
+            <a
+              href={sessionHref(session.id)}
+              onClick={(event) => {
+                if (
+                  event.defaultPrevented ||
+                  event.button !== 0 ||
+                  event.metaKey ||
+                  event.ctrlKey ||
+                  event.shiftKey ||
+                  event.altKey
+                ) {
+                  return;
+                }
+                event.preventDefault();
+                onOpen();
+              }}
               data-shortcut-session-target={session.id}
               data-testid="sidebar-session-row"
-              className="min-w-0 flex-1 flex items-center rounded-lg text-left"
+              className="min-w-0 flex-1 flex items-center rounded-lg text-left text-inherit no-underline"
             >
               {rowBody}
-            </button>
+            </a>
           </div>
         )}
 
@@ -781,8 +858,9 @@ function SessionNode({
         )}
       </div>
 
-      {open && hasChildren
-        ? session.children.map((child) => (
+      {hasChildren ? (
+        <Expandable open={open}>
+          {session.children.map((child) => (
             <SubagentRow
               key={child.id}
               session={child}
@@ -790,8 +868,9 @@ function SessionNode({
               onChanged={onChanged}
               t={t}
             />
-          ))
-        : null}
+          ))}
+        </Expandable>
+      ) : null}
     </>
   );
 }
@@ -881,17 +960,32 @@ function SubagentRow({
     void runAction(t("sidebar.openSession"), api.switchSession(session.id)).then(onChanged);
   }, [session.id, onChanged, t]);
 
+  // webui-parity 47 (S1 + S8): same selected token and same `<a>` deep-link
+  // treatment as the parent session row — see SessionNode's row markup.
   return (
-    <button
-      type="button"
-      onClick={onOpen}
+    <a
+      href={sessionHref(session.id)}
+      onClick={(event) => {
+        if (
+          event.defaultPrevented ||
+          event.button !== 0 ||
+          event.metaKey ||
+          event.ctrlKey ||
+          event.shiftKey ||
+          event.altKey
+        ) {
+          return;
+        }
+        event.preventDefault();
+        onOpen();
+      }}
       title={session.title || t(UNTITLED)}
       data-testid="sidebar-subagent-row"
       data-agent={session.agent}
       className={[
-        "w-full flex items-center gap-2 pl-8 pr-2 h-[26px] text-left transition-colors rounded-lg",
+        "w-full flex items-center gap-2 pl-8 pr-2 h-[26px] text-left transition-colors rounded-lg text-inherit no-underline",
         active
-          ? "bg-bg_interaction_tertiary_hover"
+          ? "bg-bg_interaction_tertiary_selected text-text_default_primary"
           : "hover:bg-bg_interaction_tertiary_hover",
       ].join(" ")}
     >
@@ -907,6 +1001,6 @@ function SubagentRow({
       <span className="flex-shrink-0 text-caption-small-strong text-text_default_tertiary">
         {session.agent}
       </span>
-    </button>
+    </a>
   );
 }
