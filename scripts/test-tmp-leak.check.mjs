@@ -57,16 +57,20 @@ import { tmpdir } from "node:os";
 // Every prefix the repo's tests use. Keep the list narrow: each entry is
 // a code change AND a contract — every new prefix needs the same exit
 // hook treatment every other entry has.
+//
+// Order matters here ONLY because matching stops on the first prefix that
+// matches. Most entries are more-specific prefixes that beat the catch-all
+// "webui-" / "trajectory-" / "mcode-" entries below.
 const KNOWN_PREFIXES = [
+  // specific per-test prefixes (kept narrow so we can spot regressions)
   "webui-export-test-",
   "webui-qfc-edge-",
   "webui-events-test-",
   "webui-quota-forecast-test-",
   "webui-events-concurrency-test-",
-  "trajectory-containment-",
   "webui-events-hash-test-",
+  "webui-events-ro-",
   "webui-db-outcomes-events-",
-  "mcode-exec-test-",
   "webui-bindhost-test-",
   "webui-sec-net-settings-",
   "webui-sec-net-events-",
@@ -80,35 +84,37 @@ const KNOWN_PREFIXES = [
   "webui-models-merge-",
   "webui-cred-can-",
   "webui-cred-dbl-",
-  "webui-",
-  "trajectory-",
-  "mcode-d",
+  "webui-authorize-check-",
+  "webui-providers-test-",
+  "webui-providers-cwd-",
+  "webui-ws-symlink-real-",
+  "webui-no-such-",
+  "webui-sessdb-",
+  "webui-routes-export-",
+  // trajectory tests
+  "trajectory-containment-",
+  "trajectory-paths-",
+  "trajectory-protocol-",
+  "trajectory-studio-",
+  "trajectory-git-",
+  "trajectory-plugin-data-",
+  "trajectory-e2e-",
+  // mcode-prefixed tests
+  "mcode-exec-test-",
   "mcode-tools-tui-",
   "mcode-resolver-",
   "mcode-dryrun-",
   "mcode-real-del-",
+  "mcode-d",
   "state-bus-restore-",
   "sessions-single-id-",
   "agent-team-",
-  "webui-events-ro-",
-  "webui-authorize-check-",
-  "webui-providers-test-",
-  "webui-providers-cwd-",
+  // Catch-all prefixes last — anything starting with these is flagged,
+  // regardless of which sub-prefix it claims to use. Adding a new prefix
+  // should be a deliberate code change; the catch-all ensures the lint
+  // never silently passes on an unknown name.
   "webui-",
-  "webui-trajectory-store-",
-  "webui-trajectory-e2e-",
-  "webui-trajectory-paths-",
-  "webui-trajectory-protocol-",
-  "webui-trajectory-studio-",
-  "webui-trajectory-git-",
-  "webui-trajectory-plugin-data-",
-  "webui-dryrun-",
-  "webui-real-del-",
-  "webui-ws-symlink-real-",
-  "webui-dash-",
-  "webui-no-such-",
-  "webui-sessdb-",
-  "webui-routes-export-",
+  "trajectory-",
 ];
 
 function scan(under) {
