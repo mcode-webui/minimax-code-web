@@ -10,7 +10,25 @@
  * Keep in sync with server/lib/state-bus.js.
  */
 
+/**
+ * The resolved theme — what is currently painted on <html>. Whatever the
+ * user chose (`AppearanceChoice`), the renderer only ever commits one of
+ * these two values to the document.
+ */
 export type ThemeName = "light" | "dark";
+
+/**
+ * The user's three-state appearance choice.
+ *
+ *   - `light`   → always light
+ *   - `dark`    → always dark
+ *   - `system`  → follow `prefers-color-scheme` (live, not just first paint)
+ *
+ * The "chosen mode" (this type) is separate from the "currently resolved
+ * theme" (`ThemeName`); they are persisted independently so that
+ * re-selecting `system` after a manual override stays reversible.
+ */
+export type AppearanceChoice = "light" | "dark" | "system";
 
 export interface WorkspaceState {
   dir: string;
@@ -190,7 +208,10 @@ export interface WebuiState {
    * which the composer flattens into a `string[]` of `name` values before
    * showing it as a completion palette.
    */
-  availableCommands: Record<string, Array<{ name: string; description?: string }>>;
+  availableCommands: Record<
+    string,
+    Array<{ name: string; description?: string }>
+  >;
   /** Only present on the per-client snapshots, not on `GET /api/state`. */
   onlineCount?: number;
   lanBroadcast: boolean;

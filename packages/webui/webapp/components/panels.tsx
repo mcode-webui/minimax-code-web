@@ -31,13 +31,16 @@ import { useFsTreeRevealSubscriber } from "@/lib/fs-tree-reveal";
 import { classifyCredentialPath } from "@/lib/credential-file";
 import { InboxList } from "./inbox";
 import { useSessionContext } from "@/lib/store";
-import { applyTheme, currentTheme } from "@/lib/theme";
+import { AppearanceCardPicker } from "./appearance-card-picker";
 import { matchFilter } from "@/lib/workspace-filter";
-import { splitFilesByBucket, formatStatusTags, previewDiff } from "@/lib/git-panel";
+import {
+  splitFilesByBucket,
+  formatStatusTags,
+  previewDiff,
+} from "@/lib/git-panel";
 import { BrowserPanel } from "@/components/browser-panel";
 import { isHtmlPath } from "@/lib/browser-nav";
 import type { Locale, MessageKey } from "@/lib/i18n";
-import type { ThemeName } from "@/lib/types";
 import { Icon } from "./icons";
 import { ProviderManagementPanel } from "./provider-management";
 import { FilePreviewPane } from "./file-preview-pane";
@@ -59,12 +62,7 @@ import { FilePreviewPane } from "./file-preview-pane";
  * surface.
  */
 
-export type PanelKind =
-  | "workspace"
-  | "files"
-  | "git"
-  | "plugins"
-  | "browser";
+export type PanelKind = "workspace" | "files" | "git" | "plugins" | "browser";
 
 export function RightPanel({
   kind,
@@ -191,11 +189,7 @@ export function RightPanel({
  * The body is the same `SettingsPanel` the drawer hosts, now told which section to
  * render — the settings contract itself did not move.
  */
-type SettingsSection =
-  | "general"
-  | "appearance"
-  | "connection"
-  | "providers";
+type SettingsSection = "general" | "appearance" | "connection" | "providers";
 
 const SETTINGS_NAV: {
   group: MessageKey;
@@ -215,7 +209,11 @@ const SETTINGS_NAV: {
   {
     group: "settings.group.management",
     items: [
-      { id: "connection", key: "settings.tab.connection", section: "connection" },
+      {
+        id: "connection",
+        key: "settings.tab.connection",
+        section: "connection",
+      },
       // Provider management (ticket 03) — model providers surface lives
       // in the management group, below connection, and is the only
       // server-driven section the desktop "用量与模型" group also covers.
@@ -302,13 +300,19 @@ export function SettingsModal({
       : group.items,
   })).filter((group) => group.items.length > 0);
 
-  const current = SETTINGS_NAV.flatMap((group) => group.items).find((item) => item.id === active);
+  const current = SETTINGS_NAV.flatMap((group) => group.items).find(
+    (item) => item.id === active,
+  );
   const section = current?.section;
 
   return (
     <div className="fixed inset-0 z-[1000] flex">
       {/* Upstream dims with the blanket token rather than a hardcoded black. */}
-      <div className="absolute inset-0 bg-utility_blanket" onClick={onClose} aria-hidden />
+      <div
+        className="absolute inset-0 bg-utility_blanket"
+        onClick={onClose}
+        aria-hidden
+      />
       <div
         role="dialog"
         aria-modal="true"
@@ -376,7 +380,9 @@ export function SettingsModal({
                           : "text-text_default_primary hover:bg-bg_interaction_tertiary_hover focus-visible:shadow-[inset_0_0_0_1px_var(--border_accent)]",
                     ].join(" ")}
                   >
-                    <span className="min-w-0 flex-1 truncate">{t(item.key)}</span>
+                    <span className="min-w-0 flex-1 truncate">
+                      {t(item.key)}
+                    </span>
                     {disabled ? (
                       <span className="flex-none text-caption-small-strong text-text_default_tertiary">
                         {t("common.unsupported")}
@@ -398,13 +404,13 @@ export function SettingsModal({
         <div className="flex min-w-0 flex-1 flex-col overflow-y-auto">
           <div className="mx-auto w-full min-w-[320px] max-w-[704px] px-6 py-6">
             <SettingsPanel
-            t={t}
-            locale={locale}
-            setLocale={setLocale}
-            section={section}
-            autoAddProvider={autoAddProvider}
-            onAutoAddConsumed={onAutoAddConsumed}
-          />
+              t={t}
+              locale={locale}
+              setLocale={setLocale}
+              section={section}
+              autoAddProvider={autoAddProvider}
+              onAutoAddConsumed={onAutoAddConsumed}
+            />
           </div>
         </div>
       </div>
@@ -507,7 +513,9 @@ function ProgressPanel({ t }: { t: (key: MessageKey) => string }) {
                       ].join(" ")}
                       aria-hidden
                     />
-                    <span className="min-w-0 flex-1 break-words">{alert.msg}</span>
+                    <span className="min-w-0 flex-1 break-words">
+                      {alert.msg}
+                    </span>
                   </li>
                 ))}
               </ul>
@@ -645,7 +653,9 @@ export function FilesPanel({
     // is correct on the very next frame.
     queueMicrotask(() => {
       if (toExpand.length > 0) {
-        setExpanded((current) => Array.from(new Set([...current, ...toExpand])));
+        setExpanded((current) =>
+          Array.from(new Set([...current, ...toExpand])),
+        );
         for (const path of toExpand) {
           if (fetchNodeRef.current) void fetchNodeRef.current(path);
         }
@@ -668,7 +678,9 @@ export function FilesPanel({
   // three slices (expanded set, filter string, hidden flag) in one
   // payload so the wire format is shared with ticket 07's future
   // cross-restart migration.
-  const [hydratedWorkspace, setHydratedWorkspace] = useState<string | null>(null);
+  const [hydratedWorkspace, setHydratedWorkspace] = useState<string | null>(
+    null,
+  );
   const [expanded, setExpanded] = useState<string[]>([]);
   const [filter, setFilter] = useState("");
   const [showHidden, setShowHidden] = useState(false);
@@ -757,7 +769,9 @@ export function FilesPanel({
   // is rendered). The set lives across re-renders and is cleared
   // by the auto-clear timer so a stale highlight does not stick
   // around when the user moves on.
-  const [highlightedPaths, setHighlightedPaths] = useState<Set<string>>(new Set());
+  const [highlightedPaths, setHighlightedPaths] = useState<Set<string>>(
+    new Set(),
+  );
   const highlightClearTimer = useRef<number | null>(null);
 
   // Filter auto-expansion: when the user types a filter, compute
@@ -824,7 +838,12 @@ export function FilesPanel({
       serverSearchAbort.current = null;
       if (serverSearchGen.current !== -1) {
         serverSearchGen.current = -1;
-        setServerSearch({ query: "", result: null, loading: false, error: null });
+        setServerSearch({
+          query: "",
+          result: null,
+          loading: false,
+          error: null,
+        });
       }
       setHighlightedPaths(new Set());
       if (highlightClearTimer.current !== null) {
@@ -864,7 +883,12 @@ export function FilesPanel({
       const controller = new AbortController();
       serverSearchAbort.current?.abort();
       serverSearchAbort.current = controller;
-      setServerSearch((prev) => ({ ...prev, query: trimmed, loading: true, error: null }));
+      setServerSearch((prev) => ({
+        ...prev,
+        query: trimmed,
+        loading: true,
+        error: null,
+      }));
       void api
         .searchFs(workspaceDir, trimmed, {
           signal: controller.signal,
@@ -886,7 +910,9 @@ export function FilesPanel({
           // tree walker will surface the match on the next render.
           const toExpand = pathsToExpand(result.matches, workspaceDir);
           if (toExpand.length > 0) {
-            setExpanded((current) => Array.from(new Set([...current, ...toExpand])));
+            setExpanded((current) =>
+              Array.from(new Set([...current, ...toExpand])),
+            );
             for (const path of toExpand) {
               void fetchNode(path);
             }
@@ -969,7 +995,16 @@ export function FilesPanel({
       let capturedGen = 0;
       setNodes((current) => {
         const previous = current[path];
-        const next = previous ? { ...previous } : { entries: undefined, error: null, loading: true, gen: 0, total: 0, skipped: 0 };
+        const next = previous
+          ? { ...previous }
+          : {
+              entries: undefined,
+              error: null,
+              loading: true,
+              gen: 0,
+              total: 0,
+              skipped: 0,
+            };
         const incomingGen = (previous?.gen ?? 0) + 1;
         next.gen = incomingGen;
         next.loading = true;
@@ -1090,28 +1125,41 @@ export function FilesPanel({
   // Expand / collapse handlers. Both are no-ops if the path is
   // already in the requested state — a redundant setState would
   // still trigger a re-render, so we guard.
-  const expandPath = useCallback((path: string) => {
-    setExpanded((current) => (current.includes(path) ? current : [...current, path]));
-    void fetchNode(path);
-  }, [fetchNode]);
+  const expandPath = useCallback(
+    (path: string) => {
+      setExpanded((current) =>
+        current.includes(path) ? current : [...current, path],
+      );
+      void fetchNode(path);
+    },
+    [fetchNode],
+  );
 
   const collapsePath = useCallback((path: string) => {
     setExpanded((current) => current.filter((p) => p !== path));
   }, []);
 
-  const togglePath = useCallback((path: string) => {
-    setExpanded((current) =>
-      current.includes(path) ? current.filter((p) => p !== path) : [...current, path],
-    );
-    // Only kick a fetch on the expand branch; collapsing is local.
-    if (!nodes[path]?.entries) {
-      void fetchNode(path);
-    }
-  }, [fetchNode, nodes]);
+  const togglePath = useCallback(
+    (path: string) => {
+      setExpanded((current) =>
+        current.includes(path)
+          ? current.filter((p) => p !== path)
+          : [...current, path],
+      );
+      // Only kick a fetch on the expand branch; collapsing is local.
+      if (!nodes[path]?.entries) {
+        void fetchNode(path);
+      }
+    },
+    [fetchNode, nodes],
+  );
 
-  const refreshPath = useCallback((path: string) => {
-    void fetchNode(path, { force: true });
-  }, [fetchNode]);
+  const refreshPath = useCallback(
+    (path: string) => {
+      void fetchNode(path, { force: true });
+    },
+    [fetchNode],
+  );
 
   // New folder: prompt for name, mkdir, then refresh the parent.
   // Mirrors the legacy browse tab's mkdir pattern.
@@ -1144,7 +1192,10 @@ export function FilesPanel({
   const copyPath = useCallback(
     async (path: string) => {
       try {
-        if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+        if (
+          typeof navigator !== "undefined" &&
+          navigator.clipboard?.writeText
+        ) {
           await navigator.clipboard.writeText(path);
         } else {
           // Fallback for browsers / contexts without async clipboard
@@ -1348,7 +1399,9 @@ export function FilesPanel({
         <button
           type="button"
           onClick={() => setShowHidden((v) => !v)}
-          aria-label={showHidden ? t("files.tree.shown") : t("files.tree.hidden")}
+          aria-label={
+            showHidden ? t("files.tree.shown") : t("files.tree.hidden")
+          }
           title={showHidden ? t("files.tree.shown") : t("files.tree.hidden")}
           aria-pressed={showHidden}
           data-testid="files-tree-hidden-toggle"
@@ -1362,15 +1415,27 @@ export function FilesPanel({
         >
           {/* small inline glyph: an "eye" outline so the toggle is
               readable without adding a new icon registry entry */}
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden>
-            <path d="M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8s-2.5 4.5-6.5 4.5S1.5 8 1.5 8z" stroke="currentColor" strokeWidth="1.2" />
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 16 16"
+            fill="none"
+            aria-hidden
+          >
+            <path
+              d="M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8s-2.5 4.5-6.5 4.5S1.5 8 1.5 8z"
+              stroke="currentColor"
+              strokeWidth="1.2"
+            />
             <circle cx="8" cy="8" r="1.6" fill="currentColor" />
           </svg>
         </button>
       </div>
 
       {rootError ? (
-        <p className="text-caption-small-strong text-text_status_error">{rootError}</p>
+        <p className="text-caption-small-strong text-text_status_error">
+          {rootError}
+        </p>
       ) : null}
 
       <div className="flex flex-col">
@@ -1442,7 +1507,8 @@ export function FilesPanel({
           // "loaded" and the server result will eventually be
           // dropped — we want the affordance to stay).
           const serverCredential =
-            serverSearch.result?.matches.find((m) => m.path === row.path)?.credential ?? false;
+            serverSearch.result?.matches.find((m) => m.path === row.path)
+              ?.credential ?? false;
           const credential =
             serverCredential || !!classifyCredentialPath(row.entry.name);
           return (
@@ -1483,7 +1549,9 @@ export function FilesPanel({
         {/* Filter narrows everything out — every loaded row failed the
             glob. Show a dedicated hint so the user knows the tree
             itself is fine. */}
-        {rows.length > 0 && filteredRows.length === 0 && serverMatchRows.length === 0 ? (
+        {rows.length > 0 &&
+        filteredRows.length === 0 &&
+        serverMatchRows.length === 0 ? (
           <p
             data-testid="files-tree-no-match"
             className="px-1.5 py-1 text-caption-small-strong text-text_default_tertiary"
@@ -1518,10 +1586,7 @@ export function FilesPanel({
         </p>
       ) : null}
       {serverSearch.result && !serverSearch.loading && !serverSearch.error ? (
-        <SearchFooter
-          result={serverSearch.result}
-          t={t}
-        />
+        <SearchFooter result={serverSearch.result} t={t} />
       ) : null}
 
       {/* Preview pane — subscribes to `open.file.in.web` so the tree
@@ -1629,7 +1694,9 @@ function DirRow({
             if (row.expanded) onToggle();
           }
         }}
-        aria-label={row.expanded ? t("files.tree.collapse") : t("files.tree.expand")}
+        aria-label={
+          row.expanded ? t("files.tree.collapse") : t("files.tree.expand")
+        }
         aria-expanded={row.expanded}
         data-testid="files-tree-dir-toggle"
         className="flex size-4 flex-shrink-0 items-center justify-center rounded text-icon_default_tertiary transition-transform"
@@ -1637,7 +1704,10 @@ function DirRow({
         <Icon
           name="chevronRight"
           size={11}
-          className={["transition-transform", row.expanded ? "rotate-90" : ""].join(" ")}
+          className={[
+            "transition-transform",
+            row.expanded ? "rotate-90" : "",
+          ].join(" ")}
         />
       </button>
       <button
@@ -1767,16 +1837,20 @@ function FileRow({
   const indent = row.depth * 12;
   const entry = row.entry;
   const bucket = relativeMtimeBucket(now, entry.mtime);
-  const mtimeLabel = bucket === "now"
-    ? t("files.tree.mtime.now")
-    : bucket === ""
-      ? ""
-      : (() => {
-          const [kind, raw] = bucket.split(":");
-          const n = Number(raw);
-          const safe = Number.isFinite(n) ? Math.max(1, Math.floor(n)) : 0;
-          return t(`files.tree.mtime.${kind}` as MessageKey).replace("{n}", String(safe));
-        })();
+  const mtimeLabel =
+    bucket === "now"
+      ? t("files.tree.mtime.now")
+      : bucket === ""
+        ? ""
+        : (() => {
+            const [kind, raw] = bucket.split(":");
+            const n = Number(raw);
+            const safe = Number.isFinite(n) ? Math.max(1, Math.floor(n)) : 0;
+            return t(`files.tree.mtime.${kind}` as MessageKey).replace(
+              "{n}",
+              String(safe),
+            );
+          })();
   return (
     <div
       className={[
@@ -1842,8 +1916,14 @@ function FileRow({
           data-testid="files-tree-file-copy"
           className="flex h-5 items-center gap-1 rounded px-1.5 text-caption-small-strong text-icon_default_tertiary hover:bg-bg_interaction_tertiary_selected hover:text-icon_default_primary"
         >
-          {copied ? <Icon name="check" size={12} /> : <Icon name="copy" size={12} />}
-          <span>{copied ? t("files.tree.copied") : t("files.tree.copyPath")}</span>
+          {copied ? (
+            <Icon name="check" size={12} />
+          ) : (
+            <Icon name="copy" size={12} />
+          )}
+          <span>
+            {copied ? t("files.tree.copied") : t("files.tree.copyPath")}
+          </span>
         </button>
       </div>
     </div>
@@ -1883,7 +1963,8 @@ function SearchFooter({
       wallClock: t("files.search.footer.budget.wallClock"),
       matches: t("files.search.footer.budget.matches"),
     },
-    formatElapsed: (ms) => t("files.search.footer.elapsedValue").replace("{ms}", String(ms)),
+    formatElapsed: (ms) =>
+      t("files.search.footer.elapsedValue").replace("{ms}", String(ms)),
   });
   if (segments.length === 0) return null;
   // Render with a middot separator so the row reads as a single
@@ -1919,11 +2000,11 @@ function SearchFooter({
 
 function baseName(path: string): string {
   if (!path) return "";
-  const stripped = path.length > 1 && path.endsWith("/") ? path.slice(0, -1) : path;
+  const stripped =
+    path.length > 1 && path.endsWith("/") ? path.slice(0, -1) : path;
   const i = stripped.lastIndexOf("/");
   return i === -1 ? stripped : stripped.slice(i + 1);
 }
-
 
 /**
  * Git panel — right-panel git surface (slice 03 of webui-parity).
@@ -1958,7 +2039,9 @@ export function GitPanel({ t }: { t: (key: MessageKey) => string }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
-  const [diff, setDiff] = useState<{ text: string; truncated: boolean } | null>(null);
+  const [diff, setDiff] = useState<{ text: string; truncated: boolean } | null>(
+    null,
+  );
   const [diffLoading, setDiffLoading] = useState(false);
   const [diffError, setDiffError] = useState<string | null>(null);
   // Branch-switch confirmation. The destructive confirmation lives
@@ -1967,7 +2050,10 @@ export function GitPanel({ t }: { t: (key: MessageKey) => string }) {
   // a single confirmation modal per switch is what the ticket pins.
   const [pendingBranch, setPendingBranch] = useState<string | null>(null);
   const [switchBusy, setSwitchBusy] = useState(false);
-  const [switchResult, setSwitchResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const [switchResult, setSwitchResult] = useState<{
+    ok: boolean;
+    message: string;
+  } | null>(null);
 
   // Per-request generation counter — race safety so an in-flight
   // workspace switch never overwrites a fresher status response.
@@ -1990,7 +2076,9 @@ export function GitPanel({ t }: { t: (key: MessageKey) => string }) {
       ]);
       if (gen !== loadGen.current) return;
       setStatus(statusResult);
-      setBranches(Array.isArray(branchesResult.branches) ? branchesResult.branches : []);
+      setBranches(
+        Array.isArray(branchesResult.branches) ? branchesResult.branches : [],
+      );
     } catch (cause) {
       if (gen !== loadGen.current) return;
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -2040,11 +2128,17 @@ export function GitPanel({ t }: { t: (key: MessageKey) => string }) {
     try {
       const result = await api.gitCheckout(workspaceDir, pendingBranch);
       if (result.ok) {
-        setSwitchResult({ ok: true, message: t("git.switch.success").replace("{{branch}}", pendingBranch) });
+        setSwitchResult({
+          ok: true,
+          message: t("git.switch.success").replace("{{branch}}", pendingBranch),
+        });
       } else {
         setSwitchResult({
           ok: false,
-          message: t("git.switch.failed").replace("{{error}}", result.error || "unknown"),
+          message: t("git.switch.failed").replace(
+            "{{error}}",
+            result.error || "unknown",
+          ),
         });
       }
       setPendingBranch(null);
@@ -2055,7 +2149,10 @@ export function GitPanel({ t }: { t: (key: MessageKey) => string }) {
     } catch (cause) {
       setSwitchResult({
         ok: false,
-        message: t("git.switch.failed").replace("{{error}}", cause instanceof Error ? cause.message : String(cause)),
+        message: t("git.switch.failed").replace(
+          "{{error}}",
+          cause instanceof Error ? cause.message : String(cause),
+        ),
       });
       setPendingBranch(null);
     } finally {
@@ -2065,7 +2162,10 @@ export function GitPanel({ t }: { t: (key: MessageKey) => string }) {
 
   if (!workspaceDir) {
     return (
-      <div className="flex flex-col gap-2" data-testid="git-panel-empty-no-workspace">
+      <div
+        className="flex flex-col gap-2"
+        data-testid="git-panel-empty-no-workspace"
+      >
         <span className="desktop-text-dialog-medium flex items-center gap-2 text-base font-medium leading-6 text-text_default_primary">
           <Icon name="git" size={16} />
           {t("git.title")}
@@ -2084,7 +2184,10 @@ export function GitPanel({ t }: { t: (key: MessageKey) => string }) {
 
   if (notRepo) {
     return (
-      <div className="flex flex-col gap-2" data-testid="git-panel-empty-not-repo">
+      <div
+        className="flex flex-col gap-2"
+        data-testid="git-panel-empty-not-repo"
+      >
         <span className="desktop-text-dialog-medium flex items-center gap-2 text-base font-medium leading-6 text-text_default_primary">
           <Icon name="git" size={16} />
           {t("git.title")}
@@ -2109,8 +2212,10 @@ export function GitPanel({ t }: { t: (key: MessageKey) => string }) {
 
   const buckets = splitFilesByBucket(status?.files);
   const hasFiles =
-    buckets.staged.length + buckets.unstaged.length + buckets.untracked.length > 0;
-  const currentBranch = branches?.find((b) => b.current)?.name ?? status?.branch ?? null;
+    buckets.staged.length + buckets.unstaged.length + buckets.untracked.length >
+    0;
+  const currentBranch =
+    branches?.find((b) => b.current)?.name ?? status?.branch ?? null;
   const upstream = status?.upstream ?? null;
 
   return (
@@ -2158,11 +2263,16 @@ export function GitPanel({ t }: { t: (key: MessageKey) => string }) {
               data-testid="git-panel-branch-label"
               title={currentBranch}
             >
-              {t("git.branch.tracking.noUpstream").replace("{{branch}}", currentBranch)}
+              {t("git.branch.tracking.noUpstream").replace(
+                "{{branch}}",
+                currentBranch,
+              )}
             </span>
           )
         ) : (
-          <span className="text-caption-small-strong text-text_default_tertiary">—</span>
+          <span className="text-caption-small-strong text-text_default_tertiary">
+            —
+          </span>
         )}
         {branches && branches.length > 0 ? (
           <select
@@ -2201,46 +2311,56 @@ export function GitPanel({ t }: { t: (key: MessageKey) => string }) {
           </p>
         ) : (
           <ul className="flex flex-col gap-px" data-testid="git-panel-files">
-            {[...buckets.staged, ...buckets.unstaged, ...buckets.untracked].map((file) => {
-              const isSelected = file.path === selectedFile;
-              const bucketLabel = file.staged
-                ? t("git.files.staged")
-                : file.x === "?" && file.y === "?"
-                  ? t("git.files.untracked")
-                  : t("git.files.unstaged");
-              return (
-                <li key={`${file.x}${file.y}:${file.path}`}>
-                  <button
-                    type="button"
-                    onClick={() => void loadDiff(file.path)}
-                    aria-label={t("git.file.openDiff")}
-                    title={file.path}
-                    data-testid={`git-panel-file-${file.path}`}
-                    data-bucket={file.staged ? "staged" : file.x === "?" ? "untracked" : "unstaged"}
-                    data-selected={isSelected ? "true" : "false"}
-                    className={[
-                      "flex h-7 w-full items-center gap-1 rounded-lg px-1.5 text-left transition-colors",
-                      isSelected
-                        ? "bg-bg_interaction_tertiary_selected"
-                        : "hover:bg-bg_interaction_tertiary_hover",
-                    ].join(" ")}
-                  >
-                    <span
-                      className="min-w-[28px] flex-none font-family-code text-caption-small-strong text-text_default_tertiary"
-                      data-testid={`git-panel-file-tags-${file.path}`}
+            {[...buckets.staged, ...buckets.unstaged, ...buckets.untracked].map(
+              (file) => {
+                const isSelected = file.path === selectedFile;
+                const bucketLabel = file.staged
+                  ? t("git.files.staged")
+                  : file.x === "?" && file.y === "?"
+                    ? t("git.files.untracked")
+                    : t("git.files.unstaged");
+                return (
+                  <li key={`${file.x}${file.y}:${file.path}`}>
+                    <button
+                      type="button"
+                      onClick={() => void loadDiff(file.path)}
+                      aria-label={t("git.file.openDiff")}
+                      title={file.path}
+                      data-testid={`git-panel-file-${file.path}`}
+                      data-bucket={
+                        file.staged
+                          ? "staged"
+                          : file.x === "?"
+                            ? "untracked"
+                            : "unstaged"
+                      }
+                      data-selected={isSelected ? "true" : "false"}
+                      className={[
+                        "flex h-7 w-full items-center gap-1 rounded-lg px-1.5 text-left transition-colors",
+                        isSelected
+                          ? "bg-bg_interaction_tertiary_selected"
+                          : "hover:bg-bg_interaction_tertiary_hover",
+                      ].join(" ")}
                     >
-                      {formatStatusTags(file)}
-                    </span>
-                    <span className="min-w-0 flex-1 truncate text-sm text-text_default_primary">
-                      {file.origPath ? `${file.origPath} → ${file.path}` : file.path}
-                    </span>
-                    <span className="flex-none text-caption-small-strong text-text_default_tertiary">
-                      {bucketLabel}
-                    </span>
-                  </button>
-                </li>
-              );
-            })}
+                      <span
+                        className="min-w-[28px] flex-none font-family-code text-caption-small-strong text-text_default_tertiary"
+                        data-testid={`git-panel-file-tags-${file.path}`}
+                      >
+                        {formatStatusTags(file)}
+                      </span>
+                      <span className="min-w-0 flex-1 truncate text-sm text-text_default_primary">
+                        {file.origPath
+                          ? `${file.origPath} → ${file.path}`
+                          : file.path}
+                      </span>
+                      <span className="flex-none text-caption-small-strong text-text_default_tertiary">
+                        {bucketLabel}
+                      </span>
+                    </button>
+                  </li>
+                );
+              },
+            )}
           </ul>
         )}
       </div>
@@ -2248,7 +2368,10 @@ export function GitPanel({ t }: { t: (key: MessageKey) => string }) {
       {/* Inline diff preview. */}
       {selectedFile ? (
         <div className="flex flex-col gap-1" data-testid="git-panel-diff">
-          <span className="desktop-text-ui-assist truncate text-text_default_tertiary" title={selectedFile}>
+          <span
+            className="desktop-text-ui-assist truncate text-text_default_tertiary"
+            title={selectedFile}
+          >
             {selectedFile}
           </span>
           {diffLoading ? (
@@ -2284,7 +2407,11 @@ export function GitPanel({ t }: { t: (key: MessageKey) => string }) {
           next action. */}
       {switchResult ? (
         <p
-          data-testid={switchResult.ok ? "git-panel-switch-success" : "git-panel-switch-error"}
+          data-testid={
+            switchResult.ok
+              ? "git-panel-switch-success"
+              : "git-panel-switch-error"
+          }
           className={[
             "rounded-[8px] px-2 py-1.5 text-caption-small-strong",
             switchResult.ok
@@ -2326,7 +2453,10 @@ export function GitPanel({ t }: { t: (key: MessageKey) => string }) {
       >
         <div className="flex flex-col gap-3" data-testid="git-switch-confirm">
           <p className="text-sm leading-5 text-text_default_secondary">
-            {t("git.switch.confirm.body").replace("{{branch}}", pendingBranch ?? "")}
+            {t("git.switch.confirm.body").replace(
+              "{{branch}}",
+              pendingBranch ?? "",
+            )}
           </p>
           <div className="flex items-center justify-end gap-2 pt-1">
             <button
@@ -2406,9 +2536,21 @@ function WorkspacePanel({ t }: { t: (key: MessageKey) => string }) {
           <div className="flex flex-col gap-px">
             {(
               [
-                { row: "changes", testid: "workspace-changes-entry", icon: "file" },
-                { row: "commitAndPush", testid: "workspace-commit-entry", icon: "file" },
-                { row: "openTerminal", testid: "workspace-open-terminal-entry", icon: "terminal" },
+                {
+                  row: "changes",
+                  testid: "workspace-changes-entry",
+                  icon: "file",
+                },
+                {
+                  row: "commitAndPush",
+                  testid: "workspace-commit-entry",
+                  icon: "file",
+                },
+                {
+                  row: "openTerminal",
+                  testid: "workspace-open-terminal-entry",
+                  icon: "terminal",
+                },
               ] as const
             ).map(({ row, testid, icon }) => (
               <button
@@ -2500,7 +2642,9 @@ function WorkspaceSection({
   return (
     <section className="flex w-full flex-col gap-1">
       <div className="flex min-w-0 items-baseline gap-2 px-1.5">
-        <span className="desktop-text-ui-small-strong text-text_default_primary">{title}</span>
+        <span className="desktop-text-ui-small-strong text-text_default_primary">
+          {title}
+        </span>
         {subtitle ? (
           <span className="desktop-text-ui-assist min-w-0 truncate text-text_default_tertiary">
             {subtitle}
@@ -2518,13 +2662,21 @@ function WorkspaceSection({
  * webui does not yet expose. Reads as "this section is real, the data is
  * not yet wired" rather than as an empty list ("no plan yet").
  */
-function SectionPlaceholder({ testid, t }: { testid: string; t: (key: MessageKey) => string }) {
+function SectionPlaceholder({
+  testid,
+  t,
+}: {
+  testid: string;
+  t: (key: MessageKey) => string;
+}) {
   return (
     <div
       data-testid={testid}
       className="flex items-center gap-2 rounded-[8px] px-1.5 py-2 text-text_default_tertiary"
     >
-      <span className="desktop-text-ui-assist text-sm">{t("workspace.section.development")}</span>
+      <span className="desktop-text-ui-assist text-sm">
+        {t("workspace.section.development")}
+      </span>
     </div>
   );
 }
@@ -2670,25 +2822,22 @@ function WorkspaceRecentsTab({
   // should not silently re-replace the displayed list. Same trick as
   // the FilesPanel.
   const loadGen = useRef(0);
-  const load = useCallback(
-    async (q: string) => {
-      const gen = ++loadGen.current;
-      setLoading(true);
-      setError(null);
-      try {
-        const result = await api.recentWorkspaces(q, 20);
-        if (gen !== loadGen.current) return;
-        setItems(result.items ?? []);
-        if (result.tmpDir) setTmpDir(result.tmpDir);
-      } catch (cause) {
-        if (gen !== loadGen.current) return;
-        setError(cause instanceof Error ? cause.message : String(cause));
-      } finally {
-        if (gen === loadGen.current) setLoading(false);
-      }
-    },
-    [],
-  );
+  const load = useCallback(async (q: string) => {
+    const gen = ++loadGen.current;
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await api.recentWorkspaces(q, 20);
+      if (gen !== loadGen.current) return;
+      setItems(result.items ?? []);
+      if (result.tmpDir) setTmpDir(result.tmpDir);
+    } catch (cause) {
+      if (gen !== loadGen.current) return;
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      if (gen === loadGen.current) setLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     const handle = window.setTimeout(() => {
@@ -2797,7 +2946,8 @@ function WorkspaceRecentsTab({
                     {item.dir}
                   </span>
                   <span className="text-caption-small-strong text-text_default_tertiary">
-                    {item.sessionCount} session{item.sessionCount === 1 ? "" : "s"}
+                    {item.sessionCount} session
+                    {item.sessionCount === 1 ? "" : "s"}
                   </span>
                 </button>
               </li>
@@ -2850,31 +3000,34 @@ function WorkspaceBrowseTab({
   const [busy, setBusy] = useState(false);
 
   const loadGen = useRef(0);
-  const load = useCallback(async (target: string) => {
-    const gen = ++loadGen.current;
-    setLoading(true);
-    setError(null);
-    setErrorRoots(null);
-    try {
-      const result = await api.browseWorkspace(target || undefined);
-      if (gen !== loadGen.current) return;
-      if (result.ok) {
-        setListing(result);
-      } else {
-        // The server carries `roots` on the containment error payload
-        // (server/lib/workspace.js#assertWorkspacePath /
-        // resolveWithinRoots) so the picker can render "must be under:
-        // …" instead of a bare "非法". Surface them in the UI.
-        setError(result.error ?? t("workspace.picker.error"));
-        if (Array.isArray(result.roots)) setErrorRoots(result.roots);
+  const load = useCallback(
+    async (target: string) => {
+      const gen = ++loadGen.current;
+      setLoading(true);
+      setError(null);
+      setErrorRoots(null);
+      try {
+        const result = await api.browseWorkspace(target || undefined);
+        if (gen !== loadGen.current) return;
+        if (result.ok) {
+          setListing(result);
+        } else {
+          // The server carries `roots` on the containment error payload
+          // (server/lib/workspace.js#assertWorkspacePath /
+          // resolveWithinRoots) so the picker can render "must be under:
+          // …" instead of a bare "非法". Surface them in the UI.
+          setError(result.error ?? t("workspace.picker.error"));
+          if (Array.isArray(result.roots)) setErrorRoots(result.roots);
+        }
+      } catch (cause) {
+        if (gen !== loadGen.current) return;
+        setError(cause instanceof Error ? cause.message : String(cause));
+      } finally {
+        if (gen === loadGen.current) setLoading(false);
       }
-    } catch (cause) {
-      if (gen !== loadGen.current) return;
-      setError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      if (gen === loadGen.current) setLoading(false);
-    }
-  }, [t]);
+    },
+    [t],
+  );
 
   useEffect(() => {
     void load(path);
@@ -3110,9 +3263,7 @@ function WorkspaceBrowseTab({
           data-testid="workspace-picker-empty"
           className="px-1.5 py-1 text-caption-small-strong text-text_default_tertiary"
         >
-          {filter
-            ? t("files.noMatch")
-            : t("workspace.picker.empty")}
+          {filter ? t("files.noMatch") : t("workspace.picker.empty")}
         </p>
       ) : null}
 
@@ -3195,7 +3346,11 @@ function SettingsPanel({
   );
 
   if (!snapshot) {
-    return <p className="text-text_default_tertiary">{error ?? t("app.connecting")}</p>;
+    return (
+      <p className="text-text_default_tertiary">
+        {error ?? t("app.connecting")}
+      </p>
+    );
   }
 
   // A category with no section behind it is one this server cannot drive. Say so
@@ -3234,18 +3389,25 @@ function SettingsPanel({
           </div>
         </Field>
         <Field label={t("settings.localUrl")}>
-          <div className="break-all text-text_default_secondary">{snapshot.localUrl ?? "—"}</div>
+          <div className="break-all text-text_default_secondary">
+            {snapshot.localUrl ?? "—"}
+          </div>
         </Field>
         <Field label={t("settings.lanUrl")}>
-          <div className="break-all text-text_default_secondary">{snapshot.lanUrl ?? "—"}</div>
+          <div className="break-all text-text_default_secondary">
+            {snapshot.lanUrl ?? "—"}
+          </div>
         </Field>
       </>
     ),
     appearance: (
-      /* Appearance — theme and language switches folded into settings. */
+      /* Appearance — three-state theme picker (slice 18) and the language
+         switch. The picker reads its own labels and persists the choice to
+         the slice-07 UI-state envelope; the locale prop is forwarded so the
+         card labels render in the user's selected language. */
       <Field label={t("settings.appearance")}>
         <div className="flex flex-col gap-2">
-          <ThemeSwitch t={t} />
+          <ThemeSwitch t={t} locale={locale} />
           <LanguageSwitch t={t} locale={locale} setLocale={setLocale} />
         </div>
       </Field>
@@ -3329,8 +3491,16 @@ function SettingsPanel({
         <div className="rounded-[16px] bg-bg_grouped_tertiary p-1">{body}</div>
       </section>
 
-      {notice ? <p className="text-caption-small-strong text-text_status_success">{notice}</p> : null}
-      {error ? <p className="text-caption-small-strong text-text_status_error">{error}</p> : null}
+      {notice ? (
+        <p className="text-caption-small-strong text-text_status_success">
+          {notice}
+        </p>
+      ) : null}
+      {error ? (
+        <p className="text-caption-small-strong text-text_status_error">
+          {error}
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -3353,10 +3523,18 @@ function AlertsPanel({ t }: { t: (key: MessageKey) => string }) {
  * inside a card whose padding provides the inset — so the padding lives here rather
  * than on the card, which keeps a row's hit area continuous.
  */
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
   return (
     <div className="flex flex-col gap-1 px-3 py-2">
-      <span className="desktop-text-ui-body text-text_default_primary">{label}</span>
+      <span className="desktop-text-ui-body text-text_default_primary">
+        {label}
+      </span>
       {children}
     </div>
   );
@@ -3387,30 +3565,28 @@ function Toggle({
 }
 
 /**
- * Theme picker.
+ * Theme picker (slice 18).
  *
- * The document owns the applied theme (see lib/theme.ts), and the class on <html>
- * is not reactive state, so this reads it on mount and keeps a local mirror to
- * re-render the selected segment immediately after a write.
+ * Replaces the prior 2-option Segmented (light / dark) with the
+ * three-state AppearanceCardPicker — the desktop reference shows three
+ * preview-mockup cards, not a pill switch. The new picker handles its
+ * own state, persists to the slice-07 UI-state envelope, and reacts to
+ * live `prefers-color-scheme` changes via `lib/theme.ts`'s
+ * `subscribeSystemTheme` (mounted at the page root, not here, so the
+ * subscription is active even when settings is closed).
+ *
+ * The `t` prop is still threaded in even though the picker reads its own
+ * labels — left as a no-op for callers that pass it; the surface contract
+ * does not change.
  */
-function ThemeSwitch({ t }: { t: (key: MessageKey) => string }) {
-  const [theme, setTheme] = useState<ThemeName>("light");
-  useEffect(() => setTheme(currentTheme()), []);
-  return (
-    <Segmented
-      label={t("settings.theme")}
-      value={theme}
-      options={[
-        { id: "light", label: t("settings.themeLight") },
-        { id: "dark", label: t("settings.themeDark") },
-      ]}
-      onChange={(id) => {
-        const next = id as ThemeName;
-        applyTheme(next);
-        setTheme(next);
-      }}
-    />
-  );
+function ThemeSwitch({
+  t: _t,
+  locale,
+}: {
+  t: (key: MessageKey) => string;
+  locale: Locale;
+}) {
+  return <AppearanceCardPicker locale={locale} />;
 }
 
 /** Language picker. Writes through the same store the rest of the UI reads. */
@@ -3542,7 +3718,11 @@ function SearchPanel({
         className="mavis-input"
       />
 
-      {busy ? <span className="text-caption-small-strong text-text_default_tertiary">…</span> : null}
+      {busy ? (
+        <span className="text-caption-small-strong text-text_default_tertiary">
+          …
+        </span>
+      ) : null}
       {searched && hits.length === 0 && !busy ? (
         <span className="text-text_default_tertiary">{t("search.empty")}</span>
       ) : null}
@@ -3573,7 +3753,11 @@ function SearchPanel({
         ))}
       </div>
 
-      {error ? <p className="text-caption-small-strong text-text_status_error">{error}</p> : null}
+      {error ? (
+        <p className="text-caption-small-strong text-text_status_error">
+          {error}
+        </p>
+      ) : null}
     </div>
   );
 }
