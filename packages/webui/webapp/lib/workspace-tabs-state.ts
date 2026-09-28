@@ -423,19 +423,25 @@ export const COLUMN_SPECS: Record<ColumnId, ColumnSpec> = {
   // the chat column at ~322 — narrow but the user is reading a
   // file, not chatting.
   //
-  // Slice 25 — the slice-17 cap of 768 produced a 250–280px
-  // dead band on every viewport above ~1500px because the chat
-  // content carried the same 768 cap. The reporter judged this
-  // unacceptable; the column now absorbs ALL leftover up to a
-  // high absolute ceiling (1400px) so typical viewports
-  // (1280–1920) leave no dead band. 1400 is the chosen ceiling
-  // because it sits well above the 768 default — every common
-  // desktop viewport fills the row — while still bounding line
-  // length at the edge of readability; the user accepted long
-  // lines (~1000px+) as a consequence. Above ~1640 container
-  // width the ceiling bites and a residual dead band remains;
-  // that is the cost of the bound.
-  conversation: { id: "conversation", defaultWidth: 720, minWidth: 280, maxWidth: 1400, flow: "fluid" },
+  // Slice 25 — the conversation column has NO width ceiling
+  // beyond the algorithm's "absorb all leftover" rule. The
+  // slice-17 768 cap (and the earlier 1400 attempt) both
+  // produced a dead band at the row's right edge at wide
+  // viewports — the cap discarded leftover width the column
+  // could otherwise fill. The reporter's decision: the column
+  // absorbs all leftover; the readable measure cap lives on
+  // the CONTENT (see `components/chat.tsx` and
+  // `components/composer.tsx`) and is centred inside the
+  // column, so any slack above the measure splits evenly left
+  // and right instead of dumping on one side.
+  //
+  // The `maxWidth` here stays high (2400) — it is the clamp for
+  // the user drag (`clampWidth` clamps the stored width to
+  // `[minWidth, maxWidth]`), not a ceiling on the algorithm's
+  // growth path. The algorithm in `computeColumnLayout` ignores
+  // it and always lets the conversation column absorb every
+  // remaining pixel.
+  conversation: { id: "conversation", defaultWidth: 720, minWidth: 280, maxWidth: 2400, flow: "fluid" },
   // Preview column — file preview + browser. Per user direction
   // (preview ≪ tree ≪ chat in importance, but preview > chat
   // when the row truly has no room), the preview column folds
@@ -695,19 +701,20 @@ export interface ColumnLayoutSummary {
  *      so the conversation column can grow instead.
  *   5. After the fixed columns have absorbed what they can, the
  *      conversation column absorbs whatever leftover remains.
- *      Slice 25 — the column always absorbs all leftover; the
- *      effective max is `COLUMN_SPECS.conversation.maxWidth`
- *      (1400px) when at least one fixed column is visible, and
- *      is lifted to `conversation + leftover` (unbounded in this
- *      branch) when **both** fixed columns are folded so the
- *      idle row fills the container even on extreme viewports.
- *      1400 is the absolute ceiling chosen to bound line length
- *      at the edge of readability; above ~1640 container width
- *      a residual dead band remains at the row's right edge —
- *      the cost of the bound. Slice 17's 768 cap was the
- *      original dead-gutter defence; slice 25 raises the bound
- *      so typical desktop viewports (1280–1920) leave no dead
- *      band.
+ *      Slice 25 — unconditionally: the conversation column has
+ *      no growth-path ceiling. The slice-17 768 cap and the
+ *      earlier slice-25 1400 attempt both produced a dead band
+ *      at the row's right edge at wide viewports because they
+ *      discarded width the column could otherwise have filled.
+ *      The reporter's answer: no column ceiling; the readable
+ *      measure lives on the CONTENT (see `components/chat.tsx`
+ *      and `components/composer.tsx`) and is centred inside
+ *      the column, so any slack above the measure splits evenly
+ *      left/right instead of piling on one side. `COLUMN_SPECS.
+ *      conversation.maxWidth` still exists but only caps the
+ *      user drag (clampWidth); the growth path ignores it.
+ *      Long line length at wide viewports is the consequence
+ *      the reporter accepted.
  *   6. Last resort: when the sum of every column's minimum is
  *      still bigger than the container (e.g. 360px viewport),
  *      conversation shrinks toward 0. The renderer hides
@@ -796,29 +803,28 @@ export function computeColumnLayout(
       leftover -= previewGrow;
     }
     if (leftover > 0) {
-      // Slice 25 — conversation absorbs ALL leftover. When at
-      // least one fixed column is visible, the absorption is
-      // capped at `COLUMN_SPECS.conversation.maxWidth` (1400),
-      // the absolute ceiling chosen for this slice. When both
-      // fixed columns are folded, conversation's effective max
-      // is lifted to `conversation + leftover` so the idle row
-      // always fills the container — even at extreme viewports
-      // where the bounded branch would leave a residual dead
-      // band. Long line length is an accepted consequence at
-      // wide viewports.
-      const convMax =
-        layout.collapsed.preview && layout.collapsed.tree
-          ? conversation + leftover
-          : COLUMN_SPECS.conversation.maxWidth;
-      const convGrow = Math.max(0, Math.min(convMax - conversation, leftover));
+      // Slice 25 — conversation absorbs ALL leftover, every time,
+      // unconditionally. The slice-17 cap (and the earlier 1400
+      // attempt) both produced a dead band at the row's right
+      // edge at wide viewports because the cap discarded width
+      // the column could otherwise have filled. The reporter
+      // confirmed the right approach: no column ceiling, the
+      // readable measure lives on the content (chat stream +
+      // composer) and is centred inside the column so any slack
+      // above the measure splits evenly left/right instead of
+      // piling on one side.
+      //
+      // `COLUMN_SPECS.conversation.maxWidth` is intentionally
+      // ignored here — it caps the user drag (clampWidth) but
+      // does NOT cap the growth path. Long line length at wide
+      // viewports is the consequence the reporter accepted.
+      const convGrow = leftover;
       conversation += convGrow;
       leftover -= convGrow;
     }
-    // Any remaining leftover is shed (the row centres rather
-    // than overflows). At very large viewports with at least
-    // one fixed column visible this happens when conversation
-    // hits its 1400 ceiling — a residual dead band, the cost
-    // of bounding line length.
+    // After this branch `leftover` is always 0 — conversation
+    // absorbs the entire residual — so there is no row-level
+    // dead band in any state.
   }
 
   // 4. Sort segment order to match DOM order regardless of which
