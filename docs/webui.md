@@ -231,9 +231,12 @@ Two invariants follow directly:
 
 - **Row sums to exactly the container width**, every render (modulo
   zero-width hidden segments). No dead gutter is reachable.
-- **The visible `conversation` width is never less than 280 px** while
-  it is the only visible column, because the fold ladder in step 2
-  folds `preview` and `tree` first.
+- **When `conversation` is the only visible column, its rendered width
+  stays ≥ 280 px whenever the container can fit 280 px** — the fold
+  ladder in step 2 shrinks `preview` and `tree` first, so `conversation`
+  only shrinks past 280 when nothing else gives. At very narrow
+  viewports the renderer hides it entirely
+  (`workspace-tabs-state.ts:774-780`).
 
 ### Idle path — what the user sees at common viewports
 
@@ -249,9 +252,11 @@ remainder, **not** a configured cap:
 | 1920 px | 240 | **1680** | `1920 − 240` |
 | 2560 px | 240 | **2320** | `2560 − 240` |
 
-Above ~2520 px the chat content's centred 960 px measure
-(`chat.tsx:38-52`) starts biting: the content stops widening and the
-slack above 960 splits evenly left and right inside the column. The
+The chat content's 960 px centred measure (`components/chat.tsx:38-52`,
+applied at `:255` and `composer.tsx:532`) is a hard CSS cap on the
+content, not a threshold on the column. As soon as the column reaches
+960 px the cap starts biting: the content stays at 960 and the slack
+above it splits evenly between left and right inside the column. The
 column itself keeps absorbing leftover up to the algorithm's only
 limit, which is the container width.
 
@@ -259,17 +264,29 @@ limit, which is the container width.
 
 When at least one fixed column is open, leftover after the user's
 stored widths flows into the fixed columns first, bounded by their
-`maxWidth`s (`workspace-tabs-state.ts:793-815`). At 1920 px with both
-fixed columns open at their defaults:
+`maxWidth`s (`workspace-tabs-state.ts:793-815`). At a 1920 px viewport
+with both fixed columns open at their defaults, the container is
+`1920 − sidebar 240 = 1680` — the same `1680` figure the idle table
+and the "only preview" example use (`workspace-tabs-state.test.ts:1011`).
+The stored widths (`preview` 400, `tree` 340, `conversation` 720) sum to
+**1460**, so:
 
-- `tree` grows 340 → **600** (its max), takes 260 px.
-- `preview` then takes the next 200 px (limited by what is left).
-- `conversation` ends at its stored 720 — no leftover reaches it.
+- container leftover = `1680 − 1460 = 220`
+- `tree` grows 340 → **560** (eats 220 px, falling short of its 600 max
+  because that is all the leftover there is)
+- `preview` stays at **400** (no leftover left)
+- `conversation` ends at its stored **720** — no leftover reaches it
 
-If only `preview` is open at 1920, `tree` is skipped (collapsed),
-`preview` grows 400 → **720** (its max), and `conversation` keeps the
-remaining 240 px on top of its stored 720. Drag behaviour on
-`conversation` itself is bounded by `[280, 2400]` via
+If only `preview` is open at 1920, `tree` is skipped (collapsed). The
+container is still `1680`; the stored widths sum to **1120**, so the
+leftover is `560`:
+
+- `preview` grows 400 → **720** (its max, eats 320 px)
+- `conversation` absorbs the remaining **240 px** on top of its stored
+  720 → ends at **960** (the locked value in
+  `workspace-tabs-state.test.ts:1052`).
+
+Drag behaviour on `conversation` itself is bounded by `[280, 2400]` via
 `clampToConversation` (`workspace-tabs-state.ts:856-861`); the
 algorithm may then re-distribute any overflow into `preview` first
 (`workspace-tabs-state.ts:747-762`).

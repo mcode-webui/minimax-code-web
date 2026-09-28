@@ -188,16 +188,16 @@ exec 回合的代价——以下都是当前真实存在的行为，选择权限
 | 列 | 角色 | 默认 | 最小 | 最大 | 流动方式 |
 | --- | --- | --- | --- | --- | --- |
 | `sidebar` | AppShell 自身的 chrome，在列行之外 | 240 | 220 | 400 | 固定 |
-| `conversation` | 弹性，吃掉剩余空间，**增长路径上无上限** | 720 | 280 | 2400 | 流式 |
+| `conversation` | 弹性，吃掉剩余空间，**实际列宽不会被 2400 截断** | 720 | 280 | 2400 | 流式 |
 | `preview` | 按需 — 查看面（`file:<path>`、`browser`） | 400 | 320 | 720 | 固定 |
 | `tree` | 按需 — 导航面（`files`、`git`、`tasks`、`search`、`plugins`） | 340 | 320 | 600 | 固定 |
 
-**`conversation.maxWidth = 2400` 不限制用户实际看到的列宽**。它只钳住拖拽分隔条时写入存储的值（`workspace-tabs-state.ts:511-528`）；布局算法明确忽略它，让 `conversation` 在固定列吃满各自上限后吃光剩余像素（算法注释见 `workspace-tabs-state.ts:438-443`、`:702-720`，实现见 `:805-823`）。视觉上的真正约束是聊天内容里的居中阅读宽度 960 px（`components/chat.tsx:38-52`、应用在 `:255` 与 `composer.tsx:532`）：列宽超过约 2520 px 后，列还在长，内容停在 960，居中显示，左/右均分剩余留白。
+**`conversation.maxWidth = 2400` 只约束手动拖拽分隔条时写入存储的值**（`workspace-tabs-state.ts:511-528`）——布局算法明确忽略它，让 `conversation` 在固定列吃完各自上限后吃光剩余像素（算法注释见 `workspace-tabs-state.ts:438-443`、`:702-720`，实现见 `:805-823`）。**视觉上的真正约束是聊天内容里的居中阅读宽度 960 px**（`components/chat.tsx:38-52`、应用在 `:255` 与 `composer.tsx:532`）：这是一条 CSS 硬上限（`mx-auto max-w-[960px]`），只要列宽达到 960，内容就停在 960 并居中显示，左右均分剩余留白。
 
 ### 调一个数字会发生什么
 
 - **改 `defaultWidth`**：影响首次进入工作区时的初始宽度（持久化里没存值的场景）。已经存过值的用户不会被影响——他们存的是上一次拖拽的结果。
-- **改 `minWidth`**：用户在分隔条上拖窄时，能被钳到的下限变小（或变大）。同时影响 `computeColumnLayout` 在溢出时折这一列的下限（`workspace-tabs-state.ts:863-866`）。
+- **改 `minWidth`**：用户在分隔条上拖窄时，能被钳到的下限变小。同时影响 `computeColumnLayout` 在溢出时折这一列的下限（`workspace-tabs-state.ts:863-866`）。
 - **改 `maxWidth`**：拖拽上限变化；**对 `preview` 与 `tree`，还意味着"列能吃多少剩余像素"的天花板变化**（`workspace-tabs-state.ts:868-870`）。**对 `conversation`，用户拖拽写入值的上限变化，但增长路径不受影响——它始终吃光剩余**。这是唯一一个 `maxWidth` 与"看到的列宽上限"不一致的列，原因写在 `:438-443`。
 - **改 `flow`**：把 `conversation` 改成 `fixed` 会让布局回到溢出折叠路径，且 `preview`/`tree` 的剩余像素不再流向 `conversation`——请不要这样做，算法里没有按 `flow === "fluid"` 分支处理，是按列 id 硬编码的（`workspace-tabs-state.ts:805-823`）。
 
@@ -217,18 +217,22 @@ exec 回合的代价——以下都是当前真实存在的行为，选择权限
 
 `computeColumnLayout`（`workspace-tabs-state.ts:724-854`）在固定列未到上限时按 **`tree` 先吃、再 `preview`** 的顺序吃剩余像素，每个都受各自 `maxWidth` 约束（`workspace-tabs-state.ts:793-815`）。剩余像素没有的话，`conversation` 停在它的存储宽度（默认 720）。
 
-举例：1920 视口下两个固定列都在默认宽度（`preview` 400、`tree` 340、`conversation` 720）：
+举例：1920 视口（容器 = `1920 − 侧栏 240 = 1680`，与空闲态表和"只开 preview"算例同一口径，`workspace-tabs-state.test.ts:1011`）下两个固定列都在默认宽度（`preview` 400、`tree` 340、`conversation` 720，存储总宽 1460）：
 
-- `tree` 从 340 增长到自己的上限 **600**（吃 260 px）
-- 剩 200 px 给 `preview`，从 400 长到 **600**
-- 剩余 0 px，`conversation` 停在默认的 **720**
+- 容器剩余像素 = `1680 − 1460 = 220`
+- `tree` 从 340 增长到 **560**（吃掉 220 px；由于剩余像素不够，没达到自己的 600 上限）
+- `preview` 留在 **400**（剩余像素已经耗尽）
+- `conversation` 停在默认的 **720** —— 没有剩余像素流向它
 
-只开 `preview` 不开 `tree` 时：`preview` 从 400 长到自己的上限 **720**，`conversation` 拿剩下的 240，加在自己的默认 720 上变成 **960**。
+只开 `preview` 不开 `tree` 时（容器 1680，存储总宽 1120，剩余像素 560）：
+
+- `preview` 从 400 长到自己的上限 **720**（吃掉 320 px）
+- `conversation` 拿剩下的 240 px 加在自己的默认 720 上 → **960**（与 `workspace-tabs-state.test.ts:1052` 锁定值一致）
 
 ### 边界
 
-- 当 sidebar = 240、`preview` = 320、`tree` = 320、`conversation` = 280 时整行宽度是 1160 px。视口 **< 1160 px** 且两个按需列都可见时，`conversation` 会被压到自己的最小值 280。视口更窄（典型窄屏），`conversation` 继续被压到 0，渲染器隐藏整列——这是 `workspace-tabs-state.ts:762-781` 的最后防线。
-- 用户拖 `conversation` 分隔条时，写入值会被 `clampToConversation`（`workspace-tabs-state.ts:856-861`）钳到 `[280, 2400]`。如果拖到的值让整行溢出，算法会按"先折 `preview` → 再折 `tree` → 再折 `conversation`"的顺序消化溢出（`workspace-tabs-state.ts:747-781`），与空闲态的折列优先级一致。
+- sidebar=240 + preview=320 + tree=320 + conversation=280 = 1160 px 整行。视口 = 1160 px 时 `conversation` 刚好被压到自己的最小值 280；视口再窄 1 px 就已经压破 280（例如视口 1159 → conversation 279），更窄的窄屏上 `conversation` 继续被压到 0，渲染器隐藏整列——这是 `workspace-tabs-state.ts:762-781` 的最后防线。
+- 用户拖 `conversation` 分隔条时，写入值会被 `clampToConversation`（`workspace-tabs-state.ts:856-861`）钳到 `[280, 2400]`。如果拖到的值让整行溢出，算法会按"先折 `preview` → 再折 `tree` → 再折 `conversation`"的顺序消化溢出（`workspace-tabs-state.ts:747-781`）。
 - 双击分隔条重置该列到 `defaultWidth`（`workspace-tabs-state.ts:533-536`）。**不会**重置其他列；不会影响收起/展开状态。
 
 每列持有自己的 `activeId`（`previewActiveId`、`treeActiveId`），因此
