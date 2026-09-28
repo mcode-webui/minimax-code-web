@@ -184,11 +184,102 @@
   .mavis-loading .mavis-dot {
     animation: none;
   }
+  .thinking-live-dot {
+    animation: none;
+  }
   *,
   *::before,
   *::after {
     transition-duration: 0.001ms !important;
     animation-duration: 0.001ms !important;
     animation-iteration-count: 1 !important;
+  }
+}
+
+/* Session render fidelity (webui ticket 46, PR2 — thinking block + activity
+ * group). Ported from the upstream stylesheet's transcript-widget rules
+ * (`.webui-thinking-block` / `.activity-group` / `.timeline-spine`); the
+ * layout spacing around them stays in Tailwind classes on the components
+ * (components/activity-group.tsx), so this file only carries what utilities
+ * cannot express: the native-marker suppression, the timeline spine, the
+ * clamp's gradient mask, and the live-status pulse. */
+
+/* Native <details> folding replaces the hand-rolled button disclosures, so
+ * the browser's default triangle marker has to go — the summary rows draw
+ * their own chevron. */
+details[data-testid="activity-group"] > summary,
+details.webui-thinking-block > summary {
+  list-style: none;
+}
+details[data-testid="activity-group"] > summary::-webkit-details-marker,
+details.webui-thinking-block > summary::-webkit-details-marker {
+  display: none;
+}
+
+/* Timeline spine — the vertical rule on the activity-group body's left
+ * edge. Absolutely positioned against `.activity-group-body` (relative on
+ * the component); the 7px/18px/2px offsets put the line in the gutter the
+ * body's left padding reserves, spanning from just below the summary row
+ * to the last step, like the upstream desktop's activity timeline. */
+.timeline-spine {
+  position: absolute;
+  top: 18px;
+  bottom: 2px;
+  left: 7px;
+  width: 1px;
+  border-radius: 8px;
+  background: var(--border_light);
+}
+
+/* The steps sit right of the spine, in the gutter it rules: tool cards
+ * carry their own opaque background and would otherwise paint over the
+ * line (upstream's tool rows are borderless, ours are cards until ticket
+ * 46 PR3 rebuilds them). */
+.activity-group-items {
+  padding-left: 15px;
+}
+
+/* Thinking body clamp — once the rendered body exceeds 224px
+ * (THINKING_CLAMP_HEIGHT_PX on the component), `is-clamped` caps it and
+ * fades the last 40px into the page background so the 「展开」 button below
+ * reads as "there is more", the same affordance as upstream. */
+.webui-thinking-detail-content {
+  position: relative;
+}
+.webui-thinking-detail-content.is-clamped {
+  max-height: 224px;
+  overflow: hidden;
+}
+.webui-thinking-detail-content.is-clamped::after {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 40px;
+  background: linear-gradient(180deg, transparent, var(--bg_default_primary));
+  content: "";
+  pointer-events: none;
+}
+
+/* Live "reasoning" pulse — the streaming thinking summary's status dot.
+ * The upstream desktop runs a lottie pulse here; a 6px currentColor dot
+ * breathing on opacity carries the same read with no new dependency. The
+ * reduced-motion block above switches it off (the 「推理中...」copy and the
+ * ticking seconds stay visible — the same trade the U8 indicators make). */
+.thinking-live-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: thinking-live-pulse 1.6s ease-in-out infinite;
+}
+@keyframes thinking-live-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
   }
 }

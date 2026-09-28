@@ -2,27 +2,21 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import * as api from "@/lib/api";
 import { renderMarkdown } from "@/lib/markdown";
 import { MarkdownHtml } from "./markdown-html";
 import "../lib/mermaid-renderer"; // registers the mermaid language renderer
 import "../lib/math-renderer"; // registers KaTeX (inline $…$, $$…$$, ```math fences)
 import { reportActionError } from "@/lib/action-errors";
-import { findSubagentForBlock } from "@/lib/agent-team-lookup";
-import { badgeLabelAndGlyph, agentLabel } from "@/lib/i18n-agent-team";
-import { useLocale } from "@/lib/use-locale";
 import {
   decodeTranscript,
   groupActivity,
-  SUMMARY_CATEGORY_KEY,
-  type ActivitySummary,
   type TranscriptBlock,
 } from "@/lib/transcript";
 import { Icon } from "./icons";
 import { useChatVirtualization } from "./chat-virtual-list";
 import { ActivityPulse, isSessionActivityActive } from "./loading-states";
+import { ActivityGroup } from "./activity-group";
 import { useSessionContext } from "@/lib/store";
-import { iconByName, type SummaryIconType } from "@/lib/transcript";
 import { readScrollPosition as readPersistedScroll } from "@/lib/persist";
 import type { Locale, MessageKey } from "@/lib/i18n";
 import { WorkspaceChipDropdown } from "./workspace-picker";
@@ -122,6 +116,27 @@ export function Chat({
   // `state.running.active` (set by mcode-acp/exec `finalize` and the SSE bus)
   // so the UI follows the engine, not a derived transcript signal.
   const sessionRunning = state?.running.active ?? false;
+
+  // Ticket 46 (D2/D3) — which activity run is streaming its thoughts right
+  // now. The wire transcript carries no per-block streaming flag for thinking
+  // (the `▍` cursor only marks the trailing assistant block), so the render
+  // layer derives it: the session is running AND the transcript's tail unit
+  // is an activity run whose last block is a thought — i.e. the engine is
+  // producing thinking and has not yet emitted any assistant text or tool
+  // call for this turn. That run's thinking block then renders its live
+  // 「推理中...」+ ticking-seconds summary and stays force-expanded.
+  const streamingActivityIndex = useMemo(() => {
+    if (!sessionRunning) return -1;
+    const tail = units[units.length - 1];
+    if (!tail || tail.kind !== "activity") return -1;
+    const last = tail.blocks[tail.blocks.length - 1];
+    return last?.role === "thinking" ? units.length - 1 : -1;
+  }, [units, sessionRunning]);
+  // `running.startedAt` is the turn-level anchor the streaming thinking row
+  // ticks its elapsed seconds from (the same semantics upstream feeds
+  // `WebuiThinkingBlock` as `processingStartedAtMs`). Null once the turn
+  // settles, absent on a cold-loaded session.
+  const runningStartedAt = state?.running.startedAt ?? null;
 
   // Windowed rendering: above VIRTUAL_LIST_THRESHOLD (200) units we slice the
   // transcript to a visible window around the user's scroll position. The hook
@@ -282,6 +297,8 @@ export function Chat({
                   summary={unit.summary}
                   t={t}
                   onOpenFile={onOpenFile}
+                  streaming={originalIndex === streamingActivityIndex}
+                  startedAtMs={runningStartedAt}
                 />
               ) : (
                 <Block key={originalIndex} block={unit.block} t={t} />
@@ -853,337 +870,6 @@ export function HomeState({ t, children, locale }: ChatProps & { children: React
           </>
         ) : null}
       </div>
-    </div>
-  );
-}
-
-/**
- * A folded run of thinking/tool steps.
- *
- * Upstream presents these as one collapsible group whose header summarises the run
- * ("Thought N times, used M tools") with a chevron, and whose body is a
- * `grid-template-rows` + opacity transition. The same classes are used here, so the
- * open/close motion matches.
- */
-function ActivityGroup({
-  blocks,
-  summary,
-  t,
-  onOpenFile,
-}: {
-  blocks: TranscriptBlock[];
-  summary: ActivitySummary;
-  t: (key: MessageKey) => string;
-  onOpenFile: (path: string) => void;
-}) {
-  const [open, setOpen] = useState(false);
-
-  // While a call is in flight upstream names it instead of listing categories
-  // ("已使用 3 次工具｜bash"); once the turn settles it lists the per-category
-  // contributions joined with ", " (「查看 2 个文件, 执行 1 条命令」).
-  const label = summary.activeTool
-    ? t("activity.activeTool")
-        .replace("{{count}}", String(summary.tools))
-        .replace("{{tool}}", summary.activeTool)
-    : summary.contributions
-        .map((entry) =>
-          t((SUMMARY_CATEGORY_KEY[entry.category] ?? "activity.usedTools") as MessageKey).replace(
-            "{{count}}",
-            String(entry.count),
-          ),
-        )
-        .join(", ");
-
-  return (
-    <div className="mb-4">
-      <div className="message-animate-in group relative w-full">
-        <div
-          data-testid="activity-group-header-shell"
-          className="desktop-text-ui-small flex w-full text-sm leading-5"
-        >
-          <span className="group/header group/activity-label inline-flex min-w-0 max-w-[80%] items-center gap-1 pr-1 text-left text-sm leading-5 tracking-normal text-text_default_tertiary">
-            <button
-              type="button"
-              data-testid="activity-group-header"
-              data-message-collapse-trigger
-              className="inline-flex min-w-0 items-center gap-1"
-              aria-expanded={open}
-              onClick={() => setOpen((value) => !value)}
-            >
-              <span
-                data-testid="activity-group-header-icon"
-                className="inline-flex shrink-0"
-              >
-                <CategoryIcon type={summary.iconType} />
-              </span>
-              <span className="min-w-0 truncate text-text_default_tertiary group-hover/header:text-text_default_secondary">
-                {label}
-              </span>
-            </button>
-            <button
-              type="button"
-              aria-label={t("activity.detail")}
-              className="-ml-1 inline-flex h-4 w-4 shrink-0 items-center justify-center self-center text-text_label_tertiary_default group-hover/header:text-text_label_tertiary_hover"
-              onClick={() => setOpen((value) => !value)}
-            >
-              <span
-                className={[
-                  "flex h-4 w-4 items-center justify-center transition-transform duration-200 ease-out",
-                  open ? "rotate-90" : "",
-                ].join(" ")}
-              >
-                <Icon name="chevronRight" />
-              </span>
-            </button>
-          </span>
-        </div>
-
-        <div
-          className="grid transition-[grid-template-rows,opacity] duration-200 ease-out"
-          style={{ gridTemplateRows: open ? "1fr" : "0fr", opacity: open ? 1 : 0 }}
-        >
-          <div className="overflow-hidden">
-            <div
-              data-testid="activity-group-detail"
-              className="flex max-h-[230px] flex-col gap-1.5 overflow-y-auto pt-2.5 scrollbar-hide"
-            >
-              {blocks.map((block, index) =>
-                block.role === "thinking" ? (
-                  <ThinkingRow key={index} block={block} t={t} />
-                ) : (
-                  <ToolCard key={index} block={block} t={t} onOpenFile={onOpenFile} />
-                ),
-              )}
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/**
- * One thought.
- *
- * Upstream wraps each one in a `ThinkingBlock` titled
- * `message.item.thought_process` (思考过程) that is itself **collapsed by default** —
- * the thought text is not shown until you open it. The expanded body is
- * `text-activity-detail matrix-markdown--thinking` with a 0.5px left rule,
- * indented `ml-[7.5px] pl-[13px] pt-2`, which is what the classes below
- * reproduce.
- */
-function ThinkingRow({ block, t }: { block: TranscriptBlock; t: (key: MessageKey) => string }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <div className="py-2.5">
-      <button
-        type="button"
-        aria-expanded={open}
-        onClick={() => setOpen((value) => !value)}
-        className="group/thought inline-flex min-w-0 items-center gap-1 text-text_default_tertiary"
-      >
-        <span className="min-w-0 truncate transition-colors group-hover/thought:text-text_default_secondary">
-          {t("activity.thoughtProcess")}
-        </span>
-        <span
-          className={[
-            "flex h-4 w-4 shrink-0 items-center justify-center transition-transform duration-200 ease-out",
-            open ? "rotate-0" : "-rotate-90",
-          ].join(" ")}
-        >
-          <Icon name="caretDown" size={12} />
-        </span>
-      </button>
-      {open ? (
-        <div className="ml-[7.5px] border-l-[0.5px] border-border_default pl-[13px] pt-2">
-          <div className="text-activity-detail matrix-markdown matrix-markdown--thinking text-text_default_secondary">
-            <p className="m-0 break-words whitespace-pre-wrap">{block.text}</p>
-          </div>
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-/**
- * The leading icon for an ActivityGroup header or a ToolCard.
- *
- * Upstream (`90321` byte 2085700 + icon module 32709) renders these as
- * precise 16×16 SVGs from a 16-icon registry keyed by `iconType`. The full
- * SVG catalog lives in the icon registry and is not yet pulled into this
- * frontend; for now we render a unicode glyph sized at 16 so the leading-edge
- * slot is visible and `data-tool-icon-type` is honoured. When the precise
- * paths land in `icons.tsx`, swap the glyph for `<Icon name={type} ... />`
- * behind the same `type` key — the data attributes and sizing are stable.
- */
-function CategoryIcon({ type }: { type: SummaryIconType }) {
-  const glyph = CATEGORY_GLYPH[type] ?? "•";
-  return (
-    <span
-      aria-hidden="true"
-      data-tool-icon-type={type}
-      className="inline-flex h-4 w-4 shrink-0 items-center justify-center text-text_default_tertiary"
-      style={{ fontSize: 14, lineHeight: 1 }}
-    >
-      {glyph}
-    </span>
-  );
-}
-
-const CATEGORY_GLYPH: Record<SummaryIconType, string> = {
-  "plugin": "🧩",
-  "file-edit": "✎",
-  "edit": "✎",
-  "agent": "◉",
-  "skill": "✦",
-  "web": "⌘",
-  "search": "◎",
-  "thinking": "◌",
-  "file": "▢",
-  "command": "›_",
-  "tool": "◇",
-  "logo": "◈",
-  "bot": "◉",
-  "summary": "≡",
-  "code": "⟨⟩",
-  "memory": "❒",
-  "alert": "△",
-};
-
-/**
- * A single tool call: the `→ name {args}` header plus the output the server wrote
- * beneath it. Output collapses by default — a tool can emit thousands of lines, and
- * upstream keeps it behind a disclosure for the same reason.
- */
-function ToolCard({ block, t, onOpenFile }: { block: TranscriptBlock; t: (key: MessageKey) => string; onOpenFile: (path: string) => void }) {
-  const [open, setOpen] = useState(false);
-  const output = block.toolOutput ?? [];
-  const paths = block.toolPaths ?? [];
-  const hasBody = output.length > 0 || paths.length > 0;
-  const iconType = iconByName(block.toolName);
-  // Slice 06 — Agent Team: when this tool is the parent of a subagent
-  // dispatch, attach the live status badge + jump reference from the
-  // server's `recentSubagents` array. The match is by `toolCallId`
-  // (carried on the block by the `##tc:` marker the decoder
-  // consumes) so a session that spawned multiple subagents badges
-  // each `→ task` line with its OWN child — matching by tool NAME
-  // would badge every line with the newest child, which is wrong.
-  // See `lib/agent-team-lookup.ts#findSubagentForBlock` for the
-  // matching rule and its unit tests.
-  const store = useSessionContext();
-  const { locale } = useLocale();
-  const recent = store?.state?.recentSubagents;
-  const subagent = findSubagentForBlock(recent, block);
-
-  const statusKey =
-    block.toolStatus === "failed"
-      ? "tool.status.failed"
-      : block.toolStatus === "in_progress"
-        ? "tool.status.in_progress"
-        : "tool.status.completed";
-
-  // Subagent badge — label and glyph are resolved through i18n so
-  // both locales actually differ (the previous slice hardcoded English
-  // glyphs here, leaving the file orphaned — the acceptance fix wires
-  // the keys through `tAgentTeam` / `agentLabel`).
-  const badge = subagent ? badgeLabelAndGlyph(locale, subagent.status) : null;
-  const agentNameLabel = subagent ? agentLabel(locale, subagent.agentName) : null;
-  const subagentLabel = badge && agentNameLabel
-    ? `${badge.glyph} ${agentNameLabel}`
-    : null;
-
-  return (
-    <div className="rounded-xl border border-border_default bg-bg_grouped_tertiary">
-      <button
-        type="button"
-        className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left"
-        aria-expanded={open}
-        data-tool-icon-type={iconType}
-        onClick={() => hasBody && setOpen((value) => !value)}
-      >
-        <CategoryIcon type={iconType} />
-        {hasBody ? (
-          <span className={["transition-transform duration-200", open ? "rotate-90" : ""].join(" ")}>
-            <Icon name="chevronRight" size={12} />
-          </span>
-        ) : (
-          <span className="w-3" />
-        )}
-        <span className="font-family-code truncate text-caption-small-strong text-text_default_primary">
-          {block.toolName}
-        </span>
-        <span
-          className={[
-            "flex-none text-caption-small-strong",
-            block.toolStatus === "failed"
-              ? "text-text_status_error"
-              : block.toolStatus === "in_progress"
-                ? "text-text_default_accent"
-                : "text-text_default_tertiary",
-          ].join(" ")}
-        >
-          {t(statusKey)}
-        </span>
-        {subagent ? (
-          <button
-            type="button"
-            title={subagent.sessionId}
-            data-testid="tool-card-subagent-badge"
-            data-subagent-session={subagent.sessionId}
-            data-subagent-status={subagent.status}
-            onClick={(event) => {
-              event.stopPropagation();
-              if (subagent.sessionId) {
-                void api.switchSession(subagent.sessionId).catch(() => {});
-              }
-            }}
-            className={[
-              "flex-none cursor-pointer rounded-md px-1.5 py-px text-caption-small-strong transition-colors",
-              subagent.status === "running"
-                ? "bg-bg_status_accent text-text_default_accent hover:bg-bg_interaction_tertiary_hover"
-                : subagent.status === "failed"
-                  ? "bg-bg_status_error text-text_status_error hover:bg-bg_interaction_tertiary_hover"
-                  : "bg-bg_grouped_tertiary_elevated text-text_default_secondary hover:bg-bg_interaction_tertiary_hover",
-            ].join(" ")}
-          >
-            {subagentLabel}
-          </button>
-        ) : null}
-        {block.toolArgs ? (
-          <span className="min-w-0 flex-1 truncate text-caption-small-strong text-text_default_tertiary">
-            {block.toolArgs}
-          </span>
-        ) : (
-          <span className="min-w-0 flex-1" />
-        )}
-      </button>
-
-      {open && hasBody ? (
-        <div className="border-t border-border_light px-2.5 py-1.5">
-          {paths.length > 0 ? (
-            <div className="mb-1 flex flex-wrap gap-1">
-              {paths.map((path) => (
-                <button
-                  key={path}
-                  type="button"
-                  title={path}
-                  data-testid="tool-card-path"
-                  data-path={path}
-                  onClick={() => onOpenFile(path)}
-                  className="tool-resource-reference max-w-[260px] truncate rounded-md bg-bg_grouped_tertiary_elevated px-1.5 py-0.5 text-caption-small-strong text-text_default_secondary transition-colors hover:bg-bg_interaction_tertiary_hover hover:text-text_default_primary focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-border_accent"
-                >
-                  {path}
-                </button>
-              ))}
-            </div>
-          ) : null}
-          {output.length > 0 ? (
-            <pre className="codeblock-code thin-scrollbar max-h-[320px] overflow-auto rounded-lg p-2 text-caption-small-strong whitespace-pre-wrap text-text_default_secondary">
-              {output.join("\n")}
-            </pre>
-          ) : null}
-        </div>
-      ) : null}
     </div>
   );
 }
