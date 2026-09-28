@@ -211,6 +211,8 @@ sequenceDiagram
 | **AGENTS.md** | `agent-modules/system-reminder` 在会话开始时将其注入系统提示词（项目指令、项目记忆） | 在聊天中不可见；在轨迹工作室（`/trajectory/`，会话事件）中可见 | 无特殊处理——它塑造模型行为 |
 | **思维链（Thinking）** | 模型发出 `agent_thought_chunk` | `kind:'thought'` → `▲` 行 | 可折叠的思维链块（转义文本） |
 | **内置工具**（Bash/Read/Write/Edit/…） | agent-runtime 按权限预设执行 | `tool_call` / `tool_call_update` → `→ name` + 缩进的输出行 | 工具块，自动折叠，文件徽章 |
+| **工具调用 ID 标记** `##tc:<toolCallId>` | `mcode-acp.js#applyToolUpdate` 在每个 `→ name` 标题行紧之前写入 | 一行聊天记录 `##tc:<id>`，由 `decodeTranscript` 消费 | 把 `toolCallId` 挂到工具块上，`ToolCard` 据此按 id（而非工具名）匹配 `recentSubagents[]`；不进聊天正文 |
+| **处理时长标记** `§§ processed_duration=Nms` | 提示词 finalize（`mcode-{acp,exec}.js#finalize`） | 一行聊天记录 `§§ processed_duration=Nms`，由 `decodeTranscript` 消费 | 把 `processedDuration` 挂到助手回合上，用于 `turn_process_disclosure` 折叠条；不进聊天正文 |
 | **MCP 工具** | 引擎启动已配置的 MCP 服务器（`mcp.json`）；调用以 `mcp__server__tool` 形式出现 | 与 tool_call 相同的传输线 | 同样的工具块（server·tool 命名） |
 | **技能（Skills）** | `/skill` 或提示词触发 `agent-modules/skills` → 作为 system-reminder 内容注入 | 斜杠目录来自 `available_commands_update`；调用 = 普通提示词回合 | 斜杠提示 UI；技能输出 = 普通的思维/消息/工具流 |
 | **ask_user 工具** | 引擎发出 `ask_user` 工具调用 | 聊天行 `→ ask_user {json}` | 带选项/多选/其他的弹窗；回答 → `POST /api/send {isAskAnswer:true}` |
@@ -422,6 +424,25 @@ export const MCODE_ACP_CAPABILITIES = {
 `NormalizedEvent` 是一个带标签的联合类型（`{type, …}`），包含这些类型：
 `state`、`chat`、`delta`、`tool`、`permission`、`plan`、`ask`、
 `exec`、`usage`。见 § 5。
+
+### `agent-team-status.js`
+
+Agent Team 面板的 DB → UI 状态投影。运行时库的列词表**不是**界面渲染的
+词表——存储值 ≠ 展示值：
+
+| 来源列 | 存储值 | 说明 |
+| --- | --- | --- |
+| `local_runtime_sessions.status` | `idle \| interrupted \| aborted \| error` | 窄；会话跑回合时引擎不改这列，一直是 `idle` |
+| `local_runtime_background_tasks.status`（`kind=subagent`） | `running \| succeeded \| failed \| canceled` | 子代理的真实运行态 |
+
+界面渲染的是 `AGENT_TEAM_STATUS` = `idle \| queued \| running \| waiting \|
+done \| stopped \| failed`。本模块是**唯一**决定这个映射的地方
+（`projectSessionStatus`、`projectTaskStatus`、`projectAgentStatus`），
+db 原始值从不上线。`projectAgentStatus` 合成两列——任务列的 `running`
+优先（光看会话列永远报不出"运行中"），任务已终态则以任务投影为准，
+否则用会话投影。TUI 那套更细的词表（`failed \| waiting \| running \|
+queued \| done \| stopped`）是投影层产物、不是存储值；webui 不导入它，
+但采用同样的形状。未识别的未来状态渲染为 `idle`，绝不误报"运行中"。
 
 ## 4. `clientState.state` 载荷
 

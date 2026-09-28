@@ -36,6 +36,9 @@ webui 受三项约束限制：
 | `lan-sharing` | §11 网络与访问控制 |
 | `token-auth` | §11 网络与访问控制 |
 | `mobile-responsive` | §10 UI / UX |
+| `bounded-workspace-search` | §6 工作区 |
+| `credential-file-preview-guard` | §11 网络与访问控制 |
+| `four-column-shell` | §10 UI / UX |
 
 CI 会对上述每一个名称是否出现在本文档中进行断言
 （见 `scripts/check-docs-alignment.mjs`）；上表是
@@ -50,8 +53,8 @@ CI 会对上述每一个名称是否出现在本文档中进行断言
 | 工具调用（Bash、Read、Write、Edit、…） | ✅ | 从 acp `tool_call` 事件转发而来 |
 | 已完成工具输出的自动折叠 | ✅ | 纯 CSS 实现，无逻辑 |
 | 长聊天列表虚拟化（≥ 200 条消息） | ✅ | `webapp/lib/transcript.ts` 虚拟窗口分支（N ≥ 200），带滚动/缩放 rAF 处理器；由 `webapp/test/transcript.test.ts` 覆盖。 |
-| Markdown 渲染（标题、列表、代码） | ✅ | `lib/marked.min.js` 本地内置（不走 CDN） |
-| 代码块语法高亮 | ✅ | highlight.js（本地副本） |
+| Markdown 渲染（标题、列表、代码） | ✅ | `webapp/lib/markdown.ts` 包裹工作区的 `marked` 包（`packages/tui` 已依赖它；不走 CDN） |
+| 代码块语法高亮 | ✅ | `marked` 的 code 渲染器（`webapp/lib/markdown.ts`）+ `webapp/styles/official-utilities.css` 的 CSS 类 |
 | Markdown 内 Mermaid 图渲染（slice 23） | ✅ | 代码围栏语言写 `mermaid` 即渲染为图，而非代码块。围栏语言经"语言→渲染器"注册表分发（`webapp/lib/markdown.ts` 的 `registerLanguageRenderer`，107-113 行）；mermaid 在模块导入时自注册（`webapp/lib/mermaid-renderer.ts:64-71`），其他语言的渲染器可经同一接缝接入——markdown 主流程不针对语言名写分支。图表库在页面首张图出现时才动态加载（`components/mermaid-block.tsx:62-66`），该文件带一年 immutable 强缓存（`server/lib/static.js:66`）；没有 mermaid 围栏的页面完全不加载。图跟随浅色/深色主题（`components/markdown-html.tsx:52-66` 监听 `<html>` class；`components/mermaid-block.tsx:156-166、223-229` 按主题重新初始化）。语法错误时渲染可读的失败卡片——错误信息 + 可复制的原始源码（`components/mermaid-block.tsx:285-307`）——文档其余部分照常渲染。限制：图按列宽缩放、超宽时在卡片内横向滚动（`webapp/styles/mermaid.css:62-80`）；中文标签经字体栈正常显示（`components/mermaid-block.tsx:109`）；图不产生标题，因此不会进入任何按标题组织的大纲（围栏只产出 `<pre>`/`<div>` 占位对，不产出 `h1`-`h6`，见 `lib/mermaid-renderer.ts:44-57`）。依赖 `mermaid` 11.12.1（MIT）已登记于 `release/dependency-licenses.json`。 |
 | Markdown 数学公式（KaTeX，行内 `$…$`、块级 `$$…$$`、```` ```math ```` 代码块） | ✅ | 与 Mermaid 同一条管线：行内经 marked 扩展 `webuiMath` 识别 `$…$`/`$$…$$`，`math` 代码块经语言→渲染器注册表分发（`webapp/lib/math-renderer.ts`，导入时自注册），两类围栏互不干扰。单个 `$` 仅在存在同 行闭合定界符、内容不以数字开头时才视为公式——`成本 $5 and $10`、`$HOME`、未闭合的 `$` 均按普通文本显示。公式无法解析时降级为原始写法的代码样式（行内降级 `<code class="inline-code">`，代码块降级为普通代码块），页面绝不白屏。KaTeX 以 `output: "html"` 运行（只产出 `span`/`svg`/`path`，清洗白名单按固定属性集放行；`<math>`/MathML 仍为整体丢弃标签），`trust: false`（`\href` 只显示红色警示文字，不会成为链接）。内联 `style` 仅在 `span` 上保留且值须通过 `isSafeStyleValue` 校验——禁止括号（杜绝 `url()`/`expression()`），`position`/`background`/`behavior` 直接拒绝；`components/markdown-html.tsx` 将 style 属性解析为 React 样式对象（`parseInlineStyle`，React 不接受字符串 style）。样式表 vendored 于 `webapp/styles/katex.css`（源自 `katex/dist/katex.min.css`，`@font-face` 指向 `/fonts/katex/…`），由 `app/layout.tsx` 加载；字体（60 个文件 + MIT 许可声明）vendored 于 `webapp/public/fonts/katex/`。公式为继承文字色的内容，深浅主题均正常、无需重渲染。已知成本：`katex` JS 随前端主包加载，不像 mermaid 懒加载（数学管线是同步 `renderToString`）。依赖 `katex` 0.18.7（MIT）已登记于 `release/dependency-licenses.json`。测试：`webapp/test/markdown-math.test.ts`。 |
 | 运行中取消 | ✅ | acp `session/cancel` 以 notification 形式发送，并钉在该 cid 的活动子进程上（`/api/protocol/cancel` → `server/lib/mcode-rpc.js#cancelSession`）。只有当 notification 无法投递时，才会走硬杀兜底（`/api/stop` → SIGTERM/SIGKILL）。acp 会话在排空前可能还会再发出几个事件。 |
@@ -115,6 +118,7 @@ CI 会对上述每一个名称是否出现在本文档中进行断言
 | 按工作区显示 git 状态（分支、是否脏） | ⚠ | 尽力而为；服务器在工作区变更时 shell 执行一次 `git status`。错误被静默吞掉 → 徽标显示 "—"。 |
 | 目录浏览器中的符号链接解析 | ❌ | `fs.readdir(..., {withFileTypes:true})` 将符号链接返回为 `Dirent`；webui 将它们显示为文件。尚无跟随符号链接的选项。 |
 | WSL 路径支持 | ❌ | `/api/workspace/browse` 使用 `path.join`，在 Windows 上能识别 `\\`，但不会转换 WSL 的 `\\wsl$\…` 路径 |
+| 有界的工作区搜索（slice 19a/19b） | ✅ | `GET /api/fs/search`（`server/lib/fs-search.js#searchWorkspace`）。与其它 `/api/fs/*` 同一道围栏；深度/节点/耗时/匹配数有预算，超限返回 `truncated:true` + `truncatedReason` 而非静默。`node_modules`、`.git` 不可覆盖跳过；凭据命中以 `credential:true` 标记、不省略也不返回内容（只给路径与类型）。文件树过滤先查已加载内存树、零命中才发请求，因此未加载目录也能搜到。 |
 
 ## 7. 会话
 
@@ -172,6 +176,7 @@ CI 会对上述每一个名称是否出现在本文档中进行断言
 | 会话骨架屏 + 流式活动指示（工单 U8） | ✅ | 冷启动 `!state` 分支渲染 `TranscriptSkeleton`（按真实消息行形状铺 shimmer 占位条，`webapp/components/loading-states.tsx`）；流式尾部的活动指示（`ActivityPulse`）在 `running.active` 期间显示三点加载动画加一条 shimmer 条；`prefers-reduced-motion: reduce` 下所有动画类显式静止（`webapp/app/globals.css`）。测试：`webapp/test/loading-skeleton.test.ts`。 |
 | 自定义 CSS 主题 | ❌ | 没有主题加载器；需要一套 CSS 变量系统 |
 | 用户自定义热键 | ❌ | 快捷键是硬编码的 |
+| 四列布局（侧栏 · 对话 · 预览 · 树）（slice 17 + 21） | ✅ | `webapp/components/workspace-columns.tsx`。对话列在有固定列可见时于 `[280,768]` px 弹性；两个按需列都折叠时吃满剩余。预览与树列按需出现、最后一个同角色标签关闭即自动收起（`syncColumnVisibility`）。面按 `columnRoleForKind` 分流：`file:<path>`/浏览器在预览列，`files`/`git`/`tasks`/`搜索`/`plugins` 在树列。 |
 
 ## 11. 网络与访问控制
 
@@ -190,6 +195,7 @@ CI 会对上述每一个名称是否出现在本文档中进行断言
 | HTTPS | ⚠ | v2.0.0（lease C03）——HTTPS 本身需要反向代理；已在 `docs/HTTPS-REVERSE-PROXY.md`（387 行，含 nginx / caddy / Traefik 2 配置及 SSE 长连接注意事项）中**完整记录**。webui 无代码改动。 |
 | mTLS / 客户端证书 | ❌ | 同上；文档见 `docs/HTTPS-REVERSE-PROXY.md` |
 | 速率限制 | ✅ | v2.0.0（lease C03）：`server/lib/rate-limit.js`（252 行）——按 IP 的令牌桶，默认 60 次/分钟 + 100 突发容量 + 令牌持有者 2× 倍率。路由器门禁 4 在超限时返回 429。`lib-rate-limit.test.js`（339 行，21 个单元测试）。 |
+| 凭据文件预览守卫（slice 16） | ✅ | 按文件名匹配 `.env`/`.env.*`/`*.pem`/`*.key`/`id_*` SSH 密钥/`known_hosts`/`authorized_keys`/`.npmrc`/`.pypirc`/`.netrc`/`.pgpass`/`credentials*` 及备份后缀集，`GET /api/fs/read-file` 默认 `403 {code:"credential"}`，加 `?confirm=1` 才放行。谓词（`server/lib/credential-file.js`）与 `webapp/lib/credential-file.ts` 逐字镜像、同夹具测试防漂移；`GET /api/fs/search` 复用同谓词、命中以 `credential:true` 标记但不返回内容；slice 27 扩到写侧（`POST /api/fs/write` 同样默认拒绝）。按名匹配因此**不防硬链接别名**（同 inode 的另一名字绕过），符号链接已用 `realpathSync` 解析。 |
 
 ## 12. 运维
 

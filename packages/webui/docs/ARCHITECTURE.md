@@ -216,6 +216,8 @@ Interactive surfaces and engine-side modules — who owns what:
 | **AGENTS.md** | `agent-modules/system-reminder` injects it into the system prompt at session start (project instructions, project memory) | invisible in chat; visible in the trajectory studio (`/trajectory/`, session events) | nothing special — it shapes model behavior |
 | **Thinking (思维链)** | model emits `agent_thought_chunk` | `kind:'thought'` → `▲` line | collapsible thinking block (escaped text) |
 | **Builtin tools** (Bash/Read/Write/Edit/…) | agent-runtime executes with permission presets | `tool_call` / `tool_call_update` → `→ name` + indented output lines | tool block, auto-collapse, file chips |
+| **Tool-call id marker** `##tc:<toolCallId>` | `mcode-acp.js#applyToolUpdate` writes it immediately before each `→ name` header | one chat line `##tc:<id>`, consumed by `decodeTranscript` | attaches `toolCallId` to the tool block so `ToolCard` matches `recentSubagents[]` by id (not by tool name); never reaches the chat body |
+| **Processed-duration marker** `§§ processed_duration=Nms` | prompt finalise in `mcode-{acp,exec}.js#finalize` | one chat line `§§ processed_duration=Nms`, consumed by `decodeTranscript` | attaches `processedDuration` to the assistant block for the `turn_process_disclosure` bar; never reaches the chat body |
 | **MCP tools** | engine spawns configured MCP servers (`mcp.json`); calls surface as `mcp__server__tool` | same tool_call wire | same tool block (server·tool naming) |
 | **Skills** | `/skill` or prompt triggers `agent-modules/skills` → injected as system-reminder content | slash catalog from `available_commands_update`; invocation = normal prompt turn | slash hint UI; skill output = ordinary thought/message/tool stream |
 | **ask_user tool** | engine emits `ask_user` tool call | chat line `→ ask_user {json}` | modal with options/multi-select/Other; answer → `POST /api/send {isAskAnswer:true}` |
@@ -441,6 +443,27 @@ Both expose:
 `NormalizedEvent` is a tagged union (`{type, …}`) with these types:
 `state`, `chat`, `delta`, `tool`, `permission`, `plan`, `ask`,
 `exec`, `usage`. See § 5.
+
+### `agent-team-status.js`
+
+DB → UI status projection for the Agent Team panel. The runtime db's column
+vocabulary is **not** what the UI renders — stored value ≠ display value:
+
+| Source column | Stored values | Note |
+| --- | --- | --- |
+| `local_runtime_sessions.status` | `idle \| interrupted \| aborted \| error` | Narrow; the runtime does not flip this while a session runs a turn — it stays `idle` |
+| `local_runtime_background_tasks.status` (`kind=subagent`) | `running \| succeeded \| failed \| canceled` | The subagent's actual run state |
+
+The UI renders `AGENT_TEAM_STATUS` = `idle \| queued \| running \| waiting \|
+done \| stopped \| failed`. This module is the **only** place that decides the
+mapping (`projectSessionStatus`, `projectTaskStatus`, `projectAgentStatus`);
+raw db values never reach the wire. `projectAgentStatus` composes the two — the
+task row's `running` wins (the session column alone can never report `running`),
+a terminal task projection beats a stuck-`idle` session, else the session
+projection. The TUI's finer vocabulary (`failed \| waiting \| running \| queued \|
+done \| stopped`) is a projection-layer product, not a stored value; webui does
+not import it but adopts the same shape. Unknown future statuses render as
+`idle`, never a false `running`.
 
 ## 4. The `clientState.state` payload
 

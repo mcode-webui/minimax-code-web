@@ -193,12 +193,12 @@ exec 回合的代价——以下都是当前真实存在的行为，选择权限
 
 两点边界如实说明：
 
-- 跨设备/多标签同步时，控件状态可能短暂显示引擎的原始值（形如 `MiniMax-M3 · thinking`），这是引擎会话回传的真实状态，数秒内恢复。
+- 跨设备/多标签同步时，控件状态可能短暂显示引擎的原始值（形如 `MiniMax-M3 · thinking`），这是引擎会话回传的真实状态。本地刚做的选择有约 4 秒的优先期（期间不被引擎回传覆盖），优先期过后才同步跨端变更，通常数秒内恢复。
 - 回合正在运行时切换档位，对当前回合不生效，下个回合按新档位执行（与模型切换同一语义）。
 
 还有一条给运维的规则：如果操作者在供应商配置里手工写了与内置模型同名的条目，以操作者的条目为准，档位也只显示操作者写明的那些——内置的自动识别不再叠加。
 
-接口契约（字段、两条下发通道、会话启动时的重放规则）见 [`webui.md`](webui.md) 的 Thinking levels 一节。
+接口契约（字段、两条下发通道、下发顺序——**先模型后档位**，顺序反了档位会被引擎拒掉、表现为"改了没生效"——与会话启动时的重放规则）见 [`webui.md`](webui.md) 的 Thinking levels 一节。
 
 ## 切换会话会带工作区一起切（webui-parity ticket 39）
 
@@ -620,6 +620,17 @@ slice 16 的预览守卫一致：服务会向局域网广播地址，能在网�
 是直观的清单；旧派发器仅保留两条 SSE（`/api/events`、`/api/alerts`）
 以及静态与 trajectory 挂载。
 
+`/api/events` 上除状态快照外还有命名帧——`needs_authorization`、
+`authorization_decided`、`token.first_run`、`auth.token_rotated`、
+`providers.updated`、`session-tree-changed`、`heartbeat`。
+`session-tree-changed`（Agent Team）不带载荷（`data: {}`）：子代理记录
+落库时触发，让侧边栏去重新拉 `GET /api/session-tree`，并且刻意绕过推送
+合并器，稀疏的树变更不会被丢。父会话的子代理列表随状态快照以
+`recentSubagents[]`（`{toolCallId, sessionId, agentName, status,
+createdAtMs, updatedAtMs}`）下发，按 `toolCallId` 幂等、上限 32 条、
+5 分钟 TTL；聊天卡片按 `toolCallId`（即 `##tc:` 标记）而非工具名把
+`→ task` 行对到对应条目。
+
 ### Hono 直接持有（`server/app.js` 的 `OWNED_ROUTES`）
 
 | 方法 | 路径 | 处理文件 | 说明 |
@@ -638,7 +649,7 @@ slice 16 的预览守卫一致：服务会向局域网广播地址，能在网�
 | `GET` | `/api/acp-sessions` | `routes/sessions.js#handleAcpSessions` | mcode acp 会话列表 |
 | `GET` | `/api/acp-session-title` | `routes/sessions.js#handleAcpSessionTitle` | `?sid=…` 标题助手 |
 | `GET` | `/api/sessions/:id/export` | `routes/export.js` | `?format=md\|json[&download=true]`；非法 format → `400`；authorize 拒绝 → `403`；找不到 → `404` |
-| `POST` | `/api/send` | `routes/chat.js#handleSend` | 火即弃；`200 {ok}`；`400 content required`；`409 {reason:"cid-busy"\|"session-busy"\|"at-capacity", running?, limit?}` |
+| `POST` | `/api/send` | `routes/chat.js#handleSend` | 火即弃；`200 {ok}`；`400 content required`；`409 {reason:"cid-busy"\|"session-busy"\|"at-capacity", running?, limit?}`；空闲看门狗在连续静默 `MCODE_WEBUI_PROMPT_IDLE_TIMEOUT`（默认 120 秒）后中止该回合 |
 | `POST` | `/api/stop` | `routes/chat.js#handleStop` | `200 {ok, wasRunning, cancelled, hardKilled, note}` |
 | `POST` | `/api/cmd` | `routes/chat.js#handleCmd` | webui 按钮命令 |
 | `POST` | `/api/usage` | `routes/usage.js#handleUsage` | 记录 + 投影 |
@@ -667,8 +678,8 @@ slice 16 的预览守卫一致：服务会向局域网广播地址，能在网�
 | `POST` | `/api/settings` | `routes/settings.js#handlePostSettings` | 事件日志写失败 → `500 {error:"audit write failed"}`；handler 内 B03 authorize 守门 |
 | `POST` | `/api/auth/decision` | `lib/authorize.js#handleAuthDecision` | `{requestId, approve}`；`200` 已决；`404` 无该挂起请求；`400` 非法 body；请求处理后通过删除已决条目实现幂等 |
 | `POST` | `/api/upload` | `routes/upload.js` | 必须是 `multipart/form-data`；否则 `400`；`413 {code:"UPLOAD_REQ_TOO_LARGE"\|"UPLOAD_FILE_TOO_LARGE"\|"UPLOAD_QUOTA_EXCEEDED"}`；`400 {code:"UPLOAD_MALFORMED"\|"UPLOAD_ABORTED"}`；先写 `upload.create.intent` 后写 `upload.create`，全部 fail-closed；`200 {ok, path, name, size}` |
-| `GET` | `/api/models` | `routes/model.js#handleGetModels` | 引擎模型 + webui 标签/限额投影 |
-| `POST` | `/api/set-model` | `routes/model.js#handleSetModel` | `{model}`；未知 → `400` |
+| `GET` | `/api/models` | `routes/model.js#handleGetModels` | 引擎模型 + webui 标签/限额投影；`thinkingLevels` 取自引擎两种思考 schema（档位原样、可开关内建为 `["off","on"]`）。响应含 `groups`（按供应商分组，供选择器分节）、`current`（当前模型 id，无则 `null`）、`currentThinking`（当前思考等级）、`models`（扁平列表）与 `source`（目录来源）——字段全表见 [`webui.md`](webui.md) |
+| `POST` | `/api/set-model` | `routes/model.js#handleSetModel` | `{model, thinking?}`；仅当 `model` 为空**且**未传 `thinking` 时 → `400`（缺参数，不是"未知模型"——不存在的模型名照样记录下发，接口不校验名字）；effort 模型下发 model+`thinkingEffort`，变体模型把开/关档折进一次模型选择 |
 | `POST` | `/api/permissions` | `routes/model.js#handleSetPermissions` | `{mode}`；映射到引擎 `WEBUI_TO_MCODE_PERMISSION` |
 | `GET` | `/api/permissions-modes` | `routes/model.js#handleListPermissionModes` | 引擎当前的 `availableModes` |
 | `POST` | `/api/answer` | `routes/model.js#handleAnswer` | ask-user 模态答案 |
