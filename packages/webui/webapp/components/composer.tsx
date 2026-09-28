@@ -299,14 +299,14 @@ export function Composer({
     if (!thinking) return baseLabel;
     // Ticket 11 stale-suffix guard: the chip only shows "· level"
     // when the active model actually supports the recorded level.
-    // Switching from M3 (thinkingLevels=[off,low,medium,high]) with
-    // a recorded "高" to M2 Lite (no thinkingLevels) used to render
-    // "MiniMax-M2 Lite · 高" — the engine rejects 高 for M2 Lite,
-    // and the stale suffix misled the user about what the next turn
-    // would do. Hiding the suffix when the level is unsupported is
-    // the display half of the fix; the wire half (clearing the
-    // level when the new model doesn't support it) lives in the
-    // `onPick` callback below.
+    // Switching from M3 (thinkingLevels=["off","on"], ticket 36)
+    // with a recorded "高" to M2 Lite (no thinkingLevels) used to
+    // render "MiniMax-M2 Lite · 高" — the engine rejects 高 for
+    // M2 Lite, and the stale suffix misled the user about what the
+    // next turn would do. Hiding the suffix when the level is
+    // unsupported is the display half of the fix; the wire half
+    // (clearing the level when the new model doesn't support it)
+    // lives in the `onPick` callback below.
     const activeModel = models.find((m) => m.id === value);
     const supported = activeModel?.thinkingLevels ?? [];
     if (thinking && !supported.includes(thinking)) return baseLabel;
@@ -1807,18 +1807,23 @@ function modalityBadgeKey(modality: string): MessageKey {
 /**
  * Map a server-supplied thinking level to its i18n key.
  *
- * The engine's `thinkingEffort` config option accepts `off` / `low` /
- * `medium` / `high` (see packages/tui/src/acp/control-state.ts), and
- * the providers catalogue carries the same shape plus the model's
- * own flavours (`max` / `xhigh` / `minimal` / `none`). Unknown
- * levels fall through to no tag — the picker still shows them but the
- * chip label stays clean.
+ * Two level vocabularies reach this map (ticket 36):
+ *   - effort levels (`off` / `low` / `medium` / `high` / `xhigh` /
+ *     `max` / `minimal` / `none`) from provider catalogues and the
+ *     engine's `thinkingEffort` option;
+ *   - the two-state toggle (`off` / `on`) projected from switchable
+ *     builtin MiniMax models (MiniMax-M3) — "on" is the pair of
+ *     "off", never a depth, so it gets its own label.
+ * Unknown levels fall through to no tag — the picker still shows
+ * them but the chip label stays clean.
  */
 function thinkingLevelKey(level: string): MessageKey | null {
   switch (level) {
     case "off":
     case "none":
       return "thinkingPicker.off";
+    case "on":
+      return "thinkingPicker.on";
     case "low":
       return "thinkingPicker.low";
     case "minimal":

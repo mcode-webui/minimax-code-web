@@ -1373,3 +1373,364 @@ describe("handleGetModels — ticket 09-02: grouping attribution", () => {
     );
   });
 });
+
+// ============================================================
+// Ticket 36 — builtin MiniMax models get thinking levels.
+//
+// The engine materialises its builtin catalogue into the engine
+// config.yaml under `provider.minimax.models` with the variant-style
+// thinking schema (thinking_config + variants), while the webui's
+// /api/models only projected the custom_provider shape
+// (`thinking.effortOptions`). Result: every `minimax_api` builtin
+// carried NO thinkingLevels and the composer never mounted the
+// thinking control for MiniMax's own models.
+//
+// These tests pin the fixed projection AND the wire channel:
+//   - switchable (M3) → thinkingLevels ["off","on"], driven through
+//     the engine's VARIANT model-selection values (m:...:v:thinking /
+//     m:...:v:none-thinking), because the engine rejects
+//     `thinkingEffort` for models without effortOptions
+//     ("Thinking effort is not advertised for the selected model").
+//   - forced_on + effortOptions (M3.1-Flash) → effortOptions verbatim
+//     through the existing thinkingEffort channel.
+//   - forced_on with no effort dimension (M2.7 on a materialised
+//     host) → NO thinkingLevels — a control would be a no-op.
+// ============================================================
+
+/**
+ * Like withEngineConfig but takes a full config document (not just
+ * custom_provider) — ticket 36 fixtures need `provider.minimax.models`
+ * and `custom_provider` side by side in one file.
+ */
+async function withEngineConfigDoc(doc, body) {
+  const path = join(_engineDataDir, "config.yaml");
+  writeFileSync(path, yaml.dump(doc), "utf8");
+  // `return await` — an async body must be HELD inside the try, or the
+  // finally deletes the fixture the moment the body first awaits
+  // (returning the pending promise runs the finally immediately).
+  try {
+    return await body();
+  } finally {
+    try { rmSync(path, { force: true }); } catch {}
+  }
+}
+
+/** The engine's materialised builtin tree, verbatim shapes. */
+const BUILTIN_MINIMAX_TREE = {
+  minimax: {
+    models: {
+      "MiniMax-M3": {
+        name: "MiniMax-M3",
+        reasoning: true,
+        thinking_config: { mode: "switchable", default_value: "true" },
+        variants: {
+          "none-thinking": { thinking: { type: "disabled" } },
+          thinking: { thinking: { type: "adaptive" } },
+        },
+      },
+      "MiniMax-M3.1-Flash-Preview": {
+        name: "M3.1-Flash-Preview",
+        reasoning: true,
+        thinking_config: { mode: "forced_on" },
+        thinking: {
+          effortOptions: ["default", "low", "medium", "high", "xhigh", "max"],
+          defaultEffort: "default",
+        },
+        variants: {
+          "none-thinking": { thinking: { type: "disabled" } },
+          thinking: { thinking: { type: "adaptive" } },
+        },
+      },
+      "MiniMax-M2.7": {
+        name: "MiniMax-M2.7",
+        reasoning: true,
+        thinking_config: { mode: "forced_on" },
+      },
+    },
+  },
+};
+
+describe("handleGetModels — builtin thinkingLevels (ticket 36)", () => {
+  test("switchable builtin (MiniMax-M3) carries thinkingLevels [off, on] — not a fabricated depth scale", () => {
+    setBuiltinModelsMock(["MiniMax-M3", "MiniMax-M3.1-Flash-Preview", "MiniMax-M2.7"]);
+    return withEngineConfigDoc({ provider: BUILTIN_MINIMAX_TREE }, () => {
+      const cs = fakeCs();
+      const res = fakeRes();
+      modelRoute.handleGetModels(null, res, { cs, cid: "cid-t36-1" });
+      const body = JSON.parse(res._body);
+      const m3 = body.models.find((m) => m.id === "minimax_api/MiniMax-M3");
+      assert.ok(m3, "builtin M3 entry present");
+      assert.deepEqual(m3.thinkingLevels, ["off", "on"]);
+    });
+  });
+
+  test("forced_on + effortOptions builtin (M3.1-Flash) carries the engine's efforts verbatim", () => {
+    setBuiltinModelsMock(["MiniMax-M3", "MiniMax-M3.1-Flash-Preview", "MiniMax-M2.7"]);
+    return withEngineConfigDoc({ provider: BUILTIN_MINIMAX_TREE }, () => {
+      const cs = fakeCs();
+      const res = fakeRes();
+      modelRoute.handleGetModels(null, res, { cs, cid: "cid-t36-2" });
+      const body = JSON.parse(res._body);
+      const flash = body.models.find((m) => m.id === "minimax_api/MiniMax-M3.1-Flash-Preview");
+      assert.ok(flash, "builtin M3.1-Flash entry present");
+      assert.deepEqual(flash.thinkingLevels, ["default", "low", "medium", "high", "xhigh", "max"]);
+    });
+  });
+
+  test("forced_on with no effort dimension (M2.7) gets NO thinkingLevels — counter-example", () => {
+    // The control must not appear for a model with nothing to choose.
+    // This is the ticket's honesty rule: never fabricate a control.
+    setBuiltinModelsMock(["MiniMax-M3", "MiniMax-M3.1-Flash-Preview", "MiniMax-M2.7"]);
+    return withEngineConfigDoc({ provider: BUILTIN_MINIMAX_TREE }, () => {
+      const cs = fakeCs();
+      const res = fakeRes();
+      modelRoute.handleGetModels(null, res, { cs, cid: "cid-t36-3" });
+      const body = JSON.parse(res._body);
+      const m27 = body.models.find((m) => m.id === "minimax_api/MiniMax-M2.7");
+      assert.ok(m27, "builtin M2.7 entry present");
+      assert.equal(m27.thinkingLevels, undefined, "no thinkingLevels on a no-dimension model");
+    });
+  });
+
+  test("engine-session entries in variant wire form also carry thinkingLevels", () => {
+    // applyConfigOptionUpdate mirrors the engine's wire-form
+    // currentValue into cs.model.name outside the pick window; the
+    // composer matches the active model by id, so the ENGINE-sourced
+    // entries must be annotated too or the control would disappear
+    // after a cross-client change.
+    setBuiltinModelsMock([]);
+    return withEngineConfigDoc({ provider: BUILTIN_MINIMAX_TREE }, () => {
+      const cs = fakeCs(undefined, [
+        {
+          type: "select",
+          id: "model",
+          name: "Model",
+          currentValue: "m:minimax_api:MiniMax-M3:v:thinking",
+          options: [
+            { value: "m:minimax_api:MiniMax-M3:v:thinking", name: "MiniMax-M3 · thinking" },
+            { value: "m:minimax_api:MiniMax-M3:v:none-thinking", name: "MiniMax-M3 · none-thinking" },
+          ],
+        },
+      ]);
+      const res = fakeRes();
+      modelRoute.handleGetModels(null, res, { cs, cid: "cid-t36-4" });
+      const body = JSON.parse(res._body);
+      const on = body.models.find((m) => m.id === "m:minimax_api:MiniMax-M3:v:thinking");
+      const off = body.models.find((m) => m.id === "m:minimax_api:MiniMax-M3:v:none-thinking");
+      assert.ok(on && off, "both variant wire entries present");
+      assert.deepEqual(on.thinkingLevels, ["off", "on"]);
+      assert.deepEqual(off.thinkingLevels, ["off", "on"]);
+    });
+  });
+
+  test("custom_provider thinkingLevels stay verbatim next to the builtin tree — regression", () => {
+    setBuiltinModelsMock(["MiniMax-M3"]);
+    return withEngineConfigDoc(
+      {
+        provider: BUILTIN_MINIMAX_TREE,
+        custom_provider: {
+          "deepseek-cn": {
+            kind: "custom",
+            enabled: true,
+            api: "anthropic-messages",
+            options: { apiKey: "sk-x", baseURL: "https://x" },
+            models: {
+              "deepseek-flash": {
+                name: "DeepSeek V4.1 Flash",
+                thinking: { effortOptions: ["max", "high", "low", "none"] },
+              },
+            },
+          },
+        },
+      },
+      () => {
+        const cs = fakeCs();
+        const res = fakeRes();
+        modelRoute.handleGetModels(null, res, { cs, cid: "cid-t36-5" });
+        const body = JSON.parse(res._body);
+        const ds = body.models.find((m) => m.id === "deepseek-cn/deepseek-flash");
+        assert.ok(ds, "custom_provider model present");
+        // Item-by-item identical to the engine's effortOptions — the
+        // ticket-06 path must not have moved.
+        assert.deepEqual(ds.thinkingLevels, ["max", "high", "low", "none"]);
+        const m3 = body.models.find((m) => m.id === "minimax_api/MiniMax-M3");
+        assert.deepEqual(m3.thinkingLevels, ["off", "on"]);
+      },
+    );
+  });
+
+  test("no engine config → builtin entries stay metadata-free (fresh-install regression)", () => {
+    setBuiltinModelsMock(["MiniMax-M3"]);
+    const cs = fakeCs();
+    const res = fakeRes();
+    modelRoute.handleGetModels(null, res, { cs, cid: "cid-t36-6" });
+    const body = JSON.parse(res._body);
+    const m3 = body.models.find((m) => m.id === "minimax_api/MiniMax-M3");
+    assert.ok(m3);
+    assert.equal(m3.thinkingLevels, undefined);
+  });
+});
+
+describe("handleSetModel — variant-channel wire (ticket 36)", () => {
+  /** Engine model option advertising M3 in variant wire form (what uniqueModelValues emits). */
+  const VARIANT_MODEL_OPTION = {
+    type: "select",
+    id: "model",
+    name: "Model",
+    currentValue: "m:minimax_api:MiniMax-M3:v:thinking",
+    options: [
+      { value: "m:minimax_api:MiniMax-M3:v:thinking", name: "MiniMax-M3 · thinking" },
+      { value: "m:minimax_api:MiniMax-M3:v:none-thinking", name: "MiniMax-M3 · none-thinking" },
+      { value: "m:minimax_api:MiniMax-M2.7:u", name: "MiniMax-M2.7" },
+    ],
+  };
+
+  test("model + thinking:'off' on a switchable builtin → ONE model push carrying the none-thinking variant, no thinkingEffort push", () => {
+    const calls = [];
+    registerRpcMock({
+      setConfigOption: async (_sid, configId, value) => {
+        calls.push({ configId, value });
+        return { ok: true, data: {} };
+      },
+    });
+    return withEngineConfigDoc({ provider: BUILTIN_MINIMAX_TREE }, async () => {
+      const cs = fakeCs("minimax_api/MiniMax-M3", [VARIANT_MODEL_OPTION]);
+      cs.mcodeSessionId = "mvs_t36";
+      const res = fakeRes();
+      const { existsSync: ex1 } = await import("node:fs");
+      await modelRoute.handleSetModel(
+        fakeReq({ model: "minimax_api/MiniMax-M3", thinking: "off" }),
+        res,
+        { cs, cid: "cid-t36-w1" },
+      );
+      const body = JSON.parse(res._body);
+      assert.equal(body.ok, true);
+      assert.equal(cs.model.thinking, "off");
+      assert.equal(calls.length, 1, "variant channel folds thinking into the model selection");
+      assert.deepEqual(calls[0], {
+        configId: "model",
+        value: "m:minimax_api:MiniMax-M3:v:none-thinking",
+      });
+      assert.equal(body.thinkingSynced, true, "thinking carried by the model push");
+    });
+  });
+
+  test("thinking-only update flips the variant: {thinking:'on'} → model push with v:thinking", () => {
+    const calls = [];
+    registerRpcMock({
+      setConfigOption: async (_sid, configId, value) => {
+        calls.push({ configId, value });
+        return { ok: true, data: {} };
+      },
+    });
+    return withEngineConfigDoc({ provider: BUILTIN_MINIMAX_TREE }, async () => {
+      const cs = fakeCs("minimax_api/MiniMax-M3", [VARIANT_MODEL_OPTION]);
+      cs.mcodeSessionId = "mvs_t36";
+      cs.model.thinking = "off";
+      const res = fakeRes();
+      await modelRoute.handleSetModel(fakeReq({ thinking: "on" }), res, { cs, cid: "cid-t36-w2" });
+      const body = JSON.parse(res._body);
+      assert.equal(cs.model.name, "minimax_api/MiniMax-M3", "recorded name untouched");
+      assert.equal(cs.model.thinking, "on");
+      assert.equal(calls.length, 1);
+      assert.deepEqual(calls[0], { configId: "model", value: "m:minimax_api:MiniMax-M3:v:thinking" });
+      assert.equal(body.thinkingSynced, true);
+    });
+  });
+
+  test("model-only pick on a switchable builtin uses the engine default variant (default_value 'true' → thinking)", () => {
+    const calls = [];
+    registerRpcMock({
+      setConfigOption: async (_sid, configId, value) => {
+        calls.push({ configId, value });
+        return { ok: true, data: {} };
+      },
+    });
+    return withEngineConfigDoc({ provider: BUILTIN_MINIMAX_TREE }, async () => {
+      const cs = fakeCs(undefined, [VARIANT_MODEL_OPTION]);
+      cs.mcodeSessionId = "mvs_t36";
+      cs.model.thinking = "";
+      const res = fakeRes();
+      await modelRoute.handleSetModel(fakeReq({ model: "minimax_api/MiniMax-M3" }), res, {
+        cs,
+        cid: "cid-t36-w3",
+      });
+      const body = JSON.parse(res._body);
+      assert.equal(body.mcodeSynced, true);
+      assert.equal(calls.length, 1);
+      assert.deepEqual(calls[0], { configId: "model", value: "m:minimax_api:MiniMax-M3:v:thinking" });
+      // No user-chosen level → nothing to report as thinking-synced.
+      assert.equal(body.thinkingSynced, false);
+    });
+  });
+
+  test("effort-channel builtin (M3.1-Flash) keeps the model→thinkingEffort two-push contract", () => {
+    const calls = [];
+    registerRpcMock({
+      setConfigOption: async (_sid, configId, value) => {
+        calls.push({ configId, value });
+        return { ok: true, data: {} };
+      },
+    });
+    return withEngineConfigDoc({ provider: BUILTIN_MINIMAX_TREE }, async () => {
+      const cs = fakeCs(undefined, [
+        {
+          type: "select",
+          id: "model",
+          name: "Model",
+          currentValue: "m:minimax_api:MiniMax-M3.1-Flash-Preview:u",
+          options: [
+            { value: "m:minimax_api:MiniMax-M3.1-Flash-Preview:u", name: "M3.1-Flash-Preview" },
+          ],
+        },
+      ]);
+      cs.mcodeSessionId = "mvs_t36";
+      const res = fakeRes();
+      await modelRoute.handleSetModel(
+        fakeReq({ model: "minimax_api/MiniMax-M3.1-Flash-Preview", thinking: "high" }),
+        res,
+        { cs, cid: "cid-t36-w4" },
+      );
+      const body = JSON.parse(res._body);
+      assert.equal(body.thinkingSynced, true);
+      assert.equal(calls.length, 2, "model first, then thinkingEffort — engine contract");
+      assert.deepEqual(calls[0], { configId: "model", value: "m:minimax_api:MiniMax-M3.1-Flash-Preview:u" });
+      assert.deepEqual(calls[1], { configId: "thinkingEffort", value: "high" });
+    });
+  });
+
+  test("third-party (config) model with effort levels keeps the two-push contract — regression", () => {
+    const calls = [];
+    registerRpcMock({
+      setConfigOption: async (_sid, configId, value) => {
+        calls.push({ configId, value });
+        return { ok: true, data: {} };
+      },
+    });
+    return withEngineConfigDoc({ provider: BUILTIN_MINIMAX_TREE }, async () => {
+      const cs = fakeCs(undefined, [
+        {
+          type: "select",
+          id: "model",
+          name: "Model",
+          currentValue: "m:custom_provider%3Azai-pro:glm-5.3:u",
+          options: [
+            { value: "m:custom_provider%3Azai-pro:glm-5.3:u", name: "glm-5.3" },
+          ],
+        },
+      ]);
+      cs.mcodeSessionId = "mvs_t36";
+      const res = fakeRes();
+      await modelRoute.handleSetModel(
+        fakeReq({ model: "zai-pro/glm-5.3", thinking: "high" }),
+        res,
+        { cs, cid: "cid-t36-w5" },
+      );
+      const body = JSON.parse(res._body);
+      assert.equal(body.thinkingSynced, true);
+      assert.equal(calls.length, 2);
+      assert.deepEqual(calls[0], { configId: "model", value: "m:custom_provider%3Azai-pro:glm-5.3:u" });
+      assert.deepEqual(calls[1], { configId: "thinkingEffort", value: "high" });
+    });
+  });
+});

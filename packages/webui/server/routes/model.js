@@ -15,9 +15,12 @@ import { getBuiltinModelsFromMcode } from "../lib/models.js";
 import { loadProvidersConfig } from "../lib/providers-config.js";
 import {
   readEngineCatalogue,
+  readEngineBuiltinThinking,
+  parseEngineModelWireValue,
+  variantChannelFor,
+  resolveModelId,
   mergeEngineAndWebuiProviders,
 } from "../lib/engine-catalogue.js";
-import { resolveModelId } from "../lib/mcode-acp.js";
 import { webuiModeToLabel } from "../lib/interaction/permission-presets.js";
 import { readJson } from "../lib/read-json.js";
 
@@ -146,13 +149,17 @@ function webuiFullModelId(providerKey, modelId) {
  * (the engine configOptions list is empty before the first session
  * event lands); the caller falls back to the recorded id and the
  * next session event re-attempts the apply via `applyRecordedModel`.
+ *
+ * `resolveOpts` (ticket 36) passes straight through to
+ * `resolveModelId` — today only `preferVariant`, used to fold a
+ * switchable builtin's on/off level into the model selection.
  */
-function translateWebuiModelIdToEngineValue(cs, modelId) {
+function translateWebuiModelIdToEngineValue(cs, modelId, resolveOpts) {
   if (!modelId || typeof modelId !== "string") return null;
-  const opts = Array.isArray(cs && cs.configOptions) ? cs.configOptions : [];
-  const modelOption = opts.find((o) => o && o.id === "model");
+  const allOpts = Array.isArray(cs && cs.configOptions) ? cs.configOptions : [];
+  const modelOption = allOpts.find((o) => o && o.id === "model");
   if (!modelOption) return null;
-  return resolveModelId(modelId, modelOption);
+  return resolveModelId(modelId, modelOption, resolveOpts);
 }
 
 /**
@@ -191,6 +198,14 @@ export function handleGetModels(_req, res, ctx) {
   const list = [];
   const groups = [];
   const seen = new Set();
+  // Ticket 36 — the engine's materialised builtin tree (provider.
+  // minimax.models) carries the variant-style thinking schema that
+  // /api/models never projected: switchable models became a two-state
+  // ["off","on"] toggle, forced_on+effortOptions models expose the
+  // engine's depth list verbatim, everything else stays metadata-free.
+  // One read serves both annotation sites below (engine-session
+  // entries and the builtin shell).
+  const builtinThinking = readEngineBuiltinThinking();
 
   // 1) Engine session config option — authoritative when present. We keep
   //    its encoded ids verbatim so /api/set-model round-trips. Both `name`
@@ -217,6 +232,16 @@ export function handleGetModels(_req, res, ctx) {
         provider: providerOf(id),
         source: "engine",
       };
+      // Ticket 36: applyConfigOptionUpdate mirrors the engine's
+      // wire-form currentValue into cs.model.name outside the pick
+      // window, and the composer matches the active model by id —
+      // annotate the wire-form entries too so the thinking control
+      // survives a cross-client change.
+      const wire = parseEngineModelWireValue(id);
+      if (wire && wire.providerId === "minimax_api") {
+        const proj = builtinThinking.get(wire.modelId);
+        if (proj) entry.thinkingLevels = [...proj.levels];
+      }
       engineGroup.models.push(entry);
       list.push(entry);
     }
@@ -338,6 +363,16 @@ export function handleGetModels(_req, res, ctx) {
       provider: BUILTIN_PROVIDER,
       source: "builtin",
     };
+    // Ticket 36: attach the engine's thinking metadata for this
+    // builtin. `thinkingLevels` is exactly what the engine's tree
+    // supports — ["off","on"] for a switchable variant toggle, the
+    // engine's effort list when the model has one, and ABSENT for a
+    // forced_on model with nothing user-settable (the composer then
+    // mounts no control, by design). A config-layer entry with the
+    // same id has already taken the slot (seen dedupe) — the
+    // operator's config wins wholesale, unchanged rule.
+    const proj = builtinThinking.get(m);
+    if (proj) entry.thinkingLevels = [...proj.levels];
     list.push(entry);
     builtinGroup.models.push(entry);
   }
@@ -461,12 +496,40 @@ export async function handleSetModel(req, res, ctx) {
   let mcodeSynced = false;
   let thinkingSynced = false;
   let warning = sid ? null : "no mcode session yet — recorded for the next one";
+  // Ticket 36 — variant channel. Switchable builtin models (the
+  // engine's `thinking_config.mode: switchable` + variant tree,
+  // e.g. MiniMax-M3) have NO engine effort vocabulary: the engine
+  // rejects every `thinkingEffort` value for them ("Thinking effort
+  // is not advertised for the selected model"). Their on/off level
+  // rides the MODEL selection instead — the engine advertises such
+  // models only as variant wire forms (`m:...:v:thinking` /
+  // `m:...:v:none-thinking`). When the target model rides the
+  // variant channel, one model push carries both the model and the
+  // level; the thinkingEffort push below is skipped entirely.
+  const variantTarget = modelId || (cs.model && cs.model.name) || "";
+  const variantPlan = sid ? variantChannelFor(variantTarget) : null;
   // Engine contract: model first, then thinkingEffort (the engine
   // rejects a thinkingEffort set when no model is selected). Only push
   // when BOTH the recorded model and the new (or unchanged) thinking
   // are concrete — the engine will validate the level against the
   // selected model's effortOptions and reject unknown values.
-  if (sid) {
+  if (sid && variantPlan) {
+    const level = variantPlan.level(
+      thinkingWasProvided ? thinking : cs.model && cs.model.thinking,
+    );
+    const engineValue =
+      translateWebuiModelIdToEngineValue(cs, variantTarget, {
+        preferVariant: variantPlan.variant[level],
+      }) ?? variantTarget;
+    const r = await setConfigOption(sid, "model", engineValue, ctx.cid);
+    if (modelId) mcodeSynced = r.ok;
+    // "thinking synced" reports the level actually carried by the
+    // push: an explicit pick, or a previously recorded one. An
+    // engine-default variant (no user-chosen level) is not a sync.
+    const carriedLevel = thinkingWasProvided ? !!thinking : !!(cs.model && cs.model.thinking);
+    thinkingSynced = r.ok && carriedLevel;
+    if (!r.ok) warning = r.error;
+  } else if (sid) {
     if (modelId) {
       // The engine wire form is `m:<encodedProvider>:<encodedModel>:u`
       // (see packages/tui/src/acp/control-state.ts#modelConfigValue).
