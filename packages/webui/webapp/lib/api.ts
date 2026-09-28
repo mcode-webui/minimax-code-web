@@ -391,6 +391,12 @@ export interface ModelEntry {
   protocol?: "openai" | "anthropic" | "gemini";
   thinkingLevels?: string[];
   modalities?: string[];
+  /** Context-window choices in tokens (U6), from the engine's
+   *  materialised builtin tree. Absent for models with nothing to
+   *  pick — the composer mounts no control then. */
+  contextWindowOptions?: number[];
+  /** Per-option presentation hints; today only `higher_usage`. */
+  contextWindowOptionHints?: Record<string, string>;
 }
 
 /**
@@ -430,6 +436,10 @@ export interface ModelsPayload {
    *  falling back to `cs.model.thinking`, then `null`). The composer
    *  reads this to highlight the active level in the picker. */
   currentThinking?: string | null;
+  /** The context window in tokens the picker should highlight (U6):
+   *  the recorded `cs.model.contextWindow`, falling back to the
+   *  current model's catalogue `contextLimit`, then `null`. */
+  currentContextWindow?: number | null;
   /** One of `acp-session-config` / `config+mcode-cli-bundle` / `mcode-cli-bundle`. */
   source?: string;
   reason?: string;
@@ -606,23 +616,34 @@ export interface AccountPayload {
 export const getAccount = () => request<AccountPayload>("/api/account");
 
 /**
- * Set the active model and (optionally) the thinking-effort level.
+ * Set the active model and (optionally) the thinking-effort level and
+ * the context-window choice.
  *
- * Body shape: `{ model?: string, thinking?: string }`. The two are
- * independent — a thinking-only update leaves the model alone (the
- * engine contract is "model selected before thinkingEffort"; the
- * server enforces the order at apply time), and a model-only update
+ * Body shape: `{ model?: string, thinking?: string, contextWindow?: number | null }`.
+ * The three are independent — a thinking-only update leaves the model
+ * alone (the engine contract is "model selected before thinkingEffort";
+ * the server enforces the order at apply time), and a model-only update
  * leaves the recorded effort intact so the next session boot re-applies
  * it through `applyRecordedModel`. An empty `thinking` clears the
  * recorded effort (engine's default stands).
+ *
+ * `contextWindow` (U6) is the context-window choice in tokens — one of
+ * the active model's `contextWindowOptions` from /api/models — or
+ * `null` to clear the recorded choice. The server records it in
+ * `cs.model.contextWindow` and echoes it through /api/models'
+ * `currentContextWindow`; the engine's ACP surface has no channel for
+ * it yet, so the picker's radio is a webui-recorded preference (see
+ * server/routes/model.js#handleSetModel for the verified engine-side
+ * boundary).
  */
 export const setModel = (
-  payload: { model?: string; thinking?: string },
+  payload: { model?: string; thinking?: string; contextWindow?: number | null },
 ) =>
   request<{
     ok: boolean;
     model?: string;
     thinking?: string;
+    contextWindow?: number | null;
     mcodeSynced?: boolean;
     thinkingSynced?: boolean;
     warning?: string;

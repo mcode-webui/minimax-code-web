@@ -44,6 +44,8 @@ const {
   mergeEngineAndWebuiProviders,
   thinkingFromEngineBuiltinModel,
   readEngineBuiltinThinking,
+  contextWindowFromEngineBuiltinModel,
+  readEngineBuiltinContextWindows,
 } = await import(
   new URL("../../server/lib/engine-catalogue.js", import.meta.url).href
 );
@@ -743,6 +745,121 @@ describe("readEngineBuiltinThinking — provider.minimax.models file read", () =
       },
     });
     const map = readEngineBuiltinThinking({ configPath: path });
+    assert.equal(map.size, 0);
+  });
+});
+// ---------------------------------------------------------------------
+// U6 — contextWindowFromEngineBuiltinModel / readEngineBuiltinContextWindows
+// ---------------------------------------------------------------------
+
+describe("contextWindowFromEngineBuiltinModel — contextWindowOptions → webui projection", () => {
+  // The engine's materialised M3 entry, verbatim shape (config.yaml
+  // `provider.minimax.models.MiniMax-M3`).
+  const M3_CONTEXT = {
+    name: "MiniMax-M3",
+    limit: { context: 512000, output: 128000 },
+    contextWindowOptions: [512000, 1000000],
+    contextWindowOptionHints: { "1000000": "higher_usage" },
+  };
+
+  test("options pass through in engine order with the higher_usage hint", () => {
+    const out = contextWindowFromEngineBuiltinModel(M3_CONTEXT);
+    assert.ok(out, "M3 advertises options and must project");
+    assert.deepEqual(out.options, [512000, 1000000], "engine order preserved, never sorted");
+    assert.deepEqual(out.hints, { "1000000": "higher_usage" });
+    assert.equal(out.currentLimit, 512000, "limit.context rides along as the fallback active value");
+  });
+
+  test("dedupe + hygiene: non-integer, zero, negative dropped; duplicates collapse", () => {
+    const out = contextWindowFromEngineBuiltinModel({
+      contextWindowOptions: [128000, 128000, 0, -5, 1.5, "64000", Number.MAX_SAFE_INTEGER + 1, 256000],
+    });
+    assert.ok(out);
+    // `Number.MAX_SAFE_INTEGER + 1` is not a safe integer — dropped by
+    // the same guard, alongside the zero / negative / fractional /
+    // string entries.
+    assert.deepEqual(out.options, [128000, 256000]);
+    assert.equal(out.hints, undefined, "no hints key → no hints field");
+  });
+
+  test("hints survive only for KEPT options and only for the known higher_usage value", () => {
+    const out = contextWindowFromEngineBuiltinModel({
+      contextWindowOptions: [128000],
+      contextWindowOptionHints: {
+        "128000": "higher_usage",
+        "999": "higher_usage", // names a dropped option → gone
+        "1280001": "mystery_value", // unknown hint value → dropped, not passed through
+      },
+    });
+    assert.ok(out);
+    assert.deepEqual(out.hints, { "128000": "higher_usage" });
+  });
+
+  test("no usable options → null (the route attaches nothing, the UI mounts no control)", () => {
+    assert.equal(contextWindowFromEngineBuiltinModel({ name: "MiniMax-M2.7", limit: { context: 200000 } }), null);
+    assert.equal(contextWindowFromEngineBuiltinModel({ contextWindowOptions: [] }), null);
+    assert.equal(contextWindowFromEngineBuiltinModel({ contextWindowOptions: [0, -1, "x"] }), null);
+    assert.equal(contextWindowFromEngineBuiltinModel(null), null);
+    assert.equal(contextWindowFromEngineBuiltinModel("garbage"), null);
+  });
+
+  test("limit.context that is not a safe positive integer is omitted, options still project", () => {
+    const out = contextWindowFromEngineBuiltinModel({
+      limit: { context: -1 },
+      contextWindowOptions: [128000, 256000],
+    });
+    assert.ok(out);
+    assert.equal(out.currentLimit, undefined);
+    assert.deepEqual(out.options, [128000, 256000]);
+  });
+});
+
+describe("readEngineBuiltinContextWindows — provider.minimax.models file read", () => {
+  test("projects every model in the builtin tree, null-keyed for models without options", () => {
+    const path = writeConfig({
+      provider: {
+        minimax: {
+          models: {
+            "MiniMax-M3": {
+              limit: { context: 512000 },
+              contextWindowOptions: [512000, 1000000],
+              contextWindowOptionHints: { "1000000": "higher_usage" },
+            },
+            "MiniMax-M2.7": { limit: { context: 200000 } },
+          },
+        },
+      },
+    });
+    const map = readEngineBuiltinContextWindows({ configPath: path });
+    assert.ok(map instanceof Map);
+    assert.equal(map.size, 2, "both models keyed, projection or not");
+    const m3 = map.get("MiniMax-M3");
+    assert.ok(m3);
+    assert.deepEqual(m3.options, [512000, 1000000]);
+    assert.equal(map.get("MiniMax-M2.7"), null, "no-options models stay keyed with null");
+  });
+
+  test("missing file / no provider.minimax tree / malformed entries → empty map, never a throw", () => {
+    assert.equal(readEngineBuiltinContextWindows({ configPath: join(_tmpDataDir, "definitely-missing.yaml") }).size, 0);
+    const path = writeConfig({ custom_provider: { "some-provider": { models: {} } } });
+    assert.equal(readEngineBuiltinContextWindows({ configPath: path }).size, 0);
+    const bad = writeConfig({
+      provider: { minimax: { models: { "MiniMax-M3": "garbage-string" } } },
+    });
+    assert.equal(readEngineBuiltinContextWindows({ configPath: bad }).size, 0);
+  });
+
+  test("custom_provider entries never bleed into the builtin context-window map", () => {
+    const path = writeConfig({
+      custom_provider: {
+        "evil-twin": {
+          kind: "custom",
+          api: "openai-completions",
+          models: { "MiniMax-M3": { contextWindowOptions: [1, 2] } },
+        },
+      },
+    });
+    const map = readEngineBuiltinContextWindows({ configPath: path });
     assert.equal(map.size, 0);
   });
 });

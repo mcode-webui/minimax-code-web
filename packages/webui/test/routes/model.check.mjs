@@ -1734,3 +1734,192 @@ describe("handleSetModel — variant-channel wire (ticket 36)", () => {
     });
   });
 });
+
+// ============================================================
+// U6 — context-window options. The engine's materialised builtin tree
+// (`provider.minimax.models`) is the only source that carries
+// `contextWindowOptions` / `contextWindowOptionHints`; the route
+// annotates the builtin-shell and engine-session minimax_api entries
+// with them and reports the recorded choice as `currentContextWindow`.
+// `handleSetModel` validates + records `contextWindow` (null clears).
+// ============================================================
+
+/** Write a `provider.minimax.models` tree into the per-file engine data dir. */
+function withEngineBuiltinTree(models, body) {
+  const path = join(_engineDataDir, "config.yaml");
+  writeFileSync(path, yaml.dump({ provider: { minimax: { models } } }), "utf8");
+  try {
+    return body();
+  } finally {
+    try { rmSync(path, { force: true }); } catch {}
+  }
+}
+
+describe("handleGetModels — builtin context-window options (U6)", () => {
+  test("minimax_api builtin entries carry options/hints/contextLimit; models without options stay field-free", () => {
+    setBuiltinModelsMock(["MiniMax-M3", "MiniMax-M2.7"]);
+    return withEngineBuiltinTree(
+      {
+        "MiniMax-M3": {
+          name: "M3",
+          limit: { context: 512000, output: 128000 },
+          contextWindowOptions: [512000, 1000000],
+          contextWindowOptionHints: { "1000000": "higher_usage" },
+        },
+        "MiniMax-M2.7": { name: "M2.7", limit: { context: 200000 } },
+      },
+      () => {
+        const cs = fakeCs("minimax_api/MiniMax-M3");
+        const res = fakeRes();
+        modelRoute.handleGetModels(null, res, { cs, cid: "cid-u6-1" });
+        const body = JSON.parse(res._body);
+        assert.equal(body.ok, true);
+        const m3 = body.models.find((m) => m.id === "minimax_api/MiniMax-M3");
+        const m27 = body.models.find((m) => m.id === "minimax_api/MiniMax-M2.7");
+        assert.ok(m3 && m27, "both builtins surface");
+        assert.deepEqual(m3.contextWindowOptions, [512000, 1000000]);
+        assert.deepEqual(m3.contextWindowOptionHints, { "1000000": "higher_usage" });
+        assert.equal(m3.contextLimit, 512000, "engine tree limit.context → contextLimit fallback");
+        assert.equal(
+          m27.contextWindowOptions,
+          undefined,
+          "a model without options must stay field-free (the composer mounts no control)",
+        );
+        assert.equal(m27.contextWindowOptionHints, undefined);
+        // currentContextWindow: recorded pick absent → the catalogue
+        // contextLimit of the current model is the fallback.
+        assert.equal(body.currentContextWindow, 512000);
+      },
+    );
+  });
+
+  test("a recorded cs.model.contextWindow wins over the catalogue fallback", () => {
+    setBuiltinModelsMock(["MiniMax-M3"]);
+    return withEngineBuiltinTree(
+      {
+        "MiniMax-M3": {
+          limit: { context: 512000 },
+          contextWindowOptions: [512000, 1000000],
+        },
+      },
+      () => {
+        const cs = fakeCs("minimax_api/MiniMax-M3");
+        cs.model.contextWindow = 1000000;
+        const res = fakeRes();
+        modelRoute.handleGetModels(null, res, { cs, cid: "cid-u6-2" });
+        const body = JSON.parse(res._body);
+        assert.equal(body.currentContextWindow, 1000000);
+      },
+    );
+  });
+
+  test("engine-session minimax_api wire entries are annotated too (cross-client model change)", () => {
+    setBuiltinModelsMock([]);
+    return withEngineBuiltinTree(
+      {
+        "MiniMax-M3": {
+          limit: { context: 512000 },
+          contextWindowOptions: [512000, 1000000],
+          contextWindowOptionHints: { "1000000": "higher_usage" },
+        },
+      },
+      () => {
+        const cs = fakeCs(undefined, [
+          {
+            ...MODEL_OPTION,
+            options: [
+              { value: "m:minimax_api:MiniMax-M3:u", name: "MiniMax-M3" },
+            ],
+          },
+        ]);
+        const res = fakeRes();
+        modelRoute.handleGetModels(null, res, { cs, cid: "cid-u6-3" });
+        const body = JSON.parse(res._body);
+        const wire = body.models.find((m) => m.id === "m:minimax_api:MiniMax-M3:u");
+        assert.ok(wire, "engine wire entry present");
+        assert.deepEqual(wire.contextWindowOptions, [512000, 1000000]);
+        assert.deepEqual(wire.contextWindowOptionHints, { "1000000": "higher_usage" });
+      },
+    );
+  });
+});
+
+describe("handleSetModel — contextWindow (U6)", () => {
+  test("a valid number is recorded on cs.model and echoed", async () => {
+    const cs = fakeCs();
+    const res = fakeRes();
+    await modelRoute.handleSetModel(
+      fakeReq({ model: "minimax_api/MiniMax-M3", contextWindow: 1000000 }),
+      res,
+      { cs, cid: "cid-u6-s1" },
+    );
+    const body = JSON.parse(res._body);
+    assert.equal(body.ok, true);
+    assert.equal(body.contextWindow, 1000000);
+    assert.equal(cs.model.contextWindow, 1000000);
+    assert.equal(typeof cs.model.contextWindowPickedAt, "number", "pick-stamp mirrors the ticket-08 pattern");
+  });
+
+  test("contextWindow-only payload works and does not touch the model", async () => {
+    const cs = fakeCs("minimax_api/MiniMax-M3");
+    const before = cs.model.name;
+    const res = fakeRes();
+    await modelRoute.handleSetModel(
+      fakeReq({ contextWindow: 512000 }),
+      res,
+      { cs, cid: "cid-u6-s2" },
+    );
+    const body = JSON.parse(res._body);
+    assert.equal(body.ok, true);
+    assert.equal(body.contextWindow, 512000);
+    assert.equal(body.model, undefined, "model-only fields stay out of the response");
+    assert.equal(cs.model.name, before);
+    assert.equal(cs.model.contextWindow, 512000);
+  });
+
+  test("null clears the recorded choice", async () => {
+    const cs = fakeCs();
+    cs.model.contextWindow = 1000000;
+    const res = fakeRes();
+    await modelRoute.handleSetModel(
+      fakeReq({ model: "minimax_api/MiniMax-M2.7", contextWindow: null }),
+      res,
+      { cs, cid: "cid-u6-s3" },
+    );
+    const body = JSON.parse(res._body);
+    assert.equal(body.ok, true);
+    assert.equal(body.contextWindow, null);
+    assert.equal("contextWindow" in cs.model, false, "clear deletes the field, not zero it");
+  });
+
+  test("invalid values are a 400, never a silent drop", async () => {
+    for (const bad of [0, -512000, 1.5, "1000000", Number.MAX_SAFE_INTEGER + 1]) {
+      const cs = fakeCs();
+      const res = fakeRes();
+      await modelRoute.handleSetModel(
+        fakeReq({ contextWindow: bad }),
+        res,
+        { cs, cid: "cid-u6-s4" },
+      );
+      assert.equal(res._status, 400, `expected 400 for ${JSON.stringify(bad)}`);
+      const body = JSON.parse(res._body);
+      assert.equal(body.ok, false);
+      assert.equal(cs.model.contextWindow, undefined);
+    }
+  });
+
+  test("absent field leaves the recorded value alone (independence from model/thinking)", async () => {
+    const cs = fakeCs();
+    cs.model.contextWindow = 1000000;
+    const res = fakeRes();
+    await modelRoute.handleSetModel(
+      fakeReq({ thinking: "high" }),
+      res,
+      { cs, cid: "cid-u6-s5" },
+    );
+    const body = JSON.parse(res._body);
+    assert.equal(body.ok, true);
+    assert.equal(body.contextWindow, undefined, "absent field not echoed");
+    assert.equal(cs.model.contextWindow, 1000000);
+  });
+});

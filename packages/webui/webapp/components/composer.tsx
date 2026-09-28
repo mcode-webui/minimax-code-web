@@ -139,6 +139,8 @@ export function Composer({
       protocol?: "openai" | "anthropic" | "gemini";
       thinkingLevels?: string[];
       modalities?: string[];
+      contextWindowOptions?: number[];
+      contextWindowOptionHints?: Record<string, string>;
     }[]
   >([]);
   const [groups, setGroups] = useState<
@@ -219,6 +221,8 @@ export function Composer({
             protocol: m.protocol,
             thinkingLevels: m.thinkingLevels,
             modalities: m.modalities,
+            contextWindowOptions: m.contextWindowOptions,
+            contextWindowOptionHints: m.contextWindowOptionHints,
           })),
         );
         setGroups(
@@ -331,6 +335,23 @@ export function Composer({
     const known = models.find((model) => model.id === value);
     return known?.thinkingLevels ?? [];
   }, [models, state?.model?.name]);
+
+  /**
+   * U6 — the context-window radio's current value and the pick handler
+   * target. The display value is the server-resolved
+   * `currentContextWindow` semantics inlined: the recorded pick wins,
+   * the active model's catalogue `contextLimit` (the engine's current
+   * effective window) is the fallback, `null` when neither exists (no
+   * radio is highlighted — never claim a window nothing confirmed).
+   */
+  const currentContextWindow = useMemo<number | null>(() => {
+    const recorded = state?.model?.contextWindow;
+    if (typeof recorded === "number" && recorded > 0) return recorded;
+    const value = state?.model?.name ?? "";
+    const known = value ? models.find((model) => model.id === value) : undefined;
+    const limit = known?.contextLimit;
+    return typeof limit === "number" && limit > 0 ? limit : null;
+  }, [models, state?.model?.name, state?.model?.contextWindow]);
 
   const submit = useCallback(async () => {
     const content = value.trim();
@@ -681,6 +702,7 @@ export function Composer({
                 value={state?.model.name}
                 label={currentModelLabel}
                 thinking={state?.model?.thinking ?? ""}
+                contextWindow={currentContextWindow}
                 onAddProvider={onAddProvider}
                 onPick={(id) => {
                   // Ticket 11: cascade click sends the MODEL only.
@@ -693,11 +715,40 @@ export function Composer({
                   const newModel = models.find((m) => m.id === id);
                   const supported = newModel?.thinkingLevels ?? [];
                   const recorded = state?.model?.thinking ?? "";
+                  // U6: the same follow-the-model rule for the
+                  // recorded context window — a pick the new model
+                  // doesn't advertise is cleared (null = the
+                  // documented "engine default stands" sentinel) in
+                  // the same request, so the picker never carries a
+                  // stale window across a model switch.
+                  const recordedWindow = state?.model?.contextWindow;
+                  const windowStale =
+                    typeof recordedWindow === "number" &&
+                    !normalizeContextWindowOptions(
+                      newModel?.contextWindowOptions,
+                    ).includes(recordedWindow);
                   if (recorded && !supported.includes(recorded)) {
-                    void api.setModel({ model: id, thinking: "" });
+                    void api.setModel({
+                      model: id,
+                      thinking: "",
+                      ...(windowStale ? { contextWindow: null } : {}),
+                    });
+                  } else if (windowStale) {
+                    void api.setModel({ model: id, contextWindow: null });
                   } else {
                     void api.setModel({ model: id });
                   }
+                }}
+                onContextPick={(windowValue) => {
+                  // U6: the radio rides the same atomic endpoint — the
+                  // active model id is sent along so the recorded pick
+                  // and the model stay one transaction.
+                  const id = state?.model?.name ?? "";
+                  void api.setModel(
+                    id
+                      ? { model: id, contextWindow: windowValue }
+                      : { contextWindow: windowValue },
+                  );
                 }}
               />
               {/* Thinking-effort picker (ticket 04). Only rendered when
@@ -988,7 +1039,9 @@ function ModelSelect({
   value,
   label,
   thinking,
+  contextWindow,
   onPick,
+  onContextPick,
   onAddProvider,
 }: {
   t: (key: MessageKey) => string;
@@ -998,6 +1051,8 @@ function ModelSelect({
     provider?: string;
     modalities?: string[];
     thinkingLevels?: string[];
+    contextWindowOptions?: number[];
+    contextWindowOptionHints?: Record<string, string>;
   }[];
   /** Per-provider groups from `/api/models`. Used to disable no-key
    *  providers and to look up the display label the server resolved
@@ -1015,11 +1070,19 @@ function ModelSelect({
    *  left the level recorded but unsupported by the new model), which
    *  the chip rendering layer hides by not including the suffix at all. */
   thinking: string;
+  /** U6 — the context window in tokens the detail area's radio group
+   *  highlights (`null` when nothing confirmed it). Derived by the
+   *  caller: recorded pick first, the active model's catalogue
+   *  `contextLimit` second. */
+  contextWindow?: number | null;
   /** Model pick — sends `{model}` only, with a follow-clearing clear of
    *  the recorded effort when the new model doesn't offer it. The
    *  parent decides whether to issue `{model}` or `{model, thinking: ""}`
    *  based on the new model's `thinkingLevels` vs the recorded level. */
   onPick: (id: string) => void;
+  /** U6 — context-window radio pick (tokens). The parent sends it
+   *  through the same atomic `/api/set-model` endpoint. */
+  onContextPick?: (value: number) => void;
   /** Open the provider management flow with a fresh draft already
    *  created. Triggered by the top "Add provider" row. The page owns
    *  the route — the selector just hands the intent up. */
@@ -1101,6 +1164,36 @@ function ModelSelect({
     const m = models.find((x) => x.id === value);
     return m?.provider ?? "__other";
   }, [models, value]);
+
+  /**
+   * U6 — the detail area's derivation.
+   *
+   * The active model's `contextWindowOptions`, normalised the same way
+   * the engine's own picker normalises them (dedupe, safe positive
+   * integers, engine order — packages/tui
+   * src/tui/features/model/context-window.ts). The control mounts only
+   * when at least TWO distinct options exist — a single-option
+   * "choice" is a no-op, and the engine's TUI picker gates on the same
+   * `length > 1` — and never for a model without the field, so models
+   * without options render no control and reserve no space.
+   *
+   * A stale `contextWindow` (recorded before a model switch the radio
+   * didn't follow) is NOT highlighted: the radio claims only windows
+   * the active model actually advertises.
+   */
+  const contextDetail = useMemo(() => {
+    const active = models.find((m) => m.id === value);
+    const options = normalizeContextWindowOptions(active?.contextWindowOptions);
+    if (options.length < 2) return null;
+    return {
+      options,
+      hints: active?.contextWindowOptionHints,
+      current:
+        typeof contextWindow === "number" && options.includes(contextWindow)
+          ? contextWindow
+          : null,
+    };
+  }, [models, value, contextWindow]);
 
   // Drop any open cascade when the active model changes (e.g. after
   // a session reset). The next hover/click on a provider row will
@@ -1419,6 +1512,72 @@ function ModelSelect({
                 );
               })}
               </div>
+              {/*
+                U6 detail area — the ACTIVE model's context-window
+                radio group. Sits below the provider list so it never
+                disturbs the grouping or the thinking cascade, and
+                mounts only for models advertising >= 2 options (see
+                `contextDetail`), so models without options leave no
+                blank block behind.
+              */}
+              {contextDetail ? (
+                <div
+                  data-testid="model-context-detail"
+                  className="mt-1 border-t border-border_default px-1 pb-1 pt-1"
+                >
+                  <div className="px-1 pb-1 text-caption-small-strong uppercase tracking-wide text-text_default_tertiary">
+                    {t("modelSelector.contextWindow")}
+                  </div>
+                  <div
+                    role="radiogroup"
+                    aria-label={t("modelSelector.contextWindow")}
+                    data-testid="model-context-group"
+                    className="flex flex-wrap gap-1 px-1"
+                  >
+                    {contextDetail.options.map((windowValue) => {
+                      const active = contextDetail.current === windowValue;
+                      const higherUsage =
+                        contextDetail.hints?.[String(windowValue)] === "higher_usage";
+                      return (
+                        <button
+                          key={windowValue}
+                          type="button"
+                          role="radio"
+                          aria-checked={active}
+                          data-testid={`model-context-option-${windowValue}`}
+                          onClick={() => onContextPick?.(windowValue)}
+                          className={[
+                            "flex items-center gap-1.5 rounded-[8px] border px-2 py-1 text-caption-small transition-colors",
+                            active
+                              ? "border-border_heavy bg-bg_interaction_tertiary_hover text-text_default_primary"
+                              : "border-border_default text-text_default_secondary hover:bg-bg_interaction_tertiary_hover",
+                          ].join(" ")}
+                        >
+                          <span data-testid={`model-context-value-${windowValue}`}>
+                            {formatContextWindow(windowValue)}
+                          </span>
+                          {higherUsage ? (
+                            <span
+                              data-testid="model-context-hint-higher-usage"
+                              className="text-text_default_tertiary"
+                            >
+                              {t("modelSelector.contextWindowHigherUsage")}
+                            </span>
+                          ) : null}
+                          {active ? (
+                            <Icon
+                              name="checkSmall"
+                              size={14}
+                              aria-hidden="true"
+                              className="text-text_default_primary"
+                            />
+                          ) : null}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : null}
             </div>
           )}
         </SelectPanel>
@@ -1988,6 +2147,34 @@ function modelDisplayName(name?: string | null): string {
   if (!value) return "";
   const parts = value.split("/");
   return (parts[parts.length - 1] ?? "").trim() || value;
+}
+
+/**
+ * Normalise a model's `contextWindowOptions` (U6).
+ *
+ * Set-deduped, safe positive integers only, engine order preserved —
+ * the same normalisation the engine's own pickers apply
+ * (packages/tui `contextWindowOptions()`, reference webui
+ * `ModelPicker.tsx`). Payload defensive read: the field is optional
+ * and engine-sourced, so `undefined` / wrong shapes collapse to `[]`.
+ */
+function normalizeContextWindowOptions(options: unknown): number[] {
+  if (!Array.isArray(options)) return [];
+  return [...new Set(options.filter((v) => Number.isSafeInteger(v) && v > 0))];
+}
+
+/**
+ * Token count → compact context-window label (U6).
+ *
+ * Mirrors the reference implementation (`ModelPicker.tsx`
+ * `formatContextWindow`): `1000000` → `1M`, `512000` → `512K`, anything
+ * below a thousand verbatim. The exact powers of ten the engine's
+ * catalogue uses all land on clean labels.
+ */
+function formatContextWindow(value: number): string {
+  if (value >= 1_000_000) return `${value / 1_000_000}M`;
+  if (value >= 1_000) return `${Math.round(value / 1_000)}K`;
+  return String(value);
 }
 
 /**
