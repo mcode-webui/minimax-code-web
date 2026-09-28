@@ -176,7 +176,7 @@ below cites the component file and one `data-testid` per surface.
 | --- | --- | --- |
 | Sidebar (rail) | `components/shell.tsx` | `sidebar-scroll-viewport` |
 | Sidebar session tree | `components/session-tree.tsx` | `sidebar-session-row` |
-| Sidebar context/usage popover | `components/shell.tsx` | `sidebar-user-usage-popover` |
+| Sidebar user menu (settings / check-in / usage / sign-out) | `components/shell.tsx#SidebarFooter` | `sidebar-user-menu` |
 | Sidebar inbox (alerts flyout) | `components/inbox.tsx` | `inbox-flyout` |
 | Toolbar (top bar with model selector) | `components/toolbar.tsx` | `toolbar-session-status` |
 | Composer + drop overlay | `components/composer.tsx` | `composer-drop-overlay`, `composer-send-button` |
@@ -188,13 +188,14 @@ below cites the component file and one `data-testid` per surface.
 | File tree search (server-driven, slice 19a; wired in 19b) | `components/panels.tsx` | `files-tree-filter` |
 | Sidebar tree-column "搜索" surface (slice 19b) | `components/workspace-tree-column.tsx#SearchSurface` | `tree-surface-search-input` |
 | Code preview (slice 22 IDE-grade: gutter + lazy hljs + byte-faithful copy) | `components/code-view.tsx` | `code-view` (rendered inside `file-preview`) |
-| Three-state appearance picker (slice 18) | `components/appearance-card-picker.tsx` | `appearance-card-picker` |
+| Three-state appearance picker (slice 18; lives in the settings General section since ticket 37) | `components/appearance-card-picker.tsx` | `appearance-card-picker` |
 | Git panel (slice 03) | `components/panels.tsx#GitPanel` | `git-panel` |
 | Browser panel (slice 04, sandboxed iframe over `/api/fs/raw`) | `components/browser-panel.tsx` | `browser-panel` |
 | Workspace picker (modal) | `components/workspace-picker.tsx` | `workspace-picker` |
 | Provider management | `components/provider-management.tsx` | `providers-panel` |
 | Context meter / panel | `components/context-meter.tsx` | `context-meter` |
 | Settings modal | `components/panels.tsx#SettingsModal` | `settings-modal` |
+| Usage card of the Usage & models section (ticket 37) | `components/panels.tsx#UsageCard` | `settings-usage-card` |
 | Error boundaries (global + per-route) | `app/error.tsx` + `app/global-error.tsx` | `global-error-page` |
 
 ## Four-column workspace (main, slices 17 + 21)
@@ -376,6 +377,72 @@ plain `<pre>` view that shipped in slice 02:
   → copy chain so the clipboard text round-trips to the file bytes
   for `cp file.js file.js.bak; copy in panel; paste back`) and never
   leaks the gutter line numbers into the copied text.
+
+## Settings page (ticket 37)
+
+The settings surface is a full-viewport modal — a grouped category tree on
+the left (with a search box), a 704px content column on the right. It is
+opened from the avatar's user menu at the bottom of the sidebar. This
+section records the structure and the write paths; the parity reference is
+the desktop's own settings (`refs/ui/03-settings-usage-models.jpg`,
+`04-settings-general.jpg`).
+
+**Navigation and capability honesty**
+
+| Group | Items | State |
+| --- | --- | --- |
+| Preferences | General | enabled |
+| Preferences | Voice · Shortcuts · Personalization · Browser | marked 暂不支持 (not available yet) |
+| Management | Usage & models · Connection | enabled |
+| Management | Account | marked 暂不支持 |
+| Coding | Code review · Worktree | marked 暂不支持 |
+| Archived | Archived tasks | marked 暂不支持 |
+
+The eight 暂不支持 entries are pre-existing facts: the desktop has the
+category and this server has no capability behind it, so the entry stays
+disabled with the marker rather than hidden. The rule cuts both ways — the
+desktop's General page also shows mode cards, menu-bar icon,
+launch-at-login, desktop notifications, accelerated indexing and a data
+directory, none of which this server can drive, and **none of which are
+rendered**. No new placeholders: the capability table stays honest.
+
+**General (通用)**
+
+Two cards. The first is engine facts — installed version, default model,
+local URL, LAN URL — read-only. The second holds the two rows this server
+can actually drive:
+
+| Row | What it changes | When it takes effect |
+| --- | --- | --- |
+| Appearance | Three-state card picker: light / dark / system | Immediately on click, no reload; persisted in the `webui:ui:v1` envelope (`appearance` field), survives refresh |
+| Language | zh / en segmented switch | Immediately on click, whole UI including this modal |
+
+In `system` mode the page follows the OS colour scheme live.
+
+**Usage & models (用量与模型)**
+
+The top card is the usage quota: the 5-hour window and the weekly window,
+each as a used-percentage figure with its reset time, plus a manual refresh
+button. The data comes from the engine over ACP (`POST /api/usage`); the
+store polls it every 2 minutes. The manual refresh passes `record: true`,
+which also appends the reading to the forecast history — the deliberate
+path, unlike the background poll. When the engine is unreachable or the
+account reports no quota, the card shows its unavailable line, not 0%.
+
+Below it sits the provider management panel (API keys, protocols, model
+lists) — unchanged by this ticket.
+
+**The user menu's usage row**
+
+The row used to host a hover flyout with the quota figures. It now jumps
+straight to the settings page's Usage & models section (`onOpenUsage` →
+`initialSection: "providers"`); the flyout component and its
+`usagePopover.*` strings were deleted. There is exactly one surface for
+quota figures.
+
+The nav item id behind the section is `"providers"`, unchanged: the model
+selector's "Add provider" deep-link targets that id, and only the visible
+label moved.
 
 ## Markdown rendering and Mermaid diagrams (slice 23)
 

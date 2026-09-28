@@ -3,9 +3,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import * as api from "@/lib/api";
-import { refreshQuota, useSessionContext } from "@/lib/store";
+import { useSessionContext } from "@/lib/store";
 import type { MessageKey } from "@/lib/i18n";
-import { Dropdown, Popover } from "antd";
+import { Dropdown } from "antd";
 import type { MenuProps } from "antd";
 import { Icon } from "./icons";
 import { InboxFlyout } from "./inbox";
@@ -66,6 +66,12 @@ interface ShellProps {
    * dismissible modal, not a drawer panel (see components/panels.tsx).
    */
   onOpenSettings?: () => void;
+  /**
+   * Open the settings dialog on the 用量与模型 section. The user menu's usage
+   * row dispatches through here (user decision 2026-09-28: the entry jumps to
+   * the settings section rather than hosting its own flyout).
+   */
+  onOpenUsage?: () => void;
   /** Unread alert count, shown on the account menu's Alerts row. */
   alertCount?: number;
   /**
@@ -78,7 +84,7 @@ interface ShellProps {
   hasConversation?: boolean;
 }
 
-export function AppShell({ t, children, toolbar, panel, onOpenPanel, onOpenSurfaceTab, onOpenSettings, alertCount = 0, hasConversation = false }: ShellProps) {
+export function AppShell({ t, children, toolbar, panel, onOpenPanel, onOpenSurfaceTab, onOpenSettings, onOpenUsage, alertCount = 0, hasConversation = false }: ShellProps) {
   // The sidebar is collapsible from the button in its own top strip. The state
   // lives here rather than in `Sidebar` because the expand affordance has to be
   // rendered by the content column once the sidebar is clipped away.
@@ -121,6 +127,7 @@ export function AppShell({ t, children, toolbar, panel, onOpenPanel, onOpenSurfa
         onOpenPanel={onOpenPanel}
         onOpenSurfaceTab={onOpenSurfaceTab}
         onOpenSettings={onOpenSettings}
+        onOpenUsage={onOpenUsage}
         alertCount={alertCount}
         onOpenAlerts={toggleInbox}
         collapsed={collapsed}
@@ -196,6 +203,7 @@ function Sidebar({
   onOpenPanel,
   onOpenSurfaceTab,
   onOpenSettings,
+  onOpenUsage,
   onOpenAlerts,
   alertCount = 0,
   collapsed,
@@ -205,6 +213,7 @@ function Sidebar({
   onOpenPanel?: (kind: PanelKind) => void;
   onOpenSurfaceTab?: (kind: "search") => void;
   onOpenSettings?: () => void;
+  onOpenUsage?: () => void;
   /** Toggle the 站内信 flyout anchored beside this sidebar. */
   onOpenAlerts: () => void;
   alertCount?: number;
@@ -356,6 +365,7 @@ function Sidebar({
             workspaceName={workspaceLeaf(state?.workspace?.dir)}
             onOpenAlerts={onBell}
             onOpenSettings={onOpenSettings}
+            onOpenUsage={onOpenUsage}
             alertCount={alertCount}
             rail={collapsed}
           />
@@ -500,6 +510,7 @@ function SidebarFooter({
   workspaceName,
   onOpenAlerts,
   onOpenSettings,
+  onOpenUsage,
   alertCount = 0,
   rail = false,
 }: {
@@ -512,6 +523,8 @@ function SidebarFooter({
   /** Rail mode: only the avatar fits, and the menu opens from it. */
   rail?: boolean;
   onOpenSettings?: () => void;
+  /** Opens settings on the 用量与模型 section (the usage row's target). */
+  onOpenUsage?: () => void;
   alertCount?: number;
 }) {
   const [open, setOpen] = useState(false);
@@ -583,7 +596,15 @@ function SidebarFooter({
         />
       ),
     },
-    { key: "usage", label: <MenuRow icon="gauge" label={<UsageLabel t={t} />} /> },
+    // The usage row used to host a hover flyout with the quota figures;
+    // the figures now live in the settings page's 用量与模型 section and
+    // this row jumps there (user decision 2026-09-28). Same shape as the
+    // settings row above it.
+    {
+      key: "usage",
+      onClick: () => pick(() => onOpenUsage?.())(),
+      label: <MenuRow icon="gauge" label={t("toolbar.usage")} />,
+    },
     { key: "divider", disabled: true, label: <MenuDivider /> },
     {
       key: "signOut",
@@ -776,130 +797,6 @@ function MenuDivider() {
   return (
     <div className="mavis-user-menu-divider pointer-events-none flex h-[4px] items-center">
       <div className="h-[1px] w-full bg-border_default" />
-    </div>
-  );
-}
-
-/**
- * The usage row's label: the text plus a chevron that opens the quota flyout on
- * hover.
- *
- * antd `Popover` rather than the hand-rolled flyout this replaces — the portal,
- * the placement and the gap between the row and the panel are the library's, and
- * each of those was a defect here at some point (the old formula resolved from the
- * wrong edge and opened off-screen; its `mouseleave` fired before the panel's
- * `mouseenter` and the panel vanished in the same tick). The delays and the offset
- * are the desktop's.
- *
- * The row is a menu item's click target, so the flyout stops the click: opening
- * the quota panel must not also close the menu behind it.
- */
-function UsageLabel({ t }: { t: (key: MessageKey) => string }) {
-  return (
-    <Popover
-      trigger="hover"
-      placement="rightTop"
-      align={{ offset: [4, -4] }}
-      mouseEnterDelay={0.05}
-      mouseLeaveDelay={0.15}
-      arrow={false}
-      overlayClassName="mavis-popover-overlay mavis-usage-popover-overlay"
-      content={<UsagePopover t={t} />}
-    >
-      <span
-        data-testid="sidebar-user-usage-row"
-        onClick={(event) => event.stopPropagation()}
-        className="inline-flex w-full cursor-default items-center justify-between gap-2"
-      >
-        <span>{t("toolbar.usage")}</span>
-        <Icon name="chevronRight" size={16} className="shrink-0 text-icon_default_tertiary" />
-      </span>
-    </Popover>
-  );
-}
-
-function UsagePopover({ t }: { t: (key: MessageKey) => string }) {
-  // The figures live in the store, which polls them on its own timer, so opening
-  // this popover shows the current number instead of starting from empty — and
-  // the manual refresh is an extra read, not the only way to get one.
-  const { quota, quotaBusy, quotaError } = useSessionContext();
-  const error = quotaError;
-  const busy = quotaBusy;
-
-  useEffect(() => {
-    void refreshQuota();
-  }, []);
-
-  // The engine reports two quota windows: one rolling over 5 hours and one
-  // weekly. Both are rendered. A single row could only ever describe one of
-  // them, which is how the weekly figure went missing while the API was already
-  // returning it. A window with no figure is dropped rather than drawn as 0%.
-  const windows = [
-    {
-      key: "fiveHour",
-      label: t("usagePopover.fiveHour"),
-      remaining: quota?.remaining,
-      resetAt: quota?.resetAt,
-    },
-    {
-      key: "weekly",
-      label: t("usagePopover.weekly"),
-      remaining: quota?.weeklyRemaining,
-      resetAt: quota?.weeklyResetAt,
-    },
-  ].filter((w) => typeof w.remaining === "number");
-
-  return (
-    <div data-testid="sidebar-user-usage-popover" className="flex w-full flex-col gap-2">
-      <div className="flex items-center justify-between px-2 pt-1">
-        <span className="text-[14px] leading-5 text-text_default_primary">{t("usagePopover.title")}</span>
-        <button
-          type="button"
-          // `record` — the user asked for fresh figures, so this reading is also
-          // a forecast sample.
-          onClick={() => void refreshQuota(true)}
-          disabled={busy}
-          className="flex size-5 items-center justify-center rounded text-text_default_tertiary transition-colors hover:bg-bg_interaction_tertiary_hover disabled:opacity-50"
-          title={t("usagePopover.refresh")}
-        >
-          <Icon name="refresh" size={12} />
-        </button>
-      </div>
-      {error ? (
-        <div className="flex flex-col gap-1 px-2">
-          <span className="text-[14px] leading-5 text-text_default_primary">{t("usagePopover.errorTitle")}</span>
-          <span className="text-[12px] leading-4 text-text_default_secondary">{t("usagePopover.errorBody")}</span>
-        </div>
-      ) : quota?.ok && windows.length > 0 ? (
-        windows.map((w) => {
-          // `remaining` is what is left; the row reports what was used. The
-          // desktop's row is text only — it draws no bar, so neither does this.
-          const used = Math.max(0, Math.min(100, 100 - (w.remaining as number)));
-          const reset = w.resetAt
-            ? new Date(w.resetAt > 1e12 ? w.resetAt : w.resetAt * 1000).toLocaleString()
-            : null;
-          return (
-            <div key={w.key} className="flex flex-col gap-1 overflow-hidden rounded-[8px] px-2">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[14px] font-normal leading-5 text-text_default_primary">{w.label}</span>
-                <span className="text-[14px] font-normal leading-5 text-text_default_primary">
-                  {t("usage.used")} {used}%
-                </span>
-              </div>
-              {reset ? (
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-[12px] leading-4 text-text_default_secondary">{t("usage.reset")}</span>
-                  <span className="text-[12px] leading-4 text-text_default_secondary">{reset}</span>
-                </div>
-              ) : null}
-            </div>
-          );
-        })
-      ) : (
-        <span className="px-2 text-[12px] leading-4 text-text_default_secondary">
-          {t("usagePopover.unavailable")}
-        </span>
-      )}
     </div>
   );
 }
