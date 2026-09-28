@@ -72,6 +72,27 @@ const DB_FIXTURE_SKIP = !SQLITE3_CLI_OK
 // intent + outcome events (fail-closed) on every gated delete — these
 // must never land in the operator's real ~/.mcode-webui/events.ndjson.
 let _tmpEventsDir;
+// s39 (webui-parity ticket 39): handleSwitchSession now runs the
+// target session's stored workspace through assertWorkspacePath's
+// realpathSync, which only succeeds for paths that exist on disk.
+// Pre-existing tests need TWO distinct workspace dirs (the
+// "switch A → B with different projects" fixture).
+//
+// macOS /tmp is a symlink to /private/tmp. Hardcoding the literal
+// "/tmp/webui-test-A" made assertions like `body.cwd ===
+// "/tmp/webui-test-A"` pass on Linux but fail on macOS because the
+// realpath form differs. Build the dirs via mkdtempSync (which
+// returns a unique leaf under os.tmpdir()) and immediately realpath
+// them so every assertion in this file compares against the SAME
+// form assertWorkspacePath normalizes to. Same shape as
+// packages/webui/test/routes/fs-write.test.js did for the s27 macOS
+// CI fix (#81, commit 7ac8f07).
+//
+// Each file makes its OWN pair (mkdtempSync's unique leaf makes
+// cross-file collision impossible), and after() cleans them up
+// because nothing else outside this file's lifetime uses them.
+const WS_A = realpathSync(mkdtempSync(join(tmpdir(), "webui-test-A-")));
+const WS_B = realpathSync(mkdtempSync(join(tmpdir(), "webui-test-B-")));
 before(async (t) => {
   _tmpEventsDir = mkdtempSync(join(tmpdir(), "webui-sessions-test-events-"));
   process.env.MCODE_WEBUI_EVENTS_PATH = join(_tmpEventsDir, "events.ndjson");
@@ -80,6 +101,11 @@ after(async () => {
   delete process.env.MCODE_WEBUI_EVENTS_PATH;
   if (_tmpEventsDir) {
     try { rmSync(_tmpEventsDir, { recursive: true, force: true }); } catch {}
+  }
+  // WS_A / WS_B are unique to this file's load (mkdtempSync) — safe
+  // to remove. force:true in case a test wrote content into them.
+  for (const d of [WS_A, WS_B]) {
+    try { rmSync(d, { recursive: true, force: true }); } catch {}
   }
 });
 
@@ -146,16 +172,16 @@ beforeEach(() => {
   initialSessions = [
     {
       id: "webui-A",
-      title: "A on ws-A",
-      workspace: "/ws-A",
+      title: "A on tmp-webui-A",
+      workspace: WS_A,
       createdAt: 1,
       updatedAt: 1,
       chat: ["● hi from A"],
     },
     {
       id: "webui-B",
-      title: "B on ws-B",
-      workspace: "/ws-B",
+      title: "B on tmp-webui-B",
+      workspace: WS_B,
       createdAt: 2,
       updatedAt: 2,
       chat: ["● hi from B"],
@@ -168,7 +194,7 @@ describe("handleSwitchSession — v0.5.bx-32 lastUsedWorkspace contract", () => 
   test("switching to a different workspace does NOT write lastUsedWorkspace", async () => {
     const cid = "cid-1";
     const cs = makeClientState();
-    cs.workspace = { dir: "/ws-A", branch: null, tree: null };
+    cs.workspace = { dir: WS_A, branch: null, tree: null };
     cs.lastUsedWorkspace = null; // initial state
     clients.set(cid, cs);
 
@@ -188,7 +214,7 @@ describe("handleSwitchSession — v0.5.bx-32 lastUsedWorkspace contract", () => 
   test("switching to the same workspace does NOT write lastUsedWorkspace", async () => {
     const cid = "cid-1";
     const cs = makeClientState();
-    cs.workspace = { dir: "/ws-A", branch: null, tree: null };
+    cs.workspace = { dir: WS_A, branch: null, tree: null };
     cs.lastUsedWorkspace = "previous-value"; // pretend user sent earlier
     clients.set(cid, cs);
 
@@ -208,7 +234,7 @@ describe("handleSwitchSession — v0.5.bx-32 lastUsedWorkspace contract", () => 
   test("switch updates sessionId, mcodeSessionId, sessionTitle, chat", async () => {
     const cid = "cid-1";
     const cs = makeClientState();
-    cs.workspace = { dir: "/ws-A", branch: null, tree: null };
+    cs.workspace = { dir: WS_A, branch: null, tree: null };
     clients.set(cid, cs);
 
     const ctx = { cs, cid, pathname: "" };
@@ -216,7 +242,7 @@ describe("handleSwitchSession — v0.5.bx-32 lastUsedWorkspace contract", () => 
     await handleSwitchSession(fakeReq({ id: "webui-B" }), res, ctx);
 
     assert.equal(cs.sessionId, "webui-B");
-    assert.equal(cs.sessionTitle, "B on ws-B");
+    assert.equal(cs.sessionTitle, "B on tmp-webui-B");
     assert.deepEqual(cs.chat, ["● hi from B"]);
   });
 });
@@ -244,7 +270,7 @@ describe("handleNewSession", () => {
 describe("handleSwitchSession — error paths", () => {
   test("returns 400 when id is missing", async () => {
     const cs = makeClientState();
-    cs.workspace = { dir: "/ws-A", branch: null, tree: null };
+    cs.workspace = { dir: WS_A, branch: null, tree: null };
     const cid = "cid-1";
     clients.set(cid, cs);
     const res = fakeRes();
@@ -257,7 +283,7 @@ describe("handleSwitchSession — error paths", () => {
 
   test("returns 400 when id is empty string", async () => {
     const cs = makeClientState();
-    cs.workspace = { dir: "/ws-A", branch: null, tree: null };
+    cs.workspace = { dir: WS_A, branch: null, tree: null };
     const cid = "cid-1";
     clients.set(cid, cs);
     const res = fakeRes();
@@ -267,7 +293,7 @@ describe("handleSwitchSession — error paths", () => {
 
   test("returns 404 when id not found and not a valid mvs_xxx", async () => {
     const cs = makeClientState();
-    cs.workspace = { dir: "/ws-A", branch: null, tree: null };
+    cs.workspace = { dir: WS_A, branch: null, tree: null };
     const cid = "cid-1";
     clients.set(cid, cs);
     const res = fakeRes();
@@ -286,7 +312,7 @@ describe("handleSwitchSession — error paths", () => {
     // mvs_xxx that doesn't exist in store, but the title-fetcher returns null
     // → default title "Mcode session"
     const cs = makeClientState();
-    cs.workspace = { dir: "/ws-A", branch: null, tree: null };
+    cs.workspace = { dir: WS_A, branch: null, tree: null };
     const cid = "cid-1";
     clients.set(cid, cs);
     const res = fakeRes();
@@ -314,7 +340,7 @@ describe("handleSwitchSession — error paths", () => {
           id: "webui-mvs",
           mcodeSessionId: "mvs_aaaa1111222233334444555566667777",
           title: "Mcode-target",
-          workspace: "/ws-A",
+          workspace: WS_A,
           createdAt: 3,
           updatedAt: 3,
           chat: ["● from mcode sid"],
@@ -322,7 +348,7 @@ describe("handleSwitchSession — error paths", () => {
       ],
     });
     const cs = makeClientState();
-    cs.workspace = { dir: "/ws-A", branch: null, tree: null };
+    cs.workspace = { dir: WS_A, branch: null, tree: null };
     const cid = "cid-1";
     clients.set(cid, cs);
     const res = fakeRes();
@@ -341,7 +367,7 @@ describe("handleSwitchSession — error paths", () => {
 describe("handleDeleteSession", () => {
   test("deletes a webui session by id and returns ok", async () => {
     const cs = makeClientState();
-    cs.workspace = { dir: "/ws-A", branch: null, tree: null };
+    cs.workspace = { dir: WS_A, branch: null, tree: null };
     const cid = "cid-1";
     clients.set(cid, cs);
     const res = fakeRes();
@@ -363,7 +389,7 @@ describe("handleDeleteSession", () => {
           id: "webui-mvs-del",
           mcodeSessionId: "mvs_bbbb1111222233334444555566667777",
           title: "Mcode-del",
-          workspace: "/ws-A",
+          workspace: WS_A,
           createdAt: 3,
           updatedAt: 3,
           chat: [],
@@ -371,7 +397,7 @@ describe("handleDeleteSession", () => {
       ],
     });
     const cs = makeClientState();
-    cs.workspace = { dir: "/ws-A", branch: null, tree: null };
+    cs.workspace = { dir: WS_A, branch: null, tree: null };
     const cid = "cid-1";
     clients.set(cid, cs);
     const res = fakeRes();
@@ -385,7 +411,7 @@ describe("handleDeleteSession", () => {
 
   test("returns 404 when id not found and not a mvs_xxx", async () => {
     const cs = makeClientState();
-    cs.workspace = { dir: "/ws-A", branch: null, tree: null };
+    cs.workspace = { dir: WS_A, branch: null, tree: null };
     const cid = "cid-1";
     clients.set(cid, cs);
     const res = fakeRes();
@@ -398,10 +424,10 @@ describe("handleDeleteSession", () => {
 
   test("resets cs when the deleted session is the current one", async () => {
     const cs = makeClientState();
-    cs.workspace = { dir: "/ws-A", branch: null, tree: null };
+    cs.workspace = { dir: WS_A, branch: null, tree: null };
     cs.sessionId = "webui-A"; // current is the one we'll delete
     cs.mcodeSessionId = null;
-    cs.sessionTitle = "A on ws-A";
+    cs.sessionTitle = "A on tmp-webui-A";
     cs.chat = ["existing"];
     const cid = "cid-1";
     clients.set(cid, cs);
@@ -417,11 +443,11 @@ describe("handleDeleteSession", () => {
 
   test("?dryRun=true returns preview without deleting the webui entry", async () => {
     const cs = makeClientState();
-    cs.workspace = { dir: "/ws-A", branch: null, tree: null };
+    cs.workspace = { dir: WS_A, branch: null, tree: null };
     // Pretend the target session IS the current one, so we can verify
     // dryRun does NOT reset it.
     cs.sessionId = "webui-A";
-    cs.sessionTitle = "A on ws-A";
+    cs.sessionTitle = "A on tmp-webui-A";
     cs.chat = ["existing"];
     const cid = "cid-1";
     clients.set(cid, cs);
@@ -439,7 +465,7 @@ describe("handleDeleteSession", () => {
     assert.equal(getSessionsStore().length, before, "session store should be unchanged");
     // cs should NOT be reset (preserved as the current session)
     assert.equal(cs.sessionId, "webui-A", "cs.sessionId should be preserved in dry-run");
-    assert.equal(cs.sessionTitle, "A on ws-A");
+    assert.equal(cs.sessionTitle, "A on tmp-webui-A");
     assert.deepEqual(cs.chat, ["existing"]);
   });
 });
@@ -520,14 +546,14 @@ describe("handleListSessions", () => {
 describe("handleAcpSessions", () => {
   test("returns cwd + sessions for the current workspace", async () => {
     const cs = makeClientState();
-    cs.workspace = { dir: "/ws-A", branch: null, tree: null };
-    const req = { url: "/api/acp-sessions?cwd=/ws-A" };
+    cs.workspace = { dir: WS_A, branch: null, tree: null };
+    const req = { url: `/api/acp-sessions?cwd=${encodeURIComponent(WS_A)}` };
     const res = fakeRes();
     await handleAcpSessions(req, res, { cs, cid: "cid-1", pathname: "/api/acp-sessions" });
     assert.equal(res._status, 200);
     const body = JSON.parse(res._body);
     assert.equal(body.ok, true);
-    assert.equal(body.cwd, "/ws-A");
+    assert.equal(body.cwd, WS_A);
     assert.ok(Array.isArray(body.sessions));
   });
 
@@ -596,7 +622,7 @@ describe("handleDeleteSession — v1.0 anti-resurrection", () => {
           id: "webui-ar",
           mcodeSessionId: MVS_SID,
           title: "AR target",
-          workspace: "/ws-A",
+          workspace: WS_A,
           createdAt: 9,
           updatedAt: 9,
           chat: [],
@@ -604,7 +630,7 @@ describe("handleDeleteSession — v1.0 anti-resurrection", () => {
       ],
     });
     const cs = makeClientState();
-    cs.workspace = { dir: "/ws-A", branch: null, tree: null };
+    cs.workspace = { dir: WS_A, branch: null, tree: null };
     const cid = "cid-1";
     clients.set(cid, cs);
     const res = fakeRes();
@@ -624,7 +650,7 @@ describe("handleDeleteSession — v1.0 anti-resurrection", () => {
           id: "webui-ar2",
           mcodeSessionId: MVS_SID,
           title: "AR dry",
-          workspace: "/ws-A",
+          workspace: WS_A,
           createdAt: 9,
           updatedAt: 9,
           chat: [],
@@ -632,7 +658,7 @@ describe("handleDeleteSession — v1.0 anti-resurrection", () => {
       ],
     });
     const cs = makeClientState();
-    cs.workspace = { dir: "/ws-A", branch: null, tree: null };
+    cs.workspace = { dir: WS_A, branch: null, tree: null };
     const cid = "cid-1";
     clients.set(cid, cs);
     const res = fakeRes();
@@ -654,7 +680,7 @@ describe("handleDeleteSession — v1.0 anti-resurrection", () => {
           id: "webui-mc",
           mcodeSessionId: MVS_SID,
           title: "MC target",
-          workspace: "/ws-A",
+          workspace: WS_A,
           createdAt: 9,
           updatedAt: 9,
           chat: [],
@@ -701,18 +727,18 @@ describe("handleRenameSession — CRUD rename (改)", () => {
     const cid = "cid-1";
     const cs = makeClientState();
     cs.sessionId = "webui-A";
-    cs.sessionTitle = "A on ws-A";
-    cs.workspace = { dir: "/ws-A", branch: null, tree: null };
+    cs.sessionTitle = "A on tmp-webui-A";
+    cs.workspace = { dir: WS_A, branch: null, tree: null };
     clients.set(cid, cs);
     // another tab viewing the same session must sync too
     const cs2 = makeClientState();
     cs2.sessionId = "webui-A";
-    cs2.sessionTitle = "A on ws-A";
+    cs2.sessionTitle = "A on tmp-webui-A";
     clients.set("cid-2", cs2);
     // unrelated tab must NOT sync
     const cs3 = makeClientState();
     cs3.sessionId = "webui-B";
-    cs3.sessionTitle = "B on ws-B";
+    cs3.sessionTitle = "B on tmp-webui-B";
     clients.set("cid-3", cs3);
 
     const res = fakeRes();
@@ -735,7 +761,7 @@ describe("handleRenameSession — CRUD rename (改)", () => {
 
     assert.equal(cs.sessionTitle, "renamed title", "caller's sessionTitle synced");
     assert.equal(cs2.sessionTitle, "renamed title", "other tab on same session synced");
-    assert.equal(cs3.sessionTitle, "B on ws-B", "unrelated tab untouched");
+    assert.equal(cs3.sessionTitle, "B on tmp-webui-B", "unrelated tab untouched");
   });
 
   test("renames by mcodeSessionId (mvs_ wrapper record)", async () => {
@@ -746,7 +772,7 @@ describe("handleRenameSession — CRUD rename (改)", () => {
           id: "wrap-1",
           mcodeSessionId: MVS,
           title: "Mcode session",
-          workspace: "/ws-A",
+          workspace: WS_A,
           createdAt: 1,
           updatedAt: 1,
           chat: [],
@@ -774,7 +800,7 @@ describe("handleRenameSession — CRUD rename (改)", () => {
     const MVS = "mvs_" + "b".repeat(32);
     registerSessionsStore({ initial: [] });
     const cs = makeClientState();
-    cs.workspace = { dir: "/ws-A", branch: null, tree: null };
+    cs.workspace = { dir: WS_A, branch: null, tree: null };
     clients.set("cid-1", cs);
 
     const res = fakeRes();
@@ -843,7 +869,7 @@ describe("handleRenameSession — CRUD rename (改)", () => {
     const MVS = "mvs_" + "c".repeat(32);
     registerSessionsStore({ initial: [] });
     const cs = makeClientState();
-    cs.workspace = { dir: "/ws-A", branch: null, tree: null };
+    cs.workspace = { dir: WS_A, branch: null, tree: null };
     clients.set("cid-1", cs);
     for (const title of ["first custom", "second custom"]) {
       const res = fakeRes();

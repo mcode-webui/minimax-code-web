@@ -229,7 +229,7 @@ async function waitFor(fn, what, timeoutMs = 2000) {
   }
 }
 
-const WS = join(_tmpDataDir, "ws");
+const WS = _tmpDataDir; // mkdtempSync already created the leaf — assertWorkspacePath's realpathSync requires an existing path.
 
 function makeClient(cid, { sessionId = null, mcodeSessionId = null } = {}) {
   const cs = sb.makeClientState();

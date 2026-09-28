@@ -37,7 +37,7 @@
 import { test, describe, before, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -98,6 +98,15 @@ let _acpTitleCalls = 0;
 // module-load time.
 let _tmpEventsDir;
 let _tmpDbDir;
+// s39 (webui-parity ticket 39): assertWorkspacePath's realpathSync
+// requires the workspace path to exist on disk. Pre-existing tests
+// need workspace fixture paths — built via mkdtempSync under
+// os.tmpdir() and immediately realpath'd so every assertion compares
+// against the same form the server returns (Linux /tmp vs macOS
+// /private/tmp symlink — see fs-write.test.js, #81 commit 7ac8f07).
+// Each file builds its own pair so cross-file collision is impossible.
+const WS_A = realpathSync(mkdtempSync(join(tmpdir(), "webui-test-A-")));
+const WS_B = realpathSync(mkdtempSync(join(tmpdir(), "webui-test-B-")));
 before(async (t) => {
   _tmpEventsDir = mkdtempSync(join(tmpdir(), "webui-switch-test-events-"));
   process.env.MCODE_WEBUI_EVENTS_PATH = join(_tmpEventsDir, "events.ndjson");
@@ -144,6 +153,11 @@ after(() => {
   if (_tmpDbDir) {
     try { rmSync(_tmpDbDir, { recursive: true, force: true }); } catch {}
   }
+  // WS_A / WS_B are unique to this file's load (mkdtempSync) — safe
+  // to remove here. force:true in case a test wrote content into them.
+  for (const d of [WS_A, WS_B]) {
+    try { rmSync(d, { recursive: true, force: true }); } catch {}
+  }
 });
 
 function fakeReq(body) {
@@ -167,7 +181,7 @@ function fakeRes() {
   };
 }
 
-function newCs(ws = "/ws-A") {
+function newCs(ws = WS_A) {
   const cs = makeClientState();
   cs.workspace = { dir: ws, branch: null, tree: null };
   return cs;
@@ -255,7 +269,7 @@ describe("handleSwitchSession — v2 title fast path", () => {
           id: "webui-ph",
           mcodeSessionId: MVS_T,
           title: "Mcode session", // placeholder created by the broken-title era
-          workspace: "/ws-A",
+          workspace: WS_A,
           createdAt: 1,
           updatedAt: 1,
           chat: ["● existing history"],
@@ -350,7 +364,7 @@ describe("handleSwitchSession — v2 transcript backfill", () => {
           id: "webui-empty",
           mcodeSessionId: MVS_R,
           title: "Has mcode sid, no chat",
-          workspace: "/ws-A",
+          workspace: WS_A,
           createdAt: 1,
           updatedAt: 1,
           chat: [],
@@ -373,7 +387,7 @@ describe("handleSwitchSession — v2 transcript backfill", () => {
           id: "webui-keep",
           mcodeSessionId: MVS_R,
           title: "Keep my chat",
-          workspace: "/ws-A",
+          workspace: WS_A,
           createdAt: 1,
           updatedAt: 1,
           chat: ["● mine already"],
