@@ -100,24 +100,46 @@ node dist/cli.js webui --host 0.0.0.0 --no-open   # PORT defaults to 18080
 
 正式的披露文档是 [`packages/webui/references/SECURITY-NOTES.md`](../packages/webui/references/SECURITY-NOTES.md)。
 
-## 传输选择（ACP 还是 exec）
+## 传输选择（ACP、exec 或 runtime）
 
-发出的每条消息都由两种传输之一送达引擎。选择发生在服务端、按回合进行，页面上**没有任何提示**。本节记录当前源码的实际行为，不是长期不变的契约。
+发出的每条消息由三种传输之一送达引擎：长驻的 ACP 子进程（`mcode acp`）、一次性的 exec 子进程（`mcode exec`），或——S2 新增的——**进程内 runtime 宿主**（`packages/webui/server/lib/runtime-host.js`），它拥有与 TUI 同一份 `CliService`。选择发生在服务端、按回合进行，页面上**没有任何提示**。本节记录当前源码的实际行为，不是长期不变的契约。
 
-两种传输是什么：
+三种传输是什么：
 
 - **ACP**（默认）：与 TUI 相同的协议通道（`mcode acp` 子进程）。工具调用过程、会话标题、思考等级等事件都从这条通道回传。
 - **exec**：一次性 `mcode exec` 命令行子进程。回合结束进程即退出，只有思考与正文文本回传。
+- **runtime**（S2 起提供，路由尚未接入）：进程内 runtime 宿主。它没有子进程边界，与 `mcode` CLI 共用同一份 SQLite；S3-S6 才会逐步把路由接到它上面，S7 才把默认值翻过来。S2 阶段开关设为 `runtime` 仍是 no-op——只是把宿主骨架建好。
 
-谁决定走哪条：
+S2（runtime-first 改造第二步）新增了一个开关与 `MCODE_USE_ACP` 并存：
+
+| 环境变量 | 缺省值 | 可选值 | 含义 |
+| --- | --- | --- | --- |
+| `MCODE_USE_ACP` | 未设 | `0` → exec 逃生阀（压倒其他所有）；`1` → 无效；未设 → 无效 | 旧开关，仅作逃生阀；见下表。 |
+| `MCODE_WEBUI_TRANSPORT` | `acp` | `acp`（与今天一致）、`exec`（S2 阶段无路由消费，是 no-op；今天走 exec 仍要靠 `MCODE_USE_ACP=0`）、`runtime`（S2 起的进程内宿主，开关已 plumb 但路由未接入） | 选择引擎传输。缺省下每个响应都与 `main` 字段级一致；显式 `runtime` 直到 S3+ 才真正生效。 |
+
+判定优先级（按顺序）：
+
+1. `MCODE_USE_ACP=0` ⇒ `exec`，无视 `MCODE_WEBUI_TRANSPORT`。旧逃生阀优先级最高。
+2. `MCODE_WEBUI_TRANSPORT=exec` ⇒ S2 阶段是 no-op。当前没有任何生产路由消费这个值；今天要走 exec 仍要靠 `MCODE_USE_ACP=0`。**先把契约写在这里**，避免后续切片接线时漂移。
+3. `MCODE_WEBUI_TRANSPORT=runtime` ⇒ `runtime`。S2 已经把宿主骨架建好，但尚无路由读这个开关；S3+ 才会真正接上。S2 阶段设为 `runtime` 是 no-op。
+4. `MCODE_WEBUI_TRANSPORT=acp`（缺省）⇒ ACP。权限模式静默改道仍然生效。
+5. 未知取值（例如拼错）⇒ 回落到 `acp`，并在 stderr 打印一行告警。**永远不会因为传输开关未知而拒绝启动。**
 
 | 条件 | 实际走的传输 | 判定位置 |
 | --- | --- | --- |
 | 服务端环境变量 `MCODE_USE_ACP=0` | exec | `server/routes/chat.js#handleSend` |
+| `MCODE_WEBUI_TRANSPORT=exec` | （S2 阶段是 no-op——与缺省 `acp` 等价；今天要走 exec 仍要靠 `MCODE_USE_ACP=0`） | `server/lib/config.js#MCODE_WEBUI_TRANSPORT`（路由尚未读这个值） |
 | 会话权限模式不是 Full access（Ask / Auto / Read） | exec（在 ACP 入口内部静默改道） | `server/lib/mcode-acp.js#runMcodeAcp` 首个分支 |
+| `MCODE_WEBUI_TRANSPORT=runtime` | runtime（S2 建好宿主；S3+ 才接路由） | `server/lib/config.js#MCODE_WEBUI_TRANSPORT`（路由尚未读它） |
 | 其余情况（出厂默认：权限 Full access，见 `server/lib/state-bus.js` 初始状态） | ACP | 同上 |
 
-出厂默认权限是 Full access，所以不碰任何开关时所有回合都走 ACP。两个条件若同时成立也不冲突——它们都指向 exec；环境变量先判（`chat.js` 的三元），权限判定只在其后进入 `runMcodeAcp` 时发生。
+S2 不变量（后续切片必须继续守住）：
+
+- **缺省 `MCODE_WEBUI_TRANSPORT=acp` 与 `main` 字段级一致。** 现有任一端点的响应都不能偏移；进程内不能多出新的子进程。每次提交都用完整 webui node:test 套件在无 env 覆盖的情况下跑一遍来验证。
+- **S2 只建骨架、不接线。** `createCatalogueHost` 与 `createTurnHost` 都从 `server/lib/runtime-host.js` 导出，但没有生产路由 import 它们。S3 接目录类流量（list/title），S4 接回合（`runMcodeRuntime`），S5 接模型，S6 接交互与账户。S7 才把缺省翻为 `runtime`。
+- **R1 缓解（进程隔离丧失）落在回合宿主里。** 任何对 `adapter.sendMessage` 的调用都被包在边界内——runtime 侧抛出转为流式 error 帧，**永远不会冒泡出回合**。`packages/webui/test/server/runtime-host.test.js` 用一处删掉内层 try/catch 的变异验证这条边界——边界没了测试就红。
+- **R2 缓解（取消语义）落在 `createTurnHost#abortSession`。** 它在最多 5 秒内等待流归位，然后返回 `{success:true, elapsedMs}`；**不依赖子进程 kill**，因为已经没有子进程。超时上限保证即便 runtime 卡死也不会拖累优雅停机。
+- **R8 缓解（宿主卡死）落在 `createCatalogueHost#close`。** 它把 `apiHost.close()` 与 5 秒超时赛跑——任一依赖链卡死都不会拖累 webui 的优雅停机。
 
 什么时候会遇到 exec：
 

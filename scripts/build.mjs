@@ -13,7 +13,7 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { copyLocalRuntimeAssets } from "./lib/local-runtime-assets.mjs";
-import { createTuiBundleModuleLocationConfig } from "./lib/tui-npm-bundle-profile.mjs";
+import { createTuiBundleModuleLocationConfig, createWebuiBundleModuleLocationConfig } from "./lib/tui-npm-bundle-profile.mjs";
 import { shouldCopyTuiRuntimeResource } from "./lib/tui-package-privacy.mjs";
 import { TUI_DISABLED_BUILTIN_SKILL_NAMES } from "./lib/builtin-skills.mjs";
 import { copyMcodeToolsArtifact } from './lib/mcode-tools-artifact.mjs';
@@ -32,6 +32,7 @@ const packages = new Map(
   }),
 );
 const location = createTuiBundleModuleLocationConfig();
+const webuiLocation = createWebuiBundleModuleLocationConfig();
 const outdir = path.join(root, "dist");
 rmSync(outdir, { recursive: true, force: true });
 mkdirSync(outdir, { recursive: true });
@@ -96,6 +97,17 @@ await build({
   plugins: [createWorkspaceSourcePlugin({ root, packages })],
   metafile: true,
   logLevel: "info",
+  // S2 (runtime-first migration): the webui bundle's dependency tree
+  // pulls in proper-lockfile (CJS), which requires `path` at module
+  // load. Without a banner the synthetic __require shim throws
+  // "Dynamic require of \"path\" is not supported" on first import.
+  // The CLI bundle has had an equivalent banner since 0.5.4
+  // (createTuiBundleModuleLocationConfig); the webui bundle mirrors
+  // it with `server.js` as the entry filename. Do NOT remove without
+  // first running scripts/probe-cjs-banner.mjs to confirm symptom is
+  // gone in your environment.
+  banner: { js: webuiLocation.banner },
+  define: webuiLocation.define,
 });
 copyLocalRuntimeAssets({
   repositoryRoot: root,
