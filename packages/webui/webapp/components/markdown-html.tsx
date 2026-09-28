@@ -9,6 +9,7 @@ import {
 } from "react";
 
 import { MermaidBlock } from "./mermaid-block";
+import { parseInlineStyle } from "../lib/markdown";
 
 /**
  * Render pre-sanitised HTML and mount mermaid blocks as real React
@@ -157,6 +158,12 @@ function htmlToReact(html: string, theme: "light" | "dark"): ReactNode {
         const name = attr.name.toLowerCase();
         if (name === "class") {
           props.className = attr.value;
+        } else if (name === "style") {
+          // KaTeX layout lives in inline styles, and React requires the
+          // style prop as an object — a string is rejected with a console
+          // error and the styles never apply. The value was already vetted
+          // by the sanitiser's `isSafeStyleValue`; this only reshapes it.
+          props.style = parseInlineStyle(attr.value);
         } else {
           props[attr.name] = attr.value;
         }

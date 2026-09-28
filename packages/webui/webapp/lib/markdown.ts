@@ -211,6 +211,12 @@ export const ALLOWED_TAGS = new Set([
   "p", "br", "hr", "strong", "em", "del", "code", "pre", "blockquote",
   "ul", "ol", "li", "h1", "h2", "h3", "h4", "h5", "h6",
   "a", "table", "thead", "tbody", "tr", "th", "td",
+  // KaTeX HTML output is built exclusively from `span`, `svg` and `path`
+  // (`lib/math-renderer.ts`). `svg` is therefore removed from the DROP set
+  // below, and its subtree is walked like any other element: a `<script>` or
+  // an `<animate>` inside a hand-written `<svg>` still cannot survive (they
+  // are not in this set), and `svg` admits no `href`-like attribute at all.
+  "svg", "path",
 ]);
 
 /** Attributes kept per tag; everything else is dropped. */
@@ -221,10 +227,85 @@ export const ALLOWED_ATTRS: Record<string, Set<string>> = {
   // `class` is inert (no script, no URL) and is what carries the design-system
   // styling; a markdown author can therefore only restyle, not execute.
   div: new Set(["class"]),
-  span: new Set(["class"]),
+  // `style` on `span` (plus the geometry attributes on `svg`/`path`) is what
+  // KaTeX markup needs — its layout is inline-styled spans. Every `style`
+  // value is additionally vetted by `isSafeStyleValue` below, so the value
+  // charset cannot express a URL, an `expression(...)` or a position change.
+  span: new Set(["class", "aria-hidden", "style"]),
+  svg: new Set(["class", "xmlns", "width", "height", "viewbox", "preserveaspectratio"]),
+  path: new Set(["d"]),
   th: new Set(["align"]),
   td: new Set(["align"]),
 };
+
+/**
+ * Style property names rejected even where the value check would pass.
+ *
+ * KaTeX never emits them inline; refusing them keeps layout hijacking (a
+ * `position: fixed` overlay, a background-image beacon) out of reach even if
+ * the value charset below were ever relaxed.
+ */
+const FORBIDDEN_STYLE_PROPERTIES = new Set([
+  "position", "background", "background-image", "behavior", "binding",
+  "-moz-binding",
+]);
+
+/**
+ * Whether an inline `style` attribute value is safe to keep.
+ *
+ * The grammar is deliberately narrower than CSS: each declaration must be
+ * `property: value` with a plain identifier property and a value drawn from
+ * identifier characters, digits and the few punctuation marks CSS geometry
+ * uses (`-`, `.`, `%`, `#`, `,`, `_`, whitespace). Parentheses, slashes and
+ * `@` cannot appear, ruling out `url(...)`, `expression(...)`, `@import` and
+ * `image-set()` outright; the forbidden-property list above is defence in
+ * depth on top of that.
+ *
+ * Exported for the policy tests, and mirrored by the React-side style parser
+ * in `components/markdown-html.tsx` — the two must accept the same grammar.
+ */
+export function isSafeStyleValue(value: string): boolean {
+  for (const declaration of value.split(";")) {
+    const trimmed = declaration.trim();
+    if (trimmed === "") continue;
+    const match = trimmed.match(/^(-?[a-zA-Z]+(?:-[a-zA-Z]+)*)\s*:\s*([-a-zA-Z0-9.%#_,\s]*)$/);
+    const property = match?.[1];
+    if (!match || property === undefined) return false;
+    if (FORBIDDEN_STYLE_PROPERTIES.has(property.toLowerCase())) return false;
+  }
+  return true;
+}
+
+/**
+ * Parse an inline `style` attribute value into a React style object.
+ *
+ * This is the reshaping mirror of `isSafeStyleValue`: the sanitiser has
+ * already vetted the grammar it accepts, so this function only splits
+ * declarations on `;`, splits each on the first `:`, camelCases the property
+ * (`margin-right` → `marginRight`) and skips anything malformed instead of
+ * throwing.
+ *
+ * Needed because React rejects a string `style` prop outright (console error,
+ * styles never applied) — the React tree builder in
+ * `components/markdown-html.tsx` must hand it an object. Exported for the
+ * policy tests, which pin the exact shape React receives: a wrong key casing
+ * silently drops that one declaration.
+ */
+export function parseInlineStyle(value: string): Record<string, string> {
+  const style: Record<string, string> = {};
+  for (const declaration of value.split(";")) {
+    const trimmed = declaration.trim();
+    if (trimmed === "") continue;
+    const colon = trimmed.indexOf(":");
+    if (colon <= 0) continue;
+    const property = trimmed.slice(0, colon).trim().toLowerCase();
+    const propertyValue = trimmed.slice(colon + 1).trim();
+    if (!property || propertyValue === "") continue;
+    const camel = property.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase());
+    style[camel] = propertyValue;
+  }
+  return style;
+}
 
 const SAFE_URL = /^(?:https?:|mailto:|#|\/)/i;
 
@@ -244,7 +325,11 @@ function sanitize(html: string): string {
   }
 
   const doc = new DOMParser().parseFromString(`<body>${html}</body>`, "text/html");
-  const DROP = new Set(["script", "style", "iframe", "object", "embed", "link", "meta", "form", "input", "svg", "math"]);
+  // `svg` is NOT in this set: KaTeX (lib/math-renderer.ts) emits real
+  // `<svg>` geometry and needs it to survive. Its subtree is still walked —
+  // scripts, event handlers and any attribute outside ALLOWED_ATTRS are
+  // stripped exactly as they are everywhere else.
+  const DROP = new Set(["script", "style", "iframe", "object", "embed", "link", "meta", "form", "input", "math"]);
 
   const walk = (node: Element): void => {
     for (const child of [...node.children]) {
@@ -271,6 +356,13 @@ function sanitize(html: string): string {
           continue;
         }
         if (name === "href" && !SAFE_URL.test(attr.value.trim())) {
+          child.removeAttribute(attr.name);
+          continue;
+        }
+        // `style` passes the name check only where the allowlist admits it;
+        // the value must additionally clear the safe-grammar check, so a
+        // hand-written `style="background:url(...)"` loses the attribute.
+        if (name === "style" && !isSafeStyleValue(attr.value)) {
           child.removeAttribute(attr.name);
         }
       }

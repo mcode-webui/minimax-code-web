@@ -500,6 +500,38 @@ implementation accident:
 The `mermaid` dependency (11.12.1, MIT) is recorded in
 `release/dependency-licenses.json`.
 
+## Math formulas in Markdown (KaTeX)
+
+Assistant messages and Markdown file previews also render math formulas,
+in the same pipeline as Mermaid diagrams. Three input shapes are math;
+every other use of the dollar sign stays prose:
+
+| Shape | Written as | Rendered as | Backed by |
+| --- | --- | --- | --- |
+| Inline | `$E=mc^2$` | KaTeX markup inside the paragraph | `webapp/lib/math-renderer.ts` (the marked `webuiMath` inline extension) |
+| Display | `$$\frac{a}{b}$$` | A centred block (`.katex-display`) | the same tokenizer, `displayMode: true` |
+| Fence | ```` ```math ```` | A centred block, dispatched through the language→renderer registry — the same seam `mermaid` uses, so neither fence language can shadow the other | `webapp/lib/math-renderer.ts` (`registerMathRenderer`) |
+
+| Aspect | Contract | Backed by |
+| --- | --- | --- |
+| False positives | A single `$` is math only when a closing `$` exists, the body stays on one line, and the body does not start with a digit: `costs $5 and $10`, `$HOME`, an unclosed `$\frac{` all stay prose | `webapp/lib/math-renderer.ts` (tokenizer guard) |
+| Invalid formula | An input KaTeX cannot parse degrades to the **original source as code** — inline/display shapes become `<code class="inline-code">raw</code>`, a ```math fence falls back to the plain codeblock shell (the registry's existing throw path). The rest of the document is unaffected; the page never blanks | `webapp/lib/math-renderer.ts`, `webapp/lib/markdown.ts` (`safeLanguageRenderer`) |
+| Sanitiser surface | KaTeX runs with `output: "html"` and emits only `span`, `svg`, `path`. The allowlist admits exactly those tags; `svg` keeps a fixed attribute set (`xmlns`, `width`, `height`, `viewBox`, `preserveAspectRatio`, `class`) with no `href`-like attribute, and `<math>`/MathML stays a DROP tag — which is precisely why HTML-only output is configured. Inline `style` survives only on `span` and only when the value clears `isSafeStyleValue`: no parentheses rules out `url(...)`/`expression(...)`, and `position`/`background`/`behavior` are refused outright | `webapp/lib/markdown.ts` (`ALLOWED_TAGS`, `ALLOWED_ATTRS`, `isSafeStyleValue`) |
+| React tree | The style attribute reaches React as a parsed object (`parseInlineStyle`), because React rejects a string `style` prop outright — passing it through would silently drop all KaTeX layout | `webapp/lib/markdown.ts` (`parseInlineStyle`), `components/markdown-html.tsx` |
+| Trust | KaTeX `trust` stays `false`: `\href` renders as a red warning text node, never a link, so no URL can enter the DOM through a formula | `webapp/lib/math-renderer.ts` (`KATEX_OPTIONS`) |
+| Theme | Formulas are inheriting text plus CSS transforms; they need no per-theme re-render (unlike Mermaid, which repaints on the theme flip) and pick up both themes' text colours from the design tokens | `webapp/styles/katex.css` |
+| CSS + fonts | `webapp/styles/katex.css` is vendored from `katex/dist/katex.min.css` (the same version as the `katex` devDependency) with the `@font-face` sources repointed at the vendored fonts in `webapp/public/fonts/katex/` (60 font files + the MIT license notice). The stylesheet is loaded unconditionally from `app/layout.tsx` (~24 KB); fonts are served from `/fonts/katex/…` | `app/layout.tsx`, `webapp/styles/katex.css`, `webapp/public/fonts/katex/` |
+| Bundle cost | `katex` JS is in the client bundle, not lazy-loaded the way Mermaid is: the math pipeline is synchronous string rendering (`renderToString`), and an inline `$…$` can appear mid-sentence. Accepted as a known cost; the lazy-load lever exists only if bundle budgets demand it | `webapp/lib/math-renderer.ts` |
+
+Upgrading `katex` regenerates both halves in the same commit: replace the
+files in `webapp/public/fonts/katex/` from the new `dist/fonts/`, and
+regenerate the stylesheet with
+`sed 's|url(fonts/|url(/fonts/katex/|g' node_modules/katex/dist/katex.min.css
+> webapp/styles/katex.css`.
+
+The `katex` dependency (0.18.7, MIT) is recorded in
+`release/dependency-licenses.json`.
+
 ## File preview toolbar and Markdown outline (slice 27)
 
 The preview component's header carries three controls, and the Markdown

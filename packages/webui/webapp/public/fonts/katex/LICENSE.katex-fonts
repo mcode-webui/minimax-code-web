@@ -1,0 +1,4 @@
+The KaTeX font files in this directory are distributed under the MIT License.
+They correspond to the `katex` npm package used by this WebUI. See the
+upstream license at https://github.com/KaTeX/KaTeX/blob/main/LICENSE.
+

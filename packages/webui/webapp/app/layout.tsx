@@ -11,6 +11,12 @@ import "../styles/mavis-dropdown.css";
 import "../styles/desktop-typography.css";
 import "../styles/code-preview.css";
 import "../styles/mermaid.css";
+// KaTeX stylesheet, vendored from `katex/dist/katex.min.css` (same version as
+// the `katex` devDependency) with the @font-face sources repointed at the
+// vendored fonts in `public/fonts/katex/`. Loaded unconditionally: it is
+// ~24 KB and the formulas' geometry classes must exist before any message
+// with math renders.
+import "../styles/katex.css";
 
 export const metadata: Metadata = {
   title: "MiniMax Code",

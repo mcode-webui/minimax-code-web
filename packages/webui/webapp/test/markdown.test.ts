@@ -77,7 +77,10 @@ describe("renderMarkdown — code", () => {
 
 describe("sanitiser policy", () => {
   test("script-bearing and embedding tags are not renderable at all", () => {
-    for (const tag of ["script", "style", "iframe", "object", "embed", "svg", "form", "input"]) {
+    // `svg` used to be in this list; KaTeX (lib/math-renderer.ts) emits real
+    // `<svg>` geometry, so it is now allowlisted with a strict attribute set —
+    // see the svg-specific assertions below.
+    for (const tag of ["script", "style", "iframe", "object", "embed", "math", "form", "input"]) {
       assert.equal(ALLOWED_TAGS.has(tag), false, `${tag} must not be allowed`);
     }
   });
@@ -88,12 +91,37 @@ describe("sanitiser policy", () => {
     }
   });
 
-  test("no element may carry event-handler or style attributes", () => {
-    // Only `class`, `href`, `title` and table alignment are admitted anywhere;
-    // `onclick`, `onerror`, `style` therefore cannot survive.
+  test("svg is allowlisted for KaTeX geometry only — no href-like attribute, no event handlers", () => {
+    assert.equal(ALLOWED_TAGS.has("svg"), true);
+    assert.equal(ALLOWED_TAGS.has("path"), true);
+    // Anything that could turn an `<svg>` into a link or an animated
+    // trigger is absent: `href`/`xlink:href` are the classic vectors.
+    for (const attr of ["href", "xlink:href", "onload", "onclick"]) {
+      assert.equal((ALLOWED_ATTRS["svg"] ?? new Set()).has(attr), false, `svg must not admit ${attr}`);
+    }
+    // `path` is geometry only.
+    assert.deepEqual([...(ALLOWED_ATTRS["path"] ?? [])], ["d"]);
+  });
+
+  test("no element may carry event-handler attributes", () => {
+    // Only inert presentation attributes are admitted anywhere; `onclick`,
+    // `onerror`, `onload` therefore cannot survive on any tag.
     const allowedNames = new Set(Object.values(ALLOWED_ATTRS).flatMap((s) => [...s]));
-    for (const attr of ["onclick", "onerror", "onload", "style", "srcset", "srcdoc"]) {
+    for (const attr of ["onclick", "onerror", "onload", "srcset", "srcdoc"]) {
       assert.equal(allowedNames.has(attr), false, `${attr} must not be allowed`);
+    }
+  });
+
+  test("style is admitted only on `span`, and its value must clear the safe-grammar check", () => {
+    // KaTeX layout is inline-styled spans. The attribute is allowlisted per
+    // tag (`span` only) and every value must additionally clear
+    // `isSafeStyleValue` — pinned table-driven in markdown-math.test.ts.
+    for (const [tag, attrs] of Object.entries(ALLOWED_ATTRS)) {
+      assert.equal(
+        attrs.has("style"),
+        tag === "span",
+        `${tag} must ${tag === "span" ? "" : "not "}admit style`,
+      );
     }
   });
 

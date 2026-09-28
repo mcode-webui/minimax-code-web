@@ -15,6 +15,7 @@ import {
 } from "@/lib/api";
 import { renderMarkdown } from "@/lib/markdown";
 import "@/lib/mermaid-renderer"; // registers the mermaid language renderer
+import "@/lib/math-renderer"; // registers KaTeX (inline $…$, $$…$$, ```math fences)
 import { MarkdownHtml } from "@/components/markdown-html";
 import { CodeView as IdeCodeView } from "@/components/code-view";
 import {
