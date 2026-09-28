@@ -1,4 +1,11 @@
 import type { TranscriptLine } from "./types";
+// Slice 20 (webui-parity): `extractToolPaths` derives candidate file paths
+// from a tool call's name + JSON arguments, since the engine's structured
+// `tool_update.locations` is never emitted in normal operation (verified:
+// 0 of 7,609 real tool calls). Kept in a separate module so the per-tool
+// rules can be unit-tested in isolation and so the `@ path` source stays
+// the wire contract this decoder owns.
+import { extractToolPaths, normalisePath } from "./tool-paths";
 
 /**
  * Decoder for the server's line-oriented transcript.
@@ -175,7 +182,10 @@ function collectContinuation(
  * order is load-bearing: `○` is both a todo and a system/warning glyph, and the
  * todo branch must lose to the system branch when the text reads like a notice.
  */
-export function decodeTranscript(lines: readonly TranscriptLine[]): TranscriptBlock[] {
+export function decodeTranscript(
+  lines: readonly TranscriptLine[],
+  opts: { workspaceDir?: string | null } = {},
+): TranscriptBlock[] {
   const blocks: TranscriptBlock[] = [];
   let current: TranscriptBlock | null = null;
   // Slice 06 (Agent Team): carry the most recently seen `##tc:<id>`
@@ -361,6 +371,52 @@ export function decodeTranscript(lines: readonly TranscriptLine[]): TranscriptBl
         else if (path) block.toolPaths?.push((path[1] ?? "").trim());
         else block.toolOutput?.push(inner);
         j += 1;
+      }
+      // Slice 20 (webui-parity): merge the `  @ path` source with the
+      // tool-arguments-derived one, deduped through the same
+      // `normalisePath` the extractor uses. Two cases drive the merge:
+      //
+      //   1. The engine does not emit `tool_update.locations` in normal
+      //      operation (verified against the runtime sqlite: 0 of
+      //      7,609 tool calls). Without this merge the chip row is
+      //      ALWAYS empty in real sessions — exactly the bug this
+      //      slice fixes.
+      //
+      //   2. If the engine DOES start emitting `locations` later, the
+      //      `@ path` lines still win for the absolute path they
+      //      already carry, and the extractor picks up any relative
+      //      paths the agent typed (e.g. `src/foo.ts` against the
+      //      workspace dir) the server never sees.
+      //
+      // Both sources land in `toolPaths`; the dedupe key is the
+      // normalised form (so `/abs/foo` from `@ path` matches `/abs/foo`
+      // produced by absolutising a relative args path).
+      const derived = extractToolPaths(block.toolName, block.toolArgs, opts);
+      if (derived && derived.length > 0) {
+        const existing = block.toolPaths ?? [];
+        const seen = new Set<string>();
+        const merged: string[] = [];
+        for (const raw of existing) {
+          const norm = normalisePath(raw, opts.workspaceDir) ?? raw;
+          if (!seen.has(norm)) {
+            seen.add(norm);
+            merged.push(norm);
+          }
+        }
+        for (const candidate of derived) {
+          if (!seen.has(candidate)) {
+            seen.add(candidate);
+            merged.push(candidate);
+          }
+        }
+        block.toolPaths = merged;
+      } else if (block.toolPaths && block.toolPaths.length > 0) {
+        // No derived paths — still normalise the `@ path` source so a
+        // relative `  @ src/foo.ts` lands as `/ws/src/foo.ts` in the
+        // chip row and the file-open click resolves.
+        block.toolPaths = block.toolPaths.map(
+          (p) => normalisePath(p, opts.workspaceDir) ?? p,
+        );
       }
       blocks.push(block);
       i = j;

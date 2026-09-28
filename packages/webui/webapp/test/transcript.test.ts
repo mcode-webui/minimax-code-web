@@ -298,6 +298,15 @@ describe("decodeTranscript — thinking and tool calls", () => {
   test("the indented body is split into status, output and paths", () => {
     // This is the exact layout server/lib/mcode-acp.js writes: the header, then
     // `  [status]`, then the output lines and `  @ path` entries, all indented.
+    //
+    // Slice 20 (webui-parity): the chip row is now derived from BOTH
+    // sources and merged deduped — the `  @ path` body line AND any
+    // path-shaped field the tool's args carry. `Read` has `path`, so
+    // the relative `"a.ts"` from `toolArgs` lands next to the absolute
+    // `/tmp/a.ts` from the body. No workspace dir is supplied, so
+    // `"a.ts"` stays relative (a chip the file-open endpoint will
+    // reject — the user sees "could not open" instead of a fake
+    // absolute path).
     const blocks = decodeTranscript([
       "→ Read  {\"path\":\"a.ts\"}",
       "  [completed]",
@@ -310,7 +319,11 @@ describe("decodeTranscript — thinking and tool calls", () => {
     assert.equal(tool?.role, "tool");
     assert.equal(tool?.toolStatus, "completed");
     assert.deepEqual(tool?.toolOutput, ["line one of output", "line two of output"]);
-    assert.deepEqual(tool?.toolPaths, ["/tmp/a.ts"]);
+    // Order: `  @ path` body lines arrive first in the decoder, then
+    // the args-derived paths; the merge keeps first-seen order. See
+    // `webapp/test/transcript-tool-paths.test.ts` for the slice-20
+    // wiring contract.
+    assert.deepEqual(tool?.toolPaths, ["/tmp/a.ts", "a.ts"]);
     assert.equal(blocks[1]?.role, "assistant", "the body must not swallow the next line");
   });
 
