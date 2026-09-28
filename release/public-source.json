@@ -3579,6 +3579,7 @@
     "packages/webui/test/lib/static.test.js",
     "packages/webui/test/lib/transcript-sync-wedge.check.mjs",
     "packages/webui/test/lib/transcript.test.js",
+    "packages/webui/test/lib/tui-runtime-adapter-import.test.js",
     "packages/webui/test/lib/upload.test.js",
     "packages/webui/test/lib/usage.check.mjs",
     "packages/webui/test/lib/workspace-containment.check.mjs",

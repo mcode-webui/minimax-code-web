@@ -5,7 +5,11 @@
   "description": "Minimax Code CLI and TUI product entry.",
   "type": "module",
   "exports": {
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./runtime-adapter": "./src/runtime/adapter.ts",
+    "./runtime-stream": "./src/runtime/stream-events.ts",
+    "./runtime-events": "./src/runtime/event-normalizer.ts",
+    "./auth-storage": "./src/auth/storage.ts"
   },
   "engines": {
     "node": ">=22.19 <23 || >=24.2 <27"

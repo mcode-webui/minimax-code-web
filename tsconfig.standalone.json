@@ -376,8 +376,20 @@
       "@mavis/system-reminder": [
         "./packages/agent-modules/system-reminder/src/index.ts"
       ],
+      "@minimax/code/auth-storage": [
+        "./packages/tui/src/auth/storage.ts"
+      ],
       "@minimax/code/package.json": [
         "./packages/tui/package.json"
+      ],
+      "@minimax/code/runtime-adapter": [
+        "./packages/tui/src/runtime/adapter.ts"
+      ],
+      "@minimax/code/runtime-events": [
+        "./packages/tui/src/runtime/event-normalizer.ts"
+      ],
+      "@minimax/code/runtime-stream": [
+        "./packages/tui/src/runtime/stream-events.ts"
       ],
       "@minimax/mcode-sandbox-runtime": [
         "./third_party/sandbox-runtime/src/index.ts"
