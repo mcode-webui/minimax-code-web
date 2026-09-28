@@ -175,33 +175,104 @@ below cites the component file and one `data-testid` per surface.
 ## Four-column workspace (main, slices 17 + 21)
 
 On the right side of the sidebar, the shell renders a flex row that can
-hold up to three **visible columns**: `conversation | preview | tree` (the
+hold up to three **visible columns**: `conversation | preview | tree`. The
 sidebar is owned by `AppShell`, lives outside the row, and is allocated
-zero width inside it).
+zero width inside the wrapper (`workspace-tabs-state.ts:738-744`).
 
-| Column | Role | Default / min / max width | Mounted by |
+### Column widths — the source of truth
+
+Every width number below comes from `COLUMN_SPECS` in
+`packages/webui/webapp/lib/workspace-tabs-state.ts:412-456`. Change a
+default here, and the corresponding `DEFAULT_COLUMN_LAYOUT` follows;
+change a `minWidth` / `maxWidth`, and `clampWidth`
+(`workspace-tabs-state.ts:511-515`) plus `computeColumnLayout`
+(`workspace-tabs-state.ts:724-854`) pick it up on the next render.
+
+| Column | Role | Default | Min | Max | Flow |
+| --- | --- | --- | --- | --- | --- |
+| `sidebar` | AppShell chrome — outside the column row | 240 | 220 | 400 | fixed |
+| `conversation` | Elastic — absorbs leftover, never caps the growth path | 720 | 280 | 2400 | fluid |
+| `preview` | On demand — viewing surface (`file:<path>`, `browser`) | 400 | 320 | 720 | fixed |
+| `tree` | On demand — navigation surface (`files`, `git`, `tasks`, `search`, `plugins`) | 340 | 320 | 600 | fixed |
+
+The only `maxWidth` that does **not** cap what the user actually sees on
+screen is `conversation.maxWidth = 2400`. It bounds the value the user
+can write into the layout by dragging the divider
+(`workspace-tabs-state.ts:511-528`); the layout algorithm explicitly
+ignores it and lets `conversation` absorb every leftover pixel after
+the fixed columns have grown to their caps
+(`workspace-tabs-state.ts:805-823`, commentary at `:438-443` and
+`:702-720`). `COLUMN_SPECS.conversation.maxWidth` is therefore **not**
+a viewport ceiling — past 1920 the column just keeps growing, and the
+readable measure on the chat content (960 px, centred —
+`components/chat.tsx:38-52`, applied at `:255` and `composer.tsx:532`)
+takes over the visual constraint.
+
+### What the layout algorithm does, in invariant form
+
+`computeColumnLayout` (`workspace-tabs-state.ts:724-854`) is a pure
+function that returns a `ColumnLayoutSummary`. The flow is:
+
+1. Each column starts at its stored width (clamped to its `[min, max]`
+   band). `conversation`'s stored width is the user's drag target;
+   `preview` / `tree` start at 0 when collapsed (slice 21 on-demand
+   model — `workspace-tabs-state.ts:494-504`).
+2. **Overflow** → fixed columns shrink toward their minimums in the
+   order `preview → tree`. If still over, `conversation` shrinks
+   toward its minimum (280). Last resort: `conversation` shrinks below
+   its minimum and the renderer hides it.
+3. **Leftover** → fixed columns grow toward their maximums in the
+   order `tree → preview` (the fold order reversed). Whatever is left
+   after that goes to `conversation`, **unconditionally** — slice 25
+   removed the previous growth-path ceiling, and the source comment
+   pins the decision (`workspace-tabs-state.ts:805-823`).
+
+Two invariants follow directly:
+
+- **Row sums to exactly the container width**, every render (modulo
+  zero-width hidden segments). No dead gutter is reachable.
+- **The visible `conversation` width is never less than 280 px** while
+  it is the only visible column, because the fold ladder in step 2
+  folds `preview` and `tree` first.
+
+### Idle path — what the user sees at common viewports
+
+When both `preview` and `tree` are closed (the shipped default on first
+paint — `workspace-tabs-state.ts:494-504`), `conversation` absorbs
+every pixel the row has after `sidebar` has taken its default 240 px.
+The conversation width is therefore `viewport − sidebar`, a computed
+remainder, **not** a configured cap:
+
+| Viewport | Sidebar | Conversation (idle) | Notes |
 | --- | --- | --- | --- |
-| `conversation` | Fluid (absorbs leftover) | 720 / **280** / **768** px (idle lifted) | `components/chat.tsx` |
-| `preview` | On demand — viewing surface (`file:<path>`, `browser`) | 400 / 320 / 720 px | `components/file-preview-pane.tsx`, `browser-panel.tsx` |
-| `tree` | On demand — navigation surface (`files`, `git`, `tasks`, `search`, `plugins`) | 340 / 320 / 600 px | `components/workspace-tree-column.tsx` |
+| 1280 px | 240 | **1040** | `1280 − 240` |
+| 1920 px | 240 | **1680** | `1920 − 240` |
+| 2560 px | 240 | **2320** | `2560 − 240` |
 
-**Preview and tree columns are on demand as of slice 21**: each column
-appears when at least one matching-role tab is open, and **auto-closes**
-when the last tab in that role closes. The deserializer normalises a
-stale "column open but empty" payload to closed so a stale disk write
-cannot conjure an empty column on hydration. The persistence layer +
-the page-level reducer wrappers re-derive each column's visibility from
-the tab strip on every change via
-`syncColumnVisibility(tabStrip, layout)` in
-`packages/webui/webapp/lib/workspace-tabs-state.ts`. **Idle costs no
-width**: when both on-demand columns are closed, the conversation
-column takes the whole remainder. At 1280 viewport (240 px AppShell
-chrome) the conversation column measures **1040 px**; at 1920 it
-measures **1680 px**. Both numbers are pinned by
-`packages/webui/webapp/test/workspace-tabs-state.test.ts#computeColumnLayout — slice 21 idle state`.
-When at least one fixed column is visible, conversation caps at 768
-(slice 17's dead-gutter defence survives — the new idle widening
-fires only when both fixed columns are folded).
+Above ~2520 px the chat content's centred 960 px measure
+(`chat.tsx:38-52`) starts biting: the content stops widening and the
+slack above 960 splits evenly left and right inside the column. The
+column itself keeps absorbing leftover up to the algorithm's only
+limit, which is the container width.
+
+### Fixed columns open — what gets the leftover
+
+When at least one fixed column is open, leftover after the user's
+stored widths flows into the fixed columns first, bounded by their
+`maxWidth`s (`workspace-tabs-state.ts:793-815`). At 1920 px with both
+fixed columns open at their defaults:
+
+- `tree` grows 340 → **600** (its max), takes 260 px.
+- `preview` then takes the next 200 px (limited by what is left).
+- `conversation` ends at its stored 720 — no leftover reaches it.
+
+If only `preview` is open at 1920, `tree` is skipped (collapsed),
+`preview` grows 400 → **720** (its max), and `conversation` keeps the
+remaining 240 px on top of its stored 720. Drag behaviour on
+`conversation` itself is bounded by `[280, 2400]` via
+`clampToConversation` (`workspace-tabs-state.ts:856-861`); the
+algorithm may then re-distribute any overflow into `preview` first
+(`workspace-tabs-state.ts:747-762`).
 
 Each column hosts its own independent `activeId` (`previewActiveId`,
 `treeActiveId`) so opening a tree surface does not steal focus from the

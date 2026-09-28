@@ -179,29 +179,57 @@ exec 回合的代价——以下都是当前真实存在的行为，选择权限
 
 ## 四列工作区（当前主线，slice 17 + slice 21）
 
-在侧栏右侧，外壳渲染一个最多容纳三列**可见列**的 flex 行：`conversation | preview | tree`（侧栏由 `AppShell` 拥有，在该行之外，在行内宽度视为 0）。
+在侧栏右侧，外壳渲染一个最多容纳三列**可见列**的 flex 行：`conversation | preview | tree`。侧栏由 `AppShell` 自己拥有，在该行之外渲染，并在行内宽度里视为 0（`workspace-tabs-state.ts:738-744`）。
 
-| 列 | 角色 | 默认 / 最小 / 最大宽度 | 由谁挂载 |
+### 列宽 — 真值表
+
+下表每一格都来自 `COLUMN_SPECS`（`packages/webui/webapp/lib/workspace-tabs-state.ts:412-456`）。这是改"列宽数字"的唯一地方：`DEFAULT_COLUMN_LAYOUT`（`workspace-tabs-state.ts:479-506`）会自动跟上；`clampWidth`（`workspace-tabs-state.ts:511-515`）和 `computeColumnLayout`（`workspace-tabs-state.ts:724-854`）在每次渲染都会读它。
+
+| 列 | 角色 | 默认 | 最小 | 最大 | 流动方式 |
+| --- | --- | --- | --- | --- | --- |
+| `sidebar` | AppShell 自身的 chrome，在列行之外 | 240 | 220 | 400 | 固定 |
+| `conversation` | 弹性，吃掉剩余空间，**增长路径上无上限** | 720 | 280 | 2400 | 流式 |
+| `preview` | 按需 — 查看面（`file:<path>`、`browser`） | 400 | 320 | 720 | 固定 |
+| `tree` | 按需 — 导航面（`files`、`git`、`tasks`、`search`、`plugins`） | 340 | 320 | 600 | 固定 |
+
+**`conversation.maxWidth = 2400` 不限制用户实际看到的列宽**。它只钳住拖拽分隔条时写入存储的值（`workspace-tabs-state.ts:511-528`）；布局算法明确忽略它，让 `conversation` 在固定列吃满各自上限后吃光剩余像素（算法注释见 `workspace-tabs-state.ts:438-443`、`:702-720`，实现见 `:805-823`）。视觉上的真正约束是聊天内容里的居中阅读宽度 960 px（`components/chat.tsx:38-52`、应用在 `:255` 与 `composer.tsx:532`）：列宽超过约 2520 px 后，列还在长，内容停在 960，居中显示，左/右均分剩余留白。
+
+### 调一个数字会发生什么
+
+- **改 `defaultWidth`**：影响首次进入工作区时的初始宽度（持久化里没存值的场景）。已经存过值的用户不会被影响——他们存的是上一次拖拽的结果。
+- **改 `minWidth`**：用户在分隔条上拖窄时，能被钳到的下限变小（或变大）。同时影响 `computeColumnLayout` 在溢出时折这一列的下限（`workspace-tabs-state.ts:863-866`）。
+- **改 `maxWidth`**：拖拽上限变化；**对 `preview` 与 `tree`，还意味着"列能吃多少剩余像素"的天花板变化**（`workspace-tabs-state.ts:868-870`）。**对 `conversation`，用户拖拽写入值的上限变化，但增长路径不受影响——它始终吃光剩余**。这是唯一一个 `maxWidth` 与"看到的列宽上限"不一致的列，原因写在 `:438-443`。
+- **改 `flow`**：把 `conversation` 改成 `fixed` 会让布局回到溢出折叠路径，且 `preview`/`tree` 的剩余像素不再流向 `conversation`——请不要这样做，算法里没有按 `flow === "fluid"` 分支处理，是按列 id 硬编码的（`workspace-tabs-state.ts:805-823`）。
+
+### 空闲态：用户实际看到的列宽
+
+两个按需列（`preview` 与 `tree`）首次进入时都收起（`workspace-tabs-state.ts:494-504`）。空闲态下，`conversation` 吃光视口减去侧栏的所有剩余像素——这是**算式结果**，不是配置里的常量，更不是上限：
+
+| 视口 | 侧栏 | `conversation`（空闲态） | 计算 |
 | --- | --- | --- | --- |
-| `conversation` | 弹性（吸收剩余空间，空闲时撑满） | 720 / **280** / **768** px（空闲态上限解除） | `components/chat.tsx` |
-| `preview` | 按需 — 查看面（`file:<path>`、`browser`） | 400 / 320 / 720 px | `components/file-preview-pane.tsx`、`browser-panel.tsx` |
-| `tree` | 按需 — 导航面（`files`、`git`、`tasks`、`search`、`plugins`） | 340 / 320 / 600 px | `components/workspace-tree-column.tsx` |
+| 1280 px | 240 | **1040** | `1280 − 240` |
+| 1920 px | 240 | **1680** | `1920 − 240` |
+| 2560 px | 240 | **2320** | `2560 − 240` |
 
-**slice 21 起 `preview` 与 `tree` 两列均为按需列**：每列在至少有
-一个匹配角色的标签页打开时出现，在该角色最后一个标签页关闭时
-**自动收起**。反序列化器会把陈旧的"列已开但空"载荷规范化为收起，
-从而陈旧的磁盘写入无法在 hydration 时召出一个空列。持久化层 +
-页面级 reducer 包装器每次都通过
-`syncColumnVisibility(tabStrip, layout)`（位于
-`packages/webui/webapp/lib/workspace-tabs-state.ts`）从标签页列表
-重新派生每列的可见性。**空闲不占宽度**：两个按需列都关闭时，
-`conversation` 列独占全部剩余空间。在 1280 视口下（240 px AppShell
-chrome）`conversation` 列实测 **1040 px**；1920 视口下为 **1680 px**。
-两个数值均由
-`packages/webui/webapp/test/workspace-tabs-state.test.ts#computeColumnLayout — slice 21 idle state`
-锁定。只要至少有一个固定列可见，`conversation` 就保持在 768 px
-上限（slice 17 的"反死区"防御保留不变 —— 新增的空闲放宽只在
-两个固定列都折叠时才生效）。
+只要用户不打开按需列，以上算式在任意视口下都成立——视口再宽，列就再宽。**这意味着**：若发现"空闲态对话区变窄了"，要么是侧栏被拖宽了（受 400 上限钳位，`workspace-tabs-state.ts:416`），要么是某个固定列没有收起。空闲态**不会**被 `conversation.maxWidth` 卡住。
+
+### 至少一个固定列打开时：剩余像素给谁
+
+`computeColumnLayout`（`workspace-tabs-state.ts:724-854`）在固定列未到上限时按 **`tree` 先吃、再 `preview`** 的顺序吃剩余像素，每个都受各自 `maxWidth` 约束（`workspace-tabs-state.ts:793-815`）。剩余像素没有的话，`conversation` 停在它的存储宽度（默认 720）。
+
+举例：1920 视口下两个固定列都在默认宽度（`preview` 400、`tree` 340、`conversation` 720）：
+
+- `tree` 从 340 增长到自己的上限 **600**（吃 260 px）
+- 剩 200 px 给 `preview`，从 400 长到 **600**
+- 剩余 0 px，`conversation` 停在默认的 **720**
+
+只开 `preview` 不开 `tree` 时：`preview` 从 400 长到自己的上限 **720**，`conversation` 拿剩下的 240，加在自己的默认 720 上变成 **960**。
+
+### 边界
+
+- 当 sidebar = 240、`preview` = 320、`tree` = 320、`conversation` = 280 时整行宽度是 1160 px。视口 **< 1160 px** 且两个按需列都可见时，`conversation` 会被压到自己的最小值 280。视口更窄（典型窄屏），`conversation` 继续被压到 0，渲染器隐藏整列——这是 `workspace-tabs-state.ts:762-781` 的最后防线。
+- 用户拖 `conversation` 分隔条时，写入值会被 `clampToConversation`（`workspace-tabs-state.ts:856-861`）钳到 `[280, 2400]`。如果拖到的值让整行溢出，算法会按"先折 `preview` → 再折 `tree` → 再折 `conversation`"的顺序消化溢出（`workspace-tabs-state.ts:747-781`），与空闲态的折列优先级一致。
+- 双击分隔条重置该列到 `defaultWidth`（`workspace-tabs-state.ts:533-536`）。**不会**重置其他列；不会影响收起/展开状态。
 
 每列持有自己的 `activeId`（`previewActiveId`、`treeActiveId`），因此
 打开一个 tree 表面不会夺走 preview 列的焦点，反之亦然。表面字典
