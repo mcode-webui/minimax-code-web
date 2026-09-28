@@ -561,6 +561,34 @@ through the design tokens. Below ~300px of content width the outline
 hides rather than squeezing the document — the preview column's own
 minimum (320px) still shows it.
 
+## Loading states: transcript skeleton and streaming indicator (ticket U8)
+
+The two waiting windows on the conversation surface have distinct treatments,
+and neither is a bare spinner:
+
+| Waiting for | What renders | Where it lives |
+| --- | --- | --- |
+| The first state snapshot (page load, engine boot) | `TranscriptSkeleton` — a shimmer placeholder shaped like the real transcript: right-aligned user bubbles, full-width assistant text lines, a tool-summary row with indented output lines. The connection copy (connecting / disconnected) stays underneath | The page-level `!state` branch in `app/page.tsx`; the component itself is `webapp/components/loading-states.tsx` |
+| The current turn's output (`running.active`) | `ActivityPulse` at the transcript tail — the desktop's three-dot loader plus a shimmer bar sitting where the next line of output will land, next to the phase label (thinking / working / …) | `components/chat.tsx#ThinkingIndicator`, gated by the exported pure function `isSessionActivityActive` |
+
+Invariants worth keeping when touching either branch:
+
+- The skeleton's bar colour is the user-bubble token (`--bg_grouped_tertiary`)
+  with the 15%-black overlay token as the sweep, so both themes come from the
+  token layer and the placeholder sits in the same colour family as the rows
+  it stands in for. No per-theme rules exist.
+- `prefers-reduced-motion: reduce` switches every animated class off
+  explicitly (`.mavis-skeleton-bar`, `.mavis-loading .mavis-dot`) in
+  `app/globals.css`, on top of the generic duration catch-all. The label text
+  survives with the motion removed.
+- Session *switching* does not show the skeleton: `POST /api/sessions/switch`
+  resolves the full transcript before responding and the next SSE snapshot
+  replaces the old content wholesale. The skeleton's only trigger is a missing
+  snapshot, which is the cold-load path.
+- Rendering tests for both components and the reduced-motion tripwire live in
+  `webapp/test/loading-skeleton.test.ts` (SSR through
+  `renderToStaticMarkup`; the suite has no DOM harness).
+
 ## Persistence keys (client-side `localStorage` / `sessionStorage`)
 
 | Key | Channel | Owner | Introduced by | Shape |

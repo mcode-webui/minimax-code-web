@@ -494,6 +494,30 @@ slice 16 的预览守卫一致：服务会向局域网广播地址，能在网�
 - 预览列特别窄（内容宽度低于约 300px）时大纲自动隐藏，避免把
   正文挤得没法读；预览列自身的最小宽度（320px）下大纲仍可见。
 
+## 加载态：会话骨架屏与流式活动指示（工单 U8）
+
+会话界面有两类等待，各自有明确的呈现方式，都不是一个孤零零的转圈：
+
+| 在等什么 | 用户看到什么 | 代码位置 |
+| --- | --- | --- |
+| 第一份会话快照（页面冷启动、引擎启动中） | `TranscriptSkeleton` —— 按真实消息行布局铺的 shimmer 骨架：右对齐的用户气泡、通栏的助手正文行、带缩进输出行的工具摘要行；下方保留连接状态文案（正在连接引擎 / 连接已断开） | `app/page.tsx` 的 `!state` 分支；组件在 `webapp/components/loading-states.tsx` |
+| 当前一轮的输出（`running.active`） | transcript 尾部的 `ActivityPulse` —— 桌面端同款三点加载动画，旁边多一条 shimmer 条，位置就是下一行输出将要落下的地方；阶段文案（思考中 / 工作中 / …）保留 | `components/chat.tsx` 的 `ThinkingIndicator`，开关由导出的纯函数 `isSessionActivityActive` 决定 |
+
+改这两处时值得保持的约定：
+
+- 骨架条的底色就是用户气泡的 token（`--bg_grouped_tertiary`），扫光用
+  15% 黑色叠加 token，两主题全部来自 token 层，占位条与它所代替的消息行
+  同一色系，不存在按主题写死颜色。
+- `prefers-reduced-motion: reduce` 下，`app/globals.css` 对每个动画类
+  （`.mavis-skeleton-bar`、`.mavis-loading .mavis-dot`）显式关闭动画，
+  不只依赖通用的时长覆盖；关掉动效后文案仍然可见。
+- 会话**切换**不出现骨架屏：`POST /api/sessions/switch` 在响应前就备好
+  完整 transcript，下一份 SSE 快照整体替换旧内容。骨架唯一的触发条件
+  是"快照缺失"，也就是冷启动那条路径。
+- 两个组件的渲染测试与 reduced-motion 的静态断言在
+  `webapp/test/loading-skeleton.test.ts`（走 `renderToStaticMarkup`；
+  本测试套件没有 DOM 环境）。
+
 ## 持久化键（客户端 `localStorage` / `sessionStorage`）
 
 | 键 | 通道 | 归属 | 引入 ticket | 数据形态 |

@@ -130,6 +130,36 @@
   }
 }
 
+/* Transcript loading skeleton (webui ticket U8).
+ *
+ * Same construction as the desktop skeleton loader: a 200%-wide sweep
+ * gradient travelling through `background-position`. The base is the
+ * user-bubble token (`--bg_grouped_tertiary`) so the placeholder sits in
+ * the same colour family as the rows it stands in for; the sweep is the
+ * 15% black overlay token, which reads as the same "shadow passes over
+ * the bar" motion in both themes — the theme layers only re-map the base.
+ */
+.mavis-skeleton-bar {
+  background-color: var(--bg_grouped_tertiary);
+  background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    var(--opacity_black_1_15) 50%,
+    transparent 100%
+  );
+  background-repeat: no-repeat;
+  background-size: 200% 100%;
+  animation: mavis-skeleton-shimmer 1.6s linear infinite;
+}
+@keyframes mavis-skeleton-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
 /* Code font, from the token layer (upstream's stack, see the note above). */
 .font-family-code {
   font-family: var(--font_family_code);
@@ -141,8 +171,19 @@
  * level pills, the provider save spinner) is overridden here so the
  * movement becomes instant for users who opted out. We do not kill
  * antd's own animations (those live in js and stay on) — only the
- * class-name transitions the new components introduce. */
+ * class-name transitions the new components introduce.
+ *
+ * Ticket U8: the transcript skeleton shimmer and the loading dots get
+ * explicit static rules (not just the generic catch-all below) — a
+ * user who opted out of motion must never see the sweep, even if the
+ * catch-all's duration hack is ever retuned. */
 @media (prefers-reduced-motion: reduce) {
+  .mavis-skeleton-bar {
+    animation: none;
+  }
+  .mavis-loading .mavis-dot {
+    animation: none;
+  }
   *,
   *::before,
   *::after {
