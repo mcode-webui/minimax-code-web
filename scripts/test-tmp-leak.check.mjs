@@ -112,6 +112,9 @@ function* walkSourceFiles(dir, extensions) {
     return; // unreadable subtree — same as grep skipping it
   }
   for (const entry of entries) {
+    // Third-party dependencies are not this repo's test code — their
+    // helper call sites must not gate (or pollute) the prefix registry,
+    // and scanning them would only cost time.
     if (entry.name === "node_modules") continue;
     const full = join(dir, entry.name);
     if (entry.isDirectory()) {
@@ -345,8 +348,10 @@ const KNOWN_PREFIXES = [
 /**
  * Scan packages/webui/test/ for every mkTmpDir / mkTmpDirAsync /
  * mkSubTmpDir invocation and return the set of literal prefix arguments
- * the repo's tests use. Driven by ripgrep so we stay consistent with the
- * rest of the repo's grep-style scanning.
+ * the repo's tests use. Implemented as a walkSourceFiles pass with a
+ * native RegExp tested line-by-line — no system grep involved, so the
+ * scan behaves identically on every platform (see walkSourceFiles for
+ * the rationale).
  *
  * @returns {Set<string>} the prefixes the test code passes to the helper
  */
