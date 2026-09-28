@@ -122,22 +122,22 @@ S2（runtime-first 改造第二步）新增了一个开关与 `MCODE_USE_ACP` �
 | 环境变量 | 缺省值 | 可选值 | 含义 |
 | --- | --- | --- | --- |
 | `MCODE_USE_ACP` | 未设 | `0` → exec 逃生阀（压倒其他所有）；`1` → 无效；未设 → 无效 | 旧开关，仅作逃生阀；见下表。 |
-| `MCODE_WEBUI_TRANSPORT` | `acp` | `acp`（与今天一致）、`exec`（S2 阶段无路由消费，是 no-op；今天走 exec 仍要靠 `MCODE_USE_ACP=0`）、`runtime`（S2 起的进程内宿主，开关已 plumb 但路由未接入） | 选择引擎传输。缺省下每个响应都与 `main` 字段级一致；显式 `runtime` 直到 S3+ 才真正生效。 |
+| `MCODE_WEBUI_TRANSPORT` | `acp` | `acp`（与今天一致）、`exec`（无路由消费，是 no-op；今天走 exec 仍要靠 `MCODE_USE_ACP=0`）、`runtime`（S2 起的进程内宿主；S3+ 接目录类流量） | 选择引擎传输。缺省下每个响应都与 `main` 字段级一致；显式 `runtime` 把目录类流量（list/title）切到进程内宿主。 |
 
 判定优先级（按顺序）：
 
 1. `MCODE_USE_ACP=0` ⇒ `exec`，无视 `MCODE_WEBUI_TRANSPORT`。旧逃生阀优先级最高。
-2. `MCODE_WEBUI_TRANSPORT=exec` ⇒ S2 阶段是 no-op。当前没有任何生产路由消费这个值；今天要走 exec 仍要靠 `MCODE_USE_ACP=0`。**先把契约写在这里**，避免后续切片接线时漂移。
-3. `MCODE_WEBUI_TRANSPORT=runtime` ⇒ `runtime`。S2 已经把宿主骨架建好，但尚无路由读这个开关；S3+ 才会真正接上。S2 阶段设为 `runtime` 是 no-op。
+2. `MCODE_WEBUI_TRANSPORT=exec` ⇒ no-op。当前没有任何生产路由消费这个值；今天要走 exec 仍要靠 `MCODE_USE_ACP=0`。**先把契约写在这里**，避免后续切片接线时漂移。
+3. `MCODE_WEBUI_TRANSPORT=runtime` ⇒ **目录类流量**走 runtime（S3+）；活跃回合今天仍走 ACP（S4 接）。**单次调用遇错回退 ACP**——runtime 宿主挂了不会让侧栏黑屏。
 4. `MCODE_WEBUI_TRANSPORT=acp`（缺省）⇒ ACP。权限模式静默改道仍然生效。
 5. 未知取值（例如拼错）⇒ 回落到 `acp`，并在 stderr 打印一行告警。**永远不会因为传输开关未知而拒绝启动。**
 
 | 条件 | 实际走的传输 | 判定位置 |
 | --- | --- | --- |
 | 服务端环境变量 `MCODE_USE_ACP=0` | exec | `server/routes/chat.js#handleSend` |
-| `MCODE_WEBUI_TRANSPORT=exec` | （S2 阶段是 no-op——与缺省 `acp` 等价；今天要走 exec 仍要靠 `MCODE_USE_ACP=0`） | `server/lib/config.js#MCODE_WEBUI_TRANSPORT`（路由尚未读这个值） |
+| `MCODE_WEBUI_TRANSPORT=exec` | （no-op——与缺省 `acp` 等价；今天要走 exec 仍要靠 `MCODE_USE_ACP=0`） | `server/lib/config.js#MCODE_WEBUI_TRANSPORT`（路由尚未读这个值） |
 | 会话权限模式不是 Full access（Ask / Auto / Read） | exec（在 ACP 入口内部静默改道） | `server/lib/mcode-acp.js#runMcodeAcp` 首个分支 |
-| `MCODE_WEBUI_TRANSPORT=runtime` | runtime（S2 建好宿主；S3+ 才接路由） | `server/lib/config.js#MCODE_WEBUI_TRANSPORT`（路由尚未读它） |
+| `MCODE_WEBUI_TRANSPORT=runtime`（S3+） | runtime 接目录类流量（会话列表/标题）；活跃回合今天仍走 ACP，S4 接 | `server/lib/acp-client.js#listAllMcodeSessions` / `#getMcodeSessionTitle`（runtime 宿主失败时回退 ACP） |
 | 其余情况（出厂默认：权限 Full access，见 `server/lib/state-bus.js` 初始状态） | ACP | 同上 |
 
 S2 不变量（后续切片必须继续守住）：

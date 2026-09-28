@@ -2,10 +2,60 @@
 // ACP client singleton + command/session cache.
 // Does NOT replace acp.mjs (which is the JSON-RPC transport).
 // Wraps it with caching/lifecycle for webui use.
+//
+// S3 (runtime-first migration step 3): when MCODE_WEBUI_TRANSPORT=runtime,
+// the catalogue host (server/lib/runtime-host.js) takes the list/title
+// traffic and we skip the mcode acp subprocess entirely. The catalogue
+// boot is process-lifetime like the ACP singleton: one instance, lazy
+// init, a single sqlite read per list call. Any failure (host not
+// constructed, list throws, etc.) falls back to the legacy ACP path so
+// a runtime regression does not break the sidebar — the fallback is
+// a one-line log message, not silent.
 
 import { McodeAcpClient } from "../../acp.mjs";
-import { DEFAULT_WORKSPACE, MCODE_RUNTIME_DB } from "./config.js";
+import {
+  DEFAULT_WORKSPACE,
+  MCODE_RUNTIME_DB,
+  MCODE_WEBUI_TRANSPORT,
+  MAVIS_DATA_DIR,
+} from "./config.js";
 import { deleteMcodeSessionFromDb } from "./mcode-session-delete.js";
+import {
+  listMcodeSessionsViaRuntime,
+  getMcodeSessionTitleViaRuntime,
+} from "./catalogue-sessions.js";
+
+// ---------------------------------------------------------------------------
+// S3: catalogue host (in-process runtime) wiring.
+// ---------------------------------------------------------------------------
+
+let _catalogueHost = null;
+let _catalogueHostInitPromise = null;
+
+async function getCatalogueHost() {
+  if (_catalogueHost) return _catalogueHost;
+  if (_catalogueHostInitPromise) return _catalogueHostInitPromise;
+  _catalogueHostInitPromise = (async () => {
+    try {
+      // Lazy import — keeps runtime-host.js out of the boot path for
+      // ACP-only deployments.
+      const { createCatalogueHost } = await import("./runtime-host.js");
+      _catalogueHost = await createCatalogueHost({ dataDir: MAVIS_DATA_DIR });
+      console.log(`[runtime] catalogue host ready (dataDir=${MAVIS_DATA_DIR})`);
+      return _catalogueHost;
+    } catch (e) {
+      console.warn(`[runtime] catalogue host init failed: ${e.message}`);
+      return null;
+    } finally {
+      _catalogueHostInitPromise = null;
+    }
+  })();
+  return _catalogueHostInitPromise;
+}
+
+function transportWantsCatalogue() {
+  return MCODE_WEBUI_TRANSPORT === "runtime";
+}
 
 // v0.5.bu: 拉 mcode 真实 session 列表（mcode acp session/list 协议）
 // 数据源：mcode TUI 自己的 session 存储（不是 webui 的 sessions.json）
@@ -45,6 +95,22 @@ export async function getMcodeAcpClient() {
 //   之前 getMcodeSessionsForWorkspace 内部用同一个 cache, 但 cleanup 需要列所有
 //   这函数绕过 cwd 过滤, 走 mcode acp 直接拿 raw 列表
 export async function listAllMcodeSessions() {
+  // S3: catalogue path preferred when MCODE_WEBUI_TRANSPORT=runtime.
+  // The catalogue host reads the same SQLite, so the page shape and
+  // content are equivalent — both paths return the ACP wire shape
+  // (sessionId/cwd/title) by construction.
+  if (transportWantsCatalogue()) {
+    const host = await getCatalogueHost();
+    if (host) {
+      try {
+        return await listMcodeSessionsViaRuntime(host);
+      } catch (e) {
+        console.warn(`[runtime] listAllMcodeSessions failed, falling back to ACP: ${e.message}`);
+        // Fall through to the ACP path so a runtime regression never
+        // breaks the sidebar.
+      }
+    }
+  }
   const client = await getMcodeAcpClient();
   if (!client) return [];
   try {
@@ -87,6 +153,13 @@ export async function getMcodeSessionsForWorkspace(workspace) {
 
 // v0.5.bx-31: 同步读 cache, 给 pushStateFor 用 (pushStateFor 是同步, 不能 await getMcodeSessionsForWorkspace)
 //   命中: 返 array; miss 或 workspace 不匹配: 返 null (caller 自己决定 fallback [] 或 fire-and-forget 拉)
+//
+// S3: the cache is shared between the ACP path and the catalogue path
+// (both write through `mcodeSessionsCache`). The cache is filled by
+// `getMcodeSessionsForWorkspace` only — readers must call that
+// async fn first to populate it, then read here. The catalogue path
+// reads the same SQLite, so a cache built by one path serves the
+// other equivalently.
 export function getMcodeSessionsCacheSync(workspace) {
   const now = Date.now();
   if (
@@ -112,6 +185,17 @@ export function getMcodeSessionsStaleSync(workspace) {
 // 用途：替换 webui "New session" / 截断首句 → 用 mcode 自动生成的标题
 export async function getMcodeSessionTitle(mcodeSessionId) {
   if (!mcodeSessionId) return null;
+  // S3: catalogue path preferred when MCODE_WEBUI_TRANSPORT=runtime.
+  if (transportWantsCatalogue()) {
+    const host = await getCatalogueHost();
+    if (host) {
+      try {
+        return await getMcodeSessionTitleViaRuntime(host, mcodeSessionId);
+      } catch (e) {
+        console.warn(`[runtime] getMcodeSessionTitle failed, falling back to ACP: ${e.message}`);
+      }
+    }
+  }
   const client = await getMcodeAcpClient();
   if (!client) return null;
   try {
@@ -151,6 +235,18 @@ export function shutdownMcodeAcpSingleton() {
       _mcodeAcpSingleton.stop();
     } catch {}
     _mcodeAcpSingleton = null;
+  }
+  // S3: also close the catalogue host so the bounded drain fires
+  // before graceful-shutdown returns. The catalogue host shares the
+  // bounded-drain semantics from runtime-host.js.
+  if (_catalogueHost) {
+    const host = _catalogueHost;
+    _catalogueHost = null;
+    try {
+      // Fire and forget — graceful-shutdown.js polls its own timer; we
+      // don't block on the runtime-side close.
+      host.close().catch(() => {});
+    } catch {}
   }
 }
 

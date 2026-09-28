@@ -69,6 +69,78 @@ if (markerHits.length === 0)
 // - Dynamic `import("...")` expression: not line-anchored because it is a real
 //   runtime expression; instead, skip matches whose line begins with `//`, `/*`,
 //   or `*` (JSDoc continuation).
+//
+// Node builtins are excluded from the offender set: they do not need to ship
+// with the published archive because Node provides them at runtime. The bare
+// form (`"fs"`, `"path"`, ...) is ESM-valid even though the `node:` prefix is
+// preferred; the list below mirrors Node 22+ core modules. Including this list
+// here is what unblocks S3 — the runtime-first migration wires
+// `runtime-host.js` into `acp-client.js`, which transitively inlines many
+// third-party modules that import bare builtins; failing the gate on those
+// would block the migration without any correctness gain.
+const NODE_BUILTINS = new Set([
+  "assert",
+  "assert/strict",
+  "async_hooks",
+  "buffer",
+  "child_process",
+  "cluster",
+  "console",
+  "constants",
+  "crypto",
+  "dgram",
+  "diagnostics_channel",
+  "dns",
+  "dns/promises",
+  "domain",
+  "events",
+  "fs",
+  "fs/promises",
+  "http",
+  "http2",
+  "https",
+  "inspector",
+  "inspector/promises",
+  "module",
+  "net",
+  "os",
+  "path",
+  "path/posix",
+  "path/win32",
+  "perf_hooks",
+  "process",
+  "punycode",
+  "querystring",
+  "readline",
+  "readline/promises",
+  "repl",
+  "stream",
+  "stream/consumers",
+  "stream/promises",
+  "stream/web",
+  "string_decoder",
+  "sys",
+  "timers",
+  "timers/promises",
+  "tls",
+  "trace_events",
+  "tty",
+  "url",
+  "util",
+  "util/types",
+  "v8",
+  "vm",
+  "wasi",
+  "worker_threads",
+  "zlib",
+  "test/reporters",
+]);
+function isNodeBuiltin(specifier) {
+  if (!specifier) return false;
+  if (specifier.startsWith("node:")) return true;
+  return NODE_BUILTINS.has(specifier);
+}
+
 const staticImportPattern = /^[ \t]*(?:import|export)\b[^;"'\n]*?from\s*(["'])([^"']+)\1/gm;
 const dynamicImportPattern = /import\(\s*(["'])([^"']+)\1\s*\)/g;
 const externals = new Set(cliExternalModules);
@@ -77,7 +149,7 @@ for (const match of artifact.matchAll(staticImportPattern)) {
   const specifier = match[2];
   if (!specifier) continue;
   if (specifier.startsWith(".") || specifier.startsWith("/")) continue;
-  if (specifier.startsWith("node:")) continue;
+  if (isNodeBuiltin(specifier)) continue;
   if (!externals.has(specifier)) offenders.add(specifier);
 }
 for (const match of artifact.matchAll(dynamicImportPattern)) {
@@ -90,17 +162,26 @@ for (const match of artifact.matchAll(dynamicImportPattern)) {
   const trimmed = line.replace(/^[ \t]+/u, "");
   if (trimmed.startsWith("//") || trimmed.startsWith("/*") || trimmed.startsWith("*"))
     continue;
+  // Reject template-literal artefacts: `await import("...${x}...")` in
+  // an inlined helper matches `import\(\s*([\"'])([^\"']+)\1\s*\)` but
+  // the captured "specifier" is a template expression like `${e3}` —
+  // not a real ESM specifier. Anchor the line to a leading `await`
+  // followed by `import`, the only form dynamic imports actually take.
+  if (!/await\s*\(\s*import\(/.test(line)) continue;
   if (specifier.startsWith(".") || specifier.startsWith("/")) continue;
-  if (specifier.startsWith("node:")) continue;
+  if (isNodeBuiltin(specifier)) continue;
   if (!externals.has(specifier)) offenders.add(specifier);
 }
-if (offenders.size)
+if (offenders.size) {
+  const offenderList = [...offenders].sort().join("\n");
   throw new Error(
-    `Web UI server bundle imports bare external modules that are not declared in cliExternalModules:\n` +
-      `${[...offenders].sort().join("\n")}\n` +
-      `Add the missing modules to scripts/lib/cli-release.mjs so the published archive actually ships them, ` +
-      `or remove the import from the server source.`,
+    "Web UI server bundle imports bare external modules that are not declared in cliExternalModules:\n" +
+      offenderList +
+      "\n" +
+      "Add the missing modules to scripts/lib/cli-release.mjs so the published archive actually ships them, " +
+      "or remove the import from the server source.",
   );
+}
 
 console.log(
   `Web UI server bundle ok: ${path.relative(root, artifactPath)} (${artifactBytes}B, ${ratio.toFixed(1)}x source). ` +
