@@ -112,19 +112,44 @@ node dist/cli.js webui --host 0.0.0.0 --no-open   # PORT defaults to 18080
 
 The canonical disclosure is [`packages/webui/references/SECURITY-NOTES.md`](../packages/webui/references/SECURITY-NOTES.md).
 
-## Transport selection (ACP or exec)
+## Transport selection (ACP, exec, or runtime)
 
-Every turn is sent to the engine over one of two transports. The choice is made server-side, per turn, before the engine spawns — and it is decided in two different places, evaluated in this order:
+Every turn is sent to the engine over one of three transports: the long-lived ACP subprocess (`mcode acp`), the one-shot exec subprocess (`mcode exec`), or — added in slice S2 — an **in-process runtime host** (`packages/webui/server/lib/runtime-host.js`) that owns the same `CliService` the TUI does. The choice is made server-side, per turn, before the engine spawns — and it is decided in two different places, evaluated in this order:
 
-1. `process.env.MCODE_USE_ACP === "0"` forces the exec transport (`packages/webui/server/routes/chat.js#handleSend`; the code comment there calls it the escape hatch for an ACP protocol regression). This is the only read of the variable in the codebase.
+1. `process.env.MCODE_USE_ACP === "0"` forces the exec transport (`packages/webui/server/routes/chat.js#handleSend`; the code comment there calls it the escape hatch for an ACP protocol regression). This is the only read of the variable in the codebase. `MCODE_USE_ACP=0` short-circuits all three transports.
 2. Otherwise the turn is handed to `runMcodeAcp` (`packages/webui/server/lib/mcode-acp.js`), which **silently re-routes to `runMcodeExec`** in its first branch when `cs.permissions` is set and is anything other than `"Full access"`.
 3. Only when neither applies does the turn actually run over ACP.
+
+S2 (slice 2 of the runtime-first migration) introduces a new switch alongside `MCODE_USE_ACP`:
+
+| Env var | Default | Accepted values | What it does |
+| --- | --- | --- | --- |
+| `MCODE_USE_ACP` | unset | `0` → exec escape hatch (overrides everything); `1` → no effect; unset → no effect | Today-only escape hatch; see rows below. |
+| `MCODE_WEBUI_TRANSPORT` | `acp` | `acp` (today's behaviour), `exec` (route through `runMcodeExec` always), `runtime` (opt-in to the S2 in-process host) | Selects the engine transport. Default keeps every response field-identical to today's `main`; opt-in paths route through the runtime host once S3+ lands. |
+
+Resolution rule, in priority order:
+
+1. `MCODE_USE_ACP=0` ⇒ `exec`, regardless of `MCODE_WEBUI_TRANSPORT`. The legacy escape hatch wins.
+2. `MCODE_WEBUI_TRANSPORT=exec` ⇒ `exec`. Permission-mode re-route inside `runMcodeAcp` still applies.
+3. `MCODE_WEBUI_TRANSPORT=runtime` ⇒ `runtime`. S2 lands the host infrastructure but no route reads the switch yet; the value is plumbed for S3+. Setting this to `runtime` today is a no-op until S3 lands.
+4. `MCODE_WEBUI_TRANSPORT=acp` (default) ⇒ today's ACP path. Permission-mode re-route still applies.
+5. Unknown value (e.g. typo) ⇒ falls back to `acp` with a one-line warning to stderr. The server never refuses to boot because of an unknown transport.
 
 | Turn condition | Transport | Decided at |
 | --- | --- | --- |
 | `MCODE_USE_ACP=0` in the server environment | exec | `routes/chat.js#handleSend` |
-| `cs.permissions` is `Ask`, `Auto`, or `Read` (not `Full access`) | exec (silent re-route) | `mcode-acp.js#runMcodeAcp` |
+| `MCODE_WEBUI_TRANSPORT=exec` | exec | `server/lib/config.js#MCODE_WEBUI_TRANSPORT` |
+| `cs.permissions` is `Ask`, `Auto`, or `Read` (not `Full access`) | exec (silent re-route inside ACP entry) | `mcode-acp.js#runMcodeAcp` |
+| `MCODE_WEBUI_TRANSPORT=runtime` | runtime (S2 lands the host; S3+ lights the route) | `server/lib/config.js#MCODE_WEBUI_TRANSPORT` (no route reads it yet) |
 | otherwise — factory default is `permissions: "Full access"` (`server/lib/state-bus.js` initial state) | ACP | `mcode-acp.js#runMcodeAcp` |
+
+S2 invariants (must remain true on every later slice):
+
+- **Default `MCODE_WEBUI_TRANSPORT=acp` is field-identical to `main`.** No existing endpoint response may shift; no child process count may grow. The verification suite proves this on every commit by running the full webui node:test suite with no env override.
+- **S2 ships the host but does not wire it.** `createCatalogueHost` and `createTurnHost` are exported from `server/lib/runtime-host.js`; no production route imports them. Wiring happens in S3 (catalogue traffic — list/title), S4 (active turns — `runMcodeRuntime`), S5 (models), S6 (interactions, accounts). S7 flips the default to `runtime`.
+- **R1 mitigation (process-isolation loss) lives in the turn host.** Every call into `adapter.sendMessage` is wrapped so a runtime-side throw becomes a stream-shaped error frame and never escapes the turn. Tests in `packages/webui/test/server/runtime-host.test.js` pin this with a mutation that drops the inner catch — the test goes red if the boundary is removed.
+- **R2 mitigation (abort semantics) lives in `createTurnHost#abortSession`.** It returns `{success:true, elapsedMs}` after at most a 5 s wait for the stream to settle; it does NOT rely on subprocess kill, because there is no subprocess. The bound keeps graceful shutdown responsive even on a wedged runtime.
+- **R8 mitigation (wedged host) lives in `createCatalogueHost#close`.** It races `apiHost.close()` against a 5 s timeout so a wedged dependency chain cannot wedge webui's graceful shutdown.
 
 Contract notes:
 
