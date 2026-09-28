@@ -56,9 +56,6 @@ export type PanelKind =
   | "workspace"
   | "files"
   | "git"
-  | "alerts"
-  | "search"
-  | "progress"
   | "plugins"
   | "browser";
 
@@ -154,9 +151,14 @@ export function RightPanel({
               onNavigate={onBrowserNavigate}
             />
           ) : null}
-          {kind === "alerts" ? <AlertsPanel t={t} /> : null}
-          {kind === "search" ? <SearchPanel onClose={onClose} t={t} /> : null}
-          {kind === "progress" ? <ProgressPanel t={t} /> : null}
+          {/* Slice 17 — `alerts` / `search` / `progress` were
+              removed from the PanelKind union (no entry points
+              in the four-column shell). The remaining kinds
+              that have a legacy right-panel surface are wired
+              here; the unused components (AlertsPanel /
+              SearchPanel / ProgressPanel) are kept exported so
+              a future slice can wire them to a transient
+              surface without re-importing the module graph. */}
           {kind === "plugins" ? <PluginsPanel t={t} /> : null}
         </div>
       </div>

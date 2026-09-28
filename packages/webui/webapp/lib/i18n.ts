@@ -491,6 +491,13 @@ const en = {
   "workspaceTabs.tab.browser.aria": "Close Browser tab",
   "workspaceTabs.tab.tasks": "Tasks",
   "workspaceTabs.tab.tasks.aria": "Close Tasks tab",
+  /* Slice 17 — search / plugins surfaces (column 4). These
+     restore the sidebar's legacy 搜索 / 插件 nav entries to
+     visible landing surfaces (no more silent no-op). */
+  "workspaceTabs.tab.search": "Search",
+  "workspaceTabs.tab.search.aria": "Close Search tab",
+  "workspaceTabs.tab.plugins": "Plugins",
+  "workspaceTabs.tab.plugins.aria": "Close Plugins tab",
   "workspaceTabs.tab.filePrefix": "File",
   "workspaceTabs.launcher.files": "Files",
   "workspaceTabs.launcher.git": "Changes",
@@ -530,9 +537,38 @@ const en = {
   "workspaceTabs.column.resizeAria": "Resize column",
   "workspaceTabs.column.resetAria": "Reset column width",
   "workspaceTabs.column.conversationAria": "Resize conversation column",
-  "workspaceTabs.column.panelAria": "Resize panel column",
-  "workspaceTabs.column.secondaryAria": "Resize secondary column",
+  "workspaceTabs.column.previewAria": "Resize preview column",
+  "workspaceTabs.column.treeAria": "Resize file tree column",
+  "workspaceTabs.column.sidebarAria": "Resize session sidebar",
   "workspaceTabs.column.closedAllTabs": "All tabs closed. The panel column has been collapsed.",
+  /* Slice 17 — preview column empty hint (no file tabs and no
+     browser tab). The hint mirrors the desktop reference's
+     empty state ("click a file to preview it"). */
+  "workspaceTabs.preview.empty": "Click a file or pick one in the file tree to preview it here.",
+  /* Slice 17 — tree column empty hint (no surfaces open yet).
+     The hint lists the five options the column can host and
+     lets the user open one directly. */
+  "workspaceTabs.tree.empty": "Pick a surface to navigate the workspace.",
+  /* Slice 17 — tree column surface selector (segmented control). */
+  "workspaceTabs.tree.selector.aria": "Workspace navigation",
+  "workspaceTabs.tree.selector.files.aria": "Switch to files",
+  "workspaceTabs.tree.selector.git.aria": "Switch to changes",
+  "workspaceTabs.tree.selector.tasks.aria": "Switch to tasks",
+  "workspaceTabs.tree.selector.search.aria": "Switch to search",
+  "workspaceTabs.tree.selector.plugins.aria": "Switch to plugins",
+  /* Slice 17 — search surface copy. The wire-up to a real
+     /api/... search endpoint is out of scope; the surface
+     exists so the sidebar's 搜索 entry visibly does something. */
+  "workspaceTabs.search.placeholder": "Search the workspace…",
+  "workspaceTabs.search.empty": "Type to search. The search backend is not wired in this slice.",
+  /* Slice 17 — plugins surface copy. The marketplace is a
+     placeholder — the engine has not yet exposed the
+     plugin-install contract. The card is mounted AND labelled
+     so a click on the sidebar's 插件 entry visibly produces a
+     surface rather than silently no-op'ing. */
+  "workspaceTabs.plugins.title": "Plugins",
+  "workspaceTabs.plugins.placeholder":
+    "Plugin marketplace is in progress. The engine has not yet exposed the plugin-install contract; the desktop-side category tabs and card grid will land once it does.",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -957,6 +993,11 @@ const zh: Record<MessageKey, string> = {
   "workspaceTabs.tab.browser.aria": "关闭浏览器标签",
   "workspaceTabs.tab.tasks": "任务管理",
   "workspaceTabs.tab.tasks.aria": "关闭任务管理标签",
+  /* Slice 17 — search / plugins surfaces (column 4). */
+  "workspaceTabs.tab.search": "搜索",
+  "workspaceTabs.tab.search.aria": "关闭搜索标签",
+  "workspaceTabs.tab.plugins": "插件",
+  "workspaceTabs.tab.plugins.aria": "关闭插件标签",
   "workspaceTabs.tab.filePrefix": "文件",
   "workspaceTabs.launcher.files": "文件",
   "workspaceTabs.launcher.git": "文件变动",
@@ -990,9 +1031,32 @@ const zh: Record<MessageKey, string> = {
   "workspaceTabs.column.resizeAria": "调整列宽",
   "workspaceTabs.column.resetAria": "恢复列默认宽度",
   "workspaceTabs.column.conversationAria": "调整对话区宽度",
-  "workspaceTabs.column.panelAria": "调整面板栏宽度",
-  "workspaceTabs.column.secondaryAria": "调整次级栏宽度",
+  "workspaceTabs.column.previewAria": "调整预览栏宽度",
+  "workspaceTabs.column.treeAria": "调整文件树栏宽度",
+  "workspaceTabs.column.sidebarAria": "调整会话侧栏宽度",
   "workspaceTabs.column.closedAllTabs": "已关闭全部标签，面板栏已收起。",
+  /* Slice 17 — preview column empty hint (no file tabs and no
+     browser tab). The hint mirrors the desktop reference's
+     empty state ("click a file to preview it"). */
+  "workspaceTabs.preview.empty": "点文件或在文件树里点一个文件来预览。",
+  /* Slice 17 — tree column empty hint (no surfaces open yet).
+     The hint lists the five options the column can host and
+     lets the user open one directly. */
+  "workspaceTabs.tree.empty": "选一个表面来浏览工作区。",
+  /* Slice 17 — tree column surface selector (segmented control). */
+  "workspaceTabs.tree.selector.aria": "工作区导航",
+  "workspaceTabs.tree.selector.files.aria": "切换到文件",
+  "workspaceTabs.tree.selector.git.aria": "切换到文件变动",
+  "workspaceTabs.tree.selector.tasks.aria": "切换到任务管理",
+  "workspaceTabs.tree.selector.search.aria": "切换到搜索",
+  "workspaceTabs.tree.selector.plugins.aria": "切换到插件",
+  /* Slice 17 — search surface copy. */
+  "workspaceTabs.search.placeholder": "搜索工作区…",
+  "workspaceTabs.search.empty": "输入关键词搜索。本片未接入搜索后端。",
+  /* Slice 17 — plugins surface copy. */
+  "workspaceTabs.plugins.title": "插件",
+  "workspaceTabs.plugins.placeholder":
+    "插件市场正在做。后端尚未暴露 plugin install 合约，桌面端的类别 tabs + 卡片网格会在合约打通后实装。",
 };
 
 const DICTIONARIES: Record<Locale, Record<MessageKey, string>> = { zh, en };

@@ -54,6 +54,14 @@ interface ShellProps {
   /** Open a drawer panel by kind (wired to the sidebar's nav rows). */
   onOpenPanel?: (kind: PanelKind) => void;
   /**
+   * Slice 17 — open a tree-column surface by SurfaceTabKind.
+   * The legacy `onOpenPanel("search")` route no longer exists
+   * (slice 17 removed "search" from the PanelKind union); the
+   * sidebar's 搜索 entry dispatches through here so the page can
+   * route to the new tree-column surface.
+   */
+  onOpenSurfaceTab?: (kind: "search") => void;
+  /**
    * Open the settings dialog. Separate from `onOpenPanel` because settings is a
    * dismissible modal, not a drawer panel (see components/panels.tsx).
    */
@@ -70,7 +78,7 @@ interface ShellProps {
   hasConversation?: boolean;
 }
 
-export function AppShell({ t, children, toolbar, panel, onOpenPanel, onOpenSettings, alertCount = 0, hasConversation = false }: ShellProps) {
+export function AppShell({ t, children, toolbar, panel, onOpenPanel, onOpenSurfaceTab, onOpenSettings, alertCount = 0, hasConversation = false }: ShellProps) {
   // The sidebar is collapsible from the button in its own top strip. The state
   // lives here rather than in `Sidebar` because the expand affordance has to be
   // rendered by the content column once the sidebar is clipped away.
@@ -111,6 +119,7 @@ export function AppShell({ t, children, toolbar, panel, onOpenPanel, onOpenSetti
       <Sidebar
         t={t}
         onOpenPanel={onOpenPanel}
+        onOpenSurfaceTab={onOpenSurfaceTab}
         onOpenSettings={onOpenSettings}
         alertCount={alertCount}
         onOpenAlerts={toggleInbox}
@@ -169,14 +178,23 @@ export function AppShell({ t, children, toolbar, panel, onOpenPanel, onOpenSetti
  * first row. Labels are sourced from the i18n dictionary via the `key` field, so
  * the English locale shows the matching translation.
  */
+// Slice 17 — re-added the 搜索 nav entry. Slice 15 dropped
+// "定时 / 网站 / 远程" because nothing behind them was
+// implemented. Slice 17 has both 搜索 and 插件 as tree-column
+// surfaces (column 4), so they both belong in the sidebar nav.
+// 搜索 dispatches through `onOpenSurfaceTab` (a new prop added
+// in slice 17); 插件 dispatches through `onOpenPanel` (a
+// legacy PanelKind that survived the slice-17 trim).
 const NAV_ROWS: { key: MessageKey; shortcut?: string }[] = [
   { key: "topbar.newSession", shortcut: "Ctrl+N" },
+  { key: "sidebar.search" },
   { key: "sidebar.plugins" },
 ];
 
 function Sidebar({
   t,
   onOpenPanel,
+  onOpenSurfaceTab,
   onOpenSettings,
   onOpenAlerts,
   alertCount = 0,
@@ -185,6 +203,7 @@ function Sidebar({
 }: {
   t: (key: MessageKey) => string;
   onOpenPanel?: (kind: PanelKind) => void;
+  onOpenSurfaceTab?: (kind: "search") => void;
   onOpenSettings?: () => void;
   /** Toggle the 站内信 flyout anchored beside this sidebar. */
   onOpenAlerts: () => void;
@@ -223,17 +242,22 @@ function Sidebar({
       if (entry.key === "topbar.newSession") {
         void runAction(t("topbar.newSession"), api.newSession());
       } else if (entry.key === "sidebar.search") {
-        onOpenPanel?.("search");
+        // Search is a tree-column surface (column 4) in slice 17.
+        // `onOpenPanel` no longer accepts the legacy "search"
+        // PanelKind (slice 17 removed it from the union); we route
+        // through a dedicated `onOpenSurfaceTab` so the page can
+        // dispatch to the new SurfaceTabKind vocabulary.
+        onOpenSurfaceTab?.("search");
       } else if (entry.key === "sidebar.plugins") {
-        // Open the right-side Plugins panel (see panels.tsx PluginsPanel —
-        // currently a "正在做" stub; the real marketplace comes when the
-        // engine exposes its plugin install contract). Desktop's sibling-row
-        // nav puts plugins at top-level sidebar alongside tasks / scheduled /
+        // Open the Plugins surface (column 4) — currently a
+        // placeholder pending the engine's plugin-install
+        // contract. Desktop's sibling-row nav puts plugins at
+        // top-level sidebar alongside tasks / scheduled /
         // websites / remote, not as a settings tab.
         onOpenPanel?.("plugins");
       }
     },
-    [onOpenPanel, onOpenSettings],
+    [onOpenPanel],
   );
 
   return (

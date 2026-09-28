@@ -3631,6 +3631,7 @@
     "packages/webui/webapp/components/workspace-tabs-launcher.tsx",
     "packages/webui/webapp/components/workspace-tabs-tasks.tsx",
     "packages/webui/webapp/components/workspace-tabs.tsx",
+    "packages/webui/webapp/components/workspace-tree-column.tsx",
     "packages/webui/webapp/lib/action-errors.ts",
     "packages/webui/webapp/lib/agent-team-lookup.ts",
     "packages/webui/webapp/lib/alerts.ts",

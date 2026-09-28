@@ -1,27 +1,44 @@
 "use client";
 
 /**
- * 4-column shell wrapper (slice 15).
+ * Four-column shell wrapper (slice 17).
  *
- * Wraps the existing shell's "conversation column + right panel"
- * flex row in a four-column layout:
+ * Renders the right side of the AppShell's `children` slot as
+ * three flex columns — `conversation | preview | tree` — with a
+ * draggable divider between each pair. The sidebar is owned by
+ * AppShell and lives outside this wrapper.
  *
- *   sidebar | conversation | panel | secondary (optional)
+ * Column model (matches the desktop reference at
+ * `refs/ui/02-workspace-shell.jpg`):
  *
- * Each column has a draggable divider on its RIGHT edge (except
- * the last column, which has no divider on the right). Dragging a
- * divider updates the column's width through the
- * `onColumnResize` callback; double-clicking a divider resets the
- * width to the column's default. The fold rules live in
- * `lib/workspace-tabs-state.ts#computeColumnLayout` and the rules
- * are: secondaryOpen=false → 3 columns; on narrow viewports fold
- * secondary → sidebar; no horizontal overflow ever.
+ *   ┌──────┬───────────────┬─────────┬───────┐
+ *   │ ① 侧 │ ② 对话        │ ③ 预览   │ ④ 文件│
+ *   │ 栏  │              │         │  树   │
+ *   └──────┴───────────────┴─────────┴───────┘
  *
- * The shell itself (Sidebar, ConversationToolbar, composer) stays
- * exactly where it was — slice 15 inserts this wrapper between the
- * shell's existing flex row and the content + panel pair, so the
- * only behavioural change is "the panel column is now one of up to
- * four columns".
+ * Column 2 (the conversation column) is the **fluid** one: its
+ * stored width is a *target / preferred* value; the rendered
+ * width is `min(target, leftover, maxWidth)` clamped to
+ * `[minWidth, maxWidth]`. This is the fix for the dead-gutter
+ * defect — at 1280px the conversation column is no longer 1040px
+ * wide with a ~480px centred content box and 280px gutters on
+ * each side; it sits at the user's preferred width (default 720)
+ * and the fixed columns shrink to fit.
+ *
+ * Each divider supports:
+ *
+ *   - Drag-resize. The dragged column's stored width is updated
+ *     (clamped to [min, max]). For the fluid conversation
+ *     column the stored value is the *target* — the renderer
+ *     recomputes the actual width on the next layout pass.
+ *   - Double-click reset. Calls `onColumnReset(column)` which
+ *     restores the column's default.
+ *
+ * The fold rules live in `lib/workspace-tabs-state.ts#computeColumnLayout`:
+ * when the row would overflow, fixed columns shrink in
+ * priority order `tree → preview → sidebar`; the fluid
+ * conversation column absorbs the residual down to its
+ * minimum.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -43,15 +60,16 @@ export interface WorkspaceColumnsProps {
    *  is approximate; measuring the actual element is exact). */
   containerWidth: number | null;
   /** The current viewport width (typically `window.innerWidth`).
-   *  Reserved for the future auto-collapse ladder; slice 15 does
-   *  not currently fold on viewport width (the panel column closes
-   *  only when every tab is closed), but the signature carries
-   *  the value so a future ticket does not have to re-thread it. */
+   *  Reserved for the future auto-collapse ladder; slice 17 does
+   *  not currently fold on viewport width. */
   viewportWidth: number;
   onColumnResize: (column: ColumnId, width: number) => void;
   onColumnReset: (column: ColumnId) => void;
-  /** Render slot for each column. Missing or invisible columns get
-   *  `null` — the wrapper still allocates zero width for them. */
+  /** Render slot for each column. The sidebar is owned by
+   *  AppShell, so its slot here is always `null` (and the column
+   *  is collapsed via `layout.collapsed.sidebar`). Missing or
+   *  invisible columns get `null` — the wrapper still allocates
+   *  zero width for them. */
   children: Record<ColumnId, React.ReactNode>;
 }
 
@@ -89,13 +107,32 @@ export function WorkspaceColumns({
     return () => observer.disconnect();
   }, [containerWidth]);
   const effectiveWidth = containerWidth ?? measuredWidth;
-  const summary = computeColumnLayout(layout, effectiveWidth, viewportWidth);
+  // Subtract the divider handles from the container width. The
+  // flex row in JSX places a divider AFTER every visible segment
+  // (except the last), so the column widths themselves must sum
+  // to (container - dividers). Without this subtraction the row
+  // overflows horizontally — the dividers would eat ~16-24px
+  // of the container that the algorithm thinks the columns can
+  // claim.
+  //
+  // Conversation is always visible (it's the elastic backbone),
+  // so the visible-segment count starts at 1. Each non-collapsed
+  // fixed column adds one more segment, and each visible segment
+  // (except the last) sits next to a divider handle.
+  let visibleSegmentsCount = 1; // conversation is always visible
+  if (!layout.collapsed.sidebar) visibleSegmentsCount += 1;
+  if (!layout.collapsed.preview) visibleSegmentsCount += 1;
+  if (!layout.collapsed.tree) visibleSegmentsCount += 1;
+  const dividersPx = Math.max(0, visibleSegmentsCount - 1) * DRAG_HANDLE_WIDTH;
+  const layoutWidth = effectiveWidth - dividersPx;
+  const summary = computeColumnLayout(layout, layoutWidth, viewportWidth);
   const visibleSegments = summary.segments.filter((segment) => segment.visible);
 
-  // Per-divider drag state. Two dividers can be live at once (a
-  // user can drag the conversation-divider and the panel-divider
-  // independently while the strip is being moved). The ref tracks
-  // each one so a pointer move updates only the matching column.
+  // Per-divider drag state. The pointer-move handler is attached
+  // at the wrapper level (not on each divider) so it survives a
+  // re-render without re-binding. The ref captures the column
+  // being dragged so a move event updates only the matching
+  // column.
   const dragStateRef = useRef<{
     column: ColumnId;
     startX: number;
@@ -103,11 +140,6 @@ export function WorkspaceColumns({
   } | null>(null);
   const [draggingColumn, setDraggingColumn] = useState<ColumnId | null>(null);
 
-  // Pointer move / up handlers live at the wrapper level so they
-  // do not have to be re-attached on every render. The handler
-  // reads `dragStateRef.current` rather than capturing the column
-  // id, so dragging the conversation-divider while the panel-
-  // divider updates its layout stays coherent.
   useEffect(() => {
     if (!draggingColumn) return;
     const onMove = (event: PointerEvent) => {
@@ -150,9 +182,9 @@ export function WorkspaceColumns({
       ref={selfRef}
       className="flex h-full min-h-0 min-w-0 flex-1"
       data-testid="workspace-columns"
-      data-secondary-open={layout.secondaryOpen ? "true" : "false"}
       data-narrowed={summary.narrowed ? "true" : "false"}
       data-container-width={effectiveWidth}
+      data-sum-visible-width={visibleSegments.reduce((sum, segment) => sum + segment.width, 0)}
     >
       {visibleSegments.map((segment, index) => {
         const isLast = index === visibleSegments.length - 1;
@@ -179,23 +211,23 @@ export function WorkspaceColumns({
 
 function dividerAria(column: ColumnId): string {
   switch (column) {
+    case "sidebar":
+      return "workspaceTabs.column.sidebarAria";
     case "conversation":
       return "workspaceTabs.column.conversationAria";
-    case "panel":
-      return "workspaceTabs.column.panelAria";
-    case "secondary":
-      return "workspaceTabs.column.secondaryAria";
-    case "sidebar":
-      return "workspaceTabs.column.resizeAria";
+    case "preview":
+      return "workspaceTabs.column.previewAria";
+    case "tree":
+      return "workspaceTabs.column.treeAria";
   }
 }
 
 /**
  * A single column slot. Renders the column body at its computed
- * width plus an optional divider on the right edge. The divider is
- * an 8px-wide invisible-by-default strip; the visible "pill" appears
- * only on hover or while dragging, matching the sidebar's own
- * resize affordance.
+ * width plus an optional divider on the right edge. The divider
+ * is an 8px-wide invisible-by-default strip; the visible "pill"
+ * appears only on hover or while dragging, matching the
+ * sidebar's own resize affordance.
  */
 function ColumnSlot({
   columnId,
@@ -213,7 +245,7 @@ function ColumnSlot({
   } | null;
   children: React.ReactNode;
 }) {
-  const style = { width };
+  const style: React.CSSProperties = { width };
   return (
     <>
       <div
@@ -221,6 +253,7 @@ function ColumnSlot({
         style={style}
         data-testid={`workspace-column-${columnId}`}
         data-column-width={width}
+        data-column-role={COLUMN_SPECS[columnId].flow}
       >
         {children}
       </div>

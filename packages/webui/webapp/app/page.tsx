@@ -11,7 +11,8 @@ import { SettingsModal } from "@/components/panels";
 import { AppShell } from "@/components/shell";
 import { ConversationToolbar, useAlertCount } from "@/components/toolbar";
 import { WorkspaceColumns } from "@/components/workspace-columns";
-import { WorkspaceTabsPanel } from "@/components/workspace-tabs";
+import { PreviewColumn, PreviewColumnMounted } from "@/components/workspace-tabs";
+import { TreeColumn } from "@/components/workspace-tree-column";
 import { runAction } from "@/lib/action-errors";
 import { SessionProvider, useSessionContext } from "@/lib/store";
 import { decodeTranscript } from "@/lib/transcript";
@@ -40,15 +41,14 @@ import {
   openTab,
   recordFileTabScroll,
   resetColumnWidth,
-  resetTabs,
   setColumnCollapsed,
   setColumnWidth,
   setLauncherOpen,
-  setSecondaryOpen,
   activateTab,
   DEFAULT_COLUMN_LAYOUT,
   fileTabFromPath,
   surfaceTab,
+  type ColumnId,
   type SurfaceTabKind,
   type TabStripState,
   type WorkspaceTabsState,
@@ -78,20 +78,18 @@ function App() {
   // same right-panel / sidebar collapsed choice the user previously
   // had open rather than flashing the default first.
   const [persisted] = useState<UiState>(() => readUiState());
-  // Slice 15 — restore the workspace-tabs payload (open tabs +
-  // active tab + column widths + collapsed flags) the same way.
-  // The first paint already knows whether the panel column should
-  // be open and which tabs are inside it, so a refresh on the new
-  // shell does not flash the empty launcher before restoring the
-  // saved tabs.
+  // Slice 17 — restore the workspace-tabs payload (open tabs +
+  // per-column active ids + column widths + collapsed flags) the
+  // same way. The first paint already knows whether the preview /
+  // tree columns should be open and which tabs are inside them, so
+  // a refresh on the new shell does not flash the empty launcher
+  // before restoring the saved tabs.
   const [workspaceTabs] = useState<WorkspaceTabsState>(() => readWorkspaceTabs());
-  // Right panel open/closed + which kind. Seeded from `persisted.panel`
-  // for backward compatibility — the toolbar's legacy buttons still
-  // call `openPanel(...)`, and that path now fans out through the
-  // workspace-tabs system (open a tab of the matching kind instead
-  // of a single-kind right panel). The state below is the legacy
-  // mirror; it is no longer the source of truth for what shows in
-  // the right column.
+  // The legacy `panel` mirror is still kept around so the
+  // toolbar's existing "active panel" highlight survives the
+  // refactor without a fresh state mirror — slice 17 keeps the
+  // toolbar / panel highlight working through the new tab strip
+  // system (the active tab's kind is the toolbar highlight).
   const [panel, setPanel] = useState<typeof persisted.panel>(persisted.panel);
   // Settings is a dialog rather than a drawer panel, so it has its own state.
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -101,13 +99,13 @@ function App() {
   const [sessionHint, setSessionHint] = useState<{ kind: "not-found"; sessionId: string } | null>(null);
   const alertCount = useAlertCount();
 
-  // Workspace tabs live-state (slice 15). The `useState` initializer
+  // Workspace tabs live-state (slice 17). The `useState` initializer
   // seeds from the persisted payload; subsequent edits mutate via
   // the pure reducers and the effect below mirrors them back into
   // `lib/persist.ts` storage.
   const [tabState, setTabState] = useState<TabStripState>(workspaceTabs.tabStrip);
   const [columnState, setColumnState] = useState<typeof DEFAULT_COLUMN_LAYOUT>(workspaceTabs.columnLayout);
-  // Slice 15 — WorkspaceColumns self-measures via
+  // Slice 17 — WorkspaceColumns self-measures via
   // ResizeObserver, so the page does not need to feed
   // containerWidth anymore. viewportWidth is still threaded
   // through for the future auto-collapse ladder; today it is
@@ -128,7 +126,7 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [panel]);
 
-  // Slice 15 — mirror workspace-tabs state into localStorage. The
+  // Slice 17 — mirror workspace-tabs state into localStorage. The
   // debounced writer coalesces open + activate + scroll edits into
   // one write.
   useEffect(() => {
@@ -142,22 +140,20 @@ function App() {
   // ============================================================
 
   /**
-   * Open a surface tab. If a tab of that kind is already open,
-   * just activate it (the reducer handles the move-to-end
-   * semantics).
+   * Open a surface tab. The reducer routes the tab to the right
+   * column by role: files / git / tasks land in the tree column,
+   * browser lands in the preview column. If a tab of the same
+   * kind is already open, it is activated instead of duplicated.
    */
   const openSurfaceTab = useCallback((kind: SurfaceTabKind) => {
     setTabState((current) => openTab(current, surfaceTab(kind)));
-    // Open the panel column when a surface tab is added. The
-    // legacy `panel` state mirrors this for the toolbar's active
-    // highlight and is reconciled below.
-    setColumnState((current) => setColumnCollapsed(current, "panel", false));
   }, []);
 
   /**
-   * Open a file tab. If a tab for the same path is already open,
-   * just activate it. Also calls `openFileInWeb` so any legacy
-   * subscriber (the FilesPanel preview pane) stays in sync.
+   * Open a file tab in the preview column. If a tab for the same
+   * path is already open, just activate it. Also calls
+   `openFileInWeb` so any legacy subscriber (the FilesPanel
+   preview pane) stays in sync.
    */
   const openFileTab = useCallback((path: string) => {
     if (!path) return;
@@ -170,7 +166,6 @@ function App() {
       }
       return openTab(current, fileTabFromPath(path, 0));
     });
-    setColumnState((current) => setColumnCollapsed(current, "panel", false));
     // Publish through the slice-12 channel — the FilesPanel's
     // embedded preview pane is still subscribed, so this keeps
     // its empty-state copy consistent.
@@ -178,36 +173,27 @@ function App() {
   }, []);
 
   /**
-   * Open a browser tab + set the browser path. Used by both the
-   * file tree (HTML rows) and any future "open in browser" link.
+   * Open a browser tab in the preview column + set the browser
+   * path. Used by both the file tree (HTML rows) and any future
+   * "open in browser" link.
    */
   const openBrowserTab = useCallback((path: string) => {
     if (!path) return;
     setBrowserPath(path);
     setTabState((current) => openTab(current, surfaceTab("browser")));
-    setColumnState((current) => setColumnCollapsed(current, "panel", false));
   }, []);
 
   /**
-   * Close a tab by id. The reducer handles active-tab neighbour
-   * promotion. When the strip empties, the panel column collapses
-   * so the workspace reverts to the "no right panel" state the
-   * user expected before slice 15.
+   * Close a tab by id. The reducer handles per-column active
+   * promotion. The legacy `panel` mirror reflects the active
+   * preview surface so the toolbar highlight stays correct.
    */
   const closeOneTab = useCallback((id: string) => {
     setTabState((current) => {
       const next = closeTab(current, id);
-      // The "close file" callback the file preview pane uses
-      // should not interfere — open.file.in.web has its own
-      // subscription. Clearing it when the LAST file tab closes
-      // and the strip is empty would otherwise leave a stale
-      // preview pane hanging.
       const closingFile = current.tabs.find((tab) => tab.id === id);
       if (closingFile && closingFile.kind === "file" && !next.tabs.some((tab) => tab.kind === "file")) {
         closeOpenFile();
-      }
-      if (next.tabs.length === 0) {
-        setColumnState((layout) => setColumnCollapsed(layout, "panel", true));
       }
       return next;
     });
@@ -221,16 +207,9 @@ function App() {
   }, []);
 
   /**
-   * Toggle the secondary column.
-   */
-  const toggleSecondary = useCallback(() => {
-    setColumnState((current) => setSecondaryOpen(current, !current.secondaryOpen));
-  }, []);
-
-  /**
    * Reset a column width to its default.
    */
-  const resetOneColumnWidth = useCallback((column: import("@/lib/workspace-tabs-state").ColumnId) => {
+  const resetOneColumnWidth = useCallback((column: ColumnId) => {
     setColumnState((current) => resetColumnWidth(current, column));
   }, []);
 
@@ -242,10 +221,26 @@ function App() {
   }, []);
 
   /**
-   * Switch the active tab by id (no-op if unknown).
+   * Switch the active preview tab by id (no-op if unknown).
    */
-  const switchTab = useCallback((id: string) => {
+  const switchPreviewTab = useCallback((id: string) => {
     setTabState((current) => activateTab(current, id));
+  }, []);
+
+  /**
+   * Switch the active tree tab by id (no-op if unknown).
+   */
+  const switchTreeTab = useCallback((id: string) => {
+    setTabState((current) => activateTab(current, id));
+  }, []);
+
+  /**
+   * Collapse / expand a column. The preview and tree columns
+   * are the foldable ones per the user's priority (chrome
+   * sidebar is owned by AppShell; chat column never folds).
+   */
+  const toggleColumnCollapsed = useCallback((column: ColumnId) => {
+    setColumnState((current) => setColumnCollapsed(current, column, !current.collapsed[column]));
   }, []);
 
   // ============================================================
@@ -254,16 +249,22 @@ function App() {
   // The toolbar's existing launchers (workspace, files, git,
   // browser) call `openPanel(kind)`. To keep the buttons alive
   // without re-architecting the toolbar, that callback now fans
-  // out into the workspace-tabs system: workspace opens the
-  // Files tab (legacy workspace surface was a multi-section
-  // "workspace" panel — slice 15 collapses it into Files for
-  // now), files opens the Files tab, git opens the Git tab,
-  // browser opens the Browser tab, search opens the search modal
-  // (out of slice-15 scope).
+  // out into the workspace-tabs system: workspace / files /
+  // git open a tree tab, browser opens a preview tab. Slice 17
+  // also restores the sidebar's legacy 搜索 / 插件 entries —
+  // both classify as tree surfaces (see SurfaceTabKind in
+  // workspace-tabs-state.ts and the SearchSurface / PluginsSurface
+  // bodies in workspace-tree-column.tsx) so the column renders a
+  // visible landing surface, not a silent no-op.
+  //
+  // Out of scope for slice 17 (filed as follow-ups in the report):
+  //   - `progress` — has no entry point in the UI today
+  //   - `alerts` — handled by the sidebar's 站内信 bell flyout
+  //     (AppShell owns it; `openPanel("alerts")` is dead code)
   // ============================================================
 
   const openPanel = useCallback(
-    (kind: "workspace" | "files" | "git" | "alerts" | "search" | "progress" | "plugins" | "browser") => {
+    (kind: "workspace" | "files" | "git" | "plugins" | "browser") => {
       switch (kind) {
         case "files":
           openSurfaceTab("files");
@@ -277,11 +278,18 @@ function App() {
           openSurfaceTab("browser");
           setPanel("browser");
           break;
+        case "plugins":
+          // Plugins surface lives in the tree column (column 4).
+          // The card is a placeholder pending the engine's
+          // plugin-install contract; the sidebar entry visibly
+          // produces a surface rather than silently no-op'ing.
+          openSurfaceTab("plugins");
+          setPanel("plugins");
+          break;
         case "workspace":
-          // No workspace surface tab in slice 15 — open the
-          // closest analog (the Files tab) and leave the toolbar
-          // highlight on. A future slice can add a real
-          // workspace surface tab.
+          // No workspace surface tab — open the closest analog
+          // (Files tab) and leave the toolbar highlight on. A
+          // future slice can add a real workspace surface tab.
           openSurfaceTab("files");
           setPanel("workspace");
           break;
@@ -306,8 +314,9 @@ function App() {
   }, []);
 
   // File-open callback wired to the FilesPanel and the chat
-  // transcript. Routes through the slice-15 file-tab system
-  // (multi-tab) — clicking a row opens a new file tab.
+  // transcript. Routes through the slice-17 file-tab system
+  // (multi-tab) — clicking a row opens a new file tab in the
+  // preview column.
   const onOpenFile = useCallback(
     (path: string) => {
       openFileTab(path);
@@ -315,10 +324,8 @@ function App() {
     [openFileTab],
   );
 
-  // HTML-row click — opens a browser tab AND records the path so
-  // the BrowserPanel renders the iframe. Same wiring as
-  // pre-slice-15 (the toolbar's "browser" button + the file tree
-  // HTML row).
+  // HTML-row click — opens a browser tab in the preview column
+  // AND records the path so the BrowserPanel renders the iframe.
   const onOpenInBrowser = useCallback(
     (path: string) => {
       openBrowserTab(path);
@@ -335,18 +342,11 @@ function App() {
     setBrowserPath(null);
   }, [workspaceDir]);
 
-  // When the panel column collapses (all tabs closed) and the
-  // user closes the last tab, the legacy `panel` state mirrors
-  // that — the toolbar's active highlight clears. Without this
-  // sync, the toolbar would still show "Files" as active even
-  // though the panel column is collapsed.
-  useEffect(() => {
-    if (tabState.tabs.length === 0 && columnState.collapsed.panel) {
-      setPanel(null);
-    }
-  }, [tabState.tabs.length, columnState.collapsed.panel]);
-
-  // Ctrl+N / Ctrl+K mirror the shortcuts the sidebar advertises.
+  // Ctrl+N mirrors the sidebar's "新建任务" shortcut. Ctrl+K
+  // used to open a legacy "search" panel kind that slice 17
+  // removed — the search surface now lives in the tree column
+  // and is reached through the sidebar's 搜索 nav entry (which
+  // dispatches `openSurfaceTab("search")` from shell.tsx).
   useEffect(() => {
     if (!state) return;
     const onKey = (event: KeyboardEvent) => {
@@ -354,9 +354,6 @@ function App() {
       if (event.key.toLowerCase() === "n") {
         event.preventDefault();
         void runAction(t("topbar.newSession"), api.newSession());
-      } else if (event.key.toLowerCase() === "k") {
-        event.preventDefault();
-        openPanel("search");
       }
     };
     window.addEventListener("keydown", onKey);
@@ -431,17 +428,40 @@ function App() {
   }, []);
 
   // Active panel kind for the toolbar's legacy highlight. Maps
-  // to the active surface tab so the toolbar still reads as
-  // "Files tab is active" when the Files tab is open.
+  // to the active preview / tree surface tab so the toolbar
+  // still reads as "Files tab is active" when the Files tab is
+  // open. Slice 17: the highlight prefers the active preview
+  // tab; falls back to the active tree tab when no preview tab
+  // exists.
   const activeSurfaceKind: "workspace" | "files" | "git" | "browser" | null = useMemo(() => {
-    const active = tabState.tabs.find((tab) => tab.id === tabState.activeId);
-    if (!active) return null;
-    if (active.kind === "files") return "files";
-    if (active.kind === "git") return "git";
-    if (active.kind === "browser") return "browser";
-    if (active.kind === "tasks") return null;
+    const previewTab = tabState.tabs.find((tab) => tab.id === tabState.previewActiveId);
+    if (previewTab && previewTab.kind === "browser") return "browser";
+    const treeTab = tabState.tabs.find((tab) => tab.id === tabState.treeActiveId);
+    if (treeTab && treeTab.kind === "files") return "files";
+    if (treeTab && treeTab.kind === "git") return "git";
     return null;
-  }, [tabState.activeId, tabState.tabs]);
+  }, [tabState.previewActiveId, tabState.treeActiveId, tabState.tabs]);
+
+  // ============================================================
+  // Reveal-in-tree handler. Defined BEFORE the early return for
+  // `!state` because hooks must be called in the same order on
+  // every render. The handler opens (or activates) the Files
+  // tab in the tree column; the FilesPanel inside the tree
+  // column owns the directory expansion (a future slice can
+  // wire expansion through a context channel).
+  // ============================================================
+
+  const onRevealInTree = useCallback(
+    (path: string) => {
+      setTabState((current) => {
+        const filesTab = current.tabs.find((tab) => tab.kind === "files");
+        if (filesTab) return activateTab(current, filesTab.id);
+        return openTab(current, surfaceTab("files"));
+      });
+      void path;
+    },
+    [],
+  );
 
   // Upstream shows a centred three-dot loader while the renderer waits for its
   // first state push; same treatment here.
@@ -462,96 +482,22 @@ function App() {
 
   const hasConversation = decodeTranscript(state.chat).length > 0;
 
-  // Column children for the new 4-column layout. The sidebar
-  // slot is empty here — `AppShell` already renders its own
-  // sidebar outside this column row, so passing `null` keeps the
-  // slot invisible (collapsed sidebar → zero-width). The
-  // conversation slot hosts the chat + composer; the panel slot
-  // hosts the workspace-tabs panel; the secondary slot mirrors
-  // the panel slot so the user can drag a second surface into
-  // it (slice 15 leaves the secondary as a read-only mirror for
-  // now — it shows the same active tab as the primary panel).
-  const panelColumn = (
-    <WorkspaceTabsPanel
-      state={tabState}
-      workspaceDir={workspaceDir}
-      browserPath={browserPath}
-      onBrowserNavigate={onBrowserNavigate}
-      onActivate={switchTab}
-      onClose={closeOneTab}
-      onLauncherPick={openSurfaceTab}
-      onLauncherToggle={toggleLauncher}
-      onRecordFileScroll={recordFileScroll}
-      t={t}
-      onRevealInTree={(path) => {
-        // Open the Files tab if it isn't already open, then
-        // activate it. The FilesPanel inside the tab exposes the
-        // tree; the "reveal in tree" affordance on the breadcrumb
-        // does not currently expand the file's directory (a
-        // future ticket can wire that through a context channel).
-        setTabState((current) => {
-          const filesTab = current.tabs.find((tab) => tab.kind === "files");
-          if (filesTab) return activateTab(current, filesTab.id);
-          return openTab(current, surfaceTab("files"));
-        });
-        setColumnState((current) => setColumnCollapsed(current, "panel", false));
-        void path;
-      }}
-      onOpenFile={onOpenFile}
-      onOpenInBrowser={onOpenInBrowser}
-      hasSecondary={columnState.secondaryOpen}
-      columnControls={{
-        toggleSecondary,
-        resetColumn: () => resetOneColumnWidth("panel"),
-      }}
-    />
-  );
-
-  // The secondary column re-uses the same WorkspaceTabsPanel
-  // component but with its own (currently shared) tab strip and
-  // an independent panel-control surface. Slice 15 ships a
-  // mirror — the secondary hosts the same tabs as the primary,
-  // useful for the DSH-style "file tree on the left, preview on
-  // the right" side-by-side layout.
-  const secondaryColumn = (
-    <WorkspaceTabsPanel
-      state={tabState}
-      workspaceDir={workspaceDir}
-      browserPath={browserPath}
-      onBrowserNavigate={onBrowserNavigate}
-      onActivate={switchTab}
-      onClose={closeOneTab}
-      onLauncherPick={openSurfaceTab}
-      t={t}
-      onLauncherToggle={toggleLauncher}
-      onRecordFileScroll={recordFileScroll}
-      onRevealInTree={(path) => {
-        setTabState((current) => {
-          const filesTab = current.tabs.find((tab) => tab.kind === "files");
-          if (filesTab) return activateTab(current, filesTab.id);
-          return openTab(current, surfaceTab("files"));
-        });
-        void path;
-      }}
-      onOpenFile={onOpenFile}
-      onOpenInBrowser={onOpenInBrowser}
-      hasSecondary={columnState.secondaryOpen}
-      columnControls={{
-        toggleSecondary,
-        resetColumn: () => resetOneColumnWidth("secondary"),
-      }}
-    />
-  );
+  // ============================================================
+  // Column children for the four-column shell. The sidebar slot
+  // is null because AppShell renders its own sidebar. The
+  // preview and tree slots are always present (column collapse
+  // is a visual flag in the layout state, not a render-or-decide
+  // choice — the layout passes through the appropriate slot and
+  // WorkspaceColumns hides collapsed segments via zero-width).
+  // ============================================================
 
   const conversationColumn = hasConversation ? (
-    // Slice 15 — the conversation column carries the chat
-    // transcript + the composer. Both live INSIDE the new
-    // workspace shell so the panel column can sit beside them.
-    // The previous wiring had the composer outside the shell
+    // The conversation column carries the chat transcript +
+    // the composer. Both live INSIDE the new workspace shell so
+    // the preview and tree columns can sit beside them. The
+    // previous wiring had the composer outside the shell
     // (AppShell rendered it after the children flex row), which
-    // is what the reload regression exposed: a restored payload
-    // made the new shell mount, but the composer's mount path
-    // was outside it.
+    // is what the reload regression exposed.
     <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <ScrollRestoredChat
@@ -575,28 +521,48 @@ function App() {
     </HomeState>
   );
 
-  // Slice 15 — the new 4-column shell mounts INSIDE the
-  // AppShell's `children` slot, NOT the `panel` slot. The
-  // earlier wiring (passing WorkspaceColumns through `panel`)
-  // caused the AppShell to render BOTH its own conversation-
-  // area and the new shell side-by-side: the AppShell's
-  // conversation-area came up empty (children=null), and the
-  // new shell's conversation column pushed the composer out
-  // of view. Reload surfaced the bug because the restored
-  // `webui:workspace-tabs:v1:<cid>` payload made the new shell
-  // mount again — and the dead conversation-area stole the
-  // composer.
-  //
-  // The fix is single-source: WorkspaceColumns IS the content
-  // area, so it lives as `children`. The AppShell's panel slot
-  // stays null. The home-screen conversation (inline composer
-  // + greeting) also passes as `children` so the AppShell still
-  // owns the rendering surface on every screen.
+  // The preview column always mounts on the conversation view;
+  // its visibility is owned by the column layout. The page
+  // doesn't need to gate it.
+  const previewSlot = (
+    <PreviewColumnMounted
+      tabs={tabState.tabs}
+      previewActiveId={tabState.previewActiveId}
+      workspaceDir={workspaceDir}
+      browserPath={browserPath}
+      onBrowserNavigate={onBrowserNavigate}
+      onActivate={switchPreviewTab}
+      onClose={closeOneTab}
+      onAddFile={() => {
+        // File picker is out of scope for slice 17. The page
+        // can wire this to a future "open file" modal — for
+        // now the button is mounted so the strip's affordance
+        // exists but a click is a no-op (the user can still
+        // pick a file from the tree column).
+      }}
+      onRecordFileScroll={recordFileScroll}
+      onRevealInTree={onRevealInTree}
+      t={t}
+    />
+  );
+
+  const treeSlot = (
+    <TreeColumn
+      tabs={tabState.tabs}
+      treeActiveId={tabState.treeActiveId}
+      workspaceDir={workspaceDir}
+      locale={locale}
+      t={t}
+      onPickSurface={openSurfaceTab}
+      onClose={closeOneTab}
+    />
+  );
+
   const columnChildren = {
     sidebar: null,
     conversation: conversationColumn,
-    panel: columnState.collapsed.panel ? null : panelColumn,
-    secondary: columnState.secondaryOpen ? secondaryColumn : null,
+    preview: previewSlot,
+    tree: treeSlot,
   };
 
   const newShell = hasConversation ? (
@@ -636,15 +602,11 @@ function App() {
         }
         panel={null}
         onOpenPanel={openPanel}
+        onOpenSurfaceTab={openSurfaceTab}
         onOpenSettings={openSettings}
         alertCount={alertCount}
         hasConversation={hasConversation}
       >
-        {/* Slice 15 — WorkspaceColumns is the entire content
-            area on the conversation screen, and the inline
-            home state on the home screen. AppShell no longer
-            hosts a second conversation-area; that double-mount
-            was the reload regression. */}
         {hasConversation ? newShell : conversationColumn}
       </AppShell>
       <SettingsModal
@@ -715,11 +677,11 @@ function ScrollRestoredChat({
   );
 }
 
-// keep the unused-export lint happy: slice 15 deliberately does
-// not pull `panel`/`openPanel`/`openSettings` / resetTabs from the
-// legacy path. They stay in scope so a future ticket can revive
-// them without re-importing the modules.
-void resetTabs;
+// keep the unused-export lint happy: slice 17 deliberately does
+// not pull `panel` / `openPanel` / `openSettings` / `DEFAULT_UI_STATE`
+// from the legacy path. They stay in scope so a future ticket can
+// revive them without re-importing the modules.
+void PreviewColumn;
 void DEFAULT_WORKSPACE_TABS_STATE;
 void isHtmlPath;
 void useRef;

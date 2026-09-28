@@ -1,6 +1,6 @@
 // webapp/test/workspace-tabs-state.test.ts
 //
-// Pure-logic pins for the slice-15 workspace-tabs state model.
+// Pure-logic pins for the slice-17 workspace-tabs state model.
 //
 // Every reducer in `lib/workspace-tabs-state.ts` is exercised
 // end-to-end here: open / close / activate / reorder / scroll /
@@ -12,6 +12,12 @@
 // survives a refresh: opening a few tabs + scrolling a file tab +
 // resizing columns, serializing, deserializing into a fresh state
 // must produce the same in-memory shape.
+//
+// The forward-compat test pins that an OLD-format persistence
+// payload (single `activeId`, columns named `panel`/`secondary`)
+// reads without crashing and falls back to sensible defaults —
+// a refresh after the slice-16 rollout must not white-screen a
+// user.
 
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
@@ -22,13 +28,16 @@ import {
   clampWidth,
   closeTab,
   COLUMN_SPECS,
+  columnRoleForKind,
   computeColumnLayout,
   DEFAULT_COLUMN_LAYOUT,
   DEFAULT_TAB_STRIP,
   DEFAULT_WORKSPACE_TABS_STATE,
   deserializeWorkspaceTabs,
   fileTabFromPath,
+  isPreviewSurface,
   isSurfaceTabKind,
+  isTreeSurface,
   moveTab,
   openTab,
   recordFileTabScroll,
@@ -39,13 +48,12 @@ import {
   setColumnCollapsed,
   setColumnWidth,
   setLauncherOpen,
-  setSecondaryOpen,
   surfaceTab,
   WORKSPACE_TABS_VERSION,
 } from "../lib/workspace-tabs-state";
 import type { TabStripState, WorkspaceTabsState } from "../lib/workspace-tabs-state";
 
-const cid = "test-cid-15";
+const cid = "test-cid-17";
 
 describe("basename", () => {
   test("returns the trailing path segment", () => {
@@ -60,19 +68,49 @@ describe("basename", () => {
 });
 
 describe("isSurfaceTabKind", () => {
-  test("accepts the four surface kinds", () => {
+  test("accepts the six surface kinds", () => {
     assert.equal(isSurfaceTabKind("files"), true);
     assert.equal(isSurfaceTabKind("git"), true);
     assert.equal(isSurfaceTabKind("browser"), true);
     assert.equal(isSurfaceTabKind("tasks"), true);
+    // Slice 17 additions — restore the sidebar's legacy
+    // 搜索 / 插件 entries to a visible landing surface.
+    assert.equal(isSurfaceTabKind("search"), true);
+    assert.equal(isSurfaceTabKind("plugins"), true);
   });
 
   test("rejects the launcher-only kinds and arbitrary strings", () => {
     assert.equal(isSurfaceTabKind("btw"), false);
     assert.equal(isSurfaceTabKind("terminal"), false);
+    assert.equal(isSurfaceTabKind("progress"), false);
+    assert.equal(isSurfaceTabKind("alerts"), false);
     assert.equal(isSurfaceTabKind("made-up"), false);
     assert.equal(isSurfaceTabKind(null), false);
     assert.equal(isSurfaceTabKind(42), false);
+  });
+});
+
+describe("columnRoleForKind / isPreviewSurface / isTreeSurface", () => {
+  test("browser and file tabs belong to the preview column", () => {
+    assert.equal(columnRoleForKind("browser"), "preview");
+    assert.equal(columnRoleForKind("file"), "preview");
+    assert.equal(isPreviewSurface("browser"), true);
+  });
+
+  test("files, git, tasks, search, plugins belong to the tree column", () => {
+    assert.equal(columnRoleForKind("files"), "tree");
+    assert.equal(columnRoleForKind("git"), "tree");
+    assert.equal(columnRoleForKind("tasks"), "tree");
+    // Slice 17 additions — search and plugins are tree
+    // surfaces (the column hosts navigation / listing
+    // surfaces).
+    assert.equal(columnRoleForKind("search"), "tree");
+    assert.equal(columnRoleForKind("plugins"), "tree");
+    assert.equal(isTreeSurface("files"), true);
+    assert.equal(isTreeSurface("git"), true);
+    assert.equal(isTreeSurface("tasks"), true);
+    assert.equal(isTreeSurface("search"), true);
+    assert.equal(isTreeSurface("plugins"), true);
   });
 });
 
@@ -101,13 +139,32 @@ describe("surfaceTab / fileTabFromPath", () => {
 });
 
 describe("openTab", () => {
-  test("appends a new tab and makes it active", () => {
+  test("appends a new tab and makes it active in its column", () => {
     const initial: TabStripState = { ...DEFAULT_TAB_STRIP };
     const next = openTab(initial, surfaceTab("files"));
     assert.equal(next.tabs.length, 1);
     assert.equal(next.tabs[0]!.kind, "files");
-    assert.equal(next.activeId, "files");
+    // Tree surfaces activate treeActiveId (not previewActiveId).
+    assert.equal(next.treeActiveId, "files");
+    assert.equal(next.previewActiveId, null);
     assert.equal(next.launcherOpen, false);
+  });
+
+  test("opening a browser tab activates the preview column only", () => {
+    const initial: TabStripState = { ...DEFAULT_TAB_STRIP };
+    const next = openTab(initial, surfaceTab("browser"));
+    assert.equal(next.previewActiveId, "browser");
+    assert.equal(next.treeActiveId, null);
+  });
+
+  test("opening a tree tab leaves the preview column untouched", () => {
+    const initial: TabStripState = {
+      ...DEFAULT_TAB_STRIP,
+      previewActiveId: "file:/repo/a.md",
+    };
+    const next = openTab(initial, surfaceTab("git"));
+    assert.equal(next.previewActiveId, "file:/repo/a.md");
+    assert.equal(next.treeActiveId, "git");
   });
 
   test("re-opening the same surface kind moves it to the end and activates it", () => {
@@ -116,7 +173,7 @@ describe("openTab", () => {
     assert.equal(reordered.tabs.length, 2);
     assert.equal(reordered.tabs[0]!.kind, "files");
     assert.equal(reordered.tabs[1]!.kind, "git");
-    assert.equal(reordered.activeId, "git");
+    assert.equal(reordered.treeActiveId, "git");
   });
 
   test("re-opening a file tab by the same path is idempotent (no duplicate)", () => {
@@ -124,7 +181,7 @@ describe("openTab", () => {
     const second = openTab(first, fileTabFromPath("/repo/b.md"));
     const third = openTab(second, fileTabFromPath("/repo/a.md"));
     assert.equal(third.tabs.length, 2);
-    assert.equal(third.activeId, "file:/repo/a.md");
+    assert.equal(third.previewActiveId, "file:/repo/a.md");
   });
 
   test("closes the launcher popover when an open succeeds", () => {
@@ -142,23 +199,48 @@ describe("closeTab", () => {
     assert.equal(next.tabs[0]!.kind, "git");
   });
 
-  test("promotes a neighbour when the active tab is closed", () => {
-    const state = openTab(openTab({ ...DEFAULT_TAB_STRIP }, surfaceTab("files")), surfaceTab("git"));
-    const next = closeTab(state, "files");
-    assert.equal(next.activeId, "git");
-  });
-
-  test("promotes the previous tab when closing the rightmost", () => {
-    const state = openTab(openTab({ ...DEFAULT_TAB_STRIP }, surfaceTab("files")), surfaceTab("git"));
+  test("promotes a neighbour in the SAME column when the active tab is closed", () => {
+    const state = openTab(
+      openTab(openTab({ ...DEFAULT_TAB_STRIP }, surfaceTab("files")), surfaceTab("git")),
+      surfaceTab("tasks"),
+    );
     const next = closeTab(state, "git");
-    assert.equal(next.activeId, "files");
+    // tasks is the next tree tab at the same index.
+    assert.equal(next.treeActiveId, "tasks");
+    assert.equal(next.previewActiveId, null);
   });
 
-  test("clears activeId when the last tab closes", () => {
-    const state = openTab({ ...DEFAULT_TAB_STRIP }, surfaceTab("files"));
+  test("promotes the previous tab in the same column when closing the rightmost", () => {
+    const state = openTab(
+      openTab(openTab({ ...DEFAULT_TAB_STRIP }, surfaceTab("files")), surfaceTab("git")),
+      surfaceTab("tasks"),
+    );
+    const next = closeTab(state, "tasks");
+    assert.equal(next.treeActiveId, "git");
+  });
+
+  test("leaves the OTHER column's active id untouched when closing a tab in one column", () => {
+    const state: TabStripState = {
+      ...DEFAULT_TAB_STRIP,
+      tabs: [fileTabFromPath("/repo/a.md"), surfaceTab("files")],
+      previewActiveId: "file:/repo/a.md",
+      treeActiveId: "files",
+    };
+    const next = closeTab(state, "file:/repo/a.md");
+    assert.equal(next.previewActiveId, null);
+    assert.equal(next.treeActiveId, "files");
+  });
+
+  test("clears the active id when the last tab in its column closes", () => {
+    const state: TabStripState = {
+      ...DEFAULT_TAB_STRIP,
+      tabs: [surfaceTab("files")],
+      treeActiveId: "files",
+    };
     const next = closeTab(state, "files");
     assert.equal(next.tabs.length, 0);
-    assert.equal(next.activeId, null);
+    assert.equal(next.treeActiveId, null);
+    assert.equal(next.previewActiveId, null);
   });
 
   test("is a no-op for unknown ids", () => {
@@ -169,16 +251,25 @@ describe("closeTab", () => {
 });
 
 describe("activateTab", () => {
-  test("sets the active id and ignores unknown ids", () => {
-    // Start with files as the only tab (so the active id is
-    // "files"); then activate git — but first git must be open
-    // for the activate to be a no-op rather than a no-match.
+  test("sets the matching column's active id and ignores unknown ids", () => {
     const onlyFiles = openTab({ ...DEFAULT_TAB_STRIP }, surfaceTab("files"));
     const next = activateTab(onlyFiles, "made-up");
-    assert.equal(next.activeId, "files");
+    assert.equal(next.treeActiveId, "files");
     const withGit = openTab(onlyFiles, surfaceTab("git"));
     const activateGit = activateTab(withGit, "git");
-    assert.equal(activateGit.activeId, "git");
+    assert.equal(activateGit.treeActiveId, "git");
+  });
+
+  test("activating a preview tab does not steal the tree column", () => {
+    const state: TabStripState = {
+      ...DEFAULT_TAB_STRIP,
+      tabs: [surfaceTab("files"), surfaceTab("browser")],
+      treeActiveId: "files",
+      previewActiveId: null,
+    };
+    const next = activateTab(state, "browser");
+    assert.equal(next.previewActiveId, "browser");
+    assert.equal(next.treeActiveId, "files");
   });
 
   test("no-op when the active id already matches", () => {
@@ -242,81 +333,74 @@ describe("setLauncherOpen / resetTabs", () => {
     const state = openTab(openTab({ ...DEFAULT_TAB_STRIP }, surfaceTab("files")), surfaceTab("git"));
     const next = resetTabs();
     assert.equal(next.tabs.length, 0);
-    assert.equal(next.activeId, null);
+    assert.equal(next.previewActiveId, null);
+    assert.equal(next.treeActiveId, null);
   });
 });
 
 describe("clampWidth", () => {
   test("clamps below the minimum", () => {
-    assert.equal(clampWidth("panel", 100), COLUMN_SPECS.panel.minWidth);
+    assert.equal(clampWidth("preview", 100), COLUMN_SPECS.preview.minWidth);
   });
   test("clamps above the maximum", () => {
-    assert.equal(clampWidth("panel", 9999), COLUMN_SPECS.panel.maxWidth);
+    assert.equal(clampWidth("preview", 9999), COLUMN_SPECS.preview.maxWidth);
   });
   test("rounds non-integer inputs", () => {
-    assert.equal(clampWidth("panel", 333.7), 334);
+    assert.equal(clampWidth("preview", 333.7), 334);
   });
   test("falls back to default on non-finite input", () => {
-    assert.equal(clampWidth("panel", Number.NaN), COLUMN_SPECS.panel.defaultWidth);
+    assert.equal(clampWidth("preview", Number.NaN), COLUMN_SPECS.preview.defaultWidth);
   });
 });
 
 describe("setColumnWidth / resetColumnWidth / resetAllColumnWidths", () => {
   test("setColumnWidth clamps and records", () => {
-    const state = setColumnWidth(DEFAULT_COLUMN_LAYOUT, "panel", 9999);
-    assert.equal(state.widths.panel, COLUMN_SPECS.panel.maxWidth);
+    const state = setColumnWidth(DEFAULT_COLUMN_LAYOUT, "preview", 9999);
+    assert.equal(state.widths.preview, COLUMN_SPECS.preview.maxWidth);
   });
 
   test("setColumnWidth is a no-op when the new clamped value matches", () => {
-    const once = setColumnWidth(DEFAULT_COLUMN_LAYOUT, "panel", 400);
-    const twice = setColumnWidth(once, "panel", 400);
+    const once = setColumnWidth(DEFAULT_COLUMN_LAYOUT, "preview", 400);
+    const twice = setColumnWidth(once, "preview", 400);
     assert.equal(once, twice);
   });
 
   test("resetColumnWidth restores the column's default", () => {
-    const once = setColumnWidth(DEFAULT_COLUMN_LAYOUT, "panel", 999);
-    const reset = resetColumnWidth(once, "panel");
-    assert.equal(reset.widths.panel, COLUMN_SPECS.panel.defaultWidth);
+    const once = setColumnWidth(DEFAULT_COLUMN_LAYOUT, "preview", 999);
+    const reset = resetColumnWidth(once, "preview");
+    assert.equal(reset.widths.preview, COLUMN_SPECS.preview.defaultWidth);
   });
 
   test("resetAllColumnWidths restores every column to its default", () => {
-    const tweaked = setColumnWidth(setColumnWidth(DEFAULT_COLUMN_LAYOUT, "panel", 999), "secondary", 100);
+    const tweaked = setColumnWidth(setColumnWidth(DEFAULT_COLUMN_LAYOUT, "preview", 999), "tree", 100);
     const reset = resetAllColumnWidths(tweaked);
-    assert.equal(reset.widths.panel, COLUMN_SPECS.panel.defaultWidth);
-    assert.equal(reset.widths.secondary, COLUMN_SPECS.secondary.defaultWidth);
+    assert.equal(reset.widths.preview, COLUMN_SPECS.preview.defaultWidth);
+    assert.equal(reset.widths.tree, COLUMN_SPECS.tree.defaultWidth);
   });
 });
 
-describe("setColumnCollapsed / setSecondaryOpen", () => {
+describe("setColumnCollapsed", () => {
   test("setColumnCollapsed toggles the matching flag", () => {
-    const once = setColumnCollapsed(DEFAULT_COLUMN_LAYOUT, "panel", true);
-    assert.equal(once.collapsed.panel, true);
-    const twice = setColumnCollapsed(once, "panel", false);
-    assert.equal(twice.collapsed.panel, false);
+    const once = setColumnCollapsed(DEFAULT_COLUMN_LAYOUT, "preview", true);
+    assert.equal(once.collapsed.preview, true);
+    const twice = setColumnCollapsed(once, "preview", false);
+    assert.equal(twice.collapsed.preview, false);
   });
 
-  test("setSecondaryOpen toggles the secondary flag", () => {
-    const once = setSecondaryOpen(DEFAULT_COLUMN_LAYOUT, true);
-    assert.equal(once.secondaryOpen, true);
-    const twice = setSecondaryOpen(once, false);
-    assert.equal(twice.secondaryOpen, false);
+  test("does not touch the other columns' collapsed flags", () => {
+    const once = setColumnCollapsed(DEFAULT_COLUMN_LAYOUT, "preview", true);
+    assert.equal(once.collapsed.tree, DEFAULT_COLUMN_LAYOUT.collapsed.tree);
+    assert.equal(once.collapsed.sidebar, DEFAULT_COLUMN_LAYOUT.collapsed.sidebar);
   });
 });
 
-describe("computeColumnLayout", () => {
-  test("hides the secondary column when secondaryOpen=false", () => {
-    const layout = setColumnCollapsed(DEFAULT_COLUMN_LAYOUT, "panel", false);
-    const summary = computeColumnLayout(layout, 1600, 1600);
-    const visibleIds = summary.segments.filter((s) => s.visible).map((s) => s.id);
-    assert.deepEqual(visibleIds, ["sidebar", "conversation", "panel"]);
-  });
-
-  test("shows the secondary column when secondaryOpen=true", () => {
-    let layout = setColumnCollapsed(DEFAULT_COLUMN_LAYOUT, "panel", false);
-    layout = setSecondaryOpen(layout, true);
-    const summary = computeColumnLayout(layout, 2400, 2400);
-    const visibleIds = summary.segments.filter((s) => s.visible).map((s) => s.id);
-    assert.deepEqual(visibleIds, ["sidebar", "conversation", "panel", "secondary"]);
+describe("computeColumnLayout — column model", () => {
+  test("the four columns appear in DOM order", () => {
+    const summary = computeColumnLayout(DEFAULT_COLUMN_LAYOUT, 1600, 1600);
+    assert.deepEqual(
+      summary.segments.map((s) => s.id),
+      ["sidebar", "conversation", "preview", "tree"],
+    );
   });
 
   test("clamps each column to its [min, max] bounds", () => {
@@ -325,16 +409,15 @@ describe("computeColumnLayout", () => {
       widths: {
         sidebar: 9999,
         conversation: 9999,
-        panel: 9999,
-        secondary: 9999,
+        preview: 9999,
+        tree: 9999,
       },
       collapsed: {
         sidebar: false,
         conversation: false,
-        panel: false,
-        secondary: false,
+        preview: false,
+        tree: false,
       },
-      secondaryOpen: true,
     };
     const summary = computeColumnLayout(layout, 4000, 4000);
     for (const segment of summary.segments) {
@@ -346,134 +429,172 @@ describe("computeColumnLayout", () => {
   });
 
   test("zero-width segments are marked invisible", () => {
-    const layout = setColumnCollapsed(DEFAULT_COLUMN_LAYOUT, "panel", true);
+    const layout = setColumnCollapsed(DEFAULT_COLUMN_LAYOUT, "preview", true);
     const summary = computeColumnLayout(layout, 1600, 1600);
-    const panel = summary.segments.find((s) => s.id === "panel");
-    assert.ok(panel);
-    assert.equal(panel.visible, false);
+    const preview = summary.segments.find((s) => s.id === "preview");
+    assert.ok(preview);
+    assert.equal(preview.visible, false);
+  });
+});
+
+describe("computeColumnLayout — defect A (no dead gutter)", () => {
+  // The desktop reference image (`refs/ui/02-workspace-shell.jpg`,
+  // 1384 viewport) shows all four columns with the chat column
+  // at ~322px wide. The fix: conversation is the elastic column;
+  // its rendered width tracks the leftover after the fixed
+  // columns claim their widths, clamped to [min, max]. The chat
+  // content's own max-w-[768px] fills the column at every
+  // comfortable width — no 250-280px dead gutter.
+
+  test("at 1280 the conversation column is elastic, not 1040 with a centred content box", () => {
+    const summary = computeColumnLayout(DEFAULT_COLUMN_LAYOUT, 1280, 1280);
+    const conversation = summary.segments.find((s) => s.id === "conversation")!;
+    const preview = summary.segments.find((s) => s.id === "preview")!;
+    const tree = summary.segments.find((s) => s.id === "tree")!;
+    const sidebar = summary.segments.find((s) => s.id === "sidebar")!;
+    assert.ok(conversation.visible);
+    assert.ok(preview.visible);
+    assert.ok(tree.visible);
+    // The bug: a 1040px conversation column with the chat
+    // content's max-w-[768px] centred = ~136px gutter each side.
+    // The fix: the column itself caps at maxWidth (768); no
+    // wide-gutter state is reachable.
+    assert.ok(conversation.width <= COLUMN_SPECS.conversation.maxWidth,
+      `conversation ${conversation.width} > max ${COLUMN_SPECS.conversation.maxWidth}`);
+    // The four visible widths sum to exactly the container (or
+    // less when a column collapsed). No unexplained remainder.
+    const total = sidebar.width + conversation.width + preview.width + tree.width;
+    assert.equal(total, 1280, `total ${total} != 1280`);
   });
 
-  test("folds the secondary column when the row would overflow", () => {
-    // Tight container + secondary open + large panel column = fold.
-    const layout: typeof DEFAULT_COLUMN_LAYOUT = {
-      ...DEFAULT_COLUMN_LAYOUT,
-      collapsed: {
-        sidebar: false,
-        conversation: false,
-        panel: false,
-        secondary: false,
-      },
-      widths: { ...DEFAULT_COLUMN_LAYOUT.widths, panel: 640, secondary: 640 },
-      secondaryOpen: true,
-    };
-    const summary = computeColumnLayout(layout, 1100, 1100);
-    assert.equal(summary.narrowed, true);
-    // The fold priority for secondary-open layouts is secondary → sidebar.
-    const secondary = summary.segments.find((s) => s.id === "secondary")!;
-    assert.ok(secondary.width < 640);
+  test("at 1920 the conversation column caps at its max — no 250-280px gutter each side", () => {
+    const summary = computeColumnLayout(DEFAULT_COLUMN_LAYOUT, 1920, 1920);
+    const conversation = summary.segments.find((s) => s.id === "conversation")!;
+    assert.ok(conversation.visible);
+    assert.ok(conversation.width <= COLUMN_SPECS.conversation.maxWidth,
+      `conversation ${conversation.width} > max ${COLUMN_SPECS.conversation.maxWidth}`);
+    // Conversation fills its max; the leftover distributes to
+    // tree first, then preview, then sidebar. The row sums to
+    // exactly the container.
+    const total = summary.segments.reduce((sum, s) => sum + s.width, 0);
+    assert.equal(total, 1920, `total ${total} != 1920`);
   });
 
-  test("never produces horizontal overflow", () => {
-    // Worst case: every column at its maximum, container is small.
+  test("at 1384 (the reference image width) the right-side three columns are visible and the chat column lands in the user-accepted band", () => {
+    // Slice 17 — the AppShell chrome owns the session sidebar
+    // (it renders OUTSIDE WorkspaceColumns). The wrapper itself
+    // allocates three columns: conversation, preview, tree.
+    // The "all four columns" assertion is therefore dropped here
+    // (it lives at the shell level, not the layout wrapper
+    // level); the page-level integration test pins the four
+    // columns at the AppShell + WorkspaceColumns boundary.
+    const summary = computeColumnLayout(DEFAULT_COLUMN_LAYOUT, 1384, 1384);
+    const visibleIds = summary.segments.filter((s) => s.visible).map((s) => s.id);
+    assert.deepEqual(visibleIds, ["conversation", "preview", "tree"]);
+    // Slice 17 — with the AppShell chrome owning the session
+    // sidebar, the wrapper sees only preview + tree as fixed
+    // siblings, so the elastic fill at 1384 lands ~600-700
+    // (the user accepts the chat column being noticeably wider
+    // at 1384+ once the chat column owns the empty space
+    // rather than being squeezed under a 1040px dead-gutter).
+    const conversation = summary.segments.find((s) => s.id === "conversation")!;
+    assert.ok(conversation.width >= 280 && conversation.width <= 768,
+      `conversation ${conversation.width} outside the expected band`);
+  });
+
+  test("shrinking the preview column (via stored width) widens conversation — visible reflow", () => {
+    // The drag-resize on the divider between conversation and
+    // preview updates `widths.preview`. After the drag, the
+    // conversation column visibly reflows because conversation
+    // is elastic and absorbs the released space.
+    const before = computeColumnLayout(DEFAULT_COLUMN_LAYOUT, 1280, 1280);
+    const conversationBefore = before.segments.find((s) => s.id === "conversation")!.width;
+    const previewBefore = before.segments.find((s) => s.id === "preview")!.width;
+    // The page wires the drag as `setColumnWidth(layout, "preview", preview - 120)`.
+    const dragged = setColumnWidth(DEFAULT_COLUMN_LAYOUT, "preview", previewBefore - 120);
+    const after = computeColumnLayout(dragged, 1280, 1280);
+    const conversationAfter = after.segments.find((s) => s.id === "conversation")!.width;
+    const previewAfter = after.segments.find((s) => s.id === "preview")!.width;
+    // Preview is narrower after the drag (the user's gesture).
+    assert.ok(previewAfter < previewBefore,
+      `preview should narrow: ${previewBefore} -> ${previewAfter}`);
+    // Conversation widens because it absorbs the released 120px
+    // (the elastic-column fix for defect A).
+    assert.ok(conversationAfter > conversationBefore,
+      `conversation should widen: ${conversationBefore} -> ${conversationAfter}`);
+    // Tree column stays visible — preview folds first, tree is the
+    // user-pinned feature column.
+    const tree = after.segments.find((s) => s.id === "tree")!;
+    assert.ok(tree.visible && tree.width >= COLUMN_SPECS.tree.minWidth);
+  });
+
+  test("a stored conversation width outside bounds clamps; rendered width is the elastic fill", () => {
+    // Edge case: a buggy stored width of 1500 on the conversation
+    // column must clamp to [minWidth, maxWidth] (the
+    // drag-resize handler clamps on every move so this is a
+    // static-source tripwire for the clampWidth path). The
+    // rendered width is the elastic fill — at 1280 the row
+    // does not have enough room to grant maxWidth, so the fill
+    // lands at the leftover.
+    const layout = setColumnWidth(DEFAULT_COLUMN_LAYOUT, "conversation", 1500);
+    const summary = computeColumnLayout(layout, 1280, 1280);
+    const conversation = summary.segments.find((s) => s.id === "conversation")!;
+    assert.ok(conversation.width <= COLUMN_SPECS.conversation.maxWidth);
+    assert.ok(conversation.width >= COLUMN_SPECS.conversation.minWidth);
+    // Specifically: the rendered width equals the elastic fill.
+    // Slice 17 collapsed the sidebar in WorkspaceColumns (the
+    // AppShell owns it), so the wrapper sees only preview +
+    // tree as fixed siblings — the leftover is
+    // 1280 - (preview + tree).
+    assert.equal(conversation.width, 1280 - (COLUMN_SPECS.preview.defaultWidth + COLUMN_SPECS.tree.defaultWidth));
+  });
+
+  test("fold priority: preview folds first, then tree, never sidebar", () => {
+    // Tight container forces the fix to fold feature columns.
+    // Preview folds before tree (the user's priority); sidebar
+    // never folds. Conversation drops toward 0 only when the sum
+    // of fixed minimums still exceeds the container — graceful
+    // last-resort degradation rather than horizontal overflow.
     const layout: typeof DEFAULT_COLUMN_LAYOUT = {
       ...DEFAULT_COLUMN_LAYOUT,
-      collapsed: {
-        sidebar: false,
-        conversation: false,
-        panel: false,
-        secondary: false,
-      },
       widths: {
         sidebar: COLUMN_SPECS.sidebar.maxWidth,
-        conversation: COLUMN_SPECS.conversation.maxWidth,
-        panel: COLUMN_SPECS.panel.maxWidth,
-        secondary: COLUMN_SPECS.secondary.maxWidth,
-      },
-      secondaryOpen: true,
-    };
-    // Provide a container big enough that the fold path actually
-    // has somewhere to go. The fold priority (secondary → sidebar)
-    // cannot fold the conversation + sidebar below their minimums,
-    // so we test the property on a realistic container rather
-    // than an impossibly small one.
-    const summary = computeColumnLayout(layout, 2400, 2400);
-    const totalVisibleWidth = summary.segments
-      .filter((s) => s.visible)
-      .reduce((sum, segment) => sum + segment.width, 0);
-    assert.ok(totalVisibleWidth <= 2400, `total ${totalVisibleWidth} > 2400`);
-  });
-
-  test("drag-overshoot shrinks the conversation column (panel stays on-screen)", () => {
-    // Pin the regression the acceptance run caught: a wide
-    // conversation width against a tight container must not
-    // push the panel column off-screen. With secondaryOpen=
-    // false the fold priority is [sidebar, conversation], so
-    // the conversation takes the residual fold first.
-    const layout: typeof DEFAULT_COLUMN_LAYOUT = {
-      ...DEFAULT_COLUMN_LAYOUT,
-      collapsed: {
-        sidebar: false,
-        conversation: false,
-        panel: false,
-        secondary: false,
-      },
-      widths: { ...DEFAULT_COLUMN_LAYOUT.widths, conversation: 1280 },
-    };
-    const summary = computeColumnLayout(layout, 1280, 1280);
-    const totalVisibleWidth = summary.segments
-      .filter((s) => s.visible)
-      .reduce((sum, segment) => sum + segment.width, 0);
-    assert.ok(totalVisibleWidth <= 1280, `total ${totalVisibleWidth} > 1280`);
-    const panel = summary.segments.find((s) => s.id === "panel");
-    assert.ok(panel);
-    assert.ok(panel.width >= COLUMN_SPECS.panel.minWidth, `panel ${panel.width} < ${COLUMN_SPECS.panel.minWidth}`);
-    // The conversation column absorbed the overflow.
-    const conversation = summary.segments.find((s) => s.id === "conversation");
-    assert.ok(conversation);
-    assert.ok(conversation.width < 1280);
-  });
-
-  test("double-click reset brings the row back to its default within the container", () => {
-    // The acceptance run reported "drag wider → reset does not
-    // repair". The repair path is: the persisted widths revert
-    // to the defaults, then computeColumnLayout folds any
-    // residual overflow into the elastic columns. After the
-    // fold the row fits inside the container.
-    const layout: typeof DEFAULT_COLUMN_LAYOUT = {
-      ...DEFAULT_COLUMN_LAYOUT,
-      collapsed: {
-        sidebar: false,
-        conversation: false,
-        panel: false,
-        secondary: false,
-      },
-      widths: {
-        sidebar: COLUMN_SPECS.sidebar.defaultWidth,
         conversation: COLUMN_SPECS.conversation.defaultWidth,
-        panel: COLUMN_SPECS.panel.defaultWidth,
-        secondary: COLUMN_SPECS.secondary.defaultWidth,
+        preview: COLUMN_SPECS.preview.maxWidth,
+        tree: COLUMN_SPECS.tree.maxWidth,
       },
+      collapsed: { sidebar: false, conversation: false, preview: false, tree: false },
     };
-    const summary = computeColumnLayout(layout, 1280, 1280);
-    const totalVisibleWidth = summary.segments
-      .filter((s) => s.visible)
-      .reduce((sum, segment) => sum + segment.width, 0);
-    assert.ok(totalVisibleWidth <= 1280, `total ${totalVisibleWidth} > 1280`);
+    const summary = computeColumnLayout(layout, 600, 600);
+    const sidebar = summary.segments.find((s) => s.id === "sidebar")!;
+    const tree = summary.segments.find((s) => s.id === "tree")!;
+    const preview = summary.segments.find((s) => s.id === "preview")!;
+    // Sidebar (chrome) is always at least at its minWidth.
+    assert.ok(sidebar.width >= COLUMN_SPECS.sidebar.minWidth,
+      `sidebar ${sidebar.width} < min ${COLUMN_SPECS.sidebar.minWidth}`);
+    // Preview folds before tree (the user's policy).
+    assert.ok(preview.width <= tree.width,
+      `preview ${preview.width} > tree ${tree.width} — fold priority violated`);
   });
 });
 
 describe("serializeWorkspaceTabs / deserializeWorkspaceTabs", () => {
-  test("round-trip preserves tabs, active id, file scrolls, and column widths", () => {
+  test("round-trip preserves tabs, per-column active ids, file scrolls, and column widths", () => {
     const state: WorkspaceTabsState = {
       tabStrip: {
-        tabs: [fileTabFromPath("/repo/a.md", 240), surfaceTab("git"), surfaceTab("files")],
-        activeId: "git",
+        tabs: [
+          fileTabFromPath("/repo/a.md", 240),
+          surfaceTab("git"),
+          surfaceTab("files"),
+          surfaceTab("browser"),
+        ],
+        previewActiveId: "browser",
+        treeActiveId: "files",
         launcherOpen: false,
       },
       columnLayout: {
-        widths: { sidebar: 240, conversation: 720, panel: 360, secondary: 280 },
-        collapsed: { sidebar: false, conversation: false, panel: false, secondary: false },
-        secondaryOpen: true,
+        widths: { sidebar: 240, conversation: 720, preview: 360, tree: 280 },
+        collapsed: { sidebar: false, conversation: false, preview: false, tree: false },
       },
     };
     const wire = serializeWorkspaceTabs(state, cid);
@@ -481,9 +602,9 @@ describe("serializeWorkspaceTabs / deserializeWorkspaceTabs", () => {
     assert.equal(wire.cid, cid);
     const restored = deserializeWorkspaceTabs(JSON.stringify(wire), cid);
     assert.deepEqual(restored.tabStrip.tabs, state.tabStrip.tabs);
-    assert.equal(restored.tabStrip.activeId, "git");
-    assert.equal(restored.columnLayout.widths.panel, 360);
-    assert.equal(restored.columnLayout.secondaryOpen, true);
+    assert.equal(restored.tabStrip.previewActiveId, "browser");
+    assert.equal(restored.tabStrip.treeActiveId, "files");
+    assert.equal(restored.columnLayout.widths.preview, 360);
   });
 
   test("returns defaults on garbage / version-mismatch / cid-mismatch input", () => {
@@ -494,14 +615,14 @@ describe("serializeWorkspaceTabs / deserializeWorkspaceTabs", () => {
     const wrongVersion = JSON.stringify({
       version: WORKSPACE_TABS_VERSION + 9,
       cid,
-      tabs: { tabs: [], activeId: null, fileScrolls: {} },
+      tabs: { tabs: [], previewActiveId: null, treeActiveId: null, activeId: null, fileScrolls: {} },
       layout: {},
     });
     assert.deepEqual(deserializeWorkspaceTabs(wrongVersion, cid), DEFAULT_WORKSPACE_TABS_STATE);
     const wrongCid = JSON.stringify({
       version: WORKSPACE_TABS_VERSION,
       cid: "different-cid",
-      tabs: { tabs: [], activeId: null, fileScrolls: {} },
+      tabs: { tabs: [], previewActiveId: null, treeActiveId: null, activeId: null, fileScrolls: {} },
       layout: {},
     });
     assert.deepEqual(deserializeWorkspaceTabs(wrongCid, cid), DEFAULT_WORKSPACE_TABS_STATE);
@@ -511,16 +632,15 @@ describe("serializeWorkspaceTabs / deserializeWorkspaceTabs", () => {
     const corrupted = JSON.stringify({
       version: WORKSPACE_TABS_VERSION,
       cid,
-      tabs: { tabs: [], activeId: null, fileScrolls: {} },
+      tabs: { tabs: [], previewActiveId: null, treeActiveId: null, activeId: null, fileScrolls: {} },
       layout: {
-        widths: { sidebar: 9999, conversation: 9999, panel: 9999, secondary: 9999 },
+        widths: { sidebar: 9999, conversation: 9999, preview: 9999, tree: 9999 },
         collapsed: {},
-        secondaryOpen: true,
       },
     });
     const out = deserializeWorkspaceTabs(corrupted, cid);
-    assert.ok(out.columnLayout.widths.panel <= COLUMN_SPECS.panel.maxWidth);
-    assert.ok(out.columnLayout.widths.panel >= COLUMN_SPECS.panel.minWidth);
+    assert.ok(out.columnLayout.widths.preview <= COLUMN_SPECS.preview.maxWidth);
+    assert.ok(out.columnLayout.widths.preview >= COLUMN_SPECS.preview.minWidth);
   });
 
   test("drops unknown tab ids so a future schema bump cannot crash the renderer", () => {
@@ -529,13 +649,81 @@ describe("serializeWorkspaceTabs / deserializeWorkspaceTabs", () => {
       cid,
       tabs: {
         tabs: ["files", "made-up-tab", "git"],
-        activeId: "made-up-tab",
+        previewActiveId: null,
+        treeActiveId: "made-up-tab",
+        activeId: null,
         fileScrolls: {},
       },
       layout: {},
     });
     const out = deserializeWorkspaceTabs(payload, cid);
     assert.equal(out.tabStrip.tabs.length, 2);
-    assert.equal(out.tabStrip.activeId, "git");
+    assert.equal(out.tabStrip.treeActiveId, "git");
+  });
+
+  describe("sidebar nav landing — search & plugins", () => {
+  // Regression tripwire: slice 15 collapsed the panel column and
+  // orphaned the sidebar's legacy 搜索 / 插件 nav entries. The
+  // columnRoleForKind classifier has to map them to the tree
+  // column so the page's openSurfaceTab dispatcher lands them
+  // on a visible surface (SearchSurface / PluginsSurface in
+  // components/workspace-tree-column.tsx).
+  test("search / plugins classify as tree surfaces so openSurfaceTab opens them", () => {
+    assert.equal(columnRoleForKind("search"), "tree");
+    assert.equal(columnRoleForKind("plugins"), "tree");
+    // The reducer dispatches them into the tree column.
+    const state = openTab({ ...DEFAULT_TAB_STRIP }, surfaceTab("search"));
+    assert.equal(state.treeActiveId, "search");
+    assert.equal(state.previewActiveId, null);
+    const withPlugins = openTab(state, surfaceTab("plugins"));
+    assert.equal(withPlugins.treeActiveId, "plugins");
+  });
+});
+
+test("FORWARD-COMPAT: a slice-15 payload (single activeId + panel/secondary columns) reads without crashing", () => {
+    // A user who refreshed after slice 16 but BEFORE slice 17
+    // ships has a payload like this on disk. The deserializer
+    // must NOT crash the page; it must fall back to defaults
+    // for the new column ids AND map the legacy single active
+    // id into the new per-column slots. Values that happen to
+    // still be in range in slice 17 are preserved verbatim —
+    // the user's saved conversation width (768) is still a
+    // valid slice-17 target (it was the slice-15 default and
+    // happens to be the slice-17 max).
+    const oldPayload = JSON.stringify({
+      version: WORKSPACE_TABS_VERSION,
+      cid,
+      tabs: {
+        tabs: ["files", "git", "browser", "file:/repo/a.md"],
+        activeId: "file:/repo/a.md",
+        fileScrolls: { "file:/repo/a.md": 240 },
+      },
+      layout: {
+        widths: { sidebar: 240, conversation: 768, panel: 320, secondary: 320 },
+        collapsed: { sidebar: false, conversation: false, panel: false, secondary: false },
+        secondaryOpen: true,
+      },
+    });
+    const out = deserializeWorkspaceTabs(oldPayload, cid);
+    // No white-screen: defaults are applied where the new ids
+    // are missing.
+    assert.equal(out.columnLayout.widths.sidebar, 240, "sidebar preserved");
+    assert.equal(out.columnLayout.widths.conversation, 768,
+      "conversation preserved (768 is still within slice-17 [280, 768])");
+    assert.equal(out.columnLayout.widths.preview, COLUMN_SPECS.preview.defaultWidth,
+      "preview reset to slice-17 default (panel key absent in old payload)");
+    assert.equal(out.columnLayout.widths.tree, COLUMN_SPECS.tree.defaultWidth,
+      "tree reset to slice-17 default (secondary key absent in old payload)");
+    // All four tabs survived.
+    assert.equal(out.tabStrip.tabs.length, 4);
+    // The legacy active id was a file tab → preview column picks it up.
+    assert.equal(out.tabStrip.previewActiveId, "file:/repo/a.md");
+    // The tree column had no legacy active id; the deserializer
+    // points it at the most recently opened tree tab (the last
+    // tree tab in the open-order list). `git` is the most recent
+    // because the user opened files → git → browser → file.md.
+    assert.equal(out.tabStrip.treeActiveId, "git");
+    // The scroll position survived.
+    assert.equal((out.tabStrip.tabs[3] as { scrollTop: number }).scrollTop, 240);
   });
 });
