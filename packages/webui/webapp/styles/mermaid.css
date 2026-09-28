@@ -1,0 +1,166 @@
+/* Mermaid diagram styling (slice 23 of webui-parity).
+ *
+ * The mermaid renderer emits an SVG inside `.mermaid-block-rendered`.
+ * The SVG carries its own `viewBox` and most of its own styling (fill,
+ * stroke, font), so this file owns:
+ *
+ *   - the wrapper frame around the diagram — the rounded card that
+ *     makes a flowchart / sequence / Gantt sit cleanly inside either a
+ *     markdown preview panel or a chat message bubble;
+ *   - the failure state — the "diagram unavailable" card that takes
+ *     the place of the diagram when mermaid throws;
+ *   - the lazy-load CSS for `pre.mermaid-source` — a hidden fallback so
+ *     a renderer that misfires (or a theme switch mid-mount) cannot
+ *     leak the raw diagram source into the visible page.
+ *
+ * Light and dark are both handled by token-driven CSS variables from
+ * `styles/tokens.css`. The two themes are reached by the `.dark` class
+ * on `<html>` (see app/layout.tsx), which the `.mermaid-block-rendered`
+ * container inherits via the cascade. The CJK font fallback mirrors the
+ * stack mermaid was initialised with in components/mermaid-block.tsx —
+ * the value of `font-family` here is what the SVG text uses, so it
+ * matters: PingFang SC (macOS), Microsoft YaHei (Windows), Noto Sans
+ * CJK SC (Linux distros without the Apple/Microsoft fonts).
+ *
+ * Layout in the markdown flow: mermaid diagrams are block-level; they
+ * sit between prose paragraphs the same way the `codeblock-shell` does.
+ * Max-width keeps wide Gantt charts from spilling the panel.
+ */
+
+.min-h-fallback {
+  /* Avoid the browser dropping the box to zero height before mermaid
+   * has a chance to paint. 320×240 is a reasonable upper bound for the
+   * "rendering…" indicator and matches what most flowcharts need. */
+  min-height: 80px;
+}
+
+/* The hidden source-pre. The sanitiser drops `hidden` so the rule here
+ * is the actual hiding mechanism. Without this rule a third-party
+ * renderer that forgets to wrap the source in `<pre class="mermaid-source"
+ * hidden>` would leak the diagram's source into the visible page. */
+pre.mermaid-source {
+  display: none !important;
+}
+
+/* The placeholder div is empty after MarkdownHtml has mounted the
+ * portal; keep it from collapsing so the portal has a stable box. */
+.mermaid-block {
+  display: block;
+  margin: 12px 0;
+  min-height: 80px;
+}
+
+.mermaid-block-loading {
+  color: var(--text_default_tertiary);
+  font-size: 12px;
+  font-style: italic;
+}
+
+/* The rendered SVG lives inside a card so it sits inside both the file
+ * preview panel and the chat markdown bubble without bleeding the
+ * page background. */
+.mermaid-block-rendered {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin: 12px 0;
+  padding: 16px;
+  border-radius: 10px;
+  border: 1px solid var(--border_default);
+  background: var(--bg_default_secondary);
+  overflow-x: auto;
+}
+
+/* Mermaid renders <svg> with width="100%" by default at this version;
+ * keep it responsive while capping absurdly wide diagrams. */
+.mermaid-block-rendered > svg {
+  max-width: 100%;
+  height: auto;
+  display: block;
+}
+
+/* CJK fallback. Mermaid's own `fontFamily` config lands on the SVG's
+ * inline style; this rule covers text nodes outside the SVG (the
+ * loading hint and the failure copy) and is a safety net for diagrams
+ * whose font lookup misses a system font on Linux. */
+.mermaid-block,
+.mermaid-block-failure,
+.mermaid-block-loading {
+  font-family:
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    "PingFang SC",
+    "Hiragino Sans GB",
+    "Microsoft YaHei",
+    "Noto Sans CJK SC",
+    "Source Han Sans SC",
+    sans-serif;
+}
+
+/* Failure card. The source pre is selectable so a user can copy the
+ * original diagram back out — the ticket requires the source stays
+ * copyable, and a `<pre>` with `user-select: text` is the cheapest way
+ * to make the contract explicit. */
+.mermaid-block-failure {
+  margin: 12px 0;
+  padding: 12px 16px;
+  border-radius: 10px;
+  border: 1px solid var(--border_status_warning);
+  background: var(--bg_default_secondary);
+  color: var(--text_default_secondary);
+}
+
+.mermaid-block-failure-title {
+  font-weight: 600;
+  color: var(--text_status_warning);
+  margin-bottom: 4px;
+}
+
+.mermaid-block-failure-error {
+  font-size: 12px;
+  color: var(--text_default_secondary);
+  margin-bottom: 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.mermaid-block-failure-source {
+  font-family:
+    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+  font-size: 12px;
+  color: var(--text_default_primary);
+  background: var(--bg_grouped_secondary);
+  border: 1px solid var(--border_default);
+  border-radius: 6px;
+  padding: 8px;
+  margin: 0 0 8px 0;
+  white-space: pre-wrap;
+  overflow-x: auto;
+  max-height: 240px;
+  overflow-y: auto;
+  user-select: text;
+}
+
+.mermaid-block-failure-hint {
+  font-size: 12px;
+  color: var(--text_default_tertiary);
+}
+
+/* The `pending` state is what shows during the dynamic import — a
+ * subtle rounded box. Once mermaid.render finishes, the
+ * `.mermaid-block-rendered` rule above takes over. */
+.mermaid-block-pending {
+  margin: 12px 0;
+  padding: 16px;
+  border-radius: 10px;
+  border: 1px dashed var(--border_default);
+  background: var(--bg_default_secondary);
+  color: var(--text_default_tertiary);
+  font-size: 12px;
+  min-height: 80px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}

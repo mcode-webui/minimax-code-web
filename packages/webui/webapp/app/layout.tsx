@@ -10,6 +10,7 @@ import "../styles/official-utilities.css";
 import "../styles/mavis-dropdown.css";
 import "../styles/desktop-typography.css";
 import "../styles/code-preview.css";
+import "../styles/mermaid.css";
 
 export const metadata: Metadata = {
   title: "MiniMax Code",
