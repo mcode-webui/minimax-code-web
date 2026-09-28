@@ -111,6 +111,29 @@ export function __testSnapshot(): StoreSnapshot {
 }
 
 /**
+ * Active session id from the module-scope snapshot.
+ *
+ * Why a separate accessor instead of reading from a React component's
+ * closure: the SSE-driven store lives at module scope (it must — the
+ * SSE connection has to outlive every component). A composer's
+ * in-flight submit can be closed over a ref that was current at
+ * dispatch time; if the user switches sessions, that ref is frozen
+ * at the OLD session id because the component may have remounted
+ * (page.tsx swaps the composer between the inline and chat-tree
+ * positions when `hasConversation` flips). Reading from this
+ * accessor at catch time resolves the live session id from the
+ * SAME module-scope state the SSE handler writes — it survives
+ * remounts and is updated by every state push.
+ *
+ * The composer's `submit` reads this at catch time so the cid +
+ * sessionId restore-gate compares against the active context, not
+ * a stale closure snapshot.
+ */
+export function getActiveSessionId(): string | null {
+  return snapshot.state ? snapshot.state.sessionId : null;
+}
+
+/**
  * Test-only handle: simulate an SSE frame dispatch. Production code
  * NEVER calls this — it exists so the revision-guard reducer can be
  * unit-tested without standing up React.

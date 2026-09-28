@@ -91,8 +91,15 @@ export function Chat({
   const { state } = useSessionContext();
   const scrollerRef = useRef<HTMLDivElement>(null);
   // Decode, then fold each run of thinking/tool blocks into one activity group so
-  // the transcript renders the way upstream lays it out.
-  const units = useMemo(() => groupActivity(state ? decodeTranscript(state.chat) : []), [state]);
+  // the transcript renders the way upstream lays it out. The decoder needs
+  // the workspace dir (slice 20) so a relative path the agent typed
+  // (`src/foo.ts`) lands as `/ws/src/foo.ts` and the chip click resolves.
+  const workspaceDir = state?.workspace?.dir ?? null;
+  const units = useMemo(
+    () =>
+      groupActivity(state ? decodeTranscript(state.chat, { workspaceDir }) : []),
+    [state, workspaceDir],
+  );
 
   // Global session-is-running state: when true, message-action rows are hidden
   // everywhere. The copy button has its own per-block `!isStreaming` check

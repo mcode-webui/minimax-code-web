@@ -42,6 +42,13 @@
 // forces a clean slate.
 
 import { clientId } from "./cid";
+import {
+  DEFAULT_WORKSPACE_TABS_STATE,
+  deserializeWorkspaceTabs,
+  serializeWorkspaceTabs,
+  WORKSPACE_TABS_VERSION,
+  type WorkspaceTabsState,
+} from "./workspace-tabs-state";
 
 /** Stable prefix used by every key in this namespace. Mirrors slice 01. */
 export const PREFIX = "webui";
@@ -50,15 +57,49 @@ export const PREFIX = "webui";
 export const UI_STATE_VERSION = 1;
 /** Bump when the scroll-position entry shape changes incompatibly. */
 export const SCROLL_VERSION = 1;
+/** Bump when the workspace-tabs payload shape changes incompatibly.
+ *  Re-exported from the state module so the rest of the app only
+ *  imports from `lib/persist.ts` — keeping the keyspace + version
+ *  registration in one file. */
+export { WORKSPACE_TABS_VERSION, DEFAULT_WORKSPACE_TABS_STATE };
 
-/** Right-panel kinds. Mirrors `components/panels.tsx#PanelKind`. */
+/**
+ * Right-panel kinds. Mirrors the toolbar / sidebar nav entry
+ * points' route targets. Slice 17 trimmed this union to the
+ * four kinds that actually have a landing surface in the new
+ * four-column shell:
+ *
+ *   - `workspace`  → opens the Files tab (closest analog) in
+ *                    the tree column (no dedicated workspace
+ *                    surface in slice 17 — toolbar highlight stays
+ *                    on)
+ *   - `files`      → Files tab in the tree column
+ *   - `git`        → Git tab in the tree column
+ *   - `plugins`    → Plugins placeholder in the tree column
+ *                    (engine contract not yet landed)
+ *   - `browser`    → Browser tab in the preview column
+ *
+ * `search` was a PanelKind in slice 14 but is reached through
+ * `Ctrl+K` and the sidebar's nav entry, both of which now route
+ * through `openSurfaceTab("search")` (a SurfaceTabKind, not a
+ * PanelKind). Removing it from the union prevents routing
+ * through a kind that does not have a dedicated page-level
+ * surface.
+ *
+ * Slice 17 also removed `alerts` and `progress` — neither had
+ * a live entry point. `alerts` is reached via the sidebar's
+ * 站内信 bell icon (AppShell#InboxFlyout, a separate
+ * component); `progress` had no UI entry point at all.
+ * Keeping them in the union with no consumer meant a test
+ * could assert they are not surfaces, but the UI would
+ * silently no-op on a stale persisted payload. Removing them
+ * makes the contract explicit: a kind that is not in the union
+ * cannot be opened.
+ */
 export type PanelKind =
   | "workspace"
   | "files"
   | "git"
-  | "alerts"
-  | "search"
-  | "progress"
   | "plugins"
   | "browser";
 
@@ -150,9 +191,6 @@ export function deserializeUiState(raw: string | null | undefined, cid: string |
     "workspace",
     "files",
     "git",
-    "alerts",
-    "search",
-    "progress",
     "plugins",
     "browser",
   ]);
@@ -315,4 +353,109 @@ export function writePersistedShellCollapsed(collapsed: boolean): void {
   // already has does not bounce through the debounce.
   if (current.sidebarCollapsed === collapsed) return;
   writeUiState({ ...current, sidebarCollapsed: collapsed });
+}
+
+// --- workspace tabs (slice 15) ---------------------------------------------
+
+/**
+ * Localstorage key for the workspace-tabs payload (slice 15).
+ *
+ * Lives under the same `webui:<feature>:v<n>:<cid>` envelope every
+ * other slice uses (slice 01's files-tree, slice 07's UI state, the
+ * scroll-position key). Version + cid guards make the payload
+ * safe against two cids sharing a browser and against a future
+ * shape change.
+ *
+ * The key is namespaced off `PREFIX` so a grep for the prefix in
+ * DevTools shows one coherent namespace.
+ */
+export const WORKSPACE_TABS_KEY_PREFIX = `${PREFIX}:workspace-tabs:v${WORKSPACE_TABS_VERSION}`;
+
+export function workspaceTabsKey(cid: string | null | undefined): string {
+  const safe = cid && cid.length > 0 ? cid : "anon";
+  return `${WORKSPACE_TABS_KEY_PREFIX}:${safe}`;
+}
+
+/**
+ * Read the workspace-tabs state for the current cid. Returns the
+ * default state on missing/bad input — never throws. The first read
+ * during a cold load is the canonical "did the user have an open
+ * workspace?" question; the page wires this directly to its
+ * useState initializer so the strip / columns restore BEFORE the
+ * first paint (matching slice 07's hydration contract).
+ */
+export function readWorkspaceTabs(): WorkspaceTabsState {
+  if (typeof window === "undefined") {
+    return deserializeWorkspaceTabs(null, clientId());
+  }
+  let raw: string | null = null;
+  try {
+    raw = window.localStorage.getItem(workspaceTabsKey(clientId()));
+  } catch {
+    return deserializeWorkspaceTabs(null, clientId());
+  }
+  return deserializeWorkspaceTabs(raw, clientId());
+}
+
+// --- debounced workspace-tabs writer ---------------------------------------
+
+let pendingTabsTimer: ReturnType<typeof setTimeout> | null = null;
+let pendingTabsKey: string | null = null;
+let pendingTabsCid: string | null = null;
+let pendingTabsState: WorkspaceTabsState | null = null;
+const WORKSPACE_TABS_DEBOUNCE_MS = 150;
+
+/**
+ * Best-effort write of the workspace-tabs state. Coalesces a burst
+ * of updates (open a tab + activate it + drag a column all in one
+ * tick) into a single localStorage write. Returns nothing — failures
+ * are silent by design (a quota error in writeUiState is the same
+ * failure mode this would have, so consistency wins over noise).
+ */
+export function writeWorkspaceTabs(state: WorkspaceTabsState): void {
+  if (typeof window === "undefined") return;
+  const cid = clientId();
+  scheduleWorkspaceTabsWrite(workspaceTabsKey(cid), cid, state);
+}
+
+function scheduleWorkspaceTabsWrite(key: string, cid: string, state: WorkspaceTabsState): void {
+  pendingTabsKey = key;
+  pendingTabsCid = cid;
+  pendingTabsState = state;
+  if (pendingTabsTimer) return;
+  const fire = () => {
+    const k = pendingTabsKey;
+    const c = pendingTabsCid;
+    const s = pendingTabsState;
+    pendingTabsTimer = null;
+    pendingTabsKey = null;
+    pendingTabsCid = null;
+    pendingTabsState = null;
+    if (!k || !c || !s) return;
+    try {
+      window.localStorage.setItem(k, JSON.stringify(serializeWorkspaceTabs(s, c)));
+    } catch {
+      // best-effort — see writeUiState.
+    }
+  };
+  pendingTabsTimer = setTimeout(fire, WORKSPACE_TABS_DEBOUNCE_MS);
+}
+
+/** Test-only handle: flush the debounced writer immediately. */
+export function __flushWorkspaceTabs(): void {
+  if (!pendingTabsTimer) return;
+  clearTimeout(pendingTabsTimer);
+  pendingTabsTimer = null;
+  const k = pendingTabsKey;
+  const c = pendingTabsCid;
+  const s = pendingTabsState;
+  pendingTabsKey = null;
+  pendingTabsCid = null;
+  pendingTabsState = null;
+  if (!k || !c || !s) return;
+  try {
+    window.localStorage.setItem(k, JSON.stringify(serializeWorkspaceTabs(s, c)));
+  } catch {
+    /* */
+  }
 }

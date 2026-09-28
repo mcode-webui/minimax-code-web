@@ -122,6 +122,17 @@ export const OWNED_ROUTES = new Set([
   "GET /api/fs/read-file",
   "GET /api/fs/raw",
   "POST /api/fs/mkdir",
+  // Slice 14 — open / reveal in OS file manager. Same containment
+  // gate as the other /api/fs/* routes (lib/open-target.js); the
+  // execFile boundary is the only new attack surface, and it never
+  // touches a shell.
+  "POST /api/fs/open-default",
+  "POST /api/fs/reveal",
+  // Slice 19a — bounded workspace search. Same containment gate
+  // as /api/fs/read (via assertWorkspacePath inside the route);
+  // the parameter shape is the documented contract the panel uses
+  // to populate "searched N, skipped M" footers.
+  "GET /api/fs/search",
   // Git panel (slice 03): right-panel git surface + `/review` parity
   // surfaces. Containment-gated; execFile (no shell); branch
   // checkout is allow-list gated. See lib/git.js header.
@@ -484,14 +495,38 @@ export function createHonoApp() {
   // createResponseCapture buffer (which only models writeHead/end). The
   // route's `rawStreamToWebResponse` returns a fetch-API Response with a
   // Web ReadableStream body, so we hand it back to Hono directly and skip
-  // invokeHandler entirely.
+  // invokeHandler entirely. `?download=1` flips the response into
+  // "save as" mode (slice 14's third action); the same containment
+  // gate, size cap, and regular-file check still apply.
   app.get("/api/fs/raw", (c) => {
     const url = new URL(c.req.url, "http://localhost");
     const path = url.searchParams.get("path") || "";
-    return fsRoute.rawStreamToWebResponse(path);
+    const download = url.searchParams.get("download") === "1";
+    // Slice 16 — second-confirmation override for credential-shaped
+    // files. The flag is opt-in: the panel sends it only after the
+    // user clicks "open anyway". The server is still the real gate.
+    const confirm = url.searchParams.get("confirm") === "1";
+    return fsRoute.rawStreamToWebResponse(path, { download, confirm });
   });
   app.post("/api/fs/mkdir", (c) =>
     invokeHandler(c, c.get(CAPTURE_KEY), fsRoute.handleFsMkdir),
+  );
+  // Slice 14 — open with OS default / reveal in file manager. Containment
+  // + per-node realpath gated inside lib/open-target.js; the route only
+  // JSON-decodes the body and maps structured codes to HTTP status.
+  app.post("/api/fs/open-default", (c) =>
+    invokeHandler(c, c.get(CAPTURE_KEY), fsRoute.handleFsOpenDefault),
+  );
+  app.post("/api/fs/reveal", (c) =>
+    invokeHandler(c, c.get(CAPTURE_KEY), fsRoute.handleFsReveal),
+  );
+  // Slice 19a — bounded workspace search. Same `assertWorkspacePath`
+  // gate as /api/fs/read; recursive walker with hard budgets in
+  // lib/fs-search.js. The walker clamps each budget to its absolute
+  // limit so a hostile query cannot pin the server; exceeding any
+  // budget returns `truncated: true` with a `truncatedReason`.
+  app.get("/api/fs/search", (c) =>
+    invokeHandler(c, c.get(CAPTURE_KEY), fsRoute.handleFsSearch),
   );
 
   // ----- Git panel (slice 03) -----

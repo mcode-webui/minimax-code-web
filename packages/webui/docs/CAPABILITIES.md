@@ -38,6 +38,9 @@ doc where the feature is broken down by status.
 | `token-auth` | §11 Network & access control |
 | `git-panel` | §12 Git panel |
 | `mobile-responsive` | §10 UI / UX |
+| `bounded-workspace-search` | §6 Workspaces |
+| `credential-file-preview-guard` | §11 Network & access control |
+| `four-column-shell` | §10 UI / UX |
 
 CI asserts on every one of these names appearing in this document
 (see `scripts/check-docs-alignment.mjs`); the table above is the
@@ -107,7 +110,7 @@ single index that satisfies the check.
 
 | Feature | Status | Why / where |
 |---|---|---|
-| Switch workspace via picker | ⚠ | not wired in the Next frontend. `POST /api/workspace` and `webapp/lib/api.ts#setWorkspace` both exist, but no component calls the latter. The sidebar chip that used to sit above the project list only opened the workspace panel — duplicating the toolbar's 工作区 button — so it was removed rather than left as a second door to one room. |
+| Switch workspace via picker | ✅ | `webapp/components/workspace-picker.tsx` (slice 15) — modal opens from `WorkspaceTabsLauncher` and the chip dropdown; posts to `POST /api/workspace`. Picker content is loaded via `GET /api/workspace/tree` and resolved folder names via `GET /api/workspace/resolve`; recents (last N) come from `GET /api/workspace/recent`. The native OS picker (`zenity` / `kdialog` / `osascript` / `PowerShell`) was removed in slice 14 (in-product picker only). |
 | Visual directory-tree browser (Windows drive roots) | ✅ | `/api/workspace/browse` lists children; the Next shell renders the tree in `webapp/components/panels.tsx` |
 | Recent workspaces (last 5) | ✅ | the typed store's recents slice, populated on workspace change |
 | Restore last workspace on reload | ✅ | the typed store persists the last workspace to `localStorage` and replays it on next load |
@@ -115,6 +118,7 @@ single index that satisfies the check.
 | Per-workspace git status (branch, dirty) | ⚠ | best-effort; the server shells out to `git status` once on workspace change. Errors are silently swallowed → the chip shows "—". |
 | Symlink resolution in the directory browser | ❌ | `fs.readdir(..., {withFileTypes:true})` returns symlinks as `Dirent`; webui shows them as files. No symlink-follow option yet. |
 | WSL path support | ❌ | `/api/workspace/browse` uses `path.join`, which on Windows is `\\`-aware but doesn't translate WSL `\\wsl$\…` paths |
+| Bounded workspace search (slice 19a) | ✅ | `GET /api/fs/search` — `server/lib/fs-search.js#searchWorkspace`. Same containment gate as the other `/api/fs/*` routes; budgets (depth / nodes / wall-clock / matches) are clamped to absolute limits and exceeding one returns `truncated: true` with a `truncatedReason` rather than silently. `node_modules` and `.git` are non-overridable skips; the build/cache set is overridable. Credential predicate re-uses `lib/credential-file.js` (slice 16) — matches are flagged with `credential: true`, never omitted, never content. The response carries paths and types only — no body, no `size` sample, no `mtime`. |
 
 ## 7. Sessions
 
@@ -171,6 +175,7 @@ single index that satisfies the check.
 | Dark mode respecting OS preference | ✅ | `prefers-color-scheme` media query at boot |
 | Custom CSS themes | ❌ | no theme loader; would need a CSS-vars system |
 | User-defined hotkeys | ❌ | shortcuts are hard-coded |
+| Four-column shell (sidebar · conversation · preview · tree) | ✅ | slice 17 (`webapp/components/workspace-columns.tsx`). Conversation column is fluid in `[280, 768]` px; preview and tree columns are persistent as of main. Surface kinds are split by `columnRoleForKind` — `file:<path> \| browser` lives on the preview column, `files \| git \| tasks \| search \| plugins` on the tree column. The previously-shipped `search`, `alerts`, and `progress` `PanelKind` values were removed from the union (`webapp/lib/persist.ts#PanelKind`). The two surface placeholders (`search`, `plugins`) are explicitly disclosed; the engine contract for plugins is not yet shipped, so the Plugins surface renders an i18n "this is coming" card rather than a silent no-op. |
 
 ## 11. Network & access control
 
@@ -189,6 +194,7 @@ single index that satisfies the check.
 | HTTPS | ⚠ | v2.0.0 (lease C03) — HTTPS itself requires a reverse proxy; **fully documented** in `docs/HTTPS-REVERSE-PROXY.md` (387 lines, nginx / caddy / Traefik 2 configurations with SSE long-connection notes). No code change in webui. |
 | mTLS / client cert | ❌ | same as above; documentation in `docs/HTTPS-REVERSE-PROXY.md` |
 | Rate limiting | ✅ | v2.0.0 (lease C03): `server/lib/rate-limit.js` (252 lines) — token-bucket per-ip with 60/min default + 100 burst + 2× multiplier for token holders. Router gate 4 returns 429 when exceeded. `lib-rate-limit.test.js` (339 lines, 21 unit tests). |
+| Credential-file preview guard | ✅ | slice 16 — basename match against `.env` / `.env.*` / `*.pem` / `*.key` / `id_*` SSH keys / `known_hosts` / `authorized_keys` / `.npmrc` / `.pypirc` / `.netrc` / `.pgpass` / `credentials*` and the backup-suffix set (`.bak` / `.old` / `.orig` / `.backup` / `.save` / `.swp`) returns `403 {code:"credential"}` from `GET /api/fs/read-file` unless `?confirm=1` is appended. The shared predicate (`server/lib/credential-file.js`) is mirrored verbatim in `webapp/lib/credential-file.ts`; `webapp/test/credential-file.test.ts` walks both implementations on the same fixtures so they cannot drift. `GET /api/fs/search` re-uses the same predicate and flags matches with `credential: true` but never omits or returns content; `GET /api/fs/raw` uses the same gate in streaming form. |
 
 ## 12. Git panel
 

@@ -737,6 +737,45 @@ a regular file; 413 over the 20 MiB cap.
 
 ---
 
+### `POST /api/fs/open-default` — open with OS default app (slice 14)
+
+Hands `path` to the platform's default opener (`open` / `xdg-open` /
+`cmd` / `Start-Process`). Containment gate is the same `assertWorkspacePath`
++ per-node realpath check used by `/api/fs/read`; the route's job is to
+JSON-decode the body and map the helper's structured codes to HTTP status.
+
+**Request**
+```json
+{ "path": "/home/you/repo/README.md" }
+```
+
+**Response 200** `{ ok: true }`
+
+**Errors** (sourced from `routes/fs.js#codeToStatus`):
+- `400 {code:"missing-path"}` — no `path` in body
+- `403 {code:"out-of-bounds"}` — containment rejected
+- `400 {code:"not-a-regular-file"}` — directory / non-existent / symlink escape
+- `503 {code:"no-opener"}` — host has no GUI binary on `PATH`; the UI
+  disables the button on this answer so a click never silently no-ops
+- `502 {code:"spawn-failed"}` — binary ENOENTed between probe and exec
+
+### `POST /api/fs/reveal` — reveal in file manager (slice 14)
+
+Same wire model as `/api/fs/open-default`; macOS / Windows select the file's
+row, Linux opens the parent directory (no portable "select" command exists
+under freedesktop).
+
+**Request**
+```json
+{ "path": "/home/you/repo/README.md" }
+```
+
+**Response 200** `{ ok: true }`
+
+**Errors** — identical code → status map to `open-default`.
+
+---
+
 ## Git
 
 The git endpoints drive the right-panel Git panel (slice 03 —
@@ -761,6 +800,118 @@ Security invariants (pinned by `test/routes/git.test.js`):
   so a filename like `--output=/etc/x` cannot be re-interpreted as a
   `git diff` option. The same input is rejected up front by an
   explicit `startsWith('-')` guard.
+
+### `GET /api/fs/search?root=<dir>&q=<glob>[&depth=&maxNodes=&wallMs=&limit=&includeHidden=1]`
+
+Bounded workspace-wide search by basename glob (slice 19a). The shipped
+file-tree filter matches names only against already-expanded nodes, so
+a `package.json` three directories deep shows nothing until the user
+manually expands every intermediate directory. This endpoint walks the
+workspace behind the same `assertWorkspacePath` gate the other
+`/api/fs/*` routes use, with hard budgets so a hostile or pathological
+request cannot pin the server.
+
+The panel calls this endpoint when the user types into the filter
+box and the in-memory tree has no match. Each call is a single
+round-trip that returns every match under `root` in one response; the
+panel "expands to the match" by walking the `ancestors` chain it gets
+back.
+
+**Query parameters** — `root` and `q` are required; every other
+parameter is optional and bounded by an absolute upper limit (an
+out-of-range value is clamped, not rejected):
+
+| Param | Default | Max | Notes |
+|---|---|---|---|
+| `root` | — | — | absolute path or `~/...`. Goes through `assertWorkspacePath`; out-of-root = 403. Must point at a directory. |
+| `q` | — | — | glob; `*` any run, `?` one char, case-insensitive, anchored. Empty = 400. |
+| `depth` | 8 | 16 | max directory depth from `root`. Exceeded → `truncated: true, truncatedReason: "depth"`. |
+| `maxNodes` | 5000 | 50000 | number of visited entries (files + dirs). Exceeded → `"nodes"`. |
+| `wallMs` | 1500 | 5000 | wall-clock cap in ms. Exceeded → `"wallClock"`. |
+| `limit` | 200 | 1000 | max matches returned. (Alias `maxMatches` also accepted.) Exceeded → `"matches"`. |
+| `includeHidden` | 0 | — | `1` to include dotfile entries; default mirrors the file tree's hidden-by-default behaviour. |
+
+The walker skips these directories by default (`node_modules` /
+`.git` are non-overridable; the build/cache set can be opted back
+into with the `includeDirs` option server-side):
+
+| Skip reason | Default on? | Notes |
+|---|---|---|
+| `node_modules` | yes (non-overridable) | canonical search stall at every JS project |
+| `.git` | yes (non-overridable) | privacy surface; never the user's intent |
+| `dist` / `build` / `.next` / `.cache` / `.parcel-cache` / `.turbo` / `.nx` / `coverage` / `.svn` / `.hg` / `.idea` / `.vscode` | yes (overridable server-side) | build outputs & VCS metadata, each a known walker trap |
+| huge dir (> 10 000 readdir entries) | yes | per-directory entry count, not bytes |
+| credential-shaped names | flagged, never omitted | see "credential decision" below |
+
+**Response 200**
+```json
+{
+  "ok": true,
+  "root": "/home/you/文档/demo002",
+  "q": "package.json",
+  "matches": [
+    {
+      "path": "/home/you/文档/demo002/codersday/package.json",
+      "name": "package.json",
+      "type": "file",
+      "ancestors": ["codersday"],
+      "credential": false
+    }
+  ],
+  "scanned":  { "dirs": 12, "files": 47, "total": 59 },
+  "skipped":  {
+    "node_modules": 1,
+    ".git": 0,
+    "credential": 0,
+    "huge": 0,
+    "optional": { "dist": 0, "build": 0, ".next": 0 }
+  },
+  "truncated": false,
+  "truncatedReason": null,
+  "elapsedMs": 7,
+  "budgets":   { "maxDepth": 8, "maxNodes": 5000, "wallMs": 1500, "maxMatches": 200, "includeHidden": false, "includeDirs": [] }
+}
+```
+
+`ancestors` is the path components between `root` (exclusive)
+and the match (exclusive); for a top-level match it is `[]` so
+the client can use `path` directly. The walker NEVER returns
+file contents — `matches[i]` has `path / name / type /
+ancestors` plus the optional `credential` flag and nothing
+else. No `size` sample, no `mtime` sample, no preview metadata.
+
+**Truncation honesty.** A response with `truncated: true` is the
+walker's explicit "I didn't finish" signal. The reasons are pinned:
+`"depth" | "nodes" | "wallClock" | "matches"`. The UI shows
+`searched N, skipped M, truncated by <reason>` so the user knows
+the displayed list is partial.
+
+**Credential decision — flagged, never omitted, never read.**
+`classifyCredential` (the slice-16 predicate in
+`lib/credential-file.js`) is the single source of truth. A
+credential-shaped match is included with `credential: true`
+plus a stable `credentialReason` (one of `dotenv` / `key-file` /
+`ssh-key` / `credentials` / `ssh-meta`), AND `skipped.credential`
+is incremented. The rationale:
+
+  - The user has the right to know the file exists (mirrors
+    `/api/fs/read`, which keeps credentials visible in the tree
+    listing).
+  - The path is the realpath form; a user-initiated click on the
+    match lands on `/api/fs/read-file`, whose slice-16 gate
+    refuses by default with the same `code: "credential"`
+    answer the right panel already speaks.
+  - Omitting the match would make a search for `q=*.env` (or
+    `q=.env`) return zero rows — actively misleading because
+    the workspace DOES contain those files.
+  - The response never carries content (or size / mtime / any
+    preview metadata), so the search cannot itself become a
+    credential leak even when the user is looking for one.
+
+**Errors** — 400 missing `root` / `q` / `root` is not a directory;
+403 out-of-root (same message as the other `/api/fs/*` routes);
+the gate runs first, so a malformed `root` is refused before the
+walker runs.
 
 ### `GET /api/git/status?dir=<workspace>`
 

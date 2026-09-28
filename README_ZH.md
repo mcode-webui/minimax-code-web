@@ -265,7 +265,7 @@ mcode webui --port 8123     # 自定义端口，启动后打印访问地址
 18090 被占用就换下一个空闲端口，并打印实际绑定的地址；显式传入的 `--port`
 会被钉住，不会自动后移。
 
-Web UI 通过 WebSocket 流式输出对话，渲染工具调用与权限确认，管理会话与工作区（含模态目录选择器，接口限制在允许的工作区根内），模型选择器常显当前模型，并在 `/trajectory/` 挂载只读的会话**轨迹工作室**。默认仅绑定回环地址；局域网暴露需显式开启并通过令牌鉴权。详见 [packages/webui](packages/webui/README.md) 与 [docs/webui.md](docs/webui.md)。
+Web UI 通过四列浏览器外壳（侧栏 · 对话 · 预览 · 树）暴露同一引擎。对话通过 SSE（`GET /api/events`，按 cid 划分）流式输出；工具调用、权限确认、ask-user 提示、plan-mode 模态均原生渲染。右侧分为弹性对话列（`[280, 768]` px 区间）、固定预览列（文件预览 + 走 `GET /api/fs/raw` 的沙箱浏览器）以及固定树列（文件树、Git 面板、任务列表，以及产品内搜索与插件入口的两个占位表面）。会话、工作区（`POST /api/workspace`）、工作区选择器（基于受限的 `/api/fs/*` API）、模型选择器、Provider 画廊、上下文面板、告警浮层和只读的会话**轨迹工作室**（`/trajectory/`，含 7 个 MCP 工具，也可独立运行）一应俱全。凭据形态的文件预览默认被拒（`.env` / `*.pem` / `id_rsa` 等），需要显式 `?confirm=1` 才下发明文；同一条判断函数也与 `GET /api/fs/search` 共用，搜索命中只打标记、永不下发明文。默认仅绑定回环地址；局域网暴露需显式开启并通过令牌鉴权。详见 [packages/webui](packages/webui/README.md) 与 [docs/webui.md](docs/webui.md)。
 
 Web UI 源自社区的 **mcode-webui** 插件，现已作为一等公民包迁入本仓库——其人员与历史脉络记录于 [co-builders.md](co-builders.md)。
 

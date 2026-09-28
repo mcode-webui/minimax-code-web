@@ -14,12 +14,18 @@ import {
 import { createPortal } from "react-dom";
 
 import * as api from "@/lib/api";
+import { clientId } from "@/lib/cid";
 import {
   getComposerDraft,
   setComposerDraft,
   subscribeComposerDraft,
 } from "@/lib/composer-draft";
-import { useSessionContext } from "@/lib/store";
+import {
+  completeComposerSent,
+  failComposerSent,
+  startComposerSent,
+} from "@/lib/composer-sent";
+import { getActiveSessionId, useSessionContext } from "@/lib/store";
 import { decodeTranscript } from "@/lib/transcript";
 import { translate, type Locale, type MessageKey } from "@/lib/i18n";
 import { ContextMeter } from "./context-meter";
@@ -146,6 +152,19 @@ export function Composer({
   const [slashIndex, setSlashIndex] = useState(0);
   const editorRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  // The live session id used to live on a per-instance ref here.
+  // That was correct for chat→chat switching (the instance survives)
+  // but wrong for the home↔chat boundary: page.tsx swaps the
+  // composer between two tree positions when `hasConversation`
+  // flips, and creating a fresh session clears `chat`, which can
+  // unmount the composer mid-flight. The in-flight closure keeps a
+  // ref frozen at the dispatch-time session id and never sees the
+  // rotation. Reading from `getActiveSessionId()` at catch time
+  // resolves the live session id from the module-scope snapshot
+  // the SSE handler writes — the same store `composer-draft.ts`
+  // and `composer-sent.ts` already use to survive remounts.
+  // See lib/store.tsx#getActiveSessionId and the tripwire test
+  // `composer-submit-tripwire.test.ts` for the wiring pin.
   // Drag-and-drop overlay state. The counter lives in a ref so that the
   // dragenter/dragleave sequence can update it without scheduling a
   // re-render on every event — only the visible overlay (driven by
@@ -316,20 +335,101 @@ export function Composer({
   const submit = useCallback(async () => {
     const content = value.trim();
     if ((!content && attachments.length === 0) || readOnly || sending) return;
+    // Capture the dispatch context — what session this send was FOR.
+    // The outbox record stores these, so a later failure can identify
+    // its owner. They are NOT the values the catch branch compares
+    // against; the catch branch reads the LIVE context (see below).
+    const dispatchCid = clientId();
+    const dispatchSessionId = state?.sessionId ?? null;
     setSending(true);
     setComposerDraft({ error: null });
+    // Ticket 13 — optimistic clear. The backend does session
+    // switching and transcript backfill before its ack, so waiting
+    // for the await leaves the text sitting in the box for the whole
+    // in-flight window. Park the message in the outbox (a sibling
+    // module-scope store to `composer-draft.ts`, see `lib/composer-
+    // sent.ts`) and clear the composer immediately. On success the
+    // outbox flips to `delivered` and the SSE stream renders the user
+    // bubble; on failure the catch branch reads the stashed text back
+    // into the composer — see the design note at the top of
+    // `lib/composer-sent.ts`.
+    startComposerSent({
+      cid: dispatchCid,
+      sessionId: dispatchSessionId,
+      content,
+      attachments,
+    });
+    setComposerDraft({ value: "", attachments: [] });
     try {
       // A leading slash is a command, not a message: mcode parses those, and the
-      // webui's own slash commands are handled server-side too.
+      // webui's own slash commands are handled server-side too. The same
+      // record/clear/restore semantics apply to both branches.
       if (content.startsWith("/")) await api.sendCommand(content);
       else await api.sendMessage({ content, attachments });
-      setComposerDraft({ value: "", attachments: [] });
+      completeComposerSent();
     } catch (cause) {
-      setComposerDraft({ error: cause instanceof Error ? cause.message : String(cause) });
+      const errorMessage = cause instanceof Error ? cause.message : String(cause);
+      // Read the LIVE context at catch time. The dispatch-side
+      // closure has the session id from when the user pressed
+      // Enter; if the user has since switched sessions (e.g. via the
+      // sidebar), the active session id is now different and the
+      // failure belongs to the old session, not the one currently
+      // rendered. Comparing against the captured `dispatchSessionId`
+      // would always succeed (dispatch vs dispatch) — that was the
+      // first wiring bug acceptance caught. The live context is
+      // resolved from the MODULE-scope store snapshot (lib/store.tsx
+      // #getActiveSessionId), not from a per-instance ref. The
+      // composer's `submit` can outlive its own React tree —
+      // page.tsx swaps the composer between two positions when
+      // `hasConversation` flips, and creating a fresh session
+      // clears it. An instance-scoped ref frozen at dispatch time
+      // never sees the rotation; the module snapshot is the same
+      // store the SSE handler writes, so it always reflects the
+      // current session. `clientId()` is module-scope too
+      // (lib/cid.ts), so the cid side has always been correct.
+      const liveCid = clientId();
+      const liveSessionId = getActiveSessionId();
+      // failComposerSent returns the restore payload only when the
+      // LIVE context still matches the dispatch context — a session
+      // switch mid-flight must never paste the old session's text
+      // into the new session's composer.
+      const restored = failComposerSent({
+        cid: liveCid,
+        sessionId: liveSessionId,
+        error: errorMessage,
+      });
+      // Always set the error banner — the failure is real even when
+      // the active session no longer matches the record (the banner
+      // is in the module-scope draft store too, so it outlives a
+      // session switch).
+      if (restored) {
+        // The user may have typed INTERIM text during the in-flight
+        // window. We must not clobber it — "Nothing may vanish"
+        // applies to both the failed message and whatever the user
+        // typed since. Merge: put the restored text after the
+        // current draft with a blank-line separator. The error
+        // banner explains why the original bounced; both messages
+        // remain editable.
+        const current = getComposerDraft();
+        const interim = current.value.trim();
+        const mergedValue =
+          interim.length > 0
+            ? `${current.value}\n\n${restored.content}`
+            : restored.content;
+        // Restored attachments come first so the chip list reads in
+        // the order the user assembled it (the failed message's
+        // attachments, then any new attachments added meanwhile).
+        const mergedAttachments = [
+          ...restored.attachments,
+          ...current.attachments,
+        ];
+        setComposerDraft({ value: mergedValue, attachments: mergedAttachments });
+      }
+      setComposerDraft({ error: errorMessage });
     } finally {
       setSending(false);
     }
-  }, [value, attachments, readOnly, sending]);
+  }, [value, attachments, readOnly, sending, state?.sessionId]);
 
   const onPickFiles = useCallback(async (files: FileList | null) => {
     if (!files?.length) return;

@@ -230,6 +230,124 @@ export const getFsDir = (path: string, showHidden = false) =>
     `/api/fs/read?path=${encodeURIComponent(path)}${showHidden ? "&showHidden=1" : ""}`,
   );
 
+/**
+ * One match returned by the bounded workspace search endpoint
+ * (webui-parity slice 19a → `GET /api/fs/search`). The shape is pinned
+ * by the server route in `server/routes/fs.js#handleFsSearch` and the
+ * walker in `server/lib/fs-search.js#searchWorkspace` — do not rename
+ * fields without migrating the assertions in
+ * `server/test/fs-search.test.js` (the 20/20 glob-parity invariant) and
+ * the webapp tripwires in `webapp/test/fs-search.test.ts`.
+ *
+ * `ancestors` is the chain of directory basenames between the search
+ * root (exclusive) and the match's parent (exclusive). The webapp
+ * uses it to expand the tree to the hit. A top-level match has
+ * `ancestors: []`.
+ *
+ * `credential` is the slice-16 flag: a match whose realpath basename
+ * matches `lib/credential-file.js`'s predicate. `credentialReason`
+ * is the sub-reason (`dotenv` / `key-file` / `ssh-key` / `credentials`
+ * / `ssh-meta`) the right-panel preview also uses.
+ */
+export interface FsSearchMatch {
+  path: string;
+  name: string;
+  type: "file" | "dir" | string;
+  ancestors: string[];
+  credential?: boolean;
+  credentialReason?: "dotenv" | "key-file" | "ssh-key" | "credentials" | "ssh-meta" | string;
+}
+
+export interface FsSearchSkipped {
+  "node_modules": number;
+  ".git": number;
+  credential: number;
+  huge: number;
+  /** Per-name skip counts for OPTIONAL_SKIP_DIRS (dist / build / …). */
+  optional: Record<string, number>;
+}
+
+export interface FsSearchBudgets {
+  maxDepth: number;
+  maxNodes: number;
+  wallMs: number;
+  maxMatches: number;
+  includeHidden: boolean;
+  includeDirs: string[];
+}
+
+/**
+ * Wire shape of `GET /api/fs/search` — slice 19a. The route mirrors
+ * `lib/fs-search.js#emptyResult`, with the addition of `ok: true`
+ * on the success path. The webapp treats `ok: false` (or an HTTP
+ * error) as a search failure and renders the error inline.
+ *
+ * `truncated` flips to `true` iff a budget fired. `truncatedReason`
+ * names the budget. `skipped.huge` can be non-zero WITHOUT
+ * `truncated` being true (a single directory's tail was deliberately
+ * capped while the walk itself finished within budgets) — the UI
+ * MUST surface both signals honestly so the user is never told
+ * "that's everything" when it is not.
+ */
+export interface FsSearchResult {
+  ok: true;
+  root: string;
+  q: string;
+  matches: FsSearchMatch[];
+  scanned: { dirs: number; files: number; total: number };
+  skipped: FsSearchSkipped;
+  truncated: boolean;
+  truncatedReason: "depth" | "nodes" | "wallClock" | "matches" | null;
+  elapsedMs: number;
+  budgets: FsSearchBudgets;
+}
+
+/**
+ * Optional client-side budget overrides. Every value is clamped to
+ * the server's `ABSOLUTE_LIMITS` so a malicious or buggy client
+ * cannot pin a core — see `server/lib/fs-search.js#clampBudgets`.
+ * Leave a key undefined to take the server default.
+ */
+export interface FsSearchOpts {
+  /** Abort signal so callers can cancel an in-flight request when
+   *  the user keeps typing. The request helper propagates the
+   *  signal to `fetch`. */
+  signal?: AbortSignal;
+  depth?: number;
+  maxNodes?: number;
+  wallMs?: number;
+  /** Per-page result cap. `maxMatches` is the server's name;
+   *  `limit` is the wire alias the route accepts. */
+  limit?: number;
+  includeHidden?: boolean;
+}
+
+/**
+ * Bounded workspace search (slice 19a). Walks the workspace behind
+ * the same `assertWorkspacePath` gate every other `/api/fs/*` route
+ * uses, with hard budgets so the user cannot ask the server to
+ * walk 50 000 nodes for an answer that came back 20 entries ago.
+ *
+ * The webapp calls this when the in-tree filter has no matches in
+ * already-loaded nodes (see `panels.tsx#FilesPanel`'s
+ * `triggerServerSearch`). The caller supplies an AbortSignal so a
+ * new keystroke can cancel the previous in-flight request without
+ * flooding the network.
+ */
+export const searchFs = (root: string, q: string, opts: FsSearchOpts = {}) => {
+  const params = new URLSearchParams();
+  params.set("root", root);
+  params.set("q", q);
+  if (opts.depth !== undefined) params.set("depth", String(opts.depth));
+  if (opts.maxNodes !== undefined) params.set("maxNodes", String(opts.maxNodes));
+  if (opts.wallMs !== undefined) params.set("wallMs", String(opts.wallMs));
+  if (opts.limit !== undefined) params.set("limit", String(opts.limit));
+  if (opts.includeHidden) params.set("includeHidden", "1");
+  return request<FsSearchResult>(`/api/fs/search?${params.toString()}`, {
+    ...(opts.signal ? { signal: opts.signal } : {}),
+  });
+};
+
 export const getSessionTree = (refresh = false) =>
   request<SessionTreePayload>(`/api/session-tree${refresh ? "?refresh=1" : ""}`);
 
@@ -845,6 +963,29 @@ export interface FsFilePayload {
   encoding?: "utf-8";
   content?: string;
   error?: string;
+  /**
+   * Slice 16 — structured server-side code (independent of HTTP
+   * status). Today the webapp reads it to detect the credential
+   * refusal (so the second confirmation can render); future codes
+   * (e.g. "rate-limited") can land here without changing the status
+   * mapping. The UI branches on this string, not on HTTP status.
+   */
+  code?:
+    | "credential"
+    | "out-of-bounds"
+    | "binary"
+    | "oversize"
+    | "missing-path"
+    | "not-a-regular-file"
+    | string;
+  /**
+   * Slice 16 — credential sub-reason (`dotenv` / `key-file` /
+   * `ssh-key` / `credentials` / `ssh-meta`). Populated only when
+   * `code === "credential"`. The panel may use it to render a more
+   * specific refusal message ("env file" vs "private key") without
+   * branching on free-form text.
+   */
+  credentialReason?: "dotenv" | "key-file" | "ssh-key" | "credentials" | "ssh-meta";
 }
 
 /**
@@ -852,7 +993,10 @@ export interface FsFilePayload {
  * here as `ok:false` with the same shape the server emitted — there is no
  * exception to catch, the preview component just branches on `ok`.
  */
-export const getFsFile = async (path: string): Promise<FsFilePayload> => {
+export const getFsFile = async (
+  path: string,
+  opts: { confirmCredential?: boolean } = {},
+): Promise<FsFilePayload> => {
   // The /api/fs/read-file endpoint answers 4xx with a JSON error body
   // that *also* carries mime / language / binary — the preview component
   // reads mime to route images through /api/fs/raw and language for the
@@ -860,8 +1004,16 @@ export const getFsFile = async (path: string): Promise<FsFilePayload> => {
   // responses and would discard that body, so this caller uses raw fetch
   // and reads the JSON either way (it is always JSON — the route is
   // `application/json`).
+  //
+  // Slice 16 — `confirmCredential=1` opts into the second-confirmation
+  // override for credential-shaped files. The server is still the real
+  // gate (it requires the explicit flag to release the bytes); the webapp
+  // sends the flag only after the user clicks "open anyway".
+  const confirm = opts.confirmCredential ? "&confirm=1" : "";
   const response = await fetch(
-    withClientQuery(`/api/fs/read-file?path=${encodeURIComponent(path)}`),
+    withClientQuery(
+      `/api/fs/read-file?path=${encodeURIComponent(path)}${confirm}`,
+    ),
     { headers: { Accept: "application/json" } },
   );
   const text = await response.text();
@@ -886,6 +1038,117 @@ export function fsRawUrl(path: string): string {
   return withClientQuery(
     `/api/fs/raw?path=${encodeURIComponent(path)}`,
   );
+}
+
+/**
+ * Absolute URL that asks the same `/api/fs/raw` endpoint to attach
+ * `Content-Disposition: attachment` so the browser saves the bytes
+ * instead of rendering them. Slice 14 R207 — the third "下载查看"
+ * action reuses the raw stream with a query flag rather than adding a
+ * second streaming route, so the same containment gate + 20 MiB cap
+ * stay in one place.
+ *
+ * Slice 16 — `opts.confirm === true` adds the explicit override
+ * flag the credential gate (slice 16) requires before releasing the
+ * bytes. The PreviewError download link calls this with
+ * `confirm: true` when the classifier set `reason: "credential"`
+ * — the user has clicked into a refusal and now clicks "download";
+ * we propagate the explicit confirm so the server releases the
+ * bytes rather than serving the JSON error body. Without this
+ * flag the user would download the 403 error JSON, which is
+ * confusing AND a security smell (the credential is still on disk;
+ * we just gave them the gate's response instead of the file).
+ */
+export function fsRawDownloadUrl(
+  path: string,
+  opts: { confirm?: boolean } = {},
+): string {
+  const confirm = opts.confirm === true ? "&confirm=1" : "";
+  return withClientQuery(
+    `/api/fs/raw?path=${encodeURIComponent(path)}&download=1${confirm}`,
+  );
+}
+
+// --- file-open actions (slice 14) ----------------------------------------
+//
+// The two endpoints below turn the right-hand preview panel from a dead
+// end into an actionable surface for files the in-product preview cannot
+// render (binary blobs, oversized payloads, MIME-mapped but unsupported
+// formats). The server already returns a structured `code` so the UI
+// can branch on the failure mode without parsing free-form text.
+//
+// `request()` throws on non-OK responses and would lose the `code`
+// field, so these two callers go straight through `fetch` and parse
+// the JSON either way — same shape as `getFsFile` above.
+
+export type FileOpenCode =
+  | "missing-path"
+  | "out-of-bounds"
+  | "not-a-regular-file"
+  | "no-opener"
+  | "spawn-failed"
+  | "BODY_TOO_LARGE";
+
+export interface FileOpenResult {
+  ok: boolean;
+  /** Structured rejection code (only present when `ok === false`). */
+  code?: FileOpenCode;
+  /** Human-readable error message — surfacing hint for the UI banner. */
+  error?: string;
+}
+
+/**
+ * POST /api/fs/open-default — hand a path to the OS default application.
+ *
+ * Server-side containment + per-node realpath gating is shared with the
+ * other /api/fs/* routes (see server/lib/open-target.js). The function
+ * resolves with a `FileOpenResult` regardless of HTTP status; the caller
+ * branches on `result.code` to decide whether to disable the button
+ * (no-opener), show an inline error (spawn-failed), or surface the
+ * containment refusal (out-of-bounds / not-a-regular-file).
+ */
+export async function openFileWithDefault(path: string): Promise<FileOpenResult> {
+  const response = await fetch(withClientQuery("/api/fs/open-default"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({ path }),
+  });
+  return parseFileOpenResponse(response);
+}
+
+/**
+ * POST /api/fs/reveal — open the file manager pointed at the path.
+ *
+ * macOS / Windows select the row in the file manager; Linux opens the
+ * parent directory (no portable "select" command on the freedesktop
+ * side). Same wire shape and error-code vocabulary as
+ * `openFileWithDefault`.
+ */
+export async function revealInFileManager(path: string): Promise<FileOpenResult> {
+  const response = await fetch(withClientQuery("/api/fs/reveal"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({ path }),
+  });
+  return parseFileOpenResponse(response);
+}
+
+async function parseFileOpenResponse(response: Response): Promise<FileOpenResult> {
+  const text = await response.text();
+  let parsed: FileOpenResult | null = null;
+  try {
+    parsed = text ? (JSON.parse(text) as FileOpenResult) : null;
+  } catch {
+    parsed = null;
+  }
+  if (!parsed) {
+    return {
+      ok: false,
+      code: "spawn-failed",
+      error: response.ok ? "unexpected non-JSON response" : `HTTP ${response.status}`,
+    };
+  }
+  return parsed;
 }
 
 /** Absolute URL for a session export; `download` makes the browser save it. */
