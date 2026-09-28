@@ -230,6 +230,124 @@ export const getFsDir = (path: string, showHidden = false) =>
     `/api/fs/read?path=${encodeURIComponent(path)}${showHidden ? "&showHidden=1" : ""}`,
   );
 
+/**
+ * One match returned by the bounded workspace search endpoint
+ * (webui-parity slice 19a → `GET /api/fs/search`). The shape is pinned
+ * by the server route in `server/routes/fs.js#handleFsSearch` and the
+ * walker in `server/lib/fs-search.js#searchWorkspace` — do not rename
+ * fields without migrating the assertions in
+ * `server/test/fs-search.test.js` (the 20/20 glob-parity invariant) and
+ * the webapp tripwires in `webapp/test/fs-search.test.ts`.
+ *
+ * `ancestors` is the chain of directory basenames between the search
+ * root (exclusive) and the match's parent (exclusive). The webapp
+ * uses it to expand the tree to the hit. A top-level match has
+ * `ancestors: []`.
+ *
+ * `credential` is the slice-16 flag: a match whose realpath basename
+ * matches `lib/credential-file.js`'s predicate. `credentialReason`
+ * is the sub-reason (`dotenv` / `key-file` / `ssh-key` / `credentials`
+ * / `ssh-meta`) the right-panel preview also uses.
+ */
+export interface FsSearchMatch {
+  path: string;
+  name: string;
+  type: "file" | "dir" | string;
+  ancestors: string[];
+  credential?: boolean;
+  credentialReason?: "dotenv" | "key-file" | "ssh-key" | "credentials" | "ssh-meta" | string;
+}
+
+export interface FsSearchSkipped {
+  "node_modules": number;
+  ".git": number;
+  credential: number;
+  huge: number;
+  /** Per-name skip counts for OPTIONAL_SKIP_DIRS (dist / build / …). */
+  optional: Record<string, number>;
+}
+
+export interface FsSearchBudgets {
+  maxDepth: number;
+  maxNodes: number;
+  wallMs: number;
+  maxMatches: number;
+  includeHidden: boolean;
+  includeDirs: string[];
+}
+
+/**
+ * Wire shape of `GET /api/fs/search` — slice 19a. The route mirrors
+ * `lib/fs-search.js#emptyResult`, with the addition of `ok: true`
+ * on the success path. The webapp treats `ok: false` (or an HTTP
+ * error) as a search failure and renders the error inline.
+ *
+ * `truncated` flips to `true` iff a budget fired. `truncatedReason`
+ * names the budget. `skipped.huge` can be non-zero WITHOUT
+ * `truncated` being true (a single directory's tail was deliberately
+ * capped while the walk itself finished within budgets) — the UI
+ * MUST surface both signals honestly so the user is never told
+ * "that's everything" when it is not.
+ */
+export interface FsSearchResult {
+  ok: true;
+  root: string;
+  q: string;
+  matches: FsSearchMatch[];
+  scanned: { dirs: number; files: number; total: number };
+  skipped: FsSearchSkipped;
+  truncated: boolean;
+  truncatedReason: "depth" | "nodes" | "wallClock" | "matches" | null;
+  elapsedMs: number;
+  budgets: FsSearchBudgets;
+}
+
+/**
+ * Optional client-side budget overrides. Every value is clamped to
+ * the server's `ABSOLUTE_LIMITS` so a malicious or buggy client
+ * cannot pin a core — see `server/lib/fs-search.js#clampBudgets`.
+ * Leave a key undefined to take the server default.
+ */
+export interface FsSearchOpts {
+  /** Abort signal so callers can cancel an in-flight request when
+   *  the user keeps typing. The request helper propagates the
+   *  signal to `fetch`. */
+  signal?: AbortSignal;
+  depth?: number;
+  maxNodes?: number;
+  wallMs?: number;
+  /** Per-page result cap. `maxMatches` is the server's name;
+   *  `limit` is the wire alias the route accepts. */
+  limit?: number;
+  includeHidden?: boolean;
+}
+
+/**
+ * Bounded workspace search (slice 19a). Walks the workspace behind
+ * the same `assertWorkspacePath` gate every other `/api/fs/*` route
+ * uses, with hard budgets so the user cannot ask the server to
+ * walk 50 000 nodes for an answer that came back 20 entries ago.
+ *
+ * The webapp calls this when the in-tree filter has no matches in
+ * already-loaded nodes (see `panels.tsx#FilesPanel`'s
+ * `triggerServerSearch`). The caller supplies an AbortSignal so a
+ * new keystroke can cancel the previous in-flight request without
+ * flooding the network.
+ */
+export const searchFs = (root: string, q: string, opts: FsSearchOpts = {}) => {
+  const params = new URLSearchParams();
+  params.set("root", root);
+  params.set("q", q);
+  if (opts.depth !== undefined) params.set("depth", String(opts.depth));
+  if (opts.maxNodes !== undefined) params.set("maxNodes", String(opts.maxNodes));
+  if (opts.wallMs !== undefined) params.set("wallMs", String(opts.wallMs));
+  if (opts.limit !== undefined) params.set("limit", String(opts.limit));
+  if (opts.includeHidden) params.set("includeHidden", "1");
+  return request<FsSearchResult>(`/api/fs/search?${params.toString()}`, {
+    ...(opts.signal ? { signal: opts.signal } : {}),
+  });
+};
+
 export const getSessionTree = (refresh = false) =>
   request<SessionTreePayload>(`/api/session-tree${refresh ? "?refresh=1" : ""}`);
 

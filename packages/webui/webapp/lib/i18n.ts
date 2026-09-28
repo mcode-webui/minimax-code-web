@@ -217,6 +217,44 @@ const en = {
   "files.tree.mtime.weeksAgo": "{n}w ago",
   "files.tree.mtime.monthsAgo": "{n}mo ago",
   "files.tree.mtime.yearsAgo": "{n}y ago",
+  /* Slice 19b — bounded server search wired into the file-tree
+     filter. The footer below the rows reports scanned / skipped /
+     truncated / matches. `files.search.footer.skipped.huge` is
+     ALWAYS surfaced when > 0 (a huge directory's tail was capped
+     while the walk itself finished) — see `webapp/lib/fs-search.ts`
+     and `server/lib/fs-search.js#searchWorkspace` for the
+     server-side counterpart. */
+  "files.search.loading": "Searching…",
+  "files.search.error": "Search failed: {{error}}",
+  "files.search.footer.scanned": "scanned {n}",
+  "files.search.footer.matches": "{n} match",
+  "files.search.footer.skipped.node_modules": "skip node_modules {n}",
+  "files.search.footer.skipped.git": "skip .git {n}",
+  "files.search.footer.skipped.credential": "skip credentials {n}",
+  "files.search.footer.skipped.huge": "skip huge-dir tail {n}",
+  "files.search.footer.skipped.optional": "skip optional {n}",
+  "files.search.footer.truncated": "truncated ({budget})",
+  "files.search.footer.elapsed": "{n}",
+  "files.search.footer.elapsedValue": "{ms}ms",
+  "files.search.footer.budget.depth": "depth",
+  "files.search.footer.budget.nodes": "nodes",
+  "files.search.footer.budget.wallClock": "wall-clock",
+  "files.search.footer.budget.matches": "matches",
+  /* Credential affordance on a server-search hit (slice 19b). The
+     inline label mirrors the slice-16 preview gate wording so the
+     user sees the same "this is a credential file" cue in both
+     surfaces; clicking still routes through the preview, which
+     triggers the second confirmation. */
+  "files.search.credential": "Credential file",
+  /* Slice 19b — workspace search sidebar surface (replaces the
+     slice-17 placeholder). Shares the same server endpoint as the
+     file-tree filter. */
+  "workspaceTabs.search.placeholder": "Search the workspace (incl. unexpanded dirs)…",
+  "workspaceTabs.search.tip": "Type to search the workspace. Loaded hits render instantly; an exhaustive search runs when the in-tree filter has no matches.",
+  "workspaceTabs.search.tipLoaded": "Matches in the already-loaded tree — type more to expand the search.",
+  "workspaceTabs.search.tipExhaustive": "Exhaustive search across the workspace. Skipped directories are listed in the footer.",
+  "workspaceTabs.search.empty": "No matches.",
+  "workspaceTabs.search.open": "Open",
   // 12 — open.file.in.web preview pane (right column).
   "files.preview.empty": "Select a file in the tree or a path in a turn summary to preview it.",
   "files.preview.close": "Close preview",
@@ -556,11 +594,9 @@ const en = {
   "workspaceTabs.tree.selector.tasks.aria": "Switch to tasks",
   "workspaceTabs.tree.selector.search.aria": "Switch to search",
   "workspaceTabs.tree.selector.plugins.aria": "Switch to plugins",
-  /* Slice 17 — search surface copy. The wire-up to a real
-     /api/... search endpoint is out of scope; the surface
-     exists so the sidebar's 搜索 entry visibly does something. */
-  "workspaceTabs.search.placeholder": "Search the workspace…",
-  "workspaceTabs.search.empty": "Type to search. The search backend is not wired in this slice.",
+  /* Slice 19b supersedes the slice-17 placeholder copy with a real
+     exhaustive search above. The slice-17 keys are gone — the
+     search surface is no longer a no-op placeholder. */
   /* Slice 17 — plugins surface copy. The marketplace is a
      placeholder — the engine has not yet exposed the
      plugin-install contract. The card is mounted AND labelled
@@ -745,6 +781,33 @@ const zh: Record<MessageKey, string> = {
   "files.tree.mtime.weeksAgo": "{n} 周前",
   "files.tree.mtime.monthsAgo": "{n} 月前",
   "files.tree.mtime.yearsAgo": "{n} 年前",
+  /* Slice 19b — bounded server search wired into the file-tree
+     filter. See the en block for the footer / loading / error
+     strings; both locales share the same key set. */
+  "files.search.loading": "搜索中…",
+  "files.search.error": "搜索失败：{{error}}",
+  "files.search.footer.scanned": "已搜 {n} 条",
+  "files.search.footer.matches": "命中 {n}",
+  "files.search.footer.skipped.node_modules": "跳过 node_modules {n}",
+  "files.search.footer.skipped.git": "跳过 .git {n}",
+  "files.search.footer.skipped.credential": "跳过凭据 {n}",
+  "files.search.footer.skipped.huge": "跳过超大目录尾部 {n}",
+  "files.search.footer.skipped.optional": "跳过分发目录 {n}",
+  "files.search.footer.truncated": "已截断（{budget}）",
+  "files.search.footer.elapsed": "{n}",
+  "files.search.footer.elapsedValue": "{ms}ms",
+  "files.search.footer.budget.depth": "深度",
+  "files.search.footer.budget.nodes": "节点数",
+  "files.search.footer.budget.wallClock": "时间",
+  "files.search.footer.budget.matches": "命中数",
+  "files.search.credential": "凭据文件",
+  /* Slice 19b — workspace search sidebar surface. */
+  "workspaceTabs.search.placeholder": "搜索工作区（含未展开目录）…",
+  "workspaceTabs.search.tip": "输入关键词搜索工作区。已展开目录的命中立刻显示；过滤无结果时会全盘搜索。",
+  "workspaceTabs.search.tipLoaded": "命中均在已加载的目录中——继续输入会扩展搜索范围。",
+  "workspaceTabs.search.tipExhaustive": "全盘搜索工作区，跳过的目录会列在底栏。",
+  "workspaceTabs.search.empty": "没有命中。",
+  "workspaceTabs.search.open": "打开",
   // 12 — open.file.in.web preview pane (right column).
   "files.preview.empty": "在文件树或轮次总结中点击文件路径以预览。",
   "files.preview.close": "关闭预览",
@@ -1050,9 +1113,8 @@ const zh: Record<MessageKey, string> = {
   "workspaceTabs.tree.selector.tasks.aria": "切换到任务管理",
   "workspaceTabs.tree.selector.search.aria": "切换到搜索",
   "workspaceTabs.tree.selector.plugins.aria": "切换到插件",
-  /* Slice 17 — search surface copy. */
-  "workspaceTabs.search.placeholder": "搜索工作区…",
-  "workspaceTabs.search.empty": "输入关键词搜索。本片未接入搜索后端。",
+  /* Slice 19b supersedes the slice-17 placeholder copy — see the
+     English block for the real exhaustive search above. */
   /* Slice 17 — plugins surface copy. */
   "workspaceTabs.plugins.title": "插件",
   "workspaceTabs.plugins.placeholder":
