@@ -345,19 +345,11 @@ function stripVariantSuffix(name) {
  * (engine wire form, no `/`) → the whole string — direct-match in
  * `resolveModelId` covers this case before the name-match runs.
  */
-function engineModelKeyFromId(id) {
-  if (typeof id !== "string" || !id) return id;
-  const slash = id.indexOf("/");
-  return slash >= 0 ? id.slice(slash + 1) : id;
-}
-
 /** Last segment after `/` or `:` — `minimax_api/MiniMax-M3` → `MiniMax-M3`.
  *
  * Legacy fallback for callers that recorded a form where the model id
  * is the segment after the LAST separator. Kept for backward
- * compatibility (and pinned by `lastSegment` tests); ticket 09-02
- * prefers `engineModelKeyFromId` for the new `<providerKey>/<modelId>`
- * webui form.
+ * compatibility (and pinned by `lastSegment` tests).
  */
 function lastSegment(id) {
   const i = Math.max(id.lastIndexOf("/"), id.lastIndexOf(":"));

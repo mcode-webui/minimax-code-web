@@ -217,16 +217,30 @@ export function createTurnHost(catalogueHost) {
   }
   const { adapter } = catalogueHost;
   const activeStreams = new Set();
+  // Per-turn AbortController. Routes don't have to construct one per
+  // call — the turn host owns the abort lifecycle for its turn, so a
+  // call to abortSession always has a signal to trip. Callers that
+  // bring their own signal (e.g. a request-scoped AbortController)
+  // pass it to sendMessage and it replaces this one for that stream
+  // only; the controller is still used for stream-iteration faults
+  // that need a clean break.
+  const turnController = new AbortController();
 
   /**
    * sendMessage: every throw becomes an error stream frame.
    * The wrapper never lets an exception escape the iterator boundary
    * — that's what "可弃化" means at the turn level (R1 mitigation).
+   *
+   * `signal` is the caller's optional signal. When present, it is
+   * forwarded to the adapter; when absent, the turn host's own
+   * controller provides one (so abortSession always has a signal to
+   * trip and the adapter can still react to cancellation).
    */
   async function* safeSendMessage(req, signal) {
+    const effectiveSignal = signal || turnController.signal;
     let stream;
     try {
-      stream = adapter.sendMessage(req, signal);
+      stream = adapter.sendMessage(req, effectiveSignal);
     } catch (err) {
       yield { type: "error", message: err && err.message ? err.message : String(err) };
       return;
@@ -244,10 +258,16 @@ export function createTurnHost(catalogueHost) {
   }
 
   /**
-   * abortSession: bounded termination. Returns success=true as soon
-   * as the abort has been delivered (or the bound elapses). The
-   * elapsedMs field captures the wait time so callers can detect
-   * pathological slowness without holding the request open forever.
+   * abortSession: bounded termination. Two complementary mechanisms:
+   *   1. adapter.abortSession(req) — the runtime-side protocol abort;
+   *      best-effort, may throw.
+   *   2. turnController.abort() — fires the per-turn signal that
+   *      sendMessage forwarded to the adapter. This is what trips
+   *      any AbortSignal listener the adapter registered.
+   * After both deliveries we wait for the active stream(s) to settle,
+   * bounded at TURN_ABORT_BOUND_MS. The wait is a race — a wedged
+   * runtime never settles the stream, so we MUST time out rather
+   * than block the request indefinitely (R2 / R8 mitigation).
    */
   async function safeAbortSession(req) {
     const t0 = Date.now();
@@ -257,6 +277,10 @@ export function createTurnHost(catalogueHost) {
       delivered = r === true;
     } catch {
       delivered = false;
+    }
+    // Fire the per-turn signal so listeners in the adapter wake up.
+    if (!turnController.signal.aborted) {
+      turnController.abort();
     }
     // Wait for the active stream to settle, bounded. We do NOT block
     // on `Promise.all([...activeStreams])` directly because that

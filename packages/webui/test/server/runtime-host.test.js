@@ -226,6 +226,12 @@ test("S2-RH-03: turn host sendMessage failure does not crash the process; other 
 
 // ============================================================
 // 4. Abort → wait ≤5s → discard — regression pin for R2.
+//
+// The test exercises the bounded-drain branch (the path R2 calls out):
+// `adapter.abortSession` returns, but the active stream keeps yielding
+// indefinitely. abortSession MUST NOT block forever — it must give up
+// at 5s and resolve with `success:true, elapsedMs≈5000`. The mutation
+// (drop the 5s race for an unbounded wait) is verified separately.
 // ============================================================
 
 test("S2-RH-04: abortSession triggers bounded termination; no subprocess kill", async () => {
@@ -235,60 +241,102 @@ test("S2-RH-04: abortSession triggers bounded termination; no subprocess kill", 
   );
 
   const host = await createCatalogueHost({ dataDir: dir });
-  // Stub sendMessage to return a long-lived stream that we control.
-  // This stands in for a real prompt whose stream would otherwise be
-  // indefinite — we need to abort it and verify the host waits up to
-  // 5s before discarding.
+  // Stub adapter.sendMessage to:
+  //   1. Yield one frame, then HANG forever (never settles).
+  //   2. Listen for AbortSignal — record that the turn host passed one,
+  //      but do NOT let the abort settle the stream.
+  // This is the worst case the bounded drain protects against: abort
+  // delivered, but the runtime never acknowledges it. abortSession must
+  // time out at 5s and return anyway — never block the request.
   let abortSeen = false;
+  let signalReceived = false;
   host.adapter.sendMessage = async function* (_, signal) {
-    try {
-      // Yield a frame, then sleep until either aborted or 30s elapses.
-      yield { type: "delta", content: "starting…" };
-      await new Promise((resolve, reject) => {
-        const timer = setTimeout(resolve, 30000);
-        const onAbort = () => {
+    if (signal && typeof signal.addEventListener === "function") {
+      signalReceived = true;
+      signal.addEventListener(
+        "abort",
+        () => {
           abortSeen = true;
-          clearTimeout(timer);
-          reject(new Error("aborted"));
-        };
-        // The turn host must pass an AbortSignal here. If it doesn't,
-        // the assertion below catches it.
-        if (signal && typeof signal.addEventListener === "function") {
-          signal.addEventListener("abort", onAbort, { once: true });
-        } else {
-          // No signal — fail fast so the test reports the gap.
-          clearTimeout(timer);
-          reject(new Error("sendMessage called without AbortSignal"));
-        }
-      });
-    } catch (e) {
-      yield { type: "error", message: e.message };
+          // Deliberately do NOT settle the stream — the abort is
+          // delivered but the runtime never wakes up. This is exactly
+          // the case the 5s upper bound exists to protect against.
+        },
+        { once: true },
+      );
+    } else {
+      // No signal — fail the test loudly. The turn host MUST pass one.
+      throw new Error("sendMessage called without AbortSignal");
     }
+    yield { type: "delta", content: "starting…" };
+    // Hang forever — never returns. abortSession must time out.
+    await new Promise(() => {});
   };
 
   const turn = createTurnHost(host);
   const streamP = (async () => {
-    for await (const ev of turn.sendMessage({ id: "ab" })) {
-      // consume
+    try {
+      for await (const ev of turn.sendMessage({ id: "ab" })) {
+        // consume frames until the iterator never resolves
+      }
+    } catch {
+      // The for-await will throw when the host's outer wrapper catches
+      // — but in this test the stream NEVER errors (it's hanging), so
+      // this catch never fires. We use streamP only to drain so the
+      // activeStreams Set eventually clears when the host's wrapper
+      // gives up.
     }
   })();
 
   // Give the stream a tick to start, then abort.
   await new Promise((r) => setTimeout(r, 50));
+  const t0 = Date.now();
   const abortResult = await turn.abortSession({ id: "ab" });
+  const elapsed = Date.now() - t0;
+
+  // Strict assertion — the contract is delivery-confirmed success
+  // regardless of whether the stream had time to drain. (R2 design:
+  // there is no subprocess to kill, so abortSession cannot promise
+  // termination, only "abort delivered".)
   assert.equal(abortResult.success, true, "abortSession reports success");
+  assert.equal(
+    typeof abortResult.elapsedMs,
+    "number",
+    "abortSession must report elapsed time",
+  );
+  // The bounded-drain branch MUST have fired: the stub hangs forever,
+  // so the only way abortSession can resolve is the 5s race. Assert
+  // the elapsed is at the bound — anything noticeably below means the
+  // bounded drain did not actually run.
   assert.ok(
-    typeof abortResult.elapsedMs === "number",
-    "abortSession must report elapsed time for diagnosis",
+    elapsed >= 4900,
+    `abortSession must have waited at least 4.9s for the wedged stream — ` +
+      `elapsed=${elapsed}ms (a low elapsed means the 5s bound didn't fire)`,
   );
   assert.ok(
-    abortResult.elapsedMs <= 6000,
-    `abort must finish within 5s + small jitter — elapsed=${abortResult.elapsedMs}ms`,
+    elapsed <= 6000,
+    `abortSession must finish within 5s + small jitter — elapsed=${elapsed}ms`,
   );
-  await streamP;
-  // The sendMessage stub was passed an AbortSignal (or its absence
-  // already errored).
-  assert.ok(abortSeen || true, "abort saw the signal");
+
+  // Strict check — the turn host MUST have passed an AbortSignal AND
+  // the signal MUST have been observed by the stream. This is the
+  // assertion that replaces the previous `abortSeen || true` tautology.
+  assert.equal(
+    signalReceived,
+    true,
+    "turn host must pass an AbortSignal to adapter.sendMessage",
+  );
+  assert.equal(
+    abortSeen,
+    true,
+    "abort must be observed by the stream listener (proves the signal `abort` event fires)",
+  );
+
+  // The stream itself never resolves (the stub hangs forever), so
+  // drain it in the background and let the host's wrapper forget the
+  // stream when the activeStreams Set is collected. We don't await
+  // streamP — the test exits before that, which is the intended
+  // behaviour: abortSession gives up on the stream and returns.
+  void streamP;
 
   await host.close();
   rmSync(dir, { recursive: true, force: true });
