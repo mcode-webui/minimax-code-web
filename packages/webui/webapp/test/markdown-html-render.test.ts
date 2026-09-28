@@ -67,6 +67,7 @@ import "../lib/mermaid-renderer"; // auto-registers the mermaid language rendere
 import {
   _stripMermaidInitForTest,
   _mermaidInitializeOptionsForTest,
+  _mermaidConfigKeyForTest,
   _mermaidFontFamilyForTest,
 } from "../components/mermaid-block";
 import { findMermaidSourceBefore } from "../components/markdown-html";
@@ -412,5 +413,59 @@ describe("mermaid-block — initialize options (blockers 2 + 3: labels & body le
         assert.ok(key in opts, `expected ${key} in initialize options`);
       }
     }
+  });
+});
+
+describe("mermaid-block — configKey (the initialize re-run guard)", () => {
+  // The component calls `mermaid.initialize` only when the config key
+  // changes. The key construction is exported as
+  // `_mermaidConfigKeyForTest` precisely so these assertions exist: in
+  // the slice 23 acceptance the key was reverted to the historical
+  // `${theme}|${source.length}` shape and the ENTIRE suite stayed green
+  // (22/22) — the fix had no regression protection at all. These four
+  // tests are the protection.
+
+  test("different themes produce different keys", () => {
+    const source = "flowchart LR\n  A --> B";
+    const light = _mermaidConfigKeyForTest("light", source, _mermaidInitializeOptionsForTest("light"));
+    const dark = _mermaidConfigKeyForTest("dark", source, _mermaidInitializeOptionsForTest("dark"));
+    assert.notEqual(light, dark);
+  });
+
+  test("option content change behind an unchanged source still flips the key", () => {
+    // The historical bug the old key shape could not see: options that
+    // change CONTENT while the source stays put (length included)
+    // produced the SAME key, so the second `mermaid.initialize`
+    // silently never ran. Mutating the implementation back to
+    // `${theme}|${source.length}` must turn this red.
+    const source = "flowchart LR\n  A --> B";
+    const base = _mermaidInitializeOptionsForTest("light");
+    const flipped = { ...base, htmlLabels: !(base.htmlLabels as boolean) };
+    assert.notEqual(
+      _mermaidConfigKeyForTest("light", source, base),
+      _mermaidConfigKeyForTest("light", source, flipped),
+    );
+  });
+
+  test("source does not participate — different diagrams, same config, same key", () => {
+    // `source` feeds `mermaid.render`, not `mermaid.initialize`; keying
+    // on it (the old `${theme}|${source.length}` did) forces a
+    // pointless re-initialise between two diagrams that share one
+    // config. The two sources differ in LENGTH as well as content, so
+    // the length-keyed mutation fails this too.
+    const opts = _mermaidInitializeOptionsForTest("dark");
+    assert.equal(
+      _mermaidConfigKeyForTest("dark", "flowchart LR\n  A --> B", opts),
+      _mermaidConfigKeyForTest("dark", "sequenceDiagram\n  A->>B: hi", opts),
+    );
+  });
+
+  test("identical inputs produce the identical key (idempotent guard)", () => {
+    const source = "flowchart LR\n  A --> B";
+    const opts = _mermaidInitializeOptionsForTest("light");
+    assert.equal(
+      _mermaidConfigKeyForTest("light", source, opts),
+      _mermaidConfigKeyForTest("light", source, opts),
+    );
   });
 });

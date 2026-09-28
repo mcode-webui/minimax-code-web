@@ -21,8 +21,8 @@ import { useEffect, useRef, useState } from "react";
  *     never asks for the chunk.
  *
  *   - **Theme-aware render.** `mermaid.initialize` is called once per
- *     (theme, length-bucket) pair so theme flips trigger a re-render
- *     without resetting the parser cache.
+ *     distinct config (see `_mermaidConfigKeyForTest`) so theme flips
+ *     trigger a re-render without resetting the parser cache.
  *
  *   - **CJK fallback.** The `fontFamily` stack passed to mermaid
  *     prefers the system CJK font (PingFang / Microsoft YaHei / Noto
@@ -165,6 +165,38 @@ export function _mermaidInitializeOptionsForTest(theme: "light" | "dark"): Recor
   };
 }
 
+/**
+ * Build the config-change key the component compares against
+ * `lastMermaidConfigKey` to decide whether `mermaid.initialize` must
+ * re-run. Exported so the test suite can pin the key's contract.
+ *
+ * The contract the tests pin (and a historical bug made necessary):
+ *
+ *   - The key MUST track the **content** of the initialize options. An
+ *     earlier implementation keyed on `${theme}|${source.length}`, so
+ *     an options change behind an unchanged source length produced the
+ *     SAME key and the new `mermaid.initialize` silently never ran —
+ *     acceptance flipped an option in place and nothing re-initialised,
+ *     with the entire unit suite still green (nothing asserted the
+ *     key). Hashing the live options object makes that drift
+ *     impossible: content changes, key changes.
+ *
+ *   - `source` deliberately does NOT participate in the key. `source`
+ *     is consumed by the `mermaid.render` call, not `initialize`; two
+ *     different diagrams sharing one config must NOT re-initialise
+ *     mermaid between them.
+ *
+ *   - Identical inputs must produce the identical key — the guard
+ *     exists to skip no-op re-initialisation.
+ */
+export function _mermaidConfigKeyForTest(
+  theme: "light" | "dark",
+  source: string,
+  options: Record<string, unknown>,
+): string {
+  return `${theme}|${JSON.stringify(options)}`;
+}
+
 export function MermaidBlock({ source, theme, _loadMermaid }: MermaidBlockProps) {
   const [svg, setSvg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -184,14 +216,13 @@ export function MermaidBlock({ source, theme, _loadMermaid }: MermaidBlockProps)
         // The configKey includes EVERY value passed to mermaid.initialize
         // (theme, htmlLabels, suppressErrorRendering, fontFamily). Adding a
         // new option to the shared `_mermaidInitializeOptionsForTest` builder
-        // below without also extending this key would silently leave mermaid
-        // running with a stale config across a theme flip. Source length does
-        // not participate — `source` is consumed by the render call, not the
-        // initialize call. Hashing the actual options (rather than a brittle
-        // human-typed signature) makes that drift impossible: if the options
-        // shape changes, the hash changes, and mermaid re-initialises.
+        // above without also extending this key would silently leave mermaid
+        // running with a stale config across a theme flip. Hashing the actual
+        // options (rather than a brittle human-typed signature) makes that
+        // drift impossible: if the options shape changes, the hash changes,
+        // and mermaid re-initialises.
         const options = _mermaidInitializeOptionsForTest(theme);
-        const configKey = `${theme}|${JSON.stringify(options)}`;
+        const configKey = _mermaidConfigKeyForTest(theme, source, options);
         if (lastMermaidConfigKey !== configKey) {
           mermaid.initialize(options);
           lastMermaidConfigKey = configKey;

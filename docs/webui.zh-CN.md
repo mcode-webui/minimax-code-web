@@ -165,6 +165,57 @@ search | plugins`，preview 一侧 `browser | file:<path>`，其定义位于
 列间分隔条宽 8 px，支持拖拽改宽（夹在 `[minWidth, maxWidth]` 内）
 和双击重置。
 
+## Markdown 里的 Mermaid 图（slice 23）
+
+助手回复和 Markdown 文件预览共用一套渲染管线
+（`webapp/lib/markdown.ts`，`marked` 是工作区既有依赖，不走 CDN）。在
+代码围栏的语言位置写 `mermaid`，围栏内容就会被画成图，而不是显示为
+代码块：
+
+````markdown
+```mermaid
+flowchart LR
+  需求 --> 开发 --> 验收
+```
+````
+
+**你会得到什么**
+
+- 只要围栏语言是 `mermaid` 就出图，大小写不敏感；围栏后跟的
+  `{...}` 参数不影响识别（`webapp/lib/markdown.ts:133-136`）。
+- 中文标签正常显示：节点和边上的文字走 PingFang SC / Microsoft
+  YaHei / Noto Sans CJK SC 字体栈，不会画成方块
+  （`components/mermaid-block.tsx:109`）。
+- 图跟随界面浅色/深色主题，切换主题时已渲染的图会重新画
+  （`components/markdown-html.tsx:52-66`）。
+- 图按列宽缩放；特别宽的图在卡片内横向滚动，不撑破版面
+  （`webapp/styles/mermaid.css:62-80`）。
+
+**图坏了会怎样**
+
+- **语法写错**：出错的那张图显示"Mermaid 渲染失败"卡片——错误原因
+  加原始源码。源码可以原样选中复制，复制回来的内容和当初写的逐字节
+  一致，包括 `-->|标签|` 这类箭头语法
+  （`components/mermaid-block.tsx:285-307`、
+  `components/markdown-html.tsx:183-230`）。文档其余部分照常渲染，
+  一张图坏了不会让整篇白屏。
+- **图表库加载失败**（如断网）：同样落入失败卡片，源码仍可复制，
+  其余内容不受影响。
+
+**限制**
+
+- **首次遇到图需要加载**：图表库有几 MB，页面里第一张图出现时才从
+  服务端加载（没有任何 mermaid 图的页面完全不请求它，
+  `components/mermaid-block.tsx:54-66`）；该文件带一年期 immutable
+  强缓存（`server/lib/static.js:64-66`），之后的页面加载直接用浏览
+  器缓存，不重复下载。
+- **不进目录大纲**：图不产生标题。围栏渲染为 `<pre>`/`<div>` 占位
+  元素而不是 `h1`-`h6`（`webapp/lib/mermaid-renderer.ts:44-57`），
+  因此图永远不会出现在按标题组织的大纲或导航里（webui 目前的
+  Markdown 渲染本身也不生成大纲）。
+
+依赖：`mermaid` 11.12.1（MIT），已登记于 `release/dependency-licenses.json`。
+
 ## 持久化键（客户端 `localStorage` / `sessionStorage`）
 
 | 键 | 通道 | 归属 | 引入 ticket | 数据形态 |

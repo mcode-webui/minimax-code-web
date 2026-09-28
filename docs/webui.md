@@ -183,6 +183,28 @@ entry point at all.
 Dividers between columns are 8 px wide and support drag-resize (clamped
 to `[minWidth, maxWidth]` per column) and double-click reset.
 
+## Markdown rendering and Mermaid diagrams (slice 23)
+
+Assistant messages and Markdown file previews render through
+`webapp/lib/markdown.ts` (`marked`, already a workspace dependency — no
+CDN). A fenced code block whose language token is `mermaid` renders as a
+diagram instead of a code block. The behaviour is a contract, not an
+implementation accident:
+
+| Aspect | Contract | Backed by |
+| --- | --- | --- |
+| Fence language | The bare token after the fence opener must be `mermaid`, case-insensitive; trailing metadata (```` ```mermaid {theme: dark} ````) still matches | `webapp/lib/markdown.ts:133-136` |
+| Renderer seam | Fence languages dispatch through a language→renderer registry; the markdown main flow never branches on a language name. Any other fence language can be taken over the same way — one `registerLanguageRenderer(...)` call — which is the extension path plugin renderers use | `webapp/lib/markdown.ts:54-113`, `webapp/lib/mermaid-renderer.ts:64-71` |
+| Theme | Diagrams re-render when the app switches light/dark: the host watches `<html>`'s class and mermaid is re-initialised per theme | `components/markdown-html.tsx:52-66`, `components/mermaid-block.tsx:156-166` + `223-229` |
+| Failure state | A syntax error does not blank the page. The failing diagram shows its error text plus the **original source in a copyable `<pre>`** — the copy round-trips byte-exact, including `-->|label|` edge syntax — and the rest of the document renders normally. (If a language renderer itself throws, the fence falls back to the plain code block — same "never blank the document" rule at the parser level.) | `components/mermaid-block.tsx:285-307`, `components/markdown-html.tsx:183-230`, `webapp/lib/markdown.ts:149-165` |
+| Sizing | Diagrams scale to the column width; a diagram wider than its card scrolls inside the card | `webapp/styles/mermaid.css:62-80` |
+| CJK labels | Node and edge labels render through a font stack with PingFang SC / Microsoft YaHei / Noto Sans CJK SC fallbacks, so Chinese text does not come out as tofu | `components/mermaid-block.tsx:109` |
+| Loading | The chart library is several megabytes and is `import()`-ed when the **first** diagram of a page mounts; the chunk ships with a one-year immutable cache, so later page loads fetch it from the browser cache. A page with no mermaid fence never requests the chunk | `components/mermaid-block.tsx:54-66`, `server/lib/static.js:64-66` |
+| Outline | A diagram is never a heading: the fence emits a `<pre>`/`<div>` placeholder pair, not `h1`–`h6`, so diagrams appear in no heading-derived outline (the webui itself renders no Markdown outline today) | `webapp/lib/mermaid-renderer.ts:44-57` |
+
+The `mermaid` dependency (11.12.1, MIT) is recorded in
+`release/dependency-licenses.json`.
+
 ## Persistence keys (client-side `localStorage` / `sessionStorage`)
 
 | Key | Channel | Owner | Introduced by | Shape |
