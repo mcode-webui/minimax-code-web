@@ -48,6 +48,7 @@ import {
   DEFAULT_COLUMN_LAYOUT,
   fileTabFromPath,
   surfaceTab,
+  syncColumnVisibility,
   type ColumnId,
   type SurfaceTabKind,
   type TabStripState,
@@ -145,9 +146,31 @@ function App() {
    * browser lands in the preview column. If a tab of the same
    * kind is already open, it is activated instead of duplicated.
    */
+  /**
+   * Slice 21 — apply a tab reducer and synchronously mirror the
+   * column visibility. Every reducer that touches the tab strip
+   * goes through this helper so the preview / tree columns
+   * appear and disappear in the same React batch as the tab
+   * change. The sync is idempotent — reducers that do not add or
+   * remove tabs (e.g. `activateTab`, `recordFileTabScroll`,
+   * `setLauncherOpen`) hit `syncColumnVisibility` with the same
+   * tabs and get back the same layout, so they do not bounce
+   * through a no-op state update.
+   */
+  const applyTabs = useCallback(
+    (updater: (state: TabStripState) => TabStripState) => {
+      setTabState((current) => {
+        const nextTabs = updater(current);
+        setColumnState((currentLayout) => syncColumnVisibility(nextTabs, currentLayout));
+        return nextTabs;
+      });
+    },
+    [],
+  );
+
   const openSurfaceTab = useCallback((kind: SurfaceTabKind) => {
-    setTabState((current) => openTab(current, surfaceTab(kind)));
-  }, []);
+    applyTabs((current) => openTab(current, surfaceTab(kind)));
+  }, [applyTabs]);
 
   /**
    * Open a file tab in the preview column. If a tab for the same
@@ -157,7 +180,7 @@ function App() {
    */
   const openFileTab = useCallback((path: string) => {
     if (!path) return;
-    setTabState((current) => {
+    applyTabs((current) => {
       const existing = current.tabs.find(
         (tab) => tab.kind === "file" && tab.path === path,
       );
@@ -170,7 +193,7 @@ function App() {
     // embedded preview pane is still subscribed, so this keeps
     // its empty-state copy consistent.
     openFileInWeb(path);
-  }, []);
+  }, [applyTabs]);
 
   /**
    * Open a browser tab in the preview column + set the browser
@@ -180,8 +203,8 @@ function App() {
   const openBrowserTab = useCallback((path: string) => {
     if (!path) return;
     setBrowserPath(path);
-    setTabState((current) => openTab(current, surfaceTab("browser")));
-  }, []);
+    applyTabs((current) => openTab(current, surfaceTab("browser")));
+  }, [applyTabs]);
 
   /**
    * Close a tab by id. The reducer handles per-column active
@@ -189,7 +212,7 @@ function App() {
    * preview surface so the toolbar highlight stays correct.
    */
   const closeOneTab = useCallback((id: string) => {
-    setTabState((current) => {
+    applyTabs((current) => {
       const next = closeTab(current, id);
       const closingFile = current.tabs.find((tab) => tab.id === id);
       if (closingFile && closingFile.kind === "file" && !next.tabs.some((tab) => tab.kind === "file")) {
@@ -197,14 +220,14 @@ function App() {
       }
       return next;
     });
-  }, []);
+  }, [applyTabs]);
 
   /**
    * Toggle the launcher popover. Pure flag toggle.
    */
   const toggleLauncher = useCallback(() => {
-    setTabState((current) => setLauncherOpen(current, !current.launcherOpen));
-  }, []);
+    applyTabs((current) => setLauncherOpen(current, !current.launcherOpen));
+  }, [applyTabs]);
 
   /**
    * Reset a column width to its default.
@@ -217,22 +240,22 @@ function App() {
    * Record a file tab's scroll position.
    */
   const recordFileScroll = useCallback((id: string, scrollTop: number) => {
-    setTabState((current) => recordFileTabScroll(current, id, scrollTop));
-  }, []);
+    applyTabs((current) => recordFileTabScroll(current, id, scrollTop));
+  }, [applyTabs]);
 
   /**
    * Switch the active preview tab by id (no-op if unknown).
    */
   const switchPreviewTab = useCallback((id: string) => {
-    setTabState((current) => activateTab(current, id));
-  }, []);
+    applyTabs((current) => activateTab(current, id));
+  }, [applyTabs]);
 
   /**
    * Switch the active tree tab by id (no-op if unknown).
    */
   const switchTreeTab = useCallback((id: string) => {
-    setTabState((current) => activateTab(current, id));
-  }, []);
+    applyTabs((current) => activateTab(current, id));
+  }, [applyTabs]);
 
   /**
    * Collapse / expand a column. The preview and tree columns
@@ -453,14 +476,14 @@ function App() {
 
   const onRevealInTree = useCallback(
     (path: string) => {
-      setTabState((current) => {
+      applyTabs((current) => {
         const filesTab = current.tabs.find((tab) => tab.kind === "files");
         if (filesTab) return activateTab(current, filesTab.id);
         return openTab(current, surfaceTab("files"));
       });
       void path;
     },
-    [],
+    [applyTabs],
   );
 
   // Upstream shows a centred three-dot loader while the renderer waits for its
@@ -521,9 +544,12 @@ function App() {
     </HomeState>
   );
 
-  // The preview column always mounts on the conversation view;
-  // its visibility is owned by the column layout. The page
-  // doesn't need to gate it.
+  // Slice 21 — the preview column is on-demand. The page wires
+  // the tabs + column flags through `applyTabs` so the wrapper
+  // hides this slot when no preview tab is open (its width
+  // collapses to 0 and the divider disappears). The slot is
+  // still always mounted so a tab reducer that opens the
+  // preview column does not need to wait for a mount cycle.
   const previewSlot = (
     <PreviewColumnMounted
       tabs={tabState.tabs}
@@ -533,13 +559,6 @@ function App() {
       onBrowserNavigate={onBrowserNavigate}
       onActivate={switchPreviewTab}
       onClose={closeOneTab}
-      onAddFile={() => {
-        // File picker is out of scope for slice 17. The page
-        // can wire this to a future "open file" modal — for
-        // now the button is mounted so the strip's affordance
-        // exists but a click is a no-op (the user can still
-        // pick a file from the tree column).
-      }}
       onRecordFileScroll={recordFileScroll}
       onRevealInTree={onRevealInTree}
       t={t}

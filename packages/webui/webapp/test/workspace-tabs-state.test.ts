@@ -35,6 +35,8 @@ import {
   DEFAULT_WORKSPACE_TABS_STATE,
   deserializeWorkspaceTabs,
   fileTabFromPath,
+  hasPreviewTabs,
+  hasTreeTabs,
   isPreviewSurface,
   isSurfaceTabKind,
   isTreeSurface,
@@ -49,6 +51,7 @@ import {
   setColumnWidth,
   setLauncherOpen,
   surfaceTab,
+  syncColumnVisibility,
   WORKSPACE_TABS_VERSION,
 } from "../lib/workspace-tabs-state";
 import type { TabStripState, WorkspaceTabsState } from "../lib/workspace-tabs-state";
@@ -447,7 +450,16 @@ describe("computeColumnLayout — defect A (no dead gutter)", () => {
   // comfortable width — no 250-280px dead gutter.
 
   test("at 1280 the conversation column is elastic, not 1040 with a centred content box", () => {
-    const summary = computeColumnLayout(DEFAULT_COLUMN_LAYOUT, 1280, 1280);
+    // Slice 21 — DEFAULT_COLUMN_LAYOUT starts both on-demand
+    // columns collapsed; this test pins the slice-17 defect-A
+    // fix (no 1040-wide conversation + dead gutter) by forcing
+    // both columns visible. The slice-21 idle path is covered
+    // by the "at 1280 with both columns folded" test below.
+    const layout = {
+      ...DEFAULT_COLUMN_LAYOUT,
+      collapsed: { sidebar: true, conversation: false, preview: false, tree: false },
+    };
+    const summary = computeColumnLayout(layout, 1280, 1280);
     const conversation = summary.segments.find((s) => s.id === "conversation")!;
     const preview = summary.segments.find((s) => s.id === "preview")!;
     const tree = summary.segments.find((s) => s.id === "tree")!;
@@ -468,7 +480,14 @@ describe("computeColumnLayout — defect A (no dead gutter)", () => {
   });
 
   test("at 1920 the conversation column caps at its max — no 250-280px gutter each side", () => {
-    const summary = computeColumnLayout(DEFAULT_COLUMN_LAYOUT, 1920, 1920);
+    // Slice 21 — DEFAULT_COLUMN_LAYOUT starts both on-demand
+    // columns collapsed; this test pins the slice-17 dead-gutter
+    // defence, so it forces both columns visible first.
+    const layout = {
+      ...DEFAULT_COLUMN_LAYOUT,
+      collapsed: { sidebar: true, conversation: false, preview: false, tree: false },
+    };
+    const summary = computeColumnLayout(layout, 1920, 1920);
     const conversation = summary.segments.find((s) => s.id === "conversation")!;
     assert.ok(conversation.visible);
     assert.ok(conversation.width <= COLUMN_SPECS.conversation.maxWidth,
@@ -488,7 +507,16 @@ describe("computeColumnLayout — defect A (no dead gutter)", () => {
     // (it lives at the shell level, not the layout wrapper
     // level); the page-level integration test pins the four
     // columns at the AppShell + WorkspaceColumns boundary.
-    const summary = computeColumnLayout(DEFAULT_COLUMN_LAYOUT, 1384, 1384);
+    //
+    // Slice 21 — DEFAULT_COLUMN_LAYOUT starts both on-demand
+    // columns collapsed; this test pins the slice-17 visual
+    // (all three wrapper columns visible at 1384), so it
+    // forces both fixed columns visible before computing.
+    const bothVisibleLayout = {
+      ...DEFAULT_COLUMN_LAYOUT,
+      collapsed: { sidebar: true, conversation: false, preview: false, tree: false },
+    };
+    const summary = computeColumnLayout(bothVisibleLayout, 1384, 1384);
     const visibleIds = summary.segments.filter((s) => s.visible).map((s) => s.id);
     assert.deepEqual(visibleIds, ["conversation", "preview", "tree"]);
     // Slice 17 — with the AppShell chrome owning the session
@@ -517,8 +545,15 @@ describe("computeColumnLayout — defect A (no dead gutter)", () => {
     //
     // At 1920 (room to grow) the drag to 720 is honoured
     // exactly — preview/tree absorb the leftover up to their
-    // own maxes and conversation stays at 720.
-    const dragged = setColumnWidth(DEFAULT_COLUMN_LAYOUT, "conversation", 720);
+    // own maxes and conversation stays at 720. Use an
+    // explicit both-columns-visible flag because the slice-21
+    // default starts both columns collapsed (on-demand idle),
+    // lifting conversation beyond 768 in the folded-state path.
+    const base = setColumnWidth(DEFAULT_COLUMN_LAYOUT, "conversation", 720);
+    const dragged = {
+      ...base,
+      collapsed: { sidebar: true, conversation: false, preview: false, tree: false },
+    };
     const summary = computeColumnLayout(dragged, 1920, 1920);
     const conversation = summary.segments.find((s) => s.id === "conversation")!;
     // Conversation sits at the user's stored 720 — the
@@ -541,11 +576,19 @@ describe("computeColumnLayout — defect A (no dead gutter)", () => {
     // hits the floor; preview/tree absorb the released 360px
     // (preview grows to its default 400, tree grows to its
     // max 600).
-    const before = computeColumnLayout(DEFAULT_COLUMN_LAYOUT, 1280, 1280);
+    // Slice 21 — DEFAULT_COLUMN_LAYOUT starts with both columns
+    // collapsed (on-demand idle). The drag test needs both
+    // columns visible so it can verify the fold priority's
+    // visible reflow.
+    const bothVisibleLayout = {
+      ...DEFAULT_COLUMN_LAYOUT,
+      collapsed: { sidebar: true, conversation: false, preview: false, tree: false },
+    };
+    const before = computeColumnLayout(bothVisibleLayout, 1280, 1280);
     const conversationBefore = before.segments.find((s) => s.id === "conversation")!.width;
     const previewBefore = before.segments.find((s) => s.id === "preview")!.width;
     const treeBefore = before.segments.find((s) => s.id === "tree")!.width;
-    const dragged = setColumnWidth(DEFAULT_COLUMN_LAYOUT, "conversation", 280);
+    const dragged = setColumnWidth(bothVisibleLayout, "conversation", 280);
     const after = computeColumnLayout(dragged, 1280, 1280);
     const conversationAfter = after.segments.find((s) => s.id === "conversation")!.width;
     const previewAfter = after.segments.find((s) => s.id === "preview")!.width;
@@ -569,7 +612,13 @@ describe("computeColumnLayout — defect A (no dead gutter)", () => {
     // conversation column must clamp to maxWidth (the
     // drag-resize handler clamps on every move so this is a
     // static-source tripwire for the clampWidth path).
-    const layout = setColumnWidth(DEFAULT_COLUMN_LAYOUT, "conversation", 1500);
+    // Use a layout with at least one fixed column visible so
+    // the slice-21 idle widening does not lift conversation
+    // beyond the max (slice 17's dead-gutter defence applies).
+    const layout = {
+      ...setColumnWidth(DEFAULT_COLUMN_LAYOUT, "conversation", 1500),
+      collapsed: { sidebar: true, conversation: false, preview: false, tree: false },
+    };
     const summary = computeColumnLayout(layout, 1920, 1920);
     const conversation = summary.segments.find((s) => s.id === "conversation")!;
     assert.equal(conversation.width, COLUMN_SPECS.conversation.maxWidth);
@@ -781,5 +830,337 @@ test("FORWARD-COMPAT: a slice-15 payload (single activeId + panel/secondary colu
     const conversation = summary.segments.find((s) => s.id === "conversation")!;
     assert.ok(conversation.width >= COLUMN_SPECS.conversation.minWidth,
       `conversation ${conversation.width} below min — ghost sidebar would be the cause`);
+  });
+});
+
+// =====================================================================
+// Slice 21 — on-demand columns
+// =====================================================================
+//
+// The two right-hand columns (preview / tree) now open only when
+// at least one tab in the matching role is present, and close
+// themselves when no tab remains. The state model is a pure
+// predicate (`hasPreviewTabs` / `hasTreeTabs`) plus a sync
+// reducer (`syncColumnVisibility`) that derives the column
+// collapsed flags from the tab strip. The deserializer applies
+// the sync on read so a stale "column open but empty" payload
+// never resurrects an empty column.
+//
+// The computeColumnLayout algorithm also lifts the conversation
+// max when both fixed columns are folded so the idle state fills
+// the row (1280 → conversation ≈ 1040, 1920 → conversation ≈
+// 1680), while preserving slice 17's dead-gutter defence when
+// at least one fixed column is visible.
+
+describe("hasPreviewTabs / hasTreeTabs", () => {
+  test("empty tab strip → both predicates false", () => {
+    assert.equal(hasPreviewTabs(DEFAULT_TAB_STRIP), false);
+    assert.equal(hasTreeTabs(DEFAULT_TAB_STRIP), false);
+  });
+
+  test("a preview tab (file: or browser) → hasPreviewTabs true", () => {
+    const withFile = openTab(DEFAULT_TAB_STRIP, fileTabFromPath("/repo/a.md"));
+    assert.equal(hasPreviewTabs(withFile), true);
+    assert.equal(hasTreeTabs(withFile), false);
+
+    const withBrowser = openTab(DEFAULT_TAB_STRIP, surfaceTab("browser"));
+    assert.equal(hasPreviewTabs(withBrowser), true);
+    assert.equal(hasTreeTabs(withBrowser), false);
+  });
+
+  test("a tree surface → hasTreeTabs true", () => {
+    for (const kind of ["files", "git", "tasks", "search", "plugins"] as const) {
+      const next = openTab(DEFAULT_TAB_STRIP, surfaceTab(kind));
+      assert.equal(hasPreviewTabs(next), false);
+      assert.equal(hasTreeTabs(next), true);
+    }
+  });
+
+  test("closing the last tab flips both predicates back to false", () => {
+    const withFile = openTab(DEFAULT_TAB_STRIP, fileTabFromPath("/repo/a.md"));
+    assert.equal(hasPreviewTabs(withFile), true);
+    const empty = closeTab(withFile, "file:/repo/a.md");
+    assert.equal(hasPreviewTabs(empty), false);
+  });
+});
+
+describe("syncColumnVisibility — slice 21 needs open ↔ tabs", () => {
+  test("no tabs → both flags close", () => {
+    const out = syncColumnVisibility(DEFAULT_TAB_STRIP, DEFAULT_COLUMN_LAYOUT);
+    assert.equal(out.collapsed.preview, true);
+    assert.equal(out.collapsed.tree, true);
+  });
+
+  test("opening a preview tab reopens the preview column", () => {
+    const tab = openTab(DEFAULT_TAB_STRIP, fileTabFromPath("/repo/a.md"));
+    const out = syncColumnVisibility(tab, {
+      ...DEFAULT_COLUMN_LAYOUT,
+      collapsed: { sidebar: true, conversation: false, preview: true, tree: true },
+    });
+    assert.equal(out.collapsed.preview, false);
+    assert.equal(out.collapsed.tree, true, "tree stays closed");
+  });
+
+  test("opening a tree tab reopens the tree column", () => {
+    const tab = openTab(DEFAULT_TAB_STRIP, surfaceTab("files"));
+    const out = syncColumnVisibility(tab, {
+      ...DEFAULT_COLUMN_LAYOUT,
+      collapsed: { sidebar: true, conversation: false, preview: true, tree: true },
+    });
+    assert.equal(out.collapsed.preview, true);
+    assert.equal(out.collapsed.tree, false);
+  });
+
+  test("closing the last preview tab re-closes the preview column", () => {
+    let state: TabStripState = openTab(DEFAULT_TAB_STRIP, fileTabFromPath("/repo/a.md"));
+    // The page's wrapper would have set preview:false after the open above;
+    // the sync should keep that flag in place while the tab exists.
+    let layout = syncColumnVisibility(state, DEFAULT_COLUMN_LAYOUT);
+    assert.equal(layout.collapsed.preview, false);
+    state = closeTab(state, "file:/repo/a.md");
+    layout = syncColumnVisibility(state, layout);
+    assert.equal(layout.collapsed.preview, true, "preview auto-closes when its last tab is gone");
+  });
+
+  test("closes the tree column when its last surface tab closes", () => {
+    let state: TabStripState = openTab(DEFAULT_TAB_STRIP, surfaceTab("git"));
+    let layout = syncColumnVisibility(state, DEFAULT_COLUMN_LAYOUT);
+    assert.equal(layout.collapsed.tree, false);
+    state = closeTab(state, "git");
+    layout = syncColumnVisibility(state, layout);
+    assert.equal(layout.collapsed.tree, true, "tree auto-closes when its last tab is gone");
+  });
+
+  test("idempotent — same layout returned when flags already match", () => {
+    const tab = openTab(DEFAULT_TAB_STRIP, fileTabFromPath("/repo/a.md"));
+    const layout: typeof DEFAULT_COLUMN_LAYOUT = {
+      ...DEFAULT_COLUMN_LAYOUT,
+      collapsed: { sidebar: true, conversation: false, preview: false, tree: true },
+    };
+    const once = syncColumnVisibility(tab, layout);
+    const twice = syncColumnVisibility(tab, once);
+    assert.equal(once, twice, "sync must return the same reference when flags already match");
+  });
+
+  test("sidebar collapsed flag is preserved through sync", () => {
+    // The sidebar is owned by AppShell; sync must never touch it.
+    const layout: typeof DEFAULT_COLUMN_LAYOUT = {
+      ...DEFAULT_COLUMN_LAYOUT,
+      collapsed: { sidebar: false, conversation: false, preview: true, tree: true },
+    };
+    const out = syncColumnVisibility(DEFAULT_TAB_STRIP, layout);
+    assert.equal(out.collapsed.sidebar, false,
+      "sidebar flag must survive sync — AppShell owns it");
+  });
+});
+
+describe("computeColumnLayout — slice 21 idle state", () => {
+  // The ticket's headline measurement: at 1280 with both
+  // columns folded, the conversation column must take the
+  // whole remainder (1040 = 1280 − 240 sidebar). The algorithm
+  // lifts conversation's effective max only when both fixed
+  // columns are folded; when at least one fixed column is
+  // visible it keeps the slice-17 dead-gutter defence (768).
+
+  test("at 1280 with both columns folded, conversation takes the full remainder", () => {
+    // AppShell chrome is 240, so the WorkspaceColumns container
+    // is 1040 wide. With both right-hand columns closed the
+    // conversation column must equal 1040.
+    const layout: typeof DEFAULT_COLUMN_LAYOUT = {
+      ...DEFAULT_COLUMN_LAYOUT,
+      collapsed: { sidebar: true, conversation: false, preview: true, tree: true },
+    };
+    const summary = computeColumnLayout(layout, 1040, 1280);
+    const conversation = summary.segments.find((s) => s.id === "conversation")!;
+    const preview = summary.segments.find((s) => s.id === "preview")!;
+    const tree = summary.segments.find((s) => s.id === "tree")!;
+    assert.equal(conversation.width, 1040, `conversation ${conversation.width} != 1040`);
+    assert.equal(preview.width, 0);
+    assert.equal(tree.width, 0);
+    assert.equal(preview.visible, false);
+    assert.equal(tree.visible, false);
+    assert.equal(conversation.visible, true);
+    const total = summary.segments.reduce((sum, s) => sum + s.width, 0);
+    assert.equal(total, 1040, `total ${total} != 1040`);
+  });
+
+  test("at 1920 with both columns folded, conversation fills the row", () => {
+    const layout: typeof DEFAULT_COLUMN_LAYOUT = {
+      ...DEFAULT_COLUMN_LAYOUT,
+      collapsed: { sidebar: true, conversation: false, preview: true, tree: true },
+    };
+    // AppShell chrome is 240, so the WorkspaceColumns container
+    // is 1680 wide. With both right-hand columns closed the
+    // conversation column must equal 1680.
+    const summary = computeColumnLayout(layout, 1680, 1920);
+    const conversation = summary.segments.find((s) => s.id === "conversation")!;
+    assert.equal(conversation.width, 1680, `conversation ${conversation.width} != 1680`);
+    const total = summary.segments.reduce((sum, s) => sum + s.width, 0);
+    assert.equal(total, 1680, `total ${total} != 1680`);
+  });
+
+  test("with at least one fixed column visible, conversation caps at 768", () => {
+    // Slice 17's dead-gutter defence must survive: opening just
+    // the tree column caps conversation at 768 even on a 1920
+    // viewport. The new slice-21 widening only fires when BOTH
+    // fixed columns are folded.
+    const layout: typeof DEFAULT_COLUMN_LAYOUT = {
+      ...DEFAULT_COLUMN_LAYOUT,
+      collapsed: { sidebar: true, conversation: false, preview: true, tree: false },
+    };
+    const summary = computeColumnLayout(layout, 1680, 1920);
+    const conversation = summary.segments.find((s) => s.id === "conversation")!;
+    const tree = summary.segments.find((s) => s.id === "tree")!;
+    assert.equal(conversation.width, 768,
+      `conversation ${conversation.width} must stay at the slice-17 max when any fixed column is visible`);
+    assert.ok(tree.width >= COLUMN_SPECS.tree.minWidth,
+      `tree ${tree.width} below min — fold priority violated`);
+  });
+
+  test("opening only the preview column caps conversation at 768", () => {
+    const layout: typeof DEFAULT_COLUMN_LAYOUT = {
+      ...DEFAULT_COLUMN_LAYOUT,
+      collapsed: { sidebar: true, conversation: false, preview: false, tree: true },
+    };
+    const summary = computeColumnLayout(layout, 1680, 1920);
+    const conversation = summary.segments.find((s) => s.id === "conversation")!;
+    assert.equal(conversation.width, 768);
+  });
+
+  test("with both columns visible at 1280, conversation folds per the priority", () => {
+    // Pre-slice-21 behaviour must survive: both columns visible
+    // at 1280 (1040 container) folds preview → tree → conv.
+    // This pins that the new idle-state widening does not leak
+    // into the "both visible" path. The default DEFAULT_COLUMN_LAYOUT
+    // starts with both columns collapsed (slice-21 idle), so this
+    // test pins an explicit "both visible" layout.
+    const layout = {
+      ...DEFAULT_COLUMN_LAYOUT,
+      collapsed: { sidebar: true, conversation: false, preview: false, tree: false },
+    };
+    const summary = computeColumnLayout(layout, 1040, 1280);
+    const conversation = summary.segments.find((s) => s.id === "conversation")!;
+    assert.ok(conversation.width <= COLUMN_SPECS.conversation.maxWidth,
+      `conversation ${conversation.width} > max ${COLUMN_SPECS.conversation.maxWidth}`);
+    assert.ok(conversation.width >= COLUMN_SPECS.conversation.minWidth,
+      `conversation ${conversation.width} below min`);
+  });
+});
+
+describe("deserializeWorkspaceTabs — slice 21 payload normalization", () => {
+  // A stored payload that says "column open but empty" must
+  // load as closed. Slice 17 already fixed the closely-related
+  // "ghost sidebar" bug; this is the same class for the two
+  // on-demand columns.
+
+  test("normalises a 'preview open but no preview tab' payload to closed", () => {
+    const payload = JSON.stringify({
+      version: WORKSPACE_TABS_VERSION,
+      cid,
+      tabs: { tabs: ["git"], previewActiveId: null, treeActiveId: "git", activeId: "git", fileScrolls: {} },
+      // The stale payload names preview open (slice 17 default) but
+      // the tab strip has no preview tab.
+      layout: {
+        widths: { sidebar: 240, conversation: 720, preview: 400, tree: 340 },
+        collapsed: { sidebar: false, conversation: false, preview: false, tree: false },
+      },
+    });
+    const out = deserializeWorkspaceTabs(payload, cid);
+    assert.equal(out.columnLayout.collapsed.preview, true,
+      "preview must normalise to closed when no preview tab exists");
+    // Tree stays open because the payload still has a `git` tab.
+    assert.equal(out.columnLayout.collapsed.tree, false);
+  });
+
+  test("normalises a 'tree open but no tree tab' payload to closed", () => {
+    const payload = JSON.stringify({
+      version: WORKSPACE_TABS_VERSION,
+      cid,
+      tabs: { tabs: ["file:/repo/a.md"], previewActiveId: "file:/repo/a.md", treeActiveId: null, activeId: "file:/repo/a.md", fileScrolls: {} },
+      layout: {
+        widths: { sidebar: 240, conversation: 720, preview: 400, tree: 340 },
+        collapsed: { sidebar: false, conversation: false, preview: false, tree: false },
+      },
+    });
+    const out = deserializeWorkspaceTabs(payload, cid);
+    assert.equal(out.columnLayout.collapsed.tree, true,
+      "tree must normalise to closed when no tree tab exists");
+    assert.equal(out.columnLayout.collapsed.preview, false,
+      "preview stays open because the file tab is a preview tab");
+  });
+
+  test("normalises a 'both columns open but empty' payload to closed", () => {
+    const payload = JSON.stringify({
+      version: WORKSPACE_TABS_VERSION,
+      cid,
+      tabs: { tabs: [], previewActiveId: null, treeActiveId: null, activeId: null, fileScrolls: {} },
+      layout: {
+        widths: { sidebar: 240, conversation: 720, preview: 400, tree: 340 },
+        collapsed: { sidebar: false, conversation: false, preview: false, tree: false },
+      },
+    });
+    const out = deserializeWorkspaceTabs(payload, cid);
+    assert.equal(out.columnLayout.collapsed.preview, true);
+    assert.equal(out.columnLayout.collapsed.tree, true);
+  });
+
+  test("fresh install lands in the slice-21 idle state (both columns closed)", () => {
+    // Empty input → cloneDefaultWorkspaceTabsState() → empty
+    // tab strip → syncColumnVisibility sets both flags true.
+    const out = deserializeWorkspaceTabs(null, cid);
+    assert.equal(out.tabStrip.tabs.length, 0);
+    assert.equal(out.columnLayout.collapsed.preview, true);
+    assert.equal(out.columnLayout.collapsed.tree, true);
+    assert.equal(out.columnLayout.collapsed.sidebar, true,
+      "sidebar stays collapsed — AppShell owns it");
+  });
+
+  test("garbage input (non-json, wrong version, wrong cid) lands in the idle state", () => {
+    for (const raw of [null, "", "{", "not json", "[]", JSON.stringify({})]) {
+      const out = deserializeWorkspaceTabs(raw as string | null, cid);
+      assert.equal(out.columnLayout.collapsed.preview, true,
+        `preview must default to closed on garbage input: ${raw}`);
+      assert.equal(out.columnLayout.collapsed.tree, true,
+        `tree must default to closed on garbage input: ${raw}`);
+    }
+  });
+
+  test("a preview tab in the payload keeps the preview column open after normalisation", () => {
+    const payload = JSON.stringify({
+      version: WORKSPACE_TABS_VERSION,
+      cid,
+      tabs: {
+        tabs: ["file:/repo/a.md"],
+        previewActiveId: "file:/repo/a.md",
+        treeActiveId: null,
+        activeId: "file:/repo/a.md",
+        fileScrolls: { "file:/repo/a.md": 0 },
+      },
+      layout: {
+        widths: { sidebar: 240, conversation: 720, preview: 400, tree: 340 },
+        // `preview: true` AND `tree: true` — the worst-case
+        // stale payload (both closed despite a preview tab).
+        collapsed: { sidebar: true, conversation: false, preview: true, tree: true },
+      },
+    });
+    const out = deserializeWorkspaceTabs(payload, cid);
+    assert.equal(out.columnLayout.collapsed.preview, false,
+      "sync reopens the preview column when a preview tab exists in the strip");
+    assert.equal(out.columnLayout.collapsed.tree, true,
+      "tree stays closed — no tree tab in the strip");
+  });
+});
+
+describe("DEFAULT_COLUMN_LAYOUT — slice-21 idle flags", () => {
+  // The default represents "no tabs, no columns". The deserializer
+  // + the sync reducer normalise every load, so the default
+  // itself should already encode the slice-21 idle state.
+  test("both on-demand columns start closed in the default", () => {
+    assert.equal(DEFAULT_COLUMN_LAYOUT.collapsed.preview, true);
+    assert.equal(DEFAULT_COLUMN_LAYOUT.collapsed.tree, true);
+    assert.equal(DEFAULT_COLUMN_LAYOUT.collapsed.sidebar, true,
+      "sidebar still collapses to AppShell chrome");
+    assert.equal(DEFAULT_COLUMN_LAYOUT.collapsed.conversation, false,
+      "conversation never folds");
   });
 });

@@ -138,6 +138,34 @@ function TreeColumnInner(props: TreeColumnProps) {
     [onPickSurface],
   );
 
+  // Close the active surface. The page's `applyTabs` wrapper
+  // (see app/page.tsx) syncs `collapsed.tree` in the same React
+  // batch as the tab reducer, so closing the last tree surface
+  // collapses the column with no visual seam. Discard semantics
+  // by surface:
+  //   - files: expanded paths + filter live in sessionStorage
+  //     keyed by workspace dir (slice 01), NOT in this tab; the
+  //     user's expand state survives the close and returns when
+  //     the user re-opens Files.
+  //   - search: query + server result live in `SearchSurface`'s
+  //     local state; closing unmounts the component and
+  //     discards the query. The aria-label announces this so
+  //     screen-reader users are warned before they act.
+  //   - git / tasks / plugins: read-only views of session-wide
+  //     data; closing just hides the surface.
+  // All branches are silent discards — none of the surfaces
+  // hold user-authored content that warrants a confirm prompt,
+  // but the close affordance is always keyboard-reachable and
+  // announces the consequence via aria-label.
+  const onCloseActive = useCallback(() => {
+    if (!activeTab) return;
+    props.onClose(activeTab.id);
+  }, [activeTab, props]);
+  const closeAria =
+    activeKind === "search"
+      ? t("workspaceTabs.tree.close.search.aria")
+      : t("workspaceTabs.tree.close.aria");
+
   return (
     <aside
       className="flex h-full min-h-0 w-full flex-col gap-2"
@@ -145,7 +173,10 @@ function TreeColumnInner(props: TreeColumnProps) {
       data-has-tabs={hasTabs ? "true" : "false"}
       data-active={activeKind ?? "none"}
     >
-      {/* Top bar — search box + view-mode toolbar + surface selector */}
+      {/* Top bar — surface selector + close button. The close
+          button is the user-visible counterpart to slice 21's
+          `applyTabs` wrapper: it closes the active surface tab
+          and the column auto-collapses when the last one closes. */}
       <header
         className="flex min-h-0 flex-shrink-0 flex-col gap-1"
         data-testid="tree-column-topbar"
@@ -157,6 +188,29 @@ function TreeColumnInner(props: TreeColumnProps) {
             onPick={onPickSurface}
             t={t}
           />
+          {activeTab ? (
+            <button
+              type="button"
+              onClick={onCloseActive}
+              // `aria-label` is the only announcement of the
+              // consequence. The close button itself uses the
+              // generic "close" icon (an `✕`); a screen reader
+              // reading just the role + icon would say
+              // "button close", which says nothing. The full
+              // label says "close the active surface and hide
+              // the navigation column" — and the
+              // search-specific override adds "discard the
+              // current query" so the warning lands before the
+              // user commits the gesture.
+              aria-label={closeAria}
+              title={closeAria}
+              data-testid="tree-column-close"
+              data-surface={activeKind ?? "none"}
+              className="flex size-6 flex-shrink-0 items-center justify-center rounded-[6px] text-icon_default_tertiary transition-colors hover:bg-bg_interaction_tertiary_hover hover:text-icon_default_primary focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-border_accent"
+            >
+              <Icon name="close" size={12} />
+            </button>
+          ) : null}
         </div>
         {activeKind === "files" ? (
           <FileTreeToolbar t={t} />

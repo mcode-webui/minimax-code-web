@@ -75,6 +75,8 @@ export const WORKSPACE_TAB_KEYS = [
   "workspaceTabs.tree.selector.tasks.aria",
   "workspaceTabs.tree.selector.search.aria",
   "workspaceTabs.tree.selector.plugins.aria",
+  "workspaceTabs.tree.close.aria",
+  "workspaceTabs.tree.close.search.aria",
   "workspaceTabs.search.placeholder",
   "workspaceTabs.search.empty",
   "workspaceTabs.plugins.title",
