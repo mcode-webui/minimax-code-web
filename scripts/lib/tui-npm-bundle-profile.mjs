@@ -1,11 +1,21 @@
 export const TUI_BUNDLE_CHUNKS_DIRECTORY = "chunks";
 const TUI_BUNDLE_STABLE_MODULE_URL_IDENTIFIER = "__mavis_tuiPackageEntryUrl";
 
+// S2 (R3 follow-up): every Node built-in import in these banners MUST
+// use the `node:` prefix (`node:module`, `node:path`, `node:url`). The
+// bare form (`"module"`, `"path"`, `"url"`) is ESM-valid but trips the
+// webui-bundle check at scripts/check-webui-bundle.mjs:80 — that gate
+// allows `node:`-prefixed specifiers unconditionally and rejects every
+// other bare specifier not present in cliExternalModules. CLI bundles
+// do not run through that gate, which is why the bare form lived in
+// the CLI banner for years; the webui banner inherited the same shape
+// in S2 and immediately failed at integration time. ESM treats
+// `node:` and bare builtin names as equivalent — keep them aligned.
 export function createTuiBundleModuleLocationConfig() {
   const banner =
-    'import { createRequire as __mavis_cR } from "module"; ' +
-    'import { basename as __mavis_basename, dirname as __mavis_dirname, join as __mavis_join } from "path"; ' +
-    'import { fileURLToPath as __mavis_fileURLToPath, pathToFileURL as __mavis_pathToFileURL } from "url"; ' +
+    'import { createRequire as __mavis_cR } from "node:module"; ' +
+    'import { basename as __mavis_basename, dirname as __mavis_dirname, join as __mavis_join } from "node:path"; ' +
+    'import { fileURLToPath as __mavis_fileURLToPath, pathToFileURL as __mavis_pathToFileURL } from "node:url"; ' +
     "const __mavis_tuiCurrentModuleDir = __mavis_dirname(__mavis_fileURLToPath(import.meta.url)); " +
     `const __mavis_tuiPackageRoot = __mavis_basename(__mavis_tuiCurrentModuleDir) === ${JSON.stringify(TUI_BUNDLE_CHUNKS_DIRECTORY)} ? __mavis_dirname(__mavis_tuiCurrentModuleDir) : __mavis_tuiCurrentModuleDir; ` +
     `const ${TUI_BUNDLE_STABLE_MODULE_URL_IDENTIFIER} = __mavis_pathToFileURL(__mavis_join(__mavis_tuiPackageRoot, "cli.js")).href; ` +
@@ -37,9 +47,9 @@ export function createTuiBundleModuleLocationConfig() {
 // Both must be present; do not strip either.
 export function createWebuiBundleModuleLocationConfig() {
   const banner =
-    'import { createRequire as __mavis_cR } from "module"; ' +
-    'import { dirname as __mavis_dirname } from "path"; ' +
-    'import { fileURLToPath as __mavis_fileURLToPath, pathToFileURL as __mavis_pathToFileURL } from "url"; ' +
+    'import { createRequire as __mavis_cR } from "node:module"; ' +
+    'import { dirname as __mavis_dirname } from "node:path"; ' +
+    'import { fileURLToPath as __mavis_fileURLToPath, pathToFileURL as __mavis_pathToFileURL } from "node:url"; ' +
     "const __mavis_webuiCurrentModuleDir = __mavis_dirname(__mavis_fileURLToPath(import.meta.url)); " +
     "const __mavis_webuiPackageRoot = __mavis_webuiCurrentModuleDir; " +
     'const __mavis_webuiPackageEntryUrl = __mavis_pathToFileURL(__mavis_webuiPackageRoot + "/server.js").href; ' +
