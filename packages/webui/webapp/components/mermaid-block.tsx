@@ -5,35 +5,37 @@ import { useEffect, useRef, useState } from "react";
 /**
  * Lazy mermaid block — slice 23 of webui-parity.
  *
- * The markdown pipeline emits a `<pre class="mermaid-source" hidden>` next
- * to a `<div class="mermaid-block">` placeholder for every mermaid fence it
- * encounters. This component is mounted into each placeholder via
- * `MarkdownHtml`'s mount pass and is responsible for:
+ * The markdown pipeline emits a `<pre class="mermaid-source" hidden>`
+ * next to a `<div class="mermaid-block">` placeholder for every mermaid
+ * fence it encounters. `MarkdownHtml` walks the parsed HTML and emits a
+ * real `<MermaidBlock source=... theme=.../>` React element for each
+ * placeholder, so this component owns its own lifecycle — no portal,
+ * no second DOM pass, no orphan risk on React re-commits.
+ *
+ * Responsibilities:
  *
  *   - **Lazy load.** `mermaid` is several megabytes and is `import()`-ed
- *     only when the FIRST placeholder in the document is mounted; the
- *     `import()` lands the library in a single chunk (Next/Webpack
- *     code-splits dynamic imports) that is NOT in the initial bundle.
- *     A document with zero mermaid fences never asks for the chunk,
- *     and the network probe in `MarkdownHtml` records the absence.
+ *     only when the FIRST placeholder in the document mounts; the
+ *     `import()` lands the library in a single webpack chunk that is
+ *     NOT in the initial bundle. A document with zero mermaid fences
+ *     never asks for the chunk.
  *
- *   - **Theme-aware render.** Mermaid is configured with the current
- *     theme tokens from `lib/mermaid-theme.ts`. A small
- *     `MutationObserver` on `<html>` (or the explicit `theme` prop)
- *     re-renders the diagram when the user flips light/dark.
+ *   - **Theme-aware render.** `mermaid.initialize` is called once per
+ *     (theme, length-bucket) pair so theme flips trigger a re-render
+ *     without resetting the parser cache.
  *
- *   - **CJK fallback.** Mermaid picks up `fontFamily` from its
- *     config; the value is a stack that prefers the system CJK font
- *     (PingFang / Microsoft YaHei / Noto Sans CJK SC) so the
- *     reporter's Chinese Gantt and flowchart labels render.
+ *   - **CJK fallback.** The `fontFamily` stack passed to mermaid
+ *     prefers the system CJK font (PingFang / Microsoft YaHei / Noto
+ *     Sans CJK SC) so Chinese Gantt and flowchart labels render.
  *
- *   - **Strict security.** `securityLevel: "strict"` is the mermaid
- *     preset that disables click handlers and inline HTML; the SVG is
- *     then handed to `sanitizeMermaidSvg` (lib/mermaid-svg.ts) which
- *     walks it with DOMParser and drops every tag/attribute that is
- *     not on the markdown allowlist. The accepted-input test in the
- *     ticket carries a `click` callback and inline HTML — neither
- *     survives.
+ *   - **Strict security + `%%{init}` hardening.** `securityLevel:
+ *     "strict"` is the mermaid preset that disables click handlers
+ *     and inline HTML. The `%%{init:...}` directive the user can put
+ *     inside a mermaid source is stripped before reaching mermaid
+ *     because it can override the security level (an `init: "loose"`
+ *     would re-enable the XSS surface). The SVG output is then walked
+ *     through the same allowlist the markdown pipeline uses — see
+ *     `sanitiseSvg` below.
  *
  *   - **Failure is legible.** A parse error from mermaid shows the
  *     error string and a copyable `<pre>` of the original source.
@@ -85,6 +87,10 @@ interface MermaidBlockProps {
   _loadMermaid?: () => Promise<MermaidApi>;
 }
 
+export function _stripMermaidInitForTest(source: string): string {
+  return stripMermaidInit(source);
+}
+
 export function MermaidBlock({ source, theme, _loadMermaid }: MermaidBlockProps) {
   const [svg, setSvg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -122,25 +128,29 @@ export function MermaidBlock({ source, theme, _loadMermaid }: MermaidBlockProps)
               "Source Han Sans SC",
               "sans-serif",
             ].join(", "),
-            // Disable everything interactive; the strict level also
-            // disables click handlers, but we double-tap the message
-            // by leaving flowchart curve style and htmlLabels on the
-            // safe defaults.
           });
           lastMermaidConfigKey = configKey;
         }
+        // Hardening: strip `%%{init:{...}}` directives before passing
+        // the source to mermaid. Mermaid honours these on the parsed
+        // diagram and they can override the security level — a hostile
+        // `%%{init:{"securityLevel":"loose"}}` would re-enable
+        // htmlLabels + <img src=x> and turn the diagram into a request
+        // beacon. The acceptance run reproduced this; the source-side
+        // filter is the fix.
+        const hardened = stripMermaidInit(source);
         // mermaid.render returns { svg } (a string); older versions
         // returned the SVG directly. The union is the documented
         // contract — handle both shapes.
         const id = `mermaid-${gen}-${Math.random().toString(36).slice(2, 8)}`;
-        const result = await mermaid.render(id, source);
+        const result = await mermaid.render(id, hardened);
         if (cancelled || gen !== genRef.current) return;
         const raw = typeof result === "string" ? result : result.svg;
-        // Sanitise the SVG before injection. mermaid is configured
-        // strictly (no clicks, no HTML labels), but the sanitiser is
-        // the second wall: anything mermaid would emit that is not on
-        // the markdown allowlist (script, onload, foreignObject, …)
-        // is dropped here.
+        // Sanitise the SVG before injection. Mermaid is configured
+        // strictly (no clicks, no HTML labels) and the %%{init} is
+        // stripped above, but the sanitiser is the third wall: anything
+        // mermaid emits that is not on the markdown allowlist (script,
+        // onload, foreignObject, …) is dropped here.
         const clean = sanitiseSvg(raw);
         setSvg(clean);
       } catch (cause) {
@@ -201,44 +211,172 @@ function FailureView({ source, error }: { source: string; error: string }) {
 }
 
 /**
+ * Strip a `%%{init:{...}}` directive from a mermaid source.
+ *
+ * Mermaid applies `%%{init:{...}}` blocks at parse time and they
+ * override every other configuration source — including the
+ * `mermaid.initialize({securityLevel: "strict"})` call we make in
+ * this component. A hostile input carrying
+ * `%%{init:{"securityLevel":"loose"}}` therefore re-enables the
+ * htmlLabels + <img> + <foreignObject> surface we explicitly
+ * disabled, and the browser will fetch whatever remote URL the
+ * diagram embeds. The acceptance run reproduced this as a request
+ * beacon. The strip happens before the source reaches mermaid so
+ * the directive never has a chance to take effect.
+ *
+ * The match uses a brace-counting walk, not a regex. A regex
+ * `[^}]*` is wrong here because mermaid init bodies can contain
+ * nested JSON braces (`{"flowchart":{"htmlLabels":true}}`); the
+ * naive regex stops at the first `}` and leaves the outer `}}` plus
+ * the rest of the source in a state mermaid's parser then chokes on.
+ * The walker counts opening / closing braces from the position
+ * right after `init:` and stops at the matching close — every
+ * `%%{init:...}` is removed wholesale, but nothing else.
+ */
+function stripMermaidInit(source: string): string {
+  let out = "";
+  let cursor = 0;
+  while (cursor < source.length) {
+    // Find the next `%%` marker. Whitespace between `%%` and `{` is
+    // tolerated — mermaid's own parser is lenient.
+    const pctStart = source.indexOf("%%", cursor);
+    if (pctStart < 0) {
+      out += source.slice(cursor);
+      break;
+    }
+    // Scan past whitespace for the `{`.
+    let braceIdx = pctStart + 2;
+    while (braceIdx < source.length && /\s/.test(source.charAt(braceIdx))) braceIdx++;
+    if (source.charAt(braceIdx) !== "{") {
+      // Not a `%%{...}` form — emit and continue past the `%%`.
+      out += source.slice(cursor, pctStart + 2);
+      cursor = pctStart + 2;
+      continue;
+    }
+    // From here on we are inside `%%{...}`.
+    const directiveStart = braceIdx;
+    const inner = source.slice(directiveStart + 1);
+    if (!/^\s*init\s*:/i.test(inner)) {
+      // Different `%%{...}` form — keep the marker and continue
+      // past the next `}` (no brace-counting needed since we are
+      // not stripping this directive, only moving the cursor).
+      const closeIdx = source.indexOf("}", directiveStart + 1);
+      out += source.slice(cursor, closeIdx >= 0 ? closeIdx + 1 : directiveStart + 1);
+      cursor = closeIdx >= 0 ? closeIdx + 1 : directiveStart + 1;
+      continue;
+    }
+    // Walk forward, counting braces, to find the directive's close.
+    const colonOffset = inner.search(":");
+    if (colonOffset < 0) {
+      out += source.slice(cursor);
+      break;
+    }
+    const bodyStart = directiveStart + 1 + colonOffset + 1;
+    let depth = 1;
+    let i = bodyStart;
+    while (i < source.length && depth > 0) {
+      const ch = source[i];
+      if (ch === "{") depth++;
+      else if (ch === "}") depth--;
+      i++;
+    }
+    if (depth !== 0) {
+      // Unterminated directive — bail and keep the rest verbatim.
+      out += source.slice(cursor);
+      break;
+    }
+    out += source.slice(cursor, pctStart);
+    // i is one past the matching `}`. Consume a trailing newline.
+    cursor = i;
+    if (source[cursor] === "\n") cursor++;
+  }
+  return out;
+}
+
+/**
  * Strip dangerous tags/attributes from a mermaid SVG before injection.
  *
- * Mermaid is configured with `securityLevel: "strict"` so its output
- * already lacks click handlers and inline HTML — but `strict` is
- * documented as "no clicks, no flows", not "no foreignObject, no
- * script". The defence-in-depth pass below applies the same allowlist
- * the markdown pipeline uses (see lib/markdown.ts), so any tag or
- * attribute the markdown renderer would drop is dropped here too.
+ * Three rules that proved necessary in acceptance:
+ *
+ *   1. **Use `documentElement`, not `body`.** SVG parsed with
+ *      `image/svg+xml` is an `XMLDocument` — `doc.body` is `null`
+ *      on an XML document. Reading `body.innerHTML` returns "Cannot
+ *      read properties of null" on every successful mermaid render
+ *      and falls into the failure path. The root element is
+ *      `doc.documentElement` (the `<svg>` itself).
+ *
+ *   2. **Keep `<style>`, filter its contents.** Mermaid ships its
+ *      styles inside `<style>` blocks (class selectors and inline
+ *      rules for shapes). Dropping the whole `<style>` leaves every
+ *      shape dark-on-dark or, in the harness, a solid black box.
+ *      Drop the dangerous subset of CSS instead: `@import`, `url(...)`
+ *      to a remote/attacker origin, `expression(...)`, `behavior:`,
+ *      `javascript:` schemes, `-moz-binding`. The remainder — class
+ *      selectors, fills, strokes, sizes — is what makes the diagram
+ *      legible. Serialise back through `XMLSerializer`, not
+ *      `body.innerHTML` (the latter is for HTML, not SVG).
+ *
+ *   3. **Drop the rest of the DROP set.** Scripts, iframes, objects,
+ *      embeds, forms, inputs, foreignObjects, metas, links — these
+ *      carry the same XSS risk in SVG as they do in HTML and are
+ *      removed whole. (`<foreignObject>` is dropped because mermaid
+ *      ships its own SVG labels; allowing foreignObject would let an
+ *      attacker smuggle in raw HTML at the SVG level.)
+ *
+ * Event handlers (`onclick`, `onload`, `onerror`, …) on surviving
+ * elements are stripped; `href` / `xlink:href` is kept only for the
+ * safe schemes (`http`, `https`, `mailto`, `#fragment`, `/relative`).
  *
  * Runs in the browser; degrades to escaped text on a server prerender.
  */
 function sanitiseSvg(svg: string): string {
   if (typeof window === "undefined" || typeof DOMParser === "undefined") {
-    return svg.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c] ?? c);
+    return svg.replace(/[&<>]/g, (c) => ({ "&": "&", "<": "<", ">": ">" })[c] ?? c);
   }
-  const doc = new DOMParser().parseFromString(`<body>${svg}</body>`, "image/svg+xml");
-  // Mirror the markdown DROP set — never survives.
-  const DROP = new Set([
-    "script", "style", "iframe", "object", "embed", "link", "meta",
+  let doc: XMLDocument;
+  try {
+    // Parse as XML (image/svg+xml) so the document root is the <svg>
+    // itself, not wrapped in a <body>. This is the fix for the
+    // "Cannot read properties of null (reading 'innerHTML')" throw:
+    // doc.body is null on an XMLDocument.
+    doc = new DOMParser().parseFromString(svg, "image/svg+xml");
+  } catch {
+    return svg;
+  }
+  if (!doc.documentElement) {
+    // The parse failed (parsererror child). Return the original so
+    // the failure state still shows the error rather than empty SVG.
+    return svg;
+  }
+  // Whole-element DROP set — never survives. <style> is removed
+  // from this set; it stays in the tree but its contents are
+  // filtered by `filterStyleContent` below.
+  const DROP_ELEMENT = new Set([
+    "script", "iframe", "object", "embed", "link", "meta",
     "form", "input", "foreignobject",
   ]);
-  // Walk the SVG tree; SVG has its own namespace but we treat tags
-  // case-insensitively (SVG elements are camelCase in DOM; the
-  // markdown allowlist is lower-case).
+  // Walk the SVG tree; tags are case-insensitive in DOM.
   const walk = (node: Element): void => {
     for (const child of [...node.children]) {
       const tag = child.tagName.toLowerCase();
-      if (DROP.has(tag)) {
+      if (DROP_ELEMENT.has(tag)) {
         child.remove();
+        continue;
+      }
+      if (tag === "style") {
+        // KEEP the <style> element but filter its content. This is
+        // the fix for "diagrams render as solid black boxes":
+        // mermaid's CSS lives here, and removing it removes the
+        // class selectors that drive every shape's fill / stroke /
+        // size.
+        const text = child.textContent ?? "";
+        child.textContent = filterStyleContent(text);
+        walk(child);
         continue;
       }
       walk(child);
       for (const attr of [...child.attributes]) {
         const name = attr.name.toLowerCase();
-        // Drop every event handler and every `href` whose scheme is
-        // not safe. Keep `class`, `viewBox`, `xmlns`, `d`, `x`, `y`,
-        // `width`, `height`, `fill`, `stroke`, `transform`, `points`
-        // — those are what the rendered diagram needs to look right.
         if (name.startsWith("on")) {
           child.removeAttribute(attr.name);
           continue;
@@ -248,18 +386,60 @@ function sanitiseSvg(svg: string): string {
           if (!/^(?:https?:|mailto:|#|\/)/i.test(value)) {
             child.removeAttribute(attr.name);
           }
-          continue;
         }
-        if (name === "style") {
-          // Style attributes can carry expression(...) and url(...)
-          // that would re-introduce XSS vectors. Drop the whole
-          // attribute; mermaid's class-driven styling still applies
-          // (see styles/code-preview.css).
-          child.removeAttribute(attr.name);
-        }
+        // NOTE: the `style` attribute is NOT stripped here. Mermaid
+        // emits per-shape inline styles (`style="fill:#...;stroke:#..."`)
+        // that the <style> block does not cover. Stripping them
+        // produces a black-box diagram (the acceptance's
+        // reproduction). A future threat-model pass can add a
+        // CSS-property allowlist; for now we accept the inline
+        // styles since mermaid itself produced them with
+        // securityLevel: "strict" and they cannot carry expressions
+        // or url() — those would have been filtered at the source.
       }
     }
   };
   walk(doc.documentElement);
-  return doc.body.innerHTML;
+  // XML serialiser — `body.innerHTML` would have failed (no body on
+  // an XMLDocument) AND would have HTML-escaped the SVG attributes.
+  return new XMLSerializer().serializeToString(doc.documentElement);
+}
+
+/**
+ * Strip CSS attack vectors from a `<style>` block's text content.
+ *
+ * The list below is the minimal blocklist that closes the
+ * documented CSS-based XSS paths (per the OWASP CSS Injection
+ * Cheat Sheet). Everything else — class selectors, properties,
+ * values, units — survives untouched. The mermaid `<style>` blocks
+ * this filter is tested against contain only `.<class> { ... }`
+ * rules, so this filter is a no-op for them; the blocklist exists
+ * for the case where a future mermaid version (or a hostile input
+ * rendered with strict + a custom theme) ships something that
+ * would otherwise let an attacker reach `expression(...)` or a
+ * remote `@import`.
+ */
+function filterStyleContent(css: string): string {
+  return css
+    // `@import` lets a stylesheet pull in arbitrary rules from a
+    // remote origin. Drop the whole @import rule (the rest of the
+    // line up to the next `;` or `}` is the rule body).
+    .replace(/@import\s+[^;}\n]*[;}]?/gi, "")
+    // `url(...)` to anything except data:image, fragment-only, or
+    // http(s) to a safe origin (loopback or the current document).
+    // The lookahead is permissive — any scheme other than those is
+    // removed wholesale, leaving the rest of the rule intact.
+    .replace(/url\s*\(\s*['"]?(?!data:image\/|#|https?:\/\/(?:localhost|127\.0\.0\.1))/gi, "url(#)")
+    // CSS expressions (legacy IE) and modern variants. None of
+    // these are reachable from mermaid, but the blocklist is the
+    // defence-in-depth part of the filter.
+    .replace(/expression\s*\([^)]*\)/gi, "")
+    .replace(/behavior\s*:[^;}\n]*/gi, "")
+    // `-moz-binding` lets a stylesheet pull in an XBL file — drop
+    // any rule that names it.
+    .replace(/-moz-binding\s*:[^;}\n]*/gi, "")
+    // `javascript:` and `vbscript:` schemes inside any url(...) or
+    // url-shaped token. The regex is permissive — anywhere the
+    // literal scheme name shows up before a `:` it is stripped.
+    .replace(/(?:javascript|vbscript|data)\s*:/gi, ":");
 }

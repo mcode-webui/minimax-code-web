@@ -1,176 +1,233 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
+import {
+  Children,
+  createElement,
+  useEffect,
+  useState,
+  type ReactNode,
+} from "react";
 
 import { MermaidBlock } from "./mermaid-block";
 
 /**
- * Render pre-sanitised HTML and mount mermaid blocks into their placeholders.
+ * Render pre-sanitised HTML and mount mermaid blocks as real React
+ * components.
  *
- * Why this is a separate component and not a `useEffect` inside MarkdownView:
+ * Why this is a real React tree and not a `dangerouslySetInnerHTML`
+ * injection followed by a one-shot DOM walk + portal:
  *
- *   - The markdown main flow (`lib/markdown.ts`) emits `<pre class="mermaid-source"
- *     hidden>SOURCE</pre><div class="mermaid-block">…</div>` placeholders so the
- *     sanitiser's allowlist (which only keeps `class` on `<pre>` and `<div>`)
- *     does not strip the diagram source.
+ *   - The previous design injected the sanitised HTML once after
+ *     mount, then walked the DOM to find mermaid placeholders and
+ *     replaced each placeholder with a `createPortal(<MermaidBlock>,
+ *     placeholder)`. That works on first commit but a later React
+ *     re-commit of the SAME html re-applies `dangerouslySetInnerHTML`,
+ *     which **replaces the inner DOM** (the placeholders are now
+ *     fresh nodes). The previously-portalled `MermaidBlock` instances
+ *     are attached to the OLD detached placeholders and become
+ *     orphans — the diagram never mounts, and the placeholder stays
+ *     at "渲染中…" forever. No console error fires; the failure is
+ *     silent. (Acceptance run.)
  *
- *   - `dangerouslySetInnerHTML` injects that HTML once. To render the actual
- *     diagram inside the placeholder we need a React tree that owns the
- *     placeholder DOM node; a portal is the natural primitive here.
+ *   - The fix in this version parses the sanitised HTML on every
+ *     render and converts it to a React element tree. Each mermaid
+ *     placeholder pair is recognised by the walker and replaced with
+ *     a `<MermaidBlock source=... theme=.../>` element — a real React
+ *     node, in the real React tree, that React re-reconciles on every
+ *     commit. Re-commits are idempotent: the walker runs again, finds
+ *     the placeholders in the FRESH input, and emits the same
+ *     `<MermaidBlock>` elements. No portals, no DOM walks, no
+ *     orphaned subtrees.
  *
- *   - ReactDOM portals require a `useState` / `useRef` to keep the host node
- *     stable across renders; packaging the walk-and-mount in a child component
- *     keeps the call sites clean.
- *
- * The component:
- *   - renders the sanitised HTML;
- *   - on mount (and whenever the HTML string changes), walks the resulting
- *     DOM, pairs every `<pre class="mermaid-source">` with the following
- *     `<div class="mermaid-block">`, and replaces the placeholder div's
- *     children with a `<MermaidBlock>` portal;
- *   - keeps an in-flight counter so a hot re-render does not leave orphaned
- *     placeholders or duplicate mermaid blocks;
- *   - falls back to leaving the placeholder alone when the DOM does not
- *     include any mermaid placeholders (the lazy-load evidence case —
- *     a markdown document without mermaid triggers zero mermaid work).
+ * SSR fallback: when `DOMParser` is unavailable (the static-export
+ * prerender), the walker falls back to a single `dangerouslySetInnerHTML`
+ * element. The mermaid path is a no-op in SSR — there is nothing to
+ * render — and the live mermaid mount happens entirely client-side.
  */
 export function MarkdownHtml({ html }: { html: string }) {
-  const hostRef = useRef<HTMLDivElement | null>(null);
-  // Stable state so the portals have something to mount into.
-  const [slots, setSlots] = useState<MermaidSlot[] | null>(null);
   const [theme, setTheme] = useState<"light" | "dark">("light");
 
   // Watch the <html> element for the light/dark class flip so diagrams
   // re-render when the user changes the theme.
   useEffect(() => {
     if (typeof document === "undefined") return;
-    const compute = () => {
-      const next: "light" | "dark" = document.documentElement.classList.contains("dark")
+    const compute = (): "light" | "dark" => {
+      return document.documentElement.classList.contains("dark")
         ? "dark"
         : "light";
-      setTheme(next);
     };
-    compute();
-    const obs = new MutationObserver(compute);
-    obs.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+    setTheme(compute());
+    const obs = new MutationObserver(() => setTheme(compute()));
+    obs.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["class"],
+    });
     return () => obs.disconnect();
   }, []);
 
-  useEffect(() => {
-    const host = hostRef.current;
-    if (!host) return;
-    // Find every <div class="mermaid-block"> placeholder and pair it
-    // with its preceding <pre class="mermaid-source"> sibling.
-    const placeholders = host.querySelectorAll<HTMLDivElement>("div.mermaid-block");
-    if (placeholders.length === 0) {
-      // No mermaid in the document — lazy load is provably not
-      // triggered. Slots stay null and MermaidBlock never mounts.
-      setSlots(null);
-      // Also remove any orphan <pre class="mermaid-source"> nodes so
-      // the visible document never carries raw source.
-      for (const pre of host.querySelectorAll<HTMLPreElement>("pre.mermaid-source")) {
-        pre.remove();
-      }
-      return;
-    }
-    // The placeholder pairing walks each placeholder backwards through
-    // previous siblings looking for the most recent `.mermaid-source`.
-    const nextSlots: MermaidSlot[] = [];
-    placeholders.forEach((placeholder, index) => {
-      const source = findSourceBefore(placeholder) ?? "";
-      nextSlots.push({
-        host: placeholder,
-        source,
-        index,
-      });
-      // Clear the placeholder so the portal is the only thing the
-      // user sees (the placeholder text was a "rendering…" hint).
-      placeholder.replaceChildren();
-      // Remove the source <pre> so it cannot show up via a theme
-      // switch mid-render. The portal keeps `source` in props.
-      const sibling = previousSourceSibling(placeholder);
-      if (sibling) sibling.remove();
-    });
-    setSlots(nextSlots);
-    return () => {
-      // On unmount / HTML change, clear the placeholders so React
-      // portals know to detach.
-      for (const slot of nextSlots) {
-        if (slot.host.isConnected) slot.host.replaceChildren();
-      }
-    };
-  }, [html]);
+  // Convert the sanitised HTML to a React tree. The walker is pure —
+  // same input always yields the same tree — and mermaid blocks are
+  // emitted as `<MermaidBlock source=... theme=.../>` directly. No
+  // portal, no second DOM pass.
+  const tree = htmlToReact(html, theme);
 
   return (
-    <>
-      <div
-        ref={hostRef}
-        className="markdown-html-host"
-        data-testid="markdown-html-host"
-        data-mermaid-slots={slots ? String(slots.length) : "0"}
-        // eslint-disable-next-line react/no-danger
-        dangerouslySetInnerHTML={{ __html: html }}
-      />
-      {slots?.map((slot) =>
-        slot.host.isConnected
-          ? createPortal(
-              <MermaidBlock source={slot.source} theme={theme} />,
-              slot.host,
-              `mermaid-${slot.index}`,
-            )
-          : null,
-      )}
-    </>
+    <div
+      className="markdown-html-host"
+      data-testid="markdown-html-host"
+      data-mermaid-count={countMermaid(tree)}
+    >
+      {tree}
+    </div>
   );
 }
 
-interface MermaidSlot {
-  host: HTMLDivElement;
-  source: string;
-  index: number;
+/**
+ * Walk a sanitised HTML string and convert it to a React tree.
+ *
+ * The walker:
+ *
+ *   - emits one `ReactNode` per child node of the parsed body, in
+ *     order (text nodes, element nodes);
+ *   - recognises the mermaid placeholder pair `<pre class="mermaid-source"
+ *     hidden>SOURCE</pre><div class="mermaid-block">…</div>` and
+ *     replaces the `<div>` with a `<MermaidBlock source=.../>` —
+ *     the `<pre>` is consumed (skipped) since its text content has
+ *     been folded into the MermaidBlock prop;
+ *   - passes through every other tag with the sanitiser's allowed
+ *     attributes (`class`, `href`, `title`, `align`) so a markdown
+ *     document looks the same as before — only the mermaid fences
+ *     are upgraded from inert HTML to a live component.
+ *
+ * Returns a single `dangerouslySetInnerHTML` element from inside the
+ * tree on SSR (when `DOMParser` is undefined); the prerender still
+ * produces a non-empty HTML response.
+ */
+function htmlToReact(html: string, theme: "light" | "dark"): ReactNode {
+  if (typeof DOMParser === "undefined") {
+    return (
+      <div
+        // eslint-disable-next-line react/no-danger
+        dangerouslySetInnerHTML={{ __html: html }}
+      />
+    );
+  }
+
+  const doc = new DOMParser().parseFromString(
+    `<body>${html}</body>`,
+    "text/html",
+  );
+
+  // Keep a counter for stable React keys across the walk.
+  let key = 0;
+
+  const walkChildren = (parent: Element | Document): ReactNode[] => {
+    const out: ReactNode[] = [];
+    for (const child of [...parent.childNodes]) {
+      if (child.nodeType === 3 /* text */) {
+        const text = child.textContent ?? "";
+        if (text.length === 0) continue;
+        out.push(text);
+        continue;
+      }
+      if (child.nodeType !== 1 /* element */) continue;
+      const el = child as Element;
+      const tag = el.tagName.toLowerCase();
+
+      // mermaid placeholder pair: consume the preceding source <pre>
+      // (skipped) and replace the following <div class="mermaid-block">
+      // with a real <MermaidBlock source=...>.
+      if (tag === "pre" && el.classList.contains("mermaid-source")) {
+        continue;
+      }
+      if (tag === "div" && el.classList.contains("mermaid-block")) {
+        const source = findMermaidSourceBefore(el);
+        out.push(
+          createElement(MermaidBlock, {
+            key: `mermaid-${key++}`,
+            source,
+            theme,
+          }),
+        );
+        continue;
+      }
+
+      const props: Record<string, unknown> = { key: `n${key++}` };
+      for (const attr of el.attributes) {
+        const name = attr.name.toLowerCase();
+        if (name === "class") {
+          props.className = attr.value;
+        } else {
+          props[attr.name] = attr.value;
+        }
+      }
+      const children = walkChildren(el);
+      out.push(
+        createElement(tag, props, children.length > 0 ? children : undefined),
+      );
+    }
+    return out;
+  };
+
+  return walkChildren(doc.body);
 }
 
 /**
- * Walk previous siblings of `placeholder` looking for the most recent
- * `<pre class="mermaid-source">`. The text content of that pre is the
- * mermaid source for the diagram. Returns the source string or null
- * if no sibling pre is found (defensive — the renderer always emits
- * the source pre, so a null here means a third-party plugin's renderer
- * misfired).
+ * Find the source text for a mermaid placeholder.
+ *
+ * The renderer (lib/mermaid-renderer.ts) emits a
+ * `<pre class="mermaid-source" hidden>SOURCE</pre>` immediately
+ * before each `<div class="mermaid-block">`. We walk the previous
+ * siblings of `placeholder` to find the source.
  */
-function findSourceBefore(placeholder: HTMLDivElement): string | null {
-  const pre = previousSourceSibling(placeholder);
-  if (!pre) return null;
-  // The renderer escaped the source via `escapeHtml`. Reversing the
-  // escapes gives us the original diagram source text. We use
-  // `innerHTML` because escaping only touched the four standard
-  // entities; reading `textContent` would double-decode the entities
-  // back into the rendered glyphs.
-  return decodeEscapes(pre.innerHTML);
-}
-
-function previousSourceSibling(node: HTMLElement): HTMLPreElement | null {
-  let cur: ChildNode | null = node.previousSibling;
+function findMermaidSourceBefore(placeholder: Element): string {
+  let cur: ChildNode | null = placeholder.previousSibling;
   while (cur) {
     if (
-      cur.nodeType === 1 /* Element */ &&
+      cur.nodeType === 1 &&
       (cur as Element).tagName.toLowerCase() === "pre" &&
       (cur as Element).classList.contains("mermaid-source")
     ) {
-      return cur as HTMLPreElement;
+      const pre = cur as Element;
+      // The renderer escaped the source via `escapeHtml` so the
+      // entities are HTML-safe. Reverse them before handing the
+      // source to MermaidBlock (which passes it straight to
+      // mermaid.render).
+      return decodeEscapes(pre.innerHTML);
     }
     cur = cur.previousSibling;
   }
-  return null;
+  return "";
 }
 
-/** Reverse the four-character HTML escape we apply in the renderer. */
+/** Reverse the four-character HTML escape applied in the renderer. */
 function decodeEscapes(value: string): string {
   return value
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
+    .replace(/</g, "<")
+    .replace(/>/g, ">")
+    .replace(/"/g, '"')
     .replace(/&#39;/g, "'")
-    .replace(/&amp;/g, "&");
+    .replace(/&/g, "&");
+}
+
+/**
+ * Count the number of `<MermaidBlock>` instances in a rendered tree.
+ *
+ * Used for the `data-mermaid-count` attribute on the host div so a
+ * regression test can assert "the markdown produced N mermaid
+ * diagrams" without depending on internal walker details.
+ */
+function countMermaid(node: ReactNode): number {
+  let count = 0;
+  Children.forEach(node, (child) => {
+    if (!child || typeof child !== "object") return;
+    if (Array.isArray(child)) {
+      for (const c of child) count += countMermaid(c);
+      return;
+    }
+    const el = child as { type?: unknown; props?: { children?: ReactNode } };
+    if (el.type === MermaidBlock) count++;
+    if (el.props?.children) count += countMermaid(el.props.children);
+  });
+  return count;
 }

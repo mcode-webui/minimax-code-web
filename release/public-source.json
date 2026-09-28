@@ -3751,6 +3751,7 @@
     "packages/webui/webapp/test/i18n-file-open.test.ts",
     "packages/webui/webapp/test/i18n-workspace-tabs.test.ts",
     "packages/webui/webapp/test/icons.test.ts",
+    "packages/webui/webapp/test/markdown-html-render.test.ts",
     "packages/webui/webapp/test/markdown-registry.test.ts",
     "packages/webui/webapp/test/markdown.test.ts",
     "packages/webui/webapp/test/open-file.test.ts",
