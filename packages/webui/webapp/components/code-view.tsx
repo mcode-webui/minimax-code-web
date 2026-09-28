@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   highlightCode,
@@ -181,18 +181,15 @@ function CodeBody({
   t: (key: MessageKey) => string;
   locale: Locale;
 }) {
-  // Gutter layout: a 2-cell grid keeps the gutter locked to the left
-  // of the code area regardless of horizontal scroll. The grid columns
-  // are `[auto, 1fr]` so the code area takes the remaining width and
-  // scrolls horizontally; the gutter column is fixed-width and stays
-  // in place because it shares the grid with the code.
-  //
-  // `font-variant-numeric: tabular-nums` aligns digits in the gutter
-  // so the colon between the number and the code does not dance when
-  // the file crosses 9 → 10 or 99 → 100 lines.
+  // The outer wrapper is a flex row with the gutter as a fixed-width
+  // child and the scroll area as a flex-1 sibling. ONLY the scroll
+  // area scrolls horizontally — the gutter is outside that wrapper,
+  // so it never moves with the code. (An earlier design used a single
+  // grid inside one scrolling div; the gutter scrolled with the code
+  // because it shared the scroll context. Acceptance caught it.)
   return (
     <div
-      className="file-preview-codeblock thin-scrollbar max-w-full overflow-auto rounded-[8px] bg-bg_grouped_secondary_elevated font-family-code text-caption-small-strong text-text_default_primary"
+      className="file-preview-codeblock flex min-w-0 overflow-hidden rounded-[8px] bg-bg_grouped_secondary_elevated font-family-code text-caption-small-strong text-text_default_primary"
       data-testid="file-preview-codeblock"
     >
       {!split ? (
@@ -242,45 +239,84 @@ function CodeTable({
     }
   };
 
+  // The two children of `file-preview-codeblock`:
+  //   1. <aside class="file-preview-codeblock-gutter-column"> — fixed-width,
+  //      vertically scrollable, gutter column. Lives OUTSIDE the
+  //      horizontal scroll wrapper. Numbers in `font-variant-numeric:
+  //      tabular-nums` so 1/10/100 all sit at the same x.
+  //   2. <div class="file-preview-codeblock-scroll"> — the only element
+  //      with `overflow-x: auto`. Contains the copy button row + the
+  //      pre with the code rows. Horizontal scroll on a long line
+  //      scrolls ONLY this child, exactly the IDE behaviour.
+  //
+  // Vertically, both columns scroll together because the outer wrapper
+  // does NOT have overflow-y set; the inner scroll column gets its own
+  // vertical scroll that drives the gutter's via a sync handler below.
+  const gutterRef = useRef<HTMLDivElement | null>(null);
+  const scrollRef = useRef<HTMLPreElement | null>(null);
+  const syncScroll = useCallback((source: "gutter" | "scroll") => {
+    const g = gutterRef.current;
+    const s = scrollRef.current;
+    if (!g || !s) return;
+    if (source === "gutter") g.scrollTop = s.scrollTop;
+    else s.scrollTop = g.scrollTop;
+  }, []);
   return (
-    <div className="relative">
-      <div className="sticky right-0 top-0 z-10 flex justify-end p-1.5">
-        <button
-          type="button"
-          onClick={() => void onCopy()}
-          aria-label={tFileOpen(locale, "fileOpen.code.copy.aria")}
-          data-testid="file-preview-code-copy"
-          className="rounded-[6px] border border-border_default bg-bg_default_scrim px-2 py-0.5 text-caption-small-strong text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_hover"
+    <>
+      <aside
+        ref={gutterRef}
+        onScroll={() => syncScroll("gutter")}
+        className="file-preview-codeblock-gutter-column thin-scrollbar flex-none overflow-y-auto overflow-x-hidden border-r border-border_default bg-bg_grouped_secondary py-1 font-variant-numeric tabular-nums text-text_default_quaternary"
+        data-testid="file-preview-codeblock-gutter-column"
+        aria-hidden
+      >
+        {split.lines.map((line) => (
+          <div
+            key={line.number}
+            className="file-preview-codeblock-gutter"
+            data-testid="file-preview-code-gutter"
+          >
+            {line.number}
+          </div>
+        ))}
+      </aside>
+      <div className="file-preview-codeblock-scroll min-w-0 flex-1 overflow-auto">
+        <div className="sticky right-0 top-0 z-10 flex justify-end bg-transparent">
+          <button
+            type="button"
+            onClick={() => void onCopy()}
+            aria-label={tFileOpen(locale, "fileOpen.code.copy.aria")}
+            data-testid="file-preview-code-copy"
+            className="m-1.5 rounded-[6px] border border-border_default bg-bg_default_scrim px-2 py-0.5 text-caption-small-strong text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_hover"
+          >
+            {tFileOpen(locale, "fileOpen.code.copy")}
+          </button>
+        </div>
+        <pre
+          ref={scrollRef}
+          onScroll={() => syncScroll("scroll")}
+          className="file-preview-codeblock-pre m-0"
+          data-testid="file-preview-code-pre"
         >
-          {tFileOpen(locale, "fileOpen.code.copy")}
-        </button>
-      </div>
-      <pre className="m-0 whitespace-pre" data-testid="file-preview-code-pre">
-        <code className={split.language ? `hljs language-${split.language}` : "hljs"}>
-          {split.lines.map((line) => (
-            <div
-              key={line.number}
-              className="file-preview-codeblock-line"
-              data-line={line.number}
-              data-testid="file-preview-code-line"
-            >
-              <span
-                className="file-preview-codeblock-gutter"
-                aria-hidden
-                data-testid="file-preview-code-gutter"
+          <code className={split.language ? `hljs language-${split.language}` : "hljs"}>
+            {split.lines.map((line) => (
+              <div
+                key={line.number}
+                className="file-preview-codeblock-line"
+                data-line={line.number}
+                data-testid="file-preview-code-line"
               >
-                {line.number}
-              </span>
-              <span
-                className="file-preview-codeblock-code"
-                // eslint-disable-next-line react/no-danger
-                dangerouslySetInnerHTML={{ __html: line.html || "&nbsp;" }}
-              />
-            </div>
-          ))}
-        </code>
-      </pre>
-    </div>
+                <span
+                  className="file-preview-codeblock-code"
+                  // eslint-disable-next-line react/no-danger
+                  dangerouslySetInnerHTML={{ __html: line.html || "" }}
+                />
+              </div>
+            ))}
+          </code>
+        </pre>
+      </div>
+    </>
   );
 }
 

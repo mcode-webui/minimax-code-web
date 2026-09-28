@@ -9,13 +9,15 @@
  *      without a per-theme override block in this file. Both light and
  *      dark themes are supported by construction.
  *
- *   2. The gutter — a fixed-width left column with line numbers, locked
- *      to the code column so horizontal scroll on a long line never
- *      drags the gutter off-screen. Tabular numerals keep the gutter
- *      aligned at 1, 10, 100 lines.
+ *   2. The gutter — a separate fixed-width column OUTSIDE the
+ *      horizontal scroll wrapper (`.file-preview-codeblock-gutter-column`
+ *      sibling of `.file-preview-codeblock-scroll`). Horizontal scroll
+ *      on a long line moves only the scroll column; the gutter's
+ *      `bounding rect` left edge stays put. Vertical scroll syncs both
+ *      columns via a `scroll` handler in code-view.tsx.
  *
- *   3. The shell — padded pre/code area, copy-button row, truncation
- *      notice banner. None of these have a token; values are direct.
+ *   3. The shell — copy-button row, truncation notice banner. None of
+ *      these have a token; values are direct.
  *
  * Naming convention: every selector is namespaced under
  * `.file-preview-codeblock` so the chat markdown's `.codeblock-pre`
@@ -23,18 +25,10 @@
  * by this file. The file-preview surface uses a separate class on
  * purpose: chat and file preview are different products with different
  * shells, and they should not share their cascade by accident.
- *
- * Theme note: the `--code-theme-*` palette is brighter on dark and
- * softer on light by design — tokens.css quotes the upstream values
- * verbatim, not a hand-tuned contrast pair. The values below are
- * copies of that contract.
  */
 
 /* ---------------------------------------------------------------------
  * Layer 1 — hljs token colours.
- *
- * The `code-theme-*` tokens are aliased to the upstream colour ramp
- * per-theme (light vs dark); we just wire the names.
  * --------------------------------------------------------------------- */
 .file-preview-codeblock .hljs {
   color: var(--code-theme-default);
@@ -114,68 +108,93 @@
 .file-preview-codeblock .hljs-strong { font-weight: 600; }
 
 /* ---------------------------------------------------------------------
- * Layer 2 — gutter (line numbers).
+ * Layer 2 — gutter column.
  *
- * Layout: a CSS grid keeps the gutter column fixed-width and the code
- * column flexible. Horizontal scroll lives on the OUTER wrapper; the
- * inner grid does not scroll, so the gutter never moves.
+ * The gutter lives as its own flex sibling of the scroll column; both
+ * are children of `.file-preview-codeblock` (which sets `display:
+ * flex; overflow: hidden` so the gutter is *not* inside any scroll
+ * container). The scroll column has `overflow: auto` and is the only
+ * element with horizontal overflow.
  *
- * Each line is one `.file-preview-codeblock-line` row. The gutter is a
- * fixed-width span with right-aligned, tabular numerals so a 4-digit
- * line number (9999) and a 1-digit one (1) take the same column. The
- * code column has its own left padding so digits never touch the code.
+ * Each gutter cell mirrors the height of its corresponding code cell;
+ * the row height (22px) comes from `.file-preview-codeblock-line` (the
+ * code row) and the gutter cell has the same `line-height` so the two
+ * stay aligned when the user scrolls vertically (the `scroll` handler
+ * in code-view.tsx mirrors `scrollTop` between the two columns).
+ *
+ * `font-variant-numeric: tabular-nums` keeps 1/10/100/1000 aligned.
  * --------------------------------------------------------------------- */
-.file-preview-codeblock {
-  display: block;
+.file-preview-codeblock-gutter-column {
+  /* `flex: none` keeps the gutter at its content width; the parent
+   * is a flex row so the scroll column picks up the remainder. */
+  flex: none;
+  /* A right-side divider so the eye can pick the gutter from the code
+   * on dense files. */
+  border-right: 1px solid var(--border_default);
 }
 
-.file-preview-codeblock .file-preview-codeblock-line {
-  display: grid;
-  grid-template-columns: max-content 1fr;
-  align-items: baseline;
-  column-gap: 12px;
-  padding: 0 12px;
-  /* 22px line height matches the body and gives the gutter its rhythm. */
-  min-height: 22px;
-  line-height: 22px;
-}
-
-.file-preview-codeblock .file-preview-codeblock-gutter {
+.file-preview-codeblock-gutter {
   /* Right-align digits; `text-align: end` is RTL-safe. */
   text-align: end;
   user-select: none;
   /* Tabular numerals so 1, 10, 100, 1000 all sit at the same x. */
   font-variant-numeric: tabular-nums;
   color: var(--text_default_quaternary);
-  /* Truncate the gutter at 4 digits (max file sizes we expect to see). */
+  /* Match the code row's line-height so vertical scroll stays
+   * aligned between the two columns. The horizontal padding
+   * matches the code column's padding so the right edge of the
+   * number sits flush against the divider. */
+  padding: 0 8px;
+  line-height: 22px;
   min-width: 3ch;
 }
 
-.file-preview-codeblock .file-preview-codeblock-code {
-  /* The code column takes the remaining width and may overflow
-   * horizontally. The outer wrapper handles that scroll, NOT this
-   * inner span — keeping the overflow on the parent preserves the
-   * grid layout (a child that overflows would push the gutter off
-   * screen). The code uses `min-width: max-content` so the column
-   * grows with the longest line; horizontal scroll then exposes the
-   * rest of the line on the outer wrapper. */
-  min-width: max-content;
-  white-space: pre;
-  display: block;
-}
-
-/* The native `.hljs` pre/code shell that wraps the gutter+code rows.
- * `margin: 0` clears the chat codeblock's default margin; `padding:
- * 12px 0` gives the first / last line air. */
-.file-preview-codeblock > pre.file-preview-codeblock-pre,
-.file-preview-codeblock > div > pre.file-preview-codeblock-pre {
-  padding: 6px 0;
+.file-preview-codeblock-gutter[data-empty="true"] {
+  /* Empty line: keep the height without rendering any number. The
+   * line above and below stay aligned because the gutter cell still
+   * occupies 22px. */
+  visibility: hidden;
 }
 
 /* ---------------------------------------------------------------------
- * Layer 3 — shell (copy button, truncation banner).
+ * Layer 3 — scroll column and code rows.
  *
- * The copy button is sticky to the top-right corner of the scroll
- * surface, so a long file still has the affordance in view. The
- * truncation banner is a flex row above the gutter.
+ * `.file-preview-codeblock-scroll` is the ONLY element with
+ * `overflow-x: auto`. The `pre.file-preview-codeblock-pre` inside it
+ * contains the code rows; its `min-width: max-content` makes the row
+ * grow with the longest line, which triggers the parent's horizontal
+ * scroll. The gutter column does NOT inherit this scroll — it lives
+ * in the parent flex row, not inside this scroll container.
+ *
+ * Padding on the pre matches the gutter's horizontal padding (8px on
+ * each side) so the first character of each code line aligns with
+ * the right edge of the gutter numbers.
  * --------------------------------------------------------------------- */
+.file-preview-codeblock-scroll {
+  min-width: 0;
+  /* `flex: 1 1 0` makes this column take the remaining space after
+   * the gutter's intrinsic width is satisfied. */
+  flex: 1 1 0;
+}
+
+.file-preview-codeblock-pre {
+  margin: 0;
+  padding: 6px 0 6px 0;
+}
+
+.file-preview-codeblock-pre > code {
+  /* `display: block` so each line takes its own row (one line = one
+   * `<div>`) — gives us a reliable layout grid without `inline-block`
+   * surprises on multi-line strings. */
+  display: block;
+}
+
+.file-preview-codeblock-line {
+  /* A line gets `min-width: max-content` so it grows with its own
+   * content. When the longest line is wider than the scroll column,
+   * the parent's horizontal scroll exposes the overflow. */
+  min-width: max-content;
+  padding: 0 8px;
+  line-height: 22px;
+  white-space: pre;
+}

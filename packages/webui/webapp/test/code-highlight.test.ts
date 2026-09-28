@@ -203,6 +203,19 @@ describe("highlightCode — large file degradation", () => {
     assert.equal(out.visibleLineCount, 100);
   });
 
+  test("truncation boundary is inclusive (file of exactly the cap is truncated)", async () => {
+    // A file of EXACTLY 1500 lines (the default maxLines) must
+    // still be truncated — `>=`, not `>`. Without the inclusive
+    // boundary, the boundary case skips the cap and pays the
+    // synchronous highlight hitch on the exact size the cap was
+    // designed to bound.
+    const exactLines = Array.from({ length: 1500 }, (_, i) => `line ${i}`).join("\n");
+    const out = await highlightCode("javascript", exactLines);
+    assert.equal(out.truncated, true);
+    assert.equal(out.originalLineCount, 1500);
+    assert.ok(out.visibleLineCount <= 1500);
+  });
+
   test("honours a custom maxLines", async () => {
     const content = Array.from({ length: 50 }, (_, i) => `line ${i}`).join("\n");
     const out = await highlightCode("javascript", content, { maxLines: 10 });

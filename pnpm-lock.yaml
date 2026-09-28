@@ -904,6 +904,9 @@ importers:
       autoprefixer:
         specifier: 10.6.1
         version: 10.6.1(postcss@8.5.28)
+      highlight.js:
+        specifier: 10.7.3
+        version: 10.7.3
       marked:
         specifier: 18.0.12
         version: 18.0.12

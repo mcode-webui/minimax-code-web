@@ -3728,6 +3728,7 @@
     "packages/webui/webapp/test/workspace-picker-wire.test.ts",
     "packages/webui/webapp/test/workspace-tabs-state.test.ts",
     "packages/webui/webapp/tsconfig.json",
+    "packages/webui/webapp/types/highlight-langs.d.ts",
     "pnpm-lock.yaml",
     "pnpm-workspace.yaml",
     "release/dependency-licenses.json",

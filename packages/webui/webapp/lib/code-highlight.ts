@@ -1,4 +1,18 @@
-import hljs from "highlight.js";
+// Import the CORE module rather than the package root. The root
+// `highlight.js` (`lib/index.js`) auto-registers all 191 grammars
+// via `hljs.registerLanguage(<name>, require('./languages/<name>'))`
+// at module load time, which forces every grammar into the initial
+// chunk — the opposite of the laziness the user asked for. The core
+// module (`lib/core.js`) exports the same hljs instance with zero
+// grammars registered; we then call `registerLanguage` ourselves
+// from the per-language switch below, so each grammar lands in its
+// own webpack chunk.
+//
+// The two TypeScript paths have identical exports (see
+// node_modules/highlight.js/lib/core.js line 2517 and
+// node_modules/highlight.js/lib/index.js line 2 — both export the
+// same instance), so the rest of the lib is unchanged.
+import hljs from "highlight.js/lib/core";
 
 // `LanguageFn` exists in highlight.js's d.ts but is not exported. We
 // re-derive it through the `registerLanguage` parameter type so we
@@ -46,8 +60,20 @@ const DEFAULT_LARGE_FILE_TRUNCATE_LINES = 1500;
 const DEFAULT_LARGE_FILE_TRUNCATE_BYTES = 32 * 1024;
 
 /**
+ * Cache of "language has already been registered with hljs". The
+ * registration is idempotent (`registerLanguage` throws on duplicate
+ * names — see node_modules/highlight.js/lib/core.js), so we MUST guard
+ * against a second registration; a hot file-tree navigation can ask
+ * for the same grammar twice in a row.
+ *
+ * The cache key is the normalized hljs module name, not the original
+ * server label — that way `html` and `xml` share one registration.
+ */
+const registeredLanguages = new Set<string>();
+
+/**
  * Map the server's `language` field (see `EXT_LANGUAGE` in
- * `server/lib/fs-util.js`) to the highlight.js module name to import.
+ * `server/lib/fs-util.js`) to the hljs module name we import.
  *
  * Notes for the table:
  *   - `html` → `xml` because hljs 10.7.3 ships html as an alias of xml.
@@ -67,9 +93,6 @@ const LANGUAGE_TO_HLJS: Record<string, string> = {
   css: "css",
   scss: "scss",
   less: "less",
-  // hljs 10.7.3 has no standalone `html` module; html is an alias of xml
-  // (see node_modules/highlight.js/lib/languages/xml.js). Loading xml
-  // registers html for free.
   html: "xml",
   xml: "xml",
   markdown: "markdown",
@@ -89,16 +112,82 @@ const LANGUAGE_TO_HLJS: Record<string, string> = {
 };
 
 /**
- * Cache of "language has already been registered with hljs". The
- * registration is idempotent (`registerLanguage` throws on duplicate
- * names — see node_modules/highlight.js/lib/core.js), so we MUST guard
- * against a second registration; a hot file-tree navigation can ask
- * for the same grammar twice in a row.
+ * Per-language dynamic imports. Each branch is a STATIC `import()`
+ * literal (no template, no expression) so webpack / Next code-splits
+ * each grammar into its own chunk. The expression-form import we used
+ * previously (`import(\`highlight.js/lib/languages/${name}.js\`)`) would
+ * have created a single context chunk containing all of hljs's grammars
+ * — the opposite of the laziness the user asked for, and acceptance
+ * caught it.
  *
- * The cache key is the normalized hljs module name, not the original
- * server label — that way `html` and `xml` share one registration.
+ * Each branch returns the CommonJS `default` export under ESM interop
+ * (the language modules use `module.exports = function(hljs){}`).
+ *
+ * The switch / if-ladder shape is what makes the chunking work: a
+ * `Record<string, () => import(...)>` would also have literal imports,
+ * but webpack conservatively bundles the whole Record because it
+ * cannot prove which branch will run. A series of mutually-exclusive
+ * `case` branches gives webpack the dead-code-elimination signal it
+ * needs to keep each grammar in its own chunk.
+ *
+ * Adding a new language is a one-liner in BOTH the switch and the
+ * LANGUAGE_TO_HLJS table above; the alternative (a filesystem scan)
+ * would defeat the purpose.
  */
-const registeredLanguages = new Set<string>();
+function loadLanguageModule(
+  moduleName: string,
+): Promise<{ default?: LanguageFn } & Record<string, unknown>> | LanguageFn {
+  switch (moduleName) {
+    case "typescript":
+      return import("highlight.js/lib/languages/typescript.js");
+    case "javascript":
+      return import("highlight.js/lib/languages/javascript.js");
+    // `html` is an alias of `xml` in hljs 10.7.3; importing the xml
+    // grammar registers both names for free.
+    case "xml":
+      return import("highlight.js/lib/languages/xml.js");
+    case "json":
+      return import("highlight.js/lib/languages/json.js");
+    case "css":
+      return import("highlight.js/lib/languages/css.js");
+    case "scss":
+      return import("highlight.js/lib/languages/scss.js");
+    case "less":
+      return import("highlight.js/lib/languages/less.js");
+    case "markdown":
+      return import("highlight.js/lib/languages/markdown.js");
+    case "python":
+      return import("highlight.js/lib/languages/python.js");
+    case "ruby":
+      return import("highlight.js/lib/languages/ruby.js");
+    case "go":
+      return import("highlight.js/lib/languages/go.js");
+    case "rust":
+      return import("highlight.js/lib/languages/rust.js");
+    case "java":
+      return import("highlight.js/lib/languages/java.js");
+    case "kotlin":
+      return import("highlight.js/lib/languages/kotlin.js");
+    case "swift":
+      return import("highlight.js/lib/languages/swift.js");
+    case "c":
+      return import("highlight.js/lib/languages/c.js");
+    case "cpp":
+      return import("highlight.js/lib/languages/cpp.js");
+    case "bash":
+      return import("highlight.js/lib/languages/bash.js");
+    case "yaml":
+      return import("highlight.js/lib/languages/yaml.js");
+    case "sql":
+      return import("highlight.js/lib/languages/sql.js");
+    case "dockerfile":
+      return import("highlight.js/lib/languages/dockerfile.js");
+    default:
+      // Unknown module name — return a never-resolving promise so the
+      // caller treats it as "no grammar available" (plain monospace).
+      return new Promise(() => {});
+  }
+}
 
 /**
  * Load the highlight.js grammar for `language` if it is supported.
@@ -107,9 +196,12 @@ const registeredLanguages = new Set<string>();
  * language is not in {@link LANGUAGE_TO_HLJS}. Callers that receive
  * `null` should render a plain monospace view (no error, no blank).
  *
- * The dynamic import is what makes this "per-language lazy": webpack
- * turns each `import('highlight.js/lib/languages/...')` into its own
- * chunk. Only the chunk for the open file's language is fetched.
+ * The laziness is real because {@link loadLanguageModule} is a series
+ * of literal `import()` branches; webpack puts each grammar in its
+ * own chunk and the runtime fetches only the chunk for the open
+ * file's language. Verifiable by grepping the production route
+ * chunk for a grammar you did not open (e.g. `irpf90`) — it should
+ * be absent.
  */
 export async function loadHljsLanguage(language: string): Promise<string | null> {
   const normalised = (language ?? "").toLowerCase().trim();
@@ -117,14 +209,10 @@ export async function loadHljsLanguage(language: string): Promise<string | null>
   const moduleName = LANGUAGE_TO_HLJS[normalised];
   if (!moduleName) return null;
   if (registeredLanguages.has(moduleName)) return moduleName;
-  // Dynamic import → webpack/Next chunks each language module.
   // The language modules are CommonJS (`module.exports = function(hljs){}`),
   // which ESM exposes as `default` under Node's interop. The same interop
-  // works in webpack, so a single branch covers both runtimes.
-  const mod = await import(
-    /* webpackChunkName: "hljs-[request]" */
-    `highlight.js/lib/languages/${moduleName}.js`
-  );
+  // works in webpack.
+  const mod = await loadLanguageModule(moduleName);
   const languageFn: LanguageFn = (mod as { default?: LanguageFn }).default ?? (mod as unknown as LanguageFn);
   hljs.registerLanguage(moduleName, languageFn);
   registeredLanguages.add(moduleName);
@@ -229,7 +317,11 @@ export async function highlightCode(
 
   const totalLines = countLines(content);
   const bytes = byteLength(content);
-  const shouldTruncate = totalLines > maxLines || bytes > maxBytes;
+  // Inclusive boundary on both caps. A file of EXACTLY 32 KiB still
+  // pays the synchronous highlight hitch; the safer behaviour is to
+  // short-circuit at `>=` so the boundary itself triggers truncation
+  // (the truncation step itself is microsecond-cheap).
+  const shouldTruncate = totalLines >= maxLines || bytes >= maxBytes;
   const workingContent = shouldTruncate ? truncateContent(content, maxLines, maxBytes) : content;
   const visibleLineCount = shouldTruncate ? countLines(workingContent) : totalLines;
 
