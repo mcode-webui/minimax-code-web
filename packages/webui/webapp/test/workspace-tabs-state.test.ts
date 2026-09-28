@@ -453,10 +453,12 @@ describe("computeColumnLayout — defect A (no dead gutter)", () => {
   // The desktop reference image (`refs/ui/02-workspace-shell.jpg`,
   // 1384 viewport) shows all four columns with the chat column
   // at ~322px wide. The fix: conversation is the elastic column;
-  // its rendered width tracks the leftover after the fixed
-  // columns claim their widths, clamped to [min, max]. The chat
-  // content's own max-w-[768px] fills the column at every
-  // comfortable width — no 250-280px dead gutter.
+  // its rendered width absorbs whatever is left over after the
+  // fixed columns claim their widths (no growth-path ceiling —
+  // see slice 25; the [min, max] clamp only bounds the stored
+  // user drag). The chat content's own max-w-[960px] fills the
+  // column at every comfortable width — no 250-280px dead
+  // gutter.
 
   test("at 1280 the conversation column is elastic, not 1040 with a centred content box", () => {
     // Slice 21 — DEFAULT_COLUMN_LAYOUT starts both on-demand
@@ -476,12 +478,23 @@ describe("computeColumnLayout — defect A (no dead gutter)", () => {
     assert.ok(conversation.visible);
     assert.ok(preview.visible);
     assert.ok(tree.visible);
-    // The bug: a 1040px conversation column with the chat
-    // content's max-w-[768px] centred = ~136px gutter each side.
-    // The fix: the column itself caps at maxWidth (768); no
-    // wide-gutter state is reachable.
-    assert.ok(conversation.width <= COLUMN_SPECS.conversation.maxWidth,
-      `conversation ${conversation.width} > max ${COLUMN_SPECS.conversation.maxWidth}`);
+    // The slice-17 bug: the column itself capped at maxWidth
+    // (768) — when the stored conversation width was below the
+    // cap, leftover above it piled at the row's right edge as a
+    // dead band. Slice 25 removed the column ceiling; the
+    // conversation column now absorbs the full leftover. The
+    // readable measure cap lives on the CONTENT (chat.tsx +
+    // composer.tsx both use max-w-[960px]) and is centred inside
+    // the column, so any slack above the measure splits evenly
+    // left/right instead of dumping on one side. The dead-gutter
+    // defence is now the **fixed columns stay visible** plus the
+    // total-accounting assertion below — not a column ceiling.
+    //
+    // (The previously-shared assertion `conversation.width <=
+    // COLUMN_SPECS.conversation.maxWidth` was structurally dead:
+    // the algorithm already bounds conv by the container, and
+    // the test's container (1280) is below the spec maxWidth
+    // (2400), so the comparison was always true.)
     // The four visible widths sum to exactly the container (or
     // less when a column collapsed). No unexplained remainder.
     const total = sidebar.width + conversation.width + preview.width + tree.width;
@@ -499,11 +512,15 @@ describe("computeColumnLayout — defect A (no dead gutter)", () => {
     const summary = computeColumnLayout(layout, 1920, 1920);
     const conversation = summary.segments.find((s) => s.id === "conversation")!;
     assert.ok(conversation.visible);
-    assert.ok(conversation.width <= COLUMN_SPECS.conversation.maxWidth,
-      `conversation ${conversation.width} > max ${COLUMN_SPECS.conversation.maxWidth}`);
-    // Conversation fills its max; the leftover distributes to
-    // tree first, then preview, then sidebar. The row sums to
-    // exactly the container.
+    // Slice 25 — conversation has no growth-path ceiling; the
+    // column absorbs the entire residual after the fixed
+    // columns claim their maxes (preview 720, tree 600). The
+    // total = 1920 assertion below pins that the row sums to
+    // exactly the container — the dead-gutter defence. The
+    // previously-shared `conversation.width <= COLUMN_SPECS.
+    // conversation.maxWidth` assertion was structurally dead:
+    // the container is < container.maxWidth (2400), so the
+    // comparison was always true.
     const total = summary.segments.reduce((sum, s) => sum + s.width, 0);
     assert.equal(total, 1920, `total ${total} != 1920`);
   });
@@ -973,10 +990,18 @@ describe("syncColumnVisibility — slice 21 needs open ↔ tabs", () => {
 describe("computeColumnLayout — slice 21 idle state", () => {
   // The ticket's headline measurement: at 1280 with both
   // columns folded, the conversation column must take the
-  // whole remainder (1040 = 1280 − 240 sidebar). The algorithm
-  // lifts conversation's effective max only when both fixed
-  // columns are folded; when at least one fixed column is
-  // visible it keeps the slice-17 dead-gutter defence (768).
+  // whole remainder (1040 = 1280 − 240 sidebar). Slice 25
+  // removed the conversation column's growth-path ceiling in
+  // EVERY state — when at least one fixed column is visible
+  // conversation still absorbs any leftover that survives the
+  // fixed-column maxes, capped only by the container width. (A
+  // previous version of this comment claimed slice-17's "768
+  // dead-gutter defence" survived when fixed columns were
+  // visible; that was true under slice-17 but not slice-25 —
+  // see `workspace-tabs-state.ts:805-823`.) The "no ceiling"
+  // invariant is pinned at small containers by the
+  // `total = container` assertions in each test, and at wide
+  // containers by the dedicated 2560-replica test below.
 
   test("at 1280 with both columns folded, conversation takes the full remainder", () => {
     // AppShell chrome is 240, so the WorkspaceColumns container
@@ -1060,16 +1085,67 @@ describe("computeColumnLayout — slice 21 idle state", () => {
     // into the "both visible" path. The default DEFAULT_COLUMN_LAYOUT
     // starts with both columns collapsed (slice-21 idle), so this
     // test pins an explicit "both visible" layout.
+    //
+    // The previous shape carried two tautological guards here
+    // (conv <= maxWidth 2400 and conv >= minWidth 280): the
+    // algorithm already bounds conv by the container, and the
+    // fold math clamps conv to [280, container] at this width,
+    // so both comparisons held for every valid input. Removed
+    // alongside the defect-A pair at :483-484 / :502-503 (ticket
+    // 38) — the new wide-container test below pins the actual
+    // no-ceiling invariant for the algorithm path.
     const layout = {
       ...DEFAULT_COLUMN_LAYOUT,
       collapsed: { sidebar: true, conversation: false, preview: false, tree: false },
     };
     const summary = computeColumnLayout(layout, 1040, 1280);
     const conversation = summary.segments.find((s) => s.id === "conversation")!;
-    assert.ok(conversation.width <= COLUMN_SPECS.conversation.maxWidth,
-      `conversation ${conversation.width} > max ${COLUMN_SPECS.conversation.maxWidth}`);
-    assert.ok(conversation.width >= COLUMN_SPECS.conversation.minWidth,
-      `conversation ${conversation.width} below min`);
+    // Conversation must remain visible (fold priority gives it
+    // at least its minimum) and must not have been squashed to 0
+    // by the overflow shed — the visible-flag check below pins
+    // this. The previous `width >= minWidth` line was tautological
+    // (width ∈ [280, container]), so we drop it.
+    assert.equal(conversation.visible, true,
+      `conversation must stay visible at 1280 with both columns open`);
+  });
+
+  test("at a wide container (2560) with both columns folded, conversation absorbs every pixel — no growth-path ceiling", () => {
+    // Slice 25 — the conversation column has no growth-path
+    // ceiling. The only `maxWidth` clamp is on the user drag
+    // (clampWidth); the algorithm lets conv absorb every leftover
+    // pixel. The defect-A pair at :483-484 / :502-503 (ticket 38)
+    // was always-true *only* because the test containers were
+    // small (1280 / 1920 — both well below maxWidth 2400). At a
+    // container above 2400 with nothing else to absorb, conv must
+    // exceed the spec maxWidth. This test pins the slice-25
+    // contract and would catch a regression that re-introduces
+    // a column-side ceiling ("if (conv > maxWidth) conv = maxWidth").
+    const layout: typeof DEFAULT_COLUMN_LAYOUT = {
+      ...DEFAULT_COLUMN_LAYOUT,
+      collapsed: { sidebar: true, conversation: false, preview: true, tree: true },
+    };
+    const summary = computeColumnLayout(layout, 2560, 2560);
+    const conversation = summary.segments.find((s) => s.id === "conversation")!;
+    // Both fixed columns are folded, so the entire 2560-pixel
+    // container falls through to conversation. The exact value
+    // pin is the assertion: if anyone re-adds a ceiling that
+    // clamps conv to maxWidth (2400), this would land at 2400
+    // and fail.
+    assert.equal(conversation.width, 2560,
+      `conversation ${conversation.width} must equal container 2560 — ` +
+      `no growth-path ceiling (slice 25; the 2400 cap only bounds the user drag)`);
+    // Conv also exceeds the spec maxWidth (2400), which is the
+    // observable invariant the deleted tautological guards could
+    // never reach.
+    assert.ok(conversation.width > COLUMN_SPECS.conversation.maxWidth,
+      `conversation ${conversation.width} must exceed spec maxWidth ` +
+      `${COLUMN_SPECS.conversation.maxWidth} — the spec ceiling is drag-only, not a growth path`);
+    const preview = summary.segments.find((s) => s.id === "preview")!;
+    const tree = summary.segments.find((s) => s.id === "tree")!;
+    assert.equal(preview.width, 0);
+    assert.equal(tree.width, 0);
+    const total = summary.segments.reduce((sum, s) => sum + s.width, 0);
+    assert.equal(total, 2560, `total ${total} != 2560`);
   });
 });
 

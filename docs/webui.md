@@ -292,7 +292,7 @@ stored widths flows into the fixed columns first, bounded by their
 `maxWidth`s (`workspace-tabs-state.ts:793-815`). At a 1920 px viewport
 with both fixed columns open at their defaults, the container is
 `1920 − sidebar 240 = 1680` — the same `1680` figure the idle table
-and the "only preview" example use (`workspace-tabs-state.test.ts:1011`).
+and the "only preview" example use (`workspace-tabs-state.test.ts:1028`).
 The stored widths (`preview` 400, `tree` 340, `conversation` 720) sum to
 **1460**, so:
 
@@ -309,7 +309,7 @@ leftover is `560`:
 - `preview` grows 400 → **720** (its max, eats 320 px)
 - `conversation` absorbs the remaining **240 px** on top of its stored
   720 → ends at **960** (the locked value in
-  `workspace-tabs-state.test.ts:1052`).
+  `workspace-tabs-state.test.ts:1077`).
 
 Drag behaviour on `conversation` itself is bounded by `[280, 2400]` via
 `clampToConversation` (`workspace-tabs-state.ts:856-861`); the

@@ -241,7 +241,7 @@ exec 回合的代价——以下都是当前真实存在的行为，选择权限
 
 `computeColumnLayout`（`workspace-tabs-state.ts:724-854`）在固定列未到上限时按 **`tree` 先吃、再 `preview`** 的顺序吃剩余像素，每个都受各自 `maxWidth` 约束（`workspace-tabs-state.ts:793-815`）。剩余像素没有的话，`conversation` 停在它的存储宽度（默认 720）。
 
-举例：1920 视口（容器 = `1920 − 侧栏 240 = 1680`，与空闲态表和"只开 preview"算例同一口径，`workspace-tabs-state.test.ts:1011`）下两个固定列都在默认宽度（`preview` 400、`tree` 340、`conversation` 720，存储总宽 1460）：
+举例：1920 视口（容器 = `1920 − 侧栏 240 = 1680`，与空闲态表和"只开 preview"算例同一口径，`workspace-tabs-state.test.ts:1028`）下两个固定列都在默认宽度（`preview` 400、`tree` 340、`conversation` 720，存储总宽 1460）：
 
 - 容器剩余像素 = `1680 − 1460 = 220`
 - `tree` 从 340 增长到 **560**（吃掉 220 px；由于剩余像素不够，没达到自己的 600 上限）
@@ -251,7 +251,7 @@ exec 回合的代价——以下都是当前真实存在的行为，选择权限
 只开 `preview` 不开 `tree` 时（容器 1680，存储总宽 1120，剩余像素 560）：
 
 - `preview` 从 400 长到自己的上限 **720**（吃掉 320 px）
-- `conversation` 拿剩下的 240 px 加在自己的默认 720 上 → **960**（与 `workspace-tabs-state.test.ts:1052` 锁定值一致）
+- `conversation` 拿剩下的 240 px 加在自己的默认 720 上 → **960**（与 `workspace-tabs-state.test.ts:1077` 锁定值一致）
 
 ### 边界
 
