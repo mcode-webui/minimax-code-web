@@ -594,6 +594,20 @@ const en = {
   "workspaceTabs.tree.selector.tasks.aria": "Switch to tasks",
   "workspaceTabs.tree.selector.search.aria": "Switch to search",
   "workspaceTabs.tree.selector.plugins.aria": "Switch to plugins",
+  /* Slice 21 — close button on the active tree surface. The
+     aria label is the only place that names the consequence
+     ("discards the active surface") — closing the surface tab
+     unmounts its body. For the search surface that means the
+     current query and expanded-path hint are gone (state lives
+     in `SearchSurface`'s local state, not in storage); for the
+     file tree it means the FilesPanel unmounts but the
+     sessionStorage-backed expanded path + filter survive for
+     the next time the user opens Files. The keyboard-reachable
+     control is the only affordance; the announcement lives in
+     the aria-label. */
+  "workspaceTabs.tree.close.aria": "Close the active surface and hide the navigation column",
+  "workspaceTabs.tree.close.search.aria":
+    "Close the search surface and discard the current query",
   /* Slice 19b supersedes the slice-17 placeholder copy with a real
      exhaustive search above. The slice-17 keys are gone — the
      search surface is no longer a no-op placeholder. */
@@ -1113,6 +1127,12 @@ const zh: Record<MessageKey, string> = {
   "workspaceTabs.tree.selector.tasks.aria": "切换到任务管理",
   "workspaceTabs.tree.selector.search.aria": "切换到搜索",
   "workspaceTabs.tree.selector.plugins.aria": "切换到插件",
+  /* Slice 21 — close button on the active tree surface. The
+     aria label announces the consequence so screen readers
+     know what discarding a live query does. */
+  "workspaceTabs.tree.close.aria": "关闭当前表面并收起导航栏",
+  "workspaceTabs.tree.close.search.aria":
+    "关闭搜索表面并丢弃当前查询",
   /* Slice 19b supersedes the slice-17 placeholder copy — see the
      English block for the real exhaustive search above. */
   /* Slice 17 — plugins surface copy. */
