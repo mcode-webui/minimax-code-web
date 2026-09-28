@@ -406,7 +406,15 @@ describe("computeColumnLayout — column model", () => {
     );
   });
 
-  test("clamps each column to its [min, max] bounds", () => {
+  test("clamps each column to its [min, max] bounds (skipping conversation — unbounded)", () => {
+    // Slice 25 — the conversation column has no growth-path
+    // ceiling; the algorithm lets it absorb every leftover pixel
+    // regardless of `COLUMN_SPECS.conversation.maxWidth`. The
+    // `maxWidth` still caps the user drag (via clampWidth), but
+    // the algorithm itself ignores it. This test pins the
+    // fixed-column clamps only; conversation's "any width up to
+    // the container" is covered by the live self-check and by
+    // the dedicated "absorbs all leftover" tests below.
     const layout: typeof DEFAULT_COLUMN_LAYOUT = {
       ...DEFAULT_COLUMN_LAYOUT,
       widths: {
@@ -425,6 +433,7 @@ describe("computeColumnLayout — column model", () => {
     const summary = computeColumnLayout(layout, 4000, 4000);
     for (const segment of summary.segments) {
       if (!segment.visible) continue;
+      if (segment.id === "conversation") continue;
       const spec = COLUMN_SPECS[segment.id];
       assert.ok(segment.width >= spec.minWidth, `${segment.id} ${segment.width} < ${spec.minWidth}`);
       assert.ok(segment.width <= spec.maxWidth, `${segment.id} ${segment.width} > ${spec.maxWidth}`);
@@ -519,14 +528,19 @@ describe("computeColumnLayout — defect A (no dead gutter)", () => {
     const summary = computeColumnLayout(bothVisibleLayout, 1384, 1384);
     const visibleIds = summary.segments.filter((s) => s.visible).map((s) => s.id);
     assert.deepEqual(visibleIds, ["conversation", "preview", "tree"]);
-    // Slice 17 — with the AppShell chrome owning the session
+    // Slice 25 — with the AppShell chrome owning the session
     // sidebar, the wrapper sees only preview + tree as fixed
-    // siblings, so the elastic fill at 1384 lands ~600-700
-    // (the user accepts the chat column being noticeably wider
-    // at 1384+ once the chat column owns the empty space
-    // rather than being squeezed under a 1040px dead-gutter).
+    // siblings. At 1384 both visible, conversation absorbs the
+    // fold-released width and lands within [280, ...]. The
+    // upper bound is now unbounded (the column has no
+    // growth-path ceiling — the readable measure cap lives on
+    // the content). With both columns absorbing their maxes
+    // (preview 720 + tree 600 = 1320), the conversation column
+    // fits at the residual = 1384 - 1320 = 64px which falls
+    // below the conversation minimum (280) and triggers the
+    // fold path; the final conversation width sits in the band.
     const conversation = summary.segments.find((s) => s.id === "conversation")!;
-    assert.ok(conversation.width >= 280 && conversation.width <= 768,
+    assert.ok(conversation.width >= 280 && conversation.width < 1384,
       `conversation ${conversation.width} outside the expected band`);
   });
 
@@ -540,7 +554,8 @@ describe("computeColumnLayout — defect A (no dead gutter)", () => {
     // stored a gesture and moved nothing — the original
     // "调整右侧边栏的宽度表现不正常" defect. Slice 17 makes
     // conversation a real stored width: the algorithm honours
-    // the user's drag within the [280, 768] band, and folds
+    // the user's drag (clamped to [280, 2400] by `maxWidth`,
+    // though the growth path itself is unbounded), and folds
     // the fixed columns first when the row overflows.
     //
     // At 1920 (room to grow) the drag to 720 is honoured
@@ -548,7 +563,8 @@ describe("computeColumnLayout — defect A (no dead gutter)", () => {
     // own maxes and conversation stays at 720. Use an
     // explicit both-columns-visible flag because the slice-21
     // default starts both columns collapsed (on-demand idle),
-    // lifting conversation beyond 768 in the folded-state path.
+    // lifting conversation beyond the slice-17 768 ceiling in
+    // the folded-state path.
     const base = setColumnWidth(DEFAULT_COLUMN_LAYOUT, "conversation", 720);
     const dragged = {
       ...base,
@@ -607,21 +623,20 @@ describe("computeColumnLayout — defect A (no dead gutter)", () => {
       `tree should grow as conversation releases width: ${treeBefore} -> ${treeAfter}`);
   });
 
-  test("a stored conversation width above max clamps to maxWidth", () => {
-    // Edge case: a buggy stored width of 1500 on the
-    // conversation column must clamp to maxWidth (the
+  test("a stored conversation width above max clamps to maxWidth (drag-clamp only — the growth path is unbounded)", () => {
+    // Edge case: a buggy stored width of 3000 on the
+    // conversation column must clamp to maxWidth (2400 — the
     // drag-resize handler clamps on every move so this is a
-    // static-source tripwire for the clampWidth path).
-    // Use a layout with at least one fixed column visible so
-    // the slice-21 idle widening does not lift conversation
-    // beyond the max (slice 17's dead-gutter defence applies).
-    const layout = {
-      ...setColumnWidth(DEFAULT_COLUMN_LAYOUT, "conversation", 1500),
-      collapsed: { sidebar: true, conversation: false, preview: false, tree: false },
-    };
-    const summary = computeColumnLayout(layout, 1920, 1920);
-    const conversation = summary.segments.find((s) => s.id === "conversation")!;
-    assert.equal(conversation.width, COLUMN_SPECS.conversation.maxWidth);
+    // static-source tripwire for the clampWidth path). Slice 25
+    // notes that the algorithm's GROWTH PATH no longer honours
+    // maxWidth (the conversation column always absorbs all
+    // leftover), so to observe the clamp the stored width itself
+    // is the only handle: setColumnWidth("conversation", 3000)
+    // lands at 2400. We verify the clamp by reading back the
+    // stored value rather than the algorithm output.
+    const clamped = setColumnWidth(DEFAULT_COLUMN_LAYOUT, "conversation", 3000);
+    assert.equal(clamped.widths.conversation, COLUMN_SPECS.conversation.maxWidth,
+      `clampWidth(3000) must equal maxWidth ${COLUMN_SPECS.conversation.maxWidth}`);
   });
 
   test("fold priority: preview folds first, then tree (conversation last)", () => {
@@ -759,10 +774,11 @@ test("FORWARD-COMPAT: a slice-15 payload (single activeId + panel/secondary colu
     // must NOT crash the page; it must fall back to defaults
     // for the new column ids AND map the legacy single active
     // id into the new per-column slots. Values that happen to
-    // still be in range in slice 17 are preserved verbatim —
+    // still be in range in slice 25 are preserved verbatim —
     // the user's saved conversation width (768) is still a
-    // valid slice-17 target (it was the slice-15 default and
-    // happens to be the slice-17 max).
+    // valid slice-25 target (it was the slice-15 default and
+    // happened to coincide with the slice-17 768 max, and is
+    // comfortably within the slice-25 [280, 2400] band).
     const oldPayload = JSON.stringify({
       version: WORKSPACE_TABS_VERSION,
       cid,
@@ -782,7 +798,7 @@ test("FORWARD-COMPAT: a slice-15 payload (single activeId + panel/secondary colu
     // are missing.
     assert.equal(out.columnLayout.widths.sidebar, 240, "sidebar preserved");
     assert.equal(out.columnLayout.widths.conversation, 768,
-      "conversation preserved (768 is still within slice-17 [280, 768])");
+      "conversation preserved (768 is still within slice-25 [280, 2400])");
     assert.equal(out.columnLayout.widths.preview, COLUMN_SPECS.preview.defaultWidth,
       "preview reset to slice-17 default (panel key absent in old payload)");
     assert.equal(out.columnLayout.widths.tree, COLUMN_SPECS.tree.defaultWidth,
@@ -999,11 +1015,14 @@ describe("computeColumnLayout — slice 21 idle state", () => {
     assert.equal(total, 1680, `total ${total} != 1680`);
   });
 
-  test("with at least one fixed column visible, conversation caps at 768", () => {
-    // Slice 17's dead-gutter defence must survive: opening just
-    // the tree column caps conversation at 768 even on a 1920
-    // viewport. The new slice-21 widening only fires when BOTH
-    // fixed columns are folded.
+  test("with the tree column visible at 1920, conversation absorbs all leftover", () => {
+    // Slice 25 — the conversation column has no growth-path
+    // ceiling. At 1920 with sidebar=240 and tree at its max 600,
+    // the fixed-column tree absorbs its max, then conversation
+    // absorbs the remaining 1080px (1680 − 600). No dead band at
+    // the row's right edge. The reader-readable measure cap
+    // (960px) lives on the content (chat stream + composer), not
+    // on the column — see `components/chat.tsx`.
     const layout: typeof DEFAULT_COLUMN_LAYOUT = {
       ...DEFAULT_COLUMN_LAYOUT,
       collapsed: { sidebar: true, conversation: false, preview: true, tree: false },
@@ -1011,20 +1030,27 @@ describe("computeColumnLayout — slice 21 idle state", () => {
     const summary = computeColumnLayout(layout, 1680, 1920);
     const conversation = summary.segments.find((s) => s.id === "conversation")!;
     const tree = summary.segments.find((s) => s.id === "tree")!;
-    assert.equal(conversation.width, 768,
-      `conversation ${conversation.width} must stay at the slice-17 max when any fixed column is visible`);
+    assert.equal(conversation.width, 1080,
+      `conversation ${conversation.width} must absorb all leftover (1680 - 600 = 1080)`);
     assert.ok(tree.width >= COLUMN_SPECS.tree.minWidth,
       `tree ${tree.width} below min — fold priority violated`);
   });
 
-  test("opening only the preview column caps conversation at 768", () => {
+  test("with the preview column visible at 1920, conversation absorbs all leftover", () => {
+    // Slice 25 — opening only the preview column: preview
+    // grows to its 720 max, conversation absorbs the rest of
+    // the 1680 container = 960. No dead band at the row's
+    // right edge; the readable measure cap (960px, centred) on
+    // the content does not bite here because the column itself
+    // is exactly 960.
     const layout: typeof DEFAULT_COLUMN_LAYOUT = {
       ...DEFAULT_COLUMN_LAYOUT,
       collapsed: { sidebar: true, conversation: false, preview: false, tree: true },
     };
     const summary = computeColumnLayout(layout, 1680, 1920);
     const conversation = summary.segments.find((s) => s.id === "conversation")!;
-    assert.equal(conversation.width, 768);
+    assert.equal(conversation.width, 960,
+      `conversation ${conversation.width} must absorb all leftover (1680 - 720 = 960)`);
   });
 
   test("with both columns visible at 1280, conversation folds per the priority", () => {

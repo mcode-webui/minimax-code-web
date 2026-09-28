@@ -35,9 +35,20 @@ import { WorkspaceChipDropdown } from "./workspace-picker";
  *   assistant  no bubble at all — a collapsible activity summary line followed by
  *              markdown rendered through `.matrix-markdown`
  *
- * The transcript scroller and column also come from upstream: the column is
- * `max-w-[768px]` (the 743px figure belongs to the home screen, not the
- * conversation).
+ * Slice 25 — the conversation column has no ceiling (it absorbs all
+ * leftover). The readable measure cap (960px, centred) lives on the
+ * content: `mx-auto max-w-[960px]` on `.message-container-chat-content`.
+ * At viewports where the column is narrower than 960 (1280–1920 in
+ * every state we measured), the cap does not bite and the content
+ * fills the column 1:1 minus the column's padding. At wider viewports
+ * the cap bites: the content sits at 960 centred, and the slack
+ * above it splits evenly left and right — no dead band dumping on
+ * one side. 960px is the concrete measure: ~80 characters at the
+ * ~12px default chat font, comfortably above the 768 default for
+ * typical viewports while bounding the line length at the wide
+ * extreme. Message bubbles keep their existing `max-w-[80%]` (the
+ * upstream measure) and do not re-stack. The 743px figure belongs
+ * to the home screen, not the conversation.
  */
 
 interface ChatProps {
@@ -231,7 +242,17 @@ export function Chat({
           ref={scrollerRef}
           className="scrollbar-hide relative h-full w-full overflow-x-hidden overflow-y-scroll"
         >
-          <div className="message-container-chat-content mx-auto max-w-[768px] px-4">
+          {/* Slice 25 — measure cap lives on the CONTENT, not the
+              column. The column absorbs all leftover (no ceiling);
+              the chat stream is capped at 960px (a comfortable
+              reading measure, ~80 chars at ~12px chat font) and
+              centred with `mx-auto`. At viewports where the
+              column is narrower than 960 the cap doesn't bite
+              and the content fills the column 1:1; at wider
+              viewports the cap bites and the slack above 960
+              splits evenly left and right (no dead band dumping
+              on one side). */}
+          <div className="message-container-chat-content mx-auto w-full max-w-[960px] px-4">
             <div className="min-h-[10px] w-full" />
             {units.length === 0 ? (
               <p className="py-6 text-center text-caption-small-strong text-text_default_tertiary">

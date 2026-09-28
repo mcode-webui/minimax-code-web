@@ -520,7 +520,16 @@ export function Composer({
       onDragLeave={onDragLeave}
       onDrop={onDrop}
     >
-      <div className="mx-auto w-full max-w-[743px]">
+      {/* Slice 25 — measure cap lives on the CONTENT, not the
+          column. The column absorbs all leftover (no ceiling);
+          the composer is capped at 960px (matching the chat
+          stream's measure cap) and centred with `mx-auto`. At
+          viewports where the column is narrower than 960 the
+          cap doesn't bite; at wider viewports the slack above
+          960 splits evenly left and right inside the column —
+          the reporter's "comfortable measure, centred slack"
+          choice. */}
+      <div className="mx-auto w-full max-w-[960px]">
         {/* Upstream's message-input card. Its class string is
             `mavis-message-input-card w-full border border-border_default
              bg-bg_grouped_secondary_elevated px-2.5 pt-2.5 pb-2 rounded-[20px]
