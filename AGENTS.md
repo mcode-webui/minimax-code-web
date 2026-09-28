@@ -67,8 +67,22 @@ User feedback on the running app is handled by an orchestrating agent that deleg
 - **Clarify (grill-me).** For under-specified feedback, interview the reporter one question at a time until every load-bearing decision has an answer; each question ships with a recommendation. Skip this for unambiguous bug reports.
 - **Record (to-tickets).** Break approved work into tracer-bullet tickets: `.tickets/<feature-slug>/<NN>-<slug>.md`, numbered from `01` in dependency order, each declaring its blocking tickets and its acceptance criteria. `.tickets/` is private working material — git-ignored and excluded from the source inventory — and is never committed or published.
 - **Implement.** One development subagent (model route `minimax-cn/MiniMax-M3`) per ticket, on its own branch named per the convention above. Tickets whose blockers are all merged may be developed in parallel.
-- **Accept.** An independent acceptance subagent (model route `zai-coding-cn/GLM-5.3-Flash`; never the instance that wrote the code) reviews the diff against the ticket's acceptance criteria, runs the targeted gates (`pnpm typecheck`, `pnpm build`, and the test suites touching the change), and for UI-visible changes verifies the behavior in a browser with screenshots against the dev server (`pnpm webui:dev`, frontend at `http://127.0.0.1:18091/`). The full `pnpm verify` profile is left to CI.
+- **Accept.** An independent acceptance subagent (model route `zai-coding-cn/GLM-5.3-Flash`; never the instance that wrote the code) reviews the diff against the ticket's acceptance criteria, runs the targeted gates (`pnpm typecheck`, `pnpm build`, and the test suites touching the change), and for UI-visible changes verifies the behavior in a browser with screenshots against the dev server (`pnpm webui:dev`, frontend at `http://127.0.0.1:18091/`). The full `pnpm verify` profile is left to CI. **Documentation is part of what acceptance checks: a change that alters user-visible behaviour, a contract, an endpoint, a configuration key, or a limitation ships the matching documentation in the same pull request.** An acceptance verdict of "verified" is only possible when the documentation matches the code; "the code works but the docs still describe the old behaviour" is a failure, not a follow-up.
 - **Ship.** Open a pull request that references the ticket and attaches the acceptance report (diff verdict, gates run, evidence screenshots). Enable auto-merge (squash); the PR merges once CI is green, and the branch is deleted. Direct pushes to the default branch remain forbidden.
+
+### Documentation
+
+User-visible behaviour ships in both languages, at equal weight, in the same pull request:
+
+| Reader | File | Content |
+| --- | --- | --- |
+| Product, operations | `docs/webui.zh-CN.md` | What the feature does, why it was built this way, what a user sees, what it costs, what it does not do |
+| Contributors, later agent runs | `docs/webui.md` and code comments | The contract: endpoints, payloads, configuration keys, invariants, failure modes |
+
+Both are edited by hand; neither is generated from the other. When the two would say different things, that is a defect in one of them, not a translation choice — resolve it before merging.
+
+Write both as an ordinary technical proposal a colleague would read: state the decision, the reason, the alternatives that were rejected, and how you would tell it works. Prefer a table to a paragraph when comparing options, and a stated constraint to an adjective. Do not narrate the implementation step by step, do not restate the pull request title in prose, do not add a summary that repeats what the reader just finished reading, and do not explain what the code plainly says. If a paragraph would survive being copied from another project's document, it does not belong here.
+
 
 Discipline learned the hard way — apply in every round:
 
