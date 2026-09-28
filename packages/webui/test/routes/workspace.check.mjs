@@ -14,7 +14,7 @@ import { test, describe, before } from "node:test";
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
 import { tmpdir } from "node:os";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { setupMocks, absPath } from "../helpers/_setup.js";
 
@@ -57,8 +57,15 @@ function fakeCs(workspaceDir = null) {
 }
 
 describe("handleWorkspace — /api/workspace POST", () => {
-  test("returns 200 on successful set", async () => {
+  test("returns 200 on successful set (canonical realpath stored + returned)", async () => {
+    // v2.5 (slice 16 followup): the wire contract is the canonical
+    // (realpath) form, not the literal resolve() form. The route
+    // returns the realpath in cs.workspace.dir and the body wire
+    // payload; the test pins that contract so a future revert
+    // (which would ship the literal spelling on macOS /var vs
+    // /private/var) fails this assertion.
     const tmp = mkdtempSync(join(tmpdir(), "webui-rws-test-"));
+    const tmpCanonical = realpathSync(tmp);
     try {
       const cs = fakeCs("/old");
       const res = fakeRes();
@@ -70,7 +77,7 @@ describe("handleWorkspace — /api/workspace POST", () => {
       assert.equal(res._status, 200);
       const body = JSON.parse(res._body);
       assert.equal(body.ok, true);
-      assert.equal(cs.workspace.dir, tmp);
+      assert.equal(cs.workspace.dir, tmpCanonical);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -123,6 +130,7 @@ describe("handleWorkspace — /api/workspace POST", () => {
 describe("handleWorkspaceBrowse — /api/workspace/browse GET", () => {
   test("returns 200 + children list for existing dir", () => {
     const tmp = mkdtempSync(join(tmpdir(), "webui-browse-"));
+    const tmpCanonical = realpathSync(tmp);
     try {
       mkdirSync(join(tmp, "sub1"));
       mkdirSync(join(tmp, "sub2"));
@@ -136,6 +144,13 @@ describe("handleWorkspaceBrowse — /api/workspace/browse GET", () => {
       const body = JSON.parse(res._body);
       assert.equal(body.ok, true);
       assert.equal(body.children.length, 2);
+      // The wire contract: the response carries the canonical
+      // (realpath) form for both dir and children's path. macOS
+      // /var ↔ /private/var collapses to a single spelling
+      // before it reaches the wire, so the picker UI never has
+      // to reconcile two spellings.
+      assert.equal(body.dir, tmpCanonical);
+      assert.equal(body.children[0].path, join(tmpCanonical, "sub1"));
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -172,7 +187,13 @@ describe("handleWorkspaceBrowse — /api/workspace/browse GET", () => {
     // the wire shape had no test. This test pins every field the picker
     // consumes so a future rename is caught at the route layer rather than
     // by the next acceptance pass.
+    //
+    // v2.5 (slice 16 followup): the wire contract is the canonical
+    // (realpath) form — the same contract the lib tests pin. On macOS
+    // /var ↔ /private/var the literal and canonical differ; this test
+    // uses realpathSync so it holds on every platform.
     const tmp = mkdtempSync(join(tmpdir(), "webui-browse-shape-"));
+    const tmpCanonical = realpathSync(tmp);
     try {
       mkdirSync(join(tmp, "sub"));
       const req = Readable.from([Buffer.from("")]);
@@ -184,14 +205,14 @@ describe("handleWorkspaceBrowse — /api/workspace/browse GET", () => {
       assert.equal(res._status, 200);
       assert.equal(body.ok, true);
       // The directory the listing is for — picker reads this for confirm/mkdir.
-      assert.equal(body.dir, tmp);
+      assert.equal(body.dir, tmpCanonical);
       // One level up (tmpdir has a parent on POSIX; on Windows it may be null).
       assert.ok("parent" in body, "parent key present");
       // Children — picker reads this for the listing rows.
       assert.ok(Array.isArray(body.children));
       assert.equal(body.children.length, 1);
       assert.equal(body.children[0].name, "sub");
-      assert.equal(body.children[0].path, join(tmp, "sub"));
+      assert.equal(body.children[0].path, join(tmpCanonical, "sub"));
       // browseWorkspace only enumerates directories (files are filtered
       // out at the server), so every child must carry `isDir: true`.
       // The picker's row click navigates on `entry.isDir && setPath(...)`
