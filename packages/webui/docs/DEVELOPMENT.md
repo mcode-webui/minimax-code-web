@@ -138,7 +138,9 @@ node server.js
 ## Adding a slash command (webui-side)
 
 These are commands the webui handles itself without forwarding to mcode
-(used for things like `/clear`, `/exec`).
+(the set lives in `WEBUI_LOCAL_COMMANDS`, `server/lib/acp-client.js` —
+`/clear`, `/new`, `/status`, and so on; there is no `/exec` command,
+transport is not switched by a slash command).
 
 1. In `server/lib/slash.js`, add an entry:
    ```js

@@ -423,9 +423,15 @@ error:'…'}` when the engine answers with `-32601 Method not found`
 to do — usually a toast on the client.
 
 ### `mcode-acp.js` vs `mcode-exec.js`
-Two transports with a shared shape. The transport layer is selected
-by `mcode-rpc.js` based on the engine's reported version (from the
-`initialize` reply's `agentInfo`) and the per-request `/exec` opt-in.
+Two transports with a shared shape. Which one a turn uses is decided
+before the engine spawns, in two places: `routes/chat.js#handleSend`
+forces `mcode exec` when the server environment has `MCODE_USE_ACP=0`
+(the escape hatch for an ACP protocol regression), and `runMcodeAcp`
+itself re-routes to `runMcodeExec` when the session's permission mode
+is anything other than `Full access` (the first branch of
+`runMcodeAcp`). There is no `/exec` command and no per-request
+opt-in; `mcode-rpc.js` does not select transports — it only talks to
+whatever child is currently registered.
 
 Both expose:
 - `runMcode(content, opts)` → `AsyncGenerator<NormalizedEvent>`

@@ -98,7 +98,7 @@ CI 会对上述每一个名称是否出现在本文档中进行断言
 |---|---|---|
 | 内置命令列表（`/help`、`/compact`、`/model`、…） | ✅ | mcode acp `session/commands` 在连接时获取；缓存在 `mcodeCommandsCache` 中 |
 | 输入 `/` 时命令自动补全 | ✅ | `filterSlash()` 构建浮层；匹配 `cmd` 与 `description_*` |
-| 本地（webui 侧）命令 | ✅ | `/exec` 将传输层切换为 mcode exec；`/clear` 只清空聊天 UI，不触碰 mcode |
+| 本地（webui 侧）命令 | ✅ | `WEBUI_LOCAL_COMMANDS`（`server/lib/acp-client.js`）：`new`、`clear`、`status`、`sessions`、`usage`、`help`、`stop`；`/clear` 只清空聊天 UI，不触碰 mcode。不存在 `/exec` 命令——传输按回合由环境变量（`MCODE_USE_ACP=0`）或权限模式（非 Full access）决定，与斜杠命令无关。 |
 | 隐藏 / 实验性命令 | ⚠ | acp `commands` 列表返回 mcode 所知的全部命令。webui 尚无 `hidden` 标志。 |
 
 ## 6. 工作区

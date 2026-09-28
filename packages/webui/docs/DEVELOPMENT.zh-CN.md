@@ -135,7 +135,8 @@ node server.js
 ## 添加斜杠命令（webui 侧）
 
 这些是 webui 自行处理、不转发给 mcode 的命令
-（用于 `/clear`、`/exec` 之类的功能）。
+（集合定义在 `server/lib/acp-client.js` 的 `WEBUI_LOCAL_COMMANDS`——
+`/clear`、`/new`、`/status` 等；不存在 `/exec` 命令，传输不通过斜杠命令切换）。
 
 1. 在 `server/lib/slash.js` 中添加一个条目：
    ```js
