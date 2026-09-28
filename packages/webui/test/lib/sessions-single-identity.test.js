@@ -12,12 +12,13 @@
 
 import { test, describe, before, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import {rmSync} from "node:fs";
+
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { mkTmpDir } from "../helpers/tmp.js";
 
-const dir = mkdtempSync(join(tmpdir(), "sessions-single-id-"));
+const dir = mkTmpDir("sessions-single-id-");
 process.env.MCODE_WEBUI_SESSIONS_DB = join(dir, "sessions.json");
 process.env.MCODE_WEBUI_UPLOAD_DIR = join(dir, "uploads");
 

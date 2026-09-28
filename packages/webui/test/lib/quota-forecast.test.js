@@ -14,12 +14,12 @@
 //   - Override MCODE_WEBUI_HISTORY_PATH per test for hermetic FS.
 //   - All math tests are pure (no FS) and run synchronously.
 
-import { test, describe, before, beforeEach, after } from "node:test";
+import { test, describe, before, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { mkTmpDir, rmTmpDir } from "../helpers/tmp.js";
 
 const absPath = (rel) =>
     pathToFileURL(join(import.meta.dirname, "..", "..", "server", rel)).href;
@@ -35,17 +35,16 @@ before(async () => {
 beforeEach(() => {
     // Fresh tmp dir per test → fresh usage-history.ndjson.
     // Override the path BEFORE the module's lazy resolver sees it.
-    tmpDir = mkdtempSync(join(tmpdir(), "webui-quota-forecast-test-"));
+    tmpDir = mkTmpDir("webui-quota-forecast-test-");
     tmpHistoryPath = join(tmpDir, "usage-history.ndjson");
     process.env.MCODE_WEBUI_HISTORY_PATH = tmpHistoryPath;
     forecast._resetForTests();
 });
 
-after(() => {
+afterEach(() => {
     if (tmpDir) {
-        try {
-            rmSync(tmpDir, { recursive: true, force: true });
-        } catch {}
+        rmTmpDir(tmpDir);
+        tmpDir = null;
     }
     delete process.env.MCODE_WEBUI_HISTORY_PATH;
 });

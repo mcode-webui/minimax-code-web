@@ -18,12 +18,11 @@
  * `--keep` leaves the fixture directory behind for inspection.
  */
 
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import path from 'node:path';
+import { rm } from 'node:fs/promises';
 
 import { bootstrap } from '../../../server/trajectory/main.mjs';
 import { createFixtureProjection, FIXTURE_WORKSPACE } from './fixture.mjs';
+import { mkTmpDirAsync } from '../../helpers/tmp.js';
 
 /**
  * The payloads. None of them matches a credential pattern, so redaction leaves them
@@ -96,7 +95,7 @@ async function seed(dataDir) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  const dataDir = await mkdtemp(path.join(tmpdir(), 'trajectory-e2e-'));
+  const dataDir = await mkTmpDirAsync('trajectory-e2e-');
   await seed(dataDir);
 
   const context = bootstrap({ env: { ...process.env, MINIMAX_DATA_DIR: dataDir } });

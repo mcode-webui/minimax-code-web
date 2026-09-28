@@ -15,9 +15,10 @@
 import { test, describe, before } from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
+
+
 import { pathToFileURL } from "node:url";
+import { mkTmpDir } from "../helpers/tmp.js";
 
 const absPath = (rel) => pathToFileURL(join(import.meta.dirname, "..", "..", "server", rel)).href;
 
@@ -25,7 +26,7 @@ let cfg;
 before(async () => {
   delete process.env.HOST;
   process.env.MCODE_WEBUI_SETTINGS_PATH = join(
-    mkdtempSync(join(tmpdir(), "webui-bindhost-test-")),
+    mkTmpDir("webui-bindhost-test-"),
     "settings.json", // deliberately NOT created — readPersistedLanBind sees no file
   );
   cfg = await import(absPath("lib/config.js"));

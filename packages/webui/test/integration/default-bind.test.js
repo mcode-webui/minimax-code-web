@@ -12,12 +12,13 @@
 import { test } from "node:test";
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import {rmSync, writeFileSync} from "node:fs";
+
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { findFreePort, parseListeningPort } from "../helpers/free-port.js";
+import { mkTmpDir } from "../helpers/tmp.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const serverJsPath = join(__dirname, "..", "..", "server.js");
@@ -32,7 +33,7 @@ const serverJsPath = join(__dirname, "..", "..", "server.js");
 // 0.0.0.0:<port>).
 
 async function bootOnce({ envOverrides = {}, settingsJson } = {}) {
-  const tmpDir = mkdtempSync(join(tmpdir(), "mcode-webui-bind-"));
+  const tmpDir = mkTmpDir("mcode-webui-bind-");
   const requestedPort = await findFreePort();
   const env = {
     ...process.env,

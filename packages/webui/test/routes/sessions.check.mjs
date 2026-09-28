@@ -11,7 +11,8 @@ import { test, describe, before, beforeEach, afterEach, after } from "node:test"
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, rmSync, realpathSync, symlinkSync } from "node:fs";
+import {mkdirSync, mkdtempSync, rmSync, realpathSync, symlinkSync} from "node:fs";
+
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -22,6 +23,7 @@ import {
   registerAcpMock,
   withDecisions,
 } from "../helpers/_setup.js";
+import { mkTmpDir } from "../helpers/tmp.js";
 
 // U5 honest environment gating: the db-level preview tests below
 // build a fixture db via the sqlite3 CLI AND exercise the real
@@ -94,7 +96,7 @@ let _tmpEventsDir;
 const WS_A = realpathSync(mkdtempSync(join(tmpdir(), "webui-test-A-")));
 const WS_B = realpathSync(mkdtempSync(join(tmpdir(), "webui-test-B-")));
 before(async (t) => {
-  _tmpEventsDir = mkdtempSync(join(tmpdir(), "webui-sessions-test-events-"));
+  _tmpEventsDir = mkTmpDir("webui-sessions-test-events-");
   process.env.MCODE_WEBUI_EVENTS_PATH = join(_tmpEventsDir, "events.ndjson");
 });
 after(async () => {
@@ -474,10 +476,8 @@ describe("handleDeleteSession — dry-run (db-level preview)", { skip: DB_FIXTUR
   test("deleteMcodeSessionFromDb with dryRun=true returns rows per table without modifying", async () => {
     // Use a temp sqlite db, set MCODE_RUNTIME_DB to it, populate rows,
     // call dryRun, then verify rows are still there.
-    const { mkdtempSync } = await import("node:fs");
-    const { tmpdir } = await import("node:os");
     const { join } = await import("node:path");
-    const dir = mkdtempSync(join(tmpdir(), "webui-dryrun-"));
+    const dir = mkTmpDir("webui-dryrun-");
     const dbPath = join(dir, "runtime-state.sqlite");
     // Create tables with one row for our sid
     const { spawnSync } = await import("node:child_process");
@@ -507,10 +507,8 @@ describe("handleDeleteSession — dry-run (db-level preview)", { skip: DB_FIXTUR
   });
 
   test("deleteMcodeSessionFromDb without dryRun actually deletes (sanity)", async () => {
-    const { mkdtempSync } = await import("node:fs");
-    const { tmpdir } = await import("node:os");
     const { join } = await import("node:path");
-    const dir = mkdtempSync(join(tmpdir(), "webui-real-del-"));
+    const dir = mkTmpDir("webui-real-del-");
     const dbPath = join(dir, "runtime-state.sqlite");
     const { spawnSync } = await import("node:child_process");
     spawnSync(
@@ -899,7 +897,7 @@ describe("handleNewSession — workspace containment gate", () => {
   let outside;
 
   beforeEach(() => {
-    root = mkdtempSync(join(tmpdir(), "webui-ws-gate-"));
+    root = mkTmpDir("webui-ws-gate-");
     inside = join(root, "proj");
     mkdirSync(inside, { recursive: true });
     // v2.5 (slice 16 followup): the canonical stored form is the
@@ -911,7 +909,7 @@ describe("handleNewSession — workspace containment gate", () => {
     // shapes to the same canonical path so the assertion holds
     // everywhere.
     insideCanonical = realpathSync(inside);
-    outside = mkdtempSync(join(tmpdir(), "webui-ws-out-"));
+    outside = mkTmpDir("webui-ws-out-");
     process.env.MCODE_WEBUI_WORKSPACE_ROOTS = root;
   });
   afterEach(() => {
@@ -953,8 +951,12 @@ describe("handleNewSession — workspace containment gate", () => {
     // session stored the literal symlink spelling, which then
     // disagreed with the fs gate's realpath output — two spellings
     // for one directory.
-    const realRoot = mkdtempSync(join(tmpdir(), "webui-ws-symlink-real-"));
-    const linkRoot = join(tmpdir(), `webui-ws-symlink-link-${Date.now()}`);
+    const realRoot = mkTmpDir("webui-ws-symlink-real-");
+    // linkRoot is a symlink target — it must NOT exist as a directory
+    // before symlinkSync() runs, so we synthesize a path under tmpdir
+    // instead of mkTmpDir()'ing a real directory. The real-root sibling
+    // is still cleaned up by the helper's exit hook.
+    const linkRoot = join(tmpdir(), `webui-ws-symlink-link-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`);
     try {
       symlinkSync(realRoot, linkRoot);
       // Both the typed-spelling and the canonical-spelling inputs

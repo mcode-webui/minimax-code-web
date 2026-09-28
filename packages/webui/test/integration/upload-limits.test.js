@@ -21,13 +21,14 @@
 import { test } from "node:test";
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync, readdirSync, readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import {rmSync, readdirSync, readFileSync} from "node:fs";
+
 import { join, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import http from "node:http";
 
 import { findFreePort, parseListeningPort } from "../helpers/free-port.js";
+import { mkTmpDir } from "../helpers/tmp.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const serverJsPath = join(__dirname, "..", "..", "server.js");
@@ -42,7 +43,7 @@ const serverJsPath = join(__dirname, "..", "..", "server.js");
 //   EADDRINUSE, so the test must read the actual bound port or it
 //   POSTs to a wrong/stale socket (see test/helpers/free-port.js).
 async function spawnServer(limits = {}) {
-  const tmpDir = mkdtempSync(join(tmpdir(), "mcode-webui-upload-e2e-"));
+  const tmpDir = mkTmpDir("mcode-webui-upload-e2e-");
   const uploadDir = join(tmpDir, "uploads");
   const requestedPort = await findFreePort();
   const env = {

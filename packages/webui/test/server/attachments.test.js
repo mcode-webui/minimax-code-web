@@ -6,8 +6,8 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
-import { tmpdir } from "node:os";
+import {writeFileSync, rmSync, mkdirSync} from "node:fs";
+
 import { join, resolve } from "node:path";
 
 import {
@@ -18,6 +18,7 @@ import {
   promptTextFor,
 } from "../../server/lib/attachments.js";
 import { UPLOAD_DIR } from "../../server/lib/config.js";
+import { mkTmpDir } from "../helpers/tmp.js";
 
 // UPLOAD_DIR is read at import time from the env, so point it at a scratch dir
 // for the duration of this file.

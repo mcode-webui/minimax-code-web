@@ -18,12 +18,13 @@
 
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import {writeFileSync, rmSync} from "node:fs";
+
 import { join } from "node:path";
 import { createRequire } from "node:module";
 
 import { AGENT_TEAM_STATUS } from "../../server/lib/agent-team-status.js";
+import { mkTmpDir } from "../helpers/tmp.js";
 
 const require = createRequire(import.meta.url);
 
@@ -37,7 +38,7 @@ function loadTasksModule() {
 }
 
 before(async () => {
-  tmpDir = mkdtempSync(join(tmpdir(), "agent-team-tasks-"));
+  tmpDir = mkTmpDir("agent-team-tasks-");
   dbPath = join(tmpDir, "runtime-state.sqlite");
   // Resolve better-sqlite3 from the workspace — same approach as the
   // existing test/integration tests use.

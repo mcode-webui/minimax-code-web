@@ -20,10 +20,11 @@
 import { test, describe, before, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import {rmSync} from "node:fs";
+
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { mkTmpDir } from "../helpers/tmp.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SERVER_DIR = resolve(__dirname, "..", "..", "server");
@@ -37,7 +38,7 @@ const absPath = (rel) => pathToFileURL(resolve(SERVER_DIR, rel)).href;
 // events.js resolves the path lazily per append, so the env override set
 // here covers every append this file performs (same pattern as
 // test/lib/alerts.check.mjs).
-const _tmpAuditDir = mkdtempSync(join(tmpdir(), "webui-authorize-check-"));
+const _tmpAuditDir = mkTmpDir("webui-authorize-check-");
 process.env.MCODE_WEBUI_EVENTS_PATH = join(_tmpAuditDir, "events.ndjson");
 
 // ----- state-bus mock state (read by the registered module mock) -----

@@ -16,13 +16,14 @@
 import { test } from "node:test";
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import {rmSync} from "node:fs";
+
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import http from "node:http";
 
 import { MAX_PORT_ATTEMPTS } from "../../server/lib/port.js";
+import { mkTmpDir } from "../helpers/tmp.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const serverJsPath = join(__dirname, "..", "..", "server.js");
@@ -62,7 +63,7 @@ function request(port, path, headers) {
  * captured output for failure messages.
  */
 function bootWithDefaultPort() {
-  const tmpDir = mkdtempSync(join(tmpdir(), "mcode-webui-port-fallback-"));
+  const tmpDir = mkTmpDir("mcode-webui-port-fallback-");
   const env = {
     ...process.env,
     MCODE_WEBUI_SETTINGS_PATH: join(tmpDir, "settings.json"),

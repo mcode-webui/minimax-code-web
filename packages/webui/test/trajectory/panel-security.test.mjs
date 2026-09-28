@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
-import { readFile, readdir, mkdtemp } from 'node:fs/promises';
-import { networkInterfaces, tmpdir } from 'node:os';
+import { readFile, readdir } from 'node:fs/promises';
+import { networkInterfaces } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
 import { createRequestHandler, createStudio } from '../../server/trajectory/http.mjs';
 import { openStore } from '../../server/trajectory/store.mjs';
+import { mkTmpDirAsync } from '../helpers/tmp.js';
 
 /**
  * The panel's authorization boundary, its network exposure, and the render sinks
@@ -243,7 +244,7 @@ test('restarting the panel mints a new capability rather than reusing the old on
 });
 
 test('the panel creates no files, including under PLUGIN_DATA', async () => {
-  const pluginData = await mkdtemp(path.join(tmpdir(), 'trajectory-plugin-data-'));
+  const pluginData = await mkTmpDirAsync('trajectory-plugin-data-');
   const previous = process.env.PLUGIN_DATA;
   process.env.PLUGIN_DATA = pluginData;
   const studio = createStudio({ store: makeStore(), homeDir: '/tmp/trajectory-fixture-home' });

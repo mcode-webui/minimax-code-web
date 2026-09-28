@@ -13,11 +13,12 @@
 
 import { test, describe, after, before } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import yaml from "js-yaml";
+
+import { mkTmpDir, rmTmpDir } from "../helpers/tmp.js";
 
 const absPath = (rel) => pathToFileURL(join(import.meta.dirname, "..", "..", "server", rel)).href;
 const {
@@ -968,7 +969,7 @@ describe("applyRecordedModel — variant channel (ticket 36)", () => {
   let _tmpEngine;
   let _prevMinimax;
   before(() => {
-    _tmpEngine = mkdtempSync(join(tmpdir(), "webui-t36-engine-"));
+    _tmpEngine = mkTmpDir("webui-t36-engine-");
     _prevMinimax = process.env.MINIMAX_DATA_DIR;
     process.env.MINIMAX_DATA_DIR = _tmpEngine;
     writeFileSync(
@@ -994,7 +995,7 @@ describe("applyRecordedModel — variant channel (ticket 36)", () => {
   after(() => {
     if (_prevMinimax === undefined) delete process.env.MINIMAX_DATA_DIR;
     else process.env.MINIMAX_DATA_DIR = _prevMinimax;
-    if (_tmpEngine) rmSync(_tmpEngine, { recursive: true, force: true });
+    if (_tmpEngine) rmTmpDir(_tmpEngine);
   });
 
   test("recorded pick + recorded 'off' → model push carries the none-thinking variant, no thinkingEffort push", async () => {

@@ -24,11 +24,12 @@
 
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import {rmSync, writeFileSync} from "node:fs";
+
 import { join } from "node:path";
 import { EventEmitter } from "node:events";
 import { pathToFileURL } from "node:url";
+import { mkTmpDir } from "../helpers/tmp.js";
 
 const absPath = (rel) => pathToFileURL(join(import.meta.dirname, "..", "..", "server", rel)).href;
 const fsRoute = await import(absPath("routes/fs.js"));
@@ -66,7 +67,7 @@ describe("fs routes — /api/fs/raw as the slice 04 browser-panel iframe src", (
     // /api/fs/raw route's mime table must map that to the right
     // Content-Type so the iframe actually renders the page rather
     // than downloading it.
-    const dir = mkdtempSync(join(tmpdir(), "fs-raw-browser-html-"));
+    const dir = mkTmpDir("fs-raw-browser-html-");
     try {
       const file = join(dir, "index.html");
       const html = "<!doctype html><html><body><h1>slice 04</h1></body></html>";
@@ -89,7 +90,7 @@ describe("fs routes — /api/fs/raw as the slice 04 browser-panel iframe src", (
     // cap; the test pins the 413 status + the cap message so a
     // regression that drops the cap or ships the truncated body
     // surfaces here.
-    const dir = mkdtempSync(join(tmpdir(), "fs-raw-browser-large-"));
+    const dir = mkTmpDir("fs-raw-browser-large-");
     try {
       const file = join(dir, "big.html");
       // 21 MiB of comments — just over the 20 MiB cap.
@@ -113,7 +114,7 @@ describe("fs routes — /api/fs/raw as the slice 04 browser-panel iframe src", (
     // protection covers the case where the address-bar input shape
     // ever lands on a directory (e.g. a future "open folder"
     // shortcut).
-    const dir = mkdtempSync(join(tmpdir(), "fs-raw-browser-dir-"));
+    const dir = mkTmpDir("fs-raw-browser-dir-");
     try {
       const res = fakeRes();
       fsRoute.handleFsRaw(readReq(dir), res);

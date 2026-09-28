@@ -14,11 +14,12 @@
 
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import {rmSync, writeFileSync} from "node:fs";
+
 import { join } from "node:path";
 import { EventEmitter } from "node:events";
 import { pathToFileURL } from "node:url";
+import { mkTmpDir } from "../helpers/tmp.js";
 
 const absPath = (rel) => pathToFileURL(join(import.meta.dirname, "..", "..", "server", rel)).href;
 const fsRoute = await import(absPath("routes/fs.js"));
@@ -72,7 +73,7 @@ describe("fs routes — /api/fs/raw", () => {
   });
 
   test("a png inside an allowed root is served with image/png", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "fs-raw-png-"));
+    const dir = mkTmpDir("fs-raw-png-");
     try {
       // Minimal valid PNG: 1×1 transparent pixel. Header + IHDR + IDAT +
       // IEND chunks. Pre-built so we don't depend on a graphics lib.
@@ -112,7 +113,7 @@ describe("fs routes — /api/fs/raw", () => {
   });
 
   test("an unknown extension falls back to application/octet-stream", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "fs-raw-unknown-"));
+    const dir = mkTmpDir("fs-raw-unknown-");
     try {
       const file = join(dir, "blob.qwert");
       writeFileSync(file, "hello");
@@ -134,7 +135,7 @@ describe("fs routes — /api/fs/raw", () => {
     // stat. The webapp only ever opens paths that came from a server
     // listing, so this branch is a belt-and-suspenders check, not a
     // routine path.
-    const dir = mkdtempSync(join(tmpdir(), "fs-raw-missing-"));
+    const dir = mkTmpDir("fs-raw-missing-");
     try {
       const res = fakeRes();
       fsRoute.handleFsRaw(readReq(join(dir, "ghost.png")), res);
@@ -146,7 +147,7 @@ describe("fs routes — /api/fs/raw", () => {
   });
 
   test("a directory is rejected with 400 not a regular file", () => {
-    const dir = mkdtempSync(join(tmpdir(), "fs-raw-dir-"));
+    const dir = mkTmpDir("fs-raw-dir-");
     try {
       const res = fakeRes();
       fsRoute.handleFsRaw(readReq(dir), res);

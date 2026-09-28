@@ -15,10 +15,11 @@
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import {rmSync} from "node:fs";
+
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { mkTmpDir } from "../helpers/tmp.js";
 
 const absPath = (rel) => pathToFileURL(join(import.meta.dirname, "..", "..", "server", rel)).href;
 
@@ -30,7 +31,7 @@ const absPath = (rel) => pathToFileURL(join(import.meta.dirname, "..", "..", "se
 // events.js resolves the path lazily per append, so the env override set
 // here covers every append this file performs (same pattern as
 // test/lib/alerts.check.mjs).
-const _tmpAuditDir = mkdtempSync(join(tmpdir(), "webui-session-delete-test-"));
+const _tmpAuditDir = mkTmpDir("webui-session-delete-test-");
 process.env.MCODE_WEBUI_EVENTS_PATH = join(_tmpAuditDir, "events.ndjson");
 
 // Find sqlite3 binary. On this host: C:\Users\<you>\anaconda3\Library\bin\sqlite3.exe
@@ -140,7 +141,7 @@ describe("deleteMcodeSessionFromDb — happy path (real sqlite3)", { skip: DB_FI
   let dbPath;
 
   before(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), "webui-db-test-"));
+    tmpDir = mkTmpDir("webui-db-test-");
     dbPath = join(tmpDir, "test.db");
     // Create a sqlite db with all expected tables. Use spawnSync since
     // we're on a system that has sqlite3.
@@ -207,7 +208,7 @@ describe("deleteMcodeSessionFromDb — table-missing case (does not throw)", { s
   let dbPath;
 
   before(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), "webui-db-test2-"));
+    tmpDir = mkTmpDir("webui-db-test2-");
     dbPath = join(tmpDir, "test2.db");
     // Create a db with NO tables. The function should iterate through
     // MCODE_SESSION_DELETE_TABLES and try DELETE FROM each — all should

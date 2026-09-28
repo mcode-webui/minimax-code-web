@@ -25,23 +25,17 @@
 
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { tmpdir } from "node:os";
-import {
-  mkdtempSync,
-  rmSync,
-  writeFileSync,
-  readFileSync,
-  readdirSync,
-  chmodSync,
-} from "node:fs";
+
+import {rmSync, writeFileSync, readFileSync, readdirSync, chmodSync} from "node:fs";
 import { join } from "node:path";
+import { mkTmpDir } from "../helpers/tmp.js";
 
 let sessions;
 let DIR;
 let DB;
 
 before(async () => {
-  DIR = mkdtempSync(join(tmpdir(), "webui-sessdb-"));
+  DIR = mkTmpDir("webui-sessdb-");
   DB = join(DIR, "sessions.json");
   process.env.MCODE_WEBUI_SESSIONS_DB = DB;
   sessions = await import("../../server/lib/sessions.js");

@@ -33,8 +33,8 @@ import {
 } from "node:test";
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import {rmSync} from "node:fs";
+
 import { join } from "node:path";
 import {
   setupMocks,
@@ -42,11 +42,12 @@ import {
   registerSessionsStore,
   registerMcodeAcpMock,
 } from "../helpers/_setup.js";
+import { mkTmpDir } from "../helpers/tmp.js";
 
 // alerts.js fire-and-forget audit-writes to events.ndjson via the REAL
 // lib/events.js — redirect to a per-file tmp dir so the check never
 // touches ~/.mcode-webui (same pattern as test/lib/alerts.check.mjs).
-const _tmpDir = mkdtempSync(join(tmpdir(), "webui-chat-failed-"));
+const _tmpDir = mkTmpDir("webui-chat-failed-");
 process.env.MCODE_WEBUI_EVENTS_PATH = join(_tmpDir, "events.ndjson");
 
 const ENOENT_MSG = "mcode acp child error: spawn mcode ENOENT";

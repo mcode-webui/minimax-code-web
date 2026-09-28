@@ -24,11 +24,12 @@
 
 import { test, describe, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, readdirSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { tmpdir } from "node:os";
+import {rmSync, readdirSync, readFileSync, writeFileSync, mkdirSync} from "node:fs";
+
 import { join, dirname, basename } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Readable } from "node:stream";
+import { mkTmpDir } from "../helpers/tmp.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SERVER_DIR = join(__dirname, "..", "..", "server");
@@ -36,7 +37,7 @@ const absPath = (rel) => pathToFileURL(join(SERVER_DIR, rel)).href;
 
 // Redirect the upload dir BEFORE lib/upload.js (→ lib/config.js) is
 // imported — config.js caches UPLOAD_DIR at module load.
-const TMP_ROOT = mkdtempSync(join(tmpdir(), "mcode-webui-upload-lib-"));
+const TMP_ROOT = mkTmpDir("mcode-webui-upload-lib-");
 const UPLOAD_DIR = join(TMP_ROOT, "uploads");
 process.env.MCODE_WEBUI_UPLOAD_DIR = UPLOAD_DIR;
 

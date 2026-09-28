@@ -33,10 +33,11 @@
 
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import {mkdirSync, realpathSync, rmSync, writeFileSync} from "node:fs";
+
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { mkTmpDir } from "../helpers/tmp.js";
 
 const absPath = (rel) => pathToFileURL(join(import.meta.dirname, "..", "..", "server", rel)).href;
 const fsSearch = await import(absPath("lib/fs-search.js"));
@@ -57,7 +58,7 @@ const {
 // (see fs-search.js header). Comparing against the literal would
 // platform-split the test (slice 16's exact trap).
 function makeTempWorkspace() {
-  const dir = mkdtempSync(join(tmpdir(), "fs-search-"));
+  const dir = mkTmpDir("fs-search-");
   const realDir = realpathSync(dir);
   return { dir, realDir };
 }

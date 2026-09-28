@@ -31,16 +31,17 @@
 import { test, describe, before, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import {rmSync} from "node:fs";
+
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { mkTmpDir } from "../helpers/tmp.js";
 
 // Isolation FIRST — lib/config.js resolves SESSIONS_DB / UPLOAD_DIR from
 // MCODE_WEBUI_DATA_DIR at import time, and lib/events.js resolves the
 // audit-log path per append (alerts audit-writes on failed sends). Neither
 // this check nor the operator's real ~/.mcode-webui may see the other.
-const _tmpDataDir = mkdtempSync(join(tmpdir(), "webui-first-turn-guard-"));
+const _tmpDataDir = mkTmpDir("webui-first-turn-guard-");
 process.env.MCODE_WEBUI_DATA_DIR = _tmpDataDir;
 process.env.MCODE_WEBUI_EVENTS_PATH = join(_tmpDataDir, "events.ndjson");
 

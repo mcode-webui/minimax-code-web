@@ -13,10 +13,11 @@
 import { test, describe, before } from "node:test";
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
-import { tmpdir } from "node:os";
-import { mkdtempSync, realpathSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
+
+import {realpathSync, rmSync, mkdirSync, writeFileSync} from "node:fs";
 import { join } from "node:path";
 import { setupMocks, absPath } from "../helpers/_setup.js";
+import { mkTmpDir } from "../helpers/tmp.js";
 
 let wsRoute;
 before(async (t) => {
@@ -64,7 +65,7 @@ describe("handleWorkspace — /api/workspace POST", () => {
     // payload; the test pins that contract so a future revert
     // (which would ship the literal spelling on macOS /var vs
     // /private/var) fails this assertion.
-    const tmp = mkdtempSync(join(tmpdir(), "webui-rws-test-"));
+    const tmp = mkTmpDir("webui-rws-test-");
     const tmpCanonical = realpathSync(tmp);
     try {
       const cs = fakeCs("/old");
@@ -129,7 +130,7 @@ describe("handleWorkspace — /api/workspace POST", () => {
 
 describe("handleWorkspaceBrowse — /api/workspace/browse GET", () => {
   test("returns 200 + children list for existing dir", () => {
-    const tmp = mkdtempSync(join(tmpdir(), "webui-browse-"));
+    const tmp = mkTmpDir("webui-browse-");
     const tmpCanonical = realpathSync(tmp);
     try {
       mkdirSync(join(tmp, "sub1"));
@@ -192,7 +193,7 @@ describe("handleWorkspaceBrowse — /api/workspace/browse GET", () => {
     // (realpath) form — the same contract the lib tests pin. On macOS
     // /var ↔ /private/var the literal and canonical differ; this test
     // uses realpathSync so it holds on every platform.
-    const tmp = mkdtempSync(join(tmpdir(), "webui-browse-shape-"));
+    const tmp = mkTmpDir("webui-browse-shape-");
     const tmpCanonical = realpathSync(tmp);
     try {
       mkdirSync(join(tmp, "sub"));

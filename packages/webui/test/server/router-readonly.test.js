@@ -14,10 +14,11 @@
 
 import { test, describe, before } from "node:test";
 import { strict as assert } from "node:assert";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
+
+
 import { join, dirname } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
+import { mkTmpDir } from "../helpers/tmp.js";
 
 const absPath = (rel) => pathToFileURL(join(dirname(fileURLToPath(import.meta.url)), "..", "..", "server", rel)).href;
 
@@ -28,7 +29,7 @@ const absPath = (rel) => pathToFileURL(join(dirname(fileURLToPath(import.meta.ur
 // ~/.mcode-webui/events.ndjson a running dev server is also writing, whose
 // read-modify-rename is not safe against two writers. Both paths resolve
 // lazily per call, so setting them before the import is enough.
-const stateDir = mkdtempSync(join(tmpdir(), "mcode-webui-readonly-"));
+const stateDir = mkTmpDir("mcode-webui-readonly-");
 process.env.MCODE_WEBUI_SETTINGS_PATH = join(stateDir, "settings.json");
 process.env.MCODE_WEBUI_EVENTS_PATH = join(stateDir, "events.ndjson");
 

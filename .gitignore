@@ -7,7 +7,7 @@
 # leaking into the source inventory: `scripts/source-inventory.mjs` scans
 # the working tree and records every path it does not skip, so a missed
 # pattern here would silently publish the artifact as source.
-node_modules/
+node_modules
 dist/
 .turbo/
 .cache/

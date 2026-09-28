@@ -24,15 +24,10 @@
 import { test, describe, before } from "node:test";
 import assert from "node:assert/strict";
 import { tmpdir, homedir } from "node:os";
-import {
-  mkdtempSync,
-  mkdirSync,
-  rmSync,
-  symlinkSync,
-  realpathSync,
-} from "node:fs";
+import {mkdirSync, rmSync, symlinkSync, realpathSync} from "node:fs";
 import { join, basename, delimiter } from "node:path";
 import { setupMocks, absPath } from "../helpers/_setup.js";
+import { mkTmpDir } from "../helpers/tmp.js";
 
 let ws;
 let config;
@@ -63,13 +58,13 @@ function fakeCs(workspaceDir = "/some/default") {
 
 // 每用例的隔离场地: root = 允许根（本次用例唯一）, outside = 允许根外目录。
 function makeArena(t) {
-  const root = mkdtempSync(join(tmpdir(), "webui-wsroot-"));
+  const root = mkTmpDir("webui-wsroot-");
   // v2.5 (slice 16 followup): the canonical stored form is the
   // realpath. The arena exposes both spellings (`root` and
   // `rootCanonical`) so tests can pin the contract rather than the
   // platform — macOS /var ↔ /private/var, Linux bind mounts, etc.
   const rootCanonical = realpathSync(root);
-  const outside = mkdtempSync(join(tmpdir(), "webui-wsout-"));
+  const outside = mkTmpDir("webui-wsout-");
   const outsideCanonical = realpathSync(outside);
   mkdirSync(join(root, "proj"));
   mkdirSync(join(outside, "secret"));
@@ -99,7 +94,7 @@ describe("getAllowedWorkspaceRoots", () => {
   });
 
   test("env replaces the default face entirely; nonexistent entries skipped; deduped", () => {
-    const a = mkdtempSync(join(tmpdir(), "webui-wsroots-a-"));
+    const a = mkTmpDir("webui-wsroots-a-");
     const ghost = join(a, "does-not-exist");
     try {
       process.env[ROOTS_ENV] = [a, ghost, a].join(delimiter);
@@ -132,7 +127,7 @@ describe("handleWorkspaceChange — containment", () => {
 
   test("default face zero regression: a fresh tmp workspace stays settable (env unset)", (t) => {
     delete process.env[ROOTS_ENV];
-    const scratch = mkdtempSync(join(tmpdir(), "webui-wsscratch-"));
+    const scratch = mkTmpDir("webui-wsscratch-");
     const scratchCanonical = realpathSync(scratch);
     t.after(() => rmSync(scratch, { recursive: true, force: true }));
     const cs = fakeCs("/old");

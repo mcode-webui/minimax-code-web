@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
+
+import { mkTmpDirAsync } from '../helpers/tmp.js';
 
 import { readTaskOutput } from '../../server/trajectory/tasks.mjs';
 import { findSessionDir, readJsonlEvents } from '../../server/trajectory/jsonl.mjs';
@@ -33,7 +34,7 @@ const CANARY_MESSAGES = 'CANARY-OUTSIDE-MESSAGES-JSONL-7f31';
 const approx = { detailLevel: 'full' };
 
 async function makeFixture() {
-  const base = await mkdtemp(path.join(tmpdir(), 'trajectory-containment-'));
+  const base = await mkTmpDirAsync('trajectory-containment-');
   const dataDir = path.join(base, 'data');
   const outside = path.join(base, 'outside');
   await mkdir(path.join(dataDir, 'background-tasks'), { recursive: true });

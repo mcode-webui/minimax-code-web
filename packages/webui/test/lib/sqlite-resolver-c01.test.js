@@ -25,14 +25,10 @@
 import { test, describe, before, after } from "node:test";
 import { strict as assert } from "node:assert";
 import { join, dirname } from "node:path";
-import {
-  mkdtempSync,
-  mkdirSync,
-  writeFileSync,
-  rmSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
+import {mkdirSync, writeFileSync, rmSync} from "node:fs";
+
 import { pathToFileURL } from "node:url";
+import { mkTmpDir } from "../helpers/tmp.js";
 
 const SERVER_DIR = join(import.meta.dirname, "..", "..", "server");
 const absPath = (rel) => pathToFileURL(join(SERVER_DIR, rel)).href;
@@ -208,7 +204,7 @@ describe("sqlite-resolver.js — C01 MCODE_CMD path reverse", () => {
 describe("sqlite-resolver.js — C01 db-resolver.json 3-state semantics", () => {
   let tmpHome;
   before(() => {
-    tmpHome = mkdtempSync(join(tmpdir(), "mcode-d01-resolver-"));
+    tmpHome = mkTmpDir("mcode-d01-resolver-");
   });
   after(() => {
     if (tmpHome) {
@@ -220,7 +216,7 @@ describe("sqlite-resolver.js — C01 db-resolver.json 3-state semantics", () => 
 
   test("missing db-resolver.json → loadUserResolverConfig returns []", () => {
     // home has no .mcode-webui/ directory at all
-    const cfgHome = mkdtempSync(join(tmpdir(), "mcode-d01-empty-"));
+    const cfgHome = mkTmpDir("mcode-d01-empty-");
     try {
       const out = db._loadUserResolverConfig({ home: cfgHome });
       assert.deepEqual(out, [], "no .mcode-webui/ → empty array");
@@ -230,7 +226,7 @@ describe("sqlite-resolver.js — C01 db-resolver.json 3-state semantics", () => 
   });
 
   test("malformed JSON → loadUserResolverConfig returns [] (fail-open)", () => {
-    const cfgHome = mkdtempSync(join(tmpdir(), "mcode-d01-malformed-"));
+    const cfgHome = mkTmpDir("mcode-d01-malformed-");
     try {
       mkdirSync(join(cfgHome, ".mcode-webui"), { recursive: true });
       writeFileSync(
@@ -245,7 +241,7 @@ describe("sqlite-resolver.js — C01 db-resolver.json 3-state semantics", () => 
   });
 
   test("missing `better_sqlite3_candidates` field → returns []", () => {
-    const cfgHome = mkdtempSync(join(tmpdir(), "mcode-d01-no-field-"));
+    const cfgHome = mkTmpDir("mcode-d01-no-field-");
     try {
       mkdirSync(join(cfgHome, ".mcode-webui"), { recursive: true });
       writeFileSync(
@@ -260,7 +256,7 @@ describe("sqlite-resolver.js — C01 db-resolver.json 3-state semantics", () => 
   });
 
   test("non-array `better_sqlite3_candidates` field → returns []", () => {
-    const cfgHome = mkdtempSync(join(tmpdir(), "mcode-d01-noarray-"));
+    const cfgHome = mkTmpDir("mcode-d01-noarray-");
     try {
       mkdirSync(join(cfgHome, ".mcode-webui"), { recursive: true });
       writeFileSync(
@@ -275,7 +271,7 @@ describe("sqlite-resolver.js — C01 db-resolver.json 3-state semantics", () => 
   });
 
   test("valid JSON with string array → returns the string array filtered", () => {
-    const cfgHome = mkdtempSync(join(tmpdir(), "mcode-d01-valid-"));
+    const cfgHome = mkTmpDir("mcode-d01-valid-");
     try {
       mkdirSync(join(cfgHome, ".mcode-webui"), { recursive: true });
       const userPinned = "/Users/dev/local/share/better-sqlite3/better-sqlite3";
@@ -430,7 +426,7 @@ describe("sqlite-resolver.js — D01 deleteMcodeSessionFromDb pre-flight gates",
   let unloadablePkg; // tier-1 fixture: package dir that throws on require
   let isoHome; // tier-4a fixture: empty home directory
   before(() => {
-    isoDir = mkdtempSync(join(tmpdir(), "mcode-d01-isolate-"));
+    isoDir = mkTmpDir("mcode-d01-isolate-");
     unloadablePkg = join(isoDir, "better-sqlite3");
     mkdirSync(unloadablePkg);
     writeFileSync(
@@ -441,8 +437,8 @@ describe("sqlite-resolver.js — D01 deleteMcodeSessionFromDb pre-flight gates",
       join(unloadablePkg, "index.js"),
       'throw new Error("D01 fixture: better-sqlite3 must not load");',
     );
-    isoHome = mkdtempSync(join(tmpdir(), "mcode-d01-home-"));
-    realDbPath = mkdtempSync(join(tmpdir(), "mcode-d01-realdb-")) + "/fixture.sqlite";
+    isoHome = mkTmpDir("mcode-d01-home-");
+    realDbPath = mkTmpDir("mcode-d01-realdb-") + "/fixture.sqlite";
     writeFileSync(realDbPath, "");
   });
   after(() => {

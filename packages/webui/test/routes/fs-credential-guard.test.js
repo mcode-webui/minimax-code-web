@@ -21,10 +21,11 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, rmSync, writeFileSync, symlinkSync, realpathSync } from "node:fs";
-import { tmpdir } from "node:os";
+import {rmSync, writeFileSync, symlinkSync, realpathSync} from "node:fs";
+
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { mkTmpDir } from "../helpers/tmp.js";
 
 const absPath = (rel) =>
   pathToFileURL(join(import.meta.dirname, "..", "..", "server", rel)).href;
@@ -87,7 +88,7 @@ describe("fs routes — credential preview guard (slice 16)", () => {
     ];
     for (const c of cases) {
       test(`${c.file} → 403 credential (no plaintext leak)`, () => {
-        const dir = mkdtempSync(join(tmpdir(), "fs-cred-"));
+        const dir = mkTmpDir("fs-cred-");
         try {
           const file = join(dir, c.file);
           writeFileSync(file, c.content, "utf8");
@@ -125,7 +126,7 @@ describe("fs routes — credential preview guard (slice 16)", () => {
 
   describe("read-file confirm=1 override", () => {
     test(".env with confirm=1 returns the content (the user explicitly opened it)", () => {
-      const dir = mkdtempSync(join(tmpdir(), "fs-cred-confirm-"));
+      const dir = mkTmpDir("fs-cred-confirm-");
       try {
         const file = join(dir, ".env");
         const body = "cred_canary_confirm_override\nDB_URL=postgres://localhost/x\n";
@@ -145,7 +146,7 @@ describe("fs routes — credential preview guard (slice 16)", () => {
       // The confirm knob is opt-in: a UI bug that sends it for a
       // normal file must NOT start refusing normal files. The flag
       // only matters when the predicate hits.
-      const dir = mkdtempSync(join(tmpdir(), "fs-cred-confirm-noop-"));
+      const dir = mkTmpDir("fs-cred-confirm-noop-");
       try {
         const file = join(dir, "note.md");
         writeFileSync(file, "# hi\n", "utf8");
@@ -167,7 +168,7 @@ describe("fs routes — credential preview guard (slice 16)", () => {
     // regex is loud.
     for (const name of ["README.md", "environment.ts", "env.js", "monkey.txt", ".envvars"]) {
       test(`${name} previews as usual (predicate not too eager)`, () => {
-        const dir = mkdtempSync(join(tmpdir(), "fs-cred-miss-"));
+        const dir = mkTmpDir("fs-cred-miss-");
         try {
           const file = join(dir, name);
           writeFileSync(file, "no secrets here\n", "utf8");
@@ -185,7 +186,7 @@ describe("fs routes — credential preview guard (slice 16)", () => {
 
   describe("/api/fs/raw — same gate, same override", () => {
     test(".env without confirm → 403 credential (no plaintext)", async () => {
-      const dir = mkdtempSync(join(tmpdir(), "fs-cred-raw-"));
+      const dir = mkTmpDir("fs-cred-raw-");
       try {
         const file = join(dir, ".env");
         const secret = "cred_canary_raw_no_confirm_target";
@@ -206,7 +207,7 @@ describe("fs routes — credential preview guard (slice 16)", () => {
     });
 
     test(".env with confirm=1 streams the bytes", async () => {
-      const dir = mkdtempSync(join(tmpdir(), "fs-cred-raw-ok-"));
+      const dir = mkTmpDir("fs-cred-raw-ok-");
       try {
         const file = join(dir, ".env");
         const body = "cred_canary_raw_with_confirm_target\n";
@@ -229,7 +230,7 @@ describe("fs routes — credential preview guard (slice 16)", () => {
     // gate — files stay listed. We assert that here so a future
     // refactor does not accidentally widen the gate to the listing.
     test("/api/fs/read still returns credential files in the listing", () => {
-      const dir = mkdtempSync(join(tmpdir(), "fs-cred-tree-"));
+      const dir = mkTmpDir("fs-cred-tree-");
       try {
         const file = join(dir, ".env");
         writeFileSync(file, "TREE_TEST=ok\n", "utf8");
@@ -258,7 +259,7 @@ describe("fs routes — credential preview guard (slice 16)", () => {
   // covered by these tests.
   describe("symlink aliasing — credential must see through to the target", () => {
     test("innocent.txt → id_rsa: read-file returns 403 credential", () => {
-      const dir = mkdtempSync(join(tmpdir(), "fs-cred-symlink-read-"));
+      const dir = mkTmpDir("fs-cred-symlink-read-");
       try {
         const target = join(dir, "id_rsa");
         writeFileSync(
@@ -285,7 +286,7 @@ describe("fs routes — credential preview guard (slice 16)", () => {
     });
 
     test("notes.md → .env: read-file returns 403 credential", () => {
-      const dir = mkdtempSync(join(tmpdir(), "fs-cred-symlink-env-"));
+      const dir = mkTmpDir("fs-cred-symlink-env-");
       try {
         const target = join(dir, ".env");
         writeFileSync(target, "cred_canary_symlink_env_target\n", "utf8");
@@ -308,7 +309,7 @@ describe("fs routes — credential preview guard (slice 16)", () => {
       // `/api/fs/raw`. If a workspace symlink points an .html file
       // at a credential, the panel would otherwise render the
       // secret as a webpage. The raw route has the same gate.
-      const dir = mkdtempSync(join(tmpdir(), "fs-cred-symlink-html-"));
+      const dir = mkTmpDir("fs-cred-symlink-html-");
       try {
         const target = join(dir, ".env");
         writeFileSync(target, "cred_canary_browser_panel_secret\n", "utf8");
@@ -327,7 +328,7 @@ describe("fs routes — credential preview guard (slice 16)", () => {
     });
 
     test("innocent.txt → server.pem: raw route refuses credential", async () => {
-      const dir = mkdtempSync(join(tmpdir(), "fs-cred-symlink-pem-"));
+      const dir = mkTmpDir("fs-cred-symlink-pem-");
       try {
         const target = join(dir, "server.pem");
         writeFileSync(target, "cred_canary_symlink_pem_target\n", "utf8");
@@ -345,7 +346,7 @@ describe("fs routes — credential preview guard (slice 16)", () => {
     });
 
     test("symlink with confirm=1 releases bytes (the override is end-to-end)", () => {
-      const dir = mkdtempSync(join(tmpdir(), "fs-cred-symlink-override-"));
+      const dir = mkTmpDir("fs-cred-symlink-override-");
       try {
         const target = join(dir, "id_rsa");
         writeFileSync(target, "cred_canary_symlink_override_target\n", "utf8");
@@ -378,7 +379,7 @@ describe("fs routes — credential preview guard (slice 16)", () => {
       ".npmrc.bak", ".pypirc.old",
     ]) {
       test(`${file} → 403 credential (no prompt at all is a leak)`, () => {
-        const dir = mkdtempSync(join(tmpdir(), "fs-cred-backup-"));
+        const dir = mkTmpDir("fs-cred-backup-");
         try {
           const fullPath = join(dir, file);
           writeFileSync(fullPath, "cred_canary_backup_target\n", "utf8");
@@ -400,7 +401,7 @@ describe("fs routes — credential preview guard (slice 16)", () => {
     // strips the suffix and re-tests the stem.
     for (const file of ["readme.md.bak", "notes.txt.bak", "package.json.bak"]) {
       test(`${file} previews normally (suffix alone is not credential)`, () => {
-        const dir = mkdtempSync(join(tmpdir(), "fs-cred-backup-miss-"));
+        const dir = mkTmpDir("fs-cred-backup-miss-");
         try {
           const fullPath = join(dir, file);
           writeFileSync(fullPath, "no secrets here\n", "utf8");
@@ -423,7 +424,7 @@ describe("fs routes — credential preview guard (slice 16)", () => {
   // for both read-file and raw routes.
   describe("audit log of override use", () => {
     test("confirm=1 on .env writes one audit line to stderr", () => {
-      const dir = mkdtempSync(join(tmpdir(), "fs-cred-audit-"));
+      const dir = mkTmpDir("fs-cred-audit-");
       const origWrite = process.stderr.write.bind(process.stderr);
       let captured = "";
       process.stderr.write = (chunk) => {
@@ -457,7 +458,7 @@ describe("fs routes — credential preview guard (slice 16)", () => {
     test("confirm=1 on a NON-credential file does NOT write an audit line", () => {
       // Confirm on a normal file is a no-op; the audit log
       // specifically tracks the override of a credential gate.
-      const dir = mkdtempSync(join(tmpdir(), "fs-cred-audit-miss-"));
+      const dir = mkTmpDir("fs-cred-audit-miss-");
       const origWrite = process.stderr.write.bind(process.stderr);
       let captured = "";
       process.stderr.write = (chunk) => {
@@ -482,7 +483,7 @@ describe("fs routes — credential preview guard (slice 16)", () => {
     });
 
     test("confirm=1 on .env via raw route writes raw-download audit line", async () => {
-      const dir = mkdtempSync(join(tmpdir(), "fs-cred-audit-raw-"));
+      const dir = mkTmpDir("fs-cred-audit-raw-");
       const origWrite = process.stderr.write.bind(process.stderr);
       let captured = "";
       process.stderr.write = (chunk) => {
@@ -518,8 +519,9 @@ describe("fs routes — credential preview guard (slice 16)", () => {
   // gate produces the same refusal when handed either spelling.
   describe("canonical-form (macOS /var↔/private/var shape on Linux)", () => {
     test("realpath input vs literal-symlink input produce the same refusal", () => {
-      const realRoot = mkdtempSync(join(tmpdir(), "fs-cred-can-real-"));
-      const linkRoot = join(tmpdir(), `fs-cred-can-link-${Date.now()}`);
+      const realRoot = mkTmpDir("fs-cred-can-real-");
+      // linkRoot is a symlink target — must NOT exist before symlinkSync().
+      const linkRoot = `${realRoot}-link-${Math.random().toString(16).slice(2, 8)}`;
       try {
         symlinkSync(realRoot, linkRoot);
         // Create a credential file under the REAL root.
@@ -575,8 +577,8 @@ describe("fs routes — credential preview guard (slice 16)", () => {
       // credential symlink inside. Both the dir and the file
       // symlink must be resolved, and the credential must still
       // be refused.
-      const realRoot = mkdtempSync(join(tmpdir(), "fs-cred-dbl-real-"));
-      const linkRoot = join(tmpdir(), `fs-cred-dbl-link-${Date.now()}`);
+      const realRoot = mkTmpDir("fs-cred-dbl-real-");
+      const linkRoot = `${realRoot}-link-${Math.random().toString(16).slice(2, 8)}`;
       try {
         symlinkSync(realRoot, linkRoot);
         const target = join(realRoot, "id_rsa");

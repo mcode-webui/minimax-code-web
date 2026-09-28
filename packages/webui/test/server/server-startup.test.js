@@ -19,11 +19,12 @@
 import { test } from "node:test";
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import {rmSync, existsSync, readFileSync} from "node:fs";
+
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:net";
+import { mkTmpDir } from "../helpers/tmp.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const serverJsPath = join(__dirname, "..", "..", "server.js");
@@ -53,7 +54,7 @@ function getFreePort() {
 // behavior, not a specific port; a hard-coded port collides with any real
 // webui running on the same machine and fails for unrelated reasons.
 async function _spawnFirstRun({ tokenStdout, port } = {}) {
-  const tmpDir = mkdtempSync(join(tmpdir(), "mcode-webui-c08-"));
+  const tmpDir = mkTmpDir("mcode-webui-c08-");
   const settingsPath = join(tmpDir, "settings.json");
   // Defensive: file must NOT pre-exist. mkdtempSync creates the dir
   // only; we never write settings.json here, init() does that.

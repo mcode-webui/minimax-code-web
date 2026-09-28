@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
@@ -13,6 +12,7 @@ import {
 import { resolveSqliteFile } from '../../server/trajectory/sqlite.mjs';
 import { resolveSessionsRoot } from '../../server/trajectory/fsutil.mjs';
 import { openStore } from '../../server/trajectory/store.mjs';
+import { mkTmpDirAsync } from '../helpers/tmp.js';
 
 /**
  * Portability of the paths.
@@ -100,7 +100,7 @@ test('candidate lists put the canonical layout first', () => {
 });
 
 test('the projection is found wherever this machine keeps it', async () => {
-  const root = await mkdtemp(path.join(tmpdir(), 'trajectory-paths-'));
+  const root = await mkTmpDirAsync('trajectory-paths-');
 
   // Nothing there yet: the canonical path is reported without claiming a hit.
   const missing = resolveSqliteFile(root);
@@ -118,7 +118,7 @@ test('the projection is found wherever this machine keeps it', async () => {
   assert.equal(hit.discovered, false, 'the canonical layout is not a discovery');
 
   // A differently laid-out build is still found, and reported as a discovery.
-  const otherRoot = await mkdtemp(path.join(tmpdir(), 'trajectory-paths-'));
+  const otherRoot = await mkTmpDirAsync('trajectory-paths-');
   const otherDir = path.join(otherRoot, 'sqlite');
   await mkdir(otherDir, { recursive: true });
   const other = path.join(otherDir, 'runtime-state.sqlite');
@@ -135,7 +135,7 @@ test('the projection is found wherever this machine keeps it', async () => {
 });
 
 test('a store opens a projection that is not in the canonical location, and says so', async () => {
-  const dataDir = await mkdtemp(path.join(tmpdir(), 'trajectory-store-'));
+  const dataDir = await mkTmpDirAsync('trajectory-store-');
   const dir = path.join(dataDir, 'sqlite');
   await mkdir(dir, { recursive: true });
   const db = new DatabaseSync(path.join(dir, 'runtime-state.sqlite'));

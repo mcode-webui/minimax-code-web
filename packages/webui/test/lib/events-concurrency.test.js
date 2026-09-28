@@ -15,18 +15,17 @@
 //   - Tampered seq fields are flagged by verify() (already covered,
 //     re-locked here against multiple shape variants)
 
-import { test, describe, before, beforeEach, after } from "node:test";
+import { test, describe, before, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import {
-  mkdtempSync,
   rmSync,
   readFileSync,
   writeFileSync,
   statSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { mkTmpDir, rmTmpDir } from "../helpers/tmp.js";
 
 const absPath = (rel) =>
   pathToFileURL(join(import.meta.dirname, "..", "..", "server", rel)).href;
@@ -37,15 +36,16 @@ let tmpDir;
 let tmpEventsPath;
 
 beforeEach(() => {
-  tmpDir = mkdtempSync(join(tmpdir(), "webui-events-concurrency-test-"));
+  tmpDir = mkTmpDir("webui-events-concurrency-test-");
   tmpEventsPath = join(tmpDir, "events.ndjson");
   process.env.MCODE_WEBUI_EVENTS_PATH = tmpEventsPath;
   events._resetForTests();
 });
 
-after(() => {
+afterEach(() => {
   if (tmpDir) {
-    try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+    rmTmpDir(tmpDir);
+    tmpDir = null;
   }
   delete process.env.MCODE_WEBUI_EVENTS_PATH;
 });

@@ -24,16 +24,12 @@
 // a missing module — pinning the contract before the
 // implementation lands is the whole point of TDD here.
 
-import { test, after } from "node:test";
+import { test, before, after } from "node:test";
 import { strict as assert } from "node:assert";
-import {
-  mkdtempSync,
-  rmSync,
-  readdirSync,
-  readFileSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+
+import { mkTmpDir, rmTmpDir } from "../helpers/tmp.js";
 
 // runtime-host.js takes its dataDir as a constructor option. We do
 // NOT import server/lib/config.js — the host module is env-agnostic
@@ -41,19 +37,47 @@ import { join } from "node:path";
 // single object). test:release-tools gates the four env-override
 // variables against tests that spawn `server.js`; this test does
 // not spawn server.js, so the lint does not apply.
-
-const projectRoot = join(import.meta.dirname, "..", "..");
-const tmpBase = mkdtempSync(join(tmpdir(), "mcode-webui-runtime-host-"));
+//
+// Use the shared tmp helper (not bare `mkdtempSync`) so the
+// `process.on('exit')` and signal handlers clean the directories up
+// even when the test process is killed mid-run. `mkTmpDir` returns
+// one tracked directory; `mkSubTmpDir` creates children inside an
+// already-tracked parent so a single after() rm clears the lot.
+//
+// `tmpBase` is per-test (created by `before`/`after`) rather than
+// module-scoped so the cleanup hook always runs BEFORE the suite's
+// exit phase. A module-scoped `tmpBase` plus a single after() relies
+// on the entire file finishing before the process exits; in a long
+// pnpm test run, race conditions between the after() hook and the
+// helper's exit hook can leave a stale empty parent directory. A
+// per-test base avoids that race entirely (every test's `after` is
+// guaranteed to run before the next test, before afterAll, before
+// process exit).
+let tmpBase;
+before(() => {
+  tmpBase = mkTmpDir("mcode-webui-runtime-host-");
+});
+after(() => {
+  // Round-3 B6.3 follow-up: runtime-host.test.js opens a better-sqlite3
+  // connection per `dataDir/rhXX-XXX/v2/runtime-state.sqlite`, but the
+  // catalog host's `close()` (test code: `await host.close()`) does
+  // not call `database.close()` — the fd stays open for the lifetime
+  // of the test process. While that fd is open the kernel keeps the
+  // children inode alive, which in turn keeps tmpBase non-empty and
+  // undeletable until the process exits. Running GC synchronously here
+  // forces node's fd table to release the descriptors so `rmTmpDir`
+  // can complete its recursive unlink. (`--expose-gc` is on for the
+  // webui test runner; if you run this file standalone add
+  // `NODE_OPTIONS=--expose-gc`.)
+  if (global.gc) {
+    try { global.gc(); } catch {}
+  }
+  rmTmpDir(tmpBase);
+});
 
 function setupIsolatedDir(label) {
-  return mkdtempSync(join(tmpBase, `${label}-`));
+  return mkTmpDir(`${label}-`, { parent: tmpBase });
 }
-
-after(() => {
-  try {
-    rmSync(tmpBase, { recursive: true, force: true });
-  } catch {}
-});
 
 // ============================================================
 // 1. Full chain in isolated dataDir — proves process internalization.
@@ -127,8 +151,6 @@ test("S2-RH-01: catalogue host boot → createSession → listSessions → close
     beforePids,
     "no mcode children should outlive close()",
   );
-
-  rmSync(dir, { recursive: true, force: true });
 });
 
 // ============================================================
@@ -160,8 +182,6 @@ test("S2-RH-02: catalogue host close() is bounded when apiHost.close() hangs", a
     elapsed < 5500,
     `bounded close must time out well before 5s — elapsed=${elapsed}ms`,
   );
-
-  rmSync(dir, { recursive: true, force: true });
 });
 
 // ============================================================
@@ -220,8 +240,6 @@ test("S2-RH-03: turn host sendMessage failure does not crash the process; other 
   assert.ok(Array.isArray(listed), "process survived — listSessions works");
   // catalogue close still functions.
   await host.close();
-
-  rmSync(dir, { recursive: true, force: true });
 });
 
 // ============================================================
@@ -339,7 +357,6 @@ test("S2-RH-04: abortSession triggers bounded termination; no subprocess kill", 
   void streamP;
 
   await host.close();
-  rmSync(dir, { recursive: true, force: true });
 });
 
 // ============================================================

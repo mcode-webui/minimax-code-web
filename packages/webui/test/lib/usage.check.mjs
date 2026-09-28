@@ -9,8 +9,8 @@
 
 import { test, describe, before, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import {existsSync, readFileSync, rmSync} from "node:fs";
+
 import { join } from "node:path";
 import {
   setupMocks,
@@ -18,6 +18,7 @@ import {
   registerRpcMock,
   registerSessionsStore,
 } from "../helpers/_setup.js";
+import { mkTmpDir } from "../helpers/tmp.js";
 
 let applyAccountQuota, quotaSnapshot, runUsageQuery;
 let makeClientState, pushStateFor, clients, sseByCid;
@@ -27,7 +28,7 @@ let makeClientState, pushStateFor, clients, sseByCid;
 // would append to the operator's own ~/.mcode-webui/usage-history.ndjson. The
 // path is resolved per call, so setting it here covers every test below.
 const HISTORY_PATH = join(
-  mkdtempSync(join(tmpdir(), "mcode-webui-usage-")),
+  mkTmpDir("mcode-webui-usage-"),
   "usage-history.ndjson",
 );
 process.env.MCODE_WEBUI_HISTORY_PATH = HISTORY_PATH;
