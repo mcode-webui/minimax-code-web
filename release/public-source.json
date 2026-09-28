@@ -29,6 +29,7 @@
     ".gitignore",
     ".gitleaks.toml",
     ".npmrc",
+    ".tmp-patch.mjs",
     "AGENTS.md",
     "CONTRIBUTING.md",
     "Dockerfile",

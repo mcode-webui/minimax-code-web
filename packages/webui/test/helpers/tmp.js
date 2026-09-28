@@ -20,13 +20,22 @@
 // Design
 // ------
 // Every directory created through `mkTmpDir` / `mkSubTmpDir` is registered
-// in a process-local Set. A `process.on('exit')` hook flushes the set
-// with `fs.rmSync(..., { recursive: true, force: true })`. The `exit` hook
-// is the LAST line of defence — `node --test` runs each `after()` hook
-// before process exit, so the normal path is "test code rm's via
-// `rmTmpDir`", and `exit` only fires if the suite died before reaching
-// cleanup. Both paths use `force: true` so a half-built directory does not
-// strand the test runner.
+// in a process-local Set. Three cleanup hooks flush the set:
+//
+//   1. `process.on('exit')` — synchronous; runs on normal exit AND after
+//      process.exit() / uncaughtException / unhandledRejection trigger
+//      exit. This is the LAST line of defence.
+//   2. `process.on('SIGINT')` and `process.on('SIGTERM')` — wrap the
+//      cleanup, then re-raise the signal so the parent shell / CI runner
+//      sees the correct exit code. Without this, `kill <pid>` left the
+//      tracked directories behind (B6 evidence: SIGTERM left 1 leak).
+//      SIGKILL is not handled (kernel-only, no userland hook); that path
+//      relies on OS-level tmp-cleanup, same as before this helper existed.
+//
+// `node --test` runs each `after()` hook before process exit, so the normal
+// path is "test code rm's via `rmTmpDir`", and the three hooks only fire
+// when the suite died before reaching cleanup. All three use `force: true`
+// so a half-built directory does not strand the test runner.
 //
 // Parent-directory batching
 // -------------------------
@@ -39,7 +48,7 @@
 //
 // Process-safety
 // --------------
-// The helper installs the exit hook exactly once (idempotent), and the Set
+// The helper installs all hooks exactly once (idempotent), and the Set
 // is iterated in registration order so a parent directory is removed
 // AFTER its children (the inverse order `force: true` would handle anyway,
 // but explicit order makes debugging easier).
@@ -49,7 +58,9 @@
 // `fs.rmSync(..., { recursive: true, force: true })` is the documented
 // cross-platform removal call. The helper does NOT touch `fs.rm` (async);
 // rmSync is intentional so the `exit` hook can do its work without
-// scheduling further I/O after the loop has drained.
+// scheduling further I/O after the loop has drained. The signal handlers
+// also do a synchronous rm — async handlers can let the kernel default-
+// action the signal before our cleanup finishes, which is what B6 hit.
 //
 // Usage
 // -----
@@ -74,26 +85,59 @@ const _tracked = new Set();
 let _hookInstalled = false;
 
 /**
- * Install a single synchronous `process.on('exit')` flush hook. Idempotent.
+ * Synchronously remove every tracked directory. Idempotent — safe to call
+ * multiple times; the Set is cleared after a successful pass so the signal
+ * handler that re-raises the signal does not double-rm.
+ */
+function flushTracked() {
+  for (const dir of _tracked) {
+    try {
+      if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // best-effort — never let cleanup throw out of an exit hook
+    }
+  }
+  _tracked.clear();
+}
+
+/**
+ * Install the synchronous `process.on('exit')` flush hook plus SIGINT /
+ * SIGTERM handlers that clean up THEN re-raise the signal. Idempotent.
  *
  * Why synchronous? `process.on('exit')` listeners only run sync code, and
  * we want the rm to actually finish before the process goes away — an
  * async-rm registered through `process.on('beforeExit')` can race a fast
  * exit and strand the directory again.
+ *
+ * Why re-raise the signal? A SIGINT/SIGTERM handler that does not call
+ * `process.kill(process.pid, sig)` would swallow the signal, leaving the
+ * parent (CI runner, watch process, operator) thinking the suite exited
+ * normally — exit code 0 — when it should report the signal's expected
+ * 130/143. The handler therefore (a) runs the cleanup, (b) re-raises the
+ * signal so the default disposition kills the process. process.exit()
+ * inside the handler would also work but bypasses the signal exit code.
  */
 function installExitHook() {
   if (_hookInstalled) return;
   _hookInstalled = true;
   process.on("exit", () => {
-    for (const dir of _tracked) {
-      try {
-        if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
-      } catch {
-        // best-effort — never let cleanup throw out of an exit hook
-      }
-    }
-    _tracked.clear();
+    flushTracked();
   });
+  // SIGINT (Ctrl-C / `kill -INT <pid>`): cleanup then re-raise.
+  process.on("SIGINT", () => {
+    flushTracked();
+    process.kill(process.pid, "SIGINT");
+  });
+  // SIGTERM (CI runner timeout / `kill <pid>` / `kill -TERM <pid>`):
+  // cleanup then re-raise. The default SIGTERM disposition is to kill
+  // the process; we honour that contract.
+  process.on("SIGTERM", () => {
+    flushTracked();
+    process.kill(process.pid, "SIGTERM");
+  });
+  // SIGKILL is intentionally NOT handled — kernel-only, no userland hook.
+  // The OS's regular tmp cleanup (mtime-based) is the only line of
+  // defence for that path. Same as before this helper existed.
 }
 
 /**

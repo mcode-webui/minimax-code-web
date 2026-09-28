@@ -22,7 +22,7 @@ import { compareRuns, exitCodeForStatus, renderReport, spread, validateRun, vali
 import { copyMcodeToolsArtifact, downloadMcodeToolsArtifact, MCODE_TOOLS_ARTIFACT } from '../scripts/lib/mcode-tools-artifact.mjs';
 import { checkWindowsSourceLocation, runWindowsSourceLocationCheck } from '../scripts/check-windows-source-location.mjs';
 import { collectTestIsolationViolations, formatTestIsolationViolations } from '../scripts/test-isolation-lint.check.mjs';
-import { scanTmpLeaks, formatTmpLeaks } from '../scripts/test-tmp-leak.check.mjs';
+import { scanTmpLeaks, formatTmpLeaks, verifyPrefixRegistry, formatPrefixRegistry } from '../scripts/test-tmp-leak.check.mjs';
 
 test('Windows source preflight accepts localized fsutil labels', () => {
   const result = checkWindowsSourceLocation({
@@ -1193,11 +1193,12 @@ test('test-tmp-leak lint: an empty fixture tree reports zero leaks', (t) => {
 });
 
 test('test-tmp-leak lint: a synthetic well-known-prefix directory is detected', (t) => {
-  // Seed a directory under one of the KNOWN_PREFIXES. The fixture uses
-  // a unique random suffix so concurrent CI runs cannot collide.
+  // Seed a directory whose name uses a KNOWN_PREFIXES entry (`webui-export-test-`)
+  // so the lint actually matches it. The fixture uses a unique random suffix
+  // so concurrent CI runs cannot collide.
   const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
   const fixture = mkdtempSync(path.join(tmpdir(), `leak-lint-fixture-${stamp}-`));
-  const target = path.join(fixture, `webui-leak-lint-canary-${stamp}`);
+  const target = path.join(fixture, `webui-export-test-canary-${stamp}`);
   mkdirSync(target, { recursive: true });
   t.after(() => rmSync(fixture, { recursive: true, force: true }));
   try {
@@ -1205,17 +1206,31 @@ test('test-tmp-leak lint: a synthetic well-known-prefix directory is detected', 
     // The synthetic fixture is the only well-known-prefix entry inside
     // its own directory. scanTmpLeaks walks every entry under `under`,
     // so the parent (`leak-lint-fixture-…`) is ignored but the inner
-    // `webui-leak-lint-canary-…` is matched.
+    // `webui-export-test-canary-…` is matched.
     assert.equal(
       leaks.length,
       1,
       `expected exactly one leak, got ${leaks.length}: ${formatTmpLeaks(leaks)}`,
     );
-    assert.match(leaks[0], /webui-leak-lint-canary-/);
-    assert.match(formatTmpLeaks(leaks), /webui-leak-lint-canary-/);
+    assert.match(leaks[0], /webui-export-test-canary-/);
+    assert.match(formatTmpLeaks(leaks), /webui-export-test-canary-/);
   } finally {
     // The above t.after() runs at suite end, so the fixture is removed
     // before any other test in this file can scan.
     rmSync(fixture, { recursive: true, force: true });
   }
+});
+
+// Reverse validation: the KNOWN_PREFIXES list must stay in lock-step with
+// the prefixes the test tree actually passes to mkTmpDir / mkTmpDirAsync /
+// mkSubTmpDir. A future test author who introduces a new prefix must add
+// it here AND update KNOWN_PREFIXES — verifyPrefixRegistry() makes the
+// "I added a new test prefix but forgot to register it" footgun loud.
+test('test-tmp-leak registry: KNOWN_PREFIXES covers every prefix the test tree uses', () => {
+  const verdict = verifyPrefixRegistry();
+  assert.deepEqual(
+    verdict,
+    { unregistered: [], stale: [] },
+    formatPrefixRegistry(verdict),
+  );
 });
