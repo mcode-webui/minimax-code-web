@@ -38,9 +38,9 @@ import * as React from "react";
  * text stays visible, which is the same trade the upstream desktop
  * indicator makes (lottie halts, the phrase keeps ticking).
  *
- * Colours come from the semantic token pair the desktop skeleton loader uses
- * (`--bg_default_tertiary` base, `--bg_default_secondary` highlight sweep),
- * so both themes are covered by the token layer — no per-theme rules here.
+ * Colours: the base is the user-bubble token (`--bg_grouped_tertiary`) and
+ * the sweep is the 15%-black overlay token (`--opacity_black_1_15`), so both
+ * themes are covered by the token layer — no per-theme rules here.
  */
 
 /** Engine-activity gate: true while the session is streaming a turn. */
