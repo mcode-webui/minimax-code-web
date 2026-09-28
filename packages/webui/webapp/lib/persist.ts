@@ -41,6 +41,7 @@
 // version stays stable across feature additions; bumping `version`
 // forces a clean slate.
 
+import type { AppearanceChoice } from "./types";
 import { clientId } from "./cid";
 import {
   DEFAULT_WORKSPACE_TABS_STATE,
@@ -49,6 +50,13 @@ import {
   WORKSPACE_TABS_VERSION,
   type WorkspaceTabsState,
 } from "./workspace-tabs-state";
+
+/** Pin the appearance choice string set — anything else is rejected on read. */
+const VALID_APPEARANCE: ReadonlySet<AppearanceChoice> = new Set([
+  "light",
+  "dark",
+  "system",
+]);
 
 /** Stable prefix used by every key in this namespace. Mirrors slice 01. */
 export const PREFIX = "webui";
@@ -96,12 +104,7 @@ export { WORKSPACE_TABS_VERSION, DEFAULT_WORKSPACE_TABS_STATE };
  * makes the contract explicit: a kind that is not in the union
  * cannot be opened.
  */
-export type PanelKind =
-  | "workspace"
-  | "files"
-  | "git"
-  | "plugins"
-  | "browser";
+export type PanelKind = "workspace" | "files" | "git" | "plugins" | "browser";
 
 export interface UiState {
   panel: PanelKind | null;
@@ -115,6 +118,11 @@ export interface UiState {
    *  state always wins once SSE arrives — this is only a hint for the
    *  brief loading window. */
   lastSessionId: string | null;
+  /** Three-state appearance choice (slice 18). `null` means "no
+   *  choice yet" — the bootstrap falls back to `prefers-color-scheme`
+   *  (i.e. the historical behaviour) on a null. Persisted alongside
+   *  the other UI state so the choice survives a reload. */
+  appearance: AppearanceChoice | null;
 }
 
 export const DEFAULT_UI_STATE: UiState = {
@@ -122,6 +130,7 @@ export const DEFAULT_UI_STATE: UiState = {
   panelTab: null,
   sidebarCollapsed: false,
   lastSessionId: null,
+  appearance: null,
 };
 
 interface UiStatePayload {
@@ -167,7 +176,10 @@ export function writeUiState(state: UiState): void {
   scheduleUiStateWrite(uiStateKey(cid), cid, state);
 }
 
-export function deserializeUiState(raw: string | null | undefined, cid: string | null | undefined): UiState {
+export function deserializeUiState(
+  raw: string | null | undefined,
+  cid: string | null | undefined,
+): UiState {
   if (!raw) return { ...DEFAULT_UI_STATE };
   let parsed: unknown;
   try {
@@ -181,7 +193,12 @@ export function deserializeUiState(raw: string | null | undefined, cid: string |
   // Different cid — drop. The user switched cids (rare: a different
   // browser) and the previous session's panel choice should not bleed
   // into the new identity.
-  if (typeof cid === "string" && cid.length > 0 && typeof obj.cid === "string" && obj.cid !== cid) {
+  if (
+    typeof cid === "string" &&
+    cid.length > 0 &&
+    typeof obj.cid === "string" &&
+    obj.cid !== cid
+  ) {
     return { ...DEFAULT_UI_STATE };
   }
   const s = obj.state;
@@ -194,11 +211,21 @@ export function deserializeUiState(raw: string | null | undefined, cid: string |
     "plugins",
     "browser",
   ]);
-  const panel = typeof so.panel === "string" && validKinds.has(so.panel as PanelKind) ? (so.panel as PanelKind) : null;
-  const panelTab = typeof so.panelTab === "string" ? (so.panelTab as string) : null;
+  const panel =
+    typeof so.panel === "string" && validKinds.has(so.panel as PanelKind)
+      ? (so.panel as PanelKind)
+      : null;
+  const panelTab =
+    typeof so.panelTab === "string" ? (so.panelTab as string) : null;
   const sidebarCollapsed = so.sidebarCollapsed === true;
-  const lastSessionId = typeof so.lastSessionId === "string" ? (so.lastSessionId as string) : null;
-  return { panel, panelTab, sidebarCollapsed, lastSessionId };
+  const lastSessionId =
+    typeof so.lastSessionId === "string" ? (so.lastSessionId as string) : null;
+  const appearance =
+    typeof so.appearance === "string" &&
+    VALID_APPEARANCE.has(so.appearance as AppearanceChoice)
+      ? (so.appearance as AppearanceChoice)
+      : null;
+  return { panel, panelTab, sidebarCollapsed, lastSessionId, appearance };
 }
 
 // --- debounced writer ------------------------------------------------------
@@ -224,7 +251,11 @@ function scheduleUiStateWrite(key: string, cid: string, state: UiState): void {
     pendingState = null;
     if (!k || !c || !s) return;
     try {
-      const payload: UiStatePayload = { version: UI_STATE_VERSION, cid: c, state: s };
+      const payload: UiStatePayload = {
+        version: UI_STATE_VERSION,
+        cid: c,
+        state: s,
+      };
       window.localStorage.setItem(k, JSON.stringify(payload));
     } catch {
       // same best-effort contract as the reader
@@ -246,7 +277,11 @@ export function __flushUiState(): void {
   pendingState = null;
   if (!k || !c || !s) return;
   try {
-    const payload: UiStatePayload = { version: UI_STATE_VERSION, cid: c, state: s };
+    const payload: UiStatePayload = {
+      version: UI_STATE_VERSION,
+      cid: c,
+      state: s,
+    };
     window.localStorage.setItem(k, JSON.stringify(payload));
   } catch {
     /* */
@@ -271,13 +306,18 @@ const SCROLL_KEY_PREFIX = `${PREFIX}:scroll:v${SCROLL_VERSION}`;
 /** Per-(cid, sessionId) key. Mirrors slice 01's "per-workspace guard"
  *  discipline: each session gets its own entry so two sessions do not
  *  collide. */
-export function scrollKey(cid: string | null | undefined, sessionId: string | null | undefined): string {
+export function scrollKey(
+  cid: string | null | undefined,
+  sessionId: string | null | undefined,
+): string {
   const safeCid = cid && cid.length > 0 ? cid : "anon";
   const safeS = sessionId && sessionId.length > 0 ? sessionId : "anon";
   return `${SCROLL_KEY_PREFIX}:${safeCid}:${safeS}`;
 }
 
-export function readScrollPosition(sessionId: string | null | undefined): number {
+export function readScrollPosition(
+  sessionId: string | null | undefined,
+): number {
   if (typeof window === "undefined" || !sessionId) return 0;
   let raw: string | null = null;
   try {
@@ -288,7 +328,10 @@ export function readScrollPosition(sessionId: string | null | undefined): number
   return deserializeScroll(raw, clientId(), sessionId);
 }
 
-export function writeScrollPosition(sessionId: string | null | undefined, scrollTop: number): void {
+export function writeScrollPosition(
+  sessionId: string | null | undefined,
+  scrollTop: number,
+): void {
   if (typeof window === "undefined" || !sessionId) return;
   const cid = clientId();
   try {
@@ -299,7 +342,10 @@ export function writeScrollPosition(sessionId: string | null | undefined, scroll
       scrollTop,
       savedAt: Date.now(),
     };
-    window.localStorage.setItem(scrollKey(cid, sessionId), JSON.stringify(payload));
+    window.localStorage.setItem(
+      scrollKey(cid, sessionId),
+      JSON.stringify(payload),
+    );
   } catch {
     /* best-effort */
   }
@@ -320,8 +366,20 @@ export function deserializeScroll(
   if (!parsed || typeof parsed !== "object") return 0;
   const obj = parsed as Record<string, unknown>;
   if (obj.version !== SCROLL_VERSION) return 0;
-  if (typeof cid === "string" && cid.length > 0 && typeof obj.cid === "string" && obj.cid !== cid) return 0;
-  if (typeof sessionId === "string" && sessionId.length > 0 && typeof obj.sessionId === "string" && obj.sessionId !== sessionId) return 0;
+  if (
+    typeof cid === "string" &&
+    cid.length > 0 &&
+    typeof obj.cid === "string" &&
+    obj.cid !== cid
+  )
+    return 0;
+  if (
+    typeof sessionId === "string" &&
+    sessionId.length > 0 &&
+    typeof obj.sessionId === "string" &&
+    obj.sessionId !== sessionId
+  )
+    return 0;
   const top = obj.scrollTop;
   return typeof top === "number" && Number.isFinite(top) && top >= 0 ? top : 0;
 }
@@ -418,7 +476,11 @@ export function writeWorkspaceTabs(state: WorkspaceTabsState): void {
   scheduleWorkspaceTabsWrite(workspaceTabsKey(cid), cid, state);
 }
 
-function scheduleWorkspaceTabsWrite(key: string, cid: string, state: WorkspaceTabsState): void {
+function scheduleWorkspaceTabsWrite(
+  key: string,
+  cid: string,
+  state: WorkspaceTabsState,
+): void {
   pendingTabsKey = key;
   pendingTabsCid = cid;
   pendingTabsState = state;
@@ -433,7 +495,10 @@ function scheduleWorkspaceTabsWrite(key: string, cid: string, state: WorkspaceTa
     pendingTabsState = null;
     if (!k || !c || !s) return;
     try {
-      window.localStorage.setItem(k, JSON.stringify(serializeWorkspaceTabs(s, c)));
+      window.localStorage.setItem(
+        k,
+        JSON.stringify(serializeWorkspaceTabs(s, c)),
+      );
     } catch {
       // best-effort — see writeUiState.
     }
@@ -454,7 +519,10 @@ export function __flushWorkspaceTabs(): void {
   pendingTabsState = null;
   if (!k || !c || !s) return;
   try {
-    window.localStorage.setItem(k, JSON.stringify(serializeWorkspaceTabs(s, c)));
+    window.localStorage.setItem(
+      k,
+      JSON.stringify(serializeWorkspaceTabs(s, c)),
+    );
   } catch {
     /* */
   }

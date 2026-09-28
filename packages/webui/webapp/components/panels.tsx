@@ -39,6 +39,7 @@ import { isHtmlPath } from "@/lib/browser-nav";
 import type { Locale, MessageKey } from "@/lib/i18n";
 import type { ThemeName } from "@/lib/types";
 import { Icon } from "./icons";
+import { AppearanceCardPicker } from "./appearance-card-picker";
 import { ProviderManagementPanel } from "./provider-management";
 import { FilePreviewPane } from "./file-preview-pane";
 
@@ -3245,7 +3246,7 @@ function SettingsPanel({
       /* Appearance — theme and language switches folded into settings. */
       <Field label={t("settings.appearance")}>
         <div className="flex flex-col gap-2">
-          <ThemeSwitch t={t} />
+          <ThemeSwitch t={t} locale={locale} />
           <LanguageSwitch t={t} locale={locale} setLocale={setLocale} />
         </div>
       </Field>
@@ -3392,25 +3393,15 @@ function Toggle({
  * The document owns the applied theme (see lib/theme.ts), and the class on <html>
  * is not reactive state, so this reads it on mount and keeps a local mirror to
  * re-render the selected segment immediately after a write.
+ *
+ * Slice 18 swapped the prior 2-option Segmented for the three-state
+ * `AppearanceCardPicker` (see components/appearance-card-picker.tsx). The
+ * `t` prop is still threaded in for callers that pass it; the picker reads
+ * its own labels via `tAppearance`. The locale prop is forwarded so the
+ * card labels render in the user's selected language.
  */
-function ThemeSwitch({ t }: { t: (key: MessageKey) => string }) {
-  const [theme, setTheme] = useState<ThemeName>("light");
-  useEffect(() => setTheme(currentTheme()), []);
-  return (
-    <Segmented
-      label={t("settings.theme")}
-      value={theme}
-      options={[
-        { id: "light", label: t("settings.themeLight") },
-        { id: "dark", label: t("settings.themeDark") },
-      ]}
-      onChange={(id) => {
-        const next = id as ThemeName;
-        applyTheme(next);
-        setTheme(next);
-      }}
-    />
-  );
+function ThemeSwitch({ t: _t, locale }: { t: (key: MessageKey) => string; locale: Locale }) {
+  return <AppearanceCardPicker locale={locale} />;
 }
 
 /** Language picker. Writes through the same store the rest of the UI reads. */
