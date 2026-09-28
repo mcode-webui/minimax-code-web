@@ -33,6 +33,7 @@
     "@types/react-dom": "18.3.7",
     "antd": "5.29.3",
     "autoprefixer": "10.6.1",
+    "highlight.js": "10.7.3",
     "marked": "18.0.12",
     "next": "14.2.35",
     "postcss": "8.5.28",

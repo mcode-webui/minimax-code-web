@@ -1,0 +1,181 @@
+/* Code preview (slice 22 of webui-parity).
+ *
+ * Three concerns live here, in three layers:
+ *
+ *   1. hljs token colours — every `.hljs-<role>` class is mapped to a
+ *      `--code-theme-*` token in `styles/tokens.css`. Because those
+ *      tokens flip with the `.dark` class on <html> (set by the theme
+ *      bootstrap in app/layout.tsx), the highlight palette auto-themes
+ *      without a per-theme override block in this file. Both light and
+ *      dark themes are supported by construction.
+ *
+ *   2. The gutter — a fixed-width left column with line numbers, locked
+ *      to the code column so horizontal scroll on a long line never
+ *      drags the gutter off-screen. Tabular numerals keep the gutter
+ *      aligned at 1, 10, 100 lines.
+ *
+ *   3. The shell — padded pre/code area, copy-button row, truncation
+ *      notice banner. None of these have a token; values are direct.
+ *
+ * Naming convention: every selector is namespaced under
+ * `.file-preview-codeblock` so the chat markdown's `.codeblock-pre`
+ * shell (which lives in `styles/official-utilities.css`) is unaffected
+ * by this file. The file-preview surface uses a separate class on
+ * purpose: chat and file preview are different products with different
+ * shells, and they should not share their cascade by accident.
+ *
+ * Theme note: the `--code-theme-*` palette is brighter on dark and
+ * softer on light by design — tokens.css quotes the upstream values
+ * verbatim, not a hand-tuned contrast pair. The values below are
+ * copies of that contract.
+ */
+
+/* ---------------------------------------------------------------------
+ * Layer 1 — hljs token colours.
+ *
+ * The `code-theme-*` tokens are aliased to the upstream colour ramp
+ * per-theme (light vs dark); we just wire the names.
+ * --------------------------------------------------------------------- */
+.file-preview-codeblock .hljs {
+  color: var(--code-theme-default);
+}
+
+.file-preview-codeblock .hljs-keyword,
+.file-preview-codeblock .hljs-tag,
+.file-preview-codeblock .hljs-selector-tag {
+  color: var(--code-theme-keyword);
+}
+
+.file-preview-codeblock .hljs-string,
+.file-preview-codeblock .hljs-quote,
+.file-preview-codeblock .hljs-meta-string {
+  color: var(--code-theme-string);
+}
+
+.file-preview-codeblock .hljs-number,
+.file-preview-codeblock .hljs-literal {
+  color: var(--code-theme-number);
+}
+
+.file-preview-codeblock .hljs-comment,
+.file-preview-codeblock .hljs-doctag {
+  color: var(--code-theme-comment);
+  font-style: italic;
+}
+
+.file-preview-codeblock .hljs-function,
+.file-preview-codeblock .hljs-title,
+.file-preview-codeblock .hljs-title.function_,
+.file-preview-codeblock .hljs-method {
+  color: var(--code-theme-function);
+}
+
+.file-preview-codeblock .hljs-class .hljs-title,
+.file-preview-codeblock .hljs-title.class_,
+.file-preview-codeblock .hljs-type {
+  color: var(--code-theme-type);
+}
+
+.file-preview-codeblock .hljs-attr,
+.file-preview-codeblock .hljs-attribute {
+  color: var(--code-theme-attribute);
+}
+
+.file-preview-codeblock .hljs-built_in,
+.file-preview-codeblock .hljs-builtin-name {
+  color: var(--code-theme-builtin);
+}
+
+.file-preview-codeblock .hljs-symbol,
+.file-preview-codeblock .hljs-bullet,
+.file-preview-codeblock .hljs-meta {
+  color: var(--code-theme-constant);
+}
+
+.file-preview-codeblock .hljs-params,
+.file-preview-codeblock .hljs-variable,
+.file-preview-codeblock .hljs-template-variable,
+.file-preview-codeblock .hljs-property {
+  color: var(--code-theme-property);
+}
+
+.file-preview-codeblock .hljs-regexp,
+.file-preview-codeblock .hljs-selector-attr,
+.file-preview-codeblock .hljs-selector-pseudo {
+  color: var(--code-theme-regex);
+}
+
+.file-preview-codeblock .hljs-meta-keyword,
+.file-preview-codeblock .hljs-decorator {
+  color: var(--code-theme-decorator);
+}
+
+.file-preview-codeblock .hljs-emphasis { font-style: italic; }
+.file-preview-codeblock .hljs-strong { font-weight: 600; }
+
+/* ---------------------------------------------------------------------
+ * Layer 2 — gutter (line numbers).
+ *
+ * Layout: a CSS grid keeps the gutter column fixed-width and the code
+ * column flexible. Horizontal scroll lives on the OUTER wrapper; the
+ * inner grid does not scroll, so the gutter never moves.
+ *
+ * Each line is one `.file-preview-codeblock-line` row. The gutter is a
+ * fixed-width span with right-aligned, tabular numerals so a 4-digit
+ * line number (9999) and a 1-digit one (1) take the same column. The
+ * code column has its own left padding so digits never touch the code.
+ * --------------------------------------------------------------------- */
+.file-preview-codeblock {
+  display: block;
+}
+
+.file-preview-codeblock .file-preview-codeblock-line {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  align-items: baseline;
+  column-gap: 12px;
+  padding: 0 12px;
+  /* 22px line height matches the body and gives the gutter its rhythm. */
+  min-height: 22px;
+  line-height: 22px;
+}
+
+.file-preview-codeblock .file-preview-codeblock-gutter {
+  /* Right-align digits; `text-align: end` is RTL-safe. */
+  text-align: end;
+  user-select: none;
+  /* Tabular numerals so 1, 10, 100, 1000 all sit at the same x. */
+  font-variant-numeric: tabular-nums;
+  color: var(--text_default_quaternary);
+  /* Truncate the gutter at 4 digits (max file sizes we expect to see). */
+  min-width: 3ch;
+}
+
+.file-preview-codeblock .file-preview-codeblock-code {
+  /* The code column takes the remaining width and may overflow
+   * horizontally. The outer wrapper handles that scroll, NOT this
+   * inner span — keeping the overflow on the parent preserves the
+   * grid layout (a child that overflows would push the gutter off
+   * screen). The code uses `min-width: max-content` so the column
+   * grows with the longest line; horizontal scroll then exposes the
+   * rest of the line on the outer wrapper. */
+  min-width: max-content;
+  white-space: pre;
+  display: block;
+}
+
+/* The native `.hljs` pre/code shell that wraps the gutter+code rows.
+ * `margin: 0` clears the chat codeblock's default margin; `padding:
+ * 12px 0` gives the first / last line air. */
+.file-preview-codeblock > pre.file-preview-codeblock-pre,
+.file-preview-codeblock > div > pre.file-preview-codeblock-pre {
+  padding: 6px 0;
+}
+
+/* ---------------------------------------------------------------------
+ * Layer 3 — shell (copy button, truncation banner).
+ *
+ * The copy button is sticky to the top-right corner of the scroll
+ * surface, so a long file still has the affordance in view. The
+ * truncation banner is a flex row above the gutter.
+ * --------------------------------------------------------------------- */

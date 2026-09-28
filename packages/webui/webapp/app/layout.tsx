@@ -8,6 +8,7 @@ import "../styles/tokens.css";
 import "../styles/official-utilities.css";
 import "../styles/mavis-dropdown.css";
 import "../styles/desktop-typography.css";
+import "../styles/code-preview.css";
 
 export const metadata: Metadata = {
   title: "MiniMax Code",

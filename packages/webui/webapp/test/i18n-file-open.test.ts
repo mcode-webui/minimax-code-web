@@ -84,6 +84,9 @@ describe("i18n-file-open — bilingual symmetry (no orphan keys)", () => {
       "fileOpen.confirm.title",
       "fileOpen.confirm.label",
       "fileOpen.confirm.detail",
+      "fileOpen.code.copy",
+      "fileOpen.code.copy.aria",
+      "fileOpen.code.truncated",
     ];
     for (const key of visibleKeys) {
       assert.notEqual(

@@ -71,6 +71,13 @@ const FILE_OPEN_STRINGS = {
     "fileOpen.reason.credential.subReason.ssh-key": "SSH private key",
     "fileOpen.reason.credential.subReason.credentials": "credentials file",
     "fileOpen.reason.credential.subReason.ssh-meta": "SSH metadata file",
+    /* Slice 22 — code preview copy. The badge already says the
+       language; the buttons stay short to fit a 288px panel.
+       `truncated` is shown when the highlight step dropped bytes /
+       lines to keep the main thread responsive on a multi-MiB file. */
+    "fileOpen.code.copy": "Copy",
+    "fileOpen.code.copy.aria": "Copy the source code to the clipboard without line numbers",
+    "fileOpen.code.truncated": "Showing first {{shown}} of {{total}} lines. The full file is preserved on disk — open it externally to see the rest.",
     /* Action buttons — kept terse because the row's horizontal space is
        tight in the right-hand panel (288px). The aria-label carries the
        long form for screen readers. */
@@ -138,6 +145,12 @@ const FILE_OPEN_STRINGS = {
     "fileOpen.reason.credential.subReason.ssh-key": "SSH 私钥",
     "fileOpen.reason.credential.subReason.credentials": "凭据文件",
     "fileOpen.reason.credential.subReason.ssh-meta": "SSH 元数据文件",
+    /* Slice 22 — 代码预览。徽标已经说明语言；按钮文字保持简短以
+       适配 288px 面板。`truncated` 在主线程为了避免大文件卡顿而
+       截断高亮时显示，提醒用户去外部工具看完整内容。 */
+    "fileOpen.code.copy": "复制",
+    "fileOpen.code.copy.aria": "把源码复制到剪贴板（不含行号）",
+    "fileOpen.code.truncated": "仅展示前 {{shown}} / {{total}} 行。完整文件仍在磁盘上，可通过外部工具查看其余部分。",
     "fileOpen.action.openDefault": "用默认应用打开",
     "fileOpen.action.openDefault.aria": "用系统默认应用程序打开该文件",
     "fileOpen.action.reveal": "在文件管理器中显示",
