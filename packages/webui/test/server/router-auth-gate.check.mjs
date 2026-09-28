@@ -11,12 +11,19 @@
 //
 // Without this gate the app shell loaded and every /api/* then 401'd with
 // no guidance (surfaced to users as "加载目录失败: 401" in the picker).
+//
+// Preflight: every assertion here resolves files from the Next.js static
+// export (webapp/out). In a fresh worktree that export does not exist yet,
+// so `/` falls through to the router's documented 404 tail and all six
+// tests fail for an environmental reason. CI always builds first and never
+// hits this; locally the file prints a prominent hint and skips instead of
+// bleeding six red assertions.
 
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
 import { join } from "node:path";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 
@@ -49,6 +56,25 @@ after(async () => {
 const router = await import(absPath("router.js"));
 const settingsLib = await import(absPath("lib/settings.js"));
 settingsLib.init({});
+
+const { NEXT_EXPORT_DIR } = await import(absPath("lib/layout.js"));
+const INDEX_HTML_MISSING = !existsSync(join(NEXT_EXPORT_DIR, "index.html"));
+if (INDEX_HTML_MISSING) {
+  console.error(`
+============================================================================
+ router-auth-gate.check.mjs — SKIPPED (6 tests)
+ webapp/out/index.html is missing: the Next.js static export has not been
+ built in this checkout. Run
+
+     pnpm --filter @mavis/webui webapp:build
+
+ and re-run the tests. CI always builds first, so it never hits this path.
+============================================================================
+`);
+}
+const SKIP_REASON = INDEX_HTML_MISSING
+  ? "webapp/out/index.html not built — run: pnpm --filter @mavis/webui webapp:build"
+  : false;
 
 function fakeReq({ method = "GET", url = "/", remoteAddress = "192.0.2.9", headers: extra = {} }) {
   const req = Readable.from([]);
@@ -100,7 +126,7 @@ const isGate = (res) => res._body.includes("auth-gate") || res._body.includes("w
 const isIndex = (res) =>
   res._body.includes("chat-inner") || res._body.includes("_next/static");
 
-describe("router — token gate page (v2.3)", () => {
+describe("router — token gate page (v2.3)", { skip: SKIP_REASON }, () => {
   test("non-local + no token → gate page", async () => {
     const res = await get("/");
     assert.equal(res._status, 200);
