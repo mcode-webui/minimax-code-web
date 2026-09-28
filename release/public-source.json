@@ -3619,6 +3619,7 @@
     "packages/webui/test/routes/workspace.check.mjs",
     "packages/webui/test/server/app-hono.test.js",
     "packages/webui/test/server/attachments.test.js",
+    "packages/webui/test/server/catalogue-fallback.test.js",
     "packages/webui/test/server/catalogue-via-runtime.test.js",
     "packages/webui/test/server/fs-parent-reachability.test.js",
     "packages/webui/test/server/gates-lan-reject.test.js",

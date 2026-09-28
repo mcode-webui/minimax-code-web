@@ -144,6 +144,7 @@ S2 不变量（后续切片必须继续守住）：
 
 - **缺省 `MCODE_WEBUI_TRANSPORT=acp` 与 `main` 字段级一致。** 现有任一端点的响应都不能偏移；进程内不能多出新的子进程。每次提交都用完整 webui node:test 套件在无 env 覆盖的情况下跑一遍来验证。
 - **S2 只建骨架、不接线。** `createCatalogueHost` 与 `createTurnHost` 都从 `server/lib/runtime-host.js` 导出，但没有生产路由 import 它们。S3 接目录类流量（list/title），S4 接回合（`runMcodeRuntime`），S5 接模型，S6 接交互与账户。S7 才把缺省翻为 `runtime`。
+- **目录类流量由 `MCODE_WEBUI_TRANSPORT=runtime` 选择性接管。** 该开关点亮列表/标题走 catalogue 宿主；单次调用遇错（boot 失败、`adapter.listSessions`/`adapter.getSession` 抛错）就回退 ACP——单点 runtime 故障不会让侧栏黑屏。`mcodeSessionsCache` 两条路径共用，一次填充后任何一侧都能读到，所以目录里看到的会话列表不依赖某条特定路径。
 - **R1 缓解（进程隔离丧失）落在回合宿主里。** 任何对 `adapter.sendMessage` 的调用都被包在边界内——runtime 侧抛出转为流式 error 帧，**永远不会冒泡出回合**。`packages/webui/test/server/runtime-host.test.js` 用一处删掉内层 try/catch 的变异验证这条边界——边界没了测试就红。
 - **R2 缓解（取消语义）落在 `createTurnHost#abortSession`。** 它在最多 5 秒内等待流归位，然后返回 `{success:true, elapsedMs}`；**不依赖子进程 kill**，因为已经没有子进程。超时上限保证即便 runtime 卡死也不会拖累优雅停机。
 - **R8 缓解（宿主卡死）落在 `createCatalogueHost#close`。** 它把 `apiHost.close()` 与 5 秒超时赛跑——任一依赖链卡死都不会拖累 webui 的优雅停机。

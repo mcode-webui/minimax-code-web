@@ -243,6 +243,69 @@ test("S2-RH-03: turn host sendMessage failure does not crash the process; other 
 });
 
 // ============================================================
+// 3b. Outer-boundary regression pin for R1 — synchronous throw on entry.
+// S2-RH-03 covers mid-stream iterator throws; this test pins the
+// outer-boundary case where `adapter.sendMessage(req, signal)` throws
+// synchronously before returning the iterator. The same error-frame
+// contract applies: the for-await must NOT propagate the throw, the
+// stream must yield exactly one `{type:'error'}` frame, and the
+// surrounding process must keep working.
+// ============================================================
+
+test("S2-RH-03b: turn host sendMessage synchronous entry throw is contained at the outer boundary", async () => {
+  const dir = setupIsolatedDir("rh03b");
+  const { createCatalogueHost, createTurnHost } = await import(
+    "../../server/lib/runtime-host.js"
+  );
+  assert.equal(
+    typeof createTurnHost,
+    "function",
+    "runtime-host.js must export createTurnHost",
+  );
+
+  const host = await createCatalogueHost({ dataDir: dir });
+  // Replace sendMessage with a function that throws synchronously,
+  // before any iterator object is returned. The outer try/catch in
+  // safeSendMessage must convert this to a stream error frame.
+  const realSend = host.adapter.sendMessage.bind(host.adapter);
+  host.adapter.sendMessage = () => {
+    throw new Error("simulated runtime-side synchronous entry failure");
+  };
+  void realSend;
+
+  const turn = createTurnHost(host);
+  let caughtExternally = false;
+  let streamErrorSeen = false;
+  let frameCount = 0;
+  try {
+    for await (const ev of turn.sendMessage({ id: "boom-entry" })) {
+      frameCount++;
+      if (ev && ev.type === "error") streamErrorSeen = true;
+    }
+  } catch {
+    caughtExternally = true;
+  }
+  assert.equal(
+    frameCount,
+    1,
+    `entry throw must yield exactly one frame (got ${frameCount}); for-await must NOT loop`,
+  );
+  assert.ok(
+    streamErrorSeen && !caughtExternally,
+    `entry throw must surface as a stream error frame, never as a thrown exception — ` +
+      `streamErrorSeen=${streamErrorSeen} caughtExternally=${caughtExternally}`,
+  );
+
+  // Process still alive: restore sendMessage, follow-up read works.
+  host.adapter.sendMessage = realSend;
+  const listed = await host.adapter.listSessions();
+  assert.ok(Array.isArray(listed), "process survived — listSessions works");
+  await host.close();
+
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// ============================================================
 // 4. Abort → wait ≤5s → discard — regression pin for R2.
 //
 // The test exercises the bounded-drain branch (the path R2 calls out):
