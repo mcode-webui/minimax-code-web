@@ -106,7 +106,7 @@ single index that satisfies the check.
 |---|---|---|
 | Built-in command list (`/help`, `/compact`, `/model`, …) | ✅ | mcode acp `session/commands` is fetched at connect; cached in `mcodeCommandsCache` |
 | Command autocomplete on `/` | ✅ | `filterSlash()` builds the overlay; matches against `cmd` and `description_*` |
-| Local (webui-side) commands | ✅ | `/exec` switches transport to mcode exec; `/clear` clears the chat UI without touching mcode |
+| Local (webui-side) commands | ✅ | `WEBUI_LOCAL_COMMANDS` (`server/lib/acp-client.js`): `new`, `clear`, `status`, `sessions`, `usage`, `help`, `stop`; `/clear` clears the chat UI without touching mcode. There is no `/exec` command — transport is chosen per turn by the environment (`MCODE_USE_ACP=0`) or the permission mode (≠ Full access), never by a slash command. |
 | Hidden / experimental commands | ⚠ | the acp `commands` list returns everything mcode knows about. The webui has no `hidden` flag yet. |
 
 ## 6. Workspaces

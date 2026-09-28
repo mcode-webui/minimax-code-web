@@ -412,9 +412,7 @@ export const MCODE_ACP_CAPABILITIES = {
 如何处理——通常是客户端弹一个 toast。
 
 ### `mcode-acp.js` 与 `mcode-exec.js`
-两种传输，共享同一形状。传输层由 `mcode-rpc.js`
-根据引擎自身上报的版本（取自 `initialize` 应答里的
-`agentInfo`）以及按请求的 `/exec` 显式选择来决定。
+两种传输，共享同一形状。一个回合用哪种传输在引擎启动前就已决定，判定散落两处：`routes/chat.js#handleSend` 在服务端环境变量 `MCODE_USE_ACP=0` 时强制走 `mcode exec`（ACP 协议回归时的逃生阀）；`runMcodeAcp` 自身在会话权限模式不是 `Full access` 时改道 `runMcodeExec`（`runMcodeAcp` 的首个分支）。不存在 `/exec` 命令，也没有按请求的显式选择；`mcode-rpc.js` 不做传输选择——它只与当前已注册的子进程通信。
 
 两者都暴露：
 - `runMcode(content, opts)` → `AsyncGenerator<NormalizedEvent>`

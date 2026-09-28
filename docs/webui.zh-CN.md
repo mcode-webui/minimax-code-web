@@ -2,7 +2,7 @@
 
 > 简体中文 | [English](webui.md)
 
-Web UI（`packages/webui`）是 MiniMax Code 的浏览器前端。它使用与 TUI 相同的引擎 —— CLI 的 ACP 服务器（`mcode acp`，基于 stdio 的 JSON-RPC 2.0）—— 因此终端、浏览器和桌面客户端都运行在同一个运行时之上。它不是一个插件：它随仓库一起发布，并由 CLI 启动。
+Web UI（`packages/webui`）是 MiniMax Code 的浏览器前端。它使用与 TUI 相同的引擎 —— CLI 的 ACP 服务器（`mcode acp`，基于 stdio 的 JSON-RPC 2.0）—— 因此终端、浏览器和桌面客户端都运行在同一个运行时之上。每条消息默认走 ACP 传输；两种情况下会改走一次性的 `mcode exec` 命令行（见下文「传输选择」一节）。它不是一个插件：它随仓库一起发布，并由 CLI 启动。
 
 本文描述**当前已发布的 webui 实际行为，依据源码核对**。每一处断言都给出可定位的文件或测试。功能不完整或仅为占位的，本文档会明确标注。下文记录的形态与边界来自 `packages/webui/{server,webapp}` 的当前文件版本；各项引入时间均在下文标注。
 
@@ -99,6 +99,53 @@ node dist/cli.js webui --host 0.0.0.0 --no-open   # PORT defaults to 18080
 - **凭据形态的文件默认拒绝预览**（slice 16）。文件名命中 `.env` / `.env.*`、`*.pem` / `*.key`、`id_rsa` / `id_ed25519` / `id_ecdsa` / `id_dsa`、`known_hosts`、`authorized_keys`、`.npmrc`、`.pypirc`、`.netrc`、`.pgpass`、`credentials*`，以及备份后缀集（`.bak` / `.old` / `.orig` / `.backup` / `.save` / `.swp`）时，`GET /api/fs/read-file` 返回 HTTP `403 {code: "credential"}`。Webapp 在拒绝态展示「仍要打开？」二次确认；用户确认后用 `?confirm=1` 重发请求拿到明文。唯一的判断函数位于 `packages/webui/server/lib/credential-file.js`，并在 `packages/webui/webapp/lib/credential-file.ts` 字面镜像；测试套件 `packages/webui/webapp/test/credential-file.test.ts` 同时驱动两侧，使它们无法漂移。文件树、`/api/fs/search` 与 OS 默认打开/定位不受此门禁影响（它们都是树形显示、搜索或 OS 调用，不读取明文）—— 搜索只会给命中打 `credential: true` 标记，永不下发内容。该判断函数基于文件名，**因此无法防御硬链接别名攻击**（两个指向同一 inode 的不同名字，例如 `config.txt → .env`——内核无法从 inode 还原"主"名字）。它能覆盖符号链接（由 `realpathSync` 解析），但不能覆盖硬链接——担心硬链接别名的运维必须保持工作区目录整洁。
 
 正式的披露文档是 [`packages/webui/references/SECURITY-NOTES.md`](../packages/webui/references/SECURITY-NOTES.md)。
+
+## 传输选择（ACP 还是 exec）
+
+发出的每条消息都由两种传输之一送达引擎。选择发生在服务端、按回合进行，页面上**没有任何提示**。本节记录当前源码的实际行为，不是长期不变的契约。
+
+两种传输是什么：
+
+- **ACP**（默认）：与 TUI 相同的协议通道（`mcode acp` 子进程）。工具调用过程、会话标题、思考等级等事件都从这条通道回传。
+- **exec**：一次性 `mcode exec` 命令行子进程。回合结束进程即退出，只有思考与正文文本回传。
+
+谁决定走哪条：
+
+| 条件 | 实际走的传输 | 判定位置 |
+| --- | --- | --- |
+| 服务端环境变量 `MCODE_USE_ACP=0` | exec | `server/routes/chat.js#handleSend` |
+| 会话权限模式不是 Full access（Ask / Auto / Read） | exec（在 ACP 入口内部静默改道） | `server/lib/mcode-acp.js#runMcodeAcp` 首个分支 |
+| 其余情况（出厂默认：权限 Full access，见 `server/lib/state-bus.js` 初始状态） | ACP | 同上 |
+
+出厂默认权限是 Full access，所以不碰任何开关时所有回合都走 ACP。两个条件若同时成立也不冲突——它们都指向 exec；环境变量先判（`chat.js` 的三元），权限判定只在其后进入 `runMcodeAcp` 时发生。
+
+什么时候会遇到 exec：
+
+1. **运维主动设置了 `MCODE_USE_ACP=0`。** 这是 ACP 协议回归时的逃生阀：设置后所有回合都走 exec。想回到 ACP，去掉该变量并重启 webui 即可。整个代码库只有一处读取它（`chat.js#handleSend`）。
+2. **在输入框的权限选择器里选了 Ask 或 Auto**（`POST /api/permissions` 另接受 `read`，UI 只提供 Ask / Auto / Full access 三项）。从下一条消息起，该会话的回合全部静默改走 exec。选回 **Full access** 即恢复 ACP。
+
+exec 上权限模式本身并非失效：它仍以 `--permission` 启动参数传给引擎（Ask→`ask`、Auto→`auto`、Read→`read`、其余 `full`，见 `mcode-exec.js` 的模式映射），会话经 `--session` 续接，已记录的模型经 `--model` 传递。失效的是下面这批回合级能力。
+
+exec 回合的代价——以下都是当前真实存在的行为，选择权限模式前需要知道：
+
+| 能力 | ACP 回合 | exec 回合 |
+| --- | --- | --- |
+| 工具调用过程（`→` 工具行） | 可见 | 不可见，只有思考与正文文本 |
+| 思考等级（模型选择器里的档位） | 经 ACP 配置通道同步给引擎 | 不传送，引擎用自身默认 |
+| 会话标题自动回写 | 有 | 无 |
+| 回合进行中改模型 / 权限 | 即时生效 | 无法送达已启动的子进程，下一回合才生效；接口带 `no_acp_session` 警告 |
+| 引擎侧向用户提问（工具授权、问卷） | 弹窗交互 | 无通道：stdin 在消息发出后即关闭，提问类错误以回合告警收场，提示改用输入框直接发问 |
+
+也就是说：为了更安全选 Ask，换来的当前实际结果是工具过程完全黑箱、且引擎侧的提问根本送不到浏览器。这是已知的真实缺陷，本文如实记录；它需要传输层改造才能根治，不会因为本文档的修订而消失。
+
+怎么确认某回合走了哪条路：
+
+- 回合进行期间看进程：`mcode … acp` 子进程是 ACP 回合，`mcode … exec --input - …` 是 exec 回合。
+- 行为特征：回复里没有任何 `→` 工具行、会话标题一直是初始名——大概率在 exec 上。
+
+**没有 `/exec` 命令。** 不存在通过聊天命令切换传输的入口；webui 本地命令只有 `new` / `clear` / `status` / `sessions` / `usage` / `help` / `stop`（`server/lib/acp-client.js#WEBUI_LOCAL_COMMANDS`）。切换传输只有上表的两个开关：环境变量与权限模式。
+
+权限模式接口与警告语义见 [`packages/webui/docs/API.md`](../packages/webui/docs/API.md) 的 `POST /api/permissions` 一节；面向贡献者的契约细节（判定代码位置、不变量）见 [`webui.md`](webui.md) 的 Transport selection 一节。
 
 ## 文件树（已发布的 UI）
 
