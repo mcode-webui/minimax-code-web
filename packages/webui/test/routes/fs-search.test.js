@@ -21,7 +21,7 @@
 
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -239,14 +239,28 @@ describe("fs routes — /api/fs/search (slice 19a)", () => {
     // must surface as `credential: true` even when the user got
     // there by symlink. The search walker passes the resolved
     // path into classifyCredential.
+    //
+    // The contract pinned here is **path = realpath(target) on
+    // every platform** — not the literal spelling mkdtempSync
+    // returned. macOS's temp root is `/var/folders/...` while
+    // realpathSync returns `/private/var/folders/...`; comparing
+    // against the literal would platform-split the assertion
+    // (slice 16 hit the same trap; the fix there was to compare
+    // against realpath). We do the same here.
     const root = mkdtempSync(join(tmpdir(), "fs-search-sym-"));
     try {
       const target = join(root, "id_rsa");
       writeFileSync(target, "cred_canary_symlink_search_target\n");
       const link = join(root, "innocent.txt");
       symlinkSync(target, link);
+      // The canonical spelling — what the walker emits and
+      // what the downstream /api/fs/read-file gate sees.
+      const canonicalTarget = realpathSync(target);
 
       const res = fakeRes();
+      // searchReq spells the root the way `mkdtempSync` returned
+      // it — that should work on macOS too because the route's
+      // `assertWorkspacePath` is the spelling-tolerant gate.
       fsRoute.handleFsSearch(searchReq(root, { q: "innocent.txt" }), res);
       assert.equal(res.status, 200);
       const parsed = JSON.parse(res.body);
@@ -259,7 +273,7 @@ describe("fs routes — /api/fs/search (slice 19a)", () => {
       assert.equal(res.body.includes("cred_canary_symlink_search_target"), false);
       // Path is the realpath form — verbatim with what the route
       // hands the downstream credential guard in /api/fs/read-file.
-      assert.equal(hit.path, target);
+      assert.equal(hit.path, canonicalTarget);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

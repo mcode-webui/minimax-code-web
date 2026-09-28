@@ -65,13 +65,26 @@
 //                  includeHidden, includeDirs }
 //   }
 //
-// `scanned.total` is always equal to `scanned.dirs + scanned.files`
-// (each readdir entry is exactly one of a directory or a file), and
-// the matched entries carry the realpath form so the downstream
-// read-file route's containment + credential gate can never see
-// the symlink-aliased shape.
+// `scanned.total` counts every readdir entry the walker opened,
+// INCLUDING the ones the skip-dir / hidden gates filtered out.
+// `scanned.dirs` and `scanned.files` count only the entries that
+// passed both gates. When no skip / no hide fires
+// `total == dirs + files`; otherwise `total >= dirs + files`. See
+// the `scanned.total` / `scanned.dirs` / `scanned.files` field
+// notes on `emptyResult` for the reader-facing rule.
+//
+// The walker pins the canonical / REALPATH form everywhere it
+// emits a path: `out.root` is `realpathSync(rootAbs)`; every
+// `matches[i].path` is `realpathSync(childAbs)`. This matches the
+// slice-16 decision that the canonical form across the whole fs
+// surface is the realpath — so a workspace symlink
+// `innocent.txt → id_rsa` reaches the credential predicate with
+// `id_rsa` as the basename, AND a caller that sees
+// `/var/folders/.../id_rsa` on Linux and
+// `/private/var/folders/.../id_rsa` on macOS gets the same
+// downstream `/api/fs/read-file` behaviour on both.
 
-import { readdirSync, realpathSync, lstatSync } from "node:fs";
+import { readdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { classifyCredential } from "./credential-file.js";
 import { matchFilter } from "./glob-filter.js";
@@ -169,6 +182,32 @@ function liveSkipSet(includeDirs) {
   return set;
 }
 
+/**
+ * Build the empty response shape returned to the caller.
+ *
+ * Field-by-field contract:
+ *   - `root` is the walker-canonicalised (realpath'd) form of the
+ *     search root.
+ *   - `matches[i].path` is the realpath form (see the file header).
+ *   - `scanned.total` counts every readdir entry the walker
+ *     opened — INCLUDING the ones the skip-dir, hidden, and
+ *     huge gates filtered out (the walker tracks them so the
+ *     `nodes` budget and progress callbacks stay honest).
+ *   - `scanned.dirs` and `scanned.files` count ONLY entries
+ *     that passed BOTH the skip-dir gate and the hidden gate
+ *     (they are mutually exclusive: an entry is either a
+ *     directory or a file). When no skip / no hide / no huge
+ *     slicing fires, `total == dirs + files`; otherwise
+ *     `total > dirs + files`.
+ *   - `skipped.huge` is the **unvisited tail** of any directory
+ *     declared "huge". A response with `truncated: false` AND
+ *     `skipped.huge > 0` is NOT contradictory — the walk
+ *     completed within its budgets, but a single directory's
+ *     tail was deliberately capped. The UI must surface this
+ *     honestly (a plain "truncated" pill would lie).
+ *   - `truncated` is FALSE unless a budget (depth / nodes /
+ *     wall-clock / matches) actually fired.
+ */
 function emptyResult(rootAbs, q, budgets, opts) {
   return {
     root: rootAbs,
@@ -224,11 +263,26 @@ export function searchWorkspace(rootAbs, q, opts = {}) {
   const started = (opts.now ? opts.now() : Date.now());
   const budgets = clampBudgets(opts);
   const skipDirs = liveSkipSet(opts.includeDirs);
-  const out = emptyResult(rootAbs, q, budgets, opts);
+  // Realpath the root ONCE on entry. The route layer already
+  // hands the walker the gate's realpath form (`safePath` returns
+  // `gate.real`); this is the belt-and-braces pass that keeps a
+  // direct call (e.g. a unit test or a future call site) honest
+  // with the same "every emitted path is canonical" contract.
+  // macOS's `/var/folders/... → /private/var/folders/...` is the
+  // canonical reason: a literal-spelling root would surface a
+  // different `out.root` than the per-match realpath'd paths,
+  // confusing the panel and breaking containment symmetry.
+  let canonicalRoot;
+  try {
+    canonicalRoot = realpathSync(rootAbs);
+  } catch {
+    canonicalRoot = rootAbs;
+  }
+  const out = emptyResult(canonicalRoot, q, budgets, opts);
 
   // Iterative walker (manual stack) — recursion blowup is not a
   // risk and depth bookkeeping stays explicit.
-  const stack = [{ abs: rootAbs, chain: [] }];
+  const stack = [{ abs: canonicalRoot, chain: [] }];
   // nodes = total readdir entries processed so far this run.
   // Used as the early-exit bound for the maxNodes budget.
   let nodes = 0;
@@ -264,14 +318,25 @@ export function searchWorkspace(rootAbs, q, opts = {}) {
     // read. A directory with >threshold entries is declared
     // expensive and skipped for further descent; the entries we
     // already have in memory are still processed for matches at
-    // the boundary (cheap), the count is recorded in `skipped.huge`.
+    // the boundary (cheap).
+    //
+    // `skipped.huge` records the **unvisited tail** only (NOT the
+    // whole `entries.length`). The boundary entries show up in
+    // `scanned.total` / `scanned.dirs` / `scanned.files` as
+    // ordinary entries; only the entries the walker refused to
+    // descend into are counted as "huge skips". This is the
+    // contract `truncated:false, skipped.huge>0` depends on —
+//   that combination means "the walk finished but a directory's
+    // tail was deliberately not visited", which the UI must
+    // surface honestly rather than passing it off as a complete
+    // result.
     let processableEntries = entries;
     const hugeThreshold = (typeof opts.hugeThreshold === "number" && opts.hugeThreshold > 0)
       ? opts.hugeThreshold
       : HUGE_DIR_ENTRY_THRESHOLD;
     const isHuge = entries.length > hugeThreshold;
     if (isHuge) {
-      out.skipped.huge += entries.length;
+      out.skipped.huge += entries.length - hugeThreshold;
       processableEntries = entries.slice(0, hugeThreshold);
     }
     // Sort for stable `matches` ordering: directories first (the
@@ -338,25 +403,24 @@ export function searchWorkspace(rootAbs, q, opts = {}) {
       if (!matchFilter(ent.name, q)) continue;
 
       const childAbs = join(frame.abs, ent.name);
-      // Credential predicate — keyed off the REALPATH basename so
-      // a workspace symlink `innocent.txt → id_rsa` still flags.
-      // For non-symlink entries realpath is idempotent (returns
-      // the input) so the cost is one extra syscall only when
-      // the match budget actually fires. Bounded by maxMatches.
-      let realChild = childAbs;
+      // Always realpath the match — non-symlinks are an
+      // idempotent no-op, symlinks resolve to the target. The
+      // cost is one syscall per match (bounded by `maxMatches`,
+      // default 200), and it is what lets the response carry a
+      // uniform canonical form regardless of how the caller
+      // spelled `root` (e.g. macOS's `/var/folders/...` vs
+      // `/private/var/folders/...`). The credential predicate
+      // runs against the resolved basename so a workspace
+      // symlink `innocent.txt → id_rsa` still flags.
+      let realChild;
       try {
-        if (isSymlink) {
-          realChild = realpathSync(childAbs);
-        } else {
-          // Always call lstatSync — it's cheap (the entry is in
-          // cache after readdir) and guarantees the predicate
-          // sees a stable basename even for unusual file types.
-          lstatSync(childAbs);
-        }
+        realChild = realpathSync(childAbs);
       } catch {
-        // Unresolvable link: treat as a non-credential match on
-        // the literal name. The downstream `/api/fs/read-file`
-        // gate will refuse or accept it independently.
+        // Unresolvable link or vanished entry — surface the
+        // literal spelling the walker reached. The downstream
+        // `/api/fs/read-file` gate handles the resolution /
+        // credential check independently.
+        realChild = childAbs;
       }
       const classification = classifyCredential(realChild);
       const isCredential = !!classification;

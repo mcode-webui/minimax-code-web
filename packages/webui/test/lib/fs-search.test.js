@@ -33,7 +33,7 @@
 
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -48,9 +48,18 @@ const {
   OPTIONAL_SKIP_DIRS,
 } = fsSearch;
 
+// makeTempWorkspace returns the literal-spelling `dir` (what
+// `mkdtempSync` produced) PLUS `realDir`, its realpath'd
+// canonical form. Every assertion that compares match.path
+// against an exact path string uses `realDir` — macOS's
+// `tmpdir()` is `/var/folders/...` while `realpathSync` returns
+// `/private/var/folders/...`, and the walker emits the latter
+// (see fs-search.js header). Comparing against the literal would
+// platform-split the test (slice 16's exact trap).
 function makeTempWorkspace() {
   const dir = mkdtempSync(join(tmpdir(), "fs-search-"));
-  return { dir };
+  const realDir = realpathSync(dir);
+  return { dir, realDir };
 }
 
 function mkdirp(...parts) {
@@ -113,7 +122,7 @@ describe("lib/fs-search — bounded workspace walker (slice 19a)", () => {
 
   describe("happy-path search", () => {
     test("a glob that matches basenames returns each match with its ancestor chain", () => {
-      const { dir } = makeTempWorkspace();
+      const { dir, realDir } = makeTempWorkspace();
       try {
         mkdirp(dir, "codersday");
         writeFileSync(join(dir, "codersday", "package.json"), "{}");
@@ -121,12 +130,14 @@ describe("lib/fs-search — bounded workspace walker (slice 19a)", () => {
         writeFileSync(join(dir, "src", "main.ts"), "");
         writeFileSync(join(dir, "src", "package.json"), "{}");
 
-        const r = searchWorkspace(dir, "package.json");
+        const r = searchWorkspace(realDir, "package.json");
         assert.equal(r.matches.length, 2);
         const names = r.matches.map((m) => m.path).sort();
+        // The walker emits realpath'd paths on every platform —
+        // compare against realDir, not the literal dir.
         assert.deepEqual(names, [
-          join(dir, "codersday", "package.json"),
-          join(dir, "src", "package.json"),
+          join(realDir, "codersday", "package.json"),
+          join(realDir, "src", "package.json"),
         ].sort());
         const codersdayHit = r.matches.find((m) => m.path.endsWith("codersday/package.json"));
         assert.deepEqual(codersdayHit.ancestors, ["codersday"]);
@@ -257,8 +268,25 @@ describe("lib/fs-search — bounded workspace walker (slice 19a)", () => {
           false,
           "walker must not descend into a huge directory",
         );
-        // The walker counted the entries we did not descend into.
-        assert.ok(r.skipped.huge >= 3, `expected skipped.huge >= 3, got ${r.skipped.huge}`);
+        // `skipped.huge` records the **unvisited tail** only —
+        // not the boundary entries that we DID process. With 3
+        // entries total and a threshold of 2, the unvisited tail
+        // is 1; the boundary counts in `scanned.total` /
+        // `scanned.dirs` / `scanned.files`. The acceptance
+        // concern was that this counter is the UI's only signal
+        // when `truncated:false, skipped.huge>0` and the user
+        // might miss it; pin both contracts here.
+        assert.equal(
+          r.skipped.huge, 1,
+          `expected skipped.huge == 1 (tail only), got ${r.skipped.huge}`,
+        );
+        // Boundary stays reachable: the slice gave us 2
+        // processable entries (target.md + marker.txt), and the
+        // match loop processed them both.
+        assert.ok(
+          r.scanned.total >= 2,
+          `expected scanned.total >= 2 (boundary processed), got ${r.scanned.total}`,
+        );
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }
@@ -475,10 +503,12 @@ describe("lib/fs-search — bounded workspace walker (slice 19a)", () => {
 
   describe("response shape (the contract the panel renders)", () => {
     test("empty workspace → ok, no matches, scanned.total=0", () => {
-      const { dir } = makeTempWorkspace();
+      const { dir, realDir } = makeTempWorkspace();
       try {
         const r = searchWorkspace(dir, "*");
-        assert.equal(r.root, dir);
+        // The walker canonicalises `out.root` to the realpath
+        // form on every platform — see the file header.
+        assert.equal(r.root, realDir);
         assert.equal(r.matches.length, 0);
         // Empty dir → no readdir entries to count.
         assert.equal(r.scanned.total, 0);
