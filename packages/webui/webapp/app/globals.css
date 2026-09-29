@@ -165,6 +165,27 @@
   font-family: var(--font_family_code);
 }
 
+/* Settings-page section transition (ticket 48).
+ *
+ * The content column re-mounts on every tab switch (`key={active}` on
+ * the scroll container), and this keyframe is the desktop reference's
+ * 180ms horizontal fade-in (`webui-settings-content-in`). The explicit
+ * reduced-motion rule below mirrors the reference: the content renders
+ * with no movement. */
+@keyframes webui-settings-content-in {
+  from {
+    opacity: 0;
+    transform: translateX(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+.webui-settings-content-animate {
+  animation: webui-settings-content-in 180ms ease both;
+}
+
 /* Respect prefers-reduced-motion.
  *
  * Every transition / animation added by ticket 07 (the model-selector
@@ -191,6 +212,9 @@
    * look still through the catch-all's duration hack below. */
   .mavis-loading .mavis-dot {
     animation: none !important;
+  }
+  .webui-settings-content-animate {
+    animation: none;
   }
   *,
   *::before,

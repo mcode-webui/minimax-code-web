@@ -68,7 +68,16 @@ export type IconName =
   | "moon"
   | "sun"
   | "sidebar"
-  | "settings";
+  | "settings"
+  | "settingsDesktop"
+  | "settingsShortcuts"
+  | "settingsInstructions"
+  | "settingsChart"
+  | "settingsLink"
+  | "settingsUser"
+  | "settingsCoding"
+  | "settingsWorktree"
+  | "settingsArchived";
   // "subagent" glyph removed 2026-09-23 — the upstream desktop does not carry
   // a sub-agent icon, and the workspace panel's "agent_team" section is
   // rendered with the upstream `PreviewerMini` component (with a fallback
@@ -632,6 +641,97 @@ const ICONS: Record<string, IconSpec> = {
       </>
     ),
   },
+  // Settings-page nav glyphs (webui-parity 48). Path data extracted from
+  // the desktop reference's `SettingsModal.tsx` ICONS map — same viewBox
+  // (0 0 20 20), same 1.2 stroke, so the sidebar reads as the desktop's.
+  // The reference's voice glyph is already shipped here as "mic", and the
+  // Browser tab (a webui-only nav entry) uses the existing "browser" glyph.
+  settingsDesktop: {
+    viewBox: "0 0 20 20",
+    size: 18,
+    body: (
+      <>
+        <path d="M14.9996 3.56689H4.99963C3.747 3.56689 2.73303 4.581 2.73303 5.8335V12.938L1.7301 15.189C1.61993 15.408 1.66322 16.3808 2.31799 17.0884H16.983C18.3361 16.3808 18.3787 15.4072 18.2682 15.188L17.2662 12.938V5.8335C17.2662 4.581 16.2522 3.56689 14.9996 3.56689Z" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+      </>
+    ),
+  },
+  settingsShortcuts: {
+    viewBox: "0 0 20 20",
+    size: 18,
+    body: (
+      <>
+        <path d="M13.8768 13.1403H6.10529M2 5.59998C2 4.49541 2.89543 3.59998 4 3.59998H16C17.1046 3.59998 18 4.49541 18 5.59998V14.4C18 15.5045 17.1046 16.4 16 16.4H4C2.89543 16.4 2 15.5045 2 14.4V5.59998Z" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+      </>
+    ),
+  },
+  settingsInstructions: {
+    viewBox: "0 0 20 20",
+    size: 18,
+    body: (
+      <>
+        <path d="M5.24316 2.84784C5.24316 1.57385 6.64787 .800013 7.72461 1.48065L9.60449 3.33514L10.5469 4.78241L11.4404 4.40253C12.9336 3.47824 14.6993 3.09444 16.4414 3.31561V14.6672C14.7097 14.609 13.1971 14.3609 11.873 15.1232L10.2988 16.0295L9.25098 15.7307C7.60003 14.6279 5.89805 14.1654 4.07324 14.3644V4.47479Z" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+      </>
+    ),
+  },
+  settingsChart: {
+    viewBox: "0 0 20 20",
+    size: 18,
+    body: (
+      <>
+        <path d="M2.86194 2.26236V15.5514C2.86194 16.0953 3.30396 16.5368 3.84788 16.5368H17.1373M6.82776 9.53873V13.9655M10.7926 4.44888V13.9655M14.7584 7.62076V13.9655" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+      </>
+    ),
+  },
+  settingsLink: {
+    viewBox: "0 0 20 20",
+    size: 18,
+    body: (
+      <>
+        <circle cx="10" cy="10" r="8" stroke="currentColor" strokeWidth="1.2" fill="none" />
+        <path d="M2 10h16M10 2c-2 2.2-3 4.8-3 8s1 5.8 3 8m0-16c2 2.2 3 4.8 3 8s-1 5.8-3 8" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" fill="none" />
+      </>
+    ),
+  },
+  settingsUser: {
+    viewBox: "0 0 20 20",
+    size: 18,
+    body: (
+      <>
+        <path d="M6.25 16.4965V15.25C6.25 14.8522 6.40804 14.4706 7.75 13.75H12.25C13.75 14.8522 13.592 14.4706 13.75 15.25V16.4965M17.5 10A7.5 7.5 0 1 1 2.5 10A7.5 7.5 0 0 1 17.5 10Z" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+      </>
+    ),
+  },
+  settingsCoding: {
+    viewBox: "0 0 20 20",
+    size: 18,
+    body: (
+      <>
+        <path d="M11.7852 3.57383L8.34082 16.4264M5.14453 5.74961L1.42969 9.46347L5.99219 14.027M14.0078 5.74961L18.5703 9.46347L14.0078 14.027" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+      </>
+    ),
+  },
+  settingsWorktree: {
+    viewBox: "0 0 20 20",
+    size: 18,
+    body: (
+      <>
+        <circle cx="10" cy="4" r="1.75" stroke="currentColor" strokeWidth="1.2" fill="none" />
+        <circle cx="4" cy="15" r="1.75" stroke="currentColor" strokeWidth="1.2" fill="none" />
+        <circle cx="10" cy="15" r="1.75" stroke="currentColor" strokeWidth="1.2" fill="none" />
+        <circle cx="16" cy="15" r="1.75" stroke="currentColor" strokeWidth="1.2" fill="none" />
+        <path d="M10 5.75V9M4 9h12M4 9v4.25M10 9v4.25M16 9v4.25" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" fill="none" />
+      </>
+    ),
+  },
+  settingsArchived: {
+    viewBox: "0 0 20 20",
+    size: 18,
+    body: (
+      <>
+        <path d="M16.0669 3.6062H3.13232C2.12081 3.6062 1.30127 4.42602 1.30127 5.43726V6.05347C1.30127 7.06489 2.12081 7.8855 3.13232 7.8855H16.0669V14.7683C16.0669 16.2334 14.657 17.4216 13.1919 17.4216H6.00635C4.54129 17.4216 3.354 16.2334 3.354 14.7683V7.8855" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+      </>
+    ),
+  },
   };
 
 /**
@@ -663,6 +763,15 @@ const STROKE_ICONS = new Set<IconName>([
   "workspace",
   "sidebar",
   "website",
+  "settingsDesktop",
+  "settingsShortcuts",
+  "settingsInstructions",
+  "settingsChart",
+  "settingsLink",
+  "settingsUser",
+  "settingsCoding",
+  "settingsWorktree",
+  "settingsArchived",
 ]);
 
 export function Icon({ name, size, className }: { name: IconName; size?: number; className?: string }) {

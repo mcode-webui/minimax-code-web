@@ -511,14 +511,15 @@ plain `<pre>` view that shipped in slice 02:
   for `cp file.js file.js.bak; copy in panel; paste back`) and never
   leaks the gutter line numbers into the copied text.
 
-## Settings page (ticket 37)
+## Settings page (tickets 37 / 48)
 
 The settings surface is a full-viewport modal — a grouped category tree on
-the left (with a search box), a 704px content column on the right. It is
-opened from the avatar's user menu at the bottom of the sidebar. This
-section records the structure and the write paths; the parity reference is
-the desktop's own settings (`refs/ui/03-settings-usage-models.jpg`,
-`04-settings-general.jpg`).
+the left (with a search box), a content column on the right (840px for the
+General page, 760px for every other tab since ticket 48; the previous flat
+704px cap had copied the usage page's own width). It is opened from the
+avatar's user menu at the bottom of the sidebar. This section records the
+structure and the write paths; the parity reference is the desktop's own
+settings (`refs/ui/03-settings-usage-models.jpg`, `04-settings-general.jpg`).
 
 **Navigation and capability honesty**
 
@@ -533,24 +534,71 @@ the desktop's own settings (`refs/ui/03-settings-usage-models.jpg`,
 
 The eight 暂不支持 entries are pre-existing facts: the desktop has the
 category and this server has no capability behind it, so the entry stays
-disabled with the marker rather than hidden. The rule cuts both ways — the
-desktop's General page also shows mode cards, menu-bar icon,
-launch-at-login, desktop notifications, accelerated indexing and a data
-directory, none of which this server can drive, and **none of which are
-rendered**. No new placeholders: the capability table stays honest.
+disabled with the marker rather than hidden. Since ticket 48 every tab
+carries the reference's 18×18 stroke glyph (the Browser tab — a webui-only
+entry — reuses the existing `browser` icon).
 
-**General (通用)**
+**General (通用) — sections**
 
-Two cards. The first is engine facts — installed version, default model,
-local URL, LAN URL — read-only. The second holds the two rows this server
-can actually drive:
+The General page follows the reference's sectioned layout (ticket 48): an
+`<h3>` title above each 16px-radius card, horizontal rows (title +
+description left, control right, 56px min height) with hairline dividers
+between adjacent rows:
 
-| Row | What it changes | When it takes effect |
+| Section | State | Notes |
 | --- | --- | --- |
-| Appearance | Three-state card picker: light / dark / system | Immediately on click, no reload; persisted in the `webui:ui:v1` envelope (`appearance` field), survives refresh |
-| Language | zh / en segmented switch | Immediately on click, whole UI including this modal |
+| Engine facts (local addition) | read-only | version + default model, local URL, LAN URL. The reference has no such section, hence no section title |
+| Application | enabled | appearance picker + language switch. The reference's five disabled switches (menu-bar icon, launch-at-login, desktop notifications, early access, accelerated indexing) are **not rendered** — no capability behind them |
+| Files | enabled | two switches persisted in `localStorage`, see the table below |
+| Session management | enabled | one switch, persisted; **records the preference only** — no surface reads it yet |
+| Preference settings | enabled | follow-up behaviour radio (queue / send now), persisted; **records the preference only** — the composer does not read it yet (ticket 49 owns that surface) |
+| Mode / Link destinations / Agent control / About | not implemented | the reference ships these as disabled furniture (hard-coded mode selection, disabled selects, disabled buttons); this round does not add them |
+| dataDir footer | not implemented | the reference prints the app data directory at the bottom of the General page; `/api/settings` has no such field and the server routes are read-only this round, so no value exists to print |
 
-In `system` mode the page follows the OS colour scheme live.
+Appearance and language behave as before: immediate effect on click; the
+appearance choice persists through the `webui:ui:v1` envelope; in `system`
+mode the page follows the OS colour scheme live.
+
+**Browser-local switches (ticket 48)**
+
+Four bare-string `localStorage` keys, same names and format as the desktop
+reference, so one browser profile carries the same preferences in both
+clients:
+
+| Key | Default | Affects behaviour? |
+| --- | --- | --- |
+| `file_open_in_new_tab` | `"true"` here (`"false"` in the reference) | **Yes.** On (default) keeps this client's standing one-tab-per-file behaviour; off replaces the **active file tab** with the newly opened file. The strip has no pinned-tab concept, so "active file tab" is the reuse target — a documented approximation of the reference's "reuse the unpinned tab" |
+| `file_line_wrap` | `"true"` | **Yes.** On wraps over-wide preview lines; off scrolls horizontally. Applies to previews opened after the switch (an already-open preview does not reflow); a wrapped line's gutter number aligns with its first visual row — a known trade-off |
+| `webui-context-window-usage` | `"false"` | No. Recorded preference only |
+| `webui-follow-up-behavior` | `"queue"` (or `"steer"`) | No. Recorded preference only |
+
+**Search and layout details (ticket 48)**
+
+- The search matches the **localized label and the internal key**: typing
+  `custom-instructions` finds Personalization, `usage` finds Usage &
+  models (the nav carries alias entries where this client's tab id differs
+  from the reference's key).
+- The content column carries the active tab's title in an `<h2>` that
+  follows every switch.
+- Tab switches replay a 180ms horizontal fade-in (`key={active}` re-mount);
+  with `prefers-reduced-motion` the animation is off and the content
+  renders in place.
+- The search field is a bordered 36px container — leading search glyph,
+  input, and a clear button that appears only when there is text; the back
+  affordance carries a "Back to app" label.
+
+**Present in the reference, not implemented here (recorded honestly)**
+
+| Capability | Why |
+| --- | --- |
+| Account page | needs `getAccountStatus` / `signOut`-class server contracts |
+| Archived tasks page | needs the archived-session contract |
+| Usage & models three-source tabs | Token Plan / MiniMax API / custom-model switching and source badges |
+| Token Plan panel | plan card, limit progress bars, credits; the current usage card shows two percentage rows |
+| MiniMax API key panel | input + connectivity test + save-and-use |
+| Custom model drag-reorder, per-model toggles, preset picker | provider contract work; the current panel is a two-column field editor |
+| Search keyword highlighting | the reference itself never wired it (component + keyframes defined, no call site) |
+| General-page dataDir footer | see the section table above |
 
 **Usage & models (用量与模型)**
 
@@ -576,6 +624,17 @@ quota figures.
 The nav item id behind the section is `"providers"`, unchanged: the model
 selector's "Add provider" deep-link targets that id, and only the visible
 label moved.
+
+**Ticket 48 invariants** — what this round did NOT change: the server
+contracts (`server/routes/settings.js`, `server/routes/providers.js`,
+`server/lib/settings.js` are untouched — the whole delta is client-side);
+the `SETTINGS_NAV` four-group division and the three-value
+`SettingsSection` union; the deep-link entry points (`initialSection`,
+`autoAddProvider` — the model selector's add-provider flow and the user
+menu's usage row both still land where they did); and the eight 暂不支持
+placeholders. The dead `if (!section)` branch inside `SettingsPanel` was
+removed and the `section` prop made required — every reachable tab
+resolves a section, so the branch could never render.
 
 ## Markdown rendering and Mermaid diagrams (slice 23)
 
@@ -733,8 +792,14 @@ Invariants worth keeping when touching either branch:
 | `webui:workspace-tabs:v1:<cid>` | `localStorage` | `webapp/lib/persist.ts#workspaceTabsKey` | slice 15 (workspace columns) | version-discriminated state (`WORKSPACE_TABS_VERSION`) — see `lib/workspace-tabs-state.ts` |
 | `webui:open-file:path` | `localStorage` | `webapp/lib/open-file.ts#STORAGE_KEY` | slice 12 (file preview) | bare path string or absent |
 | `webui:files-tree:<workspaceDir>` | `sessionStorage` | `webapp/components/panels.tsx` (slice 01) | slice 01 (file tree) | `{version:1, workspace, expanded[], filter, showHidden}` |
+| `file_open_in_new_tab` | `localStorage` | `webapp/lib/settings-local.ts` | ticket 48 (settings General page) | bare `"true"\|"false"` string; **deliberately outside the `webui:` namespace** — same key and format as the desktop reference so one browser profile shares the preference across both clients. Default `"true"` here (reference: `"false"`); read by `app/page.tsx#openFileTab` |
+| `file_line_wrap` | `localStorage` | `webapp/lib/settings-local.ts` | ticket 48 | bare `"true"\|"false"` string, reference-shared namespace; default `"true"`; read by `components/code-view.tsx` per mount |
+| `webui-context-window-usage` | `localStorage` | `webapp/lib/settings-local.ts` | ticket 48 | bare `"true"\|"false"` string, reference-shared namespace; default `"false"`; recorded preference, no reader yet |
+| `webui-follow-up-behavior` | `localStorage` | `webapp/lib/settings-local.ts` | ticket 48 | bare `"queue"\|"steer"` string (anything else reads as `"queue"`), reference-shared namespace; recorded preference, no reader yet |
 
-All keys share the `webui:` prefix and are best-effort writes (debounced
+Except for ticket 48's four reference-shared keys (the last four rows
+above, which deliberately use the desktop reference's bare key names),
+all keys share the `webui:` prefix and are best-effort writes (debounced
 150 ms for `ui` and `workspace-tabs`; immediate for the others). A failed
 write leaves the in-memory state correct and the persistence silent — the
 failure mode we care about is the `app/global-error.tsx` crash, not a quota

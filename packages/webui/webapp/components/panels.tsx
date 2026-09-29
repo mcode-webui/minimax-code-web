@@ -28,6 +28,16 @@ import {
   searchFootSegments,
 } from "@/lib/fs-search";
 import { useFsTreeRevealSubscriber } from "@/lib/fs-tree-reveal";
+import {
+  commitContextWindowUsage,
+  commitFileLineWrap,
+  commitFileOpenInNewTab,
+  commitFollowUpBehavior,
+  readContextWindowUsage,
+  readFileLineWrap,
+  readFileOpenInNewTab,
+  readFollowUpBehavior,
+} from "@/lib/settings-local";
 import { classifyCredentialPath } from "@/lib/credential-file";
 import { InboxList } from "./inbox";
 import { refreshQuota, useSessionContext } from "@/lib/store";
@@ -38,7 +48,7 @@ import { BrowserPanel } from "@/components/browser-panel";
 import { isHtmlPath } from "@/lib/browser-nav";
 import type { Locale, MessageKey } from "@/lib/i18n";
 import type { ThemeName } from "@/lib/types";
-import { Icon } from "./icons";
+import { Icon, type IconName } from "./icons";
 import { AppearanceCardPicker } from "./appearance-card-picker";
 import { ProviderManagementPanel } from "./provider-management";
 
@@ -199,20 +209,30 @@ type SettingsSection = "general" | "connection" | "providers";
 
 const SETTINGS_NAV: {
   group: MessageKey;
-  items: { id: string; key: MessageKey; section?: SettingsSection }[];
+  items: {
+    id: string;
+    key: MessageKey;
+    /** 18×18 nav glyph — the desktop reference's ICONS set (ticket 48). */
+    icon: IconName;
+    /** The reference tab's internal key (e.g. `custom-instructions`).
+     *  Only present where it differs from our id; the search filter
+     *  matches it so typing the reference's key still finds the tab. */
+    alias?: string;
+    section?: SettingsSection;
+  }[];
 }[] = [
   {
     group: "settings.group.preferences",
     items: [
-      { id: "general", key: "settings.tab.general", section: "general" },
+      { id: "general", key: "settings.tab.general", icon: "settingsDesktop", alias: "desktop", section: "general" },
       // No standalone appearance tab: the three-state picker and the
       // language switch render inside 通用 (user decision 2026-09-28),
       // matching the desktop reference `refs/ui/04-settings-general.jpg`,
       // where appearance is the first row of the 应用 card.
-      { id: "voice", key: "settings.tab.voice" },
-      { id: "shortcuts", key: "settings.tab.shortcuts" },
-      { id: "personalization", key: "settings.tab.personalization" },
-      { id: "browser", key: "settings.tab.browser" },
+      { id: "voice", key: "settings.tab.voice", icon: "mic" },
+      { id: "shortcuts", key: "settings.tab.shortcuts", icon: "settingsShortcuts" },
+      { id: "personalization", key: "settings.tab.personalization", icon: "settingsInstructions", alias: "custom-instructions" },
+      { id: "browser", key: "settings.tab.browser", icon: "browser" },
     ],
   },
   {
@@ -223,21 +243,21 @@ const SETTINGS_NAV: {
       // card above the provider panel inside the section. The id stays
       // "providers" — the model selector's "Add provider" deep-link
       // (page.tsx#openProviderAdd) targets it, and only the label moved.
-      { id: "providers", key: "settings.tab.usageModels", section: "providers" },
-      { id: "connection", key: "settings.tab.connection", section: "connection" },
-      { id: "account", key: "settings.tab.account" },
+      { id: "providers", key: "settings.tab.usageModels", icon: "settingsChart", alias: "usage", section: "providers" },
+      { id: "connection", key: "settings.tab.connection", icon: "settingsLink", section: "connection" },
+      { id: "account", key: "settings.tab.account", icon: "settingsUser" },
     ],
   },
   {
     group: "settings.group.coding",
     items: [
-      { id: "code-review", key: "settings.tab.codeReview" },
-      { id: "worktree", key: "settings.tab.worktree" },
+      { id: "code-review", key: "settings.tab.codeReview", icon: "settingsCoding", alias: "coding" },
+      { id: "worktree", key: "settings.tab.worktree", icon: "settingsWorktree" },
     ],
   },
   {
     group: "settings.group.archived",
-    items: [{ id: "archived", key: "settings.tab.archived" }],
+    items: [{ id: "archived", key: "settings.tab.archived", icon: "settingsArchived" }],
   },
 ];
 
@@ -299,15 +319,26 @@ export function SettingsModal({
   if (!open) return null;
 
   const needle = query.trim().toLowerCase();
+  // The reference's `filterSettingsTabs` matches `${label} ${key}`, so a
+  // user typing the reference's internal key (`custom-instructions`)
+  // still finds the localized tab (个性化). Our ids renamed a few of the
+  // reference keys, hence the `alias ?? id` fallback (ticket 48, V11).
   const groups = SETTINGS_NAV.map((group) => ({
     ...group,
     items: needle
-      ? group.items.filter((item) => t(item.key).toLowerCase().includes(needle))
+      ? group.items.filter((item) =>
+          `${t(item.key)} ${item.alias ?? item.id}`.toLowerCase().includes(needle),
+        )
       : group.items,
   })).filter((group) => group.items.length > 0);
 
   const current = SETTINGS_NAV.flatMap((group) => group.items).find((item) => item.id === active);
-  const section = current?.section;
+  // Every clickable tab carries a section (the section-less ones render
+  // disabled, see the nav map), so `active` can only ever be one of the
+  // three section ids; the `?? "general"` exists for the type, not for a
+  // reachable state. Ticket 48 removed the dead `if (!section)` branch
+  // this fallback used to feed.
+  const section = current?.section ?? "general";
 
   return (
     <div className="fixed inset-0 z-[1000] flex">
@@ -320,42 +351,57 @@ export function SettingsModal({
         data-testid="settings-modal"
         className="two-column-modal relative flex h-full w-full overflow-hidden bg-bg_grouped_secondary"
       >
-        {/* Back affordance + search + the grouped category tree. */}
-        <div className="flex w-[260px] flex-shrink-0 flex-col gap-2 overflow-y-auto bg-bg_default_scrim px-3 pt-3 pb-5">
-          <div className="flex items-center gap-1">
-            <button
-              type="button"
-              aria-label={t("settings.back")}
-              onClick={onClose}
-              className="flex size-7 flex-none items-center justify-center rounded-[8px] text-icon_default_tertiary transition-colors hover:bg-bg_interaction_tertiary_hover hover:text-icon_default_primary"
-            >
-              <Icon name="reply" size={16} className="rotate-180" />
-            </button>
-            <AntInput
+        {/* Back affordance + search + the grouped category tree. The
+         * sidebar's geometry follows the reference (ticket 48): 46px top
+         * padding, a back row with the 返回应用 label, then the search
+         * field as a bordered 36px container with a leading glyph and a
+         * conditional clear button. */}
+        <div className="flex w-[260px] flex-shrink-0 flex-col overflow-y-auto bg-bg_default_scrim px-3 pt-[46px] pb-5">
+          <button
+            type="button"
+            aria-label={t("settings.back")}
+            onClick={onClose}
+            className="mb-5 flex h-[30px] items-center gap-2 rounded-[8px] px-2 text-sm leading-5 text-text_default_secondary transition-colors hover:text-text_default_primary"
+          >
+            <Icon name="reply" size={16} className="rotate-180" />
+            <span>{t("settings.back")}</span>
+          </button>
+          <div className="flex h-9 items-center gap-2 rounded-[8px] border border-border_default px-2 text-text_default_tertiary">
+            <Icon name="search" size={16} className="flex-none" />
+            <input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               placeholder={t("settings.searchPlaceholder")}
               aria-label={t("settings.searchPlaceholder")}
               data-testid="settings-search-input"
-              // .mavis-input is the desktop skin (36px / 8px radius / token-based
-              // bg/border). The previous hand-rolled <input> was 32px / 8px — the
-              // extra 4px come from the official desktop class. Acceptable: this is
-              // a settings-modal search field, not a 1:1 match to a desktop widget.
-              className="mavis-input min-w-0 flex-1"
+              className="min-w-0 flex-1 border-0 bg-transparent text-sm text-text_default_primary outline-none"
             />
+            {query ? (
+              <button
+                type="button"
+                aria-label={t("settings.clearSearch")}
+                onClick={() => setQuery("")}
+                className="flex flex-none items-center border-0 bg-transparent p-0 text-text_default_tertiary transition-colors hover:text-text_default_primary"
+              >
+                <Icon name="close" size={14} />
+              </button>
+            ) : null}
           </div>
 
           {groups.length === 0 ? (
-            <p className="px-3 py-2 text-sm text-text_default_tertiary">
+            <p className="p-4 text-xs text-text_default_secondary">
               {t("settings.searchNoResults")}
             </p>
           ) : null}
 
-          {groups.map((group) => (
-            <div key={group.group} className="flex flex-col gap-0.5">
-              <span className="desktop-text-ui-assist px-3 py-1 text-text_default_tertiary">
+          {groups.map((group, groupIndex) => (
+            <div
+              key={group.group}
+              className={`flex flex-col gap-0.5${groupIndex === 0 ? " mt-6" : ""}`}
+            >
+              <h3 className="px-2 pt-4 pb-1.5 text-sm font-medium leading-5 text-text_default_tertiary">
                 {t(group.group)}
-              </span>
+              </h3>
               {group.items.map((item) => {
                 const disabled = !item.section;
                 const selected = item.id === active;
@@ -368,11 +414,13 @@ export function SettingsModal({
                     aria-current={selected ? "page" : undefined}
                     data-testid={`settings-tab-${item.id}`}
                     onClick={() => setActive(item.id)}
-                    // Upstream's `.menu-item`: gap 12px, padding 8px 12px, radius 8px,
-                    // hover/selected on the tertiary interaction tokens, and an
-                    // inset focus ring on keyboard focus.
+                    // Upstream's `.webui-settings-nav-item`: gap 8px,
+                    // min-height 30px, padding 0 10px, radius 8px, an
+                    // 18×18 icon slot, hover/selected on the tertiary
+                    // interaction tokens, and an inset focus ring on
+                    // keyboard focus.
                     className={[
-                      "flex w-full items-center gap-3 rounded-[8px] px-3 py-2 text-left text-sm transition-colors focus:outline-none",
+                      "flex min-h-[30px] w-full items-center gap-2 rounded-[8px] px-2.5 text-left text-sm leading-5 transition-colors focus:outline-none",
                       disabled
                         ? "cursor-not-allowed text-text_default_tertiary opacity-50 focus-visible:shadow-[inset_0_0_0_1px_var(--border_accent)]"
                         : selected
@@ -380,6 +428,7 @@ export function SettingsModal({
                           : "text-text_default_primary hover:bg-bg_interaction_tertiary_hover focus-visible:shadow-[inset_0_0_0_1px_var(--border_accent)]",
                     ].join(" ")}
                   >
+                    <Icon name={item.icon} size={18} />
                     <span className="min-w-0 flex-1 truncate">{t(item.key)}</span>
                     {disabled ? (
                       <span className="flex-none text-caption-small-strong text-text_default_tertiary">
@@ -393,14 +442,30 @@ export function SettingsModal({
           ))}
         </div>
 
-        {/* Content on the grouped-secondary background, capped at upstream's 704px. */}
+        {/* Content on the grouped-secondary background. `key={active}`
+         * re-mounts the scroll container on every tab switch so the
+         * reference's 180ms horizontal fade-in replays (V1/V2); the page
+         * width follows the reference per section (V9): the General page
+         * is 840px, every other panel 760px. */}
         <div
           role="separator"
           aria-orientation="vertical"
           className="w-0 border-l-[0.5px] border-border_light"
         />
-        <div className="flex min-w-0 flex-1 flex-col overflow-y-auto">
-          <div className="mx-auto w-full min-w-[320px] max-w-[704px] px-6 py-6">
+        <div
+          key={active}
+          className="webui-settings-content-animate flex min-w-0 flex-1 flex-col overflow-y-auto bg-bg_grouped_secondary"
+        >
+          <header className="mb-12 px-5">
+            <h2 className="m-0 text-base font-medium leading-[26px] text-text_default_primary">
+              {current ? t(current.key) : ""}
+            </h2>
+          </header>
+          <div
+            className={`mx-auto w-full min-w-[320px] px-4 pb-8 ${
+              section === "general" ? "max-w-[840px]" : "max-w-[760px]"
+            }`}
+          >
             <SettingsPanel
             t={t}
             locale={locale}
@@ -3160,8 +3225,11 @@ function SettingsPanel({
   t: (key: MessageKey) => string;
   locale: Locale;
   setLocale: (locale: Locale) => void;
-  /** Which category to render; undefined means a disabled (unsupported) one. */
-  section?: "general" | "connection" | "providers";
+  /** Which category to render. Required since ticket 48 removed the
+   *  unreachable no-section fallback: the modal only ever lands here
+   *  with one of the three section ids (the section-less nav items are
+   *  disabled buttons that never set `active`). */
+  section: "general" | "connection" | "providers";
   /** Forwarded to `ProviderManagementPanel` when `section === "providers"`. */
   autoAddProvider?: boolean;
   onAutoAddConsumed?: () => void;
@@ -3170,6 +3238,14 @@ function SettingsPanel({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // General-page browser-local preferences (ticket 48). Initialised from
+  // `localStorage` on mount and written through on every change — the
+  // same bare-string keys the desktop reference uses, see
+  // `lib/settings-local.ts`.
+  const [fileNewTab, setFileNewTab] = useState(() => readFileOpenInNewTab());
+  const [fileLineWrap, setFileLineWrap] = useState(() => readFileLineWrap());
+  const [contextUsage, setContextUsage] = useState(() => readContextWindowUsage());
+  const [followUp, setFollowUp] = useState(() => readFollowUpBehavior());
 
   const load = useCallback(async () => {
     try {
@@ -3204,15 +3280,6 @@ function SettingsPanel({
 
   if (!snapshot) {
     return <p className="text-text_default_tertiary">{error ?? t("app.connecting")}</p>;
-  }
-
-  // A category with no section behind it is one this server cannot drive. Say so
-  // rather than showing an empty page: the desktop has these categories, so their
-  // absence would otherwise read as a bug.
-  if (!section) {
-    return (
-      <p className="text-text_default_tertiary">{t("common.unsupported")}</p>
-    );
   }
 
   const exposure = (
@@ -3253,23 +3320,98 @@ function SettingsPanel({
             <div className="break-all text-text_default_secondary">{snapshot.lanUrl ?? "—"}</div>
           </Field>
         </SectionCard>
-        {/* Card 2 — the 应用 card. The desktop reference's first two rows
-         * that this server can actually drive: appearance (a client-side
-         * theme persisted in the UI-state envelope) and language (a
-         * client-side locale). The reference's other rows — menu-bar icon,
-         * launch-at-login, desktop notifications, accelerated indexing,
-         * data directory — have no backend here and are deliberately NOT
-         * rendered as placeholders (ticket 37: the capability table stays
-         * honest). */}
-        <SectionCard>
-          <Field label={t("settings.appearance")} hint={t("settings.appearanceHint")}>
+        {/* 应用 — the reference General page's application section: the
+         * rows this client can actually drive (appearance, language), in
+         * the reference's horizontal SettingRow shape with a divider
+         * between rows (ticket 48). The reference's five disabled
+         * switches (menu-bar icon, launch-at-login, desktop
+         * notifications, early access, accelerated indexing) stay
+         * unrendered — ticket 37's capability honesty rule. */}
+        <SettingsSection
+          title={t("settings.section.application")}
+          testId="application-section"
+        >
+          <SettingRow title={t("settings.appearance")} hint={t("settings.appearanceHint")}>
             <AppearanceCardPicker locale={locale} />
-          </Field>
-          <div className="mx-3 h-[0.5px] bg-border_default" aria-hidden />
-          <Field label={t("settings.language")} hint={t("settings.languageHint")}>
+          </SettingRow>
+          <RowDivider />
+          <SettingRow title={t("settings.language")} hint={t("settings.languageHint")}>
             <LanguageSwitch t={t} locale={locale} setLocale={setLocale} />
-          </Field>
-        </SectionCard>
+          </SettingRow>
+        </SettingsSection>
+        {/* 文件 — browser-local switches on the same `localStorage` keys
+         * the reference uses (G4): `file_open_in_new_tab` and
+         * `file_line_wrap`. Both have real consumers — page.tsx
+         * #openFileTab and code-view.tsx (ticket 48). */}
+        <SettingsSection title={t("settings.section.file")} testId="file-section">
+          <SettingRow
+            title={t("settings.file.openInNewTab")}
+            hint={t("settings.file.openInNewTabHint")}
+            testId="file-open-in-new-tab-switch"
+          >
+            <Switch
+              checked={fileNewTab}
+              aria-label={t("settings.file.openInNewTab")}
+              onChange={(value) => commitFileOpenInNewTab(setFileNewTab, value)}
+            />
+          </SettingRow>
+          <RowDivider />
+          <SettingRow
+            title={t("settings.file.lineWrap")}
+            hint={t("settings.file.lineWrapHint")}
+            testId="file-line-wrap-switch"
+          >
+            <Switch
+              checked={fileLineWrap}
+              aria-label={t("settings.file.lineWrap")}
+              onChange={(value) => commitFileLineWrap(setFileLineWrap, value)}
+            />
+          </SettingRow>
+        </SettingsSection>
+        {/* 会话管理 — `webui-context-window-usage` (G5). The switch
+         * persists the preference; no surface reads it yet, which the
+         * documentation states plainly. */}
+        <SettingsSection
+          title={t("settings.section.sessionManagement")}
+          testId="session-management-section"
+        >
+          <SettingRow
+            title={t("settings.session.contextWindowUsage")}
+            testId="context-window-usage-switch"
+          >
+            <Switch
+              checked={contextUsage}
+              aria-label={t("settings.session.contextWindowUsage")}
+              onChange={(value) => commitContextWindowUsage(setContextUsage, value)}
+            />
+          </SettingRow>
+        </SettingsSection>
+        {/* 偏好设置 — the reference's follow-up behaviour radio (G7,
+         * front half): `webui-follow-up-behavior`, values `queue` /
+         * `steer`. A recorded preference only — the composer does not
+         * read it yet (ticket 49 owns that surface), documented as such.
+         * The reference's two disabled switches after this row stay
+         * unrendered (capability honesty). */}
+        <SettingsSection
+          title={t("settings.section.preference")}
+          testId="preference-settings"
+        >
+          <SettingRow
+            title={t("settings.followUp.title")}
+            hint={t("settings.followUp.hint")}
+          >
+            <Segmented
+              value={followUp}
+              options={[
+                { id: "queue", label: t("settings.followUp.queue") },
+                { id: "steer", label: t("settings.followUp.steer") },
+              ]}
+              onChange={(id) =>
+                commitFollowUpBehavior(setFollowUp, id === "steer" ? "steer" : "queue")
+              }
+            />
+          </SettingRow>
+        </SettingsSection>
       </>
     ),
     connection: (
@@ -3356,9 +3498,16 @@ function SettingsPanel({
   return (
     /* Upstream's section shell: a `gap-3` column of cards. Each section
      * body carries its own SectionCard elements, because general and
-     * usage-models are two-card sections. */
+     * usage-models are two-card sections. The General page is the one
+     * exception (acceptance I-1): its sections follow the reference's
+     * `.webui-generic-page` rhythm — 32px between sections — while the
+     * usage page keeps the 12px card stack. */
     <div className="flex w-full flex-col gap-3">
-      <section className="flex w-full flex-col gap-3">{body}</section>
+      <section
+        className={`flex w-full flex-col ${section === "general" ? "gap-8" : "gap-3"}`}
+      >
+        {body}
+      </section>
 
       {notice ? <p className="text-caption-small-strong text-text_status_success">{notice}</p> : null}
       {error ? <p className="text-caption-small-strong text-text_status_error">{error}</p> : null}
@@ -3373,6 +3522,81 @@ function SettingsPanel({
  */
 function SectionCard({ children }: { children: React.ReactNode }) {
   return <div className="rounded-[16px] bg-bg_grouped_tertiary p-1">{children}</div>;
+}
+
+/**
+ * A titled section of the General page — the reference's
+ * `webui-generic-section` (ticket 48): an `<h3>` above a 16px-radius
+ * card. The engine-facts card deliberately stays a bare `SectionCard`
+ * because the reference has no section it would correspond to (R2).
+ */
+function SettingsSection({
+  title,
+  testId,
+  children,
+}: {
+  title: string;
+  testId?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section data-testid={testId} className="flex w-full flex-col gap-3">
+      <h3 className="m-0 px-4 text-sm font-medium leading-5 text-text_default_primary">
+        {title}
+      </h3>
+      <div className="flex w-full flex-col rounded-[16px] bg-bg_grouped_tertiary p-1">
+        {children}
+      </div>
+    </section>
+  );
+}
+
+/**
+ * One horizontal settings row — the reference's `webui-generic-row`
+ * (ticket 48, V6): title + grey description on the left (`flex: 1`),
+ * the control on the right (`flex-shrink: 0`), 56px minimum height,
+ * 12px radius, the reference's asymmetric 8/8/8/12 padding.
+ */
+function SettingRow({
+  title,
+  hint,
+  testId,
+  children,
+}: {
+  title: string;
+  hint?: string;
+  testId?: string;
+  children?: React.ReactNode;
+}) {
+  return (
+    <div
+      data-testid={testId}
+      className="flex min-h-[56px] w-full items-center justify-between gap-6 overflow-hidden rounded-[12px] py-2 pl-3 pr-2"
+    >
+      <div className="flex min-w-0 flex-1 flex-col gap-1">
+        <span className="text-sm font-normal leading-5 text-text_default_primary">
+          {title}
+        </span>
+        {hint ? (
+          <span className="text-xs leading-4 text-text_default_secondary">{hint}</span>
+        ) : null}
+      </div>
+      <div className="flex flex-shrink-0 items-center">{children}</div>
+    </div>
+  );
+}
+
+/**
+ * The hairline between adjacent rows inside a section — the reference's
+ * `webui-generic-divider`: a 1px line inset 12px each side with 6px of
+ * vertical breathing room.
+ */
+function RowDivider() {
+  return (
+    <div className="flex items-center justify-center px-3 py-1.5" aria-hidden>
+      <span className="block h-px w-full bg-border_light" />
+    </div>
+  );
 }
 
 /**

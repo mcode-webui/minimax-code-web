@@ -39,6 +39,22 @@ const NEW_KEYS = [
   "usage.unavailable",
   "usage.errorTitle",
   "usage.errorBody",
+  // Ticket 48 — General-page section titles, localStorage-backed row
+  // labels/hints, the back label, and the search-clear aria label.
+  "settings.clearSearch",
+  "settings.section.application",
+  "settings.section.file",
+  "settings.section.sessionManagement",
+  "settings.section.preference",
+  "settings.file.openInNewTab",
+  "settings.file.openInNewTabHint",
+  "settings.file.lineWrap",
+  "settings.file.lineWrapHint",
+  "settings.session.contextWindowUsage",
+  "settings.followUp.title",
+  "settings.followUp.hint",
+  "settings.followUp.queue",
+  "settings.followUp.steer",
 ] as const;
 
 const RETIRED_POPOVER_KEYS = [
@@ -67,6 +83,11 @@ describe("i18n settings parity (ticket 37)", () => {
 
   test("the usage-and-models tab keeps the desktop reference's Chinese name", () => {
     assert.equal(translate("zh", "settings.tab.usageModels" as MessageKey), "用量与模型");
+  });
+
+  test("ticket 48: the back label is the reference's Back to app, in both locales", () => {
+    assert.equal(translate("zh", "settings.back" as MessageKey), "返回应用");
+    assert.equal(translate("en", "settings.back" as MessageKey), "Back to app");
   });
 
   test("the retired usagePopover.* vocabulary is gone from the dictionary", () => {

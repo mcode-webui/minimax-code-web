@@ -247,3 +247,16 @@
   min-height: 22px;
   white-space: pre;
 }
+/* Soft wrap for file previews (ticket 48, the `file_line_wrap`
+ * localStorage switch). The base layout keeps every line at
+ * `min-width: max-content` + `white-space: pre` so wide lines scroll
+ * horizontally; this modifier, applied to the `<pre>` when the switch
+ * is on, lets lines wrap at the column edge instead. The gutter column
+ * still renders one number per source line, so a wrapped line's number
+ * aligns with its first visual row — the same trade-off the desktop
+ * reference makes. */
+.file-preview-codeblock-wrap .file-preview-codeblock-line {
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
