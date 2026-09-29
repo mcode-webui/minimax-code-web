@@ -331,7 +331,7 @@ exec 回合的代价——以下都是当前真实存在的行为，选择权限
 | 浏览器面板（slice 04，沙箱化 iframe over `/api/fs/raw`） | `components/browser-panel.tsx` | `browser-panel` |
 | 工作区选择器（模态） | `components/workspace-picker.tsx` | `workspace-picker` |
 | Provider 配置 | `components/provider-management.tsx` | `providers-panel` |
-| 添加模型弹窗 + 已获取模型弹窗（工单 54；验收第二轮拆为独立文件以便渲染级测试） | `components/add-model-dialog.tsx#AddModelDialog` / `#FetchedModelsDialog`（受控面 `#AddModelDialogForm` / `#FetchedModelsDialogBody`，纯函数 `#collectDialogErrors` / `#defaultChecked`） | `provider-dialog`（字段 `provider-dialog-provider-select` / `-api-key` / `-api-key-reveal` / `-model-add` / `-autofetch` / `-cancel` / `-save` / `-errors`；条目 `provider-dialog-entry-{n}` 含 `-name` / `-context` / `-max-output` / `-thinking` / `-attachment-{mod}` / `-reset` / `-remove`）/ `fetched-models-dialog`（`fetched-models-title` / `-item-{id}` / `-select-all` / `-cancel` / `-add`） |
+| 添加模型弹窗 + 已获取模型弹窗（工单 54；验收第二轮拆为独立文件以便渲染级测试；工单 56 视觉对齐） | `components/add-model-dialog.tsx#AddModelDialog` / `#FetchedModelsDialog`（受控面 `#AddModelDialogForm` / `#FetchedModelsDialogBody`，纯函数 `#collectDialogErrors` / `#defaultChecked`） | `provider-dialog`（字段 `provider-dialog-provider-select` / `-api-key` / `-api-key-reveal` / `-model-add` / `-autofetch` / `-models-empty` / `-cancel` / `-save` / `-footer` / `-errors`；条目 `provider-dialog-entry-{n}` 含 `-name` / `-context` / `-max-output` / `-thinking` / `-attachment-{mod}` / `-test` / `-test-result` / `-reset` / `-remove`）/ `fetched-models-dialog`（`fetched-models-title` / `-item-{id}` / `-select-all` / `-cancel` / `-add`） |
 | 上下文窗口 | `components/context-meter.tsx` | `context-meter` |
 | 设置模态 | `components/panels.tsx#SettingsModal` | `settings-modal` |
 | 设置页「用量与模型」节的分段页签（工单 53） | `components/panels.tsx#UsageModelsSection` | `usage-models-segment`（页签 `usage-models-tab-token-plan` / `usage-models-tab-custom-models`） |
@@ -533,13 +533,20 @@ Token Plan 视图是桌面的五区块（页签 + 四卡）：
 | --- | --- |
 | 提供商下拉（「请选择提供商」） | 选项 = `GET /api/providers/presets` 目录 + 「+ 其他（自定义）」：选预设自动填 id / 显示名 / 协议 / 端点 / 认证类型，选「其他」展开自定义字段（ID、显示名、协议、认证类型、端点）。DeepSeek / Zhipu AI（智谱）/ Moonshot AI (China) 用桌面拼写，其余本地预设保留目录名；目录接口 404 时退化为仅「其他」 |
 | API Key（密码框 + 眼睛） | 眼睛切换仅在这里安全：值就是刚输入的明文，不是脱敏占位——编辑器侧的保留密钥约定（masked 占位、空值哨兵）不变 |
-| 模型条目（「模型 01…」 + ↻ 重置 + 🗑 删除） | 五字段：模型名称→ `id`；上下文窗口→ `contextLimit`；最大输出 Token → **禁用并标注「本地版不适用」**（`/api/providers` PUT 契约没有该字段，可输入会在保存时静默丢失）；推理等级→ `thinkingLevels`（选项来自 `THINKING_LEVELS`，low/medium/high 契约冻结；桌面占位中的「max」示例故意不照抄）；支持的附件 → 图片/PDF/视频/音频 四复选框，映射 `image`/`file`/`video`/`audio`（`file` 自本轮起入选 `MODALITIES`；`text` 不受复选框控制、原样保留） |
-| 「＋ 添加」/「自动获取」 | 添加追加空白条目；自动获取打开「已获取模型」勾选弹窗，列表是**所选预设的内置目录**并注明非按 Key 实时拉取——本地后端没有模型列表代理。未选预设时弹窗如实说明能力缺失，不造数据。「全选（n/N）」+取消/添加同桌面；勾选条目带目录元数据落入表单 |
-| 取消 / 保存 | 保存前校验（已选提供商、id 唯一、逐条 `validateModelRow`），追加进面板列表后走**原有** `draftToWire` + `api.putProviders({version: 2})` 保存路径（请求体零改动）；失败时弹窗不关、已输入内容保留 |
+| 模型条目（「模型 01…」 + 检测 + ↻ 重置 + 🗑 删除） | 五字段：模型名称→ `id`；上下文窗口→ `contextLimit`；最大输出 Token → **禁用并标注「本地版不适用」**（`/api/providers` PUT 契约没有该字段，可输入会在保存时静默丢失）；推理等级→ `thinkingLevels`（选项来自 `THINKING_LEVELS`，low/medium/high 契约冻结；桌面占位中的「max」示例故意不照抄）；支持的附件 → 图片/PDF/视频/音频 四复选框，映射 `image`/`file`/`video`/`audio`（`file` 自本轮起入选 `MODALITIES`；`text` 不受复选框控制、原样保留） |
+| 「＋ 添加」/「自动获取」 | 添加追加空白条目；自动获取打开「已获取模型」勾选弹窗，列表是**所选预设的内置目录**并注明非按 Key 实时拉取——本地后端没有模型列表代理。未选预设时弹窗如实说明能力缺失，不造数据。「全选（n/N）」+取消/添加同桌面；勾选条目带目录元数据落入表单。两按钮各带 tooltip 说明分工（手动填写 vs 目录选择、自动获取仅读列表不保存配置）；条目为空时模型区渲染虚线占位「暂无模型：点击＋添加手动填写，或自动获取从所选预设目录中选择」，不再塌缩成空白 |
+| 取消 / 保存 | 保存前校验（已选提供商、id 唯一、逐条 `validateModelRow`），追加进面板列表后走**原有** `draftToWire` + `api.putProviders({version: 2})` 保存路径（请求体零改动）；失败时弹窗不关、已输入内容保留。按钮对位于独立 footer 区（上分割线 + 16px 留白），h-9 控件高度，主按钮黑底带 token 阴影 |
 
 **工单 54 的不变量**：服务端契约零改动（`/api/providers` PUT 请求体、`/api/set-model` 与全部端点不动，变更只在前端 + 测试 + 文档）；面板/编辑器侧的全部既有 `data-testid` 在源码中保留（面板源码 pin 36 条 + 空态 2 条 = 38 条，与基线一致；`webapp/test/add-model-dialog.test.ts` 钉死清单）；预设目录、thinkingLevels 编辑语义、供应商分组与思考等级显示例外不变；深链仍落自定义模型视图，改为直接打开弹窗。旧的列表草稿式 `addProvider` 路径与编辑器失去调用方的自动聚焦参数一并删除，行为由弹窗收敛。
 
 **验收第二轮（同工单）**：弹窗组件拆到 `components/add-model-dialog.tsx` 并导出受控面，测试升级为渲染级（`renderToStaticMarkup`，53a F-7 同款）——眼睛往返、校验错误块、取消重置落地面、勾选弹窗全选语义与 n/N 计数、零勾选/自定义供应商禁用态均由渲染标记 + 纯函数钉死（11 项回退行为的变异抽查全部转红）；PUT 请求体红线从调用点字面量升级为 `draftToWire` 的封闭键集断言（`provider-management.test.ts`）。一处表述更正：自定义供应商下「自动获取」链接**不是禁用**——可点开，弹窗内如实说明能力缺失，「添加」按钮禁用。
+
+**工单 56 —— 弹窗视觉与交互对齐官方**（用户反馈：丑、交互逻辑布局不一致；对照 `design-ref/screenshots/byok-custom-model-official.png`）：
+
+- **布局**：弹窗垂直居中（antd `centered`，两个弹窗一致）；卡片圆角 `--radius_12`、浮起阴影由 `--opacity_black_1_8`/`1_15` 透明度梯度组合（无字面量 rgba）；「取消/保存」移入独立 footer（上分割线 `border_default` + 16px 留白），按钮 h-9 控件高度、主按钮黑底带 `--shadow_default`；「模型」标题行的标签与操作按钮改为紧邻排列（原 `justify-between` 中间大空白造成视觉断裂）。表单体钳高 `90vh` 并内部滚动、footer 不随内容滚动——实机验证轮发现自定义分支全展开（5 个供应商字段 + 条目卡）时内容高 884px 超出 633px 视口，antd 遮罩不提供滚动，「取消/保存」落屏外不可达，钳制后 footer 在任意视口恒可见。
+- **模型区空态**：无条目时渲染虚线占位提示（`provider-dialog-models-empty`），说明两条添加路径；「＋添加」「自动获取」各带 tooltip 区分分工。
+- **连通检测（模型条目旁「检测」按钮）**：官方语义为「用当前填写信息检查对应模型能否响应」。本地实现复用服务端既有 `POST /api/providers/test` 契约（协议白名单 → 本地 Key 格式校验 → 按 baseURL 真实探测），无新增路由；探测请求由弹窗 shell 以当前表单值组装（预设分支用预设协议/端点，自定义分支用自定义字段），4 秒超时，结果显示「可达 · Nms」（成功色）/「不可达：错误」（错误色）。**粒度诚实标注**：该探测是接口级（baseURL + Key），不针对条目的模型 ID——按钮 tooltip 与本文档均如实说明，不冒充官方的模型级检测。按钮可用性镜像服务端本地校验：byok 预设需先填写 API Key，coding-plan 预设（claude-code / codex / opencode-go）无需 Key 即可检测。检测结果随输入即时失效：编辑/重置条目清除该条结果，删除条目后其余结果下标对齐，共享探测输入（提供商选择、协议、接口地址、认证类型、API Key）任一变化清除全部结果。本工单一并修复探测目标 bug：`testProvider` 此前读取并校验了 body 的 baseURL 却未下发（探测全部打到协议默认地址），现按路由注释既有承诺作为探测目标（`/api/providers` PUT 契约不动）。
+- **自动获取语义核对（对照官方「读取列表供选择添加；不会保存配置」）**：本地行为一致——勾选结果只落入弹窗草稿，保存仅由「保存」按钮触发；与官方的差异是列表来源（本地为预设内置目录而非按 Key 实时拉取），勾选弹窗内已有诚实标注，行为无需改动。
 
 **工单 53 的不变量**：服务端契约零改动（变更面：`panels.tsx` / `usage-models-cards.tsx` / `icons.tsx` / `i18n.ts` + 两个测试文件）；h2 页头、切页动画与页宽 760 不变；`SETTINGS_NAV`、`SettingsSection` 联合类型、深度链接入口（`initialSection`、`autoAddProvider`）不变；8 项「暂不支持」占位全部保留。删除了失去消费者的 `usage.used` / `usage.reset` 文案键（旧标签式「已用 X%」「重置时间」被桌面格式取代）。
 

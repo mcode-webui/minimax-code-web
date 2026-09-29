@@ -445,7 +445,7 @@ below cites the component file and one `data-testid` per surface.
 | Browser panel (slice 04, sandboxed iframe over `/api/fs/raw`) | `components/browser-panel.tsx` | `browser-panel` |
 | Workspace picker (modal) | `components/workspace-picker.tsx` | `workspace-picker` |
 | Provider management | `components/provider-management.tsx` | `providers-panel` |
-| Add-model dialog + fetched-models dialog (ticket 54; lifted to its own file in acceptance round 2 so the suite can render-test it) | `components/add-model-dialog.tsx#AddModelDialog` / `#FetchedModelsDialog` (controlled surfaces `#AddModelDialogForm` / `#FetchedModelsDialogBody`, pure helpers `#collectDialogErrors` / `#defaultChecked`) | `provider-dialog` (fields `provider-dialog-provider-select` / `-api-key` / `-api-key-reveal` / `-model-add` / `-autofetch` / `-cancel` / `-save` / `-errors`; per-entry `provider-dialog-entry-{n}` with `-name` / `-context` / `-max-output` / `-thinking` / `-attachment-{mod}` / `-reset` / `-remove`) / `fetched-models-dialog` (`fetched-models-title` / `-item-{id}` / `-select-all` / `-cancel` / `-add`) |
+| Add-model dialog + fetched-models dialog (ticket 54; lifted to its own file in acceptance round 2 so the suite can render-test it; ticket 56 visual parity) | `components/add-model-dialog.tsx#AddModelDialog` / `#FetchedModelsDialog` (controlled surfaces `#AddModelDialogForm` / `#FetchedModelsDialogBody`, pure helpers `#collectDialogErrors` / `#defaultChecked`) | `provider-dialog` (fields `provider-dialog-provider-select` / `-api-key` / `-api-key-reveal` / `-model-add` / `-autofetch` / `-models-empty` / `-cancel` / `-save` / `-footer` / `-errors`; per-entry `provider-dialog-entry-{n}` with `-name` / `-context` / `-max-output` / `-thinking` / `-attachment-{mod}` / `-test` / `-test-result` / `-reset` / `-remove`) / `fetched-models-dialog` (`fetched-models-title` / `-item-{id}` / `-select-all` / `-cancel` / `-add`) |
 | Context meter / panel | `components/context-meter.tsx` | `context-meter` |
 | Settings modal | `components/panels.tsx#SettingsModal` | `settings-modal` |
 | Segmented tabs of the Usage & models section (ticket 53) | `components/panels.tsx#UsageModelsSection` | `usage-models-segment` (tabs `usage-models-tab-token-plan` / `usage-models-tab-custom-models`) |
@@ -756,9 +756,9 @@ deep-link — opens the desktop's modal instead of appending a rail draft:
 | --- | --- |
 | Provider select (「请选择提供商」) | Options are `GET /api/providers/presets` plus a 「+ 其他（自定义）」 sentinel; choosing a preset fills id / label / protocol / baseURL / auth-type, choosing the sentinel expands the custom fields (id, display name, protocol, auth type, baseURL). DeepSeek / Zhipu AI（智谱）/ Moonshot AI (China) carry the reference's spellings; other local presets keep their catalogue labels. A 404 catalogue degrades to the custom-only dropdown |
 | API key (`AntInput.Password`) | The eye toggle is safe here and only here: the field's value is what the user just typed, not a masked placeholder — the editor's no-reveal rule (keep-existing-key convention) is untouched |
-| Model entries (「模型 01…」 + ↻ reset + 🗑 delete) | Five fields: name → `id`, context window → `contextLimit`, max output tokens → **disabled with the 「本地版不适用」 marker** (the `/api/providers` PUT contract has no field to persist it), reasoning levels → `thinkingLevels` fed from `THINKING_LEVELS` (the low/medium/high contract is frozen; the reference's 「max」 placeholder example is deliberately not copied), attachments → four checkboxes 图片/PDF/视频/音频 mapping to `image`/`file`/`video`/`audio` (`file` joined `MODALITIES`; `text` passes through untouched) |
-| 「＋ 添加」 / 「自动获取」 | Add appends a blank entry; auto-fetch opens the 「已获取模型」 dialog listing the **selected preset's built-in catalogue** with the note that it is not a live per-key query — the local backend has no model-listing proxy. With no preset selected the dialog states the missing capability instead of inventing rows. 「全选（n/N）」 + 取消/添加 follow the reference; picked entries arrive with their catalogue metadata |
-| 取消 / 保存 | Save validates (provider chosen, unique id, per-entry `validateModelRow`), appends the draft to the panel's list, and PUTs through the **unchanged** `draftToWire` + `api.putProviders({version: 2})` path; on failure the dialog stays open with the typed input intact |
+| Model entries (「模型 01…」 + connectivity test + ↻ reset + 🗑 delete) | Five fields: name → `id`, context window → `contextLimit`, max output tokens → **disabled with the 「本地版不适用」 marker** (the `/api/providers` PUT contract has no field to persist it), reasoning levels → `thinkingLevels` fed from `THINKING_LEVELS` (the low/medium/high contract is frozen; the reference's 「max」 placeholder example is deliberately not copied), attachments → four checkboxes 图片/PDF/视频/音频 mapping to `image`/`file`/`video`/`audio` (`file` joined `MODALITIES`; `text` passes through untouched) |
+| 「＋ 添加」 / 「自动获取」 | Add appends a blank entry; auto-fetch opens the 「已获取模型」 dialog listing the **selected preset's built-in catalogue** with the note that it is not a live per-key query — the local backend has no model-listing proxy. With no preset selected the dialog states the missing capability instead of inventing rows. 「全选（n/N）」 + 取消/添加 follow the reference; picked entries arrive with their catalogue metadata. Both actions carry tooltips spelling out the split (manual entry vs catalogue pick; auto-fetch reads the list only and saves nothing); with zero entries the models section renders a dashed placeholder naming both paths instead of collapsing |
+| 取消 / 保存 | Save validates (provider chosen, unique id, per-entry `validateModelRow`), appends the draft to the panel's list, and PUTs through the **unchanged** `draftToWire` + `api.putProviders({version: 2})` path; on failure the dialog stays open with the typed input intact. The pair sits in a dedicated footer region (hairline separator + 16px clearance) at the h-9 control height, the black primary carrying the token shadow |
 
 Ticket 54 invariants — no server-contract change (the `/api/providers` PUT
 body, `/api/set-model`, and every endpoint are untouched; the whole delta is
@@ -785,6 +785,59 @@ link is NOT disabled — it opens the dialog, which states the missing
 capability honestly and disables 添加. The count correction: 36
 preserved testid literals in the panel-source pin plus the 2
 empty-state affordances = 38, matching the base tree.
+
+**Ticket 56 — dialog visual/interaction parity with the official
+screenshot** (user report: ugly, interaction/layout inconsistent;
+reference `design-ref/screenshots/byok-custom-model-official.png`):
+
+- **Layout.** Both modals centre vertically (antd `centered`); the
+  card takes `--radius_12` with an elevation composed from the
+  `--opacity_black_1_8`/`1_15` ramp (no literal rgba). 取消/保存 moved
+  into a dedicated footer region (hairline `border_default` + 16px
+  clearance), buttons at the h-9 control height with the black
+  primary carrying `--shadow_default`. The models header packs its
+  label and actions adjacently — the old `justify-between` row read
+  as broken through its wide dead gap. The form body clamps to
+  `90vh` with an internal scroll and a footer that never scrolls
+  away — the live verify round caught the filled custom branch (5
+  provider fields + entry cards) reaching 884px in a 633px viewport,
+  where antd's overlay offers no scroll and 取消/保存 sat below an
+  unreachable fold.
+- **Models empty state.** With no entries the section renders a
+  dashed placeholder naming both add paths instead of collapsing to
+  blank; ＋添加 / 自动获取 carry tooltips stating their division of
+  labour.
+- **Connectivity test (per-entry 检测 button).** The official
+  semantics is "probe with the currently filled-in info, per model".
+  The local implementation reuses the server's existing
+  `POST /api/providers/test` contract verbatim — protocol whitelist,
+  local key-format check, then a real fetch against the configured
+  baseURL — with no new route. The dialog shell assembles the probe
+  from the current form values (preset branch takes the preset's
+  protocol/baseURL, custom branch takes the custom fields) with a 4s
+  timeout, and renders 「可达 · Nms」 (success token) / 「不可达：
+  error」 (error token). **Granularity, stated honestly**: the probe
+  is endpoint-level (baseURL + key) and does not exercise the
+  entry's model id — the tooltip and this paragraph say so rather
+  than claiming the reference's model-level coverage. The button's
+  availability mirrors the server's local gate: a byok probe demands
+  a typed key, a coding-plan probe (the claude-code / codex /
+  opencode-go presets) fires with the endpoint alone. A verdict is
+  dropped the moment its inputs go stale — editing/resetting an
+  entry drops that entry's verdict, removing one shifts the rest,
+  and any change to the shared probe inputs (provider choice,
+  protocol, baseURL, auth type, API key) drops them all. The ticket
+  also fixed the probe's target: `testProvider` previously read and
+  validated the body's `baseURL` but dropped it, sending every probe
+  to the protocol default; it now honours it as the route's comment
+  always claimed (`PUT /api/providers` is untouched).
+- **Auto-fetch semantics vs the official table** ("read the
+  provider's model list for selection; saves nothing"). The local
+  behaviour already matches — picked rows only land in the dialog
+  draft, and saving is a separate explicit action. The one
+  difference is the list's source (the local preset catalogue, not a
+  live per-key query), which the fetch dialog already states
+  honestly; no behaviour change was needed.
 
 **Ticket 53 invariants** — no server-contract change (the delta:
 `panels.tsx` / `usage-models-cards.tsx` / `icons.tsx` / `i18n.ts` plus two

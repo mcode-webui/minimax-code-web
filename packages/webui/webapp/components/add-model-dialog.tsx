@@ -178,6 +178,21 @@ export function defaultChecked(
   return new Set(models.map((m) => m.id));
 }
 
+/**
+ * One model entry's connectivity-test state (ticket 56, I3). A value
+ * prop on the entry card, not widget state — the shell owns the probe
+ * and the tests drive the three render branches through this type.
+ *
+ * Honesty note: the local probe contract (`POST /api/providers/test`)
+ * is ENDPOINT-level — it exercises the provider's baseURL + key, not
+ * the specific model id in the entry. The button's tooltip states
+ * this granularity; the docs (webui.md / webui.zh-CN.md) pin it.
+ */
+export type EntryTestState =
+  | { status: "testing" }
+  | { status: "ok"; latencyMs?: number }
+  | { status: "fail"; error: string };
+
 // ---------------------------------------------------------------------
 // Controlled form surface — rendered by the shell, rendered by tests.
 // ---------------------------------------------------------------------
@@ -192,6 +207,8 @@ export function AddModelDialogForm({
   entries,
   errors,
   busy,
+  entryTests,
+  canTest,
   onPresetChoice,
   onCustomField,
   onApiKey,
@@ -201,6 +218,7 @@ export function AddModelDialogForm({
   onEntryChange,
   onEntryRemove,
   onEntryReset,
+  onEntryTest,
   onCancel,
   onCommit,
 }: {
@@ -216,6 +234,15 @@ export function AddModelDialogForm({
   entries: DraftModel[];
   errors: string[];
   busy: boolean;
+  /** Per-entry probe results keyed by entry index (I3). Passing the
+   *  whole map keeps the form a pure function of props — the shell
+   *  invalidates entries as the user edits them. */
+  entryTests: Record<number, EntryTestState>;
+  /** false until a provider is chosen AND a key is typed — the
+   *  per-entry 检测 buttons render disabled (with the reason in
+   *  their tooltip) instead of firing a probe the server would
+   *  reject locally. */
+  canTest: boolean;
   onPresetChoice: (value: string) => void;
   onCustomField: (patch: Partial<DialogCustomFields>) => void;
   onApiKey: (value: string) => void;
@@ -225,11 +252,27 @@ export function AddModelDialogForm({
   onEntryChange: (index: number, next: DraftModel) => void;
   onEntryRemove: (index: number) => void;
   onEntryReset: (index: number) => void;
+  /** Fires the endpoint probe with the CURRENT form values for the
+   *  entry at `index` (official semantics: 检测 uses what is filled
+   *  in, not what is saved). */
+  onEntryTest: (index: number) => void;
   onCancel: () => void;
   onCommit: () => void;
 }) {
   return (
-    <div className="flex flex-col gap-4" data-testid="provider-dialog">
+    <div
+      className="flex max-h-[calc(90vh-64px)] flex-col"
+      data-testid="provider-dialog"
+    >
+      {/* Scrollable body region — every field section; the commit
+       * pair lives in its own separated footer region below. The
+       * 90vh clamp keeps the footer reachable on short viewports:
+       * the filled custom branch (5 provider fields + entry cards)
+       * otherwise grows past the overlay, which antd does not make
+       * scrollable, and 取消/保存 end up below the fold with no
+       * way to reach them (found live in the ticket-56 verify
+       * round: 884px of content in a 633px viewport). */}
+      <div className="thin-scrollbar flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pb-2">
       {/* 提供商 —— desktop placeholder 「请选择提供商」; options are
        * the local preset catalogue plus the 「+ 其他」 escape hatch
        * that keeps the custom-provider capability (B4). */}
@@ -344,44 +387,63 @@ export function AddModelDialogForm({
         />
       </Field>
 
-      {/* 模型 —— the reference's header row: 「＋ 添加」 next to the
-       * 「自动获取」 link, above the entry cards. */}
+      {/* 模型 —— the header row keeps the label and its actions
+       *  ADJACENT (ticket 56 V5: the old justify-between layout left
+       *  a wide dead gap between 「模型」 and the buttons, which read
+       *  as a broken row). The two actions carry tooltips spelling
+       *  out their division of labour (I2): manual entry vs
+       *  catalogue pick, and the fetch-only semantics of 自动获取. */}
       <div className="flex flex-col gap-2">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-wrap items-center gap-2">
           <span className="desktop-text-ui-small-strong text-text_default_tertiary">
             {t("providers.dialog.models")}
           </span>
-          <div className="flex items-center gap-3">
-            <button
-              type="button"
-              data-testid="provider-dialog-model-add"
-              onClick={onAddEntry}
-              className="h-7 rounded-lg bg-bg_interaction_tertiary_hover px-2.5 text-caption-small-strong text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_selected"
-            >
-              {t("providers.dialog.addEntry")}
-            </button>
-            <button
-              type="button"
-              data-testid="provider-dialog-autofetch"
-              onClick={onAutoFetch}
-              className="border-0 bg-transparent p-0 text-sm text-icon_default_accent transition-colors hover:opacity-80"
-            >
-              {t("providers.dialog.autoFetch")}
-            </button>
-          </div>
+          <button
+            type="button"
+            data-testid="provider-dialog-model-add"
+            title={t("providers.dialog.addEntryHint")}
+            onClick={onAddEntry}
+            className="h-7 rounded-lg bg-bg_interaction_tertiary_hover px-2.5 text-caption-small-strong text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_selected"
+          >
+            {t("providers.dialog.addEntry")}
+          </button>
+          <button
+            type="button"
+            data-testid="provider-dialog-autofetch"
+            title={t("providers.dialog.autoFetchHint")}
+            onClick={onAutoFetch}
+            className="border-0 bg-transparent p-0 text-sm text-icon_default_accent transition-colors hover:opacity-80"
+          >
+            {t("providers.dialog.autoFetch")}
+          </button>
         </div>
 
-        {entries.map((m, idx) => (
-          <AddModelEntry
-            key={idx}
-            t={t}
-            index={idx}
-            model={m}
-            onChange={(next) => onEntryChange(idx, next)}
-            onRemove={() => onEntryRemove(idx)}
-            onReset={() => onEntryReset(idx)}
-          />
-        ))}
+        {/* Empty state (I1): with no entries the section renders an
+         *  explicit placeholder instead of collapsing to nothing —
+         *  the 「not loaded yet」 ambiguity the user reported. */}
+        {entries.length === 0 ? (
+          <div
+            data-testid="provider-dialog-models-empty"
+            className="rounded-[8px] border border-dashed border-border_default px-3 py-4 text-center text-caption-small-strong text-text_default_tertiary"
+          >
+            {t("providers.dialog.modelsEmpty")}
+          </div>
+        ) : (
+          entries.map((m, idx) => (
+            <AddModelEntry
+              key={idx}
+              t={t}
+              index={idx}
+              model={m}
+              canTest={canTest}
+              testState={entryTests[idx] ?? null}
+              onChange={(next) => onEntryChange(idx, next)}
+              onRemove={() => onEntryRemove(idx)}
+              onReset={() => onEntryReset(idx)}
+              onTest={() => onEntryTest(idx)}
+            />
+          ))
+        )}
       </div>
 
       {errors.length > 0 ? (
@@ -394,16 +456,25 @@ export function AddModelDialogForm({
           ))}
         </ul>
       ) : null}
+      </div>
 
-      {/* 取消 / 保存 —— the reference's white secondary + black
-       * primary pair. */}
-      <div className="flex items-center justify-end gap-2 pt-1">
+      {/* 取消 / 保存 —— a DEDICATED footer (ticket 56 V3): its own
+       *  region behind a hairline separator with ≥16px of breathing
+       *  room, so the commit pair no longer sits flush under the
+       *  「＋ 添加 / 自动获取」 row. Buttons run at the h-9 (36px)
+       *  control height with the radius-8 the mavis-input standard
+       *  pins, and the black primary carries the token shadow so it
+       *  reads as THE anchor action (V4). */}
+      <div
+        data-testid="provider-dialog-footer"
+        className="mt-5 flex shrink-0 items-center justify-end gap-3 border-t border-border_default pt-4"
+      >
         <button
           type="button"
           data-testid="provider-dialog-cancel"
           disabled={busy}
           onClick={onCancel}
-          className="h-8 rounded-lg border border-border_default px-3 text-sm text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_hover disabled:opacity-50"
+          className="h-9 rounded-lg border border-border_default px-4 text-sm text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_hover disabled:opacity-50"
         >
           {t("providers.dialog.cancel")}
         </button>
@@ -413,7 +484,7 @@ export function AddModelDialogForm({
           disabled={busy}
           aria-busy={busy || undefined}
           onClick={onCommit}
-          className="h-8 rounded-lg bg-bg_interaction_primary_default px-3 text-sm font-weight_medium text-text_default_inverted_static transition-colors hover:bg-bg_interaction_primary_hover disabled:cursor-not-allowed disabled:opacity-50"
+          className="h-9 min-w-20 rounded-lg bg-bg_interaction_primary_default px-5 text-sm font-weight_medium text-text_default_inverted_static shadow-[var(--shadow_default)] transition-colors hover:bg-bg_interaction_primary_hover disabled:cursor-not-allowed disabled:opacity-50"
         >
           {busy ? t("providers.saving") : t("providers.dialog.save")}
         </button>
@@ -423,21 +494,35 @@ export function AddModelDialogForm({
 }
 
 /** One model entry card — the reference's five-field form under a
- *  「模型 01」 header with the ↻ reset and 🗑 delete affordances. */
+ *  「模型 01」 header with the 连通检测 (I3), ↻ reset, and 🗑 delete
+ *  affordances. The probe is a labelled text button rather than the
+ *  reference's refresh-shaped glyph because the card ALREADY has a
+ *  refresh-shaped 重置 icon — two identical glyphs with different
+ *  semantics was the ambiguity to avoid. */
 export function AddModelEntry({
   t,
   index,
   model,
+  canTest,
+  testState,
   onChange,
   onRemove,
   onReset,
+  onTest,
 }: {
   t: (key: MessageKey) => string;
   index: number;
   model: DraftModel;
+  /** Drives the 检测 button's disabled state — see
+   *  `AddModelDialogForm.canTest`. */
+  canTest: boolean;
+  /** The probe outcome for THIS entry, a value prop (see
+   *  `EntryTestState`); `null` renders no result line. */
+  testState: EntryTestState | null;
   onChange: (next: DraftModel) => void;
   onRemove: () => void;
   onReset: () => void;
+  onTest: () => void;
 }) {
   return (
     <div
@@ -449,6 +534,27 @@ export function AddModelEntry({
           {dialogEntryTitle(t, index)}
         </span>
         <div className="flex items-center gap-2 text-text_default_tertiary">
+          {/* 连通检测 (I3) — official semantics: probe with the
+           *  CURRENTLY FILLED provider info, before saving. The
+           *  tooltip states the local probe's endpoint-level
+           *  granularity (it does not exercise this entry's model
+           *  id specifically). */}
+          <button
+            type="button"
+            data-testid={`provider-dialog-entry-${index}-test`}
+            title={
+              canTest
+                ? t("providers.dialog.entryTestHint")
+                : t("providers.dialog.testNeedProvider")
+            }
+            disabled={testState?.status === "testing"}
+            onClick={onTest}
+            className="h-7 rounded-md border border-border_default bg-transparent px-2 text-caption-small-strong text-text_default_secondary transition-colors hover:border-icon_default_accent hover:text-icon_default_accent disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {testState?.status === "testing"
+              ? t("providers.dialog.testTesting")
+              : t("providers.dialog.entryTest")}
+          </button>
           <button
             type="button"
             data-testid={`provider-dialog-entry-${index}-reset`}
@@ -471,6 +577,35 @@ export function AddModelEntry({
           </button>
         </div>
       </div>
+
+      {/* Probe result line — one of three controlled branches; the
+       *  ok/fail colours are the status tokens, the latency/error
+       *  text is the server's structured answer, not a guess. */}
+      {testState ? (
+        <div
+          data-testid={`provider-dialog-entry-${index}-test-result`}
+          className={
+            "text-caption-small-strong " +
+            (testState.status === "ok"
+              ? "text-text_status_success"
+              : testState.status === "fail"
+                ? "text-text_status_error"
+                : "text-text_default_tertiary")
+          }
+        >
+          {testState.status === "ok"
+            ? t("providers.dialog.testOk").replace(
+                "{{ms}}",
+                testState.latencyMs != null ? String(testState.latencyMs) : "—",
+              )
+            : testState.status === "fail"
+              ? t("providers.dialog.testFail").replace(
+                  "{{error}}",
+                  testState.error,
+                )
+              : t("providers.dialog.testTesting")}
+        </div>
+      ) : null}
 
       <Field label={t("providers.dialog.field.name")}>
         <AntInput
@@ -580,6 +715,14 @@ export function AddModelDialog({
   const [fetchedOpen, setFetchedOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [errors, setErrors] = useState<string[]>([]);
+  // Per-entry probe outcomes (I3), keyed by entry index. Invalidated
+  // entry-by-entry: editing/resetting an entry drops its stale
+  // result, removing one shifts the tail down, and any change to the
+  // SHARED provider fields (choice / key) drops every result — the
+  // probe answered a question the form no longer asks.
+  const [entryTests, setEntryTests] = useState<Record<number, EntryTestState>>(
+    {},
+  );
 
   // Fetch the preset catalogue once per dialog lifetime. 404 / network
   // failure degrade to an empty catalogue — the dropdown then offers
@@ -620,6 +763,7 @@ export function AddModelDialog({
     setRevealed(false);
     setEntries([]);
     setErrors([]);
+    setEntryTests({});
   }, []);
 
   const close = useCallback(() => {
@@ -679,12 +823,138 @@ export function AddModelDialog({
     if (ok) close();
   }, [t, presetChoice, custom, existingIds, entries, selectedPreset, apiKey, onSave, close]);
 
+  // -------------------------------------------------------------------
+  // 连通检测 (I3) — official semantics: the button next to a model
+  // entry probes with what the form has NOW, before any save. The
+  // local implementation reuses the server's existing
+  // `POST /api/providers/test` contract verbatim (no new route):
+  // protocol whitelist → local key-format check → endpoint fetch.
+  // Raw fetch for the same reason the presets fetch above uses one —
+  // importing the panel's api graph here would drag it into the
+  // render-test process this file was split out to protect.
+  //
+  // Granularity honesty: the probe is endpoint-level (baseURL +
+  // key); it does NOT exercise this entry's model id. The tooltip
+  // and both docs say so — mirroring the reference's wording while
+  // claiming model-level coverage the backend does not have would
+  // be fabrication.
+  // -------------------------------------------------------------------
+  const testEntry = useCallback(
+    async (index: number) => {
+      const protocol =
+        presetChoice === PRESET_CHOICE_CUSTOM
+          ? custom.protocol
+          : (selectedPreset?.protocol ?? "");
+      const authType =
+        presetChoice === PRESET_CHOICE_CUSTOM
+          ? custom.authType
+          : (selectedPreset?.auth.type ?? "byok");
+      const baseURL =
+        presetChoice === PRESET_CHOICE_CUSTOM
+          ? custom.baseURL
+          : (selectedPreset?.auth.baseURL ?? "");
+      if (!presetChoice || !protocol) {
+        // Unreachable through the disabled button — kept as the
+        // defensive floor: the probe must never fire without a
+        // resolvable endpoint.
+        setEntryTests((cur) => ({
+          ...cur,
+          [index]: { status: "fail", error: t("providers.dialog.testNeedProvider") },
+        }));
+        return;
+      }
+      setEntryTests((cur) => ({ ...cur, [index]: { status: "testing" } }));
+      try {
+        const res = await fetch("/api/providers/test", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            protocol,
+            auth: { type: authType, apiKey, baseURL },
+            // 4s — the user is waiting at an open dialog; the wire
+            // default is 8 (same cut the panel's test button makes).
+            timeoutMs: 4000,
+          }),
+        });
+        const body = (await res.json()) as {
+          ok?: boolean;
+          code?: string;
+          error?: string;
+          latencyMs?: number;
+        };
+        setEntryTests((cur) => ({
+          ...cur,
+          [index]: body.ok
+            ? { status: "ok", latencyMs: body.latencyMs }
+            : {
+                status: "fail",
+                error: body.error || body.code || `HTTP ${res.status}`,
+              },
+        }));
+      } catch (cause) {
+        setEntryTests((cur) => ({
+          ...cur,
+          [index]: {
+            status: "fail",
+            error: cause instanceof Error ? cause.message : String(cause),
+          },
+        }));
+      }
+    },
+    [presetChoice, custom, apiKey, selectedPreset, t],
+  );
+
+  /** Drop one entry's probe result (its inputs just changed) and
+   *  shift the tail down on remove, so results stay indexed to the
+   *  entries they answered for. */
+  const dropEntryTest = useCallback((index: number) => {
+    setEntryTests((cur) => {
+      const { [index]: _stale, ...rest } = cur;
+      return rest;
+    });
+  }, []);
+  const shiftEntryTestsAfter = useCallback((removedIndex: number) => {
+    setEntryTests((cur) => {
+      const next: Record<number, EntryTestState> = {};
+      for (const [key, value] of Object.entries(cur)) {
+        const i = Number(key);
+        if (i < removedIndex) next[i] = value;
+        else if (i > removedIndex) next[i - 1] = value;
+      }
+      return next;
+    });
+  }, []);
+
+  /** Mirrors the server's LOCAL validation gate (`validateKeyFormat`):
+   *  a byok probe needs a typed key; a coding-plan probe fires with
+   *  the endpoint alone (the catalogue's claude-code / codex /
+   *  opencode-go presets are coding-plan — their key is optional
+   *  server-side, so the button must not demand one). */
+  const probeAuthType =
+    presetChoice === PRESET_CHOICE_CUSTOM
+      ? custom.authType
+      : (selectedPreset?.auth.type ?? "byok");
+  const canTest =
+    presetChoice !== null &&
+    (probeAuthType === "coding-plan" || apiKey.trim().length > 0);
+
   return (
     <AntModal
       open={open}
       onCancel={close}
       footer={null}
       width={640}
+      centered
+      styles={{
+        // Ticket 56 V1/V2: vertically centred card, radius + elevation
+        // from the token ramp (the same --radius_12 the official
+        // mavis-modal standard pins) instead of antd's flat default.
+        content: {
+          borderRadius: "var(--radius_12)",
+          boxShadow:
+            "0 4px 16px var(--opacity_black_1_8), 0 12px 40px var(--opacity_black_1_15)",
+        },
+      }}
       title={
         <span
           data-testid="provider-dialog-title"
@@ -704,23 +974,55 @@ export function AddModelDialog({
         entries={entries}
         errors={errors}
         busy={busy}
-        onPresetChoice={setPresetChoice}
-        onCustomField={(patch) => setCustom((c) => ({ ...c, ...patch }))}
-        onApiKey={setApiKey}
+        entryTests={entryTests}
+        canTest={canTest}
+        onPresetChoice={(value) => {
+          setPresetChoice(value);
+          // Shared probe inputs changed — every outstanding result is
+          // now an answer to a different question.
+          setEntryTests({});
+        }}
+        onCustomField={(patch) => {
+          setCustom((c) => ({ ...c, ...patch }));
+          // protocol / baseURL / authType all land in the probe body —
+          // a stale verdict must not survive any of them changing.
+          if (
+            patch.protocol !== undefined ||
+            patch.baseURL !== undefined ||
+            patch.authType !== undefined
+          ) {
+            setEntryTests({});
+          }
+        }}
+        onApiKey={(value) => {
+          setApiKey(value);
+          // The key is THE probe credential — an outstanding verdict
+          // answered for a different key is stale (the comment on
+          // entryTests promises this; keep the wiring honest). The
+          // identity-preserving no-op keeps keystrokes cheap when
+          // there is nothing to drop.
+          setEntryTests((cur) =>
+            Object.keys(cur).length === 0 ? cur : {},
+          );
+        }}
         onRevealToggle={() => setRevealed((r) => !r)}
         onAddEntry={() => setEntries((cur) => [...cur, blankModel()])}
         onAutoFetch={() => setFetchedOpen(true)}
-        onEntryChange={(index, next) =>
-          setEntries((cur) => cur.map((x, i) => (i === index ? next : x)))
-        }
-        onEntryRemove={(index) =>
-          setEntries((cur) => cur.filter((_, i) => i !== index))
-        }
-        onEntryReset={(index) =>
+        onEntryChange={(index, next) => {
+          setEntries((cur) => cur.map((x, i) => (i === index ? next : x)));
+          dropEntryTest(index);
+        }}
+        onEntryRemove={(index) => {
+          setEntries((cur) => cur.filter((_, i) => i !== index));
+          shiftEntryTestsAfter(index);
+        }}
+        onEntryReset={(index) => {
           setEntries((cur) =>
             cur.map((x, i) => (i === index ? blankModel() : x)),
-          )
-        }
+          );
+          dropEntryTest(index);
+        }}
+        onEntryTest={(index) => void testEntry(index)}
         onCancel={close}
         onCommit={() => void commit()}
       />
@@ -805,6 +1107,17 @@ export function FetchedModelsDialog({
       onCancel={onCancel}
       footer={null}
       width={480}
+      centered
+      styles={{
+        // Same token-pinned card treatment as the parent dialog
+        // (ticket 56 V1/V2) — one visual language across both
+        // modals, not two.
+        content: {
+          borderRadius: "var(--radius_12)",
+          boxShadow:
+            "0 4px 16px var(--opacity_black_1_8), 0 12px 40px var(--opacity_black_1_15)",
+        },
+      }}
       title={
         <span
           data-testid="fetched-models-title"
@@ -901,12 +1214,12 @@ export function FetchedModelsDialogBody({
         ) : (
           <span />
         )}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
           <button
             type="button"
             data-testid="fetched-models-cancel"
             onClick={onCancel}
-            className="h-8 rounded-lg border border-border_default px-3 text-sm text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_hover"
+            className="h-9 rounded-lg border border-border_default px-4 text-sm text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_hover"
           >
             {t("providers.dialog.cancel")}
           </button>
@@ -915,7 +1228,7 @@ export function FetchedModelsDialogBody({
             data-testid="fetched-models-add"
             disabled={!presetMode || checked.size === 0}
             onClick={onAdd}
-            className="h-8 rounded-lg bg-bg_interaction_primary_default px-3 text-sm font-weight_medium text-text_default_inverted_static transition-colors hover:bg-bg_interaction_primary_hover disabled:cursor-not-allowed disabled:opacity-50"
+            className="h-9 min-w-20 rounded-lg bg-bg_interaction_primary_default px-5 text-sm font-weight_medium text-text_default_inverted_static shadow-[var(--shadow_default)] transition-colors hover:bg-bg_interaction_primary_hover disabled:cursor-not-allowed disabled:opacity-50"
           >
             {t("providers.fetched.add")}
           </button>
