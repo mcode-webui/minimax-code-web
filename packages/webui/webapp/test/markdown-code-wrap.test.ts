@@ -128,6 +128,63 @@ describe("markdown code wrap — override sheet cascade", () => {
   });
 });
 
+describe("markdown code wrap — selector hygiene", () => {
+  // Every rule in the override sheet must scope its code/pre targeting
+  // through a class (.codeblock-shell / .markdown-code-wrap / …). A
+  // bare `code`/`pre` element selector anywhere in the sheet would
+  // also match code.inline-code — inline code in prose — and restyle
+  // it (the acceptance review's P3: the display:block rule extended
+  // to a bare `code{}` would silently break inline code while every
+  // other assertion in this file stays green).
+  //
+  // A "bare" segment is a tag token with no class constraint of its
+  // own: `code`, `code:hover`, or `pre` appearing as one of the
+  // space/>/+/~-separated segments of a selector part. `pre.codeblock-pre`
+  // is fine — the tag is constrained by a class in the same compound.
+  function bareTagSelectors(css: string): string[] {
+    const offenders: string[] = [];
+    const noComments = css.replace(/\/\*[\s\S]*?\*\//g, "");
+    for (const rule of noComments.matchAll(/([^{}]+)\{/g)) {
+      const selectorList = rule[1];
+      if (!selectorList) continue;
+      for (const part of selectorList.split(",")) {
+        const selector = part.trim();
+        if (selector === "" || selector.startsWith("@")) continue;
+        const segments = selector.split(/[\s>+~]+/).filter(Boolean);
+        if (segments.some((seg) => /^(code|pre)(:|$)/i.test(seg))) {
+          offenders.push(selector);
+        }
+      }
+    }
+    return offenders;
+  }
+
+  test("the override sheet never targets bare code/pre element selectors", () => {
+    assert.deepEqual(bareTagSelectors(overridesCss), []);
+  });
+
+  test("the bare-selector detector itself catches the regression shapes", () => {
+    // Self-proof of the sentinel above: the exact shapes a future
+    // edit might introduce, none of which any other assertion in
+    // this file notices.
+    const hostile = [
+      "/* prose mentioning code { is ignored */",
+      ".codeblock-shell .codeblock-code { display: block; }",
+      "code { display: block; }",
+      ".dark pre { overflow-x: hidden; }",
+      "pre:hover, .codeblock-shell .codeblock-code { color: red; }",
+      "span > code:first-child { color: red; }",
+      "pre.codeblock-pre { margin: 0; }",
+    ].join("\n");
+    assert.deepEqual(bareTagSelectors(hostile), [
+      "code",
+      ".dark pre",
+      "pre:hover", // from the comma list — only the bare part offends
+      "span > code:first-child",
+    ]);
+  });
+});
+
 describe("markdown code wrap — upstream sheet stays untouched", () => {
   test("official-utilities.css keeps its transparent idle scrollbar", () => {
     // The override layer only works because the vendored sheet below
