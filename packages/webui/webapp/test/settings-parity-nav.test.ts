@@ -19,11 +19,14 @@
 //      section body. A revert re-adds the nav item and this fails on
 //      the parsed preferences group.
 //
-//   2. The 8 pre-existing 暂不支持 placeholders stay — but NOTHING new
-//      may join them. The nav literal is PARSED here (not grepped), so
-//      any added item — enabled or placeholder — changes the parsed
-//      list and fails the exact-id assertions. This is the
-//      "capability table must stay honest" pin.
+//   2. The 暂不支持 placeholders stay honest — but NOTHING new may join
+//      them, and every enabled tab must map to the section it claims. The
+//      nav literal is PARSED here (not grepped), so any added item —
+//      enabled or placeholder — changes the parsed list and fails the
+//      exact-id assertions. This is the "capability table must stay
+//      honest" pin. (Ticket 55a moved voice / shortcuts / personalization
+//      / code-review out of the placeholder set by giving them real
+//      pure-frontend section bodies.)
 //
 //   3. Usage lives in the settings page — the management group's first
 //      item is 用量与模型 (the desktop reference's order and name), its
@@ -88,8 +91,11 @@ function parseSettingsNav(source: string): ParsedNavGroup[] {
     const to = next ? next.at : body.length;
     const slice = body.slice(from, to);
     const items: ParsedNavItem[] = [];
+    // Ticket 55a widened the section union with camelCase ids
+    // (`codeReview`), so the section capture takes letters of both
+    // cases (plus the historical hyphen).
     const itemRe =
-      /\{\s*id:\s*"([a-z-]+)",\s*key:\s*"([^"]+)"(?:,\s*icon:\s*"([a-zA-Z]+)")?(?:,\s*alias:\s*"([a-z-]+)")?(?:,\s*section:\s*"([a-z]+)")?\s*\}/g;
+      /\{\s*id:\s*"([a-z-]+)",\s*key:\s*"([^"]+)"(?:,\s*icon:\s*"([a-zA-Z]+)")?(?:,\s*alias:\s*"([a-z-]+)")?(?:,\s*section:\s*"([a-zA-Z-]+)")?\s*\}/g;
     for (const match of slice.matchAll(itemRe)) {
       items.push({
         id: match[1] as string,
@@ -131,24 +137,21 @@ describe("settings nav parity (ticket 37)", () => {
     assert.equal(first.section, "providers", "the id stays 'providers' so the add-provider deep-link keeps working");
   });
 
-  test("exactly the 8 pre-existing unsupported items remain — no new placeholders", () => {
+  test("only the 4 data-source-less items stay unsupported — the 55a pages enabled", () => {
     const all = groups.flatMap((g) => g.items);
     const disabled = all.filter((item) => item.section === null);
     assert.deepEqual(
       disabled.map((item) => item.id),
-      [
-        "voice",
-        "shortcuts",
-        "personalization",
-        "browser",
-        "account",
-        "code-review",
-        "worktree",
-        "archived",
-      ],
+      ["browser", "account", "worktree", "archived"],
       "a new item without a section is a new placeholder; the capability table must stay honest",
     );
     assert.equal(all.length, 11, "11 items after the appearance tab folded into general");
+    // Ticket 55a — the four pure-frontend pages became reachable sections.
+    const byId = new Map(all.map((item) => [item.id, item]));
+    assert.equal(byId.get("voice")?.section, "voice");
+    assert.equal(byId.get("shortcuts")?.section, "shortcuts");
+    assert.equal(byId.get("personalization")?.section, "personalization");
+    assert.equal(byId.get("code-review")?.section, "codeReview");
   });
 
   test("general section body renders the appearance picker and the language switch", () => {
@@ -494,5 +497,103 @@ describe("usage-models segmented tabs (ticket 53)", () => {
       !panelsSource.includes('t("usage.used")') && !panelsSource.includes('t("usage.reset")'),
       "the old label-style usage strings must not be referenced after the bar rework",
     );
+  });
+});
+
+// Ticket 55a — the four pure-frontend sub-pages (Shortcuts / Voice /
+// Personalization / Code review) became reachable sections. What only
+// panels.tsx can betray is pinned here; the rendered markup of the pages
+// themselves (placeholders, disabled controls, persisted textareas) is
+// pinned by RENDER tests in settings-extra-pages.test.ts.
+describe("settings pure sub-pages (ticket 55a)", () => {
+  test("panels.tsx imports the four pages from the split-out module", () => {
+    assert.ok(
+      panelsSource.includes('from "./settings-extra-pages"'),
+      "the pages live in components/settings-extra-pages.tsx (render-test isolation)",
+    );
+  });
+
+  test("each new section id routes to its page component before the snapshot gate", () => {
+    const switchAt = panelsSource.indexOf("const pureSection = (() => {");
+    assert.ok(switchAt >= 0, "the pure-section switch not found in SettingsPanel");
+    const gateAt = panelsSource.indexOf("if (!snapshot) {", switchAt);
+    assert.ok(gateAt > switchAt, "the snapshot gate must come after the pure-section switch");
+    const body = panelsSource.slice(switchAt, gateAt);
+    // One case per new section id, each rendering its page component —
+    // a revert to placeholders fails the nav test above, a wiring slip
+    // (right id, wrong component) fails here.
+    const pairs: ReadonlyArray<readonly [string, string]> = [
+      ['case "voice"', "<VoiceSection"],
+      ['case "shortcuts"', "<ShortcutsSection"],
+      ['case "personalization"', "<PersonalizationSection"],
+      ['case "codeReview"', "<CodeReviewSection"],
+    ];
+    for (const [caseMark, component] of pairs) {
+      assert.ok(body.includes(caseMark), `${caseMark} branch missing`);
+      assert.ok(body.includes(component), `${component} must render in its branch`);
+    }
+  });
+
+  test("the pure-section early return is genuinely reachable — the guard is not short-circuited", () => {
+    // The order pin above survives `if (false && isPureSection)` — the
+    // switch would still sit before the gate while every pure page died
+    // behind the settings fetch (acceptance mutant M8). The exact-form
+    // pin kills that class: the guard must be the bare condition, with
+    // no constant folded in front and no negation.
+    const guardAt = panelsSource.indexOf("if (isPureSection) {");
+    assert.ok(guardAt >= 0, "the early return must read exactly `if (isPureSection) {`");
+    // And the guard sits between its alias definition and the snapshot
+    // gate, so the branch it opens is the one that returns the pages.
+    const aliasAt = panelsSource.indexOf("const isPureSection =");
+    const gateAt = panelsSource.indexOf("if (!snapshot) {");
+    assert.ok(aliasAt >= 0 && guardAt > aliasAt && gateAt > guardAt);
+    // The return inside the branch renders the section body — a hollow
+    // branch (return null) would leave the pages unreachable too.
+    const branch = panelsSource.slice(guardAt, gateAt);
+    assert.ok(
+      branch.includes("return <div className=\"flex w-full flex-col gap-3\">"),
+      "the branch must return the pure section's column",
+    );
+  });
+
+  test("the tab-switch animation keeps fill-mode backwards (M4) — no retained transform", () => {
+    // `both` retains `transform: translateX(0)` after the animation ends,
+    // and a non-none transform — even an identity one — makes the content
+    // column the containing block for every `position: fixed` descendant.
+    // That pinned the memory-summary dialog's blanket to the content
+    // column (the settings sidebar escaped the dim) until the fill moved
+    // to `backwards`. This is the regression anchor for that fix; the
+    // rendered blanket itself is pinned by settings-extra-pages.test.ts.
+    const cssSource = readFileSync(resolve(here, "../app/globals.css"), "utf8");
+    const ruleAt = cssSource.indexOf(".webui-settings-content-animate {");
+    assert.ok(ruleAt >= 0, ".webui-settings-content-animate rule not found");
+    const ruleEnd = cssSource.indexOf("}", ruleAt);
+    const rule = cssSource.slice(ruleAt, ruleEnd);
+    assert.ok(
+      rule.includes("animation: webui-settings-content-in 180ms ease backwards;"),
+      "the animation shorthand must keep fill-mode backwards",
+    );
+    assert.ok(!rule.includes(" both"), "'both' would retain an identity transform after the animation");
+  });
+
+  test("the pure pages keep the desktop's 32px block rhythm inside their own column", () => {
+    const pagesSource = readFileSync(
+      resolve(here, "../components/settings-extra-pages.tsx"),
+      "utf8",
+    );
+    // Every page root uses the reference's .webui-generic-page 32px stack
+    // (gap-8), the same rhythm the General page carries — the usage and
+    // connection sections keep their 12px card stack instead.
+    const pageRoots = pagesSource.match(/data-testid="settings-(?:shortcuts|voice|personalization|code-review)-page"[^>]*className="([^"]+)"/g) ?? [];
+    assert.equal(pageRoots.length, 4, "four page roots expected");
+    for (const root of pageRoots) {
+      assert.ok(root.includes("gap-8"), `page root must carry the 32px rhythm: ${root}`);
+    }
+  });
+
+  test("existing testids untouched: the modal and search ids this ticket must not rename", () => {
+    for (const testId of ["settings-modal", "settings-search-input"]) {
+      assert.ok(panelsSource.includes(`data-testid="${testId}"`), `${testId} must stay`);
+    }
   });
 });

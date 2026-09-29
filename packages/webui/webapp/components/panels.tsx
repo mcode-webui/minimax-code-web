@@ -51,6 +51,15 @@ import type { ThemeName } from "@/lib/types";
 import { Icon, type IconName } from "./icons";
 import { AppearanceCardPicker } from "./appearance-card-picker";
 import { ProviderManagementPanel } from "./provider-management";
+// The four pure-frontend sub-pages (ticket 55a): Shortcuts / Voice /
+// Personalization / Code review. Split out like usage-models-cards so the
+// render tests can drive them without panels.tsx's store/api graph.
+import {
+  CodeReviewSection,
+  PersonalizationSection,
+  ShortcutsSection,
+  VoiceSection,
+} from "./settings-extra-pages";
 // The Token Plan view's pure display cards (ticket 53). Split out so the
 // test suite can render them through react-dom/server — panels.tsx's own
 // import graph (session store, api) is unimportable in a test process.
@@ -215,7 +224,14 @@ export function RightPanel({
  * The body is the same `SettingsPanel` the drawer hosts, now told which section to
  * render — the settings contract itself did not move.
  */
-type SettingsSection = "general" | "connection" | "providers";
+type SettingsSection =
+  | "general"
+  | "voice"
+  | "shortcuts"
+  | "personalization"
+  | "codeReview"
+  | "connection"
+  | "providers";
 
 const SETTINGS_NAV: {
   group: MessageKey;
@@ -239,9 +255,14 @@ const SETTINGS_NAV: {
       // language switch render inside 通用 (user decision 2026-09-28),
       // matching the desktop reference `refs/ui/04-settings-general.jpg`,
       // where appearance is the first row of the 应用 card.
-      { id: "voice", key: "settings.tab.voice", icon: "mic" },
-      { id: "shortcuts", key: "settings.tab.shortcuts", icon: "settingsShortcuts" },
-      { id: "personalization", key: "settings.tab.personalization", icon: "settingsInstructions", alias: "custom-instructions" },
+      // Ticket 55a: voice / shortcuts / personalization became real
+      // pure-frontend pages (structure parity with the desktop's
+      // ref-08/09/10; controls without browser capability render
+      // disabled with the standing honesty markers, see
+      // components/settings-extra-pages.tsx).
+      { id: "voice", key: "settings.tab.voice", icon: "mic", section: "voice" },
+      { id: "shortcuts", key: "settings.tab.shortcuts", icon: "settingsShortcuts", section: "shortcuts" },
+      { id: "personalization", key: "settings.tab.personalization", icon: "settingsInstructions", alias: "custom-instructions", section: "personalization" },
       { id: "browser", key: "settings.tab.browser", icon: "browser" },
     ],
   },
@@ -261,7 +282,7 @@ const SETTINGS_NAV: {
   {
     group: "settings.group.coding",
     items: [
-      { id: "code-review", key: "settings.tab.codeReview", icon: "settingsCoding", alias: "coding" },
+      { id: "code-review", key: "settings.tab.codeReview", icon: "settingsCoding", alias: "coding", section: "codeReview" },
       { id: "worktree", key: "settings.tab.worktree", icon: "settingsWorktree" },
     ],
   },
@@ -344,8 +365,9 @@ export function SettingsModal({
 
   const current = SETTINGS_NAV.flatMap((group) => group.items).find((item) => item.id === active);
   // Every clickable tab carries a section (the section-less ones render
-  // disabled, see the nav map), so `active` can only ever be one of the
-  // three section ids; the `?? "general"` exists for the type, not for a
+  // disabled, see the nav map), so `active` resolves to one of the seven
+  // section ids (three server-backed since ticket 48, four pure-frontend
+  // since ticket 55a); the `?? "general"` exists for the type, not for a
   // reachable state. Ticket 48 removed the dead `if (!section)` branch
   // this fallback used to feed.
   const section = current?.section ?? "general";
@@ -3237,9 +3259,11 @@ function SettingsPanel({
   setLocale: (locale: Locale) => void;
   /** Which category to render. Required since ticket 48 removed the
    *  unreachable no-section fallback: the modal only ever lands here
-   *  with one of the three section ids (the section-less nav items are
-   *  disabled buttons that never set `active`). */
-  section: "general" | "connection" | "providers";
+   *  with a section id (the section-less nav items are disabled buttons
+   *  that never set `active`). The four pure-frontend ids (voice /
+   *  shortcuts / personalization / codeReview, ticket 55a) return before
+   *  the settings-snapshot gate — they have no `/api` dependency. */
+  section: SettingsSection;
   /** Forwarded to `ProviderManagementPanel` when `section === "providers"`. */
   autoAddProvider?: boolean;
   onAutoAddConsumed?: () => void;
@@ -3287,6 +3311,36 @@ function SettingsPanel({
     },
     [t],
   );
+
+  // The four pure-frontend sections (ticket 55a) render before the
+  // snapshot gate: they have no `/api` dependency, so a reachable
+  // Shortcuts page must not sit behind a settings fetch that may be
+  // slow or failing. The wrapper keeps the section shell's gap-3 stack;
+  // the desktop's 32px block rhythm lives inside each page component.
+  // The aliased condition narrows `section` to the server-backed ids for
+  // everything below (the body map stays a three-key record).
+  const isPureSection =
+    section === "voice" ||
+    section === "shortcuts" ||
+    section === "personalization" ||
+    section === "codeReview";
+  if (isPureSection) {
+    const pureSection = (() => {
+      switch (section) {
+        case "voice":
+          return <VoiceSection t={t} />;
+        case "shortcuts":
+          return <ShortcutsSection t={t} />;
+        case "personalization":
+          return <PersonalizationSection t={t} />;
+        case "codeReview":
+          return <CodeReviewSection t={t} />;
+        default:
+          return null;
+      }
+    })();
+    return <div className="flex w-full flex-col gap-3">{pureSection}</div>;
+  }
 
   if (!snapshot) {
     return <p className="text-text_default_tertiary">{error ?? t("app.connecting")}</p>;

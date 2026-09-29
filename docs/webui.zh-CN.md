@@ -336,6 +336,7 @@ exec 回合的代价——以下都是当前真实存在的行为，选择权限
 | 设置模态 | `components/panels.tsx#SettingsModal` | `settings-modal` |
 | 设置页「用量与模型」节的分段页签（工单 53） | `components/panels.tsx#UsageModelsSection` | `usage-models-segment`（页签 `usage-models-tab-token-plan` / `usage-models-tab-custom-models`） |
 | 设置页「用量与模型」节的套餐卡 / 用量卡 / 积分卡 / 发票卡（工单 37 起，工单 53 重构） | `components/panels.tsx#PlanCard` / `#UsageCard` / `#CreditsCard` / `#InvoiceCard` | `settings-plan-card` / `settings-usage-card`（进度条 `usage-bar-fiveHour` / `-weekly` / `-video`）/ `settings-credits-card` / `settings-invoice-card`（`invoice-apply-link`） |
+| 设置页四个纯前端子页：快捷键 / 语音 / 个性化 / 代码审查（工单 55a） | `components/settings-extra-pages.tsx` | 页根 `settings-shortcuts-page` / `settings-voice-page` / `settings-personalization-page` / `settings-code-review-page`；键位框 `settings-shortcuts-binding-<id>`（清除/重置 `-clear` / `settings-shortcuts-reset-mini-chat`）；麦克风下拉 `settings-voice-mic-select`；文本框 `settings-personalization-instructions-textarea` / `settings-personalization-about-textarea` / `settings-code-review-guidelines-textarea`（保存 `-save`）；审查方式 `settings-code-review-method-select`；记忆摘要 `settings-memory-summary-modal`（文本区 / 字数 / 保存 / 取消各带 `-textarea` / `-count` / `-save` / `-cancel`） |
 | 错误边界（全局 + 路由级） | `app/error.tsx` + `app/global-error.tsx` | `global-error-page` |
 
 ## 四列工作区（当前主线，slice 17 + slice 21）
@@ -454,13 +455,15 @@ slice 22 增强：
 | 分组 | 条目 | 状态 |
 | --- | --- | --- |
 | 偏好 | 通用 | 可用 |
-| 偏好 | 语音 · 快捷键 · 个性化 · 浏览器 | 标注「暂不支持」 |
+| 偏好 | 语音 · 快捷键 · 个性化 | 可用——纯前端页（工单 55a），见下 |
+| 偏好 | 浏览器 | 标注「暂不支持」 |
 | 管理 | 用量与模型 · 连接 | 可用 |
 | 管理 | 账户 | 标注「暂不支持」 |
-| 编码 | 代码审查 · 工作树 | 标注「暂不支持」 |
+| 编码 | 代码审查 | 可用——纯前端页（工单 55a） |
+| 编码 | 工作树 | 标注「暂不支持」 |
 | 归档 | 已归档任务 | 标注「暂不支持」 |
 
-「暂不支持」共 8 条，是桌面版有而本服务端没有对应能力的既有事实，保留展示是为了让页面读起来和桌面版一致。每条页签带桌面参照的 18×18 线性图标（「浏览器」是本地多出的页签，用现有图标）。
+「暂不支持」余 4 条，是桌面版有而本服务端没有对应能力的既有事实，保留展示是为了让页面读起来和桌面版一致。工单 55a 把语音、快捷键、个性化、代码审查四页从占位名单里移出——给了真实的纯前端页面（不依赖 `/api`，即使设置快照加载失败也能渲染）。每条页签带桌面参照的 18×18 线性图标（「浏览器」是本地多出的页签，用现有图标）。
 
 **通用页有哪些分区**
 
@@ -489,6 +492,19 @@ slice 22 增强：
 | `webui-context-window-usage` | `false` | 否。仅记录偏好，尚无界面读取 |
 | `webui-follow-up-behavior` | `queue`（可选 `steer`） | 否。仅记录偏好，尚未影响实际发送行为 |
 
+**四个纯前端子页（工单 55a）**
+
+快捷键、语音、个性化、代码审查逐结构复刻桌面版页面（`refs/ui` 的 ref-08/09/10/11/22）。真实与占位的分界沿用用量页的 A1 规则：浏览器端有能力的控件真做；没有能力的渲染桌面同款形态但禁用，并带既有诚实标注——绝不伪造行为。
+
+| 页面 | 真实 | 占位（渲染结构、控件禁用） |
+| --- | --- | --- |
+| 快捷键 | 无——浏览器页面无法注册全局快捷键 | 两个分组（Mini Chat：Alt+M 带外置 ↺；常用：桌面九行）按桌面默认键位原样渲染；所有键位框、✕、↺ 全部禁用；两条听写行按「未设置」形态渲染且无 ✕；页首横幅「浏览器环境不适用」说明用户看到的是什么 |
+| 语音 | 无——无麦克风枚举、无听写输入 | 「麦克风」下拉唯一（禁用）选项是「本地版不适用」，不伪造设备清单；两条听写行显示「未设置」 |
+| 个性化 | 自定义指令、关于你——两个文本框真存 `localStorage`（键见持久化表），刷新后恢复；草稿与已存值一致时「保存」保持禁用 | 「记忆」卡：两个开关**全灭置灰**——桌面「记忆」行是活的蓝色开态，属于本客户端无法主张的能力——每行带「本地版不适用」标注；「管理」打开「记忆摘要」弹窗的永久空态（文本区禁用、真实的 0 字数、「尚未生成记忆摘要」、取消可用 / 保存禁用） |
+| 代码审查 | 自定义审查准则——与上面两个同法真存真恢复（保存按钮在文本区下方，ref-22 形态） | 「审查方式」下拉显示「子会话」——本地唯一有意义的模式（引擎在子会话里跑审查）——作为禁用的唯一选项 |
+
+三个文本值都是**记录性偏好**：尚无界面读取（引擎没有自定义指令 / 记忆 / 审查规则的可转发契约），持久化表里逐键注明。页面实现拆在 `components/settings-extra-pages.tsx`（与 `usage-models-cards.tsx` 同理，便于渲染测试隔离）；渲染结果由 `webapp/test/settings-extra-pages.test.ts` 断言。
+
 **搜索与排版细节（工单 48）**
 
 - 搜索同时匹配**翻译后文案**与**内部 key**：输入 `custom-instructions` 能筛出「个性化」，输入 `usage` 能筛出「用量与模型」（本客户端部分页签 id 与参照 key 不同名，导航里带了别名映射）。
@@ -504,6 +520,7 @@ slice 22 增强：
 | --- | --- |
 | 账户页 | 账户信息、退出登录；需 `getAccountStatus` / `signOut` 类后端契约 |
 | 已归档任务页 | 列表与删除；需归档会话契约 |
+| 记忆体系（记忆 / 主动记忆 / 记忆摘要） | 需记忆存储契约；个性化页的开关渲染为禁用、摘要弹窗为空态（工单 55a）——旁边的说明文字是诚实占位，不是可用功能 |
 | 用量与模型的三来源切换 | 分段页签已按桌面形态落地（工单 53），但它是**视图切换器**——不切换实际使用的模型来源；真实的 Token Plan / MiniMax API / 自定义模型来源切换与来源徽标仍需模型路由契约 |
 | MiniMax API Key 面板 | 输入 + 测试连通性 + 保存并使用 |
 | 自定义模型拖拽排序、逐模型启停、预设选择器 | 需 provider 契约扩展；添加已弹窗化（工单 54），编辑仍在列表 + 编辑器面 |
@@ -541,11 +558,11 @@ Token Plan 视图是桌面的五区块（页签 + 四卡）：
 
 **验收第二轮（同工单）**：弹窗组件拆到 `components/add-model-dialog.tsx` 并导出受控面，测试升级为渲染级（`renderToStaticMarkup`，53a F-7 同款）——眼睛往返、校验错误块、取消重置落地面、勾选弹窗全选语义与 n/N 计数、零勾选/自定义供应商禁用态均由渲染标记 + 纯函数钉死（11 项回退行为的变异抽查全部转红）；PUT 请求体红线从调用点字面量升级为 `draftToWire` 的封闭键集断言（`provider-management.test.ts`）。一处表述更正：自定义供应商下「自动获取」链接**不是禁用**——可点开，弹窗内如实说明能力缺失，「添加」按钮禁用。
 
-**工单 53 的不变量**：服务端契约零改动（变更面：`panels.tsx` / `usage-models-cards.tsx` / `icons.tsx` / `i18n.ts` + 两个测试文件）；h2 页头、切页动画与页宽 760 不变；`SETTINGS_NAV`、`SettingsSection` 联合类型、深度链接入口（`initialSection`、`autoAddProvider`）不变；8 项「暂不支持」占位全部保留。删除了失去消费者的 `usage.used` / `usage.reset` 文案键（旧标签式「已用 X%」「重置时间」被桌面格式取代）。
+**工单 53 的不变量**：服务端契约零改动（变更面：`panels.tsx` / `usage-models-cards.tsx` / `icons.tsx` / `i18n.ts` + 两个测试文件）；h2 页头、切页动画与页宽 760 不变；`SETTINGS_NAV`、`SettingsSection` 联合类型、深度链接入口（`initialSection`、`autoAddProvider`）不变；「暂不支持」占位保留（工单 55a 启用四个纯前端子页后余 4 项）。删除了失去消费者的 `usage.used` / `usage.reset` 文案键（旧标签式「已用 X%」「重置时间」被桌面格式取代）。
 
 **验收修复（2026-09-29 第二轮）**：用量条轨道改用 `bg-border_default`——原先照搬 context-meter 的 `bg-bg_grouped_tertiary_elevated` 在浅色主题下与卡片同为 `--gray_75`，三条进度条完全不可见（桌面参照恰是浅色主题）；发票「申请 ↗」改为与「去充值」/「管理 ⌄」同款的白底灰描边；整点重置文案省略分钟位（「1小时后重置」而非「1小时0分后重置」，键 `usage.duration.hour`）。四张纯展示卡拆到 `components/usage-models-cards.tsx`，`webapp/test/usage-models-cards.test.ts` 用 `renderToStaticMarkup` 断言渲染结果（占位文案、禁用态、轨道 token、外链、重置文案边界）——轨道 token 断言做过红绿验证：注入旧 token 时测试失败。
 
-**工单 48 的不变量（本轮没有改的东西）**：服务端契约零改动（`server/routes/settings.js`、`server/routes/providers.js`、`server/lib/settings.js` 未动，全部变更都在前端）；`SETTINGS_NAV` 四组划分与三值 `SettingsSection` 联合类型未变；深度链接入口（`initialSection`、`autoAddProvider`）未变——模型选择器的「新增供应商」与用户菜单的「用量」仍然落到原来的位置；8 项「暂不支持」占位全部保留。`SettingsPanel` 内部不可达的 `if (!section)` 分支已删除、`section` 参数改为必填（可达页签都能解析出 section，该分支本来就不可能渲染）。
+**工单 48 的不变量（本轮没有改的东西）**：服务端契约零改动（`server/routes/settings.js`、`server/routes/providers.js`、`server/lib/settings.js` 未动，全部变更都在前端）；`SETTINGS_NAV` 四组划分与 `SettingsSection` 联合类型未变（仅工单 55a 追加四个纯前端 id）；深度链接入口（`initialSection`、`autoAddProvider`）未变——模型选择器的「新增供应商」与用户菜单的「用量」仍然落到原来的位置；「暂不支持」占位保留（工单 55a 后余 4 项）。`SettingsPanel` 内部不可达的 `if (!section)` 分支已删除、`section` 参数改为必填（可达页签都能解析出 section，该分支本来就不可能渲染）。
 
 **用户菜单的「用量」行**
 
@@ -940,13 +957,20 @@ loading-states 相同：让 SSR 渲染测试可以脱离 `chat.tsx` 的 `@/` 别
 | `file_line_wrap` | `localStorage` | `webapp/lib/settings-local.ts` | 工单 48 + 52 | 纯 `"true"\|"false"` 字符串，参照共享命名；默认 `"true"`；每次挂载读取方为 `components/code-view.tsx`（代码文件预览）与 `components/markdown-html.tsx`（markdown 代码块：聊天、活动组、文件预览） |
 | `webui-context-window-usage` | `localStorage` | `webapp/lib/settings-local.ts` | 工单 48 | 纯 `"true"\|"false"` 字符串，参照共享命名；默认 `"false"`；仅记录偏好，尚无读取方 |
 | `webui-follow-up-behavior` | `localStorage` | `webapp/lib/settings-local.ts` | 工单 48 | 纯 `"queue"\|"steer"` 字符串（其他值读取为 `"queue"`），参照共享命名；仅记录偏好，尚无读取方 |
+| `webui-custom-instructions` | `localStorage` | `webapp/lib/settings-local.ts` | 工单 55a（个性化页） | 长文本原样存储（含空串）；用 `webui-` 前缀是因为桌面端该值的键名不在已采集的参照内，不主张跨客户端共享；「自定义指令」文本框挂载时读取、「保存」写入；仅记录偏好，尚无读取方 |
+| `webui-about-user` | `localStorage` | `webapp/lib/settings-local.ts` | 工单 55a（个性化页） | 契约同 `webui-custom-instructions`，支撑「关于你」文本框；仅记录偏好，尚无读取方 |
+| `webui-code-review-guidelines` | `localStorage` | `webapp/lib/settings-local.ts` | 工单 55a（代码审查页） | 契约同上，支撑「自定义审查准则」文本框；仅记录偏好，尚无读取方 |
 
-除工单 48 的四个参照共享键（上表末四行，有意用桌面参照的裸键名）外，
-所有键共享 `webui:` 前缀，写入均为尽力 + 防抖（`ui`、`workspace-tabs`
-为 150 ms 防抖；其他立即写）。一次失败的写入不会破坏内存状态；
-我们关心的是 `app/global-error.tsx` 捕获的硬崩溃，而非这里的配额
-错误。会话内每个 sessionId 单独存储滚动位置 —— 按会话恢复滚动位置
-是有意为之的契约。
+四个键有意保留桌面参照的裸键名——工单 48 的 `file_open_in_new_tab`、
+`file_line_wrap`、`webui-context-window-usage`、`webui-follow-up-behavior`——
+同一浏览器配置因此能在两个客户端之间共享这些偏好。工单 55a 的三个长文本键
+（`webui-custom-instructions`、`webui-about-user`、`webui-code-review-guidelines`）
+用的是 `webui-` 命名空间而非 `webui:` 信封：桌面端这几个值的键名不在已采集的
+参照内，因此不主张跨客户端共享。其余所有键共享 `webui:` 前缀，写入均为
+尽力 + 防抖（`ui`、`workspace-tabs` 为 150 ms 防抖；其他立即写）。一次失败的
+写入不会破坏内存状态；我们关心的是 `app/global-error.tsx` 捕获的硬崩溃，
+而非这里的配额错误。会话内每个 sessionId 单独存储滚动位置 ——
+按会话恢复滚动位置是有意为之的契约。
 
 ## 端点清单（依据当前源码）
 
