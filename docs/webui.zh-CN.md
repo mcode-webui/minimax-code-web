@@ -145,6 +145,7 @@ S2 不变量（后续切片必须继续守住）：
 - **缺省 `MCODE_WEBUI_TRANSPORT=acp` 与 `main` 字段级一致。** 现有任一端点的响应都不能偏移；进程内不能多出新的子进程。每次提交都用完整 webui node:test 套件在无 env 覆盖的情况下跑一遍来验证。
 - **S2 只建宿主骨架。** `createCatalogueHost` 与 `createTurnHost` 从 `server/lib/runtime-host.js` 导出。**S3 已把目录类路径（list/title）接进 `acp-client.js`**；S4 接活跃回合，S5 接模型，S6 接交互与账户。S7 才把缺省翻为 `runtime`。
 - **目录类流量由 `MCODE_WEBUI_TRANSPORT=runtime` 选择性接管。** 该开关点亮列表/标题走 catalogue 宿主；单次调用遇错（boot 失败、`adapter.listSessions`/`adapter.getSession` 抛错）就回退 ACP——单点 runtime 故障不会让侧栏黑屏。`mcodeSessionsCache` 两条路径共用，一次填充后任何一侧都能读到，所以目录里看到的会话列表不依赖某条特定路径。
+- **目录投影镜像 ACP 适配器 `toAcpSessionInfo` 的规则集**（`server/lib/catalogue-sessions.js`；规则出处 `packages/tui/src/acp/agent.ts`，判定谓词在 `packages/tui/src/runtime/delegation.ts`）：内部子代理会话（worker `purpose` 前缀 `local-task:` / `local-background-task:` / `team-plan:`、`sessionKind: "task"`、或内置子代理 `agentName`——`explore` / `worker` / `verifier`）与 cwd 缺失或非绝对路径的会话不会出现在侧栏，与 ACP 侧的丢弃行为一致；空标题与无时间戳直接省略键——线上形状永远不会出现 `title: null`。`catalogue-via-runtime.test.js` 用独立再推导的期望页做逐字段对拍锁死这些规则；其零子进程探针为相对基线——窗口开启前已存在的后代算环境噪声，而窗口内真实发生的 spawn 仍会被断言抓住。
 - **R1 缓解（进程隔离丧失）落在回合宿主里。** 任何对 `adapter.sendMessage` 的调用都被包在边界内——runtime 侧抛出转为流式 error 帧，**永远不会冒泡出回合**。`packages/webui/test/server/runtime-host.test.js` 用一处删掉内层 try/catch 的变异验证这条边界——边界没了测试就红。
 - **R2 缓解（取消语义）落在 `createTurnHost#abortSession`。** 它在最多 5 秒内等待流归位，然后返回 `{success:true, elapsedMs}`；**不依赖子进程 kill**，因为已经没有子进程。超时上限保证即便 runtime 卡死也不会拖累优雅停机。
 - **R8 缓解（宿主卡死）落在 `createCatalogueHost#close`。** 它把 `apiHost.close()` 与 5 秒超时赛跑——任一依赖链卡死都不会拖累 webui 的优雅停机。
