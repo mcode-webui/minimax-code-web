@@ -307,7 +307,7 @@ const en = {
   "files.noMatch": "No matching entries",
   // 01 — collapsible file tree additions
   "files.tree.empty": "Empty folder",
-  "files.tree.truncated": "还有 {n} 项未显示",
+  "files.tree.truncated": "{n} more not shown",
   "files.tree.hidden": "Show hidden files",
   "files.tree.shown": "Show non-hidden files",
   "files.tree.refresh": "Refresh",
@@ -861,7 +861,8 @@ const en = {
      the next time the user opens Files. The keyboard-reachable
      control is the only affordance; the announcement lives in
      the aria-label. */
-  "workspaceTabs.tree.close.aria": "Close the active surface and hide the navigation column",
+  "workspaceTabs.tree.close.aria":
+    "Close the active surface and hide the navigation column",
   "workspaceTabs.tree.close.search.aria":
     "Close the search surface and discard the current query",
   /* Slice 19b supersedes the slice-17 placeholder copy with a real
@@ -892,73 +893,83 @@ const en = {
     "The page stays in this theme no matter what your operating system does.",
   "appearance.hint.system":
     "The page follows your operating system's dark / light setting. Switches live, without refreshing.",
-  "common.save": "保存",
-  "common.cancel": "取消",
-  "settings.shortcuts.notice": "浏览器环境不适用：WebUI 无法注册全局快捷键。以下键位为桌面版默认值，仅供参考。",
+  "common.save": "Save",
+  "common.cancel": "Cancel",
+  "settings.shortcuts.notice":
+    "Not applicable in the browser: the WebUI cannot register global shortcuts. The keys below are the desktop defaults, listed for reference only.",
   "settings.shortcuts.group.miniChat": "Mini Chat",
-  "settings.shortcuts.group.common": "常用",
-  "settings.shortcuts.item.miniChat": "显示或隐藏 Mini Chat",
-  "settings.shortcuts.item.miniChatHint": "在任意应用中唤起或收起快捷输入小窗",
-  "settings.shortcuts.item.globalSearch": "全局搜索",
-  "settings.shortcuts.item.globalSearchHint": "搜索功能、设置和任务会话",
-  "settings.shortcuts.item.searchTasks": "搜索任务和会话",
-  "settings.shortcuts.item.searchTasksHint": "打开只包含任务和会话的搜索结果",
-  "settings.shortcuts.item.newTask": "新建任务",
-  "settings.shortcuts.item.newTaskHint": "打开一个新的任务输入页",
-  "settings.shortcuts.item.newTaskNoProject": "新建无项目任务",
-  "settings.shortcuts.item.newTaskNoProjectHint": "不关联项目文件夹，直接新建任务",
-  "settings.shortcuts.item.openFolder": "打开项目文件夹",
-  "settings.shortcuts.item.openFolderHint": "选择一个本地文件夹作为工作区",
-  "settings.shortcuts.item.openSettings": "打开设置",
-  "settings.shortcuts.item.openSettingsHint": "打开客户端设置页面",
-  "settings.shortcuts.item.holdDictation": "按住听写",
-  "settings.shortcuts.item.holdDictationHint": "按住快捷键开始语音输入，松开后停止",
-  "settings.shortcuts.item.toggleDictation": "切换听写",
-  "settings.shortcuts.item.toggleDictationHint": "按一次开始语音输入，再按一次停止",
-  "settings.shortcuts.item.invertFollowUp": "反转跟进行为",
-  "settings.shortcuts.item.invertFollowUpHint": "以与「跟进消息行为」相反的方式发送当前输入的消息（排队或立即发送），仅本次生效",
-  "settings.shortcuts.unset": "未设置",
-  "settings.shortcuts.clear": "清除快捷键",
-  "settings.shortcuts.reset": "重置快捷键",
-  "settings.voice.group.regular": "常规",
-  "settings.voice.group.dictation": "听写",
-  "settings.voice.microphone": "麦克风",
-  "settings.voice.microphoneHint": "用于听写语音输入",
-  "settings.voice.holdKey": "按住听写快捷键",
-  "settings.voice.holdKeyHint": "在应用内按住，即可在输入框中听写",
-  "settings.voice.toggleKey": "切换听写快捷键",
-  "settings.voice.toggleKeyHint": "在应用内按一次开始听写，再按一次停止",
-  "settings.voice.unset": "未设置",
-  "settings.personal.instructions": "自定义指令",
-  "settings.personal.instructionsPlaceholder": "定义 Agent 应该如何工作、回答和执行任务，为此设备上的所有 Agent 提供额外指令和上下文...",
-  "settings.personal.aboutYou": "关于你",
-  "settings.personal.aboutYouPlaceholder": "告诉 Agent 你的背景和长期偏好……",
-  "settings.personal.memory": "记忆",
-  "settings.personal.memoryHint": "在提示词、提醒和后续维护中使用已保存的记忆",
-  "settings.personal.proactiveMemory": "主动记忆",
-  "settings.personal.proactiveMemoryHint": "主动识别并通过 Memory 保存值得长期保留的偏好和可复用经验",
-  "settings.personal.memorySummary": "记忆摘要",
-  "settings.personal.memorySummaryHint": "查看、编辑或删除 MiniMax 已整理的长期记忆。",
-  "settings.personal.manage": "管理",
-  "settings.memory.title": "记忆摘要",
-  "settings.memory.placeholder": "MiniMax 整理的长期记忆会显示在这里。",
-  "settings.memory.empty": "尚未生成记忆摘要",
-  "settings.memory.more": "更多",
-  "settings.memory.close": "关闭",
-  "settings.codeReview.hint": "自定义内置代码审查指令的执行方式与审查准则",
-  "settings.codeReview.method": "审查方式",
-  "settings.codeReview.methodSubsession": "子会话",
-  "settings.codeReview.guidelines": "自定义审查准则",
-  "settings.codeReview.guidelinesPlaceholder": "输入需要长期应用的代码审查规则",
-  "providers.dialog.modelsEmpty": "暂无模型：点击「＋ 添加」手动填写，或「自动获取」从所选预设目录中选择",
-  "providers.dialog.addEntryHint": "手动添加一条空白模型条目，逐项填写",
-  "providers.dialog.autoFetchHint": "从所选预设的内置目录中选择模型；仅读取列表，点击「保存」前不会保存任何配置",
-  "providers.dialog.entryTest": "检测",
-  "providers.dialog.entryTestHint": "用当前填写的 API Key 与接口地址探测供应商接口连通性（接口级检测，不针对本条目的模型 ID）",
-  "providers.dialog.testTesting": "检测中…",
-  "providers.dialog.testOk": "可达 · {{ms}}ms",
-  "providers.dialog.testFail": "不可达：{{error}}",
-  "providers.dialog.testNeedProvider": "请先选择提供商并填写 API Key，再进行连通检测",
+  "settings.shortcuts.group.common": "General",
+  "settings.shortcuts.item.miniChat": "Show or hide Mini Chat",
+  "settings.shortcuts.item.miniChatHint":
+    "Summon or dismiss the quick-input mini window from any app",
+  "settings.shortcuts.item.globalSearch": "Global search",
+  "settings.shortcuts.item.globalSearchHint":
+    "Search features, settings, and task sessions",
+  "settings.shortcuts.item.searchTasks": "Search tasks and sessions",
+  "settings.shortcuts.item.searchTasksHint":
+    "Open search results scoped to tasks and sessions only",
+  "settings.shortcuts.item.newTask": "New task",
+  "settings.shortcuts.item.newTaskHint": "Open a fresh task input page",
+  "settings.shortcuts.item.newTaskNoProject": "New task without a project",
+  "settings.shortcuts.item.newTaskNoProjectHint":
+    "Start a task right away without linking a project folder",
+  "settings.shortcuts.item.openFolder": "Open project folder",
+  "settings.shortcuts.item.openFolderHint":
+    "Choose a local folder as the workspace",
+  "settings.shortcuts.item.openSettings": "Open settings",
+  "settings.shortcuts.item.openSettingsHint": "Open the client settings page",
+  "settings.shortcuts.item.holdDictation": "Hold-to-dictate",
+  "settings.shortcuts.item.holdDictationHint":
+    "Hold the shortcut to start voice input; release to stop",
+  "settings.shortcuts.item.toggleDictation": "Toggle dictation",
+  "settings.shortcuts.item.toggleDictationHint":
+    "Press once to start voice input, press again to stop",
+  "settings.shortcuts.item.invertFollowUp": "Invert follow-up behaviour",
+  "settings.shortcuts.item.invertFollowUpHint":
+    "Send the drafted message the opposite of the follow-up setting (queue or send immediately), for this message only",
+  "settings.shortcuts.unset": "Not set",
+  "settings.shortcuts.clear": "Clear shortcut",
+  "settings.shortcuts.reset": "Reset shortcut",
+  "settings.voice.group.regular": "General",
+  "settings.voice.group.dictation": "Dictation",
+  "settings.voice.microphone": "Microphone",
+  "settings.voice.microphoneHint": "Used for dictation voice input",
+  "settings.voice.holdKey": "Hold-to-dictate shortcut",
+  "settings.voice.holdKeyHint":
+    "Hold it inside the app to dictate into the input box",
+  "settings.voice.toggleKey": "Toggle-dictation shortcut",
+  "settings.voice.toggleKeyHint":
+    "Press once inside the app to start dictating, press again to stop",
+  "settings.voice.unset": "Not set",
+  "settings.personal.instructions": "Custom instructions",
+  "settings.personal.instructionsPlaceholder":
+    "Define how agents should work, answer, and execute tasks — extra instructions and context for every agent on this device...",
+  "settings.personal.aboutYou": "About you",
+  "settings.personal.aboutYouPlaceholder":
+    "Tell agents about your background and long-term preferences…",
+  "settings.personal.memory": "Memory",
+  "settings.personal.memoryHint":
+    "Use saved memories in prompts, reminders, and follow-up upkeep",
+  "settings.personal.proactiveMemory": "Proactive memory",
+  "settings.personal.proactiveMemoryHint":
+    "Spot preferences and reusable know-how worth keeping long-term, and save them via Memory",
+  "settings.personal.memorySummary": "Memory summary",
+  "settings.personal.memorySummaryHint":
+    "View, edit, or delete the long-term memories MiniMax has organised.",
+  "settings.personal.manage": "Manage",
+  "settings.memory.title": "Memory summary",
+  "settings.memory.placeholder":
+    "Long-term memories curated by MiniMax appear here.",
+  "settings.memory.empty": "No memory summary generated yet",
+  "settings.memory.more": "More",
+  "settings.memory.close": "Close",
+  "settings.codeReview.hint":
+    "Customise how the built-in code-review instructions run, and set your review guidelines",
+  "settings.codeReview.method": "Review method",
+  "settings.codeReview.methodSubsession": "Sub-session",
+  "settings.codeReview.guidelines": "Custom review guidelines",
+  "settings.codeReview.guidelinesPlaceholder":
+    "Enter code-review rules to apply on every review",
   "usage.banner.fiveHourLow": "5-hour quota is running low",
   "usage.banner.weeklyLow": "Weekly quota is running low",
 } as const;
@@ -1427,7 +1438,8 @@ const zh: Record<MessageKey, string> = {
   "settings.section.sessionManagement": "会话管理",
   "settings.section.preference": "偏好设置",
   "settings.file.openInNewTab": "在新的标签页打开文件",
-  "settings.file.openInNewTabHint": "关闭后，打开文件会替换当前预览标签页，而不是新增一个。",
+  "settings.file.openInNewTabHint":
+    "关闭后，打开文件会替换当前预览标签页，而不是新增一个。",
   "settings.file.lineWrap": "文件预览自动换行",
   "settings.file.lineWrapHint":
     "开启后，超出预览区域宽度的文本和代码会自动折行；关闭后可横向滚动查看。不修改文件内容。",
@@ -1577,7 +1589,8 @@ const zh: Record<MessageKey, string> = {
   "providers.dialog.field.maxOutput": "最大输出 Token",
   "providers.dialog.field.maxOutputNa": "本地版不适用：该字段暂不保存",
   "providers.dialog.field.thinking": "推理等级",
-  "providers.dialog.field.thinkingPlaceholder": "输入档位后按 Enter，如 low、medium、high",
+  "providers.dialog.field.thinkingPlaceholder":
+    "输入档位后按 Enter，如 low、medium、high",
   "providers.dialog.field.attachments": "支持的附件",
   "providers.dialog.attachments.image": "图片",
   "providers.dialog.attachments.pdf": "PDF",
@@ -1681,8 +1694,7 @@ const zh: Record<MessageKey, string> = {
      aria label announces the consequence so screen readers
      know what discarding a live query does. */
   "workspaceTabs.tree.close.aria": "关闭当前表面并收起导航栏",
-  "workspaceTabs.tree.close.search.aria":
-    "关闭搜索表面并丢弃当前查询",
+  "workspaceTabs.tree.close.search.aria": "关闭搜索表面并丢弃当前查询",
   /* Slice 19b supersedes the slice-17 placeholder copy — see the
      English block for the real exhaustive search above. */
   /* Slice 17 — plugins surface copy. */
@@ -1704,7 +1716,8 @@ const zh: Record<MessageKey, string> = {
     "页面跟随操作系统的明暗设置。系统切换时，页面会实时跟随，无需刷新。",
   "common.save": "保存",
   "common.cancel": "取消",
-  "settings.shortcuts.notice": "浏览器环境不适用：WebUI 无法注册全局快捷键。以下键位为桌面版默认值，仅供参考。",
+  "settings.shortcuts.notice":
+    "浏览器环境不适用：WebUI 无法注册全局快捷键。以下键位为桌面版默认值，仅供参考。",
   "settings.shortcuts.group.miniChat": "Mini Chat",
   "settings.shortcuts.group.common": "常用",
   "settings.shortcuts.item.miniChat": "显示或隐藏 Mini Chat",
@@ -1716,17 +1729,21 @@ const zh: Record<MessageKey, string> = {
   "settings.shortcuts.item.newTask": "新建任务",
   "settings.shortcuts.item.newTaskHint": "打开一个新的任务输入页",
   "settings.shortcuts.item.newTaskNoProject": "新建无项目任务",
-  "settings.shortcuts.item.newTaskNoProjectHint": "不关联项目文件夹，直接新建任务",
+  "settings.shortcuts.item.newTaskNoProjectHint":
+    "不关联项目文件夹，直接新建任务",
   "settings.shortcuts.item.openFolder": "打开项目文件夹",
   "settings.shortcuts.item.openFolderHint": "选择一个本地文件夹作为工作区",
   "settings.shortcuts.item.openSettings": "打开设置",
   "settings.shortcuts.item.openSettingsHint": "打开客户端设置页面",
   "settings.shortcuts.item.holdDictation": "按住听写",
-  "settings.shortcuts.item.holdDictationHint": "按住快捷键开始语音输入，松开后停止",
+  "settings.shortcuts.item.holdDictationHint":
+    "按住快捷键开始语音输入，松开后停止",
   "settings.shortcuts.item.toggleDictation": "切换听写",
-  "settings.shortcuts.item.toggleDictationHint": "按一次开始语音输入，再按一次停止",
+  "settings.shortcuts.item.toggleDictationHint":
+    "按一次开始语音输入，再按一次停止",
   "settings.shortcuts.item.invertFollowUp": "反转跟进行为",
-  "settings.shortcuts.item.invertFollowUpHint": "以与「跟进消息行为」相反的方式发送当前输入的消息（排队或立即发送），仅本次生效",
+  "settings.shortcuts.item.invertFollowUpHint":
+    "以与「跟进消息行为」相反的方式发送当前输入的消息（排队或立即发送），仅本次生效",
   "settings.shortcuts.unset": "未设置",
   "settings.shortcuts.clear": "清除快捷键",
   "settings.shortcuts.reset": "重置快捷键",
@@ -1740,15 +1757,18 @@ const zh: Record<MessageKey, string> = {
   "settings.voice.toggleKeyHint": "在应用内按一次开始听写，再按一次停止",
   "settings.voice.unset": "未设置",
   "settings.personal.instructions": "自定义指令",
-  "settings.personal.instructionsPlaceholder": "定义 Agent 应该如何工作、回答和执行任务，为此设备上的所有 Agent 提供额外指令和上下文...",
+  "settings.personal.instructionsPlaceholder":
+    "定义 Agent 应该如何工作、回答和执行任务，为此设备上的所有 Agent 提供额外指令和上下文...",
   "settings.personal.aboutYou": "关于你",
   "settings.personal.aboutYouPlaceholder": "告诉 Agent 你的背景和长期偏好……",
   "settings.personal.memory": "记忆",
   "settings.personal.memoryHint": "在提示词、提醒和后续维护中使用已保存的记忆",
   "settings.personal.proactiveMemory": "主动记忆",
-  "settings.personal.proactiveMemoryHint": "主动识别并通过 Memory 保存值得长期保留的偏好和可复用经验",
+  "settings.personal.proactiveMemoryHint":
+    "主动识别并通过 Memory 保存值得长期保留的偏好和可复用经验",
   "settings.personal.memorySummary": "记忆摘要",
-  "settings.personal.memorySummaryHint": "查看、编辑或删除 MiniMax 已整理的长期记忆。",
+  "settings.personal.memorySummaryHint":
+    "查看、编辑或删除 MiniMax 已整理的长期记忆。",
   "settings.personal.manage": "管理",
   "settings.memory.title": "记忆摘要",
   "settings.memory.placeholder": "MiniMax 整理的长期记忆会显示在这里。",
@@ -1760,15 +1780,6 @@ const zh: Record<MessageKey, string> = {
   "settings.codeReview.methodSubsession": "子会话",
   "settings.codeReview.guidelines": "自定义审查准则",
   "settings.codeReview.guidelinesPlaceholder": "输入需要长期应用的代码审查规则",
-  "providers.dialog.modelsEmpty": "暂无模型：点击「＋ 添加」手动填写，或「自动获取」从所选预设目录中选择",
-  "providers.dialog.addEntryHint": "手动添加一条空白模型条目，逐项填写",
-  "providers.dialog.autoFetchHint": "从所选预设的内置目录中选择模型；仅读取列表，点击「保存」前不会保存任何配置",
-  "providers.dialog.entryTest": "检测",
-  "providers.dialog.entryTestHint": "用当前填写的 API Key 与接口地址探测供应商接口连通性（接口级检测，不针对本条目的模型 ID）",
-  "providers.dialog.testTesting": "检测中…",
-  "providers.dialog.testOk": "可达 · {{ms}}ms",
-  "providers.dialog.testFail": "不可达：{{error}}",
-  "providers.dialog.testNeedProvider": "请先选择提供商并填写 API Key，再进行连通检测",
   "usage.banner.fiveHourLow": "5 小时限额即将用尽",
   "usage.banner.weeklyLow": "周限额即将用尽",
 };
