@@ -336,8 +336,11 @@ export function Chat({
             ) : null}
             {/* Ticket 46 (D6) — the live turn's elapsed bar. Renders
                 「已执行 N 秒」 and ticks once per second while the engine
-                streams; the settled bar for the same turn then takes over
-                from the assistant tail block's `processedDuration`. */}
+                streams. At turn end the block-level bar (driven by the
+                assistant tail block's `processedDuration`) briefly takes
+                over — transient, because the server does not persist the
+                `§§` marker across state rebuilds (see the docs' turn-bar
+                section). */}
             {activeTurnStats ? (
               <TurnProcessDisclosure
                 stats={activeTurnStats}

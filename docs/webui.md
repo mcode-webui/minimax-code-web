@@ -888,17 +888,18 @@ structure of the reference `WebuiToolRow`:
   path is lifted onto the summary row (basename displayed, full path on
   the `title` attribute, `toolSummaryResourcePath`). The args derivation
   comes first (the reference rule), falling back to the `@ path` lines
-  the decoder collects into `toolPaths`. **Reachability (stated
-  plainly)**: live verification shows this engine's `→ read` header
-  never carries args — the path lands as `@ path` lines separated from
-  the tool body by a blank line and the 「N more lines」 truncation
-  marker, and such detached lines are dropped by the decoder's existing
-  orphan rule (which also correctly discards the next tool's status
-  lines mixed in among them — the rule is right and stays). The summary
-  path therefore does not appear under the current transport shape; the
-  mechanism (unit-tested for both data shapes) is ready and activates
-  the moment the engine sends args on the header or a `@ path` line
-  adjacent to the body. No other tool lifts a path.
+  the decoder collects into `toolPaths`. Live sessions show the engine
+  writes read calls with JSON args on the header
+  (`→ read  {"path": …}`, key `path`) — real traffic takes the
+  first-priority branch and the summary path renders (verified 3/3 read
+  cards on a live instance, each title the full absolute path). A
+  header-without-args spelling also occurs; there, when the `@ path`
+  location lines are separated from the tool body by a blank line and
+  the 「N more lines」 truncation marker, the decoder's existing orphan
+  rule drops them (which also correctly discards the next tool's status
+  lines mixed in among them — the rule is right and stays) and the
+  summary path is absent — a data-source shape difference, not a
+  rendering defect. No other tool lifts a path.
 - **Icons**: a 16×16 SVG catalog (`components/tool-icon.tsx`) replaces
   the unicode-glyph placeholder. Paths are transcribed from the
   reference `WebuiToolIcon` registry; this wire's icon vocabulary
@@ -922,30 +923,41 @@ thinking block. That is the orchestration call, not an omission.
 
 ### Turn process bar (ticket 46, PR3)
 
-After a turn settles, a process bar renders under the assistant prose
-block (`TurnProcessDisclosure`, lifted from `chat.tsx` into
+While a turn is in flight, a process bar renders at the transcript tail
+(`TurnProcessDisclosure`, lifted from `chat.tsx` into
 `activity-group.tsx` and rebuilt on the reference `WebuiTurnProcess`):
 
-- The summary row is the composite 「思考 N 次，用了 M 次工具，共执行
-  X 分 Y 秒」; zero-count parts drop out; durations over a minute read
-  「X 分 Y 秒」, under it bare 「N 秒」. The counting matches the
-  activity group (adjacent thinking blocks merge), and the span is
-  everything between the previous user message and this turn's end
-  (`webapp/lib/turn-stats.ts`; the forward and backward scans share the
-  one rule).
-- A settled turn shows the output rate `N token/s` on the right. **The
-  figure is an estimate**: the wire transcript carries no per-turn
+- The summary row is the composite 「思考 N 次，用了 M 次工具，已执行
+  N 秒」 (「…共执行 X 分 Y 秒」 once the turn settles); zero-count parts
+  drop out; durations over a minute read 「X 分 Y 秒」, under it bare
+  「N 秒」. The counting matches the activity group (adjacent thinking
+  blocks merge), and the span is everything between the previous user
+  message and this turn's end (`webapp/lib/turn-stats.ts`; the forward
+  and backward scans share the one rule).
+- The settled state shows the output rate `N token/s` on the right.
+  **The figure is an estimate**: the wire transcript carries no per-turn
   token count (the ACP `usage` event only accumulates session totals
   server-side, and this ticket's red line forbids touching the four
   server files), so it uses the same fallback the reference applies
   when its runtime reports no `usage.outputTokens`:
   `answer characters / seconds`. Character-to-token ratios differ
   between scripts — read it as an order of magnitude, not a meter.
-- While the engine streams, the transcript tail shows 「已执行 N 秒」
-  ticking once per second; the tick is effect-driven, so the SSR and
-  hydration first frame deterministically render 0 seconds (no server/
-  client markup divergence), and when the turn settles the same bar
-  becomes 「共执行 …」 and gains the output rate.
+- The tick is effect-driven, so the SSR and hydration first frame
+  deterministically render 0 seconds (no server/client markup
+  divergence).
+- **The settled bar is transient (stated plainly)**: when the turn
+  ends, the bar briefly flips to 「共执行 X 分 Y 秒」 and gains the
+  `N token/s` figure, but that settled state is visible only for about
+  one SSE snapshot window (measured on the order of 150ms); after the
+  session stream finishes, and after any reload, it is gone. Root cause
+  is the existing server link: finalize pushes the
+  `§§ processed_duration` marker into the in-memory `cs.chat` (the SSE
+  briefly delivers it), but the marker does not survive the session
+  state persistence/rebuild, so the front-end decode has no
+  `processedDuration` to render. This ticket's red line forbids the
+  four server files; fixing it (persisting the marker, or moving it to
+  a structured field) needs its own ticket — until then the settled bar
+  is transient by design of the transport.
 - A 0.5px separator closes the bar from below. The retired
   expand-to-repeat-the-same-sentence interaction is gone (there is no
   content to expand — the reference renders a plain summary row when

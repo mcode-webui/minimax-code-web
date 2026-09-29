@@ -438,9 +438,9 @@ function ToolCard({
   const label = toolCallLabel(block.toolName, locale);
   const iconType = iconByName(block.toolName);
   // Read-style calls lift their resource path onto the summary row.
-  // The args derivation first; the engine's `→ read` header carries no
-  // args (verified live) and the path lands as a `@ path` body line the
-  // decoder collects into toolPaths — see toolSummaryResourcePath.
+  // The args derivation first (live traffic: `→ read  {"path": …}`),
+  // falling back to the decoder-collected `@ path` lines when the
+  // header carried no args — see toolSummaryResourcePath.
   const resourcePath = toolSummaryResourcePath(
     block.toolName,
     block.toolArgs,
@@ -567,9 +567,11 @@ function ToolCard({
         <div className="border-t border-border_light px-2.5 py-1.5">
           {paths.length > 0 ? (
             <div className="mb-1 flex flex-wrap gap-1">
-              {paths.map((path) => (
+              {paths.map((path, pathIndex) => (
                 <button
-                  key={path}
+                  // A tool can touch the same path twice (edit + verify);
+                  // the bare path would collide as a React key.
+                  key={`${path}-${pathIndex}`}
                   type="button"
                   title={path}
                   data-testid="tool-card-path"
@@ -655,9 +657,13 @@ function ToolDetailSection({
  *
  * Duration sources: a settled turn reads `processedDuration` (the
  * `§§ processed_duration` marker the server writes at finalise); a
- * live turn ticks from `running.startedAt`. The rate is DERIVED, not
- * measured tokens: the wire transcript carries no per-turn token
- * count (the ACP usage event only accumulates session totals
+ * live turn ticks from `running.startedAt`. The settled state is
+ * TRANSIENT: the marker reaches the front-end only in the finalise
+ * snapshot and does not survive the server's session-state rebuild, so
+ * after a reload (or once the stream settles) no `processedDuration`
+ * remains to render — see the docs' turn-bar section. The rate is
+ * DERIVED, not measured tokens: the wire transcript carries no per-turn
+ * token count (the ACP usage event only accumulates session totals
  * server-side, and this ticket's red line forbids touching the four
  * server files), so the number is `answerChars / seconds` — the same
  * fallback formula the reference applies when its runtime reports no

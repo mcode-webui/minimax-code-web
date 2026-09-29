@@ -259,11 +259,12 @@ export function resourceDisplayName(path: string): string {
 
 /**
  * The resource path a read-style summary row displays. `toolResourcePath`
- * first (the reference derivation — from the args); when the wire wrote
- * no args after the tool name (verified live: this engine's `→ read`
- * header carries none and the path arrives as a `@ path` body line the
- * decoder already collected into `toolPaths`), the first collected path
- * stands in. Non-read tools never get one.
+ * first (the reference derivation — from the args): live sessions show
+ * the engine writes read calls as `→ read  {"path": …}` with the JSON
+ * args on the header, so this is the branch real traffic takes. The
+ * `paths` fallback covers the header-without-args spelling also seen in
+ * live traffic, where the path may still arrive as a `@ path` body line
+ * the decoder collected into `toolPaths`. Non-read tools never get one.
  */
 export function toolSummaryResourcePath(
   name: string | undefined,
