@@ -20,6 +20,16 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { resolve, dirname } from "node:path";
+// P3 (acceptance): the A3 decisions are tested through the PRODUCT
+// functions imported from lib/effort-control — the module
+// composer.tsx itself imports. An earlier revision kept mirrors here,
+// and acceptance probes showed a broken product function still passed
+// green, so the table had drifted off the code it claimed to pin.
+import {
+  effortControlShape,
+  effortOptionsWithDefault,
+  resolveEffortCurrent as effortCurrent,
+} from "../lib/effort-control";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const composerSource = readFileSync(
@@ -232,43 +242,7 @@ describe("U6 wiring tripwires — composer.tsx / api.ts / i18n.ts", () => {
   });
 });
 
-/** Mirror of composer.tsx effortControlShape (ticket 49 batch 2, A3). */
-function effortControlShape(levels: string[]): "switch" | "radiogroup" | null {
-  if (levels.length === 0) return null;
-  if (levels.length === 2 && levels.includes("off") && levels.includes("on")) {
-    return "switch";
-  }
-  return "radiogroup";
-}
-
-/** Mirror of composer.tsx effortOptionsWithDefault (ticket 49 batch 2, A3). */
-function effortOptionsWithDefault(levels: string[]): string[] {
-  return ["default", ...levels.filter((level) => level !== "default")];
-}
-
-/**
- * Mirror of the adaptive control's current-option decision
- * (`effortCurrent` in ModelSettingsDetail): a preview never
- * highlights; `""` (engine default) maps to "default"; a recorded
- * level in the option list highlights itself; a stale recorded level
- * (not advertised by the target) highlights NOTHING — the same
- * anti-stale rule the row badge applies (B11) — rather than
- * pretending the engine default is picked.
- */
-function effortCurrent(
-  levels: string[],
-  thinking: string,
-  preview: boolean,
-): string | null {
-  if (preview) return null;
-  if (thinking === "") return "default";
-  // The stale check reads the RAW levels — including for the switch
-  // form, which never builds the option list (pin: a recorded "on"
-  // must read as on, not fall through to null).
-  return levels.includes(thinking) ? thinking : null;
-}
-
-describe("ticket 49 batch 2 (A3) — effort control shape decision table", () => {
+describe("ticket 49 batch 2 (A3) — effort control shape decision table (product functions)", () => {
   test("binary off/on levels render a switch, everything else a radio group", () => {
     assert.equal(effortControlShape([]), null, "no levels → no control");
     assert.equal(effortControlShape(["off", "on"]), "switch");
@@ -285,7 +259,7 @@ describe("ticket 49 batch 2 (A3) — effort control shape decision table", () =>
     assert.deepEqual(effortOptionsWithDefault(["default", "low"]), ["default", "low"]);
   });
 
-  test("current highlight: preview none, empty→default, stale none", () => {
+  test("current highlight: preview none, empty→default, stale none (product resolveEffortCurrent)", () => {
     assert.equal(effortCurrent(["low", "high"], "", false), "default");
     assert.equal(effortCurrent(["low", "high"], "high", false), "high");
     assert.equal(effortCurrent(["low", "high"], "xhigh", false), null, "stale record highlights nothing");
@@ -524,6 +498,19 @@ describe("ticket 49 batch 2 (A1) — two-column fly-out wiring", () => {
       composerSource,
       /className="mt-1 border-t border-border_default px-1 pb-1 pt-1"/,
       "the bottom area keeps its U6 chrome (border-t under the list)",
+    );
+    // P4 (acceptance): the bottom window radios must actually pick.
+    // Batch 2 shipped this instance without onContextPick — a visible,
+    // enabled-looking control whose clicks did nothing (B9 regression,
+    // acceptance P1) — and the suite stayed green because nothing
+    // asserted the bottom instance's wiring. `effortControl="badges"`
+    // is unique to the bottom call (the side column passes "adaptive"),
+    // so this linear anchor pins the bottom instance's wiring without
+    // a wildcard over the source.
+    assert.match(
+      composerSource,
+      /effortControl="badges"\s*\n\s*onContextPick=\{handleDetailContextPick\}\s*\n\s*\/>/,
+      "the bottom window radios must ride the same pick handler as the side column (P1/P4)",
     );
   });
 

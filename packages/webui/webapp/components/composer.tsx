@@ -16,6 +16,11 @@ import { createPortal } from "react-dom";
 import * as api from "@/lib/api";
 import { clientId } from "@/lib/cid";
 import {
+  effortControlShape,
+  effortOptionsWithDefault,
+  resolveEffortCurrent,
+} from "@/lib/effort-control";
+import {
   getComposerDraft,
   setComposerDraft,
   subscribeComposerDraft,
@@ -1666,10 +1671,13 @@ function ModelSelect({
                 that follow-focus rendering into the fly-out's side
                 column (see the `detail` prop above), so this area is
                 back to its U6/B9 role: it describes the ACTIVE model
-                and keeps the first-batch testids, the read-only level
-                badges, and the interactive context-window radios. Both
-                areas read the same draft mirror (A7), so a pick made
-                in either place highlights in both.
+                with the first-batch testids, the read-only LEVEL
+                badges (level editing lives in the side column and the
+                composer control), and the interactive context-window
+                radios — window picks ride the same
+                `handleDetailContextPick` the side column uses, so
+                both areas read the same draft mirror (A7) and a pick
+                made in either place highlights in both.
 
                 The three render branches live in `ModelSettingsDetail`:
                 nothing describable → the "select a model" hint; the
@@ -1693,6 +1701,7 @@ function ModelSelect({
                 thinking={activeThinking}
                 contextWindow={activeContextWindow}
                 effortControl="badges"
+                onContextPick={handleDetailContextPick}
               />
             </div>
           )}
@@ -1746,40 +1755,11 @@ function ModelSelect({
 }
 
 /**
- * Ticket 49 batch 2 (A3) — which control shape a model's thinking
- * levels render as.
- *
- * Form only: the wire semantics stay the LOCAL contract (`thinkingLevels`
- * catalogue + `""` = engine default), never the reference's
- * effortOptions/variant derivation (A9 is explicitly out of scope).
- * The two shapes mirror the reference picker's rule:
- *   - exactly `["off","on"]` (in either order) → a toggle switch;
- *   - anything else (a depth scale) → a radio group.
- */
-function effortControlShape(levels: string[]): "switch" | "radiogroup" | null {
-  if (levels.length === 0) return null;
-  if (levels.length === 2 && levels.includes("off") && levels.includes("on")) {
-    return "switch";
-  }
-  return "radiogroup";
-}
-
-/**
- * Ticket 49 batch 2 (A3) — the radio group's option list.
- *
- * `default` (UI label "Use engine default", submitted as the empty
- * string) is always a legal choice — the reference prepends it the
- * same way, and the local wire treats `""` as "no override; the
- * engine picks". A defensive filter keeps a catalogue that ever ships
- * a literal `"default"` level from producing a duplicate radio.
- */
-function effortOptionsWithDefault(levels: string[]): string[] {
-  return ["default", ...levels.filter((level) => level !== "default")];
-}
-
-/**
  * Ticket 49 batch 2 (A1) — the settings detail content shared by both
- * placements.
+ * placements. The A3 shape decisions (`effortControlShape` /
+ * `effortOptionsWithDefault` / `resolveEffortCurrent`) live in
+ * `@/lib/effort-control` so the test suite exercises the product
+ * functions, not a mirror.
  *
  * Two instances render at once, each with its own aria-live region and
  * its own testid family (no duplicate ids in the DOM):
@@ -1864,21 +1844,11 @@ function ModelSettingsDetail({
     !preview && typeof contextWindow === "number" && contextOptions.includes(contextWindow)
       ? contextWindow
       : null;
-  // A3: the adaptive control's shape and options; the recorded level
-  // highlights only when the target is the active model. A stale
-  // recorded level (unsupported by the target) highlights NOTHING —
-  // the same anti-stale rule the row badge applies (B11) — rather
-  // than silently pretending the engine default is picked.
+  // A3: the shape/options/current decisions come from
+  // @/lib/effort-control (product functions, test-imported).
   const effortShape = effortControlShape(levels);
   const effortOptions = effortShape === "radiogroup" ? effortOptionsWithDefault(levels) : [];
-  // The stale check reads the RAW levels, not `effortOptions` — the
-  // switch form never builds that list, and gating the switch's
-  // checked state on it made every recorded "on" read as off.
-  const effortCurrent = (() => {
-    if (preview || !target) return null;
-    if (thinking === "") return "default";
-    return levels.includes(thinking) ? thinking : null;
-  })();
+  const effortCurrent = resolveEffortCurrent(levels, thinking, preview);
 
   return (
     <div data-testid={containerTestId} aria-live="polite" className={className}>
