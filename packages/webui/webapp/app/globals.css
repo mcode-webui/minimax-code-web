@@ -183,7 +183,15 @@
   }
 }
 .webui-settings-content-animate {
-  animation: webui-settings-content-in 180ms ease both;
+  /* `backwards`, not `both`: the fill state after the animation ends must
+   * not retain `transform: translateX(0)`. A non-none transform — even an
+   * identity one — makes this column the containing block for every
+   * `position: fixed` descendant, which pinned ticket 55a's memory-summary
+   * dialog blanket to the content column instead of the viewport (the
+   * settings sidebar escaped the dim). `backwards` applies the from-state
+   * during the delay only; the end state falls back to the base styles,
+   * which are visually identical (opacity 1, no transform). */
+  animation: webui-settings-content-in 180ms ease backwards;
 }
 
 /* Sidebar list surfaces (webui-parity 47).

@@ -217,280 +217,17 @@ export function RightPanel({
  */
 type SettingsSection = "general" | "connection" | "providers";
 
-const SETTINGS_NAV: {
-  group: MessageKey;
-  items: {
-    id: string;
-    key: MessageKey;
-    /** 18×18 nav glyph — the desktop reference's ICONS set (ticket 48). */
-    icon: IconName;
-    /** The reference tab's internal key (e.g. `custom-instructions`).
-     *  Only present where it differs from our id; the search filter
-     *  matches it so typing the reference's key still finds the tab. */
-    alias?: string;
-    section?: SettingsSection;
-  }[];
-}[] = [
-  {
-    group: "settings.group.preferences",
-    items: [
-      { id: "general", key: "settings.tab.general", icon: "settingsDesktop", alias: "desktop", section: "general" },
-      // No standalone appearance tab: the three-state picker and the
-      // language switch render inside 通用 (user decision 2026-09-28),
-      // matching the desktop reference `refs/ui/04-settings-general.jpg`,
-      // where appearance is the first row of the 应用 card.
-      { id: "voice", key: "settings.tab.voice", icon: "mic" },
-      { id: "shortcuts", key: "settings.tab.shortcuts", icon: "settingsShortcuts" },
-      { id: "personalization", key: "settings.tab.personalization", icon: "settingsInstructions", alias: "custom-instructions" },
-      { id: "browser", key: "settings.tab.browser", icon: "browser" },
-    ],
-  },
-  {
-    group: "settings.group.management",
-    items: [
-      // Desktop reference (`refs/ui/03-settings-usage-models.jpg`): the
-      // management group is 用量与模型 → 连接 → 账户, with the usage
-      // card above the provider panel inside the section. The id stays
-      // "providers" — the model selector's "Add provider" deep-link
-      // (page.tsx#openProviderAdd) targets it, and only the label moved.
-      { id: "providers", key: "settings.tab.usageModels", icon: "settingsChart", alias: "usage", section: "providers" },
-      { id: "connection", key: "settings.tab.connection", icon: "settingsLink", section: "connection" },
-      { id: "account", key: "settings.tab.account", icon: "settingsUser" },
-    ],
-  },
-  {
-    group: "settings.group.coding",
-    items: [
-      { id: "code-review", key: "settings.tab.codeReview", icon: "settingsCoding", alias: "coding" },
-      { id: "worktree", key: "settings.tab.worktree", icon: "settingsWorktree" },
-    ],
-  },
-  {
-    group: "settings.group.archived",
-    items: [{ id: "archived", key: "settings.tab.archived", icon: "settingsArchived" }],
-  },
-];
+// The settings modal's nav + shell moved to `settings-modal-port.tsx`
+// (webui-parity 58 line A: the reference SettingsModal structure, 10 tabs
+// in 4 groups, carried over as-is). What stays here is the section body
+// the port mounts: `SettingsPanel` (connection facts) and
+// `UsageModelsSection` (ticket 53's Token Plan cards). The old
+// SETTINGS_NAV literal is deleted with the shell — the parity tripwire
+// (`settings-parity-nav.test.ts`) now pins the port's tab registry.
 
-export function SettingsModal({
-  open,
-  onClose,
-  t,
-  locale,
-  setLocale,
-  initialSection,
-  autoAddProvider,
-  onAutoAddConsumed,
-}: {
-  open: boolean;
-  onClose: () => void;
-  t: (key: MessageKey) => string;
-  locale: Locale;
-  setLocale: (locale: Locale) => void;
-  /** Section the modal should land on when it next opens. The page
-   *  sets this when the model selector's "Add provider" row is
-   *  clicked, when the user menu's usage row opens the usage card,
-   *  or not at all; the default is "general". */
-  initialSection?: "general" | "connection" | "providers";
-  /** One-shot flag consumed by `ProviderManagementPanel`. When true,
-   *  the panel fires its add-provider flow on mount and calls
-   *  `onAutoAddConsumed`. The page sets this so a deep-link from the
-   *  model selector can land the user mid-add. */
-  autoAddProvider?: boolean;
-  onAutoAddConsumed?: () => void;
-}) {
-  const [active, setActive] = useState<string>(initialSection ?? "general");
-  const [query, setQuery] = useState("");
-
-  // Re-seed `active` whenever the modal opens from a different
-  // section. The seed is only applied on the open transition — using
-  // `open` as the dep means the user's in-modal navigation (clicking
-  // a sidebar tab) is preserved for the lifetime of the open modal,
-  // while a deep-link from outside the modal still wins.
-  const wasOpen = useRef(false);
-  useEffect(() => {
-    if (!open) {
-      wasOpen.current = false;
-      return;
-    }
-    if (wasOpen.current) return;
-    wasOpen.current = true;
-    if (initialSection) setActive(initialSection);
-  }, [open, initialSection]);
-
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
-
-  if (!open) return null;
-
-  const needle = query.trim().toLowerCase();
-  // The reference's `filterSettingsTabs` matches `${label} ${key}`, so a
-  // user typing the reference's internal key (`custom-instructions`)
-  // still finds the localized tab (个性化). Our ids renamed a few of the
-  // reference keys, hence the `alias ?? id` fallback (ticket 48, V11).
-  const groups = SETTINGS_NAV.map((group) => ({
-    ...group,
-    items: needle
-      ? group.items.filter((item) =>
-          `${t(item.key)} ${item.alias ?? item.id}`.toLowerCase().includes(needle),
-        )
-      : group.items,
-  })).filter((group) => group.items.length > 0);
-
-  const current = SETTINGS_NAV.flatMap((group) => group.items).find((item) => item.id === active);
-  // Every clickable tab carries a section (the section-less ones render
-  // disabled, see the nav map), so `active` can only ever be one of the
-  // three section ids; the `?? "general"` exists for the type, not for a
-  // reachable state. Ticket 48 removed the dead `if (!section)` branch
-  // this fallback used to feed.
-  const section = current?.section ?? "general";
-
-  return (
-    <div className="fixed inset-0 z-[1000] flex">
-      {/* Upstream dims with the blanket token rather than a hardcoded black. */}
-      <div className="absolute inset-0 bg-utility_blanket" onClick={onClose} aria-hidden />
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label={t("panel.settings")}
-        data-testid="settings-modal"
-        className="two-column-modal relative flex h-full w-full overflow-hidden bg-bg_grouped_secondary"
-      >
-        {/* Back affordance + search + the grouped category tree. The
-         * sidebar's geometry follows the reference (ticket 48): 46px top
-         * padding, a back row with the 返回应用 label, then the search
-         * field as a bordered 36px container with a leading glyph and a
-         * conditional clear button. */}
-        <div className="flex w-[260px] flex-shrink-0 flex-col overflow-y-auto bg-bg_default_scrim px-3 pt-[46px] pb-5">
-          <button
-            type="button"
-            aria-label={t("settings.back")}
-            onClick={onClose}
-            className="mb-5 flex h-[30px] items-center gap-2 rounded-[8px] px-2 text-sm leading-5 text-text_default_secondary transition-colors hover:text-text_default_primary"
-          >
-            <Icon name="reply" size={16} className="rotate-180" />
-            <span>{t("settings.back")}</span>
-          </button>
-          <div className="flex h-9 items-center gap-2 rounded-[8px] border border-border_default px-2 text-text_default_tertiary">
-            <Icon name="search" size={16} className="flex-none" />
-            <input
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder={t("settings.searchPlaceholder")}
-              aria-label={t("settings.searchPlaceholder")}
-              data-testid="settings-search-input"
-              className="min-w-0 flex-1 border-0 bg-transparent text-sm text-text_default_primary outline-none"
-            />
-            {query ? (
-              <button
-                type="button"
-                aria-label={t("settings.clearSearch")}
-                onClick={() => setQuery("")}
-                className="flex flex-none items-center border-0 bg-transparent p-0 text-text_default_tertiary transition-colors hover:text-text_default_primary"
-              >
-                <Icon name="close" size={14} />
-              </button>
-            ) : null}
-          </div>
-
-          {groups.length === 0 ? (
-            <p className="p-4 text-xs text-text_default_secondary">
-              {t("settings.searchNoResults")}
-            </p>
-          ) : null}
-
-          {groups.map((group, groupIndex) => (
-            <div
-              key={group.group}
-              className={`flex flex-col gap-0.5${groupIndex === 0 ? " mt-6" : ""}`}
-            >
-              <h3 className="px-2 pt-4 pb-1.5 text-sm font-medium leading-5 text-text_default_tertiary">
-                {t(group.group)}
-              </h3>
-              {group.items.map((item) => {
-                const disabled = !item.section;
-                const selected = item.id === active;
-                return (
-                  <button
-                    key={item.id}
-                    type="button"
-                    disabled={disabled}
-                    title={disabled ? t("common.unsupported") : undefined}
-                    aria-current={selected ? "page" : undefined}
-                    data-testid={`settings-tab-${item.id}`}
-                    onClick={() => setActive(item.id)}
-                    // Upstream's `.webui-settings-nav-item`: gap 8px,
-                    // min-height 30px, padding 0 10px, radius 8px, an
-                    // 18×18 icon slot, hover/selected on the tertiary
-                    // interaction tokens, and an inset focus ring on
-                    // keyboard focus.
-                    className={[
-                      "flex min-h-[30px] w-full items-center gap-2 rounded-[8px] px-2.5 text-left text-sm leading-5 transition-colors focus:outline-none",
-                      disabled
-                        ? "cursor-not-allowed text-text_default_tertiary opacity-50 focus-visible:shadow-[inset_0_0_0_1px_var(--border_accent)]"
-                        : selected
-                          ? "bg-bg_interaction_tertiary_selected text-text_default_primary focus-visible:shadow-[inset_0_0_0_1px_var(--border_accent)]"
-                          : "text-text_default_primary hover:bg-bg_interaction_tertiary_hover focus-visible:shadow-[inset_0_0_0_1px_var(--border_accent)]",
-                    ].join(" ")}
-                  >
-                    <Icon name={item.icon} size={18} />
-                    <span className="min-w-0 flex-1 truncate">{t(item.key)}</span>
-                    {disabled ? (
-                      <span className="flex-none text-caption-small-strong text-text_default_tertiary">
-                        {t("common.unsupported")}
-                      </span>
-                    ) : null}
-                  </button>
-                );
-              })}
-            </div>
-          ))}
-        </div>
-
-        {/* Content on the grouped-secondary background. `key={active}`
-         * re-mounts the scroll container on every tab switch so the
-         * reference's 180ms horizontal fade-in replays (V1/V2); the page
-         * width follows the reference per section (V9): the General page
-         * is 840px, every other panel 760px. */}
-        <div
-          role="separator"
-          aria-orientation="vertical"
-          className="w-0 border-l-[0.5px] border-border_light"
-        />
-        <div
-          key={active}
-          className="webui-settings-content-animate flex min-w-0 flex-1 flex-col overflow-y-auto bg-bg_grouped_secondary"
-        >
-          <header className="mb-12 px-5">
-            <h2 className="m-0 text-base font-medium leading-[26px] text-text_default_primary">
-              {current ? t(current.key) : ""}
-            </h2>
-          </header>
-          <div
-            className={`mx-auto w-full min-w-[320px] px-4 pb-8 ${
-              section === "general" ? "max-w-[840px]" : "max-w-[760px]"
-            }`}
-          >
-            <SettingsPanel
-            t={t}
-            locale={locale}
-            setLocale={setLocale}
-            section={section}
-            autoAddProvider={autoAddProvider}
-            onAutoAddConsumed={onAutoAddConsumed}
-          />
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
+// The modal shell itself (nav, search, mask, tab dispatch) now lives in
+// `settings-modal-port.tsx`; this file keeps only the section bodies the
+// port mounts. See the comment block above `SettingsSection`.
 /**
  * Progress panel — **currently unreachable**.
  *
@@ -3224,7 +2961,7 @@ function WorkspaceBrowseTab({
 
 // --- settings ---------------------------------------------------------------
 
-function SettingsPanel({
+export function SettingsPanel({
   t,
   locale,
   setLocale,
@@ -3621,21 +3358,27 @@ function RowDivider() {
  * the desktop's form but disabled. The one live source — the engine's plan
  * quota — keeps rendering real figures in the usage card.
  */
-function UsageModelsSection({
+export function UsageModelsSection({
   t,
   autoAddProvider,
   onAutoAddConsumed,
+  headless = false,
 }: {
   t: (key: MessageKey) => string;
   autoAddProvider?: boolean;
   onAutoAddConsumed?: () => void;
+  /** Render only the Token Plan cards, without the internal two-tab
+   * header. The settings port (58 line A) supplies the reference's
+   * three-source switch instead and mounts this headless as its
+   * token-plan landing; the header stays for any standalone use. */
+  headless?: boolean;
 }) {
   // The reference opens on the Token Plan view. The one deliberate
   // exception is the add-provider deep-link: `autoAddProvider` fires the
   // panel's add flow on mount, which is only useful with the panel
   // visible, so that entry seeds the custom-models view instead.
   const [view, setView] = useState<"tokenPlan" | "customModels">(
-    autoAddProvider ? "customModels" : "tokenPlan",
+    autoAddProvider && !headless ? "customModels" : "tokenPlan",
   );
 
   // The reference's pill: the selected tab sits in a grey rounded pill,
@@ -3650,6 +3393,7 @@ function UsageModelsSection({
 
   return (
     <div className="flex w-full flex-col gap-3">
+      {!headless ? (<>
       {/* The segmented header. The chevron is the reference's plan-picker
        * affordance; its dropdown is deliberately omitted (ticket 53 lets
        * the empty state be dropped) — the local edition has no plan
@@ -3689,6 +3433,7 @@ function UsageModelsSection({
           {t("usage.tab.customModels")}
         </button>
       </div>
+      </>) : null}
 
       {view === "tokenPlan" ? (
         <>

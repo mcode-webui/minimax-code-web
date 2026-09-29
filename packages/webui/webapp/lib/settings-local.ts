@@ -36,6 +36,16 @@ export const FILE_OPEN_IN_NEW_TAB_KEY = "file_open_in_new_tab";
 export const FILE_LINE_WRAP_KEY = "file_line_wrap";
 export const CONTEXT_WINDOW_USAGE_KEY = "webui-context-window-usage";
 export const FOLLOW_UP_BEHAVIOR_KEY = "webui-follow-up-behavior";
+// Ticket 55a — the three long-text preferences the desktop stores on its
+// Personalization / Code review pages. Unlike the four keys above, the
+// desktop's own storage key names for these are NOT part of the observed
+// reference (settings-local's desktop-shared keys came from the reference's
+// `SettingsModal.tsx`), so these live in the `webui-` namespace rather than
+// pretending to a sharing contract nobody verified. Same bare-string wire
+// format: the value is stored verbatim, empty string included.
+export const CUSTOM_INSTRUCTIONS_KEY = "webui-custom-instructions";
+export const ABOUT_USER_KEY = "webui-about-user";
+export const CODE_REVIEW_GUIDELINES_KEY = "webui-code-review-guidelines";
 
 /** Read a bare-string flag. Anything other than the exact string
  *  `"true"` reads as `false`, mirroring the reference's
@@ -154,5 +164,71 @@ export function commitFollowUpBehavior(
   value: FollowUpBehavior,
 ): void {
   writeFollowUpBehavior(value);
+  setState(value);
+}
+
+// --- long-text preferences (ticket 55a) --------------------------------------
+
+/** Read one of the three long-text preferences verbatim. Missing key,
+ *  corrupted storage, or no `window` (SSR pass) all read as the empty
+ *  string — an unset preference and an absent one are the same state to
+ *  the textarea. */
+function readText(key: string): string {
+  if (typeof window === "undefined") return "";
+  try {
+    return window.localStorage.getItem(key) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function writeText(key: string, value: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    // best-effort, see writeFlag
+  }
+}
+
+/** The 自定义指令 textarea's stored value (Personalization page). */
+export function readCustomInstructions(): string {
+  return readText(CUSTOM_INSTRUCTIONS_KEY);
+}
+
+/** The 关于你 textarea's stored value (Personalization page). */
+export function readAboutUser(): string {
+  return readText(ABOUT_USER_KEY);
+}
+
+/** The 自定义审查准则 textarea's stored value (Code review page). */
+export function readCodeReviewGuidelines(): string {
+  return readText(CODE_REVIEW_GUIDELINES_KEY);
+}
+
+/** Persist-before-setState commit helper for the 自定义指令 save button. */
+export function commitCustomInstructions(
+  setState: (value: string) => void,
+  value: string,
+): void {
+  writeText(CUSTOM_INSTRUCTIONS_KEY, value);
+  setState(value);
+}
+
+/** Persist-before-setState commit helper for the 关于你 save button. */
+export function commitAboutUser(
+  setState: (value: string) => void,
+  value: string,
+): void {
+  writeText(ABOUT_USER_KEY, value);
+  setState(value);
+}
+
+/** Persist-before-setState commit helper for the 自定义审查准则 save button. */
+export function commitCodeReviewGuidelines(
+  setState: (value: string) => void,
+  value: string,
+): void {
+  writeText(CODE_REVIEW_GUIDELINES_KEY, value);
   setState(value);
 }

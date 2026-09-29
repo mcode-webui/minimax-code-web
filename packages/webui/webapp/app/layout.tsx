@@ -8,6 +8,9 @@ import "./globals.css";
 import "../styles/tokens.css";
 import "../styles/official-utilities.css";
 import "../styles/mavis-dropdown.css";
+// Settings-modal port (webui-parity 58): the reference package's
+// webui-settings-*/webui-generic-* component layer, carried over as-is.
+import "../styles/settings-modal.css";
 import "../styles/desktop-typography.css";
 import "../styles/code-preview.css";
 // Markdown codeblock overrides (webui-parity 52): loads after
