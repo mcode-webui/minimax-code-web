@@ -617,7 +617,6 @@ export async function handleSwitchSession(req, res, ctx) {
 // path). Audit: session.rename records from → to, fail-closed. Not behind the
 // authorize() modal — renaming is reversible; only destructive actions prompt.
 export async function handleRenameSession(req, res, ctx) {
-  const cs = ctx.cs;
   const cid = ctx.cid;
   const payload = await readJson(req);
   const id = (payload.id || "").trim();
@@ -648,9 +647,16 @@ export async function handleRenameSession(req, res, ctx) {
     // 纯 mcode 会话（sidebar 的 mvs_ 条目还没有 webui 壳）→ 建壳承接改名。
     // 其余 id 不硬造记录：404，让调用方知道 id 写错了。
     if (/^mvs_[a-f0-9]{32}$/.test(id)) {
-      item = ensureOverlayForMcodeSid(all, id, {
-        workspace: (cs && cs.workspace && cs.workspace.dir) || "",
-      });
+      // webui-parity 63 (defect F): no workspace argument, for the same
+      // reason the switch path dropped it (see the s39 note above) — and here
+      // it was the last remaining writer. Stamping cs.workspace.dir onto
+      // someone else's record attributes a workspace the session never ran
+      // in, and cs.workspace.dir is not even necessarily a real one: a
+      // switch to a session that stores no workspace leaves it holding the
+      // DEFAULT_WORKSPACE fallback, which then got persisted and re-rooted
+      // the file tree on every later switch. Unknown stays unknown ("");
+      // the target-first read picks the fallback at read time instead.
+      item = ensureOverlayForMcodeSid(all, id);
       matchKind = "orphan_mcode";
     } else {
       res.writeHead(404, { "Content-Type": "application/json; charset=utf-8" });

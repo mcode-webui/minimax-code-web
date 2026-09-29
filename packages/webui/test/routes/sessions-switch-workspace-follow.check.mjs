@@ -19,6 +19,10 @@
 //     "switch must not overwrite target.workspace" 必须变红。
 //   - ② 让切换不带 containment 闸门 → "switch must go through containment gate"
 //     必须变红。
+//   - ③ (webui-parity 63 / 缺陷 F) 去掉 DEFAULT_WORKSPACE 回落分支 →
+//     "the fallback is the live value" 必须变红。
+//   - ④ (webui-parity 63 / 缺陷 F) 让改名路径重新用当前 cs.workspace 给
+//     首次触碰的 mvs_ 记录盖章 → "the rename overlay" 必须变红。
 
 import { test, describe, before, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
@@ -35,6 +39,7 @@ import {
 } from "../helpers/_setup.js";
 
 let handleSwitchSession;
+let handleRenameSession;
 let makeClientState;
 let clients;
 
@@ -120,6 +125,7 @@ before(async (t) => {
   clients = sb.clients;
   const sessionsMod = await import(absPath("routes/sessions.js"));
   handleSwitchSession = sessionsMod.handleSwitchSession;
+  handleRenameSession = sessionsMod.handleRenameSession;
 });
 
 after(() => {
@@ -164,6 +170,17 @@ async function doSwitch(id, cs, cid = "cid-1") {
   const res = fakeRes();
   await handleSwitchSession(fakeReq({ id }), res, { cs, cid, pathname: "" });
   return { res, body: res._body ? JSON.parse(res._body) : null };
+}
+
+async function doRename({ id, title }, cs, cid = "cid-1") {
+  const res = fakeRes();
+  await handleRenameSession(fakeReq({ id, title }), res, { cs, cid, pathname: "" });
+  return { res, body: res._body ? JSON.parse(res._body) : null };
+}
+
+/** Every workspace value currently persisted, for "nothing was written" checks. */
+function persistedWorkspaces() {
+  return getSessionsStore().map((s) => s.workspace);
 }
 
 const A_ID = "webui-A";
@@ -398,5 +415,83 @@ describe("handleSwitchSession — containment gate (s39 fix)", () => {
     const { res } = await doSwitch("webui-escape", cs);
     assert.equal(res._status, 400, `expected 400, got ${res._status}: ${res._body}`);
     assert.equal(cs.workspace.dir, A_REAL);
+  });
+});
+// ============================================================
+// 4. 回落值只活在本次请求里,不得写进任何持久记录
+//    (webui-parity 63, 缺陷 F)
+// ============================================================
+// 切换到没有 workspace 记录的会话时,cs.workspace.dir 会临时等于
+// DEFAULT_WORKSPACE —— 那是为了让文件树有根可读,不是"这个会话就跑在
+// 这里"。落库之后,下一次切换会 target-first 读回这个假值,文件树根就被
+// 永久改写(质检实测:会话 1 的文件树根变成 demo002)。
+//
+// 剩下的唯一写入路径是改名时给纯 mvs_ 会话补 webui 壳:
+// ensureOverlayForMcodeSid(all, id, { workspace: cs.workspace.dir }) ——
+// 那等于把"我现在在哪"盖到别人的记录上,与 s39 在切换路径上删掉的是同一
+// 段逻辑。修法是壳从 workspace:"" 起步(未知就写未知),回落只在读取时发生。
+describe("handleSwitchSession — DEFAULT_WORKSPACE fallback never persists (webui-parity 63)", () => {
+  const WS_LESS = {
+    id: "webui-wsless",
+    title: "No workspace",
+    workspace: "", // 旧记录 / 早期引擎会话的形状
+    createdAt: 4,
+    updatedAt: 4,
+    chat: [],
+  };
+  const FOREIGN_MVS = "mvs_aaaa1111222233334444555566667777";
+
+  test("the fallback is the live value but never reaches the store", async () => {
+    registerSessionsStore({
+      initial: [
+        { id: A_ID, title: "Session A", workspace: A_REAL, createdAt: 1, updatedAt: 1, chat: [] },
+        WS_LESS,
+      ],
+    });
+    const cs = newCs(A_REAL);
+    const { res, body } = await doSwitch(WS_LESS.id, cs);
+    assert.equal(res._status, 200, `switch failed: ${res._body}`);
+    // The live fallback is the point of the fix — the file tree needs a root.
+    assert.equal(cs.workspace.dir, DEFAULT_DIR, "the live value is the DEFAULT_WORKSPACE fallback");
+    assert.equal(body.session.workspaceFallback, true, "the response must say it fell back");
+    // …and it is live only: the store still holds exactly what it held.
+    assert.deepEqual(
+      persistedWorkspaces(),
+      [A_REAL, ""],
+      "the fallback must not be written into any persisted record",
+    );
+  });
+
+  test("the rename overlay does not stamp the fallback onto a foreign session", async () => {
+    registerSessionsStore({
+      initial: [
+        { id: A_ID, title: "Session A", workspace: A_REAL, createdAt: 1, updatedAt: 1, chat: [] },
+        WS_LESS,
+      ],
+    });
+    // Land on the workspace-less session, so cs.workspace.dir is the fallback
+    // for the rest of this client state's life.
+    const cs = newCs(A_REAL);
+    const { res: switchRes } = await doSwitch(WS_LESS.id, cs);
+    assert.equal(switchRes._status, 200);
+    assert.equal(cs.workspace.dir, DEFAULT_DIR);
+
+    // Now rename an engine session that has no webui record at all. The
+    // overlay the rename has to create belongs to a conversation that never
+    // ran in DEFAULT_WORKSPACE, so it must be created workspace-less.
+    const { res: renameRes } = await doRename({ id: FOREIGN_MVS, title: "Renamed" }, cs);
+    assert.equal(renameRes._status, 200, `rename failed: ${renameRes._body}`);
+    const overlay = getSessionsStore().find((s) => s.mcodeSessionId === FOREIGN_MVS);
+    assert.ok(overlay, "the rename must still create the overlay record");
+    assert.equal(overlay.title, "Renamed", "the rename itself must still work");
+    assert.equal(
+      overlay.workspace,
+      "",
+      "the overlay MUST NOT inherit cs.workspace.dir (it may be a fallback)",
+    );
+    assert.ok(
+      !persistedWorkspaces().includes(DEFAULT_DIR),
+      `no record may carry the fallback: ${JSON.stringify(persistedWorkspaces())}`,
+    );
   });
 });
