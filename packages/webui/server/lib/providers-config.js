@@ -598,7 +598,22 @@ export async function testProvider({ protocol, auth, timeoutMs }) {
   if (!fmt.ok) {
     return { ok: false, code: "INVALID_KEY", error: fmt.reason };
   }
-  const r = await probe({ protocol, auth, ...(timeoutMs ? { timeoutMs } : {}) });
+  // `auth.baseURL` is the probe target (the route's documented
+  // contract: "the request body's baseURL is honoured so a UI 'test
+  // this endpoint' button can exercise a custom URL"); the protocol
+  // default is the fallback ONLY when it is empty. Passing it as
+  // `baseURLOverride` fixes a gap where the body's baseURL was read
+  // and validated but then dropped, sending every probe to the
+  // protocol default instead — a custom-endpoint dialog button
+  // probed the wrong target (ticket 56, found live: a local mock
+  // endpoint answered while the probe timed out against the
+  // default's unreachable host).
+  const r = await probe({
+    protocol,
+    auth,
+    baseURLOverride: auth && typeof auth.baseURL === "string" ? auth.baseURL : "",
+    ...(timeoutMs ? { timeoutMs } : {}),
+  });
   if (r.ok) return { ok: true, latencyMs: r.latencyMs, detail: r.detail };
   return {
     ok: false,

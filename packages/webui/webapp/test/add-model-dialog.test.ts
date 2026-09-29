@@ -87,6 +87,11 @@ const openTagOf = (markup: string, testid: string): string => {
   return markup.slice(start, end + 1);
 };
 
+/** Escape a copy string for embedding in a RegExp — tooltips carry
+ *  parentheses and CJK punctuation that a bare literal would eat. */
+const escapeRegExp = (s: string): string =>
+  s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 /**
  * The element that carries `data-testid="..."` through its closing
  * tag — for wrapper labels whose inner <input> holds the checked
@@ -124,6 +129,8 @@ const formProps = (overrides: Record<string, unknown> = {}) => ({
   entries: [] as DraftModel[],
   errors: [] as string[],
   busy: false,
+  entryTests: {} as Record<number, never>,
+  canTest: false,
   onPresetChoice: noop,
   onCustomField: noop,
   onApiKey: noop,
@@ -133,6 +140,7 @@ const formProps = (overrides: Record<string, unknown> = {}) => ({
   onEntryChange: noop,
   onEntryRemove: noop,
   onEntryReset: noop,
+  onEntryTest: noop,
   onCancel: noop,
   onCommit: noop,
   ...overrides,
@@ -355,9 +363,12 @@ describe("add-model dialog — entry card rendering", () => {
         thinkingLevels: ["low"],
         modalities: ["image", "file"],
       },
+      canTest: false,
+      testState: null,
       onChange: noop,
       onRemove: noop,
       onReset: noop,
+      onTest: noop,
     }),
   );
 
@@ -413,6 +424,266 @@ describe("add-model dialog — entry card rendering", () => {
       dialogSource,
       /value:\s*['"]max['"]/,
       "a max option must not appear in any quoting style",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------
+// 4b. Ticket 56 — visual/interaction parity: empty state (I1),
+//     action tooltips (I2), per-entry connectivity test (I3),
+//     dedicated footer (V3), adjacent header actions (V5),
+//     centred token-pinned modal (V1/V2).
+// ---------------------------------------------------------------------
+
+describe("add-model dialog — ticket 56 parity (I1/I2/I3, V1-V5)", () => {
+  test("I1: entries=[] renders the explicit empty placeholder; entries>0 drops it", () => {
+    const empty = render(createElement(AddModelDialogForm, formProps()));
+    assert.ok(
+      empty.includes('data-testid="provider-dialog-models-empty"'),
+      "the models section must render its empty placeholder",
+    );
+    assert.ok(
+      empty.includes(tZh("providers.dialog.modelsEmpty")),
+      "the placeholder carries the guiding copy, not a bare box",
+    );
+
+    const filled = render(
+      createElement(
+        AddModelDialogForm,
+        formProps({ entries: [{ ...blankModel(), id: "glm-5.3" }] }),
+      ),
+    );
+    assert.ok(
+      !filled.includes('data-testid="provider-dialog-models-empty"'),
+      "with entries present the placeholder must be gone",
+    );
+    assert.ok(
+      filled.includes('data-testid="provider-dialog-entry-0"'),
+      "the entry card renders in its place",
+    );
+  });
+
+  test("I2: ＋添加 and 自动获取 carry their division-of-labour tooltips", () => {
+    const markup = render(createElement(AddModelDialogForm, formProps()));
+    const addTag = openTagOf(markup, "provider-dialog-model-add");
+    const fetchTag = openTagOf(markup, "provider-dialog-autofetch");
+    assert.match(
+      addTag,
+      new RegExp(`title="${escapeRegExp(tZh("providers.dialog.addEntryHint"))}"`),
+      "＋添加 must spell out manual entry in its tooltip",
+    );
+    assert.match(
+      fetchTag,
+      new RegExp(
+        `title="${escapeRegExp(tZh("providers.dialog.autoFetchHint"))}"`,
+      ),
+      "自动获取 must state its fetch-only (no-save) semantics in its tooltip",
+    );
+    // The no-save semantics is the official contract (I4) — the zh
+    // copy must literally say it, or the tooltip drifted.
+    assert.ok(
+      tZh("providers.dialog.autoFetchHint").includes("不会保存任何配置"),
+      "the zh auto-fetch hint must keep the 不会保存任何配置 clause",
+    );
+  });
+
+  test("I3: the per-entry 检测 button renders, disabled reasoning in its tooltip", () => {
+    const markup = render(
+      createElement(AddModelEntry, {
+        t: tZh,
+        index: 0,
+        model: blankModel(),
+        canTest: false,
+        testState: null,
+        onChange: noop,
+        onRemove: noop,
+        onReset: noop,
+        onTest: noop,
+      }),
+    );
+    const testTag = openTagOf(markup, "provider-dialog-entry-0-test");
+    assert.ok(testTag.length > 0, "the test button renders on the entry card");
+    assert.ok(
+      testTag.includes(tZh("providers.dialog.testNeedProvider")),
+      "while canTest=false the tooltip explains WHAT is missing, not just 'disabled'",
+    );
+    assert.ok(
+      markup.includes(`>${tZh("providers.dialog.entryTest")}</button>`),
+      "the button is a labelled text button (检测), not a bare glyph",
+    );
+  });
+
+  test("I3: the three controlled probe branches render their verdict lines", () => {
+    const base = {
+      t: tZh,
+      index: 0,
+      model: blankModel(),
+      canTest: true,
+      onChange: noop,
+      onRemove: noop,
+      onReset: noop,
+      onTest: noop,
+    };
+    const ok = render(
+      createElement(AddModelEntry, {
+        ...base,
+        testState: { status: "ok", latencyMs: 321 },
+      }),
+    );
+    assert.ok(ok.includes('data-testid="provider-dialog-entry-0-test-result"'));
+    assert.ok(
+      ok.includes(tZh("providers.dialog.testOk").replace("{{ms}}", "321")),
+      "the ok verdict names the measured latency",
+    );
+    assert.ok(
+      ok.includes("text-text_status_success"),
+      "the ok verdict uses the success token colour",
+    );
+
+    const fail = render(
+      createElement(AddModelEntry, {
+        ...base,
+        testState: { status: "fail", error: "HTTP 401" },
+      }),
+    );
+    assert.ok(
+      fail.includes(tZh("providers.dialog.testFail").replace("{{error}}", "HTTP 401")),
+      "the fail verdict surfaces the server's structured error",
+    );
+    assert.ok(
+      fail.includes("text-text_status_error"),
+      "the fail verdict uses the error token colour",
+    );
+
+    const testing = render(
+      createElement(AddModelEntry, { ...base, testState: { status: "testing" } }),
+    );
+    assert.ok(
+      testing.includes(tZh("providers.dialog.testTesting")),
+      "the testing branch renders the in-flight copy",
+    );
+  });
+
+  test("I3: the shell probes through the existing POST /api/providers/test contract", () => {
+    // The reuse decision (no new route) is the load-bearing line —
+    // pin the endpoint, the current-values body, and the wiring so
+    // the button cannot degrade into decoration or drift onto a
+    // private endpoint.
+    assert.match(
+      dialogSource,
+      /fetch\("\/api\/providers\/test"/,
+      "the probe must go through the existing server contract",
+    );
+    assert.match(
+      dialogSource,
+      /onEntryTest=\{\(index\) => void testEntry\(index\)\}/,
+      "the form's onEntryTest must be wired to the shell's probe",
+    );
+    assert.match(
+      dialogSource,
+      /const canTest =\s*\n\s*presetChoice !== null &&\s*\n\s*\(probeAuthType === "coding-plan" \|\| apiKey\.trim\(\)\.length > 0\)/,
+      "canTest mirrors validateKeyFormat: provider chosen, and a typed key for byok (coding-plan fires without one)",
+    );
+    assert.match(
+      dialogSource,
+      /onApiKey=\{\(value\) => \{\s*\n\s*setApiKey\(value\);\s*\n\s*\/\/ The key is THE probe credential[\s\S]*?setEntryTests/,
+      "changing the key drops every outstanding verdict — it answered for a different credential",
+    );
+  });
+
+  test("V3: the commit pair lives in a separated footer region behind a hairline", () => {
+    const markup = render(createElement(AddModelDialogForm, formProps()));
+    const footerAt = markup.indexOf('data-testid="provider-dialog-footer"');
+    assert.ok(footerAt > 0, "the footer region renders");
+    assert.ok(
+      markup.lastIndexOf('data-testid="provider-dialog-models-empty"') <
+        footerAt,
+      "the footer must come after the body content",
+    );
+    assert.match(
+      dialogSource,
+      /data-testid="provider-dialog-footer"\s+className="mt-5 [^"]*shrink-0 [^"]*border-t border-border_default pt-4"/,
+      "the footer carries ≥16px separation (pt-4) plus a top hairline",
+    );
+    // Both buttons moved into the footer region — the old inline
+    // pair under the models row is what the user flagged.
+    assert.ok(
+      markup.indexOf('data-testid="provider-dialog-cancel"') > footerAt &&
+        markup.indexOf('data-testid="provider-dialog-save"') > footerAt,
+      "取消/保存 render inside the footer region",
+    );
+  });
+
+  test("V3: the body clamps to the viewport so the footer stays reachable on short screens", () => {
+    // Found live in the verify round: the filled custom branch grows
+    // past the overlay (antd does not make it scrollable), pushing
+    // 取消/保存 below the fold with no way to reach them. The clamp
+    // + internal scroll is the fix — pin both halves.
+    assert.match(
+      dialogSource,
+      /className="flex max-h-\[calc\(90vh-64px\)\] flex-col"\s*\n\s*data-testid="provider-dialog"/,
+      "the dialog clamps its height to the viewport",
+    );
+    assert.match(
+      dialogSource,
+      /className="thin-scrollbar flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pb-2"/,
+      "the body region scrolls internally when clamped (pb-2 keeps the last row off the clip edge)",
+    );
+  });
+
+  test("V4: footer buttons run at the h-9 control height", () => {
+    const markup = render(createElement(AddModelDialogForm, formProps()));
+    const saveTag = openTagOf(markup, "provider-dialog-save");
+    const cancelTag = openTagOf(markup, "provider-dialog-cancel");
+    assert.match(saveTag, /class="[^"]*h-9[^"]*"/, "保存 ≥36px tall");
+    assert.match(cancelTag, /class="[^"]*h-9[^"]*"/, "取消 matches the height");
+    assert.match(
+      saveTag,
+      /class="[^"]*shadow-\[var\(--shadow_default\)\][^"]*"/,
+      "the primary action carries the token shadow",
+    );
+  });
+
+  test("V5: the models header keeps label and actions adjacent (no justify-between gap)", () => {
+    assert.match(
+      dialogSource,
+      /\/\* 模型 —— the header row keeps the label and its actions/,
+      "the header row is documented as the adjacency fix",
+    );
+    assert.match(
+      dialogSource,
+      /className="flex flex-wrap items-center gap-2"/,
+      "the header row packs label + actions with gap-2",
+    );
+    assert.doesNotMatch(
+      dialogSource,
+      /items-center justify-between">\s*<span className="desktop-text-ui-small-strong text-text_default_tertiary">\s*\{t\("providers\.dialog\.models"\)\}/,
+      "the old justify-between header must be gone",
+    );
+  });
+
+  test("V1/V2: both modals centre vertically with token-pinned radius and elevation", () => {
+    assert.match(
+      dialogSource,
+      /width=\{640\}\s*centered\s*styles=\{\{/,
+      "the add-model modal centres and pins its card styles",
+    );
+    assert.match(
+      dialogSource,
+      /width=\{480\}\s*centered\s*styles=\{\{/,
+      "the fetched-models modal matches the treatment",
+    );
+    // Two occurrences (one per modal) — the elevation composes the
+    // opacity ramp, not a literal rgba.
+    assert.equal(
+      dialogSource.split('borderRadius: "var(--radius_12)"').length - 1,
+      2,
+      "both cards take --radius_12",
+    );
+    assert.match(
+      dialogSource,
+      /0 4px 16px var\(--opacity_black_1_8\), 0 12px 40px var\(--opacity_black_1_15\)/,
+      "the elevation references the opacity token ramp",
     );
   });
 });
@@ -676,6 +947,15 @@ describe("add-model dialog — bilingual keys", () => {
     "providers.dialog.save",
     "providers.dialog.errorProvider",
     "providers.dialog.errorDuplicate",
+    "providers.dialog.modelsEmpty",
+    "providers.dialog.addEntryHint",
+    "providers.dialog.autoFetchHint",
+    "providers.dialog.entryTest",
+    "providers.dialog.entryTestHint",
+    "providers.dialog.testTesting",
+    "providers.dialog.testOk",
+    "providers.dialog.testFail",
+    "providers.dialog.testNeedProvider",
     "providers.fetched.title",
     "providers.fetched.presetNote",
     "providers.fetched.customEmpty",

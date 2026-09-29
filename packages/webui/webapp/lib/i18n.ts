@@ -730,6 +730,20 @@ const en = {
   "providers.dialog.save": "Save",
   "providers.dialog.errorProvider": "Select a provider first",
   "providers.dialog.errorDuplicate": "Provider id already exists: {{id}}",
+  "providers.dialog.modelsEmpty":
+    "No models yet — click ＋ Add to enter one manually, or Auto-fetch to pick from the selected preset's catalogue",
+  "providers.dialog.addEntryHint":
+    "Add one empty model entry and fill it in by hand",
+  "providers.dialog.autoFetchHint":
+    "Pick models from the selected preset's built-in catalogue; fetches the list only, nothing is saved until you press Save",
+  "providers.dialog.entryTest": "Test",
+  "providers.dialog.entryTestHint":
+    "Probe the provider endpoint with the API key and base URL currently filled in (endpoint-level check; it does not exercise this entry's model id)",
+  "providers.dialog.testTesting": "Testing…",
+  "providers.dialog.testOk": "Reachable · {{ms}}ms",
+  "providers.dialog.testFail": "Unreachable: {{error}}",
+  "providers.dialog.testNeedProvider":
+    "Select a provider and enter an API key to enable the connectivity test",
   "providers.fetched.title": "Fetched models",
   "providers.fetched.presetNote":
     "Listed from the built-in provider catalogue — the local edition cannot query the provider's live model list with this key.",
@@ -1469,6 +1483,19 @@ const zh: Record<MessageKey, string> = {
   "providers.dialog.save": "保存",
   "providers.dialog.errorProvider": "请先选择提供商",
   "providers.dialog.errorDuplicate": "供应商 ID 已存在：{{id}}",
+  "providers.dialog.modelsEmpty":
+    "暂无模型：点击「＋ 添加」手动填写，或「自动获取」从所选预设目录中选择",
+  "providers.dialog.addEntryHint": "手动添加一条空白模型条目，逐项填写",
+  "providers.dialog.autoFetchHint":
+    "从所选预设的内置目录中选择模型；仅读取列表，点击「保存」前不会保存任何配置",
+  "providers.dialog.entryTest": "检测",
+  "providers.dialog.entryTestHint":
+    "用当前填写的 API Key 与接口地址探测供应商接口连通性（接口级检测，不针对本条目的模型 ID）",
+  "providers.dialog.testTesting": "检测中…",
+  "providers.dialog.testOk": "可达 · {{ms}}ms",
+  "providers.dialog.testFail": "不可达：{{error}}",
+  "providers.dialog.testNeedProvider":
+    "请先选择提供商并填写 API Key，再进行连通检测",
   "providers.fetched.title": "已获取模型",
   "providers.fetched.presetNote":
     "列表来自预置模型目录；本地版暂不支持按该 API Key 拉取实时列表。",
