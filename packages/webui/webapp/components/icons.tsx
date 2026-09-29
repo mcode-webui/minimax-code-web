@@ -31,6 +31,7 @@ export type IconName =
   | "bell"
   | "close"
   | "arrowUp"
+  | "feedback"
   | "file"
   | "browser"
   | "browserGlobe"
@@ -340,6 +341,19 @@ const ICONS: Record<string, IconSpec> = {
             <rect width="16" height="16" fill="white" />
           </clipPath>
         </defs>
+      </>
+    ),
+  },
+  /* The reference session context menu's 问题反馈 glyph (webui-parity 58
+     line B): a chat bubble with a question mark, path moved verbatim from the
+     reference `WebuiIconContextFeedback`. */
+  feedback: {
+    viewBox: "0 0 20 20",
+    size: 18,
+    body: (
+      <>
+        <path d="M10 3a7 7 0 0 1 7 7c0 3.9-3.1 7-7 7a7.2 7.2 0 0 1-2.8-.6L4 17l.6-3.2A7 7 0 1 1 10 3Z" />
+        <path d="M8.6 8a1.4 1.4 0 1 1 2.6.8c-.8.8-1.4 1-1.4 2m0 2.2v.1" />
       </>
     ),
   },
@@ -909,6 +923,7 @@ const ICONS: Record<string, IconSpec> = {
  */
 const STROKE_ICONS = new Set<IconName>([
   "download",
+  "feedback",
   "chevronRight",
   "arrowUp",
   "bell",

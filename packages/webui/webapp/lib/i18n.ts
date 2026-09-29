@@ -219,6 +219,24 @@ const en = {
   "projectMenu.removeConfirm": "Remove",
   "projectMenu.cancel": "Cancel",
 
+  /* Session-row context menu (webui-parity 58 line B — the reference
+     SessionRail's `openSessionMenu` item set, zh labels verbatim from the
+     reference). Pin / archive / fork / reveal / feedback have no contract
+     here (the reference ships reveal and feedback disabled too) and render
+     disabled; rename / copy / delete are real. */
+  "sessionMenu.pin": "Pin",
+  "sessionMenu.rename": "Rename",
+  "sessionMenu.archive": "Archive",
+  "sessionMenu.forkCurrent": "Duplicate as new session",
+  "sessionMenu.forkWorktree": "Duplicate to new worktree",
+  "sessionMenu.revealInFolder": "Reveal in folder",
+  "sessionMenu.copy": "Copy",
+  "sessionMenu.copyWorkspaceDir": "Copy workspace directory",
+  "sessionMenu.copySessionId": "Copy session ID",
+  "sessionMenu.feedback": "Feedback",
+  "sessionMenu.delete": "Delete",
+  "sessionMenu.copied": "Copied",
+
   /* Home quick-capability capsules (ticket 55c, ref-28) — the desktop's
      cloud-skill chips under the composer. Labels match the reference
      screenshots verbatim; every chip is a placeholder that toasts
@@ -1029,6 +1047,23 @@ const zh: Record<MessageKey, string> = {
   "projectMenu.removeProgress": "正在删除 {done}/{total}…",
   "projectMenu.removeConfirm": "移除",
   "projectMenu.cancel": "取消",
+
+  /* 会话行右键菜单（webui-parity 58 线 B —— 参照 SessionRail 的
+     `openSessionMenu` 菜单项，中文文案照抄参照）。置顶/归档/复制为新会话/
+     复制到新工作树暂无服务端契约；在文件夹中显示与问题反馈参照本身即为
+     禁用项，照搬；重命名/复制/删除为真实能力。 */
+  "sessionMenu.pin": "置顶",
+  "sessionMenu.rename": "重命名",
+  "sessionMenu.archive": "归档",
+  "sessionMenu.forkCurrent": "复制为新会话",
+  "sessionMenu.forkWorktree": "复制到新工作树",
+  "sessionMenu.revealInFolder": "在文件夹中显示",
+  "sessionMenu.copy": "复制",
+  "sessionMenu.copyWorkspaceDir": "复制工作目录",
+  "sessionMenu.copySessionId": "复制会话 ID",
+  "sessionMenu.feedback": "问题反馈",
+  "sessionMenu.delete": "删除",
+  "sessionMenu.copied": "已复制",
 
   /* 主页快捷能力胶囊（工单 55c，ref-28）—— 桌面版输入框下方的云端技能
      胶囊。文案逐字照参照截图；每颗都是占位，点击 toast `common.notLocal`，

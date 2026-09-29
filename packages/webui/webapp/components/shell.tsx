@@ -497,28 +497,41 @@ function NavRow({
   onClick?: () => void;
   children: React.ReactNode;
 }) {
+  // webui-parity 58 (line B): the row's DOM is the reference `RailRow`'s —
+  // an outer `div.webui-nav-item` carrying the row's surface classes and the
+  // `data-webui-nav-item` / `data-webui-nav-active` markers, with an inner
+  // `<button>` owning the click and the `pl-2 pr-2.5` inset. The active
+  // fill stays this tree's 47 (N2) behaviour; the kbd badge likewise stays
+  // from 47 — the reference's RailRow carries neither, but the active-row
+  // fill and the Ctrl+N badge are both real contracts here.
   return (
-    <button
-      type="button"
-      aria-label={label}
-      onClick={onClick}
+    <div
+      data-webui-nav-item={label}
+      data-webui-nav-active={active ? "true" : "false"}
       className={[
-        "group/nav flex h-8 w-full items-center gap-2 rounded-lg pl-2 pr-2.5 text-sm transition-colors",
+        "webui-nav-item group/nav flex h-8 w-full items-center rounded-lg text-sm transition-colors",
         active
           ? "bg-bg_interaction_tertiary_hover text-text_default_primary"
           : "text-text_default_primary hover:bg-bg_interaction_tertiary_hover",
       ].join(" ")}
     >
-      <span className="flex size-4 flex-shrink-0 items-center justify-center">{children}</span>
-      <span className="min-w-0 flex-1 truncate text-left whitespace-nowrap">{label}</span>
-      {shortcut ? (
-        <kbd
-          className="inline-flex shrink-0 items-center justify-center rounded-full bg-bg_grouped_primary px-1.5 py-0.5 font-sans text-caption-small-strong slashed-zero text-text_default_secondary opacity-0 transition-opacity pointer-events-none group-hover/nav:opacity-100 group-focus-within/nav:opacity-100"
-        >
-          {shortcut}
-        </kbd>
-      ) : null}
-    </button>
+      <button
+        type="button"
+        aria-label={label}
+        onClick={onClick}
+        className="flex h-full min-w-0 flex-1 items-center gap-2 pl-2 pr-2.5 text-left focus:outline-none"
+      >
+        <span className="flex size-4 flex-shrink-0 items-center justify-center">{children}</span>
+        <span className="min-w-0 flex-1 truncate text-left whitespace-nowrap">{label}</span>
+        {shortcut ? (
+          <kbd
+            className="inline-flex shrink-0 items-center justify-center rounded-full bg-bg_grouped_primary px-1.5 py-0.5 font-sans text-caption-small-strong slashed-zero text-text_default_secondary opacity-0 transition-opacity pointer-events-none group-hover/nav:opacity-100 group-focus-within/nav:opacity-100"
+          >
+            {shortcut}
+          </kbd>
+        ) : null}
+      </button>
+    </div>
   );
 }
 

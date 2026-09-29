@@ -18,6 +18,8 @@ import {
 } from "@/lib/project-custom";
 import { Icon } from "./icons";
 import { MenuDivider, MenuRow } from "./shell";
+import { WebuiContextMenu, type WebuiContextMenuItem } from "./context-menu";
+import { sortWebuiProjectSessionIds } from "@/lib/session-rail";
 import { ProjectRowSwitchAction } from "./workspace-picker";
 
 /**
@@ -825,8 +827,24 @@ function DirectoryNode({
   t: (key: MessageKey) => string;
 }) {
   const limit = revealed[directory.path] ?? SESSION_VISIBLE_LIMIT;
-  const visible = directory.sessions.slice(0, limit);
-  const hidden = directory.sessions.length - visible.length;
+  // webui-parity 58 (line B): within-directory ordering runs through the
+  // reference's `sortWebuiProjectSessionIds` — pinned first, then
+  // `updatedAt` descending, total on both keys so a refresh cannot reshuffle
+  // equal-activity sessions. The pin record is empty for now (no
+  // session-pin contract), so the effective rule is the deterministic
+  // recency sort; the call site is already shaped for the day a pin record
+  // lands.
+  const orderedIds = sortWebuiProjectSessionIds(
+    directory.sessions,
+    {},
+    directory.sessions.map(({ id }) => id),
+  );
+  const sessionsById = new Map(directory.sessions.map((entry) => [entry.id, entry]));
+  const orderedSessions = orderedIds
+    .map((id) => sessionsById.get(id))
+    .filter((entry): entry is api.TreeSession => Boolean(entry));
+  const visible = orderedSessions.slice(0, limit);
+  const hidden = orderedSessions.length - visible.length;
   const holdsActive = directory.sessions.some(
     (session) => session.id === activeId || session.children.some((child) => child.id === activeId),
   );
@@ -841,6 +859,7 @@ function DirectoryNode({
           open={openSessions.includes(session.id)}
           onToggle={onToggleSession}
           onChanged={onChanged}
+          workspaceDir={directory.path}
           t={t}
         />
       ))}
@@ -952,6 +971,134 @@ function DirectoryNode({
  * plain, and `started` is the marquee. The label is the tooltip, so the mark is
  * never the only carrier of the meaning.
  */
+/**
+ * The session-row right-click menu — webui-parity 58 (line B).
+ *
+ * The item list, order, dividers, icons and danger tone are the reference
+ * `SessionRail.tsx#openSessionMenu` moved across verbatim (zh labels too, via
+ * the `sessionMenu.*` dictionary entries). What differs is only which items
+ * this server can honour:
+ *
+ *   - 重命名 / 复制（工作目录、会话 ID）/ 删除 are real — they route through
+ *     the same endpoints the hover actions use.
+ *   - 置顶 / 归档 / 复制为新会话 / 复制到新工作树 have no server contract
+ *     yet, so they render disabled rather than fake an action.
+ *   - 在文件夹中显示 / 问题反馈 are disabled in the reference itself; they
+ *     are carried across as-is so the menu's shape matches.
+ */
+function buildSessionContextMenu({
+  session,
+  workspaceDir,
+  onRename,
+  onDelete,
+  t,
+}: {
+  session: api.TreeSession;
+  /** The directory the session ran in — the reference's `session.workspaceDir`. */
+  workspaceDir?: string;
+  onRename?: () => void;
+  onDelete: () => void;
+  t: (key: MessageKey) => string;
+}): readonly WebuiContextMenuItem[] {
+  const menuIcon = (name: Parameters<typeof Icon>[0]["name"]) => <Icon name={name} />;
+  return [
+    {
+      kind: "item",
+      key: "pin",
+      label: t("sessionMenu.pin"),
+      icon: menuIcon("pin"),
+      disabled: true, // no session-pin contract yet
+    },
+    {
+      kind: "item",
+      key: "rename",
+      label: t("sessionMenu.rename"),
+      icon: menuIcon("pencil"),
+      disabled: !onRename,
+      onSelect: onRename,
+    },
+    {
+      kind: "item",
+      key: "archive",
+      label: t("sessionMenu.archive"),
+      icon: menuIcon("archive"),
+      disabled: true, // no archive contract yet
+    },
+    { kind: "divider", key: "fork-divider" },
+    {
+      kind: "item",
+      key: "fork-current",
+      label: t("sessionMenu.forkCurrent"),
+      icon: menuIcon("fork"),
+      disabled: true, // no fork contract yet
+    },
+    {
+      kind: "item",
+      key: "fork-worktree",
+      label: t("sessionMenu.forkWorktree"),
+      icon: menuIcon("fork"),
+      disabled: true, // no worktree-fork contract yet
+    },
+    { kind: "divider", key: "copy-divider" },
+    {
+      kind: "item",
+      key: "show-folder",
+      label: t("sessionMenu.revealInFolder"),
+      icon: menuIcon("folder"),
+      disabled: true, // disabled in the reference as well
+    },
+    {
+      kind: "item",
+      key: "copy",
+      label: t("sessionMenu.copy"),
+      icon: menuIcon("copy"),
+      submenu: [
+        {
+          kind: "item",
+          key: "copy-workspace-dir",
+          label: t("sessionMenu.copyWorkspaceDir"),
+          icon: menuIcon("copy"),
+          disabled: !workspaceDir,
+          onSelect: () => void copyToClipboard(workspaceDir, t),
+        },
+        {
+          kind: "item",
+          key: "copy-session-id",
+          label: t("sessionMenu.copySessionId"),
+          icon: menuIcon("copy"),
+          onSelect: () => void copyToClipboard(session.id, t),
+        },
+      ],
+    },
+    {
+      kind: "item",
+      key: "feedback",
+      label: t("sessionMenu.feedback"),
+      icon: menuIcon("feedback"),
+      disabled: true, // disabled in the reference as well
+    },
+    { kind: "divider", key: "delete-divider" },
+    {
+      kind: "item",
+      key: "delete",
+      label: t("sessionMenu.delete"),
+      icon: menuIcon("trash"),
+      danger: true,
+      onSelect: onDelete,
+    },
+  ];
+}
+
+/** Clipboard write that degrades to a reported error instead of throwing in the menu. */
+async function copyToClipboard(value: string | undefined, t: (key: MessageKey) => string): Promise<void> {
+  if (!value) return;
+  try {
+    await navigator.clipboard.writeText(value);
+  } catch (cause) {
+    reportActionError(t("sessionMenu.copy"), cause);
+  }
+}
+
 const SESSION_STATE_MARK: Record<string, { dot: string; label: MessageKey }> = {
   error: { dot: "bg-bg_status_error", label: "session.status.error" },
   aborted: { dot: "bg-bg_status_warning", label: "session.status.aborted" },
@@ -964,6 +1111,7 @@ function SessionNode({
   open,
   onToggle,
   onChanged,
+  workspaceDir,
   t,
 }: {
   session: api.TreeSession;
@@ -971,10 +1119,36 @@ function SessionNode({
   open: boolean;
   onToggle: (key: string) => void;
   onChanged: () => void;
+  /** The directory this session's project row sits under — feeds the menu's copy item. */
+  workspaceDir?: string;
   t: (key: MessageKey) => string;
 }) {
   const { state } = useSessionContext();
   const active = session.id === activeId;
+  // webui-parity 58 (line B): the session row's right-click menu. State is
+  // per-row (the reference holds one in the list root; both render a single
+  // portal menu at a time because opening another row's menu unmounts this
+  // row's before its own portal can coexist).
+  const [contextMenu, setContextMenu] = useState<
+    | { readonly x: number; readonly y: number; readonly items: readonly WebuiContextMenuItem[] }
+    | undefined
+  >();
+  const openSessionMenu = (event: React.MouseEvent<HTMLElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setContextMenu({
+      x: event.clientX,
+      y: event.clientY,
+      items: buildSessionContextMenu({
+        session,
+        workspaceDir,
+        onRename: () => startRename(),
+        onDelete: () =>
+          void runAction(t("sidebar.delete"), api.deleteSession(session.id)).then(onChanged),
+        t,
+      }),
+    });
+  };
   // The engine status is the source for every row, but the active session's is
   // also on the wire live: `running.active` arrives over SSE the moment a turn
   // starts. Reading it here is what makes the marquee immediate rather than up
@@ -1135,7 +1309,10 @@ function SessionNode({
 
   return (
     <>
-      <div className="group/row relative rounded-lg">
+      <div
+        className="group/row relative rounded-lg"
+        onContextMenu={renaming ? undefined : openSessionMenu}
+      >
         {renaming ? (
           /* Editing swaps the element: a `<button>` must not contain an
              `<input>`, and it would swallow the keystrokes. The disclosure is
@@ -1221,10 +1398,19 @@ function SessionNode({
               session={child}
               active={child.id === activeId}
               onChanged={onChanged}
+              workspaceDir={workspaceDir}
               t={t}
             />
           ))}
         </Expandable>
+      ) : null}
+      {contextMenu ? (
+        <WebuiContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          items={contextMenu.items}
+          onClose={() => setContextMenu(undefined)}
+        />
       ) : null}
     </>
   );
@@ -1304,20 +1490,49 @@ function SubagentRow({
   session,
   active,
   onChanged,
+  workspaceDir,
   t,
 }: {
   session: api.TreeSession;
   active: boolean;
   onChanged: () => void;
+  /** The parent session's directory — feeds the row's copy menu item. */
+  workspaceDir?: string;
   t: (key: MessageKey) => string;
 }) {
   const onOpen = useCallback(() => {
     void runAction(t("sidebar.openSession"), api.switchSession(session.id)).then(onChanged);
   }, [session.id, onChanged, t]);
 
+  // webui-parity 58 (line B): the child (subagent) row carries the same
+  // right-click menu as its parent — the reference's `openSessionMenu` is
+  // bound to child rows too. Rename stays disabled here: the child row has
+  // no inline editor to swap into (its rename contract would need the same
+  // edit affordance the main row has).
+  const [contextMenu, setContextMenu] = useState<
+    | { readonly x: number; readonly y: number; readonly items: readonly WebuiContextMenuItem[] }
+    | undefined
+  >();
+  const openChildMenu = (event: React.MouseEvent<HTMLElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setContextMenu({
+      x: event.clientX,
+      y: event.clientY,
+      items: buildSessionContextMenu({
+        session,
+        workspaceDir,
+        onDelete: () =>
+          void runAction(t("sidebar.delete"), api.deleteSession(session.id)).then(onChanged),
+        t,
+      }),
+    });
+  };
+
   // webui-parity 47 (S1 + S8): same selected token and same `<a>` deep-link
   // treatment as the parent session row — see SessionNode's row markup.
   return (
+    <>
     <a
       href={sessionHref(session.id)}
       onClick={(event) => {
@@ -1337,6 +1552,7 @@ function SubagentRow({
       title={session.title || t(UNTITLED)}
       data-testid="sidebar-subagent-row"
       data-agent={session.agent}
+      onContextMenu={openChildMenu}
       className={[
         "w-full flex items-center gap-2 pl-8 pr-2 h-[26px] text-left transition-colors rounded-lg text-inherit no-underline",
         active
@@ -1357,5 +1573,14 @@ function SubagentRow({
         {session.agent}
       </span>
     </a>
+      {contextMenu ? (
+        <WebuiContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          items={contextMenu.items}
+          onClose={() => setContextMenu(undefined)}
+        />
+      ) : null}
+    </>
   );
 }
