@@ -8,10 +8,9 @@ import "./globals.css";
 import "../styles/tokens.css";
 import "../styles/official-utilities.css";
 import "../styles/mavis-dropdown.css";
-// The reference session rail's context-menu skin (webui-parity 58 line B):
-// class names are the reference's own; the menu itself renders from
-// components/context-menu.tsx.
-import "../styles/context-menu.css";
+// Settings-modal port (webui-parity 58): the reference package's
+// webui-settings-*/webui-generic-* component layer, carried over as-is.
+import "../styles/settings-modal.css";
 import "../styles/desktop-typography.css";
 import "../styles/code-preview.css";
 // Markdown codeblock overrides (webui-parity 52): loads after

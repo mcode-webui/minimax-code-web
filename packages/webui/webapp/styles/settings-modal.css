@@ -1,0 +1,159 @@
+/* settings-modal.css — 设置页移植的样式层（webui-parity 58 线 A）。
+ *
+ * 规则整体搬运自参照包 other-minimax-code
+ * packages/webui/src/client/styles/shell.css 的 settings 块（@layer
+ * components 内），类名与声明保持原样：webui-settings-*（弹窗外壳/侧栏/
+ * 导航/内容区）、webui-generic-*（通用页 section/card/row/divider）、
+ * webui-mode-*（模式双卡）、mavis-settings-theme-*（外观三选）、
+ * webui-toggle-switch（开关）、webui-ant-select（下拉）、webui-mavis-button
+ * （灰/黑按钮）、webui-segmented（分段单选）。tokens.css 的自定义属性
+ * 与参照 tokens 同名同值，因此声明里的 var(--…) 原样可用。
+ *
+ * 时间盒裁剪：参照的 webui-provider-* 表单/选择器样式未随本轮搬运——
+ * custom 来源沿用本仓 ProviderManagementPanel 自带样式；后续补拖拽排序
+ * 时如需 provider 表单形态再一并搬。
+ *
+ * 参照块原本位于 Tailwind 的 @layer components；本仓该指令只存在于
+ * globals.css，故这里以顶层普通规则落地（类名全部为设置页专属前
+ * 缀，与 utilities 无交叉，层叠无冲突）。 */
+  .webui-settings-mask { position: fixed; inset: 0; z-index: 100; display: flex; background: var(--utility_scrim); animation: webui-overlay-enter 160ms ease-out both; }
+  .webui-settings-modal { display: flex; width: 100vw; height: 100vh; overflow: hidden; background: var(--bg_default_primary); color: var(--text_default_primary); animation: webui-modal-enter 200ms cubic-bezier(.2, .7, .2, 1) both; }
+  .webui-settings-sidebar { width: 260px; flex: 0 0 260px; overflow-y: hidden; }
+  .webui-settings-back, .webui-settings-nav-item { display: flex; width: 100%; align-items: center; gap: var(--spacing_8); border: 0; background: transparent; color: var(--text_default_secondary); text-align: left; }
+  .webui-settings-back { font-size: var(--size_14); }
+  .webui-settings-back:hover, .webui-settings-nav-item:hover { color: var(--text_default_primary); }
+  .webui-settings-search { display: flex; height: 36px; align-items: center; gap: var(--spacing_8); padding: 0 var(--spacing_8); border: 1px solid var(--border_default); border-radius: var(--radius_8); color: var(--text_default_tertiary); }
+  .webui-settings-search input { min-width: 0; flex: 1; border: 0; outline: 0; background: transparent; color: inherit; }
+  .webui-settings-search button { border: 0; background: transparent; color: inherit; }
+  .webui-settings-group { margin-top: 0; }
+  .webui-settings-nav > .webui-settings-group:first-child { margin-top: var(--spacing_24); }
+  .webui-settings-group h3 { margin: 0 0 var(--spacing_6); color: var(--text_default_tertiary); font-weight: var(--weight_medium); }
+  .webui-settings-nav-item { border-radius: var(--radius_8); transition: background-color 120ms ease, color 120ms ease; }
+  .webui-settings-nav-item.is-active { background: var(--bg_interaction_tertiary_selected); color: var(--text_default_primary); }
+  .webui-settings-icon { width: 18px; height: 18px; flex: 0 0 18px; }
+  .webui-settings-content { min-width: 0; flex: 1; overflow: auto; animation: webui-settings-content-in 180ms ease both; }
+  .webui-settings-content-header { display: flex; align-items: flex-start; justify-content: space-between; }
+  .webui-settings-eyebrow { margin: 0 0 var(--spacing_4); color: var(--text_default_tertiary); font-size: var(--size_12); }
+  .webui-settings-content h2 { margin: 0; font-size: var(--size_16); font-weight: var(--weight_medium); line-height: 26px; }
+  .webui-settings-close { border: 0; background: transparent; color: var(--icon_default_tertiary); }
+  .webui-settings-panels { max-width: 760px; margin: 0 auto; }
+  .webui-settings-panel { margin-bottom: var(--spacing_24); border: 1px solid var(--border_default); border-radius: var(--radius_12); background: var(--bg_grouped_primary); }
+  .webui-settings-panel > h3 { margin: 0; padding: var(--spacing_16) var(--spacing_20) var(--spacing_8); font-size: var(--size_16); font-weight: var(--weight_medium); }
+  .webui-settings-row { display: flex; min-height: 66px; align-items: center; justify-content: space-between; gap: var(--spacing_16); padding: var(--spacing_12) var(--spacing_20); border-top: 1px solid var(--border_default); }
+  .webui-settings-row strong, .webui-settings-row span { display: block; }
+  .webui-settings-row strong { font-size: var(--size_14); font-weight: var(--weight_regular); }
+  .webui-settings-row span { margin-top: var(--spacing_4); color: var(--text_default_tertiary); font-size: var(--size_12); }
+  .webui-settings-row select { min-width: 150px; padding: var(--spacing_8); border: 1px solid var(--border_default); border-radius: var(--radius_8); background: var(--bg_default_primary); color: var(--text_default_primary); }
+  .webui-settings-action { margin: 0 var(--spacing_20) var(--spacing_16); padding: var(--spacing_8) var(--spacing_12); border: 1px solid var(--border_default); border-radius: var(--radius_8); background: transparent; color: var(--text_default_primary); }
+  .webui-settings-error { margin: 0 var(--spacing_20) var(--spacing_16); color: var(--text_label_danger_secondary_default); font-size: var(--size_12); }
+  .webui-settings-empty-panel { max-width: 760px; min-height: 220px; margin: 0 auto; }
+  .webui-settings-data-dir { max-width: 760px; margin: var(--spacing_32) auto 0; color: var(--text_default_tertiary); font-size: var(--size_12); word-break: break-all; }
+  .webui-settings-empty { height: var(--spacing_128); }
+  .webui-settings-theme-options { display: flex; gap: var(--spacing_12); }
+  .mavis-settings-theme-option { }
+  .mavis-settings-theme-preview { }
+  .mavis-settings-theme-preview.is-selected { outline-color: var(--border_accent); }
+  .mavis-settings-theme-preview img { border-radius: var(--radius_8); object-fit: cover; }
+  .webui-settings-mode-options { display: flex; gap: var(--spacing_12); padding: var(--spacing_12); }
+  .webui-settings-mode-card { display: flex; min-height: 118px; flex: 1; flex-direction: column; align-items: flex-start; gap: var(--spacing_4); padding: var(--spacing_12) var(--spacing_16); border: 0; border-radius: var(--radius_12); background: var(--bg_interaction_secondary_default); color: var(--text_default_primary); text-align: left; }
+  .webui-settings-mode-card:disabled { cursor: not-allowed; opacity: .6; }
+  .webui-settings-disabled-row { cursor: default; opacity: .6; }
+  .webui-settings-disabled-row:hover { background: transparent; }
+  .webui-settings-mode-card strong { font-size: var(--size_14); font-weight: var(--weight_regular); }
+  .webui-settings-mode-card span { color: var(--text_default_secondary); font-size: var(--size_12); }
+  .webui-settings-no-results { padding: var(--spacing_16); color: var(--text_default_secondary); font-size: var(--size_12); }
+  .webui-generic-page { display: flex; max-width: 840px; margin: 0 auto; flex-direction: column; gap: 32px; padding: 0 var(--spacing_16) var(--spacing_32); }
+  .webui-generic-section { display: flex; width: 100%; flex-direction: column; gap: var(--spacing_12); }
+  .webui-generic-section > h3 { margin: 0; padding: 0 var(--spacing_16); color: var(--text_default_primary); font-size: var(--size_14); font-weight: var(--weight_medium); line-height: var(--line_height_20); }
+  .webui-generic-card { display: flex; width: 100%; flex-direction: column; border-radius: var(--radius_16); background: var(--bg_grouped_tertiary); padding: var(--spacing_4); }
+  .webui-generic-section[data-testid="app-mode-section"] > .webui-generic-card { background: transparent; padding: 0; }
+  .webui-generic-section.is-preference .webui-generic-card { border-radius: var(--radius_12); }
+  .webui-generic-row { display: flex; width: 100%; min-height: 56px; align-items: center; justify-content: space-between; gap: 24px; overflow: hidden; border-radius: var(--radius_12); padding: var(--spacing_8) var(--spacing_8) var(--spacing_8) var(--spacing_12); }
+  .webui-generic-row-copy { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: var(--spacing_4); }
+  .webui-generic-row-copy strong { color: var(--text_default_primary); font-size: var(--size_14); font-weight: var(--weight_regular); line-height: var(--line_height_20); }
+  .webui-generic-row-copy span { color: var(--text_default_secondary); font-size: var(--size_12); font-weight: var(--weight_regular); line-height: var(--line_height_16); }
+  .webui-generic-row-control { flex-shrink: 0; }
+  .webui-generic-divider { display: flex; width: 100%; align-items: center; justify-content: center; padding: 6px var(--spacing_12); }
+  .webui-generic-divider span { display: block; width: 100%; height: 1px; background: var(--border_light); }
+  .webui-mode-options { display: flex; width: 100%; gap: var(--spacing_12); }
+  .webui-mode-card { display: flex; height: 118px; min-width: 0; flex: 1; flex-direction: column; align-items: flex-start; justify-content: center; border: 0; padding: 2px; text-align: left; }
+  .webui-mode-card:disabled { cursor: not-allowed; opacity: .6; }
+  .webui-mode-inner { position: relative; display: flex; width: 100%; height: 114px; flex-shrink: 0; flex-direction: column; align-items: flex-start; justify-content: center; gap: 10px; border-radius: var(--radius_12); background: var(--bg_interaction_secondary_default); padding: var(--spacing_12) var(--spacing_16); }
+  .webui-mode-icon { display: flex; width: 36px; height: 36px; flex-shrink: 0; align-items: center; justify-content: center; border-radius: 50%; background: var(--bg_grouped_secondary); color: var(--icon_default_primary); }
+  .webui-mode-copy { display: flex; width: 100%; min-width: 0; flex-direction: column; align-items: flex-start; justify-content: center; gap: var(--spacing_4); }
+  .webui-mode-copy strong, .webui-mode-copy span { width: 100%; overflow: hidden; white-space: nowrap; }
+  .webui-mode-copy strong { color: var(--text_default_primary); font-size: var(--size_14); font-weight: var(--weight_regular); line-height: var(--line_height_20); }
+  .webui-mode-copy span { color: var(--text_default_secondary); font-size: var(--size_12); line-height: var(--line_height_16); }
+  .webui-mode-radio { position: absolute; top: 22px; right: var(--spacing_16); display: flex; width: 16px; height: 16px; align-items: center; justify-content: center; color: var(--icon_default_secondary); }
+  .webui-mode-radio.is-selected { width: 20px; height: 20px; color: var(--icon_default_accent); }
+  .webui-mode-radio svg { display: block; }
+  .mavis-settings-appearance-row .webui-generic-row-control { display: flex; }
+  .mavis-settings-theme-selector { display: flex; align-items: flex-start; gap: var(--spacing_12); }
+  .mavis-settings-theme-option { display: flex; width: 100px; flex: 0 0 100px; flex-direction: column; align-items: center; gap: var(--spacing_8); border: 0; background: transparent; padding: 0; color: var(--text_default_secondary); font-size: var(--size_12); line-height: var(--line_height_16); }
+  .mavis-settings-theme-preview { display: block; width: 100px; height: 64px; overflow: hidden; border-radius: var(--radius_8); padding: var(--spacing_4); outline: 2px solid var(--border_light); outline-offset: -2px; }
+  .mavis-settings-theme-preview.is-selected { outline-color: var(--icon_default_accent); }
+  .mavis-settings-theme-preview > span { display: block; width: 100%; height: 100%; overflow: hidden; border-radius: 6px; outline: 1px solid var(--border_light); outline-offset: -1px; }
+  .mavis-settings-theme-preview img { display: block; width: 100%; height: 100%; }
+  .webui-toggle-switch { position: relative; display: inline-flex; width: 40px; height: 20px; flex: 0 0 40px; align-items: center; border: 0; border-radius: 64px; background: rgb(10 10 10 / 8%); padding: 0; cursor: pointer; transition: background-color 200ms ease; }
+  .webui-toggle-switch > span { position: absolute; top: 5px; left: 5px; display: block; width: 18px; height: 10px; border-radius: 64px; background: #fff; box-shadow: none; transition: transform 200ms ease; }
+  .webui-toggle-switch.is-checked { background: #0094fc; }
+  .webui-toggle-switch.is-checked > span { transform: translateX(12px); }
+  .webui-toggle-switch:focus-visible { outline: 2px solid var(--border_accent); outline-offset: 2px; }
+  .webui-toggle-switch:disabled { cursor: default; opacity: .6; }
+  .webui-ant-select { position: relative; display: inline-flex; width: 96px; height: 36px; align-items: center; }
+  .webui-ant-select.is-wide { width: 152px; }
+  .webui-ant-select select { width: 100%; height: 36px; appearance: none; border: 1px solid var(--border_default); border-radius: var(--radius_8); background: transparent; padding: 0 32px 0 11px; color: var(--text_default_primary); font-size: var(--size_14); }
+  .webui-ant-select svg { position: absolute; right: 8px; pointer-events: none; color: var(--text_default_tertiary); }
+  .webui-ant-select select:disabled { cursor: default; opacity: .6; }
+  .webui-mavis-button { min-width: 80px; height: 36px; border: 0; border-radius: var(--radius_8); padding: 0 var(--spacing_12); font-size: var(--size_14); font-weight: var(--weight_medium); }
+  .webui-mavis-button-gray { background: var(--bg_interaction_secondary_default); color: var(--text_default_primary); }
+  .webui-mavis-button-black { background: var(--gray_1000); color: #fff; }
+  .webui-mavis-button:disabled { cursor: default; opacity: .6; }
+  .webui-segmented { gap: 0; background: var(--gray_75); }
+  .webui-segmented button { height: 28px; border: 0; border-radius: 6px; background: transparent; padding: 0 var(--spacing_12); color: var(--text_default_primary); font-size: var(--size_14); }
+  .webui-segmented button.is-selected { background: #fff; }
+  .webui-settings-sidebar { padding: 46px var(--spacing_12) var(--spacing_20); border-right: 0; background: var(--bg_default_scrim); }
+  .webui-settings-back { height: 30px; margin-bottom: var(--spacing_20); border-radius: var(--radius_8); padding: 0 var(--spacing_8); line-height: var(--line_height_20); }
+  .webui-settings-nav-item { min-height: 30px; padding: 0 10px; font-size: var(--size_14); line-height: var(--line_height_20); }
+  .webui-settings-nav-item { color: var(--text_default_primary); }
+  .webui-settings-nav-item.is-active { background: var(--bg_interaction_tertiary_selected); border-radius: var(--radius_8); }
+  .webui-settings-nav-item:focus-visible { outline: 0; box-shadow: inset 0 0 0 1px var(--border_accent); }
+  .webui-settings-group h3 { padding: 16px var(--spacing_8) 6px; font-size: var(--size_14); line-height: var(--line_height_20); }
+  .webui-settings-content { padding: var(--spacing_8) 0 0; background: var(--bg_grouped_secondary); }
+  .webui-settings-content-header { margin: 0 0 var(--spacing_48); padding: 0 var(--spacing_20); }
+  .webui-settings-sidebar, .webui-settings-content { scrollbar-width: none; }
+  .webui-settings-sidebar::-webkit-scrollbar, .webui-settings-content::-webkit-scrollbar { display: none; }
+  .mavis-settings-search-highlight { animation: webui-settings-search-highlight 1400ms ease both; }
+  @keyframes webui-settings-search-highlight { 0% { background: var(--bg_interaction_tertiary_selected); } 100% { background: transparent; } }
+  @keyframes webui-settings-content-in { from { opacity: 0; transform: translateX(8px); } to { opacity: 1; transform: translateX(0); } }
+  @media (max-height: 680px) {
+    .webui-settings-sidebar { padding-top: 16px; padding-bottom: var(--spacing_12); }
+    .webui-settings-back { margin-bottom: var(--spacing_16); }
+    .webui-settings-nav > .webui-settings-group:first-child { margin-top: 8px; }
+    .webui-settings-group h3 { padding-top: 12px; padding-bottom: 6px; }
+    .webui-settings-nav-item { height: 30px; min-height: 30px; }
+  }
+  @media (prefers-reduced-motion: reduce) { .webui-settings-content { animation: none; } .webui-toggle-switch, .webui-toggle-switch > span { transition: none; } }
+  @keyframes webui-overlay-enter { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes webui-overlay-enter { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes webui-modal-enter { from { opacity: 0; transform: translateY(8px) scale(.995); } to { opacity: 1; transform: translateY(0) scale(1); } }
+
+/* 外观三选的预览色块（本仓适配，替代参照的 /assets/img/*.svg 预览图）：
+ * light 白底、dark 黑底、system 左右对半分，几何沿用参照
+ * .mavis-settings-theme-preview > span 的 100% 填充。 */
+.mavis-settings-theme-preview > .webui-theme-swatch-light,
+.mavis-settings-theme-preview > .webui-theme-swatch-dark,
+.mavis-settings-theme-preview > .webui-theme-swatch-system {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.mavis-settings-theme-preview > .webui-theme-swatch-light {
+  background: #f5f5f5;
+}
+.mavis-settings-theme-preview > .webui-theme-swatch-dark {
+  background: #1a1a1a;
+}
+.mavis-settings-theme-preview > .webui-theme-swatch-system {
+  background: linear-gradient(90deg, #f5f5f5 0 50%, #1a1a1a 50% 100%);
+}
