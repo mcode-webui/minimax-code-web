@@ -37,7 +37,10 @@
 //      (the absolute-empty-set variant of this assertion once
 //      observed one such descendant and went red without a
 //      regression). S3-RH-09 pins that the probe still catches a
-//      genuine in-window spawn.
+//      genuine in-window spawn — Linux only, because the /proc walk
+//      the probe depends on does not exist on darwin/win32 (on those
+//      platforms the zero-spawn tests stay green vacuously; the skip
+//      on S3-RH-09 documents this).
 
 import { test, describe, after } from "node:test";
 import { strict as assert } from "node:assert";
@@ -491,7 +494,16 @@ describe("S3 — catalogue-via-runtime normalizers", () => {
     rmTmpDir(dir);
   });
 
-  test("S3-RH-09: the baseline-relative probe still catches a genuine in-window spawn", async () => {
+  // Linux-only, and the skip must say why: the probe's visibility
+  // rests on /proc's parent-link walk (listDescendantPids above) —
+  // darwin and win32 have no /proc, the walk returns [] there, and
+  // "must observe the spawn" is deterministically false on those
+  // platforms (this went red on the macOS CI platform profile). The
+  // zero-spawn tests (RH-04/05/06) stay enabled everywhere because an
+  // empty observation satisfies them, vacuously on non-Linux; only
+  // this positive-detection test asserts the probe can see anything
+  // at all, so only it is platform-gated.
+  test("S3-RH-09: the baseline-relative probe still catches a genuine in-window spawn", { skip: process.platform !== "linux" && "spawn probing depends on Linux /proc semantics; listDescendantPids() cannot observe descendants on this platform" }, async () => {
     // The companion to the zero-spawn assertions: a probe that has
     // been made tolerant of pre-existing descendants (baseline
     // relative) must NOT become blind. Spawn a real child of THIS
