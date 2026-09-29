@@ -3655,6 +3655,7 @@
     "packages/webui/webapp/app/page.tsx",
     "packages/webui/webapp/components/action-error-banner.tsx",
     "packages/webui/webapp/components/activity-group.tsx",
+    "packages/webui/webapp/components/add-model-dialog.tsx",
     "packages/webui/webapp/components/appearance-card-picker.tsx",
     "packages/webui/webapp/components/appearance-sync.tsx",
     "packages/webui/webapp/components/browser-panel.tsx",

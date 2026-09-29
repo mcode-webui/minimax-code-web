@@ -231,6 +231,50 @@ describe("draftFromView — view → draft", () => {
 // ---------------------------------------------------------------------
 
 describe("draftToWire — draft → wire", () => {
+  // Ticket 54 acceptance round 2: the "PUT body unchanged" red line
+  // used to be pinned only at the panel's call-site literal — the
+  // function that BUILDS the payload was a blind spot (a mutation
+  // adding a field inside draftToWire shipped 129 green tests). These
+  // closed key-set assertions pin the payload at the behaviour layer:
+  // a new key anywhere in the shape fails the deepEqual, whatever
+  // quoting or call-site style it arrives with.
+  test("wire key set is closed — no field may join the PUT body (ticket 54)", () => {
+    const full: DraftProvider = {
+      ...newDraftProvider(),
+      id: "p1",
+      label: "P1",
+      preset: "zhipu",
+      auth: { type: "byok", apiKey: "sk-x", baseURL: "https://api.example.com" },
+      models: [{
+        id: "m1",
+        label: "M1",
+        contextLimit: "128000",
+        thinkingLevels: ["low"],
+        modalities: ["text", "file"],
+      }],
+    };
+    const wire = draftToWire(full);
+    assert.deepEqual(
+      Object.keys(wire).sort(),
+      ["auth", "enabled", "id", "label", "models", "preset", "protocol"],
+      "provider-level keys must stay exactly the documented PUT contract",
+    );
+    assert.ok(wire.models[0], "model row present");
+    assert.deepEqual(
+      Object.keys(wire.models[0]).sort(),
+      ["contextLimit", "id", "label", "modalities", "thinkingLevels"],
+      "model-level keys must stay exactly the documented PUT contract — maxOutputTokens and friends fail here",
+    );
+    // The specific regression the acceptance mutation proved: a
+    // max-output value must not leak into the payload even if some
+    // future form field starts collecting one.
+    assert.equal(
+      JSON.stringify(wire).includes("maxOutput"),
+      false,
+      "no maxOutput* key may appear anywhere in the serialized PUT body",
+    );
+  });
+
   test("empty model rows are dropped", () => {
     const draft: DraftProvider = {
       ...newDraftProvider(),

@@ -283,7 +283,7 @@ exec 回合的代价——以下都是当前真实存在的行为，选择权限
 | 浏览器面板（slice 04，沙箱化 iframe over `/api/fs/raw`） | `components/browser-panel.tsx` | `browser-panel` |
 | 工作区选择器（模态） | `components/workspace-picker.tsx` | `workspace-picker` |
 | Provider 配置 | `components/provider-management.tsx` | `providers-panel` |
-| 添加模型弹窗 + 已获取模型弹窗（工单 54） | `components/provider-management.tsx#AddModelDialog` / `#FetchedModelsDialog` | `provider-dialog`（字段 `provider-dialog-provider-select` / `-api-key` / `-model-add` / `-autofetch` / `-cancel` / `-save`；条目 `provider-dialog-entry-{n}` 含 `-name` / `-context` / `-max-output` / `-thinking` / `-attachment-{mod}` / `-reset` / `-remove`）/ `fetched-models-dialog`（`-select-all` / `-cancel` / `-add`） |
+| 添加模型弹窗 + 已获取模型弹窗（工单 54；验收第二轮拆为独立文件以便渲染级测试） | `components/add-model-dialog.tsx#AddModelDialog` / `#FetchedModelsDialog`（受控面 `#AddModelDialogForm` / `#FetchedModelsDialogBody`，纯函数 `#collectDialogErrors` / `#defaultChecked`） | `provider-dialog`（字段 `provider-dialog-provider-select` / `-api-key` / `-api-key-reveal` / `-model-add` / `-autofetch` / `-cancel` / `-save` / `-errors`；条目 `provider-dialog-entry-{n}` 含 `-name` / `-context` / `-max-output` / `-thinking` / `-attachment-{mod}` / `-reset` / `-remove`）/ `fetched-models-dialog`（`fetched-models-title` / `-item-{id}` / `-select-all` / `-cancel` / `-add`） |
 | 上下文窗口 | `components/context-meter.tsx` | `context-meter` |
 | 设置模态 | `components/panels.tsx#SettingsModal` | `settings-modal` |
 | 设置页「用量与模型」节的分段页签（工单 53） | `components/panels.tsx#UsageModelsSection` | `usage-models-segment`（页签 `usage-models-tab-token-plan` / `usage-models-tab-custom-models`） |
@@ -489,7 +489,9 @@ Token Plan 视图是桌面的五区块（页签 + 四卡）：
 | 「＋ 添加」/「自动获取」 | 添加追加空白条目；自动获取打开「已获取模型」勾选弹窗，列表是**所选预设的内置目录**并注明非按 Key 实时拉取——本地后端没有模型列表代理。未选预设时弹窗如实说明能力缺失，不造数据。「全选（n/N）」+取消/添加同桌面；勾选条目带目录元数据落入表单 |
 | 取消 / 保存 | 保存前校验（已选提供商、id 唯一、逐条 `validateModelRow`），追加进面板列表后走**原有** `draftToWire` + `api.putProviders({version: 2})` 保存路径（请求体零改动）；失败时弹窗不关、已输入内容保留 |
 
-**工单 54 的不变量**：服务端契约零改动（`/api/providers` PUT 请求体、`/api/set-model` 与全部端点不动，变更只在前端 + 测试 + 文档）；面板/编辑器侧的全部既有 `data-testid` 逐字保留（`webapp/test/add-model-dialog.test.ts` 钉死清单）；预设目录、thinkingLevels 编辑语义、供应商分组与思考等级显示例外不变；深链仍落自定义模型视图，改为直接打开弹窗。旧的列表草稿式 `addProvider` 路径与编辑器失去调用方的自动聚焦参数一并删除，行为由弹窗收敛。
+**工单 54 的不变量**：服务端契约零改动（`/api/providers` PUT 请求体、`/api/set-model` 与全部端点不动，变更只在前端 + 测试 + 文档）；面板/编辑器侧的全部既有 `data-testid` 在源码中保留（面板源码 pin 36 条 + 空态 2 条 = 38 条，与基线一致；`webapp/test/add-model-dialog.test.ts` 钉死清单）；预设目录、thinkingLevels 编辑语义、供应商分组与思考等级显示例外不变；深链仍落自定义模型视图，改为直接打开弹窗。旧的列表草稿式 `addProvider` 路径与编辑器失去调用方的自动聚焦参数一并删除，行为由弹窗收敛。
+
+**验收第二轮（同工单）**：弹窗组件拆到 `components/add-model-dialog.tsx` 并导出受控面，测试升级为渲染级（`renderToStaticMarkup`，53a F-7 同款）——眼睛往返、校验错误块、取消重置落地面、勾选弹窗全选语义与 n/N 计数、零勾选/自定义供应商禁用态均由渲染标记 + 纯函数钉死（11 项回退行为的变异抽查全部转红）；PUT 请求体红线从调用点字面量升级为 `draftToWire` 的封闭键集断言（`provider-management.test.ts`）。一处表述更正：自定义供应商下「自动获取」链接**不是禁用**——可点开，弹窗内如实说明能力缺失，「添加」按钮禁用。
 
 **工单 53 的不变量**：服务端契约零改动（变更面：`panels.tsx` / `usage-models-cards.tsx` / `icons.tsx` / `i18n.ts` + 两个测试文件）；h2 页头、切页动画与页宽 760 不变；`SETTINGS_NAV`、`SettingsSection` 联合类型、深度链接入口（`initialSection`、`autoAddProvider`）不变；8 项「暂不支持」占位全部保留。删除了失去消费者的 `usage.used` / `usage.reset` 文案键（旧标签式「已用 X%」「重置时间」被桌面格式取代）。
 

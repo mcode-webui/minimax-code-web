@@ -334,7 +334,7 @@ below cites the component file and one `data-testid` per surface.
 | Browser panel (slice 04, sandboxed iframe over `/api/fs/raw`) | `components/browser-panel.tsx` | `browser-panel` |
 | Workspace picker (modal) | `components/workspace-picker.tsx` | `workspace-picker` |
 | Provider management | `components/provider-management.tsx` | `providers-panel` |
-| Add-model dialog + fetched-models dialog (ticket 54) | `components/provider-management.tsx#AddModelDialog` / `#FetchedModelsDialog` | `provider-dialog` (fields `provider-dialog-provider-select` / `-api-key` / `-model-add` / `-autofetch` / `-cancel` / `-save`; per-entry `provider-dialog-entry-{n}` with `-name` / `-context` / `-max-output` / `-thinking` / `-attachment-{mod}` / `-reset` / `-remove`) / `fetched-models-dialog` (`-select-all` / `-cancel` / `-add`) |
+| Add-model dialog + fetched-models dialog (ticket 54; lifted to its own file in acceptance round 2 so the suite can render-test it) | `components/add-model-dialog.tsx#AddModelDialog` / `#FetchedModelsDialog` (controlled surfaces `#AddModelDialogForm` / `#FetchedModelsDialogBody`, pure helpers `#collectDialogErrors` / `#defaultChecked`) | `provider-dialog` (fields `provider-dialog-provider-select` / `-api-key` / `-api-key-reveal` / `-model-add` / `-autofetch` / `-cancel` / `-save` / `-errors`; per-entry `provider-dialog-entry-{n}` with `-name` / `-context` / `-max-output` / `-thinking` / `-attachment-{mod}` / `-reset` / `-remove`) / `fetched-models-dialog` (`fetched-models-title` / `-item-{id}` / `-select-all` / `-cancel` / `-add`) |
 | Context meter / panel | `components/context-meter.tsx` | `context-meter` |
 | Settings modal | `components/panels.tsx#SettingsModal` | `settings-modal` |
 | Segmented tabs of the Usage & models section (ticket 53) | `components/panels.tsx#UsageModelsSection` | `usage-models-segment` (tabs `usage-models-tab-token-plan` / `usage-models-tab-custom-models`) |
@@ -652,12 +652,28 @@ deep-link — opens the desktop's modal instead of appending a rail draft:
 Ticket 54 invariants — no server-contract change (the `/api/providers` PUT
 body, `/api/set-model`, and every endpoint are untouched; the whole delta is
 client-side plus tests and docs); every pre-existing `data-testid` on the
-panel/editor surfaces survives verbatim (`webapp/test/add-model-dialog.test.ts`
+panel/editor surfaces survives in source (`webapp/test/add-model-dialog.test.ts`
 pins the list); the preset catalogue, thinkingLevels editing semantics,
 provider grouping and the thinking-display exceptions are unchanged; the
 auto-add deep-link still lands on the custom-models view, now opening the
 dialog. The legacy rail-draft `addProvider` path and the editor's dead
 auto-focus prop were deleted with their behaviour subsumed by the dialog.
+
+**Acceptance round 2 (same ticket).** The dialog components moved to
+`components/add-model-dialog.tsx` and export their controlled surfaces,
+which unlocked behaviour-level tests (`renderToStaticMarkup`, the 53a
+F-7 harness): the eye round-trip, the validation error block, the
+cancel-reset landing state, the check-all semantics with its n/N
+counter, and the zero-selection / custom-provider disabled states are
+now pinned on rendered markup plus the pure helpers — an 11-mutation
+spot-check that reverted dialog behaviour all fails red. The PUT-body
+red line moved from a call-site literal to a closed key-set assertion
+on `draftToWire` itself (`provider-management.test.ts`). One wording
+correction from the first round: with a custom provider the 自动获取
+link is NOT disabled — it opens the dialog, which states the missing
+capability honestly and disables 添加. The count correction: 36
+preserved testid literals in the panel-source pin plus the 2
+empty-state affordances = 38, matching the base tree.
 
 **Ticket 53 invariants** — no server-contract change (the delta:
 `panels.tsx` / `usage-models-cards.tsx` / `icons.tsx` / `i18n.ts` plus two
