@@ -165,12 +165,16 @@ describe("settings tab registry parity (webui-parity 58 line A)", () => {
       );
     }
     assert.ok(
-      portSource.includes('active === "worktree" ? <div className="webui-settings-empty-panel"'),
-      "worktree has no local content yet and must stay a placeholder",
+      portSource.includes('{active === "worktree" ? ('),
+      "worktree renders a real panel (59 B2: the blank div is gone)",
     );
     assert.ok(
-      portSource.includes('aria-label="空设置面板"'),
-      "the reference's empty-panel affordance must stay",
+      portSource.includes('title={t("settings.tab.worktree")}'),
+      "the worktree panel carries the nav tab's own title",
+    );
+    assert.ok(
+      portSource.includes('{t("settings.worktree.empty")}'),
+      "worktree states honestly that it is not available locally yet — no blank panel",
     );
   });
 

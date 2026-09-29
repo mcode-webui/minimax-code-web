@@ -25,8 +25,8 @@
  *    合并后在对应分支接线。
  *  - 图标：参照 `SettingsModal.tsx` 的内联 svg path 表整体搬入
  *    （SETTINGS_ICON_PATHS），不经由本仓 icons.tsx。
- *  - 文案：已有 MessageKey 的走 `t()`；参照独有且本仓无 key 的文案按
- *    参照中文原文硬编码（参照本身即硬编码中文）。
+ *  - 文案：全部用户可见文案走 `t()`（工单 59 D3-4 把参照遗留的硬编码
+ *    中文收进 i18n 字典，en 侧为地道英文；语言自称「中文/English」除外）。
  *  - 外观三选：参照用 /assets/img/*.svg 预览图，本仓无该资产，预览槽
  *    以纯 CSS 色块呈现（light 白 / dark 黑 / system 对半分），按钮语义
  *    与选中态样式不变，主题写入走 `lib/theme.ts#applyAppearance`。
@@ -428,7 +428,7 @@ export function SettingsModalPort({
               </button>
             ) : null}
           </div>
-          <nav aria-label="设置分类" className="webui-settings-nav">
+          <nav aria-label={t("settings.nav.aria")} className="webui-settings-nav">
             {groups.length ? (
               groups.map((group) => (
                 <div key={group.key} className="webui-settings-group">
@@ -482,12 +482,12 @@ export function SettingsModalPort({
                  * 退出登录（无 capability，禁用）。 */}
                 <div className="webui-settings-row">
                   <div>
-                    <strong>账户信息</strong>
-                    <span>本地模式，未登录</span>
+                    <strong>{t("settings.account.info")}</strong>
+                    <span>{t("settings.account.localLoggedOut")}</span>
                   </div>
                 </div>
-                <SettingsButton disabled title="本地版未接入账户服务">
-                  退出登录
+                <SettingsButton disabled title={t("settings.account.signOutUnavailable")}>
+                  {t("settings.account.signOut")}
                 </SettingsButton>
               </SettingPanel>
             </div>
@@ -495,7 +495,7 @@ export function SettingsModalPort({
           {active === "archived" ? (
             <div className="webui-settings-panels">
               <SettingPanel title={t("settings.tab.archived")}>
-                <p className="webui-settings-empty-panel">暂无已归档任务</p>
+                <p className="webui-settings-empty-panel">{t("settings.archived.empty")}</p>
               </SettingPanel>
             </div>
           ) : null}
@@ -506,7 +506,13 @@ export function SettingsModalPort({
           {active === "shortcuts" ? <ShortcutsSection t={t} /> : null}
           {active === "custom-instructions" ? <PersonalizationSection t={t} /> : null}
           {active === "coding" ? <CodeReviewSection t={t} /> : null}
-          {active === "worktree" ? <div className="webui-settings-empty-panel" aria-label="空设置面板" /> : null}
+          {active === "worktree" ? (
+            <div className="webui-settings-panels">
+              <SettingPanel title={t("settings.tab.worktree")}>
+                <p className="webui-settings-empty-panel">{t("settings.worktree.empty")}</p>
+              </SettingPanel>
+            </div>
+          ) : null}
         </main>
       </section>
     </div>
@@ -547,36 +553,36 @@ function GenericPage({
 
   return (
     <div data-testid="content-body" className="webui-generic-page">
-      <GenericSection title="模式" testId="app-mode-section">
+      <GenericSection title={t("settings.mode.section")} testId="app-mode-section">
         <div data-testid="app-mode-options" className="webui-mode-options">
           <ModeCard
             testId="app-mode-option-coding"
-            title="适用于编程开发"
-            description="保留技术细节与开发工具"
+            title={t("settings.mode.coding")}
+            description={t("settings.mode.codingHint")}
             icon="coding"
             selected
           />
           <ModeCard
             testId="app-mode-option-work"
-            title="适用于日常工作"
-            description="同样强大，减少技术细节干扰"
+            title={t("settings.mode.work")}
+            description={t("settings.mode.workHint")}
             icon="work"
           />
         </div>
       </GenericSection>
 
       <GenericSection title={t("settings.section.application")} testId="application-section">
-        <Appearance value={appearance} onChange={setAppearance} />
+        <Appearance t={t} value={appearance} onChange={setAppearance} />
         <RowDivider />
-        {off("显示在菜单栏", "在菜单栏/系统托盘显示应用图标")}
+        {off(t("settings.app.menuBar"), t("settings.app.menuBarHint"))}
         <RowDivider />
-        {off("开机自启动", "登录时自动启动应用")}
+        {off(t("settings.app.autoStart"), t("settings.app.autoStartHint"))}
         <RowDivider />
-        {off("桌面通知", "任务完成、出错、需要权限审批等阻塞状态时，发送系统通知提醒")}
+        {off(t("settings.app.notifications"), t("settings.app.notificationsHint"))}
         <RowDivider />
-        {off("加入提前灰度", "优先体验最新版本功能", "early-access-update-switch")}
+        {off(t("settings.app.earlyAccess"), t("settings.app.earlyAccessHint"), "early-access-update-switch")}
         <RowDivider />
-        {off("加速索引", "开启后，MiniMax Code 会基于工作区生成语义索引，加快代码搜索的速度", "workspace-indexing-switch")}
+        {off(t("settings.app.indexing"), t("settings.app.indexingHint"), "workspace-indexing-switch")}
         <RowDivider />
         <SettingRow title={t("settings.language")} description={t("settings.languageHint")}>
           <SettingsSelect
@@ -588,21 +594,21 @@ function GenericPage({
         </SettingRow>
       </GenericSection>
 
-      <GenericSection title="链接" testId="link-open-destination-section">
+      <GenericSection title={t("settings.links.section")} testId="link-open-destination-section">
         <SettingRow
-          title="网页链接打开位置"
-          description="公开网页链接默认打开位置"
+          title={t("settings.links.web")}
+          description={t("settings.links.webHint")}
           testId="web-link-open-destination-row"
         >
-          <SettingsSelect value="内置浏览器" options={["内置浏览器"]} wide disabled testId="web-link-open-destination-row-select" />
+          <SettingsSelect value={t("settings.links.builtinBrowser")} options={[t("settings.links.builtinBrowser")]} wide disabled testId="web-link-open-destination-row-select" />
         </SettingRow>
         <RowDivider />
         <SettingRow
-          title="本地链接打开位置"
-          description="本地开发页面默认打开位置"
+          title={t("settings.links.local")}
+          description={t("settings.links.localHint")}
           testId="local-link-open-destination-row"
         >
-          <SettingsSelect value="内置浏览器" options={["内置浏览器"]} wide disabled testId="local-link-open-destination-row-select" />
+          <SettingsSelect value={t("settings.links.builtinBrowser")} options={[t("settings.links.builtinBrowser")]} wide disabled testId="local-link-open-destination-row-select" />
         </SettingRow>
       </GenericSection>
 
@@ -648,13 +654,13 @@ function GenericPage({
         </SettingRow>
       </GenericSection>
 
-      <GenericSection title="Agent 控制权限" testId="agent-control-permission-section">
+      <GenericSection title={t("settings.agentControl.section")} testId="agent-control-permission-section">
         <SettingRow
-          title="自动打开浏览器面板"
-          description="Agent 操作网页时，自动打开右侧浏览器面板"
+          title={t("settings.agentControl.browserPanel")}
+          description={t("settings.agentControl.browserPanelHint")}
           testId="browser-use-auto-open-row"
         >
-          <ToggleSwitch checked={false} label="自动打开浏览器面板" disabled testId="browser-use-auto-open-switch" />
+          <ToggleSwitch checked={false} label={t("settings.agentControl.browserPanel")} disabled testId="browser-use-auto-open-switch" />
         </SettingRow>
       </GenericSection>
 
@@ -679,31 +685,31 @@ function GenericPage({
         </SettingRow>
         <RowDivider />
         {off(
-          "去除 AI 生成水印",
-          "关闭时，下载内容将包含显式 AI 生成水印；开启去除水印即代表你已阅读并同意《去水印规则》",
+          t("settings.preference.watermark"),
+          t("settings.preference.watermarkHint"),
         )}
         <RowDivider />
-        {off("数据用于优化体验", "允许我们将你的对话内容用于优化 MiniMax Code 的使用体验。我们保障你的数据隐私安全。")}
+        {off(t("settings.preference.dataOptIn"), t("settings.preference.dataOptInHint"))}
       </GenericSection>
 
-      <GenericSection title="关于" testId="about-section">
-        <SettingRow title="上传日志" description="上传应用日志以协助排查问题">
-          <SettingsButton disabled title="本地版未接入日志上传">
-            上传
+      <GenericSection title={t("settings.about.section")} testId="about-section">
+        <SettingRow title={t("settings.about.uploadLogs")} description={t("settings.about.uploadLogsHint")}>
+          <SettingsButton disabled title={t("settings.about.uploadUnavailable")}>
+            {t("settings.about.uploadAction")}
           </SettingsButton>
         </SettingRow>
         <RowDivider />
-        <SettingRow title="应用版本" description={engine?.mcodeVersion ?? "—"}>
-          <SettingsButton variant="black" disabled title="本地版未接入更新检查">
-            检查更新
+        <SettingRow title={t("settings.about.version")} description={engine?.mcodeVersion ?? "—"}>
+          <SettingsButton variant="black" disabled title={t("settings.about.updateUnavailable")}>
+            {t("settings.about.checkUpdate")}
           </SettingsButton>
         </SettingRow>
         <RowDivider />
         {/* engine facts（本地/局域网服务地址）自旧通用页并入关于区：
          * 参照关于区无此二行，保留是为不丢失既有可见信息。 */}
-        <SettingRow title="本地服务地址" description={engine?.localUrl ?? "—"} />
+        <SettingRow title={t("settings.about.localUrl")} description={engine?.localUrl ?? "—"} />
         <RowDivider />
-        <SettingRow title="局域网服务地址" description={engine?.lanUrl ?? "—"} />
+        <SettingRow title={t("settings.about.lanUrl")} description={engine?.lanUrl ?? "—"} />
       </GenericSection>
     </div>
   );
@@ -712,19 +718,21 @@ function GenericPage({
 /** 外观三选：参照 `Appearance`。预览槽无 svg 资产，用 CSS 色块（见文件头
  * 适配点）；选择走 `applyAppearance`，与 AppearanceSync 同一通道。 */
 function Appearance({
+  t,
   value,
   onChange,
 }: {
+  readonly t: (key: MessageKey) => string;
   readonly value: "light" | "dark" | "system";
   readonly onChange: (value: "light" | "dark" | "system") => void;
 }): ReactElement {
   const options = [
-    { key: "light", label: "浅色模式", swatch: "webui-theme-swatch-light" },
-    { key: "dark", label: "深色模式", swatch: "webui-theme-swatch-dark" },
-    { key: "system", label: "跟随系统", swatch: "webui-theme-swatch-system" },
+    { key: "light", label: t("appearance.choice.light"), swatch: "webui-theme-swatch-light" },
+    { key: "dark", label: t("appearance.choice.dark"), swatch: "webui-theme-swatch-dark" },
+    { key: "system", label: t("appearance.choice.system"), swatch: "webui-theme-swatch-system" },
   ] as const;
   return (
-    <SettingRow title="外观" description="选择应用的显示主题" testId="mavis-settings-appearance-row">
+    <SettingRow title={t("settings.appearance")} description={t("settings.appearanceHint")} testId="mavis-settings-appearance-row">
       <div className="mavis-settings-theme-selector">
         {options.map((option) => (
           <button
@@ -833,7 +841,7 @@ function UsageModelSettingsPort({
             </button>
             <button
               type="button"
-              aria-label="选择模型来源"
+              aria-label={t("usageModels.source.aria")}
               className="flex h-full w-7 items-center justify-center hover:bg-bg_interaction_tertiary_hover"
               onClick={() => setSourceMenuOpen((open) => !open)}
             >
@@ -891,8 +899,8 @@ function UsageModelSettingsPort({
           <div className="flex items-center gap-2">
             <label className="text-[14px] font-medium leading-5 text-text_default_primary">API Key</label>
             {/* 无后端 capability：恒“未启用”，参照的 valid 徽标分支不触发。 */}
-            <span className="rounded-[6px] bg-[rgba(10,10,10,0.04)] px-1 py-0.5 text-[12px] leading-4 text-[#666]">
-              未启用
+            <span className="rounded-[6px] bg-bg_interaction_tertiary_selected px-1 py-0.5 text-[12px] leading-4 text-text_default_secondary">
+              {t("usageModels.minimax.notEnabled")}
             </span>
           </div>
           <div className="flex items-center gap-3">
@@ -901,14 +909,14 @@ function UsageModelSettingsPort({
               type="password"
               value={apiKey}
               onChange={(event) => setApiKey(event.target.value)}
-              placeholder="请输入API Key"
+              placeholder={t("usageModels.minimax.apiKeyPlaceholder")}
               className="min-w-0 flex-[1_0_0] rounded-[8px] border border-border_default bg-bg_default_primary px-3 py-2 text-[14px]"
             />
             <button
               type="button"
-              aria-label="测试连通性"
+              aria-label={t("usageModels.minimax.testAria")}
               disabled
-              title="本地版未接入 MiniMax API Key 服务"
+              title={t("usageModels.minimax.unavailable")}
               className="flex size-7 items-center justify-center text-icon_default_tertiary disabled:cursor-default disabled:opacity-60"
             >
               <RefreshIcon />
@@ -917,10 +925,10 @@ function UsageModelSettingsPort({
           <button
             type="button"
             disabled
-            title="本地版未接入 MiniMax API Key 服务"
+            title={t("usageModels.minimax.unavailable")}
             className="mt-1 h-9 w-[116px] rounded-[8px] bg-bg_interaction_tertiary_hover px-3 text-[14px] disabled:opacity-60"
           >
-            保存并使用
+            {t("usageModels.minimax.saveAndUse")}
           </button>
         </section>
       ) : null}
