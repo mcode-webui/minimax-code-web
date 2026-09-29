@@ -64,12 +64,128 @@ if (markerHits.length === 0)
 // like `import { Router as IttyRouter } from 'itty-router'`. The regexes below
 // avoid matching those by anchoring to actual statements.
 //
-// - Static import/export-from: anchored to start-of-line so `* import ... from`
-//   inside a JSDoc block (indented with `*`) cannot match.
-// - Dynamic `import("...")` expression: not line-anchored because it is a real
-//   runtime expression; instead, skip matches whose line begins with `//`, `/*`,
-//   or `*` (JSDoc continuation).
+// Three shapes are scanned; each lives in a real bundle:
+//
+//   1. Static import with `from`: `import x from "y"`, `import { a } from "y"`,
+//      `export { a } from "y"`. Anchored to start-of-line so a `* import ... from`
+//      inside a JSDoc block (indented with `*`) cannot match.
+//   2. Side-effect import: `import "y";` (no `from`, no destructuring). Also
+//      anchored to start-of-line so it cannot collide with the static-from
+//      pattern above. esbuild preserves this form for transitive inlines of
+//      vendor source that does `import "side-effect-only-pkg"`, and the gate
+//      MUST catch those — otherwise an undeclared npm dep can ship silently.
+//   3. Dynamic `import("...")` expression: not line-anchored (real runtime
+//      expression). Lines beginning with `//`, `/*`, or `*` are skipped so
+//      inlined comments can't false-positive. Every syntactic form is
+//      scanned — `await import("...")`, `await (import("..."))`, and the
+//      non-await forms (`const p = import("...")`, `return import("...")`,
+//      `.then(() => import("..."))`) all load the module at runtime and all
+//      must be caught. Lines whose captured specifier is a template-literal
+//      expression (`` await import(`${x}`) ``) are skipped because the regex
+//      captures the bare `${x}` substring — that string is not an ESM
+//      specifier. Verified against the real 29 MB bundle: dropping the old
+//      `await` anchor produces zero false positives on the real artifact
+//      while the non-await shapes become catchable.
+//
+// Node builtins are excluded from the offender set: they do not need to ship
+// with the published archive because Node provides them at runtime. The bare
+// form (`"fs"`, `"path"`, ...) is ESM-valid even though the `node:` prefix is
+// preferred; the list below mirrors the full set returned by
+// `require('node:module').builtinModules` in Node 22+ (verified at write
+// time on Node 24.19). Including this list here is what unblocks S3 — the
+// runtime-first migration wires `runtime-host.js` into `acp-client.js`, which
+// transitively inlines many third-party modules that import bare builtins;
+// failing the gate on those would block the migration without any correctness
+// gain.
+const NODE_BUILTINS = new Set([
+  // Legacy underscore-prefixed internal modules (still bare-loadable
+  // for backward compat; named explicitly so the set covers every entry
+  // Node 22+ lists in `node:module.builtinModules`).
+  "_http_agent",
+  "_http_client",
+  "_http_common",
+  "_http_incoming",
+  "_http_outgoing",
+  "_http_server",
+  "_stream_duplex",
+  "_stream_passthrough",
+  "_stream_readable",
+  "_stream_transform",
+  "_stream_wrap",
+  "_stream_writable",
+  "_tls_common",
+  "_tls_wrap",
+  // Standard core modules.
+  "assert",
+  "assert/strict",
+  "async_hooks",
+  "buffer",
+  "child_process",
+  "cluster",
+  "console",
+  "constants",
+  "crypto",
+  "dgram",
+  "diagnostics_channel",
+  "dns",
+  "dns/promises",
+  "domain",
+  "events",
+  "fs",
+  "fs/promises",
+  "http",
+  "http2",
+  "https",
+  "inspector",
+  "inspector/promises",
+  "module",
+  "net",
+  "os",
+  "path",
+  "path/posix",
+  "path/win32",
+  "perf_hooks",
+  "process",
+  "punycode",
+  "querystring",
+  "readline",
+  "readline/promises",
+  "repl",
+  "stream",
+  "stream/consumers",
+  "stream/promises",
+  "stream/web",
+  "string_decoder",
+  "sys",
+  "timers",
+  "timers/promises",
+  "tls",
+  "trace_events",
+  "tty",
+  "url",
+  "util",
+  "util/types",
+  "v8",
+  "vm",
+  "wasi",
+  "worker_threads",
+  "zlib",
+  "test/reporters",
+]);
+function isNodeBuiltin(specifier) {
+  if (!specifier) return false;
+  if (specifier.startsWith("node:")) return true;
+  return NODE_BUILTINS.has(specifier);
+}
+
+// Anchored to start-of-line so a `* import ... from` inside a JSDoc block
+// cannot match. The trailing `from` is mandatory for this shape; the
+// side-effect pattern below handles the `import "x"` form.
 const staticImportPattern = /^[ \t]*(?:import|export)\b[^;"'\n]*?from\s*(["'])([^"']+)\1/gm;
+// Same anchoring; matches `import "x";` / `import 'x';` only.
+const sideEffectImportPattern = /^[ \t]*import\s+(["'])([^"']+)\1\s*;?$/gm;
+// Bare `import("...")` expression. Anchor to line + skip comment lines
+// (real expressions appear mid-line; inlined comments are noise).
 const dynamicImportPattern = /import\(\s*(["'])([^"']+)\1\s*\)/g;
 const externals = new Set(cliExternalModules);
 const offenders = new Set();
@@ -77,7 +193,14 @@ for (const match of artifact.matchAll(staticImportPattern)) {
   const specifier = match[2];
   if (!specifier) continue;
   if (specifier.startsWith(".") || specifier.startsWith("/")) continue;
-  if (specifier.startsWith("node:")) continue;
+  if (isNodeBuiltin(specifier)) continue;
+  if (!externals.has(specifier)) offenders.add(specifier);
+}
+for (const match of artifact.matchAll(sideEffectImportPattern)) {
+  const specifier = match[2];
+  if (!specifier) continue;
+  if (specifier.startsWith(".") || specifier.startsWith("/")) continue;
+  if (isNodeBuiltin(specifier)) continue;
   if (!externals.has(specifier)) offenders.add(specifier);
 }
 for (const match of artifact.matchAll(dynamicImportPattern)) {
@@ -90,17 +213,30 @@ for (const match of artifact.matchAll(dynamicImportPattern)) {
   const trimmed = line.replace(/^[ \t]+/u, "");
   if (trimmed.startsWith("//") || trimmed.startsWith("/*") || trimmed.startsWith("*"))
     continue;
+  // Skip lines whose captured specifier is a template-literal
+  // expression (`` await import("${x}") ``, `` let x = import(`p/${id}`) ``):
+  // the captured specifier must not look like a template expression
+  // (no leading `$`, no `${`, no backticks). There is deliberately NO
+  // `await` anchor here — see the shape-3 note above.
+  if (
+    specifier.startsWith("$") ||
+    specifier.includes("${") ||
+    specifier.includes("`")
+  ) continue;
   if (specifier.startsWith(".") || specifier.startsWith("/")) continue;
-  if (specifier.startsWith("node:")) continue;
+  if (isNodeBuiltin(specifier)) continue;
   if (!externals.has(specifier)) offenders.add(specifier);
 }
-if (offenders.size)
+if (offenders.size) {
+  const offenderList = [...offenders].sort().join("\n");
   throw new Error(
-    `Web UI server bundle imports bare external modules that are not declared in cliExternalModules:\n` +
-      `${[...offenders].sort().join("\n")}\n` +
-      `Add the missing modules to scripts/lib/cli-release.mjs so the published archive actually ships them, ` +
-      `or remove the import from the server source.`,
+    "Web UI server bundle imports bare external modules that are not declared in cliExternalModules:\n" +
+      offenderList +
+      "\n" +
+      "Add the missing modules to scripts/lib/cli-release.mjs so the published archive actually ships them, " +
+      "or remove the import from the server source.",
   );
+}
 
 console.log(
   `Web UI server bundle ok: ${path.relative(root, artifactPath)} (${artifactBytes}B, ${ratio.toFixed(1)}x source). ` +

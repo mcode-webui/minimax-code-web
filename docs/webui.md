@@ -134,28 +134,29 @@ S2 (slice 2 of the runtime-first migration) introduces a new switch alongside `M
 | Env var | Default | Accepted values | What it does |
 | --- | --- | --- | --- |
 | `MCODE_USE_ACP` | unset | `0` → exec escape hatch (overrides everything); `1` → no effect; unset → no effect | Today-only escape hatch; see rows below. |
-| `MCODE_WEBUI_TRANSPORT` | `acp` | `acp` (today's behaviour), `exec` (no-op in S2 — no route reads this value; `exec` today is reachable only via `MCODE_USE_ACP=0`), `runtime` (opt-in to the S2 in-process host) | Selects the engine transport. Default keeps every response field-identical to today's `main`; opt-in paths route through the runtime host once S3+ lands. |
+| `MCODE_WEBUI_TRANSPORT` | `acp` | `acp` (today's behaviour), `exec` (no-op — no production route consumes this value; `exec` transport today is reachable only via `MCODE_USE_ACP=0`), `runtime` (opt-in to the S2 in-process host; S3+ lights catalogue traffic) | Selects the engine transport. Default keeps every response field-identical to today's `main`; `runtime` opts catalogue traffic (list/title) into the in-process host once S3 lands. |
 
 Resolution rule, in priority order:
 
 1. `MCODE_USE_ACP=0` ⇒ `exec`, regardless of `MCODE_WEBUI_TRANSPORT`. The legacy escape hatch wins.
-2. `MCODE_WEBUI_TRANSPORT=exec` ⇒ no-op in S2. No production route consumes this value yet; the `exec` transport today is reachable only via `MCODE_USE_ACP=0`. Documented so the contract does not drift when a future slice wires the value.
-3. `MCODE_WEBUI_TRANSPORT=runtime` ⇒ `runtime`. S2 lands the host infrastructure but no route reads the switch yet; the value is plumbed for S3+. Setting this to `runtime` today is a no-op until S3 lands.
+2. `MCODE_WEBUI_TRANSPORT=exec` ⇒ no-op. No production route consumes this value; the `exec` transport today is reachable only via `MCODE_USE_ACP=0`. Documented so the contract does not drift when a future slice wires the value.
+3. `MCODE_WEBUI_TRANSPORT=runtime` ⇒ `runtime` for **catalogue traffic** (S3+); active turns still go through ACP today (S4 wires them). Per-call fallback to ACP on any runtime-host failure so a runtime regression never breaks the sidebar.
 4. `MCODE_WEBUI_TRANSPORT=acp` (default) ⇒ today's ACP path. Permission-mode re-route still applies.
 5. Unknown value (e.g. typo) ⇒ falls back to `acp` with a one-line warning to stderr. The server never refuses to boot because of an unknown transport.
 
 | Turn condition | Transport | Decided at |
 | --- | --- | --- |
 | `MCODE_USE_ACP=0` in the server environment | exec | `routes/chat.js#handleSend` |
-| `MCODE_WEBUI_TRANSPORT=exec` | (no-op in S2 — same as default `acp`; `exec` transport today is reachable only via `MCODE_USE_ACP=0`) | `server/lib/config.js#MCODE_WEBUI_TRANSPORT` (no route reads this value yet) |
+| `MCODE_WEBUI_TRANSPORT=exec` | (no-op — same as default `acp`; `exec` transport today is reachable only via `MCODE_USE_ACP=0`) | `server/lib/config.js#MCODE_WEBUI_TRANSPORT` (no route reads this value) |
 | `cs.permissions` is `Ask`, `Auto`, or `Read` (not `Full access`) | exec (silent re-route inside ACP entry) | `mcode-acp.js#runMcodeAcp` |
-| `MCODE_WEBUI_TRANSPORT=runtime` | runtime (S2 lands the host; S3+ lights the route) | `server/lib/config.js#MCODE_WEBUI_TRANSPORT` (no route reads it yet) |
+| `MCODE_WEBUI_TRANSPORT=runtime` (S3+) | runtime for catalogue traffic (sessions list/title); active turns remain on ACP until S4 | `server/lib/acp-client.js#listAllMcodeSessions` / `#getMcodeSessionTitle` (ACP fallback on any runtime-host failure) |
 | otherwise — factory default is `permissions: "Full access"` (`server/lib/state-bus.js` initial state) | ACP | `mcode-acp.js#runMcodeAcp` |
 
 S2 invariants (must remain true on every later slice):
 
 - **Default `MCODE_WEBUI_TRANSPORT=acp` is field-identical to `main`.** No existing endpoint response may shift; no child process count may grow. The verification suite proves this on every commit by running the full webui node:test suite with no env override.
-- **S2 ships the host but does not wire it.** `createCatalogueHost` and `createTurnHost` are exported from `server/lib/runtime-host.js`; no production route imports them. Wiring happens in S3 (catalogue traffic — list/title), S4 (active turns — `runMcodeRuntime`), S5 (models), S6 (interactions, accounts). S7 flips the default to `runtime`.
+- **S2 ships the host skeleton.** `createCatalogueHost` and `createTurnHost` are exported from `server/lib/runtime-host.js`. **S3 wires the catalogue path** (list/title) into `acp-client.js`; S4 wires active turns; S5 wires models; S6 wires interactions/accounts. S7 flips the default to `runtime`.
+- **The catalogue path is opt-in via `MCODE_WEBUI_TRANSPORT=runtime`.** Setting it lights the catalogue host for list/title; an in-flight failure falls back to ACP for that one call so a runtime regression never breaks the sidebar. The cache (`mcodeSessionsCache`) is shared between paths, so a sidebar fetch served by either path serves the next read equivalently.
 - **R1 mitigation (process-isolation loss) lives in the turn host.** Every call into `adapter.sendMessage` is wrapped so a runtime-side throw becomes a stream-shaped error frame and never escapes the turn. Tests in `packages/webui/test/server/runtime-host.test.js` pin this with a mutation that drops the inner catch — the test goes red if the boundary is removed.
 - **R2 mitigation (abort semantics) lives in `createTurnHost#abortSession`.** It returns `{success:true, elapsedMs}` after at most a 5 s wait for the stream to settle; it does NOT rely on subprocess kill, because there is no subprocess. The bound keeps graceful shutdown responsive even on a wedged runtime.
 - **R8 mitigation (wedged host) lives in `createCatalogueHost#close`.** It races `apiHost.close()` against a 5 s timeout so a wedged dependency chain cannot wedge webui's graceful shutdown.

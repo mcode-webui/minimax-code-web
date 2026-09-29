@@ -96,3 +96,24 @@ paths = ['''(^|/)packages/webui/test/lib-ws-server\.test\.js$''']
 regexTarget = "match"
 regexes = ['''CLIENT_KEY = "dGhlIHNhbXBsZSBub25jZQ=="''']
 
+[[rules.allowlists]]
+description = "Bundled permission translation key and model-limit constant names in the webui server bundle, no credential values"
+condition = "AND"
+paths = ['''(^|/)dist/webui/server\.js$''']
+regexTarget = "match"
+regexes = ['''^labelKey: "permission\.scope\.byArgvPrefix2"$''', '''^EMERGENCY_OUTPUT_TOKENS[0-9]*, PI_DEFAULT_THINKING_BUDGETS[0-9]*;$''']
+
+[[rules.allowlists]]
+description = "Bundled jszip standard base64 alphabet constant, not a key"
+condition = "AND"
+paths = ['''(^|/)dist/webui/server\.js$''']
+regexTarget = "match"
+regexes = ['''^_keyStr = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789\+/="$''']
+
+[[rules.allowlists]]
+description = "Bundled node-forge PKI function aliases, no key material"
+condition = "AND"
+paths = ['''(^|/)dist/webui/server\.js$''']
+regexTarget = "match"
+regexes = ['''^[A-Za-z_$][A-Za-z0-9_$]*\.setRsaPrivateKey = [A-Za-z_$][A-Za-z0-9_$]*\.rsa\.setPrivateKey ?$''', '''^[A-Za-z_$][A-Za-z0-9_$]*\.privateKeyToAsn1 = [A-Za-z_$][A-Za-z0-9_$]*\.privateKeyToRSAPrivateKey ?$''', '''^[A-Za-z_$][A-Za-z0-9_$]*\.generateKey = [A-Za-z_$][A-Za-z0-9_$]*\.pbe\.generatePkcs12Key;?$''']
+

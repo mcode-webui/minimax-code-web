@@ -97,7 +97,7 @@ test("S2-RH-01: catalogue host boot → createSession → listSessions → close
   // Record child processes visible to this process BEFORE we boot the
   // host. The runtime is supposed to be in-process — there must be
   // zero `mcode` children spawned at any point.
-  const beforePids = listMcodeChildPids();
+  const beforePids = listDescendantPids();
   const host = await createCatalogueHost({ dataDir: dir });
   assert.ok(host, "catalogue host must be constructed");
   assert.equal(
@@ -128,7 +128,7 @@ test("S2-RH-01: catalogue host boot → createSession → listSessions → close
     "listSessions must include the freshly-created session",
   );
 
-  const afterCreatePids = listMcodeChildPids();
+  const afterCreatePids = listDescendantPids();
   assert.deepEqual(
     afterCreatePids,
     beforePids,
@@ -145,7 +145,7 @@ test("S2-RH-01: catalogue host boot → createSession → listSessions → close
     `close() must be bounded — elapsed=${elapsed}ms`,
   );
 
-  const afterClosePids = listMcodeChildPids();
+  const afterClosePids = listDescendantPids();
   assert.deepEqual(
     afterClosePids,
     beforePids,
@@ -240,6 +240,69 @@ test("S2-RH-03: turn host sendMessage failure does not crash the process; other 
   assert.ok(Array.isArray(listed), "process survived — listSessions works");
   // catalogue close still functions.
   await host.close();
+});
+
+// ============================================================
+// 3b. Outer-boundary regression pin for R1 — synchronous throw on entry.
+// S2-RH-03 covers mid-stream iterator throws; this test pins the
+// outer-boundary case where `adapter.sendMessage(req, signal)` throws
+// synchronously before returning the iterator. The same error-frame
+// contract applies: the for-await must NOT propagate the throw, the
+// stream must yield exactly one `{type:'error'}` frame, and the
+// surrounding process must keep working.
+// ============================================================
+
+test("S2-RH-03b: turn host sendMessage synchronous entry throw is contained at the outer boundary", async () => {
+  const dir = setupIsolatedDir("rh03b");
+  const { createCatalogueHost, createTurnHost } = await import(
+    "../../server/lib/runtime-host.js"
+  );
+  assert.equal(
+    typeof createTurnHost,
+    "function",
+    "runtime-host.js must export createTurnHost",
+  );
+
+  const host = await createCatalogueHost({ dataDir: dir });
+  // Replace sendMessage with a function that throws synchronously,
+  // before any iterator object is returned. The outer try/catch in
+  // safeSendMessage must convert this to a stream error frame.
+  const realSend = host.adapter.sendMessage.bind(host.adapter);
+  host.adapter.sendMessage = () => {
+    throw new Error("simulated runtime-side synchronous entry failure");
+  };
+  void realSend;
+
+  const turn = createTurnHost(host);
+  let caughtExternally = false;
+  let streamErrorSeen = false;
+  let frameCount = 0;
+  try {
+    for await (const ev of turn.sendMessage({ id: "boom-entry" })) {
+      frameCount++;
+      if (ev && ev.type === "error") streamErrorSeen = true;
+    }
+  } catch {
+    caughtExternally = true;
+  }
+  assert.equal(
+    frameCount,
+    1,
+    `entry throw must yield exactly one frame (got ${frameCount}); for-await must NOT loop`,
+  );
+  assert.ok(
+    streamErrorSeen && !caughtExternally,
+    `entry throw must surface as a stream error frame, never as a thrown exception — ` +
+      `streamErrorSeen=${streamErrorSeen} caughtExternally=${caughtExternally}`,
+  );
+
+  // Process still alive: restore sendMessage, follow-up read works.
+  host.adapter.sendMessage = realSend;
+  const listed = await host.adapter.listSessions();
+  assert.ok(Array.isArray(listed), "process survived — listSessions works");
+  await host.close();
+
+  rmSync(dir, { recursive: true, force: true });
 });
 
 // ============================================================
@@ -364,30 +427,58 @@ test("S2-RH-04: abortSession triggers bounded termination; no subprocess kill", 
 // ============================================================
 
 /**
- * Enumerate every `mcode` child process visible to /proc. Returns
- * an array of {pid, cmdline} so callers can assert that the runtime
- * internalization leaves the mcode-process landscape untouched.
+ * Enumerate every descendant of THIS test process by walking
+ * /proc/<pid>/stat parent links (the test process itself is not
+ * included). Returns a pid-sorted array of pid strings.
+ *
+ * Why descendants and not a name match: the earlier probe matched
+ * `comm === "mcode"`, but the real engine child's comm is
+ * `minimax-code` — the probe returned 0 even while a child was
+ * alive, making every "no mcode children" assertion vacuously true.
+ * A parent-PID walk is name-agnostic: any child this process spawns
+ * shows up, so the assertion can only pass when the host genuinely
+ * internalized the work.
  *
  * Linux-only (matches the production layout). On other platforms the
- * assertion is no-op'd so the suite still runs, but the central
- * invariant only fires on Linux. Better to fail loudly here than to
- * silently hide a regression.
+ * walk finds no /proc and returns [] — the suite still runs, but the
+ * internalization invariant only fires on Linux.
  */
-function listMcodeChildPids() {
-  const out = [];
+function listDescendantPids() {
+  const childrenOf = new Map();
   let pids;
   try {
     pids = readdirSync("/proc").filter((n) => /^\d+$/.test(n));
   } catch {
-    return out;
+    return [];
   }
   for (const pid of pids) {
     try {
-      const cmdline = readFileSync(`/proc/${pid}/comm`, "utf8").trim();
-      if (cmdline === "mcode" || cmdline.startsWith("mcode-")) {
-        out.push({ pid, cmdline });
-      }
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      // comm is parenthesised and may itself contain spaces or
+      // parens, so parse from the LAST closing paren; field 2 after
+      // it is ppid (field 1 after the paren is the process state).
+      const close = stat.lastIndexOf(")");
+      const fields = stat.slice(close + 2).split(" ");
+      const ppid = Number(fields[1]);
+      if (!Number.isInteger(ppid)) continue;
+      // Key by STRING pid: the walk below walks readdir's string pids,
+      // and a Map keyed by numbers never matches a string lookup.
+      const key = String(ppid);
+      if (!childrenOf.has(key)) childrenOf.set(key, []);
+      childrenOf.get(key).push(pid);
     } catch {}
   }
-  return out;
+  const out = [];
+  const stack = [String(process.pid)];
+  const seen = new Set(stack);
+  while (stack.length) {
+    const cur = stack.pop();
+    for (const child of childrenOf.get(cur) || []) {
+      if (seen.has(child)) continue;
+      seen.add(child);
+      out.push(child);
+      stack.push(child);
+    }
+  }
+  return out.sort((a, b) => Number(a) - Number(b));
 }
