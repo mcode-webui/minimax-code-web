@@ -10,15 +10,17 @@
 
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { mkTmpDir, rmTmpDir } from "../helpers/tmp.js";
 
 // IMPORTANT: set MCODE_WEBUI_TRANSPORT BEFORE the SUT modules load.
 // config.js evaluates the env at module-init time.
 process.env.MCODE_WEBUI_TRANSPORT = "runtime";
 
-const tmpBase = mkdtempSync(join(tmpdir(), "mcode-webui-s3-fallback-"));
+// Shared tmp helper (not bare `mkdtempSync`) so the dir is registered
+// for exit-hook sweep even when the test process dies mid-run — same
+// contract as runtime-host.test.js.
+const tmpBase = mkTmpDir("mcode-webui-s3-fallback-");
 
 let listCalls;
 const FAKE_SESSIONS = [
@@ -96,9 +98,7 @@ before(async (t) => {
 
 after(() => {
   delete process.env.MCODE_WEBUI_TRANSPORT;
-  try {
-    rmSync(tmpBase, { recursive: true, force: true });
-  } catch {}
+  rmTmpDir(tmpBase);
 });
 
 // ============================================================

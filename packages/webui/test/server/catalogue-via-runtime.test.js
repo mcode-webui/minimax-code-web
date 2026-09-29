@@ -31,14 +31,9 @@
 
 import { test, describe, after } from "node:test";
 import { strict as assert } from "node:assert";
-import {
-  mkdtempSync,
-  rmSync,
-  readdirSync,
-  readFileSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { mkTmpDir, rmTmpDir } from "../helpers/tmp.js";
 
 // runtime-host.js takes dataDir as an explicit option (not env).
 // This test does not spawn server.js — the test-isolation-lint does
@@ -51,12 +46,15 @@ import { join } from "node:path";
 // acp-client catalogue host boots against the isolated tmp base and
 // the transport switch resolves to `runtime`. node:test runs each
 // file in its own process, so this does not leak into other suites.
-const tmpBase = mkdtempSync(join(tmpdir(), "mcode-webui-s3-catalogue-"));
+// The shared tmp helper (not bare `mkdtempSync`) keeps the base and
+// every per-test child registered for exit-hook sweep — same contract
+// as runtime-host.test.js.
+const tmpBase = mkTmpDir("mcode-webui-s3-catalogue-");
 process.env.MCODE_WEBUI_TRANSPORT = "runtime";
 process.env.MINIMAX_DATA_DIR = tmpBase;
 
 function setupIsolatedDir(label) {
-  return mkdtempSync(join(tmpBase, `${label}-`));
+  return mkTmpDir(`${label}-`, { parent: tmpBase });
 }
 
 after(async () => {
@@ -72,9 +70,7 @@ after(async () => {
   } catch {}
   delete process.env.MCODE_WEBUI_TRANSPORT;
   delete process.env.MINIMAX_DATA_DIR;
-  try {
-    rmSync(tmpBase, { recursive: true, force: true });
-  } catch {}
+  rmTmpDir(tmpBase);
 });
 
 /**
@@ -238,7 +234,7 @@ describe("S3 — catalogue-via-runtime normalizers", () => {
     );
 
     await host.close();
-    rmSync(dir, { recursive: true, force: true });
+    rmTmpDir(dir);
   });
 
   test("S3-RH-02: catalogue list shape diff against a hand-built ACP page is zero", async () => {
@@ -277,7 +273,7 @@ describe("S3 — catalogue-via-runtime normalizers", () => {
       "catalogue list must be deep-equal to a hand-built ACP-shaped equivalent",
     );
     await host.close();
-    rmSync(dir, { recursive: true, force: true });
+    rmTmpDir(dir);
   });
 
   test("S3-RH-03: getMcodeSessionTitleViaRuntime mirrors the latest rename", async () => {
@@ -309,7 +305,7 @@ describe("S3 — catalogue-via-runtime normalizers", () => {
       "title helper must return null for a session created without a title",
     );
     await host.close();
-    rmSync(dir, { recursive: true, force: true });
+    rmTmpDir(dir);
   });
 
   test("S3-RH-04: zero child processes across N direct catalogue listings", async () => {
@@ -341,7 +337,7 @@ describe("S3 — catalogue-via-runtime normalizers", () => {
       [],
       "process internalization must hold across 10 catalogue listings (no spawn event at any point)",
     );
-    rmSync(dir, { recursive: true, force: true });
+    rmTmpDir(dir);
   });
 });
 

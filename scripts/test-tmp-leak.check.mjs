@@ -239,6 +239,8 @@ const KNOWN_PREFIXES = [
   "mcode-webui-mock-",
   "mcode-webui-port-fallback-",
   "mcode-webui-readonly-",
+  "mcode-webui-s3-catalogue-",
+  "mcode-webui-s3-fallback-",
   "mcode-webui-test-",
   "mcode-webui-upload-e2e-",
   "mcode-webui-upload-lib-",
