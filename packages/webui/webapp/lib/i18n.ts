@@ -507,6 +507,10 @@ const en = {
   "sidebar.projects": "Projects",
   "action.failed": "failed",
   "sidebar.openSession": "Open session",
+  // webui-parity 63 (defect E): a switch that lands on a session other than
+  // the row the user clicked used to be silent. This is the banner's detail
+  // line, so it reads as the cause under the "Open session — failed" head.
+  "sidebar.switchMismatch": "the engine is still on a different session",
   // webui-parity 47 (C3): the rail toggle's label flips with its state,
   // mirroring the reference shell's 展开/收起 pair. "navigation bar", not
   // "sidebar", because that is what the reference copy names.
@@ -1455,6 +1459,7 @@ const zh: Record<MessageKey, string> = {
   "sidebar.projects": "项目",
   "action.failed": "失败",
   "sidebar.openSession": "打开会话",
+  "sidebar.switchMismatch": "引擎仍停留在另一个会话",
   "sidebar.collapse": "收起导航栏",
   "sidebar.expand": "展开导航栏",
   "sidebar.loadError": "无法加载会话：",

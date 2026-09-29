@@ -10,6 +10,7 @@ import { reportActionError, runAction } from "@/lib/action-errors";
 import { useSessionContext } from "@/lib/store";
 import type { MessageKey } from "@/lib/i18n";
 import { sessionHref } from "@/lib/url-restore";
+import { classifySwitchLanding } from "@/lib/session-switch";
 import {
   readProjectCustomizations,
   setProjectTitle,
@@ -310,6 +311,34 @@ export function SessionTree({ t }: { t: (key: MessageKey) => string }) {
       ))}
     </div>
   );
+}
+
+/**
+ * Activate a session, and say so when the engine did not follow.
+ *
+ * `runAction` only covers a request that came back rejected. The failure this
+ * exists for produced no rejected request at all (webui-parity 63, defect E):
+ * the row the user clicked, the URL and the engine's active session disagreed,
+ * and a click that did nothing was indistinguishable from one that worked. The
+ * switch response names the session the engine landed on, so that is what gets
+ * compared — and only a proven mismatch reports, which keeps an ordinary switch
+ * silent rather than nagging. The decision itself is `lib/session-switch.ts`.
+ */
+function openSessionAndReportLanding(
+  sessionId: string,
+  onChanged: () => void,
+  t: (key: MessageKey) => string,
+): void {
+  const label = t("sidebar.openSession");
+  void api
+    .switchSession(sessionId)
+    .then((res) => {
+      if (classifySwitchLanding(res.session, sessionId) === "mismatch") {
+        reportActionError(label, t("sidebar.switchMismatch"));
+      }
+    })
+    .catch((cause) => reportActionError(label, cause))
+    .then(onChanged);
 }
 
 /**
@@ -1170,7 +1199,7 @@ function SessionNode({
   const stateMark = SESSION_STATE_MARK[session.status];
   const hasChildren = session.children.length > 0;
   const onOpen = useCallback(() => {
-    void runAction(t("sidebar.openSession"), api.switchSession(session.id)).then(onChanged);
+    openSessionAndReportLanding(session.id, onChanged, t);
   }, [session.id, onChanged, t]);
 
   // `draft === null` means "not renaming". The title commits on Enter or blur and
@@ -1530,7 +1559,7 @@ function SubagentRow({
   t: (key: MessageKey) => string;
 }) {
   const onOpen = useCallback(() => {
-    void runAction(t("sidebar.openSession"), api.switchSession(session.id)).then(onChanged);
+    openSessionAndReportLanding(session.id, onChanged, t);
   }, [session.id, onChanged, t]);
 
   // webui-parity 58 (line B): the child (subagent) row carries the same
