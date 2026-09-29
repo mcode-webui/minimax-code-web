@@ -3737,6 +3737,7 @@
     "packages/webui/webapp/lib/composer-draft.ts",
     "packages/webui/webapp/lib/composer-sent.ts",
     "packages/webui/webapp/lib/credential-file.ts",
+    "packages/webui/webapp/lib/effort-control.ts",
     "packages/webui/webapp/lib/file-open-reason.ts",
     "packages/webui/webapp/lib/file-preview.ts",
     "packages/webui/webapp/lib/files-tree.ts",

@@ -16,6 +16,11 @@ import { createPortal } from "react-dom";
 import * as api from "@/lib/api";
 import { clientId } from "@/lib/cid";
 import {
+  effortControlShape,
+  effortOptionsWithDefault,
+  resolveEffortCurrent,
+} from "@/lib/effort-control";
+import {
   getComposerDraft,
   setComposerDraft,
   subscribeComposerDraft,
@@ -750,6 +755,15 @@ export function Composer({
                       : { contextWindow: windowValue },
                   );
                 }}
+                onThinkingPick={(level) => {
+                  // Ticket 49 batch 2 (A3): the side column's level
+                  // pick travels the SAME payload the composer-level
+                  // control sends — `{thinking}` with `""` clearing the
+                  // override (engine default stands). No request-body
+                  // change.
+                  void api.setModel({ thinking: level });
+                }}
+                thinkingDisabled={running}
               />
               {/* Thinking-effort picker (ticket 04). Only rendered when
                   the active model carries a `thinkingLevels` list; the
@@ -902,16 +916,20 @@ function RoundButton({
  * `min-w-[160px]`, a 12px radius, a hairline in `--border_default`, the elevated
  * background, 4px padding, and a 20px offset-less shadow.
  */
-function SelectPanel({ testId, children }: { testId: string; children: React.ReactNode }) {
+const SelectPanel = forwardRef<
+  HTMLDivElement,
+  { testId: string; children: React.ReactNode }
+>(function SelectPanel({ testId, children }, ref) {
   return (
     <div
+      ref={ref}
       data-testid={testId}
       className="min-w-[160px] rounded-[12px] border border-border_default bg-bg_grouped_secondary_elevated p-1 shadow-[0_0_20px_rgba(10,10,10,0.08)]"
     >
       {children}
     </div>
   );
-}
+});
 
 /**
  * One row of a `SelectPanel`.
@@ -1042,6 +1060,8 @@ function ModelSelect({
   contextWindow,
   onPick,
   onContextPick,
+  onThinkingPick,
+  thinkingDisabled,
   onAddProvider,
 }: {
   t: (key: MessageKey) => string;
@@ -1083,6 +1103,15 @@ function ModelSelect({
   /** U6 — context-window radio pick (tokens). The parent sends it
    *  through the same atomic `/api/set-model` endpoint. */
   onContextPick?: (value: number) => void;
+  /** Ticket 49 batch 2 (A3) — thinking-level pick from the
+   *  cascade-side detail column. Travels the SAME wire path as the
+   *  composer-level control (`{thinking: level}`, `""` = engine
+   *  default); no new field, no request-body change. */
+  onThinkingPick?: (level: string) => void;
+  /** Ticket 49 batch 2 — grey the effort control while a turn is
+   *  running, mirroring the composer-level control's `disabled`
+   *  (a mid-run pick still records for the next turn). */
+  thinkingDisabled?: boolean;
   /** Open the provider management flow with a fresh draft already
    *  created. Triggered by the top "Add provider" row. The page owns
    *  the route — the selector just hands the intent up. */
@@ -1103,6 +1132,21 @@ function ModelSelect({
    *  falls back to the active model. `null` never means "the active
    *  model" — the fallback is explicit in `detailTarget`. */
   const [focusedModelId, setFocusedModelId] = useState<string | null>(null);
+  /**
+   * Ticket 49 batch 2 (A7) — draft mirror, keyed by model id.
+   *
+   * A pick inside the picker commits immediately (the wire path is
+   * unchanged) AND lands here, so the control's highlighted value
+   * comes from the local mirror while the picker is open — a
+   * catalogue refresh (`models` re-fetch) or the request round-trip
+   * cannot make the highlight blink back to the stale prop. Closing
+   * the dropdown clears the map, so reopening always starts from the
+   * persisted state the server reported (same lifecycle as the
+   * reference picker's `drafts`).
+   */
+  const [drafts, setDrafts] = useState<
+    Record<string, { thinking?: string; contextWindow?: number }>
+  >({});
   /** Ref to the provider row that owns the open submenu. */
   const submenuAnchorRef = useRef<HTMLDivElement | null>(null);
   /** Ref to the provider row that contains the active model, so the
@@ -1118,6 +1162,9 @@ function ModelSelect({
    *  first menuitem on activation and to navigate between menuitems
    *  with arrow keys. */
   const submenuRef = useRef<HTMLDivElement | null>(null);
+  /** Ref to the dropdown panel — the trigger's arrow-key handler
+   *  focuses its first (or last) focusable row after opening. */
+  const panelRef = useRef<HTMLDivElement | null>(null);
 
   const cancelSubmenuClose = useCallback(() => {
     if (submenuCloseTimerRef.current != null) {
@@ -1177,14 +1224,19 @@ function ModelSelect({
   }, [models, value]);
 
   /**
-   * Ticket 49 — the model the detail area describes.
+   * Ticket 49 — the model the CASCADE-SIDE detail column describes.
    *
-   * The hovered/keyboard-focused row wins (A2: preview any model's
-   * adjustable settings without picking it); with nothing focused
-   * the detail area falls back to the active model, so opening the
-   * dropdown still shows the live settings. A focused id that fell
-   * out of the catalogue (mid-refresh) degrades to the fallback
-   * instead of rendering a detail for a ghost row.
+   * Batch 1 rendered this into the panel-bottom detail area; batch 2
+   * moves the follow-focus rendering into the fly-out's side column
+   * (A1), so the bottom area went back to describing the active model
+   * (U6/B9 placement) while this derivation feeds the side column:
+   * the hovered/keyboard-focused row wins (A2: preview any model's
+   * adjustable settings without picking it); with nothing focused —
+   * a cascade that just opened, before any row is hovered — the
+   * column falls back to the active model, mirroring the reference
+   * picker. A focused id that fell out of the catalogue (mid-refresh)
+   * degrades to the fallback instead of rendering a detail for a
+   * ghost row.
    */
   const detailTarget = useMemo(() => {
     if (focusedModelId != null) {
@@ -1194,54 +1246,70 @@ function ModelSelect({
     return models.find((m) => m.id === value) ?? null;
   }, [models, focusedModelId, value]);
 
-  /** Ticket 49 — the detail area describes a model the user has NOT
-   *  picked. Its options render as a read-only preview: no recorded
+  /** Ticket 49 — the side column describes a model the user has NOT
+   *  picked. Its controls render as a read-only preview: no recorded
    *  pick is highlighted (the record belongs to the active model)
-   *  and the radio group is disabled — committing a window for a
+   *  and the groups are disabled — committing a setting for a
    *  non-active model has no wire meaning under the current
    *  `/api/set-model` contract, which this batch must not change. */
   const isDetailPreview = detailTarget != null && detailTarget.id !== value;
 
   /**
-   * U6 — the detail area's derivation, now over `detailTarget`
-   * (ticket 49) instead of the active model.
-   *
-   * The target model's `contextWindowOptions`, normalised the same way
-   * the engine's own picker normalises them (dedupe, safe positive
-   * integers, engine order — packages/tui
-   * src/tui/features/model/context-window.ts). The control mounts only
-   * when at least TWO distinct options exist — a single-option
-   * "choice" is a no-op, and the engine's TUI picker gates on the same
-   * `length > 1` — and never for a model without the field, so models
-   * without options render no control and reserve no space.
-   *
-   * A stale `contextWindow` (recorded before a model switch the radio
-   * didn't follow) is NOT highlighted: the radio claims only windows
-   * the target model actually advertises — and a previewed (non-active)
-   * model highlights nothing at all.
+   * The active model — the bottom detail area's constant target
+   * (U6/B9: the panel-bottom area shows the ACTIVE model's settings,
+   * whether or not a cascade is open). `null` when the catalogue
+   * carries no active entry.
    */
-  const contextDetail = useMemo(() => {
-    const options = normalizeContextWindowOptions(detailTarget?.contextWindowOptions);
-    if (options.length < 2) return null;
-    return {
-      options,
-      hints: detailTarget?.contextWindowOptionHints,
-      current:
-        !isDetailPreview && typeof contextWindow === "number" && options.includes(contextWindow)
-          ? contextWindow
-          : null,
-    };
-  }, [detailTarget, isDetailPreview, contextWindow]);
+  const activeModel = useMemo(() => models.find((m) => m.id === value) ?? null, [models, value]);
 
   /**
-   * Ticket 49 — the focused model's thinking levels, shown in the
-   * detail area as read-only badges. This is a DISPLAY only: the
-   * editable control stays outside the picker (B2 red line), and the
-   * badges never claim a current level for a previewed model. An
-   * empty list renders nothing — the "no adjustable settings" empty
-   * state covers it.
+   * Ticket 49 batch 2 (A7) — the values the settings controls
+   * highlight. The draft mirror wins over the reported props while
+   * the picker is open, so a just-made pick is what the user sees
+   * even before the server round-trip (or a catalogue refresh)
+   * lands. `contextWindow`'s `null` means "nothing confirmed it" —
+   * the draft's `undefined` must not clobber that distinction, hence
+   * the explicit key reads.
    */
-  const detailLevels = detailTarget?.thinkingLevels ?? [];
+  const activeDraft = value != null ? drafts[value] : undefined;
+  const activeThinking = activeDraft?.thinking ?? thinking;
+  const activeContextWindow =
+    activeDraft?.contextWindow !== undefined ? activeDraft.contextWindow : contextWindow;
+
+  /**
+   * Ticket 49 batch 2 — the side column's setting picks. Only the
+   * active model's controls are interactive (a preview is disabled at
+   * the render layer; the guard here is defence in depth), so every
+   * live pick records its draft under the active id and hands the
+   * wire decision to the parent — the SAME `{thinking}` /
+   * `{model, contextWindow}` payloads the composer-level controls
+   * send. Picks never close the menu (A4).
+   */
+  const handleDetailThinkingPick = useCallback(
+    (level: string) => {
+      if (value == null) return;
+      setDrafts((prev) => ({ ...prev, [value]: { ...prev[value], thinking: level } }));
+      onThinkingPick?.(level);
+    },
+    [value, onThinkingPick],
+  );
+  const handleDetailContextPick = useCallback(
+    (windowValue: number) => {
+      if (value == null) return;
+      setDrafts((prev) => ({
+        ...prev,
+        [value]: { ...prev[value], contextWindow: windowValue },
+      }));
+      onContextPick?.(windowValue);
+    },
+    [value, onContextPick],
+  );
+
+  // Ticket 49 batch 2 (A7): closing the picker drops the draft
+  // mirror — reopening starts from the persisted state.
+  useEffect(() => {
+    if (!open) setDrafts({});
+  }, [open]);
 
   // Drop any open cascade when the active model changes (e.g. after
   // a session reset). The next hover/click on a provider row will
@@ -1374,7 +1442,7 @@ function ModelSelect({
       placement="bottomRight"
       overlayClassName="mavis-dropdown mavis-dropdown-compact mavis-dropdown-custom-content"
       popupRender={() => (
-        <SelectPanel testId="model-select-panel">
+        <SelectPanel ref={panelRef} testId="model-select-panel">
           {models.length === 0 ? (
             <SelectRow testId="model-select-empty" label={t("composer.noModels")} />
           ) : (
@@ -1482,11 +1550,20 @@ function ModelSelect({
                         event.preventDefault();
                         cancelSubmenuClose();
                         setSubmenuFor(group.id);
+                        // Two frames, not one: React 18's concurrent
+                        // commit can land after the first
+                        // requestAnimationFrame, leaving the submenu
+                        // unmounted when a single-frame callback ran —
+                        // measured as "cascade opens but focus stays
+                        // on the provider row" (the QA item ④ chain
+                        // broke here).
                         requestAnimationFrame(() => {
-                          const first = submenuRef.current?.querySelector<HTMLElement>(
-                            '[role="menuitemradio"]',
-                          );
-                          first?.focus();
+                          requestAnimationFrame(() => {
+                            const first = submenuRef.current?.querySelector<HTMLElement>(
+                              '[role="menuitemradio"]',
+                            );
+                            first?.focus();
+                          });
                         });
                       }}
                       className="rounded-[8px]"
@@ -1535,6 +1612,7 @@ function ModelSelect({
                       />
                       {submenuOpen ? (
                         <CascadeSubmenu
+                          ref={submenuRef}
                           testId={`model-select-cascade-${group.id}`}
                           ariaLabel={group.label}
                           items={providerItems(group.id)}
@@ -1543,6 +1621,22 @@ function ModelSelect({
                           onMouseEnter={cancelSubmenuClose}
                           onMouseLeave={scheduleSubmenuClose}
                           onItemFocus={setFocusedModelId}
+                          detail={
+                            <ModelSettingsDetail
+                              t={t}
+                              containerTestId="model-cascade-detail"
+                              detailPrefix="model-cascade-detail"
+                              contextPrefix="model-cascade-context"
+                              target={detailTarget}
+                              preview={isDetailPreview}
+                              thinking={activeThinking}
+                              contextWindow={activeContextWindow}
+                              effortControl="adaptive"
+                              thinkingDisabled={thinkingDisabled}
+                              onThinkingPick={handleDetailThinkingPick}
+                              onContextPick={handleDetailContextPick}
+                            />
+                          }
                           onPick={(modelId) => {
                             // ticket 11: cascade click selects MODEL
                             // only. The parent's onPick handler decides
@@ -1572,161 +1666,43 @@ function ModelSelect({
               })}
               </div>
               {/*
-                Ticket 49 detail area — the settings column that
-                FOLLOWS the focused row. Sits below the provider list
-                (U6 placement kept) so it never disturbs the grouping
-                or the cascade. Always mounted while the catalogue is
-                non-empty; three render branches:
+                Ticket 49 batch 2 — the panel-bottom detail area. Batch
+                1 made it follow the focused row; batch 2 (A1) moved
+                that follow-focus rendering into the fly-out's side
+                column (see the `detail` prop above), so this area is
+                back to its U6/B9 role: it describes the ACTIVE model
+                with the first-batch testids, the read-only LEVEL
+                badges (level editing lives in the side column and the
+                composer control), and the interactive context-window
+                radios — window picks ride the same
+                `handleDetailContextPick` the side column uses, so
+                both areas read the same draft mirror (A7) and a pick
+                made in either place highlights in both.
 
-                  - nothing to describe (no focused row, no active
-                    model) → the "select a model" empty hint;
-                  - the target model has nothing adjustable (no
-                    context options, no thinking levels) → the
-                    per-model empty hint;
-                  - otherwise the target's model name, its thinking
-                    levels as read-only badges (current level
-                    highlighted only for the ACTIVE model), and its
-                context-window radio group (U6 control, `contextDetail`
-                still gates on >= 2 options).
-
-                `aria-live="polite"` (A6) announces the target switch
-                as the cursor/keyboard focus moves between rows. A
-                previewed (focused-but-not-picked) model renders the
-                radio group disabled — picks stay meaningful only for
-                the active model under the unchanged
-                `/api/set-model` contract.
+                The three render branches live in `ModelSettingsDetail`:
+                nothing describable → the "select a model" hint; the
+                target has nothing adjustable → the per-model hint
+                (with the model name — QA item ②: an aria-live region
+                announcing only "no adjustable settings" leaves a
+                screen-reader user without the context of WHICH model);
+                otherwise the model name, level display, and window
+                radios. `aria-live="polite"` announces the active-model
+                switch; the side column carries its own live region for
+                the focus follow.
               */}
-              <div
-                data-testid="model-context-detail"
-                aria-live="polite"
+              <ModelSettingsDetail
+                t={t}
+                containerTestId="model-context-detail"
+                detailPrefix="model-select-detail"
+                contextPrefix="model-context"
                 className="mt-1 border-t border-border_default px-1 pb-1 pt-1"
-              >
-                {!detailTarget ? (
-                  <div
-                    data-testid="model-select-detail-empty"
-                    className="px-1 py-1 text-caption-small text-text_default_tertiary"
-                  >
-                    {t("modelSelector.detailEmpty")}
-                  </div>
-                ) : contextDetail == null && detailLevels.length === 0 ? (
-                  <div
-                    data-testid="model-select-detail-no-settings"
-                    className="px-1 py-1 text-caption-small text-text_default_tertiary"
-                  >
-                    {t("modelSelector.detailNoSettings")}
-                  </div>
-                ) : (
-                  <>
-                    <div className="flex min-w-0 items-baseline gap-1.5 px-1 pb-1">
-                      <span
-                        data-testid="model-select-detail-model"
-                        className="truncate text-caption-small-strong uppercase tracking-wide text-text_default_tertiary"
-                      >
-                        {modelDisplayName(detailTarget.label) || detailTarget.id}
-                      </span>
-                      {isDetailPreview ? (
-                        <span
-                          data-testid="model-select-detail-preview"
-                          className="shrink-0 text-[10px] text-text_default_tertiary"
-                        >
-                          {t("modelSelector.detailPreview")}
-                        </span>
-                      ) : null}
-                    </div>
-                    {detailLevels.length > 0 ? (
-                      <div data-testid="model-select-detail-levels" className="px-1 pb-1">
-                        <div className="pb-0.5 text-caption-small-strong uppercase tracking-wide text-text_default_tertiary">
-                          {t("modelSelector.thinkingLevels")}
-                        </div>
-                        <div className="flex flex-wrap gap-1">
-                          {detailLevels.map((level) => {
-                            const isCurrent =
-                              !isDetailPreview && detailTarget.id === value && thinking === level;
-                            return (
-                              <span
-                                key={level}
-                                data-testid={`model-select-detail-level-${level}`}
-                                className={[
-                                  "rounded-md border px-1 py-0.5 text-[10px] uppercase tracking-wide",
-                                  isCurrent
-                                    ? "border-border_heavy bg-bg_interaction_tertiary_hover text-text_default_primary"
-                                    : "border-border_default text-text_default_tertiary",
-                                ].join(" ")}
-                              >
-                                {thinkingLevelLabel(t, level)}
-                              </span>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    ) : null}
-                    {contextDetail ? (
-                      <div className="px-1">
-                        <div className="pb-0.5 text-caption-small-strong uppercase tracking-wide text-text_default_tertiary">
-                          {t("modelSelector.contextWindow")}
-                        </div>
-                        <div
-                          role="radiogroup"
-                          aria-label={t("modelSelector.contextWindow")}
-                          data-testid="model-context-group"
-                          className="flex flex-wrap gap-1"
-                        >
-                          {contextDetail.options.map((windowValue) => {
-                            const active = contextDetail.current === windowValue;
-                            const higherUsage =
-                              contextDetail.hints?.[String(windowValue)] === "higher_usage";
-                            return (
-                              <button
-                                key={windowValue}
-                                type="button"
-                                role="radio"
-                                aria-checked={active}
-                                disabled={isDetailPreview}
-                                title={
-                                  isDetailPreview
-                                    ? t("modelSelector.detailPreviewHint")
-                                    : undefined
-                                }
-                                data-testid={`model-context-option-${windowValue}`}
-                                onClick={() => onContextPick?.(windowValue)}
-                                className={[
-                                  "flex items-center gap-1.5 rounded-[8px] border px-2 py-1 text-caption-small transition-colors",
-                                  active
-                                    ? "border-border_heavy bg-bg_interaction_tertiary_hover text-text_default_primary"
-                                    : "border-border_default text-text_default_secondary",
-                                  isDetailPreview
-                                    ? "cursor-not-allowed"
-                                    : "hover:bg-bg_interaction_tertiary_hover",
-                                ].join(" ")}
-                              >
-                                <span data-testid={`model-context-value-${windowValue}`}>
-                                  {formatContextWindow(windowValue)}
-                                </span>
-                                {higherUsage ? (
-                                  <span
-                                    data-testid="model-context-hint-higher-usage"
-                                    className="text-text_default_tertiary"
-                                  >
-                                    {t("modelSelector.contextWindowHigherUsage")}
-                                  </span>
-                                ) : null}
-                                {active ? (
-                                  <Icon
-                                    name="checkSmall"
-                                    size={14}
-                                    aria-hidden="true"
-                                    className="text-text_default_primary"
-                                  />
-                                ) : null}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    ) : null}
-                  </>
-                )}
-              </div>
+                target={activeModel}
+                preview={false}
+                thinking={activeThinking}
+                contextWindow={activeContextWindow}
+                effortControl="badges"
+                onContextPick={handleDetailContextPick}
+              />
             </div>
           )}
         </SelectPanel>
@@ -1737,6 +1713,34 @@ function ModelSelect({
         data-testid="model-selector-trigger"
         aria-haspopup="dialog"
         aria-expanded={open}
+        onKeyDown={(event) => {
+          // Ticket 49 batch 2 (QA item ④) — arrow keys on the CLOSED
+          // picker open it and move focus into the panel, so the whole
+          // cascade flow is reachable without a pointer. ArrowDown /
+          // ArrowRight land on the first focusable row, ArrowUp on the
+          // last. The panel's own keyboard engine takes over from
+          // there (provider rows: ArrowRight opens the cascade; rows
+          // inside the cascade: ArrowUp/Down cycle, Home/End jump,
+          // ArrowLeft returns). antd's Dropdown handles only click /
+          // Enter / Space on the trigger — the arrows are ours.
+          if (
+            event.key !== "ArrowDown" &&
+            event.key !== "ArrowUp" &&
+            event.key !== "ArrowRight"
+          ) {
+            return;
+          }
+          if (models.length === 0) return;
+          event.preventDefault();
+          if (!open) setOpen(true);
+          requestAnimationFrame(() => {
+            const rows = panelRef.current?.querySelectorAll<HTMLElement>(
+              "button:not([disabled])",
+            );
+            if (!rows || rows.length === 0) return;
+            (event.key === "ArrowUp" ? rows[rows.length - 1]! : rows[0]!).focus();
+          });
+        }}
         className="flex h-8 min-w-0 items-center gap-1 rounded-[10px] pl-2.5 pr-2 text-sm text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_hover"
       >
         <span className="max-w-[180px] truncate whitespace-nowrap">{label}</span>
@@ -1747,6 +1751,320 @@ function ModelSelect({
         />
       </button>
     </Dropdown>
+  );
+}
+
+/**
+ * Ticket 49 batch 2 (A1) — the settings detail content shared by both
+ * placements. The A3 shape decisions (`effortControlShape` /
+ * `effortOptionsWithDefault` / `resolveEffortCurrent`) live in
+ * `@/lib/effort-control` so the test suite exercises the product
+ * functions, not a mirror.
+ *
+ * Two instances render at once, each with its own aria-live region and
+ * its own testid family (no duplicate ids in the DOM):
+ *
+ *   - the panel-bottom area (U6/B9 placement, `model-select-detail-*`
+ *     + `model-context-*`): describes the ACTIVE model, level display
+ *     is the read-only badges batch 1 shipped;
+ *   - the cascade side column (`model-cascade-detail-*` +
+ *     `model-cascade-context-*`): describes `detailTarget` (follows
+ *     the focused row), and the level display is the ADAPTIVE control
+ *     (A3: radio group or switch), so a pick can be made without
+ *     closing the menu (A4).
+ *
+ * Both read the same draft mirror through their props, so a pick made
+ * in either place highlights in both (A7).
+ *
+ * The three render branches:
+ *   - no target → the "select a model" hint;
+ *   - target with neither context options (>= 2) nor thinking levels
+ *     → the per-model hint, WITH the model name — QA item ②: the
+ *     container is an aria-live region, and announcing only "no
+ *     adjustable settings" would leave a screen-reader user asking
+ *     WHICH model the sentence is about;
+ *   - otherwise the model name (+ "preview" marker when the target is
+ *     not the active model), the level display, and the context-window
+ *     radio group.
+ */
+function ModelSettingsDetail({
+  t,
+  containerTestId,
+  detailPrefix,
+  contextPrefix,
+  className,
+  target,
+  preview,
+  thinking,
+  contextWindow,
+  effortControl,
+  thinkingDisabled,
+  onThinkingPick,
+  onContextPick,
+}: {
+  t: (key: MessageKey) => string;
+  /** The outer container's testid — distinct per placement. */
+  containerTestId: string;
+  /** `model-select-detail` (bottom) / `model-cascade-detail` (side). */
+  detailPrefix: string;
+  /** `model-context` (bottom) / `model-cascade-context` (side). */
+  contextPrefix: string;
+  /** Placement chrome (the bottom area carries its own border/padding). */
+  className?: string;
+  target: {
+    id: string;
+    label: string;
+    thinkingLevels?: string[];
+    contextWindowOptions?: number[];
+    contextWindowOptionHints?: Record<string, string>;
+  } | null;
+  /** True when the target is NOT the active model: controls disable,
+   *  nothing records-backed is highlighted (A2 preview semantics). */
+  preview: boolean;
+  /** The draft-mirror-resolved recorded level (`""` = engine default). */
+  thinking: string;
+  /** The draft-mirror-resolved recorded window (tokens; `null`/`undefined`
+   *  = nothing confirmed). */
+  contextWindow?: number | null;
+  /** `badges` (bottom, read-only) or `adaptive` (side, A3 control). */
+  effortControl: "badges" | "adaptive";
+  thinkingDisabled?: boolean;
+  onThinkingPick?: (level: string) => void;
+  onContextPick?: (value: number) => void;
+}) {
+  const levels = target?.thinkingLevels ?? [];
+  // U6 mount gate: >= 2 normalised options (a single-option "choice"
+  // is a no-op), same normalisation the engine's own picker applies.
+  const contextOptions = normalizeContextWindowOptions(target?.contextWindowOptions);
+  const contextReady = contextOptions.length >= 2;
+  const contextHints = target?.contextWindowOptionHints;
+  // Stale-pick rule (U6): the radio claims only windows the target
+  // model advertises — and a previewed model highlights nothing.
+  const contextCurrent =
+    !preview && typeof contextWindow === "number" && contextOptions.includes(contextWindow)
+      ? contextWindow
+      : null;
+  // A3: the shape/options/current decisions come from
+  // @/lib/effort-control (product functions, test-imported).
+  const effortShape = effortControlShape(levels);
+  const effortOptions = effortShape === "radiogroup" ? effortOptionsWithDefault(levels) : [];
+  const effortCurrent = resolveEffortCurrent(levels, thinking, preview);
+
+  return (
+    <div data-testid={containerTestId} aria-live="polite" className={className}>
+      {!target ? (
+        <div
+          data-testid={`${detailPrefix}-empty`}
+          className="px-1 py-1 text-caption-small text-text_default_tertiary"
+        >
+          {t("modelSelector.detailEmpty")}
+        </div>
+      ) : !contextReady && levels.length === 0 ? (
+        <div data-testid={`${detailPrefix}-no-settings`} className="px-1 py-1">
+          <div className="truncate text-caption-small-strong text-text_default_secondary">
+            {modelDisplayName(target.label) || target.id}
+          </div>
+          <div className="text-caption-small text-text_default_tertiary">
+            {t("modelSelector.detailNoSettings")}
+          </div>
+        </div>
+      ) : (
+        <>
+          <div className="flex min-w-0 items-baseline gap-1.5 px-1 pb-1">
+            <span
+              data-testid={`${detailPrefix}-model`}
+              className="truncate text-caption-small-strong uppercase tracking-wide text-text_default_tertiary"
+            >
+              {modelDisplayName(target.label) || target.id}
+            </span>
+            {preview ? (
+              <span
+                data-testid={`${detailPrefix}-preview`}
+                className="shrink-0 text-[10px] text-text_default_tertiary"
+              >
+                {t("modelSelector.detailPreview")}
+              </span>
+            ) : null}
+          </div>
+          {levels.length > 0 ? (
+            <div data-testid={`${detailPrefix}-levels`} className="px-1 pb-1">
+              <div className="pb-0.5 text-caption-small-strong uppercase tracking-wide text-text_default_tertiary">
+                {t("modelSelector.thinkingLevels")}
+              </div>
+              {effortControl === "badges" ? (
+                /* Batch 1's read-only badge row: the DISPLAY-only form
+                 * (the bottom area's level surface; editing lives in
+                 * the side column and the composer control). */
+                <div className="flex flex-wrap gap-1">
+                  {levels.map((level) => {
+                    const isCurrent = !preview && thinking === level;
+                    return (
+                      <span
+                        key={level}
+                        data-testid={`${detailPrefix}-level-${level}`}
+                        className={[
+                          "rounded-md border px-1 py-0.5 text-[10px] uppercase tracking-wide",
+                          isCurrent
+                            ? "border-border_heavy bg-bg_interaction_tertiary_hover text-text_default_primary"
+                            : "border-border_default text-text_default_tertiary",
+                        ].join(" ")}
+                      >
+                        {thinkingLevelLabel(t, level)}
+                      </span>
+                    );
+                  })}
+                </div>
+              ) : effortShape === "switch" ? (
+                /* A3 binary form: the off/on pair renders as one
+                 * switch. No `default` entry here — the reference
+                 * treats switchable thinking as pure on/off; the
+                 * engine-default reset stays reachable through the
+                 * composer-level control's "Use engine default" row
+                 * and the radio group's `default` option elsewhere. */
+                <div className="flex items-center gap-2 px-0.5 py-0.5">
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={effortCurrent === "on"}
+                    aria-label={t("modelSelector.thinkingLevels")}
+                    disabled={preview || thinkingDisabled}
+                    title={preview ? t("modelSelector.detailPreviewHint") : undefined}
+                    data-testid={`${detailPrefix}-level-switch`}
+                    onClick={() => {
+                      onThinkingPick?.(effortCurrent === "on" ? "off" : "on");
+                    }}
+                    className={[
+                      "relative h-4.5 w-8 rounded-full border transition-colors",
+                      effortCurrent === "on"
+                        ? "border-border_heavy bg-bg_interaction_tertiary_hover"
+                        : "border-border_default bg-bg_grouped_secondary_elevated",
+                      preview || thinkingDisabled
+                        ? "cursor-not-allowed opacity-50"
+                        : "hover:border-border_heavy",
+                    ].join(" ")}
+                  >
+                    <span
+                      aria-hidden="true"
+                      className={[
+                        "absolute top-1/2 size-3 -translate-y-1/2 rounded-full border border-border_default bg-bg_grouped_secondary_elevated transition-all",
+                        effortCurrent === "on" ? "left-[calc(100%-14px)]" : "left-0.5",
+                      ].join(" ")}
+                    />
+                  </button>
+                  <span className="text-caption-small text-text_default_secondary">
+                    {effortCurrent === "on" ? t("thinkingPicker.on") : t("thinkingPicker.off")}
+                  </span>
+                </div>
+              ) : (
+                /* A3 multi-level form: a radio group whose first entry
+                 * is always `default` (submitted as `""`). A pick
+                 * commits immediately and does NOT close the menu. */
+                <div
+                  role="radiogroup"
+                  aria-label={t("modelSelector.thinkingLevels")}
+                  data-testid={`${detailPrefix}-level-group`}
+                  className="flex flex-wrap gap-1"
+                >
+                  {effortOptions.map((option) => {
+                    const active = effortCurrent === option;
+                    return (
+                      <button
+                        key={option}
+                        type="button"
+                        role="radio"
+                        aria-checked={active}
+                        disabled={preview || thinkingDisabled}
+                        title={preview ? t("modelSelector.detailPreviewHint") : undefined}
+                        data-testid={`${detailPrefix}-level-option-${option}`}
+                        onClick={() => {
+                          onThinkingPick?.(option === "default" ? "" : option);
+                        }}
+                        className={[
+                          "flex items-center gap-1.5 rounded-[8px] border px-2 py-1 text-caption-small transition-colors",
+                          active
+                            ? "border-border_heavy bg-bg_interaction_tertiary_hover text-text_default_primary"
+                            : "border-border_default text-text_default_secondary",
+                          preview || thinkingDisabled
+                            ? "cursor-not-allowed"
+                            : "hover:bg-bg_interaction_tertiary_hover",
+                        ].join(" ")}
+                      >
+                        {option === "default" ? t("thinkingPicker.none") : thinkingLevelLabel(t, option)}
+                        {active ? (
+                          <Icon
+                            name="checkSmall"
+                            size={14}
+                            aria-hidden="true"
+                            className="text-text_default_primary"
+                          />
+                        ) : null}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          ) : null}
+          {contextReady ? (
+            <div className="px-1">
+              <div className="pb-0.5 text-caption-small-strong uppercase tracking-wide text-text_default_tertiary">
+                {t("modelSelector.contextWindow")}
+              </div>
+              <div
+                role="radiogroup"
+                aria-label={t("modelSelector.contextWindow")}
+                data-testid={`${contextPrefix}-group`}
+                className="flex flex-wrap gap-1"
+              >
+                {contextOptions.map((windowValue) => {
+                  const active = contextCurrent === windowValue;
+                  const higherUsage = contextHints?.[String(windowValue)] === "higher_usage";
+                  return (
+                    <button
+                      key={windowValue}
+                      type="button"
+                      role="radio"
+                      aria-checked={active}
+                      disabled={preview}
+                      title={preview ? t("modelSelector.detailPreviewHint") : undefined}
+                      data-testid={`${contextPrefix}-option-${windowValue}`}
+                      onClick={() => onContextPick?.(windowValue)}
+                      className={[
+                        "flex items-center gap-1.5 rounded-[8px] border px-2 py-1 text-caption-small transition-colors",
+                        active
+                          ? "border-border_heavy bg-bg_interaction_tertiary_hover text-text_default_primary"
+                          : "border-border_default text-text_default_secondary",
+                        preview ? "cursor-not-allowed" : "hover:bg-bg_interaction_tertiary_hover",
+                      ].join(" ")}
+                    >
+                      <span data-testid={`${contextPrefix}-value-${windowValue}`}>
+                        {formatContextWindow(windowValue)}
+                      </span>
+                      {higherUsage ? (
+                        <span
+                          data-testid={`${contextPrefix}-hint-higher-usage`}
+                          className="text-text_default_tertiary"
+                        >
+                          {t("modelSelector.contextWindowHigherUsage")}
+                        </span>
+                      ) : null}
+                      {active ? (
+                        <Icon
+                          name="checkSmall"
+                          size={14}
+                          aria-hidden="true"
+                          className="text-text_default_primary"
+                        />
+                      ) : null}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ) : null}
+        </>
+      )}
+    </div>
   );
 }
 
@@ -1934,11 +2252,20 @@ const CascadeSubmenu = forwardRef<
      *  (no custom arrow navigation is added; the existing keyboard
      *  engine already moves focus, which is what triggers this). */
     onItemFocus?: (id: string) => void;
+    /** Ticket 49 batch 2 (A1) — the side settings column. When set,
+     *  the fly-out renders as the reference picker's two-column
+     *  popover: the model rows on the left, this node on the right,
+     *  in ONE fixed-positioned container. Co-locating the two is
+     *  what fixes the QA item ③ occlusion: the detail column can no
+     *  longer be covered by the cascade, because they move, clamp,
+     *  and scroll together (`maxHeight: 100vh - 16px`, each column
+     *  scrolls its own overflow). */
+    detail?: React.ReactNode;
     onPick: (id: string) => void;
     onBack: () => void;
   }
 >(function CascadeSubmenu(
-  { testId, ariaLabel, items, activeId, defaultItem, anchorRef, onMouseEnter, onMouseLeave, onItemFocus, onPick, onBack },
+  { testId, ariaLabel, items, activeId, defaultItem, anchorRef, onMouseEnter, onMouseLeave, onItemFocus, detail, onPick, onBack },
   ref,
 ) {
   const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
@@ -2084,15 +2411,53 @@ const CascadeSubmenu = forwardRef<
       }}
       style={
         pos
-          ? { position: "fixed", top: `${pos.top}px`, left: `${pos.left}px`, zIndex: 1100 }
-          : { position: "fixed", top: 0, left: 0, opacity: 0, pointerEvents: "none", zIndex: 1100 }
+          ? {
+              position: "fixed",
+              top: `${pos.top}px`,
+              left: `${pos.left}px`,
+              zIndex: 1100,
+              maxHeight: "calc(100vh - 16px)",
+            }
+          : {
+              position: "fixed",
+              top: 0,
+              left: 0,
+              opacity: 0,
+              pointerEvents: "none",
+              zIndex: 1100,
+              maxHeight: "calc(100vh - 16px)",
+            }
       }
-      className="min-w-[200px] rounded-[12px] border border-border_default bg-bg_grouped_secondary_elevated p-1 shadow-[0_0_20px_rgba(10,10,10,0.08)]"
+      className="flex min-w-[200px] overflow-hidden rounded-[12px] border border-border_default bg-bg_grouped_secondary_elevated shadow-[0_0_20px_rgba(10,10,10,0.08)]"
     >
-      {items.map((item) => renderItem(item, { separator: false, testIdSuffix: item.id }))}
-      {defaultItem ? (
-        <div className="mt-1 border-t border-border_default pt-1">
-          {renderItem(defaultItem, { separator: true, testIdSuffix: "default" })}
+      {/*
+        The model-rows column. `min-h-0` + `overflow-y-auto` so a tall
+        catalogue scrolls INSIDE the column when the container hits its
+        viewport clamp, instead of the container overflowing past the
+        bottom edge (the pre-batch-2 behaviour QA item ③ logged: the
+        fly-out covered the detail area's level badges on short
+        viewports).
+      */}
+      <div className="thin-scrollbar min-h-0 flex-1 overflow-y-auto p-1">
+        {items.map((item) => renderItem(item, { separator: false, testIdSuffix: item.id }))}
+        {defaultItem ? (
+          <div className="mt-1 border-t border-border_default pt-1">
+            {renderItem(defaultItem, { separator: true, testIdSuffix: "default" })}
+          </div>
+        ) : null}
+      </div>
+      {/*
+        The side settings column (A1). Fixed width so the popover does
+        not reflow while the detail content switches between models;
+        own vertical scrollbar for the same short-viewport clamp as the
+        rows column.
+      */}
+      {detail ? (
+        <div
+          data-testid={`${testId}-detail-column`}
+          className="thin-scrollbar min-h-0 w-56 shrink-0 overflow-y-auto border-l border-border_default p-1"
+        >
+          {detail}
         </div>
       ) : null}
     </div>

@@ -17,6 +17,12 @@ const skipped = new Set([
   ".turbo",
   ".DS_Store",
 ]);
+// Private acceptance-review reports (dot-prefixed `.*-accept.md`, any depth).
+// The same name shape .gitignore guards against committing; the inventory
+// skips it independently because it never reads .gitignore. One such report
+// sat in a worktree during a `--write` run and was recorded as reviewed
+// source — this predicate stops that class of leak at the scanner itself.
+const isPrivateReport = (name) => name.startsWith(".") && name.endsWith("-accept.md");
 // Build outputs that are not named after an entry above. These are listed by
 // repository-relative path rather than by directory name on purpose: `.next` and
 // `out` are generic names, and a name-wide exclusion would silently stop
@@ -38,7 +44,7 @@ const skippedTrees = new Set([
 ]);
 function filesIn(directory, prefix = "") {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
-    if (skipped.has(entry.name) || entry.name.endsWith(".tsbuildinfo"))
+    if (skipped.has(entry.name) || entry.name.endsWith(".tsbuildinfo") || isPrivateReport(entry.name))
       return [];
     const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
     if (entry.isSymbolicLink())
