@@ -163,6 +163,12 @@ const en = {
      alert ring buffer; see the inbox note in components/panels.tsx. */
   "toolbar.alerts": "Inbox",
   "common.unsupported": "Not available yet",
+  /* Ticket 55c — the shared "local edition cannot do this" marker. Distinct
+     from `common.unsupported` ("not available YET", an engine contract that
+     has not landed): notLocal says the capability depends on a cloud account
+     or OS integration this self-hosted server does not have, so it is not
+     coming. Wording matches the usage page's `usage.notLocal` (ticket 53). */
+  "common.notLocal": "Not applicable to the local edition",
 
   /* Inbox (站内信) — the sidebar's alert entry. Upstream labels its bell with
      the unread count; the strings are separate keys here because the translator
@@ -175,9 +181,44 @@ const en = {
   "inbox.tabMine": "My messages",
   "inbox.markAllRead": "Mark all as read",
 
-  /* Account menu rows — 1:1 with the upstream account-menu entry set. */
+  /* Account menu rows — 1:1 with the desktop user-menu entry set
+     (ticket 55c, ref-01): Settings / Upgrade / Daily check-in / Usage /
+     Feedback & help / Sign out, plus the user card at the bottom. */
   "userMenu.checkin": "Daily check-in",
   "userMenu.signOut": "Sign out",
+  "userMenu.upgrade": "Upgrade",
+  "userMenu.feedback": "Feedback & help",
+  /* The user card's display name when the engine reports no signed-in
+     identity — the honest stand-in for the desktop's account name. */
+  "userMenu.localUser": "Local user",
+
+  /* Project context menu (ticket 55c, ref-26). Rename / pin are backed by the
+     browser-local project customizations (webapp/lib/project-custom.ts);
+     reveal-in-folder and archive render disabled with `common.notLocal`;
+     remove batch-deletes the project's sessions behind a confirm. */
+  "projectMenu.rename": "Rename project",
+  "projectMenu.pin": "Pin project",
+  "projectMenu.unpin": "Unpin project",
+  "projectMenu.revealInFolder": "Reveal in folder",
+  "projectMenu.archive": "Archive chats",
+  "projectMenu.remove": "Remove",
+  "projectMenu.removeConfirmTitle": "Remove project",
+  /* Takes {count} — replaced by the component (same convention as
+     files.tree.mtime.* and usage.duration.*). */
+  "projectMenu.removeConfirmBody":
+    "This deletes every conversation under this project ({count} in total) and cannot be undone.",
+  "projectMenu.removeConfirm": "Remove",
+  "projectMenu.cancel": "Cancel",
+
+  /* Home quick-capability capsules (ticket 55c, ref-28) — the desktop's
+     cloud-skill chips under the composer. Labels match the reference
+     screenshots verbatim; every chip is a placeholder that toasts
+     `common.notLocal` because the skills are cloud-only. */
+  "home.cap.video": "Video generation",
+  "home.cap.vibe": "Vibe Coding",
+  "home.cap.design": "Design visuals",
+  "home.cap.product": "Product ops",
+  "home.cap.askMcode": "Ask MCode",
   /* Usage strings — the settings page's 用量 card (ticket 37). The user-menu
      hover flyout that used to own these was deleted; the card reads the same
      `api.getQuota()` snapshot (remaining %, resetAt, weeklyResetAt) through
@@ -931,6 +972,11 @@ const zh: Record<MessageKey, string> = {
   /* 铃铛打开的是站内信, 不是告警列表 —— 上游把系统消息与产品通知都放这里。 */
   "toolbar.alerts": "站内信",
   "common.unsupported": "暂不支持",
+  /* 工单 55c —— 共享的「本地版做不了这件事」标注。与 `common.unsupported`
+     （「暂不支持」= 引擎契约尚未落地）区分：notLocal 表示该能力依赖云端账号
+     或操作系统集成，自托管的本地服务端没有这条路，等不来。文案与用量页的
+     `usage.notLocal`（工单 53）一致。 */
+  "common.notLocal": "本地版不适用",
 
   /* 站内信 —— 侧栏底部的告警入口。上游用未读条数做 aria-label；这里拆成两个
      键，因为翻译函数不接受插值参数。 */
@@ -942,9 +988,40 @@ const zh: Record<MessageKey, string> = {
   "inbox.tabMine": "我的消息",
   "inbox.markAllRead": "全部已读",
 
-  /* 帐号菜单条目 — 与上游 account-menu 1:1 对齐。 */
+  /* 帐号菜单条目 —— 与桌面用户菜单条目集 1:1 对齐（工单 55c，ref-01）：
+     设置 / 升级 / 每日签到 / 用量 / 反馈与帮助 / 退出登录，底部是用户卡。 */
   "userMenu.checkin": "每日签到",
   "userMenu.signOut": "退出登录",
+  "userMenu.upgrade": "升级",
+  "userMenu.feedback": "反馈与帮助",
+  /* 引擎未上报登录身份时用户卡的显示名 —— 桌面账号名的诚实替身。 */
+  "userMenu.localUser": "本地用户",
+
+  /* 项目右键菜单（工单 55c，ref-26）。重命名 / 置顶由浏览器本地项目自定义
+     （webapp/lib/project-custom.ts）支撑；在文件夹中显示与归档对话渲染为
+     禁用并标注 `common.notLocal`；移除在确认弹窗后批量删除项目下的会话。 */
+  "projectMenu.rename": "重命名项目",
+  "projectMenu.pin": "置顶项目",
+  "projectMenu.unpin": "取消置顶",
+  "projectMenu.revealInFolder": "在文件夹中显示",
+  "projectMenu.archive": "归档对话",
+  "projectMenu.remove": "移除",
+  "projectMenu.removeConfirmTitle": "移除项目",
+  /* 带 {count} 占位，由组件 .replace() 填充（约定同 files.tree.mtime.*
+     与 usage.duration.*）。 */
+  "projectMenu.removeConfirmBody":
+    "将删除该项目下的全部对话（共 {count} 个），且不可恢复。",
+  "projectMenu.removeConfirm": "移除",
+  "projectMenu.cancel": "取消",
+
+  /* 主页快捷能力胶囊（工单 55c，ref-28）—— 桌面版输入框下方的云端技能
+     胶囊。文案逐字照参照截图；每颗都是占位，点击 toast `common.notLocal`，
+     因为这些技能仅云端提供。 */
+  "home.cap.video": "视频生成",
+  "home.cap.vibe": "Vibe Coding",
+  "home.cap.design": "设计视觉",
+  "home.cap.product": "产品运营",
+  "home.cap.askMcode": "询问 MCode",
   /* 用量文案 — 设置页「用量与模型」节里的用量卡片（工单 37）。原先挂这些
      文案的帐号菜单 hover 弹层已删除；卡片经由 store 读同一个
      `api.getQuota()` 快照（remaining %、resetAt、weeklyResetAt）。

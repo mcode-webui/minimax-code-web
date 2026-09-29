@@ -407,6 +407,9 @@ function App() {
   // removed — the search surface now lives in the tree column
   // and is reached through the sidebar's 搜索 nav entry (which
   // dispatches `openSurfaceTab("search")` from shell.tsx).
+  // Ctrl+, (55c) opens settings — the same binding the desktop
+  // prints on its user-menu Settings row, so the kbd badge the
+  // webui menu now carries is a real binding, not decoration.
   useEffect(() => {
     if (!state) return;
     const onKey = (event: KeyboardEvent) => {
@@ -414,11 +417,14 @@ function App() {
       if (event.key.toLowerCase() === "n") {
         event.preventDefault();
         void runAction(t("topbar.newSession"), api.newSession());
+      } else if (event.key === ",") {
+        event.preventDefault();
+        openSettings();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [state, openPanel, t]);
+  }, [state, openPanel, openSettings, t]);
 
   // URL ↔ session reconcile.
   const [urlRestored, setUrlRestored] = useState(false);
