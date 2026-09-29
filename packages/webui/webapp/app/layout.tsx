@@ -10,6 +10,10 @@ import "../styles/official-utilities.css";
 import "../styles/mavis-dropdown.css";
 import "../styles/desktop-typography.css";
 import "../styles/code-preview.css";
+// Markdown codeblock overrides (webui-parity 52): loads after
+// official-utilities.css so its idle-scrollbar and wrap rules win the
+// cascade against the vendored sheet without editing it.
+import "../styles/markdown-overrides.css";
 import "../styles/mermaid.css";
 // KaTeX stylesheet, vendored from `katex/dist/katex.min.css` (same version as
 // the `katex` devDependency) with the @font-face sources repointed at the

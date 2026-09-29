@@ -1,0 +1,121 @@
+/* Markdown codeblock overrides (webui-parity 52).
+ *
+ * Why this sheet exists separately from official-utilities.css:
+ * that file is the vendored upstream sheet — shared verbatim with the
+ * desktop build — so it must stay byte-identical. Two of its
+ * behaviours are wrong for the webui, and both are fixed here as pure
+ * cascade overrides:
+ *
+ *   1. The codeblock scrollbar is invisible until hover. The upstream
+ *      idle rule paints thumb AND track fully transparent
+ *      (`scrollbar-color:#0000 #0000`, `::-webkit-scrollbar-thumb
+ *      { background:#0000 }`), and inside chat content the horizontal
+ *      webkit scrollbar is collapsed outright (`height:0!important`,
+ *      see `.message-container-chat-content` below — chat.tsx mounts
+ *      that class). A user who does not know the bar appears on hover
+ *      reads clipped code. Fix: the idle thumb becomes faintly
+ *      visible; upstream's own hover rules keep deepening it.
+ *
+ *   2. Markdown codeblocks have no wrap mode at all. Ticket 48's
+ *      `file_line_wrap` switch only reaches the file-preview shell
+ *      (code-view.tsx → styles/code-preview.css). Chat messages,
+ *      activity groups and markdown previews render through
+ *      MarkdownHtml with the shared codeblock shell and were never
+ *      covered. Fix: MarkdownHtml adds `.markdown-code-wrap` to its
+ *      host when the switch is on, and the rules at the bottom of
+ *      this file turn code-line wrapping on under that modifier.
+ *
+ * The selectors key on the classes the markdown parser emits
+ * (lib/markdown.ts): `.codeblock-shell` > `.codeblock-toolbar` +
+ * `pre.codeblock-pre` > `code.codeblock-code`. Note the scroll
+ * container is `code.codeblock-code` (`overflow:auto` in the upstream
+ * sheet) — not the `<pre>`.
+ */
+
+/* ---------------------------------------------------------------------
+ * Make the scroll container real.
+ *
+ * The upstream sheet declares `.codeblock-shell .codeblock-code
+ * { overflow:auto }`, but upstream markup wraps the code in a `.shiki`
+ * block and this client's parser (lib/markdown.ts) emits the `<code>`
+ * with plain text only — a bare inline element. `overflow` is ignored
+ * on inline boxes, so the declared scroll container never existed
+ * here: long lines spilled past the panel and an ancestor clipped
+ * them, with nothing to scroll (the actual bug the user reported).
+ * Block-ifying the `<code>` lets the upstream `overflow:auto` take
+ * effect; every scrollbar rule below and upstream's own hover pair
+ * then apply to a real scroll box.
+ * --------------------------------------------------------------------- */
+.codeblock-shell .codeblock-code {
+  display: block;
+}
+
+/* ---------------------------------------------------------------------
+ * Idle-state scrollbar visibility (both switch states; the container
+ * only scrolls horizontally while wrapping is off).
+ *
+ * Idle thumb: faint grey instead of fully transparent. The upstream
+ * sheet already deepens it to var(--utility_scrollbar) (15 % opacity)
+ * under `.codeblock-shell:hover`; in LIGHT mode that hover rule
+ * out-scores our idle rule on specificity, so it keeps working
+ * unchanged. In DARK mode our idle rules tie the hover selectors and
+ * this sheet loads later — the two re-assert rules below restore the
+ * hover deepening there.
+ * --------------------------------------------------------------------- */
+.codeblock-shell .codeblock-code {
+  scrollbar-color: var(--opacity_black_1_8) #0000;
+}
+
+.codeblock-shell .codeblock-code::-webkit-scrollbar-thumb {
+  background: var(--opacity_black_1_8);
+}
+
+.dark .codeblock-shell .codeblock-code {
+  scrollbar-color: var(--opacity_white_0_8) #0000;
+}
+
+.dark .codeblock-shell .codeblock-code::-webkit-scrollbar-thumb {
+  background: var(--opacity_white_0_8);
+}
+
+/* Dark-mode hover re-assert (see the block comment above): without
+ * these two, a hovered dark-mode codeblock would stay at the idle
+ * grey because our idle rules load after upstream's hover rules. */
+.dark .codeblock-shell:hover .codeblock-code {
+  scrollbar-color: var(--utility_scrollbar) #0000;
+}
+
+.dark .codeblock-shell:hover .codeblock-code::-webkit-scrollbar-thumb {
+  background: var(--utility_scrollbar);
+}
+
+/* Chat content: upstream collapses the horizontal webkit scrollbar to
+ * `height:0!important` under `.message-container-chat-content`, which
+ * chat.tsx mounts. Same-selector !important loaded later wins,
+ * restoring the 6 px bar the base sheet sizes. */
+.message-container-chat-content .codeblock-shell .codeblock-code::-webkit-scrollbar {
+  height: 6px !important;
+}
+
+/* ---------------------------------------------------------------------
+ * `file_line_wrap` modifier — markdown codeblocks (ticket 52 extends
+ * ticket 48's switch to the markdown pipeline).
+ *
+ * `.markdown-code-wrap` is added to the MarkdownHtml host div when the
+ * switch reads on. Code lines wrap at the column edge; the language
+ * label lives in `.codeblock-toolbar`, outside the scroll container,
+ * so block chrome never wraps. `overflow-x:hidden` plus the scrollbar
+ * suppression mirror the upstream `markdown-view-wrap` block: once
+ * lines wrap, nothing can overflow sideways, and the always-on webkit
+ * track rule (`display:block!important` upstream) must not leave a
+ * ghost rail under the code.
+ * --------------------------------------------------------------------- */
+.markdown-code-wrap .codeblock-shell .codeblock-code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow-x: hidden;
+}
+
+.markdown-code-wrap .codeblock-shell .codeblock-code::-webkit-scrollbar {
+  display: none !important;
+}
