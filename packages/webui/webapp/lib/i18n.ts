@@ -203,10 +203,19 @@ const en = {
   "projectMenu.archive": "Archive chats",
   "projectMenu.remove": "Remove",
   "projectMenu.removeConfirmTitle": "Remove project",
-  /* Takes {count} — replaced by the component (same convention as
-     files.tree.mtime.* and usage.duration.*). */
+  /* Both {count} keys are replaced by the component with the TRUE deletion
+     set — main sessions AND subagent rows — never the sidebar pill's
+     main-session count: an irreversible confirm must not understate what
+     goes (QA F1). */
   "projectMenu.removeConfirmBody":
-    "This deletes every conversation under this project ({count} in total) and cannot be undone.",
+    "This deletes every conversation under this project, subagent sessions included ({count} in total), and cannot be undone.",
+  /* The server authorizes each single-session delete separately (no batch
+     contract), so the dialog states the number of approval prompts up
+     front (QA F2). */
+  "projectMenu.removeConfirmAuthNote":
+    "Deletion runs one session at a time; expect {count} authorization prompts, one per session — approve each to continue.",
+  /* Live progress while the batch runs: {done} of {total} (QA F2). */
+  "projectMenu.removeProgress": "Deleting {done}/{total}…",
   "projectMenu.removeConfirm": "Remove",
   "projectMenu.cancel": "Cancel",
 
@@ -1007,10 +1016,17 @@ const zh: Record<MessageKey, string> = {
   "projectMenu.archive": "归档对话",
   "projectMenu.remove": "移除",
   "projectMenu.removeConfirmTitle": "移除项目",
-  /* 带 {count} 占位，由组件 .replace() 填充（约定同 files.tree.mtime.*
-     与 usage.duration.*）。 */
+  /* 两个 {count} 占位均由组件填充为真实删除集——主会话与子代理会话
+     全量，绝不用侧栏角标的主会话数：不可逆确认不得少报要删的东西
+     （质检 F1）。 */
   "projectMenu.removeConfirmBody":
-    "将删除该项目下的全部对话（共 {count} 个），且不可恢复。",
+    "将删除该项目下的全部对话与子代理会话（共 {count} 个），且不可恢复。",
+  /* 服务端对每个单会话删除分别授权（无批量契约），因此弹窗预先写明
+     会出现多少次授权确认（质检 F2）。 */
+  "projectMenu.removeConfirmAuthNote":
+    "删除将逐个进行，期间会出现 {count} 次授权确认，请逐一批准以继续。",
+  /* 批量执行中的实时进度：{done}/{total}（质检 F2）。 */
+  "projectMenu.removeProgress": "正在删除 {done}/{total}…",
   "projectMenu.removeConfirm": "移除",
   "projectMenu.cancel": "取消",
 

@@ -227,6 +227,13 @@ export function SessionTree({ t }: { t: (key: MessageKey) => string }) {
   const onTogglePinned = useCallback((key: string) => {
     setCustoms(toggleProjectPinned(key));
   }, []);
+  // Routed through the tree root (not a direct clearProjectCustomizations
+  // call inside ProjectNode) so the in-memory `customs` state and
+  // localStorage change together — a project that survives a partial
+  // remove must not keep showing an overlay its storage already lost.
+  const onProjectRemoved = useCallback((key: string) => {
+    setCustoms(clearProjectCustomizations(key));
+  }, []);
   const sortedProjects = useMemo(() => {
     const rank = new Map(customs.pinned.map((key, index) => [key, index]));
     return [...projects].sort((a, b) => {
@@ -279,6 +286,7 @@ export function SessionTree({ t }: { t: (key: MessageKey) => string }) {
             pinned={customs.pinned.includes(project.key)}
             onRename={onRenameProject}
             onTogglePinned={onTogglePinned}
+            onProjectRemoved={onProjectRemoved}
             activeId={activeId}
             open={openProjects.includes(project.key)}
             onToggle={toggle(setOpenProjects)}
@@ -370,6 +378,7 @@ function ProjectNode({
   pinned,
   onRename,
   onTogglePinned,
+  onProjectRemoved,
   activeId,
   open,
   onToggle,
@@ -391,6 +400,12 @@ function ProjectNode({
   onRename: (key: string, title: string) => void;
   /** Toggle the pin. */
   onTogglePinned: (key: string) => void;
+  /**
+   * Drop the project's overlay entries after a FULL successful remove —
+   * routed through the tree root so the in-memory state and localStorage
+   * stay in step (QA N3).
+   */
+  onProjectRemoved: (key: string) => void;
   activeId: string | null;
   open: boolean;
   onToggle: (key: string) => void;
@@ -429,34 +444,53 @@ function ProjectNode({
   // Remove confirm. Deleting runs sequentially through the existing
   // single-session endpoint; a failure reports and stops the batch (the
   // sessions deleted before it stay deleted — the confirm already told the
-  // user this cannot be undone).
+  // user this cannot be undone). Each delete passes the server's
+  // `authorize("session.delete")` gate individually — there is no
+  // batch-authorization contract — so the confirm tells the user upfront
+  // how many approval prompts to expect, and the dialog shows live
+  // progress while it runs.
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [removing, setRemoving] = useState(false);
+  const [progress, setProgress] = useState(0);
   // Every session id under the project, subagents included: mcode's runtime
-  // rows are per-session and DELETE does not cascade into children. The
-  // CONFIRM counts main sessions only (the pill's `sessionCount` semantics —
-  // user-started conversations), the DELETE walks the full set.
-  const allSessionIds = project.directories.flatMap((directory) =>
-    directory.sessions.flatMap((session) => [
-      session.id,
-      ...session.children.map((child) => child.id),
-    ]),
+  // rows are per-session and DELETE does not cascade into children. This
+  // is ALSO the number the confirm quotes — the deletion is irreversible,
+  // so the count must be the true number of rows about to go, not the
+  // pill's main-session count (`sessionCount`), which deliberately tracks
+  // user-started conversations only.
+  const allSessionIds = useMemo(
+    () =>
+      project.directories.flatMap((directory) =>
+        directory.sessions.flatMap((session) => [
+          session.id,
+          ...session.children.map((child) => child.id),
+        ]),
+      ),
+    [project.directories],
   );
   const runRemove = useCallback(async () => {
     setRemoving(true);
+    setProgress(0);
+    let failed = false;
     for (const id of allSessionIds) {
       try {
         await api.deleteSession(id);
       } catch (cause) {
         reportActionError(t("projectMenu.remove"), cause);
+        failed = true;
         break;
       }
+      setProgress((done) => done + 1);
     }
-    clearProjectCustomizations(project.key);
+    // Customizations are cleared ONLY on a full success. A partial failure
+    // leaves the project (or its remains) with its rename/pin intact —
+    // stripping them from a project that still exists would silently undo
+    // the user's own edits (QA N3).
+    if (!failed) onProjectRemoved(project.key);
     setRemoving(false);
     setConfirmRemove(false);
     onChanged();
-  }, [allSessionIds, onChanged, project.key, t]);
+  }, [allSessionIds, onChanged, onProjectRemoved, project.key, t]);
 
   const menuItems: MenuProps["items"] = [
     {
@@ -683,11 +717,34 @@ function ProjectNode({
         >
           <div data-testid="project-remove-confirm" className="flex flex-col gap-4 py-2">
             <p className="text-sm leading-6 text-text_default_secondary">
+              {/* The count is the true deletion set — main sessions AND
+                  subagent rows — not the sidebar pill's main-session count:
+                  an irreversible confirm must not understate what goes. */}
               {t("projectMenu.removeConfirmBody").replace(
                 "{count}",
-                String(project.sessionCount),
+                String(allSessionIds.length),
               )}
             </p>
+            {/* The server authorizes each single-session delete separately
+                (no batch contract), so the user is told the number of
+                approval prompts to expect instead of discovering them
+                one dialog at a time. */}
+            <p className="text-caption-small-strong leading-5 text-text_default_tertiary">
+              {t("projectMenu.removeConfirmAuthNote").replace(
+                "{count}",
+                String(allSessionIds.length),
+              )}
+            </p>
+            {removing ? (
+              <p
+                data-testid="project-remove-progress"
+                className="text-caption-small-strong leading-5 text-text_default_secondary"
+              >
+                {t("projectMenu.removeProgress")
+                  .replace("{done}", String(progress))
+                  .replace("{total}", String(allSessionIds.length))}
+              </p>
+            ) : null}
             <div className="flex items-center justify-end gap-2">
               <button
                 type="button"
