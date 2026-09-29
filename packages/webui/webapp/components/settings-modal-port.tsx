@@ -49,6 +49,14 @@ import { applyAppearance, currentAppearance } from "@/lib/theme";
 import type { Locale, MessageKey } from "@/lib/i18n";
 import { ProviderManagementPanel } from "./provider-management";
 import { SettingsPanel, UsageModelsSection } from "./panels";
+// 55a 四子页（工单 58 线 D 接线）：与移植壳同目录的纯前端组件，无
+// store/api 依赖；面板自带 localStorage 持久化（lib/settings-local.ts）。
+import {
+  CodeReviewSection,
+  PersonalizationSection,
+  ShortcutsSection,
+  VoiceSection,
+} from "./settings-extra-pages";
 
 // --- tab registry（照抄参照 DESKTOP_SETTINGS_TABS / SETTINGS_GROUPS）------
 
@@ -491,12 +499,14 @@ export function SettingsModalPort({
               </SettingPanel>
             </div>
           ) : null}
-          {/* voice / shortcuts / custom-instructions / coding / worktree：
-           * 参照对无内容 Tab 即渲染空面板；55a 四子页内容在 deploy-55
-           * 分支提供，合并后接进对应分支。 */}
-          {active !== "desktop" && active !== "usage" && active !== "connection" && active !== "account" && active !== "archived" ? (
-            <div className="webui-settings-empty-panel" aria-label="空设置面板" />
-          ) : null}
+          {/* 55a 四子页内容接进移植壳（工单 58 线 D）：语音/快捷键/个性化/代码审查
+           * 渲染各自组件，记忆摘要弹窗由 PersonalizationSection 内部管理（「管理」
+           * 按钮打开）；工作树与已归档任务保持参照的占位/空态（55a 未实现）。 */}
+          {active === "voice" ? <VoiceSection t={t} /> : null}
+          {active === "shortcuts" ? <ShortcutsSection t={t} /> : null}
+          {active === "custom-instructions" ? <PersonalizationSection t={t} /> : null}
+          {active === "coding" ? <CodeReviewSection t={t} /> : null}
+          {active === "worktree" ? <div className="webui-settings-empty-panel" aria-label="空设置面板" /> : null}
         </main>
       </section>
     </div>

@@ -148,19 +148,30 @@ describe("settings tab registry parity (webui-parity 58 line A)", () => {
     );
   });
 
-  test("the reference's empty-panel tabs stay honest placeholders", () => {
-    // voice / shortcuts / custom-instructions / coding / worktree render
-    // the reference's empty panel until 55a's sub-page content lands on
-    // the deploy branch. The dispatch must keep them grouped in one
-    // catch-all rather than growing per-tab stubs.
-    const emptyAt = portSource.indexOf('aria-label="空设置面板"');
-    assert.ok(emptyAt > 0, "the reference's empty-panel affordance must stay");
-    for (const tab of ["voice", "shortcuts", "custom-instructions", "coding", "worktree"]) {
+  test("the 55a sub-pages render in their tabs; worktree stays an honest placeholder", () => {
+    // 工单 58 线 D：55a 的四子页内容已接进移植壳的对应 Tab（voice /
+    // shortcuts / custom-instructions / coding），记忆摘要弹窗由
+    // PersonalizationSection 内部管理；工作树与已归档任务仍无本地内容，
+    // 保持参照的诚实空面板。
+    for (const [tab, component] of [
+      ["voice", "VoiceSection"],
+      ["shortcuts", "ShortcutsSection"],
+      ["custom-instructions", "PersonalizationSection"],
+      ["coding", "CodeReviewSection"],
+    ] as const) {
       assert.ok(
-        !portSource.includes(`active === "${tab}" ?`),
-        `${tab} must not grow a bespoke body before its content lands (55a)`,
+        portSource.includes(`active === "${tab}" ? <${component}`),
+        `${tab} must render 55a's ${component}`,
       );
     }
+    assert.ok(
+      portSource.includes('active === "worktree" ? <div className="webui-settings-empty-panel"'),
+      "worktree has no local content yet and must stay a placeholder",
+    );
+    assert.ok(
+      portSource.includes('aria-label="空设置面板"'),
+      "the reference's empty-panel affordance must stay",
+    );
   });
 
   test("user menu usage row jumps to settings instead of hosting a hover popover", () => {
