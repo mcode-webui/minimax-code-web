@@ -426,7 +426,9 @@ below cites the component file and one `data-testid` per surface.
 | Sidebar session tree | `components/session-tree.tsx` | `sidebar-session-row` |
 | Session-tree section header (plain text, ticket 47) | `components/session-tree.tsx#SectionHeader` | `sidebar-section-header` |
 | Session-tree error state (`role="alert"`, ticket 47) | `components/session-tree.tsx` | `sidebar-tree-error` |
-| Sidebar user menu (settings / check-in / usage / sign-out) | `components/shell.tsx#SidebarFooter` | `sidebar-user-menu` |
+| Sidebar user menu (settings / upgrade / check-in / usage / feedback & help / sign-out + trailing user card; full row set since ticket 55c) | `components/shell.tsx#SidebarFooter` | `sidebar-user-menu` |
+| Project context menu (ticket 55c) | `components/session-tree.tsx#ProjectNode` | `project-context-menu` |
+| Home quick-capability capsules (ticket 55c) | `components/chat.tsx#HomeState` | `home-quick-capabilities` |
 | Sidebar inbox (alerts flyout) | `components/inbox.tsx` | `inbox-flyout` |
 | Toolbar (top bar with model selector) | `components/toolbar.tsx` | `toolbar-session-status` |
 | Composer + drop overlay | `components/composer.tsx` | `composer-drop-overlay`, `composer-send-button` |
@@ -647,20 +649,15 @@ settings (`refs/ui/03-settings-usage-models.jpg`, `04-settings-general.jpg`).
 | Group | Items | State |
 | --- | --- | --- |
 | Preferences | General | enabled |
-| Preferences | Voice · Shortcuts · Personalization | enabled — pure-frontend pages (ticket 55a), see below |
-| Preferences | Browser | marked 暂不支持 (not available yet) |
+| Preferences | Voice · Shortcuts · Personalization · Browser | marked 暂不支持 (not available yet) |
 | Management | Usage & models · Connection | enabled |
 | Management | Account | marked 暂不支持 |
-| Coding | Code review | enabled — pure-frontend page (ticket 55a) |
-| Coding | Worktree | marked 暂不支持 |
+| Coding | Code review · Worktree | marked 暂不支持 |
 | Archived | Archived tasks | marked 暂不支持 |
 
-The four remaining 暂不支持 entries are pre-existing facts: the desktop has the
+The eight 暂不支持 entries are pre-existing facts: the desktop has the
 category and this server has no capability behind it, so the entry stays
-disabled with the marker rather than hidden. Ticket 55a moved Voice,
-Shortcuts, Personalization and Code review out of that set by giving them
-real pure-frontend bodies (no `/api` dependency — they render even while
-the settings snapshot is loading or failing). Since ticket 48 every tab
+disabled with the marker rather than hidden. Since ticket 48 every tab
 carries the reference's 18×18 stroke glyph (the Browser tab — a webui-only
 entry — reuses the existing `browser` icon).
 
@@ -698,30 +695,6 @@ clients:
 | `webui-context-window-usage` | `"false"` | No. Recorded preference only |
 | `webui-follow-up-behavior` | `"queue"` (or `"steer"`) | No. Recorded preference only |
 
-**The four pure sub-pages (ticket 55a)**
-
-Shortcuts, Voice, Personalization and Code review reproduce the desktop's
-pages (`refs/ui` ref-08/09/10/11/22) structure-for-structure. The split
-between real and placeholder follows the same A1 rule as the usage page:
-a control with browser-side capability behind it works; a control without
-one renders the desktop's form, disabled, with the standing honesty
-marker — never fabricated behaviour.
-
-| Page | Real | Placeholder (structure rendered, control dead) |
-| --- | --- | --- |
-| Shortcuts | nothing — a browser page cannot register global shortcuts | both groups (Mini Chat: Alt+M with its external ↺; 常用: the nine desktop rows) render the desktop's default bindings verbatim; every binding box, ✕ and ↺ is disabled; the 未设置 dictation rows render the unset form without ✕; the page opens with the 「浏览器环境不适用」 notice explaining what is shown |
-| Voice | nothing — no microphone enumeration, no dictation input | the 麦克风 dropdown's only (disabled) option is 「本地版不适用」 rather than a fabricated device list; the two dictation rows show 「未设置」 |
-| Personalization | 自定义指令 and 关于你 — both textareas persist to `localStorage` (keys below) and rehydrate on refresh; 保存 stays disabled until the draft diverges from the stored value | the 记忆 card: both switches render **off** and greyed — the desktop's 记忆 row shows its live blue on-state, a capability claim this client cannot make — each row carrying the 「本地版不适用」 line; 管理 opens the 记忆摘要 dialog in its permanent empty state (disabled textarea, honest `0` count, 「尚未生成记忆摘要」, 取消 live / 保存 disabled) |
-| Code review | 自定义审查准则 — persists and rehydrates like the two above (save under the field, `ref-22`'s form) | the 审查方式 dropdown shows 子会话 — the one locally meaningful mode, since the engine runs reviews in a sub-session — as a disabled single option |
-
-The three persisted texts are **recorded preferences**: no surface reads
-them yet (the engine has no custom-instructions / memory / review-rule
-contract to forward them to), which the keys table states per key. The
-pages live in `components/settings-extra-pages.tsx` (split out of
-`panels.tsx` for render-test isolation, the `usage-models-cards.tsx`
-precedent); their rendered markup is pinned by
-`webapp/test/settings-extra-pages.test.ts`.
-
 **Search and layout details (ticket 48)**
 
 - The search matches the **localized label and the internal key**: typing
@@ -743,7 +716,6 @@ precedent); their rendered markup is pinned by
 | --- | --- |
 | Account page | needs `getAccountStatus` / `signOut`-class server contracts |
 | Archived tasks page | needs the archived-session contract |
-| Memory system (记忆 / 主动记忆 / 记忆摘要) | needs a memory-store contract; the Personalization page renders the switches disabled and the summary dialog in its empty state (ticket 55a) — the texts beside them are the honest placeholders, not live features |
 | Usage & models three-source switching | the segmented tabs now match the desktop form (ticket 53), but they are a **view switcher** — they do not switch the model source in use; real Token Plan / MiniMax API / custom-model routing plus source badges still need a model-routing contract |
 | MiniMax API key panel | input + connectivity test + save-and-use |
 | Custom model drag-reorder, per-model toggles, preset picker | provider contract work; adding is dialog-based (ticket 54), editing stays on the rail + editor surfaces |
@@ -820,9 +792,8 @@ empty-state affordances = 38, matching the base tree.
 `panels.tsx` / `usage-models-cards.tsx` / `icons.tsx` / `i18n.ts` plus two
 test files); the h2 header, the per-tab fade-in and the 760px page width are
 untouched; `SETTINGS_NAV`, the `SettingsSection` union and the deep-link
-entry points (`initialSection`, `autoAddProvider`) are unchanged; the 暂不支持
-placeholders stay (four remain after ticket 55a enabled the pure sub-pages).
-The `usage.used` / `usage.reset` label strings,
+entry points (`initialSection`, `autoAddProvider`) are unchanged; the eight
+暂不支持 placeholders stay. The `usage.used` / `usage.reset` label strings,
 which lost their last consumer to the desktop-figure forms, were deleted
 from both dictionaries.
 
@@ -855,14 +826,97 @@ label moved.
 **Ticket 48 invariants** — what this round did NOT change: the server
 contracts (`server/routes/settings.js`, `server/routes/providers.js`,
 `server/lib/settings.js` are untouched — the whole delta is client-side);
-the `SETTINGS_NAV` four-group division and the `SettingsSection` union
-(widened only by ticket 55a's four pure ids); the deep-link entry points
-(`initialSection`,
+the `SETTINGS_NAV` four-group division and the three-value
+`SettingsSection` union; the deep-link entry points (`initialSection`,
 `autoAddProvider` — the model selector's add-provider flow and the user
-menu's usage row both still land where they did); and the 暂不支持
-placeholders (four remain after ticket 55a). The dead `if (!section)` branch inside `SettingsPanel` was
+menu's usage row both still land where they did); and the eight 暂不支持
+placeholders. The dead `if (!section)` branch inside `SettingsPanel` was
 removed and the `section` prop made required — every reachable tab
 resolves a section, so the branch could never render.
+
+## Main-surface elements: user menu / project context menu / home capsules (ticket 55c)
+
+The user asked for every desktop main-surface screenshot to be copied
+verbatim. This ticket covers three elements under ticket 53's A1 ruling:
+**what has a local data source is real; what does not renders the
+desktop's exact shape with the 本地版不适用 marker, never faked data.**
+Server contracts are untouched — the whole delta is client-side.
+
+**User menu** (sidebar footer avatar, ref-01) now carries the desktop's
+full row set — Settings (with a `Ctrl+,` kbd badge; the binding is real,
+added to `app/page.tsx`'s keydown handler) / Upgrade / Daily check-in /
+Usage / Feedback & help / Sign out — plus a trailing user card (avatar,
+display name, plan badge, bell). The enabled/placeholder split:
+
+| Row | State | Reason |
+| --- | --- | --- |
+| Settings | enabled | opens the existing settings modal; `Ctrl+,` is a new real binding |
+| Usage | enabled | jumps to the settings page's Usage & models section (2026-09-28 decision, unchanged) |
+| Upgrade / Feedback & help | disabled placeholder | cloud billing and product support pages; hover title carries `common.notLocal` |
+| Daily check-in / Sign out | disabled placeholder | engine contract not landed (pre-55c treatment kept); hover title carries `common.unsupported` |
+| User card | real | engine identity and plan badge when `/api/account` reports them; the 本地用户 stand-in and no badge otherwise. The bell opens the existing inbox flyout with the unread dot |
+
+The desktop's UID line at the top is deliberately not rendered: a local
+edition has no account id to print, and an empty or invented id would
+break the honesty rule the rest of the menu follows. This reverses the
+2026-09-23/24 trims of the Upgrade / Feedback rows — the earlier call
+held that a disabled row next to a real one was the shape the user had
+rejected; the 2026-09-29 instruction to copy the screenshots overrides
+it, with the A1 marker keeping the limits stated rather than implied.
+
+**Project context menu** (right-click a sidebar project row, ref-26):
+重命名项目 / 置顶项目 / 在文件夹中显示 / 归档对话 / 移除 (danger).
+
+- Rename and pin are real, backed by a browser-local overlay
+  (`webui:project-custom:v1`, see Persistence keys). mcode's runtime db
+  has no project entity to write into — a project is the git root its
+  directories resolve to (`server/lib/session-tree.js#buildTree`) — so
+  the overlay lives where its only consumer lives, mirroring how
+  `titleCustom` overlays session titles. Pinned projects sort to the top
+  and carry a persistent pin mark beside the title; the menu row toggles
+  between 置顶项目 / 取消置顶.
+- 在文件夹中显示 is a disabled placeholder: a browser cannot open the
+  OS file manager.
+- 归档对话 is a disabled placeholder: the runtime db has an `archived`
+  flag, but writing another process's database is out of scope, and
+  until ticket 55b's archived-tasks page lands there is no un-archive
+  surface — archiving would be irreversible data loss.
+- 移除 is a real danger row: the confirm modal states the TRUE deletion
+  set — main sessions AND subagent rows, not the sidebar pill's
+  main-session count; an irreversible confirm must not understate what
+  goes — together with the irreversibility and, because the server
+  authorizes each single-session delete separately through
+  `authorize("session.delete")` (there is no batch contract), the number
+  of approval prompts to expect. Once confirmed, the dialog shows live
+  `deleting i/N` progress while the delete walks the existing
+  `DELETE /api/sessions/:id` sequentially over every session under the
+  project **including subagent rows** (the runtime rows are per-session;
+  DELETE does not cascade into children). A failure reports through the
+  action-error banner and stops the batch; the project's rename/pin
+  entries are cleared ONLY on a full success — a partially-failed remove
+  leaves the surviving project its customizations — and the clear runs
+  through the tree's state so memory and localStorage stay in step.
+
+**Home quick-capability capsules** (ref-28): the home screen renders the
+desktop's five chips under the composer row — 视频生成 (H3 badge) /
+Vibe Coding / 设计视觉 / 产品运营 / 询问 MCode — as white pills with
+hairline borders and the H3 badge in its fixed brand tint. The skills
+are cloud-only, so every chip answers a click with the 本地版不适用
+toast and sends nothing: same shape as the desktop, limit stated in one
+sentence, no launch to fake.
+
+The regression pins live in `webapp/test/shell-elements-parity.test.ts`
+in three layers: bilingual coverage for every 55c key with the zh labels
+asserted verbatim against the reference screenshots; static-source
+tripwires for the row sets, the enabled/disabled split, the danger tone,
+the batch-delete wiring (including that the confirm quotes the TRUE
+deletion set, never the pill's main-session count) and the capsules'
+click-to-toast wiring (including a no-`api.send` assertion on the capsule
+strip); and BEHAVIOUR tests on `lib/cap-toast.ts` — the toast state
+machine is an import-clean module precisely so the click→replace→dismiss
+contract runs under node:test without a render harness (QA round M6:
+hollowing the handler body had kept every source-only assertion green).
+Each layer was red-green verified against its own targeted mutation.
 
 ## Markdown rendering and Mermaid diagrams (slice 23)
 
@@ -1265,21 +1319,13 @@ Invariants worth keeping when touching either branch:
 | `file_line_wrap` | `localStorage` | `webapp/lib/settings-local.ts` | tickets 48 + 52 | bare `"true"\|"false"` string, reference-shared namespace; default `"true"`; read per mount by `components/code-view.tsx` (code-file previews) and `components/markdown-html.tsx` (markdown codeblocks: chat, activity groups, file previews) |
 | `webui-context-window-usage` | `localStorage` | `webapp/lib/settings-local.ts` | ticket 48 | bare `"true"\|"false"` string, reference-shared namespace; default `"false"`; recorded preference, no reader yet |
 | `webui-follow-up-behavior` | `localStorage` | `webapp/lib/settings-local.ts` | ticket 48 | bare `"queue"\|"steer"` string (anything else reads as `"queue"`), reference-shared namespace; recorded preference, no reader yet |
-| `webui-custom-instructions` | `localStorage` | `webapp/lib/settings-local.ts` | ticket 55a (Personalization) | long text stored verbatim (empty string included); `webui-` namespace because the desktop's own key name for this value is not part of the observed reference — no cross-client sharing is claimed; hydrates the 自定义指令 textarea on mount, written by its 保存 button; recorded preference, no reader yet |
-| `webui-about-user` | `localStorage` | `webapp/lib/settings-local.ts` | ticket 55a (Personalization) | same contract as `webui-custom-instructions`, backing the 关于你 textarea; recorded preference, no reader yet |
-| `webui-code-review-guidelines` | `localStorage` | `webapp/lib/settings-local.ts` | ticket 55a (Code review) | same contract, backing the 自定义审查准则 textarea; recorded preference, no reader yet |
+| `webui:project-custom:v1` | `localStorage` | `webapp/lib/project-custom.ts` | ticket 55c (project context menu) | `{version:1, titles:{<projectKey>:<customName>}, pinned:[<projectKey>]}`. **Deliberately not cid-namespaced**: a rename or a pin describes the project, not a browser session, so every tab of this browser shares it. Best-effort write, silent failure; a project's entries are cleared when its remove completed with every session deleted |
 
-Four keys deliberately keep the desktop reference's bare key names —
-ticket 48's `file_open_in_new_tab`, `file_line_wrap`,
-`webui-context-window-usage`, `webui-follow-up-behavior` — so one browser
-profile shares those preferences across both clients. Ticket 55a's three
-long-text keys (`webui-custom-instructions`, `webui-about-user`,
-`webui-code-review-guidelines`) use the `webui-` namespace instead of the
-`webui:` envelope: the desktop's own key names for those values are not
-part of the observed reference, so no cross-client sharing is claimed.
-Every other key shares the `webui:` prefix and is a best-effort write
-(debounced 150 ms for `ui` and `workspace-tabs`; immediate for the
-others). A failed
+Except for ticket 48's four reference-shared keys (`file_open_in_new_tab`,
+`file_line_wrap`, `webui-context-window-usage`, `webui-follow-up-behavior`,
+which deliberately use the desktop reference's bare key names),
+all keys share the `webui:` prefix and are best-effort writes (debounced
+150 ms for `ui` and `workspace-tabs`; immediate for the others). A failed
 write leaves the in-memory state correct and the persistence silent — the
 failure mode we care about is the `app/global-error.tsx` crash, not a quota
 error here. Per-session scroll keys are deliberate: a refresh restores

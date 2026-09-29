@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 
 import { renderMarkdown } from "@/lib/markdown";
 import { MarkdownHtml } from "./markdown-html";
@@ -18,6 +18,7 @@ import { ActivityPulse, isSessionActivityActive } from "./loading-states";
 import { ActivityGroup, TurnProcessDisclosure, assignActivityBlockKeys } from "./activity-group";
 import { computeTurnStatsByUnit, summarizeTurn, type TurnStats } from "@/lib/turn-stats";
 import { useSessionContext } from "@/lib/store";
+import { capToastReducer } from "@/lib/cap-toast";
 import { readScrollPosition as readPersistedScroll } from "@/lib/persist";
 import type { Locale, MessageKey } from "@/lib/i18n";
 import { WorkspaceChipDropdown } from "./workspace-picker";
@@ -711,23 +712,31 @@ function ThinkingIndicator({ t }: { t: (key: MessageKey) => string }) {
  * Upstream renders: a real-photo avatar, a time-of-day greeting
  * (`早上好` / `中午好` / `下午好` / `晚上好` / `夜深了`, picked from the user's
  * local hour) followed by a casual invite prompt, the composer inline, a single
- * row showing the active project + `本地` chip, and a horizontal `推荐` strip
- * of suggested tasks. The composer is passed in as children so its on-submit
+ * row showing the active project + `本地` chip, and a horizontal strip of
+ * quick-capability capsules (视频生成 / Vibe Coding / 设计视觉 / 产品运营 /
+ * 询问 MCode, ref-28). The composer is passed in as children so its on-submit
  * logic remains the conversation tree's.
  *
- * `SHOW_SUGGESTIONS` holds the recommended-task strip back: the chips are not
- * wired to anything yet, so the row is not shipped as dead affordances. Flip
- * the flag to restore the row exactly as it was.
+ * The capsules are cloud-skill chips: on the desktop they dispatch to hosted
+ * skills (video generation with the H3 model, etc.). This local edition has
+ * no cloud runtime, so every chip keeps the desktop's form but answers a
+ * click with the 本地版不适用 toast rather than pretending to launch —
+ * ticket 55c's A1 placeholder ruling (render the shape, state the limit).
  */
-const SUGGESTIONS: { id: string; emoji: string; labels: Record<"zh" | "en", string> }[] = [
-  { id: "video", emoji: "🎬", labels: { zh: "视频生成 H3", en: "Video gen H3" } },
-  { id: "product", emoji: "💡", labels: { zh: "产品运营", en: "Product ops" } },
-  { id: "vibe", emoji: "▶", labels: { zh: "Vibe Coding", en: "Vibe Coding" } },
-  { id: "design", emoji: "🎨", labels: { zh: "设计视觉", en: "Design" } },
-  { id: "mcode", emoji: "☕", labels: { zh: "问问 MCode", en: "Ask MCode" } },
+const QUICK_CAPABILITIES: {
+  id: string;
+  /** i18n key under `home.cap.`. */
+  key: string;
+  icon: Parameters<typeof Icon>[0]["name"];
+  /** Optional corner badge (the H3 model mark on 视频生成). */
+  badge?: string;
+}[] = [
+  { id: "video", key: "home.cap.video", icon: "video", badge: "H3" },
+  { id: "vibe", key: "home.cap.vibe", icon: "chatBubble" },
+  { id: "design", key: "home.cap.design", icon: "bulb" },
+  { id: "product", key: "home.cap.product", icon: "megaphone" },
+  { id: "askMcode", key: "home.cap.askMcode", icon: "coffee" },
 ];
-
-const SHOW_SUGGESTIONS = false;
 
 /**
  * Pick a greeting from the local hour. Mirrors upstream's wording rather than
@@ -772,6 +781,24 @@ export function HomeState({ t, children, locale }: ChatProps & { children: React
     const id = window.setInterval(() => setNow(new Date()), 60_000);
     return () => window.clearInterval(id);
   }, []);
+
+  // The placeholder toast a quick-capability chip answers with (55c).
+  // State machine: `capToastReducer` (lib/cap-toast.ts — import-clean so
+  // the behaviour is unit-tested); wiring: dispatch("click") from the
+  // chip's onClick, dispatch("dismiss") from the timer below. The
+  // reducer's stamp guard is what keeps a stale timer from dismissing a
+  // newer toast.
+  const [toast, dispatchToast] = useReducer(capToastReducer, null);
+  const onCapClick = useCallback((id: string) => {
+    dispatchToast({ type: "click", id, now: Date.now() });
+  }, []);
+  useEffect(() => {
+    if (!toast) return;
+    const id = window.setTimeout(() => {
+      dispatchToast({ type: "dismiss", at: toast.at });
+    }, 2600);
+    return () => window.clearTimeout(id);
+  }, [toast]);
 
   // Use a stable tail so the page does not jitter on every render. The seed
   // changes only when the hour-bucket shifts (morning → afternoon, etc.).
@@ -843,31 +870,56 @@ export function HomeState({ t, children, locale }: ChatProps & { children: React
           </div>
         </div>
 
-        {SHOW_SUGGESTIONS ? (
-          <>
-            {/* Suggested-task row. Upstream places this *below* the project row,
-                as a single horizontal line of icon + label chips. */}
-            <section className="mt-3 w-full px-3" aria-label={t("home.suggestions")}>
-              <div className="flex items-center justify-center gap-2 overflow-x-auto">
-                {SUGGESTIONS.map((chip, index) => (
-                  <button
-                    key={chip.id}
-                    type="button"
-                    className={[
-                      "flex h-8 shrink-0 items-center gap-1 rounded-full px-3 text-caption-small-strong transition-colors",
-                      index === 0
-                        ? "border border-border_tertiary_default text-text_default_primary hover:bg-bg_interaction_tertiary_hover"
-                        : "border border-border_default text-text_default_primary hover:bg-bg_interaction_tertiary_hover",
-                    ].join(" ")}
+        {/* Quick-capability capsules (55c, ref-28): the desktop's cloud-skill
+            strip below the project row — one centred line of white pills with
+            hairline borders, the 视频生成 chip carrying the H3 model badge.
+            Every chip is an A1 placeholder: same shape as the desktop, click
+            answers with the 本地版不适用 toast, nothing pretends to launch. */}
+        <section className="relative mt-3 w-full px-3" aria-label={t("home.suggestions")}>
+          <div
+            data-testid="home-quick-capabilities"
+            className="flex items-center justify-center gap-2 overflow-x-auto"
+          >
+            {QUICK_CAPABILITIES.map((chip) => (
+              <button
+                key={chip.id}
+                type="button"
+                data-testid={`home-quick-capability-${chip.id}`}
+                onClick={() => onCapClick(chip.id)}
+                className="flex h-8 shrink-0 items-center gap-1.5 rounded-full border border-border_default bg-bg_default_primary px-3 text-caption-small-strong text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_hover"
+              >
+                <Icon name={chip.icon} size={13} />
+                <span className="whitespace-nowrap">{t(chip.key as MessageKey)}</span>
+                {chip.badge ? (
+                  /* The H3 mark is a fixed brand tint, not a theme token —
+                     the desktop paints it the same soft pink in both themes,
+                     so the literal colour rides inline rather than joining
+                     tokens.css as a one-consumer variable. */
+                  <span
+                    data-testid={`home-quick-capability-${chip.id}-badge`}
+                    className="rounded-[4px] px-1 py-px text-[10px] font-medium leading-[13px] text-[#d63384]"
+                    style={{ backgroundColor: "rgba(214, 51, 128, 0.1)" }}
                   >
-                    <span aria-hidden>{chip.emoji}</span>
-                    <span className="whitespace-nowrap">{chip.labels[locale]}</span>
-                  </button>
-                ))}
-              </div>
-            </section>
-          </>
-        ) : null}
+                    {chip.badge}
+                  </span>
+                ) : null}
+              </button>
+            ))}
+          </div>
+          {/* The placeholder toast. Same floating-banner pattern as the
+              session-restore hint (page.tsx), local to the home column so
+              opening a conversation unmounts it with the screen. */}
+          {toast ? (
+            <div
+              role="status"
+              aria-live="polite"
+              data-testid="home-quick-capability-toast"
+              className="fixed bottom-4 left-1/2 z-[1100] flex max-w-[420px] -translate-x-1/2 items-center rounded-[10px] border border-border_default bg-bg_default_scrim px-4 py-2.5 text-sm text-text_default_primary shadow-shadow_default"
+            >
+              {t("common.notLocal")}
+            </div>
+          ) : null}
+        </section>
       </div>
     </div>
   );
