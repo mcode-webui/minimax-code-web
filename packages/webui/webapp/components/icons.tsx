@@ -87,17 +87,29 @@ export type IconName =
   | "settingsUser"
   | "settingsCoding"
   | "settingsWorktree"
-  | "settingsArchived";
+  | "settingsArchived"
+  | "sparkles"
+  | "headset"
+  | "pencil"
+  | "video"
+  | "chatBubble"
+  | "bulb"
+  | "megaphone"
+  | "coffee";
   // "subagent" glyph removed 2026-09-23 — the upstream desktop does not carry
   // a sub-agent icon, and the workspace panel's "agent_team" section is
   // rendered with the upstream `PreviewerMini` component (with a fallback
   // placeholder while the engine contract is missing), not with a custom
   // glyph. See panels.tsx WorkspacePanel.
   //
-  // "headset" + "sparkle" removed 2026-09-23 — neither was an upstream icon;
-  // upstream user-menu has no 反馈与帮助 row (it was `contact_us` submenu) and
-  // no Upgrade row (the upgrade button lives in profileCard at the top of the
-  // menu).
+  // "headset" + "sparkle" removed 2026-09-23, re-added 2026-09-29 as new
+  // drawings — the removal held that upstream's user menu has no Upgrade /
+  // 反馈与帮助 rows to hang them on. Ticket 55c (user decision 2026-09-29)
+  // reversed that: the menu now renders the desktop's full row set
+  // (设置/升级/每日签到/用量/反馈与帮助/退出登录 + user card) with the
+  // cloud-only rows as disabled placeholders, so the two glyphs came back.
+  // They are NOT upstream extractions — no upstream ref exists for them —
+  // but simple in-house line drawings in the pack's 20×20 frame.
   //
   // "contact" / "learnMore" removed 2026-09-24 — upstream's Contact us
   // (R.AkR) and Learn more (R.Mxk) submenus were extracted with their glyphs,
@@ -106,6 +118,11 @@ export type IconName =
   // 歪的. The menu does not render them; see shell.tsx SidebarFooter's
   // "Rows upstream does not have are not rendered" note. If a real target ever
   // lands, re-extract the glyph from upstream R.AkR / R.Mxk there.
+  //
+  // video / chatBubble / bulb / megaphone / coffee added 2026-09-29 (55c) —
+  // the home screen's quick-capability capsules (ref-28) carry line glyphs on
+  // the desktop; these are in-house drawings in the same 20×20 frame, not
+  // upstream extractions.
 
 interface IconSpec {
   viewBox: string;
@@ -114,6 +131,103 @@ interface IconSpec {
 }
 
 const ICONS: Record<string, IconSpec> = {
+  /* ——— In-house glyphs (ticket 55c) ——— None of the eight below has an
+     upstream ref: the desktop rows they mark only gained webui rows in 55c
+     (upgrade / feedback / the project context menu / the home capsules).
+     Drawn in the pack's own frame conventions — 20×20 viewBox, default size
+     18, stroke set listed in STROKE_ICONS below. */
+  sparkles: {
+    viewBox: "0 0 20 20",
+    size: 18,
+    body: (
+      <>
+        {/* Concave four-point star (large) + a smaller one + a dot, the
+            "upgrade" convention. Edges are quadratic curves pulled toward the
+            centre, which is what makes the star read as four points rather
+            than a rotated square. */}
+        <path d="M10 2 C10.5 7 13 9.5 18 10 C13 10.5 10.5 13 10 18 C9.5 13 7 10.5 2 10 C7 9.5 9.5 7 10 2 Z" />
+        <path d="M15.5 2.3 C15.72 3.78 16.22 4.28 17.7 4.5 C16.22 4.72 15.72 5.22 15.5 6.7 C15.28 5.22 14.78 4.72 13.3 4.5 C14.78 4.28 15.28 3.78 15.5 2.3 Z" />
+        <path d="M4.75 14.75 C5.16 14.75 5.5 15.09 5.5 15.5 C5.5 15.91 5.16 16.25 4.75 16.25 C4.34 16.25 4 15.91 4 15.5 C4 15.09 4.34 14.75 4.75 14.75 Z" />
+      </>
+    ),
+  },
+  headset: {
+    viewBox: "0 0 20 20",
+    size: 18,
+    body: (
+      <>
+        <path d="M3.5 11.5 V10 C3.5 6.41 6.41 3.5 10 3.5 C13.59 3.5 16.5 6.41 16.5 10 V11.5" />
+        <path d="M3.5 10.5 H4.75 C5.44 10.5 6 11.06 6 11.75 V13.75 C6 14.44 5.44 15 4.75 15 H3.5 C2.95 15 2.5 14.55 2.5 14 V11.5 C2.5 10.95 2.95 10.5 3.5 10.5 Z" />
+        <path d="M15.25 10.5 H16.5 C17.05 10.5 17.5 10.95 17.5 11.5 V14 C17.5 14.55 17.05 15 16.5 15 H15.25 C14.56 15 14 14.44 14 13.75 V11.75 C14 11.06 14.56 10.5 15.25 10.5 Z" />
+        <path d="M16 15 V15.25 C16 16.5 14.99 17.5 13.75 17.5 H11.5" />
+      </>
+    ),
+  },
+  pencil: {
+    viewBox: "0 0 20 20",
+    size: 18,
+    body: (
+      <>
+        {/* The 重命名 glyph for the project context menu (55c, ref-26).
+            Session rows keep their inline ✎ character (their upstream ref);
+            the context menu rows all go through Icon, so this is the pencil
+            as a 20×20 outline. */}
+        <path d="M3.2 16.8 L4 13.5 L13.7 3.8 C14.3 3.2 15.2 3.2 15.8 3.8 L16.2 4.2 C16.8 4.8 16.8 5.7 16.2 6.3 L6.5 16 Z" />
+        <path d="M12.4 5.1 L14.9 7.6" />
+      </>
+    ),
+  },
+  video: {
+    viewBox: "0 0 20 20",
+    size: 18,
+    body: (
+      <>
+        <path d="M2.5 6.75 C2.5 5.51 3.51 4.5 4.75 4.5 H10.75 C11.99 4.5 13 5.51 13 6.75 V13.25 C13 14.49 11.99 15.5 10.75 15.5 H4.75 C3.51 15.5 2.5 14.49 2.5 13.25 Z" />
+        <path d="M14.4 8.6 L16.6 7.1 C17.26 6.64 18.15 7.11 18.15 7.91 V12.09 C18.15 12.89 17.26 13.36 16.6 12.9 L14.4 11.4 Z" />
+      </>
+    ),
+  },
+  chatBubble: {
+    viewBox: "0 0 20 20",
+    size: 18,
+    body: (
+      <>
+        <path d="M10 3.25 C5.97 3.25 2.75 5.92 2.75 9.15 C2.75 10.9 3.72 12.46 5.24 13.49 C5.15 14.44 4.74 15.31 4 16.13 C5.52 15.87 6.79 15.24 7.82 14.4 C8.53 14.56 9.25 14.9 10 14.9 C14.03 14.9 17.25 12.38 17.25 9.15 C17.25 5.92 14.03 3.25 10 3.25 Z" />
+      </>
+    ),
+  },
+  bulb: {
+    viewBox: "0 0 20 20",
+    size: 18,
+    body: (
+      <>
+        <path d="M10 2.5 C7.1 2.5 4.75 4.85 4.75 7.75 C4.75 9.61 5.7 11.24 7.13 12.21 L7.13 13.25 C7.13 13.8 7.58 14.25 8.13 14.25 H11.88 C12.42 14.25 12.88 13.8 12.88 13.25 V12.21 C14.3 11.24 15.25 9.61 15.25 7.75 C15.25 4.85 12.9 2.5 10 2.5 Z" />
+        <path d="M8 16.25 H12" />
+        <path d="M8.75 18 H11.25" />
+      </>
+    ),
+  },
+  megaphone: {
+    viewBox: "0 0 20 20",
+    size: 18,
+    body: (
+      <>
+        <path d="M12.75 3.2 C12.75 2.63 12.1 2.32 11.68 2.69 L6.5 7 H4 C3.17 7 2.5 7.67 2.5 8.5 V11.5 C2.5 12.33 3.17 13 4 13 H4.75 L5.5 16.25 C5.61 16.7 6.01 17 6.45 17 H7 C7.55 17 8 16.55 8 16 V13.4 L11.68 16.81 C12.1 17.18 12.75 16.87 12.75 16.3 Z" />
+        <path d="M14.75 6.5 C15.6 7.35 16.13 8.55 16.13 9.75 C16.13 10.95 15.6 12.15 14.75 13" />
+      </>
+    ),
+  },
+  coffee: {
+    viewBox: "0 0 20 20",
+    size: 18,
+    body: (
+      <>
+        <path d="M3.75 7 H14 V11.25 C14 13.32 12.32 15 10.25 15 H7.5 C5.43 15 3.75 13.32 3.75 11.25 Z" />
+        <path d="M14 8.25 H15 C16.24 8.25 17.25 9.26 17.25 10.5 C17.25 11.74 16.24 12.75 15 12.75 H13.85" />
+        <path d="M3.5 17 H14.5" />
+      </>
+    ),
+  },
   check: {
     viewBox: "0 0 20 20",
     size: 20,
@@ -822,6 +936,16 @@ const STROKE_ICONS = new Set<IconName>([
   "settingsCoding",
   "settingsWorktree",
   "settingsArchived",
+  /* 55c in-house glyphs drawn as outlines (see the ICONS entry comments):
+     the two user-menu glyphs, the context-menu pencil, and the five
+     home-capsule chips. */
+  "headset",
+  "pencil",
+  "video",
+  "chatBubble",
+  "bulb",
+  "megaphone",
+  "coffee",
 ]);
 
 export function Icon({ name, size, className }: { name: IconName; size?: number; className?: string }) {

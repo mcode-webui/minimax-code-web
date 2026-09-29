@@ -312,7 +312,9 @@ exec 回合的代价——以下都是当前真实存在的行为，选择权限
 | 侧栏会话树 | `components/session-tree.tsx` | `sidebar-session-row` |
 | 会话树项目小节头（纯文本，工单 47） | `components/session-tree.tsx#SectionHeader` | `sidebar-section-header` |
 | 会话树错误态（`role="alert"`，工单 47） | `components/session-tree.tsx` | `sidebar-tree-error` |
-| 侧栏用户菜单（设置 / 每日签到 / 用量 / 退出登录） | `components/shell.tsx#SidebarFooter` | `sidebar-user-menu` |
+| 侧栏用户菜单（设置 / 升级 / 每日签到 / 用量 / 反馈与帮助 / 退出登录 + 底部用户卡，工单 55c 起全行集） | `components/shell.tsx#SidebarFooter` | `sidebar-user-menu` |
+| 项目右键菜单（工单 55c） | `components/session-tree.tsx#ProjectNode` | `project-context-menu` |
+| 主页快捷能力胶囊（工单 55c） | `components/chat.tsx#HomeState` | `home-quick-capabilities` |
 | 侧栏 inbox（告警浮层） | `components/inbox.tsx` | `inbox-flyout` |
 | 顶栏（带模型选择器） | `components/toolbar.tsx` | `toolbar-session-status` |
 | 录入区与拖放浮层 | `components/composer.tsx` | `composer-drop-overlay`、`composer-send-button` |
@@ -550,6 +552,33 @@ Token Plan 视图是桌面的五区块（页签 + 四卡）：
 **用户菜单的「用量」行**
 
 原来悬停会弹出一个配额浮层；现在改为点击后直接跳到设置页的「用量与模型」节，浮层组件与其文案键已移除。配额数据不再有两处入口。
+
+## 主界面三元素：用户菜单 / 项目右键菜单 / 主页快捷胶囊（工单 55c）
+
+用户要求把桌面版主界面截图全部照抄。本工单覆盖其中三个元素，对齐原则沿用 53 的 A1 拍板：**有本地数据源的真做，没有的渲染桌面同款形态 + 「本地版不适用」诚实占位，不造假数据。**
+
+**用户菜单**（侧栏底部头像，参照 ref-01）现在渲染桌面全行集：设置（带 `Ctrl+,` 徽标，浏览器里真实绑定）/ 升级 / 每日签到 / 用量 / 反馈与帮助 / 退出登录，底部多了一张用户卡（头像、显示名、套餐徽章、铃铛）。真做与占位的分界：
+
+| 行 | 状态 | 依据 |
+| --- | --- | --- |
+| 设置 | 可用 | 打开既有设置模态；`Ctrl+,` 是本次新增的真实快捷键 |
+| 用量 | 可用 | 跳设置页「用量与模型」节（沿用 2026-09-28 拍板） |
+| 升级 / 反馈与帮助 | 占位禁用 | 云端账号计费与产品支持页，本地版没有这条路，悬停标注「本地版不适用」 |
+| 每日签到 / 退出登录 | 占位禁用 | 引擎契约未落地（沿用既有处理），悬停标注「暂不支持」 |
+| 用户卡 | 真做 | 引擎上报账号身份时显示真名与套餐徽章，否则显示「本地用户」占位、不渲染徽章；铃铛打开既有站内信浮层，未读红点同步 |
+
+桌面菜单顶部的 UID 行不渲染：本地版没有账号 id 可印，空着或造假都违反本菜单其余部分遵循的诚实原则。
+
+**项目右键菜单**（侧栏项目行右键，参照 ref-26）五项对齐桌面：重命名项目 / 置顶项目 / 在文件夹中显示 / 归档对话 / 移除（红）。
+
+- 重命名与置顶是真做的。项目名与置顶状态存在浏览器本地（`webui:project-custom:v1`，见持久化键一节）——mcode 的运行时数据库里项目不是实体、没有可写入口，所以覆盖层放在唯一消费者所在处，与会话标题 `titleCustom` 的思路一致。置顶的项目排到列表最上，项目名旁常驻图钉标记。
+- 在文件夹中显示是占位禁用：浏览器打不开操作系统的文件管理器。
+- 归档对话是占位禁用：mcode 数据库虽有 `archived` 字段，但写别的进程的数据库不在本片范围，且已归档任务页（工单 55b）未落地前没有取消归档的入口——归档会变成不可逆的数据消失。
+- 移除是真做的红色危险项：确认弹窗写明真实删除总数（主会话与子代理会话全量，不是侧栏角标的主会话数——不可逆确认不得少报）与不可恢复，并预告删除将逐个进行、期间会出现 N 次授权确认（服务端对每个单会话删除分别走 `authorize("session.delete")`，没有批量授权契约）；确认后弹窗内实时显示「正在删除 i/N」，逐个走既有的单会话删除端点，失败即停并报告。仅当全部删除成功时才清掉该项目的重命名/置顶记录（部分失败时存活项目保留其自定义），清理经组件状态与 localStorage 同步进行。
+
+**主页快捷能力胶囊**（参照 ref-28）在主页输入框与项目行下方渲染桌面的五颗：视频生成（H3 徽标）/ Vibe Coding / 设计视觉 / 产品运营 / 询问 MCode。这些技能依赖云端运行时，本地版没有，所以点击后弹出「本地版不适用」的短暂提示（toast），胶囊本身不发送任何请求——形态照抄桌面，能力边界用一句话说清，不假装能启动。
+
+回归钉在 `webapp/test/shell-elements-parity.test.ts`，分三层：全部 55c 文案键的双语覆盖（zh 逐字对照参照截图）；静态源码 tripwire（菜单行集、可用/禁用分界、危险色、批量删除接线——含确认弹窗必须引用真实删除集而非角标主会话数——以及胶囊点击接线与胶囊区不发请求）；以及 `lib/cap-toast.ts` 的**行为级**测试——toast 状态机特意拆成零依赖模块，点击→替换→按时戳消失的契约在 node:test 下直接跑，无需渲染 harness（质检 M6 轮：掏空点击处理函数体曾让所有源码断言全绿）。每层都做过针对各自目标变异的红绿验证。
 
 
 
@@ -940,8 +969,10 @@ loading-states 相同：让 SSR 渲染测试可以脱离 `chat.tsx` 的 `@/` 别
 | `file_line_wrap` | `localStorage` | `webapp/lib/settings-local.ts` | 工单 48 + 52 | 纯 `"true"\|"false"` 字符串，参照共享命名；默认 `"true"`；每次挂载读取方为 `components/code-view.tsx`（代码文件预览）与 `components/markdown-html.tsx`（markdown 代码块：聊天、活动组、文件预览） |
 | `webui-context-window-usage` | `localStorage` | `webapp/lib/settings-local.ts` | 工单 48 | 纯 `"true"\|"false"` 字符串，参照共享命名；默认 `"false"`；仅记录偏好，尚无读取方 |
 | `webui-follow-up-behavior` | `localStorage` | `webapp/lib/settings-local.ts` | 工单 48 | 纯 `"queue"\|"steer"` 字符串（其他值读取为 `"queue"`），参照共享命名；仅记录偏好，尚无读取方 |
+| `webui:project-custom:v1` | `localStorage` | `webapp/lib/project-custom.ts` | 工单 55c（项目右键菜单） | `{version:1, titles:{<项目key>:<自定义名>}, pinned:[<项目key>]}`。**不按 cid 命名空间**（有意）：重命名与置顶描述的是项目本身而非某个浏览器会话，同一浏览器的所有标签页共享。写入尽力而为，失败静默；项目被完整移除（全部会话删除成功）时同步清除其条目 |
 
-除工单 48 的四个参照共享键（上表末四行，有意用桌面参照的裸键名）外，
+除工单 48 的四个参照共享键（`file_open_in_new_tab` / `file_line_wrap` /
+`webui-context-window-usage` / `webui-follow-up-behavior`，有意用桌面参照的裸键名）外，
 所有键共享 `webui:` 前缀，写入均为尽力 + 防抖（`ui`、`workspace-tabs`
 为 150 ms 防抖；其他立即写）。一次失败的写入不会破坏内存状态；
 我们关心的是 `app/global-error.tsx` 捕获的硬崩溃，而非这里的配额

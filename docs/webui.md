@@ -426,7 +426,9 @@ below cites the component file and one `data-testid` per surface.
 | Sidebar session tree | `components/session-tree.tsx` | `sidebar-session-row` |
 | Session-tree section header (plain text, ticket 47) | `components/session-tree.tsx#SectionHeader` | `sidebar-section-header` |
 | Session-tree error state (`role="alert"`, ticket 47) | `components/session-tree.tsx` | `sidebar-tree-error` |
-| Sidebar user menu (settings / check-in / usage / sign-out) | `components/shell.tsx#SidebarFooter` | `sidebar-user-menu` |
+| Sidebar user menu (settings / upgrade / check-in / usage / feedback & help / sign-out + trailing user card; full row set since ticket 55c) | `components/shell.tsx#SidebarFooter` | `sidebar-user-menu` |
+| Project context menu (ticket 55c) | `components/session-tree.tsx#ProjectNode` | `project-context-menu` |
+| Home quick-capability capsules (ticket 55c) | `components/chat.tsx#HomeState` | `home-quick-capabilities` |
 | Sidebar inbox (alerts flyout) | `components/inbox.tsx` | `inbox-flyout` |
 | Toolbar (top bar with model selector) | `components/toolbar.tsx` | `toolbar-session-status` |
 | Composer + drop overlay | `components/composer.tsx` | `composer-drop-overlay`, `composer-send-button` |
@@ -832,6 +834,90 @@ placeholders. The dead `if (!section)` branch inside `SettingsPanel` was
 removed and the `section` prop made required — every reachable tab
 resolves a section, so the branch could never render.
 
+## Main-surface elements: user menu / project context menu / home capsules (ticket 55c)
+
+The user asked for every desktop main-surface screenshot to be copied
+verbatim. This ticket covers three elements under ticket 53's A1 ruling:
+**what has a local data source is real; what does not renders the
+desktop's exact shape with the 本地版不适用 marker, never faked data.**
+Server contracts are untouched — the whole delta is client-side.
+
+**User menu** (sidebar footer avatar, ref-01) now carries the desktop's
+full row set — Settings (with a `Ctrl+,` kbd badge; the binding is real,
+added to `app/page.tsx`'s keydown handler) / Upgrade / Daily check-in /
+Usage / Feedback & help / Sign out — plus a trailing user card (avatar,
+display name, plan badge, bell). The enabled/placeholder split:
+
+| Row | State | Reason |
+| --- | --- | --- |
+| Settings | enabled | opens the existing settings modal; `Ctrl+,` is a new real binding |
+| Usage | enabled | jumps to the settings page's Usage & models section (2026-09-28 decision, unchanged) |
+| Upgrade / Feedback & help | disabled placeholder | cloud billing and product support pages; hover title carries `common.notLocal` |
+| Daily check-in / Sign out | disabled placeholder | engine contract not landed (pre-55c treatment kept); hover title carries `common.unsupported` |
+| User card | real | engine identity and plan badge when `/api/account` reports them; the 本地用户 stand-in and no badge otherwise. The bell opens the existing inbox flyout with the unread dot |
+
+The desktop's UID line at the top is deliberately not rendered: a local
+edition has no account id to print, and an empty or invented id would
+break the honesty rule the rest of the menu follows. This reverses the
+2026-09-23/24 trims of the Upgrade / Feedback rows — the earlier call
+held that a disabled row next to a real one was the shape the user had
+rejected; the 2026-09-29 instruction to copy the screenshots overrides
+it, with the A1 marker keeping the limits stated rather than implied.
+
+**Project context menu** (right-click a sidebar project row, ref-26):
+重命名项目 / 置顶项目 / 在文件夹中显示 / 归档对话 / 移除 (danger).
+
+- Rename and pin are real, backed by a browser-local overlay
+  (`webui:project-custom:v1`, see Persistence keys). mcode's runtime db
+  has no project entity to write into — a project is the git root its
+  directories resolve to (`server/lib/session-tree.js#buildTree`) — so
+  the overlay lives where its only consumer lives, mirroring how
+  `titleCustom` overlays session titles. Pinned projects sort to the top
+  and carry a persistent pin mark beside the title; the menu row toggles
+  between 置顶项目 / 取消置顶.
+- 在文件夹中显示 is a disabled placeholder: a browser cannot open the
+  OS file manager.
+- 归档对话 is a disabled placeholder: the runtime db has an `archived`
+  flag, but writing another process's database is out of scope, and
+  until ticket 55b's archived-tasks page lands there is no un-archive
+  surface — archiving would be irreversible data loss.
+- 移除 is a real danger row: the confirm modal states the TRUE deletion
+  set — main sessions AND subagent rows, not the sidebar pill's
+  main-session count; an irreversible confirm must not understate what
+  goes — together with the irreversibility and, because the server
+  authorizes each single-session delete separately through
+  `authorize("session.delete")` (there is no batch contract), the number
+  of approval prompts to expect. Once confirmed, the dialog shows live
+  `deleting i/N` progress while the delete walks the existing
+  `DELETE /api/sessions/:id` sequentially over every session under the
+  project **including subagent rows** (the runtime rows are per-session;
+  DELETE does not cascade into children). A failure reports through the
+  action-error banner and stops the batch; the project's rename/pin
+  entries are cleared ONLY on a full success — a partially-failed remove
+  leaves the surviving project its customizations — and the clear runs
+  through the tree's state so memory and localStorage stay in step.
+
+**Home quick-capability capsules** (ref-28): the home screen renders the
+desktop's five chips under the composer row — 视频生成 (H3 badge) /
+Vibe Coding / 设计视觉 / 产品运营 / 询问 MCode — as white pills with
+hairline borders and the H3 badge in its fixed brand tint. The skills
+are cloud-only, so every chip answers a click with the 本地版不适用
+toast and sends nothing: same shape as the desktop, limit stated in one
+sentence, no launch to fake.
+
+The regression pins live in `webapp/test/shell-elements-parity.test.ts`
+in three layers: bilingual coverage for every 55c key with the zh labels
+asserted verbatim against the reference screenshots; static-source
+tripwires for the row sets, the enabled/disabled split, the danger tone,
+the batch-delete wiring (including that the confirm quotes the TRUE
+deletion set, never the pill's main-session count) and the capsules'
+click-to-toast wiring (including a no-`api.send` assertion on the capsule
+strip); and BEHAVIOUR tests on `lib/cap-toast.ts` — the toast state
+machine is an import-clean module precisely so the click→replace→dismiss
+contract runs under node:test without a render harness (QA round M6:
+hollowing the handler body had kept every source-only assertion green).
+Each layer was red-green verified against its own targeted mutation.
+
 ## Markdown rendering and Mermaid diagrams (slice 23)
 
 Assistant messages and Markdown file previews render through
@@ -1233,9 +1319,11 @@ Invariants worth keeping when touching either branch:
 | `file_line_wrap` | `localStorage` | `webapp/lib/settings-local.ts` | tickets 48 + 52 | bare `"true"\|"false"` string, reference-shared namespace; default `"true"`; read per mount by `components/code-view.tsx` (code-file previews) and `components/markdown-html.tsx` (markdown codeblocks: chat, activity groups, file previews) |
 | `webui-context-window-usage` | `localStorage` | `webapp/lib/settings-local.ts` | ticket 48 | bare `"true"\|"false"` string, reference-shared namespace; default `"false"`; recorded preference, no reader yet |
 | `webui-follow-up-behavior` | `localStorage` | `webapp/lib/settings-local.ts` | ticket 48 | bare `"queue"\|"steer"` string (anything else reads as `"queue"`), reference-shared namespace; recorded preference, no reader yet |
+| `webui:project-custom:v1` | `localStorage` | `webapp/lib/project-custom.ts` | ticket 55c (project context menu) | `{version:1, titles:{<projectKey>:<customName>}, pinned:[<projectKey>]}`. **Deliberately not cid-namespaced**: a rename or a pin describes the project, not a browser session, so every tab of this browser shares it. Best-effort write, silent failure; a project's entries are cleared when its remove completed with every session deleted |
 
-Except for ticket 48's four reference-shared keys (the last four rows
-above, which deliberately use the desktop reference's bare key names),
+Except for ticket 48's four reference-shared keys (`file_open_in_new_tab`,
+`file_line_wrap`, `webui-context-window-usage`, `webui-follow-up-behavior`,
+which deliberately use the desktop reference's bare key names),
 all keys share the `webui:` prefix and are best-effort writes (debounced
 150 ms for `ui` and `workspace-tabs`; immediate for the others). A failed
 write leaves the in-memory state correct and the persistence silent — the
