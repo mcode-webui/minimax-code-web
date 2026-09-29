@@ -24,12 +24,15 @@
 // both testids on the same node so Playwright selectors written against either
 // form land on the same element.
 
+// Like components/activity-group.tsx: import React explicitly — the tsx
+// loader honours `jsx: "preserve"` with the classic runtime, so there is no
+// automatic JSX injection when the test suite renders this component.
+
+import * as React from "react";
 import type { MouseEvent, ReactNode } from "react";
 
 export type ConversationUsageActionKind =
-  | "buy_credits"
-  | "subscribe_plan"
-  | "upgrade_plan";
+  "buy_credits" | "subscribe_plan" | "upgrade_plan";
 
 export interface ConversationUsageNotice {
   kind: "five_hour" | "weekly" | "video" | "insufficient_credit" | string;
@@ -43,7 +46,11 @@ export interface ConversationUsageBannerProps {
   notice: ConversationUsageNotice;
   mobileLayout?: boolean;
   messageText: string;
-  dismissLabel?: string;
+  /** aria-label of the × button — the caller passes the localised string. */
+  dismissLabel: string;
+  /** App locale ("zh" | "en"); drives the reset-time formatting so the
+   * timestamp follows the app language setting, not the browser. */
+  locale?: string;
   buttonLabels?: Partial<Record<ConversationUsageActionKind, string>>;
   onDismiss?: () => void;
   onAction?: (kind: ConversationUsageActionKind) => void;
@@ -56,13 +63,22 @@ export interface ConversationUsageBannerProps {
   }) => ReactNode;
 }
 
+// English-only fallbacks: the shell always renders this banner with
+// `actions: []` (the local edition has no purchase surface), so these never
+// display; if a future caller fills `actions` without labels, the fallback
+// must still read as English on an English locale — localised labels are
+// the caller's job, passed through `buttonLabels`.
 const DEFAULT_BUTTON_LABELS: Record<ConversationUsageActionKind, string> = {
-  buy_credits: "购买积分",
-  subscribe_plan: "订阅套餐",
-  upgrade_plan: "升级套餐",
+  buy_credits: "Buy credits",
+  subscribe_plan: "Subscribe",
+  upgrade_plan: "Upgrade plan",
 };
 
-function formatResetAt(resetAtMs: number, now: number = Date.now()): string {
+function formatResetAt(
+  resetAtMs: number,
+  locale: string | undefined,
+  now: number = Date.now(),
+): string {
   const sameDay = (() => {
     const a = new Date(resetAtMs);
     const b = new Date(now);
@@ -72,7 +88,7 @@ function formatResetAt(resetAtMs: number, now: number = Date.now()): string {
       a.getDate() === b.getDate()
     );
   })();
-  return new Intl.DateTimeFormat(undefined, {
+  return new Intl.DateTimeFormat(locale, {
     ...(sameDay ? {} : { month: "short", day: "numeric" }),
     hour: "numeric",
     minute: "2-digit",
@@ -94,7 +110,12 @@ function DefaultActionButton(props: {
       ? `${base} border-border_default bg-bg_interaction_primary_default text-text_default_inverted hover:bg-bg_interaction_primary_hover`
       : `${base} border-border_default bg-bg_default_primary text-text_default_primary hover:bg-bg_interaction_tertiary_hover`;
   return (
-    <button type="button" className={styles} data-testid={testId} onClick={onClick}>
+    <button
+      type="button"
+      className={styles}
+      data-testid={testId}
+      onClick={onClick}
+    >
       {label}
     </button>
   );
@@ -102,7 +123,13 @@ function DefaultActionButton(props: {
 
 function CloseIcon(): React.JSX.Element {
   return (
-    <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true" focusable="false">
+    <svg
+      width="18"
+      height="18"
+      viewBox="0 0 18 18"
+      aria-hidden="true"
+      focusable="false"
+    >
       <path
         d="M4 4l10 10M14 4L4 14"
         fill="none"
@@ -124,19 +151,35 @@ function NoticeIcon(): React.JSX.Element {
       focusable="false"
       className="flex-none text-icon_default_secondary"
     >
-      <circle cx="10" cy="10" r="8" fill="none" stroke="currentColor" strokeWidth="1.5" />
-      <path d="M10 6v5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+      <circle
+        cx="10"
+        cy="10"
+        r="8"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+      />
+      <path
+        d="M10 6v5"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+      />
       <circle cx="10" cy="13.5" r="0.9" fill="currentColor" />
     </svg>
   );
 }
 
-export function ConversationUsageBanner(props: ConversationUsageBannerProps): React.JSX.Element {
+export function ConversationUsageBanner(
+  props: ConversationUsageBannerProps,
+): React.JSX.Element {
   const {
     notice,
     mobileLayout = false,
     messageText,
-    dismissLabel = "关闭",
+    dismissLabel,
+    locale,
     buttonLabels,
     onDismiss,
     onAction,
@@ -145,14 +188,16 @@ export function ConversationUsageBanner(props: ConversationUsageBannerProps): Re
 
   const labels: Record<ConversationUsageActionKind, string> = {
     buy_credits: buttonLabels?.buy_credits ?? DEFAULT_BUTTON_LABELS.buy_credits,
-    subscribe_plan: buttonLabels?.subscribe_plan ?? DEFAULT_BUTTON_LABELS.subscribe_plan,
-    upgrade_plan: buttonLabels?.upgrade_plan ?? buttonLabels?.upgrade_plan ?? DEFAULT_BUTTON_LABELS.upgrade_plan,
+    subscribe_plan:
+      buttonLabels?.subscribe_plan ?? DEFAULT_BUTTON_LABELS.subscribe_plan,
+    upgrade_plan:
+      buttonLabels?.upgrade_plan ?? DEFAULT_BUTTON_LABELS.upgrade_plan,
   };
 
   const composedMessage =
     notice.resetAtMs == null
       ? messageText
-      : `${messageText} ${formatResetAt(notice.resetAtMs)}`;
+      : `${messageText} ${formatResetAt(notice.resetAtMs, locale)}`;
 
   const canDismiss = notice.dismissable !== false;
   const dismissClass = mobileLayout

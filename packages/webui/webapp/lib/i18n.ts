@@ -895,6 +895,7 @@ const en = {
     "The page follows your operating system's dark / light setting. Switches live, without refreshing.",
   "common.save": "Save",
   "common.cancel": "Cancel",
+  "common.close": "Close",
   "settings.shortcuts.notice":
     "Not applicable in the browser: the WebUI cannot register global shortcuts. The keys below are the desktop defaults, listed for reference only.",
   "settings.shortcuts.group.miniChat": "Mini Chat",
@@ -1716,6 +1717,7 @@ const zh: Record<MessageKey, string> = {
     "页面跟随操作系统的明暗设置。系统切换时，页面会实时跟随，无需刷新。",
   "common.save": "保存",
   "common.cancel": "取消",
+  "common.close": "关闭",
   "settings.shortcuts.notice":
     "浏览器环境不适用：WebUI 无法注册全局快捷键。以下键位为桌面版默认值，仅供参考。",
   "settings.shortcuts.group.miniChat": "Mini Chat",

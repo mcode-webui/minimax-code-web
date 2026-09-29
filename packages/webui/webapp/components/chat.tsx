@@ -1,7 +1,17 @@
 "use client";
 
-import { ConversationUsageBanner, type ConversationUsageNotice } from "./conversation-usage-banner";
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import {
+  ConversationUsageBanner,
+  type ConversationUsageNotice,
+} from "./conversation-usage-banner";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+} from "react";
 
 import { renderMarkdown } from "@/lib/markdown";
 import { MarkdownHtml } from "./markdown-html";
@@ -16,8 +26,16 @@ import {
 import { Icon } from "./icons";
 import { useChatVirtualization } from "./chat-virtual-list";
 import { ActivityPulse, isSessionActivityActive } from "./loading-states";
-import { ActivityGroup, TurnProcessDisclosure, assignActivityBlockKeys } from "./activity-group";
-import { computeTurnStatsByUnit, summarizeTurn, type TurnStats } from "@/lib/turn-stats";
+import {
+  ActivityGroup,
+  TurnProcessDisclosure,
+  assignActivityBlockKeys,
+} from "./activity-group";
+import {
+  computeTurnStatsByUnit,
+  summarizeTurn,
+  type TurnStats,
+} from "@/lib/turn-stats";
 import { useSessionContext } from "@/lib/store";
 import { capToastReducer } from "@/lib/cap-toast";
 import { readScrollPosition as readPersistedScroll } from "@/lib/persist";
@@ -107,20 +125,42 @@ export function Chat({
   // 低于 20% 时给出对应横幅，无数据不渲染——不造假数字。
   const usageNotice = useMemo<ConversationUsageNotice | null>(() => {
     if (!quota?.ok) return null;
-    const window = (kind: "five_hour" | "weekly", remaining?: number, resetAt?: number) => {
+    const window = (
+      kind: "five_hour" | "weekly",
+      remaining?: number,
+      resetAt?: number,
+    ) => {
       if (typeof remaining !== "number") return null;
       if (remaining > 0.2) return null;
       return {
         kind,
-        messageKey: kind === "five_hour" ? "usage.banner.fiveHourLow" : "usage.banner.weeklyLow",
+        messageKey:
+          kind === "five_hour"
+            ? "usage.banner.fiveHourLow"
+            : "usage.banner.weeklyLow",
         resetAtMs: resetAt ?? null,
         actions: [] as const,
         dismissable: true,
       } satisfies ConversationUsageNotice;
     };
-    return window("five_hour", quota.remaining, quota.resetAt)
-      ?? window("weekly", quota.weeklyRemaining, quota.weeklyResetAt);
+    return (
+      window("five_hour", quota.remaining, quota.resetAt) ??
+      window("weekly", quota.weeklyRemaining, quota.weeklyResetAt)
+    );
   }, [quota]);
+  // 工单 60 的 × 关闭：dismiss 只对「当前这个低配额窗口」生效——记录被关掉
+  // 的 kind + resetAtMs 指纹；窗口滚动（resetAt 变化）或换窗口后横幅自然
+  // 回归，无需持久化（刷新后重新评估本来就是期望行为）。
+  const usageNoticeKey = usageNotice
+    ? `${usageNotice.kind}:${usageNotice.resetAtMs ?? "none"}`
+    : null;
+  const [dismissedUsageNoticeKey, setDismissedUsageNoticeKey] = useState<
+    string | null
+  >(null);
+  const visibleUsageNotice =
+    usageNotice && usageNoticeKey !== dismissedUsageNoticeKey
+      ? usageNotice
+      : null;
   const scrollerRef = useRef<HTMLDivElement>(null);
   // Decode, then fold each run of thinking/tool blocks into one activity group so
   // the transcript renders the way upstream lays it out. The decoder needs
@@ -129,7 +169,9 @@ export function Chat({
   const workspaceDir = state?.workspace?.dir ?? null;
   const units = useMemo(
     () =>
-      groupActivity(state ? decodeTranscript(state.chat, { workspaceDir }) : []),
+      groupActivity(
+        state ? decodeTranscript(state.chat, { workspaceDir }) : [],
+      ),
     [state, workspaceDir],
   );
 
@@ -168,7 +210,10 @@ export function Chat({
   // the thinking rows on every re-cut and wipe their elapsed-seconds state
   // at exactly the moment the turn settles. See
   // `assignActivityBlockKeys`'s docblock.
-  const activityBlockKeys = useMemo(() => assignActivityBlockKeys(units), [units]);
+  const activityBlockKeys = useMemo(
+    () => assignActivityBlockKeys(units),
+    [units],
+  );
 
   // Ticket 46 (D6) — per-turn counts for the turn-process bar. One
   // forward pass keys every assistant tail block (the blocks carrying
@@ -185,7 +230,10 @@ export function Chat({
   // transcript to a visible window around the user's scroll position. The hook
   // owns the scroll/resize listeners; `stuck` uses the 16 px threshold so the
   // "jump to latest" pill does not flicker on a single wheel tick.
-  const { window: virtWindow, stuck } = useChatVirtualization(scrollerRef, units.length);
+  const { window: virtWindow, stuck } = useChatVirtualization(
+    scrollerRef,
+    units.length,
+  );
   const visibleUnits = useMemo(
     () =>
       virtWindow.useVirtual
@@ -254,7 +302,10 @@ export function Chat({
       restoredRef.current = null;
       return;
     }
-    const explicit = typeof initialScrollTop === "number" && Number.isFinite(initialScrollTop) ? initialScrollTop : null;
+    const explicit =
+      typeof initialScrollTop === "number" && Number.isFinite(initialScrollTop)
+        ? initialScrollTop
+        : null;
     const saved = readPersistedScroll(sessionKey);
     const best = explicit !== null && explicit > 0 ? explicit : saved;
     targetScrollRef.current = best > 0 ? best : null;
@@ -315,14 +366,17 @@ export function Chat({
               splits evenly left and right (no dead band dumping
               on one side). */}
           <div className="message-container-chat-content mx-auto w-full max-w-[960px] px-4">
-            {usageNotice ? (
+            {visibleUsageNotice ? (
               <ConversationUsageBanner
-                notice={usageNotice}
+                notice={visibleUsageNotice}
                 messageText={t(
-                  usageNotice.kind === "weekly"
+                  visibleUsageNotice.kind === "weekly"
                     ? "usage.banner.weeklyLow"
                     : "usage.banner.fiveHourLow",
                 )}
+                dismissLabel={t("common.close")}
+                locale={locale}
+                onDismiss={() => setDismissedUsageNoticeKey(usageNoticeKey)}
               />
             ) : null}
             <div className="min-h-[10px] w-full" />
@@ -332,7 +386,11 @@ export function Chat({
               </p>
             ) : null}
             {virtWindow.useVirtual && virtWindow.topSpacer > 0 ? (
-              <div aria-hidden="true" data-testid="chat-virtual-top-spacer" style={{ height: virtWindow.topSpacer }} />
+              <div
+                aria-hidden="true"
+                data-testid="chat-virtual-top-spacer"
+                style={{ height: virtWindow.topSpacer }}
+              />
             ) : null}
             {visibleUnits.map((unit, localIndex) => {
               // Key by the *original* unit index so React keeps the same DOM
@@ -364,7 +422,11 @@ export function Chat({
               );
             })}
             {virtWindow.useVirtual && virtWindow.bottomSpacer > 0 ? (
-              <div aria-hidden="true" data-testid="chat-virtual-bottom-spacer" style={{ height: virtWindow.bottomSpacer }} />
+              <div
+                aria-hidden="true"
+                data-testid="chat-virtual-bottom-spacer"
+                style={{ height: virtWindow.bottomSpacer }}
+              />
             ) : null}
             {/* Ticket 46 (D6) — the live turn's elapsed bar. Renders
                 「已执行 N 秒」 and ticks once per second while the engine
@@ -559,7 +621,10 @@ function MessageActions({
           <Icon name={copied ? "check" : "file"} size={18} />
         </button>
       ) : null}
-      <div data-testid="message-feedback-actions" className="flex items-center gap-1.5">
+      <div
+        data-testid="message-feedback-actions"
+        className="flex items-center gap-1.5"
+      >
         <button
           type="button"
           data-testid="message-feedback-like"
@@ -583,7 +648,9 @@ function MessageActions({
           aria-label={t("chat.dislike")}
           aria-pressed={liked === "down"}
           title={t("chat.dislike")}
-          onClick={() => setLiked((value) => (value === "down" ? "none" : "down"))}
+          onClick={() =>
+            setLiked((value) => (value === "down" ? "none" : "down"))
+          }
           className={[
             REVEALED,
             "flex size-[26px] items-center justify-center rounded-[8px] transition-colors hover:bg-bg_interaction_tertiary_hover",
@@ -605,7 +672,9 @@ function MessageActions({
         <Icon name="fork" size={18} />
       </button>
       {ts ? (
-        <span className={`desktop-text-ui-assist text-[13px] leading-[18px] text-text_default_tertiary ${REVEALED}`}>
+        <span
+          className={`desktop-text-ui-assist text-[13px] leading-[18px] text-text_default_tertiary ${REVEALED}`}
+        >
           {formatTimestamp(ts, locale)}
         </span>
       ) : null}
@@ -616,7 +685,8 @@ function MessageActions({
 function formatTimestamp(ts: number, locale: Locale): string {
   const date = new Date(ts);
   const pad = (n: number) => n.toString().padStart(2, "0");
-  if (locale === "zh") return `${date.getMonth() + 1}月${date.getDate()}日,${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  if (locale === "zh")
+    return `${date.getMonth() + 1}月${date.getDate()}日,${pad(date.getHours())}:${pad(date.getMinutes())}`;
   return `${date.toLocaleString("en-US", { month: "short" })} ${date.getDate()}, ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
@@ -627,7 +697,13 @@ function formatTimestamp(ts: number, locale: Locale): string {
  * with `code.inline-code`, `strong`, headings, tables, …). This renders the
  * same shape with `marked`, sanitised before it reaches the DOM.
  */
-function MarkdownBody({ text, streaming }: { text: string; streaming?: boolean }) {
+function MarkdownBody({
+  text,
+  streaming,
+}: {
+  text: string;
+  streaming?: boolean;
+}) {
   const html = useMemo(() => renderMarkdown(text), [text]);
   return (
     <div className="matrix-markdown message-content relative max-w-full flex-1 overflow-hidden text-pretty">
@@ -640,7 +716,9 @@ function MarkdownBody({ text, streaming }: { text: string; streaming?: boolean }
         <MarkdownHtml html={html} />
       </div>
       {streaming ? (
-        <span className="ml-[2px] inline-block animate-pulse text-text_default_accent">▍</span>
+        <span className="ml-[2px] inline-block animate-pulse text-text_default_accent">
+          ▍
+        </span>
       ) : null}
     </div>
   );
@@ -693,7 +771,13 @@ function TodoBlock({ block }: { block: TranscriptBlock }) {
  * does not carry that summary, so notices render in its place until the
  * backend exposes it.
  */
-function NoticeBlock({ block, t }: { block: TranscriptBlock; t: (key: MessageKey) => string }) {
+function NoticeBlock({
+  block,
+  t,
+}: {
+  block: TranscriptBlock;
+  t: (key: MessageKey) => string;
+}) {
   return (
     <div className="mb-4">
       <div className="message-animate-in group relative w-full">
@@ -801,7 +885,11 @@ const GREETING_TAILS: Record<string, string[] | undefined> = {
   ],
 };
 
-export function HomeState({ t, children, locale }: ChatProps & { children: React.ReactNode; locale: Locale }) {
+export function HomeState({
+  t,
+  children,
+  locale,
+}: ChatProps & { children: React.ReactNode; locale: Locale }) {
   const { state } = useSessionContext();
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
@@ -863,7 +951,8 @@ export function HomeState({ t, children, locale }: ChatProps & { children: React
               onError={(event) => {
                 const target = event.currentTarget;
                 target.style.display = "none";
-                const fallback = target.nextElementSibling as HTMLElement | null;
+                const fallback =
+                  target.nextElementSibling as HTMLElement | null;
                 if (fallback) fallback.style.display = "flex";
               }}
             />
@@ -906,7 +995,10 @@ export function HomeState({ t, children, locale }: ChatProps & { children: React
             hairline borders, the 视频生成 chip carrying the H3 model badge.
             Every chip is an A1 placeholder: same shape as the desktop, click
             answers with the 本地版不适用 toast, nothing pretends to launch. */}
-        <section className="relative mt-3 w-full px-3" aria-label={t("home.suggestions")}>
+        <section
+          className="relative mt-3 w-full px-3"
+          aria-label={t("home.suggestions")}
+        >
           <div
             data-testid="home-quick-capabilities"
             className="flex items-center justify-center gap-2 overflow-x-auto"
@@ -920,7 +1012,9 @@ export function HomeState({ t, children, locale }: ChatProps & { children: React
                 className="flex h-8 shrink-0 items-center gap-1.5 rounded-full border border-border_default bg-bg_default_primary px-3 text-caption-small-strong text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_hover"
               >
                 <Icon name={chip.icon} size={13} />
-                <span className="whitespace-nowrap">{t(chip.key as MessageKey)}</span>
+                <span className="whitespace-nowrap">
+                  {t(chip.key as MessageKey)}
+                </span>
                 {chip.badge ? (
                   /* The H3 mark is a fixed brand tint, not a theme token —
                      the desktop paints it the same soft pink in both themes,
