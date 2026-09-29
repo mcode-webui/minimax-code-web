@@ -19,6 +19,17 @@ import { extractSegments, normalizeTerminalOutput, sliceByColumn, sliceWithWidth
 /**
  * Component interface - all components must implement this
  */
+export interface ScrollbackLayout {
+	/** Stable row identities in the last rendered document (never inferred from text). */
+	readonly anchors: readonly { readonly id: string; readonly row: number; readonly blockId?: string }[];
+	/** Source blocks still present, including blocks whose current view has no rows. */
+	readonly blocks?: ReadonlySet<string>;
+	/** Test current source membership to distinguish projection eviction from deletion. */
+	containsBlock?(id: string): boolean;
+	/** First footer row. Rows before this belong to the transcript. */
+	readonly bodyEnd: number;
+}
+
 export interface Component {
 	/**
 	 * Render the component to lines for the given viewport width
@@ -30,9 +41,13 @@ export interface Component {
 	/**
 	 * Opt into preserving native scrolling when only background content shrinks.
 	 * Return a key for the last rendered transient layout (menus, editor, banners).
-	 * A changed or missing key restores exposed document rows instead of padding.
+	 * Anchored document layouts additionally preserve their emitted history across
+	 * transient changes; unclassified layouts require an unchanged historical prefix.
 	 */
 	getViewportLayoutKey?(): string | undefined;
+
+	/** Opt into immutable native history with an editable, anchored viewport. */
+	getScrollbackLayout?(): ScrollbackLayout | undefined;
 
 	/**
 	 * Optional handler for keyboard input when component has focus
@@ -347,6 +362,8 @@ export abstract class TuiBase extends Container implements TUI {
 	/** Global callback for debug key (Shift+Ctrl+D). Called before input is forwarded to focused component. */
 	public onDebug?: () => void;
 	private renderRequested = false;
+	private hasRenderedFrame = false;
+	private outputDrainPending = false;
 	private immediateRenderScheduled = false;
 	private renderTimer: NodeJS.Timeout | undefined;
 	private lastRenderAt = 0;
@@ -778,7 +795,7 @@ export abstract class TuiBase extends Container implements TUI {
 		this.renderRequested = false;
 		this.cancelRenderTimer();
 		this.lastRenderAt = performance.now();
-		this.doRender();
+		this.renderFrame();
 	}
 
 	requestRender(force = false): void {
@@ -805,8 +822,33 @@ export abstract class TuiBase extends Container implements TUI {
 			this.cancelRenderTimer();
 			this.renderRequested = false;
 			this.lastRenderAt = performance.now();
-			this.doRender();
+			this.renderFrame();
 		});
+	}
+
+	protected hasPendingRender(): boolean {
+		return this.renderRequested || this.outputDrainPending;
+	}
+
+	private renderFrame(): void {
+		// The initial frame may follow startup controls. Later frames wait for the
+		// previous output and render only the latest model, rather than queueing
+		// obsolete history replays while an SSH peer is slow or paused.
+		if (this.hasRenderedFrame && this.terminal.outputPending && this.terminal.drainOutput) {
+			if (!this.outputDrainPending) {
+				this.outputDrainPending = true;
+				void this.terminal.drainOutput().then(() => {
+					this.outputDrainPending = false;
+					if (!this.stopped) this.requestRender();
+				}, () => {
+					// ProcessTerminal reports the failure through stdout's error event.
+					this.outputDrainPending = false;
+				});
+			}
+			return;
+		}
+		this.doRender();
+		this.hasRenderedFrame = true;
 	}
 
 	private cancelRenderTimer(): void {
@@ -828,7 +870,7 @@ export abstract class TuiBase extends Container implements TUI {
 			}
 			this.renderRequested = false;
 			this.lastRenderAt = performance.now();
-			this.doRender();
+			this.renderFrame();
 			if (this.renderRequested) {
 				this.scheduleRender();
 			}

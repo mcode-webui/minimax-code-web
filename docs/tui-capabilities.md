@@ -2,6 +2,28 @@
 
 The current capability target is **TUI 0.4.12**; see [version and evidence baseline](open-source-status.md#version-and-evidence-baseline) for the separate workspace and embedded-tool versions. “Restored” below describes implementation and assembly, not acceptance of every account or online service.
 
+## Regular-mode terminal history
+
+Regular mode preserves native terminal history, including shell output from before
+MCode started. Rows already emitted into scrollback are snapshots of what was shown
+at that time; folding, completed tools and later edits do not rewrite those rows.
+The live application view remains the source for the current transcript.
+
+Long turns keep a bounded live projection. Dropping its oldest cells does not replay
+the welcome banner or erase earlier output. When activity or Todo panels shrink,
+released rows temporarily remain blank between the transcript and footer; new
+output consumes that space. Tables and code blocks remain contiguous.
+
+When an unrelated transcript replaces the current projection, a labelled refresh
+boundary separates the retained output from the new document. Resize and forced
+redraw preserve pending output and native history. Explicit resume-start history
+clearing remains a separate startup policy. Native image history is retained until
+the terminal itself evicts it.
+
+Transient overlays use an alternate buffer so opening, nesting or resizing panels
+cannot place menu rows in native history. Closing the last overlay restores the
+main buffer and reconciles background output; terminal shutdown also restores it.
+
 ## Output speed
 
 The activity line and completed-turn summary show provider output tokens divided by
@@ -102,6 +124,33 @@ persistence succeeds. `task_output` reads use byte offsets; a successful read ca
 report a failed command. Stop failures and incomplete logs are reported separately.
 An optional `description` supplies the TUI summary while execution and permission
 checks continue to use the original command.
+
+## Stopping a conversation and its background work
+
+An explicit user stop (Esc in the TUI) also cancels background Bash commands and
+subagents owned by that conversation in the current process, including activated
+`task_append` continuations and work spawned by their child turns. Completion
+notices for those tasks no longer automatically wake the conversation. Their
+terminal results remain unread so the next turn can inspect them through the
+background-task reminder and `task_output`.
+
+Leaving a conversation with `/clear` or a session switch still stops its current
+turn and pauses its Goal and queued instructions, but leaves background work
+running. This pause also applies when unconsumed steering must fall back to the
+queue after a history-write failure. A stop rejected because it names an older
+turn does not cancel the current turn's background work.
+
+Only locally owned running tasks are canceled; tasks held by another runtime
+process are left alone. Child cleanup follows the task's owning child turn, so a
+later continuation in the same child session is preserved. Delivery suppression
+is held in process memory. If a turn does not release within the abort timeout,
+work created later during its shutdown is outside the stop boundary. A delivery
+already being admitted can also race with a stop.
+
+Offline regression tests cover cascade ownership, delivery suppression, late
+task creation, repeated stops, append completion/shutdown, and queue fallback.
+The host integration tests use a scripted runner and real background processes;
+they do not establish live-model or cross-platform acceptance.
 
 ## Skill directory links
 

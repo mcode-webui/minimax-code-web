@@ -7,6 +7,7 @@ import type {
 import type { TranscriptStore } from '../../transcript/store.js';
 import type { TuiTodoItem } from '../../todo/model.js';
 import { hydrateTuiHistory } from './turn-history-projection.js';
+import { projectHookSystemMessage } from './turn-hook-message-projection.js';
 import { TuiLiveTurnProjection } from './turn-live-projection.js';
 import { TuiToolProjection } from './turn-tool-projection.js';
 import { TuiTodoProjection } from './turn-todo-projection.js';
@@ -62,6 +63,11 @@ export class TuiTurnProjection {
     changed = this.removePreviousTerminalDuration(turnId) || changed;
     // One-time feedback survives history refreshes, so dismiss it when a new run starts.
     for (const cell of this.transcript.snapshot()) {
+      // Runtime terminal errors survive history reconciliation, but belong only
+      // to the failed run. Otherwise a successful retry can reproject them again.
+      if (cell.kind === 'error' && cell.ephemeral && cell.turnId && cell.turnId !== turnId) {
+        changed = this.transcript.remove(cell.id) || changed;
+      }
       if (
         cell.kind === 'shell' &&
         cell.ephemeral &&
@@ -157,6 +163,16 @@ export class TuiTurnProjection {
       return undefined;
     }
     if (event.type === 'generic') {
+      const hookMessage = projectHookSystemMessage({
+        ...event,
+        turnId: event.turnId ?? turnId,
+        timestamp: event.timestamp ?? this.now(),
+      });
+      if (hookMessage) {
+        this.transcript.upsert(hookMessage);
+        this.keepPendingSteersTrailing();
+        this.onChange();
+      }
       if (
         event.eventType === 'todo_updated' &&
         this.todoProjection.apply(event.turnId ?? turnId, event.data)
