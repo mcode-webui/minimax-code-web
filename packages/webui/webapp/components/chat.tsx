@@ -15,7 +15,8 @@ import {
 import { Icon } from "./icons";
 import { useChatVirtualization } from "./chat-virtual-list";
 import { ActivityPulse, isSessionActivityActive } from "./loading-states";
-import { ActivityGroup, assignActivityBlockKeys } from "./activity-group";
+import { ActivityGroup, TurnProcessDisclosure, assignActivityBlockKeys } from "./activity-group";
+import { computeTurnStatsByUnit, summarizeTurn, type TurnStats } from "@/lib/turn-stats";
 import { useSessionContext } from "@/lib/store";
 import { readScrollPosition as readPersistedScroll } from "@/lib/persist";
 import type { Locale, MessageKey } from "@/lib/i18n";
@@ -146,6 +147,17 @@ export function Chat({
   // at exactly the moment the turn settles. See
   // `assignActivityBlockKeys`'s docblock.
   const activityBlockKeys = useMemo(() => assignActivityBlockKeys(units), [units]);
+
+  // Ticket 46 (D6) — per-turn counts for the turn-process bar. One
+  // forward pass keys every assistant tail block (the blocks carrying
+  // `processedDuration`) to its turn's thinking/tool counts and answer
+  // character total; the LIVE turn has no settled tail block yet, so
+  // its stats come from the backward scan in `summarizeTurn`.
+  const turnStatsByUnit = useMemo(() => computeTurnStatsByUnit(units), [units]);
+  const activeTurnStats = useMemo(
+    () => (sessionRunning ? summarizeTurn(units, units.length - 1) : null),
+    [units, sessionRunning],
+  );
 
   // Windowed rendering: above VIRTUAL_LIST_THRESHOLD (200) units we slice the
   // transcript to a visible window around the user's scroll position. The hook
@@ -311,11 +323,31 @@ export function Chat({
                   startedAtMs={runningStartedAt}
                 />
               ) : (
-                <Block key={originalIndex} block={unit.block} t={t} />
+                <Block
+                  key={originalIndex}
+                  block={unit.block}
+                  t={t}
+                  turnStats={turnStatsByUnit.get(originalIndex)}
+                />
               );
             })}
             {virtWindow.useVirtual && virtWindow.bottomSpacer > 0 ? (
               <div aria-hidden="true" data-testid="chat-virtual-bottom-spacer" style={{ height: virtWindow.bottomSpacer }} />
+            ) : null}
+            {/* Ticket 46 (D6) — the live turn's elapsed bar. Renders
+                「已执行 N 秒」 and ticks once per second while the engine
+                streams. At turn end the block-level bar (driven by the
+                assistant tail block's `processedDuration`) briefly takes
+                over — transient, because the server does not persist the
+                `§§` marker across state rebuilds (see the docs' turn-bar
+                section). */}
+            {activeTurnStats ? (
+              <TurnProcessDisclosure
+                stats={activeTurnStats}
+                active
+                startedAtMs={runningStartedAt}
+                t={t}
+              />
             ) : null}
             <ThinkingIndicator t={t} />
             {showActions ? (
@@ -354,9 +386,13 @@ export function Chat({
 function Block({
   block,
   t,
+  turnStats,
 }: {
   block: TranscriptBlock;
   t: (key: MessageKey) => string;
+  /** This turn's counts (ticket 46 D6) — absent for non-assistant
+   *  blocks that happen to carry a `processedDuration` marker. */
+  turnStats?: TurnStats;
 }) {
   // User turns are the only ones that get a bubble.
   if (block.role === "user") {
@@ -392,6 +428,7 @@ function Block({
           <MarkdownBody text={block.text} streaming={block.streaming} />
           {block.processedDuration != null ? (
             <TurnProcessDisclosure
+              stats={turnStats ?? { thinking: 0, tools: 0, answerChars: 0 }}
               processedDurationMs={block.processedDuration}
               t={t}
             />
@@ -580,59 +617,11 @@ function MarkdownBody({ text, streaming }: { text: string; streaming?: boolean }
 /**
  * Whole-turn disclosure bar (`turn_process_disclosure` upstream).
  *
- * The desktop renders a small collapse bar pinned under each settled
- * assistant turn, summarising wall-clock duration. We only have
- * `processed_duration` today — upstream's `worked / processing_duration /
- * user_paused*` keys are engine-side state the webui backend does not surface,
- * so the bar collapses to a duration chip alone. See SPEC §B 尾项.
- *
- * The chevron rotates to mirror upstream's open/closed affordance.
+ * Ticket 46 (D6, PR3): moved to `components/activity-group.tsx` and
+ * rebuilt on the reference `WebuiTurnProcess` summary — composite copy,
+ * output rate, live tick, 0.5px separator. It is re-exported through
+ * the activity-group import at the top of this file.
  */
-function TurnProcessDisclosure({
-  processedDurationMs,
-  t,
-}: {
-  processedDurationMs: number;
-  t: (key: MessageKey) => string;
-}) {
-  const [open, setOpen] = useState(false);
-  // Round to one decimal so a 12.34s turn reads "12.3s" rather than "12s",
-  // matching upstream's tabular-nums duration display.
-  const seconds = (processedDurationMs / 1000).toFixed(1);
-  return (
-    <div
-      data-testid="turn-process-disclosure"
-      className="group/turn-process text-activity-body-small flex w-full items-center gap-1 text-text_label_tertiary_default"
-    >
-      <button
-        type="button"
-        data-testid="turn-process-disclosure-trigger"
-        aria-expanded={open}
-        aria-label={open ? t("chat.turnProcess.collapse") : t("chat.turnProcess.expand")}
-        title={open ? t("chat.turnProcess.collapse") : t("chat.turnProcess.expand")}
-        onClick={() => setOpen((value) => !value)}
-        className="desktop-text-ui-small inline-flex items-center gap-1 rounded-[6px] px-1 py-0.5 transition-colors hover:bg-bg_interaction_tertiary_hover"
-      >
-        <span className="tabular-nums">{t("chat.turnProcess.took").replace("{{seconds}}", seconds)}</span>
-        <Icon
-          name="caretDown"
-          size={12}
-          className={`transition-transform duration-150 ${open ? "" : "-rotate-90"}`}
-        />
-      </button>
-      {open ? (
-        <div
-          data-testid="turn-process-disclosure-detail"
-          className="desktop-text-ui-small mt-1 flex w-full flex-col gap-1 pl-3 text-text_default_tertiary"
-        >
-          <span className="tabular-nums">
-            {t("chat.turnProcess.took").replace("{{seconds}}", seconds)}
-          </span>
-        </div>
-      ) : null}
-    </div>
-  );
-}
 
 function TodoBlock({ block }: { block: TranscriptBlock }) {
   const glyph =

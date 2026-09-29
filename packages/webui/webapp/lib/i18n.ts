@@ -393,9 +393,36 @@ const en = {
   "activity.thinkingDone": "Finished thinking",
   "activity.expand": "Expand",
   "activity.collapse": "Collapse",
+  /* Tool-card status copy (ticket 46 D4). Five states on the reference
+     desktop vocabulary; a completed call renders no chip on its summary
+     row. The wire only ever writes completed/failed/in_progress —
+     pending and cancelled exist so the normaliser's full five-state
+     table is user-visible. */
   "tool.status.completed": "completed",
   "tool.status.failed": "failed",
   "tool.status.in_progress": "running",
+  "tool.status.pending": "pending",
+  "tool.status.cancelled": "cancelled",
+  /* Tool-card body sections (ticket 46 D4): 输入 / 结果 / 错误. */
+  "tool.section.input": "Input",
+  "tool.section.result": "Result",
+  "tool.section.error": "Error",
+  /* Failed call with no output lines — the reference's fallback error
+     body. */
+  "tool.executionFailed": "Execution failed",
+  /* Body of a still-running call that has produced nothing yet. */
+  "tool.runningDetail": "Running…",
+  /* Turn-process bar (ticket 46 D6): composite summary
+     「思考 N 次，用了 M 次工具，共执行 X 分 Y 秒」, live elapsed
+     「已执行 N 秒」, and the two duration formatters. The output-rate
+     unit is language-neutral (`token/s`) and formatted in the
+     component. */
+  "turn.usedTools": "used {{count}} tools",
+  "turn.elapsedActive": "Elapsed {{duration}}",
+  "turn.elapsedTotal": "Completed in {{duration}}",
+  "turn.duration.minutes": "{{minutes}}m {{seconds}}s",
+  "turn.duration.seconds": "{{seconds}}s",
+  "turn.outputRateSr": "Output rate: ",
   "search.placeholder": "Search titles or ids…",
   "search.empty": "No matches",
   "search.results": "%n result(s)",
@@ -479,9 +506,8 @@ const en = {
   "chat.dislike": "Dislike",
   "chat.fork": "Fork session",
   "chat.scrollBottom": "Jump to latest",
-  "chat.turnProcess.took": "Took {{seconds}}s",
-  "chat.turnProcess.expand": "Show turn details",
-  "chat.turnProcess.collapse": "Hide turn details",
+  // chat.turnProcess.* — retired by ticket 46 D6: the turn bar now
+  // renders through the turn.* keys above (composite summary).
   "panel.progress": "Progress",
   "panel.progress.subtitle": "Track long-running tasks",
   "panel.progress.empty": "No activity yet",
@@ -1061,9 +1087,32 @@ const zh: Record<MessageKey, string> = {
   "activity.thinkingDone": "已完成推理",
   "activity.expand": "展开",
   "activity.collapse": "收起",
+  /* 工具卡片状态文案（工单 46 D4）。五档状态取参照桌面的词表，中文与
+     参照完全一致；已完成的调用在摘要行不显示状态。wire 只会写
+     completed/failed/in_progress，补齐 pending 与 cancelled 是为了让
+     归一化的完整五档都有用户可见文案。 */
   "tool.status.completed": "已完成",
   "tool.status.failed": "失败",
-  "tool.status.in_progress": "进行中",
+  "tool.status.in_progress": "运行中",
+  "tool.status.pending": "等待中",
+  "tool.status.cancelled": "已取消",
+  /* 工具卡片展开体三段标题（工单 46 D4）：输入 / 结果 / 错误。 */
+  "tool.section.input": "输入",
+  "tool.section.result": "结果",
+  "tool.section.error": "错误",
+  /* 失败且无输出行的兜底错误文案，照参照。 */
+  "tool.executionFailed": "执行失败",
+  /* 运行中尚无任何产出的展开体文案。 */
+  "tool.runningDetail": "运行中…",
+  /* 轮次耗时条（工单 46 D6）：复合摘要「思考 N 次，用了 M 次工具，
+     共执行 X 分 Y 秒」、运行中「已执行 N 秒」与两个时长格式器；
+     输出速度单位 token/s 语言无关，在组件里拼接。 */
+  "turn.usedTools": "用了 {{count}} 次工具",
+  "turn.elapsedActive": "已执行 {{duration}}",
+  "turn.elapsedTotal": "共执行 {{duration}}",
+  "turn.duration.minutes": "{{minutes}} 分 {{seconds}} 秒",
+  "turn.duration.seconds": "{{seconds}} 秒",
+  "turn.outputRateSr": "输出速度：",
   "search.placeholder": "搜索标题或 ID…",
   "search.empty": "无匹配结果",
   "search.results": "%n 条结果",
@@ -1141,9 +1190,6 @@ const zh: Record<MessageKey, string> = {
   "chat.dislike": "点踩",
   "chat.fork": "复制为新会话",
   "chat.scrollBottom": "滚动到最新",
-  "chat.turnProcess.took": "本轮耗时 {{seconds}} 秒",
-  "chat.turnProcess.expand": "查看本轮详情",
-  "chat.turnProcess.collapse": "收起本轮详情",
   "panel.progress": "进度",
   "panel.progress.subtitle": "跟踪较长任务的进度",
   "panel.progress.empty": "暂无活动",
