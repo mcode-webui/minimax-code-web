@@ -945,6 +945,8 @@ const en = {
   "providers.dialog.testOk": "可达 · {{ms}}ms",
   "providers.dialog.testFail": "不可达：{{error}}",
   "providers.dialog.testNeedProvider": "请先选择提供商并填写 API Key，再进行连通检测",
+  "usage.banner.fiveHourLow": "5-hour quota is running low",
+  "usage.banner.weeklyLow": "Weekly quota is running low",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -1740,6 +1742,8 @@ const zh: Record<MessageKey, string> = {
   "providers.dialog.testOk": "可达 · {{ms}}ms",
   "providers.dialog.testFail": "不可达：{{error}}",
   "providers.dialog.testNeedProvider": "请先选择提供商并填写 API Key，再进行连通检测",
+  "usage.banner.fiveHourLow": "5 小时限额即将用尽",
+  "usage.banner.weeklyLow": "周限额即将用尽",
 };
 
 const DICTIONARIES: Record<Locale, Record<MessageKey, string>> = { zh, en };

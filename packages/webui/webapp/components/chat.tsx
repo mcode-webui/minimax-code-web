@@ -1,5 +1,6 @@
 "use client";
 
+import { ConversationUsageBanner, type ConversationUsageNotice } from "./conversation-usage-banner";
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 
 import { renderMarkdown } from "@/lib/markdown";
@@ -99,7 +100,27 @@ export function Chat({
   sessionKey,
   onOpenFile = () => {},
 }: ChatProps) {
-  const { state } = useSessionContext();
+  const { state, quota } = useSessionContext();
+
+  // 工单 60：会话用量横幅（照 other-minimax-code 的 ConversationUsageBanner
+  // 形态）。数据源是 store 轮询的真实配额快照（/api/usage）：任一窗口剩余
+  // 低于 20% 时给出对应横幅，无数据不渲染——不造假数字。
+  const usageNotice = useMemo<ConversationUsageNotice | null>(() => {
+    if (!quota?.ok) return null;
+    const window = (kind: "five_hour" | "weekly", remaining?: number, resetAt?: number) => {
+      if (typeof remaining !== "number") return null;
+      if (remaining > 0.2) return null;
+      return {
+        kind,
+        messageKey: kind === "five_hour" ? "usage.banner.fiveHourLow" : "usage.banner.weeklyLow",
+        resetAtMs: resetAt ?? null,
+        actions: [] as const,
+        dismissable: true,
+      } satisfies ConversationUsageNotice;
+    };
+    return window("five_hour", quota.remaining, quota.resetAt)
+      ?? window("weekly", quota.weeklyRemaining, quota.weeklyResetAt);
+  }, [quota]);
   const scrollerRef = useRef<HTMLDivElement>(null);
   // Decode, then fold each run of thinking/tool blocks into one activity group so
   // the transcript renders the way upstream lays it out. The decoder needs
@@ -294,6 +315,16 @@ export function Chat({
               splits evenly left and right (no dead band dumping
               on one side). */}
           <div className="message-container-chat-content mx-auto w-full max-w-[960px] px-4">
+            {usageNotice ? (
+              <ConversationUsageBanner
+                notice={usageNotice}
+                messageText={t(
+                  usageNotice.kind === "weekly"
+                    ? "usage.banner.weeklyLow"
+                    : "usage.banner.fiveHourLow",
+                )}
+              />
+            ) : null}
             <div className="min-h-[10px] w-full" />
             {units.length === 0 ? (
               <p className="py-6 text-center text-caption-small-strong text-text_default_tertiary">
