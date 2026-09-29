@@ -3,8 +3,9 @@
 //
 // Asserts the three "single-source-of-truth" relationships between
 // the manifest (`package.json`), the documentation set
-// (`README.md` + `docs/API.md` + `docs/CAPABILITIES.md`), the
-// security disclosure (`references/SECURITY-NOTES.md`), and the
+// (`README.md` + `docs/API.md` + `docs/CAPABILITIES.md` +
+// `docs/CAPABILITIES.zh-CN.md`), the security disclosure
+// (`references/SECURITY-NOTES.md`), and the
 // server code (`server/router.js`, `server/lib/config.js`).
 //
 // Each check prints a one-line PASS or a list of mismatches with the
@@ -131,6 +132,7 @@ const pkgJson = parseJson("package.json");
 const readme = read("README.md");
 const apiDoc = read("docs/API.md");
 const capabilitiesDoc = read("docs/CAPABILITIES.md");
+const capabilitiesZhDoc = read("docs/CAPABILITIES.zh-CN.md");
 const securityDoc = read("references/SECURITY-NOTES.md");
 const routerSrc = read("server/router.js");
 const appSrc = read("server/app.js");
@@ -138,10 +140,26 @@ const configSrc = read("server/lib/config.js");
 
 // -----------------------------------------------------------------------
 // Check 1: every package.json capability is mentioned in README.md and
-//          in docs/CAPABILITIES.md at least once.
+//          in docs/CAPABILITIES.md at least once, and the hand-written
+//          docs/CAPABILITIES.zh-CN.md mirror stays aligned with the
+//          English document (ticket 51 F3).
 // -----------------------------------------------------------------------
 
-console.log(`${TAG.dim("[1/6]")} package.json → README.md + docs/CAPABILITIES.md`);
+console.log(`${TAG.dim("[1/6]")} package.json → README.md + docs/CAPABILITIES.md; zh-CN mirror alignment`);
+
+// Ordered `## N. ` heading numbers of a CAPABILITIES document.
+function sectionNumbers(doc) {
+  return [...doc.matchAll(/^## (\d+)\. /gm)].map((m) => Number(m[1]));
+}
+
+// Number of capability rows (`| `name` | §N … |`) in the §0 index
+// table. Returns -1 when the document has no `## 0.` section.
+function indexRowCount(doc) {
+  const m = doc.match(/^## 0\. [^\n]*\n([\s\S]*?)(?=^## )/m);
+  if (!m) return -1;
+  return [...m[1].matchAll(/^\| `[^`]+` \|/gm)].length;
+}
+
 const caps = (pkgJson.mcodeWebui?.capabilities ?? [])
   .map((c) => (typeof c === "string" ? c : c.name))
   .filter(Boolean);
@@ -168,6 +186,32 @@ for (const cap of caps) {
     [`docs/CAPABILITIES.md does not mention the capability "${cap}"`],
   );
 }
+
+// The zh-CN document is hand-maintained, so a renumber or an index
+// addition that lands on one side only used to pass this gate
+// silently. Assert both mirrors stay in lock-step (ticket 51 F3).
+const enSections = sectionNumbers(capabilitiesDoc);
+const zhSections = sectionNumbers(capabilitiesZhDoc);
+const sectionsAligned =
+  enSections.length === zhSections.length &&
+  enSections.every((n, i) => n === zhSections[i]);
+check(
+  "docs/CAPABILITIES.zh-CN.md section numbering matches docs/CAPABILITIES.md",
+  sectionsAligned,
+  [
+    `English headings are numbered [${enSections.join(", ")}] but zh-CN headings are numbered [${zhSections.join(", ")}]`,
+  ],
+);
+
+const enIndexRows = indexRowCount(capabilitiesDoc);
+const zhIndexRows = indexRowCount(capabilitiesZhDoc);
+check(
+  "docs/CAPABILITIES.zh-CN.md §0 index row count matches docs/CAPABILITIES.md",
+  enIndexRows > 0 && enIndexRows === zhIndexRows,
+  [
+    `English §0 index has ${enIndexRows} capability rows but zh-CN §0 index has ${zhIndexRows} — a capability row is missing on one side`,
+  ],
+);
 
 // -----------------------------------------------------------------------
 // Check 2: every README.md endpoint reference resolves in server/router.js.

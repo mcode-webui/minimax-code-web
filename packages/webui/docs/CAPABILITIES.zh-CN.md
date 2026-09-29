@@ -40,6 +40,10 @@ webui 受三项约束限制：
 | `bounded-workspace-search` | §6 工作区 |
 | `credential-file-preview-guard` | §11 网络与访问控制 |
 | `four-column-shell` | §10 UI / UX |
+| `on-demand-columns` | §10 UI / UX |
+| `three-state-appearance` | §10 UI / UX |
+| `ide-grade-code-preview` | §10 UI / UX |
+| `preview-toolbar-edit-save` | §10 UI / UX |
 
 CI 会对上述每一个名称是否出现在本文档中进行断言
 （见 `scripts/check-docs-alignment.mjs`）；上表是

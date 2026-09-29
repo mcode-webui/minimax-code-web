@@ -1954,7 +1954,7 @@ user to approve destructive actions (`session.delete`,
 `session.search`, `token.reset`, `slash.clear`, `startup.cleanup`).
 The pending requests are exposed through this single endpoint — the
 client UI shows the modal, the user clicks Allow / Deny, and the
-decision is delivered back here. See [CAPABILITIES.md §12](CAPABILITIES.md)
+decision is delivered back here. See [CAPABILITIES.md §13](CAPABILITIES.md)
 for the action whitelist and the default 5-minute timeout.
 
 ### `POST /api/auth/decision`

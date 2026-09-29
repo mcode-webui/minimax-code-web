@@ -1200,7 +1200,7 @@ code, killEndpoint: "/api/stop" }`。温和版→SIGKILL 的级联
 `session.search`、`token.reset`、`slash.clear`、`startup.cleanup`）。
 所有待决请求都通过下面这一个端点暴露 —— 客户端 UI 弹出
 授权框，用户点允许 / 拒绝，决策经此端点回写。操作白名单
-与默认 5 分钟超时见 [CAPABILITIES.md §12](CAPABILITIES.md)。
+与默认 5 分钟超时见 [CAPABILITIES.md §13](CAPABILITIES.md)。
 
 ### `POST /api/auth/decision`
 
