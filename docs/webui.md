@@ -315,7 +315,8 @@ below cites the component file and one `data-testid` per surface.
 | Composer + drop overlay | `components/composer.tsx` | `composer-drop-overlay`, `composer-send-button` |
 | Chat (virtual list ≥ 200 messages) | `components/chat.tsx` + `chat-virtual-list.tsx` | `chat-virtual-top-spacer` |
 | Turn summary / disclosure | `components/chat.tsx` | `turn-process-disclosure` |
-| Activity group (collapsible tool turns) | `components/chat.tsx` | `activity-group-header` |
+| Activity group (collapsible tool turns; in `activity-group.tsx` since ticket 46) | `components/activity-group.tsx` | `activity-group-header` |
+| Thinking block (thought-process disclosure row, ticket 46 PR2) | `components/activity-group.tsx` | `thinking-block` |
 | File preview (right preview column body) | `components/file-preview.tsx` + `file-preview-pane.tsx` | `file-preview` |
 | File tree column (column 4) | `components/workspace-tree-column.tsx` + `panels.tsx#FilesPanel` | `files-tree-root` |
 | File tree search (server-driven, slice 19a; wired in 19b) | `components/panels.tsx` | `files-tree-filter` |
@@ -751,6 +752,103 @@ through the design tokens. Below ~300px of content width the outline
 hides rather than squeezing the document — the preview column's own
 minimum (320px) still shows it.
 
+## Session rendering: thinking block and activity group (ticket 46, PR2)
+
+The "process" half of an assistant turn is carried by two native
+`<details>` disclosures. The components live in
+`components/activity-group.tsx` (lifted out of `chat.tsx` for the same
+reason U8 lifted `loading-states`: the SSR render tests can load the
+module without `chat.tsx`'s `@/`-aliased import graph). All data comes
+from the existing transcript decode (`groupActivity` in
+`webapp/lib/transcript.ts`); the server transport is untouched by this
+ticket.
+
+**Activity group** (one run of adjacent thinking/tool steps; the summary
+reads like "Thought 1 time, ran 1 command"):
+
+- The summary row IS a `<summary>`: one click anywhere on the row toggles
+  the group (keyboard reachable), replacing the previous text-button +
+  separate-chevron-button pair.
+- The expanded body carries a 1px timeline spine on its left edge
+  (`.timeline-spine`, `border_light`, ported parameters).
+- While the run holds a tool whose status has not settled (no
+  `[completed]`/`[failed]` line yet, or an explicit `[in_progress]`), the
+  group carries `data-active="true"` and cannot be collapsed — a click
+  during the run snaps straight back open; only a settled turn folds. The
+  predicate `isActivityGroupActive` is an exported pure function.
+- **Reachability of `data-active` (stated plainly)**: protocol-level probes
+  (live engine turns, 120ms sampling, including a `sleep 15` tool and a
+  15-second streaming-output tool) show that under the current ACP
+  transport the tool's `→ name` header and its `  [completed]` status line
+  land in the SAME frame — the engine emits the `tool_call` notification
+  (carrying `update`) only at completion, with no incremental
+  `tool_update` in between, and the server's `applyToolUpdate`
+  (`mcode-acp.js`) defaults an update without a status field to
+  `[completed]`. The "running tool block" intermediate state therefore
+  does NOT occur under the current engine transport: `data-active`
+  forced-open is a capability reserved for the engine emitting tool-start
+  events / non-terminal intermediate updates in the future. The decode
+  contract (no status line = running), the front-end predicate and the
+  snap-back logic are all in place and pinned by unit tests, so the
+  behaviour activates the moment the engine sends the events. The SSE
+  snapshot coalescing window (default 16ms) is not the masking cause.
+- Default-open follows the upstream orchestration (`AssistantBody`'s
+  `expandProcessByDefault` + `renderActivityParts`): a mixed run (thoughts
+  AND tools) opens expanded; a pure-tool run starts collapsed; thinking
+  rows nested in a mixed run start collapsed while a thoughts-only run
+  starts with its thinking row expanded.
+
+**Thinking block** (one thought):
+
+- The summary row reads icon + status copy + elapsed seconds + chevron.
+  While streaming it shows 「推理中...」 with the second counter ticking
+  every second; when the turn settles it becomes 「已完成推理」+ the
+  frozen total.
+- The expanded body renders through the existing Markdown pipeline
+  (`lib/markdown.ts`; the KaTeX and mermaid language renderers register
+  with the component), not as plain text.
+- A body taller than 224px is clamped (`.is-clamped` plus a bottom
+  gradient mask) behind an 「展开 / 收起」 toggle.
+- Streaming keeps the block expanded; the end of the turn collapses it
+  again (unless the user had opened it by hand).
+
+**Duration data boundary (stated plainly)**: the line-oriented transcript
+carries no per-thought timestamps, so the seconds tick from the snapshot's
+`running.startedAt` (the turn's start) — the same turn-level anchor
+upstream feeds `WebuiThinkingBlock` as `processingStartedAtMs`. The
+streaming seconds therefore read as "time elapsed in this turn", and the
+frozen total is the turn-elapsed value at the moment that thought settled
+— NOT an engine-measured per-thought duration (the engine does not expose
+one). A cold-loaded historical thought has no anchor and omits the seconds
+rather than inventing them.
+
+Showing the seconds additionally requires the thought's streaming window
+("the tail block is a thought") to be exposed in at least one SSE snapshot
+frame. Two boundaries confirmed on the live instance:
+
+1. **Swallowed streaming window**: a very short thought, or one that lands
+   in the same frame as the turn's end, may never appear as the tail block
+   in any snapshot frame; that thought then freezes with no seconds
+   (「已完成推理」 with no number). The data was already merged at the
+   transport layer — the renderer cannot reconstruct it afterwards.
+2. **Row remounting (the fixed primary cause)**: mid-turn, tool headers
+   land only at completion and prose lines stream in between, so the
+   activity runs are re-cut frame by frame; the thinking rows originally
+   keyed by their within-group position remounted on every re-cut, wiping
+   the elapsed state exactly as the turn settled (reproduced live: ticking
+   1s→4s, zeroed at finalize). Fix: `assignActivityBlockKeys` (an exported
+   pure function in `activity-group.tsx`) assigns global birth-order keys,
+   and the same scenario now keeps its seconds. Rare line reorderings
+   (e.g. a block displaced by a late-arriving prose line) can still drop
+   an individual thought's seconds.
+
+The streaming verdict itself is derived, not signalled: the tail unit of
+the transcript is an activity run whose last block is a thought
+(`streamingActivityIndex` in `chat.tsx`). The transcript has no
+thinking-level streaming marker (the `▍` cursor only marks the trailing
+assistant block), so this is the most honest signal the render layer can
+derive.
+
 ## Loading states: transcript skeleton and streaming indicator (ticket U8)
 
 The two waiting windows on the conversation surface have distinct treatments,
@@ -782,6 +880,12 @@ Invariants worth keeping when touching either branch:
 - Rendering tests for both components and the reduced-motion tripwire live in
   `webapp/test/loading-skeleton.test.ts` (SSR through
   `renderToStaticMarkup`; the suite has no DOM harness).
+- Boundary with ticket 46: while a thought streams, the 「推理中...」+
+  ticking-seconds readout lives on the thinking block's summary row inside
+  the tail activity group (see the "Session rendering" section above);
+  the `ActivityPulse` in this table (three dots + shimmer + phase label)
+  still appears only at the transcript tail. Different positions, different
+  jobs; neither replaces the other.
 
 ## Persistence keys (client-side `localStorage` / `sessionStorage`)
 

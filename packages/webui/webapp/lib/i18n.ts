@@ -349,6 +349,13 @@ const en = {
   "activity.usedPlugins": "Used plugin tools {{count}} times",
   "activity.thoughtProcess": "Thinking process",
   "activity.detail": "Details",
+  // Ticket 46 (D2) — thinking-block summary copy. Upstream `WebuiThinkingBlock`
+  // shows 「推理中...」 while the thought streams and 「已完成推理」+ total
+  // seconds once it settles; the expand/collapse pair is the body clamp.
+  "activity.thinkingLive": "Thinking...",
+  "activity.thinkingDone": "Finished thinking",
+  "activity.expand": "Expand",
+  "activity.collapse": "Collapse",
   "tool.status.completed": "completed",
   "tool.status.failed": "failed",
   "tool.status.in_progress": "running",
@@ -979,6 +986,10 @@ const zh: Record<MessageKey, string> = {
   "activity.usedPlugins": "调用了 {{count}} 次插件工具",
   "activity.thoughtProcess": "思考过程",
   "activity.detail": "详情",
+  "activity.thinkingLive": "推理中...",
+  "activity.thinkingDone": "已完成推理",
+  "activity.expand": "展开",
+  "activity.collapse": "收起",
   "tool.status.completed": "已完成",
   "tool.status.failed": "失败",
   "tool.status.in_progress": "进行中",

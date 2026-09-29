@@ -260,7 +260,8 @@ exec 回合的代价——以下都是当前真实存在的行为，选择权限
 | 录入区与拖放浮层 | `components/composer.tsx` | `composer-drop-overlay`、`composer-send-button` |
 | 对话（≥ 200 条时虚拟滚动） | `components/chat.tsx` + `chat-virtual-list.tsx` | `chat-virtual-top-spacer` |
 | 轮次总结/折叠面板 | `components/chat.tsx` | `turn-process-disclosure` |
-| 活动组（可折叠的工具轮次） | `components/chat.tsx` | `activity-group-header` |
+| 活动组（可折叠的工具轮次，工单 46 起在 `activity-group.tsx`） | `components/activity-group.tsx` | `activity-group-header` |
+| 思维链块（思考过程折叠行，工单 46 PR2） | `components/activity-group.tsx` | `thinking-block` |
 | 文件预览（右预览列主体） | `components/file-preview.tsx` + `file-preview-pane.tsx` | `file-preview` |
 | 文件树列（列 4） | `components/workspace-tree-column.tsx` + `panels.tsx#FilesPanel` | `files-tree-root` |
 | 文件树搜索（服务端，slice 19a；slice 19b 联调） | `components/panels.tsx` | `files-tree-filter` |
@@ -624,6 +625,81 @@ slice 16 的预览守卫一致：服务会向局域网广播地址，能在网�
 - 预览列特别窄（内容宽度低于约 300px）时大纲自动隐藏，避免把
   正文挤得没法读；预览列自身的最小宽度（320px）下大纲仍可见。
 
+## 会话渲染：思维链块与活动组（工单 46，PR2）
+
+助手回合里的「过程」由两个原生 `<details>` 折叠面承担。组件在
+`components/activity-group.tsx`（从 `chat.tsx` 抽出，动机与 U8 抽出
+loading-states 相同：让 SSR 渲染测试可以脱离 `chat.tsx` 的 `@/` 别名
+依赖图直接加载组件）。数据全部来自既有会话行解码
+（`webapp/lib/transcript.ts` 的 `groupActivity` 输出），本工单不改
+服务端传输。
+
+**活动组**（一段连续的 thinking/tool 步骤，摘要行如「思考 1 次， 执行
+1 条命令」）：
+
+- 摘要行本身是一个 `<summary>`：整行点击即折叠/展开（键盘可达），
+  取代原先「文本按钮 + 独立箭头按钮」两处触发。
+- 展开体左侧有一条 1px 时间轴竖线（`.timeline-spine`，
+  `border_light` 色，参数照参照实现）。
+- 组内存在状态未落定的工具（还没有 `[completed]`/`[failed]` 行，或
+  显式 `[in_progress]`）时，组带 `data-active="true"` 并强制展开：
+  流式中点击折叠会被立刻拉回，回合结束才允许收起。判定函数
+  `isActivityGroupActive` 是导出的纯函数。
+- **`data-active` 的可达性（如实说明）**：协议级探测（真实引擎会话，
+  120ms 采样，含 `sleep 15` 与持续输出 15 秒的长工具）显示，当前
+  ACP 传输下工具的 `→ name` 头行与 `  [completed]` 状态行**同一帧落
+  盘**——引擎在工具完成时才发出携带 update 的 `tool_call` 通知，中
+  间没有渐进的 `tool_update`；且服务端 `applyToolUpdate`
+  （`mcode-acp.js`）对不带 status 字段的更新默认写 `[completed]`。
+  因此「运行中的工具块」这一中间态**在当前引擎传输下不会出现**，
+  `data-active` 强制展开是为引擎将来发出工具开始事件 / 非终态中间
+  更新时预留的能力：解码契约（无状态行 = 运行中）与前端判定、弹回
+  逻辑均已就绪并有单测钉住，引擎一旦发送即生效。SSE 的快照合并窗
+  口（默认 16ms）不是遮蔽原因。
+- 默认展开规则照参照编排（`AssistantBody` 的
+  `expandProcessByDefault` + `renderActivityParts`）：组内同时有思考
+  和工具时默认展开；纯工具组默认收起；混合组内嵌套的思维链行默认
+  收起，纯思考组的思维链行默认展开。
+
+**思维链块**（一段思考过程）：
+
+- 摘要行 = 图标 + 状态文案 + 已耗秒数 + 箭头。流式期间显示
+  「推理中...」，秒数每秒跳动；回合结束变为「已完成推理」+ 定格的
+  总秒数。
+- 展开体经既有 Markdown 管线渲染（`lib/markdown.ts`，KaTeX 与
+  mermaid 的语言渲染器随组件注册），不再是纯文本。
+- 展开体高度超过 224px 时自动截断（`.is-clamped` + 底部渐变遮罩），
+  并出现「展开 / 收起」按钮切换。
+- 流式期间强制展开；回合结束自动收起（用户手动展开过的除外）。
+
+**秒数的数据边界（如实说明）**：会话行编码不携带每段思维链的时间
+戳，秒数从快照 `running.startedAt`（轮次开始时刻）起算——与参照实现
+喂给 `WebuiThinkingBlock` 的 `processingStartedAtMs` 同语义。因此流式
+期间的秒数读作「本轮已进行时间」；回合结束的定格值是该段思维链结束
+时本轮已进行的时间，**不是**引擎度量的「该段思考净时长」（引擎未提
+供该数据）。冷加载的历史会话没有锚点，摘要行不显示秒数，也不伪造。
+
+秒数显示还依赖「该段思维链作为尾部块的流式窗口在 SSE 快照帧中曝
+光」，两个已实测确认的边界：
+
+1. **流式窗口被吞**：极短的思维链段、或与轮次结束同一帧落盘的段，
+   其「尾部块是思维链」的状态可能从未单独出现在任何一帧快照里，
+   该段定格后没有秒数（显示「已完成推理」不带数字）。数据在传输
+   层已被帧合并，渲染层无法事后补算。
+2. **行重挂载（已修的主要根因）**：流式中工具头行只在完成时落盘、
+   正文行穿插其间，活动组的边界每帧重切；思维链行原先以「组内位
+   置」为 React 键，组一重切键就变，行被重挂载、秒数状态恰在回合
+   结束瞬间丢失（实测复现：流式中 1s→4s 正常跳动，finalize 后清
+   零）。修复：`assignActivityBlockKeys`（`activity-group.tsx` 导出
+   的纯函数）改为按解码出生序分配全局稳定键，修复后同类场景秒数
+   保留。罕见的行序重排（如正文行迟到追加导致的块位移）仍可能丢
+   个别段的秒数。
+
+流式判定的依据是「尾部单元是活动组且其最后一个块是思维链」
+（`chat.tsx` 的 `streamingActivityIndex`）——会话行没有思维链级的
+流式标记（`▍` 光标只标在尾部 assistant 块上），这是渲染层能拿到的
+最诚实信号。
+
 ## 加载态：会话骨架屏与流式活动指示（工单 U8）
 
 会话界面有两类等待，各自有明确的呈现方式，都不是一个孤零零的转圈：
@@ -650,6 +726,10 @@ slice 16 的预览守卫一致：服务会向局域网广播地址，能在网�
 - 两个组件的渲染测试与 reduced-motion 的静态断言在
   `webapp/test/loading-skeleton.test.ts`（走 `renderToStaticMarkup`；
   本测试套件没有 DOM 环境）。
+- 与工单 46 的边界：流式期间「推理中... + 跳动秒数」显示在尾部活动
+  组内思维链块的摘要行上（见上一节「会话渲染」）；上表的
+  `ActivityPulse`（三点 + shimmer + 阶段文案）仍然只出现在 transcript
+  尾部。两者位置不同、职责不同，互不替代。
 
 ## 持久化键（客户端 `localStorage` / `sessionStorage`）
 
