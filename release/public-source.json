@@ -3876,6 +3876,7 @@
     "packages/webui/webapp/test/composer-submit-tripwire.test.ts",
     "packages/webui/webapp/test/composer-thinking-tripwire.test.ts",
     "packages/webui/webapp/test/context-meter-format.test.ts",
+    "packages/webui/webapp/test/conversation-usage-banner.test.ts",
     "packages/webui/webapp/test/credential-file.test.ts",
     "packages/webui/webapp/test/file-open-reason.test.ts",
     "packages/webui/webapp/test/file-preview.test.ts",
