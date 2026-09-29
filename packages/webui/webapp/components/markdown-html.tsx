@@ -10,6 +10,7 @@ import {
 
 import { MermaidBlock } from "./mermaid-block";
 import { parseInlineStyle } from "../lib/markdown";
+import { readFileLineWrap } from "../lib/settings-local";
 
 /**
  * Render pre-sanitised HTML and mount mermaid blocks as real React
@@ -48,6 +49,15 @@ import { parseInlineStyle } from "../lib/markdown";
 export function MarkdownHtml({ html }: { html: string }) {
   const [theme, setTheme] = useState<"light" | "dark">("light");
 
+  // Ticket 52 — `file_line_wrap` also governs markdown codeblocks. This
+  // host renders every markdown surface (chat messages, activity
+  // groups, markdown file previews), so one modifier class here covers
+  // all of them; styles/markdown-overrides.css keys the wrap rules on
+  // it. Read once per mount, matching code-view.tsx (ticket 48):
+  // toggling the switch reflows blocks mounted afterwards, not the
+  // ones already on screen.
+  const [lineWrap] = useState(() => readFileLineWrap());
+
   // Watch the <html> element for the light/dark class flip so diagrams
   // re-render when the user changes the theme.
   useEffect(() => {
@@ -74,7 +84,7 @@ export function MarkdownHtml({ html }: { html: string }) {
 
   return (
     <div
-      className="markdown-html-host"
+      className={`markdown-html-host${lineWrap ? " markdown-code-wrap" : ""}`}
       data-testid="markdown-html-host"
       data-mermaid-count={countMermaid(tree)}
     >

@@ -424,7 +424,7 @@ slice 22 增强：
 | 键 | 默认 | 影响行为吗 |
 | --- | --- | --- |
 | `file_open_in_new_tab` | `true`（本客户端默认开；桌面参照默认关） | **是**。开启时保持本客户端一贯的「每文件一个预览标签页」；关闭后打开新文件会**替换当前激活的文件标签页**。本客户端的标签条没有「固定」概念，故以「当前激活的文件标签页」为复用目标，与桌面「复用未固定标签页」语义近似但不相同 |
-| `file_line_wrap` | `true` | **是**。开启时文件预览超宽行自动折行；关闭时横向滚动。对之后打开的预览生效（已打开的预览不重排）；行号与折行后的第二视觉行不对齐，是已知取舍 |
+| `file_line_wrap` | `true` | **是**。开启时超宽行自动折行；关闭时横向滚动。覆盖两类表面：代码文件预览（工单 48）与 markdown 代码块——聊天消息、活动组、markdown 文件预览（工单 52）；语言标签不随代码行折行。对之后打开的预览/之后挂载的消息生效（已打开的不重排）；文件预览折行后行号与第二视觉行不对齐，是已知取舍 |
 | `webui-context-window-usage` | `false` | 否。仅记录偏好，尚无界面读取 |
 | `webui-follow-up-behavior` | `queue`（可选 `steer`） | 否。仅记录偏好，尚未影响实际发送行为 |
 
@@ -514,6 +514,24 @@ flowchart LR
   （见下节）只从渲染后的 `h1`-`h6` 提取条目，占位元素天然不满足。
 
 依赖：`mermaid` 11.12.1（MIT），已登记于 `release/dependency-licenses.json`。
+
+### 代码块的换行与滚动条（工单 52）
+
+所有 markdown 代码块——聊天消息、活动组、markdown 文件预览——都经同一
+个宿主组件（`components/markdown-html.tsx`）渲染，用解析器产出的外壳
+（`lib/markdown.ts`：`.codeblock-shell` > `.codeblock-toolbar` +
+`pre.codeblock-pre` > `code.codeblock-code`，滚动容器是 `code` 元素）。
+两条行为契约：
+
+| 方面 | 契约 | 依据 |
+| --- | --- | --- |
+| 换行 | `file_line_wrap` 开关（沿用工单 48 的键，不新增键）扩展到 markdown 代码块：开启时代码行在列边缘折行（`white-space: pre-wrap; overflow-wrap: anywhere`）并隐藏横向滚动条；关闭时保持单行横向滚动。语言标签在滚动容器外的工具栏里，永不折行。每次宿主挂载读一次——与工单 48 的文件预览同语义：切换开关后新挂载的块生效，屏幕上已有的不重排 | `components/markdown-html.tsx`、`webapp/styles/markdown-overrides.css` |
+| 滚动条可见 | 滚动模式下静止态滚动条可见：浅灰 thumb（8 % 透明度 token，随主题翻转）配透明轨道，悬停加深为 `--utility_scrollbar`（15 %）——上游样式把静止态 thumb 画成全透明、还把聊天内容里的 webkit 横向滚动条压成 `height:0`，用户不知道存在滚动条，只能看到被裁切的代码 | `webapp/styles/markdown-overrides.css` |
+
+覆盖层放在 webui 自有的 `webapp/styles/markdown-overrides.css`，在
+`styles/official-utilities.css` 之后加载（`app/layout.tsx`）；上游共享
+样式表本体保持逐字节不变，桌面版与它共用。同选择器规则靠源顺序取胜，
+因此导入顺序是承重结构。
 
 ## Markdown 里的数学公式（KaTeX）
 
@@ -741,7 +759,7 @@ loading-states 相同：让 SSR 渲染测试可以脱离 `chat.tsx` 的 `@/` 别
 | `webui:open-file:path` | `localStorage` | `webapp/lib/open-file.ts#STORAGE_KEY` | slice 12（文件预览） | 纯路径字符串或缺失 |
 | `webui:files-tree:<workspaceDir>` | `sessionStorage` | `webapp/components/panels.tsx`（slice 01） | slice 01（文件树） | `{version:1, workspace, expanded[], filter, showHidden}` |
 | `file_open_in_new_tab` | `localStorage` | `webapp/lib/settings-local.ts` | 工单 48（设置通用页） | 纯 `"true"\|"false"` 字符串；**有意不带 `webui:` 前缀**——与桌面参照同名同格式，同一浏览器配置在两个客户端共享该偏好。本客户端默认 `"true"`（参照为 `"false"`）；读取方 `app/page.tsx#openFileTab` |
-| `file_line_wrap` | `localStorage` | `webapp/lib/settings-local.ts` | 工单 48 | 纯 `"true"\|"false"` 字符串，参照共享命名；默认 `"true"`；`components/code-view.tsx` 每次挂载读取 |
+| `file_line_wrap` | `localStorage` | `webapp/lib/settings-local.ts` | 工单 48 + 52 | 纯 `"true"\|"false"` 字符串，参照共享命名；默认 `"true"`；每次挂载读取方为 `components/code-view.tsx`（代码文件预览）与 `components/markdown-html.tsx`（markdown 代码块：聊天、活动组、文件预览） |
 | `webui-context-window-usage` | `localStorage` | `webapp/lib/settings-local.ts` | 工单 48 | 纯 `"true"\|"false"` 字符串，参照共享命名；默认 `"false"`；仅记录偏好，尚无读取方 |
 | `webui-follow-up-behavior` | `localStorage` | `webapp/lib/settings-local.ts` | 工单 48 | 纯 `"queue"\|"steer"` 字符串（其他值读取为 `"queue"`），参照共享命名；仅记录偏好，尚无读取方 |
 

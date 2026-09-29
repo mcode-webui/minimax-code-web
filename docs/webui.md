@@ -569,7 +569,7 @@ clients:
 | Key | Default | Affects behaviour? |
 | --- | --- | --- |
 | `file_open_in_new_tab` | `"true"` here (`"false"` in the reference) | **Yes.** On (default) keeps this client's standing one-tab-per-file behaviour; off replaces the **active file tab** with the newly opened file. The strip has no pinned-tab concept, so "active file tab" is the reuse target — a documented approximation of the reference's "reuse the unpinned tab" |
-| `file_line_wrap` | `"true"` | **Yes.** On wraps over-wide preview lines; off scrolls horizontally. Applies to previews opened after the switch (an already-open preview does not reflow); a wrapped line's gutter number aligns with its first visual row — a known trade-off |
+| `file_line_wrap` | `"true"` | **Yes.** On wraps over-wide lines; off scrolls horizontally. Covers both code-file previews (ticket 48) and markdown codeblocks — chat messages, activity groups and markdown file previews (ticket 52); the language label never wraps. Applies to previews opened / messages mounted after the switch (an already-open one does not reflow); a wrapped file-preview line's gutter number aligns with its first visual row — a known trade-off |
 | `webui-context-window-usage` | `"false"` | No. Recorded preference only |
 | `webui-follow-up-behavior` | `"queue"` (or `"steer"`) | No. Recorded preference only |
 
@@ -658,6 +658,27 @@ implementation accident:
 
 The `mermaid` dependency (11.12.1, MIT) is recorded in
 `release/dependency-licenses.json`.
+
+### Code block wrapping and scrollbars (ticket 52)
+
+Every markdown codeblock — chat messages, activity groups and markdown
+file previews alike — renders through one host
+(`components/markdown-html.tsx`) with the shell the parser emits
+(`lib/markdown.ts`: `.codeblock-shell` > `.codeblock-toolbar` +
+`pre.codeblock-pre` > `code.codeblock-code`; the scroll container is
+the `code` element). Two behaviours are governed there:
+
+| Aspect | Contract | Backed by |
+| --- | --- | --- |
+| Wrapping | The `file_line_wrap` switch (ticket 48's key, no new key) extends to markdown codeblocks: on, code lines wrap at the column edge (`white-space: pre-wrap; overflow-wrap: anywhere`) and the horizontal scrollbar is suppressed; off (scroll mode), lines stay on one row. The language label sits in the toolbar outside the scroll container and never wraps. Read once per host mount — same semantics as ticket 48's file previews: blocks mounted after the toggle reflow, the ones on screen do not | `components/markdown-html.tsx`, `webapp/styles/markdown-overrides.css` |
+| Scrollbar visibility | In scroll mode the idle scrollbar is visible: faint grey thumb (8 % opacity token, theme-flipped) over a transparent track, deepening to `--utility_scrollbar` (15 %) on hover — upstream's sheet painted the idle thumb fully transparent and collapsed the chat-content webkit bar to `height:0`, so users read clipped code without knowing a bar existed | `webapp/styles/markdown-overrides.css` |
+
+The overrides live in `webapp/styles/markdown-overrides.css`, a
+webui-owned sheet loaded after `styles/official-utilities.css`
+(`app/layout.tsx`); the vendored upstream sheet itself stays
+byte-identical, because the desktop build shares it. Same-selector
+rules there win by source order, which is why the import order is
+load-bearing.
 
 ## Math formulas in Markdown (KaTeX)
 
@@ -897,7 +918,7 @@ Invariants worth keeping when touching either branch:
 | `webui:open-file:path` | `localStorage` | `webapp/lib/open-file.ts#STORAGE_KEY` | slice 12 (file preview) | bare path string or absent |
 | `webui:files-tree:<workspaceDir>` | `sessionStorage` | `webapp/components/panels.tsx` (slice 01) | slice 01 (file tree) | `{version:1, workspace, expanded[], filter, showHidden}` |
 | `file_open_in_new_tab` | `localStorage` | `webapp/lib/settings-local.ts` | ticket 48 (settings General page) | bare `"true"\|"false"` string; **deliberately outside the `webui:` namespace** — same key and format as the desktop reference so one browser profile shares the preference across both clients. Default `"true"` here (reference: `"false"`); read by `app/page.tsx#openFileTab` |
-| `file_line_wrap` | `localStorage` | `webapp/lib/settings-local.ts` | ticket 48 | bare `"true"\|"false"` string, reference-shared namespace; default `"true"`; read by `components/code-view.tsx` per mount |
+| `file_line_wrap` | `localStorage` | `webapp/lib/settings-local.ts` | tickets 48 + 52 | bare `"true"\|"false"` string, reference-shared namespace; default `"true"`; read per mount by `components/code-view.tsx` (code-file previews) and `components/markdown-html.tsx` (markdown codeblocks: chat, activity groups, file previews) |
 | `webui-context-window-usage` | `localStorage` | `webapp/lib/settings-local.ts` | ticket 48 | bare `"true"\|"false"` string, reference-shared namespace; default `"false"`; recorded preference, no reader yet |
 | `webui-follow-up-behavior` | `localStorage` | `webapp/lib/settings-local.ts` | ticket 48 | bare `"queue"\|"steer"` string (anything else reads as `"queue"`), reference-shared namespace; recorded preference, no reader yet |
 
