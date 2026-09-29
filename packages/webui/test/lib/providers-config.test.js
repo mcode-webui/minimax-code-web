@@ -774,6 +774,80 @@ describe("testProvider — no network for malformed inputs", () => {
     assert.equal(r.ok, false);
     assert.equal(r.code, "PROBE_FAILED", "validation passed → fetch attempted → probe failed");
   });
+
+  // Ticket 56 regression: the body's `auth.baseURL` must be the
+  // probe TARGET, not a field that is read, validated, and then
+  // dropped. The gap shipped because the no-network tests above
+  // cannot tell "probed the wrong host" from "probed the right
+  // host" — both end in PROBE_FAILED offline. This case pins the
+  // wiring with a local listener: the probe must land on IT (with
+  // the key in its Authorization header and nowhere else), and an
+  // empty baseURL must fall back to the protocol default WITHOUT a
+  // real network call — that branch is asserted against a fetch
+  // stub, so the suite never dials an off-machine host, with or
+  // without a key attached.
+  test("auth.baseURL is the probe target — a local listener answers; the key rides only that request; empty baseURL falls back offline", async () => {
+    const { createServer } = await import("node:http");
+    const hits = [];
+    let listenerAuthorization = "";
+    const server = createServer((req, res) => {
+      hits.push(req.url);
+      listenerAuthorization = req.headers.authorization || "";
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end("{}");
+    });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = server.address().port;
+    try {
+      const hit = await providersConfig.testProvider({
+        protocol: "openai",
+        auth: { type: "byok", apiKey: "sk-liveprobe-key", baseURL: `http://127.0.0.1:${port}` },
+        timeoutMs: 3000,
+      });
+      assert.equal(hit.ok, true, `probe against the local listener must succeed: ${JSON.stringify(hit)}`);
+      assert.deepEqual(hits, ["/v1/models"], "the openai probe hits GET {baseURL}/v1/models on the given baseURL");
+      assert.equal(
+        listenerAuthorization,
+        "Bearer sk-liveprobe-key",
+        "the key travels ONLY as the Authorization header of the probe to the user's baseURL",
+      );
+
+      // Empty baseURL → protocol-default fallback (api.openai.com).
+      // The fetch stub intercepts it: no off-machine dial, and the
+      // stub sees the DEFAULT URL, proving no body value leaked
+      // into the fallback branch. The local listener must stay
+      // untouched as well.
+      hits.length = 0;
+      const stubbedUrls = [];
+      const realFetch = globalThis.fetch;
+      globalThis.fetch = async (input, init) => {
+        stubbedUrls.push(String(input));
+        assert.equal(
+          init && init.headers && init.headers.Authorization,
+          "Bearer sk-liveprobe-key",
+          "the fallback probe carries the key only in its Authorization header",
+        );
+        return { ok: true, status: 200 };
+      };
+      try {
+        const fallback = await providersConfig.testProvider({
+          protocol: "openai",
+          auth: { type: "byok", apiKey: "sk-liveprobe-key", baseURL: "" },
+        });
+        assert.equal(fallback.ok, true);
+        assert.deepEqual(
+          stubbedUrls,
+          ["https://api.openai.com/v1/models"],
+          "empty baseURL probes the protocol default, not any cached body value",
+        );
+        assert.deepEqual(hits, [], "the local listener is untouched in the fallback branch");
+      } finally {
+        globalThis.fetch = realFetch;
+      }
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
 });
 
 // ---------------------------------------------------------------------
