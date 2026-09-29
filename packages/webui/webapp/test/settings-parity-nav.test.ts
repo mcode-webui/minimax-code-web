@@ -534,6 +534,48 @@ describe("settings pure sub-pages (ticket 55a)", () => {
     }
   });
 
+  test("the pure-section early return is genuinely reachable — the guard is not short-circuited", () => {
+    // The order pin above survives `if (false && isPureSection)` — the
+    // switch would still sit before the gate while every pure page died
+    // behind the settings fetch (acceptance mutant M8). The exact-form
+    // pin kills that class: the guard must be the bare condition, with
+    // no constant folded in front and no negation.
+    const guardAt = panelsSource.indexOf("if (isPureSection) {");
+    assert.ok(guardAt >= 0, "the early return must read exactly `if (isPureSection) {`");
+    // And the guard sits between its alias definition and the snapshot
+    // gate, so the branch it opens is the one that returns the pages.
+    const aliasAt = panelsSource.indexOf("const isPureSection =");
+    const gateAt = panelsSource.indexOf("if (!snapshot) {");
+    assert.ok(aliasAt >= 0 && guardAt > aliasAt && gateAt > guardAt);
+    // The return inside the branch renders the section body — a hollow
+    // branch (return null) would leave the pages unreachable too.
+    const branch = panelsSource.slice(guardAt, gateAt);
+    assert.ok(
+      branch.includes("return <div className=\"flex w-full flex-col gap-3\">"),
+      "the branch must return the pure section's column",
+    );
+  });
+
+  test("the tab-switch animation keeps fill-mode backwards (M4) — no retained transform", () => {
+    // `both` retains `transform: translateX(0)` after the animation ends,
+    // and a non-none transform — even an identity one — makes the content
+    // column the containing block for every `position: fixed` descendant.
+    // That pinned the memory-summary dialog's blanket to the content
+    // column (the settings sidebar escaped the dim) until the fill moved
+    // to `backwards`. This is the regression anchor for that fix; the
+    // rendered blanket itself is pinned by settings-extra-pages.test.ts.
+    const cssSource = readFileSync(resolve(here, "../app/globals.css"), "utf8");
+    const ruleAt = cssSource.indexOf(".webui-settings-content-animate {");
+    assert.ok(ruleAt >= 0, ".webui-settings-content-animate rule not found");
+    const ruleEnd = cssSource.indexOf("}", ruleAt);
+    const rule = cssSource.slice(ruleAt, ruleEnd);
+    assert.ok(
+      rule.includes("animation: webui-settings-content-in 180ms ease backwards;"),
+      "the animation shorthand must keep fill-mode backwards",
+    );
+    assert.ok(!rule.includes(" both"), "'both' would retain an identity transform after the animation");
+  });
+
   test("the pure pages keep the desktop's 32px block rhythm inside their own column", () => {
     const pagesSource = readFileSync(
       resolve(here, "../components/settings-extra-pages.tsx"),
