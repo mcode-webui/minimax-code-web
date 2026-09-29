@@ -8,7 +8,9 @@ import { Composer } from "@/components/composer";
 import { TranscriptSkeleton } from "@/components/loading-states";
 import { Modals } from "@/components/modals";
 import { ActionErrorBanner } from "@/components/action-error-banner";
-import { SettingsModal } from "@/components/panels";
+// Settings modal port (webui-parity 58): the reference SettingsModal
+// structure; the shim keeps this import shape unchanged.
+import { SettingsModal } from "@/components/settings-modal-port";
 import { AppShell } from "@/components/shell";
 import { ConversationToolbar, useAlertCount } from "@/components/toolbar";
 import { WorkspaceColumns } from "@/components/workspace-columns";
