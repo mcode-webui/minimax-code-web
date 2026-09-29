@@ -301,8 +301,8 @@ test("S2-RH-03b: turn host sendMessage synchronous entry throw is contained at t
   const listed = await host.adapter.listSessions();
   assert.ok(Array.isArray(listed), "process survived — listSessions works");
   await host.close();
-
-  rmSync(dir, { recursive: true, force: true });
+  // dir is a mkTmpDir child of tmpBase; the shared `after` hook
+  // (rmTmpDir(tmpBase)) owns teardown, like every other test here.
 });
 
 // ============================================================

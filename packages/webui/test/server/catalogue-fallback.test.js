@@ -10,20 +10,30 @@
 
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { mkTmpDir, rmTmpDir } from "../helpers/tmp.js";
 
 // IMPORTANT: set MCODE_WEBUI_TRANSPORT BEFORE the SUT modules load.
 // config.js evaluates the env at module-init time.
 process.env.MCODE_WEBUI_TRANSPORT = "runtime";
 
-const tmpBase = mkdtempSync(join(tmpdir(), "mcode-webui-s3-fallback-"));
+const tmpBase = mkTmpDir("mcode-webui-s3-fallback-");
 
 let listCalls;
-const FAKE_SESSIONS = [
+// Two fixtures in the two real shapes the two transports answer in:
+// the ACP client returns the wire shape (`cwd`), while the catalogue
+// host returns the runtime's TuiSession shape (`workspaceDir`) — the
+// projection in catalogue-sessions.js maps one onto the other. A
+// single shared fixture in the ACP shape happened to survive the S3
+// pass-through projection; the S3-parity projection reads
+// `workspaceDir`, so the shapes must be honest now.
+const FAKE_ACP_SESSIONS = [
   { sessionId: "mvs_fallback_1", cwd: "/tmp/work", title: "from acp fallback" },
   { sessionId: "mvs_fallback_2", cwd: "/tmp/work2", title: "second acp entry" },
+];
+const FAKE_TUI_SESSIONS = [
+  { sessionId: "mvs_fallback_1", workspaceDir: "/tmp/work", title: "from acp fallback" },
+  { sessionId: "mvs_fallback_2", workspaceDir: "/tmp/work2", title: "second acp entry" },
 ];
 
 // The mock below can be configured per-test via the `failureMode`
@@ -40,7 +50,7 @@ class FakeAcpClient {
   }
   async listSessions() {
     listCalls++;
-    return { sessions: FAKE_SESSIONS };
+    return { sessions: FAKE_ACP_SESSIONS };
   }
   stop() {}
 }
@@ -72,7 +82,7 @@ before(async (t) => {
                 if (failureMode === "list") {
                   throw new Error("simulated runtime-side listSessions failure");
                 }
-                return FAKE_SESSIONS;
+                return FAKE_TUI_SESSIONS;
               },
               getSession: async (id) => {
                 if (failureMode === "getSession") {
@@ -81,7 +91,7 @@ before(async (t) => {
                 // Return null for unknown ids so the test for "unknown
                 // session id" exercises the null-on-miss path. Returning a
                 // hard-coded session would mask that behaviour.
-                const hit = FAKE_SESSIONS.find((s) => s.sessionId === id);
+                const hit = FAKE_TUI_SESSIONS.find((s) => s.sessionId === id);
                 return hit ?? null;
               },
             },
@@ -97,7 +107,7 @@ before(async (t) => {
 after(() => {
   delete process.env.MCODE_WEBUI_TRANSPORT;
   try {
-    rmSync(tmpBase, { recursive: true, force: true });
+    rmTmpDir(tmpBase);
   } catch {}
 });
 
@@ -122,15 +132,15 @@ test("S3-FB-01: listAllMcodeSessions falls back to ACP when catalogue host boot 
 
   const sessions = await listAllMcodeSessions();
   assert.ok(Array.isArray(sessions), "fallback returns an array");
-  assert.equal(sessions.length, FAKE_SESSIONS.length, "fallback returns the ACP page");
+  assert.equal(sessions.length, FAKE_ACP_SESSIONS.length, "fallback returns the ACP page");
   assert.equal(
     listCalls,
     1,
     "fallback invokes the ACP listSessions exactly once per call",
   );
-  assert.equal(sessions[0].sessionId, FAKE_SESSIONS[0].sessionId);
-  assert.equal(sessions[0].cwd, FAKE_SESSIONS[0].cwd);
-  assert.equal(sessions[0].title, FAKE_SESSIONS[0].title);
+  assert.equal(sessions[0].sessionId, FAKE_ACP_SESSIONS[0].sessionId);
+  assert.equal(sessions[0].cwd, FAKE_ACP_SESSIONS[0].cwd);
+  assert.equal(sessions[0].title, FAKE_ACP_SESSIONS[0].title);
 });
 
 // ============================================================
@@ -146,7 +156,7 @@ test("S3-FB-02: getMcodeSessionTitle falls back to ACP when catalogue host boot 
   );
 
   const title = await getMcodeSessionTitle("mvs_fallback_1");
-  assert.equal(title, FAKE_SESSIONS[0].title, "title comes from ACP fallback");
+  assert.equal(title, FAKE_ACP_SESSIONS[0].title, "title comes from ACP fallback");
   assert.equal(listCalls, 1, "fallback invoked the ACP listSessions");
 });
 
@@ -189,13 +199,13 @@ test("S3-FB-04: listAllMcodeSessions falls back to ACP when catalogue listSessio
 
   const sessions = await listAllMcodeSessions();
   assert.ok(Array.isArray(sessions), "fallback returns an array");
-  assert.equal(sessions.length, FAKE_SESSIONS.length, "fallback returns the ACP page");
+  assert.equal(sessions.length, FAKE_ACP_SESSIONS.length, "fallback returns the ACP page");
   assert.equal(
     listCalls,
     1,
     "fallback invokes the ACP listSessions exactly once per call",
   );
-  assert.equal(sessions[0].title, FAKE_SESSIONS[0].title);
+  assert.equal(sessions[0].title, FAKE_ACP_SESSIONS[0].title);
 });
 
 // ============================================================
@@ -206,8 +216,9 @@ test("S3-FB-04: listAllMcodeSessions falls back to ACP when catalogue listSessio
 // other case in this file proves a failure falls THROUGH to ACP; this
 // one proves the catalogue branch is actually taken. Without it,
 // deleting the entire catalogue branch from acp-client.js leaves
-// every test in this file green (the ACP mock returns the same
-// FAKE_SESSIONS the catalogue mock serves), so `listCalls === 0` is
+// every test in this file green (the ACP mock returns the same rows
+// the catalogue mock serves, modulo the shape difference), so
+// `listCalls === 0` is
 // the only honest discriminator. It must run after FB-04: the
 // catalogue host singleton inside acp-client.js is cached across
 // tests in this file, and the cached host's adapter reads
@@ -225,19 +236,19 @@ test("S3-FB-05: healthy catalogue host serves list/title without touching ACP", 
   assert.ok(Array.isArray(sessions), "catalogue path returns an array");
   assert.equal(
     sessions.length,
-    FAKE_SESSIONS.length,
+    FAKE_TUI_SESSIONS.length,
     "catalogue path returns the full page",
   );
   assert.equal(
     sessions[0].sessionId,
-    FAKE_SESSIONS[0].sessionId,
+    FAKE_TUI_SESSIONS[0].sessionId,
     "catalogue path returns the catalogue-side data",
   );
 
-  const title = await getMcodeSessionTitle(FAKE_SESSIONS[0].sessionId);
+  const title = await getMcodeSessionTitle(FAKE_TUI_SESSIONS[0].sessionId);
   assert.equal(
     title,
-    FAKE_SESSIONS[0].title,
+    FAKE_TUI_SESSIONS[0].title,
     "title comes from the catalogue-side getSession, not from an ACP relist",
   );
 
