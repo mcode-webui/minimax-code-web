@@ -74,6 +74,67 @@ const NEW_KEYS = [
   "usage.resetsIn",
   "usage.duration.minute",
   "usage.duration.hourMinute",
+  // Ticket 55a — the four pure-frontend sub-pages: the honesty notice,
+  // every row title / hint, the memory-summary dialog, the code-review
+  // card, and the shared save / cancel actions.
+  "common.save",
+  "common.cancel",
+  "settings.shortcuts.notice",
+  "settings.shortcuts.group.miniChat",
+  "settings.shortcuts.group.common",
+  "settings.shortcuts.item.miniChat",
+  "settings.shortcuts.item.miniChatHint",
+  "settings.shortcuts.item.globalSearch",
+  "settings.shortcuts.item.globalSearchHint",
+  "settings.shortcuts.item.searchTasks",
+  "settings.shortcuts.item.searchTasksHint",
+  "settings.shortcuts.item.newTask",
+  "settings.shortcuts.item.newTaskHint",
+  "settings.shortcuts.item.newTaskNoProject",
+  "settings.shortcuts.item.newTaskNoProjectHint",
+  "settings.shortcuts.item.openFolder",
+  "settings.shortcuts.item.openFolderHint",
+  "settings.shortcuts.item.openSettings",
+  "settings.shortcuts.item.openSettingsHint",
+  "settings.shortcuts.item.holdDictation",
+  "settings.shortcuts.item.holdDictationHint",
+  "settings.shortcuts.item.toggleDictation",
+  "settings.shortcuts.item.toggleDictationHint",
+  "settings.shortcuts.item.invertFollowUp",
+  "settings.shortcuts.item.invertFollowUpHint",
+  "settings.shortcuts.unset",
+  "settings.shortcuts.clear",
+  "settings.shortcuts.reset",
+  "settings.voice.group.regular",
+  "settings.voice.group.dictation",
+  "settings.voice.microphone",
+  "settings.voice.microphoneHint",
+  "settings.voice.holdKey",
+  "settings.voice.holdKeyHint",
+  "settings.voice.toggleKey",
+  "settings.voice.toggleKeyHint",
+  "settings.voice.unset",
+  "settings.personal.instructions",
+  "settings.personal.instructionsPlaceholder",
+  "settings.personal.aboutYou",
+  "settings.personal.aboutYouPlaceholder",
+  "settings.personal.memory",
+  "settings.personal.memoryHint",
+  "settings.personal.proactiveMemory",
+  "settings.personal.proactiveMemoryHint",
+  "settings.personal.memorySummary",
+  "settings.personal.memorySummaryHint",
+  "settings.personal.manage",
+  "settings.memory.title",
+  "settings.memory.placeholder",
+  "settings.memory.empty",
+  "settings.memory.more",
+  "settings.memory.close",
+  "settings.codeReview.hint",
+  "settings.codeReview.method",
+  "settings.codeReview.methodSubsession",
+  "settings.codeReview.guidelines",
+  "settings.codeReview.guidelinesPlaceholder",
 ] as const;
 
 const RETIRED_USAGE_KEYS = [
@@ -159,6 +220,34 @@ describe("i18n settings parity (ticket 37)", () => {
       "请前往 MiniMax 开放平台申请发票",
     );
     assert.equal(translate("zh", "usage.resetsIn" as MessageKey), "{t}后重置");
+  });
+
+  test("ticket 55a: the zh strings are the desktop reference's verbatim wording", () => {
+    // The visible furniture of the four pure sub-pages — the reference's
+    // own labels (ref-08/09/10/11/22), not paraphrases.
+    assert.equal(translate("zh", "settings.shortcuts.group.common" as MessageKey), "常用");
+    assert.equal(
+      translate("zh", "settings.shortcuts.item.miniChat" as MessageKey),
+      "显示或隐藏 Mini Chat",
+    );
+    assert.equal(translate("zh", "settings.shortcuts.unset" as MessageKey), "未设置");
+    assert.equal(translate("zh", "settings.voice.group.regular" as MessageKey), "常规");
+    assert.equal(translate("zh", "settings.personal.instructions" as MessageKey), "自定义指令");
+    assert.equal(translate("zh", "settings.personal.aboutYou" as MessageKey), "关于你");
+    assert.equal(translate("zh", "settings.personal.memory" as MessageKey), "记忆");
+    assert.equal(translate("zh", "settings.personal.proactiveMemory" as MessageKey), "主动记忆");
+    assert.equal(translate("zh", "settings.personal.memorySummary" as MessageKey), "记忆摘要");
+    assert.equal(translate("zh", "settings.personal.manage" as MessageKey), "管理");
+    assert.equal(
+      translate("zh", "settings.memory.placeholder" as MessageKey),
+      "MiniMax 整理的长期记忆会显示在这里。",
+    );
+    assert.equal(translate("zh", "settings.memory.empty" as MessageKey), "尚未生成记忆摘要");
+    assert.equal(translate("zh", "settings.codeReview.method" as MessageKey), "审查方式");
+    assert.equal(translate("zh", "settings.codeReview.methodSubsession" as MessageKey), "子会话");
+    assert.equal(translate("zh", "settings.codeReview.guidelines" as MessageKey), "自定义审查准则");
+    assert.equal(translate("zh", "common.save" as MessageKey), "保存");
+    assert.equal(translate("zh", "common.cancel" as MessageKey), "取消");
   });
 
   test("surviving keys: the appearance row label and the menu usage label", () => {
