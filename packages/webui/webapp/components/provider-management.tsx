@@ -15,12 +15,10 @@ import * as api from "@/lib/api";
 import type { MessageKey } from "@/lib/i18n";
 import { useSessionContext } from "@/lib/store";
 import {
-  blankAuth,
   blankModel,
   describeTestOutcome,
   draftFromView,
   draftToWire,
-  newDraftProvider,
   validateModelRow as validateModelRowLib,
   validateProviderId,
   THINKING_LEVELS,
@@ -29,6 +27,7 @@ import {
   type DraftModel,
   type ProviderTestOutcome,
 } from "@/lib/provider-management";
+import { AddModelDialog } from "./add-model-dialog";
 
 /**
  * Provider management panel (ticket 03).
@@ -68,6 +67,20 @@ import {
  *     `feat/provider-presets`. This panel fetches the catalogue on
  *     mount and hides the section on 404 — the rest of the panel
  *     stays usable without it.
+ *
+ * Add-model dialog (ticket 54, desktop parity) — lives in
+ * `components/add-model-dialog.tsx` since acceptance round 2, so the
+ * suite can render-test its behaviour (the panel's store/api graph
+ * must stay out of a test process). The panel keeps only the wiring:
+ * the empty-state / rail button and the deep-link open the dialog,
+ * and `saveFromDialog` appends its draft through the same
+ * draftToWire + PUT path as the panel's own Save button — the wire
+ * body is unchanged. Dialog data policy (see that file for detail):
+ * auto-fetch lists the selected preset's built-in catalogue with an
+ * explicit not-a-live-query note, a custom provider keeps the link
+ * clickable but the dialog states the missing capability and
+ * disables 添加, and max-output-tokens renders disabled with the
+ * standing 「本地版不适用」 marker.
  */
 
 const PROTOCOLS: api.ProviderProtocol[] = ["openai", "anthropic", "gemini"];
@@ -96,11 +109,10 @@ export function ProviderManagementPanel({
   const [providers, setProviders] = useState<DraftProvider[] | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  /** Set on `addProvider`, consumed by `ProviderEditor` to auto-focus the
-   *  id field on the freshly-created draft. Cleared the first time the
-   *  user touches any field — auto-focusing a field the user already
-   *  edited is annoying. */
-  const [autoFocusDraftId, setAutoFocusDraftId] = useState<string | null>(null);
+  /** Ticket 54 — the desktop-parity add-model dialog. The only add
+   *  entry point: the empty-state button, the rail's 「+ 添加模型」
+   *  button, and the model-selector deep-link all open it. */
+  const [addDialogOpen, setAddDialogOpen] = useState(false);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -133,24 +145,13 @@ export function ProviderManagementPanel({
     void load();
   }, [load, providersRevision]);
 
-  const addProvider = useCallback(() => {
-    // A new draft has a stable `draftId` (opaque, never written to
-    // disk) and an empty user-facing `id` until the user types. The
-    // selection path is keyed off `draftId` so editing the user-facing
-    // id does not lose the row.
-    const draft = newDraftProvider();
-    setProviders((current) => [...(current ?? []), draft]);
-    setSelectedId(draft.draftId);
-    setAutoFocusDraftId(draft.draftId);
-  }, []);
-
   /**
-   * Auto-add fire-once (ticket 09).
+   * Auto-add fire-once (ticket 09, reworked in 54).
    *
    * The model selector's top "Add provider" row sends the user here
    * with `autoAddProvider = true`. Once the initial `load()` has
-   * populated `providers`, we fire `addProvider()` so the editor
-   * renders a fresh draft with the id input focused.
+   * populated `providers`, we open the add-model dialog — the
+   * desktop-parity add surface — so the user lands mid-add.
    *
    * The flag is one-shot: the effect tracks the consumed state with
    * a ref so a later mount (re-opening the modal) without the flag
@@ -166,9 +167,9 @@ export function ProviderManagementPanel({
     if (autoAddFiredRef.current) return;
     if (!providers) return;
     autoAddFiredRef.current = true;
-    addProvider();
+    setAddDialogOpen(true);
     onAutoAddConsumed?.();
-  }, [autoAddProvider, providers, addProvider, onAutoAddConsumed]);
+  }, [autoAddProvider, providers, onAutoAddConsumed]);
 
   // Validation summary across the whole draft, recomputed whenever
   // the user touches a field. The editor surface is only enabled
@@ -257,48 +258,70 @@ export function ProviderManagementPanel({
     }
   }, [providers, selectedId]);
 
+  /** Shared PUT path: write the given draft list through
+   *  `/api/providers` and re-read the catalogue so masked key
+   *  placeholders line up. Returns whether the PUT landed — the
+   *  add-model dialog keeps itself open on failure so the user's
+   *  typed input is not lost behind a closed modal. */
+  const persist = useCallback(
+    async (next: DraftProvider[]): Promise<boolean> => {
+      setBusy(true);
+      setSaveError(null);
+      try {
+        const wire = next.filter((p) => !p.markedForDeletion).map(draftToWire);
+        await api.putProviders({ version: 2, providers: wire });
+        setSavedAt(Date.now());
+        await load();
+        return true;
+      } catch (cause) {
+        setSaveError(
+          t("providers.saveError").replace(
+            "{{error}}",
+            cause instanceof Error ? cause.message : String(cause),
+          ),
+        );
+        return false;
+      } finally {
+        setBusy(false);
+      }
+    },
+    [load, t],
+  );
+
   const save = useCallback(async () => {
     if (!providers || !validation.ok) return;
-    setBusy(true);
-    setSaveError(null);
-    try {
-      const wire = providers
-        .filter((p) => !p.markedForDeletion)
-        .map(draftToWire);
-      await api.putProviders({ version: 2, providers: wire });
-      setSavedAt(Date.now());
-      // Refresh the local view from the server so masked placeholders
-      // line up with the just-saved record.
-      await load();
-      // Auto-test after save: a user who just configured a new provider
-      // expects feedback immediately, not a separate click on the
-      // "Test connection" button. The test runs against the live draft
-      // values the user typed; the test result lands inline next to
-      // the save button (described by `testByProvider`).
-      //
-      // The auto-test fires on the *first* newly-added draft with a key
-      // — existing providers were already tested when the user touched
-      // their key field, and re-running the probe on every save would
-      // hide a stale result under a fresh success message.
-      const fresh = providers.find(
-        (p) =>
-          !p.markedForDeletion &&
-          p.isNew &&
-          p.auth.type === "byok" &&
-          p.auth.apiKey.trim().length > 0,
-      );
-      if (fresh) await testSelected();
-    } catch (cause) {
-      setSaveError(
-        t("providers.saveError").replace(
-          "{{error}}",
-          cause instanceof Error ? cause.message : String(cause),
-        ),
-      );
-    } finally {
-      setBusy(false);
-    }
-  }, [providers, validation.ok, load, t, testSelected]);
+    const putOk = await persist(providers);
+    if (!putOk) return;
+    // Auto-test after save: a user who just configured a new provider
+    // expects feedback immediately, not a separate click on the
+    // "Test connection" button. The test runs against the live draft
+    // values the user typed; the test result lands inline next to
+    // the save button (described by `testByProvider`).
+    //
+    // The auto-test fires on the *first* newly-added draft with a key
+    // — existing providers were already tested when the user touched
+    // their key field, and re-running the probe on every save would
+    // hide a stale result under a fresh success message.
+    const fresh = providers.find(
+      (p) =>
+        !p.markedForDeletion &&
+        p.isNew &&
+        p.auth.type === "byok" &&
+        p.auth.apiKey.trim().length > 0,
+    );
+    if (fresh) await testSelected();
+  }, [providers, validation.ok, persist, testSelected]);
+
+  /** Add-model dialog commit (ticket 54): append the dialog's draft
+   *  and PUT immediately — the desktop dialog saves on its own 保存
+   *  button, not through the panel-level Save. */
+  const saveFromDialog = useCallback(
+    async (draft: DraftProvider): Promise<boolean> => {
+      if (!providers) return false;
+      return persist([...providers, draft]);
+    },
+    [providers, persist],
+  );
 
   if (loadError && !providers) {
     return (
@@ -325,22 +348,46 @@ export function ProviderManagementPanel({
       </div>
 
       {/* Preset one-click enable — degrades gracefully when the
-          sibling branch's endpoints are not yet mounted (404 → null). */}
-      <ProviderPresetSection t={t} onAfterEnable={() => void load()} />
+          sibling branch's endpoints are not yet mounted (404 → null).
+          On the empty state it renders BELOW the centered affordance:
+          the reference's first paint is 「暂未添加自定义模型」 in the
+          tab's whitespace, and an 11-row catalogue above it would push
+          that out of the viewport. */}
+      {providers.length > 0 ? (
+        <ProviderPresetSection t={t} onAfterEnable={() => void load()} />
+      ) : null}
 
+      {/* Ticket 54 — desktop-parity empty state: the reference centers
+          「暂未添加自定义模型」 with a 「+ 添加模型」 button in the
+          tab's whitespace; the two-column rail only exists once
+          there is something to manage. The testids stay on the same
+          affordances (providers-empty text, provider-add-button). */}
+      {providers.length === 0 ? (
+        <>
+        <div className="flex flex-col items-center gap-4 py-14">
+          <p
+            data-testid="providers-empty"
+            className="text-sm text-text_default_tertiary"
+          >
+            {t("providers.empty")}
+          </p>
+          <button
+            type="button"
+            data-testid="provider-add-button"
+            onClick={() => setAddDialogOpen(true)}
+            className="h-8 rounded-lg bg-bg_interaction_tertiary_hover px-4 text-sm text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_selected"
+          >
+            + {t("providers.add")}
+          </button>
+        </div>
+        <ProviderPresetSection t={t} onAfterEnable={() => void load()} />
+        </>
+      ) : (
       <div className="grid grid-cols-[200px_1fr] gap-3">
         {/* Left rail — provider list. */}
         <div className="flex flex-col gap-2">
           <div className="flex flex-col gap-1 rounded-[10px] bg-bg_grouped_tertiary p-1">
-            {providers.length === 0 ? (
-              <p
-                data-testid="providers-empty"
-                className="px-2 py-3 text-caption-small-strong text-text_default_tertiary"
-              >
-                {t("providers.empty")}
-              </p>
-            ) : (
-              providers.map((p) => {
+            {providers.map((p) => {
                 const isSelected =
                   (selectedId && p.draftId === selectedId) ||
                   (!selectedId && p === selected);
@@ -445,13 +492,12 @@ export function ProviderManagementPanel({
                     ) : null}
                   </button>
                 );
-              })
-            )}
+              })}
           </div>
           <button
             type="button"
             data-testid="provider-add-button"
-            onClick={addProvider}
+            onClick={() => setAddDialogOpen(true)}
             className="h-8 self-start rounded-lg border border-border_default px-3 text-sm text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_hover"
           >
             + {t("providers.add")}
@@ -464,12 +510,6 @@ export function ProviderManagementPanel({
             <ProviderEditor
               t={t}
               draft={selected}
-              autoFocusId={autoFocusDraftId === selected.draftId}
-              onTouched={() => {
-                if (autoFocusDraftId === selected.draftId) {
-                  setAutoFocusDraftId(null);
-                }
-              }}
               onChange={updateSelected}
               onDelete={() => markDeleted(selected.id)}
               onTest={() => void testSelected()}
@@ -527,6 +567,20 @@ export function ProviderManagementPanel({
           </div>
         </div>
       </div>
+      )}
+
+      {/* Ticket 54 — the desktop-parity add-model dialog. Opened by
+       *  the empty-state / rail button and the deep-link; saving PUTs
+       *  through `saveFromDialog` and closes only on success. */}
+      <AddModelDialog
+        t={t}
+        open={addDialogOpen}
+        existingIds={providers
+          .filter((p) => !p.markedForDeletion)
+          .map((p) => p.id)}
+        onCancel={() => setAddDialogOpen(false)}
+        onSave={saveFromDialog}
+      />
     </div>
   );
 }
@@ -538,14 +592,6 @@ export function ProviderManagementPanel({
 interface ProviderEditorProps {
   t: (key: MessageKey) => string;
   draft: DraftProvider;
-  /** True while the editor is mounted on a freshly-added draft — the
-   *  id input auto-focuses so the user can start typing without
-   *  moving the cursor. */
-  autoFocusId?: boolean;
-  /** Called once when the user touches any field; the panel uses this
-   *  to clear its auto-focus flag so the focus does not re-fire on
-   *  every re-render. */
-  onTouched?: () => void;
   onChange: (mutator: (draft: DraftProvider) => DraftProvider) => void;
   onDelete: () => void;
   onTest: () => void;
@@ -555,27 +601,12 @@ interface ProviderEditorProps {
 function ProviderEditor({
   t,
   draft,
-  autoFocusId,
-  onTouched,
   onChange,
   onDelete,
   onTest,
   testResult,
 }: ProviderEditorProps) {
-  const idInputRef = useRef<React.ComponentRef<typeof AntInput> | null>(null);
   const idError = validateProviderId(draft.id);
-
-  // Autofocus the id input on freshly-added drafts. The effect runs
-  // only when `autoFocusId` flips on — re-running on every render would
-  // yank focus from the user as they type.
-  useEffect(() => {
-    if (!autoFocusId) return;
-    // antd's Input forwards the ref to the underlying <input>; reach
-    // into it via the public `input` property (typed as the inner
-    // element by antd 5's class API).
-    const inner = idInputRef.current?.input;
-    if (inner && typeof inner.focus === "function") inner.focus();
-  }, [autoFocusId]);
   const testDescription = testResult ? describeTestOutcome(t, testResult) : null;
 
   return (
@@ -606,12 +637,10 @@ function ProviderEditor({
         </legend>
         <Field label={t("providers.field.id")}>
           <AntInput
-            ref={idInputRef}
             value={draft.id}
             disabled={!draft.isNew}
             data-testid="provider-field-id"
             onChange={(e) => {
-              onTouched?.();
               onChange((p) => ({ ...p, id: e.target.value }));
             }}
             className="mavis-input"
@@ -765,13 +794,22 @@ function ProviderEditor({
 }
 
 /**
- * The API-key field is the load-bearing piece of the keep-existing-key
- * convention: the masked placeholder goes in `placeholder`, NEVER in
- * `value`. The controlled value is `""` whenever the user did not
- * touch the field — the server interprets that as "keep the existing
- * key". A "reveal" toggle is intentionally absent: showing the
- * plaintext defeats the masking contract; the user clears the field
- * to overwrite (the masked placeholder will reappear).
+ * The EDITOR's API-key field is the load-bearing piece of the
+ * keep-existing-key convention: the masked placeholder goes in
+ * `placeholder`, NEVER in `value`. The controlled value is `""`
+ * whenever the user did not touch the field — the server interprets
+ * that as "keep the existing key". A "reveal" toggle is intentionally
+ * absent HERE: the only text this field could reveal is the masked
+ * placeholder, and showing the plaintext of the stored key defeats
+ * the masking contract; the user clears the field to overwrite (the
+ * masked placeholder will reappear).
+ *
+ * The add-model dialog (ticket 54) is a different contract and DOES
+ * ship the eye toggle (desktop parity): there is no stored key and
+ * no masked placeholder — the field's value is exactly what the user
+ * just typed, so revealing it leaks nothing the user cannot already
+ * see on their own screen. That input lives in `AddModelDialog`, not
+ * here.
  */
 function ApiKeyInput({
   draft,

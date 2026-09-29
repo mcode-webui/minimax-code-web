@@ -584,8 +584,8 @@ const en = {
      Chinese entry below. */
   "providers.title": "Model providers",
   "providers.subtitle": "Configure API keys, protocols, and model catalogues",
-  "providers.empty": "No providers configured yet",
-  "providers.add": "Add provider",
+  "providers.empty": "No custom models yet",
+  "providers.add": "Add model",
   "providers.test": "Test connection",
   "providers.testing": "Testing…",
   "providers.testOk": "Connected in {{ms}}ms",
@@ -631,6 +631,7 @@ const en = {
   "providers.models.modalities.image": "image",
   "providers.models.modalities.audio": "audio",
   "providers.models.modalities.video": "video",
+  "providers.models.modalities.file": "file",
   "providers.idInvalid":
     "Lowercase letters, digits, '.', '-', '_'; must start with one",
   "providers.section.connection": "Connection",
@@ -640,6 +641,45 @@ const en = {
     "Preset catalogue not available in this build",
   "providers.presets.enable": "Enable",
   "providers.presets.enabling": "Enabling…",
+  // Ticket 54 — the desktop-parity add-model dialog and its
+  // auto-fetch checkbox dialog. Empty-state strings (providers.empty /
+  // providers.add) are retargeted in place: the key names stay, the
+  // copy follows the desktop's 「暂未添加自定义模型」/「+ 添加模型」.
+  "providers.dialog.title": "Add model",
+  "providers.dialog.provider": "Provider",
+  "providers.dialog.providerPlaceholder": "Select a provider",
+  "providers.dialog.other": "+ Other (custom)",
+  "providers.dialog.apiKeyPlaceholder": "Enter API Key",
+  "providers.dialog.models": "Models",
+  "providers.dialog.addEntry": "＋ Add",
+  "providers.dialog.autoFetch": "Auto-fetch",
+  "providers.dialog.entryTitle": "Model {{n}}",
+  "providers.dialog.entryReset": "Reset this entry",
+  "providers.dialog.entryRemove": "Delete this entry",
+  "providers.dialog.field.name": "Model name",
+  "providers.dialog.field.context": "Context window",
+  "providers.dialog.field.maxOutput": "Max output tokens",
+  "providers.dialog.field.maxOutputNa":
+    "Not applicable in the local edition — the field is not persisted",
+  "providers.dialog.field.thinking": "Reasoning levels",
+  "providers.dialog.field.thinkingPlaceholder":
+    "Type a level and press Enter, e.g. low, medium, high",
+  "providers.dialog.field.attachments": "Supported attachments",
+  "providers.dialog.attachments.image": "Image",
+  "providers.dialog.attachments.pdf": "PDF",
+  "providers.dialog.attachments.video": "Video",
+  "providers.dialog.attachments.audio": "Audio",
+  "providers.dialog.cancel": "Cancel",
+  "providers.dialog.save": "Save",
+  "providers.dialog.errorProvider": "Select a provider first",
+  "providers.dialog.errorDuplicate": "Provider id already exists: {{id}}",
+  "providers.fetched.title": "Fetched models",
+  "providers.fetched.presetNote":
+    "Listed from the built-in provider catalogue — the local edition cannot query the provider's live model list with this key.",
+  "providers.fetched.customEmpty":
+    "The local edition cannot auto-fetch models for a custom provider — add them manually.",
+  "providers.fetched.selectAll": "Select all",
+  "providers.fetched.add": "Add",
 
   // Slice 15 — Sidebar workspace tabs.
   // Tab strip + launcher labels. The aria variants power the close-X
@@ -1244,8 +1284,8 @@ const zh: Record<MessageKey, string> = {
      双语齐全；新增键请同步补全英文与中文。 */
   "providers.title": "模型供应商",
   "providers.subtitle": "配置 API Key、协议和模型清单",
-  "providers.empty": "暂无供应商",
-  "providers.add": "新增供应商",
+  "providers.empty": "暂未添加自定义模型",
+  "providers.add": "添加模型",
   "providers.test": "测试连接",
   "providers.testing": "正在测试…",
   "providers.testOk": "{{ms}}ms 连通",
@@ -1290,6 +1330,7 @@ const zh: Record<MessageKey, string> = {
   "providers.models.modalities.image": "图像",
   "providers.models.modalities.audio": "音频",
   "providers.models.modalities.video": "视频",
+  "providers.models.modalities.file": "文件",
   "providers.idInvalid": "小写字母、数字、'.', '-', '_'；必须以其中之一开头",
   "providers.section.connection": "连接",
   "providers.section.models": "模型",
@@ -1297,6 +1338,42 @@ const zh: Record<MessageKey, string> = {
   "providers.presets.unavailable": "当前版本未提供预置目录",
   "providers.presets.enable": "启用",
   "providers.presets.enabling": "正在启用…",
+  // 工单 54 —— 桌面对齐的「添加模型」弹窗与「已获取模型」勾选弹窗。
+  // 空态（providers.empty / providers.add）原 key 改文案，对齐桌面
+  // 的「暂未添加自定义模型」与「+ 添加模型」。
+  "providers.dialog.title": "添加模型",
+  "providers.dialog.provider": "提供商",
+  "providers.dialog.providerPlaceholder": "请选择提供商",
+  "providers.dialog.other": "+ 其他（自定义）",
+  "providers.dialog.apiKeyPlaceholder": "请输入API Key",
+  "providers.dialog.models": "模型",
+  "providers.dialog.addEntry": "＋ 添加",
+  "providers.dialog.autoFetch": "自动获取",
+  "providers.dialog.entryTitle": "模型 {{n}}",
+  "providers.dialog.entryReset": "重置本条目",
+  "providers.dialog.entryRemove": "删除本条目",
+  "providers.dialog.field.name": "模型名称",
+  "providers.dialog.field.context": "上下文窗口",
+  "providers.dialog.field.maxOutput": "最大输出 Token",
+  "providers.dialog.field.maxOutputNa": "本地版不适用：该字段暂不保存",
+  "providers.dialog.field.thinking": "推理等级",
+  "providers.dialog.field.thinkingPlaceholder": "输入档位后按 Enter，如 low、medium、high",
+  "providers.dialog.field.attachments": "支持的附件",
+  "providers.dialog.attachments.image": "图片",
+  "providers.dialog.attachments.pdf": "PDF",
+  "providers.dialog.attachments.video": "视频",
+  "providers.dialog.attachments.audio": "音频",
+  "providers.dialog.cancel": "取消",
+  "providers.dialog.save": "保存",
+  "providers.dialog.errorProvider": "请先选择提供商",
+  "providers.dialog.errorDuplicate": "供应商 ID 已存在：{{id}}",
+  "providers.fetched.title": "已获取模型",
+  "providers.fetched.presetNote":
+    "列表来自预置模型目录；本地版暂不支持按该 API Key 拉取实时列表。",
+  "providers.fetched.customEmpty":
+    "本地版暂不支持按 API Key 自动获取自定义供应商的模型列表，请手动添加。",
+  "providers.fetched.selectAll": "全选",
+  "providers.fetched.add": "添加",
 
   // Slice 15 — Sidebar workspace tabs (zh mirror of the en block
   // above). Every key MUST exist in both locales — the runtime

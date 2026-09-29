@@ -20,6 +20,7 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  ATTACHMENT_MODALITIES,
   THINKING_LEVELS,
   MODALITIES,
   blankAuth,
@@ -70,8 +71,25 @@ describe("provider-management — enum values", () => {
     assert.deepEqual([...THINKING_LEVELS], ["low", "medium", "high"]);
   });
 
-  test("MODALITIES covers text / image / audio / video", () => {
-    assert.deepEqual([...MODALITIES], ["text", "image", "audio", "video"]);
+  // Ticket 54: `file` joined the modality vocabulary — the desktop's
+  // attachment checkbox PDF maps to it, the picker's badge renderer
+  // already understands it, and the server forwards any non-empty
+  // string. The form-side enum is what this pins.
+  test("MODALITIES covers text / image / audio / video / file", () => {
+    assert.deepEqual([...MODALITIES], ["text", "image", "audio", "video", "file"]);
+  });
+
+  test("ATTACHMENT_MODALITIES is the desktop attachment quartet", () => {
+    assert.deepEqual([...ATTACHMENT_MODALITIES], ["image", "file", "video", "audio"]);
+    for (const mod of ATTACHMENT_MODALITIES) {
+      assert.ok(
+        (MODALITIES as readonly string[]).includes(mod),
+        `${mod} must be a legal modality`,
+      );
+    }
+    // text is an input capability, not an attachment — the checkbox
+    // group must never toggle it.
+    assert.ok(!(ATTACHMENT_MODALITIES as readonly string[]).includes("text"));
   });
 });
 
@@ -144,6 +162,18 @@ describe("validateModelRow — model-row shape", () => {
     assert.match(err ?? "", /modality/);
   });
 
+  // Ticket 54 / B5: the PDF attachment checkbox writes the `file`
+  // modality — a row that carries it must validate, or the dialog
+  // could never save what its own checkbox produced.
+  test("the file modality (PDF attachment) is accepted", () => {
+    const err = validateModelRow({
+      ...blankModel(),
+      id: "m1",
+      modalities: ["text", "file", "image"],
+    });
+    assert.equal(err, null);
+  });
+
   test("a well-formed row returns null", () => {
     const err = validateModelRow({
       ...blankModel(),
@@ -201,6 +231,50 @@ describe("draftFromView — view → draft", () => {
 // ---------------------------------------------------------------------
 
 describe("draftToWire — draft → wire", () => {
+  // Ticket 54 acceptance round 2: the "PUT body unchanged" red line
+  // used to be pinned only at the panel's call-site literal — the
+  // function that BUILDS the payload was a blind spot (a mutation
+  // adding a field inside draftToWire shipped 129 green tests). These
+  // closed key-set assertions pin the payload at the behaviour layer:
+  // a new key anywhere in the shape fails the deepEqual, whatever
+  // quoting or call-site style it arrives with.
+  test("wire key set is closed — no field may join the PUT body (ticket 54)", () => {
+    const full: DraftProvider = {
+      ...newDraftProvider(),
+      id: "p1",
+      label: "P1",
+      preset: "zhipu",
+      auth: { type: "byok", apiKey: "sk-x", baseURL: "https://api.example.com" },
+      models: [{
+        id: "m1",
+        label: "M1",
+        contextLimit: "128000",
+        thinkingLevels: ["low"],
+        modalities: ["text", "file"],
+      }],
+    };
+    const wire = draftToWire(full);
+    assert.deepEqual(
+      Object.keys(wire).sort(),
+      ["auth", "enabled", "id", "label", "models", "preset", "protocol"],
+      "provider-level keys must stay exactly the documented PUT contract",
+    );
+    assert.ok(wire.models[0], "model row present");
+    assert.deepEqual(
+      Object.keys(wire.models[0]).sort(),
+      ["contextLimit", "id", "label", "modalities", "thinkingLevels"],
+      "model-level keys must stay exactly the documented PUT contract — maxOutputTokens and friends fail here",
+    );
+    // The specific regression the acceptance mutation proved: a
+    // max-output value must not leak into the payload even if some
+    // future form field starts collecting one.
+    assert.equal(
+      JSON.stringify(wire).includes("maxOutput"),
+      false,
+      "no maxOutput* key may appear anywhere in the serialized PUT body",
+    );
+  });
+
   test("empty model rows are dropped", () => {
     const draft: DraftProvider = {
       ...newDraftProvider(),

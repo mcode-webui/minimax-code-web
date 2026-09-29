@@ -284,6 +284,7 @@ exec 回合的代价——以下都是当前真实存在的行为，选择权限
 | 浏览器面板（slice 04，沙箱化 iframe over `/api/fs/raw`） | `components/browser-panel.tsx` | `browser-panel` |
 | 工作区选择器（模态） | `components/workspace-picker.tsx` | `workspace-picker` |
 | Provider 配置 | `components/provider-management.tsx` | `providers-panel` |
+| 添加模型弹窗 + 已获取模型弹窗（工单 54；验收第二轮拆为独立文件以便渲染级测试） | `components/add-model-dialog.tsx#AddModelDialog` / `#FetchedModelsDialog`（受控面 `#AddModelDialogForm` / `#FetchedModelsDialogBody`，纯函数 `#collectDialogErrors` / `#defaultChecked`） | `provider-dialog`（字段 `provider-dialog-provider-select` / `-api-key` / `-api-key-reveal` / `-model-add` / `-autofetch` / `-cancel` / `-save` / `-errors`；条目 `provider-dialog-entry-{n}` 含 `-name` / `-context` / `-max-output` / `-thinking` / `-attachment-{mod}` / `-reset` / `-remove`）/ `fetched-models-dialog`（`fetched-models-title` / `-item-{id}` / `-select-all` / `-cancel` / `-add`） |
 | 上下文窗口 | `components/context-meter.tsx` | `context-meter` |
 | 设置模态 | `components/panels.tsx#SettingsModal` | `settings-modal` |
 | 设置页「用量与模型」节的分段页签（工单 53） | `components/panels.tsx#UsageModelsSection` | `usage-models-segment`（页签 `usage-models-tab-token-plan` / `usage-models-tab-custom-models`） |
@@ -457,9 +458,8 @@ slice 22 增强：
 | 账户页 | 账户信息、退出登录；需 `getAccountStatus` / `signOut` 类后端契约 |
 | 已归档任务页 | 列表与删除；需归档会话契约 |
 | 用量与模型的三来源切换 | 分段页签已按桌面形态落地（工单 53），但它是**视图切换器**——不切换实际使用的模型来源；真实的 Token Plan / MiniMax API / 自定义模型来源切换与来源徽标仍需模型路由契约 |
-| 添加模型弹窗形态（工单 53b） | 桌面的「+ 添加模型」模态：提供商下拉、API Key 眼睛切换、多模型条目字段（名称/上下文窗口/最大输出/推理等级/支持附件）与「自动获取」勾选弹窗；当前自定义模型页签内仍是左右分栏字段编辑器（`provider-management.tsx`），数据能力等价、形态未对齐 |
 | MiniMax API Key 面板 | 输入 + 测试连通性 + 保存并使用 |
-| 自定义模型拖拽排序、逐模型启停、预设选择器 | 需 provider 契约扩展；当前是左右分栏字段编辑器 |
+| 自定义模型拖拽排序、逐模型启停、预设选择器 | 需 provider 契约扩展；添加已弹窗化（工单 54），编辑仍在列表 + 编辑器面 |
 | 搜索关键词高亮 | 参照自己也没接线（定义了组件与动画但无调用点） |
 | 通用页 dataDir 底注 | 见上表 |
 
@@ -476,7 +476,23 @@ Token Plan 视图是桌面的五区块（页签 + 四卡）：
 | 积分行（ⓘ + 蓝色开关） | 本地无积分体系：开关渲染桌面同款蓝色 iOS 形态但置灰（checked + disabled），文案照桌面，行内标注「本地版不适用」 |
 | 发票行 | 唯一完全真实的外链：「申请 ↗」新标签打开 MiniMax 开放平台 |
 
-自定义模型视图是原有供应商面板（API Key、协议、模型清单、连接测试、预设一键启用）原样迁移，`data-testid` 不改名；桌面的空态文案与「添加模型」弹窗形态按上表登记为 53b。
+自定义模型视图是原有供应商面板（API Key、协议、模型清单、连接测试、预设一键启用），`data-testid` 全部不改名；工单 54 把**添加**流程重做成桌面同款弹窗（见下节），列表 + 编辑器保留为编辑路径。
+
+**添加模型弹窗（工单 54，53b）**
+
+未配置任何供应商时，页签中央显示「暂未添加自定义模型」与「+ 添加模型」按钮；有供应商后按钮移到列表下方。模型选择器的「新增供应商」深链也落在同一弹窗。弹窗内：
+
+| 区域 | 契约 |
+| --- | --- |
+| 提供商下拉（「请选择提供商」） | 选项 = `GET /api/providers/presets` 目录 + 「+ 其他（自定义）」：选预设自动填 id / 显示名 / 协议 / 端点 / 认证类型，选「其他」展开自定义字段（ID、显示名、协议、认证类型、端点）。DeepSeek / Zhipu AI（智谱）/ Moonshot AI (China) 用桌面拼写，其余本地预设保留目录名；目录接口 404 时退化为仅「其他」 |
+| API Key（密码框 + 眼睛） | 眼睛切换仅在这里安全：值就是刚输入的明文，不是脱敏占位——编辑器侧的保留密钥约定（masked 占位、空值哨兵）不变 |
+| 模型条目（「模型 01…」 + ↻ 重置 + 🗑 删除） | 五字段：模型名称→ `id`；上下文窗口→ `contextLimit`；最大输出 Token → **禁用并标注「本地版不适用」**（`/api/providers` PUT 契约没有该字段，可输入会在保存时静默丢失）；推理等级→ `thinkingLevels`（选项来自 `THINKING_LEVELS`，low/medium/high 契约冻结；桌面占位中的「max」示例故意不照抄）；支持的附件 → 图片/PDF/视频/音频 四复选框，映射 `image`/`file`/`video`/`audio`（`file` 自本轮起入选 `MODALITIES`；`text` 不受复选框控制、原样保留） |
+| 「＋ 添加」/「自动获取」 | 添加追加空白条目；自动获取打开「已获取模型」勾选弹窗，列表是**所选预设的内置目录**并注明非按 Key 实时拉取——本地后端没有模型列表代理。未选预设时弹窗如实说明能力缺失，不造数据。「全选（n/N）」+取消/添加同桌面；勾选条目带目录元数据落入表单 |
+| 取消 / 保存 | 保存前校验（已选提供商、id 唯一、逐条 `validateModelRow`），追加进面板列表后走**原有** `draftToWire` + `api.putProviders({version: 2})` 保存路径（请求体零改动）；失败时弹窗不关、已输入内容保留 |
+
+**工单 54 的不变量**：服务端契约零改动（`/api/providers` PUT 请求体、`/api/set-model` 与全部端点不动，变更只在前端 + 测试 + 文档）；面板/编辑器侧的全部既有 `data-testid` 在源码中保留（面板源码 pin 36 条 + 空态 2 条 = 38 条，与基线一致；`webapp/test/add-model-dialog.test.ts` 钉死清单）；预设目录、thinkingLevels 编辑语义、供应商分组与思考等级显示例外不变；深链仍落自定义模型视图，改为直接打开弹窗。旧的列表草稿式 `addProvider` 路径与编辑器失去调用方的自动聚焦参数一并删除，行为由弹窗收敛。
+
+**验收第二轮（同工单）**：弹窗组件拆到 `components/add-model-dialog.tsx` 并导出受控面，测试升级为渲染级（`renderToStaticMarkup`，53a F-7 同款）——眼睛往返、校验错误块、取消重置落地面、勾选弹窗全选语义与 n/N 计数、零勾选/自定义供应商禁用态均由渲染标记 + 纯函数钉死（11 项回退行为的变异抽查全部转红）；PUT 请求体红线从调用点字面量升级为 `draftToWire` 的封闭键集断言（`provider-management.test.ts`）。一处表述更正：自定义供应商下「自动获取」链接**不是禁用**——可点开，弹窗内如实说明能力缺失，「添加」按钮禁用。
 
 **工单 53 的不变量**：服务端契约零改动（变更面：`panels.tsx` / `usage-models-cards.tsx` / `icons.tsx` / `i18n.ts` + 两个测试文件）；h2 页头、切页动画与页宽 760 不变；`SETTINGS_NAV`、`SettingsSection` 联合类型、深度链接入口（`initialSection`、`autoAddProvider`）不变；8 项「暂不支持」占位全部保留。删除了失去消费者的 `usage.used` / `usage.reset` 文案键（旧标签式「已用 X%」「重置时间」被桌面格式取代）。
 

@@ -73,6 +73,8 @@ export type IconName =
   | "caretDown"
   | "check"
   | "trash"
+  | "eye"
+  | "eyeOff"
   | "moon"
   | "sun"
   | "sidebar"
@@ -388,6 +390,30 @@ const ICONS: Record<string, IconSpec> = {
         <circle cx="10" cy="10" r="7.2" />
         <path d="M10 9.2v4" strokeLinecap="round" />
         <path d="M10 6.6v.01" strokeLinecap="round" strokeWidth="1.6" />
+      </>
+    ),
+  },
+  /* Ticket 54 — the add-model dialog's API-key reveal toggle.
+     Stroked 16×16 glyphs: the open eye (revealed) and the crossed eye
+     (masked), matching the desktop reference's eye / eye-off pair. */
+  eye: {
+    viewBox: "0 0 16 16",
+    size: 14,
+    body: (
+      <>
+        <path d="M1.5 8C2.6 5.6 5 4.2 8 4.2C11 4.2 13.4 5.6 14.5 8C13.4 10.4 11 11.8 8 11.8C5 11.8 2.6 10.4 1.5 8Z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" fill="none" />
+        <circle cx="8" cy="8" r="2.1" stroke="currentColor" strokeWidth="1.2" fill="none" />
+      </>
+    ),
+  },
+  eyeOff: {
+    viewBox: "0 0 16 16",
+    size: 14,
+    body: (
+      <>
+        <path d="M1.5 8C2.6 5.6 5 4.2 8 4.2C11 4.2 13.4 5.6 14.5 8C13.4 10.4 11 11.8 8 11.8C5 11.8 2.6 10.4 1.5 8Z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" fill="none" />
+        <circle cx="8" cy="8" r="2.1" stroke="currentColor" strokeWidth="1.2" fill="none" />
+        <path d="M2.5 13.5L13.5 2.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
       </>
     ),
   },

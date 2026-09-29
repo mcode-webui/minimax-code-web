@@ -335,6 +335,7 @@ below cites the component file and one `data-testid` per surface.
 | Browser panel (slice 04, sandboxed iframe over `/api/fs/raw`) | `components/browser-panel.tsx` | `browser-panel` |
 | Workspace picker (modal) | `components/workspace-picker.tsx` | `workspace-picker` |
 | Provider management | `components/provider-management.tsx` | `providers-panel` |
+| Add-model dialog + fetched-models dialog (ticket 54; lifted to its own file in acceptance round 2 so the suite can render-test it) | `components/add-model-dialog.tsx#AddModelDialog` / `#FetchedModelsDialog` (controlled surfaces `#AddModelDialogForm` / `#FetchedModelsDialogBody`, pure helpers `#collectDialogErrors` / `#defaultChecked`) | `provider-dialog` (fields `provider-dialog-provider-select` / `-api-key` / `-api-key-reveal` / `-model-add` / `-autofetch` / `-cancel` / `-save` / `-errors`; per-entry `provider-dialog-entry-{n}` with `-name` / `-context` / `-max-output` / `-thinking` / `-attachment-{mod}` / `-reset` / `-remove`) / `fetched-models-dialog` (`fetched-models-title` / `-item-{id}` / `-select-all` / `-cancel` / `-add`) |
 | Context meter / panel | `components/context-meter.tsx` | `context-meter` |
 | Settings modal | `components/panels.tsx#SettingsModal` | `settings-modal` |
 | Segmented tabs of the Usage & models section (ticket 53) | `components/panels.tsx#UsageModelsSection` | `usage-models-segment` (tabs `usage-models-tab-token-plan` / `usage-models-tab-custom-models`) |
@@ -604,9 +605,8 @@ clients:
 | Account page | needs `getAccountStatus` / `signOut`-class server contracts |
 | Archived tasks page | needs the archived-session contract |
 | Usage & models three-source switching | the segmented tabs now match the desktop form (ticket 53), but they are a **view switcher** — they do not switch the model source in use; real Token Plan / MiniMax API / custom-model routing plus source badges still need a model-routing contract |
-| Add-model dialog form (ticket 53b) | the desktop's "+ 添加模型" modal: provider dropdown, API-key eye toggle, per-model entry fields (name / context window / max output / reasoning level / attachment kinds), and the auto-fetch checkbox dialog; the custom-models view currently keeps the two-column field editor (`provider-management.tsx`) — data capability equivalent, form not aligned |
 | MiniMax API key panel | input + connectivity test + save-and-use |
-| Custom model drag-reorder, per-model toggles, preset picker | provider contract work; the current panel is a two-column field editor |
+| Custom model drag-reorder, per-model toggles, preset picker | provider contract work; adding is dialog-based (ticket 54), editing stays on the rail + editor surfaces |
 | Search keyword highlighting | the reference itself never wired it (component + keyframes defined, no call site) |
 | General-page dataDir footer | see the section table above |
 
@@ -631,9 +631,50 @@ The Token Plan view is the desktop's five blocks (the tabs plus four cards):
 | Invoice row | The one fully live affordance: 申请 ↗ opens the MiniMax open platform in a new tab |
 
 The custom-models view is the existing provider panel (API keys, protocols,
-model lists, connection tests, preset one-click enable) moved as-is, with
-its `data-testid`s unchanged; the desktop's empty-state copy and the
-add-model dialog form are recorded above as ticket 53b.
+model lists, connection tests, preset one-click enable) with every
+`data-testid` unchanged; ticket 54 rebuilt the **add** flow into the
+desktop's dialog form (next section) while the rail + editor surfaces stay
+as the editing path.
+
+**Add-model dialog (ticket 54, 53b)**
+
+The 「+ 添加模型」 button — centered under the empty state, at the bottom of
+the provider rail once providers exist, and via the model selector's
+deep-link — opens the desktop's modal instead of appending a rail draft:
+
+| Dialog region | Contract |
+| --- | --- |
+| Provider select (「请选择提供商」) | Options are `GET /api/providers/presets` plus a 「+ 其他（自定义）」 sentinel; choosing a preset fills id / label / protocol / baseURL / auth-type, choosing the sentinel expands the custom fields (id, display name, protocol, auth type, baseURL). DeepSeek / Zhipu AI（智谱）/ Moonshot AI (China) carry the reference's spellings; other local presets keep their catalogue labels. A 404 catalogue degrades to the custom-only dropdown |
+| API key (`AntInput.Password`) | The eye toggle is safe here and only here: the field's value is what the user just typed, not a masked placeholder — the editor's no-reveal rule (keep-existing-key convention) is untouched |
+| Model entries (「模型 01…」 + ↻ reset + 🗑 delete) | Five fields: name → `id`, context window → `contextLimit`, max output tokens → **disabled with the 「本地版不适用」 marker** (the `/api/providers` PUT contract has no field to persist it), reasoning levels → `thinkingLevels` fed from `THINKING_LEVELS` (the low/medium/high contract is frozen; the reference's 「max」 placeholder example is deliberately not copied), attachments → four checkboxes 图片/PDF/视频/音频 mapping to `image`/`file`/`video`/`audio` (`file` joined `MODALITIES`; `text` passes through untouched) |
+| 「＋ 添加」 / 「自动获取」 | Add appends a blank entry; auto-fetch opens the 「已获取模型」 dialog listing the **selected preset's built-in catalogue** with the note that it is not a live per-key query — the local backend has no model-listing proxy. With no preset selected the dialog states the missing capability instead of inventing rows. 「全选（n/N）」 + 取消/添加 follow the reference; picked entries arrive with their catalogue metadata |
+| 取消 / 保存 | Save validates (provider chosen, unique id, per-entry `validateModelRow`), appends the draft to the panel's list, and PUTs through the **unchanged** `draftToWire` + `api.putProviders({version: 2})` path; on failure the dialog stays open with the typed input intact |
+
+Ticket 54 invariants — no server-contract change (the `/api/providers` PUT
+body, `/api/set-model`, and every endpoint are untouched; the whole delta is
+client-side plus tests and docs); every pre-existing `data-testid` on the
+panel/editor surfaces survives in source (`webapp/test/add-model-dialog.test.ts`
+pins the list); the preset catalogue, thinkingLevels editing semantics,
+provider grouping and the thinking-display exceptions are unchanged; the
+auto-add deep-link still lands on the custom-models view, now opening the
+dialog. The legacy rail-draft `addProvider` path and the editor's dead
+auto-focus prop were deleted with their behaviour subsumed by the dialog.
+
+**Acceptance round 2 (same ticket).** The dialog components moved to
+`components/add-model-dialog.tsx` and export their controlled surfaces,
+which unlocked behaviour-level tests (`renderToStaticMarkup`, the 53a
+F-7 harness): the eye round-trip, the validation error block, the
+cancel-reset landing state, the check-all semantics with its n/N
+counter, and the zero-selection / custom-provider disabled states are
+now pinned on rendered markup plus the pure helpers — an 11-mutation
+spot-check that reverted dialog behaviour all fails red. The PUT-body
+red line moved from a call-site literal to a closed key-set assertion
+on `draftToWire` itself (`provider-management.test.ts`). One wording
+correction from the first round: with a custom provider the 自动获取
+link is NOT disabled — it opens the dialog, which states the missing
+capability honestly and disables 添加. The count correction: 36
+preserved testid literals in the panel-source pin plus the 2
+empty-state affordances = 38, matching the base tree.
 
 **Ticket 53 invariants** — no server-contract change (the delta:
 `panels.tsx` / `usage-models-cards.tsx` / `icons.tsx` / `i18n.ts` plus two
