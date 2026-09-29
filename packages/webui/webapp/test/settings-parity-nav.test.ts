@@ -180,20 +180,20 @@ describe("settings nav parity (ticket 37)", () => {
     );
   });
 
-  test("providers section body renders the usage card above the provider panel", () => {
+  test("providers section body renders the segmented-tab UsageModelsSection", () => {
     const bodyStart = panelsSource.indexOf("const body = {");
     const providersAt = panelsSource.indexOf("providers: (", bodyStart);
     assert.ok(providersAt >= 0, "providers case not found in the body object");
     const closeAt = panelsSource.indexOf("[section];", providersAt);
     assert.ok(closeAt > providersAt, "body object terminator not found");
     const providersBody = panelsSource.slice(providersAt, closeAt);
-    const usageAt = providersBody.indexOf("<UsageCard");
-    const panelAt = providersBody.indexOf("<ProviderManagementPanel");
-    assert.ok(usageAt >= 0, "the usage card must render in the usage-and-models section");
     assert.ok(
-      panelAt > usageAt,
-      "the usage card sits above the provider management panel (reference: 用量 above 模型)",
+      providersBody.includes("<UsageModelsSection"),
+      "ticket 53: the section is the desktop's segmented-tab page (UsageModelsSection)",
     );
+    // Ticket 53 moved the layout decision inside UsageModelsSection; the
+    // card-above-panel stacking this test used to pin here is re-pinned
+    // per-view by the ticket-53 describe below.
   });
 
   test("user menu usage row jumps to settings instead of hosting a hover popover", () => {
@@ -347,5 +347,152 @@ describe("settings visuals and search (ticket 48)", () => {
     }
     // R3 — disabled tabs still carry the 暂不支持 badge.
     assert.ok(panelsSource.includes('title={disabled ? t("common.unsupported") : undefined}'));
+  });
+});
+
+// Ticket 53 — the 用量与模型 page rework: the desktop's segmented tabs over
+// the Token Plan view (plan card, usage bars, credits switch, invoice link)
+// and the custom-models view (the provider panel, unchanged).
+//
+// Division of labour with usage-models-cards.test.ts: the four cards are
+// pure display components living in components/usage-models-cards.tsx and
+// are pinned by RENDER tests there (placeholders, disabled actions, the
+// F-1 track token, the F-2 outline, the F-3' caption). This describe pins
+// what only panels.tsx can betray — the segmented wiring, the view
+// branches, the deep-link seed, and the usage container's quota honesty.
+//
+// What the decisions need pinned:
+//
+//   - The segmented header (Token Plan 使用中 ⌄ | hairline | 自定义模型) —
+//     a revert to the flat two-card stack fails the segment assertions.
+//   - The Token Plan branch renders the four cards in the reference order,
+//     imported from the render-tested module.
+//   - The one live data path stays honest: the 5-hour / weekly bars read
+//     the quota store (no fabricated figures), and the video bar carries
+//     the notLocal placeholder key, not a made-up "0/5".
+//   - The add-provider deep-link must land on the custom-models view —
+//     otherwise the auto-add flow fires behind the Token Plan view.
+describe("usage-models segmented tabs (ticket 53)", () => {
+  const sectionAt = panelsSource.indexOf("function UsageModelsSection");
+  assert.ok(sectionAt >= 0, "UsageModelsSection not found in panels.tsx");
+  const sectionEnd = panelsSource.indexOf("\nfunction UsageCard", sectionAt);
+  assert.ok(sectionEnd > sectionAt, "UsageCard not found after UsageModelsSection");
+  const segmentSource = panelsSource.slice(sectionAt, sectionEnd);
+  const usageCardAt = panelsSource.indexOf("function UsageCard");
+  assert.ok(usageCardAt > 0, "the usage container must stay in panels.tsx");
+  const usageCardSource = panelsSource.slice(
+    usageCardAt,
+    panelsSource.indexOf("\n// --- alerts", usageCardAt),
+  );
+
+  test("segmented header: two tabs, the active badge, the chevron, a hairline", () => {
+    assert.ok(
+      segmentSource.includes('data-testid="usage-models-segment"'),
+      "the tablist container must carry its testid",
+    );
+    assert.ok(
+      segmentSource.includes('data-testid="usage-models-tab-token-plan"'),
+      "the Token Plan tab button must carry its testid",
+    );
+    assert.ok(
+      segmentSource.includes('data-testid="usage-models-tab-custom-models"'),
+      "the custom-models tab button must carry its testid",
+    );
+    assert.ok(
+      segmentSource.includes('t("usage.tab.inUse")'),
+      "the green 使用中 badge renders inside the Token Plan tab",
+    );
+    assert.ok(
+      segmentSource.includes('<Icon name="chevronDown"'),
+      "the reference's disclosure chevron renders in the tab",
+    );
+    assert.ok(
+      segmentSource.includes("bg-bg_interaction_tertiary_selected"),
+      "the selected tab uses the grey pill treatment",
+    );
+    // The hairline between the two tabs.
+    assert.ok(
+      segmentSource.includes('className="h-4 w-px bg-border_light" aria-hidden'),
+      "a vertical hairline separates the two tabs",
+    );
+  });
+
+  test("the Token Plan view stacks the desktop's four cards in order", () => {
+    const branchAt = segmentSource.indexOf('view === "tokenPlan" ? (');
+    assert.ok(branchAt >= 0, "the Token Plan branch not found");
+    const branch = segmentSource.slice(branchAt);
+    const order = ["<PlanCard", "<UsageCard", "<CreditsCard", "<InvoiceCard"];
+    let cursor = -1;
+    for (const marker of order) {
+      const at = branch.indexOf(marker);
+      assert.ok(
+        at > cursor,
+        `${marker} must render inside the Token Plan view, in reference order`,
+      );
+      cursor = at;
+    }
+  });
+
+  test("the four cards come from the render-tested usage-models-cards module", () => {
+    assert.ok(
+      panelsSource.includes('from "./usage-models-cards"'),
+      "panels.tsx must import the split-out card module (render tests live there)",
+    );
+  });
+
+  test("the custom-models view forwards the provider panel with its deep-link props", () => {
+    const elseAt = segmentSource.indexOf(") : (");
+    assert.ok(elseAt > 0, "the custom-models branch not found");
+    const elseBranch = segmentSource.slice(elseAt);
+    assert.ok(
+      elseBranch.includes("<ProviderManagementPanel"),
+      "the provider panel lives in the custom-models view",
+    );
+    assert.ok(
+      elseBranch.includes("autoAddProvider={autoAddProvider}"),
+      "the add-provider flag is forwarded to the panel",
+    );
+  });
+
+  test("the add-provider deep-link seeds the custom-models view, not Token Plan", () => {
+    assert.ok(
+      segmentSource.includes('autoAddProvider ? "customModels" : "tokenPlan"'),
+      "autoAddProvider must land on the custom-models view (the add flow fires on mount)",
+    );
+  });
+
+  test("A1: the usage container reads the quota store honestly", () => {
+    assert.ok(
+      usageCardSource.includes('key: "fiveHour"') && usageCardSource.includes('key: "weekly"'),
+      "the two engine-backed windows keep their live rows",
+    );
+    assert.ok(
+      usageCardSource.includes("usedFromRemaining(quota?.ok ? quota.remaining : undefined)"),
+      "the 5-hour figure reads the quota store, not a constant",
+    );
+    assert.ok(
+      usageCardSource.includes('key: "video"') &&
+        usageCardSource.slice(usageCardSource.indexOf('key: "video"')).includes('"usage.notLocal"'),
+      "the video window has no local source — its figure slot renders the placeholder",
+    );
+    assert.ok(
+      !usageCardSource.includes("0/5"),
+      "no fabricated 0/5 figure may ship",
+    );
+    assert.ok(
+      usageCardSource.includes("resetCaption"),
+      "the bars print the reference's relative reset caption",
+    );
+    assert.ok(
+      usageCardSource.includes("<UsageBar"),
+      "the rows render through the render-tested UsageBar",
+    );
+  });
+
+  test("the retired usage.used / usage.reset label strings have no consumer", () => {
+    assert.ok(
+      !panelsSource.includes('t("usage.used")') && !panelsSource.includes('t("usage.reset")'),
+      "the old label-style usage strings must not be referenced after the bar rework",
+    );
   });
 });

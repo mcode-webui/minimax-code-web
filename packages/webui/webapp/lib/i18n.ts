@@ -181,15 +181,42 @@ const en = {
   /* Usage strings — the settings page's 用量 card (ticket 37). The user-menu
      hover flyout that used to own these was deleted; the card reads the same
      `api.getQuota()` snapshot (remaining %, resetAt, weeklyResetAt) through
-     the store. `usage.used` / `usage.reset` predate the card and stay. */
+     the store. `usage.used` / `usage.reset` were deleted with ticket 53's
+      progress-bar rework — the desktop form prints "0% / 100%" and a relative
+      "resets in" caption, so the old label-style strings had no consumer. */
   "usage.title": "Usage",
   "usage.fiveHour": "5-hour limit",
   "usage.weekly": "Weekly limit",
-  "usage.used": "Used",
   "usage.unavailable": "Quota data not available",
   "usage.refresh": "Refresh",
   "usage.errorTitle": "Failed to load usage",
   "usage.errorBody": "Try again in a moment.",
+  /* Ticket 53 — the desktop-parity rework of the section. The segmented
+     tabs (Token Plan / custom models), the Token Plan panel's plan card,
+     credits row, invoice row, the video-limit bar (no local data source),
+     and the "not applicable to the local edition" placeholder that fills
+     every data region the local server has no source for. The reset
+     caption keys take {t} and are .replace()-ed by the component, the
+     same convention as files.tree.mtime.*. */
+  "usage.tab.tokenPlan": "Token Plan",
+  "usage.tab.inUse": "Active",
+  "usage.tab.customModels": "Custom models",
+  "usage.notLocal": "Not applicable to the local edition",
+  "usage.plan.title": "Current plan",
+  "usage.plan.upgrade": "Upgrade",
+  "usage.plan.manage": "Manage",
+  "usage.credits": "Credits",
+  "usage.plan.topUp": "Top up",
+  "usage.video": "Video limit",
+  "usage.credits.hint":
+    "When on, conversations can consume your credits (including granted credits).",
+  "usage.invoice.title": "Invoices",
+  "usage.invoice.apply": "Apply",
+  "usage.invoice.hint": "Request invoices on the MiniMax open platform.",
+  "usage.resetsIn": "Resets in {t}",
+  "usage.duration.minute": "{n} min",
+  "usage.duration.hour": "{n} h",
+  "usage.duration.hourMinute": "{h} h {n} min",
   "toolbar.files": "Files",
   "toolbar.usage": "Usage",
   "plan.agree": "Agree",
@@ -295,7 +322,6 @@ const en = {
   "settings.resetToken": "Rotate token",
   "settings.ackToken": "I saved the token",
   "settings.tokenValue": "Token",
-  "usage.reset": "Resets",
   "alerts.empty": "No messages",
   "workspace.sectionEnvironment": "Environment",
   /* Workspace panel — switch workspace entry. The picker modal itself
@@ -849,15 +875,41 @@ const zh: Record<MessageKey, string> = {
   /* 用量文案 — 设置页「用量与模型」节里的用量卡片（工单 37）。原先挂这些
      文案的帐号菜单 hover 弹层已删除；卡片经由 store 读同一个
      `api.getQuota()` 快照（remaining %、resetAt、weeklyResetAt）。
-     `usage.used` / `usage.reset` 早于本卡片存在，保留。 */
+     `usage.used` / `usage.reset` 已随工单 53 的进度条重构删除——桌面
+     形态直接印「0% / 100%」与相对时间重置文案，旧标签式字符串不再有
+     消费者。 */
   "usage.title": "用量",
   "usage.fiveHour": "5 小时限额",
-  "usage.weekly": "每周限额",
-  "usage.used": "已用",
+  // 桌面参照截图作「周限额」（工单 53 逐字对齐），此前误作「每周限额」。
+  "usage.weekly": "周限额",
   "usage.unavailable": "暂无用量数据",
   "usage.refresh": "刷新",
   "usage.errorTitle": "用量加载失败",
   "usage.errorBody": "请稍后再试",
+  /* 工单 53 —— 本节的桌面对齐重构：分段页签（Token Plan / 自定义模型）、
+     Token Plan 面板的套餐卡、积分行、发票行、视频限额条（本地无数据源），
+     以及所有本地版没有数据源的数据区统一填充的「本地版不适用」占位文案。
+     重置文案键带 {t} 占位，由组件 .replace() 填充，约定与
+     files.tree.mtime.* 相同。文案逐字照桌面参照截图
+     （refs/ui/03-settings-usage-models.jpg）。 */
+  "usage.tab.tokenPlan": "Token Plan",
+  "usage.tab.inUse": "使用中",
+  "usage.tab.customModels": "自定义模型",
+  "usage.notLocal": "本地版不适用",
+  "usage.plan.title": "当前套餐",
+  "usage.plan.upgrade": "升级",
+  "usage.plan.manage": "管理",
+  "usage.credits": "积分",
+  "usage.plan.topUp": "去充值",
+  "usage.video": "视频限额",
+  "usage.credits.hint": "开启后，可以在对话中消耗你的积分（含赠予积分）。",
+  "usage.invoice.title": "发票",
+  "usage.invoice.apply": "申请",
+  "usage.invoice.hint": "请前往 MiniMax 开放平台申请发票",
+  "usage.resetsIn": "{t}后重置",
+  "usage.duration.minute": "{n}分",
+  "usage.duration.hour": "{n}小时",
+  "usage.duration.hourMinute": "{h}小时{n}分",
   "toolbar.files": "文件",
   "toolbar.usage": "用量",
   "plan.agree": "同意",
@@ -949,7 +1001,6 @@ const zh: Record<MessageKey, string> = {
   "settings.resetToken": "轮换 Token",
   "settings.ackToken": "我已保存 Token",
   "settings.tokenValue": "Token",
-  "usage.reset": "重置时间",
   "alerts.empty": "暂无消息",
   /* Workspace panel section labels are aligned with the desktop's
      `workspace_panel.section_*` keys (反编译 36705 chunk). */

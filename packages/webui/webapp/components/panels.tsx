@@ -51,6 +51,16 @@ import type { ThemeName } from "@/lib/types";
 import { Icon, type IconName } from "./icons";
 import { AppearanceCardPicker } from "./appearance-card-picker";
 import { ProviderManagementPanel } from "./provider-management";
+// The Token Plan view's pure display cards (ticket 53). Split out so the
+// test suite can render them through react-dom/server — panels.tsx's own
+// import graph (session store, api) is unimportable in a test process.
+import {
+  CreditsCard,
+  InvoiceCard,
+  PlanCard,
+  UsageBar,
+  resetCaption,
+} from "./usage-models-cards";
 
 /**
  * Right-hand drawer.
@@ -3473,25 +3483,18 @@ function SettingsPanel({
       </SectionCard>
     ),
     providers: (
-      // The desktop's 用量与模型 page stacks the usage card above the
-      // provider management panel. The usage card reads the same store
-      // the deleted user-menu flyout did; the panel owns its own
-      // loading / saving state, so wrapping it in a card here keeps the
-      // section chrome consistent with the rest of SettingsPanel. The
-      // autoAdd flag and its consumer callback are forwarded so the
-      // model's "Add provider" deep-link can land the user mid-add.
-      <>
-        <SectionCard>
-          <UsageCard t={t} />
-        </SectionCard>
-        <SectionCard>
-          <ProviderManagementPanel
-            t={t}
-            autoAddProvider={autoAddProvider}
-            onAutoAddConsumed={onAutoAddConsumed}
-          />
-        </SectionCard>
-      </>
+      // Ticket 53: the section is the desktop's segmented-tab page — a
+      // "Token Plan 使用中 ⌄" pill vs. "自定义模型", split by a hairline —
+      // over two views. The Token Plan view stacks the desktop's five
+      // blocks (plan card, usage bars, credits row, invoice row); the
+      // custom-models view carries the provider panel unchanged. The
+      // wrapper owns the view state so the add-provider deep-link can
+      // land directly on the custom-models view (see UsageModelsSection).
+      <UsageModelsSection
+        t={t}
+        autoAddProvider={autoAddProvider}
+        onAutoAddConsumed={onAutoAddConsumed}
+      />
     ),
   }[section];
 
@@ -3600,7 +3603,123 @@ function RowDivider() {
 }
 
 /**
- * The usage card (用量) of the 用量与模型 section.
+ * The 用量与模型 body (ticket 53) — the desktop's segmented-tab page.
+ *
+ * Reference (`refs/ui/03-settings-usage-models.jpg` + the user-supplied
+ * 28-shot set, `refs/ui/usage-models-reference.md`): a segmented header —
+ * 「Token Plan 使用中 ⌄」 as a grey pill with a green "active" badge and a
+ * disclosure chevron, a hairline, then 「自定义模型」 as bare text — over
+ * two views. The Token Plan view stacks the desktop's four cards (plan,
+ * usage bars, credits switch, invoice link); the custom-models view carries
+ * the provider management panel unchanged (testids intact — the add-model
+ * *dialog* form of the reference is recorded as follow-up work, not
+ * retrofitted here).
+ *
+ * Data policy (user decision 2026-09-29, ticket 53 A1/B1): every data
+ * region the local server has no source for renders the standing 「本地版
+ * 不适用」 placeholder instead of fabricated figures, while controls keep
+ * the desktop's form but disabled. The one live source — the engine's plan
+ * quota — keeps rendering real figures in the usage card.
+ */
+function UsageModelsSection({
+  t,
+  autoAddProvider,
+  onAutoAddConsumed,
+}: {
+  t: (key: MessageKey) => string;
+  autoAddProvider?: boolean;
+  onAutoAddConsumed?: () => void;
+}) {
+  // The reference opens on the Token Plan view. The one deliberate
+  // exception is the add-provider deep-link: `autoAddProvider` fires the
+  // panel's add flow on mount, which is only useful with the panel
+  // visible, so that entry seeds the custom-models view instead.
+  const [view, setView] = useState<"tokenPlan" | "customModels">(
+    autoAddProvider ? "customModels" : "tokenPlan",
+  );
+
+  // The reference's pill: the selected tab sits in a grey rounded pill,
+  // the unselected one renders as bare secondary text.
+  const tabClassName = (selected: boolean) =>
+    [
+      "flex items-center gap-1.5 rounded-[8px] px-2.5 py-1 text-sm leading-5 transition-colors",
+      selected
+        ? "bg-bg_interaction_tertiary_selected text-text_default_primary"
+        : "text-text_default_secondary hover:text-text_default_primary",
+    ].join(" ");
+
+  return (
+    <div className="flex w-full flex-col gap-3">
+      {/* The segmented header. The chevron is the reference's plan-picker
+       * affordance; its dropdown is deliberately omitted (ticket 53 lets
+       * the empty state be dropped) — the local edition has no plan
+       * source to switch between, so the glyph is form, not function. */}
+      <div
+        role="tablist"
+        aria-label={t("settings.tab.usageModels")}
+        data-testid="usage-models-segment"
+        className="flex items-center gap-3 px-1"
+      >
+        <button
+          type="button"
+          role="tab"
+          aria-selected={view === "tokenPlan"}
+          data-testid="usage-models-tab-token-plan"
+          onClick={() => setView("tokenPlan")}
+          className={tabClassName(view === "tokenPlan")}
+        >
+          {t("usage.tab.tokenPlan")}
+          {/* The green "active" badge — the reference renders it on the
+           * light-green chip inside the pill. It is form parity, not a
+           * local claim: nothing here reports a plan as in use. */}
+          <span className="rounded-[4px] bg-border_status_success px-1 py-px text-caption-small-strong text-text_status_success">
+            {t("usage.tab.inUse")}
+          </span>
+          <Icon name="chevronDown" size={12} className="text-text_default_tertiary" />
+        </button>
+        <span className="h-4 w-px bg-border_light" aria-hidden />
+        <button
+          type="button"
+          role="tab"
+          aria-selected={view === "customModels"}
+          data-testid="usage-models-tab-custom-models"
+          onClick={() => setView("customModels")}
+          className={tabClassName(view === "customModels")}
+        >
+          {t("usage.tab.customModels")}
+        </button>
+      </div>
+
+      {view === "tokenPlan" ? (
+        <>
+          <SectionCard>
+            <PlanCard t={t} />
+          </SectionCard>
+          <SectionCard>
+            <UsageCard t={t} />
+          </SectionCard>
+          <SectionCard>
+            <CreditsCard t={t} />
+          </SectionCard>
+          <SectionCard>
+            <InvoiceCard t={t} />
+          </SectionCard>
+        </>
+      ) : (
+        <SectionCard>
+          <ProviderManagementPanel
+            t={t}
+            autoAddProvider={autoAddProvider}
+            onAutoAddConsumed={onAutoAddConsumed}
+          />
+        </SectionCard>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The usage card (用量) of the Token Plan view.
  *
  * Ported from the user menu's hover flyout (shell.tsx#UsagePopover), which
  * this rework deletes: the figures are the plan quota the store already
@@ -3609,10 +3728,16 @@ function RowDivider() {
  * to the forecast history, so a landing refresh is a measurement while the
  * background poll stays a plain read.
  *
- * Rendered rows: the engine reports two windows — one rolling over 5 hours,
- * one weekly. A window with no figure is dropped rather than drawn as 0%,
- * and a quota payload that is neither ok nor carrying any window shows the
- * unavailable line instead of an empty card.
+ * Ticket 53 restyles the rows into the reference's stacked progress bars:
+ * 「5 小时限额」 (printed "used% / 100%"), 「周限额」 (printed "used%"),
+ * 「视频限额」 (a used-of-total figure on the desktop), each bar with its
+ * relative reset caption underneath.
+ * The 5-hour and weekly windows keep their live engine figures — a window
+ * with no reading draws its placeholder in the figure slot rather than 0%
+ * — and the video window has no local source at all, so it permanently
+ * renders the 「本地版不适用」 placeholder. The bar rows are the pure
+ * `UsageBar` from usage-models-cards.tsx (render-tested there); this
+ * container owns the quota reading and the refresh affordance.
  */
 function UsageCard({ t }: { t: (key: MessageKey) => string }) {
   const { quota, quotaBusy, quotaError } = useSessionContext();
@@ -3624,20 +3749,45 @@ function UsageCard({ t }: { t: (key: MessageKey) => string }) {
     void refreshQuota();
   }, []);
 
-  const windows = [
+  // `remaining` is what is left; the bar reports what was used. A missing
+  // figure is "no gauge to draw", never 0%.
+  const usedFromRemaining = (remaining: number | undefined) =>
+    typeof remaining === "number" ? Math.max(0, Math.min(100, 100 - remaining)) : null;
+
+  const rows: {
+    key: string;
+    label: string;
+    used: number | null;
+    /** The 5-hour row prints "used% / 100%"; the others print "used%". */
+    withTotal: boolean;
+    resetAt?: number;
+    /** Which standing line fills the figure slot when `used` is null. */
+    placeholder: MessageKey;
+  }[] = [
     {
       key: "fiveHour",
       label: t("usage.fiveHour"),
-      remaining: quota?.remaining,
-      resetAt: quota?.resetAt,
+      used: usedFromRemaining(quota?.ok ? quota.remaining : undefined),
+      withTotal: true,
+      resetAt: quota?.ok ? quota.resetAt : undefined,
+      placeholder: "usage.unavailable",
     },
     {
       key: "weekly",
       label: t("usage.weekly"),
-      remaining: quota?.weeklyRemaining,
-      resetAt: quota?.weeklyResetAt,
+      used: usedFromRemaining(quota?.ok ? quota.weeklyRemaining : undefined),
+      withTotal: false,
+      resetAt: quota?.ok ? quota.weeklyResetAt : undefined,
+      placeholder: "usage.unavailable",
     },
-  ].filter((w) => typeof w.remaining === "number");
+    {
+      key: "video",
+      label: t("usage.video"),
+      used: null,
+      withTotal: false,
+      placeholder: "usage.notLocal",
+    },
+  ];
 
   return (
     <div data-testid="settings-usage-card" className="flex w-full flex-col gap-2">
@@ -3657,46 +3807,26 @@ function UsageCard({ t }: { t: (key: MessageKey) => string }) {
         </button>
       </div>
       {quotaError ? (
-        <div className="flex flex-col gap-1 px-3 pb-2">
+        <div className="flex flex-col gap-1 px-3 pb-3">
           <span className="text-sm text-text_default_primary">{t("usage.errorTitle")}</span>
           <span className="text-caption-small-strong text-text_default_secondary">
             {t("usage.errorBody")}
           </span>
         </div>
-      ) : quota?.ok && windows.length > 0 ? (
-        <div className="flex flex-col gap-2 px-3 pb-3">
-          {windows.map((w) => {
-            // `remaining` is what is left; the row reports what was used.
-            const used = Math.max(0, Math.min(100, 100 - (w.remaining as number)));
-            const reset = w.resetAt
-              ? new Date(w.resetAt > 1e12 ? w.resetAt : w.resetAt * 1000).toLocaleString()
-              : null;
-            return (
-              <div key={w.key} className="flex flex-col gap-1 overflow-hidden rounded-[8px]">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-sm font-normal text-text_default_primary">{w.label}</span>
-                  <span className="text-sm font-normal text-text_default_primary">
-                    {t("usage.used")} {used}%
-                  </span>
-                </div>
-                {reset ? (
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-caption-small-strong text-text_default_secondary">
-                      {t("usage.reset")}
-                    </span>
-                    <span className="text-caption-small-strong text-text_default_secondary">
-                      {reset}
-                    </span>
-                  </div>
-                ) : null}
-              </div>
-            );
-          })}
-        </div>
       ) : (
-        <span className="px-3 pb-3 text-caption-small-strong text-text_default_secondary">
-          {t("usage.unavailable")}
-        </span>
+        <div className="flex flex-col gap-3 px-3 pb-3">
+          {rows.map((row) => (
+            <UsageBar
+              key={row.key}
+              testId={`usage-bar-${row.key}`}
+              label={row.label}
+              used={row.used}
+              withTotal={row.withTotal}
+              placeholder={t(row.placeholder)}
+              caption={row.used !== null && row.resetAt ? resetCaption(row.resetAt, t) : null}
+            />
+          ))}
+        </div>
       )}
     </div>
   );
