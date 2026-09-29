@@ -39,3 +39,10 @@ packages/webui/desktop-unpacked/
 # for the feedback-driven workflow described in AGENTS.md; never committed
 # or published. Also excluded from the source inventory scan.
 .tickets/
+
+# Acceptance-review reports (dot-prefixed *-accept.md at any depth). Private
+# verification material for the agent workflow — they belong outside the repo
+# (kept in /tmp or the work area), but this pattern is the belt-and-braces
+# guard so an accidental `git add -A` after a review round cannot commit one.
+# scripts/source-inventory.mjs skips the same name shape independently.
+.*-accept.md

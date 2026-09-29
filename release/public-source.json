@@ -29,7 +29,6 @@
     ".gitignore",
     ".gitleaks.toml",
     ".npmrc",
-    ".s49-b2-accept.md",
     "AGENTS.md",
     "CONTRIBUTING.md",
     "Dockerfile",
