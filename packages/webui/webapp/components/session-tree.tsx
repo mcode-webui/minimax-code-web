@@ -340,16 +340,23 @@ function SectionHeader({ label }: { label: string }) {
  * (`text-icon_default_tertiary hover:text-icon_default_secondary`, `rounded`).
  * `tone="tertiary"` is the variant upstream uses for a row whose icon is already
  * dimmed (`text-text_default_tertiary … hover:text-text_default_secondary`).
+ *
+ * `className` exists for the one caller that renders a row action inside a
+ * `pointer-events-none` layer (the session row's hover tray, webui-parity 63):
+ * `pointer-events` is an inherited property, so such a tray has to switch it
+ * back on per control or the control stops taking clicks.
  */
 function RowAction({
   label,
   onClick,
   tone = "icon",
+  className,
   children,
 }: {
   label: string;
   onClick: () => void;
   tone?: "icon" | "tertiary" | "primary";
+  className?: string;
   children: React.ReactNode;
 }) {
   const cls =
@@ -359,7 +366,13 @@ function RowAction({
         ? "flex h-[30px] w-[30px] items-center justify-center rounded-[8px] text-icon_interaction_tertiary_default transition-colors duration-200 hover:text-icon_interaction_tertiary_hover"
         : "flex h-[30px] w-[30px] items-center justify-center rounded text-icon_default_tertiary transition-colors hover:text-icon_default_secondary";
   return (
-    <button type="button" aria-label={label} title={label} onClick={onClick} className={cls}>
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      onClick={onClick}
+      className={className ? `${cls} ${className}` : cls}
+    >
       {children}
     </button>
   );
@@ -1360,18 +1373,33 @@ function SessionNode({
         )}
 
         {renaming ? null : (
-        <div className="absolute right-1 top-1/2 -translate-y-1/2 z-[1]">
+        /* webui-parity 63 (defect ② / D5): the tray is 90px of the row's
+           ~197px width, absolutely positioned and z-raised, so while it was
+           shown it swallowed every click in the row's right half — a click
+           meant to open the session landed on export / rename / delete, and
+           delete really did delete the session (audit seq 72534-72539). The
+           tray is `pointer-events-none`; the three controls below switch it
+           back on individually, so the row keeps the rest of its hit area and
+           the native `download` semantics survive (an `onClick
+           preventDefault` "fix" would have turned a mis-click into a dead
+           click and dropped save-as / copy-link). Same idiom as the project
+           header's action slot. */
+        <div className="pointer-events-none absolute right-1 top-1/2 -translate-y-1/2 z-[1]">
           <div className="hidden h-[30px] w-[90px] items-center group-hover/row:flex group-focus-within/row:flex">
             <a
               href={api.sessionExportUrl(session.id)}
               download
               aria-label={t("sidebar.export")}
               title={t("sidebar.export")}
-              className="flex h-[30px] w-[30px] items-center justify-center rounded text-icon_default_tertiary transition-colors hover:text-icon_default_secondary"
+              className="pointer-events-auto flex h-[30px] w-[30px] items-center justify-center rounded text-icon_default_tertiary transition-colors hover:text-icon_default_secondary"
             >
               <Icon name="download" size={14} />
             </a>
-            <RowAction label={t("sidebar.rename")} onClick={startRename}>
+            <RowAction
+              label={t("sidebar.rename")}
+              onClick={startRename}
+              className="pointer-events-auto"
+            >
               {/* Upstream's rename affordance is this glyph, not an icon-pack path. */}
               <span aria-hidden className="text-[13px] leading-none">
                 ✎
@@ -1379,6 +1407,7 @@ function SessionNode({
             </RowAction>
             <RowAction
               label={t("sidebar.delete")}
+              className="pointer-events-auto"
               onClick={() =>
                 void runAction(t("sidebar.delete"), api.deleteSession(session.id)).then(onChanged)
               }

@@ -3903,6 +3903,7 @@
     "packages/webui/webapp/test/open-file.test.ts",
     "packages/webui/webapp/test/preview-edit.test.ts",
     "packages/webui/webapp/test/provider-management.test.ts",
+    "packages/webui/webapp/test/session-row-hover-tray.test.ts",
     "packages/webui/webapp/test/settings-extra-pages.test.ts",
     "packages/webui/webapp/test/settings-general-sections.test.ts",
     "packages/webui/webapp/test/settings-parity-nav.test.ts",
