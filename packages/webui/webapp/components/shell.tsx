@@ -528,34 +528,36 @@ function NavRow({
  * the account menu.
  *
  * The account menu is **1:1 with the upstream `user_menu`** (function `e7`
- * in `page-b7c7b58f4fd0d4c1.js`, offset 627389). It has:
+ * in `page-b7c7b58f4fd0d4c1.js`, offset 627389), full row set per ticket 55c
+ * (ref-01):
  *
- * Upstream also puts a profileCard at the top — realUserID + copy, workspace
- * name + plan tier, and an Upgrade / Manage button. The webui does not render
- * it: the id has no source, the workspace name and the plan tier are two
- * different things that read as one identity when stacked, the account name and
- * plan already show on the footer row, and a permanently disabled Manage button
- * is not a feature. Its rows are absent rather than faked.
- *   - Settings — the `R.ewm` settings glyph.
- *   - Daily check-in — `R.OgN`; shown only when signed in. The webui engine
- *     contract for the check-in is not implemented yet, so the row opens a
- *     placeholder Tooltip saying so rather than a panel.
- *   - Usage — `R.Mcw`; opens a hover Tooltip popover (function `Q`, offset
- *     599872) with the live quota snapshot from `api.getQuota()`. NOT a
- *     panel — upstream is hover Tooltip only.
- *   - Sign out — `R.R0g`; webui has no logout endpoint yet, so the row is
- *     disabled with a tooltip.
+ *   - Settings — the `R.ewm` settings glyph, with the desktop's `Ctrl+,`
+ *     kbd badge. The badge is honest: page.tsx binds Ctrl+, to open settings.
+ *   - Upgrade — `sparkles` glyph. Cloud-account billing; disabled with the
+ *     本地版不适用 tooltip (decision A1).
+ *   - Daily check-in — `R.OgN`; no engine contract, disabled placeholder.
+ *   - Usage — `R.Mcw`; jumps to the settings page's 用量与模型 section
+ *     (user decision 2026-09-28).
+ *   - Feedback & help — `headset` glyph. Points at product support surfaces
+ *     this distribution does not have; disabled placeholder (A1).
+ *   - Sign out — `R.R0g`; no logout endpoint, disabled placeholder.
+ *   - A trailing user card — avatar, display name, plan badge, bell.
  *
- * Rows upstream does not have are not rendered — keeping a webui-invented row
- * next to a real upstream row was what the user flagged as 歪的.
+ * Ticket 55c reversed two earlier trims: the 2026-09-23/24 removals of the
+ * Upgrade / Feedback rows (and their glyphs) held that a disabled row next to
+ * a real one was the "invented row" shape the user had rejected. The user's
+ * 2026-09-29 instruction ("照抄全部截图") re-adds the desktop's full row set
+ * with the A1 honesty marker — every cloud-only row renders disabled with the
+ * 本地版不适用 tooltip rather than being hidden, so the menu's shape matches
+ * the desktop and its limits are stated, not implied.
  *
- * Upstream's Contact us (`R.AkR`) and Learn more (`R.Mxk`) submenus are not
- * rendered, and their extracted glyphs were deleted 2026-09-24. Their entries
- * point at product pages and a support mailbox that this distribution does not
- * have, so every row would have been a disabled placeholder — exactly the
- * "invented row next to a real one" shape the user rejected. There is nothing
- * to route to, so the menu does not carry them at all. If a real target ever
- * lands, the upstream module ids above are the source to re-extract from.
+ * The user card shows the engine-reported identity when there is one
+ * (`/api/account`), the 本地用户 placeholder when there is not, the plan tier
+ * as a badge when the engine reports one, and a bell that opens the same
+ * 站内信 flyout the footer row's bell does (unread dot included). The
+ * desktop's UID line at the top of the menu is NOT rendered: a local edition
+ * has no account id to print, and an empty or faked id would violate the
+ * honesty rule the rest of the menu follows.
  */
 /** Last path segment of a workspace directory, for display. */
 function workspaceLeaf(dir: string | undefined): string {
@@ -614,6 +616,11 @@ function SidebarFooter({
   }, [open]);
   const name = account?.identity?.name || workspaceName;
   const planTier = account?.tokenPlan?.tier || plan;
+  // The menu's user card shows the ACCOUNT identity (ref-01), not the
+  // workspace: when the engine reports no signed-in identity it carries the
+  // 本地用户 placeholder instead of the footer row's workspace-leaf fallback
+  // — the card answers "who am I", the footer row answers "where am I".
+  const userCardName = account?.identity?.name || t("userMenu.localUser");
 
   /** Run a menu action and close the menu in one step. */
   const pick = (action: () => void) => () => {
@@ -640,8 +647,23 @@ function SidebarFooter({
   const menuItems: MenuProps["items"] = [
     {
       key: "settings",
-      label: <MenuRow icon="settings" label={t("sidebar.settings")} />,
+      label: <MenuRow icon="settings" label={t("sidebar.settings")} kbd="Ctrl+," />,
       onClick: () => pick(() => onOpenSettings?.())(),
+    },
+    // Ticket 55c (ref-01): the desktop's Upgrade row. Cloud-account billing
+    // has no local path, so the row renders disabled with the A1 marker
+    // rather than hidden — the menu keeps the desktop's shape.
+    {
+      key: "upgrade",
+      disabled: true,
+      label: (
+        <MenuRow
+          icon="sparkles"
+          label={t("userMenu.upgrade")}
+          disabled
+          title={t("common.notLocal")}
+        />
+      ),
     },
     {
       key: "checkin",
@@ -665,6 +687,21 @@ function SidebarFooter({
       onClick: () => pick(() => onOpenUsage?.())(),
       label: <MenuRow icon="gauge" label={t("toolbar.usage")} />,
     },
+    // Ticket 55c (ref-01): the desktop's 反馈与帮助 row — a support
+    // submenu this distribution has no target for. Disabled placeholder.
+    {
+      key: "feedback",
+      disabled: true,
+      label: (
+        <MenuRow
+          icon="headset"
+          label={t("userMenu.feedback")}
+          chevron
+          disabled
+          title={t("common.notLocal")}
+        />
+      ),
+    },
     { key: "divider", disabled: true, label: <MenuDivider /> },
     {
       key: "signOut",
@@ -675,6 +712,22 @@ function SidebarFooter({
           label={t("userMenu.signOut")}
           disabled
           title={t("common.unsupported")}
+        />
+      ),
+    },
+    // The trailing user card (ref-01 bottom): avatar / name / plan badge /
+    // bell. The item itself is inert (no onClick) — only the bell inside
+    // acts, opening the same 站内信 flyout the footer row's bell does.
+    { key: "divider2", disabled: true, label: <MenuDivider /> },
+    {
+      key: "userCard",
+      label: (
+        <UserMenuCard
+          name={userCardName}
+          planTier={planTier}
+          alertCount={alertCount}
+          onOpenAlerts={() => pick(() => onOpenAlerts())()}
+          t={t}
         />
       ),
     },
@@ -785,8 +838,13 @@ function SidebarFooter({
 }
 
 /**
- * One row of the account menu: an 18px leading glyph, the label, and an optional
- * trailing chevron.
+ * One row of the account menu: an 18px leading glyph, the label, an optional
+ * trailing kbd badge (the desktop's Settings row carries `Ctrl+,`) and an
+ * optional trailing chevron.
+ *
+ * Exported because the sidebar's project context menu (session-tree.tsx,
+ * ticket 55c) uses the same row construction — same `matrix-menu-item` skin,
+ * same padding — so the two menus stay visually one component family.
  *
  * This is the row's *content*; the item around it is antd's `li` — radius, hover,
  * focus and the disabled state are the library's. The desktop splits the two the
@@ -799,26 +857,38 @@ function SidebarFooter({
  * `disabled` is a prop rather than something read off the item: the desktop dims
  * the row itself (`opacity-20`) rather than relying on antd's disabled text
  * colour, which the row's own colour class would override anyway.
+ *
+ * `danger` re-colours the row for destructive entries (the project menu's
+ * 移除). The desktop paints its danger rows red in both states; here the tint
+ * rides the same `text-text_status_error` token the transcript's error marks
+ * use.
  */
-function MenuRow({
+export function MenuRow({
   icon,
   label,
   chevron,
   disabled,
+  danger,
+  kbd,
   title,
+  testid,
 }: {
   icon: Parameters<typeof Icon>[0]["name"];
   label: React.ReactNode;
   chevron?: boolean;
   disabled?: boolean;
+  danger?: boolean;
+  kbd?: string;
   title?: string;
+  testid?: string;
 }) {
   return (
     <div
       title={title}
-      className={`matrix-menu-item flex w-full min-w-0 items-center overflow-hidden p-1.5 text-[14px] text-text_default_primary ${
-        disabled ? "cursor-not-allowed opacity-20" : "cursor-pointer"
-      }`}
+      data-testid={testid}
+      className={`matrix-menu-item flex w-full min-w-0 items-center overflow-hidden p-1.5 text-[14px] ${
+        danger ? "text-text_status_error" : "text-text_default_primary"
+      } ${disabled ? "cursor-not-allowed opacity-20" : "cursor-pointer"}`}
     >
       <div className="relative flex w-full min-w-0 items-center gap-2 md:min-w-[108px]">
         <div
@@ -830,6 +900,11 @@ function MenuRow({
         <div className="flex min-w-0 flex-1 items-center font-[400] leading-5">
           <span className="flex w-full min-w-0 items-center justify-between gap-2">
             <span className="min-w-0 flex-1 truncate">{label}</span>
+            {kbd ? (
+              <kbd className="inline-flex shrink-0 items-center justify-center rounded-[4px] bg-bg_grouped_tertiary px-1 py-px font-sans text-[11px] leading-[14px] text-text_default_tertiary">
+                {kbd}
+              </kbd>
+            ) : null}
             {chevron ? (
               <Icon
                 name="chevronRight"
@@ -853,10 +928,82 @@ function MenuRow({
  * construction here — including the `mavis-user-menu-divider` class, which is what
  * restores the opacity the disabled state would otherwise dim.
  */
-function MenuDivider() {
+export function MenuDivider() {
   return (
     <div className="mavis-user-menu-divider pointer-events-none flex h-[4px] items-center">
       <div className="h-[1px] w-full bg-border_default" />
+    </div>
+  );
+}
+
+/**
+ * The user card at the bottom of the account menu (ref-01): avatar / display
+ * name / plan badge / bell.
+ *
+ * The name is the engine identity when one exists and the 本地用户 placeholder
+ * otherwise; the plan badge only renders when the engine reports a tier (no
+ * faked "Ultra"); the bell is the same 站内信 entry the footer row carries,
+ * unread dot included, and must stop the click before antd's item handler can
+ * close the menu on it.
+ */
+function UserMenuCard({
+  name,
+  planTier,
+  alertCount,
+  onOpenAlerts,
+  t,
+}: {
+  name: string;
+  planTier: string;
+  alertCount: number;
+  onOpenAlerts: () => void;
+  t: (key: MessageKey) => string;
+}) {
+  return (
+    <div
+      data-testid="user-menu-card"
+      className="flex w-full min-w-0 items-center gap-2 p-1.5"
+    >
+      <span className="flex size-7 flex-shrink-0 items-center justify-center overflow-hidden rounded-full border border-border_light bg-bg_grouped_tertiary text-sm font-medium text-text_default_primary">
+        {name.slice(0, 1).toUpperCase()}
+      </span>
+      <span className="flex min-w-0 flex-1 flex-col gap-px">
+        <span
+          data-testid="user-menu-card-name"
+          className="truncate text-[14px] font-[400] leading-5 text-text_default_primary"
+        >
+          {name}
+        </span>
+        {planTier ? (
+          <span
+            data-testid="user-menu-card-plan"
+            className="mt-px w-fit truncate rounded-[4px] bg-bg_grouped_tertiary px-1 py-px text-[11px] leading-[14px] text-text_default_secondary"
+          >
+            {planTier}
+          </span>
+        ) : null}
+      </span>
+      <button
+        type="button"
+        aria-label={alertCount > 0 ? t("inbox.entryUnread") : t("inbox.entryNoUnread")}
+        title={t("inbox.title")}
+        data-testid="user-menu-card-bell"
+        onClick={(event) => {
+          event.stopPropagation();
+          onOpenAlerts();
+        }}
+        onPointerDown={(event) => event.stopPropagation()}
+        onMouseDown={(event) => event.stopPropagation()}
+        className="relative flex size-8 flex-shrink-0 items-center justify-center rounded-[8px] border-0 bg-transparent p-0 text-icon_default_primary transition-colors duration-150 hover:bg-bg_interaction_tertiary_hover"
+      >
+        <Icon name="bell" size={18} />
+        {alertCount > 0 ? (
+          <span
+            aria-hidden="true"
+            className="absolute top-1 right-1 size-1.5 rounded-full bg-bg_interaction_danger_primary_default"
+          />
+        ) : null}
+      </button>
     </div>
   );
 }

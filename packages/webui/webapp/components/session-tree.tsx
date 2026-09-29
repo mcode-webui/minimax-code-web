@@ -1,14 +1,23 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Input as AntInput, type InputRef } from "antd";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Dropdown } from "antd";
+import { Input as AntInput, Modal as AntModal, type InputRef } from "antd";
+import type { MenuProps } from "antd";
 
 import * as api from "@/lib/api";
 import { reportActionError, runAction } from "@/lib/action-errors";
 import { useSessionContext } from "@/lib/store";
 import type { MessageKey } from "@/lib/i18n";
 import { sessionHref } from "@/lib/url-restore";
+import {
+  readProjectCustomizations,
+  setProjectTitle,
+  toggleProjectPinned,
+  clearProjectCustomizations,
+} from "@/lib/project-custom";
 import { Icon } from "./icons";
+import { MenuDivider, MenuRow } from "./shell";
 import { ProjectRowSwitchAction } from "./workspace-picker";
 
 /**
@@ -29,13 +38,27 @@ import { ProjectRowSwitchAction } from "./workspace-picker";
  * client's DOM. The reference for a re-derivation is
  * `scripts/desktop-reference.mjs` (`--surface sidebar`).
  *
- * Two deliberate departures, both to avoid shipping dead controls:
+ * ## Project context menu (ticket 55c, ref-26)
  *
- *   - Upstream swaps the row marker to a pin button on hover. This server has
- *     no pinning contract, so the hairline is kept as the resting state and
- *     the pin is omitted.
- *   - Upstream's per-row actions are pin / rename / delete. Rename, delete and
- *     export all have endpoints and are rendered; pinning has none, so it is not.
+ * The project header carries the desktop's five-entry context menu:
+ *
+ *   - 重命名项目 — real, backed by a browser-local display-name overlay
+ *     (`lib/project-custom.ts`); there is no mcode surface to write a project
+ *     name into (see that module's header for the reasoning).
+ *   - 置顶项目 — real, same overlay module; pinned projects sort to the top.
+ *   - 在文件夹中显示 — placeholder, disabled: a browser cannot open the OS
+ *     file manager.
+ *   - 归档对话 — placeholder, disabled: mcode's runtime db has an `archived`
+ *     flag, but writing another process's database is out of scope for this
+ *     slice and there is no un-archive surface yet (ticket 55b's archived
+ *     tasks page is the prerequisite; without it archiving would be
+ *     irreversible data loss).
+ *   - 移除 (red) — real: batch-deletes every session under the project
+ *     through the existing `DELETE /api/sessions/:id`, behind a confirm.
+ *
+ * One deliberate departure remains from the earlier trim: the per-row hover
+ * pin (upstream swaps the row marker to a pin on hover). Pinning is
+ * project-level in this UI, so the hairline stays as the resting state.
  *
  * webui-parity 47 aligned the interaction layer with the reference: selected
  * rows paint with the `tertiary_selected` token (hover keeps `tertiary_hover`),
@@ -191,6 +214,29 @@ export function SessionTree({ t }: { t: (key: MessageKey) => string }) {
 
   const projects = payload?.projects ?? [];
 
+  // Ticket 55c — browser-local project customizations (rename overlay + pin
+  // set; see lib/project-custom.ts). One state at the tree root, updated by
+  // the project rows' context-menu actions. Pinned projects sort to the top
+  // (in pin order — newest pin first), the rest keep the server's recency
+  // order. A pin whose project disappeared is inert: it simply matches
+  // nothing.
+  const [customs, setCustoms] = useState(() => readProjectCustomizations());
+  const onRenameProject = useCallback((key: string, title: string) => {
+    setCustoms(setProjectTitle(key, title));
+  }, []);
+  const onTogglePinned = useCallback((key: string) => {
+    setCustoms(toggleProjectPinned(key));
+  }, []);
+  const sortedProjects = useMemo(() => {
+    const rank = new Map(customs.pinned.map((key, index) => [key, index]));
+    return [...projects].sort((a, b) => {
+      const pa = rank.has(a.key) ? rank.get(a.key)! : Number.POSITIVE_INFINITY;
+      const pb = rank.has(b.key) ? rank.get(b.key)! : Number.POSITIVE_INFINITY;
+      if (pa !== pb) return pa - pb;
+      return 0; // stable: Array.prototype.sort keeps recency order within a tier
+    });
+  }, [projects, customs.pinned]);
+
   return (
     // `scrollbar-gutter: stable` matches upstream so the list does not shift
     // when the scrollbar appears.
@@ -225,10 +271,14 @@ export function SessionTree({ t }: { t: (key: MessageKey) => string }) {
       {/* Section header — collapsible `group/section` row whose label is `项目`. */}
       {projects.length > 0 ? <SectionHeader label={t("sidebar.projects")} /> : null}
 
-      {projects.map((project) => (
+      {sortedProjects.map((project) => (
         <div key={project.key} className="space-y-px">
           <ProjectNode
             project={project}
+            displayName={customs.titles[project.key] ?? project.name}
+            pinned={customs.pinned.includes(project.key)}
+            onRename={onRenameProject}
+            onTogglePinned={onTogglePinned}
             activeId={activeId}
             open={openProjects.includes(project.key)}
             onToggle={toggle(setOpenProjects)}
@@ -305,9 +355,21 @@ function RowAction({
   );
 }
 
-/** Level 1 — a project (one git repository, however many worktrees it has). */
+/**
+ * Level 1 — a project (one git repository, however many worktrees it has).
+ *
+ * The header carries the desktop's context menu (55c, ref-26). Rename and pin
+ * are backed by the browser-local overlay (`lib/project-custom.ts`); reveal
+ * and archive are disabled placeholders; remove batch-deletes the project's
+ * sessions behind a confirm. The rename affordance reuses the session row's
+ * inline-editor interaction (Enter commits, Escape discards, blur commits).
+ */
 function ProjectNode({
   project,
+  displayName,
+  pinned,
+  onRename,
+  onTogglePinned,
   activeId,
   open,
   onToggle,
@@ -321,6 +383,14 @@ function ProjectNode({
   t,
 }: {
   project: api.TreeProject;
+  /** Overlay display name (user rename); falls back to the repo basename. */
+  displayName: string;
+  /** Whether the pin overlay currently holds this project. */
+  pinned: boolean;
+  /** Commit a rename (empty title clears the overlay). */
+  onRename: (key: string, title: string) => void;
+  /** Toggle the pin. */
+  onTogglePinned: (key: string) => void;
   activeId: string | null;
   open: boolean;
   onToggle: (key: string) => void;
@@ -334,84 +404,312 @@ function ProjectNode({
   t: (key: MessageKey) => string;
 }) {
   const label = project.repoPaths.length
-    ? `${project.name}, ${project.repoPaths.join(", ")}`
-    : project.name;
+    ? `${displayName}, ${project.repoPaths.join(", ")}`
+    : displayName;
   // The first repo path is the broad-stroke target; multi-directory
   // projects expose the per-directory choice below through DirectoryNode.
   const switchRepoPath = project.repoPaths[0] ?? project.directories[0]?.path;
 
-  return (
-    <>
-      <div
-        role="button"
-        tabIndex={0}
-        aria-label={label}
-        title={label}
-        aria-expanded={open}
-        data-testid="sidebar-project-header"
-        onClick={() => onToggle(project.key)}
+  // Inline rename (same interaction contract as SessionNode's editor).
+  const [draft, setDraft] = useState<string | null>(null);
+  const inputRef = useRef<InputRef>(null);
+  const renaming = draft !== null;
+  useEffect(() => {
+    if (renaming) inputRef.current?.input?.select();
+  }, [renaming]);
+
+  const commitRename = useCallback(() => {
+    const next = (draft ?? "").trim();
+    // Empty commit clears the overlay (back to the repo basename) — the
+    // same rule the pin overlay follows, so there is one way to reset.
+    setDraft(null);
+    if (next && next !== displayName) onRename(project.key, next);
+  }, [draft, displayName, onRename, project.key]);
+
+  // Remove confirm. Deleting runs sequentially through the existing
+  // single-session endpoint; a failure reports and stops the batch (the
+  // sessions deleted before it stay deleted — the confirm already told the
+  // user this cannot be undone).
+  const [confirmRemove, setConfirmRemove] = useState(false);
+  const [removing, setRemoving] = useState(false);
+  // Every session id under the project, subagents included: mcode's runtime
+  // rows are per-session and DELETE does not cascade into children. The
+  // CONFIRM counts main sessions only (the pill's `sessionCount` semantics —
+  // user-started conversations), the DELETE walks the full set.
+  const allSessionIds = project.directories.flatMap((directory) =>
+    directory.sessions.flatMap((session) => [
+      session.id,
+      ...session.children.map((child) => child.id),
+    ]),
+  );
+  const runRemove = useCallback(async () => {
+    setRemoving(true);
+    for (const id of allSessionIds) {
+      try {
+        await api.deleteSession(id);
+      } catch (cause) {
+        reportActionError(t("projectMenu.remove"), cause);
+        break;
+      }
+    }
+    clearProjectCustomizations(project.key);
+    setRemoving(false);
+    setConfirmRemove(false);
+    onChanged();
+  }, [allSessionIds, onChanged, project.key, t]);
+
+  const menuItems: MenuProps["items"] = [
+    {
+      key: "rename",
+      label: (
+        <MenuRow icon="pencil" label={t("projectMenu.rename")} testid="project-menu-rename" />
+      ),
+      onClick: () => {
+        setDraft(displayName);
+      },
+    },
+    {
+      key: "pin",
+      label: (
+        <MenuRow
+          icon="pin"
+          label={pinned ? t("projectMenu.unpin") : t("projectMenu.pin")}
+          testid="project-menu-pin"
+        />
+      ),
+      onClick: () => onTogglePinned(project.key),
+    },
+    {
+      key: "reveal",
+      disabled: true,
+      label: (
+        <MenuRow
+          icon="folder"
+          label={t("projectMenu.revealInFolder")}
+          disabled
+          title={t("common.notLocal")}
+          testid="project-menu-reveal"
+        />
+      ),
+    },
+    {
+      key: "archive",
+      disabled: true,
+      label: (
+        <MenuRow
+          icon="archive"
+          label={t("projectMenu.archive")}
+          disabled
+          title={t("common.notLocal")}
+          testid="project-menu-archive"
+        />
+      ),
+    },
+    { key: "divider", disabled: true, label: <MenuDivider /> },
+    {
+      key: "remove",
+      label: (
+        <MenuRow
+          icon="trash"
+          label={t("projectMenu.remove")}
+          danger
+          testid="project-menu-remove"
+        />
+      ),
+      onClick: () => setConfirmRemove(true),
+    },
+  ];
+
+  const header = renaming ? (
+    <div data-testid="sidebar-project-header" className="group/project-header flex h-[30px] items-center gap-2 rounded-lg pl-2 pr-0.5">
+      <span className="flex size-[14px] flex-shrink-0 items-center justify-center text-icon_default_primary">
+        <Icon name="caretDown" size={12} className={open ? "transition-transform" : "-rotate-90 transition-transform"} />
+      </span>
+      <span className="flex size-[18px] flex-shrink-0 items-center justify-center text-icon_default_secondary">
+        <Icon name={open ? "folderEmpty" : "folder"} size={18} />
+      </span>
+      <AntInput
+        ref={inputRef}
+        type="text"
+        maxLength={200}
+        value={draft ?? ""}
+        aria-label={t("projectMenu.rename")}
+        data-testid="sidebar-project-rename-input"
+        onChange={(event) => setDraft(event.target.value)}
+        onClick={(event) => event.stopPropagation()}
         onKeyDown={(event) => {
-          if (event.key === "Enter" || event.key === " ") {
+          if (event.key === "Enter") {
             event.preventDefault();
-            onToggle(project.key);
+            commitRename();
+          } else if (event.key === "Escape") {
+            event.preventDefault();
+            setDraft(null);
           }
         }}
-        className="group/project-header flex h-[30px] cursor-pointer items-center gap-2 rounded-lg pl-2 pr-0.5 text-left transition-colors hover:bg-bg_interaction_tertiary_hover focus:outline-none focus-visible:bg-bg_interaction_tertiary_hover"
+        onBlur={() => commitRename()}
+        className="desktop-text-ui-body min-w-0 flex-1 rounded-[4px] border border-border_accent bg-bg_grouped_secondary px-1.5 py-px text-sm leading-5 text-text_default_primary outline-none"
+      />
+    </div>
+  ) : (
+    <div
+      role="button"
+      tabIndex={0}
+      aria-label={label}
+      title={label}
+      aria-expanded={open}
+      data-testid="sidebar-project-header"
+      data-pinned={pinned ? "true" : "false"}
+      onClick={() => onToggle(project.key)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onToggle(project.key);
+        }
+      }}
+      className="group/project-header flex h-[30px] cursor-pointer items-center gap-2 rounded-lg pl-2 pr-0.5 text-left transition-colors hover:bg-bg_interaction_tertiary_hover focus:outline-none focus-visible:bg-bg_interaction_tertiary_hover"
+    >
+      {/* The caret is the filled triangle the desktop uses for sidebar
+          disclosures, rotated -90deg when collapsed, distinct from the stroked
+          chevron used elsewhere. */}
+      <span className="flex size-[14px] flex-shrink-0 items-center justify-center text-icon_default_primary">
+        <Icon
+          name="caretDown"
+          size={12}
+          className={open ? "transition-transform" : "-rotate-90 transition-transform"}
+        />
+      </span>
+      <span className="flex size-[18px] flex-shrink-0 items-center justify-center text-icon_default_secondary">
+        <Icon name={open ? "folderEmpty" : "folder"} size={18} />
+      </span>
+      <span
+        data-testid="sidebar-project-title"
+        className="desktop-text-ui-body min-w-0 flex-1 truncate text-sm leading-5 text-text_default_secondary"
       >
-        {/* The caret is the filled triangle the desktop uses for sidebar
-            disclosures, rotated -90deg when collapsed, distinct from the stroked
-            chevron used elsewhere. */}
-        <span className="flex size-[14px] flex-shrink-0 items-center justify-center text-icon_default_primary">
-          <Icon
-            name="caretDown"
-            size={12}
-            className={open ? "transition-transform" : "-rotate-90 transition-transform"}
-          />
-        </span>
-        <span className="flex size-[18px] flex-shrink-0 items-center justify-center text-icon_default_secondary">
-          <Icon name={open ? "folderEmpty" : "folder"} size={18} />
-        </span>
-        <span
-          data-testid="sidebar-project-title"
-          className="desktop-text-ui-body min-w-0 flex-1 truncate text-sm leading-5 text-text_default_secondary"
-        >
-          {project.name}
-        </span>
+        {displayName}
+      </span>
 
-        {/* Fixed-width 60px slot: the count pill fades out as hover actions fade
-            in, and keeping the slot a fixed width stops the title from
-            reflowing on hover. */}
-        <div className="relative ml-auto h-[30px] w-[60px] flex-shrink-0">
-          <span
-            aria-hidden
-            className="pointer-events-none absolute inset-y-0 right-0 flex w-[30px] items-center justify-center transition-opacity duration-200 group-hover/project-header:opacity-0"
+      {/* A pinned project keeps its pin visible beside the title — the
+          hover-only actions row would otherwise make pin state invisible
+          until hover, and the pinned tier exists precisely to be seen. */}
+      {pinned ? (
+        <span
+          aria-label={t("projectMenu.pin")}
+          title={t("projectMenu.pin")}
+          className="flex size-[18px] flex-shrink-0 items-center justify-center text-icon_default_tertiary"
+        >
+          <Icon name="pin" size={12} />
+        </span>
+      ) : null}
+
+      {/* Fixed-width 60px slot: the count pill fades out as hover actions fade
+          in, and keeping the slot a fixed width stops the title from
+          reflowing on hover. */}
+      <div className="relative ml-auto h-[30px] w-[60px] flex-shrink-0">
+        <span
+          aria-hidden
+          className="pointer-events-none absolute inset-y-0 right-0 flex w-[30px] items-center justify-center transition-opacity duration-200 group-hover/project-header:opacity-0"
+        >
+          <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-bg_grouped_tertiary px-1 text-center text-xs font-normal leading-4 text-text_default_secondary">
+            {project.sessionCount}
+          </span>
+        </span>
+        <span className="pointer-events-none absolute inset-y-0 right-0.5 flex items-center gap-0.5 opacity-0 transition-opacity duration-200 group-hover/project-header:pointer-events-auto group-hover/project-header:opacity-100">
+          {switchRepoPath ? (
+            <ProjectRowSwitchAction
+              t={t}
+              repoPath={switchRepoPath}
+              onChanged={onChanged}
+            />
+          ) : null}
+          <RowAction
+            label={t("sidebar.newInProject")}
+            tone="primary"
+            onClick={() =>
+              void runAction(t("sidebar.newInProject"), api.newSession(project.directories[0]?.path)).then(
+                onChanged,
+              )
+            }
           >
-            <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-bg_grouped_tertiary px-1 text-center text-xs font-normal leading-4 text-text_default_secondary">
-              {project.sessionCount}
-            </span>
-          </span>
-          <span className="pointer-events-none absolute inset-y-0 right-0.5 flex items-center gap-0.5 opacity-0 transition-opacity duration-200 group-hover/project-header:pointer-events-auto group-hover/project-header:opacity-100">
-            {switchRepoPath ? (
-              <ProjectRowSwitchAction
-                t={t}
-                repoPath={switchRepoPath}
-                onChanged={onChanged}
-              />
-            ) : null}
-            <RowAction
-              label={t("sidebar.newInProject")}
-              tone="primary"
-              onClick={() =>
-                void runAction(t("sidebar.newInProject"), api.newSession(project.directories[0]?.path)).then(
-                  onChanged,
-                )
-              }
-            >
-              <Icon name="plusSmall" size={16} />
-            </RowAction>
-          </span>
-        </div>
+            <Icon name="plusSmall" size={16} />
+          </RowAction>
+        </span>
       </div>
+    </div>
+  );
+
+  return (
+    <>
+      {/* The context menu rides the header row (right-click). antd's Dropdown
+          owns dismissal; the panel wears the same mavis-dropdown skin the
+          user menu does so the two menus read as one family. */}
+      <Dropdown
+        trigger={["contextMenu"]}
+        placement="bottomLeft"
+        overlayClassName="mavis-dropdown mavis-user-dropdown"
+        menu={{
+          items: menuItems,
+          rootClassName: "mavis-dropdown-root-sub-menu mavis-user-dropdown-submenu",
+          style: { width: "100%" },
+        }}
+        popupRender={(menuNode) => <div data-testid="project-context-menu">{menuNode}</div>}
+      >
+        {header}
+      </Dropdown>
+
+      {confirmRemove ? (
+        <AntModal
+          open
+          centered
+          closable
+          keyboard
+          maskClosable={!removing}
+          footer={null}
+          destroyOnHidden
+          width={440}
+          rootClassName="mavis-confirm-modal-compact"
+          classNames={{
+            mask: "mavis-confirm-modal-compact-mask",
+            content: "mavis-confirm-modal-compact-surface",
+          }}
+          styles={{ header: { background: "transparent" } }}
+          title={
+            <span className="mavis-confirm-modal-compact-title text-heading3 text-text_default_primary">
+              {t("projectMenu.removeConfirmTitle")}
+            </span>
+          }
+          onCancel={() => {
+            if (!removing) setConfirmRemove(false);
+          }}
+        >
+          <div data-testid="project-remove-confirm" className="flex flex-col gap-4 py-2">
+            <p className="text-sm leading-6 text-text_default_secondary">
+              {t("projectMenu.removeConfirmBody").replace(
+                "{count}",
+                String(project.sessionCount),
+              )}
+            </p>
+            <div className="flex items-center justify-end gap-2">
+              <button
+                type="button"
+                disabled={removing}
+                onClick={() => setConfirmRemove(false)}
+                className="h-8 rounded-lg border border-border_default px-3 text-sm text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_hover disabled:opacity-50"
+              >
+                {t("projectMenu.cancel")}
+              </button>
+              <button
+                type="button"
+                disabled={removing}
+                data-testid="project-remove-confirm-button"
+                onClick={() => void runRemove()}
+                className="h-8 rounded-lg bg-bg_interaction_danger_primary_default px-3 text-sm text-text_label_danger_primary_default transition-colors hover:opacity-90 disabled:opacity-50"
+              >
+                {t("projectMenu.removeConfirm")}
+              </button>
+            </div>
+          </div>
+        </AntModal>
+      ) : null}
 
       <Expandable open={open}>
         {project.directories.map((directory) => (
