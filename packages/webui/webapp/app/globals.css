@@ -268,6 +268,18 @@
   .thinking-live-dot {
     animation: none;
   }
+  /* webui-parity 61 (G1) — same shape as `.thinking-live-dot` above: the
+   * catch-all below only forces `animation-duration`, never
+   * `animation-name`, so without this explicit rule the message entry
+   * animation would still be *named* under reduced motion (it would merely
+   * finish instantly). Acceptance is stated in computed values
+   * (`animation-name: none`), so the rule has to be here rather than
+   * left to the catch-all. No `!important` — unlike the loading dots,
+   * no later stylesheet re-declares `message-animate-in` (pinned by
+   * test/message-enter-animation.test.ts). */
+  .message-animate-in {
+    animation: none;
+  }
   .webui-expandable-motion {
     transition: none;
   }
@@ -365,5 +377,49 @@ details.webui-thinking-block > summary::-webkit-details-marker {
   }
   50% {
     opacity: 1;
+  }
+}
+
+/* Message entry animation (webui-parity 61, G1).
+ *
+ * The class has been carried on the five message containers since ticket
+ * 46 PR1, but no rule ever defined it — the animation was structurally
+ * present and behaviourally zero. This is the desktop's `message-appear`,
+ * transcribed value for value from the reference package's
+ * `styles/shell.css` ("conversation" section): 0.18s, ease-out, `both`.
+ *
+ * Placement is load-bearing in three ways:
+ *
+ * - Outside any `@layer` (the file's only layer is `@layer base`). Tailwind
+ *   purges the utilities it generates, never hand-written rules, so a
+ *   content-scan miss cannot drop this. `message-animate-in` is not a
+ *   utility and must not be spelled as one.
+ * - Plain top-level, so it competes on specificity alone (0,1,0) with the
+ *   Tailwind utility classes the same elements carry. No call site puts an
+ *   opacity or transform utility on a `message-animate-in` element, and the
+ *   animation's own `both` fill holds the `to` state afterwards, so it
+ *   cannot be outranked into invisibility.
+ * - The cascade direction between this file and `styles/official-utilities.css`
+ *   (which loads later) is why the reduced-motion branch lives in the block
+ *   above rather than here: a `@media` wrapper at the bottom would read
+ *   better but the winning rule has to be the explicit one.
+ *
+ * Replay semantics: a CSS animation starts on element creation, not on
+ * re-render, and every call site writes a static `className` literal — the
+ * streaming flag is passed down to the cursor, never into these class
+ * lists. The message container therefore keeps its identity while tokens
+ * arrive and plays the animation exactly once, on first paint. The `▍`
+ * cursor has its own class and is untouched by this rule. */
+.message-animate-in {
+  animation: message-appear 0.18s ease-out both;
+}
+@keyframes message-appear {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
   }
 }
