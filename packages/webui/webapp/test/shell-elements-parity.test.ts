@@ -29,6 +29,7 @@ import { fileURLToPath } from "node:url";
 import { resolve, dirname } from "node:path";
 
 import { translate, type MessageKey } from "../lib/i18n";
+import { capToastReducer } from "../lib/cap-toast";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const read = (relative: string) =>
@@ -51,6 +52,8 @@ const KEYS_55C: MessageKey[] = [
   "projectMenu.remove",
   "projectMenu.removeConfirmTitle",
   "projectMenu.removeConfirmBody",
+  "projectMenu.removeConfirmAuthNote",
+  "projectMenu.removeProgress",
   "projectMenu.removeConfirm",
   "projectMenu.cancel",
   "home.cap.video",
@@ -96,6 +99,21 @@ describe("55c i18n — bilingual coverage and verbatim zh labels", () => {
   test("removeConfirmBody carries the {count} placeholder in both locales", () => {
     assert.ok(translate("zh", "projectMenu.removeConfirmBody").includes("{count}"));
     assert.ok(translate("en", "projectMenu.removeConfirmBody").includes("{count}"));
+  });
+  test("removeConfirmAuthNote carries the {count} placeholder in both locales (F2)", () => {
+    assert.ok(translate("zh", "projectMenu.removeConfirmAuthNote").includes("{count}"));
+    assert.ok(translate("en", "projectMenu.removeConfirmAuthNote").includes("{count}"));
+  });
+  test("zh removeConfirmBody states the subagent sessions explicitly (F1)", () => {
+    // The honest wording: the confirm must not understate the deletion set.
+    assert.ok(
+      translate("zh", "projectMenu.removeConfirmBody").includes("子代理会话"),
+      "zh body must mention subagent sessions",
+    );
+    assert.ok(
+      translate("en", "projectMenu.removeConfirmBody").includes("subagent sessions"),
+      "en body must mention subagent sessions",
+    );
   });
 });
 
@@ -195,12 +213,61 @@ describe("55c project context menu (session-tree.tsx, ref-26)", () => {
     );
   });
 
+  test("the confirm quotes the TRUE deletion set, not the pill's main count (F1)", () => {
+    // The body's {count} must be filled from allSessionIds.length (main +
+    // subagent). The under-counting bug was exactly this replace feeding on
+    // project.sessionCount, so the wrong spelling is pinned out.
+    const at = src.indexOf('data-testid="project-remove-confirm"');
+    const slice = src.slice(at, src.indexOf("projectMenu.removeConfirmAuthNote"));
+    assert.ok(
+      slice.includes("String(allSessionIds.length)"),
+      "confirm body count = allSessionIds.length",
+    );
+    assert.ok(
+      !slice.includes("project.sessionCount"),
+      "confirm body must NOT quote the pill's main-session count",
+    );
+  });
+
+  test("the confirm pre-announces the authorization prompts and shows progress (F2)", () => {
+    assert.ok(
+      src.includes('t("projectMenu.removeConfirmAuthNote")'),
+      "auth-prompt count note rendered in the confirm",
+    );
+    assert.ok(
+      src.includes('t("projectMenu.removeProgress")'),
+      "live progress line rendered while removing",
+    );
+    assert.ok(
+      src.includes('data-testid="project-remove-progress"'),
+      "progress line is addressable",
+    );
+  });
+
+  test("customizations are cleared only on FULL success, through the tree root (N3)", () => {
+    // The clear call must be gated on !failed and routed via the
+    // onProjectRemoved prop (which updates the in-memory customs state),
+    // never a direct clearProjectCustomizations inside ProjectNode.
+    const at = src.indexOf("if (!failed) onProjectRemoved(project.key);");
+    assert.ok(at >= 0, "clear is gated on full success");
+    const nodeStart = src.indexOf("function ProjectNode");
+    const nodeSrc = src.slice(nodeStart, src.indexOf("function DirectoryNode"));
+    assert.ok(
+      !nodeSrc.includes("clearProjectCustomizations"),
+      "ProjectNode does not clear the overlay directly",
+    );
+    assert.ok(
+      nodeSrc.includes("onProjectRemoved"),
+      "ProjectNode routes the clear through the prop",
+    );
+  });
+
   test("rename / pin ride the browser-local overlay module", () => {
     assert.ok(src.includes("setProjectTitle"), "rename commits through the overlay");
     assert.ok(src.includes("toggleProjectPinned"), "pin toggles through the overlay");
     assert.ok(
-      src.includes("clearProjectCustomizations(project.key)"),
-      "removing a project drops its customizations",
+      src.includes("setCustoms(clearProjectCustomizations(key))"),
+      "the tree root clears a removed project's customizations in state AND storage",
     );
   });
 });
@@ -240,5 +307,72 @@ describe("55c home quick-capability capsules (chat.tsx, ref-28)", () => {
   test("the old emoji-chip draft is gone (replaced by the icon pills)", () => {
     assert.ok(!src.includes("SHOW_SUGGESTIONS"), "the hold-back flag was removed");
     assert.ok(!src.includes("SUGGESTIONS:"), "the emoji chip list was removed");
+  });
+
+  test("toast wiring: the chip click dispatches into capToastReducer (M6)", () => {
+    // QA M6 hollowed out the handler's body while keeping the call site —
+    // every assertion above stayed green. The wiring is pinned by its two
+    // dispatch spellings now: the reducer must actually receive the click,
+    // and the timer must actually dismiss through the stamp it observed.
+    assert.ok(
+      src.includes('from "@/lib/cap-toast"'),
+      "chat.tsx pulls the reducer from the import-clean module",
+    );
+    assert.ok(
+      src.includes("useReducer(capToastReducer, null)"),
+      "toast state is the reducer's, not a bare useState",
+    );
+    assert.ok(
+      src.includes('dispatchToast({ type: "click", id, now: Date.now() })'),
+      "the click handler's body dispatches the click action",
+    );
+    assert.ok(
+      src.includes('dispatchToast({ type: "dismiss", at: toast.at })'),
+      "the timer dismisses through the observed stamp",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 3. Cap-toast state machine — BEHAVIOUR tests on the import-clean reducer
+//    (QA M6: the click→toast contract had to be testable without a render
+//    harness; hollowing the handler body or breaking the reducer semantics
+//    now fails here, not just in a source grep)
+// ---------------------------------------------------------------------------
+
+describe("55c capToastReducer — the capsule toast state machine (M6)", () => {
+  test("a click from the resting state shows the clicked chip's toast", () => {
+    const next = capToastReducer(null, { type: "click", id: "video", now: 1000 });
+    assert.deepEqual(next, { key: "video", at: 1000 });
+  });
+
+  test("a newer click REPLACES the showing toast (one toast, latest reason)", () => {
+    const first = capToastReducer(null, { type: "click", id: "video", now: 1000 });
+    const second = capToastReducer(first, { type: "click", id: "askMcode", now: 2000 });
+    assert.deepEqual(second, { key: "askMcode", at: 2000 });
+  });
+
+  test("a dismiss clears the toast only when the stamp matches its own timer", () => {
+    const toast = capToastReducer(null, { type: "click", id: "design", now: 1000 });
+    assert.equal(
+      capToastReducer(toast, { type: "dismiss", at: 1000 }),
+      null,
+      "matching stamp dismisses",
+    );
+  });
+
+  test("a stale timer cannot dismiss a newer toast (stamp guard)", () => {
+    const first = capToastReducer(null, { type: "click", id: "video", now: 1000 });
+    const second = capToastReducer(first, { type: "click", id: "vibe", now: 2000 });
+    // The timer scheduled for `first` fires after `second` replaced it.
+    assert.deepEqual(
+      capToastReducer(second, { type: "dismiss", at: 1000 }),
+      second,
+      "stale stamp leaves the newer toast showing",
+    );
+  });
+
+  test("a dismiss against the resting state is a no-op", () => {
+    assert.equal(capToastReducer(null, { type: "dismiss", at: 12345 }), null);
   });
 });

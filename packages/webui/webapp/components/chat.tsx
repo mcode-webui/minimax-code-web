@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 
 import { renderMarkdown } from "@/lib/markdown";
 import { MarkdownHtml } from "./markdown-html";
@@ -18,6 +18,7 @@ import { ActivityPulse, isSessionActivityActive } from "./loading-states";
 import { ActivityGroup, TurnProcessDisclosure, assignActivityBlockKeys } from "./activity-group";
 import { computeTurnStatsByUnit, summarizeTurn, type TurnStats } from "@/lib/turn-stats";
 import { useSessionContext } from "@/lib/store";
+import { capToastReducer } from "@/lib/cap-toast";
 import { readScrollPosition as readPersistedScroll } from "@/lib/persist";
 import type { Locale, MessageKey } from "@/lib/i18n";
 import { WorkspaceChipDropdown } from "./workspace-picker";
@@ -781,18 +782,20 @@ export function HomeState({ t, children, locale }: ChatProps & { children: React
     return () => window.clearInterval(id);
   }, []);
 
-  // The placeholder toast a quick-capability chip answers with (55c). The
-  // chip ids double as toast keys: clicking chip B while chip A's toast is
-  // up replaces it (one toast, latest reason), and the auto-dismiss timer
-  // restarts. `null` hides it.
-  const [toast, setToast] = useState<{ key: string; at: number } | null>(null);
+  // The placeholder toast a quick-capability chip answers with (55c).
+  // State machine: `capToastReducer` (lib/cap-toast.ts — import-clean so
+  // the behaviour is unit-tested); wiring: dispatch("click") from the
+  // chip's onClick, dispatch("dismiss") from the timer below. The
+  // reducer's stamp guard is what keeps a stale timer from dismissing a
+  // newer toast.
+  const [toast, dispatchToast] = useReducer(capToastReducer, null);
   const onCapClick = useCallback((id: string) => {
-    setToast({ key: id, at: Date.now() });
+    dispatchToast({ type: "click", id, now: Date.now() });
   }, []);
   useEffect(() => {
     if (!toast) return;
     const id = window.setTimeout(() => {
-      setToast((current) => (current && current.at === toast.at ? null : current));
+      dispatchToast({ type: "dismiss", at: toast.at });
     }, 2600);
     return () => window.clearTimeout(id);
   }, [toast]);

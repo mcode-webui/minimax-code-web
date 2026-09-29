@@ -574,9 +574,11 @@ Token Plan 视图是桌面的五区块（页签 + 四卡）：
 - 重命名与置顶是真做的。项目名与置顶状态存在浏览器本地（`webui:project-custom:v1`，见持久化键一节）——mcode 的运行时数据库里项目不是实体、没有可写入口，所以覆盖层放在唯一消费者所在处，与会话标题 `titleCustom` 的思路一致。置顶的项目排到列表最上，项目名旁常驻图钉标记。
 - 在文件夹中显示是占位禁用：浏览器打不开操作系统的文件管理器。
 - 归档对话是占位禁用：mcode 数据库虽有 `archived` 字段，但写别的进程的数据库不在本片范围，且已归档任务页（工单 55b）未落地前没有取消归档的入口——归档会变成不可逆的数据消失。
-- 移除是真做的红色危险项：先弹确认（写明项目名下的对话总数与不可恢复），确认后逐个走既有的单会话删除端点（含子代理会话），失败即停并报告。删除同时清掉该项目的重命名/置顶记录。
+- 移除是真做的红色危险项：确认弹窗写明真实删除总数（主会话与子代理会话全量，不是侧栏角标的主会话数——不可逆确认不得少报）与不可恢复，并预告删除将逐个进行、期间会出现 N 次授权确认（服务端对每个单会话删除分别走 `authorize("session.delete")`，没有批量授权契约）；确认后弹窗内实时显示「正在删除 i/N」，逐个走既有的单会话删除端点，失败即停并报告。仅当全部删除成功时才清掉该项目的重命名/置顶记录（部分失败时存活项目保留其自定义），清理经组件状态与 localStorage 同步进行。
 
 **主页快捷能力胶囊**（参照 ref-28）在主页输入框与项目行下方渲染桌面的五颗：视频生成（H3 徽标）/ Vibe Coding / 设计视觉 / 产品运营 / 询问 MCode。这些技能依赖云端运行时，本地版没有，所以点击后弹出「本地版不适用」的短暂提示（toast），胶囊本身不发送任何请求——形态照抄桌面，能力边界用一句话说清，不假装能启动。
+
+回归钉在 `webapp/test/shell-elements-parity.test.ts`，分三层：全部 55c 文案键的双语覆盖（zh 逐字对照参照截图）；静态源码 tripwire（菜单行集、可用/禁用分界、危险色、批量删除接线——含确认弹窗必须引用真实删除集而非角标主会话数——以及胶囊点击接线与胶囊区不发请求）；以及 `lib/cap-toast.ts` 的**行为级**测试——toast 状态机特意拆成零依赖模块，点击→替换→按时戳消失的契约在 node:test 下直接跑，无需渲染 harness（质检 M6 轮：掏空点击处理函数体曾让所有源码断言全绿）。每层都做过针对各自目标变异的红绿验证。
 
 
 
@@ -967,9 +969,10 @@ loading-states 相同：让 SSR 渲染测试可以脱离 `chat.tsx` 的 `@/` 别
 | `file_line_wrap` | `localStorage` | `webapp/lib/settings-local.ts` | 工单 48 + 52 | 纯 `"true"\|"false"` 字符串，参照共享命名；默认 `"true"`；每次挂载读取方为 `components/code-view.tsx`（代码文件预览）与 `components/markdown-html.tsx`（markdown 代码块：聊天、活动组、文件预览） |
 | `webui-context-window-usage` | `localStorage` | `webapp/lib/settings-local.ts` | 工单 48 | 纯 `"true"\|"false"` 字符串，参照共享命名；默认 `"false"`；仅记录偏好，尚无读取方 |
 | `webui-follow-up-behavior` | `localStorage` | `webapp/lib/settings-local.ts` | 工单 48 | 纯 `"queue"\|"steer"` 字符串（其他值读取为 `"queue"`），参照共享命名；仅记录偏好，尚无读取方 |
-| `webui:project-custom:v1` | `localStorage` | `webapp/lib/project-custom.ts` | 工单 55c（项目右键菜单） | `{version:1, titles:{<项目key>:<自定义名>}, pinned:[<项目key>]}`。**不按 cid 命名空间**（有意）：重命名与置顶描述的是项目本身而非某个浏览器会话，同一浏览器的所有标签页共享。写入尽力而为，失败静默；删除项目时同步清除其条目 |
+| `webui:project-custom:v1` | `localStorage` | `webapp/lib/project-custom.ts` | 工单 55c（项目右键菜单） | `{version:1, titles:{<项目key>:<自定义名>}, pinned:[<项目key>]}`。**不按 cid 命名空间**（有意）：重命名与置顶描述的是项目本身而非某个浏览器会话，同一浏览器的所有标签页共享。写入尽力而为，失败静默；项目被完整移除（全部会话删除成功）时同步清除其条目 |
 
-除工单 48 的四个参照共享键（上表末四行，有意用桌面参照的裸键名）外，
+除工单 48 的四个参照共享键（`file_open_in_new_tab` / `file_line_wrap` /
+`webui-context-window-usage` / `webui-follow-up-behavior`，有意用桌面参照的裸键名）外，
 所有键共享 `webui:` 前缀，写入均为尽力 + 防抖（`ui`、`workspace-tabs`
 为 150 ms 防抖；其他立即写）。一次失败的写入不会破坏内存状态；
 我们关心的是 `app/global-error.tsx` 捕获的硬崩溃，而非这里的配额

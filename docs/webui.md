@@ -881,13 +881,21 @@ it, with the A1 marker keeping the limits stated rather than implied.
   flag, but writing another process's database is out of scope, and
   until ticket 55b's archived-tasks page lands there is no un-archive
   surface — archiving would be irreversible data loss.
-- 移除 is a real danger row: a confirm modal states the project's main
-  conversation count and the irreversibility, then the delete walks the
-  existing `DELETE /api/sessions/:id` sequentially over every session
-  under the project **including subagent rows** (the runtime rows are
-  per-session; DELETE does not cascade into children). A failure
-  reports through the action-error banner and stops the batch; the
-  project's rename/pin entries are cleared with it.
+- 移除 is a real danger row: the confirm modal states the TRUE deletion
+  set — main sessions AND subagent rows, not the sidebar pill's
+  main-session count; an irreversible confirm must not understate what
+  goes — together with the irreversibility and, because the server
+  authorizes each single-session delete separately through
+  `authorize("session.delete")` (there is no batch contract), the number
+  of approval prompts to expect. Once confirmed, the dialog shows live
+  `deleting i/N` progress while the delete walks the existing
+  `DELETE /api/sessions/:id` sequentially over every session under the
+  project **including subagent rows** (the runtime rows are per-session;
+  DELETE does not cascade into children). A failure reports through the
+  action-error banner and stops the batch; the project's rename/pin
+  entries are cleared ONLY on a full success — a partially-failed remove
+  leaves the surviving project its customizations — and the clear runs
+  through the tree's state so memory and localStorage stay in step.
 
 **Home quick-capability capsules** (ref-28): the home screen renders the
 desktop's five chips under the composer row — 视频生成 (H3 badge) /
@@ -897,12 +905,18 @@ are cloud-only, so every chip answers a click with the 本地版不适用
 toast and sends nothing: same shape as the desktop, limit stated in one
 sentence, no launch to fake.
 
-The regression pins live in `webapp/test/shell-elements-parity.test.ts`:
-bilingual coverage for every 55c key with the zh labels asserted verbatim
-against the reference screenshots, plus static-source tripwires for the
-row sets, the enabled/disabled split, the danger tone, the batch-delete
-wiring, and the capsules' click-to-toast contract (including a
-no-`api.send` assertion on the capsule strip).
+The regression pins live in `webapp/test/shell-elements-parity.test.ts`
+in three layers: bilingual coverage for every 55c key with the zh labels
+asserted verbatim against the reference screenshots; static-source
+tripwires for the row sets, the enabled/disabled split, the danger tone,
+the batch-delete wiring (including that the confirm quotes the TRUE
+deletion set, never the pill's main-session count) and the capsules'
+click-to-toast wiring (including a no-`api.send` assertion on the capsule
+strip); and BEHAVIOUR tests on `lib/cap-toast.ts` — the toast state
+machine is an import-clean module precisely so the click→replace→dismiss
+contract runs under node:test without a render harness (QA round M6:
+hollowing the handler body had kept every source-only assertion green).
+Each layer was red-green verified against its own targeted mutation.
 
 ## Markdown rendering and Mermaid diagrams (slice 23)
 
@@ -1305,10 +1319,11 @@ Invariants worth keeping when touching either branch:
 | `file_line_wrap` | `localStorage` | `webapp/lib/settings-local.ts` | tickets 48 + 52 | bare `"true"\|"false"` string, reference-shared namespace; default `"true"`; read per mount by `components/code-view.tsx` (code-file previews) and `components/markdown-html.tsx` (markdown codeblocks: chat, activity groups, file previews) |
 | `webui-context-window-usage` | `localStorage` | `webapp/lib/settings-local.ts` | ticket 48 | bare `"true"\|"false"` string, reference-shared namespace; default `"false"`; recorded preference, no reader yet |
 | `webui-follow-up-behavior` | `localStorage` | `webapp/lib/settings-local.ts` | ticket 48 | bare `"queue"\|"steer"` string (anything else reads as `"queue"`), reference-shared namespace; recorded preference, no reader yet |
-| `webui:project-custom:v1` | `localStorage` | `webapp/lib/project-custom.ts` | ticket 55c (project context menu) | `{version:1, titles:{<projectKey>:<customName>}, pinned:[<projectKey>]}`. **Deliberately not cid-namespaced**: a rename or a pin describes the project, not a browser session, so every tab of this browser shares it. Best-effort write, silent failure; removing a project clears its entries |
+| `webui:project-custom:v1` | `localStorage` | `webapp/lib/project-custom.ts` | ticket 55c (project context menu) | `{version:1, titles:{<projectKey>:<customName>}, pinned:[<projectKey>]}`. **Deliberately not cid-namespaced**: a rename or a pin describes the project, not a browser session, so every tab of this browser shares it. Best-effort write, silent failure; a project's entries are cleared when its remove completed with every session deleted |
 
-Except for ticket 48's four reference-shared keys (the last four rows
-above, which deliberately use the desktop reference's bare key names),
+Except for ticket 48's four reference-shared keys (`file_open_in_new_tab`,
+`file_line_wrap`, `webui-context-window-usage`, `webui-follow-up-behavior`,
+which deliberately use the desktop reference's bare key names),
 all keys share the `webui:` prefix and are best-effort writes (debounced
 150 ms for `ui` and `workspace-tabs`; immediate for the others). A failed
 write leaves the in-memory state correct and the persistence silent — the
