@@ -1447,6 +1447,19 @@ function ModelSelect({
             <SelectRow testId="model-select-empty" label={t("composer.noModels")} />
           ) : (
             <div className="flex flex-col">
+              {/* Ticket 58 (port line C) — the reference picker's
+                  two-column dialog shape (webui-model-menu--two-column):
+                  a left list column and a right settings column in ONE
+                  popup, so the active model's effort/context settings
+                  are visible without opening the cascade. The left
+                  column keeps OUR provider grouping (B1 explicit
+                  exception to the reference's flat list) and the whole
+                  cascade flow below it is untouched; the right column
+                  embeds OUR ModelSettingsDetail (adaptive effort
+                  control + context radios) — the reference's detail
+                  column position, our control implementation. */}
+              <div className="flex items-stretch" data-webui-model-menu="true">
+                <div className="flex flex-col">
               {/* Top "Add provider" affordance (ticket 09). One-click
                   jump to the management panel's add flow. */}
               {onAddProvider ? (
@@ -1475,7 +1488,8 @@ function ModelSelect({
               <div
                 ref={listScrollRef}
                 data-testid="model-select-list"
-                className="thin-scrollbar max-h-[60vh] overflow-y-auto"
+                data-webui-model-menu-list="true"
+                className="thin-scrollbar max-h-[60vh] w-60 overflow-y-auto"
               >
               {grouped.map((group, groupIndex) => {
                 const disabled = isGroupDisabled(group);
@@ -1664,6 +1678,41 @@ function ModelSelect({
                   </div>
                 );
               })}
+              </div>
+                </div>
+                {/*
+                  Ticket 58 (port line C) — the reference picker's
+                  detail column (its `webui-model-menu-detail`), now in
+                  the main panel. It follows the SAME `detailTarget` the
+                  cascade side column follows (focused cascade row →
+                  preview; nothing focused → the active model), renders
+                  OUR adaptive effort control and context radios through
+                  the shared ModelSettingsDetail, and every pick rides
+                  the SAME draft mirror (A7) and wire path —
+                  `{thinking}` / `{model, contextWindow}` — with no
+                  request-body change (A9) and no menu close on a
+                  setting pick (A4). Its own testid family avoids
+                  duplicate ids with the two pinned placements.
+                */}
+                <div
+                  data-testid="model-select-panel-detail-column"
+                  className="thin-scrollbar max-h-[60vh] w-64 shrink-0 self-stretch overflow-y-auto border-l border-border_default py-1 pl-1"
+                >
+                  <ModelSettingsDetail
+                    t={t}
+                    containerTestId="model-panel-detail"
+                    detailPrefix="model-panel-detail"
+                    contextPrefix="model-panel-context"
+                    target={detailTarget}
+                    preview={isDetailPreview}
+                    thinking={activeThinking}
+                    contextWindow={activeContextWindow}
+                    effortControl="adaptive"
+                    thinkingDisabled={thinkingDisabled}
+                    onThinkingPick={handleDetailThinkingPick}
+                    onContextPick={handleDetailContextPick}
+                  />
+                </div>
               </div>
               {/*
                 Ticket 49 batch 2 — the panel-bottom detail area. Batch
