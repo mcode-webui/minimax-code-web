@@ -666,12 +666,14 @@ file previews alike — renders through one host
 (`components/markdown-html.tsx`) with the shell the parser emits
 (`lib/markdown.ts`: `.codeblock-shell` > `.codeblock-toolbar` +
 `pre.codeblock-pre` > `code.codeblock-code`; the scroll container is
-the `code` element). Two behaviours are governed there:
+the `code` element). The contracts:
 
 | Aspect | Contract | Backed by |
 | --- | --- | --- |
 | Wrapping | The `file_line_wrap` switch (ticket 48's key, no new key) extends to markdown codeblocks: on, code lines wrap at the column edge (`white-space: pre-wrap; overflow-wrap: anywhere`) and the horizontal scrollbar is suppressed; off (scroll mode), lines stay on one row. The language label sits in the toolbar outside the scroll container and never wraps. Read once per host mount — same semantics as ticket 48's file previews: blocks mounted after the toggle reflow, the ones on screen do not | `components/markdown-html.tsx`, `webapp/styles/markdown-overrides.css` |
 | Scrollbar visibility | In scroll mode the idle scrollbar is visible: faint grey thumb (8 % opacity token, theme-flipped) over a transparent track, deepening to `--utility_scrollbar` (15 %) on hover — upstream's sheet painted the idle thumb fully transparent and collapsed the chat-content webkit bar to `height:0`, so users read clipped code without knowing a bar existed | `webapp/styles/markdown-overrides.css` |
+| Scroll container is a blockified `<code>` | The parser emits a bare inline `<code>` (no `.shiki` wrapper, unlike upstream markup), and `overflow` is ignored on inline boxes — upstream's `overflow:auto` on the element therefore never produced a scroll container here, which is the deeper half of the "can't scroll, can't see a bar" report. The override sheet blockifies it (`display: block`) so the upstream scroll declaration takes effect; without that line every scrollbar rule is dead styling. A tripwire test also rejects any bare `code`/`pre` selector in the sheet, because one would restyle `code.inline-code` (inline code in prose) | `webapp/styles/markdown-overrides.css`, `webapp/test/markdown-code-wrap.test.ts` |
+| Known limit — codeblock taller than the 45vh shell | `.codeblock-shell` caps itself at `max-height: 45vh`, but the `<pre>` inside has the default `min-height: auto` and refuses to shrink below its content, so an over-long codeblock overflows the shell and vertical scrolling happens on the outer preview/message container instead. Pre-existing behaviour (present in scroll mode too, before ticket 52); wrapping only makes it easier to hit because wrapped blocks have more visual rows. Fixing it means `min-height: 0` on `.codeblock-pre` — deliberately not done in this ticket, recorded for a follow-up | `styles/official-utilities.css` (`.codeblock-shell`), upstream markup |
 
 The overrides live in `webapp/styles/markdown-overrides.css`, a
 webui-owned sheet loaded after `styles/official-utilities.css`

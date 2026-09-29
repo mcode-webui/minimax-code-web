@@ -521,12 +521,14 @@ flowchart LR
 个宿主组件（`components/markdown-html.tsx`）渲染，用解析器产出的外壳
 （`lib/markdown.ts`：`.codeblock-shell` > `.codeblock-toolbar` +
 `pre.codeblock-pre` > `code.codeblock-code`，滚动容器是 `code` 元素）。
-两条行为契约：
+契约如下：
 
 | 方面 | 契约 | 依据 |
 | --- | --- | --- |
 | 换行 | `file_line_wrap` 开关（沿用工单 48 的键，不新增键）扩展到 markdown 代码块：开启时代码行在列边缘折行（`white-space: pre-wrap; overflow-wrap: anywhere`）并隐藏横向滚动条；关闭时保持单行横向滚动。语言标签在滚动容器外的工具栏里，永不折行。每次宿主挂载读一次——与工单 48 的文件预览同语义：切换开关后新挂载的块生效，屏幕上已有的不重排 | `components/markdown-html.tsx`、`webapp/styles/markdown-overrides.css` |
 | 滚动条可见 | 滚动模式下静止态滚动条可见：浅灰 thumb（8 % 透明度 token，随主题翻转）配透明轨道，悬停加深为 `--utility_scrollbar`（15 %）——上游样式把静止态 thumb 画成全透明、还把聊天内容里的 webkit 横向滚动条压成 `height:0`，用户不知道存在滚动条，只能看到被裁切的代码 | `webapp/styles/markdown-overrides.css` |
+| 滚动容器是被块化的 `<code>` | 解析器产出的是裸 inline `<code>`（与上游标记不同，没有 `.shiki` 包装），而 `overflow` 在 inline 盒上被忽略——上游对该元素声明的 `overflow:auto` 在本客户端从未形成滚动容器，这是「既滚不动也看不见滚条」报障的另一半根因。覆盖层将其块化（`display: block`）后上游滚动声明才生效；删掉这一行，所有滚动条规则都是死样式。哨兵测试同时拒绝覆盖表里出现任何裸 `code`/`pre` 选择器——一旦出现会误伤正文里的行内代码（`code.inline-code`） | `webapp/styles/markdown-overrides.css`、`webapp/test/markdown-code-wrap.test.ts` |
+| 已知限制——超长代码块溢出 45vh 外壳 | `.codeblock-shell` 给自己设了 `max-height: 45vh`，但内部的 `<pre>` 保持默认 `min-height: auto`、拒绝收缩到内容高度以下，于是超长代码块会撑破外壳，纵向滚动发生在外层预览/消息容器上。这是既有行为（滚动模式下同样存在，早于工单 52）；换行只是让块更容易撞上（折行后视觉行数更多）。修法是给 `.codeblock-pre` 设 `min-height: 0`——本工单刻意未动，记录为后续工单 | `styles/official-utilities.css`（`.codeblock-shell`）、上游标记 |
 
 覆盖层放在 webui 自有的 `webapp/styles/markdown-overrides.css`，在
 `styles/official-utilities.css` 之后加载（`app/layout.tsx`）；上游共享
