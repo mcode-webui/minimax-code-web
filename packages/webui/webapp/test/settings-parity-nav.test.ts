@@ -352,17 +352,21 @@ describe("settings visuals and search (ticket 48)", () => {
 
 // Ticket 53 — the 用量与模型 page rework: the desktop's segmented tabs over
 // the Token Plan view (plan card, usage bars, credits switch, invoice link)
-// and the custom-models view (the provider panel, unchanged). Same
-// static-source pin discipline as above: the suite has no render harness,
-// so the render-critical wiring is asserted against panels.tsx's source.
+// and the custom-models view (the provider panel, unchanged).
+//
+// Division of labour with usage-models-cards.test.ts: the four cards are
+// pure display components living in components/usage-models-cards.tsx and
+// are pinned by RENDER tests there (placeholders, disabled actions, the
+// F-1 track token, the F-2 outline, the F-3' caption). This describe pins
+// what only panels.tsx can betray — the segmented wiring, the view
+// branches, the deep-link seed, and the usage container's quota honesty.
 //
 // What the decisions need pinned:
 //
 //   - The segmented header (Token Plan 使用中 ⌄ | hairline | 自定义模型) —
 //     a revert to the flat two-card stack fails the segment assertions.
-//   - A1/B1, the placeholder policy: every no-source data region renders
-//     `usage.notLocal`, the credits switch renders checked+disabled (the
-//     desktop's blue form, greyed), and the plan actions are disabled.
+//   - The Token Plan branch renders the four cards in the reference order,
+//     imported from the render-tested module.
 //   - The one live data path stays honest: the 5-hour / weekly bars read
 //     the quota store (no fabricated figures), and the video bar carries
 //     the notLocal placeholder key, not a made-up "0/5".
@@ -371,16 +375,15 @@ describe("settings visuals and search (ticket 48)", () => {
 describe("usage-models segmented tabs (ticket 53)", () => {
   const sectionAt = panelsSource.indexOf("function UsageModelsSection");
   assert.ok(sectionAt >= 0, "UsageModelsSection not found in panels.tsx");
-  const sectionEnd = panelsSource.indexOf("\nfunction PlanCard", sectionAt);
-  assert.ok(sectionEnd > sectionAt, "PlanCard not found after UsageModelsSection");
+  const sectionEnd = panelsSource.indexOf("\nfunction UsageCard", sectionAt);
+  assert.ok(sectionEnd > sectionAt, "UsageCard not found after UsageModelsSection");
   const segmentSource = panelsSource.slice(sectionAt, sectionEnd);
-  const planCardAt = panelsSource.indexOf("function PlanCard");
-  const invoiceCardAt = panelsSource.indexOf("function InvoiceCard");
-  assert.ok(
-    planCardAt >= 0 && invoiceCardAt > planCardAt,
-    "the ticket-53 card components must exist",
+  const usageCardAt = panelsSource.indexOf("function UsageCard");
+  assert.ok(usageCardAt > 0, "the usage container must stay in panels.tsx");
+  const usageCardSource = panelsSource.slice(
+    usageCardAt,
+    panelsSource.indexOf("\n// --- alerts", usageCardAt),
   );
-  const tokenPlanSource = panelsSource.slice(planCardAt, invoiceCardAt);
 
   test("segmented header: two tabs, the active badge, the chevron, a hairline", () => {
     assert.ok(
@@ -404,7 +407,7 @@ describe("usage-models segmented tabs (ticket 53)", () => {
       "the reference's disclosure chevron renders in the tab",
     );
     assert.ok(
-      segmentSource.includes('bg-bg_interaction_tertiary_selected'),
+      segmentSource.includes("bg-bg_interaction_tertiary_selected"),
       "the selected tab uses the grey pill treatment",
     );
     // The hairline between the two tabs.
@@ -430,6 +433,13 @@ describe("usage-models segmented tabs (ticket 53)", () => {
     }
   });
 
+  test("the four cards come from the render-tested usage-models-cards module", () => {
+    assert.ok(
+      panelsSource.includes('from "./usage-models-cards"'),
+      "panels.tsx must import the split-out card module (render tests live there)",
+    );
+  });
+
   test("the custom-models view forwards the provider panel with its deep-link props", () => {
     const elseAt = segmentSource.indexOf(") : (");
     assert.ok(elseAt > 0, "the custom-models branch not found");
@@ -451,92 +461,31 @@ describe("usage-models segmented tabs (ticket 53)", () => {
     );
   });
 
-  test("A1: the plan card's data regions render the notLocal placeholder, actions disabled", () => {
-    const planCard = panelsSource.slice(
-      planCardAt,
-      panelsSource.indexOf("\nfunction UsageCard", planCardAt),
-    );
+  test("A1: the usage container reads the quota store honestly", () => {
     assert.ok(
-      (planCard.match(/t\("usage\.notLocal"\)/g) ?? []).length >= 2,
-      "both data rows (plan name, credits figure) render the placeholder",
-    );
-    // No fabricated expiry date: the card must not print a date line at all.
-    assert.ok(
-      !planCard.includes("到期") && !planCard.includes("Expires"),
-      "the plan card must not fabricate an expiry line",
-    );
-    assert.ok(
-      planCard.includes('data-testid="plan-upgrade-button"') &&
-        (planCard.match(/disabled/g) ?? []).length >= 3,
-      "升级 / 管理 / 去充值 render in the desktop's form but disabled",
-    );
-    assert.ok(
-      planCard.includes("bg-bg_interaction_primary_default"),
-      "升级 keeps the reference's black primary-button treatment",
-    );
-  });
-
-  test("A1: the usage bars — live quota for 5h/weekly, notLocal for video, never 0/5", () => {
-    const usageCard = panelsSource.slice(
-      panelsSource.indexOf("function UsageCard"),
-      panelsSource.indexOf("\nfunction resetCaption"),
-    );
-    assert.ok(
-      usageCard.includes('key: "fiveHour"') && usageCard.includes('key: "weekly"'),
+      usageCardSource.includes('key: "fiveHour"') && usageCardSource.includes('key: "weekly"'),
       "the two engine-backed windows keep their live rows",
     );
     assert.ok(
-      usageCard.includes('usedFromRemaining(quota?.ok ? quota.remaining : undefined)'),
+      usageCardSource.includes("usedFromRemaining(quota?.ok ? quota.remaining : undefined)"),
       "the 5-hour figure reads the quota store, not a constant",
     );
     assert.ok(
-      usageCard.includes('key: "video"') &&
-        usageCard.slice(usageCard.indexOf('key: "video"')).includes('"usage.notLocal"'),
+      usageCardSource.includes('key: "video"') &&
+        usageCardSource.slice(usageCardSource.indexOf('key: "video"')).includes('"usage.notLocal"'),
       "the video window has no local source — its figure slot renders the placeholder",
     );
     assert.ok(
-      !usageCard.includes("0/5"),
+      !usageCardSource.includes("0/5"),
       "no fabricated 0/5 figure may ship",
     );
     assert.ok(
-      usageCard.includes("row.withTotal ? `${row.used}% / 100%` : `${row.used}%`"),
-      "the only figure forms are the reference's used% / 100% and used%",
-    );
-    assert.ok(
-      usageCard.includes("resetCaption"),
+      usageCardSource.includes("resetCaption"),
       "the bars print the reference's relative reset caption",
     );
-  });
-
-  test("B1: the credits switch renders the desktop's on form, disabled", () => {
-    const creditsCard = panelsSource.slice(
-      panelsSource.indexOf("function CreditsCard"),
-      panelsSource.indexOf("\nfunction InvoiceCard"),
-    );
     assert.ok(
-      creditsCard.includes("<Switch checked disabled"),
-      "the blue iOS switch renders checked (on form) and disabled (no local credits system)",
-    );
-    assert.ok(
-      creditsCard.includes('t("usage.credits.hint")') &&
-        creditsCard.includes('t("usage.notLocal")'),
-      "the row keeps the reference's hint plus the not-applicable marker",
-    );
-  });
-
-  test("the invoice row is a real outbound link with the ↗ affordance", () => {
-    const invoiceCard = panelsSource.slice(panelsSource.indexOf("function InvoiceCard"));
-    assert.ok(
-      invoiceCard.includes('data-testid="invoice-apply-link"'),
-      "the apply link carries its testid",
-    );
-    assert.ok(
-      invoiceCard.includes('target="_blank"') && invoiceCard.includes('rel="noreferrer"'),
-      "the apply action opens the platform in a new tab safely",
-    );
-    assert.ok(
-      invoiceCard.includes('name="arrowUp" size={12} className="rotate-45"'),
-      "the ↗ glyph is the rotated arrow (the file's glyph-reuse convention)",
+      usageCardSource.includes("<UsageBar"),
+      "the rows render through the render-tested UsageBar",
     );
   });
 

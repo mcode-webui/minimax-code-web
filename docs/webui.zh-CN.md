@@ -466,7 +466,9 @@ Token Plan 视图是桌面的五区块（页签 + 四卡）：
 
 自定义模型视图是原有供应商面板（API Key、协议、模型清单、连接测试、预设一键启用）原样迁移，`data-testid` 不改名；桌面的空态文案与「添加模型」弹窗形态按上表登记为 53b。
 
-**工单 53 的不变量**：服务端契约零改动（全部变更在 `panels.tsx` / `icons.tsx` / `i18n.ts`）；h2 页头、切页动画与页宽 760 不变；`SETTINGS_NAV`、`SettingsSection` 联合类型、深度链接入口（`initialSection`、`autoAddProvider`）不变；8 项「暂不支持」占位全部保留。删除了失去消费者的 `usage.used` / `usage.reset` 文案键（旧标签式「已用 X%」「重置时间」被桌面格式取代）。
+**工单 53 的不变量**：服务端契约零改动（变更面：`panels.tsx` / `usage-models-cards.tsx` / `icons.tsx` / `i18n.ts` + 两个测试文件）；h2 页头、切页动画与页宽 760 不变；`SETTINGS_NAV`、`SettingsSection` 联合类型、深度链接入口（`initialSection`、`autoAddProvider`）不变；8 项「暂不支持」占位全部保留。删除了失去消费者的 `usage.used` / `usage.reset` 文案键（旧标签式「已用 X%」「重置时间」被桌面格式取代）。
+
+**验收修复（2026-09-29 第二轮）**：用量条轨道改用 `bg-border_default`——原先照搬 context-meter 的 `bg-bg_grouped_tertiary_elevated` 在浅色主题下与卡片同为 `--gray_75`，三条进度条完全不可见（桌面参照恰是浅色主题）；发票「申请 ↗」改为与「去充值」/「管理 ⌄」同款的白底灰描边；整点重置文案省略分钟位（「1小时后重置」而非「1小时0分后重置」，键 `usage.duration.hour`）。四张纯展示卡拆到 `components/usage-models-cards.tsx`，`webapp/test/usage-models-cards.test.ts` 用 `renderToStaticMarkup` 断言渲染结果（占位文案、禁用态、轨道 token、外链、重置文案边界）——轨道 token 断言做过红绿验证：注入旧 token 时测试失败。
 
 **工单 48 的不变量（本轮没有改的东西）**：服务端契约零改动（`server/routes/settings.js`、`server/routes/providers.js`、`server/lib/settings.js` 未动，全部变更都在前端）；`SETTINGS_NAV` 四组划分与三值 `SettingsSection` 联合类型未变；深度链接入口（`initialSection`、`autoAddProvider`）未变——模型选择器的「新增供应商」与用户菜单的「用量」仍然落到原来的位置；8 项「暂不支持」占位全部保留。`SettingsPanel` 内部不可达的 `if (!section)` 分支已删除、`section` 参数改为必填（可达页签都能解析出 section，该分支本来就不可能渲染）。
 

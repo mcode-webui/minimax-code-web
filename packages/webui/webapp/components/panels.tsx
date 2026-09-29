@@ -51,6 +51,16 @@ import type { ThemeName } from "@/lib/types";
 import { Icon, type IconName } from "./icons";
 import { AppearanceCardPicker } from "./appearance-card-picker";
 import { ProviderManagementPanel } from "./provider-management";
+// The Token Plan view's pure display cards (ticket 53). Split out so the
+// test suite can render them through react-dom/server — panels.tsx's own
+// import graph (session store, api) is unimportable in a test process.
+import {
+  CreditsCard,
+  InvoiceCard,
+  PlanCard,
+  UsageBar,
+  resetCaption,
+} from "./usage-models-cards";
 
 /**
  * Right-hand drawer.
@@ -3709,83 +3719,6 @@ function UsageModelsSection({
 }
 
 /**
- * The 当前套餐 card — the reference's two-row plan card (plan name +
- * expiry over credits), a hairline between the rows, and the row actions:
- * the black 「升级」 primary button plus 「管理 ⌄」 on top, 「去充值」 plus
- * 「管理 ⌄」 below.
- *
- * The local edition has no cloud-account source for any of the figures, so
- * by decision A1 the data regions render the 「本地版不适用」 placeholder,
- * the expiry line is omitted rather than given a fabricated date, and every
- * action renders in the desktop's form but disabled — there is nothing
- * local for 升级 / 管理 / 去充值 to act on.
- */
-function PlanCard({ t }: { t: (key: MessageKey) => string }) {
-  const manageButton = (testId: string) => (
-    <button
-      type="button"
-      disabled
-      data-testid={testId}
-      className="flex h-7 cursor-not-allowed items-center gap-1 rounded-[8px] border border-border_default px-2.5 text-caption-small-strong text-text_default_primary opacity-50"
-    >
-      {t("usage.plan.manage")}
-      <Icon name="chevronDown" size={12} />
-    </button>
-  );
-
-  return (
-    <div data-testid="settings-plan-card" className="flex w-full flex-col">
-      <div className="flex items-center gap-1.5 px-3 pt-2 pb-1">
-        <span className="desktop-text-ui-body text-text_default_primary">
-          {t("usage.plan.title")}
-        </span>
-        <Icon name="info" size={14} className="text-text_default_tertiary" />
-      </div>
-      <div className="flex items-center justify-between gap-3 px-3 py-2.5">
-        <div className="flex min-w-0 flex-col gap-0.5">
-          <span className="truncate text-sm font-medium text-text_default_primary">
-            {t("usage.notLocal")}
-          </span>
-        </div>
-        <div className="flex flex-shrink-0 items-center gap-2">
-          {/* The reference's black primary button, disabled (no local
-           * plan to upgrade). */}
-          <button
-            type="button"
-            disabled
-            data-testid="plan-upgrade-button"
-            className="h-7 cursor-not-allowed rounded-[8px] bg-bg_interaction_primary_default px-2.5 text-caption-small-strong text-icon_interaction_primary_default opacity-50"
-          >
-            {t("usage.plan.upgrade")}
-          </button>
-          {manageButton("plan-manage-button")}
-        </div>
-      </div>
-      <RowDivider />
-      <div className="flex items-center justify-between gap-3 px-3 py-2.5 pb-3">
-        <div className="flex min-w-0 flex-col gap-0.5">
-          <span className="text-sm text-text_default_primary">{t("usage.credits")}</span>
-          <span className="text-caption-small-strong text-text_default_secondary">
-            {t("usage.notLocal")}
-          </span>
-        </div>
-        <div className="flex flex-shrink-0 items-center gap-2">
-          <button
-            type="button"
-            disabled
-            data-testid="plan-top-up-button"
-            className="h-7 cursor-not-allowed rounded-[8px] border border-border_default px-2.5 text-caption-small-strong text-text_default_primary opacity-50"
-          >
-            {t("usage.plan.topUp")}
-          </button>
-          {manageButton("plan-credits-manage-button")}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/**
  * The usage card (用量) of the Token Plan view.
  *
  * Ported from the user menu's hover flyout (shell.tsx#UsagePopover), which
@@ -3802,8 +3735,9 @@ function PlanCard({ t }: { t: (key: MessageKey) => string }) {
  * The 5-hour and weekly windows keep their live engine figures — a window
  * with no reading draws its placeholder in the figure slot rather than 0%
  * — and the video window has no local source at all, so it permanently
- * renders the 「本地版不适用」 placeholder. The bar itself is the context
- * meter's geometry (4px rounded track, accent fill).
+ * renders the 「本地版不适用」 placeholder. The bar rows are the pure
+ * `UsageBar` from usage-models-cards.tsx (render-tested there); this
+ * container owns the quota reading and the refresh affordance.
  */
 function UsageCard({ t }: { t: (key: MessageKey) => string }) {
   const { quota, quotaBusy, quotaError } = useSessionContext();
@@ -3881,133 +3815,19 @@ function UsageCard({ t }: { t: (key: MessageKey) => string }) {
         </div>
       ) : (
         <div className="flex flex-col gap-3 px-3 pb-3">
-          {rows.map((row) => {
-            const caption =
-              row.used !== null && row.resetAt ? resetCaption(row.resetAt, t) : null;
-            return (
-              <div key={row.key} data-testid={`usage-bar-${row.key}`} className="flex flex-col gap-1">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-sm font-normal text-text_default_primary">{row.label}</span>
-                  {row.used === null ? (
-                    <span className="text-caption-small-strong text-text_default_secondary">
-                      {t(row.placeholder)}
-                    </span>
-                  ) : (
-                    <span className="text-sm font-normal text-text_default_primary">
-                      {row.withTotal ? `${row.used}% / 100%` : `${row.used}%`}
-                    </span>
-                  )}
-                </div>
-                <div
-                  className="h-1 w-full overflow-hidden rounded-full bg-bg_grouped_tertiary_elevated"
-                  role="progressbar"
-                  aria-label={row.label}
-                  aria-valuemin={0}
-                  aria-valuemax={100}
-                  aria-valuenow={row.used ?? undefined}
-                >
-                  {row.used !== null && row.used > 0 ? (
-                    <div
-                      className="h-full rounded-full bg-icon_default_accent"
-                      style={{ width: `${row.used}%` }}
-                    />
-                  ) : null}
-                </div>
-                {caption ? (
-                  <span className="text-caption-small-strong text-text_default_secondary">
-                    {caption}
-                  </span>
-                ) : null}
-              </div>
-            );
-          })}
+          {rows.map((row) => (
+            <UsageBar
+              key={row.key}
+              testId={`usage-bar-${row.key}`}
+              label={row.label}
+              used={row.used}
+              withTotal={row.withTotal}
+              placeholder={t(row.placeholder)}
+              caption={row.used !== null && row.resetAt ? resetCaption(row.resetAt, t) : null}
+            />
+          ))}
         </div>
       )}
-    </div>
-  );
-}
-
-/**
- * The reset caption under a usage bar — the reference's relative form
- * 「43分后重置」 / 「4小时43分后重置」, built from the duration keys because
- * the translator takes no interpolation parameters (the same
- * `.replace("{n}", …)` convention as files.tree.mtime.*).
- */
-function resetCaption(resetAt: number, t: (key: MessageKey) => string): string | null {
-  const ms = (resetAt > 1e12 ? resetAt : resetAt * 1000) - Date.now();
-  if (ms <= 0) return null;
-  const totalMinutes = Math.round(ms / 60_000);
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-  const span =
-    hours > 0
-      ? t("usage.duration.hourMinute")
-          .replace("{h}", String(hours))
-          .replace("{n}", String(minutes))
-      : t("usage.duration.minute").replace("{n}", String(minutes));
-  return t("usage.resetsIn").replace("{t}", span);
-}
-
-/**
- * The 积分 card — the reference's one-row card with its ⓘ title, the
- * 「开启后…」 hint, and the blue iOS switch at the right edge.
- *
- * Decision B1: the switch renders the desktop's blue on-state form but is
- * disabled — the local edition has no credits system, so it neither
- * toggles nor persists state, and the row says so next to the hint.
- */
-function CreditsCard({ t }: { t: (key: MessageKey) => string }) {
-  return (
-    <div data-testid="settings-credits-card" className="flex w-full flex-col">
-      <div className="flex items-center gap-1.5 px-3 pt-2">
-        <span className="desktop-text-ui-body text-text_default_primary">{t("usage.credits")}</span>
-        <Icon name="info" size={14} className="text-text_default_tertiary" />
-      </div>
-      <div className="flex items-center justify-between gap-3 px-3 pt-1.5 pb-3">
-        <div className="flex min-w-0 flex-col gap-0.5">
-          <span className="text-caption-small-strong text-text_default_secondary">
-            {t("usage.credits.hint")}
-          </span>
-          <span className="text-caption-small-strong text-text_default_tertiary">
-            {t("usage.notLocal")}
-          </span>
-        </div>
-        <div className="flex flex-shrink-0 items-center" data-testid="credits-spending-switch" title={t("usage.notLocal")}>
-          <Switch checked disabled aria-label={t("usage.credits")} />
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/**
- * The 发票 card — the reference's outbound row: the hint text plus the
- * 「申请 ↗」 link-button. Unlike the other cards this one is fully real:
- * invoicing lives on the MiniMax open platform, so the link is live and
- * opens a new tab. (The ↗ glyph is the send/arrowUp icon rotated 45°,
- * the file's established way to reuse a glyph.)
- */
-function InvoiceCard({ t }: { t: (key: MessageKey) => string }) {
-  return (
-    <div data-testid="settings-invoice-card" className="flex w-full flex-col">
-      <div className="flex items-center px-3 pt-2">
-        <span className="desktop-text-ui-body text-text_default_primary">
-          {t("usage.invoice.title")}
-        </span>
-      </div>
-      <div className="flex items-center justify-between gap-3 px-3 pt-1.5 pb-3">
-        <span className="min-w-0 text-sm text-text_default_primary">{t("usage.invoice.hint")}</span>
-        <a
-          href="https://platform.minimaxi.com/"
-          target="_blank"
-          rel="noreferrer"
-          data-testid="invoice-apply-link"
-          className="flex h-7 flex-shrink-0 items-center gap-1 rounded-[8px] bg-bg_interaction_tertiary_hover px-2.5 text-caption-small-strong text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_selected"
-        >
-          {t("usage.invoice.apply")}
-          <Icon name="arrowUp" size={12} className="rotate-45" />
-        </a>
-      </div>
     </div>
   );
 }

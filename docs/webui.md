@@ -627,13 +627,28 @@ model lists, connection tests, preset one-click enable) moved as-is, with
 its `data-testid`s unchanged; the desktop's empty-state copy and the
 add-model dialog form are recorded above as ticket 53b.
 
-**Ticket 53 invariants** — no server-contract change (the whole delta is
-`panels.tsx` / `icons.tsx` / `i18n.ts`); the h2 header, the per-tab fade-in
-and the 760px page width are untouched; `SETTINGS_NAV`, the `SettingsSection`
-union and the deep-link entry points (`initialSection`, `autoAddProvider`)
-are unchanged; the eight 暂不支持 placeholders stay. The `usage.used` /
-`usage.reset` label strings, which lost their last consumer to the
-desktop-figure forms, were deleted from both dictionaries.
+**Ticket 53 invariants** — no server-contract change (the delta:
+`panels.tsx` / `usage-models-cards.tsx` / `icons.tsx` / `i18n.ts` plus two
+test files); the h2 header, the per-tab fade-in and the 760px page width are
+untouched; `SETTINGS_NAV`, the `SettingsSection` union and the deep-link
+entry points (`initialSection`, `autoAddProvider`) are unchanged; the eight
+暂不支持 placeholders stay. The `usage.used` / `usage.reset` label strings,
+which lost their last consumer to the desktop-figure forms, were deleted
+from both dictionaries.
+
+**Acceptance fixes (second round, 2026-09-29).** The usage-bar track moved
+to `bg-border_default` — the context meter's `bg-bg_grouped_tertiary_elevated`
+it had been copied from resolves to the same grey as the section card in
+the light theme (`--gray_75` both), making all three bars invisible, and
+the reference itself is light-themed. The invoice 申请 ↗ action switched to
+the white-ground grey-outline form the 去充值 / 管理 buttons share. Whole-hour
+reset captions drop the minute slot ("resets in 1 h", new key
+`usage.duration.hour`). The four pure display cards now live in
+`components/usage-models-cards.tsx`, and
+`webapp/test/usage-models-cards.test.ts` asserts their RENDERED markup
+(`renderToStaticMarkup`: placeholders, disabled actions, the track token,
+the outbound link, the caption boundary) — the track-token assertion was
+red-green verified: injecting the old token fails the test.
 
 **The user menu's usage row**
 

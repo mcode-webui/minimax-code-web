@@ -18,6 +18,13 @@
  * alignment working notes for the name-to-export table.
  */
 
+// This file imports React explicitly: usage-models-cards.tsx pulls it into
+// webapp/test/usage-models-cards.test.ts, whose react-dom/server render
+// under the tsx loader honours `jsx: "preserve"` with the classic runtime —
+// no Next compiler runs in that process to inject the automatic one (the
+// same reason loading-states.tsx imports React).
+import * as React from "react";
+
 export type IconName =
   | "archive"
   | "attach"
