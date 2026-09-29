@@ -329,7 +329,8 @@ below cites the component file and one `data-testid` per surface.
 | Provider management | `components/provider-management.tsx` | `providers-panel` |
 | Context meter / panel | `components/context-meter.tsx` | `context-meter` |
 | Settings modal | `components/panels.tsx#SettingsModal` | `settings-modal` |
-| Usage card of the Usage & models section (ticket 37) | `components/panels.tsx#UsageCard` | `settings-usage-card` |
+| Segmented tabs of the Usage & models section (ticket 53) | `components/panels.tsx#UsageModelsSection` | `usage-models-segment` (tabs `usage-models-tab-token-plan` / `usage-models-tab-custom-models`) |
+| Plan / usage / credits / invoice cards of the Usage & models section (ticket 37, reworked 53) | `components/panels.tsx#PlanCard` / `#UsageCard` / `#CreditsCard` / `#InvoiceCard` | `settings-plan-card` / `settings-usage-card` (bars `usage-bar-fiveHour` / `-weekly` / `-video`) / `settings-credits-card` / `settings-invoice-card` (`invoice-apply-link`) |
 | Error boundaries (global + per-route) | `app/error.tsx` + `app/global-error.tsx` | `global-error-page` |
 
 ## Four-column workspace (main, slices 17 + 21)
@@ -594,8 +595,8 @@ clients:
 | --- | --- |
 | Account page | needs `getAccountStatus` / `signOut`-class server contracts |
 | Archived tasks page | needs the archived-session contract |
-| Usage & models three-source tabs | Token Plan / MiniMax API / custom-model switching and source badges |
-| Token Plan panel | plan card, limit progress bars, credits; the current usage card shows two percentage rows |
+| Usage & models three-source switching | the segmented tabs now match the desktop form (ticket 53), but they are a **view switcher** — they do not switch the model source in use; real Token Plan / MiniMax API / custom-model routing plus source badges still need a model-routing contract |
+| Add-model dialog form (ticket 53b) | the desktop's "+ 添加模型" modal: provider dropdown, API-key eye toggle, per-model entry fields (name / context window / max output / reasoning level / attachment kinds), and the auto-fetch checkbox dialog; the custom-models view currently keeps the two-column field editor (`provider-management.tsx`) — data capability equivalent, form not aligned |
 | MiniMax API key panel | input + connectivity test + save-and-use |
 | Custom model drag-reorder, per-model toggles, preset picker | provider contract work; the current panel is a two-column field editor |
 | Search keyword highlighting | the reference itself never wired it (component + keyframes defined, no call site) |
@@ -603,16 +604,36 @@ clients:
 
 **Usage & models (用量与模型)**
 
-The top card is the usage quota: the 5-hour window and the weekly window,
-each as a used-percentage figure with its reset time, plus a manual refresh
-button. The data comes from the engine over ACP (`POST /api/usage`); the
-store polls it every 2 minutes. The manual refresh passes `record: true`,
-which also appends the reading to the forecast history — the deliberate
-path, unlike the background poll. When the engine is unreachable or the
-account reports no quota, the card shows its unavailable line, not 0%.
+Below the page's h2 sits the desktop's segmented header: 「Token Plan 使用中
+⌄」 (selected state is a grey pill; the green "active" badge and the
+disclosure chevron render in the desktop's form, and the dropdown itself is
+deliberately omitted per ticket 53 — the local edition has no plan source to
+switch between) | a hairline | 「自定义模型」. The page lands on the Token
+Plan view; the one exception is the model selector's add-provider deep-link
+(`autoAddProvider`), which seeds the custom-models view — otherwise the add
+flow would fire behind a view where the panel is not rendered.
 
-Below it sits the provider management panel (API keys, protocols, model
-lists) — unchanged by this ticket.
+The Token Plan view is the desktop's five blocks (the tabs plus four cards):
+
+| Block | Data policy |
+| --- | --- |
+| Plan card (ⓘ + two rows + 管理⌄) | No cloud-account source locally: the plan name and the credits figure render 「本地版不适用」, and the expiry line is omitted rather than given a fabricated date; 升级 (black primary) / 管理 ⌄ / 去充值 render in the desktop's form but disabled |
+| Usage card (three stacked progress bars) | The 5-hour and weekly windows are the one live source (engine over ACP, `POST /api/usage`; polled every 2 minutes, manual refresh records a forecast sample): with data they print the desktop forms "X% / 100%" / "X%" plus a relative reset caption ("resets in 43 min"); with no reading a bar shows the unavailable line, never 0%; the video window has no local source and permanently shows 「本地版不适用」 |
+| Credits row (ⓘ + blue switch) | No credits system locally: the switch renders the desktop's blue on-form but greyed (checked + disabled), the hint is the reference's, and the row carries the not-applicable marker |
+| Invoice row | The one fully live affordance: 申请 ↗ opens the MiniMax open platform in a new tab |
+
+The custom-models view is the existing provider panel (API keys, protocols,
+model lists, connection tests, preset one-click enable) moved as-is, with
+its `data-testid`s unchanged; the desktop's empty-state copy and the
+add-model dialog form are recorded above as ticket 53b.
+
+**Ticket 53 invariants** — no server-contract change (the whole delta is
+`panels.tsx` / `icons.tsx` / `i18n.ts`); the h2 header, the per-tab fade-in
+and the 760px page width are untouched; `SETTINGS_NAV`, the `SettingsSection`
+union and the deep-link entry points (`initialSection`, `autoAddProvider`)
+are unchanged; the eight 暂不支持 placeholders stay. The `usage.used` /
+`usage.reset` label strings, which lost their last consumer to the
+desktop-figure forms, were deleted from both dictionaries.
 
 **The user menu's usage row**
 

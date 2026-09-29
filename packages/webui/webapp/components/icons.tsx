@@ -59,6 +59,7 @@ export type IconName =
   | "chevronDown"
   | "chevronRight"
   | "chevronUp"
+  | "info"
   | "permissionAsk"
   | "permissionAuto"
   | "checkSmall"
@@ -366,6 +367,21 @@ const ICONS: Record<string, IconSpec> = {
     <>
       <path d="M12 6L8 10L4 6" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" />
     </>
+    ),
+  },
+  /* The ⓘ marker of the usage-and-models page's 当前套餐 / 积分 cards
+     (ticket 53). Not an upstream extraction: the reference bundle has no
+     re-usable info glyph at this size, so this is a drawn outline — a
+     20×20 circle with the centered dot+stem of the desktop's ⓘ. */
+  info: {
+    viewBox: "0 0 20 20",
+    size: 14,
+    body: (
+      <>
+        <circle cx="10" cy="10" r="7.2" />
+        <path d="M10 9.2v4" strokeLinecap="round" />
+        <path d="M10 6.6v.01" strokeLinecap="round" strokeWidth="1.6" />
+      </>
     ),
   },
   trash: {
@@ -749,6 +765,7 @@ const STROKE_ICONS = new Set<IconName>([
   "chevronRight",
   "arrowUp",
   "bell",
+  "info",
   "send",
   "reply",
   "chevronDown",

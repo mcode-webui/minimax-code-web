@@ -55,6 +55,33 @@ const NEW_KEYS = [
   "settings.followUp.hint",
   "settings.followUp.queue",
   "settings.followUp.steer",
+  // Ticket 53 — the usage-models segmented tabs, the Token Plan panel's
+  // cards, and the placeholder policy strings.
+  "usage.tab.tokenPlan",
+  "usage.tab.inUse",
+  "usage.tab.customModels",
+  "usage.notLocal",
+  "usage.plan.title",
+  "usage.plan.upgrade",
+  "usage.plan.manage",
+  "usage.credits",
+  "usage.plan.topUp",
+  "usage.video",
+  "usage.credits.hint",
+  "usage.invoice.title",
+  "usage.invoice.apply",
+  "usage.invoice.hint",
+  "usage.resetsIn",
+  "usage.duration.minute",
+  "usage.duration.hourMinute",
+] as const;
+
+const RETIRED_USAGE_KEYS = [
+  // Ticket 53's progress-bar rework replaced the label-style figures
+  // ("已用 0%", "重置时间 …") with the desktop's "0% / 100%" and relative
+  // "resets in" forms, so the old strings lost their last consumer.
+  "usage.used",
+  "usage.reset",
 ] as const;
 
 const RETIRED_POPOVER_KEYS = [
@@ -97,6 +124,41 @@ describe("i18n settings parity (ticket 37)", () => {
       assert.equal(en, undefined, `${key} must be removed from the en dictionary`);
       assert.equal(zh, undefined, `${key} must be removed from the zh dictionary`);
     }
+  });
+
+  test("ticket 53: the retired usage.used / usage.reset labels are gone, both locales", () => {
+    for (const key of RETIRED_USAGE_KEYS) {
+      const en = translate("en", key as unknown as MessageKey);
+      const zh = translate("zh", key as unknown as MessageKey);
+      assert.equal(en, undefined, `${key} must be removed from the en dictionary`);
+      assert.equal(zh, undefined, `${key} must be removed from the zh dictionary`);
+    }
+  });
+
+  test("ticket 53: the zh strings are the desktop reference's verbatim wording", () => {
+    assert.equal(translate("zh", "settings.tab.usageModels" as MessageKey), "用量与模型");
+    assert.equal(translate("zh", "usage.tab.tokenPlan" as MessageKey), "Token Plan");
+    assert.equal(translate("zh", "usage.tab.inUse" as MessageKey), "使用中");
+    assert.equal(translate("zh", "usage.tab.customModels" as MessageKey), "自定义模型");
+    assert.equal(translate("zh", "usage.notLocal" as MessageKey), "本地版不适用");
+    assert.equal(translate("zh", "usage.plan.title" as MessageKey), "当前套餐");
+    assert.equal(translate("zh", "usage.plan.upgrade" as MessageKey), "升级");
+    assert.equal(translate("zh", "usage.plan.manage" as MessageKey), "管理");
+    assert.equal(translate("zh", "usage.credits" as MessageKey), "积分");
+    assert.equal(translate("zh", "usage.plan.topUp" as MessageKey), "去充值");
+    assert.equal(translate("zh", "usage.weekly" as MessageKey), "周限额");
+    assert.equal(translate("zh", "usage.video" as MessageKey), "视频限额");
+    assert.equal(
+      translate("zh", "usage.credits.hint" as MessageKey),
+      "开启后，可以在对话中消耗你的积分（含赠予积分）。",
+    );
+    assert.equal(translate("zh", "usage.invoice.title" as MessageKey), "发票");
+    assert.equal(translate("zh", "usage.invoice.apply" as MessageKey), "申请");
+    assert.equal(
+      translate("zh", "usage.invoice.hint" as MessageKey),
+      "请前往 MiniMax 开放平台申请发票",
+    );
+    assert.equal(translate("zh", "usage.resetsIn" as MessageKey), "{t}后重置");
   });
 
   test("surviving keys: the appearance row label and the menu usage label", () => {

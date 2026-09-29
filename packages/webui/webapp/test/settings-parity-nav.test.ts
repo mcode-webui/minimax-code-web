@@ -180,20 +180,20 @@ describe("settings nav parity (ticket 37)", () => {
     );
   });
 
-  test("providers section body renders the usage card above the provider panel", () => {
+  test("providers section body renders the segmented-tab UsageModelsSection", () => {
     const bodyStart = panelsSource.indexOf("const body = {");
     const providersAt = panelsSource.indexOf("providers: (", bodyStart);
     assert.ok(providersAt >= 0, "providers case not found in the body object");
     const closeAt = panelsSource.indexOf("[section];", providersAt);
     assert.ok(closeAt > providersAt, "body object terminator not found");
     const providersBody = panelsSource.slice(providersAt, closeAt);
-    const usageAt = providersBody.indexOf("<UsageCard");
-    const panelAt = providersBody.indexOf("<ProviderManagementPanel");
-    assert.ok(usageAt >= 0, "the usage card must render in the usage-and-models section");
     assert.ok(
-      panelAt > usageAt,
-      "the usage card sits above the provider management panel (reference: 用量 above 模型)",
+      providersBody.includes("<UsageModelsSection"),
+      "ticket 53: the section is the desktop's segmented-tab page (UsageModelsSection)",
     );
+    // Ticket 53 moved the layout decision inside UsageModelsSection; the
+    // card-above-panel stacking this test used to pin here is re-pinned
+    // per-view by the ticket-53 describe below.
   });
 
   test("user menu usage row jumps to settings instead of hosting a hover popover", () => {
@@ -347,5 +347,203 @@ describe("settings visuals and search (ticket 48)", () => {
     }
     // R3 — disabled tabs still carry the 暂不支持 badge.
     assert.ok(panelsSource.includes('title={disabled ? t("common.unsupported") : undefined}'));
+  });
+});
+
+// Ticket 53 — the 用量与模型 page rework: the desktop's segmented tabs over
+// the Token Plan view (plan card, usage bars, credits switch, invoice link)
+// and the custom-models view (the provider panel, unchanged). Same
+// static-source pin discipline as above: the suite has no render harness,
+// so the render-critical wiring is asserted against panels.tsx's source.
+//
+// What the decisions need pinned:
+//
+//   - The segmented header (Token Plan 使用中 ⌄ | hairline | 自定义模型) —
+//     a revert to the flat two-card stack fails the segment assertions.
+//   - A1/B1, the placeholder policy: every no-source data region renders
+//     `usage.notLocal`, the credits switch renders checked+disabled (the
+//     desktop's blue form, greyed), and the plan actions are disabled.
+//   - The one live data path stays honest: the 5-hour / weekly bars read
+//     the quota store (no fabricated figures), and the video bar carries
+//     the notLocal placeholder key, not a made-up "0/5".
+//   - The add-provider deep-link must land on the custom-models view —
+//     otherwise the auto-add flow fires behind the Token Plan view.
+describe("usage-models segmented tabs (ticket 53)", () => {
+  const sectionAt = panelsSource.indexOf("function UsageModelsSection");
+  assert.ok(sectionAt >= 0, "UsageModelsSection not found in panels.tsx");
+  const sectionEnd = panelsSource.indexOf("\nfunction PlanCard", sectionAt);
+  assert.ok(sectionEnd > sectionAt, "PlanCard not found after UsageModelsSection");
+  const segmentSource = panelsSource.slice(sectionAt, sectionEnd);
+  const planCardAt = panelsSource.indexOf("function PlanCard");
+  const invoiceCardAt = panelsSource.indexOf("function InvoiceCard");
+  assert.ok(
+    planCardAt >= 0 && invoiceCardAt > planCardAt,
+    "the ticket-53 card components must exist",
+  );
+  const tokenPlanSource = panelsSource.slice(planCardAt, invoiceCardAt);
+
+  test("segmented header: two tabs, the active badge, the chevron, a hairline", () => {
+    assert.ok(
+      segmentSource.includes('data-testid="usage-models-segment"'),
+      "the tablist container must carry its testid",
+    );
+    assert.ok(
+      segmentSource.includes('data-testid="usage-models-tab-token-plan"'),
+      "the Token Plan tab button must carry its testid",
+    );
+    assert.ok(
+      segmentSource.includes('data-testid="usage-models-tab-custom-models"'),
+      "the custom-models tab button must carry its testid",
+    );
+    assert.ok(
+      segmentSource.includes('t("usage.tab.inUse")'),
+      "the green 使用中 badge renders inside the Token Plan tab",
+    );
+    assert.ok(
+      segmentSource.includes('<Icon name="chevronDown"'),
+      "the reference's disclosure chevron renders in the tab",
+    );
+    assert.ok(
+      segmentSource.includes('bg-bg_interaction_tertiary_selected'),
+      "the selected tab uses the grey pill treatment",
+    );
+    // The hairline between the two tabs.
+    assert.ok(
+      segmentSource.includes('className="h-4 w-px bg-border_light" aria-hidden'),
+      "a vertical hairline separates the two tabs",
+    );
+  });
+
+  test("the Token Plan view stacks the desktop's four cards in order", () => {
+    const branchAt = segmentSource.indexOf('view === "tokenPlan" ? (');
+    assert.ok(branchAt >= 0, "the Token Plan branch not found");
+    const branch = segmentSource.slice(branchAt);
+    const order = ["<PlanCard", "<UsageCard", "<CreditsCard", "<InvoiceCard"];
+    let cursor = -1;
+    for (const marker of order) {
+      const at = branch.indexOf(marker);
+      assert.ok(
+        at > cursor,
+        `${marker} must render inside the Token Plan view, in reference order`,
+      );
+      cursor = at;
+    }
+  });
+
+  test("the custom-models view forwards the provider panel with its deep-link props", () => {
+    const elseAt = segmentSource.indexOf(") : (");
+    assert.ok(elseAt > 0, "the custom-models branch not found");
+    const elseBranch = segmentSource.slice(elseAt);
+    assert.ok(
+      elseBranch.includes("<ProviderManagementPanel"),
+      "the provider panel lives in the custom-models view",
+    );
+    assert.ok(
+      elseBranch.includes("autoAddProvider={autoAddProvider}"),
+      "the add-provider flag is forwarded to the panel",
+    );
+  });
+
+  test("the add-provider deep-link seeds the custom-models view, not Token Plan", () => {
+    assert.ok(
+      segmentSource.includes('autoAddProvider ? "customModels" : "tokenPlan"'),
+      "autoAddProvider must land on the custom-models view (the add flow fires on mount)",
+    );
+  });
+
+  test("A1: the plan card's data regions render the notLocal placeholder, actions disabled", () => {
+    const planCard = panelsSource.slice(
+      planCardAt,
+      panelsSource.indexOf("\nfunction UsageCard", planCardAt),
+    );
+    assert.ok(
+      (planCard.match(/t\("usage\.notLocal"\)/g) ?? []).length >= 2,
+      "both data rows (plan name, credits figure) render the placeholder",
+    );
+    // No fabricated expiry date: the card must not print a date line at all.
+    assert.ok(
+      !planCard.includes("到期") && !planCard.includes("Expires"),
+      "the plan card must not fabricate an expiry line",
+    );
+    assert.ok(
+      planCard.includes('data-testid="plan-upgrade-button"') &&
+        (planCard.match(/disabled/g) ?? []).length >= 3,
+      "升级 / 管理 / 去充值 render in the desktop's form but disabled",
+    );
+    assert.ok(
+      planCard.includes("bg-bg_interaction_primary_default"),
+      "升级 keeps the reference's black primary-button treatment",
+    );
+  });
+
+  test("A1: the usage bars — live quota for 5h/weekly, notLocal for video, never 0/5", () => {
+    const usageCard = panelsSource.slice(
+      panelsSource.indexOf("function UsageCard"),
+      panelsSource.indexOf("\nfunction resetCaption"),
+    );
+    assert.ok(
+      usageCard.includes('key: "fiveHour"') && usageCard.includes('key: "weekly"'),
+      "the two engine-backed windows keep their live rows",
+    );
+    assert.ok(
+      usageCard.includes('usedFromRemaining(quota?.ok ? quota.remaining : undefined)'),
+      "the 5-hour figure reads the quota store, not a constant",
+    );
+    assert.ok(
+      usageCard.includes('key: "video"') &&
+        usageCard.slice(usageCard.indexOf('key: "video"')).includes('"usage.notLocal"'),
+      "the video window has no local source — its figure slot renders the placeholder",
+    );
+    assert.ok(
+      !usageCard.includes("0/5"),
+      "no fabricated 0/5 figure may ship",
+    );
+    assert.ok(
+      usageCard.includes("row.withTotal ? `${row.used}% / 100%` : `${row.used}%`"),
+      "the only figure forms are the reference's used% / 100% and used%",
+    );
+    assert.ok(
+      usageCard.includes("resetCaption"),
+      "the bars print the reference's relative reset caption",
+    );
+  });
+
+  test("B1: the credits switch renders the desktop's on form, disabled", () => {
+    const creditsCard = panelsSource.slice(
+      panelsSource.indexOf("function CreditsCard"),
+      panelsSource.indexOf("\nfunction InvoiceCard"),
+    );
+    assert.ok(
+      creditsCard.includes("<Switch checked disabled"),
+      "the blue iOS switch renders checked (on form) and disabled (no local credits system)",
+    );
+    assert.ok(
+      creditsCard.includes('t("usage.credits.hint")') &&
+        creditsCard.includes('t("usage.notLocal")'),
+      "the row keeps the reference's hint plus the not-applicable marker",
+    );
+  });
+
+  test("the invoice row is a real outbound link with the ↗ affordance", () => {
+    const invoiceCard = panelsSource.slice(panelsSource.indexOf("function InvoiceCard"));
+    assert.ok(
+      invoiceCard.includes('data-testid="invoice-apply-link"'),
+      "the apply link carries its testid",
+    );
+    assert.ok(
+      invoiceCard.includes('target="_blank"') && invoiceCard.includes('rel="noreferrer"'),
+      "the apply action opens the platform in a new tab safely",
+    );
+    assert.ok(
+      invoiceCard.includes('name="arrowUp" size={12} className="rotate-45"'),
+      "the ↗ glyph is the rotated arrow (the file's glyph-reuse convention)",
+    );
+  });
+
+  test("the retired usage.used / usage.reset label strings have no consumer", () => {
+    assert.ok(
+      !panelsSource.includes('t("usage.used")') && !panelsSource.includes('t("usage.reset")'),
+      "the old label-style usage strings must not be referenced after the bar rework",
+    );
   });
 });

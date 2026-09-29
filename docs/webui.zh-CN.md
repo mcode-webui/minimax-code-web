@@ -274,7 +274,8 @@ exec 回合的代价——以下都是当前真实存在的行为，选择权限
 | Provider 配置 | `components/provider-management.tsx` | `providers-panel` |
 | 上下文窗口 | `components/context-meter.tsx` | `context-meter` |
 | 设置模态 | `components/panels.tsx#SettingsModal` | `settings-modal` |
-| 设置页「用量与模型」节的用量卡（工单 37） | `components/panels.tsx#UsageCard` | `settings-usage-card` |
+| 设置页「用量与模型」节的分段页签（工单 53） | `components/panels.tsx#UsageModelsSection` | `usage-models-segment`（页签 `usage-models-tab-token-plan` / `usage-models-tab-custom-models`） |
+| 设置页「用量与模型」节的套餐卡 / 用量卡 / 积分卡 / 发票卡（工单 37 起，工单 53 重构） | `components/panels.tsx#PlanCard` / `#UsageCard` / `#CreditsCard` / `#InvoiceCard` | `settings-plan-card` / `settings-usage-card`（进度条 `usage-bar-fiveHour` / `-weekly` / `-video`）/ `settings-credits-card` / `settings-invoice-card`（`invoice-apply-link`） |
 | 错误边界（全局 + 路由级） | `app/error.tsx` + `app/global-error.tsx` | `global-error-page` |
 
 ## 四列工作区（当前主线，slice 17 + slice 21）
@@ -443,8 +444,8 @@ slice 22 增强：
 | --- | --- |
 | 账户页 | 账户信息、退出登录；需 `getAccountStatus` / `signOut` 类后端契约 |
 | 已归档任务页 | 列表与删除；需归档会话契约 |
-| 用量与模型的三来源切换 | Token Plan / MiniMax API / 自定义模型页签与来源徽标 |
-| Token Plan 套餐面板 | 套餐卡、限额进度条、积分行；当前用量卡只有两行百分比 |
+| 用量与模型的三来源切换 | 分段页签已按桌面形态落地（工单 53），但它是**视图切换器**——不切换实际使用的模型来源；真实的 Token Plan / MiniMax API / 自定义模型来源切换与来源徽标仍需模型路由契约 |
+| 添加模型弹窗形态（工单 53b） | 桌面的「+ 添加模型」模态：提供商下拉、API Key 眼睛切换、多模型条目字段（名称/上下文窗口/最大输出/推理等级/支持附件）与「自动获取」勾选弹窗；当前自定义模型页签内仍是左右分栏字段编辑器（`provider-management.tsx`），数据能力等价、形态未对齐 |
 | MiniMax API Key 面板 | 输入 + 测试连通性 + 保存并使用 |
 | 自定义模型拖拽排序、逐模型启停、预设选择器 | 需 provider 契约扩展；当前是左右分栏字段编辑器 |
 | 搜索关键词高亮 | 参照自己也没接线（定义了组件与动画但无调用点） |
@@ -452,9 +453,20 @@ slice 22 增强：
 
 **用量与模型**
 
-上方是用量卡片：5 小时限额与每周限额两个窗口，各显示已用百分比和重置时间，右上角有手动刷新。数据来自引擎（`POST /api/usage`），页面每 2 分钟自动读一次；手动刷新会把这次读数计入用量预测的历史采样。引擎未连接或账户无配额时，卡片显示「暂无用量数据」而不是 0%。
+页头 h2 下方是桌面的分段页签：「Token Plan 使用中 ⌄」（选中态浅灰胶囊，绿色「使用中」徽标与下拉箭头按桌面形态渲染；下拉按工单 53 拍板省略——本地版没有可切换的计划来源）｜竖线｜「自定义模型」。默认落在 Token Plan 视图；唯一的例外是模型选择器「新增供应商」深链（`autoAddProvider`）直接落在自定义模型视图，否则新增流程会在不可见面板里触发。
 
-下方是模型供应商面板（配置 API Key、协议和模型清单），行为不变。
+Token Plan 视图是桌面的五区块（页签 + 四卡）：
+
+| 区块 | 数据策略 |
+| --- | --- |
+| 当前套餐卡（ⓘ + 两行 + 管理⌄） | 本地无云端账户数据源：套餐名与积分数值显示「本地版不适用」，到期行不渲染（不造假日期）；「升级」（黑底主按钮）/「管理 ⌄」/「去充值」渲染桌面同款形态但禁用 |
+| 用量卡（三条进度条纵排） | 5 小时限额与周限额是唯一真实数据源（引擎经 ACP 上报，`POST /api/usage`；页面每 2 分钟自动读一次，手动刷新计入预测采样），有数据时印桌面格式「X% / 100%」/「X%」+ 相对时间重置文案（如「43分后重置」）；引擎未上报时该条显示「暂无用量数据」而非 0%；视频限额本地无数据源，固定显示「本地版不适用」 |
+| 积分行（ⓘ + 蓝色开关） | 本地无积分体系：开关渲染桌面同款蓝色 iOS 形态但置灰（checked + disabled），文案照桌面，行内标注「本地版不适用」 |
+| 发票行 | 唯一完全真实的外链：「申请 ↗」新标签打开 MiniMax 开放平台 |
+
+自定义模型视图是原有供应商面板（API Key、协议、模型清单、连接测试、预设一键启用）原样迁移，`data-testid` 不改名；桌面的空态文案与「添加模型」弹窗形态按上表登记为 53b。
+
+**工单 53 的不变量**：服务端契约零改动（全部变更在 `panels.tsx` / `icons.tsx` / `i18n.ts`）；h2 页头、切页动画与页宽 760 不变；`SETTINGS_NAV`、`SettingsSection` 联合类型、深度链接入口（`initialSection`、`autoAddProvider`）不变；8 项「暂不支持」占位全部保留。删除了失去消费者的 `usage.used` / `usage.reset` 文案键（旧标签式「已用 X%」「重置时间」被桌面格式取代）。
 
 **工单 48 的不变量（本轮没有改的东西）**：服务端契约零改动（`server/routes/settings.js`、`server/routes/providers.js`、`server/lib/settings.js` 未动，全部变更都在前端）；`SETTINGS_NAV` 四组划分与三值 `SettingsSection` 联合类型未变；深度链接入口（`initialSection`、`autoAddProvider`）未变——模型选择器的「新增供应商」与用户菜单的「用量」仍然落到原来的位置；8 项「暂不支持」占位全部保留。`SettingsPanel` 内部不可达的 `if (!section)` 分支已删除、`section` 参数改为必填（可达页签都能解析出 section，该分支本来就不可能渲染）。
 
