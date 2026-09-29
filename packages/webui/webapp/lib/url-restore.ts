@@ -35,6 +35,21 @@ import type { PanelKind } from "./persist";
 /** The query parameter name carrying the active session id. */
 export const SESSION_QUERY = "session";
 
+/**
+ * Deep-link href for a session row (webui-parity 47, S8).
+ *
+ * The app's URL grammar is the `?session=` query parameter above — NOT the
+ * reference's `#session=` fragment. The restore pipeline (cold load,
+ * popstate, replaceState sync) is keyed on the query string, and
+ * `writeSessionToUrl` deliberately preserves whatever fragment is present,
+ * so a `#session=` href would linger beside the query parameter and the two
+ * grammars would fight. Sourcing the href from `SESSION_QUERY` keeps the
+ * row markup and the parser from drifting apart.
+ */
+export function sessionHref(sessionId: string): string {
+  return `?${SESSION_QUERY}=${encodeURIComponent(sessionId)}`;
+}
+
 /** Best-effort read of the `?session=` value. Empty/undefined when
  *  none was set or the value was malformed (whitespace-only). */
 export function parseSessionFromUrl(href?: string): string | null {

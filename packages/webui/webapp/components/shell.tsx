@@ -11,6 +11,7 @@ import { Icon } from "./icons";
 import { InboxFlyout } from "./inbox";
 import { SessionTree } from "./session-tree";
 import { runAction } from "@/lib/action-errors";
+import { isSidebarNavActive, type SidebarNavSurface } from "@/lib/sidebar-nav";
 import {
   readShellCollapsedFromPersistedState,
   writePersistedShellCollapsed,
@@ -35,12 +36,13 @@ import type { PanelKind } from "./panels";
  */
 
 // Desktop parity : 240px default, drag-clamped to
-// 240–400, and a 52px icon rail when collapsed — the sidebar never becomes a
-// zero-width column.
+// 240–400, and a 64px icon rail when collapsed — the sidebar never becomes a
+// zero-width column. webui-parity 47 (C1) raised the rail from 52px to the
+// reference's 64px so the collapsed icon column breathes the same way.
 const SIDEBAR_MIN = 240;
 const SIDEBAR_MAX = 400;
 const SIDEBAR_DEFAULT = 240;
-const SIDEBAR_RAIL = 52;
+const SIDEBAR_RAIL = 64;
 /** Below this width the sidebar collapses itself, as the desktop client does. */
 const SIDEBAR_AUTO_COLLAPSE_PX = 980;
 
@@ -82,9 +84,17 @@ interface ShellProps {
    * conversation column and the disclaimer appears below it.
    */
   hasConversation?: boolean;
+  /**
+   * webui-parity 47 (N2) — which tree-column surface the sidebar should mark
+   * as active. The tab strip lives in the page (page.tsx owns `tabState`),
+   * so the page computes "the tree column's active tab is search/plugins"
+   * and hands it down; the nav row cannot read it anywhere else. Null when
+   * no sidebar-owned surface is the active one.
+   */
+  activeNavSurface?: "search" | "plugins" | null;
 }
 
-export function AppShell({ t, children, toolbar, panel, onOpenPanel, onOpenSurfaceTab, onOpenSettings, onOpenUsage, alertCount = 0, hasConversation = false }: ShellProps) {
+export function AppShell({ t, children, toolbar, panel, onOpenPanel, onOpenSurfaceTab, onOpenSettings, onOpenUsage, alertCount = 0, hasConversation = false, activeNavSurface = null }: ShellProps) {
   // The sidebar is collapsible from the button in its own top strip. The state
   // lives here rather than in `Sidebar` because the expand affordance has to be
   // rendered by the content column once the sidebar is clipped away.
@@ -132,13 +142,19 @@ export function AppShell({ t, children, toolbar, panel, onOpenPanel, onOpenSurfa
         onOpenAlerts={toggleInbox}
         collapsed={collapsed}
         onToggleCollapsed={toggleCollapsed}
+        activeNavSurface={activeNavSurface}
       />
       <InboxFlyout open={inboxOpen} onClose={closeInbox} t={t} />
       <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
         <div className="relative flex h-full min-w-0 flex-1 flex-col">
-          {toolbar}
-          {/* Collapsed: the sidebar's own toggle is clipped, so the expand
-              affordance floats over the content at the same top offset. */}
+          {/* webui-parity 47 (C6): while the rail is collapsed the toolbar's
+              title row would otherwise jump ~180px left, because the flex row
+              reclaims the sidebar's width. The reference compensates with
+              `pl-[142px]` on its session title row (64px rail + 142px ≈ the
+              expanded title position), so the same constant is applied here
+              rather than inventing one. The padding wraps the toolbar slot,
+              not the content, matching what the reference compensates. */}
+          <div className={collapsed ? "pl-[142px]" : undefined}>{toolbar}</div>
 
           <div className="flex min-h-0 flex-1">
             {/* The AI-content disclaimer lives in the conversation column, not
@@ -208,6 +224,7 @@ function Sidebar({
   alertCount = 0,
   collapsed,
   onToggleCollapsed,
+  activeNavSurface,
 }: {
   t: (key: MessageKey) => string;
   onOpenPanel?: (kind: PanelKind) => void;
@@ -219,10 +236,24 @@ function Sidebar({
   alertCount?: number;
   collapsed: boolean;
   onToggleCollapsed: () => void;
+  /** See the `activeNavSurface` prop on `AppShell` (webui-parity 47 N2). */
+  activeNavSurface?: "search" | "plugins" | null;
 }) {
   const { state } = useSessionContext();
+  const sessionId = state?.mcodeSessionId ?? null;
   const [width, setWidth] = useState(SIDEBAR_DEFAULT);
   const dragging = useRef(false);
+
+  // webui-parity 47 (N2) — the nav rows' active wiring. The reference marks
+  // each rail row with `data-webui-nav-active` from a real `active` prop; the
+  // same signal here drives both the full row and the collapsed icon rail.
+  // The rule itself lives in `lib/sidebar-nav.ts` (pure, unit-driven); the
+  // inputs are the engine's active session id and the page-owned surface
+  // signal handed down through `activeNavSurface`.
+  const isNavActive = useCallback(
+    (key: MessageKey): boolean => isSidebarNavActive(key, sessionId, activeNavSurface ?? null),
+    [activeNavSurface, sessionId],
+  );
 
   const onBell = useCallback(() => {
     onOpenAlerts();
@@ -271,22 +302,27 @@ function Sidebar({
 
   return (
     <>
-      {/* Collapsing animates the outer width to the 52px rail rather than to zero,
-          and the transcript keeps its state: the session tree stays mounted (just
-          hidden) so its loaded rows and scroll position survive a collapse cycle. */}
+      {/* Collapsing animates the outer width to the 64px rail rather than to
+          zero, and the transcript keeps its state: the session tree stays
+          mounted (just hidden) so its loaded rows and scroll position survive
+          a collapse cycle. webui-parity 47 (C1): 180ms on the reference's own
+          cubic-bezier(.2,.7,.2,1), replacing the previous 200ms ease-out. */}
       <div
-        className="relative h-full min-h-0 flex-shrink-0 overflow-hidden transition-[width] duration-200 ease-out"
+        className="relative h-full min-h-0 flex-shrink-0 overflow-hidden transition-[width] duration-[180ms] ease-[cubic-bezier(0.2,0.7,0.2,1)]"
         style={{ width: collapsed ? SIDEBAR_RAIL : width }}
       >
         {/* Upstream's sidebar card. Class order and the inline geometry come from
             its live DOM (`data-testid="sidebar-base-card"`): the card itself owns
             the `border-right: 0.6px` hairline and a width/transform/opacity
             transition, which is why the border is inline here rather than a
-            utility. */}
+            utility. webui-parity 47 (C5): the card goes transparent while
+            collapsed — the rail is a chromeless strip, and the reference's
+            own `webui-rail` swaps `bg-bg_default_scrim` for `bg-transparent`
+            on the same branch. */}
         <div
           data-testid="sidebar-base-card"
           data-rail-mode={collapsed ? "true" : "false"}
-          className="relative z-50 flex flex-col overflow-hidden bg-bg_default_scrim select-none"
+          className={`relative z-50 flex flex-col overflow-hidden select-none ${collapsed ? "bg-transparent" : "bg-bg_default_scrim"}`}
           style={{
             // The card itself narrows to the rail; only animating the outer
             // wrapper would leave a 240px card clipped to a 52px slice.
@@ -296,28 +332,20 @@ function Sidebar({
             borderRight: "0.6px solid var(--border_light)",
           }}
         >
-          {/* Upstream's window-drag strip. `[-webkit-app-region:drag]` is inert in
-              a browser, so it is omitted; the strip now carries the sidebar
-              collapse toggle in place of upstream's traffic-light gap. The
-              `pl-2` matches the nav-row padding below (also `px-2`), so the
-              toggle's left edge sits at the same x as the new-session button
-              beneath it. The SVG is forced to `block` (see IconButton's
-              `[&>svg]:block`) so it no longer drifts against the inline
-              baseline — without it the icon sat visibly off-centre inside the
-              28x28 button. */}
+          {/* Upstream's window-drag strip, kept as a spacer. webui-parity 47
+              (C2) moved the collapse toggle OUT of the sidebar onto a
+              floating overlay (rendered after the separator below), so the
+              strip no longer carries a control — it only holds the nav rows'
+              vertical offset, which stays 38px so the rows do not shift. */}
           <div className="flex w-full flex-shrink-0 flex-col">
-            <div className="relative flex h-[38px] w-full items-center pl-2">
-              <IconButton label={t("sidebar.collapse")} onClick={onToggleCollapsed}>
-                <Icon name="sidebar" />
-              </IconButton>
-            </div>
+            <div className="relative h-[38px] w-full" aria-hidden />
           </div>
 
           {/* Nav rows. Upstream's section is `px-2 pt-2 pb-5 space-y-px`. */}
           <nav
             className={
               collapsed
-                ? "flex w-[52px] flex-shrink-0 flex-col items-start gap-px px-2 pt-2"
+                ? "flex w-[64px] flex-shrink-0 flex-col items-start gap-px px-2 pt-2"
                 : "flex-shrink-0 space-y-px px-2 pt-2 pb-5"
             }
           >
@@ -328,8 +356,14 @@ function Sidebar({
                   type="button"
                   aria-label={t(entry.key)}
                   title={t(entry.key)}
+                  aria-current={isNavActive(entry.key) ? "true" : undefined}
                   onClick={() => onNav(entry)}
-                  className="mavis-sidebar-icon-item flex size-[34px] flex-shrink-0 items-center justify-center rounded-[8px] text-icon_default_primary transition-colors hover:bg-bg_interaction_tertiary_hover"
+                  className={[
+                    "mavis-sidebar-icon-item flex size-[34px] flex-shrink-0 items-center justify-center rounded-[8px] transition-colors",
+                    isNavActive(entry.key)
+                      ? "bg-bg_interaction_tertiary_hover text-icon_default_primary"
+                      : "text-icon_default_primary hover:bg-bg_interaction_tertiary_hover",
+                  ].join(" ")}
                 >
                   <Icon name={iconForNav(entry.key)} />
                 </button>
@@ -338,6 +372,7 @@ function Sidebar({
                   key={entry.key}
                   label={t(entry.key)}
                   shortcut={entry.shortcut}
+                  active={isNavActive(entry.key)}
                   onClick={() => onNav(entry)}
                 >
                   <Icon name={iconForNav(entry.key)} />
@@ -385,6 +420,31 @@ function Sidebar({
           <div className="absolute top-1/2 left-1/2 h-12 w-[3px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-text_default_tertiary opacity-0 transition-opacity duration-150 group-hover:opacity-100" />
         </div>
       )}
+
+      {/* webui-parity 47 (C2/C3) — the collapse toggle lives OUTSIDE the
+          sidebar, on a pointer-events-none overlay above the shell, which is
+          how the reference places it (`data-webui-sidebar-toggle` in a
+          `left-[126px] top-0 z-[60]` strip). Outside the clipping sidebar it
+          stays reachable in both states; expanded it sits at the strip's own
+          left edge (left-2, where the in-sidebar toggle used to be),
+          collapsed it floats just right of the 64px rail. The label flips
+          with state (展开导航栏 / 收起导航栏) and `aria-expanded` is the
+          machine-readable half of the same signal. */}
+      <div
+        className="pointer-events-none absolute top-0 z-[60] flex h-[38px] items-center"
+        style={{ left: collapsed ? SIDEBAR_RAIL + 8 : 8 }}
+      >
+        <button
+          type="button"
+          data-testid="sidebar-collapse-toggle"
+          aria-label={collapsed ? t("sidebar.expand") : t("sidebar.collapse")}
+          aria-expanded={!collapsed}
+          onClick={onToggleCollapsed}
+          className="pointer-events-auto flex size-8 items-center justify-center rounded-[8px] text-text_default_tertiary transition-colors hover:bg-bg_interaction_tertiary_hover hover:text-icon_default_primary [&>svg]:block"
+        >
+          <Icon name="sidebar" />
+        </button>
+      </div>
     </>
   );
 }
@@ -647,7 +707,7 @@ function SidebarFooter({
             type="button"
             data-testid="sidebar-user-menu-trigger-rail"
             aria-label={t("sidebar.menu")}
-            className="group/avatar flex size-[52px] cursor-pointer items-center justify-center"
+            className="group/avatar flex size-[64px] cursor-pointer items-center justify-center"
           >
             <span className="flex size-6 items-center justify-center overflow-hidden rounded-full transition-[filter] group-hover/avatar:brightness-110">
               <span className="flex size-6 items-center justify-center rounded-full bg-bg_grouped_tertiary text-xs text-text_default_primary">
@@ -798,28 +858,6 @@ function MenuDivider() {
     <div className="mavis-user-menu-divider pointer-events-none flex h-[4px] items-center">
       <div className="h-[1px] w-full bg-border_default" />
     </div>
-  );
-}
-
-function IconButton({
-  label,
-  onClick,
-  children,
-}: {
-  label: string;
-  onClick: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      title={label}
-      aria-label={label}
-      onClick={onClick}
-      className="flex size-7 items-center justify-center rounded-[8px] text-icon_default_tertiary transition-colors hover:bg-bg_interaction_tertiary_hover hover:text-icon_default_primary [&>svg]:block"
-    >
-      {children}
-    </button>
   );
 }
 

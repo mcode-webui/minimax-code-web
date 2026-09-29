@@ -294,6 +294,107 @@ writes into `cs.chat`; switched-away writes via
   `workspace` and `workspaceFallback` so post-mortems can answer
   "why did the file tree jump".
 
+## Sidebar (webui-parity ticket 47)
+
+The sidebar was aligned with the reference client across three areas:
+collapse behaviour, nav rows, and the session list. This section is the
+contract; `docs/webui.zh-CN.md`'s sidebar section is the user-facing twin.
+
+### Collapse contract
+
+| Constant | Value | Where |
+| --- | --- | --- |
+| `SIDEBAR_RAIL` | `64` (px) | `components/shell.tsx` — raised from 52 to match the reference rail |
+| `SIDEBAR_MIN` / `SIDEBAR_MAX` / `SIDEBAR_DEFAULT` | `240` / `400` / `240` (px) | drag-resize clamp, unchanged |
+| `SIDEBAR_AUTO_COLLAPSE_PX` | `980` (px) | `innerWidth < 980` collapses; never auto-expands |
+| Width transition | `180ms cubic-bezier(.2,.7,.2,1)` | on the outer wrapper, matching the reference's `.webui-rail` |
+| Collapsed background | `bg-transparent` | expanded keeps `bg-bg_default_scrim` |
+| Collapsed toolbar compensation | `pl-[142px]` | wraps the toolbar slot in `AppShell`, the reference's own constant |
+
+The collapse toggle is a `size-8` button on a `pointer-events-none` overlay
+**outside** the sidebar (`data-testid="sidebar-collapse-toggle"`, expanded at
+`left: 8px`, collapsed at `SIDEBAR_RAIL + 8`), so it stays reachable in both
+states instead of living inside the clipping card. Its `aria-label` flips
+with state — `sidebar.expand` / `sidebar.collapse`, "Expand navigation bar" /
+"Collapse navigation bar" (展开导航栏 / 收起导航栏) — and `aria-expanded`
+carries the machine-readable half.
+
+The collapsed form is an **icon rail**, not the reference's emptied strip:
+rows and the avatar menu stay reachable. This is a deliberate keep — the
+reference's own collapsed shell hides everything and its rail-mode
+`UserMenu` branch never executes there.
+
+Persistence: the collapsed flag round-trips through the existing
+`webui:ui-state` payload (`sidebarCollapsed`, see `lib/persist.ts`
+`readShellCollapsedFromPersistedState` / `writePersistedShellCollapsed`).
+**No new storage key was added**, so the persistence-keys section is
+unchanged.
+
+### Nav-row activation
+
+Activation is a pure function, `lib/sidebar-nav.ts#isSidebarNavActive`, so
+the regression suite drives the decision rather than rendered classes:
+
+- `sidebar.search` lights when the tree column's active tab is the `search`
+  surface;
+- `sidebar.plugins` lights for the `plugins` surface (the legacy
+  `panel === "plugins"` mirror agrees with `openSurfaceTab`);
+- `topbar.newSession` lights only with **no session selected and no sibling
+  surface active** — the reference's home-mode rule for its 新建任务 row.
+
+The page computes the tree-surface signal (`activeNavSurface`, passed
+through `AppShell`) because the tab strip state lives in `page.tsx`; the
+session-id half comes from the store inside the shell. The active token is
+`bg_interaction_tertiary_hover` held permanently — the reference's own
+nav-active treatment, distinct from the session-row rule below.
+
+定时 / 网站 / 远程 are **not rendered**: the repo's standing decision is
+that a control without a contract behind it is omitted, not shipped inert.
+They remain a product decision (see HANDOVER's 18094 fusion list).
+
+### Session-list contract
+
+- Selected rows (`sidebar-session-row`, `sidebar-subagent-row`) paint with
+  `bg-bg_interaction_tertiary_selected`; hover uses
+  `bg_interaction_tertiary_hover`. Before ticket 47 both states wrote the
+  hover token, which made the open session indistinguishable from any
+  hovered row. Honest boundary: upstream defines the two tokens as the
+  **same value in the light theme** (both resolve to `--opacity_black_1_4`,
+  see `tokens.css`), so the visual distinction holds only in the **dark
+  theme** (hover `opacity_white_0_4` vs selected `opacity_white_0_8`); the
+  light-theme equality is the upstream token set's current state, not a
+  regression introduced here.
+- Session and subagent rows are `<a href={sessionHref(id)}>` deep links over
+  the **`?session=` query grammar** (`lib/url-restore.ts#sessionHref`), not
+  the reference's `#session=` fragment: the restore pipeline (cold load,
+  popstate, replaceState sync) parses the query string, and
+  `writeSessionToUrl` preserves fragments, so a fragment href would linger
+  beside the query parameter. Plain left clicks are intercepted into the
+  same `switchSession` call as before; modified clicks (middle / cmd /
+  ctrl / shift) fall through to the browser, and the URL they open is one
+  the cold-load path already restores.
+- Disclosures (project → directories → subagents) mount through
+  `session-tree.tsx#Expandable`, the reference's `.webui-expandable-motion`
+  (grid-template-rows `0fr→1fr`, 180ms, plus a 140ms opacity crossfade);
+  `globals.css` carries the rule under the same class name with a
+  `prefers-reduced-motion` branch that drops the transition but keeps the
+  open/closed state. Children stay mounted while collapsed (wrapped in
+  `inert` + `aria-hidden`).
+- The reveal mechanism stays **per-directory, 6 at a time**
+  (`SESSION_VISIBLE_LIMIT`); no global Load-more was introduced.
+- `GET /api/session-tree` and `GET /api/sessions` are **read-only in this
+  ticket** — no request parameter or response field changed.
+
+### What this ticket does not do
+
+The reference has a right-click context menu (pin / archive / fork / delete)
+and a localStorage pin+archive overlay; both need server contracts that do
+not exist yet (no pin, archive or copy endpoints) and are deferred as a
+batch. The Agent Team badge, the `workspaceDir` secondary line and the
+「最近任务」 section exist in reference files but are not rendered by the
+reference's own shell, so they are not implemented here either. A later
+agent must not mistake any of these for "implemented but broken".
+
 ## Context window (what the picker shows, and what a pick does today)
 
 The model picker's detail area (below the provider list) **follows the focused row** (ticket 49 batch 1): hovering or keyboard-focusing a model row in a provider cascade switches the detail area to that model without picking it; with nothing focused it falls back to the active model. It mounts a context-window radio group only when the target model's `/api/models` entry carries at least two `contextWindowOptions`; a model without the field — or with a single option, which would be a no-op choice — renders no control. Today that is exactly `MiniMax-M3` and `MiniMax-M3.1-Flash-Preview` (`[512000, 1000000]`); every other catalogue entry stays field-free. Each option label is a compact token count (`512K`, `1M`), and an option the engine hints as `higher_usage` (`contextWindowOptionHints`) carries a "higher usage" tag.
@@ -316,7 +417,10 @@ below cites the component file and one `data-testid` per surface.
 | Surface | Component | Anchor `data-testid` |
 | --- | --- | --- |
 | Sidebar (rail) | `components/shell.tsx` | `sidebar-scroll-viewport` |
+| Sidebar collapse toggle (overlay outside the rail, ticket 47) | `components/shell.tsx` | `sidebar-collapse-toggle` |
 | Sidebar session tree | `components/session-tree.tsx` | `sidebar-session-row` |
+| Session-tree section header (plain text, ticket 47) | `components/session-tree.tsx#SectionHeader` | `sidebar-section-header` |
+| Session-tree error state (`role="alert"`, ticket 47) | `components/session-tree.tsx` | `sidebar-tree-error` |
 | Sidebar user menu (settings / check-in / usage / sign-out) | `components/shell.tsx#SidebarFooter` | `sidebar-user-menu` |
 | Sidebar inbox (alerts flyout) | `components/inbox.tsx` | `inbox-flyout` |
 | Toolbar (top bar with model selector) | `components/toolbar.tsx` | `toolbar-session-status` |
