@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert as AntAlert,
   Input as AntInput,
+  Modal as AntModal,
   Select as AntSelect,
   Switch as AntSwitch,
   Tag as AntTag,
@@ -14,7 +15,9 @@ import {
 import * as api from "@/lib/api";
 import type { MessageKey } from "@/lib/i18n";
 import { useSessionContext } from "@/lib/store";
+import { Icon } from "./icons";
 import {
+  ATTACHMENT_MODALITIES,
   blankAuth,
   blankModel,
   describeTestOutcome,
@@ -68,6 +71,24 @@ import {
  *     `feat/provider-presets`. This panel fetches the catalogue on
  *     mount and hides the section on 404 — the rest of the panel
  *     stays usable without it.
+ *
+ * Add-model dialog (ticket 54, desktop parity):
+ *   - The add flow renders as the desktop's modal: provider select
+ *     (placeholder 「请选择提供商」) over the preset catalogue + a
+ *     "+ Other (custom)" escape hatch, a password API-key input with
+ *     the eye reveal, a model area with the 「＋ 添加」 button, the
+ *     「自动获取」 link, per-entry cards (模型 01 … 05 fields), and a
+ *     取消 / 保存 footer. Saving goes through the same PUT as the
+ *     panel's Save button — the wire body is unchanged.
+ *   - 「自动获取」 opens the 「已获取模型」 checkbox dialog. The local
+ *     backend has no per-key model-listing capability, so the list
+ *     is the selected preset's built-in catalogue (public-doc
+ *     metadata, not a live query), and the dialog says so. Custom
+ *     providers get an honest empty note instead of fabricated rows.
+ *   - Max-output-tokens renders in the desktop's form but disabled
+ *     with the standing 「本地版不适用」 marker: the providers PUT
+ *     contract has no field to persist it, and a writable input
+ *     would silently drop the value on save.
  */
 
 const PROTOCOLS: api.ProviderProtocol[] = ["openai", "anthropic", "gemini"];
@@ -96,11 +117,10 @@ export function ProviderManagementPanel({
   const [providers, setProviders] = useState<DraftProvider[] | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  /** Set on `addProvider`, consumed by `ProviderEditor` to auto-focus the
-   *  id field on the freshly-created draft. Cleared the first time the
-   *  user touches any field — auto-focusing a field the user already
-   *  edited is annoying. */
-  const [autoFocusDraftId, setAutoFocusDraftId] = useState<string | null>(null);
+  /** Ticket 54 — the desktop-parity add-model dialog. The only add
+   *  entry point: the empty-state button, the rail's 「+ 添加模型」
+   *  button, and the model-selector deep-link all open it. */
+  const [addDialogOpen, setAddDialogOpen] = useState(false);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -133,24 +153,13 @@ export function ProviderManagementPanel({
     void load();
   }, [load, providersRevision]);
 
-  const addProvider = useCallback(() => {
-    // A new draft has a stable `draftId` (opaque, never written to
-    // disk) and an empty user-facing `id` until the user types. The
-    // selection path is keyed off `draftId` so editing the user-facing
-    // id does not lose the row.
-    const draft = newDraftProvider();
-    setProviders((current) => [...(current ?? []), draft]);
-    setSelectedId(draft.draftId);
-    setAutoFocusDraftId(draft.draftId);
-  }, []);
-
   /**
-   * Auto-add fire-once (ticket 09).
+   * Auto-add fire-once (ticket 09, reworked in 54).
    *
    * The model selector's top "Add provider" row sends the user here
    * with `autoAddProvider = true`. Once the initial `load()` has
-   * populated `providers`, we fire `addProvider()` so the editor
-   * renders a fresh draft with the id input focused.
+   * populated `providers`, we open the add-model dialog — the
+   * desktop-parity add surface — so the user lands mid-add.
    *
    * The flag is one-shot: the effect tracks the consumed state with
    * a ref so a later mount (re-opening the modal) without the flag
@@ -166,9 +175,9 @@ export function ProviderManagementPanel({
     if (autoAddFiredRef.current) return;
     if (!providers) return;
     autoAddFiredRef.current = true;
-    addProvider();
+    setAddDialogOpen(true);
     onAutoAddConsumed?.();
-  }, [autoAddProvider, providers, addProvider, onAutoAddConsumed]);
+  }, [autoAddProvider, providers, onAutoAddConsumed]);
 
   // Validation summary across the whole draft, recomputed whenever
   // the user touches a field. The editor surface is only enabled
@@ -257,48 +266,70 @@ export function ProviderManagementPanel({
     }
   }, [providers, selectedId]);
 
+  /** Shared PUT path: write the given draft list through
+   *  `/api/providers` and re-read the catalogue so masked key
+   *  placeholders line up. Returns whether the PUT landed — the
+   *  add-model dialog keeps itself open on failure so the user's
+   *  typed input is not lost behind a closed modal. */
+  const persist = useCallback(
+    async (next: DraftProvider[]): Promise<boolean> => {
+      setBusy(true);
+      setSaveError(null);
+      try {
+        const wire = next.filter((p) => !p.markedForDeletion).map(draftToWire);
+        await api.putProviders({ version: 2, providers: wire });
+        setSavedAt(Date.now());
+        await load();
+        return true;
+      } catch (cause) {
+        setSaveError(
+          t("providers.saveError").replace(
+            "{{error}}",
+            cause instanceof Error ? cause.message : String(cause),
+          ),
+        );
+        return false;
+      } finally {
+        setBusy(false);
+      }
+    },
+    [load, t],
+  );
+
   const save = useCallback(async () => {
     if (!providers || !validation.ok) return;
-    setBusy(true);
-    setSaveError(null);
-    try {
-      const wire = providers
-        .filter((p) => !p.markedForDeletion)
-        .map(draftToWire);
-      await api.putProviders({ version: 2, providers: wire });
-      setSavedAt(Date.now());
-      // Refresh the local view from the server so masked placeholders
-      // line up with the just-saved record.
-      await load();
-      // Auto-test after save: a user who just configured a new provider
-      // expects feedback immediately, not a separate click on the
-      // "Test connection" button. The test runs against the live draft
-      // values the user typed; the test result lands inline next to
-      // the save button (described by `testByProvider`).
-      //
-      // The auto-test fires on the *first* newly-added draft with a key
-      // — existing providers were already tested when the user touched
-      // their key field, and re-running the probe on every save would
-      // hide a stale result under a fresh success message.
-      const fresh = providers.find(
-        (p) =>
-          !p.markedForDeletion &&
-          p.isNew &&
-          p.auth.type === "byok" &&
-          p.auth.apiKey.trim().length > 0,
-      );
-      if (fresh) await testSelected();
-    } catch (cause) {
-      setSaveError(
-        t("providers.saveError").replace(
-          "{{error}}",
-          cause instanceof Error ? cause.message : String(cause),
-        ),
-      );
-    } finally {
-      setBusy(false);
-    }
-  }, [providers, validation.ok, load, t, testSelected]);
+    const putOk = await persist(providers);
+    if (!putOk) return;
+    // Auto-test after save: a user who just configured a new provider
+    // expects feedback immediately, not a separate click on the
+    // "Test connection" button. The test runs against the live draft
+    // values the user typed; the test result lands inline next to
+    // the save button (described by `testByProvider`).
+    //
+    // The auto-test fires on the *first* newly-added draft with a key
+    // — existing providers were already tested when the user touched
+    // their key field, and re-running the probe on every save would
+    // hide a stale result under a fresh success message.
+    const fresh = providers.find(
+      (p) =>
+        !p.markedForDeletion &&
+        p.isNew &&
+        p.auth.type === "byok" &&
+        p.auth.apiKey.trim().length > 0,
+    );
+    if (fresh) await testSelected();
+  }, [providers, validation.ok, persist, testSelected]);
+
+  /** Add-model dialog commit (ticket 54): append the dialog's draft
+   *  and PUT immediately — the desktop dialog saves on its own 保存
+   *  button, not through the panel-level Save. */
+  const saveFromDialog = useCallback(
+    async (draft: DraftProvider): Promise<boolean> => {
+      if (!providers) return false;
+      return persist([...providers, draft]);
+    },
+    [providers, persist],
+  );
 
   if (loadError && !providers) {
     return (
@@ -325,22 +356,46 @@ export function ProviderManagementPanel({
       </div>
 
       {/* Preset one-click enable — degrades gracefully when the
-          sibling branch's endpoints are not yet mounted (404 → null). */}
-      <ProviderPresetSection t={t} onAfterEnable={() => void load()} />
+          sibling branch's endpoints are not yet mounted (404 → null).
+          On the empty state it renders BELOW the centered affordance:
+          the reference's first paint is 「暂未添加自定义模型」 in the
+          tab's whitespace, and an 11-row catalogue above it would push
+          that out of the viewport. */}
+      {providers.length > 0 ? (
+        <ProviderPresetSection t={t} onAfterEnable={() => void load()} />
+      ) : null}
 
+      {/* Ticket 54 — desktop-parity empty state: the reference centers
+          「暂未添加自定义模型」 with a 「+ 添加模型」 button in the
+          tab's whitespace; the two-column rail only exists once
+          there is something to manage. The testids stay on the same
+          affordances (providers-empty text, provider-add-button). */}
+      {providers.length === 0 ? (
+        <>
+        <div className="flex flex-col items-center gap-4 py-14">
+          <p
+            data-testid="providers-empty"
+            className="text-sm text-text_default_tertiary"
+          >
+            {t("providers.empty")}
+          </p>
+          <button
+            type="button"
+            data-testid="provider-add-button"
+            onClick={() => setAddDialogOpen(true)}
+            className="h-8 rounded-lg bg-bg_interaction_tertiary_hover px-4 text-sm text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_selected"
+          >
+            + {t("providers.add")}
+          </button>
+        </div>
+        <ProviderPresetSection t={t} onAfterEnable={() => void load()} />
+        </>
+      ) : (
       <div className="grid grid-cols-[200px_1fr] gap-3">
         {/* Left rail — provider list. */}
         <div className="flex flex-col gap-2">
           <div className="flex flex-col gap-1 rounded-[10px] bg-bg_grouped_tertiary p-1">
-            {providers.length === 0 ? (
-              <p
-                data-testid="providers-empty"
-                className="px-2 py-3 text-caption-small-strong text-text_default_tertiary"
-              >
-                {t("providers.empty")}
-              </p>
-            ) : (
-              providers.map((p) => {
+            {providers.map((p) => {
                 const isSelected =
                   (selectedId && p.draftId === selectedId) ||
                   (!selectedId && p === selected);
@@ -445,13 +500,12 @@ export function ProviderManagementPanel({
                     ) : null}
                   </button>
                 );
-              })
-            )}
+              })}
           </div>
           <button
             type="button"
             data-testid="provider-add-button"
-            onClick={addProvider}
+            onClick={() => setAddDialogOpen(true)}
             className="h-8 self-start rounded-lg border border-border_default px-3 text-sm text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_hover"
           >
             + {t("providers.add")}
@@ -464,12 +518,6 @@ export function ProviderManagementPanel({
             <ProviderEditor
               t={t}
               draft={selected}
-              autoFocusId={autoFocusDraftId === selected.draftId}
-              onTouched={() => {
-                if (autoFocusDraftId === selected.draftId) {
-                  setAutoFocusDraftId(null);
-                }
-              }}
               onChange={updateSelected}
               onDelete={() => markDeleted(selected.id)}
               onTest={() => void testSelected()}
@@ -527,6 +575,20 @@ export function ProviderManagementPanel({
           </div>
         </div>
       </div>
+      )}
+
+      {/* Ticket 54 — the desktop-parity add-model dialog. Opened by
+       *  the empty-state / rail button and the deep-link; saving PUTs
+       *  through `saveFromDialog` and closes only on success. */}
+      <AddModelDialog
+        t={t}
+        open={addDialogOpen}
+        existingIds={providers
+          .filter((p) => !p.markedForDeletion)
+          .map((p) => p.id)}
+        onCancel={() => setAddDialogOpen(false)}
+        onSave={saveFromDialog}
+      />
     </div>
   );
 }
@@ -538,14 +600,6 @@ export function ProviderManagementPanel({
 interface ProviderEditorProps {
   t: (key: MessageKey) => string;
   draft: DraftProvider;
-  /** True while the editor is mounted on a freshly-added draft — the
-   *  id input auto-focuses so the user can start typing without
-   *  moving the cursor. */
-  autoFocusId?: boolean;
-  /** Called once when the user touches any field; the panel uses this
-   *  to clear its auto-focus flag so the focus does not re-fire on
-   *  every re-render. */
-  onTouched?: () => void;
   onChange: (mutator: (draft: DraftProvider) => DraftProvider) => void;
   onDelete: () => void;
   onTest: () => void;
@@ -555,27 +609,12 @@ interface ProviderEditorProps {
 function ProviderEditor({
   t,
   draft,
-  autoFocusId,
-  onTouched,
   onChange,
   onDelete,
   onTest,
   testResult,
 }: ProviderEditorProps) {
-  const idInputRef = useRef<React.ComponentRef<typeof AntInput> | null>(null);
   const idError = validateProviderId(draft.id);
-
-  // Autofocus the id input on freshly-added drafts. The effect runs
-  // only when `autoFocusId` flips on — re-running on every render would
-  // yank focus from the user as they type.
-  useEffect(() => {
-    if (!autoFocusId) return;
-    // antd's Input forwards the ref to the underlying <input>; reach
-    // into it via the public `input` property (typed as the inner
-    // element by antd 5's class API).
-    const inner = idInputRef.current?.input;
-    if (inner && typeof inner.focus === "function") inner.focus();
-  }, [autoFocusId]);
   const testDescription = testResult ? describeTestOutcome(t, testResult) : null;
 
   return (
@@ -606,12 +645,10 @@ function ProviderEditor({
         </legend>
         <Field label={t("providers.field.id")}>
           <AntInput
-            ref={idInputRef}
             value={draft.id}
             disabled={!draft.isNew}
             data-testid="provider-field-id"
             onChange={(e) => {
-              onTouched?.();
               onChange((p) => ({ ...p, id: e.target.value }));
             }}
             className="mavis-input"
@@ -765,13 +802,22 @@ function ProviderEditor({
 }
 
 /**
- * The API-key field is the load-bearing piece of the keep-existing-key
- * convention: the masked placeholder goes in `placeholder`, NEVER in
- * `value`. The controlled value is `""` whenever the user did not
- * touch the field — the server interprets that as "keep the existing
- * key". A "reveal" toggle is intentionally absent: showing the
- * plaintext defeats the masking contract; the user clears the field
- * to overwrite (the masked placeholder will reappear).
+ * The EDITOR's API-key field is the load-bearing piece of the
+ * keep-existing-key convention: the masked placeholder goes in
+ * `placeholder`, NEVER in `value`. The controlled value is `""`
+ * whenever the user did not touch the field — the server interprets
+ * that as "keep the existing key". A "reveal" toggle is intentionally
+ * absent HERE: the only text this field could reveal is the masked
+ * placeholder, and showing the plaintext of the stored key defeats
+ * the masking contract; the user clears the field to overwrite (the
+ * masked placeholder will reappear).
+ *
+ * The add-model dialog (ticket 54) is a different contract and DOES
+ * ship the eye toggle (desktop parity): there is no stored key and
+ * no masked placeholder — the field's value is exactly what the user
+ * just typed, so revealing it leaks nothing the user cannot already
+ * see on their own screen. That input lives in `AddModelDialog`, not
+ * here.
  */
 function ApiKeyInput({
   draft,
@@ -925,6 +971,720 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
       <span className="desktop-text-ui-small-strong text-text_default_tertiary">{label}</span>
       {children}
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------
+// Add-model dialog — desktop parity (ticket 54).
+// ---------------------------------------------------------------------
+// The desktop's 「添加模型」 modal: provider select + password API-key
+// input with the eye reveal + a model area whose entries carry the
+// five reference fields, over a 取消 / 保存 footer. The dialog is the
+// ONLY add entry point; editing a saved provider stays on the rail +
+// editor surfaces (red line: the local editing capability is not
+// replaced by the dialog).
+//
+// Data honesty, per the ticket's auto-fetch clause:
+//   - 「自动获取」 opens the 「已获取模型」 checkbox dialog listing the
+//     SELECTED PRESET's built-in catalogue (public-doc metadata the
+//     server ships in `/api/providers/presets`), with a note that it
+//     is not a live per-key query — the local backend has no
+//     model-listing proxy.
+//   - Custom providers get an explicit 「不支持」 note instead of a
+//     fabricated list.
+//   - Max-output-tokens renders disabled with the standing 「本地版
+//     不适用」 marker: the PUT contract has no field for it.
+
+/** The wire shape of one `/api/providers/presets` entry, restricted to
+ *  the fields the dialog consumes. The route's `publicPresetView`
+ *  also returns `models[]` — the panel's preset section ignores it,
+ *  the dialog's auto-fetch list is exactly it. */
+interface PresetCatalogueEntry {
+  id: string;
+  label: string;
+  protocol: api.ProviderProtocol;
+  auth: { type: api.ProviderAuthType; baseURL: string };
+  models: Array<{
+    id: string;
+    label?: string;
+    contextLimit?: number;
+    thinkingLevels?: string[];
+    modalities?: string[];
+  }>;
+}
+
+/** Sentinel provider-select value for the 「+ 其他（自定义）」 option —
+ *  distinct from `null`, which means "nothing chosen yet". */
+const PRESET_CHOICE_CUSTOM = "__custom__";
+
+/** Desktop-style display names, applied only to the presets the
+ *  reference's dropdown actually names (DeepSeek / Zhipu AI（智谱）/
+ *  Moonshot AI (China)). Every other local preset keeps its catalogue
+ *  label: inventing reference spellings for providers the reference
+ *  never shows would be fabrication, not parity. */
+const PRESET_DISPLAY_LABELS: Record<string, string> = {
+  deepseek: "DeepSeek",
+  zhipu: "Zhipu AI（智谱）",
+  kimi: "Moonshot AI (China)",
+};
+
+/** The attachment-checkbox quartet → i18n key. `file` is the PDF
+ *  checkbox (B5 mapping: 图片→image, PDF→file, 视频→video, 音频→audio). */
+const ATTACHMENT_LABEL_KEYS: Record<
+  (typeof ATTACHMENT_MODALITIES)[number],
+  MessageKey
+> = {
+  image: "providers.dialog.attachments.image",
+  file: "providers.dialog.attachments.pdf",
+  video: "providers.dialog.attachments.video",
+  audio: "providers.dialog.attachments.audio",
+};
+
+function AddModelDialog({
+  t,
+  open,
+  existingIds,
+  onCancel,
+  onSave,
+}: {
+  t: (key: MessageKey) => string;
+  open: boolean;
+  /** ids already configured — the dialog refuses to create a
+   *  duplicate (the server would reject the whole PUT). */
+  existingIds: string[];
+  onCancel: () => void;
+  /** Panel-owned commit: merge + PUT. Resolves false on failure so
+   *  the dialog stays open with the user's input intact. */
+  onSave: (draft: DraftProvider) => Promise<boolean>;
+}) {
+  const [presets, setPresets] = useState<PresetCatalogueEntry[] | null>(null);
+  const [presetChoice, setPresetChoice] = useState<string | null>(null);
+  const [custom, setCustom] = useState({
+    id: "",
+    label: "",
+    protocol: "openai" as api.ProviderProtocol,
+    authType: "byok" as api.ProviderAuthType,
+    baseURL: "",
+  });
+  const [apiKey, setApiKey] = useState("");
+  const [entries, setEntries] = useState<DraftModel[]>([]);
+  const [fetchedOpen, setFetchedOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [errors, setErrors] = useState<string[]>([]);
+
+  // Fetch the preset catalogue once per dialog lifetime. 404 / network
+  // failure degrade to an empty catalogue — the dropdown then offers
+  // only 「+ 其他（自定义）」, mirroring ProviderPresetSection's
+  // graceful-degradation contract.
+  useEffect(() => {
+    if (!open || presets !== null) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/providers/presets", {
+          headers: { Accept: "application/json" },
+        });
+        if (cancelled) return;
+        if (!res.ok) {
+          setPresets([]);
+          return;
+        }
+        const body = (await res.json()) as { presets?: PresetCatalogueEntry[] };
+        setPresets(Array.isArray(body.presets) ? body.presets : []);
+      } catch {
+        if (!cancelled) setPresets([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, presets]);
+
+  const resetForm = useCallback(() => {
+    setPresetChoice(null);
+    setCustom({
+      id: "",
+      label: "",
+      protocol: "openai",
+      authType: "byok",
+      baseURL: "",
+    });
+    setApiKey("");
+    setEntries([]);
+    setErrors([]);
+  }, []);
+
+  const close = useCallback(() => {
+    resetForm();
+    setFetchedOpen(false);
+    onCancel();
+  }, [resetForm, onCancel]);
+
+  const selectedPreset =
+    presets?.find((p) => p.id === presetChoice) ?? null;
+
+  const commit = async () => {
+    const errs: string[] = [];
+    if (presetChoice === null) errs.push(t("providers.dialog.errorProvider"));
+    let providerId = "";
+    if (presetChoice === PRESET_CHOICE_CUSTOM) {
+      providerId = custom.id.trim();
+      const idErr = validateProviderId(providerId);
+      if (idErr) errs.push(idErr);
+    } else if (presetChoice) {
+      providerId = presetChoice;
+    }
+    if (providerId && existingIds.includes(providerId)) {
+      errs.push(
+        t("providers.dialog.errorDuplicate").replace("{{id}}", providerId),
+      );
+    }
+    entries.forEach((m, i) => {
+      const mErr = validateModelRowLib(m);
+      if (mErr) {
+        errs.push(
+          `${t("providers.dialog.entryTitle").replace(
+            "{{n}}",
+            String(i + 1).padStart(2, "0"),
+          )}: ${mErr}`,
+        );
+      }
+    });
+    if (errs.length > 0) {
+      setErrors(errs);
+      return;
+    }
+    setErrors([]);
+    const draft: DraftProvider =
+      presetChoice === PRESET_CHOICE_CUSTOM
+        ? {
+            ...newDraftProvider(),
+            id: providerId,
+            label: custom.label.trim() || providerId,
+            protocol: custom.protocol,
+            auth: {
+              type: custom.authType,
+              apiKey,
+              baseURL: custom.baseURL,
+            },
+            models: entries,
+          }
+        : {
+            ...newDraftProvider(),
+            id: selectedPreset?.id ?? "",
+            label: selectedPreset
+              ? PRESET_DISPLAY_LABELS[selectedPreset.id] ?? selectedPreset.label
+              : "",
+            protocol: selectedPreset?.protocol ?? "openai",
+            auth: {
+              type: selectedPreset?.auth.type ?? "byok",
+              apiKey,
+              baseURL: selectedPreset?.auth.baseURL ?? "",
+            },
+            preset: selectedPreset?.id ?? null,
+            models: entries,
+          };
+    setBusy(true);
+    const ok = await onSave(draft);
+    setBusy(false);
+    if (ok) close();
+  };
+
+  return (
+    <AntModal
+      open={open}
+      onCancel={close}
+      footer={null}
+      width={640}
+      title={
+        <span
+          data-testid="provider-dialog-title"
+          className="text-base font-medium text-text_default_primary"
+        >
+          {t("providers.dialog.title")}
+        </span>
+      }
+    >
+      <div className="flex flex-col gap-4" data-testid="provider-dialog">
+        {/* 提供商 —— desktop placeholder 「请选择提供商」; options are
+         * the local preset catalogue plus the 「+ 其他」 escape hatch
+         * that keeps the custom-provider capability (B4). */}
+        <Field label={t("providers.dialog.provider")}>
+          <AntSelect
+            value={presetChoice ?? undefined}
+            data-testid="provider-dialog-provider-select"
+            placeholder={t("providers.dialog.providerPlaceholder")}
+            onChange={(value) => setPresetChoice(value as string)}
+            className="mavis-input"
+            loading={presets === null}
+            options={[
+              ...(presets ?? []).map((p) => ({
+                value: p.id,
+                label: PRESET_DISPLAY_LABELS[p.id] ?? p.label,
+              })),
+              { value: PRESET_CHOICE_CUSTOM, label: t("providers.dialog.other") },
+            ]}
+          />
+        </Field>
+
+        {presetChoice === PRESET_CHOICE_CUSTOM ? (
+          <div
+            data-testid="provider-dialog-custom-fields"
+            className="flex flex-col gap-2 rounded-[8px] bg-bg_grouped_tertiary p-2"
+          >
+            <div className="grid grid-cols-2 gap-2">
+              <Field label={t("providers.field.id")}>
+                <AntInput
+                  value={custom.id}
+                  data-testid="provider-dialog-custom-id"
+                  onChange={(e) =>
+                    setCustom((c) => ({ ...c, id: e.target.value }))
+                  }
+                  className="mavis-input"
+                />
+              </Field>
+              <Field label={t("providers.field.label")}>
+                <AntInput
+                  value={custom.label}
+                  data-testid="provider-dialog-custom-label"
+                  onChange={(e) =>
+                    setCustom((c) => ({ ...c, label: e.target.value }))
+                  }
+                  className="mavis-input"
+                />
+              </Field>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <Field label={t("providers.field.protocol")}>
+                <AntSelect
+                  value={custom.protocol}
+                  data-testid="provider-dialog-custom-protocol"
+                  onChange={(value) =>
+                    setCustom((c) => ({
+                      ...c,
+                      protocol: value as api.ProviderProtocol,
+                    }))
+                  }
+                  className="mavis-input"
+                  options={PROTOCOLS.map((proto) => ({ label: proto, value: proto }))}
+                />
+              </Field>
+              <Field label={t("providers.field.authType")}>
+                <AntSelect
+                  value={custom.authType}
+                  data-testid="provider-dialog-custom-authType"
+                  onChange={(value) =>
+                    setCustom((c) => ({
+                      ...c,
+                      authType: value as api.ProviderAuthType,
+                    }))
+                  }
+                  className="mavis-input"
+                  options={AUTH_TYPES.map((type) => ({ label: type, value: type }))}
+                />
+              </Field>
+            </div>
+            <Field label={t("providers.field.baseURL")}>
+              <AntInput
+                value={custom.baseURL}
+                data-testid="provider-dialog-custom-baseURL"
+                onChange={(e) =>
+                  setCustom((c) => ({ ...c, baseURL: e.target.value }))
+                }
+                className="mavis-input"
+                placeholder={t("providers.field.baseURLHint")}
+              />
+            </Field>
+          </div>
+        ) : null}
+
+        {/* API Key —— password input with the desktop's eye toggle.
+         * The reveal is safe here (unlike the editor's field): the
+         * value is what the user just typed, there is no stored key
+         * to unmask. */}
+        <Field label={t("providers.field.apiKey")}>
+          <AntInput.Password
+            value={apiKey}
+            data-testid="provider-dialog-api-key"
+            onChange={(e) => setApiKey(e.target.value)}
+            className="mavis-input"
+            placeholder={t("providers.dialog.apiKeyPlaceholder")}
+          />
+        </Field>
+
+        {/* 模型 —— the reference's header row: 「＋ 添加」 next to the
+         * 「自动获取」 link, above the entry cards. */}
+        <div className="flex flex-col gap-2">
+          <div className="flex items-center justify-between">
+            <span className="desktop-text-ui-small-strong text-text_default_tertiary">
+              {t("providers.dialog.models")}
+            </span>
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                data-testid="provider-dialog-model-add"
+                onClick={() => setEntries((cur) => [...cur, blankModel()])}
+                className="h-7 rounded-lg bg-bg_interaction_tertiary_hover px-2.5 text-caption-small-strong text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_selected"
+              >
+                {t("providers.dialog.addEntry")}
+              </button>
+              <button
+                type="button"
+                data-testid="provider-dialog-autofetch"
+                onClick={() => setFetchedOpen(true)}
+                className="border-0 bg-transparent p-0 text-sm text-icon_default_accent transition-colors hover:opacity-80"
+              >
+                {t("providers.dialog.autoFetch")}
+              </button>
+            </div>
+          </div>
+
+          {entries.map((m, idx) => (
+            <AddModelEntry
+              key={idx}
+              t={t}
+              index={idx}
+              model={m}
+              onChange={(next) =>
+                setEntries((cur) => cur.map((x, i) => (i === idx ? next : x)))
+              }
+              onRemove={() =>
+                setEntries((cur) => cur.filter((_, i) => i !== idx))
+              }
+              onReset={() =>
+                setEntries((cur) => cur.map((x, i) => (i === idx ? blankModel() : x)))
+              }
+            />
+          ))}
+        </div>
+
+        {errors.length > 0 ? (
+          <ul
+            data-testid="provider-dialog-errors"
+            className="rounded-[8px] border border-border_default bg-bg_grouped_tertiary px-3 py-2 text-caption-small-strong text-text_status_error"
+          >
+            {errors.map((err, i) => (
+              <li key={i}>{err}</li>
+            ))}
+          </ul>
+        ) : null}
+
+        {/* 取消 / 保存 —— the reference's white secondary + black
+         * primary pair. */}
+        <div className="flex items-center justify-end gap-2 pt-1">
+          <button
+            type="button"
+            data-testid="provider-dialog-cancel"
+            disabled={busy}
+            onClick={close}
+            className="h-8 rounded-lg border border-border_default px-3 text-sm text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_hover disabled:opacity-50"
+          >
+            {t("providers.dialog.cancel")}
+          </button>
+          <button
+            type="button"
+            data-testid="provider-dialog-save"
+            disabled={busy}
+            aria-busy={busy || undefined}
+            onClick={() => void commit()}
+            className="h-8 rounded-lg bg-bg_interaction_primary_default px-3 text-sm font-weight_medium text-text_default_inverted_static transition-colors hover:bg-bg_interaction_primary_hover disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {busy ? t("providers.saving") : t("providers.dialog.save")}
+          </button>
+        </div>
+      </div>
+
+      <FetchedModelsDialog
+        t={t}
+        open={fetchedOpen}
+        presetMode={selectedPreset !== null}
+        models={selectedPreset?.models ?? []}
+        onCancel={() => setFetchedOpen(false)}
+        onAdd={(picked) => {
+          setEntries((cur) => [
+            ...cur,
+            ...picked.map((m) => ({
+              id: m.id,
+              label: m.label ?? m.id,
+              contextLimit: m.contextLimit ? String(m.contextLimit) : "",
+              thinkingLevels: m.thinkingLevels ? [...m.thinkingLevels] : [],
+              modalities: m.modalities ? [...m.modalities] : [],
+            })),
+          ]);
+          setFetchedOpen(false);
+        }}
+      />
+    </AntModal>
+  );
+}
+
+/** One model entry card — the reference's five-field form under a
+ *  「模型 01」 header with the ↻ reset and 🗑 delete affordances. */
+function AddModelEntry({
+  t,
+  index,
+  model,
+  onChange,
+  onRemove,
+  onReset,
+}: {
+  t: (key: MessageKey) => string;
+  index: number;
+  model: DraftModel;
+  onChange: (next: DraftModel) => void;
+  onRemove: () => void;
+  onReset: () => void;
+}) {
+  const title = t("providers.dialog.entryTitle").replace(
+    "{{n}}",
+    String(index + 1).padStart(2, "0"),
+  );
+  return (
+    <div
+      data-testid={`provider-dialog-entry-${index}`}
+      className="flex flex-col gap-2 rounded-[8px] bg-bg_grouped_tertiary p-3"
+    >
+      <div className="flex items-center justify-between">
+        <span className="text-sm font-weight_medium text-text_default_primary">
+          {title}
+        </span>
+        <div className="flex items-center gap-2 text-text_default_tertiary">
+          <button
+            type="button"
+            data-testid={`provider-dialog-entry-${index}-reset`}
+            title={t("providers.dialog.entryReset")}
+            aria-label={t("providers.dialog.entryReset")}
+            onClick={onReset}
+            className="flex size-6 items-center justify-center rounded-md transition-colors hover:bg-bg_interaction_tertiary_hover hover:text-text_default_primary"
+          >
+            <Icon name="refresh" size={13} />
+          </button>
+          <button
+            type="button"
+            data-testid={`provider-dialog-entry-${index}-remove`}
+            title={t("providers.dialog.entryRemove")}
+            aria-label={t("providers.dialog.entryRemove")}
+            onClick={onRemove}
+            className="flex size-6 items-center justify-center rounded-md transition-colors hover:bg-bg_interaction_tertiary_hover hover:text-text_default_primary"
+          >
+            <Icon name="trash" size={13} />
+          </button>
+        </div>
+      </div>
+
+      <Field label={t("providers.dialog.field.name")}>
+        <AntInput
+          value={model.id}
+          data-testid={`provider-dialog-entry-${index}-name`}
+          onChange={(e) => onChange({ ...model, id: e.target.value })}
+          className="mavis-input"
+        />
+      </Field>
+
+      <div className="grid grid-cols-2 gap-2">
+        <Field label={t("providers.dialog.field.context")}>
+          <AntInput
+            value={model.contextLimit}
+            data-testid={`provider-dialog-entry-${index}-context`}
+            onChange={(e) => onChange({ ...model, contextLimit: e.target.value })}
+            className="mavis-input"
+            inputMode="numeric"
+          />
+        </Field>
+        {/* Max output tokens: the reference's field, rendered in the
+         * desktop's form but DISABLED with the standing not-applicable
+         * marker — the providers PUT contract has nowhere to persist
+         * it, and a writable input would silently drop the value. */}
+        <Field label={t("providers.dialog.field.maxOutput")}>
+          <AntInput
+            disabled
+            data-testid={`provider-dialog-entry-${index}-max-output`}
+            className="mavis-input"
+            placeholder={t("providers.dialog.field.maxOutputNa")}
+          />
+        </Field>
+      </div>
+
+      <Field label={t("providers.dialog.field.thinking")}>
+        <AntSelect
+          mode="multiple"
+          value={model.thinkingLevels}
+          data-testid={`provider-dialog-entry-${index}-thinking`}
+          onChange={(values) => onChange({ ...model, thinkingLevels: values })}
+          className="mavis-input"
+          placeholder={t("providers.dialog.field.thinkingPlaceholder")}
+          options={THINKING_LEVELS.map((lvl) => ({
+            label: t(`providers.models.thinkingLevels.${lvl}` as MessageKey),
+            value: lvl,
+          }))}
+        />
+      </Field>
+
+      <Field label={t("providers.dialog.field.attachments")}>
+        <div className="flex flex-wrap items-center gap-4 pt-1">
+          {ATTACHMENT_MODALITIES.map((mod) => (
+            <label
+              key={mod}
+              className="flex cursor-pointer items-center gap-1.5 text-sm text-text_default_secondary"
+            >
+              <input
+                type="checkbox"
+                checked={model.modalities.includes(mod)}
+                data-testid={`provider-dialog-entry-${index}-attachment-${mod}`}
+                onChange={(e) =>
+                  onChange({
+                    ...model,
+                    modalities: e.target.checked
+                      ? [...model.modalities, mod]
+                      : model.modalities.filter((m) => m !== mod),
+                  })
+                }
+                className="size-3.5 accent-[var(--border_accent)]"
+              />
+              {t(ATTACHMENT_LABEL_KEYS[mod])}
+            </label>
+          ))}
+        </div>
+      </Field>
+    </div>
+  );
+}
+
+/**
+ * 「已获取模型」 — the auto-fetch checkbox dialog (ticket 54).
+ *
+ * Desktop form: a scrollable checkbox list, a bottom-left 「全选
+ * (n/N)」 toggle, and 取消 / 添加 buttons. Local data policy: the list
+ * is the selected preset's built-in catalogue and the note says so;
+ * with no preset selected (custom provider / nothing chosen) the list
+ * is empty and an explicit note states the local backend cannot query
+ * a provider's live model list — no rows are invented.
+ */
+function FetchedModelsDialog({
+  t,
+  open,
+  presetMode,
+  models,
+  onCancel,
+  onAdd,
+}: {
+  t: (key: MessageKey) => string;
+  open: boolean;
+  /** true when a preset is selected — the list is that preset's
+   *  catalogue and the preset note renders; false renders the
+   *  custom-provider not-supported note. */
+  presetMode: boolean;
+  models: PresetCatalogueEntry["models"];
+  onCancel: () => void;
+  onAdd: (picked: PresetCatalogueEntry["models"]) => void;
+}) {
+  // Fresh open → everything checked, matching the reference's
+  // 全选 (11/11) landing state.
+  const [checked, setChecked] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    if (open) setChecked(new Set(models.map((m) => m.id)));
+    // models identity changes only when the preset selection does;
+    // re-seeding on every render would fight the user's clicks.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  const allChecked =
+    models.length > 0 && checked.size === models.length;
+  const toggleAll = () => {
+    setChecked(allChecked ? new Set() : new Set(models.map((m) => m.id)));
+  };
+
+  return (
+    <AntModal
+      open={open}
+      onCancel={onCancel}
+      footer={null}
+      width={480}
+      title={
+        <span
+          data-testid="fetched-models-title"
+          className="text-base font-medium text-text_default_primary"
+        >
+          {t("providers.fetched.title")}
+        </span>
+      }
+    >
+      <div className="flex flex-col gap-3" data-testid="fetched-models-dialog">
+        <p className="text-caption-small-strong text-text_default_tertiary">
+          {presetMode
+            ? t("providers.fetched.presetNote")
+            : t("providers.fetched.customEmpty")}
+        </p>
+
+        {presetMode && models.length > 0 ? (
+          <div className="thin-scrollbar flex max-h-64 flex-col overflow-y-auto rounded-[8px] border border-border_default">
+            {models.map((m) => (
+              <label
+                key={m.id}
+                data-testid={`fetched-models-item-${m.id}`}
+                className="flex cursor-pointer items-center gap-2 border-b border-border_light px-3 py-2 text-sm text-text_default_primary last:border-b-0 hover:bg-bg_interaction_tertiary_hover"
+              >
+                <input
+                  type="checkbox"
+                  checked={checked.has(m.id)}
+                  onChange={(e) =>
+                    setChecked((cur) => {
+                      const next = new Set(cur);
+                      if (e.target.checked) next.add(m.id);
+                      else next.delete(m.id);
+                      return next;
+                    })
+                  }
+                  className="size-3.5 accent-[var(--border_accent)]"
+                />
+                <span className="font-family-code">{m.id}</span>
+              </label>
+            ))}
+          </div>
+        ) : null}
+
+        <div className="flex items-center justify-between pt-1">
+          {presetMode && models.length > 0 ? (
+            <label
+              className="flex cursor-pointer items-center gap-2 text-sm text-text_default_primary"
+              data-testid="fetched-models-select-all"
+            >
+              <input
+                type="checkbox"
+                checked={allChecked}
+                onChange={toggleAll}
+                className="size-3.5 accent-[var(--border_accent)]"
+              />
+              {t("providers.fetched.selectAll")}
+              <span className="text-text_default_tertiary">
+                （{checked.size}/{models.length}）
+              </span>
+            </label>
+          ) : (
+            <span />
+          )}
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              data-testid="fetched-models-cancel"
+              onClick={onCancel}
+              className="h-8 rounded-lg border border-border_default px-3 text-sm text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_hover"
+            >
+              {t("providers.dialog.cancel")}
+            </button>
+            <button
+              type="button"
+              data-testid="fetched-models-add"
+              disabled={!presetMode || checked.size === 0}
+              onClick={() => onAdd(models.filter((m) => checked.has(m.id)))}
+              className="h-8 rounded-lg bg-bg_interaction_primary_default px-3 text-sm font-weight_medium text-text_default_inverted_static transition-colors hover:bg-bg_interaction_primary_hover disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {t("providers.fetched.add")}
+            </button>
+          </div>
+        </div>
+      </div>
+    </AntModal>
   );
 }
 

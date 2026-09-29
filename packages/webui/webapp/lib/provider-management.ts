@@ -14,6 +14,9 @@
  *                            dropping empty fields the wire contract
  *                            expects to be absent.
  *   - `THINKING_LEVELS` / `MODALITIES` — the enum values the form sends.
+ *   - `ATTACHMENT_MODALITIES` — the desktop attachment-checkbox quartet
+ *                            (image / file / video / audio) as a subset
+ *                            of `MODALITIES` the dialog toggles.
  */
 
 import type { MessageKey } from "./i18n";
@@ -24,7 +27,25 @@ import type {
 } from "./api";
 
 export const THINKING_LEVELS = ["low", "medium", "high"] as const;
-export const MODALITIES = ["text", "image", "audio", "video"] as const;
+/**
+ * Modality vocabulary the form may write. `file` joined the original
+ * four in ticket 54: the desktop's attachment checkbox PDF maps to
+ * the `file` modality, and the model picker's badge renderer
+ * (`composer.tsx#modalityBadgeKey`) already understands it. The
+ * server's normaliser forwards any non-empty string, so the enum
+ * here is the form-side contract, not a wire constraint.
+ */
+export const MODALITIES = ["text", "image", "audio", "video", "file"] as const;
+
+/**
+ * The desktop's "supported attachments" checkbox quartet — 图片 /
+ * PDF / 视频 / 音频 — and the modality value each checkbox toggles.
+ * `text` is deliberately absent: it is an input capability the
+ * desktop dialog does not expose as an attachment, so the checkbox
+ * group never adds or removes it. Editing a model whose modalities
+ * carry `text` keeps that value untouched.
+ */
+export const ATTACHMENT_MODALITIES = ["image", "file", "video", "audio"] as const;
 
 export interface DraftAuth {
   type: ProviderAuthType;

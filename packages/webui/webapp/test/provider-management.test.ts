@@ -20,6 +20,7 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  ATTACHMENT_MODALITIES,
   THINKING_LEVELS,
   MODALITIES,
   blankAuth,
@@ -70,8 +71,25 @@ describe("provider-management — enum values", () => {
     assert.deepEqual([...THINKING_LEVELS], ["low", "medium", "high"]);
   });
 
-  test("MODALITIES covers text / image / audio / video", () => {
-    assert.deepEqual([...MODALITIES], ["text", "image", "audio", "video"]);
+  // Ticket 54: `file` joined the modality vocabulary — the desktop's
+  // attachment checkbox PDF maps to it, the picker's badge renderer
+  // already understands it, and the server forwards any non-empty
+  // string. The form-side enum is what this pins.
+  test("MODALITIES covers text / image / audio / video / file", () => {
+    assert.deepEqual([...MODALITIES], ["text", "image", "audio", "video", "file"]);
+  });
+
+  test("ATTACHMENT_MODALITIES is the desktop attachment quartet", () => {
+    assert.deepEqual([...ATTACHMENT_MODALITIES], ["image", "file", "video", "audio"]);
+    for (const mod of ATTACHMENT_MODALITIES) {
+      assert.ok(
+        (MODALITIES as readonly string[]).includes(mod),
+        `${mod} must be a legal modality`,
+      );
+    }
+    // text is an input capability, not an attachment — the checkbox
+    // group must never toggle it.
+    assert.ok(!(ATTACHMENT_MODALITIES as readonly string[]).includes("text"));
   });
 });
 
@@ -142,6 +160,18 @@ describe("validateModelRow — model-row shape", () => {
       modalities: ["hologram"],
     });
     assert.match(err ?? "", /modality/);
+  });
+
+  // Ticket 54 / B5: the PDF attachment checkbox writes the `file`
+  // modality — a row that carries it must validate, or the dialog
+  // could never save what its own checkbox produced.
+  test("the file modality (PDF attachment) is accepted", () => {
+    const err = validateModelRow({
+      ...blankModel(),
+      id: "m1",
+      modalities: ["text", "file", "image"],
+    });
+    assert.equal(err, null);
   });
 
   test("a well-formed row returns null", () => {
