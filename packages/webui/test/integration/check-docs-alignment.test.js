@@ -139,13 +139,15 @@ describe("check-docs-alignment: live integration (B05 gate)", () => {
 
     test("script input files exist and are non-empty", () => {
         // Belt-and-braces: the script reads package.json, README.md,
-        // docs/API.md, docs/CAPABILITIES.md, references/SECURITY-NOTES.md,
-        // server/router.js, server/lib/config.js. Each MUST exist.
+        // docs/API.md, docs/CAPABILITIES.md, docs/CAPABILITIES.zh-CN.md,
+        // references/SECURITY-NOTES.md, server/router.js,
+        // server/lib/config.js. Each MUST exist.
         const inputs = [
             "package.json",
             "README.md",
             "docs/API.md",
             "docs/CAPABILITIES.md",
+            "docs/CAPABILITIES.zh-CN.md",
             "references/SECURITY-NOTES.md",
             "server/router.js",
             "server/lib/config.js",
@@ -157,6 +159,25 @@ describe("check-docs-alignment: live integration (B05 gate)", () => {
                 `${rel} should be non-empty (script reads it at startup)`,
             );
         }
+    });
+
+    test("zh-CN mirror assertions run and pass (ticket 51 F3)", () => {
+        const r = runCheckScript();
+        // Ticket 51 F3 extended Check 1 to the hand-maintained zh-CN
+        // document: its `## N.` section numbering and its §0 index row
+        // count must track docs/CAPABILITIES.md. On the real tree both
+        // must report ✓ (a ✗ here means one mirror was renumbered or
+        // got new capabilities without the other).
+        assert.match(
+            r.stdoutStripped,
+            /✓ docs\/CAPABILITIES\.zh-CN\.md section numbering matches docs\/CAPABILITIES\.md/,
+            `expected the zh-CN section-numbering check to pass.\nstdout: ${r.stdoutStripped.slice(0, 1200)}`,
+        );
+        assert.match(
+            r.stdoutStripped,
+            /✓ docs\/CAPABILITIES\.zh-CN\.md §0 index row count matches docs\/CAPABILITIES\.md/,
+            `expected the zh-CN index-row-count check to pass.\nstdout: ${r.stdoutStripped.slice(0, 1200)}`,
+        );
     });
 });
 

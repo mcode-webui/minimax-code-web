@@ -59,6 +59,83 @@ function extractHelper(name) {
 }
 
 const pathMatches = extractHelper("pathMatches");
+const sectionNumbers = extractHelper("sectionNumbers");
+const indexRowCount = extractHelper("indexRowCount");
+
+// -----------------------------------------------------------------------
+// sectionNumbers / indexRowCount — the zh-CN mirror helpers added by
+// ticket 51 F3. The zh CAPABILITIES document is hand-maintained, so
+// the gate asserts its `## N.` numbering and §0 index size track the
+// English document. These unit tests lock the extraction logic down
+// on synthetic fixtures (the red/green paths of the mutation check).
+// -----------------------------------------------------------------------
+
+describe("check-docs-alignment / sectionNumbers", () => {
+  test("extracts heading numbers in document order", () => {
+    const doc = "## 0. Index\n\nrows\n\n## 1. Core\n\n## 2. Plan\n";
+    assert.deepEqual(sectionNumbers(doc), [0, 1, 2]);
+  });
+
+  test("ignores deeper headings and body text that mention numbers", () => {
+    const doc = [
+      "## 0. Index",
+      "### 9. not a section heading",
+      "text about 42 and `## 7.` inline",
+      "## 1. Core",
+    ].join("\n");
+    assert.deepEqual(sectionNumbers(doc), [0, 1]);
+  });
+
+  test("exposes a renumber drift (the F3 mutation) as a mismatched array", () => {
+    // English: 0..14; mutated zh: 0..12, 15, 14 — must NOT be equal.
+    const en = sectionNumbers(
+      Array.from({ length: 15 }, (_, i) => `## ${i}. S${i}`).join("\n"),
+    );
+    const zhMutated = sectionNumbers(
+      Array.from({ length: 13 }, (_, i) => `## ${i}. S${i}`)
+        .concat(["## 15. S13", "## 14. S14"])
+        .join("\n"),
+    );
+    assert.equal(
+      en.length === zhMutated.length &&
+        en.every((n, i) => n === zhMutated[i]),
+      false,
+      "a renumbered zh heading must fail the mirror assertion",
+    );
+  });
+});
+
+describe("check-docs-alignment / indexRowCount", () => {
+  const enFixture = [
+    "## 0. Capabilities index",
+    "",
+    "| Capability | Detailed in |",
+    "|---|---|",
+    "| `chat-streaming` | §1 Core chat |",
+    "| `plan-mode` | §2 Plan mode |",
+    "",
+    "## 1. Core chat",
+    "",
+    "| `not-an-index-row` prose |",
+  ].join("\n");
+
+  test("counts only the capability rows inside the §0 table", () => {
+    assert.equal(indexRowCount(enFixture), 2);
+  });
+
+  test("returns -1 when the document has no §0 section", () => {
+    assert.equal(indexRowCount("## 1. Core chat\n"), -1);
+  });
+
+  test("exposes a dropped index row (the F3 mutation) as a count mismatch", () => {
+    const zhMutated = enFixture.replace(
+      "| `plan-mode` | §2 Plan mode |\n",
+      "",
+    );
+    assert.equal(indexRowCount(zhMutated), 1);
+    assert.notEqual(indexRowCount(enFixture), indexRowCount(zhMutated));
+  });
+});
 
 describe("check-docs-alignment / pathMatches", () => {
   const routerLiteral = `
@@ -216,6 +293,19 @@ describe("check-docs-alignment / live execution", () => {
       stripped,
       /OK\s+all checks passed/,
       `expected "OK all checks passed" after reconcile §6, got stripped: ${stripped.slice(0, 600)}`,
+    );
+    // Ticket 51 F3: the zh-CN mirror assertions must run on the real
+    // tree and pass — the zh document's section numbering and §0
+    // index size track the English document.
+    assert.match(
+      stripped,
+      /✓ docs\/CAPABILITIES\.zh-CN\.md section numbering matches docs\/CAPABILITIES\.md/,
+      `expected the zh-CN section-numbering check to pass, got stripped: ${stripped.slice(0, 1200)}`,
+    );
+    assert.match(
+      stripped,
+      /✓ docs\/CAPABILITIES\.zh-CN\.md §0 index row count matches docs\/CAPABILITIES\.md/,
+      `expected the zh-CN index-row-count check to pass, got stripped: ${stripped.slice(0, 1200)}`,
     );
   });
 
