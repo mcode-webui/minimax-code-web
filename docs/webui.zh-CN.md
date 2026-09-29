@@ -961,12 +961,16 @@ loading-states 相同：让 SSR 渲染测试可以脱离 `chat.tsx` 的 `@/` 别
 | `webui-about-user` | `localStorage` | `webapp/lib/settings-local.ts` | 工单 55a（个性化页） | 契约同 `webui-custom-instructions`，支撑「关于你」文本框；仅记录偏好，尚无读取方 |
 | `webui-code-review-guidelines` | `localStorage` | `webapp/lib/settings-local.ts` | 工单 55a（代码审查页） | 契约同上，支撑「自定义审查准则」文本框；仅记录偏好，尚无读取方 |
 
-除工单 48 的四个参照共享键（上表末四行，有意用桌面参照的裸键名）外，
-所有键共享 `webui:` 前缀，写入均为尽力 + 防抖（`ui`、`workspace-tabs`
-为 150 ms 防抖；其他立即写）。一次失败的写入不会破坏内存状态；
-我们关心的是 `app/global-error.tsx` 捕获的硬崩溃，而非这里的配额
-错误。会话内每个 sessionId 单独存储滚动位置 —— 按会话恢复滚动位置
-是有意为之的契约。
+四个键有意保留桌面参照的裸键名——工单 48 的 `file_open_in_new_tab`、
+`file_line_wrap`、`webui-context-window-usage`、`webui-follow-up-behavior`——
+同一浏览器配置因此能在两个客户端之间共享这些偏好。工单 55a 的三个长文本键
+（`webui-custom-instructions`、`webui-about-user`、`webui-code-review-guidelines`）
+用的是 `webui-` 命名空间而非 `webui:` 信封：桌面端这几个值的键名不在已采集的
+参照内，因此不主张跨客户端共享。其余所有键共享 `webui:` 前缀，写入均为
+尽力 + 防抖（`ui`、`workspace-tabs` 为 150 ms 防抖；其他立即写）。一次失败的
+写入不会破坏内存状态；我们关心的是 `app/global-error.tsx` 捕获的硬崩溃，
+而非这里的配额错误。会话内每个 sessionId 单独存储滚动位置 ——
+按会话恢复滚动位置是有意为之的契约。
 
 ## 端点清单（依据当前源码）
 

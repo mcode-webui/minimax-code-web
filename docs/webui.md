@@ -1269,10 +1269,17 @@ Invariants worth keeping when touching either branch:
 | `webui-about-user` | `localStorage` | `webapp/lib/settings-local.ts` | ticket 55a (Personalization) | same contract as `webui-custom-instructions`, backing the 关于你 textarea; recorded preference, no reader yet |
 | `webui-code-review-guidelines` | `localStorage` | `webapp/lib/settings-local.ts` | ticket 55a (Code review) | same contract, backing the 自定义审查准则 textarea; recorded preference, no reader yet |
 
-Except for ticket 48's four reference-shared keys (the last four rows
-above, which deliberately use the desktop reference's bare key names),
-all keys share the `webui:` prefix and are best-effort writes (debounced
-150 ms for `ui` and `workspace-tabs`; immediate for the others). A failed
+Four keys deliberately keep the desktop reference's bare key names —
+ticket 48's `file_open_in_new_tab`, `file_line_wrap`,
+`webui-context-window-usage`, `webui-follow-up-behavior` — so one browser
+profile shares those preferences across both clients. Ticket 55a's three
+long-text keys (`webui-custom-instructions`, `webui-about-user`,
+`webui-code-review-guidelines`) use the `webui-` namespace instead of the
+`webui:` envelope: the desktop's own key names for those values are not
+part of the observed reference, so no cross-client sharing is claimed.
+Every other key shares the `webui:` prefix and is a best-effort write
+(debounced 150 ms for `ui` and `workspace-tabs`; immediate for the
+others). A failed
 write leaves the in-memory state correct and the persistence silent — the
 failure mode we care about is the `app/global-error.tsx` crash, not a quota
 error here. Per-session scroll keys are deliberate: a refresh restores

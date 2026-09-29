@@ -297,6 +297,20 @@ describe("MemorySummaryModal: the permanent empty state", () => {
     assert.ok(markup.includes("bg-bg_default_primary"), "the card carries bg_default_primary");
     assert.ok(!markup.includes("bg-bg_default "), "the non-token bg-bg_default class must not ship");
   });
+
+  test("the blanket is fixed to the viewport — it must dim the settings sidebar too", () => {
+    // Acceptance mutant M6: swapping `fixed` for `absolute` made the
+    // blanket cover only the scrollable content column, and the settings
+    // sidebar escaped the dim. `fixed` only spans the viewport when no
+    // ancestor retains a transform — the ancestor side of that contract
+    // is the fill-mode pin in settings-parity-nav.test.ts (M4).
+    const root = controlMarkup(markup, "settings-memory-summary-modal");
+    assert.ok(
+      root.includes('class="fixed inset-0'),
+      "the overlay root must be fixed to the full viewport (fixed inset-0)",
+    );
+    assert.ok(root.includes("z-[1010]"), "the overlay must stack above the settings modal's z-1000");
+  });
 });
 
 describe("CodeReviewSection: disabled method dropdown, real guideline persistence", () => {
