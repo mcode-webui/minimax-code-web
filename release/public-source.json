@@ -3901,6 +3901,7 @@
     "packages/webui/webapp/test/markdown-registry.test.ts",
     "packages/webui/webapp/test/markdown-toc.test.ts",
     "packages/webui/webapp/test/markdown.test.ts",
+    "packages/webui/webapp/test/message-enter-animation.test.ts",
     "packages/webui/webapp/test/open-file.test.ts",
     "packages/webui/webapp/test/preview-edit.test.ts",
     "packages/webui/webapp/test/provider-management.test.ts",
