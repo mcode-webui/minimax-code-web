@@ -383,7 +383,8 @@ describe("i18n en-dictionary hygiene (ticket 59)", () => {
       if (opener.test(line)) mode = block;
       else if (other.test(line)) mode = "";
       const match = mode ? line.match(/^\s*"([\w.]+)":/) : null;
-      if (match) keys.push(match[1]);
+      const key = match?.[1];
+      if (key) keys.push(key);
     }
     return keys;
   };
