@@ -113,6 +113,17 @@ const en = {
      materialised builtin tree). */
   "modelSelector.contextWindow": "Context window",
   "modelSelector.contextWindowHigherUsage": "higher usage",
+  /* Model selector — ticket 49 (batch 1). The detail area follows the
+     hovered/keyboard-focused row. `detailEmpty` is the hint when
+     nothing is describable (no focused row, no active model);
+     `detailNoSettings` when the target model advertises neither
+     context-window options nor thinking levels; `detailPreview` marks
+     a focused-but-not-picked model whose radios render disabled;
+     `detailPreviewHint` is the radio title explaining why. */
+  "modelSelector.detailEmpty": "Select a model to see its settings",
+  "modelSelector.detailNoSettings": "This model has no adjustable settings.",
+  "modelSelector.detailPreview": "preview",
+  "modelSelector.detailPreviewHint": "Pick this model to adjust its settings",
   "modelSelector.modalityBadge.text": "text",
   "modelSelector.modalityBadge.image": "image",
   "modelSelector.modalityBadge.audio": "audio",
@@ -777,6 +788,15 @@ const zh: Record<MessageKey, string> = {
      contextWindowOptionHints）。 */
   "modelSelector.contextWindow": "上下文窗口",
   "modelSelector.contextWindowHigherUsage": "用量较高",
+  /* 模型选择器 — 工单 49（第一批）。详情区跟随 hover / 键盘聚焦的行：
+     `detailEmpty` 是无可描述对象时的提示（无聚焦行且无活动模型）；
+     `detailNoSettings` 是目标模型既无上下文窗口档位也无思考等级时的提示；
+     `detailPreview` 标记「已聚焦但未选中」的预览态（单选组禁用）；
+     `detailPreviewHint` 是单选组的 title，解释为什么点不动。 */
+  "modelSelector.detailEmpty": "选择一个模型查看设置",
+  "modelSelector.detailNoSettings": "这个模型没有可调设置。",
+  "modelSelector.detailPreview": "预览",
+  "modelSelector.detailPreviewHint": "先选中该模型才能调整设置",
   "modelSelector.modalityBadge.text": "文本",
   "modelSelector.modalityBadge.image": "图像",
   "modelSelector.modalityBadge.audio": "音频",
