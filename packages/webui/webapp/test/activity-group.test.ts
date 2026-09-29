@@ -57,9 +57,10 @@ import type { ActivitySummary, TranscriptBlock } from "../lib/transcript";
   });
 }
 
-const { ActivityGroup, isActivityGroupActive, assignActivityBlockKeys } = await import(
+const { ActivityGroup, TurnProcessDisclosure, isActivityGroupActive, assignActivityBlockKeys } = await import(
   "../components/activity-group"
 );
+const { ToolIcon } = await import("../components/tool-icon");
 const { SessionProvider } = await import("../lib/store");
 const { translate } = await import("../lib/i18n");
 const { groupActivity, decodeTranscript: realDecode } = await import("../lib/transcript");
@@ -117,6 +118,20 @@ function toolBlock(status?: string): TranscriptBlock {
     toolOutput: [],
     toolPaths: [],
     ...(status ? { toolStatus: status } : {}),
+  };
+}
+
+/** A tool block with a full body — the PR3 (D4) render fixture. */
+function richToolBlock(overrides: Partial<TranscriptBlock> = {}): TranscriptBlock {
+  return {
+    role: "tool",
+    text: "→ bash  {}",
+    toolName: "bash",
+    toolArgs: '{"command":"ls"}',
+    toolOutput: ["total 0"],
+    toolPaths: [],
+    toolStatus: "completed",
+    ...overrides,
   };
 }
 
@@ -290,6 +305,208 @@ describe("ThinkingRow — the thinking block (D2)", () => {
   });
 });
 
+describe("ToolCard — the tool row (D4, PR3)", () => {
+  // No subagent fixture, no paths → the card contains zero <button>
+  // elements, which is also the no-nested-buttons proof (see below).
+  const html = renderGroup([richToolBlock()], toolsOnlySummary);
+
+  test("folds through a native details/summary — the header is not a button", () => {
+    assert.match(html, /<details[^>]*data-testid="tool-card"[^>]*>/);
+    assert.match(html, /<summary[^>]*>/);
+    // The retired header was a <button> whose body sometimes held the
+    // subagent badge — another <button> — i.e. invalid HTML. With the
+    // native summary this fixture renders no button at all; a badge
+    // would be a legal interactive descendant of <summary>.
+    assert.doesNotMatch(html, /<button/);
+  });
+
+  test("the summary shows the human label, not the raw tool name", () => {
+    assert.match(html, />终端</);
+    assert.doesNotMatch(html, />bash</);
+  });
+
+  test("a completed call renders no status chip (reference rule)", () => {
+    assert.doesNotMatch(html, /data-testid="tool-card-status"/);
+    assert.doesNotMatch(html, /已完成/);
+    assert.match(html, /data-tool-status="completed"/);
+  });
+
+  test("the body splits into 输入 / 结果; args moved off the summary row", () => {
+    assert.match(html, /输入/);
+    assert.match(html, /结果/);
+    assert.doesNotMatch(html, /错误/);
+    // The args appear exactly once — in the 输入 section of the body,
+    // no longer on the summary row (ticket 46 P4 decision). Match the
+    // ESCAPED args form (&quot;command&quot;) so the icon-type attribute
+    // value "command" cannot collide with the assertion.
+    const cardStart = html.indexOf('data-testid="tool-card"');
+    const cardHtml = cardStart >= 0 ? html.slice(cardStart) : html;
+    const summaryRow = cardHtml.match(/<summary[\s\S]*?<\/summary>/)?.[0] ?? "";
+    assert.doesNotMatch(summaryRow, /&quot;command/);
+    assert.match(html, /&quot;command/);
+  });
+
+  test("status copy follows the five-state vocabulary", () => {
+    const running = renderGroup(
+      [richToolBlock({ toolStatus: "in_progress" })],
+      toolsOnlySummary,
+    );
+    assert.match(running, /data-testid="tool-card-status"/);
+    assert.match(running, /运行中/);
+    assert.match(running, /data-tool-status="running"/);
+    const cancelled = renderGroup(
+      [richToolBlock({ toolStatus: "cancelled" })],
+      toolsOnlySummary,
+    );
+    assert.match(cancelled, /已取消/);
+    assert.match(cancelled, /data-tool-status="cancelled"/);
+  });
+
+  test("a failed call renders its output as the red 错误 section", () => {
+    const failed = renderGroup(
+      [richToolBlock({ toolStatus: "failed", toolOutput: ["boom"] })],
+      toolsOnlySummary,
+    );
+    assert.match(failed, /data-tool-status="error"/);
+    assert.match(failed, /失败/);
+    assert.match(failed, /data-testid="tool-card-error-section"/);
+    // The result section is suppressed for errors — 错误 replaces 结果.
+    assert.doesNotMatch(failed, /结果/);
+    // Both the section label and the body carry the error colour.
+    const errorSection = failed.match(
+      /<section[^>]*tool-card-error-section[\s\S]*?<\/section>/,
+    )?.[0];
+    assert.ok(errorSection, "error section missing");
+    assert.match(errorSection, /text-text_status_error/);
+    assert.match(errorSection, /错误/);
+    assert.match(errorSection, /boom/);
+    // The leading icon turns error-coloured too.
+    assert.match(failed, /<svg[^>]*text-text_status_error/);
+  });
+
+  test("a failed call with no output falls back to 执行失败", () => {
+    const failed = renderGroup(
+      [richToolBlock({ toolStatus: "failed", toolOutput: [] })],
+      toolsOnlySummary,
+    );
+    assert.match(failed, /执行失败/);
+  });
+
+  test("a running call with no output shows the running placeholder", () => {
+    const running = renderGroup(
+      [richToolBlock({ toolStatus: "in_progress", toolArgs: "", toolOutput: [] })],
+      toolsOnlySummary,
+    );
+    assert.match(running, /data-testid="tool-card-running"/);
+    assert.match(running, /运行中…/);
+  });
+
+  test("read-style calls lift the resource path onto the summary (title = full path)", () => {
+    const readHtml = renderGroup(
+      [
+        richToolBlock({
+          text: "→ read",
+          toolName: "read",
+          // Live-verified wire shape: the read header carries NO args;
+          // the path arrives as a `@ path` line the decoder collects.
+          toolArgs: "",
+          toolPaths: ["/ws/packages/a.ts"],
+          toolOutput: ["file body"],
+        }),
+      ],
+      toolsOnlySummary,
+    );
+    const pathSpan = readHtml.match(
+      /<span[^>]*data-testid="tool-card-resource-path"[^>]*>/,
+    )?.[0];
+    assert.ok(pathSpan, "resource-path span missing");
+    assert.match(pathSpan, /title="\/ws\/packages\/a\.ts"/);
+    assert.match(readHtml, />a\.ts</);
+    // 读取文件 — the read label.
+    assert.match(readHtml, /读取文件/);
+    // The args-less card still has a body (the output section).
+    assert.match(readHtml, /结果/);
+  });
+
+  test("over-long bodies clamp at 2000 characters with ...", () => {
+    const long = renderGroup(
+      [richToolBlock({ toolOutput: ["x".repeat(2500)] })],
+      toolsOnlySummary,
+    );
+    // Exactly 2000 kept characters then "..." inside the body pre —
+    // and not one character more of the 2500 that were fed in.
+    assert.match(long, /<pre[^>]*>x{2000}\.\.\.<\/pre>/);
+    assert.doesNotMatch(long, /<pre[^>]*>x{2001}/);
+  });
+
+  test("icons are 16×16 SVGs from the catalog, not unicode glyphs", () => {
+    assert.match(html, /<svg[^>]*viewBox="0 0 16 16"/);
+    assert.doesNotMatch(activitySource, /CATEGORY_GLYPH/);
+    // The catalog itself renders the reference stroke style and keys
+    // every SummaryIconType.
+    const catalog = renderToStaticMarkup(createElement(ToolIcon, { type: "command" }));
+    assert.match(catalog, /<svg[^>]*viewBox="0 0 16 16"/);
+    assert.match(catalog, /stroke-width="1\.25"/);
+    assert.match(catalog, /data-tool-icon-type="command"/);
+  });
+
+  test("the orphan data-message-collapse-trigger marker is gone", () => {
+    // QA-registered leftover: the attribute had no consumer anywhere in
+    // the repo (grep-verified) — removed rather than carried forward.
+    assert.doesNotMatch(activitySource, /data-message-collapse-trigger/);
+  });
+});
+
+describe("TurnProcessDisclosure — the turn bar (D6, PR3)", () => {
+  const stats = { thinking: 1, tools: 2, answerChars: 600 };
+  const renderBar = (props: Record<string, unknown> = {}) =>
+    renderToStaticMarkup(
+      createElement(TurnProcessDisclosure, {
+        stats,
+        processedDurationMs: 125000,
+        t,
+        ...props,
+      }),
+    );
+
+  test("settled: composite summary with M 分 N 秒 and the output rate", () => {
+    const html = renderBar();
+    assert.match(html, /思考 1 次，用了 2 次工具，共执行 2 分 5 秒/);
+    assert.match(html, /data-testid="turn-process-disclosure"/);
+    assert.match(html, /data-testid="turn-process-summary-text"/);
+    // 600 chars / 125s = 4.8 → 5 token/s (character estimate — the wire
+    // carries no per-turn token count; see the component docblock).
+    assert.match(html, /data-testid="turn-output-rate"/);
+    assert.match(html, /5 token\/s/);
+  });
+
+  test("settled under a minute: bare seconds, zero-count parts drop out", () => {
+    const html = renderBar({
+      processedDurationMs: 42000,
+      stats: { thinking: 0, tools: 0, answerChars: 0 },
+    });
+    assert.match(html, /共执行 42 秒/);
+    assert.doesNotMatch(html, /思考/);
+    assert.doesNotMatch(html, /用了/);
+    assert.doesNotMatch(html, /turn-output-rate/);
+  });
+
+  test("live: 已执行 renders 0 on the first frame and no rate", () => {
+    // SSR/hydration frame: the tick starts in an effect, so the first
+    // render is deterministic 0 regardless of startedAtMs.
+    const html = renderBar({ active: true, startedAtMs: Date.now() - 30000 });
+    assert.match(html, /已执行 0 秒/);
+    assert.match(html, /思考 1 次，用了 2 次工具/);
+    assert.doesNotMatch(html, /turn-output-rate/);
+  });
+
+  test("a 0.5px separator closes the bar from below", () => {
+    const html = renderBar();
+    assert.match(html, /data-testid="turn-process-separator"/);
+    assert.match(html, /border-b-\[0\.5px\]/);
+  });
+});
+
 describe("chat.tsx wiring — the streaming derivation stays put", () => {
   test("the tail-run derivation feeds streaming and startedAtMs into the group", () => {
     assert.match(chatSource, /const streamingActivityIndex = useMemo/);
@@ -304,14 +521,23 @@ describe("chat.tsx wiring — the streaming derivation stays put", () => {
   });
 
   test("the moved components are imported, not duplicated", () => {
-    assert.match(chatSource, /import \{ ActivityGroup, assignActivityBlockKeys \} from "\.\/activity-group"/);
+    assert.match(chatSource, /import \{ ActivityGroup, TurnProcessDisclosure, assignActivityBlockKeys \} from "\.\/activity-group"/);
     assert.doesNotMatch(chatSource, /function ActivityGroup\(/);
     assert.doesNotMatch(chatSource, /function ThinkingRow\(/);
     assert.doesNotMatch(chatSource, /function ToolCard\(/);
+    // PR3: the turn bar moved here too — chat.tsx keeps only the wiring.
+    assert.doesNotMatch(chatSource, /function TurnProcessDisclosure\(/);
   });
 
-  test("the turn-process disclosure is untouched", () => {
-    assert.match(chatSource, /data-testid="turn-process-disclosure"/);
+  test("the turn-process bar is wired with turn stats (PR3 D6)", () => {
+    // Settled turns: every assistant tail block renders the bar with its
+    // precomputed stats; the live turn renders the active bar at the
+    // transcript tail.
+    assert.match(chatSource, /processedDurationMs=\{block\.processedDuration\}/);
+    assert.match(chatSource, /stats=\{turnStats \?\? \{ thinking: 0, tools: 0, answerChars: 0 \}\}/);
+    assert.match(chatSource, /const turnStatsByUnit = useMemo\(\(\) => computeTurnStatsByUnit\(units\), \[units\]\)/);
+    assert.match(chatSource, /const activeTurnStats = useMemo\(/);
+    assert.match(chatSource, /startedAtMs=\{runningStartedAt\}/);
   });
 
   test("the stable block keys are assigned once per units pass and forwarded (P3-1)", () => {
@@ -410,6 +636,19 @@ describe("i18n — both locales carry the thinking-block copy", () => {
     assert.equal(translate("zh", "activity.thinkingDone"), "已完成推理");
     assert.equal(translate("zh", "activity.expand"), "展开");
     assert.equal(translate("zh", "activity.collapse"), "收起");
+    // PR3 (D4/D6) keys.
+    assert.equal(translate("zh", "tool.status.pending"), "等待中");
+    assert.equal(translate("zh", "tool.status.cancelled"), "已取消");
+    assert.equal(translate("zh", "tool.status.in_progress"), "运行中");
+    assert.equal(translate("zh", "tool.section.input"), "输入");
+    assert.equal(translate("zh", "tool.section.result"), "结果");
+    assert.equal(translate("zh", "tool.section.error"), "错误");
+    assert.equal(translate("zh", "tool.executionFailed"), "执行失败");
+    assert.equal(translate("zh", "turn.usedTools"), "用了 {{count}} 次工具");
+    assert.equal(translate("zh", "turn.elapsedActive"), "已执行 {{duration}}");
+    assert.equal(translate("zh", "turn.elapsedTotal"), "共执行 {{duration}}");
+    assert.equal(translate("zh", "turn.duration.minutes"), "{{minutes}} 分 {{seconds}} 秒");
+    assert.equal(translate("zh", "turn.duration.seconds"), "{{seconds}} 秒");
   });
 
   test("en", () => {
@@ -417,5 +656,17 @@ describe("i18n — both locales carry the thinking-block copy", () => {
     assert.equal(translate("en", "activity.thinkingDone"), "Finished thinking");
     assert.equal(translate("en", "activity.expand"), "Expand");
     assert.equal(translate("en", "activity.collapse"), "Collapse");
+    // PR3 (D4/D6) keys — equal weight, not a translation afterthought.
+    assert.equal(translate("en", "tool.status.pending"), "pending");
+    assert.equal(translate("en", "tool.status.cancelled"), "cancelled");
+    assert.equal(translate("en", "tool.section.input"), "Input");
+    assert.equal(translate("en", "tool.section.result"), "Result");
+    assert.equal(translate("en", "tool.section.error"), "Error");
+    assert.equal(translate("en", "tool.executionFailed"), "Execution failed");
+    assert.equal(translate("en", "turn.usedTools"), "used {{count}} tools");
+    assert.equal(translate("en", "turn.elapsedActive"), "Elapsed {{duration}}");
+    assert.equal(translate("en", "turn.elapsedTotal"), "Completed in {{duration}}");
+    assert.equal(translate("en", "turn.duration.minutes"), "{{minutes}}m {{seconds}}s");
+    assert.equal(translate("en", "turn.duration.seconds"), "{{seconds}}s");
   });
 });

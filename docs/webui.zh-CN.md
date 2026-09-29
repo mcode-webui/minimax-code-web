@@ -259,9 +259,10 @@ exec 回合的代价——以下都是当前真实存在的行为，选择权限
 | 顶栏（带模型选择器） | `components/toolbar.tsx` | `toolbar-session-status` |
 | 录入区与拖放浮层 | `components/composer.tsx` | `composer-drop-overlay`、`composer-send-button` |
 | 对话（≥ 200 条时虚拟滚动） | `components/chat.tsx` + `chat-virtual-list.tsx` | `chat-virtual-top-spacer` |
-| 轮次总结/折叠面板 | `components/chat.tsx` | `turn-process-disclosure` |
+| 轮次耗时条（工单 46 PR3 起复合文案与输出速度） | `components/activity-group.tsx#TurnProcessDisclosure` | `turn-process-disclosure` |
 | 活动组（可折叠的工具轮次，工单 46 起在 `activity-group.tsx`） | `components/activity-group.tsx` | `activity-group-header` |
 | 思维链块（思考过程折叠行，工单 46 PR2） | `components/activity-group.tsx` | `thinking-block` |
+| 工具卡片（单次工具调用，工单 46 PR3） | `components/activity-group.tsx#ToolCard` | `tool-card` |
 | 文件预览（右预览列主体） | `components/file-preview.tsx` + `file-preview-pane.tsx` | `file-preview` |
 | 文件树列（列 4） | `components/workspace-tree-column.tsx` + `panels.tsx#FilesPanel` | `files-tree-root` |
 | 文件树搜索（服务端，slice 19a；slice 19b 联调） | `components/panels.tsx` | `files-tree-filter` |
@@ -625,7 +626,7 @@ slice 16 的预览守卫一致：服务会向局域网广播地址，能在网�
 - 预览列特别窄（内容宽度低于约 300px）时大纲自动隐藏，避免把
   正文挤得没法读；预览列自身的最小宽度（320px）下大纲仍可见。
 
-## 会话渲染：思维链块与活动组（工单 46，PR2）
+## 会话渲染：思维链块、活动组与工具卡片（工单 46）
 
 助手回合里的「过程」由两个原生 `<details>` 折叠面承担。组件在
 `components/activity-group.tsx`（从 `chat.tsx` 抽出，动机与 U8 抽出
@@ -700,6 +701,82 @@ loading-states 相同：让 SSR 渲染测试可以脱离 `chat.tsx` 的 `@/` 别
 流式标记（`▍` 光标只标在尾部 assistant 块上），这是渲染层能拿到的
 最诚实信号。
 
+### 工具卡片（工单 46 PR3）
+
+单次工具调用渲染为一张原生 `<details>` 卡片（`ToolCard`），结构照
+参照实现的 `WebuiToolRow`：
+
+- **人话标签**：摘要行显示中文人话工具名（`bash` → 终端、`read` →
+  读取文件、`edit` → 编辑文件、`grep` → 搜索 …），映射表是
+  `webapp/lib/tool-projection.ts` 的 `toolCallLabel`——参照桌面文案的
+  双语移植（中文列照抄参照，英文列为对应直译；界面双语同权）。
+  未收录的工具名回落到「工具 / Tool」，与参照的回落一致；参照表中
+  带 `{{name}}` 模板占位的条目（如 `read_skill_file`）未收录——本
+  渲染层没有替换站点，收录会显示原始占位符。
+- **状态五档归一**：`normalizeToolStatus` 把 wire 状态行归一成
+  等待中 / 运行中 / 已完成 / 失败 / 已取消（加 `unknown`），中文文案
+  与参照一致；参照桌面的数字状态码 1/2/3/4/5 分别映射
+  running/completed/error/pending/pending，一并保留（当前 wire 只写
+  字符串状态）。与参照的一处刻意差异：**没有状态行视为运行中**
+  （参照记为 unknown），因为 wire 先写 `→ name` 头行、状态行只在
+  调用落定时补写——「没有状态」在本传输下就是在跑，与
+  `isActivityGroupActive` 同一口径。已完成的调用不显示状态徽标
+  （参照行为，收尾的行保持干净）。
+- **展开体三段**：输入 / 结果 / 错误。入参摘要按编排拍板从摘要行
+  移入「输入」段；失败调用的输出行渲染为标红的「错误」段（wire
+  把失败文本写在普通输出行里，没有独立的 error 字段），失败且无
+  输出时兜底显示「执行失败」。任一段超过 2000 字符截断加 `...`
+  （`clampDetailText`）。运行中尚无产出的调用显示「运行中…」。
+- **read 类资源路径**：`read` / `read_file` 的资源路径提到摘要行
+  常驻显示（文件名 + 悬停 title 全路径，`toolSummaryResourcePath`）。
+  解析优先从入参取（参照推导），入参缺失时回退到解码器收集进
+  `toolPaths` 的 `@ path` 行。**可达性（如实说明）**：实机验证当前
+  引擎的 `→ read` 头行一律不带参数，路径以 `@ path` 行落盘、且与
+  工具体之间隔着空行与「N more lines」截断标记——这类孤立行被
+  解码器按既有 orphan 规则丢弃（该规则同时挡掉了混在其中的下一个
+  工具状态行，语义正确，不改）。因此摘要行路径在当前传输形态下
+  不出现；机制（含两种数据形态的单测）就绪，引擎在头行带参、或
+  `@ path` 行紧贴工具体落下时即生效。其余工具不提路径。
+- **图标**：16×16 SVG 目录（`components/tool-icon.tsx`），替换
+  unicode 字形占位；path 照参照 `WebuiToolIcon` 目录逐个转录，本
+  wire 图标词表（`SummaryIconType`）与参照 category 不完全同名，
+  个别条目取最接近的参照图形（`plugin` → 参照 combine、
+  `file-edit`/`edit` → 参照 code、`agent` → 参照 bot、
+  `skill` → 参照 task），无参照对应的 `summary` / `alert` 以同风格
+  （viewBox 16、stroke 1.25、圆角连接）自绘。失败状态下图标与状态
+  徽标转错误色。
+- **合法性修复（质检登记）**：旧卡片的头部是 `<button>`，其内部又
+  嵌着子代理徽标 `<button>`——非法 HTML；改为 `<details>/<summary>`
+  后嵌套消失（`<summary>` 允许交互后代）。孤儿属性
+  `data-message-collapse-trigger`（全仓无消费者）删除。
+
+**工具级耗时不加**：参照的工具行摘要只有「名字 · 状态」，没有单个
+工具的耗时——耗时在轮次条与思维链块上。此为编排拍板，非遗漏。
+
+### 轮次耗时条（工单 46 PR3）
+
+回合结束后，助手正文块下方渲染一条耗时条（`TurnProcessDisclosure`
+，自 `chat.tsx` 挪入 `activity-group.tsx` 并按参照 `WebuiTurnProcess`
+重建）：
+
+- 摘要行是复合文案「思考 N 次，用了 M 次工具，共执行 X 分 Y 秒」；
+  计数为零的分段省略；超过 1 分钟的时长显示「X 分 Y 秒」，不足 1
+  分钟显示「N 秒」。计数口径与活动组一致（思考数相邻合并），
+  统计范围是上一个用户消息到本回合结束之间的全部块
+  （`webapp/lib/turn-stats.ts`，正扫/倒扫两个入口共用同一口径）。
+- 回合结束在右侧显示输出速度「N token/s」。**该数字是估算**：wire
+  会话行不携带每回合 token 数（ACP `usage` 事件只在服务端累计会话
+  总量，本工单红线禁止改四个 server 文件），故按参照在无
+  `usage.outputTokens` 时的同一回退公式 `回答字符数 / 秒数` 计算。
+  中英文等表意文字的字符/ token 比不同，读作数量级参考而非精确值。
+- 运行中在 transcript 尾部显示「已执行 N 秒」，每秒跳动；跳动从
+  effect 里驱动，SSR 与 hydration 首帧固定渲染 0 秒（服务端与客户
+  端标记一致，不闪不跳变），回合结束后同一条转为「共执行 …」并
+  追加输出速度。
+- 摘要行下方有一条 0.5px 分隔线。旧版「可展开重复同一句耗时」的
+  折叠交互移除（无内容可展开，参照在无展开内容时也只渲染纯摘要
+  行）；`turn-process-disclosure` testid 保留。
+
 ## 加载态：会话骨架屏与流式活动指示（工单 U8）
 
 会话界面有两类等待，各自有明确的呈现方式，都不是一个孤零零的转圈：
@@ -727,9 +804,10 @@ loading-states 相同：让 SSR 渲染测试可以脱离 `chat.tsx` 的 `@/` 别
   `webapp/test/loading-skeleton.test.ts`（走 `renderToStaticMarkup`；
   本测试套件没有 DOM 环境）。
 - 与工单 46 的边界：流式期间「推理中... + 跳动秒数」显示在尾部活动
-  组内思维链块的摘要行上（见上一节「会话渲染」）；上表的
-  `ActivityPulse`（三点 + shimmer + 阶段文案）仍然只出现在 transcript
-  尾部。两者位置不同、职责不同，互不替代。
+  组内思维链块的摘要行上，「已执行 N 秒」耗时条显示在 transcript
+  尾部（见上一节「会话渲染」）；上表的 `ActivityPulse`（三点 +
+  shimmer + 阶段文案）同样只出现在 transcript 尾部、位于耗时条之
+  下。三者位置不同、职责不同，互不替代。
 
 ## 持久化键（客户端 `localStorage` / `sessionStorage`）
 

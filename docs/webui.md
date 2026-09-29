@@ -314,9 +314,10 @@ below cites the component file and one `data-testid` per surface.
 | Toolbar (top bar with model selector) | `components/toolbar.tsx` | `toolbar-session-status` |
 | Composer + drop overlay | `components/composer.tsx` | `composer-drop-overlay`, `composer-send-button` |
 | Chat (virtual list ≥ 200 messages) | `components/chat.tsx` + `chat-virtual-list.tsx` | `chat-virtual-top-spacer` |
-| Turn summary / disclosure | `components/chat.tsx` | `turn-process-disclosure` |
+| Turn process bar (composite summary + output rate since ticket 46 PR3) | `components/activity-group.tsx#TurnProcessDisclosure` | `turn-process-disclosure` |
 | Activity group (collapsible tool turns; in `activity-group.tsx` since ticket 46) | `components/activity-group.tsx` | `activity-group-header` |
 | Thinking block (thought-process disclosure row, ticket 46 PR2) | `components/activity-group.tsx` | `thinking-block` |
+| Tool card (one tool call, ticket 46 PR3) | `components/activity-group.tsx#ToolCard` | `tool-card` |
 | File preview (right preview column body) | `components/file-preview.tsx` + `file-preview-pane.tsx` | `file-preview` |
 | File tree column (column 4) | `components/workspace-tree-column.tsx` + `panels.tsx#FilesPanel` | `files-tree-root` |
 | File tree search (server-driven, slice 19a; wired in 19b) | `components/panels.tsx` | `files-tree-filter` |
@@ -752,7 +753,7 @@ through the design tokens. Below ~300px of content width the outline
 hides rather than squeezing the document — the preview column's own
 minimum (320px) still shows it.
 
-## Session rendering: thinking block and activity group (ticket 46, PR2)
+## Session rendering: thinking block, activity group and tool card (ticket 46)
 
 The "process" half of an assistant turn is carried by two native
 `<details>` disclosures. The components live in
@@ -849,6 +850,108 @@ thinking-level streaming marker (the `▍` cursor only marks the trailing
 assistant block), so this is the most honest signal the render layer can
 derive.
 
+### Tool card (ticket 46, PR3)
+
+One tool call renders as a native `<details>` card (`ToolCard`), on the
+structure of the reference `WebuiToolRow`:
+
+- **Human labels**: the summary row shows the human tool name
+  (`bash` → 终端, `read` → 读取文件, `edit` → 编辑文件, `grep` →
+  搜索, …) from `toolCallLabel` in `webapp/lib/tool-projection.ts` — a
+  bilingual port of the reference desktop copy (the zh column is the
+  reference copy verbatim, the en column its English counterpart; both
+  locales ship at equal weight). Unknown names fall back to 「工具 /
+  Tool」, the reference fallback. Reference entries carrying `{{name}}`
+  template placeholders (`read_skill_file` & co.) are not carried over:
+  this renderer has no substitution site, so keeping them would display
+  the raw placeholder.
+- **Five-state normalisation**: `normalizeToolStatus` maps the wire
+  status line onto 等待中 / 运行中 / 已完成 / 失败 / 已取消 (plus
+  `unknown`), with the reference desktop copy; Desktop's numeric codes
+  1/2/3/4/5 map to running/completed/error/pending/pending and are kept
+  for parity (today's wire only writes string statuses). One deliberate
+  delta: **a missing status line counts as running** (the reference
+  records unknown), because the wire writes the `→ name` header first
+  and the status line only when the call settles — "no status" means
+  in-flight on this transport, the same rule `isActivityGroupActive`
+  encodes. A completed call renders no status chip (reference rule —
+  settled rows stay clean).
+- **Three body sections**: 输入 / 结果 / 错误. The input args moved OFF
+  the summary row into the 输入 section (orchestration decision); a
+  failed call's output lines render as the red 错误 section (the wire
+  writes failure text as ordinary output lines — there is no separate
+  error field), falling back to 「执行失败」 when a failure has no
+  output; any section longer than 2000 characters clamps with `...`
+  (`clampDetailText`). A running call with no output yet shows
+  「运行中…」.
+- **Read-style resource paths**: for `read` / `read_file` the resource
+  path is lifted onto the summary row (basename displayed, full path on
+  the `title` attribute, `toolSummaryResourcePath`). The args derivation
+  comes first (the reference rule), falling back to the `@ path` lines
+  the decoder collects into `toolPaths`. **Reachability (stated
+  plainly)**: live verification shows this engine's `→ read` header
+  never carries args — the path lands as `@ path` lines separated from
+  the tool body by a blank line and the 「N more lines」 truncation
+  marker, and such detached lines are dropped by the decoder's existing
+  orphan rule (which also correctly discards the next tool's status
+  lines mixed in among them — the rule is right and stays). The summary
+  path therefore does not appear under the current transport shape; the
+  mechanism (unit-tested for both data shapes) is ready and activates
+  the moment the engine sends args on the header or a `@ path` line
+  adjacent to the body. No other tool lifts a path.
+- **Icons**: a 16×16 SVG catalog (`components/tool-icon.tsx`) replaces
+  the unicode-glyph placeholder. Paths are transcribed from the
+  reference `WebuiToolIcon` registry; this wire's icon vocabulary
+  (`SummaryIconType`) is not name-identical with the reference
+  categories, so a few entries use the nearest reference glyph
+  (`plugin` → reference combine, `file-edit`/`edit` → reference code,
+  `agent` → reference bot, `skill` → reference task), and the two types
+  with no reference counterpart (`summary`, `alert`) are drawn here in
+  the same style (viewBox 16, stroke 1.25, round joins/caps). On
+  failure the icon and the status chip turn error-coloured.
+- **Legality fix (QA-registered)**: the old card header was a
+  `<button>` with the subagent badge — another `<button>` — nested
+  inside it: invalid HTML. The `<details>/<summary>` rebuild removes
+  the nesting (a `<summary>` may legally contain interactive
+  descendants). The orphan `data-message-collapse-trigger` attribute
+  (no consumer anywhere in the repo) is deleted.
+
+**No per-tool duration, by decision**: the reference tool row summary
+reads "name · status" only — durations live on the turn bar and the
+thinking block. That is the orchestration call, not an omission.
+
+### Turn process bar (ticket 46, PR3)
+
+After a turn settles, a process bar renders under the assistant prose
+block (`TurnProcessDisclosure`, lifted from `chat.tsx` into
+`activity-group.tsx` and rebuilt on the reference `WebuiTurnProcess`):
+
+- The summary row is the composite 「思考 N 次，用了 M 次工具，共执行
+  X 分 Y 秒」; zero-count parts drop out; durations over a minute read
+  「X 分 Y 秒」, under it bare 「N 秒」. The counting matches the
+  activity group (adjacent thinking blocks merge), and the span is
+  everything between the previous user message and this turn's end
+  (`webapp/lib/turn-stats.ts`; the forward and backward scans share the
+  one rule).
+- A settled turn shows the output rate `N token/s` on the right. **The
+  figure is an estimate**: the wire transcript carries no per-turn
+  token count (the ACP `usage` event only accumulates session totals
+  server-side, and this ticket's red line forbids touching the four
+  server files), so it uses the same fallback the reference applies
+  when its runtime reports no `usage.outputTokens`:
+  `answer characters / seconds`. Character-to-token ratios differ
+  between scripts — read it as an order of magnitude, not a meter.
+- While the engine streams, the transcript tail shows 「已执行 N 秒」
+  ticking once per second; the tick is effect-driven, so the SSR and
+  hydration first frame deterministically render 0 seconds (no server/
+  client markup divergence), and when the turn settles the same bar
+  becomes 「共执行 …」 and gains the output rate.
+- A 0.5px separator closes the bar from below. The retired
+  expand-to-repeat-the-same-sentence interaction is gone (there is no
+  content to expand — the reference renders a plain summary row when
+  the turn has no expandable content of its own); the
+  `turn-process-disclosure` testid is kept.
+
 ## Loading states: transcript skeleton and streaming indicator (ticket U8)
 
 The two waiting windows on the conversation surface have distinct treatments,
@@ -882,10 +985,11 @@ Invariants worth keeping when touching either branch:
   `renderToStaticMarkup`; the suite has no DOM harness).
 - Boundary with ticket 46: while a thought streams, the 「推理中...」+
   ticking-seconds readout lives on the thinking block's summary row inside
-  the tail activity group (see the "Session rendering" section above);
-  the `ActivityPulse` in this table (three dots + shimmer + phase label)
-  still appears only at the transcript tail. Different positions, different
-  jobs; neither replaces the other.
+  the tail activity group, and the live 「已执行 N 秒」 turn bar sits at
+  the transcript tail (see the "Session rendering" section above); the
+  `ActivityPulse` in this table (three dots + shimmer + phase label)
+  also appears only at the transcript tail, below the turn bar.
+  Different positions, different jobs; none replaces another.
 
 ## Persistence keys (client-side `localStorage` / `sessionStorage`)
 

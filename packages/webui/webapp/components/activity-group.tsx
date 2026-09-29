@@ -26,10 +26,19 @@ import {
   iconByName,
   type ActivitySummary,
   type RenderUnit,
-  type SummaryIconType,
   type TranscriptBlock,
 } from "../lib/transcript";
+import {
+  TOOL_STATUS_LABEL_KEY,
+  clampDetailText,
+  normalizeToolStatus,
+  resourceDisplayName,
+  toolCallLabel,
+  toolSummaryResourcePath,
+} from "../lib/tool-projection";
+import type { TurnStats } from "../lib/turn-stats";
 import { Icon } from "./icons";
+import { ToolIcon } from "./tool-icon";
 import type { MessageKey } from "../lib/i18n";
 
 /**
@@ -196,14 +205,13 @@ export function ActivityGroup({
           >
             <summary
               data-testid="activity-group-header"
-              data-message-collapse-trigger
               className="group/header inline-flex min-w-0 max-w-full cursor-pointer list-none items-center gap-1 pr-1 text-left text-sm leading-5 tracking-normal [&::-webkit-details-marker]:hidden"
             >
               <span
                 data-testid="activity-group-header-icon"
                 className="inline-flex shrink-0"
               >
-                <CategoryIcon type={summary.iconType} />
+                <ToolIcon type={summary.iconType} className="h-4 w-4 text-text_default_tertiary" />
               </span>
               <span className="min-w-0 truncate text-text_default_tertiary group-hover/header:text-text_default_secondary">
                 {label}
@@ -339,7 +347,7 @@ function ThinkingRow({
         className="group/thought inline-flex min-w-0 cursor-pointer list-none items-center gap-1 text-text_default_tertiary [&::-webkit-details-marker]:hidden"
       >
         <span className="inline-flex shrink-0" data-testid="thinking-summary-icon">
-          <CategoryIcon type="thinking" />
+          <ToolIcon type="thinking" className="h-4 w-4 text-text_default_tertiary" />
         </span>
         <span
           className="min-w-0 truncate transition-colors group-hover/thought:text-text_default_secondary"
@@ -397,61 +405,63 @@ function ThinkingRow({
 }
 
 /**
- * The leading icon for an ActivityGroup header or a ToolCard.
+ * A single tool call (ticket 46 — D4, PR3).
  *
- * Upstream (`90321` byte 2085700 + icon module 32709) renders these as
- * precise 16×16 SVGs from a 16-icon registry keyed by `iconType`. The full
- * SVG catalog lives in the icon registry and is not yet pulled into this
- * frontend; for now we render a unicode glyph sized at 16 so the leading-edge
- * slot is visible and `data-tool-icon-type` is honoured. When the precise
- * paths land in `icons.tsx`, swap the glyph for `<Icon name={type} ... />`
- * behind the same `type` key — the data attributes and sizing are stable.
+ * Upstream (`WebuiToolRow`) is a native `<details>`: the summary row
+ * carries the human label from the projection table, the status chip
+ * (hidden once completed — the reference keeps settled rows clean), and,
+ * for read-style calls, the resource path with its full form on the
+ * `title` attribute. The body splits into 「输入 / 结果 / 错误」
+ * sections, each clamped at 2000 characters by `clampDetailText`.
+ *
+ * Switching the header from a `<button>` to `<details>/<summary>` (PR3)
+ * also fixes the invalid nested-button HTML flagged in QA: the subagent
+ * badge is a real `<button>` and used to sit INSIDE the header button.
  */
-function CategoryIcon({ type }: { type: SummaryIconType }) {
-  const glyph = CATEGORY_GLYPH[type] ?? "•";
-  return (
-    <span
-      aria-hidden="true"
-      data-tool-icon-type={type}
-      className="inline-flex h-4 w-4 shrink-0 items-center justify-center text-text_default_tertiary"
-      style={{ fontSize: 14, lineHeight: 1 }}
-    >
-      {glyph}
-    </span>
-  );
-}
-
-const CATEGORY_GLYPH: Record<SummaryIconType, string> = {
-  "plugin": "🧩",
-  "file-edit": "✎",
-  "edit": "✎",
-  "agent": "◉",
-  "skill": "✦",
-  "web": "⌘",
-  "search": "◎",
-  "thinking": "◌",
-  "file": "▢",
-  "command": "›_",
-  "tool": "◇",
-  "logo": "◈",
-  "bot": "◉",
-  "summary": "≡",
-  "code": "⟨⟩",
-  "memory": "❒",
-  "alert": "△",
-};
-
-/**
- * A single tool call: the `→ name {args}` header plus the output the server wrote
- * beneath it. Output collapses by default — a tool can emit thousands of lines, and
- * upstream keeps it behind a disclosure for the same reason.
- */
-function ToolCard({ block, t, onOpenFile }: { block: TranscriptBlock; t: (key: MessageKey) => string; onOpenFile: (path: string) => void }) {
-  const [open, setOpen] = useState(false);
-  const output = block.toolOutput ?? [];
-  const paths = block.toolPaths ?? [];
-  const hasBody = output.length > 0 || paths.length > 0;
+function ToolCard({
+  block,
+  t,
+  onOpenFile,
+}: {
+  block: TranscriptBlock;
+  t: (key: MessageKey) => string;
+  onOpenFile: (path: string) => void;
+}) {
+  // Bilingual label table lookup needs the active locale (the reference
+  // hardcodes its Chinese desktop copy; this frontend is bilingual).
+  const { locale } = useLocale();
+  const status = normalizeToolStatus(block.toolStatus);
+  const statusLabelKey =
+    status === "unknown" ? undefined : TOOL_STATUS_LABEL_KEY[status];
+  // The reference hides the status chip entirely once a call completes.
+  const showStatusLabel = status !== "completed" && statusLabelKey !== undefined;
+  const label = toolCallLabel(block.toolName, locale);
   const iconType = iconByName(block.toolName);
+  // Read-style calls lift their resource path onto the summary row.
+  // The args derivation first; the engine's `→ read` header carries no
+  // args (verified live) and the path lands as a `@ path` body line the
+  // decoder collects into toolPaths — see toolSummaryResourcePath.
+  const resourcePath = toolSummaryResourcePath(
+    block.toolName,
+    block.toolArgs,
+    block.toolPaths ?? [],
+  );
+
+  const output = (block.toolOutput ?? []).join("\n");
+  // The wire writes a failed call's error text as ordinary output lines
+  // under the tool header, so the error SECTION is the output rendered
+  // in error styling (and the result section is suppressed).
+  const errorText =
+    status === "error" ? (output || t("tool.executionFailed")) : undefined;
+  const resultText = status === "error" ? undefined : (output || undefined);
+  // Ticket 46 P4 decision: the args move OFF the summary row into the
+  // body's 「输入」 section, matching the reference layout.
+  const inputText = (block.toolArgs ?? "").trim() || undefined;
+  const paths = block.toolPaths ?? [];
+  const hasDetail = Boolean(
+    inputText || resultText || errorText || paths.length > 0 || status === "running",
+  );
+
   // Slice 06 — Agent Team: when this tool is the parent of a subagent
   // dispatch, attach the live status badge + jump reference from the
   // server's `recentSubagents` array. The match is by `toolCallId`
@@ -462,16 +472,8 @@ function ToolCard({ block, t, onOpenFile }: { block: TranscriptBlock; t: (key: M
   // See `lib/agent-team-lookup.ts#findSubagentForBlock` for the
   // matching rule and its unit tests.
   const store = useSessionContext();
-  const { locale } = useLocale();
   const recent = store?.state?.recentSubagents;
   const subagent = findSubagentForBlock(recent, block);
-
-  const statusKey =
-    block.toolStatus === "failed"
-      ? "tool.status.failed"
-      : block.toolStatus === "in_progress"
-        ? "tool.status.in_progress"
-        : "tool.status.completed";
 
   // Subagent badge — label and glyph are resolved through i18n so
   // both locales actually differ (the previous slice hardcoded English
@@ -484,37 +486,55 @@ function ToolCard({ block, t, onOpenFile }: { block: TranscriptBlock; t: (key: M
     : null;
 
   return (
-    <div className="rounded-xl border border-border_default bg-bg_grouped_tertiary">
-      <button
-        type="button"
-        className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left"
-        aria-expanded={open}
-        data-tool-icon-type={iconType}
-        onClick={() => hasBody && setOpen((value) => !value)}
-      >
-        <CategoryIcon type={iconType} />
-        {hasBody ? (
-          <span className={["transition-transform duration-200", open ? "rotate-90" : ""].join(" ")}>
+    <details
+      data-testid="tool-card"
+      data-tool-status={status}
+      className="group/tool rounded-xl border border-border_default bg-bg_grouped_tertiary"
+    >
+      <summary className="flex w-full cursor-pointer list-none items-center gap-2 px-2.5 py-1.5 text-left [&::-webkit-details-marker]:hidden">
+        {hasDetail ? (
+          <span className="flex h-3 w-3 shrink-0 items-center justify-center text-text_label_tertiary_default transition-transform duration-200 ease-out group-open/tool:rotate-90">
             <Icon name="chevronRight" size={12} />
           </span>
         ) : (
-          <span className="w-3" />
+          <span className="w-3 shrink-0" />
         )}
-        <span className="font-family-code truncate text-caption-small-strong text-text_default_primary">
-          {block.toolName}
-        </span>
-        <span
+        <ToolIcon
+          type={iconType}
           className={[
-            "flex-none text-caption-small-strong",
-            block.toolStatus === "failed"
-              ? "text-text_status_error"
-              : block.toolStatus === "in_progress"
-                ? "text-text_default_accent"
-                : "text-text_default_tertiary",
+            "h-4 w-4 shrink-0",
+            status === "error" ? "text-text_status_error" : "text-text_default_tertiary",
           ].join(" ")}
-        >
-          {t(statusKey)}
+        />
+        <span className="font-family-code truncate text-caption-small-strong text-text_default_primary">
+          {label}
         </span>
+        {showStatusLabel && statusLabelKey !== undefined ? (
+          <span
+            className={[
+              "flex-none text-caption-small-strong",
+              status === "error"
+                ? "text-text_status_error"
+                : status === "running"
+                  ? "text-text_default_accent"
+                  : "text-text_default_tertiary",
+            ].join(" ")}
+            data-testid="tool-card-status"
+          >
+            · {t(statusLabelKey as MessageKey)}
+          </span>
+        ) : null}
+        {resourcePath ? (
+          <span
+            className="text-caption-small-strong min-w-0 flex-1 truncate text-text_default_secondary"
+            title={resourcePath}
+            data-testid="tool-card-resource-path"
+          >
+            {resourceDisplayName(resourcePath)}
+          </span>
+        ) : (
+          <span className="min-w-0 flex-1" />
+        )}
         {subagent ? (
           <button
             type="button"
@@ -524,6 +544,7 @@ function ToolCard({ block, t, onOpenFile }: { block: TranscriptBlock; t: (key: M
             data-subagent-status={subagent.status}
             onClick={(event) => {
               event.stopPropagation();
+              event.preventDefault();
               if (subagent.sessionId) {
                 void switchSession(subagent.sessionId).catch(() => {});
               }
@@ -540,16 +561,9 @@ function ToolCard({ block, t, onOpenFile }: { block: TranscriptBlock; t: (key: M
             {subagentLabel}
           </button>
         ) : null}
-        {block.toolArgs ? (
-          <span className="min-w-0 flex-1 truncate text-caption-small-strong text-text_default_tertiary">
-            {block.toolArgs}
-          </span>
-        ) : (
-          <span className="min-w-0 flex-1" />
-        )}
-      </button>
+      </summary>
 
-      {open && hasBody ? (
+      {hasDetail ? (
         <div className="border-t border-border_light px-2.5 py-1.5">
           {paths.length > 0 ? (
             <div className="mb-1 flex flex-wrap gap-1">
@@ -560,7 +574,10 @@ function ToolCard({ block, t, onOpenFile }: { block: TranscriptBlock; t: (key: M
                   title={path}
                   data-testid="tool-card-path"
                   data-path={path}
-                  onClick={() => onOpenFile(path)}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    onOpenFile(path);
+                  }}
                   className="tool-resource-reference max-w-[260px] truncate rounded-md bg-bg_grouped_tertiary_elevated px-1.5 py-0.5 text-caption-small-strong text-text_default_secondary transition-colors hover:bg-bg_interaction_tertiary_hover hover:text-text_default_primary focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-border_accent"
                 >
                   {path}
@@ -568,13 +585,179 @@ function ToolCard({ block, t, onOpenFile }: { block: TranscriptBlock; t: (key: M
               ))}
             </div>
           ) : null}
-          {output.length > 0 ? (
-            <pre className="codeblock-code thin-scrollbar max-h-[320px] overflow-auto rounded-lg p-2 text-caption-small-strong whitespace-pre-wrap text-text_default_secondary">
-              {output.join("\n")}
-            </pre>
+          {status === "running" && !inputText && !resultText && !errorText ? (
+            <div
+              className="text-caption-small-strong text-text_default_tertiary"
+              data-testid="tool-card-running"
+            >
+              {t("tool.runningDetail")}
+            </div>
+          ) : null}
+          {inputText ? (
+            <ToolDetailSection label={t("tool.section.input")} value={inputText} />
+          ) : null}
+          {resultText ? (
+            <ToolDetailSection label={t("tool.section.result")} value={resultText} />
+          ) : null}
+          {errorText ? (
+            <ToolDetailSection label={t("tool.section.error")} value={errorText} error />
           ) : null}
         </div>
       ) : null}
-    </div>
+    </details>
+  );
+}
+
+/** One 「输入 / 结果 / 错误」 body section of a tool card. The error
+ *  section renders its label and body in the error colour; every body
+ *  clamps at `TOOL_DETAIL_CHAR_LIMIT` (2000) with a `...` suffix, the
+ *  reference truncation rule. */
+function ToolDetailSection({
+  label,
+  value,
+  error = false,
+}: {
+  label: string;
+  value: string;
+  error?: boolean;
+}) {
+  return (
+    <section className="mb-1.5 last:mb-0" data-testid={error ? "tool-card-error-section" : undefined}>
+      <div
+        className={[
+          "text-caption-small-strong mb-0.5",
+          error ? "text-text_status_error" : "text-text_default_tertiary",
+        ].join(" ")}
+      >
+        {label}
+      </div>
+      <pre
+        className={[
+          "codeblock-code thin-scrollbar max-h-[320px] overflow-auto rounded-lg p-2 text-caption-small-strong whitespace-pre-wrap",
+          error ? "text-text_status_error" : "text-text_default_secondary",
+        ].join(" ")}
+      >
+        {clampDetailText(value)}
+      </pre>
+    </section>
+  );
+}
+
+/**
+ * Whole-turn process bar (ticket 46 — D6, PR3), lifted here from
+ * `chat.tsx` with the reference (`WebuiTurnProcess`) summary restored.
+ *
+ * The summary row is the composite 「思考 N 次，用了 M 次工具，共执行
+ * X 分 Y 秒」; parts with a zero count drop out. A live turn renders
+ * 「已执行 N 秒」 and re-renders once per second; a settled turn adds
+ * the output rate `N token/s` on the right. A 0.5px separator closes
+ * the bar from below, the reference rule.
+ *
+ * Duration sources: a settled turn reads `processedDuration` (the
+ * `§§ processed_duration` marker the server writes at finalise); a
+ * live turn ticks from `running.startedAt`. The rate is DERIVED, not
+ * measured tokens: the wire transcript carries no per-turn token
+ * count (the ACP usage event only accumulates session totals
+ * server-side, and this ticket's red line forbids touching the four
+ * server files), so the number is `answerChars / seconds` — the same
+ * fallback formula the reference applies when its runtime reports no
+ * `usage.outputTokens`. See `lib/turn-stats.ts`.
+ *
+ * No toggle: the retired chat.tsx version duplicated the same
+ * sentence in an expandable detail; the reference renders a plain
+ * summary row when the turn has no expandable content of its own, and
+ * here the activity groups above the bar already own the folding.
+ * The `turn-process-disclosure` testid is kept.
+ */
+export function TurnProcessDisclosure({
+  stats,
+  processedDurationMs,
+  t,
+  active = false,
+  startedAtMs,
+}: {
+  stats: TurnStats;
+  /** Settled turns only — `block.processedDuration` in milliseconds. */
+  processedDurationMs?: number;
+  t: (key: MessageKey) => string;
+  /** True while the engine is still streaming THIS turn. */
+  active?: boolean;
+  /** `running.startedAt` — the live turn's tick anchor. */
+  startedAtMs?: number | null;
+}) {
+  // Live seconds render 0 on the first (SSR + hydration) frame and
+  // start ticking from the effect — never from Date.now() during
+  // render, which would desync server and client markup.
+  const [liveSeconds, setLiveSeconds] = useState<number | null>(null);
+  useEffect(() => {
+    if (!active) return undefined;
+    const tick = () => {
+      if (typeof startedAtMs !== "number") return;
+      setLiveSeconds(Math.max(0, Math.floor((Date.now() - startedAtMs) / 1000)));
+    };
+    tick();
+    const timer = window.setInterval(tick, 1000);
+    return () => window.clearInterval(timer);
+  }, [active, startedAtMs]);
+
+  const seconds = active
+    ? (liveSeconds ?? 0)
+    : typeof processedDurationMs === "number"
+      ? Math.max(0, Math.floor(processedDurationMs / 1000))
+      : 0;
+
+  // 「M 分 N 秒」 over a minute, bare seconds under it — the reference
+  // duration formatter.
+  const durationLabel =
+    seconds >= 60
+      ? t("turn.duration.minutes")
+          .replace("{{minutes}}", String(Math.floor(seconds / 60)))
+          .replace("{{seconds}}", String(seconds % 60))
+      : t("turn.duration.seconds").replace("{{seconds}}", String(seconds));
+
+  const parts: string[] = [];
+  if (stats.thinking > 0) {
+    parts.push(t("activity.thoughtSteps").replace("{{count}}", String(stats.thinking)));
+  }
+  if (stats.tools > 0) {
+    parts.push(t("turn.usedTools").replace("{{count}}", String(stats.tools)));
+  }
+  const elapsedTemplate = active ? t("turn.elapsedActive") : t("turn.elapsedTotal");
+  const summary = [...parts, elapsedTemplate.replace("{{duration}}", durationLabel)].join("，");
+
+  const outputRate =
+    !active && seconds > 0 && stats.answerChars > 0
+      ? Math.round(stats.answerChars / seconds)
+      : null;
+
+  return (
+    <section className="pt-2" data-testid="turn-process-disclosure">
+      <div
+        className="flex min-w-0 flex-wrap items-center gap-x-2"
+        data-testid="turn-process-summary"
+      >
+        <span
+          className="text-activity-body-small flex items-center gap-1 py-1 text-center text-sm font-normal leading-5 tracking-normal text-text_label_tertiary_default"
+          data-testid="turn-process-summary-text"
+          data-summary-text={summary}
+        >
+          {summary}
+        </span>
+        {!active && outputRate !== null ? (
+          <span
+            className="text-size_12 ml-auto text-text_default_tertiary tabular-nums"
+            data-testid="turn-output-rate"
+          >
+            <span className="sr-only">{t("turn.outputRateSr")}</span>
+            {outputRate} token/s
+          </span>
+        ) : null}
+      </div>
+      <div
+        className="mt-2 border-b-[0.5px] border-border_default"
+        data-testid="turn-process-separator"
+        aria-hidden="true"
+      />
+    </section>
   );
 }
