@@ -1,5 +1,8 @@
 # Examples
 
+Try the [Pocket Pet walkthrough](../examples/pocket-pet) for a visual example with two real requests: add a focus timer, then change pause to a long press. It includes a starter, finished implementation, and tests. No hardware is required.
+
+
 Build the project using the [installation guide](installation.md). Run the `pnpm mcode` commands below from the source root. For interactive tasks, open the target project directory and launch the built CLI by absolute path.
 
 ## 1. Edit code and run tests
@@ -169,6 +172,8 @@ The image is sent as input to the selected model service. Use content suitable f
 See [capability coverage](tui-capabilities.md) for custom MCP, managed connectors, and media tools, and the [authenticated project MCP walkthrough](#5-connect-an-authenticated-project-mcp-server) below for your own remote server.
 
 ## 4. Manage plugins
+
+Synchronous Hooks can show [TUI-only messages](hooks.md) with `systemMessage`, including notices after a normal Stop.
 
 Open `/plugins` inside the TUI, or run `mcode plugin` from a shell to open that panel. For a source build, use `pnpm mcode plugin` from the source root instead; the commands below use the installed `mcode` executable.
 

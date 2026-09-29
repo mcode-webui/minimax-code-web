@@ -19,16 +19,16 @@ afterEach(() => {
 });
 
 describe.skipIf(process.platform !== "win32")("Windows source contract", () => {
-  // Two *synchronous* `fsutil` spawns. Vitest's default 5s budget is not enough
-  // for that on a loaded Windows runner — measured 8.4s in CI, where the failure
-  // is a timeout rather than a wrong answer. The first spawn of a binary on a
-  // Defender-scanned volume pays the scan; on main's own run the same test
-  // passed inside the default, which is what makes this look flaky rather than
-  // broken. A generous explicit budget keeps what the test actually asserts —
-  // that a real Windows host accepts this checkout on a local NTFS volume —
-  // without turning it into a stopwatch on the runner.
+  // One *synchronous* `powershell.exe` spawn. Vitest's default 5s budget is not
+  // enough for PowerShell cold start on a loaded Windows runner, where the
+  // failure is a timeout rather than a wrong answer. A generous explicit budget
+  // keeps what the test actually asserts — that a real Windows host accepts this
+  // checkout on a local NTFS volume — without turning it into a stopwatch on the
+  // runner. `allowNonFixed: false` keeps the assertion on a local fixed volume
+  // rather than inheriting the GITHUB_ACTIONS default, which permits a network
+  // drive and would let a non-local checkout pass a test named for a local one.
   it("accepts the Windows checkout on a local NTFS volume", { timeout: 60_000 }, () => {
-    assert.deepEqual(checkWindowsSourceLocation(), {
+    assert.deepEqual(checkWindowsSourceLocation({ allowNonFixed: false }), {
       ok: true,
       skipped: false,
     });
