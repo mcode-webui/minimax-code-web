@@ -35,6 +35,7 @@ webui 受三项约束限制：
 | `bilingual-ui` | §10 UI / UX |
 | `lan-sharing` | §11 网络与访问控制 |
 | `token-auth` | §11 网络与访问控制 |
+| `git-panel` | §12 Git 面板 |
 | `mobile-responsive` | §10 UI / UX |
 | `bounded-workspace-search` | §6 工作区 |
 | `credential-file-preview-guard` | §11 网络与访问控制 |
@@ -58,7 +59,7 @@ CI 会对上述每一个名称是否出现在本文档中进行断言
 | Markdown 内 Mermaid 图渲染（slice 23） | ✅ | 代码围栏语言写 `mermaid` 即渲染为图，而非代码块。围栏语言经"语言→渲染器"注册表分发（`webapp/lib/markdown.ts` 的 `registerLanguageRenderer`，107-113 行）；mermaid 在模块导入时自注册（`webapp/lib/mermaid-renderer.ts:64-71`），其他语言的渲染器可经同一接缝接入——markdown 主流程不针对语言名写分支。图表库在页面首张图出现时才动态加载（`components/mermaid-block.tsx:62-66`），该文件带一年 immutable 强缓存（`server/lib/static.js:66`）；没有 mermaid 围栏的页面完全不加载。图跟随浅色/深色主题（`components/markdown-html.tsx:52-66` 监听 `<html>` class；`components/mermaid-block.tsx:156-166、223-229` 按主题重新初始化）。语法错误时渲染可读的失败卡片——错误信息 + 可复制的原始源码（`components/mermaid-block.tsx:285-307`）——文档其余部分照常渲染。限制：图按列宽缩放、超宽时在卡片内横向滚动（`webapp/styles/mermaid.css:62-80`）；中文标签经字体栈正常显示（`components/mermaid-block.tsx:109`）；图不产生标题，因此不会进入任何按标题组织的大纲（围栏只产出 `<pre>`/`<div>` 占位对，不产出 `h1`-`h6`，见 `lib/mermaid-renderer.ts:44-57`）。依赖 `mermaid` 11.12.1（MIT）已登记于 `release/dependency-licenses.json`。 |
 | Markdown 数学公式（KaTeX，行内 `$…$`、块级 `$$…$$`、```` ```math ```` 代码块） | ✅ | 与 Mermaid 同一条管线：行内经 marked 扩展 `webuiMath` 识别 `$…$`/`$$…$$`，`math` 代码块经语言→渲染器注册表分发（`webapp/lib/math-renderer.ts`，导入时自注册），两类围栏互不干扰。单个 `$` 仅在存在同 行闭合定界符、内容不以数字开头时才视为公式——`成本 $5 and $10`、`$HOME`、未闭合的 `$` 均按普通文本显示。公式无法解析时降级为原始写法的代码样式（行内降级 `<code class="inline-code">`，代码块降级为普通代码块），页面绝不白屏。KaTeX 以 `output: "html"` 运行（只产出 `span`/`svg`/`path`，清洗白名单按固定属性集放行；`<math>`/MathML 仍为整体丢弃标签），`trust: false`（`\href` 只显示红色警示文字，不会成为链接）。内联 `style` 仅在 `span` 上保留且值须通过 `isSafeStyleValue` 校验——禁止括号（杜绝 `url()`/`expression()`），`position`/`background`/`behavior` 直接拒绝；`components/markdown-html.tsx` 将 style 属性解析为 React 样式对象（`parseInlineStyle`，React 不接受字符串 style）。样式表 vendored 于 `webapp/styles/katex.css`（源自 `katex/dist/katex.min.css`，`@font-face` 指向 `/fonts/katex/…`），由 `app/layout.tsx` 加载；字体（60 个文件 + MIT 许可声明）vendored 于 `webapp/public/fonts/katex/`。公式为继承文字色的内容，深浅主题均正常、无需重渲染。已知成本：`katex` JS 随前端主包加载，不像 mermaid 懒加载（数学管线是同步 `renderToString`）。依赖 `katex` 0.18.7（MIT）已登记于 `release/dependency-licenses.json`。测试：`webapp/test/markdown-math.test.ts`。 |
 | 运行中取消 | ✅ | acp `session/cancel` 以 notification 形式发送，并钉在该 cid 的活动子进程上（`/api/protocol/cancel` → `server/lib/mcode-rpc.js#cancelSession`）。只有当 notification 无法投递时，才会走硬杀兜底（`/api/stop` → SIGTERM/SIGKILL）。acp 会话在排空前可能还会再发出几个事件。 |
-| 回退 / 分叉某条消息 | ⚠ | 引擎已实现 `session/fork` 和 `session/resume`（`MCODE_ACP_CAPABILITIES.fork / .resume = true`），但目前 webui 还没有路由暴露它们——参见 [§13](CAPABILITIES.zh-CN.md#13-要启用--行-mcode-需要增加什么)。 |
+| 回退 / 分叉某条消息 | ⚠ | 引擎已实现 `session/fork` 和 `session/resume`（`MCODE_ACP_CAPABILITIES.fork / .resume = true`），但目前 webui 还没有路由暴露它们——参见 [§14](CAPABILITIES.zh-CN.md#14-要启用--行mcode-需要增加什么)。 |
 | 编辑已发送的消息并重新发送 | ❌ | acp 协议未暴露 |
 | 重新生成最后一条助手回复 | ❌ | acp 没有丢弃某一轮的方法 |
 | 流式输出中间思维链（`<thinking>`） | ⚠ | 如果 delta 中存在则会渲染，但引擎将其作为纯文本发出——没有结构化分离 |
@@ -197,7 +198,21 @@ CI 会对上述每一个名称是否出现在本文档中进行断言
 | 速率限制 | ✅ | v2.0.0（lease C03）：`server/lib/rate-limit.js`（252 行）——按 IP 的令牌桶，默认 60 次/分钟 + 100 突发容量 + 令牌持有者 2× 倍率。路由器门禁 4 在超限时返回 429。`lib-rate-limit.test.js`（339 行，21 个单元测试）。 |
 | 凭据文件预览守卫（slice 16） | ✅ | 按文件名匹配 `.env`/`.env.*`/`*.pem`/`*.key`/`id_*` SSH 密钥/`known_hosts`/`authorized_keys`/`.npmrc`/`.pypirc`/`.netrc`/`.pgpass`/`credentials*` 及备份后缀集，`GET /api/fs/read-file` 默认 `403 {code:"credential"}`，加 `?confirm=1` 才放行。谓词（`server/lib/credential-file.js`）与 `webapp/lib/credential-file.ts` 逐字镜像、同夹具测试防漂移；`GET /api/fs/search` 复用同谓词、命中以 `credential:true` 标记但不返回内容；slice 27 扩到写侧（`POST /api/fs/write` 同样默认拒绝）。按名匹配因此**不防硬链接别名**（同 inode 的另一名字绕过），符号链接已用 `realpathSync` 解析。 |
 
-## 12. 运维
+## 12. Git 面板
+
+| 功能 | 状态 | 原因 / 位置 |
+|---|---|---|
+| 工作区状态（`git status --porcelain=v1 -b`） | ✅ | `GET /api/git/status` —— `server/lib/git.js#gitStatus`。返回当前分支 + 上游分支 + 领先/落后提交数，以及每个文件的 `{x, y, path, origPath, staged}`。非 git 目录应答 `{ok:false, isRepo:false}`，面板据此渲染空状态，而不是弹一条红色 toast。 |
+| 本地分支列表 + 当前分支标记 | ✅ | `GET /api/git/branches` —— `server/lib/git.js#gitBranches`。执行 `branch --list --format=%(refname:short)`；行首的 `* `（`--list` 默认标记当前分支的记号）转成 `current` 标志。 |
+| 单文件与 HEAD 的差异 | ✅ | `GET /api/git/diff?dir=&file=` —— `server/lib/git.js#gitDiff`。先试 `git diff HEAD -- <file>`；未跟踪文件在 HEAD 中没有条目、这条路查不出差异，于是回退到 `git diff --no-index -- /dev/null <file>` 合成一份全新增差异。`--` 分隔符是选项注入的边界：用户提供的路径永远在它之后，因此只能被当作路径，不能被当作 git 选项。 |
+| 切换分支（破坏性操作，客户端二次确认） | ✅ | `POST /api/git/checkout {dir, branch}` —— `server/lib/git.js#gitCheckout`。分支名须匹配 `^[A-Za-z0-9._/-]+$` 且不得以 `-` 开头（否则 git 会把它读成自己的选项）；围栏强制把 `dir` 约束在允许的根目录内；`execFile` 让 `git` 的每个 argv 元素保持字面量。 |
+| 右侧面板的 Git 面（`GitPanel`） | ✅ | `webapp/components/panels.tsx#GitPanel`（slice 03）。当前分支 + 变更文件列表，点击文件可预览差异；带确认提示的分支切换器；非 git 或超出允许根的目录显示空状态。围栏在服务端执行，面板只读响应里的 `ok`：`ok:false` 走空状态，不弹红色 toast。 |
+| `/review` 斜杠命令（对齐 TUI） | ✅ | `server/lib/interaction/commands.js#bodyReview` + `handleLocalSlash` / `handleCmdCommand`。向聊天中发出一条 `staged / unstaged / untracked` 三段概览，数据来自与 Git 面板共用的 `gitStatus` 辅助函数——两处看到的是同一份状态。 |
+| 与 `/api/fs/*` 共用的围栏 | ✅ | `assertWorkspacePath`（`server/lib/workspace.js`）。每个 git 入口都把请求的 `dir` 交由它校验；越界时应答 `{ok:false, error:"…不在任何允许根内…"}`，面板读 `ok` 字段而非 HTTP 状态码。与文件系统路由同一道围栏，因此绕过其中一个也就绕过了另一个——不存在只在 git 侧收紧的路径。 |
+| execFile，不走 shell | ✅ | `lib/git.js` 中的 `run(dir, args)` 使用 `execFile('git', ['-C', dir, ...args], …)`，每个 argv 元素都是子进程的字面量参数。不经过 shell，就没有元字符攻击面。 |
+| 本地分支白名单（正则 + 前导连字符防护） | ✅ | `gitCheckout` 中的 `BRANCH_RE` 与 `branch.startsWith('-')`。面板只列出服务端 `/api/git/branches` 返回的分支；服务端白名单是纵深防御——即使请求被伪造绕过前端，服务端仍会拒绝。 |
+
+## 13. 运维
 
 | 功能 | 状态 | 原因 / 位置 |
 |---|---|---|
@@ -216,7 +231,7 @@ CI 会对上述每一个名称是否出现在本文档中进行断言
 | SBOM + 本地 CVE 门禁 | ✅ | `pnpm --filter @mavis/webui sbom` → CycloneDX 1.5（`scripts/gen-sbom.mjs`）+ `pnpm audit --omit=dev` + 仓库根目录 `docs/verification.md` 矩阵。webui 本身没有插件级 CI 工作流；唯一的强制项是 `pnpm --filter @mavis/webui check`（文档对齐关）以及 monorepo 的 `pnpm verify`。 |
 | `token.first_run` SSE 事件 | ✅ | `server/lib/state-bus.js#pushTokenFirstRun` 在首次启动时向所有 `sseByCid` 广播 `{event: "token.first_run", data: {token, persistPath}}`。由 `auth.js#isFirstRun()` + 持久化的 `tokenAcknowledged` 标志防重放。 |
 
-## 13. 要启用 ❌ 行，mcode 需要增加什么
+## 14. 要启用 ❌ 行，mcode 需要增加什么
 
 - `set_mode` / `set_config_option` → 在 UI 中实现会话中途切换权限模式
 - `cancel` → 真正的运行中取消，而不仅仅是 SIGTERM
