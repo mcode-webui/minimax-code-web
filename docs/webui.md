@@ -302,6 +302,57 @@ behaviour (`routes/chat.js` finalize drain) is unchanged: still-viewing
 writes into `cs.chat`; switched-away writes via
 `appendChatToSession(owningSid, lines)`.
 
+### Parallel turns in one tab
+
+A tab can run two conversations at the same time. The claim `POST /api/send`
+takes is keyed by `(cid, conversation)`, not by `cid` alone.
+
+`cid` is the browser-TAB identity — one `localStorage['webui_cid']`, generated
+once and deliberately stable across a session switch so one tab keeps one
+client state object, one SSE channel, one coalesce/revision bookkeeping and
+one `mcode acp` transport connection. Those stay tab-scoped on purpose. The
+turn claim was not one of them: keyed by `cid` alone, a long turn in one
+conversation refused every send into every other conversation of the same tab
+with `409 cid-busy` until it finished.
+
+| Situation | Result |
+| --- | --- |
+| Send into session A while session B's turn runs (same tab) | `200`, runs in parallel |
+| Second send into the SAME session while its turn runs | `409 cid-busy` — the duplicate-execution guard (#126 D-2) |
+| Another tab or client already running that engine session | `409 session-busy` |
+| More live turns server-wide than `MCODE_MAX_CONCURRENT` | `409 at-capacity` |
+
+The conversation key is the webui record id, with `null` as a first-class key:
+it is the tab's unsaved draft, which is itself a conversation, and a tab has at
+most one. `handleSend` claims before that record exists (a brand-new session has
+no id yet) and creates it a few statements later with no `await` in between, so
+the claim is re-pointed onto the new id by `moveRunSession` — otherwise the
+second send into that conversation would find a free key and start a duplicate
+turn.
+
+Two consequences of the conversation being a first-class key are worth stating
+because they are load-bearing elsewhere:
+
+- **A first turn's record id changes under the run.** The draft is promoted to
+  the engine identity mid-turn (`bindDraftToMcodeSid`) and `cs.sessionId`
+  follows, so the id a run was claimed under stops matching the view. Every
+  lookup that answers "is this session the one that is streaming?" therefore
+  falls back to the engine session id, which does not change. This is why a
+  duplicate send into a first-turn conversation is answered `session-busy`
+  rather than `cid-busy` once the backfill has landed — both refuse.
+- **`MAX_CONCURRENT` counts turns, not busy clients.** One tab running two
+  conversations spends two of the slots, because that is two engine
+  subprocesses; that is the resource the ceiling exists to bound.
+
+What stays tab-scoped, and why it is safe under two live turns:
+
+| Concern | Key | Why it is still correct |
+| --- | --- | --- |
+| Client state, SSE channel, snapshot revision, push coalescing | `cid` | One projection per tab is the contract; the snapshot is scoped per conversation by `snapshotViewFields` |
+| Stream line buffer (`runChatByCid`) | `(cid, engineSessionId)` | Already per conversation. `createRunChat` replaces only the calling run's own key — the previous whole-tab replace would have dropped a sibling's live lines |
+| Run indicator / "thinking" state | the viewed conversation | `viewOwnsLiveRun` resolves the viewed session's run, so a sibling's turn neither claims nor clears this view's indicator |
+| Engine child process, `/api/stop`, session RPCs | `(cid, engineSessionId)` | One subprocess per turn. `/api/stop` and `session/cancel` / `session/set_config_option` target the VIEWED session's child; a tab-wide lookup would have signalled the wrong turn |
+
 ### What the user sees
 
 - **Side effect**: the file-tree panel re-roots under the new
@@ -2131,7 +2182,7 @@ marker), not by tool name.
 | `GET` | `/api/acp-sessions` | `routes/sessions.js#handleAcpSessions` | mcode acp session list |
 | `GET` | `/api/acp-session-title` | `routes/sessions.js#handleAcpSessionTitle` | title helper for `?sid=...` |
 | `GET` | `/api/sessions/:id/export` | `routes/export.js` | `?format=md\|json[&download=true]`; `400` on bad format; `403` on authorize decline; `404` on missing session |
-| `POST` | `/api/send` | `routes/chat.js#handleSend` | fire-and-forget; `200 {ok}`; `400 content required`; `409 {reason:"cid-busy"\|"session-busy"\|"at-capacity", running?, limit?}`; the idle watchdog aborts a run that stays silent for `MCODE_WEBUI_PROMPT_IDLE_TIMEOUT` (default 120 s) |
+| `POST` | `/api/send` | `routes/chat.js#handleSend` | fire-and-forget; `200 {ok}`; `400 content required`; `409 {reason:"cid-busy"\|"session-busy"\|"at-capacity", running?, limit?}`. The claim is per conversation, so a second conversation of the same tab is not blocked — see [Parallel turns in one tab](#parallel-turns-in-one-tab); the idle watchdog aborts a run that stays silent for `MCODE_WEBUI_PROMPT_IDLE_TIMEOUT` (default 120 s) |
 | `POST` | `/api/stop` | `routes/chat.js#handleStop` | `200 {ok, wasRunning, cancelled, hardKilled, note}` |
 | `POST` | `/api/cmd` | `routes/chat.js#handleCmd` | the eight button commands only; `200 {ok, cmd}` when claimed, `400 {ok:false, reason:"unknown_command", knownCommands, suggestion}` when not — see [Slash commands](#slash-commands-which-endpoint-answers-them-webui-parity-ticket-65) |
 | `POST` | `/api/usage` | `routes/usage.js#handleUsage` | record-only + projection |

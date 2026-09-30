@@ -17,6 +17,7 @@ import {
   getActiveChild,
   beginRun,
   endRun,
+  moveRunSession,
   createRunChat,
   drainRunChat,
 } from "../lib/state-bus.js";
@@ -123,15 +124,27 @@ export async function handleSend(req, res, ctx) {
   // subprocess, so without this a double-send (retry, two tabs, a scripted
   // client) silently starts a second one: measured on a running server, ten
   // concurrent sends produced ten live engine processes. Three claims are
-  // checked — this cid is idle, no other cid is running this engine session,
-  // and the server is under MAX_CONCURRENT (which /api/health advertises as
-  // `maxConcurrent` and which nothing used to read).
+  // checked — this CONVERSATION is idle, no other client is running this
+  // engine session, and the server is under MAX_CONCURRENT (which
+  // /api/health advertises as `maxConcurrent` and which nothing used to read).
+  //
+  // The claim is keyed by (cid, cs.sessionId), not by cid alone: cid is the
+  // browser-TAB identity, so a cid-wide lock made a long turn in one
+  // conversation refuse sends in every other conversation of the same tab
+  // with 409 `cid-busy`. Two conversations of one tab are two engine
+  // subprocesses and two independent line buffers (see run-mirror), so they
+  // run in parallel; a second send into the SAME conversation is still the
+  // duplicate-execution guard and is still refused.
   //
   // Answering 409 rather than acking and failing later is deliberate: the ack
   // is fire-and-forget, so a rejection after it would be invisible to the
   // caller. api.sendMessage surfaces a non-2xx as an error, so the composer
   // shows it.
-  const claim = beginRun(cid, cs && cs.mcodeSessionId);
+  //
+  // `runSessionId` tracks the key this turn claimed under, and is what the
+  // `finally` releases — the draft-creation block below may replace the key.
+  let runSessionId = (cs && cs.sessionId) || null;
+  const claim = beginRun(cid, cs && cs.mcodeSessionId, runSessionId);
   if (!claim.ok) {
     res.writeHead(409, { "Content-Type": "application/json; charset=utf-8" });
     return res.end(
@@ -195,6 +208,15 @@ export async function handleSend(req, res, ctx) {
     // the engine-side bind/title writes must know where the turn CAME
     // FROM, not where the user is looking now.
     const owningWebuiSessionId = (cs && cs.sessionId) || null;
+    // The draft block above may have turned this tab's `null` conversation
+    // key into a real record id. Move the claim onto it so the NEXT send
+    // into this conversation is refused as the duplicate it is. Both
+    // statements run without an intervening `await`, so no second request
+    // can observe the gap.
+    if (owningWebuiSessionId !== runSessionId) {
+      moveRunSession(cid, runSessionId, owningWebuiSessionId);
+      runSessionId = owningWebuiSessionId;
+    }
 
     // Detect slash commands that we can satisfy without spawning mcode
     const slashResult = await handleLocalSlash(content, cs, cid);
@@ -220,7 +242,7 @@ export async function handleSend(req, res, ctx) {
     // locally-handled slash command above never leaves a stale buffer
     // behind). The engine's stream writes land in this buffer, never
     // directly in cs.chat; the finalize drain below flushes it.
-    createRunChat(cid, cs && cs.mcodeSessionId, []);
+    createRunChat(cid, cs && cs.mcodeSessionId, [], owningWebuiSessionId);
     const t0 = Date.now();
     const r =
       process.env.MCODE_USE_ACP === "0"
@@ -385,10 +407,13 @@ export async function handleSend(req, res, ctx) {
     persistCurrentChat(cs);
     pushStateFor(cid);
   } finally {
-    // Releases the cid claim and, if this run owned it, the engine-session
-    // claim. Covers every exit after the ack — including the early return for
-    // a locally-handled slash command, which never spawns an engine.
-    endRun(cid);
+    // Releases THIS conversation's claim and, if this run owned it, the
+    // engine-session claim — a sibling conversation running in the same tab
+    // keeps both. Covers every exit after the ack — including the early
+    // return for a locally-handled slash command, which never spawns an
+    // engine, and a throw before the draft block, where the key is still
+    // the `null` one `beginRun` was given.
+    endRun(cid, runSessionId);
   }
 }
 
@@ -400,7 +425,10 @@ export async function handleSend(req, res, ctx) {
 export async function handleStop(_req, res, ctx) {
   const cid = ctx.cid;
   const cs = ctx.cs;
-  const child = getActiveChild(cid);
+  // The VIEWED session's child, not "any child of this tab": a tab may run
+  // two conversations at once, and stopping must not signal the other
+  // turn's subprocess.
+  const child = getActiveChild(cid, cs && cs.mcodeSessionId);
   const wasRunning = !!child;
   let cancelled = false;
   let hardKilled = false;

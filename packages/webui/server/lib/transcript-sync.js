@@ -134,12 +134,16 @@ export function syncTranscriptsOnce({ dbPath = MCODE_RUNTIME_DB } = {}) {
       const stale = lastDelta
         ? Date.now() - lastDelta > TRANSCRIPT_SYNC_WEDGED_MS
         : true;
-      if (stale && !getActiveChild(cid)) {
+      // Scoped to THIS session's child: a sibling conversation streaming in
+      // the same tab must not make a genuinely wedged view look alive (and
+      // vice versa — an idle session must still heal while another runs).
+      const child = getActiveChild(cid, cs.mcodeSessionId);
+      if (stale && !child) {
         // fall through to the heal path below
       } else {
         continue;
       }
-    } else if (getActiveChild(cid)) {
+    } else if (getActiveChild(cid, cs.mcodeSessionId)) {
       continue;
     }
 

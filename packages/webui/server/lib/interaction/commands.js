@@ -205,7 +205,9 @@ async function bodyUsage(cs, cid) {
 }
 
 async function bodyStop(cs, cid) {
-  const child = getActiveChild(cid);
+  // Scoped to the viewed session: a tab running two conversations has two
+  // children, and /stop must not kill the other turn.
+  const child = getActiveChild(cid, cs && cs.mcodeSessionId);
   const wasRunning = !!child;
   if (child) {
     try {
