@@ -906,11 +906,14 @@ deep-link — opens the desktop's modal instead of appending a rail draft:
 
 | Dialog region | Contract |
 | --- | --- |
-| Provider select (「请选择提供商」) | Options are `GET /api/providers/presets` plus a 「+ 其他（自定义）」 sentinel; choosing a preset fills id / label / protocol / baseURL / auth-type, choosing the sentinel expands the custom fields (id, display name, protocol, auth type, baseURL). DeepSeek / Zhipu AI（智谱）/ Moonshot AI (China) carry the reference's spellings; other local presets keep their catalogue labels. A 404 catalogue degrades to the custom-only dropdown |
+| Provider select (「请选择提供商」) | Options are `GET /api/providers/presets` plus a 「+ 其他（自定义）」 sentinel; choosing a preset fills id / label / auth-type / baseURL and seeds 「API 格式」, choosing the sentinel expands the custom fields (id, display name, auth type, baseURL). DeepSeek / Zhipu AI（智谱）/ Moonshot AI (China) carry the reference's spellings; other local presets keep their catalogue labels. A 404 catalogue degrades to the custom-only dropdown |
+| API 格式 | The desktop's **second** field, rendered for every provider rather than only for 「其他（自定义）」. It is the existing wire `protocol` under the desktop's labels — `OpenAI Completions` / `Anthropic Messages` / `Gemini` — so no new format reaches the backend. Choosing a preset seeds it from that preset's own protocol and it stays editable afterwards. The protocol select that used to sit inside the custom branch was removed rather than kept alongside: two controls bound to one value is how the preset and custom branches end up disagreeing about what gets saved |
+| 自定义 Headers | Rows of (name, value) with 「＋ 添加 Header」 and a per-row remove, held as a **list** rather than an object so a half-typed row survives editing. A blank name is dropped, a name is trimmed but a value is not, and a later duplicate wins — all three decided in one place (`headerPairsToRecord`), so the dialog, the PUT body and the server cannot disagree. Zero rows render an explicit placeholder rather than collapsing. The collapse result lands in `auth.headers` on the PUT body and comes back in `auth.headers` on `GET /api/providers` |
 | API key (`AntInput.Password`) | The eye toggle is safe here and only here: the field's value is what the user just typed, not a masked placeholder — the editor's no-reveal rule (keep-existing-key convention) is untouched |
 | Model entries (「模型 01…」 + connectivity test + ↻ reset + 🗑 delete) | Five fields: name → `id`, context window → `contextLimit`, max output tokens → **disabled with the 「本地版不适用」 marker** (the `/api/providers` PUT contract has no field to persist it), reasoning levels → `thinkingLevels` fed from `THINKING_LEVELS` (the low/medium/high contract is frozen; the reference's 「max」 placeholder example is deliberately not copied), attachments → four checkboxes 图片/PDF/视频/音频 mapping to `image`/`file`/`video`/`audio` (`file` joined `MODALITIES`; `text` passes through untouched) |
 | 「＋ 添加」 / 「自动获取」 | Add appends a blank entry; auto-fetch opens the 「已获取模型」 dialog listing the **selected preset's built-in catalogue** with the note that it is not a live per-key query — the local backend has no model-listing proxy. With no preset selected the dialog states the missing capability instead of inventing rows. 「全选（n/N）」 + 取消/添加 follow the reference; picked entries arrive with their catalogue metadata. Both actions carry tooltips spelling out the split (manual entry vs catalogue pick; auto-fetch reads the list only and saves nothing); with zero entries the models section renders a dashed placeholder naming both paths instead of collapsing |
-| 取消 / 保存 | Save validates (provider chosen, unique id, per-entry `validateModelRow`), appends the draft to the panel's list, and PUTs through the **unchanged** `draftToWire` + `api.putProviders({version: 2})` path; on failure the dialog stays open with the typed input intact. The pair sits in a dedicated footer region (hairline separator + 16px clearance) at the h-9 control height, the black primary carrying the token shadow |
+| 跳过连通检测 / 连通检测 | The desktop's **form-level** check, on the left of the footer bar. It reuses the existing `POST /api/providers/test` contract with the live form values (protocol, key, baseURL **and the custom headers**, so the probe exercises the request that will actually be sent) and records one verdict, rendered as 「可达 · Nms」 / 「不可达：错误」. This is a different scope from the per-entry 检测 on each model card — that one asks whether a model id responds, this one asks whether the provider is reachable at all — so both exist. Editing any probed input (provider, API 格式, key, baseURL, auth type, any header row) drops the verdict, because a verdict that survived an edit is a pass for a request the provider will never see. Header values are re-validated server-side on this path too, since the test endpoint takes `auth` straight from the body without the PUT normaliser |
+| 取消 / 保存 | Save validates (provider chosen, unique id, per-entry `validateModelRow`), appends the draft to the panel's list, and PUTs through the **unchanged** `draftToWire` + `api.putProviders({version: 2})` path; on failure the dialog stays open with the typed input intact. The pair sits in a dedicated footer region (hairline separator + 16px clearance) at the h-9 control height, the black primary carrying the token shadow. 保存 is **disabled until the form-level check passes**, matching the reference footer and the greyed 保存 in the reference screenshot; 跳过连通检测 is the escape hatch for an operator who cannot reach the endpoint, and a line states which of the two is blocking. A disabled control with a stated reason and two ways to lift it is not a dead button |
 
 Ticket 54 invariants — no server-contract change (the `/api/providers` PUT
 body, `/api/set-model`, and every endpoint are untouched; the whole delta is
@@ -990,6 +993,57 @@ reference `design-ref/screenshots/byok-custom-model-official.png`):
   difference is the list's source (the local preset catalogue, not a
   live per-key query), which the fetch dialog already states
   honestly; no behaviour change was needed.
+
+**Ticket 85 — the three desktop fields the local dialog was missing**
+(`API 格式`, `自定义 Headers`, footer `连通检测` / `跳过连通检测`)
+
+The add surface was **already** dialog-based on this branch — that part of
+the request was a no-op, and no work was spent re-doing it. What was
+genuinely missing is below; the per-model-entry 检测 from ticket 56 and
+the page-inline **editing** flow are both untouched.
+
+`自定义 Headers` is the only one of the three that needed a contract
+change, so it is the one worth reading closely:
+
+| Layer | What it does |
+| --- | --- |
+| Dialog | Rows of (name, value). Held as a list, collapsed by `headerPairsToRecord` (blank names dropped, names trimmed, values not, later duplicate wins) |
+| `PUT /api/providers` | New **optional** field `providers[].auth.headers: Record<string,string>`. A body that omits it is byte-identical to the pre-ticket body and a stored provider without it loads to `{}` — the field is additive, not a migration |
+| `GET /api/providers` | Returns `auth.headers` **verbatim, unmasked** |
+| `engine-provider-sync` | Copies it to the engine's `options.headers`, omitted when empty. This is the load-bearing link: `local-runtime-v2` already merges `options.headers` into every upstream request for the provider (`catalog/provider-views.ts:218`), so no runtime change was needed |
+| `POST /api/providers/test` | Carries the headers into the probe, re-validated through the same grammar because this route takes `auth` from the body without the PUT normaliser |
+
+**Why headers are not masked, when `apiKey` is.** `apiKey` is masked
+because the server substitutes it on the operator's behalf — the operator
+never needs to read it back. A custom header is routing or tenant
+configuration the operator typed and must be able to edit, so masking it
+would create a write-only field. An operator who treats a header *value*
+as a secret has no way to express that here; the honest statement is that
+this field is not a place to keep credentials. The API Key field remains
+the only masked one.
+
+**Validation is a reject, not a strip.** Names must match the RFC 9110
+token grammar and values may not carry CR, LF or NUL; a record that fails
+rejects the whole PUT with an error naming the provider and the header.
+Silently stripping the character would leave the operator believing a
+header is in effect when the upstream never received it intact. Ceilings:
+20 headers, 128-char names, 4096-char values.
+
+**Probe asymmetry, stated.** The connectivity probe spreads operator
+headers FIRST, so the protocol's own required headers (`Content-Type`,
+`anthropic-version`, `Accept`) overwrite them. A probe answers "can I
+reach this provider", not "replay my headers exactly"; letting a
+mistyped `Content-Type` break the probe would make it answer a question
+the operator did not ask. The production request path has no such
+restriction.
+
+**Still not done** (deliberately, for the next batch): the desktop's
+「模型 01」 nested sub-card with 模型名称 / 上下文窗口 / 最大输出 Token is
+a **screenshot-only** shape — the reference implementation carries a
+single 模型名称 textarea instead, so the desktop is newer than the
+reference and there is no second source to check it against. Rebuilding
+the model-entry structure is a larger change than this batch and is left
+alone.
 
 **Ticket 53 invariants** — no server-contract change (the delta:
 `panels.tsx` / `usage-models-cards.tsx` / `icons.tsx` / `i18n.ts` plus two
