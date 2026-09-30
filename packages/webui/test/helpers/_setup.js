@@ -544,7 +544,11 @@ export async function setupMocks(t, overrides = {}) {
       handleLocalSlash: async () => ({ handled: false, continueMcode: false }),
       // routes/chat.js imports this too — a missing named export makes the
       // SUT import hang (Node 24.14 mock.module pitfall #4)
-      handleCmdCommand: async () => ({ ok: true }),
+      // The shape mirrors the REAL dispatcher (interaction/commands.js
+      // #handleCmdCommand → {handled, continueMcode}): routes/chat.js reads
+      // `handled` to choose between 200 and 400, so a mock answering
+      // `{ok:true}` made every command look unclaimed.
+      handleCmdCommand: async () => ({ handled: true, continueMcode: false }),
       // v0.5.bx 系列 patch: test/lib/slash.check.mjs tests the real matchSlash
       // — but we still provide a stub for the mocked version
       matchSlash: (content) => {

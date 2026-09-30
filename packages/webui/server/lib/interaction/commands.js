@@ -20,6 +20,7 @@ import {
   resetContext,
 } from "../sessions.js";
 import { ensureMcodeCommands } from "../acp-client.js";
+import { CMD_BUTTON_COMMANDS } from "./command-registry.js";
 import { runUsageQuery } from "../usage.js";
 import { pushStateFor, getActiveChild } from "../state-bus.js";
 import { gitStatus } from "../git.js";
@@ -33,21 +34,14 @@ export function matchSlash(content) {
   return { cmd: m[1], rest: m[2] || "" };
 }
 
-// webui-local commands shown in /help. Source of truth lives in
-// lib/acp-client.js#WEBUI_LOCAL_COMMANDS — this array is the
-// fallback when ensureMcodeCommands() hasn't returned yet (first
-// /help race). Kept as a private constant because the canonical
-// list is owned by acp-client.js.
-const LOCAL_HELP_FALLBACK = [
-  { name: "new", desc: "新建会话" },
-  { name: "clear", desc: "清空当前对话" },
-  { name: "status", desc: "查看当前状态" },
-  { name: "sessions", desc: "查看最近会话" },
-  { name: "review", desc: "审查工作区变更 (TUI /review)" },
-  { name: "help", desc: "可用命令" },
-  { name: "usage", desc: "查询用量" },
-  { name: "stop", desc: "停止当前任务" },
-];
+// webui-local commands shown in /help. This array is the fallback when
+// ensureMcodeCommands() hasn't returned yet (first /help race) — the
+// live list normally comes from lib/acp-client.js#WEBUI_LOCAL_COMMANDS.
+// The fallback entries themselves now come from the command registry
+// (the ONE declaration of the /api/cmd command set, also read by the
+// composer's routing and by the 400 branch of POST /api/cmd), so the
+// two server lists can no longer describe different sets.
+const LOCAL_HELP_FALLBACK = CMD_BUTTON_COMMANDS;
 
 // ----- private body functions: each takes (cs, cid, rest) -----
 

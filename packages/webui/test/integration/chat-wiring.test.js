@@ -323,3 +323,224 @@ describe("chat route production wiring — /clear must pass the slash.js gate", 
     assert.equal(v.ok, true, `chain must verify: ${JSON.stringify(v)}`);
   });
 });
+
+// webui-parity 62 D4 — the real /api/cmd over real HTTP, real
+// dispatcher, no module mocks. The old route wrote `200 {ok:true}`
+// BEFORE dispatching, so `/goal <text>` (implemented on the
+// /api/send path, not here) answered success, cleared the composer and
+// left no trace anywhere. The route now reports the dispatcher's
+// verdict: 200 for a claimed command, 4xx for one nobody claims.
+describe("POST /api/cmd — a command the dispatcher does not claim", () => {
+  let server;
+
+  beforeEach(async () => {
+    const tmpDir = mkTmpDir("mcode-webui-w2-cmd-");
+    const requestedPort = await findFreePort();
+    const env = {
+      ...process.env,
+      PORT: String(requestedPort),
+      HOST: "127.0.0.1",
+      MCODE_WEBUI_SETTINGS_PATH: join(tmpDir, "settings.json"),
+      MCODE_WEBUI_EVENTS_PATH: join(tmpDir, "events.ndjson"),
+      MCODE_WEBUI_SESSIONS_DB: join(tmpDir, "sessions.json"),
+      MCODE_WEBUI_UPLOAD_DIR: join(tmpDir, "uploads"),
+      TOKEN: "",
+      MCODE_WEBUI_TOKEN_STDOUT: "0",
+      DEBUG_INJECT: "1",
+    };
+    const proc = spawn("node", [SERVER_JS], {
+      stdio: ["ignore", "pipe", "pipe"],
+      cwd: PLUGIN_ROOT,
+      env,
+    });
+    let stdout = "";
+    let stderr = "";
+    proc.stdout.on("data", (d) => (stdout += d.toString()));
+    proc.stderr.on("data", (d) => (stderr += d.toString()));
+    let boundPort = null;
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(
+          new Error(
+            `server.js did not start within 3s on port ${requestedPort}\nstdout: ${stdout}\nstderr: ${stderr}`,
+          ),
+        );
+      }, 3000);
+      const onChunk = () => {
+        const p = parseListeningPort(stdout);
+        if (p !== null) {
+          boundPort = p;
+          clearTimeout(timer);
+          proc.stdout.off("data", onChunk);
+          resolve();
+        }
+      };
+      proc.stdout.on("data", onChunk);
+    });
+    server = {
+      proc,
+      port: boundPort !== null ? boundPort : requestedPort,
+      tmpDir,
+      eventsPath: join(tmpDir, "events.ndjson"),
+    };
+  });
+
+  afterEach(async () => {
+    if (server && server.proc && server.proc.exitCode === null) {
+      try {
+        server.proc.kill("SIGTERM");
+      } catch {}
+      await Promise.race([
+        new Promise((r) => server.proc.on("exit", r)),
+        new Promise((r) => setTimeout(r, 1500)),
+      ]);
+      if (server.proc.exitCode === null) {
+        try {
+          server.proc.kill("SIGKILL");
+        } catch {}
+      }
+    }
+    if (server && server.tmpDir) {
+      try {
+        rmSync(server.tmpDir, { recursive: true, force: true });
+      } catch {}
+    }
+    server = null;
+  });
+
+  function postCmd(cmd) {
+    return new Promise((resolve, reject) => {
+      const data = JSON.stringify({ cmd });
+      const req = http.request(
+        {
+          method: "POST",
+          host: "127.0.0.1",
+          port: server.port,
+          path: `/api/cmd?cid=${GATE_CID}`,
+          headers: {
+            "Content-Type": "application/json",
+            "Content-Length": Buffer.byteLength(data),
+          },
+        },
+        (res) => {
+          const chunks = [];
+          res.on("data", (c) => chunks.push(c));
+          res.on("end", () => {
+            const raw = Buffer.concat(chunks).toString("utf8");
+            let json;
+            try {
+              json = JSON.parse(raw);
+            } catch {}
+            resolve({ status: res.statusCode, body: raw, json });
+          });
+          res.on("error", reject);
+        },
+      );
+      req.on("error", reject);
+      req.write(data);
+      req.end();
+    });
+  }
+
+  async function readState() {
+    return new Promise((resolve, reject) => {
+      const req = http.request(
+        {
+          host: "127.0.0.1",
+          port: server.port,
+          path: `/api/debug/state?cid=${GATE_CID}`,
+        },
+        (res) => {
+          const chunks = [];
+          res.on("data", (c) => chunks.push(c));
+          res.on("end", () => {
+            const raw = Buffer.concat(chunks).toString("utf8");
+            let json;
+            try {
+              json = JSON.parse(raw);
+            } catch {}
+            resolve(json);
+          });
+          res.on("error", reject);
+        },
+      );
+      req.on("error", reject);
+      req.end();
+    });
+  }
+
+  test("/goal and other unclaimed inputs answer 4xx with reason + suggestion", async () => {
+    for (const cmd of [
+      "/goal 绘制绘.html讲述一个成语故事",
+      "/goal-done",
+      "/goal-blocked",
+      "/compact",
+      "/not-a-command",
+      "/",
+      "",
+    ]) {
+      const res = await postCmd(cmd);
+      assert.ok(
+        res.status >= 400 && res.status < 500,
+        `${JSON.stringify(cmd)} must answer 4xx; got ${res.status} ${res.body}`,
+      );
+      assert.equal(res.json && res.json.ok, false, `${JSON.stringify(cmd)} must not answer ok:true`);
+      assert.equal(res.json && res.json.reason, "unknown_command");
+      assert.ok(
+        typeof res.json.suggestion === "string" && res.json.suggestion.length > 0,
+        `${JSON.stringify(cmd)} must carry a suggestion; body: ${res.body}`,
+      );
+      assert.ok(
+        typeof res.json.error === "string" && res.json.error.length > 0,
+        `${JSON.stringify(cmd)} must carry a displayable error; body: ${res.body}`,
+      );
+    }
+  });
+
+  test("a /api/send command is told where it belongs", async () => {
+    const res = await postCmd("/goal write a poem");
+    assert.equal(res.status, 400);
+    assert.match(res.json.suggestion, /普通消息发送/);
+    // The /api/cmd set is offered so the user can see what this
+    // endpoint does accept.
+    assert.deepEqual(res.json.knownCommands, [
+      "new",
+      "clear",
+      "status",
+      "sessions",
+      "review",
+      "help",
+      "usage",
+      "stop",
+    ]);
+  });
+
+  test("a claimed command still answers 200 and runs", async () => {
+    const res = await postCmd("/status");
+    assert.equal(res.status, 200, `claimed command must answer 200; body: ${res.body}`);
+    assert.equal(res.json.ok, true);
+    const state = await readState();
+    const chat = (state && state.chatLast5) || [];
+    assert.ok(
+      chat.some((l) => typeof l === "string" && l.includes("/status")),
+      `the command must have produced its chat line; chat: ${JSON.stringify(chat)}`,
+    );
+  });
+
+  test("a rejected command changes nothing (no goal, no chat line, no session)", async () => {
+    const before = await readState();
+    const beforeChat = JSON.stringify((before && before.chatLast5) || []);
+    const res = await postCmd("/goal 不该生效");
+    assert.equal(res.status, 400);
+    const after = await readState();
+    assert.equal(
+      JSON.stringify((after && after.chatLast5) || []),
+      beforeChat,
+      "a rejected command must not append a chat line",
+    );
+    assert.ok(
+      !(after && after.goal && after.goal.active),
+      `a rejected command must not set a goal; goal: ${JSON.stringify(after && after.goal)}`,
+    );
+  });
+});

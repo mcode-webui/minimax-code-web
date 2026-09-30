@@ -184,7 +184,11 @@ describe("handleStop", () => {
 });
 
 describe("handleCmd", () => {
-  test("returns 200 with ok:true for any cmd (delegates to handleCmdCommand)", async () => {
+  // NOTE: this suite mocks lib/slash.js, so `handleCmdCommand` here is a
+  // stub that always claims. It therefore pins the 200 branch only; the
+  // 400 branch (an unclaimed command) needs the REAL dispatcher and is
+  // asserted over real HTTP in test/integration/chat-wiring.test.js.
+  test("returns 200 with ok:true for a command the dispatcher claims", async () => {
     const cid = "cid-1";
     const cs = makeClientState();
     cs.workspace = { dir: "/ws-X", branch: null, tree: null };

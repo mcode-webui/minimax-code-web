@@ -245,6 +245,7 @@ const KNOWN_PREFIXES = [
   "mcode-webui-upload-e2e-",
   "mcode-webui-upload-lib-",
   "mcode-webui-usage-",
+  "mcode-webui-w2-cmd-",
   "mcode-webui-w2-gate-",
   "minimax-code-engine-cat-",
   "minimax-code-engine-sync-",
