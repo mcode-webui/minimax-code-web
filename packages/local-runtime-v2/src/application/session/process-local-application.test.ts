@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { LocalRuntimeApplication } from "./process-local-application-contract.js";
 import { createProcessLocalApplication } from "./process-local-application.js";
+import { CliService } from "../../local/cli-service.js";
 
 describe("createProcessLocalApplication account and usage", () => {
   it("uses the recovered model route for account login checks while preserving live token presence", async () => {
@@ -127,10 +128,13 @@ describe("createProcessLocalApplication capabilities", () => {
       refresh: vi.fn(),
       listMarketplacePlugins: vi.fn(),
       listInstalledPlugins: vi.fn(),
+      listEnabledPlugins: vi.fn(),
       installPlugin: vi.fn(),
       uninstallPlugin: vi.fn(),
       enablePlugin: vi.fn(),
       disablePlugin: vi.fn(),
+      previewGithubPlugin: vi.fn(),
+      importGithubPlugin: vi.fn(),
     };
     const peripherals = {
       mcp: { listLocalMcpServers: vi.fn(), listMcpCapabilities: vi.fn() },
@@ -314,5 +318,55 @@ describe("createProcessLocalApplication capabilities", () => {
       saveAndUse: false,
     });
     expect(application.events.watch).toEqual(expect.any(Function));
+  });
+});
+
+// The three plugin methods webui's `/api/plugins/*` surface depends on are pure
+// forwarders, so nothing above them notices a wiring slip: the webui route
+// tests inject their own fake cliService and never touch this class. These
+// assertions drive the real method bodies so a forwarder that reached for the
+// wrong application method, dropped its argument, or lost the abort signal
+// would fail here instead of at the caller.
+describe("CliService plugin forwarding", () => {
+  function makeCliService() {
+    const plugins = {
+      listEnabledPlugins: vi.fn(async () => ({ plugins: [] })),
+      previewGithubPlugin: vi.fn(async () => ({ canImport: true })),
+      importGithubPlugin: vi.fn(async () => ({ plugin: { name: "p" } })),
+    };
+    const cliService = new CliService({ application: { plugins } } as never);
+    return { cliService, plugins };
+  }
+
+  it("forwards listEnabledPlugins and its request", async () => {
+    const { cliService, plugins } = makeCliService();
+    await expect(cliService.listEnabledPlugins({})).resolves.toEqual({ plugins: [] });
+    expect(plugins.listEnabledPlugins).toHaveBeenCalledWith({});
+  });
+
+  it("forwards previewGithubPlugin together with the abort signal", async () => {
+    const { cliService, plugins } = makeCliService();
+    const signal = new AbortController().signal;
+    await cliService.previewGithubPlugin({ url: "https://github.com/acme/p" }, signal);
+    expect(plugins.previewGithubPlugin).toHaveBeenCalledWith(
+      { url: "https://github.com/acme/p" },
+      signal,
+    );
+    // The signal is optional on the facade; a call without one must still go
+    // through rather than being dropped.
+    await cliService.previewGithubPlugin({ url: "https://github.com/acme/p" });
+    expect(plugins.previewGithubPlugin).toHaveBeenLastCalledWith(
+      { url: "https://github.com/acme/p" },
+      undefined,
+    );
+  });
+
+  it("forwards importGithubPlugin and its source", async () => {
+    const { cliService, plugins } = makeCliService();
+    const source = { repositoryUrl: "https://github.com/acme/p", commitSha: "abc" };
+    await expect(cliService.importGithubPlugin({ source })).resolves.toEqual({
+      plugin: { name: "p" },
+    });
+    expect(plugins.importGithubPlugin).toHaveBeenCalledWith({ source });
   });
 });
