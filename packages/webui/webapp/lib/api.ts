@@ -17,6 +17,57 @@ export interface ApiResult<T> {
   data?: T;
 }
 
+/**
+ * The request deadline elapsed before any response arrived.
+ *
+ * Why this is a type and not just a message. `POST /api/send` answers with an
+ * acknowledgement and then runs the turn (see `routes/chat.js#handleSend`: the
+ * 200 is written at the top, the engine work follows). A deadline that expires
+ * therefore says NOTHING about whether the engine received the prompt — the
+ * request can be on the server and executing while the browser is still
+ * waiting, and a stalled dev proxy or a busy event loop is enough to cause it.
+ *
+ * The old code flattened this into `new Error("no response within 30000ms")`,
+ * the composer showed it as a red "message failed" banner, put the text back
+ * in the box, and the user's next Enter ran the turn a second time
+ * (webui-parity 81 D-2: `sleep 35` executed twice). Reporting the timeout as a
+ * failure is a lie about a side effect that may already have happened, and the
+ * refill is what turned the lie into a duplicate execution.
+ *
+ * The caller branches on `isSendUnconfirmed` and resolves the real question —
+ * did the turn start? — against the server (see `lib/send-confirmation.ts`).
+ * The `message` is kept for logs and for callers that only want a string; it
+ * is never rendered as a user-facing verdict.
+ */
+export class SendUnconfirmedError extends Error {
+  /** Structural marker. Read through `isSendUnconfirmed`, never by message. */
+  readonly unconfirmed = true;
+  /** The deadline that elapsed, for copy that names the real number. */
+  readonly timeoutMs: number;
+
+  constructor(timeoutMs: number) {
+    super(`no response within ${timeoutMs}ms`);
+    this.name = "SendUnconfirmedError";
+    this.timeoutMs = timeoutMs;
+  }
+}
+
+/**
+ * True when `cause` is the deadline error above.
+ *
+ * The `unconfirmed` flag is read structurally rather than through
+ * `instanceof`: the api module is imported by both the app bundle and the
+ * vitest suites, and a second copy of the class (two realms, a re-bundled
+ * module) would make `instanceof` answer false for a real timeout.
+ */
+export function isSendUnconfirmed(cause: unknown): cause is SendUnconfirmedError {
+  return (
+    typeof cause === "object" &&
+    cause !== null &&
+    (cause as { unconfirmed?: unknown }).unconfirmed === true
+  );
+}
+
 async function request<T>(
   path: string,
   init?: RequestInit & { json?: unknown; timeoutMs?: number },
@@ -41,7 +92,7 @@ async function request<T>(
     });
   } catch (cause) {
     if (controller?.signal.aborted) {
-      throw new Error(`no response within ${timeoutMs}ms`);
+      throw new SendUnconfirmedError(timeoutMs as number);
     }
     throw cause;
   } finally {
@@ -70,7 +121,15 @@ async function request<T>(
 
 // --- state and health -------------------------------------------------------
 
-export const getState = () => request<WebuiState>("/api/state");
+/**
+ * `GET /api/state` — the server's own view of this cid.
+ *
+ * `timeoutMs` exists for the send-confirmation probe
+ * (`lib/send-confirmation.ts`), which has a hard budget of its own and must not
+ * inherit an unbounded fetch. Normal callers pass nothing.
+ */
+export const getState = (timeoutMs?: number) =>
+  request<WebuiState>("/api/state", timeoutMs === undefined ? undefined : { timeoutMs });
 
 export interface Health {
   ok: boolean;
@@ -88,9 +147,17 @@ export interface SendPayload {
   isAskAnswer?: boolean;
 }
 
-// Both send endpoints answer with an ack *before* the engine runs (see
-// routes/chat.js#handleSend), so a reply slower than this means the request is
-// not going to arrive at all.
+// Deadline for the two send endpoints' acknowledgement.
+//
+// It was NOT raised. A longer deadline only moves the same false negative
+// further out (webui-parity 81 D-2), and it cannot be fixed by a deadline at
+// all: the deadline measures the ROUND TRIP, while the question the composer
+// actually has to answer is whether the ENGINE TOOK THE PROMPT. Those are
+// different questions — the turn is already running while the browser is still
+// waiting. So the deadline is kept at a value that fails fast enough for the
+// user to get an answer, and the timeout path resolves the real question
+// against the server before deciding what to show or restore
+// (`lib/send-confirmation.ts`).
 const SEND_ACK_TIMEOUT_MS = 30_000;
 
 export const sendMessage = (payload: SendPayload) =>
@@ -109,6 +176,12 @@ export const sendCommand = (cmd: string) =>
     json: { cmd },
     timeoutMs: SEND_ACK_TIMEOUT_MS,
   });
+
+// `/api/cmd` is the one send endpoint that does NOT acknowledge before it
+// works: it answers after the dispatcher has run, so its deadline covers the
+// command itself (`/help` waits on the engine's command list). It shares the
+// same unconfirmed-error path — a timeout there means the command may already
+// have written its output, and saying "failed" would be equally untrue.
 
 // --- sessions ---------------------------------------------------------------
 

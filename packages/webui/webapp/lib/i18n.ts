@@ -154,6 +154,12 @@ const en = {
   "ask.title": "Question",
 
   "error.send": "Could not send the message",
+  "error.unconfirmed.accepted":
+    "Sent, but the server never confirmed it. The engine is running this message now — do not send it again.",
+  "error.unconfirmed.rejected":
+    "Not delivered: the server holds no record of this message. The text is back in the input box.",
+  "error.unconfirmed.unreachable":
+    "Status unknown: the server neither confirmed the message nor could be reached to check, so it may already be running. Check the conversation history before sending it again. The text is back in the input box.",
   "error.session": "Could not load sessions",
   "toolbar.workspace": "Workspace",
   "toolbar.browser": "Browser",
@@ -1241,6 +1247,12 @@ const zh: Record<MessageKey, string> = {
   "ask.title": "提问",
 
   "error.send": "消息发送失败",
+  "error.unconfirmed.accepted":
+    "消息已发出，但服务器一直没有确认。引擎此刻正在执行这条消息 —— 请勿重复发送。",
+  "error.unconfirmed.rejected":
+    "未送达：服务器没有记录这条消息。原文已放回输入框。",
+  "error.unconfirmed.unreachable":
+    "状态未知：服务器既没有确认，也无法查询，它可能已经在执行。发送前请先查看会话历史确认。原文已放回输入框。",
   "error.session": "会话列表加载失败",
   "toolbar.workspace": "工作区",
   "toolbar.browser": "网页",
