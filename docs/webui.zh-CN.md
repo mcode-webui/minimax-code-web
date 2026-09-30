@@ -408,11 +408,16 @@ search | plugins`，preview 一侧 `browser | file:<path>`，其定义位于
 （`api.searchFs`），复用文件树筛选器相同的 `searchFootSegments`
 页脚（扫描数 / 命中数 / 跳过数 / 截断 / 预算），并通过共享的
 `fs-tree-reveal` 通道把点击行为接成"展开到命中"——文件树面板应用
-与自身服务端搜索相同的展开 + 高亮。**60 号工单阶段①交付的是插件
-后端，不是插件面板。** `/api/plugins/*` 的十个端点与它们的类型化
-客户端函数已经就绪，详见下文「插件接口」一节。但「插件」入口本身
-仍然打开此前那张占位卡：还没有任何界面调用这些函数，用户可见的
-管理界面尚未落地。今天为真的是契约，不是界面。
+与自身服务端搜索相同的展开 + 高亮。**插件面板与插件后端同批交付
+（68 号工单）。** `PluginsSurface`
+（`webapp/components/plugins-surface.tsx`）已挂载到两个列宿主
+（`panels.tsx:354`、`workspace-tree-column.tsx:645`），下文「插件
+接口」一节的那十个 `/api/plugins/*` 端点，今天是由用户能真正打开
+的界面调用的。其中 `plugins` 域是真数据——已安装列表、本地市场、
+GitHub 导入——在「已安装」视图里，每张卡片带启用开关与一个需要
+确认的卸载动作。`skills`、`apps`、`mcp`、`agents` 四个域尚无管理
+端点，因此渲染一张说明缺哪项能力的 `pending` 卡，而不是塞一份
+编造的列表。
 
 表面种类统一通过 `openSurfaceTab("…")` 触发；右栏种类
 （`PanelKind`）是单独收紧的并集：`"workspace" | "files" | "git" |
@@ -426,12 +431,13 @@ search | plugins`，preview 一侧 `browser | file:<path>`，其定义位于
 
 ### 插件接口（60 号工单阶段①）
 
-本节只描述**契约**。会消费它的浏览器面板不在本次发布里：「插件」
-侧栏入口仍然渲染它一直以来的那张占位卡，webapp 里还没有任何代码
-调用这些函数。请把下面的端点表与载荷表读作「未来面板照此编写」
-的接口，而不是今天就能用的界面描述。下面两条数据事实对正在运行的
-服务端已经成立，值得现在就记下：本地市场、已安装列表与 GitHub
-导入是真数据，而官方市场在本地版不可达。
+本节描述的是**那块面板背后的契约**：十个端点、入参，以及调用方必须
+处理的各态。用户在 `plugins` 域里实际拿到的是「市场」与「已安装」
+两个视图、两个视图都有的一行关键词框、只出现在市场侧的分类下拉与
+来源切换、一个刷新按钮，以及分两步走的 GitHub 导入（先预览 URL，
+再确认导入）。只有 `plugins` 域会发起请求；四个 pending 域一次请求
+都不发。真正决定这些能用到多少的是两条数据事实：本地市场、已安装
+列表与 GitHub 导入是真数据，而官方市场在本地版不可达。
 
 `webapp/lib/api.ts` 为每个端点暴露一个类型化函数：
 
@@ -448,8 +454,9 @@ search | plugins`，preview 一侧 `browser | file:<path>`，其定义位于
 | `plugins.import.preview_url` | `POST /api/plugins/import/preview` | `previewGithubPlugin` | `url` |
 | `plugins.import.from_url` | `POST /api/plugins/import` | `importGithubPlugin` | `source`（`repositoryUrl` `commitSha` `subPath?`） |
 
-消费方需要处理的各态，按契约定义（每一态**渲染成什么样**是面板的
-决定，本次发布不做这个决定）：
+调用方需要处理的各态，按契约定义。「渲染」一列是已交付面板的实际
+做法，只有一行例外：`plugins.refresh.all` 从未被调用——面板上的刷新
+按钮是重拉列表，而不是向该端点发请求。
 
 | func_name | empty | loading | error | success |
 |---|---|---|---|---|
@@ -466,13 +473,16 @@ search | plugins`，preview 一侧 `browser | file:<path>`，其定义位于
 
 **本地版唯一提供不了的端点，说清楚。** 官方市场需要云端账号，而本地版的
 云端基址不可解析，于是 `source=1` 应答 `{ok:false,
-code:"NETWORK_ERROR"}`。未来的面板必须把它当作**设计好的状态** ——
+code:"NETWORK_ERROR"}`。面板把它当作**设计好的状态** ——
 渲染 `plugins.market.official.notLocal.*` 文案而不是红色错误 ——
-官方的安装 / 启停 / 卸载同理保持静默。其余全是真数据：已安装列表、
+并且在**发出请求之前**就短路（`mayRequestMarketplace`）：一次要等
+30 秒超时才失败的请求，会让设计好的状态看起来像事故。官方源上安装 /
+启停 / 卸载被拒时同理保持静默。其余全是真数据：已安装列表、
 本地市场（独立技能 + 本地包投影），以及两个 GitHub 导入端点 ——
 它们直接抓公网仓库，不经 registry。本地包**不能**安装（运行时答
-`LOCAL_PLUGIN_INSTALL_UNSUPPORTED`），所以本地卡片不渲染安装按钮，
-而不是给一个注定失败的操作入口。
+`LOCAL_PLUGIN_INSTALL_UNSUPPORTED`），所以 `canInstall` 只对市场视图里
+的官方行为真，本地卡片不渲染安装按钮，而不是给一个注定失败的操作
+入口。
 
 **写新调用前要知道的几条线上约定。** `source` 入参是数字
 （`1` 官方 / `2` 本地）；出参里运行时的数字原样透传，路由另在页面、

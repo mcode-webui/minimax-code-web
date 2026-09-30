@@ -587,13 +587,18 @@ reuses the same `searchFootSegments` footer as the file-tree filter
 (scanned / matches / skipped / truncated / budget), and on click
 sends an expand-to-hit request through the shared `fs-tree-reveal`
 channel so the file tree panel applies the same expand + highlight.
-**Ticket 60 phase 1 ships the plugin backend, not the plugin panel.**
-The ten `/api/plugins/*` endpoints and their typed client functions are
-in place, described in
-[The plugins API](#the-plugins-api-ticket-60-phase-1) below. The "插件"
-entry itself still opens the earlier placeholder card: no panel calls
-these functions yet, so the user-visible management screen is still to
-come. What is real today is the contract, not the interface.
+**The plugin panel shipped with the plugin backend (ticket 68).**
+`PluginsSurface` (`webapp/components/plugins-surface.tsx`) is mounted in
+both column hosts (`panels.tsx:354`, `workspace-tree-column.tsx:645`), so
+the ten `/api/plugins/*` endpoints in
+[The plugins API](#the-plugins-api-ticket-60-phase-1) below are called by
+a screen a user can open today. The `plugins` area is real data — the
+installed list, the local marketplace, GitHub import — and in the
+installed view every card carries an enable switch and an uninstall
+behind a confirmation dialog. The `skills`, `apps`, `mcp` and `agents`
+areas have no management endpoint yet, so they render a `pending` card
+naming the capability that is missing rather than a list of invented
+entries.
 
 Surface kinds go through `openSurfaceTab("…")`; the right-panel kinds
 (`PanelKind`) are a separately-trimmed union: `"workspace" | "files" |
@@ -608,15 +613,16 @@ to `[minWidth, maxWidth]` per column) and double-click reset.
 
 ### The plugins API (ticket 60, phase 1)
 
-This section documents the **contract only**. The browser panel that
-would consume it is not in this release: the "插件" sidebar entry still
-renders the placeholder card it has always rendered, and nothing in
-the webapp calls these functions yet. Read the endpoint and payload
-tables below as the interface a future panel is written against, not as
-a description of a screen you can use today. Two data facts below are
-already true of the running server and worth knowing now: the local
-marketplace, the installed list and GitHub import return real data,
-while the official marketplace cannot resolve in a local edition.
+This section documents the **contract behind that panel**: the ten
+endpoints, their parameters, and the states a caller must handle. What
+the user actually gets in the `plugins` area is a market view and an
+installed view, a keyword box on both, a category dropdown and a source
+switch on the market side, a refresh button, and a two-step GitHub
+import (preview the URL, then commit it). Only the `plugins` area loads
+anything; the four pending areas never issue a request. Two data facts
+decide how much of that is reachable: the local marketplace, the
+installed list and GitHub import return real data, while the official
+marketplace cannot resolve in a local edition.
 
 | func_name | Endpoint | `api.ts` function | Parameters |
 |---|---|---|---|
@@ -633,8 +639,10 @@ while the official marketplace cannot resolve in a local edition.
 
 `webapp/lib/api.ts` exposes one typed function per endpoint:
 
-States a consumer must handle, as the contract defines them (the
-rendering of each is a panel decision that this release does not make):
+States a caller must handle, as the contract defines them. The rendering
+column is what the shipped panel does, with one exception:
+`plugins.refresh.all` is never called — the panel's refresh button
+re-pulls the list rather than posting to the endpoint.
 
 | func_name | empty | loading | error | success |
 |---|---|---|---|---|
@@ -652,16 +660,20 @@ rendering of each is a panel decision that this release does not make):
 **The one endpoint that cannot serve a local edition, stated plainly.**
 The official marketplace needs a cloud account, and the local edition's
 cloud base URL does not resolve, so `source=1` answers
-`{ok:false, code:"NETWORK_ERROR"}`. A future panel must treat that as a
-designed state — the `plugins.market.official.notLocal.*` copy rather
-than a red error — and must keep the official install / enable / disable
-/ uninstall actions silent for the same reason. Everything else is real
+`{ok:false, code:"NETWORK_ERROR"}`. The panel treats that as a designed
+state — the `plugins.market.official.notLocal.*` copy rather than a red
+error — and short-circuits **before** issuing the request
+(`mayRequestMarketplace`), because a request that fails only after a
+30 s timeout would make a designed state look like an incident. Official
+refusals on the install / enable / disable / uninstall actions are
+silent for the same reason. Everything else is real
 data: the installed list, the local marketplace (standalone skills plus
 the local package projection), and the two GitHub import endpoints, which
 fetch a public repository directly and never touch the registry. A
 local package cannot be *installed* — the runtime answers
-`LOCAL_PLUGIN_INSTALL_UNSUPPORTED` — so a local card must render no
-install button rather than offering an action that always fails.
+`LOCAL_PLUGIN_INSTALL_UNSUPPORTED` — so `canInstall` is true only for an
+official row in the market view and a local card renders no install
+button, rather than offering an action that always fails.
 
 **Wire conventions worth knowing before writing a new call.**
 `source` is numeric on the way in (`1` official, `2` local); on the way

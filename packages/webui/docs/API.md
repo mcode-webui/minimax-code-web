@@ -1964,11 +1964,11 @@ proxy).
 ### `GET /api/providers/presets`
 
 Built-in preset provider gallery (ticket 02). The response lists every
-curated template (currently 10 — 智谱 / Kimi / 百炼 / 火山 / mimo /
-minimax / opencode go / OpenRouter / Claude Code / Codex) with the
-metadata each one would write into the user-level file on enable.
-The `enabled` flag and `enabledIds` array mark templates whose id
-already appears in the configured catalogue, so the UI can render
+curated template (currently 11 — 智谱 / Kimi / 百炼 / 火山 / mimo /
+minimax / opencode go / OpenRouter / Claude Code / Codex / DeepSeek)
+with the metadata each one would write into the user-level file on
+enable. The `enabled` flag and `enabledIds` array mark templates whose
+id already appears in the configured catalogue, so the UI can render
 "Enabled" / "Enable" buttons without a second round-trip.
 
 Templates never carry key material: `apiKey` / `apiKeyMasked` / `hasKey`

@@ -98,40 +98,62 @@ mcode sqlite via `GET /api/acp-sessions` on init.
 
 ## Plan mode modal won't dismiss
 
-**Symptoms**: clicking "Skip" or pressing Esc doesn't close the
-plan modal.
+**Symptoms**: the plan-review modal stays on screen. "Agree",
+"Add context" and "Skip" all appear to do nothing, and Esc does
+nothing at all.
 
-**Cause**: the click handler is calling `hidePlan()` but the SSE
-event from mcode hasn't arrived yet, so the next render re-opens
-it.
-
-**Fix**:
-1. Wait 2-3 seconds for the SSE ack.
-2. If it still doesn't dismiss, click "Skip" again — sometimes
-   the first click is consumed by the focus ring and the second
-   click hits the button.
-3. If the modal is truly stuck, the underlying mcode state is
-   stuck. Send any user message — the plan context will be
-   superseded and the modal will close.
-
-## Ask-user modal reappears after dismissal
-
-**Symptoms**: you click "Skip" on the ask-user modal, then it pops
-back up on the next message.
-
-**Cause**: the webui stores the dismissed question id in
-`DISMISSED_QUESTIONS` (localStorage). If you clear localStorage
-or use a different CID, the dismissal is lost.
+**Cause**: the same blocking chrome as the ask-user prompt below —
+no close button, no Escape handler, no backdrop dismissal
+(`modals.tsx:304-313`). All three buttons post to
+`POST /api/answer {type: "plan", option: …}` (modals.tsx:41-45),
+and that route is the legacy no-op described in the ask-user entry
+below, so the plan decision never reaches the engine and
+`state.plan.active` (modals.tsx:38-39) stays true.
 
 **Fix**:
-- If the question reappears in the same session: don't clear
-  localStorage. If you really need to, clear the per-CID
-  presentation state from `localStorage` (the same key the
-  shell uses for `DISMISSED_QUESTIONS`); there is no longer a
-  brand-logo shortcut, since the legacy vanilla-JS UI and the
-  `public/brand-logo.png` image were removed.
-- If the question reappears in a new session: that's by design.
-  New session = new state.
+1. None of the three buttons closes the modal while the route is
+   wired that way.
+2. Reloading the page does not help: `plan.active` is server state
+   re-pushed in the state snapshot.
+3. A new session clears it. If the engine ends the plan on its own,
+   the modal closes on the next state push — nothing in the browser
+   can make that happen sooner.
+
+## Ask-user modal will not close
+
+**Symptoms**: the ask-user modal stays on screen. "Skip" appears
+to do nothing, and Esc does nothing at all.
+
+**Cause**: the prompt has no way out by design. It renders
+through the blocking-prompt chrome in
+`webapp/components/modals.tsx` — `closable={false}`,
+`keyboard={false}`, `maskClosable={false}` (modals.tsx:304-313) —
+so there is no close button, no Escape handler and no backdrop
+dismissal; the server is waiting on a decision. No dismissal is
+remembered either. The component holds the typed "Other" text and
+the ticked labels in React state (modals.tsx:72-78), and
+`destroyOnHidden` drops both when the prompt closes. There is no
+storage key to clear, and a different CID changes nothing.
+
+**Fix**: answer the question — that is the only action that
+reaches the engine.
+1. Click an option. A single-select option sends its index; a
+   multi-select question (only when the engine sets
+   `multiSelect`) collects labels until you press Submit.
+2. Or type into "Other" and press Enter or Submit.
+3. Both go out as `POST /api/send {content, isAskAnswer: true}`
+   (modals.tsx:86-101). The modal closes when the state snapshot
+   stops carrying `ask.active` (modals.tsx:80) — after the engine
+   consumed the answer. A multi-question batch shows `n/total` in
+   the title and advances one question per answer.
+
+**Known defect**: "Skip" is inert. It posts
+`POST /api/answer {type: "ask", option: "esc"}` (modals.tsx:214),
+and that route is a legacy no-op — it answers
+`{ok: true, deprecated: true}` without forwarding anything to the
+engine (`server/routes/model.js#handleAnswer`, registered at
+`server/app.js:645`; API.md documents the same). The first two
+options above are the only escape until the route is re-wired.
 
 ## `Failed to load resource: 404` for `favicon.ico`
 

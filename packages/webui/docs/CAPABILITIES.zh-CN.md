@@ -108,7 +108,7 @@ CI 会对上述每一个名称是否出现在本文档中进行断言
 |---|---|---|
 | 内置命令列表（`/help`、`/compact`、`/model`、…） | ✅ | mcode acp `session/commands` 在连接时获取；缓存在 `mcodeCommandsCache` 中 |
 | 输入 `/` 时命令自动补全 | ✅ | `filterSlash()` 构建浮层；匹配 `cmd` 与 `description_*` |
-| 本地（webui 侧）命令 | ✅ | `WEBUI_LOCAL_COMMANDS`（`server/lib/acp-client.js`）：`new`、`clear`、`status`、`sessions`、`usage`、`help`、`stop`；`/clear` 只清空聊天 UI，不触碰 mcode。不存在 `/exec` 命令——传输按回合由环境变量（`MCODE_USE_ACP=0`）或权限模式（非 Full access）决定，与斜杠命令无关。 |
+| 本地（webui 侧）命令 | ✅ | `CMD_BUTTON_COMMANDS`（`server/lib/interaction/command-registry.js`）——`POST /api/cmd` 接受什么的唯一声明处，`/help` 兜底与 400 分支都读它：`new`、`clear`、`status`、`sessions`、`review`、`help`、`usage`、`stop`。`/clear` 只清空聊天 UI，不触碰 mcode；`/review` 输出一份 staged / unstaged / untracked 概览（见 §12）。不存在 `/exec` 命令——传输按回合由环境变量（`MCODE_USE_ACP=0`）或权限模式（非 Full access）决定，与斜杠命令无关。`server/lib/acp-client.js#WEBUI_LOCAL_COMMANDS` 是另一份 7 条目的数组，供 `/help` 列表使用，**没有**跟着补上 `/review`；契约是注册表，不是那份数组。 |
 | 隐藏 / 实验性命令 | ⚠ | acp `commands` 列表返回 mcode 所知的全部命令。webui 尚无 `hidden` 标志。 |
 
 ## 6. 工作区
@@ -181,7 +181,7 @@ CI 会对上述每一个名称是否出现在本文档中进行断言
 | 会话骨架屏 + 流式活动指示（工单 U8） | ✅ | 冷启动 `!state` 分支渲染 `TranscriptSkeleton`（按真实消息行形状铺 shimmer 占位条，`webapp/components/loading-states.tsx`）；流式尾部的活动指示（`ActivityPulse`）在 `running.active` 期间显示三点加载动画加一条 shimmer 条；`prefers-reduced-motion: reduce` 下所有动画类显式静止（`webapp/app/globals.css`）。测试：`webapp/test/loading-skeleton.test.ts`。 |
 | 自定义 CSS 主题 | ❌ | 没有主题加载器；需要一套 CSS 变量系统 |
 | 用户自定义热键 | ❌ | 快捷键是硬编码的 |
-| 四列布局（侧栏 · 对话 · 预览 · 树）（slice 17 + 21） | ✅ | `webapp/components/workspace-columns.tsx`。对话列在有固定列可见时于 `[280,768]` px 弹性；两个按需列都折叠时吃满剩余。预览与树列按需出现、最后一个同角色标签关闭即自动收起（`syncColumnVisibility`）。面按 `columnRoleForKind` 分流：`file:<path>`/浏览器在预览列，`files`/`git`/`tasks`/`搜索`/`plugins` 在树列。 |
+| 四列布局（侧栏 · 对话 · 预览 · 树）（slice 17 + 21） | ✅ | `webapp/components/workspace-columns.tsx`。对话列在有固定列可见时于 `[280,768]` px 弹性；两个按需列都折叠时吃满剩余。预览与树列按需出现、最后一个同角色标签关闭即自动收起（`syncColumnVisibility`）。面按 `columnRoleForKind` 分流：`file:<path>`/浏览器在预览列，`files`/`git`/`tasks`/`搜索`/`plugins` 在树列。原先发布的 `search`、`alerts`、`progress` 已从 `PanelKind` 并集移除（`webapp/lib/persist.ts#PanelKind`）。侧栏树列的「搜索」面**自 slice 19b 起已可用**（`webapp/components/workspace-tree-column.tsx#SearchSurface`）。插件面**自 68 号工单起已可用**（`webapp/components/plugins-surface.tsx`，挂载于 `panels.tsx:354` 与 `workspace-tree-column.tsx:645`）：`plugins` 域列出已安装插件、本地市场与 GitHub 导入，每张卡片带启用开关与需要确认的卸载。面内还剩两处占位，两处都是诚实的：`skills`/`apps`/`mcp`/`agents` 四域渲染一张 `pending` 卡并写明缺哪项后端能力（不塞示例行）；官方市场渲染 `common.notLocal` 态——面板在发请求**之前**就短路，因为一次要等 30 秒超时才失败的请求看起来会像事故。 |
 
 ## 11. 网络与访问控制
 
@@ -248,5 +248,6 @@ CI 会对上述每一个名称是否出现在本文档中进行断言
 - ask 问题上的可选标志 → 可选问题
 - 用于 WSL 符号链接的路径前缀解析器 → WSL 路径支持
 
-这些是向上游提出的需求。历史清单及 mcode 团队的回应
-见 [docs/acp-goal-plan-status.md](acp-goal-plan-status.md)。
+这些是向上游提出的需求。历史目标 / 计划 / 状态清单与 mcode 团队的
+回应留在一份内部文档里，而它不属于本公开投影，因此上面这份列表就是
+此处能读到的全部。
