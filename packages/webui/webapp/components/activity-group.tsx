@@ -36,7 +36,7 @@ import {
   toolCallLabel,
   toolSummaryResourcePath,
 } from "../lib/tool-projection";
-import type { TurnStats } from "../lib/turn-stats";
+import { hasExpandableTurnContent, type TurnStats } from "../lib/turn-stats";
 import { Icon } from "./icons";
 import { ToolIcon } from "./tool-icon";
 import type { MessageKey } from "../lib/i18n";
@@ -127,6 +127,19 @@ export function assignActivityBlockKeys(
  * collapsed, and inside a mixed run the nested thinking blocks start
  * collapsed (`collapseNestedThinking`) while a thoughts-only run starts
  * with its thinking block expanded.
+ *
+ * The body has no height cap and no scrollbar of its own (webui-parity 61,
+ * G7). The reference stylesheet gives `.activity-group-items` `gap: 0`, a
+ * 28px minimum row height and no `max-height` — the whole transcript
+ * scrolls as one column, and a long tool run is simply long. Our previous
+ * `max-h-[230px] overflow-y-auto` put a second scrollbar inside a page that
+ * already scrolls, so a group cut its own steps off mid-list. Row height and
+ * zero gap now come from `app/globals.css` (`.activity-group-items > *`),
+ * matching the reference's `.webui-tool-row { min-height: 28px }`.
+ *
+ * webui-parity 61 (G4) adds an optional controlled mode: pass `expanded` +
+ * `onExpandedChange` and the turn bar's chevron drives the group. Uncontrolled
+ * is the default and is byte-for-byte the behaviour above.
  */
 export function ActivityGroup({
   blocks,
@@ -136,6 +149,8 @@ export function ActivityGroup({
   onOpenFile,
   streaming = false,
   startedAtMs,
+  expanded,
+  onExpandedChange,
 }: {
   blocks: TranscriptBlock[];
   /** Per-block stable React keys from `assignActivityBlockKeys` (see its
@@ -152,11 +167,21 @@ export function ActivityGroup({
   /** `running.startedAt` from the snapshot — the anchor the streaming
    *  thinking row ticks its elapsed seconds from. Absent on cold load. */
   startedAtMs?: number | null;
+  /** Turn-level expansion intent (webui-parity 61, G4). `undefined` — the
+   *  default — leaves the group on its own state and its own initial value.
+   *  A boolean puts the group under the turn bar's chevron, which drives
+   *  every group of that turn as one block; see `TurnProcessDisclosure`. */
+  expanded?: boolean;
+  /** Required alongside `expanded`: with it the group is controlled, and a
+   *  header click reports the new state instead of keeping it. */
+  onExpandedChange?: (next: boolean) => void;
 }) {
   const active = useMemo(() => isActivityGroupActive(blocks), [blocks]);
   // Mixed runs (thoughts + tools) open expanded, pure-tool runs collapsed —
   // see the component docblock. `useState` initialiser runs once per mount.
-  const [expanded, setExpanded] = useState(() => summary.thinking > 0);
+  const [ownExpanded, setOwnExpanded] = useState(() => summary.thinking > 0);
+  const controlled = expanded !== undefined && onExpandedChange !== undefined;
+  const expandedState = controlled ? expanded : ownExpanded;
   const hasTools = useMemo(() => blocks.some((block) => block.role === "tool"), [blocks]);
 
   // While a call is in flight upstream names it instead of listing categories
@@ -190,7 +215,7 @@ export function ActivityGroup({
             data-testid="activity-group"
             data-active={active ? "true" : undefined}
             className="min-w-0 flex-1"
-            open={forcedOpen || expanded}
+            open={forcedOpen || expandedState}
             onToggle={(event) => {
               const next = event.currentTarget.open;
               if (forcedOpen && !next) {
@@ -200,7 +225,8 @@ export function ActivityGroup({
                 event.currentTarget.open = true;
                 return;
               }
-              setExpanded(next);
+              if (controlled) onExpandedChange(next);
+              else setOwnExpanded(next);
             }}
           >
             <summary
@@ -229,7 +255,7 @@ export function ActivityGroup({
               <span className="timeline-spine" aria-hidden="true" />
               <div
                 data-testid="activity-group-detail"
-                className="activity-group-items flex max-h-[230px] flex-col gap-1.5 overflow-y-auto scrollbar-hide"
+                className="activity-group-items flex flex-col gap-0"
               >
                 {blocks.map((block, index) =>
                   block.role === "thinking" ? (
@@ -613,7 +639,9 @@ function ToolCard({
 /** One 「输入 / 结果 / 错误」 body section of a tool card. The error
  *  section renders its label and body in the error colour; every body
  *  clamps at `TOOL_DETAIL_CHAR_LIMIT` (2000) with a `...` suffix, the
- *  reference truncation rule. */
+ *  reference truncation rule, and at 180px of height, the reference
+ *  `.webui-tool-detail-section pre` cap (webui-parity 61, G7) — the one
+ *  scroll container the desktop still keeps inside a group. */
 function ToolDetailSection({
   label,
   value,
@@ -635,7 +663,7 @@ function ToolDetailSection({
       </div>
       <pre
         className={[
-          "codeblock-code thin-scrollbar max-h-[320px] overflow-auto rounded-lg p-2 text-caption-small-strong whitespace-pre-wrap",
+          "codeblock-code thin-scrollbar max-h-[180px] overflow-auto rounded-lg p-2 text-caption-small-strong whitespace-pre-wrap",
           error ? "text-text_status_error" : "text-text_default_secondary",
         ].join(" ")}
       >
@@ -669,10 +697,37 @@ function ToolDetailSection({
  * fallback formula the reference applies when its runtime reports no
  * `usage.outputTokens`. See `lib/turn-stats.ts`.
  *
- * No toggle: the retired chat.tsx version duplicated the same
- * sentence in an expandable detail; the reference renders a plain
- * summary row when the turn has no expandable content of its own, and
- * here the activity groups above the bar already own the folding.
+ * The turn bar's chevron (webui-parity 61, G4). The reference
+ * (`WebuiTurnProcess`, `TranscriptPrimitives.tsx`) renders the same
+ * summary row as a `<button>` carrying a `turn-process-chevron` glyph that
+ * rotates 90° when the turn's process is expanded, and renders plain
+ * text with no toggle when the turn has nothing to expand. Both halves of
+ * that are restored here:
+ *
+ *   - the gate is `hasExpandableTurnContent(stats)` — the same counts the
+ *     composite summary already prints, so a turn with no thought and no
+ *     tool call (a plain ping/pong) keeps a bare summary line;
+ *   - the live turn never shows the toggle. The reference reaches the same
+ *     state through its `forceExpanded` / `disabled` props, whose docblock
+ *     says those modes "suppress the toggle and keep available details
+ *     open", and here it is also the only honest option: an activity group
+ *     holding a running tool is force-open and cannot be collapsed, so a
+ *     chevron on the live bar would be a control that cannot act.
+ *
+ * What expanding shows is the turn's process — its thinking and tool
+ * steps, which live in the `ActivityGroup`s above the bar. This is the
+ * reference's disclosure body without its DOM nesting: the reference puts
+ * those steps INSIDE the collapsible region, and ticket 61 risk 2 records
+ * that the agreed shape here is state coordination instead, so the groups
+ * keep their own folding semantics and the chevron drives them as one
+ * block. The turn's answer text is unaffected either way — the reference
+ * keeps it outside the collapse through `collapsedContent`, and ours is
+ * never inside it.
+ *
+ * `expanded` is `undefined` until the user touches the chevron: the turn's
+ * groups keep their own defaults (a mixed run open, a pure-tool run
+ * collapsed) exactly as before this ticket. The first click inverts
+ * `defaultExpanded`, so it always changes something visible.
  * The `turn-process-disclosure` testid is kept.
  */
 export function TurnProcessDisclosure({
@@ -681,6 +736,9 @@ export function TurnProcessDisclosure({
   t,
   active = false,
   startedAtMs,
+  expanded,
+  defaultExpanded = true,
+  onExpandedChange,
 }: {
   stats: TurnStats;
   /** Settled turns only — `block.processedDuration` in milliseconds. */
@@ -690,6 +748,15 @@ export function TurnProcessDisclosure({
   active?: boolean;
   /** `running.startedAt` — the live turn's tick anchor. */
   startedAtMs?: number | null;
+  /** The user's chevron intent for this turn's activity groups; `undefined`
+   *  until they touch it, which leaves the groups on their own defaults. */
+  expanded?: boolean;
+  /** The expansion the turn's groups have by default — the target the first
+   *  click inverts. See `computeTurnLayout#defaultExpandedByTurn`. */
+  defaultExpanded?: boolean;
+  /** Called with the next expansion when the chevron is pressed. Absent means
+   *  the bar is not wired to a turn (the live bar), and no toggle renders. */
+  onExpandedChange?: (next: boolean) => void;
 }) {
   // Live seconds render 0 on the first (SSR + hydration) frame and
   // start ticking from the effect — never from Date.now() during
@@ -736,19 +803,49 @@ export function TurnProcessDisclosure({
       ? Math.round(stats.answerChars / seconds)
       : null;
 
+  // The chevron exists only for a settled turn that HAS process steps and a
+  // handler to drive them with — see the docblock's G4 section.
+  const canToggle = !active && hasExpandableTurnContent(stats) && !!onExpandedChange;
+  const processExpanded = expanded ?? defaultExpanded;
+
+  const summaryText = (
+    <span
+      className="text-activity-body-small flex items-center gap-1 py-1 text-center text-sm font-normal leading-5 tracking-normal text-text_label_tertiary_default"
+      data-testid="turn-process-summary-text"
+      data-summary-text={summary}
+    >
+      {summary}
+    </span>
+  );
+
   return (
     <section className="pt-2" data-testid="turn-process-disclosure">
       <div
         className="flex min-w-0 flex-wrap items-center gap-x-2"
         data-testid="turn-process-summary"
       >
-        <span
-          className="text-activity-body-small flex items-center gap-1 py-1 text-center text-sm font-normal leading-5 tracking-normal text-text_label_tertiary_default"
-          data-testid="turn-process-summary-text"
-          data-summary-text={summary}
-        >
-          {summary}
-        </span>
+        {canToggle ? (
+          <button
+            type="button"
+            aria-expanded={processExpanded}
+            data-testid="turn-process-trigger"
+            onClick={() => onExpandedChange?.(!processExpanded)}
+            className="group/turn-process text-activity-body-small flex cursor-pointer items-center gap-1 py-1 text-center text-sm font-normal leading-5 tracking-normal text-text_label_tertiary_default transition-colors hover:text-text_label_tertiary_hover"
+          >
+            {summaryText}
+            <span
+              data-testid="turn-process-chevron"
+              className={[
+                "-ml-1 flex h-4 w-4 shrink-0 items-center justify-center self-center text-icon_interaction_tertiary_default transition-transform duration-200 ease-out group-hover/turn-process:text-icon_interaction_tertiary_hover",
+                processExpanded ? "rotate-90" : "",
+              ].join(" ")}
+            >
+              <Icon name="chevronRight" size={16} />
+            </span>
+          </button>
+        ) : (
+          summaryText
+        )}
         {!active && outputRate !== null ? (
           <span
             className="text-size_12 ml-auto text-text_default_tertiary tabular-nums"

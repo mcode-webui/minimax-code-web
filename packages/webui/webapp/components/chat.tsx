@@ -17,7 +17,7 @@ import { Icon } from "./icons";
 import { useChatVirtualization } from "./chat-virtual-list";
 import { ActivityPulse, isSessionActivityActive } from "./loading-states";
 import { ActivityGroup, TurnProcessDisclosure, assignActivityBlockKeys } from "./activity-group";
-import { computeTurnStatsByUnit, summarizeTurn, type TurnStats } from "@/lib/turn-stats";
+import { computeTurnLayout, computeTurnStatsByUnit, summarizeTurn, type TurnStats } from "@/lib/turn-stats";
 import { useSessionContext } from "@/lib/store";
 import { capToastReducer } from "@/lib/cap-toast";
 import { readScrollPosition as readPersistedScroll } from "@/lib/persist";
@@ -189,6 +189,32 @@ export function Chat({
     [units, sessionRunning],
   );
 
+  // Webui-parity 61 (G4) — the turn bar's chevron. A chevron can only drive
+  // the turn's activity groups if their state lives above both, and the key
+  // has to survive the per-frame re-cut of the activity runs. `turnIndexByUnit`
+  // is the stable key: a unit's index moves as the turn grows, its turn
+  // ordinal only moves when a new user prompt arrives.
+  //
+  // The map holds ONLY explicit user intent. Absent means the groups keep
+  // their own defaults (a mixed run open, a pure-tool run collapsed), which is
+  // what the transcript did before the chevron existed — the chevron reads
+  // `defaultExpandedByTurn` for the aria state and inverts it on the first
+  // click, so a click always changes something the reader can see.
+  const { turnIndexByUnit, defaultExpandedByTurn } = useMemo(
+    () => computeTurnLayout(units),
+    [units],
+  );
+  const [turnProcessExpanded, setTurnProcessExpanded] = useState<
+    ReadonlyMap<number, boolean>
+  >(() => new Map());
+  const setTurnExpanded = useCallback((turnIndex: number, next: boolean) => {
+    setTurnProcessExpanded((previous) => {
+      const updated = new Map(previous);
+      updated.set(turnIndex, next);
+      return updated;
+    });
+  }, []);
+
   // Windowed rendering: above VIRTUAL_LIST_THRESHOLD (200) units we slice the
   // transcript to a visible window around the user's scroll position. The hook
   // owns the scroll/resize listeners; `stuck` uses the 16 px threshold so the
@@ -354,6 +380,8 @@ export function Chat({
               const originalIndex = virtWindow.useVirtual
                 ? virtWindow.startIdx + localIndex
                 : localIndex;
+              const turnIndex = turnIndexByUnit[originalIndex] ?? 0;
+              const turnExpanded = turnProcessExpanded.get(turnIndex);
               return unit.kind === "activity" ? (
                 <ActivityGroup
                   key={originalIndex}
@@ -364,6 +392,8 @@ export function Chat({
                   onOpenFile={onOpenFile}
                   streaming={originalIndex === streamingActivityIndex}
                   startedAtMs={runningStartedAt}
+                  expanded={turnExpanded}
+                  onExpandedChange={turnExpanded === undefined ? undefined : (next) => setTurnExpanded(turnIndex, next)}
                 />
               ) : (
                 <Block
@@ -371,6 +401,10 @@ export function Chat({
                   block={unit.block}
                   t={t}
                   turnStats={turnStatsByUnit.get(originalIndex)}
+                  turnIndex={turnIndex}
+                  turnProcessExpanded={turnExpanded}
+                  turnProcessDefaultExpanded={defaultExpandedByTurn.get(turnIndex) ?? true}
+                  onTurnProcessExpandedChange={setTurnExpanded}
                 />
               );
             })}
@@ -392,7 +426,7 @@ export function Chat({
                 t={t}
               />
             ) : null}
-            <ThinkingIndicator t={t} />
+            <ThinkingIndicator t={t} locale={locale} />
             {showActions ? (
               <div className="mb-4">
                 <MessageActions
@@ -430,12 +464,24 @@ function Block({
   block,
   t,
   turnStats,
+  turnIndex = 0,
+  turnProcessExpanded,
+  turnProcessDefaultExpanded,
+  onTurnProcessExpandedChange,
 }: {
   block: TranscriptBlock;
   t: (key: MessageKey) => string;
   /** This turn's counts (ticket 46 D6) — absent for non-assistant
    *  blocks that happen to carry a `processedDuration` marker. */
   turnStats?: TurnStats;
+  /** Turn ordinal from `computeTurnLayout` — the chevron's coordination key
+   *  (webui-parity 61, G4). Defaults to 0 for call sites that predate it. */
+  turnIndex?: number;
+  /** Explicit chevron intent for this turn's activity groups; `undefined`
+   *  while the turn's groups are still on their own defaults. */
+  turnProcessExpanded?: boolean;
+  turnProcessDefaultExpanded?: boolean;
+  onTurnProcessExpandedChange?: (turnIndex: number, next: boolean) => void;
 }) {
   // User turns are the only ones that get a bubble.
   if (block.role === "user") {
@@ -474,6 +520,13 @@ function Block({
               stats={turnStats ?? { thinking: 0, tools: 0, answerChars: 0 }}
               processedDurationMs={block.processedDuration}
               t={t}
+              expanded={turnProcessExpanded}
+              defaultExpanded={turnProcessDefaultExpanded}
+              onExpandedChange={
+                onTurnProcessExpandedChange
+                  ? (next) => onTurnProcessExpandedChange(turnIndex, next)
+                  : undefined
+              }
             />
           ) : null}
         </div>
@@ -723,7 +776,13 @@ function NoticeBlock({ block, t }: { block: TranscriptBlock; t: (key: MessageKey
   );
 }
 
-function ThinkingIndicator({ t }: { t: (key: MessageKey) => string }) {
+function ThinkingIndicator({
+  t,
+  locale,
+}: {
+  t: (key: MessageKey) => string;
+  locale: Locale;
+}) {
   const { state } = useSessionContext();
   // Ticket U8: the gate is the exported pure function (unit-tested in
   // webapp/test/loading-skeleton.test.ts); the indicator itself lives in
@@ -734,6 +793,12 @@ function ThinkingIndicator({ t }: { t: (key: MessageKey) => string }) {
   // on the four canonical phases the desktop uses (working / planning /
   // wiring / checking); anything else falls through to the default "thinking"
   // copy so an unknown stage never crashes the indicator.
+  //
+  // webui-parity 61 (G5): the phase label is the indicator's FIRST phrase, not
+  // its only one. `ActivityPulse` shows it until the rotation's first swap
+  // (2–3 s in), then the desktop's weighted phrase table takes over — so the
+  // stage the engine reported is still the first thing a reader sees, and a
+  // long turn does not sit on a frozen label.
   const phase = (state?.context.thinkingStatus ?? "").toLowerCase();
   const label =
     phase === "working"
@@ -745,7 +810,7 @@ function ThinkingIndicator({ t }: { t: (key: MessageKey) => string }) {
           : phase === "checking"
             ? t("chat.thinkingStatus.checking")
             : t("chat.thinking");
-  return <ActivityPulse label={label} />;
+  return <ActivityPulse label={label} locale={locale} />;
 }
 
 /**

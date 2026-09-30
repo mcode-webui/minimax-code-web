@@ -475,6 +475,8 @@ below cites the component file and one `data-testid` per surface.
 | Composer + drop overlay | `components/composer.tsx` | `composer-drop-overlay`, `composer-send-button` |
 | Chat (virtual list ≥ 200 messages) | `components/chat.tsx` + `chat-virtual-list.tsx` | `chat-virtual-top-spacer` |
 | Turn process bar (composite summary + output rate since ticket 46 PR3) | `components/activity-group.tsx#TurnProcessDisclosure` | `turn-process-disclosure` |
+| Turn-bar expand chevron (webui-parity 61, drives the turn's activity groups) | `components/activity-group.tsx#TurnProcessDisclosure` | `turn-process-trigger`, `turn-process-chevron` |
+| Streaming-label phrase rotation (webui-parity 61) | `components/loading-states.tsx#ActivityPulse` + `lib/thinking-phrases.ts` | `activity-indicator-label` |
 | Activity group (collapsible tool turns; in `activity-group.tsx` since ticket 46) | `components/activity-group.tsx` | `activity-group-header` |
 | Thinking block (thought-process disclosure row, ticket 46 PR2) | `components/activity-group.tsx` | `thinking-block` |
 | Tool card (one tool call, ticket 46 PR3) | `components/activity-group.tsx#ToolCard` | `tool-card` |
@@ -1302,6 +1304,20 @@ reads like "Thought 1 time, ran 1 command"):
   AND tools) opens expanded; a pure-tool run starts collapsed; thinking
   rows nested in a mixed run start collapsed while a thoughts-only run
   starts with its thinking row expanded.
+- **The group body is uncapped and has no scrollbar of its own (webui-parity
+  61, restoring the desktop shape)**: the body used to carry
+  `max-h-[230px] overflow-y-auto`, so a long tool run nested a second
+  scrollbar inside a page that already scrolls and cut its own steps off
+  mid-list. The reference stylesheet gives `.activity-group-items`
+  `gap: 0` plus a 28px minimum row height and no `max-height`; this
+  repository now matches — zero gap as the component's `gap-0`, and the
+  28px floor in `app/globals.css` as `.activity-group-items > *` (outside
+  every `@layer`, so Tailwind's purge cannot reach a hand-written rule).
+  Removing the cap costs no render work either way: a collapsed
+  `<details>` keeps its body in the DOM, so the row count was never the
+  reason for the cap. The one scroll container the desktop keeps inside a
+  group is the tool detail's `pre`, capped at 180px (the reference
+  `.webui-tool-detail-section pre`); this repository shipped 320px.
 
 **Thinking block** (one thought):
 
@@ -1462,11 +1478,56 @@ While a turn is in flight, a process bar renders at the transcript tail
   four server files; fixing it (persisting the marker, or moving it to
   a structured field) needs its own ticket — until then the settled bar
   is transient by design of the transport.
-- A 0.5px separator closes the bar from below. The retired
-  expand-to-repeat-the-same-sentence interaction is gone (there is no
-  content to expand — the reference renders a plain summary row when
-  the turn has no expandable content of its own); the
+- A 0.5px separator closes the bar from below; the
   `turn-process-disclosure` testid is kept.
+
+#### The turn bar's expand chevron (webui-parity 61, restoring the desktop shape)
+
+A settled turn bar carries the desktop's `>` chevron
+(`turn-process-chevron`). Ticket 46 removed it on the grounds that there
+was "nothing to expand" — this repository lays the thinking and tool
+steps out flat as activity groups instead of nesting them inside the
+turn bar's collapsible region, so the chevron had nothing to point at.
+Webui-parity 61 changes that premise: the chevron is **state
+coordination** that drives the turn's activity groups, without
+re-arranging the DOM.
+
+- **When it appears**: the turn has thoughts or tool calls. The predicate
+  is the exported pure function `hasExpandableTurnContent(stats)` — the
+  same two counts the composite summary already prints, and the same
+  question the reference asks through `WebuiTurnProcess`'s
+  `hasExpandableContent` (which `AssistantBody.tsx` computes from that
+  turn's thinking text, tools and activity segments). A plain question
+  turn (no thought, no tool) has nothing to disclose and renders the bare
+  summary line with no chevron; that is the desktop's own rule, and the
+  reason the turn in desktop screenshot 02 does show one is that the turn
+  itself had process content.
+- **A live turn never shows it.** The reference reaches the same state
+  through its `forceExpanded` / `disabled` props, whose docblock says
+  those modes "suppress the toggle and keep available details open". Here
+  there is a harder reason as well: an activity group holding a running
+  tool is force-open under `data-active` and cannot be collapsed, so a
+  live chevron would be a control that cannot act.
+- **What expanding shows**: the turn's thinking and tool steps — the
+  activity groups. The turn's answer text is not part of it: the
+  reference keeps the answer outside the collapse through
+  `collapsedContent`, and here the answer is never inside a group.
+- **The coordination key is the turn ordinal, not the unit index.**
+  Activity runs are re-cut on every streaming frame, so a unit index
+  drifts while its turn ordinal only advances when a new user prompt
+  arrives; keying on units would detach the chevron from the groups it
+  drives the moment a tool header lands. `computeTurnLayout` in
+  `webapp/lib/turn-stats.ts` is the pure function that produces the
+  ordinals, and the intent lives in one
+  `Map<turn ordinal, expanded>` in `Chat`.
+- **Until the user clicks, every group keeps its own default** (mixed run
+  open, pure-tool run collapsed). The chevron's `aria-expanded` reads
+  `computeTurnLayout#defaultExpandedByTurn` (true when any group of the
+  turn opens by default) and inverts it on the first click, so the first
+  click always changes something visible. After that the turn's groups
+  move as one block.
+- Neither the `data-active` forced-open rule nor a group's own folding
+  semantics change: a collapse intent never overrides forced open.
 
 ## Loading states: transcript skeleton and streaming indicator (ticket U8)
 
@@ -1476,7 +1537,7 @@ and neither is a bare spinner:
 | Waiting for | What renders | Where it lives |
 | --- | --- | --- |
 | The first state snapshot (page load, engine boot) | `TranscriptSkeleton` — a shimmer placeholder shaped like the real transcript: right-aligned user bubbles, full-width assistant text lines, a tool-summary row with indented output lines. The connection copy (connecting / disconnected) stays underneath | The page-level `!state` branch in `app/page.tsx`; the component itself is `webapp/components/loading-states.tsx` |
-| The current turn's output (`running.active`) | `ActivityPulse` at the transcript tail — the desktop's three-dot loader plus a shimmer bar sitting where the next line of output will land, next to the phase label (thinking / working / …) | `components/chat.tsx#ThinkingIndicator`, gated by the exported pure function `isSessionActivityActive` |
+| The current turn's output (`running.active`) | `ActivityPulse` at the transcript tail — the desktop's three-dot loader plus a shimmer bar sitting where the next line of output will land. The label shows the phase the engine reported (thinking / working / …) first, then rotates through the desktop's weighted phrase table | `components/chat.tsx#ThinkingIndicator`, gated by the exported pure function `isSessionActivityActive` |
 
 Invariants worth keeping when touching either branch:
 
@@ -1499,13 +1560,47 @@ Invariants worth keeping when touching either branch:
 - Rendering tests for both components and the reduced-motion tripwire live in
   `webapp/test/loading-skeleton.test.ts` (SSR through
   `renderToStaticMarkup`; the suite has no DOM harness).
+- **Streaming-label phrase rotation (webui-parity 61, restoring the desktop
+  shape)**: the desktop does not park one static label on screen for the
+  length of a turn. The schedule and the draw are transcribed from the
+  reference `ActivityIndicator.tsx`: 2000–3000 ms (drawn) before the first
+  swap, 3500 ms between swaps after that, a weighted bucket draw — basic
+  0.75, specific 0.15, motion 0.1 — uniform inside the drawn bucket, with
+  the previous phrase filtered out so nothing repeats back to back. The
+  tables are in `webapp/lib/thinking-phrases.ts`, indexed by `Locale` with
+  the same structure in both languages; a separate module rather than the
+  flat `lib/i18n.ts` dictionary, for the reason `lib/i18n-agent-team.ts`
+  gives. The draw and the schedule are the exported pure functions
+  `pickWeightedPhrase` / `computeThinkingPhraseStartDelay`, and the timer
+  lives in `ActivityPulse` alone.
+- **Under `prefers-reduced-motion` the rotation continues, deliberately.** A
+  phrase swap is a discrete text replacement, not motion: there is no
+  translation, no scaling and no continuous movement for a vestibular
+  trigger to react to, and the desktop makes the same trade — its
+  reduced-motion branch halts the lottie and leaves the label ticking.
+  Stopping the rotation would re-install the frozen-label defect G5 exists
+  to remove. The animated half of the indicator (three dots, shimmer) is
+  still switched off by the explicit `globals.css` rules above, so a
+  reduce-motion user sees a still indicator with a still-ticking label.
+- **No side effects on streaming**: the rotation's state lives in
+  `ActivityPulse` itself, so a swap re-renders that one `<span>`
+  (`activity-indicator-label`) and nothing above it — the transcript
+  bodies, the markdown and the streaming cursor are not in the update path.
+  The effect depends on the phrase table alone (a module-level constant
+  looked up by locale, stable identity), never on a per-render closure and
+  never on `label` — the phase copy changes with the engine, and depending
+  on it would reset the schedule mid-turn. The timer is a chained
+  `setTimeout` rather than a `setInterval` and is cleared on cleanup; the
+  component unmounts when the turn settles, leaving no pending timer.
+  Effects do not run on the server, so the SSR and hydration first frames
+  are both the phase copy — no first-paint swap.
 - Boundary with ticket 46: while a thought streams, the 「推理中...」+
   ticking-seconds readout lives on the thinking block's summary row inside
   the tail activity group, and the live 「已执行 N 秒」 turn bar sits at
   the transcript tail (see the "Session rendering" section above); the
-  `ActivityPulse` in this table (three dots + shimmer + phase label)
-  also appears only at the transcript tail, below the turn bar.
-  Different positions, different jobs; none replaces another.
+  `ActivityPulse` in this table (three dots + shimmer + phase label +
+  rotating phrases) also appears only at the transcript tail, below the
+  turn bar. Different positions, different jobs; none replaces another.
 
 ## Persistence keys (client-side `localStorage` / `sessionStorage`)
 

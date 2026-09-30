@@ -335,6 +335,28 @@ details.webui-thinking-block > summary::-webkit-details-marker {
   padding-left: 15px;
 }
 
+/* Webui-parity 61 (G7) — the reference's row metrics, transcribed from
+ * `styles/shell.css` (`.activity-group-items`): `gap: 0` (carried as the
+ * `gap-0` utility on the component) and a 28px minimum row whether the step
+ * is a thought or a tool, so a long run reads as a uniform timeline instead
+ * of the loose `gap-1.5` stack this shipped with.
+ *
+ * `> *` rather than a class per row: the children are native `<details>`
+ * elements (a thinking block and a tool card) that share no class of their
+ * own, and the reference reaches the same rows through
+ * `.activity-group-items .webui-tool-row { min-height: 28px }`.
+ *
+ * The box used to carry `max-height: 230px` plus a scrollbar of its own. The
+ * reference has no cap and neither does this: the transcript column already
+ * scrolls, and a nested scroller cut a long tool run's own steps off
+ * mid-list. It costs no render work either way — a collapsed `<details>`
+ * keeps its body in the DOM, so the row count was never the reason for the
+ * cap. The one scroll container the desktop still keeps is the tool detail's
+ * `pre`, capped at 180px on the component. */
+.activity-group-items > * {
+  min-height: 28px;
+}
+
 /* Thinking body clamp — once the rendered body exceeds 224px
  * (THINKING_CLAMP_HEIGHT_PX on the component), `is-clamped` caps it and
  * fades the last 40px into the page background so the 「展开」 button below

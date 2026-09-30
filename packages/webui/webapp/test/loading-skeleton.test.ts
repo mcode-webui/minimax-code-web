@@ -183,9 +183,12 @@ describe("wiring tripwire — the loading branches stay put", () => {
   test("chat.tsx ThinkingIndicator gates on the pure function and returns null when idle", () => {
     const idx = chatSource.indexOf("function ThinkingIndicator");
     assert.ok(idx >= 0, "ThinkingIndicator present in chat.tsx");
-    const body = chatSource.slice(idx, idx + 1400);
+    const body = chatSource.slice(idx, idx + 2200);
     assert.match(body, /if \(!isSessionActivityActive\(state\)\) return null;/);
-    assert.match(body, /<ActivityPulse label=\{label\} \/>/);
+    // webui-parity 61 (G5): the locale rides along so the indicator can draw
+    // from that locale's phrase table. The phase label itself is unchanged and
+    // still reaches the component as `label`.
+    assert.match(body, /<ActivityPulse label=\{label\} locale=\{locale\} \/>/);
   });
 });
 

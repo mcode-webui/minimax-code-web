@@ -361,6 +361,8 @@ ACP 握手是双向的，两个方向都由同一份 `initialize` 载荷决定�
 | 录入区与拖放浮层 | `components/composer.tsx` | `composer-drop-overlay`、`composer-send-button` |
 | 对话（≥ 200 条时虚拟滚动） | `components/chat.tsx` + `chat-virtual-list.tsx` | `chat-virtual-top-spacer` |
 | 轮次耗时条（工单 46 PR3 起复合文案与输出速度） | `components/activity-group.tsx#TurnProcessDisclosure` | `turn-process-disclosure` |
+| 轮次条展开箭头（工单 61 还原，驱动该回合的活动组） | `components/activity-group.tsx#TurnProcessDisclosure` | `turn-process-trigger`、`turn-process-chevron` |
+| 流式指示短语轮换（工单 61 还原） | `components/loading-states.tsx#ActivityPulse` + `lib/thinking-phrases.ts` | `activity-indicator-label` |
 | 活动组（可折叠的工具轮次，工单 46 起在 `activity-group.tsx`） | `components/activity-group.tsx` | `activity-group-header` |
 | 思维链块（思考过程折叠行，工单 46 PR2） | `components/activity-group.tsx` | `thinking-block` |
 | 工具卡片（单次工具调用，工单 46 PR3） | `components/activity-group.tsx#ToolCard` | `tool-card` |
@@ -931,6 +933,16 @@ loading-states 相同：让 SSR 渲染测试可以脱离 `chat.tsx` 的 `@/` 别
   `expandProcessByDefault` + `renderActivityParts`）：组内同时有思考
   和工具时默认展开；纯工具组默认收起；混合组内嵌套的思维链行默认
   收起，纯思考组的思维链行默认展开。
+- **组体不限高、不内嵌滚动条（工单 61 还原）**：组体此前带
+  `max-h-[230px] overflow-y-auto`，长工具轮会在一个本身就在滚动的页面
+  里再套一条滚动条，把自己的步骤从中间切断。参照样式表给
+  `.activity-group-items` 的是 `gap: 0` 加每行 28px 最小高度，没有
+  `max-height`；本仓现在一致：零行距由组件上的 `gap-0` 承担，28px 行高
+  下限写在 `app/globals.css` 的 `.activity-group-items > *`（`@layer`
+  之外，Tailwind 清理不到手写规则）。去掉限高不带来渲染成本——收起的
+  `<details>` 本来就把展开体留在 DOM 里，行数从来不是当初加限高的理由。
+  桌面版在组内唯一保留的滚动容器是工具详情的 `pre`，限高 180px（照参照
+  `.webui-tool-detail-section pre`），本仓原先是 320px。
 
 **思维链块**（一段思考过程）：
 
@@ -1053,9 +1065,40 @@ loading-states 相同：让 SSR 渲染测试可以脱离 `chat.tsx` 的 `@/` 别
   下发，前端解码因此拿不到 `processedDuration`。本工单红线禁改
   四个 server 文件，修复（落盘该标记或改走结构化字段）需另立
   工单；在此之前终态耗时条按瞬态对待。
-- 摘要行下方有一条 0.5px 分隔线。旧版「可展开重复同一句耗时」的
-  折叠交互移除（无内容可展开，参照在无展开内容时也只渲染纯摘要
-  行）；`turn-process-disclosure` testid 保留。
+- 摘要行下方有一条 0.5px 分隔线；`turn-process-disclosure` testid 保留。
+
+#### 轮次条上的展开箭头（工单 61 还原）
+
+终态轮次条恢复桌面版的 `>` 展开箭头（`turn-process-chevron`）。旧版
+把它拿掉的理由是「无内容可展开」——本仓把思维/工具步骤平铺成活动组，
+不在耗时条的折叠体里，于是箭头无处可指。这个前提在工单 61 改掉了：
+箭头改为**状态协调**，驱动该回合的活动组，不重排 DOM。
+
+- **什么条件下出现**：该回合有思维或工具调用。判定是导出的纯函数
+  `hasExpandableTurnContent(stats)`，即摘要行已经在打印的那两个计数；
+  与参照 `WebuiTurnProcess` 的 `hasExpandableContent` 同一口径（参照在
+  `AssistantBody.tsx` 由该回合的 thinking 文本 / 工具 / 活动段算出）。
+  纯问答回合（既没有思维也没有工具）没有可展开内容，只渲染纯摘要行，
+  不出现箭头——这是桌面版的规则，也是桌面版 02 号截图里那条带箭头
+  的回合本身有过程内容的原因。
+- **运行中的回合不出现箭头**。参照的 `forceExpanded` / `disabled` 两个
+  模式同样「抑制切换、保持详情展开」；本仓这边还有一个更硬的理由：持有
+  运行中工具的活动组被 `data-active` 强制展开、不能收起，此时的箭头是
+  一个按不动的控件。
+- **展开的是什么**：该回合的思维与工具步骤，即活动组本身。回合的回答
+  文本不在其中——参照用 `collapsedContent` 把回答留在折叠体之外，本仓
+  的回答本来就不在活动组内。
+- **协调键是回合序号，不是单元序号**。活动组在流式期间每帧重切，单元
+  序号会漂、回合序号只在出现新用户消息时前进；用单元序号会让箭头在工具
+  头行落盘的那一刻与它驱动的组脱钩。序号由 `webapp/lib/turn-stats.ts` 的
+  纯函数 `computeTurnLayout` 给出，意图保存在 `Chat` 的一个
+  `Map<回合序号, 展开态>` 里。
+- **未点击过时各组保持自己的默认展开态**（混合组展开、纯工具组收起），
+  箭头的 `aria-expanded` 读 `computeTurnLayout#defaultExpandedByTurn`
+  （该回合有任一组默认展开即为 true），第一次点击取反，因此第一次点击
+  一定看得见变化。点击之后该回合各组作为一个整体联动。
+- `data-active` 强制展开规则与活动组自身的折叠语义都不因此改变：
+  收起意图不会盖过强制展开。
 
 ## 加载态：会话骨架屏与流式活动指示（工单 U8）
 
@@ -1064,7 +1107,7 @@ loading-states 相同：让 SSR 渲染测试可以脱离 `chat.tsx` 的 `@/` 别
 | 在等什么 | 用户看到什么 | 代码位置 |
 | --- | --- | --- |
 | 第一份会话快照（页面冷启动、引擎启动中） | `TranscriptSkeleton` —— 按真实消息行布局铺的 shimmer 骨架：右对齐的用户气泡、通栏的助手正文行、带缩进输出行的工具摘要行；下方保留连接状态文案（正在连接引擎 / 连接已断开） | `app/page.tsx` 的 `!state` 分支；组件在 `webapp/components/loading-states.tsx` |
-| 当前一轮的输出（`running.active`） | transcript 尾部的 `ActivityPulse` —— 桌面端同款三点加载动画，旁边多一条 shimmer 条，位置就是下一行输出将要落下的地方；阶段文案（思考中 / 工作中 / …）保留 | `components/chat.tsx` 的 `ThinkingIndicator`，开关由导出的纯函数 `isSessionActivityActive` 决定 |
+| 当前一轮的输出（`running.active`） | transcript 尾部的 `ActivityPulse` —— 桌面端同款三点加载动画，旁边多一条 shimmer 条，位置就是下一行输出将要落下的地方；标签先显示引擎报的阶段文案（思考中 / 工作中 / …），随后按桌面版的加权短语表轮换 | `components/chat.tsx` 的 `ThinkingIndicator`，开关由导出的纯函数 `isSessionActivityActive` 决定 |
 
 改这两处时值得保持的约定：
 
@@ -1083,11 +1126,35 @@ loading-states 相同：让 SSR 渲染测试可以脱离 `chat.tsx` 的 `@/` 别
 - 两个组件的渲染测试与 reduced-motion 的静态断言在
   `webapp/test/loading-skeleton.test.ts`（走 `renderToStaticMarkup`；
   本测试套件没有 DOM 环境）。
+- **流式标签的短语轮换（工单 61 还原）**：桌面版不在整个回合期间把一个
+  静态标签钉在屏幕上。参照 `ActivityIndicator.tsx` 的排期与抽签照搬：
+  首次换词前等 2000–3000ms（随机取值），之后每 3500ms 换一次；短语分
+  三个加权桶抽取——basic 0.75 / specific 0.15 / motion 0.1——桶内均匀，
+  且抽签前先滤掉上一句，不出现连续重复。表在
+  `webapp/lib/thinking-phrases.ts`（按 `Locale` 索引，两种语言各自成表，
+  结构相同；独立模块而非塞进 `lib/i18n.ts` 的扁平字典，理由与
+  `lib/i18n-agent-team.ts` 相同）。抽签与排期是导出的纯函数
+  `pickWeightedPhrase` / `computeThinkingPhraseStartDelay`，定时器只存在于
+  `ActivityPulse` 这一个叶子组件里。
+- **减弱动态效果下短语继续轮换，这是有意的取舍**：换词是一次性文本替换，
+  没有位移、没有缩放、没有持续运动，前庭障碍的触发条件不存在；桌面版做
+  的是同一取舍——`prefers-reduced-motion` 分支停掉 lottie 播放，文案照
+  旧跳动。停掉轮换反而会把 G5 要修的「长回合标签僵住」再装回来。指示器
+  里会动的那一半（三点与 shimmer）仍由上一条的 `globals.css` 显式规则
+  关闭，减弱动效的用户看到的是一个静止的指示器配一个仍在换词的标签。
+- **对流式渲染无副作用**：轮换的状态挂在 `ActivityPulse` 自身，换词触发
+  的重渲染只覆盖那一个 `<span>`（`activity-indicator-label`），transcript
+  正文、markdown 与流式光标都不在更新路径里。effect 的依赖只有短语表
+  （按 locale 从模块级常量取，对象身份稳定），不依赖每渲染新建的闭包，也
+  不依赖 `label`（阶段文案随引擎变化，重启计时器就会让节奏被重置）。定时
+  器是链式 `setTimeout` 而非 `setInterval`，清理时清空；组件随回合结束而
+  卸载，不留悬垂定时器。effect 不在服务端运行，故 SSR 与 hydration 的
+  首帧都是阶段文案，没有首帧跳变。
 - 与工单 46 的边界：流式期间「推理中... + 跳动秒数」显示在尾部活动
   组内思维链块的摘要行上，「已执行 N 秒」耗时条显示在 transcript
   尾部（见上一节「会话渲染」）；上表的 `ActivityPulse`（三点 +
-  shimmer + 阶段文案）同样只出现在 transcript 尾部、位于耗时条之
-  下。三者位置不同、职责不同，互不替代。
+  shimmer + 阶段文案 + 轮换短语）同样只出现在 transcript 尾部、位于耗
+  时条之下。三者位置不同、职责不同，互不替代。
 
 ## 持久化键（客户端 `localStorage` / `sessionStorage`）
 
