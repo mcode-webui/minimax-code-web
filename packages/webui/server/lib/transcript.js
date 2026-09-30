@@ -479,3 +479,64 @@ export function loadTranscriptChatLines(mcodeSid, opts = {}) {
     truncated: mapped.truncated,
   };
 }
+
+// ============================================================
+// mergeEngineTranscript — fold a fresh engine-DB read into the lines
+// the browser already shows, instead of overwriting them.
+// ============================================================
+//
+// Why this exists. `transcript-sync.js` polls the engine runtime DB so a
+// conversation driven by ANOTHER client (the desktop app, the TUI, another
+// agent) catches up in an open tab. The poll used to assign
+// `cs.chat = read.lines` outright. That is correct for engine lines and
+// catastrophic for everything the webui authors itself: the slash-command
+// echo written by `interaction/commands.js` (`› /help`, `● 可用命令：…`,
+// `● 当前 model=…`, `● 变更概览 …`) never reaches the engine, so the poll
+// deleted it about four seconds after the user asked for it — and then
+// persisted the deletion, so even a reload could not bring it back. Users
+// saw `POST /api/cmd → 200`, the composer cleared, and nothing at all on
+// screen (webui-parity 81 D-1).
+//
+// The rule. `read` is the SPINE: the engine's own view of the conversation,
+// in order. `current` is what is already rendered. Walk both in lockstep;
+// whenever a `current` line does not line up with the `read` line at the
+// cursor, that line was authored by the webui and is kept, advancing only
+// `current`. When `read` runs out first, the remainder of `current` is
+// still webui-authored and is kept; when `current` runs out first, the
+// remainder of `read` is engine content this tab has not seen yet (the
+// foreign-client case the poll exists for) and is appended.
+//
+// The one assumption is that the engine APPENDS — it does not rewrite an
+// already-emitted line. The switch path has always relied on that (it only
+// backfills an empty or visibly-cumulative stored chat), and the merge adds
+// no new dependency on it: a rewrite would surface as the old line being
+// kept next to its replacement rather than being replaced. Nothing this
+// server produces does that.
+//
+// Capped reads (400 lines / 200KB) are the caller's concern, not this
+// function's: `transcript-sync.js` skips a capped read that would shrink
+// the view, so a truncated `read` here is always a prefix-preserving
+// window and every line it dropped is a line the engine no longer returns.
+export function mergeEngineTranscript(read, current) {
+  const dbLines = Array.isArray(read) ? read : [];
+  const haveLines = Array.isArray(current) ? current : [];
+  const merged = [];
+  let i = 0; // cursor into haveLines
+  let j = 0; // cursor into dbLines
+  while (i < haveLines.length) {
+    const line = haveLines[i];
+    if (j < dbLines.length && dbLines[j] === line) {
+      merged.push(line);
+      i += 1;
+      j += 1;
+      continue;
+    }
+    // Not the engine's line at this position — keep it and leave the
+    // engine cursor alone so the next `have` line can still line up.
+    merged.push(line);
+    i += 1;
+  }
+  // Everything the engine has that this tab has not rendered yet.
+  for (; j < dbLines.length; j += 1) merged.push(dbLines[j]);
+  return merged;
+}

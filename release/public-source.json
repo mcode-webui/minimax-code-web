@@ -3621,6 +3621,7 @@
     "packages/webui/test/lib/state-bus-revision.check.mjs",
     "packages/webui/test/lib/state-bus.check.mjs",
     "packages/webui/test/lib/static.test.js",
+    "packages/webui/test/lib/transcript-merge.test.js",
     "packages/webui/test/lib/transcript-sync-wedge.check.mjs",
     "packages/webui/test/lib/transcript.test.js",
     "packages/webui/test/lib/tui-runtime-adapter-import.test.js",
