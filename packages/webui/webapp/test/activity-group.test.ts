@@ -26,6 +26,10 @@
 //     a client-side measurement, so the static markup must NOT carry them;
 //   - the chat.tsx call site still passes `streaming` / `startedAtMs` (the
 //     tail-run derivation), and the retired two-button header is gone;
+//   - the slice-06 subagent badge: when a `→ task` line has a matching
+//     `recentSubagents[]` entry the summary row grows a real `<button>`
+//     carrying the child session id, the localized 「glyph + agent label」
+//     text and the status colour; with no match the card stays button-free;
 //   - the i18n tables carry both locales for the four new keys.
 //
 // createElement, not JSX: this suite is a `.test.ts` file (the test:webapp
@@ -40,6 +44,7 @@ import * as React from "react";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ActivitySummary, TranscriptBlock } from "../lib/transcript";
+import type { RecentSubagent, WebuiState } from "../lib/types";
 
 // components/icons.tsx (pulled in through the component graph) compiles its
 // JSX under the classic runtime in this process, which resolves a bare
@@ -61,7 +66,7 @@ const { ActivityGroup, TurnProcessDisclosure, isActivityGroupActive, assignActiv
   "../components/activity-group"
 );
 const { ToolIcon } = await import("../components/tool-icon");
-const { SessionProvider } = await import("../lib/store");
+const { SessionProvider, __testSnapshot } = await import("../lib/store");
 const { translate } = await import("../lib/i18n");
 const { groupActivity, decodeTranscript: realDecode } = await import("../lib/transcript");
 
@@ -157,6 +162,88 @@ function renderGroup(
       }),
     ),
   );
+}
+
+// --- slice 06 (Agent Team) subagent badge fixtures -------------------------
+//
+// How the badge fixture reaches the renderer, and why it is not
+// `__testApplyAction`. `useSession()` reads
+// `useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot)`, and
+// `renderToStaticMarkup` runs the SERVER branch — `getServerSnapshot`,
+// which returns the store's `INITIAL` constant. The live `snapshot` that
+// `__testApplyAction` writes is never consulted on that path, so pushing a
+// `state` action leaves `ToolCard` with `state === null` and the badge
+// absent (verified by probe, not assumed). `INITIAL` is still reachable
+// from the test side: `lib/store.tsx` initialises `let snapshot` FROM that
+// same constant, so the object `__testSnapshot()` returns before any action
+// has been applied IS `INITIAL`. Swapping its `state` field in place puts a
+// `recentSubagents` list in front of the renderer, and `runWithSubagents`
+// restores the field in a `finally` so the rest of the suite keeps seeing
+// the no-subagent baseline. No production backdoor is added: the hook used
+// here (`__testSnapshot`) is already exported for tests.
+const serverSnapshot = __testSnapshot();
+
+/** A subagent row as `WebuiState.recentSubagents` carries it — see
+ *  `lib/types.ts#RecentSubagent`. `status` is the UI vocabulary, never a
+ *  raw db string. */
+function subagentEntry(overrides: Partial<RecentSubagent> = {}): RecentSubagent {
+  return {
+    toolCallId: "tc-1",
+    sessionId: "child-session-a",
+    agentName: "verifier",
+    status: "running",
+    ...overrides,
+  };
+}
+
+/** A `→ task` dispatch block — the only tool family that can carry a
+ *  subagent badge (`findSubagentForBlock` gates on the name), with the
+ *  `toolCallId` the decoder attaches from the server's `##tc:` marker. */
+function taskBlock(toolCallId: string, overrides: Partial<TranscriptBlock> = {}): TranscriptBlock {
+  return {
+    role: "tool",
+    text: "→ task",
+    toolName: "task",
+    toolArgs: '{"subagent_type":"verifier"}',
+    toolOutput: [],
+    toolPaths: [],
+    toolStatus: "completed",
+    toolCallId,
+    ...overrides,
+  };
+}
+
+/** Render one ActivityGroup with a `recentSubagents` list in the store's
+ *  server snapshot, restoring the previous state afterwards. */
+function renderWithSubagents(
+  blocks: TranscriptBlock[],
+  recent: RecentSubagent[] | undefined,
+  summary: ActivitySummary = toolsOnlySummary,
+): string {
+  const saved = serverSnapshot.state;
+  // Only the fields `ToolCard` reads are populated; the badge path never
+  // touches the rest of the snapshot.
+  serverSnapshot.state = { recentSubagents: recent } as unknown as WebuiState;
+  try {
+    return renderGroup(blocks, summary);
+  } finally {
+    serverSnapshot.state = saved;
+  }
+}
+
+/** The badge's own opening tag (attributes included) — the unit every
+ *  colour / jump-target assertion is made against. */
+function badgeTag(html: string): string {
+  const tag = html.match(/<button[^>]*data-testid="tool-card-subagent-badge"[^>]*>/)?.[0];
+  assert.ok(tag, "tool-card-subagent-badge button missing");
+  return tag;
+}
+
+/** The badge's rendered text, glyph included. */
+function badgeText(html: string): string {
+  return html.match(
+    /data-testid="tool-card-subagent-badge"[^>]*>([^<]*)</,
+  )?.[1] ?? "";
 }
 
 describe("ActivityGroup — native <details> folding (D3)", () => {
@@ -454,6 +541,173 @@ describe("ToolCard — the tool row (D4, PR3)", () => {
     // QA-registered leftover: the attribute had no consumer anywhere in
     // the repo (grep-verified) — removed rather than carried forward.
     assert.doesNotMatch(activitySource, /data-message-collapse-trigger/);
+  });
+});
+
+// The badge is the slice-06 answer to the "main/sub-agent communication must
+// not degrade" red line: the parent turn's `→ task` line is the ONLY place
+// the user can reach the child session. Everything below pins the render,
+// the copy, the colour, the jump target and the HTML legality of that
+// affordance.
+describe("ToolCard — the subagent badge (slice 06 Agent Team)", () => {
+  test("a task block with a matching recentSubagents entry renders the badge", () => {
+    const html = renderWithSubagents([taskBlock("tc-1")], [subagentEntry()]);
+    const tag = badgeTag(html);
+    // The status the renderer read off the entry, verbatim.
+    assert.match(tag, /data-subagent-status="running"/);
+    // The badge is a real <button>, not a span pretending to be one.
+    assert.match(tag, /type="button"/);
+    // The card still folds natively — the badge did not replace <summary>.
+    assert.match(html, /<summary[^>]*>/);
+  });
+
+  test("no recentSubagents — absent or empty — means no badge at all", () => {
+    const absent = renderWithSubagents([taskBlock("tc-1")], undefined);
+    assert.doesNotMatch(absent, /tool-card-subagent-badge/);
+    const empty = renderWithSubagents([taskBlock("tc-1")], []);
+    assert.doesNotMatch(empty, /tool-card-subagent-badge/);
+    // …and the card is back to the button-free markup the ToolCard block
+    // above pins, so a stray badge cannot leak into an unlinked run.
+    assert.doesNotMatch(absent, /<button/);
+  });
+
+  test("a non-dispatch tool never badges, even with live subagents in state", () => {
+    // findSubagentForBlock gates on the tool name: a read / bash / write
+    // line has no child session to jump to.
+    const html = renderWithSubagents(
+      [richToolBlock({ toolName: "bash", text: "→ bash", toolCallId: "tc-1" })],
+      [subagentEntry()],
+    );
+    assert.doesNotMatch(html, /tool-card-subagent-badge/);
+  });
+
+  test("the badge text is the localized glyph plus the agent label", () => {
+    // zh is the default SSR locale (useLocale initialises to "zh"), so the
+    // badge must read 「▶ 验证者」 — glyph from the status table, label from
+    // the agent-name table, both through tAgentTeam.
+    const running = renderWithSubagents(
+      [taskBlock("tc-1")],
+      [subagentEntry({ status: "running", agentName: "verifier" })],
+    );
+    assert.equal(badgeText(running), "▶ 验证者");
+    const done = renderWithSubagents(
+      [taskBlock("tc-1")],
+      [subagentEntry({ status: "done", agentName: "explore" })],
+    );
+    assert.equal(badgeText(done), "✓ 探查者");
+    const failed = renderWithSubagents(
+      [taskBlock("tc-1")],
+      [subagentEntry({ status: "failed", agentName: "coder" })],
+    );
+    assert.equal(badgeText(failed), "✗ 编码者");
+    // An unmapped agent token falls back to the stored English name rather
+    // than rendering an empty badge.
+    const custom = renderWithSubagents(
+      [taskBlock("tc-1")],
+      [subagentEntry({ agentName: "archivist" })],
+    );
+    assert.equal(badgeText(custom), "▶ archivist");
+  });
+
+  test("a status outside the badge vocabulary renders no label and no crash", () => {
+    // badgeLabelAndGlyph returns null for an unknown status; the card must
+    // still render the button (the session is still reachable) with an
+    // empty body rather than print a raw i18n key.
+    const html = renderWithSubagents(
+      [taskBlock("tc-1")],
+      [subagentEntry({ status: "hibernating" })],
+    );
+    badgeTag(html);
+    assert.equal(badgeText(html), "");
+    assert.doesNotMatch(html, /agentTeam\./);
+  });
+
+  test("status colour follows the three-way vocabulary", () => {
+    const running = badgeTag(
+      renderWithSubagents([taskBlock("tc-1")], [subagentEntry({ status: "running" })]),
+    );
+    assert.match(running, /\bbg-bg_status_accent\b/);
+    assert.match(running, /\btext-text_default_accent\b/);
+    const failed = badgeTag(
+      renderWithSubagents([taskBlock("tc-1")], [subagentEntry({ status: "failed" })]),
+    );
+    assert.match(failed, /\bbg-bg_status_error\b/);
+    assert.match(failed, /\btext-text_status_error\b/);
+    // Every settled status shares the neutral chip — the third branch.
+    const done = badgeTag(
+      renderWithSubagents([taskBlock("tc-1")], [subagentEntry({ status: "done" })]),
+    );
+    assert.match(done, /\bbg-bg_grouped_tertiary_elevated\b/);
+    assert.match(done, /\btext-text_default_secondary\b/);
+    assert.doesNotMatch(done, /\bbg-bg_status_error\b/);
+  });
+
+  test("the jump target is the child session id, on the badge and its title", () => {
+    const html = renderWithSubagents(
+      [taskBlock("tc-1")],
+      [subagentEntry({ sessionId: "child-session-xyz" })],
+    );
+    const tag = badgeTag(html);
+    assert.match(tag, /data-subagent-session="child-session-xyz"/);
+    assert.match(tag, /title="child-session-xyz"/);
+    // The click handler navigates to that same field — the badge's jump
+    // target is the CHILD session, never the parent's own id and never the
+    // toolCallId. (A static read: renderToStaticMarkup drops onClick, and
+    // this suite has no DOM to dispatch a real click on.)
+    assert.match(
+      activitySource,
+      /switchSession\(subagent\.sessionId\)/,
+    );
+    // The handler also stops the click from toggling the enclosing
+    // <details> — without it a badge click would fold the card open/closed
+    // and read as a navigation failure.
+    assert.match(
+      activitySource,
+      /data-testid="tool-card-subagent-badge"[\s\S]{0,600}event\.stopPropagation\(\)/,
+    );
+  });
+
+  test("two task lines in one run badge their OWN child", () => {
+    // The regression the lookup module exists for: matching by tool NAME
+    // badges every `→ task` line with the newest child, so clicking an
+    // older dispatch jumps to the wrong subagent session.
+    const html = renderWithSubagents(
+      [taskBlock("tc-1"), taskBlock("tc-2")],
+      [
+        subagentEntry({ toolCallId: "tc-1", sessionId: "child-one" }),
+        subagentEntry({ toolCallId: "tc-2", sessionId: "child-two", agentName: "coder" }),
+      ],
+    );
+    const sessions = [...html.matchAll(/data-subagent-session="([^"]+)"/g)].map((m) => m[1]);
+    assert.deepEqual(sessions, ["child-one", "child-two"]);
+  });
+
+  test("the badge is a legal interactive descendant of <summary>, not nested in a button", () => {
+    // HTML forbids a <button> inside a <button>. The header is a native
+    // <summary> precisely so the badge can be a real button beside it.
+    const html = renderWithSubagents([taskBlock("tc-1")], [subagentEntry()]);
+    // Scope to the TOOL CARD's own summary — the group header above it is a
+    // <summary> too, and matching the first one would test the wrong row.
+    const cardStart = html.indexOf('data-testid="tool-card"');
+    assert.ok(cardStart >= 0, "tool card missing");
+    const summaryStart = html.indexOf("<summary", cardStart);
+    const summaryEnd = html.indexOf("</summary>", cardStart);
+    assert.ok(summaryStart >= 0 && summaryEnd > summaryStart, "tool card has no <summary>");
+    const summaryRow = html.slice(summaryStart, summaryEnd);
+    // The badge lives INSIDE the summary row…
+    assert.match(summaryRow, /data-testid="tool-card-subagent-badge"/);
+    // …and it is the row's ONLY button, so nothing wraps it.
+    assert.equal(
+      (summaryRow.match(/<button/g) ?? []).length,
+      1,
+      "the summary row must hold exactly one <button> — the badge",
+    );
+    // No other button in the card either (the fixture has no paths, so the
+    // body's path buttons stay out of the picture).
+    assert.equal((html.match(/<button/g) ?? []).length, 1);
+    // The retired regression — a header <button> holding the badge — is
+    // gone at the source level too.
+    assert.doesNotMatch(activitySource, /<summary[^>]*>\s*<button/);
   });
 });
 
