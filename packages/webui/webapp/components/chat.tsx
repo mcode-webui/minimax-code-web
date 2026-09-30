@@ -724,7 +724,7 @@ function MarkdownBody({ text, streaming }: { text: string; streaming?: boolean }
         <MarkdownHtml html={html} />
       </div>
       {streaming ? (
-        <span className="ml-[2px] inline-block animate-pulse text-text_default_accent">▍</span>
+        <span className="ml-[2px] inline-block stream-cursor text-text_default_accent">▍</span>
       ) : null}
     </div>
   );

@@ -280,6 +280,14 @@
   .message-animate-in {
     animation: none;
   }
+  /* webui-parity 61 (G6) — the streaming cursor follows the same shape: the
+   * catch-all below forces `animation-duration` only, so an unhandled
+   * `animation-name` would keep the glyph blinking for a user who opted out.
+   * `animation: none` also leaves the cursor at its base opacity, i.e. fully
+   * lit and still — a cursor that vanished would break the insertion point. */
+  .stream-cursor {
+    animation: none;
+  }
   .webui-expandable-motion {
     transition: none;
   }
@@ -444,4 +452,66 @@ details.webui-thinking-block > summary::-webkit-details-marker {
     opacity: 1;
     transform: translateY(0);
   }
+}
+
+/* Streaming cursor rhythm (webui-parity 61, G6).
+ *
+ * The trailing `▍` of a streaming assistant block shipped on Tailwind's
+ * stock `animate-pulse` — `pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite`
+ * over `@keyframes pulse { 50% { opacity: .5 } }` (tailwindcss 3.4.19,
+ * `stubs/config.full.js`). That is a symmetric eased breath between opacity
+ * 1 and 0.5: no instant edge, no off state, and a period long enough (2s)
+ * that its two halves read as one slow swell. It says "something is
+ * loading", which is what a skeleton says; a text cursor has to say "this
+ * is where the next token lands".
+ *
+ * The replacement is a square wave — two opacity levels, no interpolation
+ * between them:
+ *
+ *   - `steps(1, end)` rather than a curve: the value holds for the whole
+ *     interval and jumps at its end, so the edges are hard. Terminal and
+ *     editor cursors blink this way, and it is the difference between a
+ *     glyph that blinks and a glyph that fades.
+ *   - 1.1s period, 60% lit: faster than the 3.5s phrase rotation and, more
+ *     to the point, not a ratio of it (3.5 / 1.1 = 3.18), so the two rhythms
+ *     never lock into a single slow compound beat. The lit phase is the
+ *     majority of the cycle, so the insertion point is readable most of the
+ *     time; the dark phase is long enough to be unmistakably a blink rather
+ *     than a flicker.
+ *   - floor 0.2 rather than 0: unlike a terminal block cursor on a fixed
+ *     cell, this glyph sits at the end of a prose run. At 0 the cursor
+ *     vanishes for half a second and the paragraph looks like it lost its
+ *     last character. A dim-but-present floor keeps the beat (two clearly
+ *     separated levels) and never hides the caret.
+ *
+ * Nothing here keys off token arrival, and that is deliberate. The cursor
+ * span is reconciled as the same element for the whole turn — React reuses
+ * it while the text prop grows — so a CSS animation runs free and a
+ * "flash on each token" behaviour would need a per-token remount (a `key`),
+ * which buys nothing here: at streaming speed the animation would be
+ * restarted before it ever reached its dark phase, so the rhythm would
+ * flatten to a permanently lit glyph exactly while it matters, and the
+ * render path would churn one DOM node per token. The free-running beat
+ * costs the stream nothing and stays independent of it.
+ *
+ * Reduced motion is handled in the shared block above, with the same
+ * explicit `animation: none` shape as `.message-animate-in` (the generic
+ * catch-all only forces `animation-duration`, so it cannot switch an
+ * `animation-name` off). Under reduce the cursor renders as a solid lit
+ * glyph. */
+@keyframes stream-cursor-blink {
+  0%,
+  60% {
+    opacity: 1;
+  }
+  /* The 0.01% offset gives the dark level a declared start so the jump
+   * lands on the cycle boundary rather than being interpolated across
+   * 60% -> 100% (which would be a fade, i.e. the breath this replaces). */
+  60.01%,
+  100% {
+    opacity: 0.2;
+  }
+}
+.stream-cursor {
+  animation: stream-cursor-blink 1.1s steps(1, end) infinite;
 }
