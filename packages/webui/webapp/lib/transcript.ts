@@ -652,6 +652,19 @@ export function iconByName(toolName: string | undefined): SummaryIconType {
 }
 
 /**
+ * Whether `TOOL_CATEGORY` reads this tool name as a file edit.
+ *
+ * Exported so the edited-files card (ticket 77) and the activity summary cannot
+ * drift into two different notions of "an edit": both ask this one predicate.
+ * A name outside the table is *not* an edit, which is the safe direction — the
+ * summary under-states what ran rather than claiming files changed when none
+ * did.
+ */
+export function isFileEditTool(toolName: string | undefined): boolean {
+  return TOOL_CATEGORY[(toolName ?? "tool").trim().toLowerCase()] === "file-edit";
+}
+
+/**
  * Count the activity in a run of blocks (see `groupActivity`).
  *
  * `thinking` counts **thoughts**, not thinking blocks. The grammar writes one
