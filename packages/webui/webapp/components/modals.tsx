@@ -16,10 +16,13 @@ import type { MessageKey } from "@/lib/i18n";
  * `needs_authorization` SSE frame (exposed by the store as `authorize`). Nothing
  * here polls.
  *
- * Answers go back on the channels the server documents:
- *   plan    -> POST /api/answer {type:"plan", option: agree|skip|add}
+ * Answers go back on channels the engine actually receives:
  *   ask     -> POST /api/send   {content, isAskAnswer:true}
  *   auth    -> POST /api/auth/decision {requestId, approve}
+ *
+ * plan    -> NO CHANNEL. See PlanModal below for the full protocol
+ *             trace; the plan prompt is read-only on purpose and renders
+ *             no decision buttons.
  */
 
 export function Modals({ t }: { t: (key: MessageKey) => string }) {
@@ -32,36 +35,65 @@ export function Modals({ t }: { t: (key: MessageKey) => string }) {
   );
 }
 
+/**
+ * Plan review — READ ONLY, on purpose.
+ *
+ * A button that does nothing is worse than no button: the user believes
+ * the engine took their decision. The three buttons this modal used to
+ * render (Agree / Add context / Skip) all posted to `POST /api/answer`,
+ * and `server/routes/model.js#handleAnswer` is a legacy no-op that
+ * answered `{ok:true, deprecated:true}` without ever reaching the engine.
+ * The click "succeeded" and the plan stayed pending — a fake capability.
+ *
+ * The engine has no webui-reachable exit for a plan decision:
+ *
+ *   1. A plan review is a runtime `questionnaire.ask` with
+ *      `mode:'plan'` (packages/local-runtime-v2/src/service/plan/
+ *      application.ts:278), not an ACP message.
+ *   2. The ACP bridge projects it ONE WAY, as a `plan_update`
+ *      notification (packages/tui/src/acp/agent.ts:1356). No request
+ *      carries the answer back.
+ *   3. The TUI answers it on the local-runtime channel
+ *      (`runtime.replyQuestionnaire`,
+ *      packages/tui/src/tui/controller/interaction/interaction-flow.ts:938),
+ *      which this package does not speak.
+ *   4. The questionnaire fallback is an incoming `session/requestPermission`
+ *      REQUEST. webui's ACP client emits it with no responder
+ *      (`acp.mjs#_dispatch`), and the agent exposes no plan-decision
+ *      method: its whole `app.onRequest(acp.methods.agent.*)` surface is
+ *      initialize, authenticate, session.new/list/fork/load/resume/close/
+ *      setMode/setConfigOption/prompt.
+ *
+ * So the honest shape is a notice, not a decision. Closing it does not
+ * answer the review — the turn stays pending on the engine either way —
+ * but a trapped, undismissable dialog carrying three dead buttons was
+ * strictly worse than a dismissable one that says so.
+ */
 function PlanModal({ t }: { t: (key: MessageKey) => string }) {
   const { state } = useSessionContext();
-  const [busy, setBusy] = useState(false);
   const plan = state?.plan;
+  // The engine keys each review by `planId`; dismissing hides THIS
+  // review and nothing else, so a later plan still surfaces.
+  const [dismissedId, setDismissedId] = useState<string | null>(null);
   if (!plan?.active) return null;
-
-  const answer = async (option: "agree" | "skip" | "add") => {
-    setBusy(true);
-    try {
-      await api.answer("plan", option);
-    } finally {
-      setBusy(false);
-    }
-  };
+  const planId = plan.planId ?? "";
+  if (dismissedId === planId) return null;
 
   return (
-    <Modal title={plan.title || t("plan.title")}>
+    <Modal title={plan.title || t("plan.title")} onClose={() => setDismissedId(planId)}>
+      <p className="whitespace-pre-wrap text-text_default_secondary">
+        {t("plan.readOnlyNotice")}
+      </p>
       {plan.summary ? (
-        <p className="whitespace-pre-wrap text-text_default_secondary">{plan.summary}</p>
+        <div
+          data-testid="plan-review-body"
+          className="mt-4 max-h-64 overflow-auto whitespace-pre-wrap text-text_default_primary text-sm"
+        >
+          {plan.summary}
+        </div>
       ) : null}
-      <div className="mt-4 flex flex-wrap items-center gap-2">
-        <PrimaryButton disabled={busy} onClick={() => void answer("agree")}>
-          {t("plan.agree")}
-        </PrimaryButton>
-        <GhostButton disabled={busy} onClick={() => void answer("add")}>
-          {t("plan.addContext")}
-        </GhostButton>
-        <GhostButton disabled={busy} onClick={() => void answer("skip")}>
-          {t("plan.skip")}
-        </GhostButton>
+      <div className="mt-4 flex items-center gap-2">
+        <PrimaryButton onClick={() => setDismissedId(planId)}>{t("plan.close")}</PrimaryButton>
       </div>
     </Modal>
   );
@@ -211,7 +243,12 @@ function AskModal({ t }: { t: (key: MessageKey) => string }) {
         <GhostButton disabled={busy || !canSubmit} onClick={submitOther}>
           {t("ask.submit")}
         </GhostButton>
-        <GhostButton disabled={busy} onClick={() => void api.answer("ask", "esc")}>
+        {/* Skip rides the SAME working channel as the option buttons above:
+            `POST /api/send {content, isAskAnswer:true}` is the only ask
+            path the engine receives (routes/chat.js#isAskAnswer). It used
+            to post to `POST /api/answer`, which is a legacy no-op, so the
+            click was accepted and the question stayed pending. */}
+        <GhostButton disabled={busy} onClick={() => void reply(t("ask.skipReply"))}>
           {t("ask.skip")}
         </GhostButton>
       </div>
@@ -258,12 +295,16 @@ function AuthModal({ t }: { t: (key: MessageKey) => string }) {
  *
  * Two flavours, and the difference is deliberate:
  *
- *   blocking (no `onClose`)  the plan / ask / authorize prompts. They carry a
+ *   blocking (no `onClose`)  the ask / authorize prompts. They carry a
  *                            decision the server is waiting on, so there is no
  *                            close affordance, no Escape handler and no
  *                            backdrop dismissal — answering is the only way out.
- *   dismissible (`onClose`)  user-opened dialogs such as settings. A close
- *                            button, Escape and a backdrop click all dismiss.
+ *   dismissible (`onClose`)  the plan notice, and user-opened dialogs such as
+ *                            settings. A close button, Escape and a backdrop
+ *                            click all dismiss. The plan review uses this
+ *                            flavour because webui has no way to ANSWER it —
+ *                            a dialog with no working button and no way out
+ *                            traps the user, so it must stay dismissable.
  *
  * The body scrolls once it outgrows the viewport, which matters for the settings
  * dialog; the blocking prompts are short enough that it never engages.
@@ -283,30 +324,39 @@ function AuthModal({ t }: { t: (key: MessageKey) => string }) {
  * desktop's *generic* overlay uses (measured on its update notice), but its
  * confirm modal overrides the dim to `#00000040`. The specific rule wins.
  *
- * Not dismissible, and that is the point: each of these carries a decision the
- * server is waiting on. The hand-rolled version got that by omitting three
- * listeners; here it is three explicit props — `closable={false}`,
- * `keyboard={false}`, `maskClosable={false}`. `footer={null}` because every
- * prompt brings its own answer buttons, and `destroyOnHidden` so a closed
- * prompt's local state (a typed "Other", a ticked set) does not survive into the
- * next question.
+ * Not dismissible by default, and that is the point: each blocking prompt
+ * carries a decision the server is waiting on. The hand-rolled version got that
+ * by omitting three listeners; here it is three explicit props —
+ * `closable={false}`, `keyboard={false}`, `maskClosable={false}` — derived
+ * from whether `onClose` was passed. `footer={null}` because every prompt
+ * brings its own answer buttons, and `destroyOnHidden` so a closed prompt's
+ * local state (a typed "Other", a ticked set) does not survive into the next
+ * question.
  */
 export function Modal({
   title,
   meta,
+  onClose,
   children,
 }: {
   title: string;
   meta?: string;
+  /**
+   * Present → the dialog is dismissible (close button, Escape, backdrop
+   * click). Absent → the blocking flavour: no way out but an answer.
+   */
+  onClose?: () => void;
   children: React.ReactNode;
 }) {
+  const dismissible = onClose !== undefined;
   return (
     <AntModal
       open
       centered
-      closable={false}
-      keyboard={false}
-      maskClosable={false}
+      closable={dismissible}
+      keyboard={dismissible}
+      maskClosable={dismissible}
+      onCancel={onClose}
       footer={null}
       destroyOnHidden
       width={520}

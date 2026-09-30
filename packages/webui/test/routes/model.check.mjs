@@ -483,14 +483,31 @@ describe("handleListPermissionModes — /api/permissions-modes", () => {
   });
 });
 
-describe("handleAnswer — /api/answer (legacy no-op)", () => {
-  test("returns deprecated:true (legacy endpoint)", async () => {
+describe("handleAnswer — /api/answer (removed capability tombstone)", () => {
+  // Ticket 70: this route used to answer 200 {ok:true, deprecated:true}
+  // while doing nothing. The webapp's plan modal (three buttons) and the
+  // ask modal's Skip button all posted here, so a click looked
+  // successful and the prompt stayed pending. It now refuses explicitly:
+  // a caller that reaches it gets a status it can act on, and a caller
+  // that does not is unaffected.
+  test("answers 410 with ok:false rather than claiming success", async () => {
     const res = fakeRes();
-    await modelRoute.handleAnswer(fakeReq({ type: "x", option: 1 }), res, {});
-    assert.equal(res._status, 200);
+    await modelRoute.handleAnswer(fakeReq({ type: "plan", option: "agree" }), res, {});
+    assert.equal(res._status, 410);
     const body = JSON.parse(res._body);
-    assert.equal(body.ok, true);
-    assert.equal(body.deprecated, true);
+    assert.equal(body.ok, false);
+    assert.equal(body.removed, true);
+    assert.match(body.error, /isAskAnswer/);
+  });
+
+  test("an empty body still gets the 410, not a 500", async () => {
+    // The route kept `readJson(req)` for the MCODE_USAGE_DEBUG log line.
+    // readJson normalises an unparseable body to `{}`, so a client that
+    // posts nothing is refused on the same terms as any other caller.
+    const res = fakeRes();
+    await modelRoute.handleAnswer(Readable.from([]), res, {});
+    assert.equal(res._status, 410);
+    assert.equal(JSON.parse(res._body).ok, false);
   });
 });
 

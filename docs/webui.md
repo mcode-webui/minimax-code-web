@@ -1620,7 +1620,7 @@ marker), not by tool name.
 | `POST` | `/api/set-model` | `routes/model.js#handleSetModel` | `{model, thinking?}`; `400` only when `model` is empty **and** `thinking` is absent (missing-parameter, not unknown-model — an unknown model name is recorded and pushed, never validated here); effort models push model+`thinkingEffort`, variant models fold the on/off level into one model selection |
 | `POST` | `/api/permissions` | `routes/model.js#handleSetPermissions` | `{mode}`; mapped to engine mode via `WEBUI_TO_MCODE_PERMISSION` |
 | `GET` | `/api/permissions-modes` | `routes/model.js#handleListPermissionModes` | engine's current `availableModes` |
-| `POST` | `/api/answer` | `routes/model.js#handleAnswer` | ask-user modal answer |
+| `POST` | `/api/answer` | `routes/model.js#handleAnswer` | **Removed capability — tombstone only.** Always `410 {ok:false, removed:true, error}`. It used to answer `200 {ok:true, deprecated:true}` without reaching the engine, and four buttons called it, so a click looked successful while the prompt stayed pending. `webapp/lib/api.ts` deliberately exports no client for it; do not add one without a channel that reaches the engine. See "Blocking prompts: what each one can actually answer" |
 | `GET` | `/api/providers` | `routes/providers.js#handleGetProviders` | masked catalogue |
 | `PUT` | `/api/providers` | `routes/providers.js#handlePutProviders` | full replace; `400` on validate, `500` on write failure |
 | `POST` | `/api/providers/test` | `routes/providers.js#handleTestProvider` | `{provider}`; structured codes → status |
@@ -1667,6 +1667,76 @@ authorize round-trip (5-minute default timeout, fail-closed):
 
 The whitelist is the only source of truth — anything not on this list
 cannot be gated via the modal flow.
+
+## Blocking prompts: what each one can actually answer
+
+`components/modals.tsx` renders three blocking prompts. Two of them carry a
+decision the engine receives; one cannot, and says so instead of pretending.
+The distinction is a contract, not a UI preference: a button that posts
+somewhere the engine never reads accepts the click and leaves the prompt
+pending, which is worse than showing no button.
+
+| Prompt | Answer channel | Engine receives it? |
+| --- | --- | --- |
+| ask_user | `POST /api/send {content, isAskAnswer:true}` | Yes. `routes/chat.js` reads `isAskAnswer` and forwards the string; options, free text and Skip all use it. |
+| Authorization | `POST /api/auth/decision {requestId, approve}` | Yes — for webui's own `authorize()` actions. It is a webui-local gate, not the engine's tool-permission prompt. |
+| Plan review | none | **No.** The prompt is read-only and renders no decision. |
+
+### Why a plan decision has no channel
+
+A plan review is not an ACP message. It is a runtime questionnaire:
+
+1. `local-runtime-v2` opens it as `questionnaire.ask` with `mode:'plan'` and a
+   single step carrying one option, `approve`
+   (`packages/local-runtime-v2/src/service/plan/application.ts:278`).
+2. The ACP bridge projects it **one way**, as a `plan_update` notification
+   (`packages/tui/src/acp/agent.ts:1356`). Nothing carries the answer back.
+3. The TUI answers it on the local-runtime channel — `runtime.replyQuestionnaire`
+   (`packages/tui/src/tui/controller/interaction/interaction-flow.ts:938`) — which
+   this package does not speak.
+4. The fallback is an incoming `session/requestPermission` **request**
+   (`packages/tui/src/acp/interactions.ts:680`). `acp.mjs#_dispatch` emits it
+   with no responder, so it cannot be answered either. The agent's entire
+   `app.onRequest(acp.methods.agent.*)` surface is `initialize`, `authenticate`,
+   `session.new/list/fork/load/resume/close/setMode/setConfigOption/prompt` —
+   there is no plan-decision method to call.
+
+So the modal shows the plan document and states that the review must be answered
+elsewhere. It is dismissible: with no working button, a dialog that cannot be
+closed is a trap. Closing it does not answer the review, and the turn stays
+pending on the engine either way.
+
+### The `plan_update` payload
+
+The only producer is `agent.ts:1356`, and it sends
+`{sessionUpdate:'plan_update', plan:{type:'markdown', planId, content}}`. The
+projection in `server/lib/mcode-acp.js` reads exactly that. It used to read
+`planId` / `title` / `summary` / `options` off the top level of the update,
+where the engine puts none of them — so `plan.active` was true with an empty
+title, an empty body and no options. `options` is always empty and stays in the
+type only so a consumer cannot trip over `undefined`; the review's single
+`approve` option lives on the questionnaire side.
+
+### Wiring a plan decision, when it is done
+
+Two things must land together, in this order:
+
+1. **The ACP client must answer incoming requests.** `acp.mjs#_dispatch`
+   currently drops any message that is a request rather than a response. It
+   needs a responder registry keyed by JSON-RPC id, or the engine's
+   `session/requestPermission` hangs until its projection times out and
+   fail-closes by dismissing the questionnaire.
+2. **Only then fix `initialize`.** `acp.mjs#start` sends
+   `capabilities: {mcpCapabilities: …}`, but the agent reads
+   `params.clientCapabilities` (`agent.ts:434`), so webui negotiates no client
+   capabilities at all. The consequence is larger than the plan: the
+   `plan_update` projection is gated on `clientCapabilities.plan` and therefore
+   never fires today, and the elicitation path that would answer a
+   multi-option questionnaire is unavailable for the same reason. Fixing the
+   field name alone would start sending questionnaires webui cannot answer.
+
+`POST /api/answer` stays a `410` tombstone until then, and
+`webapp/lib/api.ts` exports no client for it.
 
 ## Architecture
 

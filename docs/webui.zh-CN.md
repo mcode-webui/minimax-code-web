@@ -1191,7 +1191,7 @@ createdAtMs, updatedAtMs}`）下发，按 `toolCallId` 幂等、上限 32 条、
 | `POST` | `/api/set-model` | `routes/model.js#handleSetModel` | `{model, thinking?}`；仅当 `model` 为空**且**未传 `thinking` 时 → `400`（缺参数，不是"未知模型"——不存在的模型名照样记录下发，接口不校验名字）；effort 模型下发 model+`thinkingEffort`，变体模型把开/关档折进一次模型选择 |
 | `POST` | `/api/permissions` | `routes/model.js#handleSetPermissions` | `{mode}`；映射到引擎 `WEBUI_TO_MCODE_PERMISSION` |
 | `GET` | `/api/permissions-modes` | `routes/model.js#handleListPermissionModes` | 引擎当前的 `availableModes` |
-| `POST` | `/api/answer` | `routes/model.js#handleAnswer` | ask-user 模态答案 |
+| `POST` | `/api/answer` | `routes/model.js#handleAnswer` | **已移除的能力，仅留墓碑路由。** 恒为 `410 {ok:false, removed:true, error}`。它过去返回 `200 {ok:true, deprecated:true}` 却从未触达引擎，而四个按钮都在调它——点击看着成功，提问其实一直挂着。`webapp/lib/api.ts` 刻意不为它导出任何客户端；在拿到真正能触达引擎的通道前不要补回来。详见「阻断式弹窗：各自到底能应答什么」 |
 | `GET` | `/api/providers` | `routes/providers.js#handleGetProviders` | 掩码后的目录 |
 | `PUT` | `/api/providers` | `routes/providers.js#handlePutProviders` | 整体替换；校验失败 `400`；写失败 `500` |
 | `POST` | `/api/providers/test` | `routes/providers.js#handleTestProvider` | `{provider}`；结构化 code → status |
@@ -1235,6 +1235,40 @@ Hono 仍然为所有实际请求持有 `/api/health` 与 `/api/settings`；旧�
 - `startup.cleanup` — 启动时的孤儿清理
 
 白名单是唯一可信源 —— 不在列表里的无法走模态门禁。
+
+## 阻断式弹窗：各自到底能应答什么
+
+`components/modals.tsx` 渲染三个阻断式弹窗。其中两个的决定引擎收得到，另一个收不到 —— 那个不装样子，而是直说。这个区分是契约，不是界面偏好：**一个把决定发往引擎从不读取之处的按钮，会让点击"成功"而提问一直挂着**，比干脆不显示该按钮更糟。
+
+| 弹窗 | 应答通道 | 引擎收得到吗 |
+| --- | --- | --- |
+| ask_user 提问 | `POST /api/send {content, isAskAnswer:true}` | 收得到。`routes/chat.js` 读 `isAskAnswer` 并转发该字符串；选项、自由文本、跳过三者都走它。 |
+| 授权确认 | `POST /api/auth/decision {requestId, approve}` | 收得到 —— 但这是 webui 自己的 `authorize()` 动作门禁，不是引擎的工具权限询问。 |
+| 计划审阅 | 无 | **收不到。** 该弹窗只读，不渲染任何决定按钮。 |
+
+### 为什么计划决定没有通道
+
+计划审阅不是 ACP 消息，它是一次运行时问卷：
+
+1. `local-runtime-v2` 以 `questionnaire.ask` + `mode:'plan'` 打开它，只有一步、一个选项 `approve`（`packages/local-runtime-v2/src/service/plan/application.ts:278`）。
+2. ACP 桥接**单向**投影为 `plan_update` 通知（`packages/tui/src/acp/agent.ts:1356`），没有任何东西把答案送回去。
+3. TUI 走 local-runtime 通道应答 —— `runtime.replyQuestionnaire`（`packages/tui/src/tui/controller/interaction/interaction-flow.ts:938`）—— 本包不实现这个运行时。
+4. 兜底路径是引擎主动发来的 `session/requestPermission` **请求**（`packages/tui/src/acp/interactions.ts:680`）。`acp.mjs#_dispatch` 把它 emit 出去却无人应答，因此这条路也走不通。引擎侧 `app.onRequest(acp.methods.agent.*)` 的全部方法只有 `initialize`、`authenticate`、`session.new/list/fork/load/resume/close/setMode/setConfigOption/prompt` —— 没有任何"计划决定"方法可调。
+
+所以弹窗只展示计划正文，并说明这次审阅需要在别处应答。它**可关闭**：在没有可用按钮的前提下，不能关的弹窗就是陷阱。关掉它并不会应答这次审阅 —— 无论关不关，本轮在引擎侧都处于暂停。
+
+### `plan_update` 的载荷
+
+唯一产出方是 `agent.ts:1356`，发的是 `{sessionUpdate:'plan_update', plan:{type:'markdown', planId, content}}`。`server/lib/mcode-acp.js` 的投影读的正是这个形状。它此前读的是 update **顶层**的 `planId` / `title` / `summary` / `options`，而引擎一个都不放在那里 —— 于是 `plan.active` 为真而标题为空、正文为空、无选项。`options` 恒为空，留在类型里只是为了让消费方不会读到 `undefined`；审阅里那个 `approve` 选项在问卷那一侧。
+
+### 将来要接上计划决定时的做法
+
+两件事必须**按序**一起落地：
+
+1. **先让 ACP 客户端能应答反向请求。** `acp.mjs#_dispatch` 目前会丢弃所有"请求而非响应"的消息，需要一个按 JSON-RPC id 索引的应答注册表；否则引擎的 `session/requestPermission` 会一直挂着，直到投影超时并以「关闭问卷」收场。
+2. **然后才修 `initialize`。** `acp.mjs#start` 现在发的是 `capabilities: {mcpCapabilities: …}`，而引擎读的是 `params.clientCapabilities`（`agent.ts:434`），所以 webui 实际上一个客户端能力都没协商上。后果比计划本身更大：`plan_update` 投影以 `clientCapabilities.plan` 为开关，因此**今天根本不会触发**；本可应答多选问卷的 elicitation 路径也因同一原因不可用。只改字段名会开始向 webui 发送它答不了的问卷。
+
+在那之前，`POST /api/answer` 保持 `410` 墓碑，`webapp/lib/api.ts` 不为它导出任何客户端。
 
 ## 架构
 

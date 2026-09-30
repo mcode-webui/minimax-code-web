@@ -751,19 +751,39 @@ export function handleListPermissionModes(_req, res) {
   );
 }
 
-// POST /api/answer — legacy no-op (新 webui 走 /api/send)
+// POST /api/answer — REMOVED capability, kept only as a tombstone.
+//
+// This route was a legacy no-op: it read the body, logged it, and answered
+// `{ok:true, deprecated:true}` without ever reaching the engine. The webapp's
+// plan modal (three buttons) and the ask modal's Skip button both called it,
+// so a click looked successful while the prompt stayed pending — a fake
+// capability, and the reason those four buttons did nothing.
+//
+// It now answers 410 Gone with `ok:false`. The remaining live channels are
+// `POST /api/send {content, isAskAnswer:true}` (ask_user) and
+// `POST /api/auth/decision` (authorization). A plan decision has NO
+// webui-reachable channel: the engine's plan review is a runtime
+// `questionnaire.ask` answered on the local-runtime channel
+// (`runtime.replyQuestionnaire`), which this server does not speak. The
+// protocol trace is in `webapp/components/modals.tsx#PlanModal`.
+//
+// Delete this route once no client in the wild references it; it is retained
+// so a stale caller gets an explicit refusal rather than a 404 it cannot
+// explain.
 export async function handleAnswer(req, res, _ctx) {
   const payload = await readJson(req);
   if (process.env.MCODE_USAGE_DEBUG)
     console.log(
-      `[api.answer] type=${payload.type} option=${payload.option} (legacy, no-op)`,
+      `[api.answer] type=${payload.type} option=${payload.option} (removed, no engine channel)`,
     );
-  res.writeHead(200, { "Content-Type": "application/json" });
+  res.writeHead(410, { "Content-Type": "application/json; charset=utf-8" });
   return res.end(
     JSON.stringify({
-      ok: true,
-      deprecated: true,
-      note: "use /api/send for new flow",
+      ok: false,
+      removed: true,
+      error:
+        "POST /api/answer never reached the engine and no longer pretends to. " +
+        "Use POST /api/send with isAskAnswer for ask_user, or POST /api/auth/decision for authorization.",
     }),
   );
 }
