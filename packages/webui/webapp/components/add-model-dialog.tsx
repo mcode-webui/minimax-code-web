@@ -49,10 +49,12 @@ import { Icon } from "./icons";
 import {
   ATTACHMENT_MODALITIES,
   blankModel,
+  headerPairsToRecord,
   newDraftProvider,
   validateModelRow,
   validateProviderId,
   THINKING_LEVELS,
+  type DraftHeaderRow,
   type DraftModel,
   type DraftProvider,
 } from "../lib/provider-management";
@@ -102,11 +104,16 @@ export const ATTACHMENT_LABEL_KEYS: Record<
   audio: "providers.dialog.attachments.audio",
 };
 
-/** The custom-provider branch's editable fields. */
+/** The custom-provider branch's editable fields.
+ *
+ *  `protocol` used to live here. It moved OUT to the dialog's top-level
+ *  「API 格式」 dropdown (ticket 85) because the desktop shows that
+ *  control for EVERY provider, not only for custom ones — keeping it
+ *  here would have meant two controls bound to one value, with the
+ *  preset branch's copy invisible. */
 export interface DialogCustomFields {
   id: string;
   label: string;
-  protocol: ProviderProtocol;
   authType: ProviderAuthType;
   baseURL: string;
 }
@@ -115,11 +122,27 @@ export function blankDialogCustom(): DialogCustomFields {
   return {
     id: "",
     label: "",
-    protocol: "openai",
     authType: "byok",
     baseURL: "",
   };
 }
+
+/** The protocols this build supports, in the desktop's dropdown order,
+ *  each paired with the label the desktop shows. The VALUES are the
+ *  wire `protocol` enum — this is a relabelling of an existing field,
+ *  not a new format the backend has to learn. */
+export const API_FORMAT_OPTIONS: ReadonlyArray<{
+  value: ProviderProtocol;
+  labelKey: MessageKey;
+}> = [
+  { value: "openai", labelKey: "providers.dialog.apiFormat.openai" },
+  { value: "anthropic", labelKey: "providers.dialog.apiFormat.anthropic" },
+  { value: "gemini", labelKey: "providers.dialog.apiFormat.gemini" },
+];
+
+/** One row of the 自定义 Headers list. Both halves are raw user input;
+ *  the wire object is produced by `headerPairsToRecord`. */
+export type DialogHeaderRow = DraftHeaderRow;
 
 /** Entry-card header — the reference's 「模型 01」 zero-padded form. */
 export function dialogEntryTitle(
@@ -201,36 +224,51 @@ export function AddModelDialogForm({
   t,
   presets,
   presetChoice,
+  apiFormat,
   custom,
   apiKey,
   revealed,
+  headers,
   entries,
   errors,
   busy,
   entryTests,
   canTest,
+  formTest,
+  skipTest,
   onPresetChoice,
+  onApiFormat,
   onCustomField,
   onApiKey,
   onRevealToggle,
+  onHeaderChange,
+  onHeaderAdd,
+  onHeaderRemove,
   onAddEntry,
   onAutoFetch,
   onEntryChange,
   onEntryRemove,
   onEntryReset,
   onEntryTest,
+  onFormTest,
+  onSkipTestToggle,
   onCancel,
   onCommit,
 }: {
   t: (key: MessageKey) => string;
   presets: PresetCatalogueEntry[] | null;
   presetChoice: string | null;
+  /** The 「API 格式」 selection — the wire `protocol`, for presets and
+   *  custom providers alike. */
+  apiFormat: ProviderProtocol;
   custom: DialogCustomFields;
   apiKey: string;
   /** Drives the key input's `type` — the eye toggle is a prop, not
    *  buried widget state, so a static render per state IS the
    *  round-trip proof. */
   revealed: boolean;
+  /** The 自定义 Headers rows. */
+  headers: DialogHeaderRow[];
   entries: DraftModel[];
   errors: string[];
   busy: boolean;
@@ -243,10 +281,19 @@ export function AddModelDialogForm({
    *  their tooltip) instead of firing a probe the server would
    *  reject locally. */
   canTest: boolean;
+  /** The FORM-level connectivity verdict (ticket 85) — the desktop's
+   *  footer 连通检测. `null` means "not run yet", which is what keeps
+   *  保存 disabled until it passes or the operator skips it. */
+  formTest: EntryTestState | null;
+  skipTest: boolean;
   onPresetChoice: (value: string) => void;
+  onApiFormat: (value: ProviderProtocol) => void;
   onCustomField: (patch: Partial<DialogCustomFields>) => void;
   onApiKey: (value: string) => void;
   onRevealToggle: () => void;
+  onHeaderChange: (index: number, patch: Partial<DialogHeaderRow>) => void;
+  onHeaderAdd: () => void;
+  onHeaderRemove: (index: number) => void;
   onAddEntry: () => void;
   onAutoFetch: () => void;
   onEntryChange: (index: number, next: DraftModel) => void;
@@ -256,6 +303,8 @@ export function AddModelDialogForm({
    *  entry at `index` (official semantics: 检测 uses what is filled
    *  in, not what is saved). */
   onEntryTest: (index: number) => void;
+  onFormTest: () => void;
+  onSkipTestToggle: (next: boolean) => void;
   onCancel: () => void;
   onCommit: () => void;
 }) {
@@ -294,6 +343,24 @@ export function AddModelDialogForm({
         />
       </Field>
 
+      {/* API 格式 — the desktop's second field, shown for EVERY
+       *  provider (not just 「其他（自定义）」). It is the existing
+       *  wire `protocol` under the desktop's labels, so nothing new
+       *  reaches the backend: the value a preset arrives with is
+       *  pre-filled by the shell and stays editable. */}
+      <Field label={t("providers.dialog.apiFormat")}>
+        <AntSelect
+          value={apiFormat}
+          data-testid="provider-dialog-api-format"
+          onChange={(value) => onApiFormat(value as ProviderProtocol)}
+          className="mavis-input"
+          options={API_FORMAT_OPTIONS.map((opt) => ({
+            value: opt.value,
+            label: t(opt.labelKey),
+          }))}
+        />
+      </Field>
+
       {presetChoice === PRESET_CHOICE_CUSTOM ? (
         <div
           data-testid="provider-dialog-custom-fields"
@@ -318,19 +385,6 @@ export function AddModelDialogForm({
             </Field>
           </div>
           <div className="grid grid-cols-2 gap-2">
-            <Field label={t("providers.field.protocol")}>
-              <AntSelect
-                value={custom.protocol}
-                data-testid="provider-dialog-custom-protocol"
-                onChange={(value) =>
-                  onCustomField({ protocol: value as ProviderProtocol })
-                }
-                className="mavis-input"
-                options={(["openai", "anthropic", "gemini"] as const).map(
-                  (proto) => ({ label: proto, value: proto }),
-                )}
-              />
-            </Field>
             <Field label={t("providers.field.authType")}>
               <AntSelect
                 value={custom.authType}
@@ -386,6 +440,81 @@ export function AddModelDialogForm({
           }
         />
       </Field>
+
+      {/* 自定义 Headers — the desktop's fifth field, and the one the
+       *  local dialog was missing entirely. These are EXTRA outbound
+       *  headers, merged into every request this provider makes
+       *  (the runtime merges `options.headers`); they are not a
+       *  replacement for the API Key, which has its own field above.
+       *
+       *  Rows are a list, not an object, so a half-typed row
+       *  survives; `headerPairsToRecord` is the single place that
+       *  decides what is sendable (blank names dropped, later
+       *  duplicates winning). */}
+      <div className="flex flex-col gap-2">
+        <div className="flex items-center justify-between">
+          <span className="desktop-text-ui-small-strong text-text_default_tertiary">
+            {t("providers.dialog.headers")}
+          </span>
+          <button
+            type="button"
+            data-testid="provider-dialog-headers-add"
+            onClick={onHeaderAdd}
+            className="h-7 rounded-lg border border-border_default px-2.5 text-caption-small-strong text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_hover"
+          >
+            {t("providers.dialog.headersAdd")}
+          </button>
+        </div>
+        {headers.length === 0 ? (
+          <p
+            data-testid="provider-dialog-headers-empty"
+            className="text-caption-small-strong text-text_default_tertiary"
+          >
+            {t("providers.dialog.headersAdd")}
+          </p>
+        ) : (
+          headers.map((row, idx) => (
+            <div
+              key={idx}
+              data-testid={`provider-dialog-header-${idx}`}
+              className="flex items-center gap-2"
+            >
+              <AntInput
+                value={row.name}
+                data-testid={`provider-dialog-header-${idx}-name`}
+                aria-label={t("providers.dialog.headerName")}
+                placeholder={t("providers.dialog.headerName")}
+                onChange={(e) => onHeaderChange(idx, { name: e.target.value })}
+                className="mavis-input"
+              />
+              <AntInput
+                value={row.value}
+                data-testid={`provider-dialog-header-${idx}-value`}
+                aria-label={t("providers.dialog.headerValue")}
+                placeholder={t("providers.dialog.headerValue")}
+                onChange={(e) => onHeaderChange(idx, { value: e.target.value })}
+                className="mavis-input"
+              />
+              <button
+                type="button"
+                data-testid={`provider-dialog-header-${idx}-remove`}
+                title={t("providers.dialog.headerRemove").replace(
+                  "{{name}}",
+                  row.name.trim() || `#${idx + 1}`,
+                )}
+                aria-label={t("providers.dialog.headerRemove").replace(
+                  "{{name}}",
+                  row.name.trim() || `#${idx + 1}`,
+                )}
+                onClick={() => onHeaderRemove(idx)}
+                className="flex size-7 shrink-0 items-center justify-center rounded-md text-text_default_tertiary transition-colors hover:bg-bg_interaction_tertiary_hover hover:text-text_default_primary"
+              >
+                <Icon name="trash" size={13} />
+              </button>
+            </div>
+          ))
+        )}
+      </div>
 
       {/* 模型 —— the header row keeps the label and its actions
        *  ADJACENT (ticket 56 V5: the old justify-between layout left
@@ -464,11 +593,86 @@ export function AddModelDialogForm({
        *  「＋ 添加 / 自动获取」 row. Buttons run at the h-9 (36px)
        *  control height with the radius-8 the mavis-input standard
        *  pins, and the black primary carries the token shadow so it
-       *  reads as THE anchor action (V4). */}
+       *  reads as THE anchor action (V4).
+       *
+       *  Ticket 85 — the desktop's form-level 连通检测 + 跳过连通检测
+       *  land on the LEFT of this bar, mirroring the reference footer
+       *  (`other-minimax-code/.../UsageModelSettings.tsx:318`). The
+       *  per-entry 检测 on each model card is a DIFFERENT scope and
+       *  stays: it answers "does this model id respond", this one
+       *  answers "can this provider be reached at all".
+       *
+       *  保存 gating: the desktop disables it until the form-level
+       *  probe passes, and the reference screenshot shows exactly
+       *  that greyed state. A disabled control is not a dead one —
+       *  the reason is spelled out next to it and two controls
+       *  (连通检测 / 跳过连通检测) lift it. */}
       <div
         data-testid="provider-dialog-footer"
-        className="mt-5 flex shrink-0 items-center justify-end gap-3 border-t border-border_default pt-4"
+        className="mt-5 flex shrink-0 items-center justify-between gap-3 border-t border-border_default pt-4"
       >
+        <div className="flex min-w-0 flex-col items-start gap-1">
+          <div className="flex items-center gap-3">
+            <label className="flex cursor-pointer items-center gap-1.5 text-caption-small-strong text-text_default_secondary">
+              <input
+                type="checkbox"
+                checked={skipTest}
+                data-testid="provider-dialog-skip-test"
+                onChange={(e) => onSkipTestToggle(e.target.checked)}
+                className="size-3.5 accent-[var(--border_accent)]"
+              />
+              {t("providers.dialog.formTestSkip")}
+            </label>
+            <button
+              type="button"
+              data-testid="provider-dialog-form-test"
+              title={canTest ? t("providers.dialog.formTestHint") : t("providers.dialog.formTestNeedProvider")}
+              disabled={!canTest || formTest?.status === "testing"}
+              onClick={onFormTest}
+              className="h-7 rounded-lg border border-border_default px-2.5 text-caption-small-strong text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_hover disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {formTest?.status === "testing"
+                ? t("providers.dialog.testTesting")
+                : t("providers.dialog.formTest")}
+            </button>
+          </div>
+          {/* Two mutually exclusive reasons to be disabled, and the one
+            *  line that says which. Without it a greyed 保存 is a
+            *  mystery; with it the operator knows which of the two
+            *  controls to use. */}
+          {!skipTest && formTest?.status !== "ok" ? (
+            <p
+              data-testid="provider-dialog-save-blocked"
+              className="text-caption-small-strong text-text_default_tertiary"
+            >
+              {canTest
+                ? t("providers.dialog.formTestHint")
+                : t("providers.dialog.formTestNeedProvider")}
+            </p>
+          ) : null}
+          {formTest && formTest.status !== "testing" ? (
+            <p
+              data-testid="provider-dialog-form-test-result"
+              className={
+                "text-caption-small-strong " +
+                (formTest.status === "ok"
+                  ? "text-text_status_success"
+                  : "text-text_status_error")
+              }
+            >
+              {formTest.status === "ok"
+                ? t("providers.dialog.testOk").replace(
+                    "{{ms}}",
+                    formTest.latencyMs != null ? String(formTest.latencyMs) : "—",
+                  )
+                : t("providers.dialog.testFail").replace(
+                    "{{error}}",
+                    formTest.error,
+                  )}
+            </p>
+          ) : null}
+        </div>
+        <div className="flex shrink-0 items-center gap-3">
         <button
           type="button"
           data-testid="provider-dialog-cancel"
@@ -481,13 +685,14 @@ export function AddModelDialogForm({
         <button
           type="button"
           data-testid="provider-dialog-save"
-          disabled={busy}
+          disabled={busy || (!skipTest && formTest?.status !== "ok")}
           aria-busy={busy || undefined}
           onClick={onCommit}
           className="h-9 min-w-20 rounded-lg bg-bg_interaction_primary_default px-5 text-sm font-weight_medium text-text_default_inverted_static shadow-[var(--shadow_default)] transition-colors hover:bg-bg_interaction_primary_hover disabled:cursor-not-allowed disabled:opacity-50"
         >
           {busy ? t("providers.saving") : t("providers.dialog.save")}
         </button>
+        </div>
       </div>
     </div>
   );
@@ -708,13 +913,26 @@ export function AddModelDialog({
 }) {
   const [presets, setPresets] = useState<PresetCatalogueEntry[] | null>(null);
   const [presetChoice, setPresetChoice] = useState<string | null>(null);
+  // The 「API 格式」 selection, for presets and custom alike (ticket 85).
+  // Re-seeded from the preset whenever the choice changes, so picking a
+  // preset lands on the format that preset actually speaks while the
+  // operator can still override it.
+  const [apiFormat, setApiFormat] = useState<ProviderProtocol>("openai");
   const [custom, setCustom] = useState<DialogCustomFields>(blankDialogCustom);
   const [apiKey, setApiKey] = useState("");
   const [revealed, setRevealed] = useState(false);
+  // 自定义 Headers rows (ticket 85) — a list, so a half-typed row is not
+  // lost; `headerPairsToRecord` collapses it at commit time.
+  const [headers, setHeaders] = useState<DialogHeaderRow[]>([]);
   const [entries, setEntries] = useState<DraftModel[]>([]);
   const [fetchedOpen, setFetchedOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [errors, setErrors] = useState<string[]>([]);
+  // Form-level connectivity verdict (ticket 85) — the desktop's footer
+  // 连通检测. Kept separate from `entryTests` because the two answer
+  // different questions and must invalidate independently.
+  const [formTest, setFormTest] = useState<EntryTestState | null>(null);
+  const [skipTest, setSkipTest] = useState(false);
   // Per-entry probe outcomes (I3), keyed by entry index. Invalidated
   // entry-by-entry: editing/resetting an entry drops its stale
   // result, removing one shifts the tail down, and any change to the
@@ -758,12 +976,16 @@ export function AddModelDialog({
    *  validation errors. */
   const resetForm = useCallback(() => {
     setPresetChoice(null);
+    setApiFormat("openai");
     setCustom(blankDialogCustom());
     setApiKey("");
     setRevealed(false);
+    setHeaders([]);
     setEntries([]);
     setErrors([]);
     setEntryTests({});
+    setFormTest(null);
+    setSkipTest(false);
   }, []);
 
   const close = useCallback(() => {
@@ -788,17 +1010,24 @@ export function AddModelDialog({
       return;
     }
     setErrors([]);
+    // One place decides which headers are sendable, so the dialog, the
+    // wire body and the server can never disagree about what the
+    // operator typed.
+    const headerRecord = headerPairsToRecord(headers);
     const draft: DraftProvider =
       presetChoice === PRESET_CHOICE_CUSTOM
         ? {
             ...newDraftProvider(),
             id: custom.id.trim(),
             label: custom.label.trim() || custom.id.trim(),
-            protocol: custom.protocol,
+            protocol: apiFormat,
             auth: {
               type: custom.authType,
               apiKey,
               baseURL: custom.baseURL,
+              headers: Object.keys(headerRecord).length
+                ? Object.entries(headerRecord).map(([name, value]) => ({ name, value }))
+                : [],
             },
             models: entries,
           }
@@ -808,11 +1037,14 @@ export function AddModelDialog({
             label: selectedPreset
               ? PRESET_DISPLAY_LABELS[selectedPreset.id] ?? selectedPreset.label
               : "",
-            protocol: selectedPreset?.protocol ?? "openai",
+            protocol: apiFormat,
             auth: {
               type: selectedPreset?.auth.type ?? "byok",
               apiKey,
               baseURL: selectedPreset?.auth.baseURL ?? "",
+              headers: Object.keys(headerRecord).length
+                ? Object.entries(headerRecord).map(([name, value]) => ({ name, value }))
+                : [],
             },
             preset: selectedPreset?.id ?? null,
             models: entries,
@@ -821,7 +1053,7 @@ export function AddModelDialog({
     const ok = await onSave(draft);
     setBusy(false);
     if (ok) close();
-  }, [t, presetChoice, custom, existingIds, entries, selectedPreset, apiKey, onSave, close]);
+  }, [t, presetChoice, custom, existingIds, entries, selectedPreset, apiKey, headers, apiFormat, onSave, close]);
 
   // -------------------------------------------------------------------
   // 连通检测 (I3) — official semantics: the button next to a model
@@ -839,70 +1071,92 @@ export function AddModelDialog({
   // claiming model-level coverage the backend does not have would
   // be fabrication.
   // -------------------------------------------------------------------
+  /** The single probe both buttons fire. Raw `fetch` to the existing
+   *  `POST /api/providers/test` contract — no new route — for the same
+   *  reason the presets fetch above uses one: importing the panel's
+   *  api graph here would drag it into the render-test process this
+   *  file was split out to protect.
+   *
+   *  `auth` is assembled from the LIVE form values so 检测 means
+   *  "can I reach this as currently filled", not "was this reachable
+   *  when I saved it". The custom headers ride along: the probe must
+   *  exercise the request that will actually be sent (see the same
+   *  reasoning on the server's `probe()`).
+   *
+   *  Granularity honesty: the probe is endpoint-level (baseURL + key +
+   *  headers); it does NOT exercise a specific model id. The tooltips
+   *  and both docs say so — mirroring the reference's wording while
+   *  claiming model-level coverage the backend does not have would
+   *  be fabrication. */
+  const runProbe = useCallback(async (): Promise<EntryTestState> => {
+    const protocol = apiFormat;
+    const authType =
+      presetChoice === PRESET_CHOICE_CUSTOM
+        ? custom.authType
+        : (selectedPreset?.auth.type ?? "byok");
+    const baseURL =
+      presetChoice === PRESET_CHOICE_CUSTOM
+        ? custom.baseURL
+        : (selectedPreset?.auth.baseURL ?? "");
+    const headerRecord = headerPairsToRecord(headers);
+    if (!presetChoice || !protocol) {
+      // Unreachable through the disabled button — kept as the
+      // defensive floor: the probe must never fire without a
+      // resolvable endpoint.
+      return { status: "fail", error: t("providers.dialog.testNeedProvider") };
+    }
+    try {
+      const res = await fetch("/api/providers/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          protocol,
+          auth: {
+            type: authType,
+            apiKey,
+            baseURL,
+            ...(Object.keys(headerRecord).length > 0 ? { headers: headerRecord } : {}),
+          },
+          // 4s — the user is waiting at an open dialog; the wire
+          // default is 8 (same cut the panel's test button makes).
+          timeoutMs: 4000,
+        }),
+      });
+      const body = (await res.json()) as {
+        ok?: boolean;
+        code?: string;
+        error?: string;
+        latencyMs?: number;
+      };
+      return body.ok
+        ? { status: "ok", latencyMs: body.latencyMs }
+        : {
+            status: "fail",
+            error: body.error || body.code || `HTTP ${res.status}`,
+          };
+    } catch (cause) {
+      return {
+        status: "fail",
+        error: cause instanceof Error ? cause.message : String(cause),
+      };
+    }
+  }, [apiFormat, presetChoice, custom, apiKey, headers, selectedPreset, t]);
+
   const testEntry = useCallback(
     async (index: number) => {
-      const protocol =
-        presetChoice === PRESET_CHOICE_CUSTOM
-          ? custom.protocol
-          : (selectedPreset?.protocol ?? "");
-      const authType =
-        presetChoice === PRESET_CHOICE_CUSTOM
-          ? custom.authType
-          : (selectedPreset?.auth.type ?? "byok");
-      const baseURL =
-        presetChoice === PRESET_CHOICE_CUSTOM
-          ? custom.baseURL
-          : (selectedPreset?.auth.baseURL ?? "");
-      if (!presetChoice || !protocol) {
-        // Unreachable through the disabled button — kept as the
-        // defensive floor: the probe must never fire without a
-        // resolvable endpoint.
-        setEntryTests((cur) => ({
-          ...cur,
-          [index]: { status: "fail", error: t("providers.dialog.testNeedProvider") },
-        }));
-        return;
-      }
       setEntryTests((cur) => ({ ...cur, [index]: { status: "testing" } }));
-      try {
-        const res = await fetch("/api/providers/test", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            protocol,
-            auth: { type: authType, apiKey, baseURL },
-            // 4s — the user is waiting at an open dialog; the wire
-            // default is 8 (same cut the panel's test button makes).
-            timeoutMs: 4000,
-          }),
-        });
-        const body = (await res.json()) as {
-          ok?: boolean;
-          code?: string;
-          error?: string;
-          latencyMs?: number;
-        };
-        setEntryTests((cur) => ({
-          ...cur,
-          [index]: body.ok
-            ? { status: "ok", latencyMs: body.latencyMs }
-            : {
-                status: "fail",
-                error: body.error || body.code || `HTTP ${res.status}`,
-              },
-        }));
-      } catch (cause) {
-        setEntryTests((cur) => ({
-          ...cur,
-          [index]: {
-            status: "fail",
-            error: cause instanceof Error ? cause.message : String(cause),
-          },
-        }));
-      }
+      const outcome = await runProbe();
+      setEntryTests((cur) => ({ ...cur, [index]: outcome }));
     },
-    [presetChoice, custom, apiKey, selectedPreset, t],
+    [runProbe],
   );
+
+  /** The footer 连通检测 (ticket 85). Same probe, provider-level scope:
+   *  it records one verdict, and 保存 waits on it. */
+  const testForm = useCallback(async () => {
+    setFormTest({ status: "testing" });
+    setFormTest(await runProbe());
+  }, [runProbe]);
 
   /** Drop one entry's probe result (its inputs just changed) and
    *  shift the tail down on remove, so results stay indexed to the
@@ -955,6 +1209,13 @@ export function AddModelDialog({
             "0 4px 16px var(--opacity_black_1_8), 0 12px 40px var(--opacity_black_1_15)",
         },
       }}
+      // Localized accessible name for the header close button.
+      // `rc-dialog` hardcodes `aria-label: "Close"` and spreads the
+      // caller's picked aria attributes AFTER it
+      // (node_modules/rc-dialog/es/Dialog/Content/Panel.js:109-113),
+      // so the OBJECT form is the only way to override it — a boolean
+      // `closable` leaves an English label on the Chinese interface.
+      closable={{ "aria-label": t("common.close") }}
       title={
         <span
           data-testid="provider-dialog-title"
@@ -968,30 +1229,47 @@ export function AddModelDialog({
         t={t}
         presets={presets}
         presetChoice={presetChoice}
+        apiFormat={apiFormat}
         custom={custom}
         apiKey={apiKey}
         revealed={revealed}
+        headers={headers}
         entries={entries}
         errors={errors}
         busy={busy}
         entryTests={entryTests}
         canTest={canTest}
+        formTest={formTest}
+        skipTest={skipTest}
         onPresetChoice={(value) => {
           setPresetChoice(value);
           // Shared probe inputs changed — every outstanding result is
           // now an answer to a different question.
           setEntryTests({});
+          setFormTest(null);
+          // Seed 「API 格式」 from the newly chosen preset so the
+          // dropdown lands on the format that preset actually speaks;
+          // 「其他（自定义）」 has none to seed from and keeps the
+          // previous choice, which is what the operator last saw.
+          if (value !== PRESET_CHOICE_CUSTOM) {
+            const next = presets?.find((p) => p.id === value);
+            if (next) setApiFormat(next.protocol);
+          }
+        }}
+        onApiFormat={(value) => {
+          setApiFormat(value);
+          // The format selects the probe endpoint shape — a verdict
+          // from the previous one no longer answers this question.
+          setEntryTests({});
+          setFormTest(null);
         }}
         onCustomField={(patch) => {
           setCustom((c) => ({ ...c, ...patch }));
-          // protocol / baseURL / authType all land in the probe body —
-          // a stale verdict must not survive any of them changing.
-          if (
-            patch.protocol !== undefined ||
-            patch.baseURL !== undefined ||
-            patch.authType !== undefined
-          ) {
+          // baseURL / authType all land in the probe body — a stale
+          // verdict must not survive any of them changing.
+          if (patch.baseURL !== undefined || patch.authType !== undefined) {
             setEntryTests({});
+            setFormTest(null);
           }
         }}
         onApiKey={(value) => {
@@ -1004,8 +1282,26 @@ export function AddModelDialog({
           setEntryTests((cur) =>
             Object.keys(cur).length === 0 ? cur : {},
           );
+          setFormTest(null);
         }}
         onRevealToggle={() => setRevealed((r) => !r)}
+        onHeaderChange={(index, patch) => {
+          setHeaders((rows) =>
+            rows.map((row, i) => (i === index ? { ...row, ...patch } : row)),
+          );
+          // Headers ride in the probe request, so editing one makes
+          // every outstanding verdict an answer to a different
+          // question. Dropping the verdict is what re-enables 保存
+          // honestly rather than letting a stale pass through.
+          setEntryTests({});
+          setFormTest(null);
+        }}
+        onHeaderAdd={() => setHeaders((rows) => [...rows, { name: "", value: "" }])}
+        onHeaderRemove={(index) => {
+          setHeaders((rows) => rows.filter((_, i) => i !== index));
+          setEntryTests({});
+          setFormTest(null);
+        }}
         onAddEntry={() => setEntries((cur) => [...cur, blankModel()])}
         onAutoFetch={() => setFetchedOpen(true)}
         onEntryChange={(index, next) => {
@@ -1023,6 +1319,8 @@ export function AddModelDialog({
           dropEntryTest(index);
         }}
         onEntryTest={(index) => void testEntry(index)}
+        onFormTest={() => void testForm()}
+        onSkipTestToggle={setSkipTest}
         onCancel={close}
         onCommit={() => void commit()}
       />
@@ -1118,6 +1416,7 @@ export function FetchedModelsDialog({
             "0 4px 16px var(--opacity_black_1_8), 0 12px 40px var(--opacity_black_1_15)",
         },
       }}
+      closable={{ "aria-label": t("common.close") }}
       title={
         <span
           data-testid="fetched-models-title"

@@ -257,6 +257,13 @@ export async function handleTestProvider(req, res, _ctx) {
     type: typeof authRaw.type === "string" ? authRaw.type : "byok",
     apiKey: typeof authRaw.apiKey === "string" ? authRaw.apiKey : "",
     baseURL: typeof authRaw.baseURL === "string" ? authRaw.baseURL : "",
+    // Custom headers (webui-parity ticket 85). Forwarded verbatim;
+    // `probe()` re-validates them through `normalizeCustomHeaders`
+    // because THIS route rebuilds `auth` by hand and therefore never
+    // passes through the PUT normaliser. Without this line the dialog
+    // sends them, the route drops them, and the probe silently answers
+    // a question about a request the provider will never receive.
+    headers: authRaw.headers,
   };
   // Optional timeout override (ms) — surfaces from the request
   // body so a UI "quick test" can fire a short probe. Unspecified

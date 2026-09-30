@@ -52,6 +52,26 @@ export interface DraftAuth {
   /** "" is the keep-existing-key sentinel. */
   apiKey: string;
   baseURL: string;
+  /**
+   * Extra outbound headers, as an ORDERED list of name/value pairs.
+   *
+   * Why a list and not `Record<string, string>`: the dialog is a
+   * sequence of rows the operator adds, deletes and reorders, and two
+   * of those operations are unrepresentable on a plain object —
+   * "an empty name in the middle" (a half-typed row the operator has
+   * not finished) and "the same name twice" (the server collapses
+   * those at JSON parse time, silently dropping one). The list keeps
+   * the user's in-progress state; `headerPairsToRecord` is the ONE
+   * place that decides what is sendable.
+   */
+  headers: DraftHeaderRow[];
+}
+
+/** One row in the dialog's 自定义 Headers list. Both halves are raw
+ *  user input; neither is trimmed or validated here. */
+export interface DraftHeaderRow {
+  name: string;
+  value: string;
 }
 
 export interface DraftModel {
@@ -94,7 +114,38 @@ export interface ProviderTestOutcome {
 }
 
 export function blankAuth(): DraftAuth {
-  return { type: "byok", apiKey: "", baseURL: "" };
+  return { type: "byok", apiKey: "", baseURL: "", headers: [] };
+}
+
+/**
+ * Collapse the dialog's header rows into the wire object.
+ *
+ * The rules, and why each exists:
+ *
+ *   - a row with a blank name is DROPPED. The dialog keeps a trailing
+ *     empty row so 「＋ 添加」 is always reachable; sending it would
+ *     make the server reject the whole PUT with an invalid-header-name
+ *     error over a field the operator never filled in.
+ *   - a name is trimmed but a VALUE is not. `X-Tenant : acme` should
+ *     store `X-Tenant`, while a leading space in a token value is
+ *     part of the value and trimming it would silently corrupt it.
+ *   - a later row with the same name wins, matching what a JSON object
+ *     would do on the wire. The dialog cannot prevent the duplicate;
+ *     it can only resolve it the same way the transport would, so what
+ *     the operator sees saved is what actually gets sent.
+ *   - a name that fails the RFC 9110 token grammar is still passed
+ *     through, so the server's validation message — which names the
+ *     offending header — is what the operator reads, instead of a
+ *     silent local drop that leaves them wondering where it went.
+ */
+export function headerPairsToRecord(rows: DraftHeaderRow[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const row of rows) {
+    const name = row.name.trim();
+    if (!name) continue;
+    out[name] = row.value;
+  }
+  return out;
 }
 
 export function blankModel(): DraftModel {
@@ -112,6 +163,14 @@ export function draftFromView(view: ProviderView): DraftProvider {
       type: view.auth.type,
       apiKey: "",
       baseURL: view.auth.baseURL ?? "",
+      // The server returns a flat object; the dialog edits a list.
+      // Sorted by name so a reopened dialog lists the same headers in
+      // the same order every time — a map has no order of its own, and
+      // an order that shuffles between visits reads as the config
+      // changing under the operator.
+      headers: Object.entries(view.auth.headers ?? {})
+        .map(([name, value]) => ({ name, value }))
+        .sort((a, b) => a.name.localeCompare(b.name)),
     },
     models: view.models.map((m) => ({
       id: m.id,
@@ -195,7 +254,12 @@ export interface WireProvider {
   preset?: string;
   enabled?: boolean;
   protocol: ProviderProtocol;
-  auth: { type: ProviderAuthType; apiKey: string; baseURL?: string };
+  auth: {
+    type: ProviderAuthType;
+    apiKey: string;
+    baseURL?: string;
+    headers?: Record<string, string>;
+  };
   models: Array<{
     id: string;
     label?: string;
@@ -214,6 +278,10 @@ export interface WireProvider {
  *     minimal).
  *   - apiKey is forwarded verbatim — including the empty sentinel
  *     that the server's `applyKeepKeyConvention` interprets.
+ *   - header rows go through `headerPairsToRecord`; an empty map is
+ *     OMITTED from the body rather than sent as `{}`, so a provider
+ *     that never had headers keeps the byte-identical request body it
+ *     had before this field existed.
  */
 export function draftToWire(draft: DraftProvider): WireProvider {
   const models = draft.models
@@ -231,6 +299,7 @@ export function draftToWire(draft: DraftProvider): WireProvider {
       };
     })
     .filter((m): m is NonNullable<typeof m> => m !== null);
+  const headers = headerPairsToRecord(draft.auth.headers);
   return {
     id: draft.id.trim(),
     label: draft.label.trim() || undefined,
@@ -241,6 +310,7 @@ export function draftToWire(draft: DraftProvider): WireProvider {
       type: draft.auth.type,
       apiKey: draft.auth.apiKey,
       ...(draft.auth.baseURL.trim() ? { baseURL: draft.auth.baseURL.trim() } : {}),
+      ...(Object.keys(headers).length > 0 ? { headers } : {}),
     },
     models,
   };

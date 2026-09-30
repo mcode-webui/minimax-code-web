@@ -182,6 +182,85 @@ describe("toEngineCustomProvider — eligibility", () => {
     assert.deepEqual(out.entry.models, { "glm-5.3": {} });
   });
 
+  test("custom headers reach options.headers (webui-parity ticket 85)", () => {
+    // The load-bearing line for the whole feature: the runtime merges
+    // `options.headers` into every upstream request for this provider
+    // (local-runtime-v2 catalog/provider-views.ts:218). Without this
+    // mapping a header the operator typed, saved and read back would
+    // never be sent — the worst kind of "saved".
+    const p = {
+      ...base,
+      auth: {
+        ...base.auth,
+        headers: { "X-Tenant": "acme", "X-Trace": "01H" },
+      },
+    };
+    const out = toEngineCustomProvider(p);
+    assert.ok(out, "still eligible");
+    assert.deepEqual(out.entry.options.headers, {
+      "X-Tenant": "acme",
+      "X-Trace": "01H",
+    });
+  });
+
+  test("a provider with no headers keeps the exact pre-ticket options shape", () => {
+    // Omission, not `headers: {}` — so an untouched provider's engine
+    // config does not churn on every sync.
+    const out = toEngineCustomProvider(base);
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(out.entry.options, "headers"),
+      false,
+      "no headers key when the operator configured none",
+    );
+    assert.deepEqual(
+      Object.keys(out.entry.options).sort(),
+      ["apiKey", "authMode", "baseURL"],
+      "the options key set must not grow for a provider that has none",
+    );
+  });
+
+  test("the emitted headers are a copy, not the stored record", () => {
+    const headers = { "X-Tenant": "acme" };
+    const out = toEngineCustomProvider({ ...base, auth: { ...base.auth, headers } });
+    out.entry.options.headers["X-Tenant"] = "tampered";
+    assert.equal(headers["X-Tenant"], "acme", "the source record must be unreachable");
+  });
+
+  test("an EMPTY headers object is omitted, not written as `headers: {}`", () => {
+    // The end-to-end run caught this: `normaliseProvider` always
+    // materialises `auth.headers` (absent -> {}), and the projection's
+    // truthiness test treated `{}` as "has headers", so every provider
+    // that never configured one grew a `headers: {}` block in the
+    // engine's config.yaml. The fixture above cannot see it — its
+    // `auth` has no `headers` key at all — so the normalised shape is
+    // reproduced explicitly here.
+    const out = toEngineCustomProvider({
+      ...base,
+      auth: { ...base.auth, headers: {} },
+    });
+    assert.ok(out, "still eligible");
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(out.entry.options, "headers"),
+      false,
+      "an empty header map must be omitted, not emitted as {}",
+    );
+  });
+
+  test("a non-object headers value is ignored rather than projected", () => {
+    for (const bad of [["X-A"], "X-A", 42]) {
+      const out = toEngineCustomProvider({
+        ...base,
+        auth: { ...base.auth, headers: bad },
+      });
+      assert.ok(out, "still eligible");
+      assert.equal(
+        Object.prototype.hasOwnProperty.call(out.entry.options, "headers"),
+        false,
+        `headers=${JSON.stringify(bad)} must not be projected`,
+      );
+    }
+  });
+
   test("coding-plan providers are skipped (out of scope for byok projection)", () => {
     const p = { ...base, auth: { type: "coding-plan", apiKey: "tk-fake", baseURL: "https://example.com" } };
     assert.equal(toEngineCustomProvider(p), null);

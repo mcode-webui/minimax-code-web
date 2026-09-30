@@ -554,6 +554,13 @@ export interface ProviderAuthView {
   hasKey: boolean;
   apiKeyMasked: string;
   baseURL: string;
+  /**
+   * Extra outbound headers, echoed back verbatim by the server (they
+   * are operator-authored routing config, not a masked secret). Always
+   * present as an object on a current server; a server older than the
+   * field omits it, so treat absence as "none" rather than assuming.
+   */
+  headers?: Record<string, string>;
 }
 
 export interface ProviderModelView {
@@ -617,6 +624,9 @@ export const putProviders = (body: {
       type: ProviderAuthType;
       apiKey: string;
       baseURL?: string;
+      /** Optional extra outbound headers. Omit or send `{}` for none;
+       *  the server rejects a name or value carrying CR/LF/NUL. */
+      headers?: Record<string, string>;
     };
     models: Array<{
       id: string;
@@ -653,7 +663,14 @@ export interface ProviderTestResult {
  */
 export async function testProviderConnection(payload: {
   protocol: ProviderProtocol;
-  auth: { type: ProviderAuthType; apiKey: string; baseURL?: string };
+  auth: {
+    type: ProviderAuthType;
+    apiKey: string;
+    baseURL?: string;
+    /** Carried into the probe request so the test exercises the same
+     *  headers the saved provider will send. */
+    headers?: Record<string, string>;
+  };
   timeoutMs?: number;
 }): Promise<ProviderTestResult> {
   const response = await fetch(withClientQuery("/api/providers/test"), {

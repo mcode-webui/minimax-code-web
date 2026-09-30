@@ -16,7 +16,8 @@
 //         "auth": {
 //           "type":    "byok"|"coding-plan",
 //           "apiKey":  "sk-...",
-//           "baseURL": "https://..."       // optional (provider's own; default per protocol)
+//           "baseURL": "https://...",     // optional (provider's own; default per protocol)
+//           "headers": { "X-Tenant": "acme" }  // optional; extra outbound headers, see below
 //         },
 //         "models": [
 //           {
@@ -47,6 +48,15 @@
 //
 // Security:
 //   - `apiKey` is masked in every public response (maskKey()).
+//   - `auth.headers` is NOT masked and IS echoed back verbatim: these
+//     are routing/tenant configuration the operator typed, not a
+//     credential the server substituted. A provider that needs a
+//     secret per-request belongs behind the apiKey field, which is
+//     masked. The trade is stated in docs/webui.md and its zh-CN twin.
+//   - Header names and values are validated against a strict grammar
+//     (`normalizeCustomHeaders`) before anything persists or reaches
+//     the outbound request path, so a stored config cannot inject
+//     extra header lines into an upstream request.
 //   - Connectivity probes only fire AFTER a local format check passes.
 //   - When `apiKey` is absent, probe runs with no credential header and
 //     receives the same structured error shape.
@@ -73,6 +83,87 @@ export const SCHEMA_VERSION = 2;
 export const ALLOWED_PROTOCOLS = new Set(["openai", "anthropic", "gemini"]);
 /** Allowed auth types. */
 export const ALLOWED_AUTH_TYPES = new Set(["byok", "coding-plan"]);
+
+// ---------------------------------------------------------------------
+// Custom headers
+// ---------------------------------------------------------------------
+/** Ceilings for `auth.headers`. A provider is a user-typed record on
+ *  the operator's own machine, not an untrusted network input, so these
+ *  are abuse guards (a pasted 10k-header blob) rather than a security
+ *  boundary. They are deliberately generous: real gateways need a
+ *  handful of headers, not dozens. */
+export const MAX_CUSTOM_HEADERS = 20;
+export const MAX_HEADER_NAME_LEN = 128;
+export const MAX_HEADER_VALUE_LEN = 4096;
+
+/**
+ * HTTP field-name grammar (RFC 9110 §5.6.2 token), reduced to the
+ * characters that can actually break a request line or a header block.
+ *
+ * WHY THIS IS A HARD FILTER AND NOT A SANITISE: these values are
+ * concatenated into outbound request headers by the runtime
+ * (`local-runtime-v2` merges `options.headers` into the upstream
+ * request). A name or value carrying CR, LF, or NUL would let a
+ * stored config inject additional header lines — or a whole second
+ * request — into that upstream call. Rejecting the whole record is
+ * the only response that cannot be misread: silently stripping the
+ * character would leave the operator believing a header is in effect
+ * when the upstream never saw it intact.
+ */
+const HEADER_NAME_RE = /^[A-Za-z0-9!#$%&'*+\-.^_`|~]+$/;
+
+/**
+ * Normalise one provider's custom-header map.
+ *
+ * Returns `{ ok: true, headers }` with a plain string→string object
+ * (a fresh object, never a caller-held reference), or `{ ok: false,
+ * error }` on the first offending entry. An absent / empty / non-object
+ * input normalises to `{}` — the common case, and the reason this does
+ * not need an `absent` sentinel the way the apiKey keep-convention
+ * does.
+ *
+ * Duplicate names cannot occur: a JS object literal already collapsed
+ * them at parse time, and a JSON body with duplicate keys keeps the
+ * last one. The surviving value is the one that is validated, so the
+ * stored map and the request that leaves the process agree.
+ */
+export function normalizeCustomHeaders(raw) {
+  if (raw === undefined || raw === null) return { ok: true, headers: {} };
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    return { ok: false, error: "auth.headers must be an object" };
+  }
+  const entries = Object.entries(raw);
+  if (entries.length > MAX_CUSTOM_HEADERS) {
+    return {
+      ok: false,
+      error: `auth.headers has ${entries.length} entries, limit is ${MAX_CUSTOM_HEADERS}`,
+    };
+  }
+  const headers = {};
+  for (const [name, value] of entries) {
+    if (!HEADER_NAME_RE.test(name) || name.length > MAX_HEADER_NAME_LEN) {
+      return { ok: false, error: `auth.headers: invalid header name '${name}'` };
+    }
+    if (typeof value !== "string") {
+      return { ok: false, error: `auth.headers: '${name}' must be a string` };
+    }
+    if (value.length > MAX_HEADER_VALUE_LEN) {
+      return {
+        ok: false,
+        error: `auth.headers: '${name}' exceeds ${MAX_HEADER_VALUE_LEN} characters`,
+      };
+    }
+    // Control characters are legal in a header VALUE (obs-fold aside,
+    // which no modern client sends) except for the ones that end the
+    // line. Tab is explicitly allowed by the grammar.
+    if (/[\r\n\0]/.test(value)) {
+      return { ok: false, error: `auth.headers: '${name}' contains a line break or NUL` };
+    }
+    headers[name] = value;
+  }
+  return { ok: true, headers };
+}
+
 
 /** Persistent user-level file path. Lazy: respects MCODE_WEBUI_DATA_DIR. */
 export function getUserLevelPath() {
@@ -212,6 +303,17 @@ export function normaliseProvider(p) {
     apiKey: typeof authRaw.apiKey === "string" ? authRaw.apiKey : "",
     baseURL: typeof authRaw.baseURL === "string" ? authRaw.baseURL : "",
   };
+  // Custom headers are OPTIONAL and additive: a config written before
+  // this field existed normalises to `{}` and a PUT that omits them
+  // keeps `{}` — the same as a provider that never had any. There is
+  // no keep-sentinel, because unlike the apiKey there is no secret to
+  // mask on the way out: the operator typed these values and reads
+  // them back verbatim.
+  const hdr = normalizeCustomHeaders(authRaw.headers);
+  if (!hdr.ok) {
+    return { ok: false, error: `provider '${id}': ${hdr.error}` };
+  }
+  auth.headers = hdr.headers;
   if (auth.apiKey) {
     const fmt = validateKeyFormat(auth);
     if (!fmt.ok) return { ok: false, error: `provider '${id}': ${fmt.reason}` };
@@ -461,6 +563,15 @@ export function publicView(provider) {
       hasKey: !!(provider.auth.apiKey && provider.auth.apiKey.length > 0),
       apiKeyMasked: maskKey(provider.auth.apiKey),
       baseURL: provider.auth.baseURL || "",
+      // Custom headers are NOT masked. They are operator-authored
+      // routing/auth-adjacent configuration (a tenant id, a gateway
+      // routing key) that the operator typed and must be able to read
+      // back to edit it — masking them would make the field a
+      // write-only trap, the exact failure the apiKey placeholder
+      // convention avoids by masking only the SECRET. An operator
+      // who treats a header value as a secret has no way to express
+      // that here; that trade is stated in both docs.
+      headers: { ...(provider.auth.headers ?? {}) },
     },
     models: provider.models.map((m) => ({
       id: m.id,
@@ -505,12 +616,30 @@ async function probe({ protocol, auth, baseURLOverride, timeoutMs = 8000 }) {
   if (!baseURL) {
     return { ok: false, latencyMs: 0, error: "no base URL configured" };
   }
+  // Custom headers travel WITH the probe. A probe that omitted them
+  // would answer a question the operator never asked: against a
+  // gateway that requires `X-Tenant`, the bare probe fails while the
+  // real request would have succeeded — or worse, succeeds while the
+  // real request would have been rejected for a missing header.
+  // The probe must exercise the request that will actually be sent.
+  //
+  // Re-validated here because `/api/providers/test` takes its `auth`
+  // straight from the request body without going through the PUT
+  // normaliser. The filter is the same one the config path uses, so
+  // a value that could not be stored also cannot be probed with.
+  const hdr = normalizeCustomHeaders(auth?.headers);
+  const customHeaders = hdr.ok ? hdr.headers : {};
   const started = Date.now();
   let ctrl;
   try {
     ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-    const result = await runProtocolProbe({ protocol, baseURL, auth, signal: ctrl.signal });
+    const result = await runProtocolProbe({
+      protocol,
+      baseURL,
+      auth: { ...auth, headers: customHeaders },
+      signal: ctrl.signal,
+    });
     clearTimeout(timer);
     return { ...result, latencyMs: Date.now() - started };
   } catch (e) {
@@ -523,9 +652,18 @@ async function probe({ protocol, auth, baseURLOverride, timeoutMs = 8000 }) {
 }
 
 async function runProtocolProbe({ protocol, baseURL, auth, signal }) {
+  // Operator headers are spread FIRST in every branch, so the
+  // protocol's own required headers below overwrite them. A probe is
+  // "can I reach this provider", not a configurable HTTP client: an
+  // operator who mistypes `Content-Type` in the header field should
+  // get a probe that still means something. The production path (the
+  // runtime's own header merge) is NOT restricted this way — this
+  // asymmetry is deliberate and is what the granularity note in both
+  // docs refers to.
+  const custom = auth?.headers ?? {};
   if (protocol === "openai") {
     // `GET {baseURL}/v1/models` with `Authorization: Bearer <key>` (when present)
-    const headers = { Accept: "application/json" };
+    const headers = { ...custom, Accept: "application/json" };
     if (auth.apiKey) headers.Authorization = `Bearer ${auth.apiKey}`;
     const res = await fetch(`${trimSlash(baseURL)}/v1/models`, { method: "GET", headers, signal });
     if (res.ok) return { ok: true, detail: `HTTP ${res.status}` };
@@ -539,6 +677,7 @@ async function runProtocolProbe({ protocol, baseURL, auth, signal }) {
     // `model not found` failure mode that earlier versions of the
     // probe had when a custom baseURL did not accept `claude-3-haiku`.
     const headers = {
+      ...custom,
       "Content-Type": "application/json",
       "anthropic-version": "2023-06-01",
       Accept: "application/json",
@@ -562,10 +701,14 @@ async function runProtocolProbe({ protocol, baseURL, auth, signal }) {
   }
   if (protocol === "gemini") {
     // `GET {baseURL}/v1beta/models?key=<key>` (key is in the URL, not a
-    // header — that's the Gemini spec).
+    // header — that's the Gemini spec). Custom headers still apply.
     const url = new URL(`${trimSlash(baseURL)}/v1beta/models`);
     if (auth.apiKey) url.searchParams.set("key", auth.apiKey);
-    const res = await fetch(url.toString(), { method: "GET", signal });
+    const res = await fetch(url.toString(), {
+      method: "GET",
+      ...(Object.keys(custom).length > 0 ? { headers: { ...custom } } : {}),
+      signal,
+    });
     if (res.ok) return { ok: true, detail: `HTTP ${res.status}` };
     return { ok: false, error: `HTTP ${res.status}` };
   }
