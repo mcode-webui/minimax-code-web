@@ -1,7 +1,7 @@
 "use client";
 
 import { ConversationUsageBanner, type ConversationUsageNotice } from "./conversation-usage-banner";
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState, Fragment } from "react";
 
 import { renderMarkdown } from "@/lib/markdown";
 import { MarkdownHtml } from "./markdown-html";
@@ -17,8 +17,14 @@ import { Icon } from "./icons";
 import { useChatTailFollow, useChatVirtualization } from "./chat-virtual-list";
 import { ActivityPulse, isSessionActivityActive } from "./loading-states";
 import { ActivityGroup, TurnProcessDisclosure, assignActivityBlockKeys } from "./activity-group";
-import { collectEditedFiles } from "@/lib/edited-files";
+import {
+  collectEditedFilesByTurn,
+  isTurnTailUnit,
+  resolveEditedFiles,
+  turnCoordinatesByTurn,
+} from "@/lib/edited-files";
 import { EditedFilesCard } from "./edited-files-card";
+import { useTurnDiffs } from "@/lib/turn-diff";
 import {
   computeTurnLayout,
   computeTurnStatsByUnit,
@@ -222,12 +228,31 @@ export function Chat({
     });
   }, []);
 
-  // Ticket 77 — the 「已编辑 N 个文件」 card's data. Derived from the FULL
-  // `units` list, not the virtualized window: the card is a turn-level footer,
-  // so it must not appear or vanish as the user scrolls the window past 200
-  // units. `collectEditedFiles` returns only paths this turn's edit tools
-  // actually named, and an empty list means the card is not rendered at all.
-  const editedFiles = useMemo(() => collectEditedFiles(units), [units]);
+  // Webui-parity 83 — the 「已编辑 N 个文件」 card, once per TURN.
+  //
+  // Two sources, one authority per turn: the transcript's own scan of which
+  // paths a turn's edit tools named, and the engine's record for that turn
+  // (real `+N` / `-N`, and the `canUndo` / `canReapply` gates). The record is
+  // selected by the turn's `assistantMessageId` — the value the engine itself
+  // persisted the turn under — and NEVER by a turn ordinal, because the
+  // engine's selector silently falls back to the session's latest turn when
+  // handed no id, which would put another turn's numbers under this card.
+  //
+  // A turn with no coordinate (recorded before the marker shipped, read
+  // through the legacy probe, run over the exec transport) is never queried
+  // and keeps the ticket-77 path-only card: no counts, no buttons.
+  const turnCoordinates = useMemo(
+    () => turnCoordinatesByTurn(units, turnIndexByUnit),
+    [units, turnIndexByUnit],
+  );
+  const { diffs, errors, busy, revert, reapply } = useTurnDiffs(
+    state?.mcodeSessionId ?? null,
+    turnCoordinates,
+  );
+  const scannedFilesByTurn = useMemo(
+    () => collectEditedFilesByTurn(units, turnIndexByUnit),
+    [units, turnIndexByUnit],
+  );
 
   // Windowed rendering: above VIRTUAL_LIST_THRESHOLD (200) units we slice the
   // transcript to a visible window around the user's scroll position. The hook
@@ -426,30 +451,56 @@ export function Chat({
                 : localIndex;
               const turnIndex = turnIndexByUnit[originalIndex] ?? 0;
               const turnExpanded = turnProcessExpanded.get(turnIndex);
-              return unit.kind === "activity" ? (
-                <ActivityGroup
-                  key={originalIndex}
-                  blocks={unit.blocks}
-                  blockKeys={activityBlockKeys.get(originalIndex)}
-                  summary={unit.summary}
+              // The turn's card hangs off its LAST unit, so it renders as the
+              // turn's footer rather than one card for the whole transcript.
+              const turnFiles = isTurnTailUnit(turnIndexByUnit, originalIndex)
+                ? resolveEditedFiles(scannedFilesByTurn.get(turnIndex) ?? [], diffs.get(turnIndex))
+                : [];
+              const card = turnFiles.length > 0 ? (
+                <EditedFilesCard
+                  key={`edited-files-${turnIndex}`}
+                  files={turnFiles}
                   t={t}
                   onOpenFile={onOpenFile}
-                  streaming={originalIndex === streamingActivityIndex}
-                  startedAtMs={runningStartedAt}
-                  expanded={turnExpanded}
-                  onExpandedChange={turnExpanded === undefined ? undefined : (next) => setTurnExpanded(turnIndex, next)}
+                  canUndo={diffs.get(turnIndex)?.canUndo === true}
+                  canReapply={diffs.get(turnIndex)?.canReapply === true}
+                  onUndo={turnCoordinates.has(turnIndex) ? () => void revert(turnIndex) : undefined}
+                  onRedo={turnCoordinates.has(turnIndex) ? () => void reapply(turnIndex) : undefined}
+                  busy={busy.has(turnIndex)}
+                  error={errors.get(turnIndex) ?? null}
                 />
-              ) : (
-                <Block
-                  key={originalIndex}
-                  block={unit.block}
-                  t={t}
-                  turnStats={turnStatsByUnit.get(originalIndex)}
-                  turnIndex={turnIndex}
-                  turnProcessExpanded={turnExpanded}
-                  turnProcessDefaultExpanded={defaultExpandedByTurn.get(turnIndex) ?? true}
-                  onTurnProcessExpandedChange={setTurnExpanded}
-                />
+              ) : null;
+              return (
+                // The unit's container is the Fragment, because a turn's card
+                // (webui-parity 83) renders after the unit itself. Its key
+                // stays the ORIGINAL unit index, so React keeps the same DOM
+                // nodes when the virtual window shifts.
+                <Fragment key={originalIndex}>
+                  {unit.kind === "activity" ? (
+                    <ActivityGroup
+                      blocks={unit.blocks}
+                      blockKeys={activityBlockKeys.get(originalIndex)}
+                      summary={unit.summary}
+                      t={t}
+                      onOpenFile={onOpenFile}
+                      streaming={originalIndex === streamingActivityIndex}
+                      startedAtMs={runningStartedAt}
+                      expanded={turnExpanded}
+                      onExpandedChange={turnExpanded === undefined ? undefined : (next) => setTurnExpanded(turnIndex, next)}
+                    />
+                  ) : (
+                    <Block
+                      block={unit.block}
+                      t={t}
+                      turnStats={turnStatsByUnit.get(originalIndex)}
+                      turnIndex={turnIndex}
+                      turnProcessExpanded={turnExpanded}
+                      turnProcessDefaultExpanded={defaultExpandedByTurn.get(turnIndex) ?? true}
+                      onTurnProcessExpandedChange={setTurnExpanded}
+                    />
+                  )}
+                  {card}
+                </Fragment>
               );
             })}
             {virtWindow.useVirtual && virtWindow.bottomSpacer > 0 ? (
@@ -484,12 +535,10 @@ export function Chat({
                 />
               </div>
             ) : null}
-            {/* Ticket 77 (G3) — the turn's last block, matching where the
-                desktop puts the 「已编辑 N 个文件」 card. Derived from the full
-                unit list, so it is stable under virtual scrolling. */}
-            {editedFiles.length > 0 ? (
-              <EditedFilesCard files={editedFiles} t={t} onOpenFile={onOpenFile} />
-            ) : null}
+            {/* Webui-parity 83 moved the 「已编辑 N 个文件」 card from the end of
+                the whole transcript to the end of each turn, where the desktop
+                puts it; see the render loop above. The trailing message-action
+                row stays last. */}
           </div>
         </div>
 

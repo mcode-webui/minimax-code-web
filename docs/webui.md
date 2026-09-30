@@ -1684,7 +1684,7 @@ Two sources, in strict order of authority, and never merged:
 | Source | What it is | What it can prove |
 |---|---|---|
 | **The engine's record** | `GET /api/turn-diff` with the turn's `assistantMessageId` | The real per-file `+N` / `-N`, the real file list (which includes edits made through tools whose arguments name no path), and the engine's own `canUndo` / `canReapply` |
-| **The transcript scan** | `collectTurnEditedFiles` (`webapp/lib/edited-files.ts`) over the turn's `RenderUnit`s | Only the file paths a `file-edit` tool named. No counts, no gates. |
+| **The transcript scan** | `collectEditedFilesByTurn` (`webapp/lib/edited-files.ts`), keyed by the layout turn ordinal | Only the file paths a `file-edit` tool named. No counts, no gates. |
 
 The engine's list REPLACES the scan rather than merging with it. A merge
 would double-count a file the two name differently, and the counts would
@@ -1761,12 +1761,21 @@ move, in this order:
 - The collapse state is **not** persisted in `localStorage`: a reload
   returns to collapsed. It is derived state, not a user preference, so
   red line 3 is untouched.
-- Cards are derived from the **full** `units` list, not the virtualised
-  `visibleUnits` window — otherwise scrolling past 200 units would make
-  them blink in and out. Each turn's card sits at **its own** turn's last
-  unit, so a three-turn session reads as three cards; the final turn's
-  card stays at the transcript tail, after the message-action row, which
-  is where ticket 77 put the single card and where the desktop puts it.
+- The **coordinates, the scan and the records** are all derived from the
+  **full** `units` list, never from the virtualised `visibleUnits` window, so
+  a turn outside the window is still fetched and its numbers do not change
+  under the user. The card itself, however, is a list child: it renders
+  inside the `visibleUnits` loop at its own turn's last unit. Above
+  `VIRTUAL_LIST_THRESHOLD` (200 units) a turn's card therefore appears and
+  disappears with the scroll window, the same as that turn's messages do.
+  This is the one place the card is windowed, and it is a deliberate trade —
+  a card pinned outside the window would render in a position the reader
+  cannot see. Non-virtualised transcripts (≤ 200 units, the overwhelming
+  majority) render every turn's card unconditionally.
+- Each turn's card sits at **its own** turn's last unit, so a three-turn
+  session reads as three cards. Ticket 77's single session-wide card at the
+  transcript tail is gone: the trailing message-action row is now the last
+  element in the column.
 - With no `onOpenFile` wired, a file row degrades to plain text rather
   than to a button that does nothing.
 - The route exposes `applications.session.diff` and nothing else; the

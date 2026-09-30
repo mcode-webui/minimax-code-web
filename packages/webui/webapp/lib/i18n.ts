@@ -473,6 +473,14 @@ const en = {
   "activity.thinkingDone": "Finished thinking",
   "activity.expand": "Expand",
   "activity.collapse": "Collapse",
+  // webui-parity 83 — the turn-diff card's controls. They exist only where the
+  // engine's record says this turn can be undone / reapplied; a turn with no
+  // record draws no button at all, so neither string is ever a promise the
+  // engine has already refused.
+  "turnDiff.undo": "Undo",
+  "turnDiff.redo": "Redo",
+  "turnDiff.working": "Applying…",
+  "turnDiff.error": "Change not applied:",
   /* Tool-card status copy (ticket 46 D4). Five states on the reference
      desktop vocabulary; a completed call renders no chip on its summary
      row. The wire only ever writes completed/failed/in_progress —
@@ -1564,6 +1572,13 @@ const zh: Record<MessageKey, string> = {
   "activity.thinkingDone": "已完成推理",
   "activity.expand": "展开",
   "activity.collapse": "收起",
+  // 工单 83 —— 回合 diff 卡的控件。只在引擎记录说该回合可撤销/可重做时
+  // 出现；没有记录的回合根本不画按钮，所以这两条文案永远不会变成
+  // 「引擎已经拒绝的动作」的承诺。
+  "turnDiff.undo": "撤销",
+  "turnDiff.redo": "重做",
+  "turnDiff.working": "正在应用…",
+  "turnDiff.error": "改动未生效：",
   /* 工具卡片状态文案（工单 46 D4）。五档状态取参照桌面的词表，中文与
      参照完全一致；已完成的调用在摘要行不显示状态。wire 只会写
      completed/failed/in_progress，补齐 pending 与 cancelled 是为了让

@@ -448,11 +448,21 @@ describe("G1 — call sites cannot re-arm the animation mid-stream", () => {
   test("the containers are keyed by unit position, not by content", () => {
     // React's key is the other half of "plays once": an unstable key would
     // remount the container even though its class list is static.
-    const keyed = [...chatSource.matchAll(/<(Block|ActivityGroup)\s+key=\{([^}]+)\}/g)].map((m) => m[2] as string);
-    assert.ok(keyed.length >= 2, "both unit renderers must carry a key");
-    for (const key of keyed) {
-      assert.equal(key, "originalIndex", `unit keys must stay positional, found "${key}"`);
+    //
+    // webui-parity 83 moved the key up one level: a turn's 「已编辑 N 个文件」
+    // card renders AFTER its unit, so the list child is a `<Fragment>` wrapping
+    // the block plus the card. The key is still the positional `originalIndex`
+    // — which is the whole point of this test — it just sits on the fragment
+    // now. Keeping the assertion on the element that actually carries the key
+    // is what stops a future edit from dropping it silently.
+    const keyed = [...chatSource.matchAll(/<(Fragment|Block|ActivityGroup)\s+key=\{([^}]+)\}/g)];
+    assert.ok(keyed.length >= 1, "the unit list child must carry a key");
+    for (const [, element, key] of keyed) {
+      assert.equal(key, "originalIndex", `${element} keys must stay positional, found "${key}"`);
     }
+    // Exactly one keyed element per rendered unit — a second, differently
+    // keyed wrapper would silently reintroduce the remount.
+    assert.equal(keyed.length, 1, "one key per unit, on the outermost list child");
   });
 });
 
