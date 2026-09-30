@@ -2009,7 +2009,7 @@ function ModelSettingsDetail({
                  * switch. No `default` entry here — the reference
                  * treats switchable thinking as pure on/off; the
                  * engine-default reset stays reachable through the
-                 * composer-level control's "Use engine default" row
+                 * composer-level control's "Default" row
                  * and the radio group's `default` option elsewhere. */
                 <div className="flex items-center gap-2 px-0.5 py-0.5">
                   <button
@@ -2542,7 +2542,7 @@ const CascadeSubmenu = forwardRef<
  * Thinking-effort picker.
  *
  * Same shell and panel as the other selectors. The trigger is the
- * active level ("High" / "Medium" / …) or "Use engine default" when
+ * active level ("High" / "Medium" / …) or "Default" when
  * the user has not picked one (the recorded value is empty).
  *
  * The levels array comes from the active model's catalogue entry; the
