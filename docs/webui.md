@@ -780,20 +780,29 @@ settings (`refs/ui/03-settings-usage-models.jpg`, `04-settings-general.jpg`).
 
 **Navigation and capability honesty**
 
-| Group | Items | State |
-| --- | --- | --- |
-| Preferences | General | enabled |
-| Preferences | Voice · Shortcuts · Personalization · Browser | marked 暂不支持 (not available yet) |
-| Management | Usage & models · Connection | enabled |
-| Management | Account | marked 暂不支持 |
-| Coding | Code review · Worktree | marked 暂不支持 |
-| Archived | Archived tasks | marked 暂不支持 |
+Ten tabs in four groups. Every tab carries the reference's 18×18 stroke
+glyph; the state column says what a user actually gets, and a control that
+renders but cannot act is called **placeholder** — a designed outcome, not a
+missing feature. Only Worktree is genuinely not implemented.
 
-The eight 暂不支持 entries are pre-existing facts: the desktop has the
-category and this server has no capability behind it, so the entry stays
-disabled with the marker rather than hidden. Since ticket 48 every tab
-carries the reference's 18×18 stroke glyph (the Browser tab — a webui-only
-entry — reuses the existing `browser` icon).
+| Group | Tab | State |
+| --- | --- | --- |
+| Preferences | General (通用) | implemented |
+| Preferences | Voice | implemented, placeholder controls — the microphone dropdown is disabled with a single 「本地版不适用」 option, and both dictation rows show 未设置 (no device enumeration, no dictation input in a browser) |
+| Preferences | Shortcuts | implemented, read-only — 10 desktop default bindings under a 「浏览器环境不适用」 notice; the ✕ / ↺ affordances render disabled |
+| Preferences | Personalization | implemented — 自定义指令 and 关于你 persist to `localStorage`; both memory switches render off and disabled with the not-applicable marker, and 管理 opens the 记忆摘要 dialog in its permanent empty state |
+| Management | Usage & models | implemented; the three sources are a **view switcher** — they do not switch the model source in use |
+| Management | Connection | implemented |
+| Management | Account | implemented as a placeholder — 账户信息 reads 「本地模式，未登录」, 退出登录 is disabled (no account service locally) |
+| Coding | Code review | implemented — 自定义审查准则 persists to `localStorage`; 审查方式 is a disabled single-option dropdown showing 子会话 |
+| Coding | Worktree | **not implemented** — the tab is a one-line panel reading 「本地版暂不支持工作树管理」 |
+| Archived | Archived tasks | the tab renders its empty state 「暂无已归档任务」; the list and its actions need an archived-session contract that does not exist |
+
+**There is no Browser tab in Settings.** The browser surface is a workspace
+column tab (`workspaceTabs.tab.browser`) that mounts `BrowserPanel` over the
+workspace tabs, not a settings section; the `settings.tab.browser` dictionary
+key has no call site. An earlier revision of this document listed a Browser
+tab under Preferences.
 
 **General (通用) — sections**
 
@@ -804,12 +813,14 @@ between adjacent rows:
 
 | Section | State | Notes |
 | --- | --- | --- |
-| Engine facts (local addition) | read-only | version + default model, local URL, LAN URL. The reference has no such section, hence no section title |
-| Application | enabled | appearance picker + language switch. The reference's five disabled switches (menu-bar icon, launch-at-login, desktop notifications, early access, accelerated indexing) are **not rendered** — no capability behind them |
+| Mode | disabled furniture | the two mode cards (built for coding / built for everyday work) render as the reference's, both `disabled` with the coding card preselected — no local mode switch |
+| Application | enabled | appearance picker + language switch. The reference's five desktop switches (menu-bar icon, launch-at-login, desktop notifications, early access, accelerated indexing) render **disabled**, one per row — no capability behind them |
+| Link destinations | disabled furniture | two rows (web links, local links) whose selects are disabled single-option dropdowns |
 | Files | enabled | two switches persisted in `localStorage`, see the table below |
 | Session management | enabled | one switch, persisted; **records the preference only** — no surface reads it yet |
-| Preference settings | enabled | follow-up behaviour radio (queue / send now), persisted; **records the preference only** — the composer does not read it yet (ticket 49 owns that surface) |
-| Mode / Link destinations / Agent control / About | not implemented | the reference ships these as disabled furniture (hard-coded mode selection, disabled selects, disabled buttons); this round does not add them |
+| Agent control | disabled furniture | the 「自动打开浏览器面板」 switch renders off and disabled (no capability behind it) |
+| Preference settings | enabled | follow-up behaviour radio (queue / send now), persisted; **records the preference only** — the composer does not read it yet (ticket 49 owns that surface). Watermark and data opt-in render disabled |
+| About | mixed | upload logs and check-for-update are disabled buttons; the local URL and LAN URL are live read-only rows from `/api/settings` |
 | dataDir footer | not implemented | the reference prints the app data directory at the bottom of the General page; `/api/settings` has no such field and the server routes are read-only this round, so no value exists to print |
 
 Appearance and language behave as before: immediate effect on click; the
@@ -848,8 +859,8 @@ clients:
 
 | Capability | Why |
 | --- | --- |
-| Account page | needs `getAccountStatus` / `signOut`-class server contracts |
-| Archived tasks page | needs the archived-session contract |
+| Account page | the tab renders in the reference's form, but there is no `getAccountStatus` / `signOut`-class server contract, so the account row reads 「本地模式，未登录」 and sign-out is disabled |
+| Archived tasks page | the tab renders its empty state; the list, its restore and its delete need the archived-session contract |
 | Usage & models three-source switching | the segmented tabs now match the desktop form (ticket 53), but they are a **view switcher** — they do not switch the model source in use; real Token Plan / MiniMax API / custom-model routing plus source badges still need a model-routing contract |
 | MiniMax API key panel | input + connectivity test + save-and-use |
 | Custom model drag-reorder, per-model toggles, preset picker | provider contract work; adding is dialog-based (ticket 54), editing stays on the rail + editor surfaces |
@@ -980,9 +991,11 @@ reference `design-ref/screenshots/byok-custom-model-official.png`):
 test files); the h2 header, the per-tab fade-in and the 760px page width are
 untouched; `SETTINGS_NAV`, the `SettingsSection` union and the deep-link
 entry points (`initialSection`, `autoAddProvider`) are unchanged; the eight
-暂不支持 placeholders stay. The `usage.used` / `usage.reset` label strings,
-which lost their last consumer to the desktop-figure forms, were deleted
-from both dictionaries.
+tabs that were placeholders when this round landed kept their placeholder
+form — the settings-modal port (58) and its four sub-pages (55a) later gave
+most of them content, see the navigation table above. The `usage.used` /
+`usage.reset` label strings, which lost their last consumer to the
+desktop-figure forms, were deleted from both dictionaries.
 
 **Acceptance fixes (second round, 2026-09-29).** The usage-bar track moved
 to `bg-border_default` — the context meter's `bg-bg_grouped_tertiary_elevated`
@@ -1016,9 +1029,10 @@ contracts (`server/routes/settings.js`, `server/routes/providers.js`,
 the `SETTINGS_NAV` four-group division and the three-value
 `SettingsSection` union; the deep-link entry points (`initialSection`,
 `autoAddProvider` — the model selector's add-provider flow and the user
-menu's usage row both still land where they did); and the eight 暂不支持
-placeholders. The dead `if (!section)` branch inside `SettingsPanel` was
-removed and the `section` prop made required — every reachable tab
+menu's usage row both still land where they did); and the eight tabs that
+were placeholders in this round, which the settings-modal port (58) has
+since given content. The dead `if (!section)` branch inside `SettingsPanel`
+was removed and the `section` prop made required — every reachable tab
 resolves a section, so the branch could never render.
 
 ## Main-surface elements: user menu / project context menu / home capsules (ticket 55c)
