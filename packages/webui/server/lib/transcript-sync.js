@@ -16,6 +16,14 @@
 // and the read reuses the switch path's own loader (same probes, same caps), so
 // the two can never disagree about the transcript grammar.
 //
+// The read is applied as a MERGE, not a replacement (webui-parity 81 D-1).
+// This server authors transcript lines of its own — the slash-command echo in
+// `interaction/commands.js`, its `! [warn]` notices — and none of them ever
+// reach the engine, so the engine's read is authoritative for engine lines and
+// silent about the rest. Assigning it wholesale deleted the command echo a few
+// seconds after the user asked for it and persisted the deletion; see
+// `transcript.js#mergeEngineTranscript` for the merge contract.
+//
 // Cost: one indexed read of the runtime DB per watching client per tick. Tabs
 // without an SSE stream are skipped, which is the common case for a closed or
 // backgrounded page. MCODE_WEBUI_TRANSCRIPT_SYNC_MS=0 disables the poll.
@@ -23,7 +31,7 @@
 import { MCODE_RUNTIME_DB } from "./config.js";
 import { persistCurrentChat } from "./sessions.js";
 import { clients, getActiveChild, getSseClient, pushStateFor } from "./state-bus.js";
-import { loadTranscriptChatLines } from "./transcript.js";
+import { loadTranscriptChatLines, mergeEngineTranscript } from "./transcript.js";
 
 /** How often the poll runs. 4s keeps a browser tab within a few seconds of the engine. */
 export const DEFAULT_TRANSCRIPT_SYNC_MS = 4000;
@@ -63,17 +71,29 @@ export { TRANSCRIPT_SYNC_WEDGED_MS as wedgedRunMs };
 /**
  * Did the stored transcript move?
  *
- * Line count plus the last line is the cheap, decisive check: a session that is
- * still being written to changes its tail on every event, while a finished one is
- * byte-identical between ticks. Comparing only the tail is deliberate — a rewrite
- * that touches only older lines is not something this server produces, and the
- * full compare would mean hashing 200KB every 4s.
+ * A full element-wise compare. It used to be length plus last line, on the
+ * argument that a rewrite of an older line is not something this server
+ * produces and the full compare would mean hashing 200KB every 4s. Both
+ * halves of that argument stopped holding once the engine read was applied as
+ * a merge (see `transcript.js#mergeEngineTranscript`): a webui-local tail such
+ * as `› /help` + its output is preserved at the end of the list, so a poll
+ * that brought in a foreign turn from another client in the MIDDLE left the
+ * length and the tail identical while the body had changed — the cheap check
+ * reported "unchanged" and the turn was never rendered.
+ *
+ * The cost argument was also wrong: this compares string references and
+ * lengths across at most 400 entries every 4s, once per watching client, and
+ * almost every element is the identical string object, so `===` short-circuits
+ * on the first character. That is not a 200KB hash.
  */
 export function transcriptChanged(prev, next) {
   if (!Array.isArray(prev) || !Array.isArray(next)) return true;
+  if (prev === next) return false;
   if (prev.length !== next.length) return true;
-  if (next.length === 0) return false;
-  return prev[prev.length - 1] !== next[next.length - 1];
+  for (let i = 0; i < prev.length; i += 1) {
+    if (prev[i] !== next[i]) return true;
+  }
+  return false;
 }
 
 /**
@@ -136,7 +156,6 @@ export function syncTranscriptsOnce({ dbPath = MCODE_RUNTIME_DB } = {}) {
       continue;
     }
     if (!read || !read.ok || !Array.isArray(read.lines)) continue;
-    if (!transcriptChanged(cs.chat, read.lines)) continue;
 
     const before = Array.isArray(cs.chat) ? cs.chat.length : 0;
 
@@ -157,7 +176,18 @@ export function syncTranscriptsOnce({ dbPath = MCODE_RUNTIME_DB } = {}) {
       continue;
     }
 
-    cs.chat = read.lines;
+    // The engine read is a SPINE, not a replacement: the slash-command echo
+    // this webui writes (`› /help`, `● 当前 model=…`, …) is authored here and
+    // never reaches the engine DB, so assigning `read.lines` outright deleted
+    // it about four seconds after the user asked for it and persisted the
+    // deletion (webui-parity 81 D-1). `mergeEngineTranscript` folds the
+    // engine's view into what is already shown. The change gate below runs on
+    // the MERGED result, so a tick that would only re-assert the same lines
+    // stays quiet instead of pushing a redundant full-state frame every four
+    // seconds.
+    const prevChat = Array.isArray(cs.chat) ? cs.chat : [];
+    cs.chat = mergeEngineTranscript(read.lines, prevChat);
+    if (!transcriptChanged(prevChat, cs.chat)) continue;
     try {
       persistCurrentChat(cs);
     } catch (error) {
@@ -168,7 +198,7 @@ export function syncTranscriptsOnce({ dbPath = MCODE_RUNTIME_DB } = {}) {
     pushStateFor(cid, { reason: "transcript-sync" });
     refreshed.push(cid);
     console.log(
-      `[transcript-sync] cid=${cid} ${String(cs.mcodeSessionId).substring(0, 12)}… lines ${before} → ${read.lines.length} (msgs=${read.messageCount})`,
+      `[transcript-sync] cid=${cid} ${String(cs.mcodeSessionId).substring(0, 12)}… lines ${before} → ${cs.chat.length} (engine ${read.lines.length}, msgs=${read.messageCount})`,
     );
   }
 

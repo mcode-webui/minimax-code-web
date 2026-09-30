@@ -255,7 +255,7 @@ describe("composer wiring — the router decides, not the leading slash", () => 
 describe("rejected submissions come back into the composer", () => {
   test("a rejected command with an empty box restores exactly the command", () => {
     const draft = mergeRestoredDraft(
-      { value: "", error: null, attachments: [] },
+      { value: "", error: null, errorKind: null, unconfirmed: null, attachments: [] },
       { content: "/goal 绘制绘.html讲述一个成语故事", attachments: [] },
     );
     assert.equal(draft.value, "/goal 绘制绘.html讲述一个成语故事");
@@ -264,7 +264,7 @@ describe("rejected submissions come back into the composer", () => {
 
   test("interim text is kept, with the rejected command after it", () => {
     const draft = mergeRestoredDraft(
-      { value: "我还想问", error: null, attachments: [] },
+      { value: "我还想问", error: null, errorKind: null, unconfirmed: null, attachments: [] },
       { content: "/clear", attachments: [] },
     );
     assert.equal(draft.value, "我还想问\n\n/clear");
@@ -272,7 +272,7 @@ describe("rejected submissions come back into the composer", () => {
 
   test("a whitespace-only draft is treated as empty", () => {
     const draft = mergeRestoredDraft(
-      { value: "   ", error: null, attachments: [] },
+      { value: "   ", error: null, errorKind: null, unconfirmed: null, attachments: [] },
       { content: "/compact", attachments: [] },
     );
     assert.equal(draft.value, "/compact");
@@ -280,7 +280,7 @@ describe("rejected submissions come back into the composer", () => {
 
   test("restored attachments come first, interim ones after", () => {
     const draft = mergeRestoredDraft(
-      { value: "", error: null, attachments: ["/b.png"] },
+      { value: "", error: null, errorKind: null, unconfirmed: null, attachments: ["/b.png"] },
       { content: "/goal", attachments: ["/a.png"] },
     );
     assert.deepEqual(draft.attachments, ["/a.png", "/b.png"]);
@@ -306,12 +306,20 @@ describe("rejected submissions come back into the composer", () => {
     // The restore is the last line of defence for a rejected command
     // (a 4xx from /api/cmd, a network failure): the composer was
     // optimistically cleared at dispatch, so the payload is the only
-    // copy of the user's text. It has to be written back UNCONDITION-
-    // ALLY on a matching context — a guard that reads right but never
-    // fires (`if (false && restored)`, a negated condition, a restore
-    // computed and thrown away) is the exact shape of the bug this
-    // test exists to catch, so the assertion pins the guard itself,
-    // not merely the presence of the helper call.
+    // copy of the user's text. It has to be written back on a matching
+    // context — a guard that reads right but never fires (`if (false &&
+    // restored)`, a negated condition, a restore computed and thrown
+    // away) is the exact shape of the bug this test exists to catch, so
+    // the assertion pins the guard itself, not merely the presence of
+    // the helper call.
+    //
+    // webui-parity 81 D-2 sharpened the guard: a send whose acknowledgement
+    // timed out may already be running in the engine, and restoring THAT
+    // text would hand the user a one-keypress duplicate. The guard is
+    // therefore `restored && (outcome === null || shouldRestoreDraft(…))`
+    // — `outcome === null` is the ordinary rejection, which must still
+    // restore unconditionally. Both halves are pinned below; dropping
+    // either one is a regression.
     const catchIdx = composerSource.indexOf("} catch (cause) {");
     const failIdx = composerSource.indexOf("failComposerSent({");
     assert.ok(
@@ -332,18 +340,20 @@ describe("rejected submissions come back into the composer", () => {
       "",
       "only comments may sit between the fail call and its restore guard",
     );
-    // … and that guard must be the plain matching-context check.
+    // … and that guard must be the matching-context check AND the D-2
+    // probe gate. An ordinary rejection (`outcome === null`) restores
+    // unconditionally; a send the server may already be running does not.
+    const guard = "if (restored && (outcome === null || shouldRestoreDraft(outcome))) {";
     assert.equal(
-      composerSource.slice(guardIdx, guardIdx + "if (restored) {".length),
-      "if (restored) {",
-      "the restore must be guarded by exactly `if (restored)`",
+      composerSource.slice(guardIdx, guardIdx + guard.length),
+      guard,
+      `the restore must be guarded by exactly \`${guard}\` — a plain ` +
+        `\`if (restored)\` hands the user a one-keypress duplicate when the ` +
+        `engine is already running the message (webui-parity 81 D-2)`,
     );
 
     // The guarded body must actually write the merged patch.
-    const guardEnd = composerSource.indexOf(
-      "}",
-      guardIdx + "if (restored) {".length,
-    );
+    const guardEnd = composerSource.indexOf("}", guardIdx + guard.length);
     const body = composerSource.slice(guardIdx, guardEnd);
     assert.ok(
       /setComposerDraft\(\s*mergeRestoredDraft\(getComposerDraft\(\),\s*restored\)\s*\)/.test(

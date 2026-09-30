@@ -21,16 +21,57 @@
  * imports it directly under the plain Node test runner.
  */
 
+// Type-only, so the runtime dependency graph is unchanged — this store stays
+// importable under a plain Node test runner with no DOM and no fetch.
+import type { SendProbeOutcome } from "./send-confirmation";
+
 export interface ComposerDraft {
   /** Text currently typed in the textarea. */
   value: string;
   /** Last send-failure message, or null. Rendered as the error banner. */
   error: string | null;
+  /**
+   * Which kind of failure `error` is, or null when there is no banner.
+   *
+   * Why this is not derived from the message: the send acknowledgement can
+   * time out while the engine is already running the prompt, and that is not
+   * a failure (webui-parity 81 D-2). The banner must then read as "not
+   * confirmed, do not resend" — different words, different colour, and never
+   * the "could not send" headline. Only the caller knows which happened, so
+   * it says so here; `error` stays the raw server string for the `rejected`
+   * case, which is a real refusal and does deserve to be quoted.
+   */
+  errorKind: ComposerErrorKind | null;
+  /**
+   * What the post-timeout probe against the server concluded, or null when
+   * there is no banner or the failure was a real refusal. Drives which of
+   * the three unconfirmed banners renders — they are not interchangeable:
+   * "the engine is running it, do not resend" and "we could not find out"
+   * call for opposite behaviour.
+   */
+  unconfirmed: SendProbeOutcome | null;
   /** Accepted upload references, `@path` prefixed. */
   attachments: string[];
 }
 
-const EMPTY_DRAFT: ComposerDraft = { value: "", error: null, attachments: [] };
+/**
+ * `rejected` — the server refused the send (4xx, network error before the
+ * request left). A real failure; the text goes back in the box.
+ *
+ * `unconfirmed` — the acknowledgement never arrived and the follow-up read
+ * against the server could not establish whether the turn started. The text
+ * may already be executing. Never rendered as a failure, and the draft is
+ * only restored when the server positively holds no record of the send.
+ */
+export type ComposerErrorKind = "rejected" | "unconfirmed";
+
+const EMPTY_DRAFT: ComposerDraft = {
+  value: "",
+  error: null,
+  errorKind: null,
+  unconfirmed: null,
+  attachments: [],
+};
 
 let draft: ComposerDraft = EMPTY_DRAFT;
 const listeners = new Set<() => void>();

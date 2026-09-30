@@ -1841,6 +1841,103 @@ while the request was in flight) and shows the banner; a command routed
 to `/api/send` that the engine rejects surfaces as an error alert on the
 anomaly channel.
 
+### Who owns a transcript line
+
+`/api/cmd` output and engine output are both transcript lines, and they
+do not come from the same place.
+
+| Kind | Written by | In the engine runtime DB? | Survives a poll tick? |
+| --- | --- | --- | --- |
+| engine turn (`› ping`, `● pong`, tool blocks) | the engine, streamed into `cs.chat` | yes | yes, refreshed from the DB |
+| `/api/cmd` echo (`› /help`, `● 可用命令：…`, `● 当前 model=…`, `● 变更概览 …`) | `interaction/commands.js`, into `cs.chat` | **no — the engine never sees it** | yes, and it is the only thing that keeps it there |
+| a turn another client ran (desktop app, TUI) | the engine, for a different cid | yes | yes, pulled in — that is the poll's purpose |
+
+The four-second poll (`lib/transcript-sync.js`, `MCODE_WEBUI_TRANSCRIPT_SYNC_MS=0`
+disables it) re-reads the engine's view so a conversation driven elsewhere
+catches up in an open tab. It is a **merge**, not a replacement:
+`mergeEngineTranscript` (`lib/transcript.js`) walks the engine read and
+the lines already shown in lockstep, keeps any line the engine does not
+know about in place, and appends the engine's remainder.
+
+Server-written annotations — `§§ processed_duration=Nms`, `§§ turn_msg=<id>`,
+`##tc:<id>` — are the one class of engine line the merge may not treat as an
+ordinary line, because position is their entire meaning: the decoder resolves
+each one onto the block above it. A tab whose chat was recorded before its
+marker shipped does not carry the line, so the merge emits it at the cursor
+the engine put it at and never at the tail. Two consequences, both visible in
+the chat. A turn another client ran keeps **its own** turn coordinate instead
+of handing it to whatever the user ran next, which is the difference between
+the 「已编辑 N 个文件」 card reading this turn's diff and reading the engine's
+latest turn. And a transcript recorded before a marker shipped is annotated in
+place rather than replayed behind its own copy — the tail position duplicated
+the whole conversation instead, once annotated and once not.
+
+The alternative that was rejected: assign the read over `cs.chat`. It is
+one line, and it is what shipped. The consequence was that `/help` and
+`/status` returned `200`, cleared the composer, rendered their output for
+about four seconds, and then vanished — and `persistCurrentChat` recorded
+the deletion, so a reload did not bring them back. Measured on a live
+instance: the echo was on the wire at t+200 ms and gone by the next tick.
+An in-memory ledger of local lines was also considered and rejected: it
+would not survive the reload it was meant to protect, which is exactly the
+half of the defect users noticed.
+
+The merge assumes the engine **appends** and never rewrites a line it has
+already emitted. A rewrite would show up as the old line sitting next to
+its replacement rather than being replaced; the switch path's backfill rule
+(`routes/sessions.js`) already depends on the same assumption.
+
+## The send acknowledgement: "not confirmed" is not "failed"
+
+`POST /api/send` writes `200 {ok:true}` at the top of `handleSend` and
+runs the turn afterwards. The acknowledgement therefore reports *receipt*,
+and the deadline the browser imposes on it (`SEND_ACK_TIMEOUT_MS`, 30 s in
+`webapp/lib/api.ts`) reports *round trip*. Neither says whether the engine
+took the prompt — during a stalled proxy or a busy event loop the engine can
+be executing the message while the browser is still waiting.
+
+Reporting that as a failure is a claim about a side effect that may already
+have happened, and the composer's response to a "failure" — put the text
+back in the box — turned it into a duplicate execution. In testing, a
+`sleep 35` ran twice because the first attempt's acknowledgement was slow
+and the user pressed Enter again.
+
+| | Old | New |
+| --- | --- | --- |
+| Error shape | `Error("no response within 30000ms")`, matched by wording | `SendUnconfirmedError`, matched on an `unconfirmed` flag (`isSendUnconfirmed`) |
+| Deadline | 30 s | 30 s — **unchanged**; a longer one only moves the same false negative later |
+| Decision | none — the deadline was the verdict | `probeSend` asks `GET /api/state`, bounded to 3 reads over ~2.7 s |
+| Draft restored | always | only when the server positively holds no record of the send |
+| Banner | `消息发送失败: no response within 30000ms`, red | one of three, none of which claims failure |
+
+`probeSend` (`webapp/lib/send-confirmation.ts`) reduces its reads to one of
+three answers:
+
+| Answer | Evidence | Draft | Banner says |
+| --- | --- | --- | --- |
+| `accepted` | a turn is running for this cid, or the prompt's `›` echo is in the transcript | **not** restored | sent, never confirmed, the engine is running it — do not send it again |
+| `rejected` | the server answered and holds no record | restored | not delivered, the server has no record; the text is back in the box |
+| `unreachable` | no read came back | restored | status unknown, it may already be running — check the history before sending again |
+
+`accepted` is the case the whole design turns on: a send the engine may
+already be running must never come back as text one Enter can re-send.
+`unreachable` restores the draft even though the answer is unknown, because
+losing what the user typed is the worse defect, and the banner carries the
+"check the history first" instruction that makes the restore safe. The
+banner is also styled as secondary text rather than as an error.
+
+A client-generated idempotency key on `POST /api/send` would make the
+duplicate structurally impossible rather than merely unlikely. It is not
+implemented: it is a request-contract change, and it needs a
+server-side dedup store with a defined window. Treated as its own ticket,
+not folded into this fix.
+
+**How you would tell it works.** Send `/help` in a session that already has
+an engine turn, and leave the tab open: the output is still there ten
+seconds later, and it is still there after a reload. Force an
+acknowledgement timeout against a server that is running the turn: the
+banner says the engine is running the message, and the composer is empty.
+
 ## Endpoint catalog (against current source)
 
 Every `/api/*` endpoint listed below is registered either by Hono
