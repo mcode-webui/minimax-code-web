@@ -64,6 +64,7 @@ import * as protocolRoute from "./routes/protocol.js";
 import * as providersRoute from "./routes/providers.js";
 import * as gitRoute from "./routes/git.js";
 import * as pluginsRoute from "./routes/plugins.js";
+import * as turnDiffRoute from "./routes/turn-diff.js";
 import * as authorizeRoute from "./lib/authorize.js";
 
 /**
@@ -164,6 +165,12 @@ export const OWNED_ROUTES = new Set([
   "POST /api/plugins/uninstall",
   "POST /api/plugins/import/preview",
   "POST /api/plugins/import",
+  // webui-parity 83 — per-turn file changes. `assistantMessageId` is
+  // mandatory on all three: without it the engine answers with its LATEST
+  // turn, which would be another turn's counts.
+  "GET /api/turn-diff",
+  "POST /api/turn-diff/revert",
+  "POST /api/turn-diff/reapply",
   // Settings.
   "GET /api/settings",
   "POST /api/settings",
@@ -606,6 +613,20 @@ export function createHonoApp() {
   );
   app.post("/api/plugins/import", (c) =>
     invokeHandler(c, c.get(CAPTURE_KEY), pluginsRoute.handlePluginsImport),
+  );
+
+  // ----- Per-turn file changes (webui-parity 83) -----
+  // Gate chain is inherited from the middleware above (no auth, rate limit or
+  // read-only re-implemented here). Both POSTs mutate real workspace files,
+  // so a read-only server answering 403 is the intended behaviour.
+  app.get("/api/turn-diff", (c) =>
+    invokeHandler(c, c.get(CAPTURE_KEY), turnDiffRoute.handleTurnDiff),
+  );
+  app.post("/api/turn-diff/revert", (c) =>
+    invokeHandler(c, c.get(CAPTURE_KEY), turnDiffRoute.handleTurnDiffRevert),
+  );
+  app.post("/api/turn-diff/reapply", (c) =>
+    invokeHandler(c, c.get(CAPTURE_KEY), turnDiffRoute.handleTurnDiffReapply),
   );
 
   // ----- Settings -----

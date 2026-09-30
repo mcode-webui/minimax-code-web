@@ -95,6 +95,12 @@ describe("app.js — migration ledger", () => {
       "POST /api/plugins/uninstall",
       "POST /api/plugins/import/preview",
       "POST /api/plugins/import",
+      // webui-parity 83 — per-turn file changes. All three require an
+      // `assistantMessageId`; without it the engine would answer with its
+      // LATEST turn (see routes/turn-diff.js).
+      "GET /api/turn-diff",
+      "POST /api/turn-diff/revert",
+      "POST /api/turn-diff/reapply",
       "GET /api/settings",
       "POST /api/settings",
       "POST /api/auth/decision",

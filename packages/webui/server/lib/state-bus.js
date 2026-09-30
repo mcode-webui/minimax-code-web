@@ -1279,6 +1279,31 @@ export function pushSessionTreeChanged() {
 }
 
 /**
+ * Broadcast a `workspace-files-changed` frame: the files ON DISK under the
+ * workspace changed underneath the browser.
+ *
+ * webui-parity 83. Reverting a turn's diff rewrites real files
+ * (`local-runtime`'s `file-changes.ts` does `fs.writeFile` / `fs.rm` against
+ * the captured snapshot), and the webui has no other way to learn that: the
+ * chat transcript is unchanged, and nothing in the turn stream says "the
+ * workspace moved". The three surfaces that read those files — the files
+ * tree, the open file preview and the git panel — each re-read on this frame
+ * (see `store.tsx#workspaceRevision`). Like `session-tree-changed` it carries
+ * no payload: the consumers know what to re-read, and a dropped frame is a
+ * stale panel. Bypasses the coalescer for the same reason — workspace
+ * mutations are sparse and each one is user-visible.
+ */
+export function pushWorkspaceFilesChanged() {
+  const frame = "event: workspace-files-changed\ndata: {}\n\n";
+  for (const [, res] of sseByCid) {
+    if (!res || res.writableEnded || res.destroyed) continue;
+    try {
+      res.write(frame);
+    } catch {}
+  }
+}
+
+/**
  * Append (or refresh) a subagent entry for `cid`. Idempotent on
  * `toolCallId` — a second call with the same id updates `status` and
  * `updatedAtMs` rather than appending a duplicate.

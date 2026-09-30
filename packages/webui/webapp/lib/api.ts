@@ -1839,3 +1839,68 @@ function pluginMutationBody(
     : { pluginName, source: PLUGIN_SOURCE_WIRE_VALUE[source] };
 }
 
+
+// --- per-turn file changes (webui-parity 83) -------------------------------
+//
+// The turn coordinate is `assistantMessageId` — the msg_id the engine
+// persisted the turn's record under. It is REQUIRED on all three calls, and
+// the route answers an empty record without touching the engine when it is
+// missing: the engine's own selector falls back to the session's LATEST turn,
+// which would show another turn's counts and let an undo rewrite that turn's
+// files instead. Callers must pass the id they got from the transcript.
+
+/** The engine's turn-diff view, narrowed to the fields the card reads. */
+export interface TurnDiffPayload {
+  readonly fileChanges?: {
+    readonly file: string;
+    readonly additions: number;
+    readonly deletions: number;
+    readonly status?: string;
+  }[];
+  readonly sourceMessageId?: string;
+  readonly changeSetId?: string;
+  readonly status?: string;
+  readonly undoable?: boolean;
+  readonly canUndo?: boolean;
+  readonly canReapply?: boolean;
+}
+
+export interface TurnDiffResult {
+  readonly ok: boolean;
+  /** `null` means "no record for this coordinate" — never a default turn. */
+  readonly turnDiff: TurnDiffPayload | null;
+}
+
+// A revert rewrites workspace files and the engine verifies each against its
+// captured snapshot, so it is slower than a read but never unbounded.
+const TURN_DIFF_MUTATION_TIMEOUT_MS = 60_000;
+
+export function getTurnDiff(
+  sessionId: string,
+  assistantMessageId: string,
+): Promise<TurnDiffResult> {
+  const search = new URLSearchParams({ sessionId, assistantMessageId });
+  return request<TurnDiffResult>(`/api/turn-diff?${search.toString()}`);
+}
+
+export function revertTurnDiff(
+  sessionId: string,
+  assistantMessageId: string,
+): Promise<TurnDiffResult> {
+  return request<TurnDiffResult>("/api/turn-diff/revert", {
+    method: "POST",
+    json: { sessionId, assistantMessageId },
+    timeoutMs: TURN_DIFF_MUTATION_TIMEOUT_MS,
+  });
+}
+
+export function reapplyTurnDiff(
+  sessionId: string,
+  assistantMessageId: string,
+): Promise<TurnDiffResult> {
+  return request<TurnDiffResult>("/api/turn-diff/reapply", {
+    method: "POST",
+    json: { sessionId, assistantMessageId },
+    timeoutMs: TURN_DIFF_MUTATION_TIMEOUT_MS,
+  });
+}

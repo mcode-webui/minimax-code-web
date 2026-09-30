@@ -1377,6 +1377,120 @@ spinner。
 
 ---
 
+## 回合改动
+
+运行时按回合记录该回合改动的文件——带真实的增删行数，并且能把工作区
+还原回去。这三个端点把这份记录透出来。它们存在的原因是转录本身答不了
+这个问题：转录只带工具提到的文件路径，永远不带行数，也永远不带引擎关于
+「这一回合现在还能不能改」的判断。
+
+| func_name | 端点 | 卡片用途 |
+|---|---|---|
+| `sessions.diff.get_turn` | `GET /api/turn-diff` | 读回合的计数与门控 |
+| `sessions.diff.revert_turn` | `POST /api/turn-diff/revert` | 撤销按钮 |
+| `sessions.diff.reapply_turn` | `POST /api/turn-diff/reapply` | 重做按钮 |
+
+### 回合坐标
+
+三个请求都带 `assistantMessageId`——该回合**最后一条助手消息**的
+msg_id，也正是运行时落库这条记录时用的值。webapp 从转录里拿到它：服务端
+在回合结算时写一行 `§§ turn_msg=<id>` 标记（`server/lib/mcode-acp.js#finalize`），
+转录回读则用运行时自带的 `turn_id` / `msg_id` 两列合成同一行
+（`server/lib/transcript.js`）。
+
+`assistantMessageId` 在三个端点上都是**必填**，而它的缺失不算客户端错误——
+那是「本回合没有坐标」的情形，应答 `{"ok":true,"turnDiff":null}` 且
+**不调用引擎**。原因在引擎自己的选择器
+（`local-runtime/src/turns/diff-api.ts:209-220`）：不给 id 时它会退化成
+`latestForSession`，于是一个丢了坐标的请求会答出**别的回合**的计数，撤销
+按钮就会去改那个回合的文件。没有坐标的回合渲染纯路径卡。
+
+路由只触及运行时 `applications` 树里的一个成员 `applications.session.diff`。
+同一棵树上还有 `session.lifecycle`，它能删会话；把这一层放宽成「整个
+applications 句柄」等于把删会话的能力交给一个 diff 端点。
+
+### `GET /api/turn-diff?sessionId=&assistantMessageId=`
+
+**func_name** `sessions.diff.get_turn`。`sessionId` 是**引擎**的会话 id
+（`mvs_` + 32 位十六进制），即 `state.mcodeSessionId` 上的那个。
+
+**响应 200**
+```json
+{
+  "ok": true,
+  "turnDiff": {
+    "fileChanges": [
+      { "file": "webui-turn.txt", "additions": 2, "deletions": 0, "status": "added" }
+    ],
+    "sourceMessageId": "ed8b9ddd-9bb0-4b06-a8fc-e863036830e3",
+    "changeSetId": "cs_ffc8873c6",
+    "status": "active",
+    "undoable": true,
+    "canUndo": false,
+    "canReapply": false
+  }
+}
+```
+
+`canUndo` / `canReapply` 是引擎自己的答案，卡片必须据此画两个按钮，不得
+自行判断。只有**最新**回合的 diff 能改；引擎会在用户点击之前就用
+`canUndo:false` 说出来，真点了也回 409。
+
+`additions` / `deletions` 是**该回合**的前后行数差，不是工作区相对 HEAD 的
+diff。`previewState` 协议里有定义，但这条链路恒为 `undefined`——不要渲染它。
+
+**应答**
+
+- `200 {"ok":true,"turnDiff":null}` —— 请求没带坐标，或该 id 没有记录
+  （没动过文件的回合根本不落库）。
+- `400 {"ok":false,"code":"invalidRequest","error":"sessionId must look like mvs_<32 hex> …"}` —— `sessionId` 形状不对。
+- `404` —— 引擎不认识这个会话。
+- `200 {"ok":false,"code":"RUNTIME_UNAVAILABLE"}` —— 运行时应用起不来。
+
+### `POST /api/turn-diff/revert`
+
+**func_name** `sessions.diff.revert_turn`。body 为
+`{ "sessionId", "assistantMessageId" }`。
+
+把工作区文件还原到该回合之前的内容：引擎先逐个校验文件与当时捕获的快照
+一致，再写回或删除。**这是真的写文件。** 回合之后被改过的文件会被拒绝，
+而不是被覆盖。
+
+**响应 200** `{"ok":true,"turnDiff":{…}}`——撤销后的记录；`status` 为
+`reverted`，`canReapply` 变为 true。
+
+**错误** —— 回合不是最新回合（`Only the latest turn diff can be changed`）
+或文件已与快照不符，均为 409 `TURN_DIFF_CONFLICT`；未知会话 404；
+`sessionId` 形状不对 400；只读模式 403。客户端原样显示引擎的消息——只有
+那句话能说明是这两种拒绝中的哪一种。
+
+### `POST /api/turn-diff/reapply`
+
+**func_name** `sessions.diff.reapply_turn`。body 与坐标规则同上。把该回合的
+改动在撤销之后重新放回去。
+
+**响应 200** `{"ok":true,"turnDiff":{…}}`，`status:"active"`、
+`canUndo:true`。错误集与 revert 相同。
+
+### 一次成功变更要刷新什么
+
+撤销或重做改的是浏览器正在显示的文件，因此服务端做两步，客户端靠同一帧
+做剩下三步：
+
+| 步骤 | 谁 | 做什么 |
+|---|---|---|
+| 会话树缓存 | 服务端 | `invalidateSessionTree()`——缓存的树与磁盘不再一致 |
+| 广播 | 服务端 | 依次发 `session-tree-changed` 与 `workspace-files-changed` 两帧 SSE |
+| 文件树 | 客户端 | 监听 `workspaceRevision`，重读所有已展开的目录 |
+| 文件预览 | 客户端 | 走刷新通道重读当前文件（保留滚动位置；有未保存草稿则不动） |
+| git 面板 | 客户端 | 重读 status 与 branches |
+
+`workspace-files-changed` 是一个新的无载荷命名 SSE 帧。它是 webui 唯一能
+得知「磁盘上的文件在自己脚下变了」的信号：转录没变，回合流里也没有任何一帧
+在说这件事。
+
+---
+
 ## 设置
 
 ### `GET /api/settings`
