@@ -164,7 +164,7 @@ S2 invariants (must remain true on every later slice):
 
 Contract notes:
 
-- **There is no `/exec` command.** The webui-local command set is `WEBUI_LOCAL_COMMANDS` — `new`, `clear`, `status`, `sessions`, `usage`, `help`, `stop` (`server/lib/acp-client.js`). Transport is never switched by a slash command; the two conditions above are the whole rule.
+- **There is no `/exec` command.** The webui button-command set is `CMD_BUTTON_COMMANDS` — `new`, `clear`, `status`, `sessions`, `review`, `help`, `usage`, `stop` (`server/lib/interaction/command-registry.js`; `server/lib/acp-client.js#WEBUI_LOCAL_COMMANDS` is the palette list the engine advertises, which omits `review`). Transport is never switched by a slash command; the two conditions above are the whole rule.
 - The permission mode is selectable in the composer (Ask / Auto / Full access; `webapp/components/composer.tsx#PERMISSION_MODES`) or via `POST /api/permissions`, which also accepts `read`. The route writes the label into `cs.permissions` unconditionally (`server/routes/model.js#handleSetPermissions`) — that label is what steers the **next** turn's transport.
 - An exec turn is not a degraded permission mode: the mode still reaches the engine as the `--permission` spawn flag (Ask→`ask`, Auto→`auto`, Read→`read`, else `full`; the mode mapping in `mcode-exec.js`), the session continues via `--session`, and the recorded model is passed via `--model`.
 - A live exec child has no RPC surface: `session/set_config_option` calls (model, permission) return `no_acp_session` and take effect on the next turn (`server/lib/mcode-rpc.js#noLiveClientFailure`); the same call lands on the live child immediately on an ACP turn. Warning semantics are documented in [`packages/webui/docs/API.md`](../packages/webui/docs/API.md) under `POST /api/permissions`.
@@ -1384,6 +1384,59 @@ failure mode we care about is the `app/global-error.tsx` crash, not a quota
 error here. Per-session scroll keys are deliberate: a refresh restores
 the user's place in each conversation independently.
 
+## Slash commands: which endpoint answers them (webui-parity ticket 65)
+
+A `/`-prefixed line in the composer is not automatically a command. Two
+endpoints can consume one, they implement different sets, and the
+composer decides between them before anything is sent.
+
+| Input | Endpoint | Why |
+| --- | --- | --- |
+| `/new` `/clear` `/status` `/sessions` `/review` `/help` `/usage` `/stop` — bare, no argument | `POST /api/cmd` | the button-command set; `/api/cmd` claims exactly these eight |
+| `/goal <text>`, `/goal-done`, `/goal-blocked` | `POST /api/send` | typed webui commands, implemented by `handleLocalSlash`; `/goal` needs its argument and has no `/api/cmd` equivalent |
+| `/compact` and every other engine command | `POST /api/send` | `handleLocalSlash`'s `default` branch forwards the line to mcode unchanged, which is how engine commands work at all |
+| anything unclaimed | `POST /api/send` | same forward; the engine answers in the transcript |
+| `/clear now` (a claimed command with an argument) | `POST /api/send` | `handleCmdCommand` matches the whole text after the slash, so the argument makes it a different string; `handleLocalSlash` parses the name and runs the same gated handler |
+
+The decision is `routeSlashInput` (`webapp/lib/slash-routing.ts`), called
+from `composer.tsx#submit`. The set it compares against is declared once
+on the server in `server/lib/interaction/command-registry.js`
+(`CMD_BUTTON_COMMANDS`, read by the `/api/cmd` 400 branch and by
+`/help`'s fallback); the browser carries a mirror because the bundle
+cannot import a server module, and `webapp/test/slash-routing.test.ts`
+compares the mirror against the registry and against the `case` labels
+parsed out of both dispatchers in `interaction/commands.js`. A command
+added on one side alone fails the gate.
+
+### `POST /api/cmd` — four answers
+
+The response is written **after** the dispatch, so it describes the
+command rather than the receipt.
+
+| Status | Body | Meaning |
+| --- | --- | --- |
+| `200` | `{ok:true, cmd}` | the dispatcher claimed the command and ran it |
+| `400` | `{ok:false, error, reason:"unknown_command", cmd, knownCommands[], suggestion}` | nobody claimed it; nothing was mutated |
+| `403` / other `4xx` | gate refusal or request error | e.g. a declined `authorize("slash.clear")` |
+| `5xx` | gate, audit, or handler failure | the audit is fail-closed by design |
+
+`error` is the one-line Chinese string the composer's error banner
+shows; `reason` is the machine-readable discriminator; `suggestion` is
+the fix — "send it as a normal message" for a `/api/send` command such
+as `/goal`, otherwise the list of commands this endpoint does accept.
+`knownCommands` carries the accepted set so a client can render it
+without hard-coding the list.
+
+An earlier revision of this route wrote `200 {ok:true}` before
+dispatching, which made every input a success — `/goal <text>` cleared
+the composer and did nothing at all.
+
+A rejected command mutates nothing: no chat line, no goal, no session.
+The composer restores the rejected text (merged after anything typed
+while the request was in flight) and shows the banner; a command routed
+to `/api/send` that the engine rejects surfaces as an error alert on the
+anomaly channel.
+
 ## Endpoint catalog (against current source)
 
 Every `/api/*` endpoint listed below is registered either by Hono
@@ -1426,7 +1479,7 @@ marker), not by tool name.
 | `GET` | `/api/sessions/:id/export` | `routes/export.js` | `?format=md\|json[&download=true]`; `400` on bad format; `403` on authorize decline; `404` on missing session |
 | `POST` | `/api/send` | `routes/chat.js#handleSend` | fire-and-forget; `200 {ok}`; `400 content required`; `409 {reason:"cid-busy"\|"session-busy"\|"at-capacity", running?, limit?}`; the idle watchdog aborts a run that stays silent for `MCODE_WEBUI_PROMPT_IDLE_TIMEOUT` (default 120 s) |
 | `POST` | `/api/stop` | `routes/chat.js#handleStop` | `200 {ok, wasRunning, cancelled, hardKilled, note}` |
-| `POST` | `/api/cmd` | `routes/chat.js#handleCmd` | webui button-driven commands |
+| `POST` | `/api/cmd` | `routes/chat.js#handleCmd` | the eight button commands only; `200 {ok, cmd}` when claimed, `400 {ok:false, reason:"unknown_command", knownCommands, suggestion}` when not — see [Slash commands](#slash-commands-which-endpoint-answers-them-webui-parity-ticket-65) |
 | `POST` | `/api/usage` | `routes/usage.js#handleUsage` | record-only + projection |
 | `POST` | `/api/usage-trigger` | `routes/usage.js#handleUsage` | alias kept for legacy clients |
 | `GET` | `/api/usage-real` | `routes/usage.js#handleUsageReal` | real-token snapshot |

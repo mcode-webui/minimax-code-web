@@ -134,19 +134,33 @@ node server.js
 
 ## 添加斜杠命令（webui 侧）
 
-这些是 webui 自行处理、不转发给 mcode 的命令
-（集合定义在 `server/lib/acp-client.js` 的 `WEBUI_LOCAL_COMMANDS`——
-`/clear`、`/new`、`/status` 等；不存在 `/exec` 命令，传输不通过斜杠命令切换）。
+这些是 webui 自行处理、不转发给 mcode 的命令。分发器有两个，且命令集不同：
 
-1. 在 `server/lib/slash.js` 中添加一个条目：
-   ```js
-   { cmd: '/foo', handler: handleFoo, hidden: false }
-   ```
-2. `handleFoo` 接收 `(content, ctx)`，返回以下两者之一：
-   - `null`（未处理，转发给 mcode）
-   - `{ handled: true, response: '…' }`（已处理，作为
-     合成消息发送给用户）
-3. webui 会把 `response` 显示为仿佛来自 mcode 的消息。
+- `handleLocalSlash`（`server/lib/interaction/commands.js`）——`POST /api/send`
+  路径，服务于带参数的手输命令（`/goal <内容>`、`/goal-done`、
+  `/goal-blocked`）。它不认领的输入会原样转交 mcode，`/compact` 这类引擎
+  命令正是这样走到引擎的。
+- `handleCmdCommand`（同一文件）——`POST /api/cmd` 路径，服务于裸 `/name`
+  的按钮命令（`new`、`clear`、`status`、`sessions`、`review`、`help`、
+  `usage`、`stop`）。无人认领的命令返回 `400 {reason:"unknown_command"}`，
+  绝不静默丢弃。
+
+新增一条命令的步骤：
+
+1. 把命令名加进 `server/lib/interaction/command-registry.js`——`/api/cmd`
+   命令集的唯一声明处（`CMD_BUTTON_COMMANDS`；send 路径的手输命令集是
+   `SEND_SLASH_COMMANDS`）。`/help` 的兜底列表与 400 响应体都读它。
+2. 在 `server/lib/interaction/commands.js` 里对应的分发器加 `case "foo":`
+   （以及 `bodyFoo`）。路由必须经 `server/lib/slash.js` 引入分发器——授权门
+   与写前审计都在那一层；**不要**直接引入原始分发器。
+3. 若命令属于 `/api/cmd` 集，在 `webapp/lib/slash-routing.ts` 里镜像同一个
+   名字——这就是把手输命令送到正确端点的东西。
+   `webapp/test/slash-routing.test.ts` 会在镜像、注册表与分发器的 `case`
+   标签三者不一致时失败，所以漏掉第 1 步或第 3 步会得到一条红测试，而不是
+   一个静默的 400。
+
+破坏性命令（`/clear`、`/new`）由外壳里的 `authorize("slash.clear")` 守门，
+不要再加第二道门。
 
 ## 添加由 mcode 翻译的斜杠命令
 
