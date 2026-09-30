@@ -1,7 +1,8 @@
 // server/lib/git.js — git CLI wrapper (zero npm deps, uses the OS `git` binary).
 //
 // Used by the right-panel Git panel (slice 03 of webui-parity): workspace
-// status (porcelain v1 + branch / upstream), local-branch list,
+// status (porcelain v1 + branch / upstream + the HEAD sha / commit time
+// the conversation toolbar's version badge renders), local-branch list,
 // single-file diff against HEAD with a no-index fallback for untracked
 // files, and a destructive branch-switch gated by a local-branch
 // allow-list.
@@ -231,7 +232,48 @@ function gateFile(dir, file) {
   return null
 }
 
-// Workspace status: branch + upstream + ahead/behind + changed files.
+// HEAD's identity: the abbreviated commit id and the moment the
+// commit landed in THIS working tree. The conversation toolbar's
+// version badge renders these so a user can tell which checkout they
+// are looking at without opening a terminal.
+//
+//   - `headSha` is `git log -1 --format=%h`, i.e. git's own
+//     abbreviation (`core.abbrev`, which auto-scales with repository
+//     size) rather than a hard-coded 7 — a 7-char cut is ambiguous in
+//     a large repository, and the user is copying this string to paste
+//     into `git show`.
+//   - `headCommittedAt` is `%cI`, the **committer** time in strict
+//     ISO 8601. Author time is the wrong half for this question: a
+//     rebase, amend or cherry-pick moves the committer time forward
+//     while the author time stays at the original write, so an
+//     author-time badge would report a freshly rebased branch as
+//     months old. The committer time is "when did this exact content
+//     enter this tree", which is what "which version am I running"
+//     means.
+//
+// Both fields are `null` for a repository with no commits yet (an
+// unborn HEAD). A brand-new `git init` is a normal state for a user
+// who has not committed, so it is answered with empty values rather
+// than an error: the badge simply does not render.
+//
+// Runs through the same `run()` execFile boundary as everything else
+// in this module and only ever against the already-gated `abs` dir —
+// no shell, and no second containment decision to keep in sync.
+async function readHeadIdentity(abs) {
+  const res = await run(abs, ['log', '-1', '--format=%h%x00%cI'])
+  if (!res.ok) return { headSha: null, headCommittedAt: null }
+  // NUL is the only byte that cannot appear in either field, so the
+  // split is unambiguous even for an unusual commit message or a
+  // timezone the local libc renders unusually.
+  const [headSha, headCommittedAt] = res.stdout.trim().split('\0')
+  return {
+    headSha: headSha || null,
+    headCommittedAt: headCommittedAt || null,
+  }
+}
+
+// Workspace status: branch + upstream + ahead/behind + HEAD identity
+// + changed files.
 // `git status --porcelain=v1 -b` gives a single deterministic stream
 // (one header line `## <branch>[...<upstream>] [ahead N, behind M]`
 // followed by the per-file entries). Not-a-git-repo is not an error:
@@ -244,6 +286,10 @@ export async function gitStatus(dir) {
     const notRepo = /not a git repository|不是 git 仓库/i.test(res.error || '')
     return { ok: false, isRepo: !notRepo, error: notRepo ? '不是 git 仓库' : res.error }
   }
+  // The HEAD probe is a second `git` process, so it runs concurrently
+  // with the status call rather than after it — the wall clock of a
+  // `/api/git/status` is still one `git` round trip, not two.
+  const headPromise = readHeadIdentity(abs)
   const lines = res.stdout.split('\n').filter((l) => l !== '')
   let branch = null
   let upstream = null
@@ -253,6 +299,16 @@ export async function gitStatus(dir) {
   for (const line of lines) {
     if (line.startsWith('## ')) {
       const head = line.slice(3)
+      // An unborn HEAD (a fresh `git init` with nothing committed yet)
+      // emits `## No commits yet on <branch>`. The generic regex below
+      // would read the word "No" as the branch name, so this prefix is
+      // peeled off first — the version badge would otherwise print a
+      // branch called "No".
+      const unborn = /^No commits yet on (.+)$/.exec(head)
+      if (unborn) {
+        branch = unborn[1] || null
+        continue
+      }
       // Branch header regex (deliberately permissive — see pr-22 § gitStatus):
       //   <localBranch>[...<upstream>] [ahead N, behind M]
       // Both halves are optional (detached HEAD, brand-new branch with no
@@ -277,7 +333,7 @@ export async function gitStatus(dir) {
     }
     files.push({ x, y, path, origPath, staged: x !== ' ' && x !== '?' })
   }
-  return { ok: true, isRepo: true, branch, upstream, ahead, behind, files }
+  return { ok: true, isRepo: true, branch, upstream, ahead, behind, ...(await headPromise), files }
 }
 
 // Local branch list + current marker. We deliberately do NOT use

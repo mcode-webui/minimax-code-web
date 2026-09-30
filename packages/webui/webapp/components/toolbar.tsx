@@ -2,6 +2,7 @@
 
 import { useSessionContext, useTicker } from "@/lib/store";
 import type { MessageKey } from "@/lib/i18n";
+import { VersionBadgeChip } from "@/components/version-badge";
 import { Icon } from "./icons";
 
 /**
@@ -70,11 +71,26 @@ export function ConversationToolbar({
           conversation" disclosure — upstream uses it to rename / move the
           session; the server has no rename endpoint yet, so the disclosure
           is purely presentational. */}
-      <div className="flex min-w-0 flex-1 translate-y-[2px] items-center gap-2 pr-20">
+      {/* `pr-[160px]` reserves the width the `fixed right-4` launcher
+          cluster below actually occupies PLUS 12px of breathing room:
+          4 × `size-[30px]` + 3 × `gap-1` + `right-4` = 148px, and
+          flush against the icons reads as one control rather than two.
+          It was `pr-20` (80px) — an under-count that stayed invisible
+          because the row's only trailing content used to be nothing
+          (the title is left-aligned, so a too-small reserve could not
+          collide with anything). webui-parity 89 put the version badge
+          at the row's far end with `ml-auto`, which is what finally
+          measured it: 68px UNDER the cluster at 1440px wide. */}
+      <div className="flex min-w-0 flex-1 translate-y-[2px] items-center gap-2 pr-[160px]">
+        {/* `min-w-0` makes the title the row's ELASTIC member. It was
+            not, so the title refused to shrink and the badge — the only
+            other item that can — was crushed to zero width instead.
+            The title already owns a `truncate` span for exactly this
+            job; it just had no way to be given less room. */}
         <button
           type="button"
           aria-label={state?.sessionTitle || t("sidebar.untitled")}
-          className="flex h-8 items-center gap-1 rounded-lg px-2 text-sm font-medium text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_hover"
+          className="flex h-8 min-w-0 items-center gap-1 rounded-lg px-2 text-sm font-medium text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_hover"
         >
           <span className="max-w-[420px] truncate">{state?.sessionTitle || t("sidebar.untitled")}</span>
           <Icon name="chevronDown" size={14} />
@@ -98,6 +114,16 @@ export function ConversationToolbar({
             ) : null}
           </span>
         ) : null}
+        {/* webui-parity 89 (F-4) — the version badge. Placement is the
+            one place in this bar that is both always-on and never
+            actionable, so it goes at the FAR END of the title row
+            (`ml-auto`), opposite the session title it qualifies: the
+            title answers "what am I looking at", the badge answers
+            "which checkout am I looking at", and reading them as one
+            left-to-right pair is the question the user actually has.
+            It sits BEFORE the `pr-20` reserve, so the fixed launcher
+            cluster can never overlap it at a narrow viewport. */}
+        <VersionBadgeChip t={t} now={now} />
       </div>
 
       {/* Panel launchers — the right extension area's tab list. Upstream pins

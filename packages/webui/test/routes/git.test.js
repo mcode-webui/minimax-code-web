@@ -175,6 +175,171 @@ describe("git routes — /api/git/status", () => {
   });
 });
 
+// webui-parity 89 (F-4) — the HEAD identity the conversation
+// toolbar's version badge renders. The three states that matter are
+// exactly the three the badge branches on: a normal repository
+// (branch + sha + commit time), a non-git directory (no identity at
+// all, NOT an error — most workspaces here are not repositories),
+// and a repository with an unborn HEAD (`git init` with nothing
+// committed, where `git log -1` has nothing to report).
+describe("git routes — /api/git/status HEAD identity (version badge)", () => {
+  test("a normal repo returns the short sha git itself abbreviates", async () => {
+    const res = fakeRes();
+    gitRoute.handleGitStatus(readReq(`/api/git/status?dir=${encodeURIComponent(repoDir)}`), res);
+    const body = await readBody(res);
+    assert.equal(res.status, 200);
+    assert.equal(body.ok, true);
+    assert.equal(body.isRepo, true);
+    // Compared against git's own answer rather than a hard-coded
+    // length: the field is `git log -1 --format=%h`, and git widens
+    // the abbreviation when 7 chars would be ambiguous. Pinning "7"
+    // would pin an implementation detail that is not the contract.
+    const expected = execSync("git rev-parse --short HEAD", { cwd: repoDir }).toString().trim();
+    assert.equal(body.headSha, expected);
+    assert.match(body.headSha, /^[0-9a-f]{7,40}$/);
+  });
+
+  test("the commit time is the COMMITTER time, not the author time", async () => {
+    // The two halves are only distinguishable on a commit whose
+    // author and committer dates differ, so this builds one: a commit
+    // written "long ago" by its author and landed in the tree
+    // "recently" by whoever applied it. That is exactly the rebase /
+    // cherry-pick / amend shape the field choice is about, and it is
+    // why the shared single-commit fixture above cannot make this
+    // assertion — there, `%aI` and `%cI` are the same string.
+    const repo = realpathSync(mkTmpDir("git-panel-badge-dates-"));
+    execSync("git init -q -b main", { cwd: repo });
+    execSync("git config user.email test@example.com", { cwd: repo });
+    execSync("git config user.name tester", { cwd: repo });
+    try {
+      writeFileSync(join(repo, "dated.txt"), "dated\n");
+      execSync("git add dated.txt", { cwd: repo });
+      execSync("git commit -q -m dated", {
+        cwd: repo,
+        env: {
+          ...process.env,
+          GIT_AUTHOR_DATE: "2020-01-02T03:04:05+00:00",
+          GIT_COMMITTER_DATE: "2026-10-01T09:12:33+00:00",
+        },
+      });
+      const res = fakeRes();
+      gitRoute.handleGitStatus(readReq(`/api/git/status?dir=${encodeURIComponent(repo)}`), res);
+      const body = await readBody(res);
+      const committer = execSync('git log -1 --format=%cI', { cwd: repo }).toString().trim();
+      const author = execSync('git log -1 --format=%aI', { cwd: repo }).toString().trim();
+      // Precondition: the fixture really does separate the two, or
+      // this assertion would pass for the wrong reason.
+      assert.notEqual(committer, author, "fixture must give author and committer different dates");
+      assert.equal(body.headCommittedAt, committer);
+      assert.notEqual(body.headCommittedAt, author, "the author time must not be what ships");
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  test("the sha advances after a new commit (the badge is not frozen at first read)", async () => {
+    // Its own repository rather than the shared `repoDir` fixture: a
+    // commit-then-reset dance on shared state would make the file-list
+    // assertions in the describe above order-dependent.
+    const repo = realpathSync(mkTmpDir("git-panel-badge-advance-"));
+    execSync("git init -q -b main", { cwd: repo });
+    execSync("git config user.email test@example.com", { cwd: repo });
+    execSync("git config user.name tester", { cwd: repo });
+    try {
+      writeFileSync(join(repo, "a.txt"), "a\n");
+      execSync("git add a.txt", { cwd: repo });
+      execSync("git commit -q -m first", { cwd: repo });
+      const first = await readBodyOf(fakeRes());
+      const before = execSync("git rev-parse --short HEAD", { cwd: repo }).toString().trim();
+      assert.equal(first.body.headSha, before);
+
+      writeFileSync(join(repo, "b.txt"), "b\n");
+      execSync("git add b.txt", { cwd: repo });
+      execSync("git commit -q -m second", { cwd: repo });
+      const second = await readBodyOf(fakeRes());
+      const after = execSync("git rev-parse --short HEAD", { cwd: repo }).toString().trim();
+      assert.equal(second.body.headSha, after);
+      assert.notEqual(second.body.headSha, before);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+
+    async function readBodyOf(res) {
+      gitRoute.handleGitStatus(readReq(`/api/git/status?dir=${encodeURIComponent(repo)}`), res);
+      return { status: res.status, body: await readBody(res) };
+    }
+  });
+
+  test("a non-git directory answers no HEAD identity and no error", async () => {
+    const plain = mkTmpDir("git-panel-badge-plain-");
+    try {
+      const res = fakeRes();
+      gitRoute.handleGitStatus(readReq(`/api/git/status?dir=${encodeURIComponent(plain)}`), res);
+      const body = await readBody(res);
+      assert.equal(res.status, 200);
+      assert.equal(body.ok, false);
+      assert.equal(body.isRepo, false);
+      // Absent, not a fake value: the badge renders nothing rather
+      // than something that looks like a version.
+      assert.equal(body.headSha, undefined);
+      assert.equal(body.headCommittedAt, undefined);
+    } finally {
+      rmSync(plain, { recursive: true, force: true });
+    }
+  });
+
+  test("a repo with an unborn HEAD answers null identity, not an error", async () => {
+    const empty = realpathSync(mkTmpDir("git-panel-badge-empty-"));
+    execSync("git init -q -b main", { cwd: empty });
+    try {
+      const res = fakeRes();
+      gitRoute.handleGitStatus(readReq(`/api/git/status?dir=${encodeURIComponent(empty)}`), res);
+      const body = await readBody(res);
+      assert.equal(res.status, 200);
+      // `git status` succeeds here, so the route answers ok:true — a
+      // fresh `git init` is a healthy repository, it simply has no
+      // commit to name yet.
+      assert.equal(body.ok, true);
+      assert.equal(body.isRepo, true);
+      assert.equal(body.headSha, null);
+      assert.equal(body.headCommittedAt, null);
+    } finally {
+      rmSync(empty, { recursive: true, force: true });
+    }
+  });
+
+  test("an unborn HEAD still reports its branch name, not the word 'No'", async () => {
+    // `git status --porcelain -b` prints `## No commits yet on main`;
+    // the generic branch regex would read the first token as the
+    // branch, so the badge would have shown a branch called "No".
+    const empty = realpathSync(mkTmpDir("git-panel-badge-unborn-"));
+    execSync("git init -q -b feature/unborn", { cwd: empty });
+    try {
+      const res = fakeRes();
+      gitRoute.handleGitStatus(readReq(`/api/git/status?dir=${encodeURIComponent(empty)}`), res);
+      const body = await readBody(res);
+      assert.equal(body.branch, "feature/unborn");
+    } finally {
+      rmSync(empty, { recursive: true, force: true });
+    }
+  });
+
+  test("an out-of-root dir is still refused — the HEAD probe reuses the same gate", async () => {
+    const outsideRoot = process.platform === "win32"
+      ? process.env.SystemRoot || "C:\\Windows"
+      : "/etc";
+    const res = fakeRes();
+    gitRoute.handleGitStatus(readReq(`/api/git/status?dir=${encodeURIComponent(outsideRoot)}`), res);
+    const body = await readBody(res);
+    assert.equal(body.ok, false);
+    assert.equal(body.isRepo, false);
+    // No identity leaks out of a rejected path — the probe runs
+    // against the gated dir or not at all.
+    assert.equal(body.headSha, undefined);
+    assert.equal(body.headCommittedAt, undefined);
+  });
+});
+
 describe("git routes — /api/git/branches", () => {
   test("missing dir returns 400", async () => {
     const res = fakeRes();

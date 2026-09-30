@@ -1409,6 +1409,21 @@ export interface GitStatusPayload {
   upstream?: string | null;
   ahead?: number;
   behind?: number;
+  /**
+   * Abbreviated commit id of HEAD, at git's own abbreviation length
+   * (7 by default, longer in a repository where 7 would be
+   * ambiguous). `null` for a repository with no commits yet — the
+   * conversation toolbar's version badge renders nothing in that case.
+   */
+  headSha?: string | null;
+  /**
+   * HEAD's **committer** time as a strict ISO 8601 string. Committer
+   * time rather than author time because the question this answers is
+   * "when did this content enter this tree" — a rebase, amend or
+   * cherry-pick moves the committer time forward while the author
+   * time stays at the original write. `null` alongside `headSha`.
+   */
+  headCommittedAt?: string | null;
   files?: GitStatusFile[];
   error?: string;
 }
