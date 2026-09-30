@@ -16,6 +16,16 @@ const cli = path.resolve(path.dirname(manifestPath), require(manifestPath).bin.v
 // https://github.com/libuv/libuv/issues/5010. Keep real filesystem watching in
 // the tests, but create their temporary fixtures beneath the canonical path.
 const environment = { ...process.env };
+// Assertions compare against the English copy the suites ship, but the TUI
+// picks its language from the environment: sessionMutationLocale() falls back to
+// Intl's resolved locale, which Node derives from LANG, and
+// packages/tui/src/update/messages.ts reads LC_ALL/LC_MESSAGES/LANG directly.
+// A developer shell with LANG=zh_CN.utf8 therefore renders Chinese TUI output
+// and fails English-only assertions that CI never sees. Pin both variables so
+// the suites run under the locale CI uses, and cover the Intl and environment
+// lookup paths together rather than stubbing each test.
+environment.LC_ALL = "en_US.UTF-8";
+environment.LANG = "en_US.UTF-8";
 if (process.platform === "win32") {
   environment.TEMP = environment.TMP = realpathSync.native(tmpdir());
 }
