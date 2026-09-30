@@ -106,8 +106,8 @@ describe("collectEditedFiles reports only paths the turn's edit tools named", ()
 
   test("counts a file once however many times it was edited", () => {
     // Three calls, two distinct files. The card header is a count of FILES;
-    // a call count here would overstate the work the same way a stale
-    // `activity.editedFiles` summary does.
+    // a call count here would overstate the work, and would also disagree
+    // with the activity-group summary, which counts files on the same key.
     const files = collectEditedFiles(
       unitsOf(
         editBlock("edit_file", "/ws/src/a.ts"),
@@ -171,6 +171,41 @@ describe("collectEditedFiles reports only paths the turn's edit tools named", ()
     for (const name of ["bash", "read_file", "web_search", "task", undefined]) {
       assert.equal(isFileEditTool(name), false, `${String(name)} is not an edit`);
     }
+  });
+
+  test("the card and the activity summary report the SAME number for one turn", () => {
+    // The reported bug: a model edited one file five times in a turn. The
+    // group header said 「已编辑 5 个文件」 (edit calls) while the card, same
+    // turn, same sentence, said 「已编辑 1 个文件」 (distinct files). Two
+    // numbers for one fact, and the larger one was false.
+    const units = unitsOf(
+      editBlock("edit_file", "/ws/src/a.ts"),
+      editBlock("edit_file", "/ws/src/a.ts"),
+      editBlock("write_file", "/ws/src/a.ts"),
+      editBlock("edit_file", "/ws/src/b.ts"),
+      editBlock("edit_file", "/ws/src/a.ts"),
+    );
+    const headerCount = units
+      .flatMap((unit) => (unit.kind === "activity" ? unit.summary.contributions : []))
+      .filter((entry) => entry.category === "file-edit")
+      .reduce((sum, entry) => sum + entry.count, 0);
+    const markup = renderCard(collectEditedFiles(units));
+    assert.equal(headerCount, 2, "the header counts distinct files");
+    assert.ok(markup.includes('data-edited-files-count="2"'), `card count in ${markup}`);
+    assert.ok(markup.includes("已编辑2个文件"), "the card speaks the same sentence");
+  });
+
+  test("a turn whose edits all named one file agrees on one, not five", () => {
+    const units = unitsOf(
+      editBlock("edit_file", "/ws/src/a.ts"),
+      editBlock("edit_file", "/ws/src/a.ts"),
+      editBlock("edit_file", "/ws/src/a.ts"),
+    );
+    const headerCount = units
+      .flatMap((unit) => (unit.kind === "activity" ? unit.summary.contributions : []))
+      .find((entry) => entry.category === "file-edit")?.count;
+    assert.equal(headerCount, 1);
+    assert.equal(collectEditedFiles(units).length, 1);
   });
 });
 

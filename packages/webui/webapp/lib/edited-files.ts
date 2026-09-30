@@ -16,7 +16,7 @@
 // Guessing either would put invented numbers in front of the user, so callers
 // get `null` / an empty list instead and render nothing.
 
-import { isFileEditTool, type RenderUnit } from "./transcript";
+import { editedFileKey, isFileEditTool, type RenderUnit } from "./transcript";
 
 /** One file the turn's edit tools named, in the transcript's own terms. */
 export interface EditedFile {
@@ -36,6 +36,9 @@ export type EditedFiles = readonly EditedFile[];
  * are skipped. An edit tool that named no path (a `bash` heredoc, an unparsed
  * arg shape) contributes nothing rather than a placeholder row — the count in
  * the card header is a count of files we can actually name.
+ *
+ * `editedFileKey` is the activity-group summary's identity too, so the header
+ * 「已编辑 N 个文件」 and this card cannot report two different N for one turn.
  */
 export function collectEditedFiles(units: readonly RenderUnit[]): EditedFiles {
   const files: EditedFile[] = [];
@@ -45,7 +48,7 @@ export function collectEditedFiles(units: readonly RenderUnit[]): EditedFiles {
     for (const block of unit.blocks) {
       if (block.role !== "tool" || !isFileEditTool(block.toolName)) continue;
       for (const path of block.toolPaths ?? []) {
-        const key = dedupeKey(path);
+        const key = editedFileKey(path);
         if (!key || seen.has(key)) continue;
         seen.add(key);
         files.push({ path, name: basenameOf(path) });
@@ -55,21 +58,9 @@ export function collectEditedFiles(units: readonly RenderUnit[]): EditedFiles {
   return files;
 }
 
-/**
- * Identity for "the same file named twice".
- *
- * Separators are folded so a Windows-style `a\b.ts` and an `a/b.ts` do not read
- * as two files. Case is left alone on purpose: macOS and Linux are
- * case-sensitive, and folding case there would merge two genuinely distinct
- * files into one row.
- */
-function dedupeKey(path: string): string {
-  return path.trim().replace(/\\/g, "/");
-}
-
 /** The trailing path segment, with both separator styles honoured. */
 export function basenameOf(path: string): string {
-  const normalised = dedupeKey(path);
+  const normalised = editedFileKey(path);
   const index = normalised.lastIndexOf("/");
   return index === -1 ? normalised : normalised.slice(index + 1);
 }
