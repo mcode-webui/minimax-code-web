@@ -410,6 +410,37 @@ details.webui-thinking-block > summary::-webkit-details-marker {
   }
 }
 
+/* Scroll anchoring off on the chat scroller (webui-parity 88).
+ *
+ * `overflow-anchor` is the browser's automatic "keep the content you are
+ * looking at in place" behaviour: when content is inserted ABOVE the viewport
+ * it adjusts `scrollTop` by the inserted height. That is the wrong default for
+ * this container, because its scroll offset is not the browser's to manage —
+ * three things own it, and only three:
+ *
+ *   1. the tail follow in `chat-virtual-list.tsx`, which pins the offset to the
+ *      growing end of a streaming turn,
+ *   2. the reader's own scrolling,
+ *   3. the persisted-position restore in `chat.tsx`.
+ *
+ * With anchoring left on, (1) cannot tell a reader scrolling away from the
+ * browser nudging the offset underneath it: the off-switch reads "the
+ * container moved off my pin", abandons the follow, and the answer is stranded
+ * below the fold again — the original defect, half-fixed. Measured on the dev
+ * instance: the offset jumped 55 → 125 px on its own while the transcript grew
+ * above the viewport, with no input event at all. Pinning is strictly more
+ * correct than anchoring for a transcript that grows at the tail, so anchoring
+ * is off: the reader who scrolled up keeps the exact offset they chose, and the
+ * reader watching the tail stays on it.
+ *
+ * Same placement rule as `message-animate-in` below: outside any `@layer`, so
+ * Tailwind's content scan cannot purge it, and not spelled as a utility so the
+ * rule survives a Tailwind upgrade that renames one. Pinned by
+ * `test/chat-scroll-anchoring.test.ts`. */
+.chat-scroll {
+  overflow-anchor: none;
+}
+
 /* Message entry animation (webui-parity 61, G1).
  *
  * The class has been carried on the five message containers since ticket
