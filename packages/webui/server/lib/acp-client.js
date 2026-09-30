@@ -32,7 +32,22 @@ import {
 let _catalogueHost = null;
 let _catalogueHostInitPromise = null;
 
-async function getCatalogueHost() {
+/**
+ * The process-lifetime catalogue host singleton, booted on first call.
+ *
+ * Exported because `/api/plugins/*` (routes/plugins.js) needs the runtime's
+ * `cliService` as its only data source, and the host is the single owner of
+ * that service. Routing plugins through the exported getter is deliberate:
+ * `transportWantsCatalogue()` below gates *session-list* traffic only — in
+ * ACP protocol there is no plugin method at all, so gating plugins on the
+ * transport would leave the panel dead in the default `acp` mode. Callers
+ * must never construct a second host: two CliService instances on one dataDir
+ * is both wasteful and a split-brain against the plugin/local-disable tables.
+ *
+ * Resolves to `null` when the runtime fails to boot; callers answer
+ * `RUNTIME_UNAVAILABLE` rather than falling back to another path.
+ */
+export async function getCatalogueHost() {
   if (_catalogueHost) return _catalogueHost;
   if (_catalogueHostInitPromise) return _catalogueHostInitPromise;
   _catalogueHostInitPromise = (async () => {
