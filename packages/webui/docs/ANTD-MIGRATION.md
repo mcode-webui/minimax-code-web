@@ -332,6 +332,28 @@ port the desktop's skin for the surface if it needs one, verify.
   lives on the turn inspector's `activity-group-*` regions, which has no webui
   entry point.
 
+### Postscript — the decision above was reversed
+
+**All three of `search`, `alerts` and `progress` have since been removed from
+the `PanelKind` union.** `packages/webui/webapp/lib/persist.ts` now declares
+five kinds — `"workspace" | "files" | "git" | "plugins" | "browser"` — and the
+comment above the union records why each one went:
+
+| Removed kind | Why it was unreachable | Where it lives now |
+| --- | --- | --- |
+| `search` | Reached through `Ctrl+K` and the sidebar nav entry, both of which route through `openSurfaceTab("search")` — a `SurfaceTabKind`, not a `PanelKind` | The sidebar `SearchSurface` |
+| `alerts` | The bell opens the `InboxFlyout` component, not a panel | `AppShell#InboxFlyout` |
+| `progress` | Never had a UI entry point | Nothing — the activity feed it resembled lives on the turn inspector's `activity-group-*` regions |
+
+The union is also enforced on read: `restoreUiState` keeps a persisted `panel`
+value only if it is in `validKinds`. Deleting rather than keeping is what the
+union comment asks for — a kind that is not in the union cannot be opened, so a
+stale persisted payload can no longer make the UI silently no-op.
+
+So "Kept rather than deleted" is superseded. The walkthrough stays because the
+reasoning behind it still holds: the desktop's right panel has no alerts or
+progress tab, and `ProgressPanel` was never an upstream timeline.
+
 ## Dependency procedure
 
 1. `pnpm --filter @mavis/webui add -D antd@5.29.3 @ant-design/nextjs-registry@1.3.0`

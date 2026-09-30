@@ -134,6 +134,17 @@ Switch 的几何尺寸同样来自这份主题（`trackHeight: 16`、`trackMinWi
 - **右侧区的标签页集合——以及两个根本打不开的面。** 一次界面走查发现：`PanelKind` 声明了 6 种，`RightPanel` 也把 6 种都渲染了，但只有 4 种可达：应用里每一处 `openPanel(...)` 传的都是 `workspace`、`files`、`search` 或 `plugins`，而铃铛打开的是 inbox 悬浮卡、不是 `alerts` 面板。于是 `alerts` 与 `progress` 是发布产物里的死面。
   它们同时也没有可移植的对应物。桌面端的右侧区是一个带标签页的**文件**面板，其注册表恰好四项——`changes`、`terminal`、`browser`、`files`，每项都按 capability 门控（从 bundle 的标签列表里提取）。那里既没有进度标签，也没有告警标签。`ProgressPanel` 早先的注释声称上游把它渲染为「右侧边缘的 `进度` 标签页」；那是读参考资料之前写的，是假的。注释现在如实写出，并说明桌面端右侧区实际包含什么。
   选择保留而不是删除：其内容由本应用已有的 state 组装，接上一个入口只是一行改动。但它们不是移植过来的面，且 `ProgressPanel` 展示的是「近期告警 + 当前运行」，而不是上游的时间线——它类似的活动流位于回合检视器的 `activity-group-*` 区域，而 webui 没有那个入口。
+- **后记——上面那个决定后来被推翻了。** `search`、`alerts`、`progress` **三者此后都已从 `PanelKind` 并集里移除**。`packages/webui/webapp/lib/persist.ts` 现声明 5 种——`"workspace" | "files" | "git" | "plugins" | "browser"`——并集上方的注释逐条记下了各自移除的理由：
+
+  | 移除的 kind | 当初为什么不可达 | 现在住在哪里 |
+  | --- | --- | --- |
+  | `search` | 走 `Ctrl+K` 与侧栏导航入口进入，两者都经 `openSurfaceTab("search")` 路由——那是 `SurfaceTabKind`，不是 `PanelKind` | 侧栏的 `SearchSurface` |
+  | `alerts` | 铃铛打开的是 `InboxFlyout` 组件，不是面板 | `AppShell#InboxFlyout` |
+  | `progress` | 从来就没有界面入口 | 没有——它类似的活动流位于回合检视器的 `activity-group-*` 区域 |
+
+  该并集在读取侧也被强制执行：`restoreUiState` 只保留落在 `validKinds` 里的持久化 `panel` 值。删而不是留，正是并集注释要求的——不在并集里的 kind 无法被打开，于是一份陈旧的持久化负载不会再让界面静默空转。
+
+  因此「选择保留而不是删除」已被推翻。走查本身留下，因为它的推理仍然成立：桌面端右侧区没有告警标签也没有进度标签，而 `ProgressPanel` 从来就不是上游的时间线。
 
 ## 依赖流程
 
