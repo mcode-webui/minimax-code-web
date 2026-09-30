@@ -590,13 +590,14 @@ const en = {
   "panel.progress": "Progress",
   "panel.progress.subtitle": "Track long-running tasks",
   "panel.progress.empty": "No activity yet",
-  // Plugins panel — stub until the engine exposes its install contract.
-  // The shell maps `sidebar.plugins` to this surface (a sibling of tasks /
-  // scheduled / websites / remote on desktop, NOT a settings tab — the
-  // earlier settings-tab route was a misread of the desktop layout).
+  /* Plugins panel — the shell maps `sidebar.plugins` to this surface (a
+     sibling of tasks / scheduled / websites / remote on desktop, NOT a
+     settings tab — the earlier settings-tab route was a misread of the
+     desktop layout). Ticket 60 phase 1 rewrote the placeholder value to
+     describe the surface that now exists; the key stayed. */
   "panel.plugins.title": "Plugins",
   "panel.plugins.placeholder":
-    "Plugin marketplace is in progress. The engine's install contract is not exposed by this server yet, so the desktop's category tabs + grid view will land once the contract is wired through.",
+    "Five capability areas in one surface. Plugins is live: browse the local market, manage what is installed, and import a package from GitHub. Skills, apps, MCP and agents open in a later stage.",
   /* Git panel (slice 03) — right-panel surface that mirrors the
      desktop's right-tab Git view: branch + changed-file list +
      click-to-diff + branch switch. Empty-state and destructive-
@@ -872,14 +873,103 @@ const en = {
   /* Slice 19b supersedes the slice-17 placeholder copy with a real
      exhaustive search above. The slice-17 keys are gone — the
      search surface is no longer a no-op placeholder. */
-  /* Slice 17 — plugins surface copy. The marketplace is a
-     placeholder — the engine has not yet exposed the
-     plugin-install contract. The card is mounted AND labelled
-     so a click on the sidebar's 插件 entry visibly produces a
-     surface rather than silently no-op'ing. */
+  /* Slice 17 — plugins surface copy. The card is mounted AND
+     labelled so a click on the sidebar's 插件 entry visibly
+     produces a surface rather than silently no-op'ing. Ticket 60
+     phase 1 replaced the placeholder value with the real surface
+     (components/plugins-surface.tsx) while the key stayed. */
   "workspaceTabs.plugins.title": "Plugins",
   "workspaceTabs.plugins.placeholder":
-    "Plugin marketplace is in progress. The engine has not yet exposed the plugin-install contract; the desktop-side category tabs and card grid will land once it does.",
+    "Five capability areas in one surface. Plugins is live: browse the local market, manage what is installed, and import a package from GitHub. Skills, apps, MCP and agents open in a later stage.",
+
+  /* Ticket 60 phase 1, slice B — the plugin surface (five capability
+     areas). One namespace for the whole surface, so a missing string is
+     obvious. Three families, three different meanings, never mixed:
+
+       plugins.area.<domain>.pending.*  a phase that has not been built
+       plugins.market.official.notLocal  a cloud account the local
+                                        edition does not have
+       plugins.state.*                   the four request states
+
+     `translate()` takes no interpolation parameters, so counts are
+     rendered next to their label rather than inside one string. */
+  "plugins.area.aria": "Plugin capability areas",
+  "plugins.area.plugins": "Plugins",
+  "plugins.area.skills": "Skills",
+  "plugins.area.apps": "Apps",
+  "plugins.area.mcp": "MCP",
+  "plugins.area.agents": "Agents",
+  "plugins.area.skills.pending.title": "Skills management",
+  "plugins.area.skills.pending.body":
+    "The skills screen opens in a later stage. This server has no skills endpoint yet, so the list stays empty on purpose — nothing here is sample data.",
+  "plugins.area.apps.pending.title": "Apps management",
+  "plugins.area.apps.pending.body":
+    "The apps screen opens in a later stage. The runtime declares an apps contract but this server exposes no endpoint for it, so the list stays empty on purpose.",
+  "plugins.area.mcp.pending.title": "MCP server management",
+  "plugins.area.mcp.pending.body":
+    "The MCP screen opens in a later stage. Registering, editing and testing local stdio or HTTP servers needs endpoints this server does not have yet.",
+  "plugins.area.agents.pending.title": "Agent management",
+  "plugins.area.agents.pending.body":
+    "The agents screen opens in a later stage. There is no agent endpoint at all yet, so this area shows no list and no sample agents.",
+  "plugins.view.aria": "Plugin views",
+  "plugins.view.market": "Marketplace",
+  "plugins.view.personal": "Installed",
+  "plugins.source.aria": "Marketplace source",
+  "plugins.source.local": "Local",
+  "plugins.source.official": "Official",
+  "plugins.source.unknown": "Unknown source",
+  "plugins.search.aria": "Search plugins",
+  "plugins.search.placeholder": "Search plugins",
+  "plugins.category.aria": "Plugin category",
+  "plugins.category.all": "All",
+  "plugins.category.other": "Other",
+  "plugins.category.office": "Office",
+  "plugins.category.studio": "Creative",
+  "plugins.category.design": "Design and sites",
+  "plugins.category.code": "Code",
+  "plugins.category.business": "Business",
+  "plugins.category.sales": "Sales",
+  "plugins.category.productivity": "Productivity",
+  "plugins.category.tools": "Tools",
+  "plugins.category.science": "Science and healthcare",
+  "plugins.category.education": "Education",
+  "plugins.action.install": "Install",
+  "plugins.action.uninstall": "Uninstall",
+  "plugins.action.enable": "Enable",
+  "plugins.action.disable": "Disable",
+  "plugins.action.refresh": "Refresh plugins",
+  "plugins.action.retry": "Try again",
+  "plugins.action.import": "Import from GitHub",
+  "plugins.action.notLocal.notice":
+    "This action needs the official cloud account, which the local edition does not have. Nothing was changed.",
+  "plugins.card.installed": "Installed",
+  "plugins.card.capability.skill": "Skills",
+  "plugins.card.capability.mcp": "MCP",
+  "plugins.card.capability.app": "Apps",
+  "plugins.card.capability.hook": "Hooks",
+  "plugins.state.loading": "Loading plugins",
+  "plugins.state.empty.market": "This market has no plugins yet.",
+  "plugins.state.empty.installed": "No plugins are installed.",
+  "plugins.state.error.title": "Plugins could not be loaded",
+  "plugins.state.error.body": "The server refused the request.",
+  "plugins.market.official.notLocal.title": "Official marketplace",
+  "plugins.market.official.notLocal.body":
+    "The official marketplace requires a cloud account and is not reachable in the local edition. Browse local plugins or import from a GitHub URL instead.",
+  "plugins.market.localSkills.title": "Local skills",
+  "plugins.confirm.uninstall.title": "Uninstall this plugin?",
+  "plugins.confirm.uninstall.body":
+    "Its skills, MCP servers and hooks stop being available right away. You can install it again from the local market.",
+  "plugins.import.title": "Import a plugin from GitHub",
+  "plugins.import.url.aria": "GitHub repository URL",
+  "plugins.import.url.placeholder": "https://github.com/<owner>/<repo>",
+  "plugins.import.preview": "Preview",
+  "plugins.import.submit": "Import",
+  "plugins.import.empty": "Enter a GitHub URL and preview it first.",
+  "plugins.import.canImport": "This package can be imported.",
+  "plugins.import.cannotImport":
+    "This package exposes nothing this runtime can use, so there is nothing to import.",
+  "plugins.import.size": "Package size",
+  "plugins.import.failed": "Import failed:",
   /* Slice 18 — three-state appearance setting. Strings are registered here
      so the central MessageKey union covers them (the runtime translator
      goes through `translate()`); `lib/i18n-appearance.ts` is a slice-local
@@ -1527,10 +1617,10 @@ const zh: Record<MessageKey, string> = {
   "panel.progress": "进度",
   "panel.progress.subtitle": "跟踪较长任务的进度",
   "panel.progress.empty": "暂无活动",
-  // 插件面板 stub —— 等后端装好 plugin install 合约再接上。
+  // 插件面板 —— 阶段①实装（components/plugins-surface.tsx），键保留、值改写。
   "panel.plugins.title": "插件",
   "panel.plugins.placeholder":
-    "插件市场正在做。后端尚未暴露 plugin install 合约，桌面端的类别 tabs + 卡片网格会在合约打通后实装。",
+    "五个能力域在同一表面内。插件域已实装：浏览本地市场、管理已安装插件、从 GitHub 链接导入。技能、应用、MCP、Agent 四个域在后续阶段开放。",
   /* Git 面板（slice 03）— 右栏对应桌面端右栏 Git 视图：分支 + 变更文件 + 点击查看 diff + 切换分支。空态和破坏性操作文案集中在这里。 */
   "git.title": "Git",
   "git.empty.notRepo": "当前目录不是 git 仓库",
@@ -1759,10 +1849,94 @@ const zh: Record<MessageKey, string> = {
   "workspaceTabs.tree.close.search.aria": "关闭搜索表面并丢弃当前查询",
   /* Slice 19b supersedes the slice-17 placeholder copy — see the
      English block for the real exhaustive search above. */
-  /* Slice 17 — plugins surface copy. */
+  /* Slice 17 — plugins surface copy. Ticket 60 阶段①把占位值改成实装描述，
+     键名保留。 */
   "workspaceTabs.plugins.title": "插件",
   "workspaceTabs.plugins.placeholder":
-    "插件市场正在做。后端尚未暴露 plugin install 合约，桌面端的类别 tabs + 卡片网格会在合约打通后实装。",
+    "五个能力域在同一表面内。插件域已实装：浏览本地市场、管理已安装插件、从 GitHub 链接导入。技能、应用、MCP、Agent 四个域在后续阶段开放。",
+
+  /* 工单 60 阶段①子片 B —— 插件表面（五个能力域）。整块放在一个命名空间下，
+     缺键一眼可见。三族含义互不混用：
+       plugins.area.<domain>.pending.*  尚未开发的阶段
+       plugins.market.official.notLocal  本地版没有的云端账号
+       plugins.state.*                   四个请求状态
+     `translate()` 不接受插值参数，所以计数与标签分开渲染，不拼进同一个串。 */
+  "plugins.area.aria": "插件能力域",
+  "plugins.area.plugins": "插件",
+  "plugins.area.skills": "技能",
+  "plugins.area.apps": "应用",
+  "plugins.area.mcp": "MCP",
+  "plugins.area.agents": "Agents",
+  "plugins.area.skills.pending.title": "技能管理",
+  "plugins.area.skills.pending.body":
+    "技能管理界面在后续阶段开放。本服务端目前没有技能端点，所以列表刻意留空 —— 这里没有任何示例数据。",
+  "plugins.area.apps.pending.title": "应用管理",
+  "plugins.area.apps.pending.body":
+    "应用管理界面在后续阶段开放。运行时已声明应用契约，但本服务端未暴露对应端点，列表刻意留空。",
+  "plugins.area.mcp.pending.title": "MCP 服务器管理",
+  "plugins.area.mcp.pending.body":
+    "MCP 管理界面在后续阶段开放。登记、编辑与测试本地 stdio / HTTP 服务器所需的端点本服务端尚不具备。",
+  "plugins.area.agents.pending.title": "Agent 管理",
+  "plugins.area.agents.pending.body":
+    "Agent 管理界面在后续阶段开放。目前完全没有 agent 端点，因此该域不展示列表，也不展示示例 agent。",
+  "plugins.view.aria": "插件视图",
+  "plugins.view.market": "市场",
+  "plugins.view.personal": "已安装",
+  "plugins.source.aria": "市场来源",
+  "plugins.source.local": "本地",
+  "plugins.source.official": "官方",
+  "plugins.source.unknown": "来源未知",
+  "plugins.search.aria": "搜索插件",
+  "plugins.search.placeholder": "搜索插件",
+  "plugins.category.aria": "插件分类",
+  "plugins.category.all": "全部",
+  "plugins.category.other": "其他",
+  "plugins.category.office": "办公",
+  "plugins.category.studio": "创作",
+  "plugins.category.design": "设计与网站",
+  "plugins.category.code": "代码",
+  "plugins.category.business": "商业",
+  "plugins.category.sales": "销售",
+  "plugins.category.productivity": "效率",
+  "plugins.category.tools": "工具",
+  "plugins.category.science": "科学与医疗",
+  "plugins.category.education": "教育",
+  "plugins.action.install": "安装",
+  "plugins.action.uninstall": "卸载",
+  "plugins.action.enable": "启用",
+  "plugins.action.disable": "停用",
+  "plugins.action.refresh": "刷新插件列表",
+  "plugins.action.retry": "重试",
+  "plugins.action.import": "从 GitHub 导入",
+  "plugins.action.notLocal.notice":
+    "该操作需要官方云端账号，本地版没有，因此未做任何改动。",
+  "plugins.card.installed": "已安装",
+  "plugins.card.capability.skill": "技能",
+  "plugins.card.capability.mcp": "MCP",
+  "plugins.card.capability.app": "应用",
+  "plugins.card.capability.hook": "钩子",
+  "plugins.state.loading": "正在加载插件",
+  "plugins.state.empty.market": "该市场暂无插件。",
+  "plugins.state.empty.installed": "尚未安装任何插件。",
+  "plugins.state.error.title": "插件加载失败",
+  "plugins.state.error.body": "服务端拒绝了本次请求。",
+  "plugins.market.official.notLocal.title": "官方市场",
+  "plugins.market.official.notLocal.body":
+    "官方市场需登录云端账号，本地版不可达。可浏览本地插件或从 GitHub 链接导入。",
+  "plugins.market.localSkills.title": "本地技能",
+  "plugins.confirm.uninstall.title": "卸载该插件？",
+  "plugins.confirm.uninstall.body":
+    "它的技能、MCP 服务器与钩子会立即失效。稍后可从本地市场重新安装。",
+  "plugins.import.title": "从 GitHub 导入插件",
+  "plugins.import.url.aria": "GitHub 仓库地址",
+  "plugins.import.url.placeholder": "https://github.com/<owner>/<repo>",
+  "plugins.import.preview": "预览",
+  "plugins.import.submit": "导入",
+  "plugins.import.empty": "填入 GitHub 地址后先预览。",
+  "plugins.import.canImport": "该插件包可以导入。",
+  "plugins.import.cannotImport": "该插件包没有本运行时可用的能力，无可导入内容。",
+  "plugins.import.size": "包体积",
+  "plugins.import.failed": "导入失败：",
   /* Slice 18 — 三态外观设置。完整中英文一一对应,见
      webapp/test/i18n-appearance.test.ts。文案集中放在
      lib/i18n-appearance.ts,这里只是注册键。 */
