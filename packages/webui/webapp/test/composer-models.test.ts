@@ -900,7 +900,7 @@ describe("setModel payload — wiring the composer sends", () => {
     assert.equal("model" in payload, false, "no model field echoed on effort-only update");
   });
 
-  test("'Use engine default' sends thinking:'' (clear the override)", () => {
+  test("'Default' sends thinking:'' (clear the override)", () => {
     const payload = { thinking: "" };
     assert.equal(payload.thinking, "");
   });

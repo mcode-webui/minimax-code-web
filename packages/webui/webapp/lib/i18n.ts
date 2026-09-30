@@ -130,10 +130,12 @@ const en = {
   "modelSelector.modalityBadge.video": "video",
   "modelSelector.modalityBadge.file": "file",
   // Thinking-effort picker (off / low / medium / high). The
-  // `thinkingPicker.none` key is the "no level recorded" placeholder;
-  // it surfaces only between picking a model and the picker closing.
+  // `thinkingPicker.none` key is the "no level picked" placeholder; it
+  // surfaces only between picking a model and the picker closing.
+  // Wording is the user's word ("Default"), not the engine's — an
+  // interface should not narrate which layer is deciding.
   "thinkingPicker.label": "Thinking effort",
-  "thinkingPicker.none": "Use engine default",
+  "thinkingPicker.none": "Default",
   "thinkingPicker.off": "Off",
   "thinkingPicker.on": "On",
   "thinkingPicker.low": "Low",
@@ -514,7 +516,7 @@ const en = {
   // webui-parity 63 (defect E): a switch that lands on a session other than
   // the row the user clicked used to be silent. This is the banner's detail
   // line, so it reads as the cause under the "Open session — failed" head.
-  "sidebar.switchMismatch": "the engine is still on a different session",
+  "sidebar.switchMismatch": "the switch did not land — try again",
   // webui-parity 47 (C3): the rail toggle's label flips with its state,
   // mirroring the reference shell's 展开/收起 pair. "navigation bar", not
   // "sidebar", because that is what the reference copy names.
@@ -623,7 +625,7 @@ const en = {
   "git.file.openDiff": "View diff",
   "git.file.diff.empty": "No diff for this file",
   "git.file.diff.truncated":
-    "Diff truncated — full diff available on the engine",
+    "Diff truncated — open the file to see the rest",
   "git.file.diff.loading": "Loading diff…",
   "git.file.diff.failed": "Could not load diff",
   "git.refresh": "Refresh",
@@ -1220,7 +1222,7 @@ const zh: Record<MessageKey, string> = {
   "modelSelector.modalityBadge.file": "文件",
   /* 思考等级选择器 (off / low / medium / high)。 */
   "thinkingPicker.label": "思考等级",
-  "thinkingPicker.none": "沿用引擎默认",
+  "thinkingPicker.none": "默认",
   "thinkingPicker.off": "关闭",
   "thinkingPicker.on": "开启",
   "thinkingPicker.low": "低",
@@ -1556,7 +1558,7 @@ const zh: Record<MessageKey, string> = {
   "sidebar.projects": "项目",
   "action.failed": "失败",
   "sidebar.openSession": "打开会话",
-  "sidebar.switchMismatch": "引擎仍停留在另一个会话",
+  "sidebar.switchMismatch": "切换没有生效，请重试",
   "sidebar.collapse": "收起导航栏",
   "sidebar.expand": "展开导航栏",
   "sidebar.loadError": "无法加载会话：",
@@ -1644,7 +1646,7 @@ const zh: Record<MessageKey, string> = {
   "git.files.untracked": "未跟踪",
   "git.file.openDiff": "查看 diff",
   "git.file.diff.empty": "该文件无 diff",
-  "git.file.diff.truncated": "diff 已截断 — 完整内容请在引擎中查看",
+  "git.file.diff.truncated": "diff 已截断 — 打开文件可看完整内容",
   "git.file.diff.loading": "加载 diff 中…",
   "git.file.diff.failed": "diff 加载失败",
   "git.refresh": "刷新",
