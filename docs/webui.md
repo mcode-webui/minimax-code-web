@@ -518,7 +518,7 @@ Two invariants follow directly:
   ladder in step 2 shrinks `preview` and `tree` first, so `conversation`
   only shrinks past 280 when nothing else gives. At very narrow
   viewports the renderer hides it entirely
-  (`workspace-tabs-state.ts:774-780`).
+  (`workspace-tabs-state.ts:762-781`).
 
 ### Idle path — what the user sees at common viewports
 
@@ -571,7 +571,7 @@ leftover is `560`:
 Drag behaviour on `conversation` itself is bounded by `[280, 2400]` via
 `clampToConversation` (`workspace-tabs-state.ts:856-861`); the
 algorithm may then re-distribute any overflow into `preview` first
-(`workspace-tabs-state.ts:747-762`).
+(`workspace-tabs-state.ts:747-781`).
 
 Each column hosts its own independent `activeId` (`previewActiveId`,
 `treeActiveId`) so opening a tree surface does not steal focus from the
@@ -1398,6 +1398,17 @@ composer decides between them before anything is sent.
 | anything unclaimed | `POST /api/send` | same forward; the engine answers in the transcript |
 | `/clear now` (a claimed command with an argument) | `POST /api/send` | `handleCmdCommand` matches the whole text after the slash, so the argument makes it a different string; `handleLocalSlash` parses the name and runs the same gated handler |
 
+The `/api/send` side is not a disjoint list.
+`server/lib/interaction/command-registry.js` declares
+`SEND_SLASH_COMMANDS` (`goal`, `goal-done`, `goal-blocked`, `clear`,
+`new`, `status`, `review`, `help`, `usage`) — nine names, six of which
+(`clear`, `new`, `status`, `review`, `help`, `usage`) are also button
+commands. `handleLocalSlash` consumes them, which is why the
+`/api/cmd` 400 branch asks `isSendSlashCommand(name)` first and
+phrases its `suggestion` as "send it as a normal message" for those.
+Routing still prefers `/api/cmd` for the bare form;
+`SEND_SLASH_COMMANDS` never influences routing.
+
 The decision is `routeSlashInput` (`webapp/lib/slash-routing.ts`), called
 from `composer.tsx#submit`. The set it compares against is declared once
 on the server in `server/lib/interaction/command-registry.js`
@@ -1417,8 +1428,14 @@ command rather than the receipt.
 | --- | --- | --- |
 | `200` | `{ok:true, cmd}` | the dispatcher claimed the command and ran it |
 | `400` | `{ok:false, error, reason:"unknown_command", cmd, knownCommands[], suggestion}` | nobody claimed it; nothing was mutated |
-| `403` / other `4xx` | gate refusal or request error | e.g. a declined `authorize("slash.clear")` |
-| `5xx` | gate, audit, or handler failure | the audit is fail-closed by design |
+| `4xx` | request gate refusal, before the handler runs | untrusted `Origin`, bad token (`403`), rate limit (`429`) |
+| `5xx` | gate, audit, or handler failure | the write-ahead audit is fail-closed by design |
+
+A **declined** `authorize("slash.clear")` gate is not an error status:
+`handleCmdCommand` appends `● 已取消 /<cmd> (授权未通过: <decidedBy>)`
+to the transcript and still answers `200 {ok:true, cmd}`, with nothing
+mutated. So `200` is not proof that the command did something — read
+the transcript.
 
 `error` is the one-line Chinese string the composer's error banner
 shows; `reason` is the machine-readable discriminator; `suggestion` is

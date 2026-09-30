@@ -999,6 +999,16 @@ loading-states 相同：让 SSR 渲染测试可以脱离 `chat.tsx` 的 `@/` 别
 | 任何未被认领的命令 | `POST /api/send` | 同样转交引擎，由引擎在对话流里回答 |
 | `/clear now`（认领的命令带了参数） | `POST /api/send` | `handleCmdCommand` 匹配斜杠后的整段文本，带参数就是另一个字符串；`handleLocalSlash` 会解析命令名并走同一道授权门 |
 
+`/api/send` 这一侧的命令集并不是与按钮集不相交的一份清单。
+`server/lib/interaction/command-registry.js` 声明了
+`SEND_SLASH_COMMANDS`（`goal` / `goal-done` / `goal-blocked` / `clear` /
+`new` / `status` / `review` / `help` / `usage`，共 9 个），其中 6 个
+（`clear` / `new` / `status` / `review` / `help` / `usage`）同时也是按钮
+命令。`handleLocalSlash` 消费它们，`/api/cmd` 的 400 分支因此先问
+`isSendSlashCommand(name)`，对这 6 个把 `suggestion` 写成「请作为普通
+消息发送」。路由本身仍然优先把裸命令送到 `/api/cmd`，
+`SEND_SLASH_COMMANDS` 不参与路由判断。
+
 判断函数是 `routeSlashInput`（`webapp/lib/slash-routing.ts`），由
 `composer.tsx#submit` 调用。它比对的那份清单在服务端只声明一次：
 `server/lib/interaction/command-registry.js` 的
@@ -1016,8 +1026,13 @@ loading-states 相同：让 SSR 渲染测试可以脱离 `chat.tsx` 的 `@/` 别
 | --- | --- | --- |
 | `200` | `{ok:true, cmd}` | 分发器认领了该命令并已执行 |
 | `400` | `{ok:false, error, reason:"unknown_command", cmd, knownCommands[], suggestion}` | 无人认领；未发生任何状态变更 |
-| `403` / 其它 `4xx` | 授权拒绝或请求错误 | 例如 `authorize("slash.clear")` 被拒绝 |
-| `5xx` | 授权、审计或命令体自身失败 | 审计按设计 fail-closed |
+| `4xx` | 通用请求门禁在处理器之前拒绝 | `Origin` 不可信、token 无效（`403`）、限流（`429`） |
+| `5xx` | 授权、审计或命令体自身失败 | 写前审计按设计 fail-closed |
+
+`authorize("slash.clear")` 授权被拒**不是**错误状态：
+`handleCmdCommand` 追加 `● 已取消 /<cmd> (授权未通过: <decidedBy>)`
+到转录后仍回 `200 {ok:true, cmd}`，且未发生任何状态变更。
+因此 `200` 不能证明命令真的做了事——要读转录才知道。
 
 `error` 是直接显示在 composer 错误条上的中文提示；`reason` 是机器可读
 的判定位；`suggestion` 是修复办法——`/goal` 这类 send 路径命令会提示

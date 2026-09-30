@@ -263,10 +263,14 @@ outcome, not the receipt.
   banner. It is a user-facing product string and is Chinese, like the
   rest of the chat surface; do not parse it.
 - `reason` — the machine-readable discriminator. `unknown_command` is
-  the only reason this route produces itself; a declined
-  `authorize("slash.clear")` gate answers `403`, and a failure in the
-  gate, the write-ahead audit, or a command body answers `5xx` (the
-  audit is fail-closed by design).
+  the only reason this route produces itself. A **declined**
+  `authorize("slash.clear")` gate does **not** fail the request:
+  `handleCmdCommand` appends `● 已取消 /<cmd> (授权未通过: <decidedBy>)`
+  to the transcript and returns `handled:true`, so the answer is
+  `200 {ok:true, cmd}` with nothing mutated. A **failure** in the gate,
+  the write-ahead audit (fail-closed by design), or a command body
+  answers `5xx`; the shared request gates can reject before the handler
+  runs with `403` (untrusted `Origin`, bad token) or `429` (rate limit).
 - `knownCommands` — the accepted set, so a client never has to keep its
   own copy of the list.
 - `suggestion` — for a `/api/send` command such as `/goal`, the body

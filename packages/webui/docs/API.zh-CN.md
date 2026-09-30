@@ -242,8 +242,12 @@ webui 命令（`/goal <内容>`、`/goal-done`、`/goal-blocked`）属于
 - `error` —— webui composer 错误条直接显示的字符串。它是面向用户的
   产品文案，与对话界面其余部分一致，使用中文；**不要**拿它做解析。
 - `reason` —— 机器可读的判定位。`unknown_command` 是本路由自身产生的
-  唯一 reason；`authorize("slash.clear")` 授权被拒 → `403`；授权、写前
-  审计或命令体自身失败 → `5xx`（审计按设计 fail-closed）。
+  唯一 reason。`authorize("slash.clear")` 授权被拒**不会**让请求失败：
+  `handleCmdCommand` 追加 `● 已取消 /<cmd> (授权未通过: <decidedBy>)`
+  到转录后返回 `handled:true`，因此应答仍是 `200 {ok:true, cmd}`，
+  且未发生任何状态变更。授权、写前审计（按设计 fail-closed）或命令体
+  **自身抛错**才会变成 `5xx`；通用请求门禁会在处理器之前以 `403`
+  （`Origin` 不可信、token 无效）或 `429`（限流）拒绝。
 - `knownCommands` —— 接受集一并下发，客户端不必自己维护一份清单。
 - `suggestion` —— 对 `/goal` 这类 send 路径命令，正文会明确说“请作为
   普通消息发送”，而不是笼统地报未知。
