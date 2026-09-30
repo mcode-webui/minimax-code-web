@@ -11,7 +11,64 @@ landed on the development branch but are not yet cut into a release.
 
 ## Unreleased
 
+> 本节最上面一组条目覆盖 **2026-09-27 → 2026-09-30**。这段工作是一条连续的
+> 桌面端对齐线（webui-parity 切片线），所以条目按**用户能感知的功能**归类，
+> 而不是逐条照抄提交信息；纯内部重构、测试与文档提交不入册。
+
 ### Added
+
+- **文件预览与编辑**（一整条预览链）。`GET /api/fs/read-file`（JSON 文本，512 KiB 封顶）、
+  `GET /api/fs/raw`（按扩展名推断 MIME 的字节流，20 MiB 封顶）、
+  `POST /api/fs/write`、`POST /api/fs/open-default`、`POST /api/fs/reveal`。
+  预览面板带工具栏：Markdown 预览带大纲，代码预览带行号与按语言惰性高亮；
+  可以直接编辑并保存，保存时做**冲突检测**（磁盘已被改动则拒绝并提示，不静默覆盖）。
+  任何文件都能打开到面板里，并有三条退出路径。设置新增 `file_line_wrap`
+  （默认 `true`）——代码块按此设置换行或横向滚动。
+- **凭据文件默认拒绝预览**。webui 会广播局域网 URL，同网段即可打到
+  `/api/fs/read-file`，`.env` / `~/.ssh/id_rsa` 这类文件此前可以当纯文本读出来。
+  现在的决定是**默认拒绝 + 说明原因 + 二次确认**；判定在服务端
+  （`server/lib/credential-file.js` 是权威实现，webapp 侧是一份镜像，
+  两侧对同一份 fixture 的命中/不命中由测试钉住）。
+- **工作区有界搜索**。`GET /api/fs/search`，三重预算封顶：遍历深度
+  （不会跑过封顶目录）、墙钟（默认 1500 ms、硬上限 5000 ms）、
+  返回条数（默认 200、硬上限 1000）。侧栏「搜索」面 200 ms 防抖后调用它，
+  与文件树过滤器共用同一个页脚台账（scanned / matches / skipped /
+  truncated / budget），点中结果经 `fs-tree-reveal` 通道让文件树展开并高亮同一处。
+- **Git 面板与 `/review`**。`GET /api/git/status`、`GET /api/git/branches`、
+  `GET /api/git/diff`、`POST /api/git/checkout`；`/review` 作为
+  `POST /api/cmd` 的按钮命令接入。
+- **内置浏览器面板**。在 `/api/fs/raw` 之上提供沙箱预览：iframe 只给
+  `allow-scripts` 一个 token（该字符串由测试钉死），地址栏有一份拒绝
+  的 scheme 清单，历史前进/后退为本地栈。挂载时一并修掉历史回显与
+  工作区相对路径解析。
+- **供应商、模型与用量**。`providers-config` v2 schema + 分层解析 + 热更新 API；
+  10 个预置供应商模板可一键启用；供应商管理界面（保留已有 key 的语义）并热接线；
+  跨供应商切换改由引擎注册表同步；思考强度选择器与协议感知的模型选择器；
+  模型选择器可滚动并带「添加供应商」入口；供应商→模型的级联选择器 +
+  独立的思考级别按钮；模型选择器详情列（随焦点联动、读实时设置）带上下文窗口选项
+  与草稿镜像；用量与模型页按桌面端布局重做；添加模型对话框两批对齐桌面端。
+- **插件后端十个端点与插件面板**。`GET /api/plugins/installed`、
+  `GET /api/plugins/marketplace`、`GET /api/plugins/enabled`、
+  `GET /api/plugins/refresh`、`POST /api/plugins/install`、
+  `POST /api/plugins/install/import` 的预览与落地两支、`POST /api/plugins/uninstall`、
+  `POST /api/plugins/enable`、`POST /api/plugins/disable`，配一份带类型的客户端。
+  面板把**五个能力域**收进一根工作区列：`plugins` 是真实数据（已装列表、
+  本地市场、GitHub 导入，已装视图每张卡带启用开关与带确认的卸载）；
+  `skills` / `apps` / `mcp` / `agents` 还没有管理端点，渲染一张说清缺什么的
+  诚实的占位卡，而不是编出来的条目。
+- **Markdown 渲染补两项**。KaTeX 数学公式与 mermaid 图表，在消息正文与预览里都渲染。
+- **会话呈现**。工具卡片与回合流程条对齐参考实现；思考块与活动分组对齐；
+  回合摘要里的文件胶囊改为从工具输入推导；转录形态的加载骨架与流式微光指示器；
+  发送后输入框清空并可恢复草稿；Agent 团队面板（子代理通信）；重开态与参考实现对齐。
+- **工作区外壳与设置**。多标签面板列 + 四列可拖拽布局；侧栏列按需出现、无内容时自动收起；
+  四列工作区对齐桌面端布局并恢复此前失效的入口；用户菜单、项目右键菜单、
+  首页胶囊；设置页两批对齐桌面端；侧栏对齐参考实现；
+  外观改为**三态**（浅色 / 深色 / 跟随系统），跟随系统时实时响应
+  `prefers-color-scheme` 变化。
+- **斜杠命令注册表**。命令名的唯一声明处是
+  `server/lib/interaction/command-registry.js`；`POST /api/cmd` 接受 8 个命令
+  （`new` `clear` `status` `sessions` `review` `help` `usage` `stop`），
+  `/help` 兜底与 400 应答都读同一份清单。
 
 - **界面组件改为 antd v5**（与桌面端同库同版本，`antd@5.29.3`）。此前本前端把 antd
   的行为手写了一遍，账号二级菜单、用量悬浮卡、composer 的两个选择器都因此出过
@@ -47,6 +104,18 @@ landed on the development branch but are not yet cut into a release.
 
 ### Changed
 
+- **前端主题改用桌面端 token 体系**。`webapp/styles/tokens.css` 现在是桌面端
+  样式的逐字副本（注释写明「不要手改，从提取出的上游样式表重新生成」），
+  旧的 "Ink & Paper" 单色强调色一整套已下线：强调色是品牌蓝
+  （浅色 `#0094fc` / 深色 `#0077d9`），success / warning / danger 是真实颜色而非灰阶。
+  主题机制同步改为在 `<html>` 上写 `light` / `dark` 类名。
+  设计依据见 `docs/DESIGN.md` §12。
+- **斜杠命令按命令集路由**。`/api/cmd` 只接按钮命令、`/api/send` 只接带参数的
+  输入型命令，两份清单都是注册表里的具名集合，浏览器侧镜像由同一份
+  `webapp/test/slash-routing.test.ts` 钉住。
+- **会话正文吸收剩余宽度**，改为居中的可读行宽，而不是把空白留在边上。
+- 树列里此前叠着的预览被移除——预览归预览列，树归树列。
+
 - **套餐用量改问引擎，webui 不再保存 Subscription Key**。配额链路原先由 webui 让
   用户填 Token Plan API Key 直连 MiniMax 配额接口，但凭据本来就在 mcode 手里
   （`server/lib/usage.js` 的注释自己写明"只有 mcode 持有凭据"），而且 key 以明文存
@@ -77,6 +146,20 @@ landed on the development branch but are not yet cut into a release.
   EADDRINUSE 失败，而其意图是首启 token 行为而非绑定特定端口。
 
 ### Fixed
+
+- **斜杠命令曾被静默吞掉并回一个假的 200**。`handleCmd` 此前对
+  `handled !== true` 的情形也走 200 分支，用户看不到任何提示，命令像是什么都没发生。
+  现在返回 400 + `reason: "unknown_command"`，并区分两种情形给出可执行的建议：
+  该命令属于 `/api/send` 路径（composer 会自动路由），还是根本不认识。
+- **切换会话后工作区指错**。会话切换时工作区没有重新指向，重开态与正文对不上。
+- **会话切换的点击热区**：侧栏会话行的可点区域此前偏小，点空白处没反应。
+- **四列工作区里此前失效的入口已恢复**。
+- **回合摘要里的文件胶囊**：改为从工具输入推导，此前有一类工具调用不出胶囊。
+- **i18n 英文侧的裸键泄漏**，以及登录动画的一处问题。
+- **减弱动效偏好没有生效**：省略号动画的规则输给了级联里的后续规则。
+- **内置的 MiniMax 思考档位没有投影进 `thinkingLevels`**，用户在思考级别选择器里
+  看不到它们。
+- **模型分组的归属错乱**：模型 id 改为按供应商编键并按供应商去重。
 
 - **权限模式选择器从未生效，且会把权限降级为「始终授权」**：前端发
   `{ permissions }`，而 `handleSetPermissions` 读的是 `payload.mode`；路由对不认识的
