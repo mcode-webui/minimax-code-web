@@ -13,6 +13,7 @@
 // a one-line log message, not silent.
 
 import { McodeAcpClient } from "../../acp.mjs";
+import { CMD_BUTTON_COMMANDS } from "./interaction/command-registry.js";
 import {
   DEFAULT_WORKSPACE,
   MCODE_RUNTIME_DB,
@@ -278,6 +279,14 @@ export function getMcodeServerInfo() {
 // v0.5.ak: mcode 真实命令缓存（不套预设）
 // 用一个长寿命 McodeAcpClient lazy init 拉 available_commands_update
 // /help 读这里，不用 hardcode 列表
+//
+// 本模块不声明 webui 本地命令表。缓存的 `webui` 组直接取自
+// interaction/command-registry.js#CMD_BUTTON_COMMANDS —— 它是 POST /api/cmd
+// 接受集的唯一声明处，也是 /help 兜底与 400 分支读的那一份。此前这里另有一份
+// 7 条目的 WEBUI_LOCAL_COMMANDS（缺 /review），而本文件是 /help 与命令面板
+// （SSE availableCommands.webui → composer.tsx）的活路径来源，兜底路径反而读
+// 注册表，于是同一次 /help 会打出两张不同的命令表。现在只有一个事实来源；
+// test/lib/command-list-drift.check.mjs 钉住这个关系。
 // ============================================================
 let cachedMcodeCommands = {
   mcode: [],
@@ -285,15 +294,6 @@ let cachedMcodeCommands = {
   fetchedAt: 0,
   source: "none",
 };
-export const WEBUI_LOCAL_COMMANDS = [
-  { name: "new", desc: "新建会话" },
-  { name: "clear", desc: "清空当前对话" },
-  { name: "status", desc: "查看状态" },
-  { name: "sessions", desc: "最近会话列表" },
-  { name: "usage", desc: "套餐用量" },
-  { name: "help", desc: "可用命令" },
-  { name: "stop", desc: "停止当前任务" },
-];
 let mcodeCommandsClient = null; // long-lived McodeAcpClient
 let mcodeCommandsPromise = null; // 去重 lazy init
 
@@ -361,7 +361,7 @@ export async function ensureMcodeCommands({
       const list = await got;
       cachedMcodeCommands = {
         mcode: list,
-        webui: WEBUI_LOCAL_COMMANDS,
+        webui: CMD_BUTTON_COMMANDS,
         fetchedAt: Date.now(),
         source: "mcode.acp.available_commands_update",
       };
@@ -374,7 +374,7 @@ export async function ensureMcodeCommands({
       console.warn(`[webui] ensureMcodeCommands failed: ${e.message}`);
       cachedMcodeCommands = {
         mcode: [],
-        webui: WEBUI_LOCAL_COMMANDS,
+        webui: CMD_BUTTON_COMMANDS,
         fetchedAt: 0,
         source: `error: ${e.message}`,
       };

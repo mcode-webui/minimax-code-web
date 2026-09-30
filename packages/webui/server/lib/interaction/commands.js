@@ -35,12 +35,11 @@ export function matchSlash(content) {
 }
 
 // webui-local commands shown in /help. This array is the fallback when
-// ensureMcodeCommands() hasn't returned yet (first /help race) — the
-// live list normally comes from lib/acp-client.js#WEBUI_LOCAL_COMMANDS.
-// The fallback entries themselves now come from the command registry
-// (the ONE declaration of the /api/cmd command set, also read by the
-// composer's routing and by the 400 branch of POST /api/cmd), so the
-// two server lists can no longer describe different sets.
+// ensureMcodeCommands() hasn't returned yet (first /help race).
+// Both entries of that choice are the SAME set today: the live path
+// (lib/acp-client.js fills the cache's `webui` group) and this fallback
+// read CMD_BUTTON_COMMANDS, so /help cannot describe a command set
+// that differs from the one POST /api/cmd accepts.
 const LOCAL_HELP_FALLBACK = CMD_BUTTON_COMMANDS;
 
 // ----- private body functions: each takes (cs, cid, rest) -----

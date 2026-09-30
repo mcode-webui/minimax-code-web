@@ -108,7 +108,7 @@ CI 会对上述每一个名称是否出现在本文档中进行断言
 |---|---|---|
 | 内置命令列表（`/help`、`/compact`、`/model`、…） | ✅ | mcode acp `session/commands` 在连接时获取；缓存在 `mcodeCommandsCache` 中 |
 | 输入 `/` 时命令自动补全 | ✅ | `filterSlash()` 构建浮层；匹配 `cmd` 与 `description_*` |
-| 本地（webui 侧）命令 | ✅ | `CMD_BUTTON_COMMANDS`（`server/lib/interaction/command-registry.js`）——`POST /api/cmd` 接受什么的唯一声明处，`/help` 兜底与 400 分支都读它：`new`、`clear`、`status`、`sessions`、`review`、`help`、`usage`、`stop`。`/clear` 只清空聊天 UI，不触碰 mcode；`/review` 输出一份 staged / unstaged / untracked 概览（见 §12）。不存在 `/exec` 命令——传输按回合由环境变量（`MCODE_USE_ACP=0`）或权限模式（非 Full access）决定，与斜杠命令无关。`server/lib/acp-client.js#WEBUI_LOCAL_COMMANDS` 是另一份 7 条目的数组，供 `/help` 列表使用，**没有**跟着补上 `/review`；契约是注册表，不是那份数组。 |
+| 本地（webui 侧）命令 | ✅ | `CMD_BUTTON_COMMANDS`（`server/lib/interaction/command-registry.js`）——`POST /api/cmd` 接受什么的唯一声明处，也是 `/help` 列表、斜杠命令面板与 400 分支共同引用的那一份：`new`、`clear`、`status`、`sessions`、`review`、`help`、`usage`、`stop`。`server/lib/acp-client.js` 的命令缓存用同一个数组填充 `webui` 组，因此面板与 `/help` 不可能给出与接口实际接受范围不同的命令表；该关系由 `test/lib/command-list-drift.check.mjs` 钉住。`/clear` 只清空聊天 UI，不触碰 mcode；`/review` 输出一份 staged / unstaged / untracked 概览（见 §12）。不存在 `/exec` 命令——传输按回合由环境变量（`MCODE_USE_ACP=0`）或权限模式（非 Full access）决定，与斜杠命令无关。 |
 | 隐藏 / 实验性命令 | ⚠ | acp `commands` 列表返回 mcode 所知的全部命令。webui 尚无 `hidden` 标志。 |
 
 ## 6. 工作区
