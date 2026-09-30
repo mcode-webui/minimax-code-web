@@ -1531,6 +1531,54 @@ re-arranging the DOM.
 - Neither the `data-active` forced-open rule nor a group's own folding
   semantics change: a collapse intent never overrides forced open.
 
+## The 「已编辑 N 个文件」 card (ticket 77)
+
+The last block of a turn is the edited-files card — the one in the
+desktop screenshot `06-browser-tree-tasks-review.jpg`. It mounts in
+`chat.tsx` after `MessageActions`, matching the reference's mount point
+at `other-minimax-code/.../AssistantBody.tsx:340-380`. The header reuses
+the existing `activity.editedFiles` key; **no new i18n key was added**.
+The activity-group summary and this card are the same sentence, so they
+have to stay the same sentence.
+
+### Where the data comes from
+
+The three-tier fallback chain from ticket 61 §4.2 does not resolve at
+tier 1. The card lands on tier 2, but with better semantics than tier 2
+was sketched for: the source is not "the workspace's git changes" but
+**the file paths the turn's edit tools actually named in the transcript**,
+which is turn-scoped by construction.
+
+| Tier | Source | Finding |
+|---|---|---|
+| 1 — turn changeset | `SessionDiffApplication.getTurnDiff` | **Unreachable.** `local-runtime-v2` really does have it (`application/session/diff-application.ts:51`, backed by v1's `LocalTurnDiffCapability` over `SqliteLocalTurnDiffStore`, carrying per-file `additions`/`deletions` and `undo` snapshots). The blocker is addressing, not existence: the transcript is a flat array of glyph-prefixed strings carrying neither `turnId` nor `assistantMessageId`, and `findTurnDiffRecord` (`local-runtime/src/turns/diff-api.ts:209-220`) falls back to `latestForSession` when no selector is supplied — so every historical assistant message would render the same "last turn" card. Separately, `server/lib/runtime-host.js:176-178` forwards only `cliService` / `apiHost` / `controller` and drops the `application` the v2 host returns. Closing either gap means touching `local-runtime-v2`, which ticket 61 §6 risk 1 already reserves for a separate decision. |
+| 2 — the turn's file paths | the transcript's `file-edit` tool blocks | **Adopted.** `collectEditedFiles` (`webapp/lib/edited-files.ts`) walks every `RenderUnit`, reads `toolPaths` off the blocks `isFileEditTool` accepts, normalises separators, de-duplicates, and keeps first-seen order. |
+| 3 — nothing changed | the list is empty | **The card is not rendered at all** (A1). With no file to name there is no empty shell and no 「已编辑 0 个文件」 placeholder. |
+
+### What each desktop element maps to
+
+| Desktop element | Here | Why |
+|---|---|---|
+| Header glyph | **Present** | The `pencil` icon from the existing `icons.tsx` set. |
+| 「已编辑 N 个文件」 | **Present** | N counts **distinct files**, not edit calls — a file edited five times is still one file. |
+| Green `+N` / red `-N` | **Absent** | The transcript carries no line statistics and there is no reachable turn-scoped source. Drawing one would be a fabricated number. |
+| 「撤销」 (undo) | **Absent** | No turn-scoped revert endpoint exists; the engine's `rewindTurnDiff` is a side effect of rewinding history, not a per-card undo. A dead button is worse than no button. |
+| 「Review」 | **Absent — the file rows replace it** | A file row opens the real preview through the existing `onOpenFile` chain (red line 4). That is the affordance this codebase can actually honour. |
+| File row: type icon + name | **Present** | A `file` icon plus the path's trailing segment; the full path rides on `title` and `data-file-path`. |
+| Per-row added/deleted | **Absent** | Same reason as the header badge. |
+| Collapse (3 rows, then expand) | **Present** | A pure client-side state machine, `reduceEditedFilesCardState`; the toggle appears only past three rows. |
+
+### Contract notes
+
+- The collapse state is **not** persisted in `localStorage`: a reload
+  returns to collapsed. It is derived state, not a user preference, so
+  red line 3 is untouched.
+- The card derives from the **full** `units` list, not the virtualised
+  `visibleUnits` window — otherwise scrolling past 200 units would make
+  it blink in and out.
+- With no `onOpenFile` wired, a file row degrades to plain text rather
+  than to a button that does nothing.
+
 ## Loading states: transcript skeleton and streaming indicator (ticket U8)
 
 The two waiting windows on the conversation surface have distinct treatments,

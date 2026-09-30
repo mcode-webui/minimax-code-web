@@ -17,7 +17,14 @@ import { Icon } from "./icons";
 import { useChatVirtualization } from "./chat-virtual-list";
 import { ActivityPulse, isSessionActivityActive } from "./loading-states";
 import { ActivityGroup, TurnProcessDisclosure, assignActivityBlockKeys } from "./activity-group";
-import { computeTurnLayout, computeTurnStatsByUnit, summarizeTurn, type TurnStats } from "@/lib/turn-stats";
+import { collectEditedFiles } from "@/lib/edited-files";
+import { EditedFilesCard } from "./edited-files-card";
+import {
+  computeTurnLayout,
+  computeTurnStatsByUnit,
+  summarizeTurn,
+  type TurnStats,
+} from "@/lib/turn-stats";
 import { useSessionContext } from "@/lib/store";
 import { capToastReducer } from "@/lib/cap-toast";
 import { readScrollPosition as readPersistedScroll } from "@/lib/persist";
@@ -214,6 +221,13 @@ export function Chat({
       return updated;
     });
   }, []);
+
+  // Ticket 77 — the 「已编辑 N 个文件」 card's data. Derived from the FULL
+  // `units` list, not the virtualized window: the card is a turn-level footer,
+  // so it must not appear or vanish as the user scrolls the window past 200
+  // units. `collectEditedFiles` returns only paths this turn's edit tools
+  // actually named, and an empty list means the card is not rendered at all.
+  const editedFiles = useMemo(() => collectEditedFiles(units), [units]);
 
   // Windowed rendering: above VIRTUAL_LIST_THRESHOLD (200) units we slice the
   // transcript to a visible window around the user's scroll position. The hook
@@ -439,6 +453,12 @@ export function Chat({
                   sessionRunning={false}
                 />
               </div>
+            ) : null}
+            {/* Ticket 77 (G3) — the turn's last block, matching where the
+                desktop puts the 「已编辑 N 个文件」 card. Derived from the full
+                unit list, so it is stable under virtual scrolling. */}
+            {editedFiles.length > 0 ? (
+              <EditedFilesCard files={editedFiles} t={t} onOpenFile={onOpenFile} />
             ) : null}
           </div>
         </div>
