@@ -104,21 +104,33 @@ webui 的会话列表中。
    发送任意用户消息 —— 计划上下文会被取代，
    弹窗就会关闭。
 
-## 询问用户的弹窗在关闭后又重新出现
+## 询问用户的弹窗关不掉
 
-**症状**：你点击了询问用户弹窗上的 "Skip"，然后它在
-下一条消息时又弹了出来。
+**症状**：询问用户弹窗一直停在屏幕上。点 "Skip" 像是什么都没发生，
+按 Esc 也毫无反应。
 
-**根因**：webui 把已关闭的问题 id 存储在
-`DISMISSED_QUESTIONS`（localStorage）中。如果你清空了
-localStorage 或使用了不同的 CID，关闭记录就会丢失。
+**根因**：这个提示按设计就没有退路。它走的是
+`webapp/components/modals.tsx` 里的阻塞式提示外壳——`closable={false}`、
+`keyboard={false}`、`maskClosable={false}`（modals.tsx:304-313）——因此没有
+关闭按钮、没有 Esc 处理器、点遮罩也不关闭：服务端正在等一个决定。系统也
+不记录任何「已关闭」状态。组件只把输入框里的 "Other" 文本和勾选的标签放在
+React state 里（modals.tsx:72-78），而 `destroyOnHidden` 会在提示关闭时把两者
+一起丢掉。所以没有哪个存储键可以清空，换 CID 也没有意义。
 
-**修复**：
-- 如果问题在同一会话中重新出现：不要清空 localStorage。
-  如果确实需要，双击左上角的品牌 logo 来清除
-  `presentedKeys`（这等同于清空 `DISMISSED_QUESTIONS`）。
-- 如果问题在新会话中重新出现：这是设计使然。
-  新会话 = 新状态。
+**修复**：回答问题——这是唯一能到达引擎的动作。
+1. 点击某个选项。单选时直接发送该选项的序号；多选（仅当引擎下发了
+   `multiSelect` 时）先勾选标签，再按 Submit 提交。
+2. 或者在 "Other" 里输入文字，按 Enter 或点 Submit。
+3. 两者都通过 `POST /api/send {content, isAskAnswer: true}` 发出
+   （modals.tsx:86-101）。当状态快照不再带 `ask.active` 时弹窗关闭
+   （modals.tsx:80）——也就是引擎消费掉这次回答之后。一批多问题会在标题上
+   显示 `n/总数`，每回答一次前进一题。
+
+**已知缺陷**："Skip" 是失效的。它发的是
+`POST /api/answer {type: "ask", option: "esc"}`（modals.tsx:214），而这个路由是
+遗留的空操作——直接返回 `{ok: true, deprecated: true}`，不会向引擎转发任何内容
+（`server/routes/model.js#handleAnswer`，注册于 `server/app.js:645`；API.md 里有
+同样的说明）。在该路由重新接线之前，上面前两种方式是唯一的出路。
 
 ## `favicon.ico` 报 `Failed to load resource: 404`
 

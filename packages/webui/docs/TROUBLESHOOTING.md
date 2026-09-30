@@ -114,24 +114,41 @@ it.
    stuck. Send any user message — the plan context will be
    superseded and the modal will close.
 
-## Ask-user modal reappears after dismissal
+## Ask-user modal will not close
 
-**Symptoms**: you click "Skip" on the ask-user modal, then it pops
-back up on the next message.
+**Symptoms**: the ask-user modal stays on screen. "Skip" appears
+to do nothing, and Esc does nothing at all.
 
-**Cause**: the webui stores the dismissed question id in
-`DISMISSED_QUESTIONS` (localStorage). If you clear localStorage
-or use a different CID, the dismissal is lost.
+**Cause**: the prompt has no way out by design. It renders
+through the blocking-prompt chrome in
+`webapp/components/modals.tsx` — `closable={false}`,
+`keyboard={false}`, `maskClosable={false}` (modals.tsx:304-313) —
+so there is no close button, no Escape handler and no backdrop
+dismissal; the server is waiting on a decision. No dismissal is
+remembered either. The component holds the typed "Other" text and
+the ticked labels in React state (modals.tsx:72-78), and
+`destroyOnHidden` drops both when the prompt closes. There is no
+storage key to clear, and a different CID changes nothing.
 
-**Fix**:
-- If the question reappears in the same session: don't clear
-  localStorage. If you really need to, clear the per-CID
-  presentation state from `localStorage` (the same key the
-  shell uses for `DISMISSED_QUESTIONS`); there is no longer a
-  brand-logo shortcut, since the legacy vanilla-JS UI and the
-  `public/brand-logo.png` image were removed.
-- If the question reappears in a new session: that's by design.
-  New session = new state.
+**Fix**: answer the question — that is the only action that
+reaches the engine.
+1. Click an option. A single-select option sends its index; a
+   multi-select question (only when the engine sets
+   `multiSelect`) collects labels until you press Submit.
+2. Or type into "Other" and press Enter or Submit.
+3. Both go out as `POST /api/send {content, isAskAnswer: true}`
+   (modals.tsx:86-101). The modal closes when the state snapshot
+   stops carrying `ask.active` (modals.tsx:80) — after the engine
+   consumed the answer. A multi-question batch shows `n/total` in
+   the title and advances one question per answer.
+
+**Known defect**: "Skip" is inert. It posts
+`POST /api/answer {type: "ask", option: "esc"}` (modals.tsx:214),
+and that route is a legacy no-op — it answers
+`{ok: true, deprecated: true}` without forwarding anything to the
+engine (`server/routes/model.js#handleAnswer`, registered at
+`server/app.js:645`; API.md documents the same). The first two
+options above are the only escape until the route is re-wired.
 
 ## `Failed to load resource: 404` for `favicon.ico`
 
