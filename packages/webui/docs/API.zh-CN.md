@@ -690,6 +690,411 @@ dotfile。符号链接当文件返回时是 `Dirent` 项（webui 视为
 
 **错误** —— 400：JSON 非法；403：父目录越界；409：已存在。
 
+### `GET /api/fs/read-file?path=<file>`
+
+以文本读取单个常规文件的内容。驱动右栏文件预览（slice 02 ——
+`webapp/components/file-preview.tsx`）。边界与 `/api/fs/read` 相同；
+门禁先跑，因此越界路径在文件被 stat 之前就已被拒。
+
+超过 **512 KiB** 的文件返回 `413`，而不是静默截断 —— 调用方
+（webapp 预览）渲染一个「过大」状态，并把用户指向真正的编辑器。
+响应体仍带探测出的 `mime` / `language`，让 UI 不用二次往返就能
+路由到正确的渲染器。
+
+二进制探测扫描前 4 KiB 找 NUL 字节。命中则返回
+`ok:false, error:"binary file not supported"` 与 415 状态；webapp
+渲染「无法预览」占位。错误路径同样带 `mime` / `language`，让 UI
+能提示原因（例如 `.png` 的「图片，请用 raw 端点」）。
+
+**响应 200**
+```json
+{
+  "ok": true,
+  "path": "C:\\Users\\you\\README.md",
+  "size": 2400,
+  "mtime": 1790609123912.887,
+  "mime": "text/markdown; charset=utf-8",
+  "language": "markdown",
+  "binary": false,
+  "encoding": "utf-8",
+  "content": "# Title\n\n…"
+}
+```
+
+`encoding` 成功时为 `"utf-8"`（BOM 已剥离）；`language` 取
+`markdown` / `typescript` / `javascript` / `json` / `yaml` / `css` /
+`html` / `python` / `go` / `rust` / `bash` / `sql` / `dockerfile` /
+`plain` 之一（仅供参考 —— 渲染器可以不理会）。`mtime` 是读取那一刻
+的 `stat().mtimeMs`（slice 27）：预览编辑器把它与 `size` 一起记为
+冲突检测基线，保存时一并回传 —— 若期间磁盘已变，
+`POST /api/fs/write` 返回 `409`。
+
+**错误** —— 400：缺 `path`；403：越界；403 `{code:"credential"}`：
+文件名命中凭据形态（除非 `?confirm=1`）；413：超 512 KiB；415：
+二进制文件或非常规文件（目录 / 设备 / socket）；500：stat 失败
+（请求途中文件消失）。
+
+**凭据判据只看文件名 —— 不覆盖硬链接别名。**
+`classifyCredential`（`server/lib/credential-file.js`，在
+`webapp/lib/credential-file.ts` 逐字镜像）比对的是请求路径的
+**basename** 与凭据形态表。因此该防护覆盖符号链接（读取前由
+`realpathSync` 解析），但不覆盖硬链接 —— 共享 inode 的两个名字
+（`config.txt → .env`）按 basename 无法区分，因为内核不会仅从
+inode 暴露「主名」。在意硬链接别名的运维必须保持工作区树整洁。
+`/api/fs/raw` 以流式形式复用同一判据，`/api/fs/search` 再次应用
+它（命中标记 `credential: true`，但绝不裁剪内容）。
+
+### `GET /api/fs/raw?path=<file>`
+
+以字节流原样返回文件。供预览里的 `<img>` 与下载动作使用
+（slice 02）。边界与 `/api/fs/read` 相同；硬上限 **20 MiB**
+（与 pr-22 参照一致）。
+
+`Content-Type` 由扩展名映射，未知扩展名回落到
+`application/octet-stream`。`Cache-Control: no-store` —— 本地文件
+没有不可变哈希，缓存不能谎报新鲜度。
+
+**响应 200** —— 二进制流。映射表：
+
+| 扩展名 | Content-Type |
+|---|---|
+| `.png` / `.jpg` / `.jpeg` / `.gif` / `.webp` / `.ico` / `.pdf` | 如所列 |
+| `.svg` | `image/svg+xml` |
+| `.html` / `.htm` / `.css` / `.js` / `.mjs` / `.json` / `.md` / `.txt` | `text/...; charset=utf-8` |
+| `.woff2` | `font/woff2` |
+| （其他一切） | `application/octet-stream` |
+
+**错误** —— 400：缺 `path`；403：越界；404：不存在；400：不是
+常规文件；413：超 20 MiB。
+
+---
+
+### `POST /api/fs/write` —— 保存预览编辑器的缓冲（slice 27）
+
+预览工具栏的保存按钮落在这里。这是文件预览打开的**唯一**写入面，
+下面每一条边界都在服务端强制 —— webapp 只是结构化应答的呈现层。
+
+**请求体**
+```json
+{
+  "path": "C:\\Users\\you\\README.md",
+  "content": "# Title\n\nedited in the preview panel\n",
+  "expectedMtime": 1790609123912.887,
+  "expectedSize": 2400,
+  "confirm": false
+}
+```
+
+| 字段 | 必填 | 含义 |
+|---|---|---|
+| `path` | 是 | 绝对路径（或 `~/...`）；与其余每个 `/api/fs/*` 路由走**同一条** `safePath` → `assertWorkspacePath` 门禁 —— 解析 realpath、感知符号链接、越界即 403 |
+| `content` | 是 | 完整文件体的 UTF-8 字符串；非字符串 = 400 `invalid-content` |
+| `expectedMtime` | 否 | 打开文件时 `GET /api/fs/read-file` 返回的 `mtime` |
+| `expectedSize` | 否 | 同一次读取返回的 `size` |
+| `confirm` | 否 | `true` = 用户已通过凭据确认卡（见下） |
+
+**冲突检测。** 两个基线字段中只要有任一存在、且与实时 stat 不再
+一致，路由就返回 `409` 并且**什么都不写** —— 外部编辑必须以一个
+由用户裁决的冲突呈现，绝不静默覆盖。完全没有基线字段的请求体是
+显式覆盖形态；面板只在用户回答了冲突卡（「覆盖磁盘版本」）之后
+才发这种请求。
+
+**凭据守卫（对齐 slice 16）。** 命中凭据形态的 basename
+（`.env` / `*.pem` / `id_rsa` / `credentials*` 等 —— 与读路由
+同一个 `classifyCredential` 判据）默认拒绝，返回
+`403 {code:"credential", credentialReason}`，文件不被触碰。
+`confirm:true` 既放行写入，也发出与读覆盖相同的
+`credential.override` stderr 审计行，只是 `endpoint:"write"`。
+理由：服务端会广播局域网 URL，而一个可在网页上编辑的 `.env`
+会让每个局域网对端都成为本机配置的作者。
+
+**受控写入。** handler 是在已过门禁的路径上直接
+`writeFileSync(path, content, 'utf8')` —— 这条路径上没有 shell、
+没有 exec、没有任何命令插值。编辑器只编辑**已存在**的文件；
+不存在「从网页新建文件」的通路。
+
+**响应 200** —— 下一次保存应当据以做冲突检测的新基线：
+```json
+{
+  "ok": true,
+  "path": "C:\\Users\\you\\README.md",
+  "size": 40,
+  "mtime": 1790609400000.5
+}
+```
+
+`path` 是**经 realpath 归一的绝对形态**（共享门禁在做任何别的事
+之前先解析符号链接 —— 也就是每个 `/api/fs/*` 路由都返回的
+slice-16 形态；在 macOS 上，写 `/var/folders/…` 会应答
+`/private/var/folders/…`）。
+
+**错误** —— 400 `missing-path` / `missing-content` /
+`invalid-content` / `not-a-regular-file`；403：越界（共享门禁；
+路径不存在通常就在这里以 realpath 错误失败 —— 读路由记录的是
+同一行为）；403 `credential`（未确认的凭据形态）；404
+`not-found`（门禁与 stat 之间文件消失 —— TOCTOU 守卫）；409
+`conflict`（响应体带 `{diskMtime, diskSize}`）；413 `too-large`
+（内容超 `WRITE_MAX_BYTES`，即读路径的 512 KiB —— 你无法保存
+一个当初根本读不下来的东西）；413 `BODY_TOO_LARGE`（JSON 请求体
+超共享读取器的 1 MiB 上限）；500 `write-failed`（`writeFileSync`
+本身抛出，例如 `EACCES`；磁盘文件未被触碰）。
+
+**凭据判据只看文件名 —— 不覆盖硬链接别名**，与
+`GET /api/fs/read-file` 一节记录的一致。
+
+---
+
+### `POST /api/fs/open-default` —— 用系统默认应用打开（slice 14）
+
+把 `path` 交给平台默认的打开器（`open` / `xdg-open` / `cmd` /
+`Start-Process`）。边界门禁与 `/api/fs/read` 相同，即
+`assertWorkspacePath` + 逐节点 realpath 检查；这个路由的职责只是
+JSON 解码请求体，并把 helper 的结构化 code 映射成 HTTP 状态。
+
+**请求体**
+```json
+{ "path": "/home/you/repo/README.md" }
+```
+
+**响应 200** `{ ok: true }`
+
+**错误**（取自 `routes/fs.js#codeToStatus`）：
+- `400 {code:"missing-path"}` —— 请求体没有 `path`
+- `403 {code:"out-of-bounds"}` —— 边界门禁拒绝
+- `400 {code:"not-a-regular-file"}` —— 目录 / 不存在 / 符号链接逃逸
+- `503 {code:"no-opener"}` —— 宿主机 `PATH` 上没有 GUI 二进制；
+  UI 收到该应答就禁用按钮，使一次点击永远不会静默无效
+- `502 {code:"spawn-failed"}` —— 二进制在探测与 exec 之间 ENOENT
+
+### `POST /api/fs/reveal` —— 在文件管理器中定位（slice 14）
+
+与 `/api/fs/open-default` 同一套线上模型；macOS / Windows 选中
+文件所在行，Linux 打开父目录（freedesktop 下不存在可移植的
+「选中」命令）。
+
+**请求体**
+```json
+{ "path": "/home/you/repo/README.md" }
+```
+
+**响应 200** `{ ok: true }`
+
+**错误** —— 与 `open-default` 完全相同的 code → 状态映射。
+
+---
+
+### `GET /api/fs/search?root=<dir>&q=<glob>[&depth=&maxNodes=&wallMs=&limit=&includeHidden=1]`
+
+按 basename glob 做有界的工作区全量搜索（slice 19a）。已发布的
+文件树筛选器只对**已展开**的节点匹配名字，因此三层目录深处的
+一个 `package.json` 在用户手动展开每层中间目录之前不会出现任何
+结果。这个端点在其余 `/api/fs/*` 路由所用的同一条
+`assertWorkspacePath` 门禁之后遍历工作区，并带硬性预算，使恶意
+或病态的请求无法把服务端钉死。
+
+用户在筛选框输入且内存中的树没有命中时，面板就调用它。每次调用
+是一次往返，返回 `root` 之下的全部命中；面板沿着返回的
+`ancestors` 链「展开到命中」。
+
+**查询参数** —— `root` 与 `q` 必填；其余参数都可选且有绝对上限
+（超范围的值被钳位，而不是被拒）：
+
+| 参数 | 默认 | 上限 | 说明 |
+|---|---|---|---|
+| `root` | — | — | 绝对路径或 `~/...`。过 `assertWorkspacePath`；越界 = 403。必须指向一个目录。 |
+| `q` | — | — | glob；`*` 任意长串、`?` 单字符、大小写不敏感、锚定匹配。空 = 400。 |
+| `depth` | 8 | 16 | 从 `root` 出发的最大目录深度。超出 → `truncated: true, truncatedReason: "depth"`。 |
+| `maxNodes` | 5000 | 50000 | 访问过的条目数（文件 + 目录）。超出 → `"nodes"`。 |
+| `wallMs` | 1500 | 5000 | 墙钟上限（毫秒）。超出 → `"wallClock"`。 |
+| `limit` | 200 | 1000 | 返回的最大命中数。（别名 `maxMatches` 同样接受。）超出 → `"matches"`。 |
+| `includeHidden` | 0 | — | `1` 包含 dotfile 条目；默认与文件树「默认隐藏」的行为一致。 |
+
+遍历器默认跳过这些目录（`node_modules` / `.git` 不可覆盖；
+构建 / 缓存集合可在服务端用 `includeDirs` 选项重新纳入）：
+
+| 跳过原因 | 默认开？ | 说明 |
+|---|---|---|
+| `node_modules` | 是（不可覆盖） | 每个 JS 项目的经典搜索陷坑 |
+| `.git` | 是（不可覆盖） | 隐私面；绝不是用户的本意 |
+| `dist` / `build` / `.next` / `.cache` / `.parcel-cache` / `.turbo` / `.nx` / `coverage` / `.svn` / `.hg` / `.idea` / `.vscode` | 是（服务端可覆盖） | 构建产物与 VCS 元数据，每一个都是已知的遍历陷阱 |
+| 巨型目录（readdir 条目 > 10 000） | 是 | 按单目录条目数计，不是按字节 |
+| 命中凭据形态的名字 | 标记，从不省略 | 见下方「凭据决策」 |
+
+**响应 200**
+```json
+{
+  "ok": true,
+  "root": "/home/you/文档/demo002",
+  "q": "package.json",
+  "matches": [
+    {
+      "path": "/home/you/文档/demo002/codersday/package.json",
+      "name": "package.json",
+      "type": "file",
+      "ancestors": ["codersday"],
+      "credential": false
+    }
+  ],
+  "scanned":  { "dirs": 12, "files": 47, "total": 59 },
+  "skipped":  {
+    "node_modules": 1,
+    ".git": 0,
+    "credential": 0,
+    "huge": 0,
+    "optional": { "dist": 0, "build": 0, ".next": 0 }
+  },
+  "truncated": false,
+  "truncatedReason": null,
+  "elapsedMs": 7,
+  "budgets":   { "maxDepth": 8, "maxNodes": 5000, "wallMs": 1500, "maxMatches": 200, "includeHidden": false, "includeDirs": [] }
+}
+```
+
+`ancestors` 是 `root`（不含）到命中（不含）之间的路径片段；顶层命中
+对应 `[]`，客户端可以直接用 `path`。遍历器**从不**返回文件内容 ——
+`matches[i]` 就是 `path / name / type / ancestors`，加上可选的
+`credential` 标记，没有别的。没有 `size` 采样，没有 `mtime` 采样，
+没有预览元数据。
+
+**截断是诚实的。** `truncated: true` 是遍历器明确的「我没走完」
+信号。原因是锁定的几种：`"depth" | "nodes" | "wallClock" |
+"matches"`。UI 显示 `searched N, skipped M, truncated by <reason>`，
+让用户知道当前显示的列表是部分的。
+
+**凭据决策 —— 标记，从不省略，从不读取。**
+`classifyCredential`（`lib/credential-file.js` 里的 slice-16
+判据）是唯一事实来源。命中凭据形态的结果会带着
+`credential: true` 与一个稳定的 `credentialReason`（`dotenv` /
+`key-file` / `ssh-key` / `credentials` / `ssh-meta` 之一）被**纳入**
+结果，同时 `skipped.credential` 递增。理由：
+
+  - 用户有权知道这个文件存在（与 `/api/fs/read` 一致，后者让
+    凭据在树列表中保持可见）。
+  - 该路径是 realpath 形态；用户主动点击命中后落到
+    `/api/fs/read-file`，其 slice-16 门禁会以右栏已在讲的同一个
+    `code: "credential"` 应答默认拒绝。
+  - 省略命中会让 `q=*.env`（或 `q=.env`）的搜索返回零行 ——
+    这在主动误导，因为工作区**确实**包含这些文件。
+  - 响应从不携带内容（也不带 size / mtime / 任何预览元数据），
+    因此即便用户就是冲着凭据而来，搜索本身也不会成为凭据泄露。
+
+**错误** —— 400：缺 `root` / `q`，或 `root` 不是目录；403：越界
+（与其他 `/api/fs/*` 路由同一条消息）；门禁先跑，因此畸形的
+`root` 在遍历器启动之前就被拒。
+
+---
+
+## Git
+
+git 端点驱动右栏 Git 面板（slice 03 ——
+`webapp/components/panels.tsx#GitPanel`）与 `/review` 斜杠命令。
+它们与 fs 端点（`/api/fs/*`）共享同一条边界：候选 `dir` 会经过
+`resolve()` 并解析符号链接（`realpath`），且必须落在某个允许
+工作区根之内（默认主目录 + 默认工作区 + tmp；
+`MCODE_WEBUI_WORKSPACE_ROOTS` 会**完全替换**默认集合）。越界
+目录以 `{ok:false, error:"…不在允许根内…"}` 应答 —— 面板把它
+显示为空状态，而不是红色 toast。
+
+安全不变量（由 `test/routes/git.test.js` 锁定）：
+
+* `git` 经 `execFile` 以 `['-C', dir, ...args]` 调用 —— 无 shell，
+  无元字符攻击面。
+* `gitCheckout` 把分支名匹配 `^[A-Za-z0-9._/-]+$`，并额外拒绝以
+  `-` 开头的名字（一个叫 `--upload-pack=…` 的分支，否则会被 git
+  二进制本身重新解释成 `git checkout` 的选项）。
+* `gitDiff` 总是把用户给的文件名放在 `--` token 之后，因此
+  `--output=/etc/x` 这样的文件名无法被重新解释成 `git diff` 的
+  选项。同一个输入还会被显式的 `startsWith('-')` 守卫先行拒绝。
+
+### `GET /api/git/status?dir=<workspace>`
+
+面板头部用的工作区状态。`dir` 必填。
+
+`status --porcelain=v1 -b` 给出确定性输出：一行头部
+（`## <branch>[...<upstream>] [ahead N, behind M]`），随后是逐
+文件条目。路由解析两半；detached HEAD 或没有 upstream 的分支
+只是得到 `null` upstream 与 0 ahead/behind，不算错误。
+
+**响应 200**
+```json
+{
+  "ok": true,
+  "isRepo": true,
+  "branch": "feat/git-panel",
+  "upstream": "origin/feat/git-panel",
+  "ahead": 0,
+  "behind": 0,
+  "files": [
+    { "x": "M", "y": " ", "path": "README.md", "origPath": null, "staged": true },
+    { "x": "?", "y": "?", "path": "untracked.txt", "origPath": null, "staged": false }
+  ]
+}
+```
+
+`x` / `y` 是原始 porcelain 状态码（见 `git status --help` 的
+"porcelain v1 format" 一节）；`staged` 为 `x !== ' ' && x !== '?'`
+（索引位置上包含 `M`、`A`、`D`、`R`、`C`）。重命名同时带
+`origPath`（改名前路径）与 `path`（改名后路径）。
+`isRepo:false` 是对非 git 目录的无错应答。
+
+**错误** —— 400：缺 `dir`；请求体是 `{ok:false, error}`，而 HTTP
+状态**保持 200**（面板读 `ok` 而不是 HTTP 码，所以非 git 目录
+是一个正常状态）。
+
+### `GET /api/git/branches?dir=<workspace>`
+
+本地分支列表加一个 `current` 标记。面板把这个列表渲染成分支
+切换器 —— `gitCheckout` 要求被选中的名字也匹配同一集合，因此
+切换器永远不会给出一个它无法兑现的选项。
+
+**响应 200**
+```json
+{
+  "ok": true,
+  "branches": [
+    { "name": "feat/git-panel", "current": true },
+    { "name": "main", "current": false }
+  ]
+}
+```
+
+**错误** —— 400：缺 `dir`；git 失败时 `{ok:false, error}`。
+
+### `GET /api/git/diff?dir=<workspace>&file=<path>`
+
+对 `HEAD` 的单文件 diff。未跟踪文件（porcelain 里的 `?`）回落到
+`git diff --no-index -- /dev/null <file>`，它生成一份合成的
+全新增 diff，于是面板也能预览它们。只要输入文件存在，该回落就
+返回 `{ok:true, diff}`（永不报错）；`ok:false` 只留给门禁拒绝或
+`git` 调用失败。
+
+**响应 200**
+```json
+{ "ok": true, "diff": "diff --git a/README.md b/README.md\n…" }
+```
+
+**错误** —— 400：缺 `dir` / `file`；边界校验失败或路径非法时
+`{ok:false, error}`。软失败路径的 HTTP 状态**保持 200**；面板读
+`ok`。
+
+### `POST /api/git/checkout`
+
+切到本地分支。**破坏性** —— 面板在发出请求前用确认框守住这个
+按钮。服务端纵深防御：分支名匹配 `^[A-Za-z0-9._/-]+$`，且以 `-`
+开头即拒绝，因此伪造的客户端也塞不进选项。
+
+**请求体**
+```json
+{ "dir": "C:\\Users\\you\\projects\\foo", "branch": "feat/git-panel" }
+```
+
+**响应 200** 成功时 `{ok:true}`；门禁 / 白名单拒绝或 `git` 失败时
+`{ok:false, error}`。HTTP 状态**保持 200**；面板读 `ok`。
+
+**错误** —— 400：缺 `dir` / `branch`，或 JSON 非法；
+`{ok:false, error:"非法分支名"}` 表示白名单拒绝；`git` 失败时
+`{ok:false, error}`。
+
 ---
 
 ## 插件
@@ -1264,6 +1669,223 @@ Multipart 文件上传。保存到 `MCODE_WEBUI_UPLOAD_DIR` 并返回
 任何动作即作答。回应请走 `POST /api/send`，载荷为
 `{content, isAskAnswer: true}`。`deprecated: true` 永远都会出现 —— 仅检查
 `ok` 的客户端会一直调用一个什么都不做的端点。
+
+### `GET /api/providers`
+
+返回合并后的 v2 provider 目录，其中每个 `apiKey` 都是掩码形态
+（`apiKeyMasked`）—— 明文凭据在任何响应路径里都不会被返回。
+响应还会报出服务端对每一层实际读取了哪些文件路径，便于运维确认
+现网配置来自哪个文件。
+
+分层解析顺序：`MCODE_WEBUI_MODELS_CONFIG` 环境变量 → cwd 下的
+`models.json` → 用户级 `~/.mcode-webui/providers.json`（PUT 的写入
+目标）。同 id 的 provider 做深合并；模型按 id 去重，高层胜出。
+
+**响应 200**
+```json
+{
+  "ok": true,
+  "version": 2,
+  "providers": [
+    {
+      "id": "openai_compat",
+      "label": "OpenAI Compat",
+      "enabled": true,
+      "protocol": "openai",
+      "auth": {
+        "type": "byok",
+        "hasKey": true,
+        "apiKeyMasked": "sk-a***yz",
+        "baseURL": "https://api.openai.com"
+      },
+      "models": [
+        {
+          "id": "gpt-4o-mini",
+          "label": "GPT-4o mini",
+          "contextLimit": 128000,
+          "thinkingLevels": ["low", "medium", "high"],
+          "modalities": ["text", "image"]
+        }
+      ]
+    }
+  ],
+  "sources": {
+    "env": null,
+    "cwd": "/srv/webui/models.json",
+    "user": "/home/you/.mcode-webui/providers.json"
+  },
+  "userPath": "/home/you/.mcode-webui/providers.json"
+}
+```
+
+- `auth.apiKeyMasked` 是本接口族**唯一**返回的 apiKey 形态。测试
+  与 `scripts/check-docs-alignment.mjs` 一起把这条规则钉死：无论
+  密钥来自哪一层，明文 key 都绝不允许出现在任何
+  `/api/providers*` 响应中。
+- `MCODE_WEBUI_MODELS_CONFIG` 未设置时 `sources.env` 为 `null`；
+  此时 `sources.cwd` 也从层级集合中省略（环境变量覆盖的就是 cwd
+  那个文件）。
+
+### `PUT /api/providers`
+
+校验并持久化一份 v2 provider 配置到用户级文件
+（`~/.mcode-webui/providers.json`，即本 handler 写入的文件）。
+env / cwd 两层归部署方所有，永远不在这里被写。
+
+handler 通过 rename 原子写入（磁盘上不会出现半写文件），下一次
+调用时重载层级集合，并以掩码载荷广播一个 SSE 具名事件
+`providers.updated`，让每个已连接客户端无需轮询就刷新自己的
+目录。`/api/models` 在下一次请求时即可看到变更 —— 无需重启。
+
+**请求体**
+```json
+{
+  "version": 2,
+  "providers": [
+    {
+      "id": "openai_compat",
+      "label": "OpenAI Compat",
+      "enabled": true,
+      "protocol": "openai",
+      "auth": { "type": "byok", "apiKey": "sk-realkey...", "baseURL": "https://api.openai.com" },
+      "models": [
+        { "id": "gpt-4o-mini", "label": "GPT-4o mini", "contextLimit": 128000 }
+      ]
+    }
+  ]
+}
+```
+
+**响应 200**
+```json
+{
+  "ok": true,
+  "providers": [ /* 掩码视图，形态与 GET 相同 */ ],
+  "path": "/home/you/.mcode-webui/providers.json"
+}
+```
+
+- `400 BAD_BODY` —— provider 形态非法、协议未知，或校验失败
+  （每条错误都带一条可读的 `error` 文本，指出出问题的字段）。
+- `500 WRITE_FAILED` —— 磁盘 I/O 失败（内存中的状态没有变化；
+  运维应重试）。
+
+### `POST /api/providers/test`
+
+按协议跑一次最小连通性探测。**本地 key 格式校验发生在任何网络
+调用之前** —— 畸形 key 直接得到 `400 INVALID_KEY`，不发任何
+请求。探测成功返回 `{ok:true, latencyMs, detail}`；网络失败返回
+`502 PROBE_FAILED` 并带上游状态码（不返回响应体 —— 配错的代理
+可能在上游错误消息里回显凭据）。
+
+**请求体**
+```json
+{
+  "protocol": "openai",
+  "auth": { "type": "byok", "apiKey": "sk-realkey...", "baseURL": "https://api.openai.com" }
+}
+```
+
+**响应 200**（探测成功）
+```json
+{ "ok": true, "protocol": "openai", "code": "OK", "latencyMs": 187, "detail": "HTTP 200" }
+```
+
+**响应 400**（key 畸形 —— 未发生任何网络调用）
+```json
+{ "ok": false, "protocol": "openai", "code": "INVALID_KEY", "error": "auth.apiKey is too short (< 8 chars)" }
+```
+
+**响应 502**（上游拒绝了请求）
+```json
+{ "ok": false, "protocol": "openai", "code": "PROBE_FAILED", "error": "HTTP 401", "latencyMs": 412 }
+```
+
+- 协议白名单：`openai`（`GET /v1/models`）、`anthropic`
+  （`POST /v1/messages`，模型 `claude-3-5-sonnet-20241022`、
+  `max_tokens:1`）、`gemini`（`GET /v1beta/models?key=...`）。
+  其余一律返回 `400 BAD_PROTOCOL`，不发网络请求。
+- key 只发往请求体里的那个 `baseURL`（缺省时用协议默认值）。
+  明文 key 在任何响应路径上都不会离开服务端。
+
+### `GET /api/providers/presets`
+
+内置预设 provider 画廊（02 号工单）。响应列出全部策展模板
+（当前 **11** 个 —— 智谱 / Kimi / 百炼 / 火山 / mimo / minimax /
+opencode go / OpenRouter / Claude Code / Codex / DeepSeek），以及
+每一个在启用时会写入用户级文件的元数据。`enabled` 标记与
+`enabledIds` 数组标出那些 id 已出现在已配置目录中的模板，于是 UI
+无需二次往返就能渲染「已启用」/「启用」按钮。
+
+模板永不携带密钥材料：`apiKey` / `apiKeyMasked` / `hasKey` 在
+画廊载荷中**有意缺席**。用户在启用预设之后再填凭据。
+
+预设的 `auth.type`（`byok` 或 `coding-plan`）在这一层目前只是
+**装饰性的**：没有任何代码路径据此分支，一个已启用但 key 为空的
+预设被引擎消费的方式与一条 byok 记录完全相同。该标签会被保留在
+持久化记录上，好让未来的订阅鉴权行为（按 provider 的 key 流程、
+自动刷新、分层配额）有一个稳定的挂载点；它**今天不改变**任何
+行为。
+
+**响应 200**
+```json
+{
+  "ok": true,
+  "version": 2,
+  "presets": [
+    {
+      "id": "zhipu",
+      "label": "智谱 (Zhipu / GLM)",
+      "protocol": "openai",
+      "auth": { "type": "byok", "baseURL": "https://open.bigmodel.cn/api/paas/v4/" },
+      "models": [
+        { "id": "glm-4-plus", "label": "GLM-4 Plus", "contextLimit": 128000, "modalities": ["text"] }
+      ],
+      "enabled": false
+    }
+  ],
+  "enabledIds": ["zhipu"]
+}
+```
+
+### `POST /api/providers/preset/:id/enable`
+
+把一个预设一键物化进用户级目录。handler 解析模板、把它合并进
+现有目录、通过与 PUT 相同的 `writeProvidersConfig` 流水线写盘
+（原子 rename、完整 v2 校验门），并广播标准的 `providers.updated`
+SSE 事件，让每个已连接客户端刷新目录。下一次 `/api/models` 读取
+即可看到新条目，无需重启（用户级文件每次调用都会重读）。
+
+幂等：对同一个 id 的第二次调用返回 `200` 与
+`alreadyEnabled: true` 以及既有的掩码记录，而不是覆盖用户之后对
+`apiKey` / `baseURL` 的修改。与某个预设同 id 的**自定义** provider
+**不会**被覆盖 —— handler 在同一套幂等契约下返回既有记录。
+
+持久化记录的 `apiKey` 起始为空；用户通过自定义 provider 界面的
+同一个表单填写。
+
+**响应 200**（新启用）
+```json
+{
+  "ok": true,
+  "alreadyEnabled": false,
+  "provider": { /* 掩码视图，形态与 GET 相同 */ },
+  "path": "/home/you/.mcode-webui/providers.json"
+}
+```
+
+**响应 200**（幂等 —— 预设已配置）
+```json
+{
+  "ok": true,
+  "alreadyEnabled": true,
+  "provider": { /* 既有的掩码记录 */ }
+}
+```
+
+- `400 UNKNOWN_PRESET` —— `:id` 不是已知模板。
+- `500 WRITE_FAILED` —— 磁盘 I/O 失败（内存中的状态没有变化；
+  运维应重试）。
 
 ---
 
