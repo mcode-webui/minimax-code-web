@@ -3765,6 +3765,7 @@
     "packages/webui/webapp/lib/markdown.ts",
     "packages/webui/webapp/lib/math-renderer.ts",
     "packages/webui/webapp/lib/mermaid-renderer.ts",
+    "packages/webui/webapp/lib/model-groups.ts",
     "packages/webui/webapp/lib/open-file.ts",
     "packages/webui/webapp/lib/path-clipboard.ts",
     "packages/webui/webapp/lib/persist.ts",

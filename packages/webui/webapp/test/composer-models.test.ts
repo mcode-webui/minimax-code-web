@@ -1,106 +1,191 @@
 // webapp/test/composer-models.test.ts
 //
-// Unit tests for the catalogue grouping the composer ModelSelect applies
-// before rendering. Pin the order-preserving behaviour the ModelSelect
-// panel relies on: catalogue order is preserved within each provider,
-// providers are bucketed in first-seen order, and entries without a
-// provider land in a single `__other` bucket so they are still reachable.
+// Unit tests for the catalogue grouping and the thinking-level
+// derivations the composer ModelSelect applies before rendering.
 //
-// Style note: pure-function re-implementation (mirroring the grouping
-// inside composer.tsx#ModelSelect). The grouping logic is small and
-// stable; isolating it here means the regression lives next to the test
-// instead of being a snapshot of a render-tree.
+// The functions under test are the PRODUCT functions, imported from
+// `webapp/lib/model-groups.ts` — the same module `components/composer.tsx`
+// imports. An earlier revision of this file re-implemented the grouping
+// loop here and commented that the mirror was intentional; that made the
+// suite structurally incapable of failing: break the grouping in the
+// component and these tests stayed green. Red line ⑤ (provider grouping +
+// thinking levels must not regress) had no defence at all. The mirrors
+// for red-line-⑤ derivations are now gone; what remains below is listed
+// under "STILL MIRRORED" at the bottom of the file, with the same caveat.
 
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 
-interface CatalogueEntry {
-  id: string;
-  label: string;
-  provider?: string;
-}
+import {
+  OTHER_PROVIDER_ID,
+  chipLevelSuffix,
+  groupModelsByProvider,
+  isGroupDisabled,
+  modalityBadgeKey,
+  providerIdOfModel,
+  providerLabel,
+  thinkingLevelKey,
+  thinkingLevelLabel,
+  thinkingLevelsForModel,
+} from "../lib/model-groups";
+import type { ProviderGroupMeta, SelectableModel } from "../lib/model-groups";
 
-/** Mirror of composer.tsx ModelSelect's grouping derivation. */
-function groupModelsByProvider(
-  models: CatalogueEntry[],
-  otherLabel: string,
-): Array<{ key: string; label: string; models: CatalogueEntry[] }> {
-  const order: string[] = [];
-  const buckets = new Map<string, CatalogueEntry[]>();
-  for (const model of models) {
-    const key = model.provider ?? "__other";
-    if (!buckets.has(key)) {
-      buckets.set(key, []);
-      order.push(key);
-    }
-    buckets.get(key)!.push(model);
-  }
-  return order.map((key) => ({
-    key,
-    label: key === "__other" ? otherLabel : key,
-    models: buckets.get(key)!,
-  }));
-}
+interface CatalogueEntry extends SelectableModel {}
 
 describe("groupModelsByProvider — composer ModelSelect grouping", () => {
   test("groups entries by `provider` while preserving catalogue order", () => {
-    const groups = groupModelsByProvider(
+    const groups = groupModelsByProvider<CatalogueEntry>(
       [
         { id: "minimax_api/MiniMax-M3", label: "MiniMax-M3", provider: "minimax_api" },
         { id: "openai_compat/gpt-4o", label: "GPT-4o", provider: "openai_compat" },
         { id: "minimax_api/MiniMax-M2.7", label: "MiniMax-M2.7", provider: "minimax_api" },
       ],
+      [],
       "Other",
     );
     assert.equal(groups.length, 2);
     const first = groups[0];
     const second = groups[1];
     assert.ok(first && second, "groups present");
-    assert.equal(first.key, "minimax_api");
+    assert.equal(first.id, "minimax_api");
     assert.deepEqual(
       first.models.map((m) => m.id),
       ["minimax_api/MiniMax-M3", "minimax_api/MiniMax-M2.7"],
       "catalogue order preserved within a provider",
     );
-    assert.equal(second.key, "openai_compat");
+    assert.equal(second.id, "openai_compat");
     assert.equal(second.models.length, 1);
   });
 
+  test("provider buckets appear in first-seen order", () => {
+    const groups = groupModelsByProvider<CatalogueEntry>(
+      [
+        { id: "openai_compat/gpt-4o", label: "GPT-4o", provider: "openai_compat" },
+        { id: "minimax_api/MiniMax-M3", label: "M3", provider: "minimax_api" },
+        { id: "anthropic/claude", label: "Claude", provider: "anthropic" },
+      ],
+      [],
+      "Other",
+    );
+    assert.deepEqual(groups.map((g) => g.id), ["openai_compat", "minimax_api", "anthropic"]);
+  });
+
+  test("the server-resolved group label wins over the built-in providerLabel", () => {
+    const meta: ProviderGroupMeta[] = [
+      { id: "openai_compat", label: "OpenAI (自建)" },
+      { id: "minimax_api", label: "MiniMax" },
+    ];
+    const withMeta = groupModelsByProvider<CatalogueEntry>(
+      [
+        { id: "openai_compat/gpt-4o", label: "GPT-4o", provider: "openai_compat" },
+        { id: "zai-max/glm-5.3", label: "GLM-5.3", provider: "zai-max" },
+      ],
+      meta,
+      "Other",
+    );
+    assert.equal(withMeta[0]?.label, "OpenAI (自建)", "server label wins");
+    assert.equal(
+      withMeta[1]?.label,
+      "zai-max",
+      "no server label → the built-in fallback, which renders the raw unknown id",
+    );
+  });
+
+  test("the group auth view rides along (the no-key greying input)", () => {
+    const meta: ProviderGroupMeta[] = [
+      { id: "anthropic", label: "Anthropic", auth: { hasKey: false, type: "byok" } },
+    ];
+    const groups = groupModelsByProvider<CatalogueEntry>(
+      [{ id: "anthropic/claude", label: "Claude", provider: "anthropic" }],
+      meta,
+      "Other",
+    );
+    assert.equal(groups[0]?.auth?.hasKey, false);
+    assert.equal(isGroupDisabled(groups[0]!), true, "no-key group derives as disabled");
+  });
+
   test("provider-less entries fall into a single `__other` bucket", () => {
-    const groups = groupModelsByProvider(
+    const groups = groupModelsByProvider<CatalogueEntry>(
       [
         { id: "m:minimax_api:MiniMax-M3:v:default", label: "M3 default" },
         { id: "minimax_api/MiniMax-M3", label: "MiniMax-M3", provider: "minimax_api" },
+        { id: "m:minimax_api:MiniMax-M2:v:default", label: "M2 default" },
       ],
+      [],
       "Other",
     );
     const first = groups[0];
     const second = groups[1];
     assert.ok(first && second, "both groups present");
     // `__other` comes first because it was seen first in the catalogue
-    assert.equal(first.key, "__other");
+    assert.equal(first.id, OTHER_PROVIDER_ID);
     assert.equal(first.label, "Other");
-    assert.equal(second.key, "minimax_api");
+    assert.equal(first.models.length, 2, "every provider-less entry shares the one bucket");
+    assert.equal(second.id, "minimax_api");
   });
 
   test("empty catalogue yields no groups", () => {
-    const groups = groupModelsByProvider([], "Other");
+    const groups = groupModelsByProvider<CatalogueEntry>([], [], "Other");
     assert.equal(groups.length, 0);
   });
 
   test("all-providerless catalogue collapses to one group", () => {
-    const groups = groupModelsByProvider(
+    const groups = groupModelsByProvider<CatalogueEntry>(
       [
         { id: "m:a:b:v:x", label: "x" },
         { id: "m:a:b:v:y", label: "y" },
       ],
+      [],
       "Other",
     );
     assert.equal(groups.length, 1);
     const only = groups[0];
     assert.ok(only, "single group present");
-    assert.equal(only.key, "__other");
+    assert.equal(only.id, OTHER_PROVIDER_ID);
     assert.equal(only.models.length, 2);
+  });
+
+  test("the grouping key and the active-model provider id agree", () => {
+    // The row ✓ marker and the scroll target key off `providerIdOfModel`
+    // while the rows themselves key off `groupModelsByProvider`. A
+    // disagreement strands the active model outside its own section.
+    const models: CatalogueEntry[] = [
+      { id: "a/1", label: "1", provider: "openai_compat" },
+      { id: "b/1", label: "1", provider: "minimax_api" },
+      { id: "c/1", label: "1" },
+    ];
+    const grouped = groupModelsByProvider(models, [], "Other");
+    for (const model of models) {
+      const id = providerIdOfModel(models, model.id);
+      assert.ok(
+        grouped.some((g) => g.id === id),
+        `model ${model.id} resolves to group ${id}, which must exist`,
+      );
+    }
+  });
+});
+
+describe("providerIdOfModel — the active model's provider section", () => {
+  test("active model's provider wins", () => {
+    assert.equal(
+      providerIdOfModel([{ id: "m", label: "M", provider: "minimax_api" }], "m"),
+      "minimax_api",
+    );
+  });
+
+  test("provider-less active model → the `__other` bucket", () => {
+    assert.equal(
+      providerIdOfModel([{ id: "m", label: "M" }], "m"),
+      OTHER_PROVIDER_ID,
+    );
+  });
+
+  test("unknown / empty active id → the `__other` bucket (never a phantom group)", () => {
+    const models: CatalogueEntry[] = [{ id: "m", label: "M", provider: "minimax_api" }];
+    assert.equal(providerIdOfModel(models, "ghost"), OTHER_PROVIDER_ID);
+    assert.equal(providerIdOfModel(models, ""), OTHER_PROVIDER_ID);
+    assert.equal(providerIdOfModel(models, null), OTHER_PROVIDER_ID);
+    assert.equal(providerIdOfModel(models, undefined), OTHER_PROVIDER_ID);
   });
 });
 
@@ -135,53 +220,6 @@ interface Group {
   auth?: GroupAuth;
 }
 
-/** Mirror of composer.tsx#isGroupDisabled. */
-function isGroupDisabled(group: { auth?: GroupAuth }): boolean {
-  if (!group.auth) return false;
-  return group.auth.hasKey === false;
-}
-
-/** Mirror of composer.tsx#modalityBadgeKey. */
-function modalityBadgeKey(modality: string): string {
-  switch (modality) {
-    case "text":
-      return "modelSelector.modalityBadge.text";
-    case "image":
-      return "modelSelector.modalityBadge.image";
-    case "audio":
-      return "modelSelector.modalityBadge.audio";
-    case "video":
-      return "modelSelector.modalityBadge.video";
-    default:
-      return "modelSelector.modalityBadge.file";
-  }
-}
-
-/** Mirror of composer.tsx#thinkingLevelKey. */
-function thinkingLevelKey(level: string): string | null {
-  switch (level) {
-    case "off":
-    case "none":
-      return "thinkingPicker.off";
-    case "on":
-      return "thinkingPicker.on";
-    case "low":
-      return "thinkingPicker.low";
-    case "minimal":
-      return "thinkingPicker.minimal";
-    case "medium":
-      return "thinkingPicker.medium";
-    case "high":
-      return "thinkingPicker.high";
-    case "xhigh":
-      return "thinkingPicker.xhigh";
-    case "max":
-      return "thinkingPicker.max";
-    default:
-      return null;
-  }
-}
-
 describe("isGroupDisabled — provider group greyed when no API key", () => {
   test("no auth view → enabled (engine session group has no auth)", () => {
     assert.equal(isGroupDisabled({}), false);
@@ -204,6 +242,25 @@ describe("isGroupDisabled — provider group greyed when no API key", () => {
       isGroupDisabled({ auth: { hasKey: true, type: "byok" } }),
       false,
     );
+  });
+
+  test("the disabled flag is what the composer's cascade-open gate reads", () => {
+    // `cascadeOpenFor` refuses to fly out of a no-key provider, so a
+    // group that derives as enabled here must fly out and vice versa.
+    const noKey: Group = {
+      id: "anthropic",
+      label: "Anthropic",
+      auth: { hasKey: false, type: "byok" },
+      models: [{ id: "anthropic/claude", label: "Claude" }],
+    };
+    const ready: Group = {
+      id: "openai_compat",
+      label: "OpenAI",
+      auth: { hasKey: true, type: "byok" },
+      models: [{ id: "openai_compat/gpt-4o", label: "GPT-4o" }],
+    };
+    assert.equal(isGroupDisabled(noKey), true);
+    assert.equal(isGroupDisabled(ready), false);
   });
 });
 
@@ -252,6 +309,12 @@ describe("thinkingLevelKey — engine effort → i18n key", () => {
     assert.equal(thinkingLevelKey("turbo"), null);
     assert.equal(thinkingLevelKey(""), null);
   });
+
+  test("thinkingLevelLabel resolves through t, and falls back to the raw level", () => {
+    const t = (key: string) => `<${key}>`;
+    assert.equal(thinkingLevelLabel(t as never, "high"), "<thinkingPicker.high>");
+    assert.equal(thinkingLevelLabel(t as never, "turbo"), "turbo", "unknown level stays readable");
+  });
 });
 
 // ============================================================
@@ -263,27 +326,19 @@ describe("thinkingLevelKey — engine effort → i18n key", () => {
 // carries an empty `thinkingLevels[]` so the dropdown never advertises
 // a level the engine would reject.
 //
-// The selection rule is identical to the existing ThinkingEffortSelect
-// gating: presence of `thinkingLevels[]` on the catalogue entry is the
-// only signal. Pin the rule here so a future regression that gates
-// the pill row differently surfaces as a test failure.
+// The selection rule is the composer-level ThinkingEffortSelect gate:
+// `thinkingLevelsForModel(catalogue, activeId).length > 0`, where
+// `thinkingLevelsForModel` is the product function the composer itself
+// calls to build the picker's option list. Presence of a non-empty
+// `thinkingLevels[]` on the catalogue entry is the only signal.
 // ============================================================
 
-interface CatalogueEntry {
-  id: string;
-  label: string;
-  thinkingLevels?: string[];
-}
-
-/** Mirror of composer.tsx#ModelSelect's "active model has reasoning
- *  controls" derivation. */
+/** The rule both the pill row and the composer-level control gate on. */
 function activeModelHasInlineLevels(
   catalogue: CatalogueEntry[],
-  activeId: string,
+  activeId: string | null | undefined,
 ): boolean {
-  if (!activeId) return false;
-  const known = catalogue.find((m) => m.id === activeId);
-  return !!known && Array.isArray(known.thinkingLevels) && known.thinkingLevels.length > 0;
+  return thinkingLevelsForModel(catalogue, activeId).length > 0;
 }
 
 describe("inline level row availability — ticket 07", () => {
@@ -320,6 +375,20 @@ describe("inline level row availability — ticket 07", () => {
       [{ id: "minimax/M3", label: "M3", thinkingLevels: ["low"] }],
       "openai/gpt-4o",
     ), false);
+  });
+
+  test("the composer mounts its own effort picker off the same derivation", () => {
+    // `thinkingLevelsForActive` in the composer IS the call the render
+    // gate `thinkingLevelsForActive.length > 0` reads, so the option
+    // list and the visibility decision cannot drift apart.
+    const catalogue: CatalogueEntry[] = [
+      { id: "minimax/M3", label: "M3", thinkingLevels: ["off", "on"] },
+      { id: "minimax/M2", label: "M2" },
+    ];
+    assert.deepEqual(thinkingLevelsForModel(catalogue, "minimax/M3"), ["off", "on"]);
+    assert.deepEqual(thinkingLevelsForModel(catalogue, "minimax/M2"), []);
+    assert.deepEqual(thinkingLevelsForModel(catalogue, "ghost"), []);
+    assert.deepEqual(thinkingLevelsForModel(catalogue, ""), []);
   });
 });
 
@@ -886,40 +955,17 @@ interface ProviderGroup {
 }
 
 /**
- * Mirror of `composer.tsx#ModelSelect`'s provider-group derivation.
- * Order-preserving: groups appear in the order their first model
- * shows up in the flat catalogue. A model without a `provider` lands
- * in a synthetic `__other` group.
- */
-function groupByProvider(
-  models: { id: string; label: string; provider?: string; thinkingLevels?: string[] }[],
-  otherLabel: string,
-): ProviderGroup[] {
-  const order: string[] = [];
-  const buckets = new Map<string, ProviderGroup>();
-  for (const m of models) {
-    const key = m.provider ?? "__other";
-    if (!buckets.has(key)) {
-      buckets.set(key, { id: key, label: key === "__other" ? otherLabel : key, models: [] });
-      order.push(key);
-    }
-    buckets.get(key)!.models.push({
-      id: m.id,
-      label: m.label,
-      thinkingLevels: m.thinkingLevels,
-    });
-  }
-  return order.map((k) => buckets.get(k)!);
-}
-
-/**
- * Mirror of `composer.tsx#ModelSelect#cascadeOpenFor` for provider rows.
+ * `composer.tsx#ModelSelect#cascadeOpenFor` for provider rows.
  *
  * A provider's submenu is open iff:
  *   1. The dropdown itself is open, AND
  *   2. The provider has at least one model, AND
  *   3. The provider is not disabled (no-key provider), AND
  *   4. `submenuFor` names this provider.
+ *
+ * Clause 3 reads the product `isGroupDisabled` rather than restating
+ * the rule; the rest is the call-site conjunction, which is not a named
+ * product function.
  */
 function providerCascadeOpenFor(
   open: boolean,
@@ -929,7 +975,7 @@ function providerCascadeOpenFor(
 ): boolean {
   if (!open) return false;
   if (group.models.length === 0) return false;
-  if (group.auth && group.auth.hasKey === false) return false;
+  if (isGroupDisabled(group)) return false;
   return submenuFor === providerId;
 }
 
@@ -1091,22 +1137,25 @@ describe("providerCascadeItems — ticket 11", () => {
  * Chip stale-suffix guard.
  *
  * The chip's "· level" suffix must NEVER appear when the active model
- * doesn't offer the recorded level. Mirrors the rule inside
- * `composer.tsx#Composer#currentModelLabel`.
+ * doesn't offer the recorded level. `chipLevelSuffix` is the product
+ * function `composer.tsx#Composer#currentModelLabel` appends the
+ * suffix with, so this predicate is the render, not a restatement of
+ * the rule: it resolves the label through `t` and returns the literal
+ * 「 · <label>」 the chip shows.
  */
+const chipT = (key: string) => key;
+
 function chipShowsLevelSuffix(
   activeModel: { id: string; thinkingLevels?: string[] } | null,
   recordedThinking: string,
 ): boolean {
-  if (!recordedThinking) return false;
-  if (!activeModel) return false;
-  const supported = activeModel.thinkingLevels ?? [];
-  return supported.includes(recordedThinking);
+  return chipLevelSuffix(chipT as never, recordedThinking, activeModel) !== "";
 }
 
 describe("chip stale-suffix guard — ticket 11", () => {
   test("no recorded thinking → no suffix", () => {
     assert.equal(chipShowsLevelSuffix({ id: "m" }, ""), false);
+    assert.equal(chipShowsLevelSuffix(null, "high"), false);
   });
 
   test("recorded level is supported → suffix shows", () => {
@@ -1132,6 +1181,24 @@ describe("chip stale-suffix guard — ticket 11", () => {
     assert.equal(
       chipShowsLevelSuffix({ id: "m", thinkingLevels: ["low", "medium"] }, "high"),
       false,
+    );
+  });
+
+  test("the suffix is the translated label, not a raw level glyph", () => {
+    // A zh UI must never grow an English depth word on the chip.
+    assert.equal(
+      chipLevelSuffix(chipT as never, "high", { id: "m", thinkingLevels: ["high"] }),
+      " · thinkingPicker.high",
+    );
+    assert.equal(
+      chipLevelSuffix(chipT as never, "on", { id: "M3", thinkingLevels: ["off", "on"] }),
+      " · thinkingPicker.on",
+      "the two-state toggle's own label",
+    );
+    // A level the i18n table does not know renders no suffix at all.
+    assert.equal(
+      chipLevelSuffix(chipT as never, "turbo", { id: "m", thinkingLevels: ["turbo"] }),
+      "",
     );
   });
 });
@@ -1238,17 +1305,18 @@ describe("levelButtonClickPayload — ticket 11", () => {
  * The button is hidden when the active model has no
  * `thinkingLevels` (the chip becomes a no-op control otherwise). The
  * composer gates the render on `thinkingLevelsForActive.length > 0`,
- * which is derived from the active model's catalogue entry. Pin the
- * rule here so a regression in the gating leaves the button exposed
- * on a no-levels model (a UI bug, but a security-shaped one — the
- * user could pick a level that the engine rejects).
+ * and `thinkingLevelsForActive` is `thinkingLevelsForModel(catalogue,
+ * activeId)` — so this predicate is that gate, driven by the product
+ * function rather than a restatement of it.
  */
 function levelButtonShouldRender(
   activeModel: { thinkingLevels?: string[] } | null | undefined,
 ): boolean {
   if (!activeModel) return false;
-  const supported = activeModel.thinkingLevels ?? [];
-  return supported.length > 0;
+  return thinkingLevelsForModel(
+    [{ id: "active", label: "active", thinkingLevels: activeModel.thinkingLevels }],
+    "active",
+  ).length > 0;
 }
 
 describe("levelButtonShouldRender — ticket 11", () => {
@@ -1364,3 +1432,36 @@ describe("cascadePlacement — ticket 11 right-side placement", () => {
     assert.equal(pos.top, 592, "bottom edge clamped to viewport - height - inset");
   });
 });
+// ============================================================
+// STILL MIRRORED — known-unverified helpers remaining in this file.
+//
+// Everything red line ⑤ names (provider grouping, the thinking-level
+// derivations, the level/badge/suffix key maps) now runs against
+// `webapp/lib/model-groups.ts` — the module `components/composer.tsx`
+// imports. The helpers below did NOT move and are still local copies of
+// composer behaviour, so breaking the product code they describe leaves
+// their tests green. They are listed rather than quietly left in place:
+//
+//   - isConfiguredGroup         — a constant `true`; documents that the
+//                                 server does the filtering, asserts no
+//                                 client code.
+//   - selectorMaxHeightPx       — the panel uses Tailwind `max-h-[60vh]`;
+//                                 no JS reads this number.
+//   - scrollIntoViewAdjustment  — the composer's useEffect does this math
+//                                 inline; the copy cannot see a revert.
+//   - scrollBehavior            — the composer's prefersReducedMotion
+//                                 branches inline.
+//   - makeAddProviderBridge     — the call site's callback shape.
+//   - webuiFullModelId          — a mirror of routes/model.js, not of
+//                                 the composer; the server route is not
+//                                 importable from the node test runner.
+//   - providerCascadeItems / providerCascadeOpenFor (conjunction only) /
+//     cascadeModelClickPayload / levelButtonClickPayload /
+//     modelPickBudget / levelPickBudget / cascadePlacement
+//                               — ticket 11 cascade interaction and wire
+//                                 payloads, none of which is a named
+//                                 product function to import.
+//
+// Red line ⑤ has no entries left. The cascade surface above does, and
+// is the next extraction to make (same treatment as lib/model-groups).
+// ============================================================

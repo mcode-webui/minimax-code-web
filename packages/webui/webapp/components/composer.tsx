@@ -21,6 +21,17 @@ import {
   resolveEffortCurrent,
 } from "@/lib/effort-control";
 import {
+  chipLevelSuffix,
+  groupModelsByProvider,
+  isGroupDisabled,
+  modalityBadgeKey,
+  providerIdOfModel,
+  providerLabel,
+  thinkingLevelKey,
+  thinkingLevelLabel,
+  thinkingLevelsForModel,
+} from "@/lib/model-groups";
+import {
   getComposerDraft,
   mergeRestoredDraft,
   setComposerDraft,
@@ -319,11 +330,8 @@ export function Composer({
     // (clearing the level when the new model doesn't support it)
     // lives in the `onPick` callback below.
     const activeModel = models.find((m) => m.id === value);
-    const supported = activeModel?.thinkingLevels ?? [];
-    if (thinking && !supported.includes(thinking)) return baseLabel;
-    const level = thinkingLevelKey(thinking);
-    if (!level) return baseLabel;
-    return `${baseLabel} · ${t(level)}`;
+    const suffix = chipLevelSuffix(t, thinking, activeModel);
+    return suffix ? `${baseLabel}${suffix}` : baseLabel;
   }, [models, state?.model?.name, state?.model?.thinking, t]);
 
   /**
@@ -336,12 +344,10 @@ export function Composer({
    * picker (e.g. mid-fetch, or the engine encoded an id the
    * catalogue doesn't carry).
    */
-  const thinkingLevelsForActive = useMemo(() => {
-    const value = state?.model?.name ?? "";
-    if (!value) return [];
-    const known = models.find((model) => model.id === value);
-    return known?.thinkingLevels ?? [];
-  }, [models, state?.model?.name]);
+  const thinkingLevelsForActive = useMemo(
+    () => thinkingLevelsForModel(models, state?.model?.name),
+    [models, state?.model?.name],
+  );
 
   /**
    * U6 — the context-window radio's current value and the pick handler
@@ -1185,40 +1191,20 @@ function ModelSelect({
   // Group by provider, preserving the catalogue order. A provider-less entry
   // (engine-encoded ids whose prefix wasn't coerced) falls into "Other" so it
   // is still reachable from the menu. The /api/models groups[] carries the
-  // server-resolved label + auth view; merge it into the in-component shape.
-  const grouped = useMemo(() => {
-    const order: string[] = [];
-    const buckets = new Map<
-      string,
-      { id: string; label: string; models: typeof models; auth?: { hasKey: boolean; type: "byok" | "coding-plan" } }
-    >();
-    for (const model of models) {
-      const key = model.provider ?? "__other";
-      if (!buckets.has(key)) {
-        const meta = groups.find((g) => g.id === key);
-        buckets.set(key, {
-          id: key,
-          label:
-            key === "__other"
-              ? t("modelSelector.other")
-              : meta?.label ?? providerLabel(key),
-          models: [],
-          auth: meta?.auth,
-        });
-        order.push(key);
-      }
-      buckets.get(key)!.models.push(model);
-    }
-    return order.map((key) => buckets.get(key)!);
-  }, [models, groups, t]);
+  // server-resolved label + auth view; `groupModelsByProvider` (lib/model-groups)
+  // merges it into the in-component shape.
+  const grouped = useMemo(
+    () => groupModelsByProvider(models, groups, t("modelSelector.other")),
+    [models, groups, t],
+  );
 
   // The provider id of the active model — `__other` for ungrouped
   // entries. Drives the ✓ marker on provider rows and the scroll-
   // into-view target.
-  const activeProviderId = useMemo(() => {
-    const m = models.find((x) => x.id === value);
-    return m?.provider ?? "__other";
-  }, [models, value]);
+  const activeProviderId = useMemo(
+    () => providerIdOfModel(models, value),
+    [models, value],
+  );
 
   /**
    * Ticket 49 — the model the CASCADE-SIDE detail column describes.
@@ -2133,22 +2119,6 @@ function prefersReducedMotion(): boolean {
 }
 
 /**
- * True when a provider group should render greyed.
- *
- * Groups with `auth.hasKey === false` cannot reach their models — every
- * pick would 401/403. The engine session group (`__engine`) does not
- * carry `auth` at all; it is always usable because the engine has
- * already authenticated against its own credentials.
- */
-function isGroupDisabled(group: {
-  id: string;
-  auth?: { hasKey: boolean; type: "byok" | "coding-plan" };
-}): boolean {
-  if (!group.auth) return false;
-  return group.auth.hasKey === false;
-}
-
-/**
  * One row of a `SelectPanel`.
  *
  * A plain button, not an antd `Menu` item: the desktop renders these popups as
@@ -2511,78 +2481,6 @@ const CascadeSubmenu = forwardRef<
 });
 
 /**
- * Map a server-supplied modality string to its i18n key.
- *
- * Falls back to `file` for any value the catalogue carries but the
- * dictionary doesn't know — `file` is the closest neutral word and
- * keeps the badge readable rather than dropping a glyph on the row.
- */
-function modalityBadgeKey(modality: string): MessageKey {
-  switch (modality) {
-    case "text":
-      return "modelSelector.modalityBadge.text";
-    case "image":
-      return "modelSelector.modalityBadge.image";
-    case "audio":
-      return "modelSelector.modalityBadge.audio";
-    case "video":
-      return "modelSelector.modalityBadge.video";
-    default:
-      return "modelSelector.modalityBadge.file";
-  }
-}
-
-/**
- * Map a server-supplied thinking level to its i18n key.
- *
- * Two level vocabularies reach this map (ticket 36):
- *   - effort levels (`off` / `low` / `medium` / `high` / `xhigh` /
- *     `max` / `minimal` / `none`) from provider catalogues and the
- *     engine's `thinkingEffort` option;
- *   - the two-state toggle (`off` / `on`) projected from switchable
- *     builtin MiniMax models (MiniMax-M3) — "on" is the pair of
- *     "off", never a depth, so it gets its own label.
- * Unknown levels fall through to no tag — the picker still shows
- * them but the chip label stays clean.
- */
-function thinkingLevelKey(level: string): MessageKey | null {
-  switch (level) {
-    case "off":
-    case "none":
-      return "thinkingPicker.off";
-    case "on":
-      return "thinkingPicker.on";
-    case "low":
-      return "thinkingPicker.low";
-    case "minimal":
-      return "thinkingPicker.minimal";
-    case "medium":
-      return "thinkingPicker.medium";
-    case "high":
-      return "thinkingPicker.high";
-    case "xhigh":
-      return "thinkingPicker.xhigh";
-    case "max":
-      return "thinkingPicker.max";
-    default:
-      return null;
-  }
-}
-
-/**
- * Resolve a thinking level to its display label (the same keys
- * `thinkingLevelKey` returns, just looked up through `t`).
- *
- * Unknown levels fall through to the raw string — same fallback the
- * ThinkingEffortSelect menu uses, so a model that ships a brand-new
- * level still surfaces it instead of dropping a glyph on the chip.
- */
-function thinkingLevelLabel(t: (key: MessageKey) => string, level: string): string {
-  const key = thinkingLevelKey(level);
-  return key ? t(key) : level;
-}
-
-/**
  * Thinking-effort picker.
  *
  * Same shell and panel as the other selectors. The trigger is the
@@ -2678,30 +2576,6 @@ function ThinkingEffortSelect({
       </button>
     </Dropdown>
   );
-}
-
-/**
- * Display label for a provider id.
- *
- * Falls back to the raw id when nothing better is known — keeping the chip
- * readable beats hiding the value. New provider ids ship without a translation
- * here on purpose: an unknown id means the catalogue has a provider the rest
- * of the UI does not yet know about, and rendering the raw id surfaces the
- * drift instead of silently mapping it to something plausible.
- */
-function providerLabel(id: string): string {
-  switch (id) {
-    case "minimax_api":
-      return "MiniMax";
-    case "openai_compat":
-      return "OpenAI";
-    case "anthropic":
-      return "Anthropic";
-    case "__engine":
-      return "Engine session";
-    default:
-      return id;
-  }
 }
 
 /**
