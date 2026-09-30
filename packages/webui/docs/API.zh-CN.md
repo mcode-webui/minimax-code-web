@@ -1133,7 +1133,7 @@ plugin-system；host 在第一次插件调用时懒起，路由自身不持有�
 
 阶段①只覆盖 plugins 域。`skills` / `mcp` / `apps` / `agents` 尚无
 端点，这四个页签渲染阶段性占位，明说其管理界面在后续阶段开放。
-界面现状记录在 [docs/webui.zh-CN.md](../../docs/webui.zh-CN.md)。
+界面现状记录在 [docs/webui.zh-CN.md](../../../docs/webui.zh-CN.md)。
 
 | func_name | 端点 | 面板用途 |
 |---|---|---|
@@ -1413,7 +1413,7 @@ plugin-system；host 在第一次插件调用时懒起，路由自身不持有�
 
 阶段①只覆盖 plugins 域。`skills` / `mcp` / `apps` / `agents` 尚无
 端点，这四个页签渲染阶段性占位，明说其管理界面在后续阶段开放。
-界面现状记录在 [docs/webui.zh-CN.md](../../docs/webui.zh-CN.md)。
+界面现状记录在 [docs/webui.zh-CN.md](../../../docs/webui.zh-CN.md)。
 
 | func_name | 端点 | 面板用途 |
 |---|---|---|

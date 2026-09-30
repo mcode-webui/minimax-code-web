@@ -365,7 +365,7 @@ so that no file has to hold more than one concern:
 
 ## License
 
-Apache-2.0. See [LICENSE](LICENSE).
+Apache-2.0. See [LICENSE](../../../../LICENSE).
 
 ## Design notes
 
