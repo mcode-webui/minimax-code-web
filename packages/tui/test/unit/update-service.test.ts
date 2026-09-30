@@ -4,10 +4,10 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { McodeUpdateService, type McodeUpdateDependencies } from '../../src/update/service.js';
 import { resolveMcodeNpmDistribution } from '../../src/update/install-source.js';
-import type { McodeReleaseManifestV1 } from '../../src/update/release.js';
+import { resolveMcodeReleaseTarget, type McodeReleaseManifestV1 } from '../../src/update/release.js';
 
 const temporaryRoots: string[] = [];
 
@@ -53,6 +53,43 @@ function releaseFixture(version = '1.2.4', artifact = Buffer.from('signed artifa
 afterEach(() => {
   for (const root of temporaryRoots.splice(0)) {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// McodeUpdateService.check() resolves the release target from the running
+// process, so this file only runs on a host release.ts actually publishes for.
+// A host outside that set (linux-arm64, for example) fails every check with
+// "Unsupported MCode update host" no matter what the test asserts. Pin the
+// reported platform and arch to a real required target for the duration of
+// each test, and restore the host descriptors afterwards so the rest of the
+// process is unaffected. Hosts that already publish keep their own values,
+// which leaves the win32-only install test exercising the real win32 branch.
+const hostIsRequiredTarget = (() => {
+  try {
+    resolveMcodeReleaseTarget();
+    return true;
+  } catch {
+    return false;
+  }
+})();
+const pinnedTarget = hostIsRequiredTarget
+  ? { platform: process.platform, arch: process.arch }
+  : { platform: 'linux', arch: 'x64' };
+const hostDescriptors = {
+  platform: Object.getOwnPropertyDescriptor(process, 'platform'),
+  arch: Object.getOwnPropertyDescriptor(process, 'arch'),
+};
+
+beforeEach(() => {
+  for (const [key, value] of Object.entries(pinnedTarget)) {
+    Object.defineProperty(process, key, { value, configurable: true });
+  }
+});
+
+afterEach(() => {
+  for (const [key, descriptor] of Object.entries(hostDescriptors)) {
+    if (!descriptor) continue;
+    Object.defineProperty(process, key, descriptor);
   }
 });
 
