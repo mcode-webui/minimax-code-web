@@ -4,10 +4,10 @@
 > extracted from the shipped desktop client, and it defines the tokens, typography, theme
 > protocol, layout constants, and component contracts the Web UI must adopt.
 >
-> **Authority.** The **desktop client's colour system is the source of truth**. Where the Web
-> UI's current theme differs, the desktop value wins and the Web UI value is to be migrated —
-> see [§12](#12-migrating-the-web-ui-theme-to-the-desktop-system), which lists the current
-> Web UI tokens, their desktop replacements, and the exact values.
+> **Authority.** The **desktop client's colour system is the source of truth**. The Web UI
+> adopted it in full, so there is no live divergence left to resolve. [§12](#12-migrating-the-web-ui-theme-to-the-desktop-system)
+> records that migration: the Web UI tokens it retired, their desktop replacements, and the
+> exact values.
 >
 > **Not in scope.** `packages/webui/server/trajectory/DESIGN.md` documents a different
 > subject: the Trajectory Studio plugin's design (data sources, MCP vs Mini App, panel
@@ -30,9 +30,9 @@ Every value below was read from the desktop artifact.
 | TUI palette | `packages/tui/src/tui/theme/palettes.ts`, `contracts.ts`, `syntax.ts` |
 
 Extraction is read-only; see `DESKTOP-ARCHITECTURE.md` §1 for the asar header format and the reader
-snippet. Current Web UI values in §12 come from
-`packages/webui/webapp/styles/tokens.css` (the Next-export frontend's
-verbatim copy of the desktop stylesheet).
+snippet. The retired Web UI values in §12 are the pre-migration `tokens.css`, kept as the
+baseline the migration was measured against; `tokens.css` itself is now the desktop stylesheet
+verbatim.
 
 ## 2. Design principles
 
@@ -532,15 +532,19 @@ keeps the door open for reusing those rules, and it makes the surface explicit i
 
 ### 7.5 What the Web UI already has
 
-`packages/webui/webapp/styles/tokens.css` (with `app/layout.tsx` writing the
-attributes) implements the same mechanism: `data-theme="light|dark"` on
-`:root`, a `@media (prefers-color-scheme: dark)` fallback guarded by
-`:root:not([data-theme="light"])`, and `localStorage["theme"]`.
+`packages/webui/webapp/styles/tokens.css` implements the **desktop's own** mechanism:
+a `light` / `dark` class on `<html>` (`app/layout.tsx` writes it from an inline
+bootstrap, so there is no flash of the wrong theme), a `prefers-color-scheme`
+fallback, and a three-state user choice — `light`, `dark`, `system` — persisted
+in the `webui:ui:v1:<cid>` `localStorage` envelope. `system` follows the OS live
+rather than only at first paint, via `components/appearance-sync.tsx`.
 
-Keep it. It already solves the flash-of-wrong-theme problem and is dependency-free.
-The migration in §12 changes token **values and names**, not this mechanism. Adding
-`style.colorScheme` alongside `data-theme` is the one behavioural improvement worth making,
-because it fixes native form controls and scrollbars.
+The pre-migration frontend instead used a `data-theme="light|dark"` attribute on
+`:root` with a `localStorage["theme"]` key. Neither survives: `data-theme` has one
+hit in `webapp/`, and it is a Mermaid SVG attribute, not a theme switch.
+
+`style.colorScheme` is set alongside the class, which is what fixes native form
+controls and scrollbars.
 
 ## 8. Layout
 
@@ -824,15 +828,22 @@ other      update changelog review parent
 
 ## 12. Migrating the Web UI theme to the desktop system
 
-`packages/webui/webapp/styles/tokens.css` (the new frontend) currently
-implements a theme it calls **"Ink & Paper" v3**: a deliberately monochrome
-palette — neutral surfaces, a near-black / near-white accent, and
-desaturated semantic colours (`--success` and `--warning` are greys).
+> **Status: the migration is complete.** The three columns on the left of the table below are
+> kept as the historical record of what the Web UI shipped *before* the migration. They are
+> marked **retired** and no longer describe the running product.
 
-**Under this document's authority rule, that palette is replaced by the desktop's.** The table
-below is the migration: current Web UI token → desktop token → the value to adopt.
+`packages/webui/webapp/styles/tokens.css` is now the desktop's own stylesheet, copied
+verbatim. Its header states this, and states that it must not be hand-edited — regenerate it
+from the extracted upstream sheet. The retired "Ink & Paper" v3 palette it replaced — neutral
+surfaces, a near-black / near-white accent, greys for `--success` and `--warning` — is gone:
+`Ink & Paper` has zero hits in the stylesheet, and so do `--success`, `--warning`, `--danger`
+and `var(--accent)` across the whole of `webapp/`.
 
-| Current Web UI token | Light now | Dark now | Desktop token | Light | Dark |
+**Under this document's authority rule, the desktop's palette is the Web UI's.** The table
+below is the migration that was carried out: retired Web UI token → desktop token → the value
+adopted.
+
+| Retired Web UI token | Light (retired) | Dark (retired) | Desktop token | Light | Dark |
 | --- | --- | --- | --- | --- | --- |
 | `--bg` | `#fafafa` | `#0b0b0c` | `--bg_default_primary` | `#fff` | `#171717` |
 | `--bg-elevated` | `#ffffff` | `#141416` | `--bg_default_primary_elevated` | `#fff` | `#1c1c1c` |
@@ -869,13 +880,30 @@ The four rows in bold are the visible identity change: the accent becomes brand 
 of near-black, and success / warning / danger become real colours instead of greys. Everything
 else is a value refinement that keeps the layout intact.
 
-### 12.1 Migration order
+**Postscript — the right-hand columns are what the product runs on.** Every desktop token in
+the table is defined in `tokens.css` with both theme values, and every value matches:
+
+| Adopted token | `tokens.css` | Light resolves to | Dark resolves to |
+| --- | --- | --- | --- |
+| `--text_default_accent` | L396 / L649 | `--blue_400` `#0094fc` | `--blue_500` `#0077d9` |
+| `--text_status_success` | L448 / L701 | `--green_400` `#04b54b` | `--green_500` `#009c3d` |
+| `--text_status_warning` | L449 / L702 | `--orange_400` `#f56811` | `--orange_500` `#e25507` |
+| `--text_status_error` | L447 / L700 | `--red_400` `#f73646` | `--red_500` `#e31937` |
+| `--bg_interaction_accent_hover` | L293 | `#0094fc0a` | — |
+| `--bg_interaction_accent_press` | L295 / L539 | `#0094fc14` | `#0064ab26` |
+
+The alias step in §12.1 (keep the old names for one release, then remove them) was not needed:
+the stylesheet was replaced wholesale rather than repointed rule by rule, so the retired names
+left with it. `--font-mono` is the one row whose token is not in `tokens.css` — the
+`--mcode-font-family-*` families ship in `webapp/styles/desktop-typography.css`, and
+`tokens.css` carries no `font-family` at all.
+
+### 12.1 Migration order (as planned; step 3's alias pass was not needed)
 
 1. Add the primitive scale (§3) and the scales (§4) to `main.css` under `:root`.
 2. Add the semantic tokens (§5) with both theme values.
-3. Repoint existing component rules from the current names to the semantic names. Keeping the
-   old names as aliases for one release reduces the diff and lets the change be reviewed
-   incrementally:
+3. Repoint existing component rules from the old names to the semantic names. The plan was to
+   keep the old names as aliases for one release:
 
    ```css
    :root[data-theme="light"] {
@@ -887,15 +915,20 @@ else is a value refinement that keeps the layout intact.
    }
    ```
 
-4. Adopt the typography scale (§6), including the CJK font stack and the locale-dependent
-   input height.
-5. Replace the code block theme with `--code-theme-*` (§10).
-6. Remove the aliases once no rule references them.
+   **This did not happen.** The stylesheet was replaced wholesale by the desktop's own, so
+   there was never a window in which both sets of names were live, and steps 4 and 6 (adopt
+   the typography scale, remove the aliases) had no alias set to act on. The typography scale
+   and the `--code-theme-*` block theme did land, in `desktop-typography.css` and
+   `tokens.css` respectively.
 
 ### 12.2 What does not change
 
-- The theme mechanism: `data-theme` on `:root`, the `prefers-color-scheme` fallback, and
-  `localStorage["webui-theme"]` stay as they are (§7.5).
+- The theme mechanism, in the form the desktop uses: a `light` / `dark` **class on `<html>`**
+  (written by the inline bootstrap in `app/layout.tsx`, plus
+  `components/appearance-sync.tsx` for live `prefers-color-scheme` changes), with a three-state
+  user choice — `light`, `dark`, `system` — persisted in the `webui:ui:v1:<cid>`
+  `localStorage` envelope. §7.5's earlier `data-theme` attribute and
+  `localStorage["webui-theme"]` key described the pre-migration frontend and no longer exist.
 - The layout structure and component markup. This is a token and value change.
 - The server is bundled, not dependency-free: `scripts/build.mjs` produces
   `dist/webui/server.js` from `packages/webui/server/bootstrap.js` and inlines the
@@ -920,7 +953,7 @@ else is a value refinement that keeps the layout intact.
 - [ ] Mixed Chinese/English text falls back to `HarmonyOS Sans SC` / `PingFang SC`.
 - [ ] Status line items follow the TUI ordering, hiding, and exclusivity rules.
 - [ ] The command palette covers the TUI's 40 slash commands.
-- [ ] `style.colorScheme` is set alongside `data-theme`.
+- [ ] `style.colorScheme` is set alongside the `light` / `dark` class on `<html>`.
 - [ ] `data-mavis-surface="web"` is declared on `html`.
 
 ## Appendix: token inventory

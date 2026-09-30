@@ -1207,7 +1207,7 @@ Phase 1 covers the plugins domain only. `skills`, `mcp`, `apps` and
 `agents` have no endpoints yet; the other four tabs of the panel
 render a staged placeholder that says their management surface opens
 in a later phase. The state of the surface is recorded in
-[docs/webui.md](../../docs/webui.md).
+[docs/webui.md](../../../docs/webui.md).
 
 | func_name | Endpoint | Panel use |
 |---|---|---|

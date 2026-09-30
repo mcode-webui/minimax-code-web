@@ -139,7 +139,7 @@ The webui only forwards stdin / parses stdout / renders the SSE stream.
 ### Configuration (verbatim)
 
 CORS headers are decided per request at the top of
-[`server/router.js`](server/router.js#handleRequest) — Gate 1:
+[`server/router.js`](../server/router.js#handleRequest) — Gate 1:
 
 ```js
 res.setHeader("Vary", "Origin");
