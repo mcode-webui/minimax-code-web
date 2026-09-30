@@ -587,7 +587,7 @@ reuses the same `searchFootSegments` footer as the file-tree filter
 (scanned / matches / skipped / truncated / budget), and on click
 sends an expand-to-hit request through the shared `fs-tree-reveal`
 channel so the file tree panel applies the same expand + highlight.
-**The plugin panel shipped with the plugin backend (dispatch 68).**
+**The plugin panel shipped with the plugin backend (ticket 68).**
 `PluginsSurface` (`webapp/components/plugins-surface.tsx`) is mounted in
 both column hosts (`panels.tsx:354`, `workspace-tree-column.tsx:645`), so
 the ten `/api/plugins/*` endpoints in
