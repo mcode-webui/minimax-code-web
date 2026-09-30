@@ -94,3 +94,59 @@ export function computeTurnStatsByUnit(
   });
   return stats;
 }
+
+/**
+ * True when the turn has process steps a disclosure could reveal — thought
+ * runs or tool calls (webui-parity 61, G4).
+ *
+ * This is the reference's own gate for the chevron. `AssistantBody.tsx` in the
+ * reference package computes
+ * `hasExpandableProcessContent = Boolean(thinking?.trim() || tools?.length ||
+ * processSegments?.some(s => s.activityParts?.length))` and hands it to
+ * `WebuiTurnProcess` as `hasExpandableContent`; when it is false the desktop
+ * renders the duration summary as plain text with no toggle. Our equivalent
+ * is the pair of counts `computeTurnStatsByUnit` already produces for the
+ * bar's composite summary — the same events, reduced to the same question.
+ */
+export function hasExpandableTurnContent(stats: TurnStats): boolean {
+  return stats.thinking > 0 || stats.tools > 0;
+}
+
+/** Per-turn layout the turn-bar disclosure coordinates with (G4).
+ *
+ *  - `turnIndexByUnit[i]` is the ordinal of the turn unit `i` belongs to,
+ *    counting from 0 and incrementing at every user block. Turn ordinals —
+ *    not unit indices — are the coordination key: activity runs are re-cut
+ *    on every streaming frame, so a unit index moves while its turn does not.
+ *  - `defaultExpandedByTurn` is the expansion the turn's activity groups
+ *    already have before the user touches the chevron: true when at least one
+ *    of them opens by default (a mixed run opens, a pure-tool run does not —
+ *    `ActivityGroup`'s own rule). It is what the chevron's first click
+ *    inverts, so the first click always changes something visible.
+ */
+export interface TurnLayout {
+  readonly turnIndexByUnit: readonly number[];
+  readonly defaultExpandedByTurn: ReadonlyMap<number, boolean>;
+}
+
+export function computeTurnLayout(units: readonly RenderUnit[]): TurnLayout {
+  const turnIndexByUnit: number[] = [];
+  const defaultExpandedByTurn = new Map<number, boolean>();
+  let turnIndex = 0;
+  units.forEach((unit, index) => {
+    // A user block is a turn boundary, not a member: it belongs to the turn it
+    // opens, which is the one after the running counter.
+    if (unit.kind === "block" && unit.block.role === "user") {
+      turnIndex += 1;
+    }
+    turnIndexByUnit[index] = turnIndex;
+    if (unit.kind === "activity") {
+      const opensByDefault = summarizeActivity(unit.blocks).thinking > 0;
+      defaultExpandedByTurn.set(
+        turnIndex,
+        (defaultExpandedByTurn.get(turnIndex) ?? false) || opensByDefault,
+      );
+    }
+  });
+  return { turnIndexByUnit, defaultExpandedByTurn };
+}
