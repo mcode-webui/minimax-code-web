@@ -99,7 +99,11 @@ function buildAuthContextGetter(dataDir) {
  * @param {CatalogueHostOptions} options
  * @returns {Promise<{
  *   adapter: TuiRuntimeAdapter,
+ *   cliService: object,
  *   apiHost: { close: () => Promise<void> },
+ *   controller: object,
+ *   application: object|undefined,
+ *   applications: { session: { diff: object }, queue: object }|undefined,
  *   close: () => Promise<void>,
  * }>}
  */
@@ -176,6 +180,15 @@ export async function createCatalogueHost(options) {
     cliService: host.cliService,
     apiHost: host.apiHost,
     controller: host.controller,
+    // Process-local product facade (events / models / skills / plugins /
+    // permissions / …). Same single-owner rule as cliService: consumers
+    // must not build a second runtime.
+    application: host.application,
+    // Feature applications, including `session.diff` — the turn-diff use
+    // case (getTurnDiff / revertTurnDiff / reapplyTurnDiff). It lives
+    // here and NOT on `application`: the process-local facade declares
+    // no diff member, so reading diff off `application` yields nothing.
+    applications: host.applications,
     close,
   };
 }
