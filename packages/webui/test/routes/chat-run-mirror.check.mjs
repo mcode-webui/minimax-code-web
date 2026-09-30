@@ -576,3 +576,117 @@ describe("run-mirror — mid-run switch keeps views and records isolated", () =>
     assert.equal(sb.runChatLinesFor(cid, promoted.mcodeSessionId), null);
   });
 });
+
+// ---------------------------------------------------------------------------
+// webui-parity 83 — the turn coordinate written at prompt finalize (LIVE path)
+//
+// The backfill path (transcript.js synthesising `§§ turn_msg=` from the
+// runtime's `turn_id` / `msg_id` columns) has its own coverage; this block
+// covers the other half, the marker the LIVE prompt writes into `cs.chat`
+// and the owning record. It runs the real chat.js → mcode-acp.js finalize
+// chain with only the ACP transport faked, so the assertion is on what the
+// transcript actually carries after a turn settles — not on a helper's
+// return value.
+//
+// The engine persists a turn's file-change record under the msg_id of that
+// turn's LAST assistant message, and the transport reports exactly that id
+// as `lastAssistantMessageId`. A marker that carried any other id — or none
+// — would make every consumer look up a record the engine never wrote.
+// ---------------------------------------------------------------------------
+describe("finalize writes the turn coordinate into the transcript", () => {
+  const TURN_ID = "84afc7db-3f73-44a8-9a36-c463bb64278f";
+
+  /** Run one turn end to end and return the finalized chat lines. */
+  async function runTurn(cid, { sessionId, answer, lastAssistantMessageId }) {
+    const cs = makeClient(cid, { sessionId });
+    storeRecord(sessionId, []);
+    const turn = handleSend(fakeReq({ content: "改一下文件" }), fakeRes(), { cs, cid });
+    await waitFor(() => cs.mcodeSessionId, "the engine sid to bind");
+    await waitFor(() => FakeMcodeAcpClient.pending.length === 1, "prompt parked");
+    FakeMcodeAcpClient.emit({ kind: "message", text: answer });
+    FakeMcodeAcpClient.release(
+      lastAssistantMessageId === undefined ? {} : { lastAssistantMessageId },
+    );
+    await turn;
+    await waitFor(() => sb.activeRunCount() === 0, "turn to drain");
+    return { cs, record: recordBy(cs.mcodeSessionId) };
+  }
+
+  test("the marker's value is the transport's LAST assistant message id", async () => {
+    const { cs } = await runTurn("cid-coord-live", {
+      sessionId: "sess-coord",
+      answer: "改好了",
+      lastAssistantMessageId: TURN_ID,
+    });
+    const markers = cs.chat.filter((l) => String(l).startsWith("§§ turn_msg="));
+    assert.deepEqual(markers, [`§§ turn_msg=${TURN_ID}`]);
+  });
+
+  test("the marker lands AFTER the turn's last line, not before it", async () => {
+    // Ordering is load-bearing: the decoder attaches a marker to the block
+    // the turn last had open. A marker written mid-drain would land on the
+    // tool step instead of the answer.
+    const { cs } = await runTurn("cid-coord-order", {
+      sessionId: "sess-coord-order",
+      answer: "改好了",
+      lastAssistantMessageId: TURN_ID,
+    });
+    const answerAt = cs.chat.findIndex((l) => String(l).startsWith("●"));
+    const markerAt = cs.chat.findIndex((l) => String(l).startsWith("§§ turn_msg="));
+    assert.ok(answerAt >= 0 && markerAt > answerAt, `answer@${answerAt} marker@${markerAt}`);
+  });
+
+  test("the persisted record carries the marker too, not only the live view", async () => {
+    // A turn the user watched and then reloaded must resolve to the same
+    // coordinate. cs.chat is a view; the record is what the session list and
+    // the next read see.
+    const { record } = await runTurn("cid-coord-record", {
+      sessionId: "sess-coord-record",
+      answer: "改好了",
+      lastAssistantMessageId: TURN_ID,
+    });
+    assert.deepEqual(
+      record.chat.filter((l) => String(l).startsWith("§§ turn_msg=")),
+      [`§§ turn_msg=${TURN_ID}`],
+    );
+  });
+
+  test("a turn the transport gave no id for writes no marker at all", async () => {
+    // The honest degradation, on the LIVE side. The exec transport reports
+    // no message ids, and a turn that never reached a message has no engine
+    // record either — so there is no selector to write, and inventing one
+    // would point a later lookup at whatever turn happened to be latest.
+    const { cs, record } = await runTurn("cid-coord-none", {
+      sessionId: "sess-coord-none",
+      answer: "只有回答",
+      lastAssistantMessageId: null,
+    });
+    assert.deepEqual(
+      cs.chat.filter((l) => String(l).startsWith("§§ turn_msg=")),
+      [],
+    );
+    assert.deepEqual(
+      record.chat.filter((l) => String(l).startsWith("§§ turn_msg=")),
+      [],
+    );
+  });
+
+  test("the marker is metadata, never conversation text", async () => {
+    // `§§` is outside the glyph vocabulary the decoder treats as a block
+    // opener, so a leak here would render as a stray system notice rather
+    // than fail loudly. The decoder's own consumption is covered in
+    // webapp/test/turn-coordinate.test.ts; this pins the producer's half.
+    const { cs } = await runTurn("cid-coord-meta", {
+      sessionId: "sess-coord-meta",
+      answer: "改好了",
+      lastAssistantMessageId: TURN_ID,
+    });
+    const carriers = cs.chat.filter((l) => String(l).includes("turn_msg"));
+    assert.ok(carriers.length > 0, "the marker is present (otherwise this proves nothing)");
+    assert.deepEqual(
+      carriers,
+      [`§§ turn_msg=${TURN_ID}`],
+      "the marker occupies a line of its own, never glued onto the answer",
+    );
+  });
+});

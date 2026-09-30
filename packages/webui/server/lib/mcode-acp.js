@@ -806,6 +806,21 @@ function streamAcpPrompt(
           chatTarget.push(`§§ processed_duration=${Math.round(r.durationMs)}ms`);
         }
       }
+      // webui-parity 83 (turn coordinate): the same finalize writes the
+      // engine-side turn selector into the transcript as `§§ turn_msg=<id>`.
+      // `r.assistantMessageId` is the msg_id of the turn's LAST assistant
+      // message chunk (acp.mjs#prompt), which is the exact value the engine
+      // persisted as `local_runtime_turn_diffs.assistant_message_id` — so the
+      // turn-diff endpoint can select THIS turn's record without a sequence
+      // translation. It is written only when the prompt settled normally; a
+      // turn the engine never finalized has no diff record, so a marker there
+      // would only invite a lookup that returns nothing.
+      if (typeof r.assistantMessageId === "string" && r.assistantMessageId) {
+        const msgTarget = r && typeof r.chatArray === "function" ? r.chatArray() : cs.chat;
+        if (Array.isArray(msgTarget)) {
+          msgTarget.push(`§§ turn_msg=${r.assistantMessageId}`);
+        }
+      }
       clearActiveChild(cid);
       cs.running = {
         active: false,
@@ -1234,6 +1249,10 @@ function streamAcpPrompt(
         r.answer = result.answer || r.answer;
         r.thinking = result.thinking || r.thinking;
         r.stopReason = result.stopReason;
+        // webui-parity 83: the turn's engine-side coordinate, read off the
+        // LAST assistant message chunk. `finalize()` writes it as
+        // `§§ turn_msg=<id>`; see the marker branch there.
+        r.assistantMessageId = result.lastAssistantMessageId || r.assistantMessageId;
         // v0.5.bx: 捕获 mcode 返的 usage（totalTokens/inputTokens/outputTokens/thoughtTokens）
         if (result.usage) r.usage = result.usage;
         r.status = "succeeded";

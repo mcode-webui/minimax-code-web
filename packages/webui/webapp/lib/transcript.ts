@@ -73,6 +73,23 @@ export interface TranscriptBlock {
    * upstream `turn_process_disclosure` collapse bar.
    */
   processedDuration?: number;
+  /**
+   * Assistant blocks only: the engine-side turn coordinate — the msg_id of
+   * this turn's last assistant message, which is the value the runtime
+   * persisted as `local_runtime_turn_diffs.assistant_message_id` for the turn.
+   * Attached by `decodeTranscript` from the `§§ turn_msg=<id>` marker the
+   * server writes at prompt finalise (`server/lib/mcode-acp.js#finalize`) and
+   * from the same marker `server/lib/transcript.js` synthesises when it
+   * backfills an existing session from the v2 message rows.
+   *
+   * Absent for a turn with no marker: sessions recorded before the marker
+   * shipped, sessions read through the legacy transcript probe (no coordinate
+   * columns), and the exec escape transport (no message ids on the wire).
+   * Callers MUST degrade honestly when it is missing — querying the turn-diff
+   * endpoint without it would return the engine's *latest* turn, i.e. another
+   * turn's numbers.
+   */
+  assistantMessageId?: string;
 }
 
 /** Leading glyphs that begin a new block. */
@@ -113,6 +130,22 @@ const TODO_LINE = /^([✓✔○◌◯✗✘×])\s+(.+)$/;
  * the block stream.
  */
 const TURN_PROCESS_LINE = /^§§\s+processed_duration=(\d+)(ms)?$/;
+/**
+ * Server-written turn coordinate: `§§ turn_msg=<assistantMessageId>`.
+ *
+ * webui-parity 83. The engine persists a turn's file-change record under the
+ * msg_id of that turn's last assistant message, and the ACP wire already
+ * carries that id — the server used to drop it. It is written at prompt
+ * finalise next to `processed_duration`, and the transcript backfill
+ * synthesises the same line from the runtime's `turn_id` / `msg_id` columns,
+ * so one marker serves both the live and the restored path.
+ *
+ * The decoder consumes it (it never appears in the rendered chat body) and
+ * attaches the id to the turn's assistant block, which is what lets the
+ * 「已编辑 N 个文件」 card ask the engine for THIS turn's diff instead of
+ * guessing a turn ordinal.
+ */
+const TURN_MESSAGE_ID_LINE = /^§§\s+turn_msg=(\S+)$/;
 /**
  * Slice 06 (Agent Team): server-written toolCallId marker.
  *
@@ -203,6 +236,27 @@ export function decodeTranscript(
     }
   };
 
+  /**
+   * Attach a per-turn server marker to the block that owns the turn: the
+   * currently open assistant block, or — when the turn already closed (a
+   * trailing system note, a tool line) — the most recently flushed assistant
+   * block. Shared by the `processed_duration` and `turn_msg` markers so both
+   * resolve the same owner the same way.
+   */
+  const attachToTurnAssistant = (apply: (block: TranscriptBlock) => void) => {
+    if (current && current.role === "assistant") {
+      apply(current);
+      return;
+    }
+    for (let j = blocks.length - 1; j >= 0; j--) {
+      const prev = blocks[j];
+      if (prev && prev.role === "assistant") {
+        apply(prev);
+        return;
+      }
+    }
+  };
+
   /** Append a line to the open block, or open a new one. */
   const pushText = (role: BlockRole, text: string) => {
     if (current && current.role === role) {
@@ -238,17 +292,27 @@ export function decodeTranscript(
     if (turnProcess) {
       const dur = Number.parseInt(turnProcess[1] ?? "", 10);
       if (Number.isFinite(dur) && dur > 0) {
-        if (current && current.role === "assistant") {
-          current.processedDuration = dur;
-        } else {
-          for (let j = blocks.length - 1; j >= 0; j--) {
-            const prev = blocks[j];
-            if (prev && prev.role === "assistant") {
-              prev.processedDuration = dur;
-              break;
-            }
-          }
-        }
+        attachToTurnAssistant((block) => {
+          block.processedDuration = dur;
+        });
+      }
+      i += 1;
+      continue;
+    }
+
+    // --- webui-parity 83 turn coordinate (`§§ turn_msg=<id>`).
+    //
+    // Same owner resolution as the duration marker, one step later in the
+    // stream: the server writes both at prompt finalise. Older transcripts
+    // simply lack the line — `assistantMessageId` stays undefined and the
+    // turn-diff card degrades to the path-only rendering.
+    const turnMessageId = TURN_MESSAGE_ID_LINE.exec(line);
+    if (turnMessageId) {
+      const id = turnMessageId[1] ?? "";
+      if (id) {
+        attachToTurnAssistant((block) => {
+          block.assistantMessageId = id;
+        });
       }
       i += 1;
       continue;
