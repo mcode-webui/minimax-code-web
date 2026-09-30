@@ -285,6 +285,7 @@ const KNOWN_PREFIXES = [
   "webui-parent-out-",
   "webui-parent-root-",
   "webui-paths-",
+  "webui-plan-projection-",
   "webui-presets-route-",
   "webui-presets-route-cwd-",
   "webui-providers-cwd-",
