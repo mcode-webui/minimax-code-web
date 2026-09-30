@@ -3885,6 +3885,7 @@
     "packages/webui/webapp/test/api-permissions.test.ts",
     "packages/webui/webapp/test/attachment-drop.test.ts",
     "packages/webui/webapp/test/browser-nav.test.ts",
+    "packages/webui/webapp/test/chat-scroll-anchoring.test.ts",
     "packages/webui/webapp/test/chat-virtual-list.test.ts",
     "packages/webui/webapp/test/cid.test.ts",
     "packages/webui/webapp/test/code-highlight.test.ts",

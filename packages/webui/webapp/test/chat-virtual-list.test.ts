@@ -13,9 +13,16 @@
 //   "actively watching" from "scrolled up to read history".
 //
 //   All assertions drive pure functions — `computeVirtualWindow`,
-//   `isNearBottom`, `decideScrollBehavior`, `estimateDomNodeCount`. The hook
-//   `useChatVirtualization` is integration-tested by chat.tsx itself (no jsdom
-//   here).
+//   `isNearBottom`, `decideScrollBehavior`, `computeTailFollowScrollTop`,
+//   `estimateDomNodeCount` — plus two render-wiring tripwires that read
+//   chat.tsx / chat-virtual-list.tsx as source. The hooks
+//   `useChatVirtualization` and `useChatTailFollow` are integration-tested by
+//   chat.tsx itself (no jsdom here).
+//
+// Ticket 88 (`computeTailFollowScrollTop`): the transcript has to keep its
+// streaming tail inside the visible box. The pure tests pin the arithmetic; the
+// tripwires pin that chat.tsx actually calls the hook, because a hook with
+// passing unit tests and no call site is dead code.
 //
 // Performance contract: for 10 000 messages the visible DOM stays under
 // ~200 nodes (visible + buffer + 2 spacers). `estimateDomNodeCount` pins
@@ -28,12 +35,17 @@
 
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   VIRTUAL_LIST_THRESHOLD,
   ESTIMATED_MESSAGE_HEIGHT,
   VIRTUAL_LIST_BUFFER,
   NEAR_BOTTOM_PX,
   computeVirtualWindow,
+  computeTailFollowScrollTop,
+  TAIL_FOLLOW_TOLERANCE_PX,
+  isAwayFromPin,
+  isAtTail,
   isNearBottom,
   decideScrollBehavior,
   estimateDomNodeCount,
@@ -351,6 +363,247 @@ describe("estimateDomNodeCount — perf contract pin", () => {
     assert.ok(
       large.withVirtual > small.withVirtual,
       "taller viewport → more rows visible → more DOM nodes",
+    );
+  });
+});
+
+// ============================================================
+// computeTailFollowScrollTop — ticket 88.
+//
+// The invariant: while a turn streams, the tail of the transcript is inside the
+// scroller's visible box. Growing the transcript below the fold leaves
+// `scrollTop` untouched, so without this pin the streaming answer renders but
+// never becomes visible — the reader watches 「思考中」 for the whole turn.
+//
+// The measurements below are taken from the unfixed build's live trace
+// (1440×900 viewport, 688 px scroller): the scroller sat at scrollTop 0 for
+// the whole 15 s turn while scrollHeight went 688 → 1196. Each step replays
+// that trace and asserts the tail stays pinned, and — the half that is easy to
+// ship wrong — that a reader who scrolled up is left alone.
+// ============================================================
+describe("computeTailFollowScrollTop — streaming tail stays visible", () => {
+  // One table-driven pass over the recorded turn: [scrollTop before, scrollHeight after].
+  // Every row is a state the unfixed build actually sat in.
+  const MEASURED_TURN: ReadonlyArray<readonly [number, number]> = [
+    [0, 688], // content still fits: nothing to do
+    [0, 798],
+    [0, 820],
+    [0, 900], // first overflow — unfixed build now strands the answer below the fold
+    [0, 1010],
+    [0, 1037],
+    [0, 1091],
+    [0, 1142],
+    [0, 1196],
+  ];
+
+  test("the tail is pinned on every measured step of the unfixed turn", () => {
+    const clientHeight = 688;
+    for (const [scrollTopBefore, scrollHeightAfter] of MEASURED_TURN) {
+      const target = computeTailFollowScrollTop({
+        following: true,
+        scrollHeight: scrollHeightAfter,
+        clientHeight,
+      });
+      assert.notEqual(target, null, `following reader must get a target at ${scrollHeightAfter}px`);
+      // The invariant, stated as geometry: after the pin, the bottom of the
+      // content coincides with the bottom of the viewport.
+      assert.ok(
+        target! + clientHeight >= scrollHeightAfter,
+        `at scrollHeight=${scrollHeightAfter}: tail must be inside the box, got scrollTop=${target}`,
+      );
+      // And the pin is monotonic — each step moves down, never back up, so the
+      // reader is never yanked backwards by their own streaming answer.
+      assert.ok(
+        target! >= scrollTopBefore,
+        `at scrollHeight=${scrollHeightAfter}: follow must not move the reader up (${scrollTopBefore} → ${target})`,
+      );
+    }
+  });
+
+  test("a reader who scrolled up is never dragged back to the tail", () => {
+    // 200 px of scrollTop against a 1196 px transcript: mid-history.
+    assert.equal(
+      computeTailFollowScrollTop({ following: false, scrollHeight: 1196, clientHeight: 688 }),
+      null,
+    );
+  });
+
+  test("content shorter than the viewport clamps to 0, not a negative scrollTop", () => {
+    assert.equal(
+      computeTailFollowScrollTop({ following: true, scrollHeight: 400, clientHeight: 688 }),
+      0,
+    );
+    // Exactly the viewport: 0, and no negative target to write.
+    assert.equal(
+      computeTailFollowScrollTop({ following: true, scrollHeight: 688, clientHeight: 688 }),
+      0,
+    );
+  });
+
+  test("empty container (scrollHeight 0) clamps to 0 rather than throwing", () => {
+    assert.equal(
+      computeTailFollowScrollTop({ following: true, scrollHeight: 0, clientHeight: 0 }),
+      0,
+    );
+  });
+
+  test("one token of growth still moves the pin by exactly that token", () => {
+    // The per-token contract: 20 px of new text moves the pin 20 px, so the
+    // newest line is always at the bottom edge of the box.
+    const before = computeTailFollowScrollTop({
+      following: true,
+      scrollHeight: 1000,
+      clientHeight: 688,
+    });
+    const after = computeTailFollowScrollTop({
+      following: true,
+      scrollHeight: 1020,
+      clientHeight: 688,
+    });
+    assert.equal(after! - before!, 20);
+  });
+
+  test("isNearBottom still gates the initial follow on a session change", () => {
+    // On a session change the hook has no pin to compare against yet, so the
+    // wide reading is the right one: "near enough to the tail to start
+    // following". Max scrollTop on this transcript is 508 px: 200 px is
+    // mid-history (do not follow), 498 px is 10 px off the tail (follow).
+    assert.equal(isNearBottom({ scrollTop: 200, clientHeight: 688, scrollHeight: 1196 }), false);
+    assert.equal(
+      isNearBottom({ scrollTop: 1196 - 688 - 10, clientHeight: 688, scrollHeight: 1196 }),
+      true,
+    );
+  });
+});
+
+// ============================================================
+// The off-switch and the re-arm.
+//
+// The follow survives a streaming turn only because these two read the
+// CONTAINER, never a nearness test against the freshly grown DOM. Replay the
+// measured failure: the unfixed-then-first-fixed build's debug trace recorded
+// `sync follow=false sH=1170 sT=402` — an 80 px gap that no reader created,
+// produced by a queued scroll event dispatching after the next SSE frame had
+// already grown the transcript. `isAwayFromPin` at that same moment says
+// "nobody moved" (the reader is still exactly where the pin left them), which
+// is the only correct answer.
+// ============================================================
+describe("isAwayFromPin / isAtTail — the follow state machine", () => {
+  test("TAIL_FOLLOW_TOLERANCE_PX = 2 (sub-pixel noise, well under one wheel tick)", () => {
+    assert.equal(TAIL_FOLLOW_TOLERANCE_PX, 2);
+  });
+
+  test("growth alone never reads as the reader leaving", () => {
+    // The measured failure frame: pinned at 402, transcript grew 1090 → 1170.
+    // A nearness test here answers "no, 80 px from the bottom" and would kill a
+    // follow the reader never asked to end.
+    assert.equal(
+      isAwayFromPin({ scrollTop: 402, pinnedTop: 402 }),
+      false,
+      "an 80 px growth below the reader must not read as the reader scrolling away",
+    );
+    // And the near-bottom reading of the same frame is the trap, pinned here so
+    // nobody reintroduces it:
+    assert.equal(
+      isNearBottom({ scrollTop: 402, clientHeight: 688, scrollHeight: 1170 }),
+      false,
+      "this is exactly the misread the off-switch must not depend on",
+    );
+  });
+
+  test("a real scroll away is detected", () => {
+    assert.equal(isAwayFromPin({ scrollTop: 200, pinnedTop: 402 }), true);
+    // PageUp: 600 px in one tick, far outside any plausible noise.
+    assert.equal(isAwayFromPin({ scrollTop: 0, pinnedTop: 600 }), true);
+  });
+
+  test("sub-pixel drift is not a scroll away", () => {
+    assert.equal(isAwayFromPin({ scrollTop: 402.5, pinnedTop: 402 }), false);
+    assert.equal(isAwayFromPin({ scrollTop: 401.9, pinnedTop: 402 }), false);
+    // 2.1 px is outside the tolerance — anchoring nudges are sub-pixel, a
+    // deliberate move is not.
+    assert.equal(isAwayFromPin({ scrollTop: 404.1, pinnedTop: 402 }), true);
+  });
+
+  test("explicit tolerance overrides the default", () => {
+    assert.equal(isAwayFromPin({ scrollTop: 410, pinnedTop: 402, tolerance: 20 }), false);
+    assert.equal(isAwayFromPin({ scrollTop: 410, pinnedTop: 402, tolerance: 0 }), true);
+  });
+
+  test("isAtTail is the strict re-arm reading, not the 50 px one", () => {
+    // Parked exactly on the newest line → re-arm.
+    assert.equal(isAtTail({ scrollTop: 482, clientHeight: 688, scrollHeight: 1170 }), true);
+    // Parked 40 px above it → still reading something else. isNearBottom would
+    // call this "close enough"; the re-arm must not.
+    assert.equal(isAtTail({ scrollTop: 442, clientHeight: 688, scrollHeight: 1170 }), false);
+    assert.equal(isNearBottom({ scrollTop: 442, clientHeight: 688, scrollHeight: 1170 }), true);
+  });
+
+  test("a transcript shorter than the viewport is at its tail", () => {
+    assert.equal(isAtTail({ scrollTop: 0, clientHeight: 688, scrollHeight: 400 }), true);
+  });
+});
+
+// ============================================================
+// Render-wiring tripwire.
+//
+// The suite has no jsdom, so the pure-function tests above cannot see whether
+// chat.tsx actually calls the hook. A hook that is unit-tested but never wired
+// ships dead code that its own tests pass — this pins the call site.
+// ============================================================
+describe("chat.tsx wires the tail follow into the render path", () => {
+  const chatSource = readFileSync(new URL("../components/chat.tsx", import.meta.url), "utf8");
+
+  test("imports and calls useChatTailFollow with the growing units as revision", () => {
+    assert.match(
+      chatSource,
+      /import\s*\{[^}]*\buseChatTailFollow\b[^}]*\}\s*from\s*"\.\/chat-virtual-list"/,
+      "chat.tsx must import useChatTailFollow from ./chat-virtual-list",
+    );
+    assert.match(
+      chatSource,
+      /useChatTailFollow\(\s*scrollerRef\s*,\s*units\s*,\s*sessionKey\s*\)/,
+      "chat.tsx must call useChatTailFollow(scrollerRef, units, sessionKey): the " +
+        "revision has to be the growing unit list and the reset key the session, " +
+        "or the follow never re-applies / never re-measures on a session change",
+    );
+  });
+
+  test("the 'jump to latest' pill re-arms the follow", () => {
+    // The pill is the one affordance that says "take me back to the tail". The
+    // pin re-arms on a position reading, which the pill's own scroll is about to
+    // change, so the click has to re-arm explicitly.
+    assert.match(
+      chatSource,
+      /const\s*\{[^}]*\bfollowNow\b[^}]*\}\s*=\s*useChatTailFollow\(/,
+      "chat.tsx must destructure followNow from useChatTailFollow",
+    );
+    assert.match(
+      chatSource,
+      /const scrollToBottom = useCallback\(\(\) => \{[\s\S]{0,400}?followNow\(\)/,
+      "scrollToBottom (the pill handler) must call followNow()",
+    );
+  });
+
+  test("the follow hook decides at a commit boundary, not on a scroll event", () => {
+    const source = readFileSync(
+      new URL("../components/chat-virtual-list.tsx", import.meta.url),
+      "utf8",
+    );
+    // A scroll EVENT is dispatched asynchronously: by the time its handler runs
+    // the next SSE frame may already have grown the transcript, so a nearness
+    // test there latches the follow off mid-turn. The decision has to be made
+    // in a layout effect, on one settled reading of the DOM.
+    assert.doesNotMatch(
+      source,
+      /addEventListener\("scroll",[^)]*followingRef/,
+      "the follow flag must not be maintained from a scroll listener",
+    );
+    assert.match(source, /useLayoutEffect\(/, "the follow must run in a layout effect");
+    assert.match(
+      source,
+      /isAwayFromPin\(\{\s*scrollTop: metrics\.scrollTop,\s*pinnedTop/,
+      "the off-switch must compare against the pin, not against nearness",
     );
   });
 });

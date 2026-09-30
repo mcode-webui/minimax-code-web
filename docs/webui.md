@@ -1373,6 +1373,35 @@ thinking-level streaming marker (the `▍` cursor only marks the trailing
 assistant block), so this is the most honest signal the render layer can
 derive.
 
+### Streaming tail visibility (webui-parity ticket 88)
+
+**Invariant: while a turn streams, the tail of the transcript is inside the
+scroller's visible box.** Every token the engine emits must be readable without
+the reader scrolling. A turn appends a block and then grows it token by token,
+so the DOM below the reader grows while their `scrollTop` does not move; with
+nothing pinning the offset, the answer is laid out below the fold and the reader
+watches the thinking indicator for the whole turn. Reproduced on the unfixed
+build: over a 15-second turn `scrollTop` never left 0 while `scrollHeight` went
+688 → 1196.
+
+This is not virtualization. Below `VIRTUAL_LIST_THRESHOLD` (200 units) the
+window is `useVirtual: false` and every unit is in the DOM; the measured turn
+peaked at 8 units. The tail was rendered and simply off-screen.
+
+| Concern | Decision | Rejected alternative |
+| --- | --- | --- |
+| Who owns the offset | Exactly three: the tail follow, the reader, the persisted-position restore. Browser scroll anchoring is switched OFF on the scroller (`.chat-scroll`, `app/globals.css`) because it is a fourth, implicit owner — it adjusted `scrollTop` by 55 → 125 px on its own while the transcript grew above the viewport, which the follow reads as the reader leaving | Leaving anchoring on. A transcript that grows at the tail needs pinning, not anchoring; with it on the follow cannot attribute a move to its cause |
+| When the follow turns off | When the container moves off the pin the follow itself last wrote (`isAwayFromPin`, 2 px tolerance). Content is appended BELOW the reader, so growth alone never changes `scrollTop` | A nearness test (`isNearBottom`) at scroll-event time. Scroll events dispatch asynchronously, so by the time the handler runs the next SSE frame may already have grown the transcript and the test answers "no" for a reader who never left. Shipped once, measured latching off ~20 s into every turn, replaced |
+| When the follow re-arms | The reader scrolls back to the tail, or clicks the "jump to latest" pill (which calls `followNow()` — the pill's own scroll is about to change the position a re-arm would read) | Re-deriving from metrics every commit, which cannot tell "the reader moved" from "the transcript grew" |
+| Reader scrolled up | Left exactly where they are, for the rest of the turn; the pill stays available. Measured: 0 px drift across 157 samples / 40 s of continued streaming | Following anyway, on the argument that the reader will want the answer eventually. Dragging a reader who is reading history is the other half of the same annoyance |
+| While a turn is live | The persisted-position restore is gated off (`sessionRunning`). `initialScrollTop` is re-read from storage on every render, so the restore re-armed itself from the follow's own persisted writes and dragged the container back one frame after each pin | Letting both write. Two owners for one offset is the defect, not the fix |
+| Animation | Instant, not smooth — a smooth scroll chases a target that moves with every token, so it lags the stream and overshoots at turn end | `behavior: "smooth"` on the pin |
+| Virtualization | Untouched. The follow is orthogonal: one number written per commit, before paint, in a layout effect | Disabling virtualization above 200 units to keep the tail rendered. The tail was always rendered |
+
+The restore is unaffected for a settled session — that is the case it exists
+for. Reopening a session left on the tail lands on the tail; one left
+mid-history lands mid-history.
+
 ### Tool card (ticket 46, PR3)
 
 One tool call renders as a native `<details>` card (`ToolCard`), on the

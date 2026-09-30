@@ -1,22 +1,25 @@
 "use client";
 
 /**
- * Pure-logic helpers for the chat-list virtualization (Lease C04 — port).
+ * Pure-logic helpers for the chat-list virtualization (Lease C04 — port) and
+ * for the tail follow that keeps a streaming turn inside the visible box.
  *
  * The renderer holds the visible DOM bounded regardless of message count; this
- * file owns the math that lets it do that.
+ * file owns the math that lets it do that, plus the one scroll write that makes
+ * the growing tail visible.
  *
- * Why this file is structured as pure functions + a tiny hook:
+ * Why this file is structured as pure functions + tiny hooks:
  *   - The pure functions (`computeVirtualWindow`, `isNearBottom`,
- *     `decideScrollBehavior`, `estimateDomNodeCount`) carry the math. They have
- *     no DOM dependency, no app-state, no module-level globals — every
- *     function is a pure transform. The companion test file drives them from
- *     Node without jsdom.
- *   - The React hook (`useChatVirtualization`) wires the math to the live
- *     scroll container: it subscribes to scroll/resize, recomputes the window
- *     and the near-bottom state, and exposes them to the renderer. Keeping
- *     the math pure means the test pins the contract, and the hook never has
- *     to be unit-tested in isolation.
+ *     `decideScrollBehavior`, `computeTailFollowScrollTop`, `isAwayFromPin`,
+ *     `isAtTail`, `estimateDomNodeCount`) carry the math. They have no DOM
+ *     dependency, no app-state, no module-level globals — every function is a
+ *     pure transform. The companion test file drives them from Node without
+ *     jsdom.
+ *   - The React hooks (`useChatVirtualization`, `useChatTailFollow`) wire the
+ *     math to the live scroll container: they subscribe to scroll/resize,
+ *     recompute the window, the near-bottom state and the tail-follow decision,
+ *     and expose them to the renderer. Keeping the math pure means the test pins
+ *     the contract, and the hooks never have to be unit-tested in isolation.
  *
  * Why fixed-height estimation instead of measured heights:
  *   Measuring real heights would require rendering the entire list off-screen
@@ -25,7 +28,7 @@
  *   O(1) compute cost per scroll tick.
  */
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { RefObject } from "react";
 
 // ============================================================
@@ -229,6 +232,100 @@ export function decideScrollBehavior(args: NearBottomArgs): ScrollBehavior {
   return isNearBottom(args) ? "auto" : "preserve";
 }
 
+export interface TailFollowScrollArgs {
+  /**
+   * True when the reader's last expressed scroll intent was "stay on the live
+   * tail". Maintained by the per-commit decision in `useChatTailFollow` — see
+   * that hook's docblock for why the intent cannot be re-derived from the
+   * post-growth scroll metrics.
+   */
+  following: boolean;
+  /** `el.scrollHeight` AFTER the new content is laid out. */
+  scrollHeight: number;
+  /** `el.clientHeight` of the scroll container. */
+  clientHeight: number;
+}
+
+/**
+ * Px of slack around a pinned position that still counts as "nobody moved the
+ * container".
+ *
+ * Two things live inside this slack and neither is a reader action: fractional
+ * `scrollTop` on a HiDPI viewport, and the browser's own scroll anchoring
+ * nudging the offset by a sub-pixel amount when content above changes. A wheel
+ * tick is ~20 px and PageUp/PageDown ~600 px, so 2 px separates the two
+ * cleanly. Widen it and a real scroll away stops registering; narrow it and
+ * the follow chatters itself off.
+ */
+export const TAIL_FOLLOW_TOLERANCE_PX = 2;
+
+/**
+ * The `scrollTop` that pins the freshly grown transcript to its tail, or `null`
+ * for "leave the reader where they are".
+ *
+ * `null` is the load-bearing half of this contract. A turn appends a new block
+ * and grows the last one token by token, so the DOM below the reader grows
+ * while their `scrollTop` does not move: without this pin the streaming answer
+ * lands outside the visible box and the reader watches 「思考中」 for the whole
+ * turn. `null` is what keeps a reader who scrolled up to read history from
+ * being dragged back down mid-turn.
+ *
+ * The clamp at 0 matters for the short-transcript case: when the content fits,
+ * `scrollHeight - clientHeight` is negative and writing it would be a no-op at
+ * best (browsers clamp silently) and a spurious scroll event at worst, which
+ * would feed straight back into the follow decision.
+ */
+export function computeTailFollowScrollTop(args: TailFollowScrollArgs): number | null {
+  if (!args.following) return null;
+  const target = args.scrollHeight - args.clientHeight;
+  return target > 0 ? target : 0;
+}
+
+export interface AwayFromPinArgs {
+  /** `el.scrollTop` as read at a commit boundary. */
+  scrollTop: number;
+  /** The `scrollTop` this hook last left the container at. */
+  pinnedTop: number;
+  /** Px slack (default `TAIL_FOLLOW_TOLERANCE_PX`). */
+  tolerance?: number;
+}
+
+/**
+ * Did somebody move the container away from where the follow left it?
+ *
+ * Comparing against the pin rather than re-testing "am I near the bottom" is
+ * what makes the follow survive a streaming turn. Content is appended BELOW the
+ * reader, so growth alone never changes `scrollTop`; only a reader action (or
+ * the browser's own anchoring nudge) does. A nearness test cannot make that
+ * distinction, because by the time it runs the new content is already laid out
+ * and the reader who never left looks exactly like one who scrolled away.
+ */
+export function isAwayFromPin(args: AwayFromPinArgs): boolean {
+  const tolerance = args.tolerance ?? TAIL_FOLLOW_TOLERANCE_PX;
+  return Math.abs(args.scrollTop - args.pinnedTop) > tolerance;
+}
+
+export interface AtTailArgs {
+  scrollTop: number;
+  scrollHeight: number;
+  clientHeight: number;
+  /** Px slack (default `TAIL_FOLLOW_TOLERANCE_PX`). */
+  tolerance?: number;
+}
+
+/**
+ * Is the container parked exactly at its tail right now?
+ *
+ * Distinct from `isNearBottom`, which answers "close enough to start following"
+ * with a 50 px tolerance. Re-arming needs the strict reading: a reader who has
+ * deliberately scrolled back down to the newest line is at the tail, and a
+ * reader parked 40 px above it is still reading something else.
+ */
+export function isAtTail(args: AtTailArgs): boolean {
+  const tolerance = args.tolerance ?? TAIL_FOLLOW_TOLERANCE_PX;
+  return args.scrollHeight - args.scrollTop - args.clientHeight <= tolerance;
+}
+
 /**
  * DOM node count estimator. The current implementation always renders N
  * nodes (one per unit). With virtualization, the DOM contains approximately
@@ -334,4 +431,125 @@ export function useChatVirtualization(
   }, [totalCount, scrollerRef, stuckThreshold]);
 
   return metrics;
+}
+
+// ============================================================
+// Tail follow — keep the streaming answer inside the visible box
+// ============================================================
+
+export interface ChatTailFollow {
+  /**
+   * Re-arm the follow explicitly. `chat.tsx` calls this from the "jump to
+   * latest" pill so a reader who scrolled up can return to the tail by click
+   * even when the re-arm-by-position reading below is ambiguous.
+   */
+  followNow: () => void;
+}
+
+/**
+ * Pin the transcript to its tail while the reader is watching it live.
+ *
+ * The defect this closes: the scroller had exactly one auto-scroll path in the
+ * whole webapp — `scrollToBottom` in `chat.tsx`, wired to the "jump to latest"
+ * pill. Nothing moved the container while a turn streamed, so the growing
+ * answer was laid out below the fold and stayed invisible. Measured on the
+ * unfixed build (see `.tickets/webui-parity/88-streaming-bubble-visibility.md`):
+ * over a 15 s turn `scrollTop` never left 0 while `scrollHeight` went
+ * 688 → 1196.
+ *
+ * Why every decision happens at a commit boundary, with no scroll listener:
+ * appending content BELOW the reader leaves `scrollTop` untouched, so the only
+ * thing that moves the container is a reader action. But a scroll EVENT is not
+ * a safe place to read that, because the browser dispatches scroll events
+ * asynchronously — by the time the handler runs, the next SSE frame may already
+ * have grown the transcript, and "am I near the bottom?" then answers no for a
+ * reader who never left. A first cut of this hook did exactly that and the
+ * follow latched off ~20 s into every turn, with the debug trace reading
+ * `sync follow=false sH=1170 sT=402` (an 80 px gap that no reader created).
+ * Comparing the container against the pin the hook itself last wrote is immune
+ * to that, because growth cannot change `scrollTop` at all.
+ *
+ * So the layout effect below owns the whole state machine: it turns the follow
+ * off when something moved the container off our pin, re-arms it when the
+ * reader is parked at the tail, and pins otherwise. It runs in a layout effect
+ * so the write lands before paint — a passive effect would show one frame of
+ * the answer below the fold on every token.
+ *
+ * `resetKey` re-measures once per session. That is the seam with the
+ * persisted-position restore in `chat.tsx`: on a session change the reader has
+ * no tail-follow history, and the restore decides where they land. A restore
+ * that arrives a frame later (it runs in a rAF) is picked up by the very next
+ * commit — either as an off-pin move, or as a re-arm if the restored position
+ * is the tail.
+ *
+ * `revision` is any value that changes when the transcript grows — `chat.tsx`
+ * passes the `units` array, whose identity changes on every SSE frame.
+ *
+ * Deliberately NOT smooth: smooth scrolling chases a target that moves with
+ * every token, so it lags behind the stream and overshoots when the turn ends.
+ */
+export function useChatTailFollow(
+  scrollerRef: RefObject<HTMLElement>,
+  revision: unknown,
+  resetKey?: string | null,
+): ChatTailFollow {
+  const followingRef = useRef(false);
+  const pinnedTopRef = useRef<number | null>(null);
+  const lastResetKeyRef = useRef<string | null | undefined>(undefined);
+
+  const followNow = useCallback(() => {
+    followingRef.current = true;
+    pinnedTopRef.current = null;
+  }, []);
+
+  useLayoutEffect(() => {
+    const el = scrollerRef.current;
+    if (!el) return;
+    if (lastResetKeyRef.current !== resetKey) {
+      lastResetKeyRef.current = resetKey;
+      followingRef.current = isNearBottom({
+        scrollTop: el.scrollTop,
+        clientHeight: el.clientHeight,
+        scrollHeight: el.scrollHeight,
+      });
+      // Seed the pin with where the container is RIGHT NOW, not `null`. The
+      // persisted-position restore in `chat.tsx` runs in a rAF, so it lands
+      // after this commit; seeding the baseline is what makes that move visible
+      // to the next commit as "somebody moved the container", which is what
+      // keeps a reader who reopened a session mid-history off the follow. With
+      // a `null` baseline the first post-restore commit would see no movement,
+      // keep following, and drag them to the tail a frame after restore.
+      pinnedTopRef.current = el.scrollTop;
+      return;
+    }
+
+    const metrics = {
+      scrollTop: el.scrollTop,
+      scrollHeight: el.scrollHeight,
+      clientHeight: el.clientHeight,
+    };
+
+    // Off-switch, then re-arm, then pin — in that order, all on one reading of
+    // the DOM taken after the new content is laid out.
+    if (followingRef.current) {
+      const pinnedTop = pinnedTopRef.current;
+      if (pinnedTop !== null && isAwayFromPin({ scrollTop: metrics.scrollTop, pinnedTop })) {
+        followingRef.current = false;
+        pinnedTopRef.current = null;
+      }
+    } else if (isAtTail(metrics)) {
+      // The reader scrolled back down to the newest line on their own.
+      followingRef.current = true;
+    }
+
+    const target = computeTailFollowScrollTop({ following: followingRef.current, ...metrics });
+    if (target === null) return;
+    if (el.scrollTop !== target) el.scrollTop = target;
+    // Record where the container actually ended up, not where we aimed: a
+    // browser that clamps the write would otherwise read as "the reader moved"
+    // on the next commit and switch the follow off.
+    pinnedTopRef.current = el.scrollTop;
+  }, [revision, resetKey, scrollerRef]);
+
+  return { followNow };
 }
