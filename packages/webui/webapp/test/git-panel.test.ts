@@ -21,7 +21,10 @@ import {
   formatStatusTags,
   describeCleanliness,
   previewDiff,
+  resolveVersionBadge,
+  versionBadgeTimeBucket,
 } from "../lib/git-panel";
+import { translate, type MessageKey } from "../lib/i18n";
 import type { GitStatusFile } from "../lib/api";
 
 function file(overrides: Partial<GitStatusFile>): GitStatusFile {
@@ -214,5 +217,152 @@ describe("previewDiff — display truncation", () => {
     const ws = previewDiff("   ", 400);
     assert.equal(ws.text, "   ");
     assert.equal(ws.truncated, false);
+  });
+});
+
+// webui-parity 89 (F-4) — the conversation toolbar's version badge.
+// The render decision is what these pin. A badge that appears over an
+// empty pill (non-git workspace, unborn HEAD, still-loading) is the
+// exact "dead control" shape the ticket forbids, so the null cases are
+// asserted as loudly as the populated one. The React wiring itself
+// (fetch on workspace change, the copy button) is verified live in the
+// ticket's end-to-end run — Node's test loader cannot mount the tree.
+describe("resolveVersionBadge — when the version badge renders", () => {
+  const repo = {
+    ok: true,
+    isRepo: true,
+    branch: "feat/version-badge",
+    headSha: "0e99b45",
+    headCommittedAt: "2026-10-01T09:12:33+08:00",
+  };
+
+  test("a repository with a commit yields branch + sha + parsed time", () => {
+    const badge = resolveVersionBadge({ workspaceDir: "/w", status: repo });
+    assert.ok(badge);
+    assert.equal(badge.branch, "feat/version-badge");
+    assert.equal(badge.shortSha, "0e99b45");
+    assert.equal(badge.committedAtMs, Date.parse("2026-10-01T09:12:33+08:00"));
+  });
+
+  test("no workspace renders nothing", () => {
+    // The pre-first-response state and the no-session state both land
+    // here; neither may paint a placeholder.
+    assert.equal(resolveVersionBadge({ workspaceDir: null, status: null }), null);
+    assert.equal(resolveVersionBadge({ workspaceDir: "", status: null }), null);
+    assert.equal(resolveVersionBadge({ workspaceDir: "/w", status: null }), null);
+  });
+
+  test("a non-git workspace renders nothing", () => {
+    // `isRepo:false` is the server's NORMAL answer for a plain folder,
+    // not an error state — most workspaces in this product are not
+    // repositories.
+    assert.equal(
+      resolveVersionBadge({ workspaceDir: "/w", status: { ok: false, isRepo: false } }),
+      null,
+    );
+  });
+
+  test("a failed request renders nothing", () => {
+    assert.equal(
+      resolveVersionBadge({
+        workspaceDir: "/w",
+        status: { ok: false, isRepo: true, error: "boom" },
+        hasError: true,
+      }),
+      null,
+    );
+  });
+
+  test("a repo with an unborn HEAD renders nothing (no sha to show)", () => {
+    // `git init` with nothing committed: isRepo:true, but `git log -1`
+    // has no answer, so both identity fields are null. A badge showing
+    // only a branch name would claim a version that does not exist.
+    assert.equal(
+      resolveVersionBadge({
+        workspaceDir: "/w",
+        status: { ok: true, isRepo: true, branch: "main", headSha: null, headCommittedAt: null },
+      }),
+      null,
+    );
+  });
+
+  test("a missing or blank sha renders nothing", () => {
+    for (const headSha of [undefined, "", "   "]) {
+      assert.equal(
+        resolveVersionBadge({
+          workspaceDir: "/w",
+          status: { ok: true, isRepo: true, branch: "main", headSha },
+        }),
+        null,
+        `headSha=${JSON.stringify(headSha)} should not render a badge`,
+      );
+    }
+  });
+
+  test("a detached HEAD keeps the sha and drops the branch, rather than faking one", () => {
+    const badge = resolveVersionBadge({
+      workspaceDir: "/w",
+      status: { ok: true, isRepo: true, branch: null, headSha: "abc1234" },
+    });
+    assert.ok(badge);
+    assert.equal(badge.branch, null);
+    assert.equal(badge.shortSha, "abc1234");
+  });
+
+  test("an unparseable timestamp costs only the time half, not the badge", () => {
+    const badge = resolveVersionBadge({
+      workspaceDir: "/w",
+      status: { ok: true, isRepo: true, branch: "main", headSha: "abc1234", headCommittedAt: "not-a-date" },
+    });
+    assert.ok(badge);
+    assert.equal(badge.committedAtMs, null);
+    assert.equal(badge.shortSha, "abc1234");
+  });
+});
+
+describe("versionBadgeTimeBucket — the relative-time half", () => {
+  const now = Date.parse("2026-10-01T12:00:00Z");
+  const at = (ms: number) => now - ms;
+
+  test("a missing timestamp yields no time half at all (no orphan separator)", () => {
+    assert.equal(versionBadgeTimeBucket(now, null), "");
+  });
+
+  test("a future timestamp yields no time half — clock skew must not print '-2h ago'", () => {
+    assert.equal(versionBadgeTimeBucket(now, now + 2 * 60 * 60_000), "");
+  });
+
+  test("the ladder matches the file tree's mtime buckets", () => {
+    const min = 60_000;
+    const hour = 60 * min;
+    const day = 24 * hour;
+    assert.equal(versionBadgeTimeBucket(now, at(30_000)), "now");
+    assert.equal(versionBadgeTimeBucket(now, at(5 * min)), "minutesAgo:5");
+    assert.equal(versionBadgeTimeBucket(now, at(3 * hour)), "hoursAgo:3");
+    assert.equal(versionBadgeTimeBucket(now, at(2 * day)), "daysAgo:2");
+    assert.equal(versionBadgeTimeBucket(now, at(10 * day)), "weeksAgo:1");
+    assert.equal(versionBadgeTimeBucket(now, at(90 * day)), "monthsAgo:3");
+    assert.equal(versionBadgeTimeBucket(now, at(400 * day)), "yearsAgo:1");
+  });
+
+  test("every bucket key it can emit is a real bilingual dictionary key", () => {
+    // A bucket with no dictionary entry would render the key name
+    // itself into the toolbar, so the two vocabularies are pinned
+    // against each other rather than trusted to drift together.
+    const emitted = [
+      "now",
+      "minutesAgo:1",
+      "hoursAgo:1",
+      "daysAgo:1",
+      "weeksAgo:1",
+      "monthsAgo:1",
+      "yearsAgo:1",
+    ];
+    for (const bucket of emitted) {
+      const [name] = bucket.split(":");
+      const key = `git.badge.${name}` as MessageKey;
+      assert.notEqual(translate("zh", key), undefined, `zh is missing ${key}`);
+      assert.notEqual(translate("en", key), undefined, `en is missing ${key}`);
+    }
   });
 });

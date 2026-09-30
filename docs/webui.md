@@ -438,6 +438,52 @@ batch. The Agent Team badge, the `workspaceDir` secondary line and the
 reference's own shell, so they are not implemented here either. A later
 agent must not mistake any of these for "implemented but broken".
 
+## Conversation toolbar: the version badge (webui-parity 89)
+
+The conversation toolbar's right end of the title row carries a version badge:
+the branch name, the abbreviated commit id, and how long ago that commit
+landed. It answers "which checkout am I looking at" without opening a terminal,
+which is the question a user has when a build behaves unexpectedly and there
+is more than one checkout in play.
+
+| State | What renders |
+| --- | --- |
+| Repository with at least one commit | `branch` + `headSha` + relative commit time |
+| Directory that is not a repository | nothing — the whole element is absent from the DOM |
+| Repository with an unborn HEAD (`git init`, nothing committed) | nothing; there is no commit to name |
+| Detached HEAD | the sha alone, with no placeholder word standing in for a branch |
+| Request failed or has not answered yet | nothing |
+
+The absent cases are the contract, not an afterthought: an empty pill would be
+a control that looks live and carries no information, so
+`resolveVersionBadge` returns `null` and the component renders an empty
+string. `webapp/test/toolbar-version-badge.test.ts` pins the rendered output
+in both directions.
+
+**Placement.** The badge sits at the far end of the title row (`ml-auto`),
+opposite the session title it qualifies, and before that row's `pr-20` reserve
+— so the `fixed right-4` launcher cluster can never overlap it. It follows
+the running-turn indicator when one is showing. The relative time is the only
+part with a narrow-width rule (`hidden lg:inline`): the branch name and the
+sha are what identify a build, so they stay and the time gives way. Long
+branch names truncate rather than pushing the bar wider.
+
+**The click copies the short sha.** It is a real `<button>` with an
+`aria-label` and a transient 「已复制」 confirmation, not decorative text. A
+denied clipboard shows no confirmation rather than a confirmation the user
+acts on.
+
+**Data and cost.** One `GET /api/git/status` on workspace change — the same
+endpoint the right-panel Git panel reads, not a second source of truth. It
+does not poll: a `git status` on a large tree is a real index refresh, a
+version identity changes when the user commits or checks out a branch rather
+than on a schedule, and the Git panel already sets the precedent of fetching
+on workspace change plus an explicit Refresh. The relative-time half needs no
+refetch at all — it ticks off the toolbar's existing 1s ticker, which the
+elapsed-timer already pays for. While the Git panel is open, two requests for
+the endpoint are in flight; that is accepted rather than hoisting panel state
+into a provider above the shell for a panel the badge does not render.
+
 ## Context window (what the picker shows, and what a pick does today)
 
 The model picker's settings detail renders at **two levels** (ticket 49 batch 2). The panel-bottom area always describes the ACTIVE model; when a provider cascade is open, the fly-out renders as the reference picker's two-column popover — the provider's model rows on the left, a **follow-focus settings column** on the right. Hovering or keyboard-focusing a model row switches that column to the model without picking it; a cascade that just opened (nothing focused yet) falls back to the active model, mirroring the reference. Both areas read the same draft mirror (below), so a window pick made in either place highlights in both.
@@ -475,6 +521,7 @@ below cites the component file and one `data-testid` per surface.
 | Home quick-capability capsules (ticket 55c) | `components/chat.tsx#HomeState` | `home-quick-capabilities` |
 | Sidebar inbox (alerts flyout) | `components/inbox.tsx` | `inbox-flyout` |
 | Toolbar (top bar with model selector) | `components/toolbar.tsx` | `toolbar-session-status` |
+| Toolbar version badge (branch + short sha + commit time, webui-parity 89) | `components/version-badge.tsx` | `toolbar-version-badge` |
 | Composer + drop overlay | `components/composer.tsx` | `composer-drop-overlay`, `composer-send-button` |
 | Chat (virtual list ≥ 200 messages) | `components/chat.tsx` + `chat-virtual-list.tsx` | `chat-virtual-top-spacer` |
 | Turn process bar (composite summary + output rate since ticket 46 PR3) | `components/activity-group.tsx#TurnProcessDisclosure` | `turn-process-disclosure` |

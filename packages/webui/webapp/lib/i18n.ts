@@ -637,6 +637,22 @@ const en = {
   "git.switch.failed": "Could not switch branch: {{error}}",
   "git.switcher.title": "Switch branch",
   "git.switcher.empty": "No local branches",
+  /* webui-parity 89 — the conversation toolbar's version badge. The
+     badge is one string of identity (branch + short sha + how long ago
+     the commit landed) with a copy-to-clipboard action, so the keys
+     are its confirmation and its seven time buckets. The
+     buckets deliberately mirror files.tree.mtime.*: they are the same
+     relative-time ladder, and versionBadgeTimeBucket returns that
+     ladder's keys. */
+  "git.badge.copyAria": "Copy the commit id",
+  "git.badge.copied": "Copied",
+  "git.badge.now": "just now",
+  "git.badge.minutesAgo": "{n}m ago",
+  "git.badge.hoursAgo": "{n}h ago",
+  "git.badge.daysAgo": "{n}d ago",
+  "git.badge.weeksAgo": "{n}w ago",
+  "git.badge.monthsAgo": "{n}mo ago",
+  "git.badge.yearsAgo": "{n}y ago",
 
   /* Re-open state parity (webui-parity 07). The "session id is gone"
      hint fires when the URL deep-links to a session id the server no
@@ -1658,6 +1674,17 @@ const zh: Record<MessageKey, string> = {
   "git.switch.failed": "切换分支失败：{{error}}",
   "git.switcher.title": "切换分支",
   "git.switcher.empty": "无本地分支",
+  /* webui-parity 89 — 会话标题栏的版本标识：分支 + commit 短编号 + 提交
+     距今多久，悬停显示绝对时间，点击复制短编号。 */
+  "git.badge.copyAria": "复制 commit 编号",
+  "git.badge.copied": "已复制",
+  "git.badge.now": "刚刚",
+  "git.badge.minutesAgo": "{n} 分钟前",
+  "git.badge.hoursAgo": "{n} 小时前",
+  "git.badge.daysAgo": "{n} 天前",
+  "git.badge.weeksAgo": "{n} 周前",
+  "git.badge.monthsAgo": "{n} 月前",
+  "git.badge.yearsAgo": "{n} 年前",
   /* 07 — 重开页面状态一致：URL 深链跳到的会话 ID 已不存在时的提示；
      短暂展示让用户知道是有意回到首页，不是静默丢失上下文。 */
   "session.hint.notFound": "该会话已不可用，已返回首页。",

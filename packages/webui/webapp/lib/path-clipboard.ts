@@ -7,29 +7,11 @@
 // confirmation banner — the breadcrumb is too compact for a
 // transient label, and a global confirmation banner is overkill
 // for a small affordance.
+//
+// The write itself lives in lib/clipboard.ts (webui-parity 89 moved it
+// out of this file so the toolbar version badge's commit-id copy and
+// this path copy share one fallback chain rather than keeping two
+// copies of it); this module stays as the named entry point for path
+// callers.
 
-export async function copyPathToClipboard(path: string): Promise<boolean> {
-  if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
-    try {
-      await navigator.clipboard.writeText(path);
-      return true;
-    } catch {
-      // fall through to the legacy path
-    }
-  }
-  if (typeof document === "undefined") return false;
-  try {
-    const textarea = document.createElement("textarea");
-    textarea.value = path;
-    textarea.setAttribute("readonly", "");
-    textarea.style.position = "absolute";
-    textarea.style.left = "-9999px";
-    document.body.appendChild(textarea);
-    textarea.select();
-    document.execCommand("copy");
-    document.body.removeChild(textarea);
-    return true;
-  } catch {
-    return false;
-  }
-}
+export { copyTextToClipboard as copyPathToClipboard } from "./clipboard";
