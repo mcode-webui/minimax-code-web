@@ -168,6 +168,12 @@ export async function createCatalogueHost(options) {
 
   return {
     adapter,
+    // Bare cliService, for callers with no adapter-level method to go
+    // through. `/api/plugins/*` needs it: TuiRuntimeAdapter's plugin surface
+    // (packages/tui/src/runtime/adapters/plugin-access.ts) exposes only four
+    // TUI view methods and has no preview / import / listEnabled. The host
+    // stays the single owner — consumers must not build a second one.
+    cliService: host.cliService,
     apiHost: host.apiHost,
     controller: host.controller,
     close,

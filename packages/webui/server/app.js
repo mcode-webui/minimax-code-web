@@ -63,6 +63,7 @@ import * as debugRoute from "./routes/debug.js";
 import * as protocolRoute from "./routes/protocol.js";
 import * as providersRoute from "./routes/providers.js";
 import * as gitRoute from "./routes/git.js";
+import * as pluginsRoute from "./routes/plugins.js";
 import * as authorizeRoute from "./lib/authorize.js";
 
 /**
@@ -147,6 +148,22 @@ export const OWNED_ROUTES = new Set([
   "GET /api/git/branches",
   "GET /api/git/diff",
   "POST /api/git/checkout",
+  // Plugins management (ticket 60 phase 1). Every endpoint is a projection
+  // over a `cliService` method the runtime already implements; the routes
+  // lazily boot the catalogue host themselves, so they work under the
+  // default `acp` transport too. `GET /api/plugins/marketplace` requires an
+  // explicit `source` (1 = official, 2 = local) — the runtime maps an absent
+  // one to official, whose placeholder cloud domain does not resolve locally.
+  "GET /api/plugins/installed",
+  "GET /api/plugins/marketplace",
+  "GET /api/plugins/enabled",
+  "POST /api/plugins/refresh",
+  "POST /api/plugins/enable",
+  "POST /api/plugins/disable",
+  "POST /api/plugins/install",
+  "POST /api/plugins/uninstall",
+  "POST /api/plugins/import/preview",
+  "POST /api/plugins/import",
   // Settings.
   "GET /api/settings",
   "POST /api/settings",
@@ -554,6 +571,41 @@ export function createHonoApp() {
   );
   app.post("/api/git/checkout", (c) =>
     invokeHandler(c, c.get(CAPTURE_KEY), gitRoute.handleGitCheckout),
+  );
+
+  // ----- Plugins (ticket 60 phase 1) -----
+  // Gate chain is inherited from the middleware above (no auth re-implemented
+  // here); a read-only server answers the five POSTs with 403, which is the
+  // intended behaviour rather than a route bug.
+  app.get("/api/plugins/installed", (c) =>
+    invokeHandler(c, c.get(CAPTURE_KEY), pluginsRoute.handlePluginsInstalled),
+  );
+  app.get("/api/plugins/marketplace", (c) =>
+    invokeHandler(c, c.get(CAPTURE_KEY), pluginsRoute.handlePluginsMarketplace),
+  );
+  app.get("/api/plugins/enabled", (c) =>
+    invokeHandler(c, c.get(CAPTURE_KEY), pluginsRoute.handlePluginsEnabled),
+  );
+  app.post("/api/plugins/refresh", (c) =>
+    invokeHandler(c, c.get(CAPTURE_KEY), pluginsRoute.handlePluginsRefresh),
+  );
+  app.post("/api/plugins/enable", (c) =>
+    invokeHandler(c, c.get(CAPTURE_KEY), pluginsRoute.handlePluginsEnable),
+  );
+  app.post("/api/plugins/disable", (c) =>
+    invokeHandler(c, c.get(CAPTURE_KEY), pluginsRoute.handlePluginsDisable),
+  );
+  app.post("/api/plugins/install", (c) =>
+    invokeHandler(c, c.get(CAPTURE_KEY), pluginsRoute.handlePluginsInstall),
+  );
+  app.post("/api/plugins/uninstall", (c) =>
+    invokeHandler(c, c.get(CAPTURE_KEY), pluginsRoute.handlePluginsUninstall),
+  );
+  app.post("/api/plugins/import/preview", (c) =>
+    invokeHandler(c, c.get(CAPTURE_KEY), pluginsRoute.handlePluginsImportPreview),
+  );
+  app.post("/api/plugins/import", (c) =>
+    invokeHandler(c, c.get(CAPTURE_KEY), pluginsRoute.handlePluginsImport),
   );
 
   // ----- Settings -----

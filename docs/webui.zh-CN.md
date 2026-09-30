@@ -408,9 +408,11 @@ search | plugins`，preview 一侧 `browser | file:<path>`，其定义位于
 （`api.searchFs`），复用文件树筛选器相同的 `searchFootSegments`
 页脚（扫描数 / 命中数 / 跳过数 / 截断 / 预算），并通过共享的
 `fs-tree-reveal` 通道把点击行为接成"展开到命中"——文件树面板应用
-与自身服务端搜索相同的展开 + 高亮。**「插件」入口仍是占位**
-（`PluginsSurface`），因为引擎尚未发布插件安装协议；该表面渲染
-一个 i18n "敬请期待"卡片而非静默空操作。
+与自身服务端搜索相同的展开 + 高亮。**60 号工单阶段①交付的是插件
+后端，不是插件面板。** `/api/plugins/*` 的十个端点与它们的类型化
+客户端函数已经就绪，详见下文「插件接口」一节。但「插件」入口本身
+仍然打开此前那张占位卡：还没有任何界面调用这些函数，用户可见的
+管理界面尚未落地。今天为真的是契约，不是界面。
 
 表面种类统一通过 `openSurfaceTab("…")` 触发；右栏种类
 （`PanelKind`）是单独收紧的并集：`"workspace" | "files" | "git" |
@@ -421,6 +423,71 @@ search | plugins`，preview 一侧 `browser | file:<path>`，其定义位于
 
 列间分隔条宽 8 px，支持拖拽改宽（夹在 `[minWidth, maxWidth]` 内）
 和双击重置。
+
+### 插件接口（60 号工单阶段①）
+
+本节只描述**契约**。会消费它的浏览器面板不在本次发布里：「插件」
+侧栏入口仍然渲染它一直以来的那张占位卡，webapp 里还没有任何代码
+调用这些函数。请把下面的端点表与载荷表读作「未来面板照此编写」
+的接口，而不是今天就能用的界面描述。下面两条数据事实对正在运行的
+服务端已经成立，值得现在就记下：本地市场、已安装列表与 GitHub
+导入是真数据，而官方市场在本地版不可达。
+
+`webapp/lib/api.ts` 为每个端点暴露一个类型化函数：
+
+| func_name | 端点 | `api.ts` 函数 | 入参 |
+|---|---|---|---|
+| `plugins.list.installed` | `GET /api/plugins/installed` | `listInstalledPlugins` | `keyword?` `limit?` `cursor?` |
+| `plugins.list.marketplace` | `GET /api/plugins/marketplace` | `listMarketplacePlugins` | `source`（必填）+ 上述参数，另加 `category?` `skillLimit?` `skillCursor?` |
+| `plugins.list.enabled` | `GET /api/plugins/enabled` | `listEnabledPlugins` | —— |
+| `plugins.refresh.all` | `POST /api/plugins/refresh` | `refreshPlugins` | —— |
+| `plugins.enable.by_name` | `POST /api/plugins/enable` | `enablePlugin` | `pluginName` `source?` |
+| `plugins.disable.by_name` | `POST /api/plugins/disable` | `disablePlugin` | `pluginName` `source?` |
+| `plugins.install.by_name` | `POST /api/plugins/install` | `installPlugin` | `pluginName` `source?` |
+| `plugins.uninstall.by_name` | `POST /api/plugins/uninstall` | `uninstallPlugin` | `pluginName` `source?` |
+| `plugins.import.preview_url` | `POST /api/plugins/import/preview` | `previewGithubPlugin` | `url` |
+| `plugins.import.from_url` | `POST /api/plugins/import` | `importGithubPlugin` | `source`（`repositoryUrl` `commitSha` `subPath?`） |
+
+消费方需要处理的各态，按契约定义（每一态**渲染成什么样**是面板的
+决定，本次发布不做这个决定）：
+
+| func_name | empty | loading | error | success |
+|---|---|---|---|---|
+| `plugins.list.installed` | `{ok:true, plugins:[], hasMore:false}` | 由消费方自理 | 200 `{ok:false, code}` | 一页数据，官方 + 本地合并 |
+| `plugins.list.marketplace` | `{ok:true, plugins:[]}` | 由消费方自理 | `source=2` → 如实报错；`source=1` → 设计上的 notLocal 态 | 插件行，本地源另带 `marketplaceSkills` |
+| `plugins.list.enabled` | `{ok:true, plugins:[]}` | —— | 200 `{ok:false, code}` | `{plugins:[{name, displayName?}]}` |
+| `plugins.refresh.all` | —— | 刷新按钮 spinner | 透传运行时原 code | `{ok:true}`，随后重拉已安装列表 |
+| `plugins.enable.by_name` | —— | 行内 spinner | `PLUGIN_NOT_FOUND` / `PLUGIN_AUTH_REQUIRED` / `PLUGIN_AUTH_SYNC_TIMEOUT` | `{ok:true, sourceKind, installExists, enabled:true}` |
+| `plugins.disable.by_name` | —— | 行内 spinner | 同上三个 code | `{ok:true, sourceKind, installExists, enabled:false}` |
+| `plugins.install.by_name` | —— | 按钮 spinner | `PLUGIN_AUTH_REQUIRED`；本地包为 `LOCAL_PLUGIN_INSTALL_UNSUPPORTED` | `{ok:true, sourceKind, installExists:true, enabled:true}` |
+| `plugins.uninstall.by_name` | 目标不存在 → `{ok:true, installExists:false}` | 确认框 → spinner | 同上三个 code | `{ok:true, sourceKind, installExists:false, enabled:false}` |
+| `plugins.import.preview_url` | —— | 对话框加载 | URL 非法 / `PLUGIN_NO_SUPPORTED_CAPABILITY` / 公网不可达 | `{source, plugin:{summary,…}, diagnostics, packageSizeBytes, canImport}` |
+| `plugins.import.from_url` | —— | 按钮 spinner | `PLUGIN_ALREADY_EXISTS` / `PLUGIN_IMPORT_INVALID` | `{plugin:{summary}}`，导入即启用 |
+
+**本地版唯一提供不了的端点，说清楚。** 官方市场需要云端账号，而本地版的
+云端基址不可解析，于是 `source=1` 应答 `{ok:false,
+code:"NETWORK_ERROR"}`。未来的面板必须把它当作**设计好的状态** ——
+渲染 `plugins.market.official.notLocal.*` 文案而不是红色错误 ——
+官方的安装 / 启停 / 卸载同理保持静默。其余全是真数据：已安装列表、
+本地市场（独立技能 + 本地包投影），以及两个 GitHub 导入端点 ——
+它们直接抓公网仓库，不经 registry。本地包**不能**安装（运行时答
+`LOCAL_PLUGIN_INSTALL_UNSUPPORTED`），所以本地卡片不渲染安装按钮，
+而不是给一个注定失败的操作入口。
+
+**写新调用前要知道的几条线上约定。** `source` 入参是数字
+（`1` 官方 / `2` 本地）；出参里运行时的数字原样透传，路由另在页面、
+每个插件行与每个变更应答上补一个不依赖协议的字符串 `sourceKind`
+（`"official"` / `"local"`）。消费方分支判断必须用 `sourceKind` 而非
+数字 `source` —— 这就是 webapp 不必依赖 `@mavis/protocol` 的原因。
+市场列表**必填** `source`
+—— 运行时把缺省读成「官方」，默默取默认值会让每个请求都打向不可达
+的 registry。运行时失败是 200 + `ok:false` + 可分支的 `code`；请求被
+拒则是 400，而 webapp 的封装把任何非 2xx 变成一个带服务端消息文本的
+抛出异常 —— 也就是说 400 上的 `code` 读不回来，消费方必须在筛选条件
+变化时重置过期游标，而不是去解析失败响应。游标与签发它的筛选条件
+绑定：换了 keyword 再复用旧游标是
+400 `PLUGIN_CURSOR_INVALID`。鉴权走共享门禁链；只读
+模式下所有 POST 返回 403 —— 这是策略使然的不可用，不是故障。
 
 ### 代码预览（slice 22，IDE 级）
 

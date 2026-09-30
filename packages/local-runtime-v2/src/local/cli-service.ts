@@ -48,6 +48,8 @@ import type {
   ListPendingPermissionsResult as ListPendingPermissionsResp,
   ListInstalledPluginsInput as ListInstalledPluginsReq,
   ListInstalledPluginsResult as ListInstalledPluginsResp,
+  ListEnabledPluginsInput as ListEnabledPluginsReq,
+  ListEnabledPluginsResult as ListEnabledPluginsResp,
   ListMarketplacePluginsInput as ListMarketplacePluginsReq,
   ListMarketplacePluginsResult as ListMarketplacePluginsResp,
   ReorderQueueInput as ReorderQueueReq,
@@ -58,6 +60,10 @@ import type {
   RequestCompactionResult as RequestCompactionResp,
   MutatePluginInput as MutatePluginReq,
   MutatePluginResult as MutatePluginResp,
+  ImportGithubPluginInput as ImportGithubPluginReq,
+  ImportGithubPluginResult as ImportGithubPluginResp,
+  PreviewGithubPluginInput as PreviewGithubPluginReq,
+  PreviewGithubPluginResult as PreviewGithubPluginResp,
   ReplyPermissionInput as ReplyPermissionReq,
   ReplyPermissionResult as ReplyPermissionResp,
   ReplyQuestionnaireInput as ReplyQuestionnaireReq,
@@ -607,6 +613,12 @@ export class CliService {
     return this.options.application.plugins.listInstalledPlugins(req);
   }
 
+  listEnabledPlugins(
+    req: ListEnabledPluginsReq,
+  ): Promise<ListEnabledPluginsResp> {
+    return this.options.application.plugins.listEnabledPlugins(req);
+  }
+
   installPlugin(req: MutatePluginReq): Promise<MutatePluginResp> {
     return this.options.application.plugins.installPlugin(req);
   }
@@ -621,6 +633,19 @@ export class CliService {
 
   uninstallPlugin(req: MutatePluginReq): Promise<MutatePluginResp> {
     return this.options.application.plugins.uninstallPlugin(req);
+  }
+
+  previewGithubPlugin(
+    req: PreviewGithubPluginReq,
+    signal?: AbortSignal,
+  ): Promise<PreviewGithubPluginResp> {
+    return this.options.application.plugins.previewGithubPlugin(req, signal);
+  }
+
+  importGithubPlugin(
+    req: ImportGithubPluginReq,
+  ): Promise<ImportGithubPluginResp> {
+    return this.options.application.plugins.importGithubPlugin(req);
   }
 
   getPermissionMode() {

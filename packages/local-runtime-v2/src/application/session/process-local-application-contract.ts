@@ -10,6 +10,10 @@ import type {
 import type { LocalSkillService } from "@mavis/local-runtime";
 import type { LocalMcpPublicFacade } from "../../service/mcp/index.js";
 import type {
+  ImportGithubPluginInput as ImportGithubPluginReq,
+  ImportGithubPluginResult as ImportGithubPluginResp,
+  ListEnabledPluginsInput as ListEnabledPluginsReq,
+  ListEnabledPluginsResult as ListEnabledPluginsResp,
   ListInstalledPluginsInput as ListInstalledPluginsReq,
   ListInstalledPluginsResult as ListInstalledPluginsResp,
   ListMarketplacePluginsInput as ListMarketplacePluginsReq,
@@ -18,6 +22,8 @@ import type {
   ListRuntimeSkillsResult as ListRuntimeSkillsResp,
   MutatePluginInput as MutatePluginReq,
   MutatePluginResult as MutatePluginResp,
+  PreviewGithubPluginInput as PreviewGithubPluginReq,
+  PreviewGithubPluginResult as PreviewGithubPluginResp,
 } from "@mavis/protocol/local";
 import type { MiniAppSurfaceSummary } from "@mavis/shared/miniapp-surface";
 import type { SessionReportManifest } from "../../service/session-system/index.js";
@@ -108,10 +114,20 @@ export interface LocalRuntimeApplication {
     listInstalledPlugins(
       req: ListInstalledPluginsReq,
     ): Promise<ListInstalledPluginsResp>;
+    listEnabledPlugins(
+      req: ListEnabledPluginsReq,
+    ): Promise<ListEnabledPluginsResp>;
     installPlugin(req: MutatePluginReq): Promise<MutatePluginResp>;
     uninstallPlugin(req: MutatePluginReq): Promise<MutatePluginResp>;
     enablePlugin(req: MutatePluginReq): Promise<MutatePluginResp>;
     disablePlugin(req: MutatePluginReq): Promise<MutatePluginResp>;
+    previewGithubPlugin(
+      req: PreviewGithubPluginReq,
+      signal?: AbortSignal,
+    ): Promise<PreviewGithubPluginResp>;
+    importGithubPlugin(
+      req: ImportGithubPluginReq,
+    ): Promise<ImportGithubPluginResp>;
   };
   readonly miniApps?: {
     list(): Promise<{ readonly miniApps: readonly MiniAppSurfaceSummary[] }>;

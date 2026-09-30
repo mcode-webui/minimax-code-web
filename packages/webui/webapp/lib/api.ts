@@ -1377,3 +1377,461 @@ export function gitCheckout(dir: string, branch: string): Promise<GitCheckoutPay
   });
 }
 
+// --- plugins (ticket 60, dispatch 68 phase 1) -------------------------------
+
+/**
+ * Plugin source as the browser branches on it.
+ *
+ * The runtime enum `InstalledPluginSource` is numeric (1 = official,
+ * 2 = local). `@mavis/webui` deliberately does not depend on
+ * `@mavis/protocol` — the webapp has no such dependency and must not
+ * grow one — so `server/routes/plugins.js` stamps a protocol-free
+ * `sourceKind` string on every plugin element and on every mutation
+ * answer, and `webapp` restates the literals. Requests travel the
+ * other way in the numeric form (`?source=2`, `{"source":2}`),
+ * matching the reference contract in
+ * `plugin-management.ts#INPUT_SHAPES`; `PLUGIN_SOURCE_WIRE_VALUE`
+ * below is the single conversion point.
+ */
+export type PluginSource = "official" | "local";
+
+/**
+ * What the route stamps. `unknown` is its defensive fallback for an
+ * element whose `source` is neither 1 nor 2; nothing should render a
+ * marketplace card for it.
+ */
+export type PluginSourceKind = PluginSource | "unknown";
+
+const PLUGIN_SOURCE_WIRE_VALUE: Record<PluginSource, 1 | 2> = {
+  official: 1,
+  local: 2,
+};
+
+/**
+ * Marketplace category id. The runtime's `MarketplaceCategory` is a
+ * numeric enum (0 = other … 10 = education) and the route reads the
+ * category off the query string as a plain integer, so webapp restates
+ * the ids instead of importing the protocol package.
+ */
+export type PluginCategory = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10;
+
+/** Capability counts carried by every plugin summary. */
+export interface PluginCapabilityCounts {
+  appCount: number;
+  mcpServerCount: number;
+  skillCount: number;
+  hookCount?: number;
+}
+
+export interface InstalledPlugin {
+  name: string;
+  version?: string;
+  displayName?: string;
+  description?: string;
+  author?: string;
+  iconUrl?: string;
+  darkIconUrl?: string;
+  /** Which side of the marketplace this plugin lives on. */
+  sourceKind: PluginSourceKind;
+  /** The raw runtime enum (1 / 2); `sourceKind` is the form to read. */
+  source?: number;
+  enabled: boolean;
+  capabilities: PluginCapabilityCounts;
+}
+
+export interface MarketplacePlugin {
+  name: string;
+  version?: string;
+  displayName?: string;
+  description?: string;
+  author?: string;
+  iconUrl?: string;
+  darkIconUrl?: string;
+  /**
+   * Stamped by the route from the requested source — a marketplace
+   * summary carries no source of its own, because the page *is* one
+   * source. The plugin summary inside an import answer is the raw
+   * runtime shape, so this stays optional.
+   */
+  sourceKind?: PluginSourceKind;
+  source?: number;
+  installExists: boolean;
+  enabled: boolean;
+  category?: PluginCategory;
+  capabilities: PluginCapabilityCounts;
+}
+
+/**
+ * A standalone skill as the local marketplace projects it. It arrives
+ * beside the plugin rows, not inside them: the local branch merges two
+ * sources (local packages + standalone skills) and the caller decides
+ * whether to interleave them.
+ */
+export interface MarketplaceSkill {
+  id: number;
+  name: string;
+  displayName?: string;
+  description?: string;
+  displayDescription?: string;
+  category?: PluginCategory;
+  /** True when the skill is already present locally. */
+  added?: boolean;
+}
+
+export interface EnabledPlugin {
+  name: string;
+  displayName?: string;
+  iconUrl?: string;
+  darkIconUrl?: string;
+}
+
+/**
+ * Shared failure fields. A runtime rejection answers HTTP 200 with
+ * `ok:false` plus a machine-readable `code`
+ * (`PLUGIN_NOT_FOUND`, `PLUGIN_AUTH_REQUIRED`, `PLUGIN_ALREADY_EXISTS`,
+ * `RUNTIME_UNAVAILABLE`, …), so the caller branches on `code` rather
+ * than on the message.
+ *
+ * A rejected *request* is an HTTP error and throws instead — 400
+ * `invalidBody` for a malformed parameter, 400 with the code intact for
+ * the three facade validation codes (`INVALID_PLUGIN_SOURCE`,
+ * `PLUGIN_LIMIT_INVALID`, `PLUGIN_CURSOR_INVALID`), 403 in read-only
+ * mode, 413 above 1 MiB. `request` surfaces a non-2xx as an `Error`
+ * carrying the server's `error` text, so a caller that needs to act on
+ * one of those codes resets its cursor on filter change rather than
+ * parsing the failure — the same rule every other helper here follows.
+ */
+interface PluginApiFailure {
+  error?: string;
+  code?: string;
+}
+
+export interface PluginsInstalledPayload extends PluginApiFailure {
+  ok: boolean;
+  plugins?: InstalledPlugin[];
+  hasMore?: boolean;
+  nextCursor?: string;
+}
+
+export interface PluginsMarketplacePayload extends PluginApiFailure {
+  ok: boolean;
+  /** The source this page was requested for. */
+  source?: number;
+  sourceKind?: PluginSourceKind;
+  plugins?: MarketplacePlugin[];
+  hasMore?: boolean;
+  nextCursor?: string;
+  /** Rows matching the filter before paging. */
+  pluginTotal?: number;
+  /**
+   * The registry answered with a cursor that no longer fits the query;
+   * drop the cursor and start the list again. Only the official branch
+   * can raise it.
+   */
+  cursorResetRequired?: boolean;
+  /** Local source only — see `MarketplaceSkill`. */
+  marketplaceSkills?: MarketplaceSkill[];
+  skillHasMore?: boolean;
+  skillNextCursor?: string;
+}
+
+export interface PluginsEnabledPayload extends PluginApiFailure {
+  ok: boolean;
+  plugins?: EnabledPlugin[];
+}
+
+/** The refresh answer carries no data — the caller re-pulls the list. */
+export interface PluginsRefreshPayload extends PluginApiFailure {
+  ok: boolean;
+}
+
+export interface PluginMutationPayload extends PluginApiFailure {
+  ok: boolean;
+  sourceKind?: PluginSourceKind;
+  source?: number;
+  /** False when the target is not installed — the uninstall answer. */
+  installExists?: boolean;
+  enabled?: boolean;
+}
+
+/** Pinned repository coordinates; the preview echoes them back. */
+export interface GithubPluginSource {
+  repositoryUrl: string;
+  commitSha: string;
+  subPath?: string;
+}
+
+export interface PluginImportDiagnostic {
+  code: string;
+  capability?: string;
+  name?: string;
+}
+
+export interface PluginImportPreviewPayload extends PluginApiFailure {
+  ok: boolean;
+  source?: GithubPluginSource;
+  plugin?: {
+    summary: MarketplacePlugin;
+    skillCount: number;
+    mcpServerCount: number;
+    hasStdioMcp: boolean;
+  };
+  diagnostics?: PluginImportDiagnostic[];
+  packageSizeBytes?: number;
+  /** False when the package exposes nothing this runtime can use. */
+  canImport?: boolean;
+}
+
+export interface PluginImportPayload extends PluginApiFailure {
+  ok: boolean;
+  plugin?: MarketplacePlugin;
+}
+
+export interface PluginListQuery {
+  keyword?: string;
+  /** Page size. The route caps it at 200 and defaults to 50. */
+  limit?: number;
+  /**
+   * Opaque forward cursor. It is bound to the `keyword` it was issued
+   * for — reusing it after a keyword change answers
+   * `PLUGIN_CURSOR_INVALID`, so reset it whenever the filter changes.
+   */
+  cursor?: string;
+}
+
+export interface PluginMarketplaceQuery extends PluginListQuery {
+  /**
+   * Required. The runtime reads a missing source as "official", which
+   * points a default request at a cloud registry the local edition
+   * cannot reach, so the route rejects the omission instead.
+   */
+  source: PluginSource;
+  category?: PluginCategory;
+  skillLimit?: number;
+  skillCursor?: string;
+}
+
+// Lists answer from a local runtime call, but the official branch waits
+// on a cloud registry first; 30 s is generous for the local path and
+// still short enough to fail visibly on a dead one.
+const PLUGINS_READ_TIMEOUT_MS = 30_000;
+// Mutations reconcile against the registry and may wait for an auth
+// sync to settle, so they get a longer deadline than a read.
+const PLUGINS_MUTATION_TIMEOUT_MS = 60_000;
+// Import fetches a public GitHub archive and unpacks it.
+const PLUGINS_IMPORT_TIMEOUT_MS = 60_000;
+
+function pluginsQuery(params: Record<string, string | number | undefined>): string {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === "") continue;
+    search.set(key, String(value));
+  }
+  return search.toString();
+}
+
+/**
+ * Installed plugins, official and local segments merged, one page.
+ * Each element carries the `sourceKind` string the panel branches on.
+ *
+ * `GET /api/plugins/installed` — func_name `plugins.list.installed`.
+ * Refresh with `refreshPlugins()` and pull this again; the panels read
+ * `ok` and, on `ok:false`, `code`.
+ */
+export function listInstalledPlugins(
+  params: PluginListQuery = {},
+): Promise<PluginsInstalledPayload> {
+  const query = pluginsQuery({
+    keyword: params.keyword,
+    limit: params.limit,
+    cursor: params.cursor,
+  });
+  return request<PluginsInstalledPayload>(
+    `/api/plugins/installed${query ? `?${query}` : ""}`,
+    { timeoutMs: PLUGINS_READ_TIMEOUT_MS },
+  );
+}
+
+/**
+ * Marketplace rows for one source. `source` is required and leaves as
+ * the numeric enum; the answer echoes it back and stamps `sourceKind`
+ * on the page and on every row.
+ *
+ * `GET /api/plugins/marketplace` — func_name `plugins.list.marketplace`.
+ * `source:"local"` is real data (standalone skills plus the local
+ * package projection). `source:"official"` is the one honest placeholder
+ * of phase 1: the cloud base URL does not resolve in the local edition,
+ * so the call answers `ok:false` and the caller renders the
+ * `plugins.market.official.notLocal.*` copy instead of an error.
+ */
+export function listMarketplacePlugins(
+  params: PluginMarketplaceQuery,
+): Promise<PluginsMarketplacePayload> {
+  const { source, ...rest } = params;
+  const query = pluginsQuery({
+    keyword: rest.keyword,
+    limit: rest.limit,
+    cursor: rest.cursor,
+    category: rest.category,
+    skillLimit: rest.skillLimit,
+    skillCursor: rest.skillCursor,
+    source: PLUGIN_SOURCE_WIRE_VALUE[source],
+  });
+  return request<PluginsMarketplacePayload>(`/api/plugins/marketplace?${query}`, {
+    timeoutMs: PLUGINS_READ_TIMEOUT_MS,
+  });
+}
+
+/**
+ * The plugins the current turn can actually use — the runtime's own
+ * enabled snapshot rather than the installed list.
+ *
+ * `GET /api/plugins/enabled` — func_name `plugins.list.enabled`.
+ */
+export function listEnabledPlugins(): Promise<PluginsEnabledPayload> {
+  return request<PluginsEnabledPayload>("/api/plugins/enabled", {
+    timeoutMs: PLUGINS_READ_TIMEOUT_MS,
+  });
+}
+
+/**
+ * Reconcile installed state against both sources.
+ *
+ * `POST /api/plugins/refresh` — func_name `plugins.refresh.all`. Takes
+ * no body; the answer carries no data, so the caller reloads
+ * `listInstalledPlugins` afterwards.
+ */
+export function refreshPlugins(): Promise<PluginsRefreshPayload> {
+  return request<PluginsRefreshPayload>("/api/plugins/refresh", {
+    method: "POST",
+    json: {},
+    timeoutMs: PLUGINS_MUTATION_TIMEOUT_MS,
+  });
+}
+
+/**
+ * Turn a plugin on.
+ *
+ * `POST /api/plugins/enable` — func_name `plugins.enable.by_name`.
+ * `installExists` says whether the target is on disk, `enabled` is the
+ * resulting state. A rejection answers 200 with `PLUGIN_NOT_FOUND`,
+ * `PLUGIN_AUTH_REQUIRED` or `PLUGIN_AUTH_SYNC_TIMEOUT`; a body the
+ * runtime will not read answers 400 `invalidBody`.
+ */
+export function enablePlugin(
+  pluginName: string,
+  source?: PluginSource,
+): Promise<PluginMutationPayload> {
+  return request<PluginMutationPayload>("/api/plugins/enable", {
+    method: "POST",
+    json: pluginMutationBody(pluginName, source),
+    timeoutMs: PLUGINS_MUTATION_TIMEOUT_MS,
+  });
+}
+
+/**
+ * Turn a plugin off. Disabling deactivates its turn hooks, so a session
+ * already running on that plugin keeps its own progress.
+ *
+ * `POST /api/plugins/disable` — func_name `plugins.disable.by_name`.
+ */
+export function disablePlugin(
+  pluginName: string,
+  source?: PluginSource,
+): Promise<PluginMutationPayload> {
+  return request<PluginMutationPayload>("/api/plugins/disable", {
+    method: "POST",
+    json: pluginMutationBody(pluginName, source),
+    timeoutMs: PLUGINS_MUTATION_TIMEOUT_MS,
+  });
+}
+
+/**
+ * Install a plugin.
+ *
+ * `POST /api/plugins/install` — func_name `plugins.install.by_name`.
+ * Only the official source installs in the local edition; a local
+ * package answers `LOCAL_PLUGIN_INSTALL_UNSUPPORTED`, which is product
+ * semantics rather than a fault, so the local card renders no install
+ * button in the first place.
+ */
+export function installPlugin(
+  pluginName: string,
+  source?: PluginSource,
+): Promise<PluginMutationPayload> {
+  return request<PluginMutationPayload>("/api/plugins/install", {
+    method: "POST",
+    json: pluginMutationBody(pluginName, source),
+    timeoutMs: PLUGINS_MUTATION_TIMEOUT_MS,
+  });
+}
+
+/**
+ * Uninstall a plugin. **Destructive** — the panel must gate this behind
+ * a confirmation prompt.
+ *
+ * `POST /api/plugins/uninstall` — func_name `plugins.uninstall.by_name`.
+ * A target that is not installed answers `ok:true` with
+ * `installExists:false`: the call is idempotent, not an error.
+ */
+export function uninstallPlugin(
+  pluginName: string,
+  source?: PluginSource,
+): Promise<PluginMutationPayload> {
+  return request<PluginMutationPayload>("/api/plugins/uninstall", {
+    method: "POST",
+    json: pluginMutationBody(pluginName, source),
+    timeoutMs: PLUGINS_MUTATION_TIMEOUT_MS,
+  });
+}
+
+/**
+ * Read a GitHub repository URL and report what importing it would bring
+ * in — the dry run behind the import dialog, and it reaches the public
+ * internet directly rather than the official registry.
+ *
+ * `POST /api/plugins/import/preview` — func_name
+ * `plugins.import.preview_url`. A refusal is an invalid URL,
+ * `PLUGIN_NO_SUPPORTED_CAPABILITY`, or a network failure; `canImport`
+ * is false when the package exposes nothing this runtime can run.
+ */
+export function previewGithubPlugin(url: string): Promise<PluginImportPreviewPayload> {
+  return request<PluginImportPreviewPayload>("/api/plugins/import/preview", {
+    method: "POST",
+    json: { url },
+    timeoutMs: PLUGINS_IMPORT_TIMEOUT_MS,
+  });
+}
+
+/**
+ * Install the plugin the preview resolved. The answer carries the
+ * plugin summary, enabled.
+ *
+ * `POST /api/plugins/import` — func_name `plugins.import.from_url`.
+ * A rejection is `PLUGIN_ALREADY_EXISTS` or `PLUGIN_IMPORT_INVALID`.
+ */
+export function importGithubPlugin(
+  source: GithubPluginSource,
+): Promise<PluginImportPayload> {
+  return request<PluginImportPayload>("/api/plugins/import", {
+    method: "POST",
+    json: { source },
+    timeoutMs: PLUGINS_IMPORT_TIMEOUT_MS,
+  });
+}
+
+/**
+ * The four mutators share one body: a required name plus the source the
+ * caller is acting on. An omitted source is forwarded as-is, and the
+ * runtime reads a missing one as "official" one layer down — so a
+ * caller that knows which side the plugin came from always passes it.
+ */
+function pluginMutationBody(
+  pluginName: string,
+  source?: PluginSource,
+): { pluginName: string; source?: 1 | 2 } {
+  return source === undefined
+    ? { pluginName }
+    : { pluginName, source: PLUGIN_SOURCE_WIRE_VALUE[source] };
+}
+

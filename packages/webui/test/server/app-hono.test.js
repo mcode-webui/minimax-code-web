@@ -82,6 +82,19 @@ describe("app.js — migration ledger", () => {
       "GET /api/git/branches",
       "GET /api/git/diff",
       "POST /api/git/checkout",
+      // Plugins (ticket 60 phase 1). The marketplace route requires an
+      // explicit `source`; the five POSTs are stopped by the read-only gate
+      // on a read-only server, which is the intended answer.
+      "GET /api/plugins/installed",
+      "GET /api/plugins/marketplace",
+      "GET /api/plugins/enabled",
+      "POST /api/plugins/refresh",
+      "POST /api/plugins/enable",
+      "POST /api/plugins/disable",
+      "POST /api/plugins/install",
+      "POST /api/plugins/uninstall",
+      "POST /api/plugins/import/preview",
+      "POST /api/plugins/import",
       "GET /api/settings",
       "POST /api/settings",
       "POST /api/auth/decision",

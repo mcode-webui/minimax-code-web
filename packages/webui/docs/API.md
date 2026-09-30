@@ -1163,6 +1163,318 @@ stays `200`; the panel reads `ok`.
 
 ---
 
+## Plugins
+
+Plugin management (ticket 60, phase 1), served by
+`server/routes/plugins.js`. Every handler reaches the
+`local-runtime-v2` plugin system through the catalogue host, which
+starts lazily on the first plugin call; the routes hold no plugin
+state of their own. The gate chain (CORS → origin/CSRF → LAN → token →
+rate limit → read-only) is inherited from `app.js` exactly as for
+`/api/git/*` — there is no second authentication path here. The
+surface that calls these endpoints is `plugins-surface.tsx`, through
+`webapp/lib/api.ts`.
+
+Two answer conventions cover the whole group:
+
+- A **runtime** failure is HTTP 200 with `{ok:false, error, code}`.
+  The panel branches on `code`; a non-2xx status would misreport an
+  expected state as a transport fault. When the catalogue host cannot
+  boot, every endpoint answers `{ok:false, error:"runtime unavailable",
+  code:"RUNTIME_UNAVAILABLE"}`.
+- A **rejected request** is an HTTP error: 400 `{ok:false,
+  code:"invalidBody"}` for a missing or malformed parameter, 400 with
+  the code intact for the three facade validation codes
+  (`INVALID_PLUGIN_SOURCE`, `PLUGIN_LIMIT_INVALID`,
+  `PLUGIN_CURSOR_INVALID`), 403 in read-only mode for every POST (gate
+  5 — the correct answer, not a bug), 413 for a body above 1 MiB.
+
+`source` names the plugin origin and is numeric on the wire: `1` =
+official (cloud registry), `2` = local (packages on this machine). It
+is **required** on `GET /api/plugins/marketplace`, because the runtime
+reads a missing source as "official" and a silent default would aim
+every request at a registry the local edition cannot reach.
+
+In **responses** the numeric `source` is passed through as the runtime
+produced it, and the route additionally stamps a protocol-free
+`sourceKind` string — `"official"` or `"local"` — on the page, on every
+plugin row, and on every mutation answer. The webapp branches on
+`sourceKind`, which is how it stays free of an `@mavis/protocol`
+dependency (`@mavis/webui` does not have one). An element whose
+`source` is neither 1 nor 2 gets `sourceKind:"unknown"`.
+
+Phase 1 covers the plugins domain only. `skills`, `mcp`, `apps` and
+`agents` have no endpoints yet; the other four tabs of the panel
+render a staged placeholder that says their management surface opens
+in a later phase. The state of the surface is recorded in
+[docs/webui.md](../../docs/webui.md).
+
+| func_name | Endpoint | Panel use |
+|---|---|---|
+| `plugins.list.installed` | `GET /api/plugins/installed` | Installed list |
+| `plugins.list.marketplace` | `GET /api/plugins/marketplace` | Marketplace, one source per call |
+| `plugins.list.enabled` | `GET /api/plugins/enabled` | The plugins the current turn can use |
+| `plugins.refresh.all` | `POST /api/plugins/refresh` | Reconcile button |
+| `plugins.enable.by_name` | `POST /api/plugins/enable` | Card switch, on |
+| `plugins.disable.by_name` | `POST /api/plugins/disable` | Card switch, off |
+| `plugins.install.by_name` | `POST /api/plugins/install` | Official install |
+| `plugins.uninstall.by_name` | `POST /api/plugins/uninstall` | Delete, behind a confirmation |
+| `plugins.import.preview_url` | `POST /api/plugins/import/preview` | Import dialog, dry run |
+| `plugins.import.from_url` | `POST /api/plugins/import` | Import dialog, commit |
+
+**What is real and what is a placeholder.** The installed list, the
+local marketplace (`source=2`) and both GitHub import endpoints are
+**real data** — the import path fetches a public repository directly
+and never touches the cloud registry. The official marketplace
+(`source=1`) and the official install / enable / disable / uninstall
+actions are the **only** honest placeholders of this phase: the cloud
+base URL does not resolve in the local edition, so the official listing
+answers `{ok:false}` and the panel renders the
+`plugins.market.official.notLocal.*` copy rather than an error toast.
+The four non-plugin tabs render a staged placeholder of their own
+(`plugins.area.<domain>.pending.*`) that says the management surface
+opens in a later phase.
+
+### `GET /api/plugins/installed?keyword=&limit=&cursor=`
+
+**func_name** `plugins.list.installed`. Installed plugins, official and
+local segments merged, one page. `keyword` filters by name; `limit`
+defaults to 50 and is capped at 200; `cursor` is the opaque forward
+cursor from `nextCursor`.
+
+**Response 200**
+```json
+{
+  "ok": true,
+  "plugins": [
+    {
+      "name": "acme-notes",
+      "version": "1.2.0",
+      "displayName": "Acme Notes",
+      "description": "…",
+      "author": "acme",
+      "iconUrl": "https://…/icon.png",
+      "source": 2,
+      "sourceKind": "local",
+      "enabled": true,
+      "capabilities": { "appCount": 0, "mcpServerCount": 1, "skillCount": 3, "hookCount": 0 }
+    }
+  ],
+  "hasMore": false
+}
+```
+
+The empty state is `{ok:true, plugins:[], hasMore:false}` — nothing
+installed is an answer, not an error. `hasMore:true` carries
+`nextCursor`. The panel shows skeleton rows while this is in flight.
+
+**Errors** — 400 on a malformed parameter: a non-integer `limit` or a
+`category` that is not an integer answers `code:"invalidBody"`, and a
+cursor issued for a different `keyword` answers 400 with
+`code:"PLUGIN_CURSOR_INVALID"` (the panel drops the cursor and restarts
+the list). Runtime failures answer 200 with their own `code`. Note that
+the webapp helper turns any non-2xx into a thrown error carrying the
+server's `error` text, which is why the panel resets the cursor when the
+filter changes rather than on the failure itself.
+
+### `GET /api/plugins/marketplace?source=&keyword=&limit=&cursor=&category=&skillLimit=&skillCursor=`
+
+**func_name** `plugins.list.marketplace`. `source` is required (§Plugins
+above). `category` is a numeric category id (0 other … 10 education);
+`skillLimit` / `skillCursor` page the standalone-skill segment.
+
+**Response 200**
+```json
+{
+  "ok": true,
+  "source": 2,
+  "sourceKind": "local",
+  "plugins": [
+    {
+      "name": "acme-notes",
+      "displayName": "Acme Notes",
+      "description": "…",
+      "installExists": false,
+      "enabled": false,
+      "category": 7,
+      "capabilities": { "appCount": 0, "mcpServerCount": 1, "skillCount": 3 },
+      "sourceKind": "local"
+    }
+  ],
+  "hasMore": false,
+  "pluginTotal": 1,
+  "marketplaceSkills": [
+    { "id": 41, "name": "weekly-digest", "displayName": "Weekly digest", "added": true }
+  ],
+  "skillHasMore": false
+}
+```
+
+A marketplace summary carries no `source` of its own — the page *is* one
+source — so the route stamps `sourceKind` on every row from the
+requested source. The empty state is `{ok:true, source, sourceKind,
+plugins:[], hasMore:false}`. `marketplaceSkills` carries the standalone
+skills the local branch projects alongside the plugin rows; it is
+present for `source=2` and the panel decides whether to interleave the
+two. The official branch may additionally answer
+`cursorResetRequired:true`, meaning the registry rejected the cursor
+and the caller restarts from the first page.
+
+**Errors** — 400 when `source` is missing or not `1`/`2`, when `limit`
+is not a positive integer, or when `category` is not an integer
+(`code:"invalidBody"`); `source=1` answers `ok:false` in the local
+edition (unreachable cloud base URL) and the panel renders the
+not-local placeholder for it. `source=2` failures are ordinary errors
+and surface as one.
+
+### `GET /api/plugins/enabled`
+
+**func_name** `plugins.list.enabled`. The plugins the current runtime
+snapshot reports as enabled — narrower than the installed list, which
+also carries disabled entries.
+
+**Response 200**
+```json
+{ "ok": true, "plugins": [{ "name": "acme-notes", "displayName": "Acme Notes" }] }
+```
+
+The empty state is `{ok:true, plugins:[]}`.
+
+**Errors** — 200 `{ok:false, error, code}` when the runtime is
+unreachable; 400 is not possible (no parameters).
+
+### `POST /api/plugins/refresh`
+
+**func_name** `plugins.refresh.all`. Reconciles installed state against
+both sources. No parameters; the request body is drained and ignored.
+
+**Response 200** `{ok:true}` — the answer carries no data, so the caller
+re-pulls `GET /api/plugins/installed` afterwards. The panel shows a
+spinner on the refresh button while it runs.
+
+**Errors** — 200 `{ok:false, error, code}` with the runtime's own code;
+403 in read-only mode.
+
+### `POST /api/plugins/enable`
+
+Turn a plugin on. **func_name** `plugins.enable.by_name`.
+
+### `POST /api/plugins/disable`
+
+Turn a plugin off; the plugin's turn hooks deactivate, and a session
+already running on it is not interrupted. **func_name**
+`plugins.disable.by_name`.
+
+### `POST /api/plugins/install`
+
+Install a plugin. Only the official source installs in the local
+edition — a local package answers `LOCAL_PLUGIN_INSTALL_UNSUPPORTED`
+and the panel never renders the button. **func_name**
+`plugins.install.by_name`.
+
+### `POST /api/plugins/uninstall`
+
+Uninstall a plugin. **Destructive** — the panel gates the button
+behind a confirmation prompt, and uninstalling a target that is not
+installed is idempotent rather than a failure. **func_name**
+`plugins.uninstall.by_name`.
+
+These four share one body and one answer shape.
+
+**Request**
+```json
+{ "pluginName": "acme-notes", "source": 2 }
+```
+
+`source` is optional, and an omitted one is forwarded as-is — the
+runtime reads a missing source as "official" one layer down, so a
+caller that knows which side the plugin came from should pass it. A
+`pluginName` that is missing or blank answers 400 `invalidBody`, as
+does a `source` that is neither 1 nor 2. Uninstalling a target that is
+not installed is **idempotent**, not a failure.
+
+**Response 200**
+```json
+{ "ok": true, "source": 2, "sourceKind": "local", "installExists": true, "enabled": false }
+```
+
+`installExists` says whether the plugin is on disk; `enabled` is the
+resulting state. The panel shows a row-level spinner for the duration
+of the call.
+
+**Errors** — `PLUGIN_NOT_FOUND`, `PLUGIN_AUTH_REQUIRED` and
+`PLUGIN_AUTH_SYNC_TIMEOUT` as `code` on a 200 answer; 400 `invalidBody`
+for a body the route will not read; 403 in read-only mode. The official
+mutations are the placeholder half of this surface: `PLUGIN_AUTH_REQUIRED`
+is the expected answer for them in the local edition, and the panel
+stays silent rather than raising a toast.
+
+### `POST /api/plugins/import/preview`
+
+**func_name** `plugins.import.preview_url`. Resolves a GitHub URL and
+reports what importing it would bring, without installing anything. It
+fetches the public repository directly — no cloud account, no registry.
+
+**Request**
+```json
+{ "url": "https://github.com/acme/mcode-plugin" }
+```
+
+**Response 200**
+```json
+{
+  "ok": true,
+  "source": { "repositoryUrl": "https://github.com/acme/mcode-plugin", "commitSha": "0f1e2d3" },
+  "plugin": {
+    "summary": { "name": "acme-notes", "displayName": "Acme Notes", "capabilities": { "appCount": 0, "mcpServerCount": 0, "skillCount": 2 } },
+    "skillCount": 2,
+    "mcpServerCount": 0,
+    "hasStdioMcp": false
+  },
+  "diagnostics": [{ "code": "SKILL_NAME_COLLISION", "capability": "skill", "name": "weekly-digest" }],
+  "packageSizeBytes": 18432,
+  "canImport": true
+}
+```
+
+`source` is the pinned coordinate to hand to the commit call;
+`canImport:false` with populated `diagnostics` is a valid answer, and
+the dialog shows them instead of an error. The panel shows a loading
+state for the duration of the fetch.
+
+**Errors** — 400 on a malformed body; 200 `{ok:false, error, code}` for
+an invalid URL, a repository the public internet cannot reach,
+`PLUGIN_NO_SUPPORTED_CAPABILITY`, or `PLUGIN_IMPORT_UNAVAILABLE`.
+
+### `POST /api/plugins/import`
+
+**func_name** `plugins.import.from_url`. Installs the plugin a preview
+resolved; the answer carries the plugin summary, enabled.
+
+**Request**
+```json
+{
+  "source": {
+    "repositoryUrl": "https://github.com/acme/mcode-plugin",
+    "commitSha": "0f1e2d3",
+    "subPath": "packages/notes"
+  }
+}
+```
+
+`subPath` is optional and selects a plugin inside a monorepo.
+
+**Response 200**
+```json
+{ "ok": true, "plugin": { "name": "acme-notes", "displayName": "Acme Notes", "enabled": true, "capabilities": { "appCount": 0, "mcpServerCount": 0, "skillCount": 2 } } }
+```
+
+**Errors** — `PLUGIN_ALREADY_EXISTS` when the plugin is already
+imported, `PLUGIN_IMPORT_INVALID` for a coordinate the runtime cannot
+use, both on a 200 answer; 403 in read-only mode.
+
+---
+
 ## Settings
 
 ### `GET /api/settings`
