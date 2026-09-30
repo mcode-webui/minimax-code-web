@@ -1102,6 +1102,45 @@ loading-states 相同：让 SSR 渲染测试可以脱离 `chat.tsx` 的 `@/` 别
 - `data-active` 强制展开规则与活动组自身的折叠语义都不因此改变：
   收起意图不会盖过强制展开。
 
+## 「已编辑 N 个文件」汇总卡（工单 77）
+
+回合的最后一块是这张卡（桌面版 `06-browser-tree-tasks-review.jpg`
+里的那张），挂载点在 `chat.tsx` 的 `MessageActions` 之后——与
+参照仓 `AssistantBody.tsx:340-380` 的位置一致。文案复用既有的
+`activity.editedFiles` 键，**没有新增 i18n 键**：活动组摘要和这
+张卡说的是同一句话，就该是同一个键。
+
+### 数据从哪来（三级降级链，审计结论）
+
+工单 61 §4.2 定的降级链，第一级审计**没通过**。卡片落在第 2 级，
+但语义比第 2 级原设想更好：数据源不是「工作区 git 变更」而是
+**转录里编辑类工具真实点名的文件路径**，天然是回合级的。
+
+| 级 | 数据源 | 审计结果 |
+|---|---|---|
+| 1 回合级 changeset | `SessionDiffApplication.getTurnDiff` | **不可达**。`local-runtime-v2` 确实有这套能力（`application/session/diff-application.ts:51`，由 v1 的 `LocalTurnDiffCapability` 落到 `SqliteLocalTurnDiffStore`，逐文件带 `additions`/`deletions` 与 `undo` 快照），但 webui 拿不到回合坐标：转录是字形前缀的纯字符串数组，不携带 `turnId` 也不携带 `assistantMessageId`，而 `findTurnDiffRecord`（`local-runtime/src/turns/diff-api.ts:209-220`）在没有选择器时退化成 `latestForSession`——挂在每条历史助手消息下都是同一张「最后一回合」的卡。另外 webui 侧 `server/lib/runtime-host.js:176-178` 只回传 `cliService`/`apiHost`/`controller`，把 v2 宿主返回的 `application` 丢掉了。补齐要动 `local-runtime-v2`，工单 61 第六节风险 1 已声明需另行拍板。 |
+| 2 回合级文件路径 | 转录的 `file-edit` 工具块 | **采用**。`collectEditedFiles`（`webapp/lib/edited-files.ts`）走遍 `RenderUnit[]`，对 `isFileEditTool` 为真的工具块取 `toolPaths`，按分隔符归一去重，保留首次出现顺序。 |
+| 3 无变更 | 列表为空 | **整卡不渲染**（A1）。没有文件可点名时不画空壳、不画「已编辑 0 个文件」。 |
+
+### 桌面版每个元素对应什么
+
+| 桌面版元素 | 我们的对应 | 说明 |
+|---|---|---|
+| 头部图标 | **有** | `pencil` 图标，沿用 `icons.tsx` 既有图标集。 |
+| 「已编辑 N 个文件」 | **有** | N 是**去重后的文件数**，不是编辑调用次数——同一文件改五次仍算一个文件。 |
+| 绿色 `+N` / 红色 `-N` 增删统计 | **没有** | 转录不含任何行数统计，本仓也没有可达的回合级行数来源。画一个就是编数字。 |
+| 「撤销」按钮 | **没有** | 没有回合级回滚端点；引擎的 `rewindTurnDiff` 是历史回退的副作用，不是按卡片撤销。不画死按钮。 |
+| 「Review」按钮 | **没有（以文件行替代）** | 点文件行走既有的 `onOpenFile` 链路开文件预览（红线 4），这是本仓真能兑现的动作。 |
+| 文件行：类型图标 + 文件名 | **有** | `file` 图标 + 路径末段；完整路径挂在 `title` 与 `data-file-path` 上。 |
+| 文件行右侧增删数 | **没有** | 同增删统计。 |
+| 折叠（先 3 行 + 展开） | **有** | 纯客户端状态机 `reduceEditedFilesCardState`，超过 3 行才出现切换。 |
+
+### 契约要点
+
+- 折叠状态**不进 `localStorage`**：刷新后回到折叠态。这是派生状态而非用户偏好，红线 3 不受影响。
+- 卡片从**完整** `units` 派生，不是虚拟窗口 `visibleUnits`——否则超过 200 个单元后滚动会让它忽隐忽现。
+- 未接 `onOpenFile` 时文件行降级为纯文本，**不退化成点了没反应的按钮**。
+
 ## 加载态：会话骨架屏与流式活动指示（工单 U8）
 
 会话界面有两类等待，各自有明确的呈现方式，都不是一个孤零零的转圈：
