@@ -36,6 +36,16 @@ const composerSource = readFileSync(
   resolve(here, "../components/composer.tsx"),
   "utf8",
 );
+// The provider grouping and the thinking-level derivations moved out of
+// composer.tsx into `lib/model-groups.ts` (same code, named inputs) so
+// the unit tests could drive the product functions instead of a copy.
+// The tripwires below follow the code: they pin the derivation where it
+// now lives AND pin that composer.tsx actually imports it, so a
+// half-done extraction cannot pass.
+const modelGroupsSource = readFileSync(
+  resolve(here, "../lib/model-groups.ts"),
+  "utf8",
+);
 const i18nSource = readFileSync(resolve(here, "../lib/i18n.ts"), "utf8");
 const apiSource = readFileSync(resolve(here, "../lib/api.ts"), "utf8");
 
@@ -426,7 +436,21 @@ describe("ticket 49 batch 1 — follow-focus wiring survives batch 2 (kept tripw
 
   test("red lines intact: provider grouping and all three thinking displays survive", () => {
     // B1 — provider grouping with sticky headers and the Other bucket.
-    assert.match(composerSource, /model\.provider \?\? "__other"/);
+    // The bucketing now lives in lib/model-groups.ts; assert the
+    // `__other` bucket is still the anchor there AND that the selector
+    // renders it from that function (a dead export would pass the
+    // first half alone).
+    assert.match(modelGroupsSource, /OTHER_PROVIDER_ID = "__other"/);
+    assert.match(
+      modelGroupsSource,
+      /const key = model\.provider \?\? OTHER_PROVIDER_ID;/,
+      "the grouping key is still `provider` with the `__other` fallback",
+    );
+    assert.match(
+      composerSource,
+      /groupModelsByProvider\(models, groups, t\("modelSelector\.other"\)\)/,
+      "composer.tsx must build `grouped` through the product grouping function",
+    );
     assert.match(composerSource, /data-testid=\{`model-select-group-label-\$\{group\.id\}`\}/);
     assert.match(composerSource, /sticky top-0 z-10/);
     // B2 ① — the active model row's level badge.

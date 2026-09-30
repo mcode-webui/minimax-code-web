@@ -252,6 +252,8 @@ ACP 握手是双向的，两个方向都由同一份 `initialize` 载荷决定�
 
 还有一条给运维的规则：如果操作者在供应商配置里手工写了与内置模型同名的条目，以操作者的条目为准，档位也只显示操作者写明的那些——内置的自动识别不再叠加。
 
+这两处「例外」（供应商分组 + 思考等级的多处显示）背后是 `packages/webui/webapp/lib/model-groups.ts` 里导出的纯函数——`groupModelsByProvider`（按供应商归并，无 provider 的条目落到同一个「其他」桶）、`providerIdOfModel`、`isGroupDisabled`、`thinkingLevelsForModel`（判定某模型有没有可调档位）、`thinkingLevelKey`、`chipLevelSuffix`（等级后缀的陈旧残留守卫）、`modalityBadgeKey`、`providerLabel`——`components/composer.tsx` 直接 import 这个模块，不再在组件内联重推一遍规则，`webapp/test/composer-models.test.ts` 测的就是这些产品函数本身。此前该测试文件把分组逻辑抄了一份在自己的文件里，导致分组改坏测试照样全绿，红线⑤形同虚设；此次只是把同一段代码连同具名入参搬到 lib，**用户可见行为零变化**。调用点仍由 `webapp/test/composer-thinking-tripwire.test.ts` 钉住，「导出了但组件不再调用」这种半吊子提取也会失败。
+
 接口契约（字段、两条下发通道、下发顺序——**先模型后档位**，顺序反了档位会被引擎拒掉、表现为"改了没生效"——与会话启动时的重放规则）见 [`webui.md`](webui.md) 的 Thinking levels 一节。
 
 ## 切换会话会带工作区一起切（webui-parity ticket 39）
