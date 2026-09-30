@@ -40,6 +40,7 @@ import { Readable } from "node:stream";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { mkTmpDir } from "../helpers/tmp.js";
 import {
   setupMocks,
@@ -51,8 +52,28 @@ import {
 } from "../helpers/_setup.js";
 
 // The v2 probe SQL from lib/transcript.js (keyed lookup in the fake Db).
-const V2_SQL =
-  "SELECT role, data_json FROM local_runtime_message_rows WHERE session_id = ? ORDER BY created_at_ms ASC, rowid ASC";
+//
+// Read from the ONE declaration, never re-typed: webui-parity 83 widened that
+// probe's SELECT to carry the turn coordinate columns (`turn_id`, `msg_id`),
+// and the hard-coded copy of the SQL that used to live here silently stopped
+// matching — the fixture rows then looked like "no matching table" and the
+// backfill quietly produced an empty chat. That failure mode is invisible:
+// the switch still answered 200, just with no history.
+//
+// The read is LAZY on purpose. `lib/transcript.js` imports `lib/config.js`,
+// which freezes `MCODE_RUNTIME_DB` at module-load; importing it at this
+// file's top level would pin the real runtime database before `before()` has
+// pointed `MCODE_RUNTIME_DB` at the scratch file, and the real (unmocked)
+// better-sqlite3 would answer the fixture sid with zero rows.
+let _v2Sql;
+async function v2ProbeSql() {
+  if (_v2Sql) return _v2Sql;
+  const mod = await import(
+    pathToFileURL(join(import.meta.dirname, "..", "..", "server", "lib", "transcript.js")).href
+  );
+  _v2Sql = mod.V2_DATA_JSON_PROBES[0].sql;
+  return _v2Sql;
+}
 
 // Fake better-sqlite3: prepare() throws for any SQL not in rowsBySql (like
 // a real prepare on a missing column), serves sid-filtered rows otherwise.
@@ -302,14 +323,21 @@ describe("handleSwitchSession — v2 title fast path", () => {
 // (b) transcript backfill + parseChatLines round-trip
 // ============================================================
 describe("handleSwitchSession — v2 transcript backfill", () => {
-  function seedTranscript(sid) {
+  async function seedTranscript(sid) {
     _fakeDbOpts = {
       rowsBySql: {
-        [V2_SQL]: {
+        [await v2ProbeSql()]: {
           [sid]: [
-            { role: "user", data_json: JSON.stringify({ role: "user", msg_type: 1, msg_content: "调研市面上 AI 小说工具" }) },
+            {
+              role: "user",
+              turn_id: "turn-a",
+              msg_id: "msg-user-1",
+              data_json: JSON.stringify({ role: "user", msg_type: 1, msg_content: "调研市面上 AI 小说工具" }),
+            },
             {
               role: "assistant",
+              turn_id: "turn-a",
+              msg_id: "msg-assistant-1",
               data_json: JSON.stringify({
                 role: "assistant",
                 msg_type: 2,
@@ -326,7 +354,14 @@ describe("handleSwitchSession — v2 transcript backfill", () => {
                 ],
               }),
             },
-            { role: "assistant", data_json: JSON.stringify({ role: "assistant", msg_content: "最终结论在这里" }) },
+            {
+              role: "assistant",
+              turn_id: "turn-a",
+              // The LAST assistant row of the turn — the id the engine
+              // persisted the turn's diff record under.
+              msg_id: "msg-assistant-2",
+              data_json: JSON.stringify({ role: "assistant", msg_content: "最终结论在这里" }),
+            },
           ],
         },
       },
@@ -334,7 +369,7 @@ describe("handleSwitchSession — v2 transcript backfill", () => {
   }
 
   test("mvs_ switch with empty chat backfills mapped history into cs.chat + response + store", async () => {
-    seedTranscript(MVS_R);
+    await seedTranscript(MVS_R);
     const cs = newCs();
     const { res, body } = await doSwitch(MVS_R, cs);
     assert.equal(res._status, 200);
@@ -347,6 +382,12 @@ describe("handleSwitchSession — v2 transcript backfill", () => {
       "  file1",
       "  file2",
       "● 最终结论在这里",
+      // webui-parity 83: the backfill synthesises the engine's turn
+      // coordinate from the row's own `turn_id` / `msg_id` columns, so a
+      // restored session reaches the same per-turn diff card a live turn
+      // does. `msg-assistant-2` is the LAST assistant row of the turn — the
+      // exact id the engine persisted the turn's record under.
+      "§§ turn_msg=msg-assistant-2",
     ];
     assert.deepEqual(cs.chat, expected, "cs.chat carries the mapped transcript");
     assert.deepEqual(body.session.chat, expected, "response session.chat carries it too");
@@ -358,7 +399,7 @@ describe("handleSwitchSession — v2 transcript backfill", () => {
   });
 
   test("existing empty-chat wrapper is backfilled too (webuiId match path)", async () => {
-    seedTranscript(MVS_R);
+    await seedTranscript(MVS_R);
     registerSessionsStore({
       initial: [
         {
@@ -381,7 +422,7 @@ describe("handleSwitchSession — v2 transcript backfill", () => {
   });
 
   test("NON-empty chat is never overwritten by the backfill", async () => {
-    seedTranscript(MVS_R);
+    await seedTranscript(MVS_R);
     registerSessionsStore({
       initial: [
         {
@@ -406,7 +447,7 @@ describe("handleSwitchSession — v2 transcript backfill", () => {
     // the source transcript. With this fake DB the legacy probes throw, so
     // export reports mcode_unavailable and the messages are PURELY the
     // parsed webui lines — the exact round-trip under test.
-    seedTranscript(MVS_R);
+    await seedTranscript(MVS_R);
     const cs = newCs();
     const { body } = await doSwitch(MVS_R, cs);
     const wrapperId = body.session.id;

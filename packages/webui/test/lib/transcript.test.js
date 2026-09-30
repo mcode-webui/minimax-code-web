@@ -47,7 +47,27 @@ const {
 // Fake better-sqlite3: prepare(sql) succeeds ONLY for SQL keys present in
 // rowsBySql (each entry: sid → rows); everything else throws, exactly like
 // a real prepare() on a missing table / missing column.
+//
+// The result rows are PROJECTED onto the statement's own SELECT list, the
+// way SQLite does it. Without that, a fixture row's every field would reach
+// the mapper no matter what the query asked for — and a column missing from
+// the SELECT list would be invisible to the suite while being invisible in
+// production too, because a real `SELECT role, data_json` never returns
+// `turn_id`. That is the silent-degradation shape the switch-backfill test
+// documents; this fake is the half that lets the suite see it.
 // ---------------------------------------------------------------------------
+function selectedColumns(sql) {
+  const m = /^\s*SELECT\s+(.+?)\s+FROM\s/i.exec(sql);
+  assert.ok(m, `fake db: cannot read the SELECT list out of ${sql.slice(0, 60)}`);
+  return m[1].split(",").map((c) => c.trim());
+}
+
+function project(row, columns) {
+  const out = {};
+  for (const c of columns) out[c] = row[c];
+  return out;
+}
+
 function makeFakeDb({ rowsBySql = {}, constructThrows = false } = {}) {
   return class FakeDb {
     constructor(path, opts) {
@@ -58,8 +78,9 @@ function makeFakeDb({ rowsBySql = {}, constructThrows = false } = {}) {
     prepare(sql) {
       const bySid = rowsBySql[sql];
       if (!bySid) throw new Error(`fake db: no such column (${sql.slice(0, 52)}…)`);
+      const columns = selectedColumns(sql);
       return {
-        all: (sid) => (bySid[sid] || []).slice(),
+        all: (sid) => (bySid[sid] || []).map((row) => project(row, columns)),
       };
     }
     close() {
@@ -492,5 +513,132 @@ describe("loadTranscriptChatLines — read + map composition", () => {
     const r = loadTranscriptChatLines("junk");
     assert.equal(r.ok, false);
     assert.equal(r.reason, "bad_mcode_sid");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// webui-parity 83 — the turn coordinate carried back into the transcript
+// ---------------------------------------------------------------------------
+//
+// The engine persists a turn's file-change record under the msg_id of that
+// turn's LAST assistant message, and it writes one message row per message
+// into `local_runtime_message_rows` with `turn_id` / `msg_id` columns. The
+// backfill turns those two columns into the SAME `§§ turn_msg=<id>` marker
+// the live path writes, so a restored session reaches the same per-turn diff
+// card a live turn does — and the endpoint can be given an exact selector
+// instead of a turn ordinal that no longer lines up with the engine's rows.
+//
+// The invariant that matters most is the last one: a transcript with NO
+// coordinate columns must come out byte-for-byte as it did before this
+// feature, because the legacy probes have no such columns and every stored
+// session older than them still has to render.
+describe("messagesToChatLines — the §§ turn_msg marker", () => {
+  const TURN_A = "turn-a";
+  const TURN_B = "turn-b";
+
+  function read(rows) {
+    return readMcodeTranscript(SID, {
+      dbPath: realDbPath(),
+      getDb: () => makeFakeDb({ rowsBySql: { [V2_DATA_JSON_PROBES[0].sql]: { [SID]: rows } } }),
+      probes: [...LEGACY_TRANSCRIPT_PROBES, ...V2_DATA_JSON_PROBES],
+    });
+  }
+
+  function userRow(turn_id, msg_id, content) {
+    return { role: "user", turn_id, msg_id, data_json: JSON.stringify({ role: "user", msg_content: content }) };
+  }
+  function assistantRow(turn_id, msg_id, content) {
+    return { role: "assistant", turn_id, msg_id, data_json: JSON.stringify({ role: "assistant", msg_content: content }) };
+  }
+
+  test("the probe's own SELECT list carries the coordinate columns", () => {
+    // The mapper reads `r.turn_id` / `r.msg_id`, and a row only has those
+    // fields because the statement SELECTED them. Narrowing that list is the
+    // one edit that loses every coordinate at once while leaving the schema,
+    // the writer and the marker syntax untouched — so the list itself is
+    // pinned, not just the behaviour it produces.
+    const columns = selectedColumns(V2_DATA_JSON_PROBES[0].sql);
+    assert.ok(columns.includes("turn_id"), `SELECT list is ${columns.join(", ")}`);
+    assert.ok(columns.includes("msg_id"), `SELECT list is ${columns.join(", ")}`);
+  });
+
+  test("one marker per turn, carrying that turn's LAST assistant msg_id", () => {
+    const r = read([
+      userRow(TURN_A, "m-u1", "改一下"),
+      // Three assistant rows in the turn — thinking, a tool step, the answer.
+      // The engine stored the record under the LAST one, so the marker must
+      // be the last one too; taking the first would select nothing.
+      assistantRow(TURN_A, "m-a1", "我先看看"),
+      assistantRow(TURN_A, "m-a2", "中间步骤"),
+      assistantRow(TURN_A, "m-a3", "改好了"),
+      userRow(TURN_B, "m-u2", "再来一次"),
+      assistantRow(TURN_B, "m-b1", "第二次的答案"),
+    ]);
+    assert.equal(r.ok, true);
+    const lines = messagesToChatLines(r.messages).lines;
+    assert.deepEqual(
+      lines.filter((l) => l.startsWith("§§")),
+      ["§§ turn_msg=m-a3", "§§ turn_msg=m-b1"],
+    );
+  });
+
+  test("the marker lands AFTER the turn's last line, not before it", () => {
+    const r = read([userRow(TURN_A, "m-u1", "q"), assistantRow(TURN_A, "m-a1", "a")]);
+    const lines = messagesToChatLines(r.messages).lines;
+    assert.deepEqual(lines, ["› q", "● a", "§§ turn_msg=m-a1"]);
+  });
+
+  test("a turn with no assistant message contributes no marker", () => {
+    // An aborted prompt. The engine wrote no diff record, so there is no id
+    // to select — and inventing one is exactly the fallback this forbids.
+    const r = read([userRow(TURN_A, "m-u1", "q")]);
+    const lines = messagesToChatLines(r.messages).lines;
+    assert.deepEqual(lines, ["› q"]);
+  });
+
+  test("a turn coordinate split across two turns never leaks across", () => {
+    // Turn A's marker must be A's last assistant id, not turn B's. A marker
+    // emitted one turn late would make the card show the NEXT turn's counts.
+    const r = read([
+      assistantRow(TURN_A, "a-only", "第一回合"),
+      userRow(TURN_B, "m-u2", "第二问"),
+      assistantRow(TURN_B, "b-last", "第二回合"),
+    ]);
+    const lines = messagesToChatLines(r.messages).lines;
+    assert.deepEqual(lines, ["● 第一回合", "§§ turn_msg=a-only", "› 第二问", "● 第二回合", "§§ turn_msg=b-last"]);
+  });
+
+  test("rows without the coordinate columns produce no marker at all", () => {
+    // The legacy probe shape. This is every session older than the columns,
+    // and it must decode exactly as it did before the feature shipped.
+    const legacy = [
+      { role: "user", content: "旧问题" },
+      { role: "assistant", content: "旧答案" },
+    ];
+    assert.deepEqual(messagesToChatLines(legacy).lines, ["› 旧问题", "● 旧答案"]);
+  });
+
+  test("the COLUMN wins over the payload's own copy of msg_id", () => {
+    // A partial write or schema drift can leave the two disagreeing. The
+    // column is the index the runtime's own selector is built on, so it is
+    // the one that must reach the transcript.
+    const r = read([
+      {
+        role: "assistant",
+        turn_id: TURN_A,
+        msg_id: "column-id",
+        data_json: JSON.stringify({ role: "assistant", msg_id: "payload-id", msg_content: "答案" }),
+      },
+    ]);
+    assert.equal(r.ok, true);
+    const lines = messagesToChatLines(r.messages).lines;
+    assert.ok(lines.includes("§§ turn_msg=column-id"));
+    assert.ok(!lines.some((l) => l.includes("payload-id")));
+  });
+
+  test("a user row's msg_id is never mistaken for the turn's coordinate", () => {
+    const r = read([userRow(TURN_A, "m-u1", "q"), assistantRow(TURN_A, "m-a1", "a")]);
+    const lines = messagesToChatLines(r.messages).lines;
+    assert.ok(!lines.some((l) => l.includes("m-u1")));
   });
 });

@@ -372,7 +372,7 @@ export class McodeAcpClient extends EventEmitter {
       //   hold. The old turn-long concatenation leaked into the [send]
       //   result log, the ● finalize rewrite, the no-usage token
       //   estimate and the empty-turn note.
-      const result = { thinking: '', answer: '', messageIds: new Set(), stopReason: null, lastChunkKind: null }
+      const result = { thinking: '', answer: '', messageIds: new Set(), lastAssistantMessageId: null, stopReason: null, lastChunkKind: null }
       const onUpdate = (u) => {
         if (u.sessionUpdate === 'agent_thought_chunk' && u.content?.type === 'text') {
           if (result.lastChunkKind !== 'thought') result.thinking = ''
@@ -385,6 +385,14 @@ export class McodeAcpClient extends EventEmitter {
           result.answer += u.content.text
           result.lastChunkKind = 'message'
           if (u.messageId) result.messageIds.add(u.messageId)
+          // webui-parity 83 (turn coordinate): the engine persists a turn's
+          // diff record under the msg_id of the LAST assistant *message* of
+          // that turn (turn-outcome.ts#readAssistantMessageId reads only
+          // AgentMessage / AgentMessageChunk — never a thought). A turn
+          // carries more than one messageId on the wire (one per message
+          // segment), so "any chunk" would select the wrong record; this
+          // field keeps the last one and nothing else consumes it yet.
+          if (u.messageId) result.lastAssistantMessageId = u.messageId
           try { onChunk?.({ kind: 'message', text: u.content.text }) } catch {}
         } else if (u.sessionUpdate === 'tool_call') {
           // session-isolation/07 (acceptance alignment): ONLY

@@ -102,6 +102,18 @@ function _parseChatLines(lines) {
     const line = raw.replace(/\s+$/, "");
     if (!line) continue;
 
+    // Server-written per-turn metadata, not conversation text.
+    //
+    // `§§ processed_duration=Nms` (prompt finalise) and `§§ turn_msg=<id>`
+    // (webui-parity 83, the engine's turn selector) are one wire convention:
+    // a marker line the webapp's `decodeTranscript` consumes and never
+    // renders. This parser is the SECOND reader of that transcript, so it has
+    // to skip them too — otherwise an exported assistant message ends with a
+    // raw `§§ …` line glued onto its text. `§§` is outside the glyph
+    // vocabulary, so no message shape this grammar can produce starts with
+    // one, and the skip cannot swallow conversation.
+    if (/^§§\s/.test(line)) continue;
+
     // Plan block
     if (/^Plan\s*[:：]\s*.+/i.test(line.trim())) {
       flush();

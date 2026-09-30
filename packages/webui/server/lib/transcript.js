@@ -67,11 +67,18 @@ export const LEGACY_TRANSCRIPT_PROBES = [
 //   why export's enrichment was silently dead — this probe revives reads for
 //   the switch path. NOT part of the default set: export.js must not change
 //   behavior, so only callers that opt in (switch backfill) append it.
+//
+//   webui-parity 83: the probe also selects `turn_id` and `msg_id`. Those two
+//   columns are the engine's own turn coordinate — the last assistant row of a
+//   turn carries exactly the `assistant_message_id` the turn's diff record was
+//   persisted under — so the mapper can synthesise the same `§§ turn_msg=<id>`
+//   marker the live path writes, and an existing session gains the coordinate
+//   on the next switch without the engine being asked anything.
 export const V2_DATA_JSON_PROBES = [
   {
     table: "local_runtime_message_rows",
     sql:
-      "SELECT role, data_json FROM local_runtime_message_rows WHERE session_id = ? ORDER BY created_at_ms ASC, rowid ASC",
+      "SELECT role, data_json, turn_id, msg_id FROM local_runtime_message_rows WHERE session_id = ? ORDER BY created_at_ms ASC, rowid ASC",
     kind: "v2-data-json",
     mapRow: _mapV2DataJsonRow,
   },
@@ -174,6 +181,14 @@ function _mapV2DataJsonRow(r) {
   const m = { role, content };
   if (thinking) m.thinking = thinking;
   if (tool_calls) m.tool_calls = tool_calls;
+  // webui-parity 83: the engine's own turn coordinate. The COLUMN is
+  // authoritative — `data_json` carries its own copies of both fields, and a
+  // row whose column and payload disagree (partial write, schema drift) must
+  // not fabricate a selector. Absent (legacy table, or a row the engine wrote
+  // before these columns existed) simply means "no coordinate for this turn",
+  // and the transcript degrades to the marker-free card.
+  if (typeof r.turn_id === "string" && r.turn_id) m.turnId = r.turn_id;
+  if (typeof r.msg_id === "string" && r.msg_id) m.msgId = r.msg_id;
   return m;
 }
 
@@ -379,11 +394,36 @@ export function messagesToChatLines(messages, opts = {}) {
   const src = Array.isArray(messages) ? messages : [];
   const raw = [];
   let skipped = 0;
+  // webui-parity 83 (turn coordinate). Every v2 row carries the engine's own
+  // `turn_id`, and the LAST assistant row of a turn carries the exact msg_id
+  // that turn's diff record was persisted under (turn-outcome.ts reads the
+  // last agent *message* response; the runtime writes one message row per
+  // message). Emitting `§§ turn_msg=<id>` at the end of each turn group gives
+  // an existing session the same coordinate the live path writes, so one
+  // decoder serves both. Rows without a `turn_id` (legacy probes) contribute
+  // no marker at all — the card degrades instead of inventing one.
+  let groupTurnId = null;
+  let groupTurnMsgId = null;
+  const flushTurnGroup = () => {
+    if (groupTurnId !== null && groupTurnMsgId) raw.push(`§§ turn_msg=${groupTurnMsgId}`);
+    groupTurnId = null;
+    groupTurnMsgId = null;
+  };
   for (const m of src) {
+    const turnId = m && typeof m.turnId === "string" && m.turnId ? m.turnId : null;
+    if (turnId !== groupTurnId) {
+      flushTurnGroup();
+      groupTurnId = turnId;
+    }
     const lines = _messageToLines(m);
     if (lines.length === 0) skipped++;
     raw.push(...lines);
+    const role = m && typeof m.role === "string" ? m.role.toLowerCase() : "";
+    if (role === "assistant" && typeof m.msgId === "string" && m.msgId) {
+      groupTurnMsgId = m.msgId;
+    }
   }
+  flushTurnGroup();
   // Cap 1 — line count: keep the TAIL (recent history is what the user
   // switched TO see).
   let lines = raw.length > maxLines ? raw.slice(raw.length - maxLines) : raw.slice();
