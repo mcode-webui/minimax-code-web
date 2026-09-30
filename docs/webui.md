@@ -1380,6 +1380,18 @@ reads like "Thought 1 time, ran 1 command"):
 - The summary row IS a `<summary>`: one click anywhere on the row toggles
   the group (keyboard reachable), replacing the previous text-button +
   separate-chevron-button pair.
+- **The `file-edit` contribution counts distinct FILES, not edit calls.**
+  Every other category counts the calls in its bucket, because every other
+  sentence is a call sentence (「执行 1 条命令」). 「已编辑 N 个文件」 has a
+  file as its subject, so a model that edited one file five times must not
+  read as five files — that number used to disagree with the turn's
+  edited-files card, which renders the same sentence from
+  `collectEditedFiles`. Both now de-duplicate through one key,
+  `editedFileKey` in `webapp/lib/transcript.ts` (separators folded, case
+  left alone), so a group header and the card cannot report different N for
+  one turn. An edit call that named no path contributes no `file-edit` line
+  at all rather than a phantom file. How many calls ran is not lost: it is
+  the summary's `tools`, which the turn bar reports as 「用了 N 次工具」.
 - The expanded body carries a 1px timeline spine on its left edge
   (`.timeline-spine`, `border_light`, ported parameters).
 - While the run holds a tool whose status has not settled (no
@@ -1675,7 +1687,9 @@ them.
 The header reuses the existing `activity.editedFiles` key for its
 sentence; ticket 83 added keys only for the new affordances (undo, redo,
 the failure copy). The activity-group summary and this card are the same
-sentence, so they have to stay the same sentence.
+sentence, so they have to stay the same sentence — and, since they are the
+same sentence, the same number: the group header counts distinct files
+through the same `editedFileKey` (see the activity-group section above).
 
 ### Where the data comes from
 

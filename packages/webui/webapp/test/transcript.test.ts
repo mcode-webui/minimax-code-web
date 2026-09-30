@@ -344,13 +344,13 @@ describe("summarizeActivity — counting thoughts, not lines", () => {
   // The grammar emits one block per output line, so the block count used to
   // overstate the work: a thought spanning n lines read as "思考 n 次".
   const thinking = (text: string) => ({ role: "thinking" as const, text });
-  const tool = (name: string, status?: string) => ({
+  const tool = (name: string, status?: string, ...paths: string[]) => ({
     role: "tool" as const,
     text: `→ ${name} {}`,
     toolName: name,
     toolArgs: "{}",
     toolOutput: [],
-    toolPaths: [],
+    toolPaths: paths,
     ...(status ? { toolStatus: status } : {}),
   });
   const assistant = (text: string) => ({ role: "assistant" as const, text });
@@ -395,7 +395,7 @@ describe("summarizeActivity — counting thoughts, not lines", () => {
       tool("bash", "completed"),
       tool("bash", "completed"),
       tool("read", "completed"),
-      tool("edit", "completed"),
+      tool("edit", "completed", "/ws/src/a.ts"),
     ]);
     // Upstream order is plugin, file-edit, agent, skill, web, thinking, file,
     // command, tool — so file-edit precedes file, which precedes command.
@@ -409,7 +409,7 @@ describe("summarizeActivity — counting thoughts, not lines", () => {
   test("caps the contribution list at upstream's maxCategories", () => {
     const summary = summarizeActivity([
       tool("read", "completed"),
-      tool("edit", "completed"),
+      tool("edit", "completed", "/ws/src/a.ts"),
       tool("bash", "completed"),
       tool("web_search", "completed"),
       tool("task", "completed"),
@@ -432,6 +432,60 @@ describe("summarizeActivity — counting thoughts, not lines", () => {
     assert.equal(done.activeTool, undefined);
     const running = summarizeActivity([tool("bash", "completed"), tool("edit")]);
     assert.equal(running.activeTool, "edit");
+  });
+});
+
+describe("summarizeActivity — the file-edit line counts files, not calls", () => {
+  // The sentence behind the `file-edit` contribution is 「已编辑 N 个文件」:
+  // its subject is a file. It used to be a call count, so five edits to one
+  // file read 「已编辑 5 个文件」 in the group header while the turn's card —
+  // same sentence, same turn — listed that one file.
+  const edit = (path?: string, name = "edit_file") => ({
+    role: "tool" as const,
+    text: `→ ${name} {}`,
+    toolName: name,
+    toolArgs: "{}",
+    toolOutput: [],
+    toolPaths: path ? [path] : [],
+    toolStatus: "completed" as const,
+  });
+
+  test("five edits to one file report one file", () => {
+    const summary = summarizeActivity([
+      edit("/ws/src/a.ts"),
+      edit("/ws/src/a.ts"),
+      edit("/ws/src/a.ts"),
+      edit("/ws/src/a.ts"),
+      edit("/ws/src/a.ts"),
+    ]);
+    assert.deepEqual(summary.contributions, [{ category: "file-edit", count: 1, iconType: "edit" }]);
+  });
+
+  test("distinct files are counted once each, across both edit tool families", () => {
+    const summary = summarizeActivity([
+      edit("/ws/src/a.ts", "edit_file"),
+      edit("/ws/src/b.ts", "write_file"),
+      edit("/ws/src/a.ts", "apply_patch"),
+    ]);
+    assert.deepEqual(summary.contributions, [{ category: "file-edit", count: 2, iconType: "edit" }]);
+  });
+
+  test("a separator style cannot make one file read as two", () => {
+    const summary = summarizeActivity([edit("/ws/src/a.ts"), edit("\\ws\\src\\a.ts")]);
+    assert.deepEqual(summary.contributions, [{ category: "file-edit", count: 1, iconType: "edit" }]);
+  });
+
+  test("an edit that names no path contributes no line rather than 「0 个文件」", () => {
+    const summary = summarizeActivity([edit(), edit()]);
+    assert.deepEqual(summary.contributions, []);
+    // The calls still ran: `tools` is the call count and is not affected.
+    assert.equal(summary.tools, 2);
+  });
+
+  test("the call count survives as `tools`, so 「改了几次」 is not lost", () => {
+    const summary = summarizeActivity([edit("/ws/src/a.ts"), edit("/ws/src/a.ts"), edit("/ws/src/b.ts")]);
+    assert.equal(summary.tools, 3);
+    assert.equal(summary.contributions[0]?.count, 2);
   });
 });
 

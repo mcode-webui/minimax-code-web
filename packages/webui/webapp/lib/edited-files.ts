@@ -21,7 +21,7 @@
 // turn's `assistantMessageId`, never by a turn ordinal, because the engine's
 // selector falls back to the session's LATEST turn when handed no id.
 
-import { isFileEditTool, type RenderUnit } from "./transcript";
+import { editedFileKey, isFileEditTool, type RenderUnit } from "./transcript";
 import type { FileDiffInfo, TurnDiff } from "./turn-diff";
 
 /** One file the turn edited, in the transcript's own terms. */
@@ -44,20 +44,15 @@ export interface EditedFile {
 export type EditedFiles = readonly EditedFile[];
 
 /**
- * Identity for "the same file named twice".
- *
- * Separators are folded so a Windows-style `a\b.ts` and an `a/b.ts` do not read
- * as two files. Case is left alone on purpose: macOS and Linux are
- * case-sensitive, and folding case there would merge two genuinely distinct
- * files into one row.
- */
-function dedupeKey(path: string): string {
-  return path.trim().replace(/\\/g, "/");
-}
+// "The same file named twice" is decided by `editedFileKey`, which this module
+// does NOT own: it lives in `lib/transcript.ts` beside `isFileEditTool`, so the
+// activity-group summary and this card count files on one key by construction.
+// A private copy here would be a second caliber, and the two would drift the
+// moment either side folded a separator differently.
 
 /** The trailing path segment, with both separator styles honoured. */
 export function basenameOf(path: string): string {
-  const normalised = dedupeKey(path);
+  const normalised = editedFileKey(path);
   const index = normalised.lastIndexOf("/");
   return index === -1 ? normalised : normalised.slice(index + 1);
 }
@@ -72,6 +67,9 @@ export function basenameOf(path: string): string {
  * engine selector: turns with no file change never reach the engine's table at
  * all, so the two sequences drift. The ordinals here only ever pair a unit
  * with the turn it is drawn in.
+ *
+ * Distinctness is `editedFileKey`, the summary's own key, so a file named five
+ * times in one turn is one file here and one file in the group header above it.
  */
 export function collectEditedFilesByTurn(
   units: readonly RenderUnit[],
@@ -82,11 +80,11 @@ export function collectEditedFilesByTurn(
     const turnIndex = turnIndexByUnit[index];
     if (turnIndex === undefined) return;
     if (unit.kind !== "activity") return;
-    const seen = new Set(byTurn.get(turnIndex)?.map((f) => dedupeKey(f.path)) ?? []);
+    const seen = new Set(byTurn.get(turnIndex)?.map((f) => editedFileKey(f.path)) ?? []);
     for (const block of unit.blocks) {
       if (block.role !== "tool" || !isFileEditTool(block.toolName)) continue;
       for (const path of block.toolPaths ?? []) {
-        const key = dedupeKey(path);
+        const key = editedFileKey(path);
         if (!key || seen.has(key)) continue;
         seen.add(key);
         const files = byTurn.get(turnIndex) ?? [];

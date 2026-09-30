@@ -539,7 +539,8 @@ export interface ActivitySummary {
   /** Thought *runs*, not thinking blocks — see the note on `summarizeActivity`. */
   thinking: number;
   tools: number;
-  /** Per-category counts, already ordered by priority and capped. */
+  /** Per-category counts, already ordered by priority and capped. `file-edit` is
+   *  a distinct-file count, not a call count — see `summarizeActivity`. */
   contributions: { category: SummaryCategory; count: number; iconType: SummaryIconType }[];
   /**
    * A tool with no terminal status line yet, i.e. the one currently running.
@@ -729,6 +730,20 @@ export function isFileEditTool(toolName: string | undefined): boolean {
 }
 
 /**
+ * Identity for "the same file named twice".
+ *
+ * Lives here, beside `isFileEditTool`, for the same reason: the activity-group
+ * summary and the turn's edited-files card both count files, and two copies of
+ * this function are two calibers. Separators are folded so a Windows-style
+ * `a\b.ts` and an `a/b.ts` do not read as two files. Case is left alone on
+ * purpose: macOS and Linux are case-sensitive, and folding case there would
+ * merge two genuinely distinct files into one row.
+ */
+export function editedFileKey(path: string): string {
+  return path.trim().replace(/\\/g, "/");
+}
+
+/**
  * Count the activity in a run of blocks (see `groupActivity`).
  *
  * `thinking` counts **thoughts**, not thinking blocks. The grammar writes one
@@ -740,6 +755,16 @@ export function isFileEditTool(toolName: string | undefined): boolean {
  * `tools` stays a block count: the grammar already writes exactly one `→ name`
  * header per tool call, and its output lines are folded into that block by the
  * decoder.
+ *
+ * The `file-edit` contribution is the one category that is **not** a call
+ * count. It counts the **distinct files** the run's edit tools named, keyed by
+ * `editedFileKey` — the sentence behind it is 「已编辑 N 个文件」, whose subject
+ * is a file. Five edits to one file used to read 「已编辑 5 个文件」 in the
+ * group header while the turn's card listed that one file: the same turn, two
+ * numbers, one of them false. An edit call that named no path contributes
+ * nothing rather than a phantom row, which is the same under-statement rule
+ * `isFileEditTool` follows. How many calls ran is not lost: it is `tools`,
+ * which the turn bar reports as 「用了 N 次工具」.
  */
 export function summarizeActivity(blocks: readonly TranscriptBlock[]): ActivitySummary {
   let thinking = 0;
@@ -747,6 +772,7 @@ export function summarizeActivity(blocks: readonly TranscriptBlock[]): ActivityS
   let previousWasThinking = false;
   let activeTool: string | undefined;
   const counts = new Map<string, number>();
+  const editedFiles = new Set<string>();
 
   const add = (category: string) => counts.set(category, (counts.get(category) ?? 0) + 1);
 
@@ -760,13 +786,26 @@ export function summarizeActivity(blocks: readonly TranscriptBlock[]): ActivityS
     } else if (block.role === "tool") {
       tools += 1;
       const name = (block.toolName ?? "tool").trim();
-      add(TOOL_CATEGORY[name.toLowerCase()] ?? "tool");
+      const category = TOOL_CATEGORY[name.toLowerCase()] ?? "tool";
+      if (category === "file-edit") {
+        for (const path of block.toolPaths ?? []) {
+          const key = editedFileKey(path);
+          if (key) editedFiles.add(key);
+        }
+      } else {
+        add(category);
+      }
       // No status line yet means the call is still in flight. The *last* such tool
       // is the active one, so later blocks overwrite earlier ones.
       if (!block.toolStatus && name) activeTool = name;
     }
     previousWasThinking = isThinking;
   }
+
+  // Files the run's edit tools named, resolved before the priority filter: an
+  // edit call with no nameable path leaves the set empty and the category out
+  // of `counts`, so the group says nothing about it rather than 「0 个文件」.
+  if (editedFiles.size > 0) counts.set("file-edit", editedFiles.size);
 
   const contributions = SUMMARY_CATEGORY_ORDER.filter((entry) => counts.has(entry.category))
     .slice(0, MAX_SUMMARY_CATEGORIES)

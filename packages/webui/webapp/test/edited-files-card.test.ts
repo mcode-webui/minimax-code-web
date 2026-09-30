@@ -18,6 +18,12 @@
 // button is gated on anything but the engine's own flag is the dead control
 // this repository already had to delete once (ticket 114).
 //
+// And it pins the ONE number 「已编辑 N 个文件」 is allowed to be: distinct
+// files, keyed by `editedFileKey`, which `lib/transcript.ts` and
+// `lib/edited-files.ts` share. The group header counts that way and the card
+// counts that way, so a turn where one file was edited five times reports 1 in
+// both places rather than 5 in one and 1 in the other.
+//
 // createElement, not JSX: this is a `.test.ts` file (the test:webapp glob is
 // `**/*.test.ts`) and the tsx loader only transpiles JSX in `.tsx`.
 
@@ -104,17 +110,26 @@ function unitsOf(...blocks: TranscriptBlock[]): RenderUnit[] {
   return groupActivity(blocks);
 }
 
+/** The fixture's units and the scan they produce. Handing a test both halves is
+ *  what lets it compare the card against the activity-group header those VERY
+ *  units produce — two separately built fixtures could agree by accident. */
+function scanAndUnitsOf(
+  ...blocks: TranscriptBlock[]
+): { units: RenderUnit[]; files: EditedFiles } {
+  const units = unitsOf(userBlock("q"), ...blocks);
+  const { turnIndexByUnit } = computeTurnLayout(units);
+  const byTurn = collectEditedFilesByTurn(units, turnIndexByUnit);
+  assert.equal(byTurn.size <= 1, true, "the fixture is one turn");
+  return { units, files: byTurn.get(1) ?? [] };
+}
+
 /** The transcript's own scan for a SINGLE-turn transcript — the tier that
  *  every turn with no engine record renders. A transcript that opens with a
  *  user block is turn 1 by `computeTurnLayout`'s own counting (it starts at 0
  *  and increments on the first user block), so the fixture matches what the
  *  decoder actually produces. */
 function scanOf(...blocks: TranscriptBlock[]): EditedFiles {
-  const units = unitsOf(userBlock("q"), ...blocks);
-  const { turnIndexByUnit } = computeTurnLayout(units);
-  const byTurn = collectEditedFilesByTurn(units, turnIndexByUnit);
-  assert.equal(byTurn.size <= 1, true, "the fixture is one turn");
-  return byTurn.get(1) ?? [];
+  return scanAndUnitsOf(...blocks).files;
 }
 
 function renderCard(files: EditedFiles, props: Record<string, unknown> = {}): string {
@@ -175,6 +190,9 @@ describe("the transcript scan reports only paths the turn's edit tools named", (
   });
 
   test("counts a file once however many times it was edited", () => {
+    // Three calls, two distinct files. The card header is a count of FILES;
+    // a call count here would overstate the work, and would also disagree
+    // with the activity-group summary, which counts files on the same key.
     const files = scanOf(
       editBlock("edit_file", "/ws/src/a.ts"),
       editBlock("edit_file", "/ws/src/b.ts"),
@@ -227,6 +245,45 @@ describe("the transcript scan reports only paths the turn's edit tools named", (
     const byTurn = collectEditedFilesByTurn(units, turnIndexByUnit);
     assert.deepEqual(byTurn.get(1)?.map((f) => f.path), ["/ws/first.ts"]);
     assert.deepEqual(byTurn.get(2)?.map((f) => f.path), ["/ws/second.ts"]);
+  });
+
+  // The 「已编辑 N 个文件」 caliber, end to end. `lib/transcript.ts` and
+  // `lib/edited-files.ts` share one key (`editedFileKey`), so the group header
+  // and the card cannot report two different N for the same turn.
+
+  test("the card and the activity summary report the SAME number for one turn", () => {
+    // The reported bug: a model edited one file five times in a turn. The
+    // group header said 「已编辑 5 个文件」 (edit calls) while the card, same
+    // turn, same sentence, said 「已编辑 1 个文件」 (distinct files). Two
+    // numbers for one fact, and the larger one was false.
+    const { units, files } = scanAndUnitsOf(
+      editBlock("edit_file", "/ws/src/a.ts"),
+      editBlock("edit_file", "/ws/src/a.ts"),
+      editBlock("write_file", "/ws/src/a.ts"),
+      editBlock("edit_file", "/ws/src/b.ts"),
+      editBlock("edit_file", "/ws/src/a.ts"),
+    );
+    const headerCount = units
+      .flatMap((unit) => (unit.kind === "activity" ? unit.summary.contributions : []))
+      .filter((entry) => entry.category === "file-edit")
+      .reduce((sum, entry) => sum + entry.count, 0);
+    const markup = renderCard(files);
+    assert.equal(headerCount, 2, "the header counts distinct files");
+    assert.ok(markup.includes('data-edited-files-count="2"'), `card count in ${markup}`);
+    assert.ok(markup.includes("已编辑2个文件"), "the card speaks the same sentence");
+  });
+
+  test("a turn whose edits all named one file agrees on one, not five", () => {
+    const { units, files } = scanAndUnitsOf(
+      editBlock("edit_file", "/ws/src/a.ts"),
+      editBlock("edit_file", "/ws/src/a.ts"),
+      editBlock("edit_file", "/ws/src/a.ts"),
+    );
+    const headerCount = units
+      .flatMap((unit) => (unit.kind === "activity" ? unit.summary.contributions : []))
+      .find((entry) => entry.category === "file-edit")?.count;
+    assert.equal(headerCount, 1);
+    assert.equal(files.length, 1);
   });
 });
 
