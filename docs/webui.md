@@ -1644,6 +1644,34 @@ Invariants worth keeping when touching either branch:
   component unmounts when the turn settles, leaving no pending timer.
   Effects do not run on the server, so the SSR and hydration first frames
   are both the phase copy — no first-paint swap.
+- **The streaming cursor blinks; it does not breathe (webui-parity 61, G6)**.
+  The trailing cursor glyph on a streaming assistant block is drawn with
+  `.stream-cursor`, a square wave: `stream-cursor-blink 1.1s steps(1, end)
+  infinite` over two opacity levels, lit for 60% of the cycle and dim for the
+  rest. It replaced Tailwind's stock `animate-pulse` — `pulse 2s
+  cubic-bezier(0.4, 0, 0.6, 1) infinite` over `@keyframes pulse { 50% {
+  opacity: .5 } }` — a symmetric eased breath with no instant edge and no off
+  state: a loading tell, not a caret. Four choices are load-bearing.
+  `steps(1, end)` holds each level for its whole interval and jumps at the
+  interval end, which is what makes it read as a blink. The 1.1s period is
+  faster than the 3.5s phrase rotation and not a ratio of it (3.5 / 1.1 =
+  3.18), so the two rhythms never lock into one slow compound beat. The dark
+  level is 0.2 rather than 0, because this glyph sits at the end of a prose
+  run and owns no cell of its own the way a terminal block cursor does — at 0
+  the paragraph looks like it lost its last character for half a second. The
+  `60.01%` stop exists so the dark level has a declared start and the edge is
+  a jump rather than a fade across 60% → 100%.
+  The rhythm is deliberately *not* keyed to token arrival. The cursor span is
+  reconciled as the same element for the whole turn, so the animation
+  free-runs; a "flash on each push" behaviour would need a per-token remount,
+  which would restart the animation before it ever reached its dark phase — a
+  solid glyph exactly while the rhythm matters most — and churn one DOM node
+  per token for nothing. Under `prefers-reduced-motion` the class is switched
+  off by an explicit rule in the shared `globals.css` block, like every other
+  animated class there, and the caret renders solid and still: the glyph is
+  the only carrier of "where the next token lands", so a cursor that vanished
+  under reduce-motion would break the insertion point. Pinned by
+  `webapp/test/stream-cursor.test.ts`.
 - Boundary with ticket 46: while a thought streams, the 「推理中...」+
   ticking-seconds readout lives on the thinking block's summary row inside
   the tail activity group, and the live 「已执行 N 秒」 turn bar sits at
