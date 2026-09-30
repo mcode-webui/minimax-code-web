@@ -51,6 +51,7 @@ import type { ThemeName } from "@/lib/types";
 import { Icon, type IconName } from "./icons";
 import { AppearanceCardPicker } from "./appearance-card-picker";
 import { ProviderManagementPanel } from "./provider-management";
+import { PluginsSurface } from "./plugins-surface";
 // The Token Plan view's pure display cards (ticket 53). Split out so the
 // test suite can render them through react-dom/server — panels.tsx's own
 // import graph (session store, api) is unimportable in a test process.
@@ -338,12 +339,11 @@ function ProgressPanel({ t }: { t: (key: MessageKey) => string }) {
 /**
  * Plugin marketplace.
  *
- * Stub — the real implementation lives behind the engine's plugin install
- * contract, which this server does not expose yet. The desktop client renders
- * a category-tabs + grid-of-cards layout (市场 / 个人 tabs, 安装 buttons).
- * Until that contract lands, show the affordance plus a "正在做" notice so the
- * click target is real and the user knows we know it's missing. See shell.tsx
- * sidebar.nav for the desktop order.
+ * The body is `PluginsSurface` (ticket 60 phase 1, slice B): five
+ * capability areas in one column, with the plugins area real (installed
+ * list, local market, enable/disable, uninstall, GitHub import) and the
+ * other four rendering the staged placeholder their endpoints need.
+ * This drawer keeps the section heading the panel registry already had.
  */
 function PluginsPanel({ t }: { t: (key: MessageKey) => string }) {
   return (
@@ -351,14 +351,7 @@ function PluginsPanel({ t }: { t: (key: MessageKey) => string }) {
       <div className="desktop-text-dialog-medium text-base font-medium leading-6 text-text_default_primary">
         {t("panel.plugins.title")}
       </div>
-      <div className="flex items-start gap-2 rounded-[10px] border border-border_default bg-bg_grouped_secondary_elevated px-3 py-3">
-        <span className="mt-0.5 flex size-5 flex-none items-center justify-center rounded-full bg-bg_interaction_tertiary_hover text-icon_default_secondary">
-          <Icon name="plugins" size={14} />
-        </span>
-        <div className="desktop-text-ui-body min-w-0 flex-1 text-sm leading-5 text-text_default_secondary">
-          {t("panel.plugins.placeholder")}
-        </div>
-      </div>
+      <PluginsSurface t={t} />
     </div>
   );
 }

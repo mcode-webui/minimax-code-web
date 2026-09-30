@@ -43,6 +43,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Locale, MessageKey } from "@/lib/i18n";
 import { Icon, type IconName } from "./icons";
 import { FilesPanel, GitPanel } from "./panels";
+import { PluginsSurface } from "./plugins-surface";
 import { WorkspaceTabsTasks } from "./workspace-tabs-tasks";
 import {
   columnRoleForKind,
@@ -244,7 +245,7 @@ function TreeColumnInner(props: TreeColumnProps) {
             onPickSurface={onPickSurface}
           />
         ) : activeTab && activeKind === "plugins" ? (
-          <PluginsSurface t={t} />
+          <PluginsSurfacePanel t={t} />
         ) : (
           <EmptyHint t={t} onPickSurface={onSelector} />
         )}
@@ -621,39 +622,27 @@ function SearchSurface({
 }
 
 /**
- * The plugins surface (column 4, "plugins" tab). The plugin
- * marketplace is a placeholder — the engine has not yet exposed
- * the plugin-install contract — so the surface renders a
- * centred "this is coming" card with the i18n explanation.
- * The card is mounted AND labelled so a click on the sidebar's
- * 插件 entry visibly produces a surface rather than silently
- * no-op'ing.
+ * The plugins surface (column 4, "plugins" tab).
+ *
+ * Since ticket 60 phase 1 this is a forwarding shell: the five capability
+ * areas live in `plugins-surface.tsx`, which the suite renders directly.
+ * The wrapper keeps the two attributes the column body is selected by —
+ * `data-testid="tree-surface-body-plugins"` and `data-active-surface` —
+ * and the local name avoids colliding with the imported component.
+ *
+ * The two placeholder-copy testids that used to sit here
+ * (`tree-surface-plugins-title` / `-body`) went with the placeholder they
+ * named: that copy is gone by design, and a testid whose only content was
+ * the retired sentence would outlive the thing it described.
  */
-function PluginsSurface({ t }: { t: (key: MessageKey) => string }) {
+function PluginsSurfacePanel({ t }: { t: (key: MessageKey) => string }) {
   return (
     <div
-      className="flex h-full min-h-0 flex-col items-center justify-center gap-3 px-4 py-6 text-center text-text_default_secondary"
+      className="flex h-full min-h-0 flex-col overflow-y-auto px-3 py-3"
       data-testid="tree-surface-body-plugins"
       data-active-surface="plugins"
     >
-      <span
-        className="flex size-10 items-center justify-center rounded-full bg-bg_grouped_secondary_elevated text-icon_default_tertiary"
-        aria-hidden
-      >
-        <Icon name="plugins" size={18} />
-      </span>
-      <h2
-        data-testid="tree-surface-plugins-title"
-        className="desktop-text-dialog-medium text-base font-medium leading-6 text-text_default_primary"
-      >
-        {t("workspaceTabs.plugins.title")}
-      </h2>
-      <p
-        data-testid="tree-surface-plugins-body"
-        className="max-w-[260px] text-caption-small-strong text-text_default_tertiary"
-      >
-        {t("workspaceTabs.plugins.placeholder")}
-      </p>
+      <PluginsSurface t={t} />
     </div>
   );
 }
