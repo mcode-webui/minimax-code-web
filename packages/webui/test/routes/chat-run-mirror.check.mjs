@@ -39,7 +39,7 @@
 //      record (captured owning webui id) is promoted and receives the
 //      turn — never the record the user switched to.
 
-import { test, describe, before, beforeEach, after } from "node:test";
+import { test, describe, before, beforeEach, afterEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
 import {rmSync} from "node:fs";
@@ -230,6 +230,59 @@ async function waitFor(fn, what, timeoutMs = 2000) {
   }
 }
 
+// ------------------------------------------------------------------
+// Turn bookkeeping — a test must never abandon a live turn.
+//
+// `beginRun` / `endRun` keep a PROCESS-WIDE registry (the cid claim plus
+// the engine-session claim), and `activeRunCount()` reads it globally. A
+// test that aborts mid-turn — any assertion failure between `handleSend`
+// and the finalize — leaves that turn parked on the fake transport: the
+// route never reaches its `finally { endRun(cid) }`, the claim for the
+// cid and for `mvs_fake_N` stays registered, and the run buffer for the
+// cid stays seeded. The next test's `waitFor(activeRunCount() === 0)`
+// can then never be satisfied, so a single real failure used to cascade
+// into EVERY following test, each burning its full 2s budget: one flake
+// became eight red tests and a 14s run, which is what made this file look
+// like a "slow machine" problem in the CI logs.
+//
+// `trackTurn` therefore registers every turn this file starts, and
+// `afterEach` unblocks and drains whatever is still parked before the next
+// test's `beforeEach` throws the state away. The cleanup is a safety net,
+// not the assertion: a leak still fails the test that caused it.
+// ------------------------------------------------------------------
+const liveTurns = new Set();
+
+/** Register the promise `handleSend` returns so `afterEach` can drain it. */
+function trackTurn(turn) {
+  liveTurns.add(turn);
+  // `.then` with both arms (not `.finally`) so a rejecting turn settles
+  // the derived promise too — an unobserved rejection would crash the run.
+  turn.then(
+    () => liveTurns.delete(turn),
+    () => liveTurns.delete(turn),
+  );
+  return turn;
+}
+
+// The draft case parks a turn inside `session/new`, before any prompt
+// exists; releasing `pending` is not enough to let that turn finish.
+let newSessionReleaser = null;
+
+/** Park every subsequent `session/new` until the cleanup or the test says so. */
+function gateNewSession() {
+  FakeMcodeAcpClient.newSessionGate = () =>
+    new Promise((r) => {
+      newSessionReleaser = r;
+    });
+}
+
+/** Unblock a parked `session/new` (idempotent). */
+function releaseNewSessionGate() {
+  const releaser = newSessionReleaser;
+  newSessionReleaser = null;
+  if (releaser) releaser();
+}
+
 const WS = _tmpDataDir; // mkdtempSync already created the leaf — assertWorkspacePath's realpathSync requires an existing path.
 
 function makeClient(cid, { sessionId = null, mcodeSessionId = null } = {}) {
@@ -273,6 +326,22 @@ const stable = (chat) =>
     return !s.startsWith("§§") && !s.startsWith("##tc:");
   });
 
+// Same idea as `stable()`, but it keeps the `##tc:` marker — that marker's
+// POSITION is part of the contract, so counting lines must still see it —
+// and drops only `§§ processed_duration=Nms`.
+//
+// Why that one line cannot be counted: `mcode-acp.js#finalize` writes the
+// duration marker only when the turn took at least one whole millisecond
+// (`if (r.durationMs > 0)`), and `r.durationMs` is `Date.now() - t0`
+// measured across a fake transport that settles inside a single tick. So
+// the marker is present or absent depending on whether the event loop
+// crossed a millisecond boundary between the prompt starting and the turn
+// settling — a coin flip the test does not control, measured at 2 runs in
+// 5 on a warm local machine. `stable()` already hides the line from the
+// content comparisons; `durable()` hides it from the line COUNT.
+const durable = (chat) =>
+  (chat || []).filter((line) => !String(line).startsWith("§§ processed_duration"));
+
 before(async (t) => {
   await setupMocks(t);
   sb = await import(absPath("lib/state-bus.js"));
@@ -295,6 +364,23 @@ beforeEach(() => {
   FakeMcodeAcpClient.reset();
 });
 
+// Runs after EVERY test, including one that failed or threw — which is
+// precisely the case that used to leak. The wait is bounded so a turn that
+// cannot be unblocked reports its own failure instead of hanging the file.
+afterEach(async () => {
+  releaseNewSessionGate();
+  while (FakeMcodeAcpClient.pending.length) FakeMcodeAcpClient.release();
+  if (liveTurns.size === 0) return;
+  const drained = Promise.allSettled([...liveTurns]);
+  let timer;
+  await Promise.race([
+    drained,
+    new Promise((r) => { timer = setTimeout(r, 5000); }),
+  ]);
+  clearTimeout(timer);
+  liveTurns.clear();
+});
+
 after(() => {
   try {
     rmSync(_tmpDataDir, { recursive: true, force: true });
@@ -313,7 +399,7 @@ async function setupTwoSessions(cid) {
   // Turn 1 — completes immediately; promotes the A record to the
   // engine identity (id → mvs_fake_1) and persists ["› hello", "● ok"].
   const res1 = fakeRes();
-  const turn1 = handleSend(fakeReq({ content: "hello" }), res1, { cs, cid });
+  const turn1 = trackTurn(handleSend(fakeReq({ content: "hello" }), res1, { cs, cid }));
   await waitFor(() => cs.mcodeSessionId, "turn 1 to bind the engine sid");
   FakeMcodeAcpClient.release();
   await turn1;
@@ -344,7 +430,7 @@ describe("run-mirror — mid-run switch keeps views and records isolated", () =>
     const { cs, sidA } = await setupTwoSessions(cid);
 
     const res2 = fakeRes();
-    const turn2 = handleSend(fakeReq({ content: "run A2" }), res2, { cs, cid });
+    const turn2 = trackTurn(handleSend(fakeReq({ content: "run A2" }), res2, { cs, cid }));
     await waitFor(
       () => FakeMcodeAcpClient.pending.length === 1,
       "turn 2 prompt to park",
@@ -396,14 +482,16 @@ describe("run-mirror — mid-run switch keeps views and records isolated", () =>
       true,
       "owning view keeps its running indicator after switch-back",
     );
-    // base (3 persisted lines) + the 6 buffered stream lines so far
-    // (▲ pondering, → Bash header, status line, output line, ● line)
-    // — plus the slice-06 `##tc:<id>` marker that precedes the tool
-    // header. The marker is consumed by the decoder and never
-    // appears in the rendered chat body; it only inflates the raw
-    // buffer length. Filtering it via `stable()` would drop it
-    // here too — see `stable()`'s docstring.
-    assert.equal(backSnap.chat.length, 10);
+    // 3 persisted base lines (› hello, ● ok, › run A2) + the 6 buffered
+    // stream lines so far: ▲ pondering, the slice-06 `##tc:<id>` marker,
+    // the → Bash header, the status line, the output line and the ● line.
+    // The marker is consumed by the decoder and never appears in the
+    // rendered chat body; it only inflates the raw buffer length, so the
+    // count must see it (`stable()` would drop it — see `stable()`), while
+    // turn 1's duration marker must not (`durable()` drops it — see
+    // `durable()`, and .tickets/webui-parity/90-chat-run-mirror-flaky.md
+    // for the 10-vs-9 flake this assertion used to carry).
+    assert.equal(durable(backSnap.chat).length, 9);
     assert.deepEqual(
       stable(backSnap.chat).slice(0, 3),
       ["› hello", "● ok", "› run A2"],
@@ -447,7 +535,7 @@ describe("run-mirror — mid-run switch keeps views and records isolated", () =>
     const { cs, sidA } = await setupTwoSessions(cid);
 
     const res2 = fakeRes();
-    const turn2 = handleSend(fakeReq({ content: "run A2" }), res2, { cs, cid });
+    const turn2 = trackTurn(handleSend(fakeReq({ content: "run A2" }), res2, { cs, cid }));
     await waitFor(() => FakeMcodeAcpClient.pending.length === 1, "prompt parked");
     emitThought();
     emitToolAndAnswer();
@@ -506,30 +594,26 @@ describe("run-mirror — mid-run switch keeps views and records isolated", () =>
 
   test("first turn on a draft with a pre-bind switch: the DRAFT record is promoted and receives the turn, not the switched-to session", async () => {
     const cid = "cid-draft-switch";
-    let releaseNewSession;
-    FakeMcodeAcpClient.newSessionGate = () =>
-      new Promise((r) => {
-        releaseNewSession = r;
-      });
+    gateNewSession();
 
     const cs = makeClient(cid); // brand-new: no sessionId, no sid
     storeRecord("sess-B", []);
 
     const res1 = fakeRes();
-    const turn1 = handleSend(fakeReq({ content: "first!" }), res1, { cs, cid });
+    const turn1 = trackTurn(handleSend(fakeReq({ content: "first!" }), res1, { cs, cid }));
     // handleSend created the draft record; the turn is parked BEFORE the
     // engine session id exists (inside session/new).
     await waitFor(() => cs.sessionId, "draft record created");
     const draftId = cs.sessionId;
     assert.ok(draftId && draftId !== "sess-B");
-    await waitFor(() => releaseNewSession, "turn parked inside session/new");
+    await waitFor(() => newSessionReleaser, "turn parked inside session/new");
 
     // User switches away BEFORE the bind ran.
     await handleSwitchSession(fakeReq({ id: "sess-B" }), fakeRes(), { cs, cid });
     assert.equal(cs.sessionId, "sess-B");
     assert.equal(cs.mcodeSessionId, null);
 
-    releaseNewSession();
+    releaseNewSessionGate();
 
     // The DRAFT record (found via its preserved `›` line) got the engine
     // binding and was promoted (id = mvs sid); the switched-to record was
@@ -600,7 +684,7 @@ describe("finalize writes the turn coordinate into the transcript", () => {
   async function runTurn(cid, { sessionId, answer, lastAssistantMessageId }) {
     const cs = makeClient(cid, { sessionId });
     storeRecord(sessionId, []);
-    const turn = handleSend(fakeReq({ content: "改一下文件" }), fakeRes(), { cs, cid });
+    const turn = trackTurn(handleSend(fakeReq({ content: "改一下文件" }), fakeRes(), { cs, cid }));
     await waitFor(() => cs.mcodeSessionId, "the engine sid to bind");
     await waitFor(() => FakeMcodeAcpClient.pending.length === 1, "prompt parked");
     FakeMcodeAcpClient.emit({ kind: "message", text: answer });
