@@ -692,6 +692,286 @@ dotfile。符号链接当文件返回时是 `Dirent` 项（webui 视为
 
 ---
 
+## 插件
+
+插件管理（60 号工单阶段①），由 `server/routes/plugins.js` 提供。
+每个 handler 都经 catalogue host 打到 `local-runtime-v2` 的
+plugin-system；host 在第一次插件调用时懒起，路由自身不持有任何
+插件状态。门禁链（CORS → origin/CSRF → 局域网 → token → 限流 →
+只读）与 `/api/git/*` 完全一致，从 `app.js` 继承，**没有第二条
+鉴权路径**。调用方是 `plugins-surface.tsx`，经
+`webapp/lib/api.ts` 发请求。
+
+整组端点有两种应答约定：
+
+- **运行时**失败是 HTTP 200 + `{ok:false, error, code}`，前端按
+  `code` 分支；用非 2xx 状态码会把一种预期状态误报成传输故障。
+  catalogue host 起不来时，每个端点都应答
+  `{ok:false, error:"runtime unavailable", code:"RUNTIME_UNAVAILABLE"}`。
+- **请求被拒**是 HTTP 错误：入参缺失或非法为 400
+  `{ok:false, code:"invalidBody"}`；三个 facade 校验码
+  （`INVALID_PLUGIN_SOURCE`、`PLUGIN_LIMIT_INVALID`、
+  `PLUGIN_CURSOR_INVALID`）也是 400，且保留原 code；只读模式下所有
+  POST 为 403（门禁 5 的正确行为，不是缺陷）；body 超过 1 MiB 为 413。
+
+`source` 表示插件来源，线上是数字：`1` = 官方（云端 registry），
+`2` = 本地（本机上的包）。`GET /api/plugins/marketplace` **必填**
+`source` —— 运行时把缺省读成「官方」，若默默取默认值，所有请求都会
+打向本地版不可达的 registry。
+
+**响应里**的数字 `source` 按运行时原样透传，路由另外在页面、每个
+插件行与每个变更应答上打一个不依赖协议的字符串 `sourceKind` ——
+`"official"` 或 `"local"`。webapp 分支判断用 `sourceKind`，这就是
+它不必依赖 `@mavis/protocol`（`@mavis/webui` 本来就没有这个依赖）
+的原因。`source` 既不是 1 也不是 2 的元素会拿到
+`sourceKind:"unknown"`。
+
+阶段①只覆盖 plugins 域。`skills` / `mcp` / `apps` / `agents` 尚无
+端点，这四个页签渲染阶段性占位，明说其管理界面在后续阶段开放。
+界面现状记录在 [docs/webui.zh-CN.md](../../docs/webui.zh-CN.md)。
+
+| func_name | 端点 | 面板用途 |
+|---|---|---|
+| `plugins.list.installed` | `GET /api/plugins/installed` | 已安装列表 |
+| `plugins.list.marketplace` | `GET /api/plugins/marketplace` | 市场，每次调用一个来源 |
+| `plugins.list.enabled` | `GET /api/plugins/enabled` | 当前轮次可用的插件 |
+| `plugins.refresh.all` | `POST /api/plugins/refresh` | 对账按钮 |
+| `plugins.enable.by_name` | `POST /api/plugins/enable` | 卡片开关：启用 |
+| `plugins.disable.by_name` | `POST /api/plugins/disable` | 卡片开关：停用 |
+| `plugins.install.by_name` | `POST /api/plugins/install` | 官方安装 |
+| `plugins.uninstall.by_name` | `POST /api/plugins/uninstall` | 删除，先弹确认 |
+| `plugins.import.preview_url` | `POST /api/plugins/import/preview` | 导入对话框试算 |
+| `plugins.import.from_url` | `POST /api/plugins/import` | 导入对话框提交 |
+
+**哪些是真数据、哪些是占位。** 已安装列表、本地市场（`source=2`）
+与两个 GitHub 导入端点都是**真数据** —— 导入链直接抓公网仓库，
+不经云端 registry。官方市场（`source=1`）与官方安装 / 启停 / 卸载
+动作是本阶段**唯一**的诚实占位：本地版的云端基址不可解析，官方列表
+应答 `{ok:false}`，面板渲染 `plugins.market.official.notLocal.*`
+文案而不是错误弹窗。四个非插件页签渲染各自的阶段性占位
+（`plugins.area.<domain>.pending.*`）。
+
+### `GET /api/plugins/installed?keyword=&limit=&cursor=`
+
+**func_name** `plugins.list.installed`。已安装插件，官方与本地两段
+合并，取一页。`keyword` 按名字过滤；`limit` 默认 50、上限 200；
+`cursor` 是 `nextCursor` 给出的不透明前向游标。
+
+**响应 200**
+```json
+{
+  "ok": true,
+  "plugins": [
+    {
+      "name": "acme-notes",
+      "version": "1.2.0",
+      "displayName": "Acme Notes",
+      "description": "…",
+      "author": "acme",
+      "iconUrl": "https://…/icon.png",
+      "source": 2,
+      "sourceKind": "local",
+      "enabled": true,
+      "capabilities": { "appCount": 0, "mcpServerCount": 1, "skillCount": 3, "hookCount": 0 }
+    }
+  ],
+  "hasMore": false
+}
+```
+
+空态是 `{ok:true, plugins:[], hasMore:false}` —— 没装插件是一个
+答案，不是错误。`hasMore:true` 时带 `nextCursor`。请求在途期间面板
+显示骨架行。
+
+**错误** —— 入参非法 400：`limit` 非正整数或 `category` 非整数是
+`code:"invalidBody"`；对别的 `keyword` 签发的游标复用后是 400 +
+`code:"PLUGIN_CURSOR_INVALID"`（面板丢弃游标重新起列表）。运行时
+失败是 200 + 自己的 `code`。注意 webapp 的封装把任何非 2xx 变成
+一个带服务端 `error` 文本的抛出异常，所以面板的防线是「筛选变化就
+重置游标」，而不是在失败之后去解析 code。
+
+### `GET /api/plugins/marketplace?source=&keyword=&limit=&cursor=&category=&skillLimit=&skillCursor=`
+
+**func_name** `plugins.list.marketplace`。`source` 必填（见上文
+「插件」）。`category` 是数字分类 id（0 other … 10 education）；
+`skillLimit` / `skillCursor` 给独立技能分段翻页。
+
+**响应 200**
+```json
+{
+  "ok": true,
+  "source": 2,
+  "sourceKind": "local",
+  "plugins": [
+    {
+      "name": "acme-notes",
+      "displayName": "Acme Notes",
+      "description": "…",
+      "installExists": false,
+      "enabled": false,
+      "category": 7,
+      "capabilities": { "appCount": 0, "mcpServerCount": 1, "skillCount": 3 },
+      "sourceKind": "local"
+    }
+  ],
+  "hasMore": false,
+  "pluginTotal": 1,
+  "marketplaceSkills": [
+    { "id": 41, "name": "weekly-digest", "displayName": "Weekly digest", "added": true }
+  ],
+  "skillHasMore": false
+}
+```
+
+市场摘要自身不带 `source` —— 整页**就是**一个来源 —— 所以路由按请求
+的 source 给每一行打 `sourceKind`。空态是 `{ok:true, source,
+sourceKind, plugins:[], hasMore:false}`。`marketplaceSkills` 是本地
+分支投影出的独立技能，与插件行并列返回（`source=2` 才有），是否与
+插件卡混排由面板决定。官方分支还可能带 `cursorResetRequired:true`，
+表示 registry 拒收该游标，调用方应从第一页重来。
+
+**错误** —— `source` 缺失或不是 `1`/`2`、`limit` 非正整数、
+`category` 非整数均为 400（`code:"invalidBody"`）；本地版里
+`source=1` 应答 `ok:false`（云端基址不可达），面板为其渲染
+notLocal 占位；`source=2` 的失败按普通错误处理。
+
+### `GET /api/plugins/enabled`
+
+**func_name** `plugins.list.enabled`。当前运行时快照里处于启用
+状态的插件 —— 比已安装列表窄，后者还含被停用的条目。
+
+**响应 200**
+```json
+{ "ok": true, "plugins": [{ "name": "acme-notes", "displayName": "Acme Notes" }] }
+```
+
+空态是 `{ok:true, plugins:[]}`。
+
+**错误** —— 运行时不可达时 200 `{ok:false, error, code}`；无入参，
+不会有 400。
+
+### `POST /api/plugins/refresh`
+
+**func_name** `plugins.refresh.all`。对两个来源做安装态对账。无入参；
+请求体被读空后忽略。
+
+**响应 200** `{ok:true}` —— 应答不含数据，调用方随后重拉
+`GET /api/plugins/installed`。在途期间面板在刷新按钮上显示
+spinner。
+
+**错误** —— 200 `{ok:false, error, code}`，透传运行时原 code；
+只读模式 403。
+
+### `POST /api/plugins/enable`
+
+启用插件。**func_name** `plugins.enable.by_name`。
+
+### `POST /api/plugins/disable`
+
+停用插件；其回合 hook 随之失活，而正在该插件上跑的会话不受打断。
+**func_name** `plugins.disable.by_name`。
+
+### `POST /api/plugins/install`
+
+安装插件。本地版只有官方源可安装 —— 对本地包会得到
+`LOCAL_PLUGIN_INSTALL_UNSUPPORTED`，面板因此不渲染该按钮。
+**func_name** `plugins.install.by_name`。
+
+### `POST /api/plugins/uninstall`
+
+卸载插件。**破坏性** —— 面板先弹确认框；目标不存在时是幂等
+成功而非失败。**func_name** `plugins.uninstall.by_name`。
+
+这四个端点共用一份 body 与一种应答形态。
+
+**请求体**
+```json
+{ "pluginName": "acme-notes", "source": 2 }
+```
+
+`source` 可选；缺省时按原样透传，而运行时把缺省读成「官方」—— 所以
+知道插件来自哪一侧的调用方应该传它。`pluginName` 缺失或空白、
+`source` 既不是 1 也不是 2，均为 400 `invalidBody`。卸载一个不存在的
+目标是**幂等**成功，不是失败。
+
+**响应 200**
+```json
+{ "ok": true, "source": 2, "sourceKind": "local", "installExists": true, "enabled": false }
+```
+
+`installExists` 表示插件是否在盘上；`enabled` 是操作后的状态。
+调用期间面板显示行内 spinner。
+
+**错误** —— `PLUGIN_NOT_FOUND`、`PLUGIN_AUTH_REQUIRED`、
+`PLUGIN_AUTH_SYNC_TIMEOUT` 以 `code` 出现在 200 应答里；路由读不懂
+的 body 是 400 `invalidBody`；只读模式 403。官方变更动作是本表面的
+另一半占位：本地版里 `PLUGIN_AUTH_REQUIRED` 是它们的预期答案，面板
+保持静默而不弹提示。
+
+### `POST /api/plugins/import/preview`
+
+**func_name** `plugins.import.preview_url`。解析一个 GitHub 链接并
+报告导入会带来什么，不实际安装。它直接抓公网仓库 —— 不需要云端
+账号，不经 registry。
+
+**请求体**
+```json
+{ "url": "https://github.com/acme/mcode-plugin" }
+```
+
+**响应 200**
+```json
+{
+  "ok": true,
+  "source": { "repositoryUrl": "https://github.com/acme/mcode-plugin", "commitSha": "0f1e2d3" },
+  "plugin": {
+    "summary": { "name": "acme-notes", "displayName": "Acme Notes", "capabilities": { "appCount": 0, "mcpServerCount": 0, "skillCount": 2 } },
+    "skillCount": 2,
+    "mcpServerCount": 0,
+    "hasStdioMcp": false
+  },
+  "diagnostics": [{ "code": "SKILL_NAME_COLLISION", "capability": "skill", "name": "weekly-digest" }],
+  "packageSizeBytes": 18432,
+  "canImport": true
+}
+```
+
+`source` 是提交导入时要用的钉死坐标；`canImport:false` 配
+`diagnostics` 也是一个合法答案，对话框展示诊断而不是报错。抓取
+期间面板显示加载态。
+
+**错误** —— body 非法 400；URL 非法、公网不可达、
+`PLUGIN_NO_SUPPORTED_CAPABILITY`、`PLUGIN_IMPORT_UNAVAILABLE`
+均为 200 `{ok:false, error, code}`。
+
+### `POST /api/plugins/import`
+
+**func_name** `plugins.import.from_url`。安装试算解析出的插件，
+应答带插件摘要，且已是启用态。
+
+**请求体**
+```json
+{
+  "source": {
+    "repositoryUrl": "https://github.com/acme/mcode-plugin",
+    "commitSha": "0f1e2d3",
+    "subPath": "packages/notes"
+  }
+}
+```
+
+`subPath` 可选，用于在 monorepo 中定位某一个插件。
+
+**响应 200**
+```json
+{ "ok": true, "plugin": { "name": "acme-notes", "displayName": "Acme Notes", "enabled": true, "capabilities": { "appCount": 0, "mcpServerCount": 0, "skillCount": 2 } } }
+```
+
+**错误** —— 插件已导入为 `PLUGIN_ALREADY_EXISTS`，坐标不可用为
+`PLUGIN_IMPORT_INVALID`，两者都在 200 应答里；只读模式 403。
+
+---
+
 ## 设置
 
 ### `GET /api/settings`

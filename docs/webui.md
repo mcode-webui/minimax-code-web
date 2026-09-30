@@ -587,10 +587,13 @@ reuses the same `searchFootSegments` footer as the file-tree filter
 (scanned / matches / skipped / truncated / budget), and on click
 sends an expand-to-hit request through the shared `fs-tree-reveal`
 channel so the file tree panel applies the same expand + highlight.
-**The "插件" surface is still a placeholder** (`PluginsSurface`) —
-the engine has not yet shipped the plugin-install contract; the
-surface renders an i18n "this is coming" card rather than a silent
-no-op.
+**Ticket 60 phase 1 ships the plugin backend, not the plugin panel.**
+The ten `/api/plugins/*` endpoints and their typed client functions are
+in place, described in
+[The plugins API](#the-plugins-api-ticket-60-phase-1) below. The "插件"
+entry itself still opens the earlier placeholder card: no panel calls
+these functions yet, so the user-visible management screen is still to
+come. What is real today is the contract, not the interface.
 
 Surface kinds go through `openSurfaceTab("…")`; the right-panel kinds
 (`PanelKind`) are a separately-trimmed union: `"workspace" | "files" |
@@ -602,6 +605,84 @@ entry point at all.
 
 Dividers between columns are 8 px wide and support drag-resize (clamped
 to `[minWidth, maxWidth]` per column) and double-click reset.
+
+### The plugins API (ticket 60, phase 1)
+
+This section documents the **contract only**. The browser panel that
+would consume it is not in this release: the "插件" sidebar entry still
+renders the placeholder card it has always rendered, and nothing in
+the webapp calls these functions yet. Read the endpoint and payload
+tables below as the interface a future panel is written against, not as
+a description of a screen you can use today. Two data facts below are
+already true of the running server and worth knowing now: the local
+marketplace, the installed list and GitHub import return real data,
+while the official marketplace cannot resolve in a local edition.
+
+| func_name | Endpoint | `api.ts` function | Parameters |
+|---|---|---|---|
+| `plugins.list.installed` | `GET /api/plugins/installed` | `listInstalledPlugins` | `keyword?` `limit?` `cursor?` |
+| `plugins.list.marketplace` | `GET /api/plugins/marketplace` | `listMarketplacePlugins` | `source` (required) + the above, plus `category?` `skillLimit?` `skillCursor?` |
+| `plugins.list.enabled` | `GET /api/plugins/enabled` | `listEnabledPlugins` | — |
+| `plugins.refresh.all` | `POST /api/plugins/refresh` | `refreshPlugins` | — |
+| `plugins.enable.by_name` | `POST /api/plugins/enable` | `enablePlugin` | `pluginName` `source?` |
+| `plugins.disable.by_name` | `POST /api/plugins/disable` | `disablePlugin` | `pluginName` `source?` |
+| `plugins.install.by_name` | `POST /api/plugins/install` | `installPlugin` | `pluginName` `source?` |
+| `plugins.uninstall.by_name` | `POST /api/plugins/uninstall` | `uninstallPlugin` | `pluginName` `source?` |
+| `plugins.import.preview_url` | `POST /api/plugins/import/preview` | `previewGithubPlugin` | `url` |
+| `plugins.import.from_url` | `POST /api/plugins/import` | `importGithubPlugin` | `source` (`repositoryUrl` `commitSha` `subPath?`) |
+
+`webapp/lib/api.ts` exposes one typed function per endpoint:
+
+States a consumer must handle, as the contract defines them (the
+rendering of each is a panel decision that this release does not make):
+
+| func_name | empty | loading | error | success |
+|---|---|---|---|---|
+| `plugins.list.installed` | `{ok:true, plugins:[], hasMore:false}` | consumer's own | 200 `{ok:false, code}` | one page, official + local merged |
+| `plugins.list.marketplace` | `{ok:true, plugins:[]}` | consumer's own | `source=2` → report it; `source=1` → designed notLocal state | plugin rows + `marketplaceSkills` for the local source |
+| `plugins.list.enabled` | `{ok:true, plugins:[]}` | — | 200 `{ok:false, code}` | `{plugins:[{name, displayName?}]}` |
+| `plugins.refresh.all` | — | refresh-button spinner | runtime code passed through | `{ok:true}`, then re-pull the installed list |
+| `plugins.enable.by_name` | — | row spinner | `PLUGIN_NOT_FOUND` / `PLUGIN_AUTH_REQUIRED` / `PLUGIN_AUTH_SYNC_TIMEOUT` | `{ok:true, sourceKind, installExists, enabled:true}` |
+| `plugins.disable.by_name` | — | row spinner | same three codes | `{ok:true, sourceKind, installExists, enabled:false}` |
+| `plugins.install.by_name` | — | button spinner | `PLUGIN_AUTH_REQUIRED`; `LOCAL_PLUGIN_INSTALL_UNSUPPORTED` on a local package | `{ok:true, sourceKind, installExists:true, enabled:true}` |
+| `plugins.uninstall.by_name` | target absent → `{ok:true, installExists:false}` | confirm dialog, then spinner | same three codes | `{ok:true, sourceKind, installExists:false, enabled:false}` |
+| `plugins.import.preview_url` | — | dialog loading | invalid URL / `PLUGIN_NO_SUPPORTED_CAPABILITY` / unreachable | `{source, plugin:{summary,…}, diagnostics, packageSizeBytes, canImport}` |
+| `plugins.import.from_url` | — | button spinner | `PLUGIN_ALREADY_EXISTS` / `PLUGIN_IMPORT_INVALID` | `{plugin:{summary}}`, already enabled |
+
+**The one endpoint that cannot serve a local edition, stated plainly.**
+The official marketplace needs a cloud account, and the local edition's
+cloud base URL does not resolve, so `source=1` answers
+`{ok:false, code:"NETWORK_ERROR"}`. A future panel must treat that as a
+designed state — the `plugins.market.official.notLocal.*` copy rather
+than a red error — and must keep the official install / enable / disable
+/ uninstall actions silent for the same reason. Everything else is real
+data: the installed list, the local marketplace (standalone skills plus
+the local package projection), and the two GitHub import endpoints, which
+fetch a public repository directly and never touch the registry. A
+local package cannot be *installed* — the runtime answers
+`LOCAL_PLUGIN_INSTALL_UNSUPPORTED` — so a local card must render no
+install button rather than offering an action that always fails.
+
+**Wire conventions worth knowing before writing a new call.**
+`source` is numeric on the way in (`1` official, `2` local); on the way
+out the runtime's number is passed through and the route adds a
+protocol-free `sourceKind` string (`"official"` / `"local"`) to the
+page, to every plugin row and to every mutation answer. A consumer must
+branch on `sourceKind`, never on the numeric `source`, which is how the
+webapp stays free of an `@mavis/protocol` dependency. The marketplace
+listing *requires* `source`, because the runtime reads a missing one as
+"official" and a silent default would send every request to an
+unreachable registry. A
+runtime failure answers 200 with `ok:false` and a `code` to branch on;
+a rejected request answers 400 instead, and the webapp helper surfaces
+any non-2xx as a thrown error carrying the server's message — which
+means a `code` on a 400 cannot be read back, so a consumer must reset a
+stale cursor on a filter change rather than parse the failure. A cursor
+is bound to the filter it was issued for: reusing it after a keyword
+change answers 400 `PLUGIN_CURSOR_INVALID`. Authentication is the shared
+gate chain, and in
+read-only mode every POST answers 403 — the mutations are unavailable
+by policy, not by failure.
 
 ### Code preview (slice 22, IDE-grade)
 
