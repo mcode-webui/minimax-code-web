@@ -675,13 +675,17 @@ export const setModel = (
 export const setPermissions = (mode: string) =>
   request<{ ok: boolean }>("/api/permissions", { method: "POST", json: { mode } });
 
-/**
- * Answer a pending permission prompt or plan review.
- * `type: "permission"` answers a tool-approval prompt; the ask_user flow uses
- * `POST /api/send` with `isAskAnswer` instead.
- */
-export const answer = (type: string, option: string) =>
-  request<{ ok: boolean }>("/api/answer", { method: "POST", json: { type, option } });
+// There is deliberately NO client for `POST /api/answer`.
+//
+// It used to export `answer(type, option)`, and the ask / plan modals called
+// it. `server/routes/model.js#handleAnswer` is a legacy no-op — it answered
+// `{ok:true, deprecated:true}` without ever reaching the engine — so those
+// buttons accepted a click and left the prompt pending. The endpoint now
+// answers 410, the ask flow goes through `sendMessage({isAskAnswer:true})` and
+// the authorization flow through `postAuthDecision`, both of which the engine
+// actually receives. A plan decision has no webui-reachable channel at all;
+// see the PlanModal comment in `components/modals.tsx` for the trace. Do not
+// re-add a client here without a channel that reaches the engine.
 
 // --- workspace --------------------------------------------------------------
 

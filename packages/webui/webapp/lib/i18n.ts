@@ -287,12 +287,16 @@ const en = {
   "usage.duration.hourMinute": "{h} h {n} min",
   "toolbar.files": "Files",
   "toolbar.usage": "Usage",
-  "plan.agree": "Agree",
-  "plan.addContext": "Add context",
-  "plan.skip": "Skip",
+  "plan.readOnlyNotice":
+    "The agent is waiting for you to review this plan. This web UI can show the plan but cannot answer the review — approve it where you started the session, or leave it and the turn stays paused.",
+  "plan.close": "Close",
   "ask.other": "Other…",
   "ask.submit": "Submit",
   "ask.skip": "Skip",
+  // The text the Skip button sends to the engine on the isAskAnswer
+  // channel. It is a prompt, not a key press, so it has to read as a
+  // sentence the agent can act on.
+  "ask.skipReply": "Skip this question — continue without an answer from me.",
   "ask.multiSelectHint": "Select one or more",
   "auth.title": "Authorization required",
   "auth.requested": "The agent is requesting permission to continue.",
@@ -1268,12 +1272,15 @@ const zh: Record<MessageKey, string> = {
   "usage.duration.hourMinute": "{h}小时{n}分",
   "toolbar.files": "文件",
   "toolbar.usage": "用量",
-  "plan.agree": "同意",
-  "plan.addContext": "补充上下文",
-  "plan.skip": "跳过",
+  "plan.readOnlyNotice":
+    "智能体正在等你审阅这份计划。本网页端能展示计划，但无法应答这次审阅 —— 请回到你发起会话的客户端去批准；若不处理，本轮将一直暂停。",
+  "plan.close": "关闭",
   "ask.other": "其他…",
   "ask.submit": "提交",
   "ask.skip": "跳过",
+  // 「跳过」按钮经 isAskAnswer 通道发给引擎的正文。它是一条提示词而非按键，
+  // 所以必须写成智能体能直接理解的整句。
+  "ask.skipReply": "跳过这个问题 —— 不用我作答，请继续。",
   "ask.multiSelectHint": "可多选",
   "auth.title": "需要授权",
   "auth.requested": "智能体正在请求继续操作的权限。",

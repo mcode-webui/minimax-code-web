@@ -1136,22 +1136,29 @@ function streamAcpPrompt(
           // and refresh the live task status on the recorded entry.
           applyToolUpdate(r, cs, c.update, { cid });
         } else if (c.kind === "plan_update" && c.update) {
-          // plan_update event
+          // plan_update — the engine's ONLY plan projection, and it is
+          // one-way (packages/tui/src/acp/agent.ts:1356):
+          //   { sessionUpdate:'plan_update', plan:{ type:'markdown', planId, content } }
+          //
+          // The previous code read `planId` / `title` / `summary` / `options`
+          // off the TOP level of the update, where the engine puts none of
+          // them, so every field landed empty and the plan modal rendered a
+          // blank, undismissable dialog. Read the shape the engine sends.
+          // There are no options: a plan review carries a single `approve`
+          // option, and only on the questionnaire side
+          // (packages/local-runtime-v2/src/service/plan/application.ts:278),
+          // never on this notification.
           const u = c.update;
+          const body = u.plan && typeof u.plan === "object" ? u.plan : null;
           cs.plan = {
             active: true,
-            planId: u.planId || null,
-            title: u.title || "",
-            summary: u.summary || "",
-            options: Array.isArray(u.options)
-              ? u.options.map((o) => ({
-                  label: o.label || "",
-                  desc: o.description || o.desc || "",
-                }))
-              : [],
+            planId: body && typeof body.planId === "string" ? body.planId : null,
+            title: "",
+            summary: body && typeof body.content === "string" ? body.content : "",
+            options: [],
           };
           console.log(
-            `[plan.update] cid=${cid} planId=${cs.plan.planId} title="${(u.title || "").slice(0, 50)}" options=${cs.plan.options.length}`,
+            `[plan.update] cid=${cid} planId=${cs.plan.planId} chars=${cs.plan.summary.length}`,
           );
         } else if (c.kind === "plan_removed" && c.update) {
           cs.plan = {

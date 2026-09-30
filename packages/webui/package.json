@@ -59,15 +59,15 @@
       },
       {
         "name": "plan-mode",
-        "description": "Adds a `Plan:` prefix to the prompt so the mcode acp subprocess emits a structured plan event. The webui renders a plan-review modal with options (`agree` / `skip` / `add context`) and forwards the choice via `POST /api/answer`."
+        "description": "Renders the engine's `plan_update` event as a READ-ONLY, dismissible plan notice showing the plan document. It carries no decision buttons: a plan review is a runtime questionnaire answered on the local-runtime channel, which this package does not speak, so webui has no way to accept, skip, or annotate a plan. It previously offered Agree / Add context / Skip and posted them to `POST /api/answer`, which answered `200 {ok:true}` without reaching the engine — the buttons were a fake capability and are gone."
       },
       {
         "name": "ask-user-tool",
-        "description": "Renders the mcode acp `ask_user` event as a modal question with 2-4 options, optional multi-select checkboxes, and a free-text 'Other' field. Answer is sent back through `POST /api/send` with `isAskAnswer: true`."
+        "description": "Renders the ask_user dialog as a modal question with 2-4 options, optional multi-select checkboxes, a free-text 'Other' field, and a Skip button. Every one of them — options, free text, and Skip — is sent back through `POST /api/send` with `isAskAnswer: true`, the only ask path the engine receives. Skip used to post to `POST /api/answer`, a legacy no-op."
       },
       {
         "name": "permission-prompts",
-        "description": "When the mcode subprocess requests approval for a tool call, the webui opens a permission modal with three options (`ask` / `auto` / `full`). The user's choice is forwarded via `POST /api/answer {type: 'permission', option}`."
+        "description": "The webui's own destructive-action confirmations (session delete, token reset, and the other actions in `server/lib/authorize.js#AUTHORIZE_ACTIONS`) surface as a modal and are answered via `POST /api/auth/decision {requestId, approve}`. This is a webui-local gate. The ENGINE's tool-permission prompt is a separate runtime `permission.ask` and is NOT answered by webui: it would arrive as an incoming `session/requestPermission` ACP request, and this package's ACP client emits it with no responder."
       },
       {
         "name": "workspace-switching",
@@ -115,7 +115,7 @@
       "workspace": "GET|POST /api/workspace[?/browse]",
       "settings": "GET|POST /api/settings",
       "upload": "POST /api/upload",
-      "model": "GET /api/models, POST /api/set-model|permissions|answer",
+      "model": "GET /api/models, POST /api/set-model|permissions, POST /api/answer (410 tombstone — removed capability)",
       "providers": "GET|PUT /api/providers, POST /api/providers/test, GET /api/providers/presets, POST /api/providers/preset/:id/enable",
       "usage": "GET|POST /api/usage[-real|-trigger|/refresh]",
       "git": "GET /api/git/status|branches|diff, POST /api/git/checkout",

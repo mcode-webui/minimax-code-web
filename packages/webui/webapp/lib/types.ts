@@ -148,9 +148,22 @@ export interface AskState {
 
 export interface PlanState {
   active: boolean;
+  /**
+   * Identifies one engine-side review. The plan prompt is dismissed per
+   * `planId`, so a later review still surfaces after an earlier one is
+   * closed. Null when the engine sent no id.
+   */
+  planId: string | null;
   title: string | null;
+  /** The plan document, verbatim markdown from the engine. */
   summary: string;
-  options: string[];
+  /**
+   * Always empty. The engine's `plan_update` notification carries only
+   * `{type, planId, content}`; a plan review's single `approve` option
+   * lives on the questionnaire side, which webui cannot answer. Kept so a
+   * consumer cannot trip over `undefined`.
+   */
+  options: Array<{ label: string; desc: string }>;
 }
 
 export interface RunningState {
