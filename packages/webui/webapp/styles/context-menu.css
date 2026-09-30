@@ -1,0 +1,103 @@
+/*
+ * webui-context-menu — the floating right-click menu's skin, moved verbatim
+ * from the reference client's `styles/shell.css` (session-rail port,
+ * webui-parity 58 line B). The class names are the reference's own
+ * (`WebuiContextMenu` in `components/context-menu.tsx` renders them); the
+ * rules are byte-identical apart from the keyframes frame, which lives here
+ * because this stylesheet is the only user of it.
+ */
+
+@keyframes webui-menu-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.webui-context-menu {
+  position: fixed;
+  z-index: 120;
+  display: flex;
+  width: 208px;
+  flex-direction: column;
+  gap: 1px;
+  border: 0.5px solid var(--border_light);
+  border-radius: 12px;
+  background: var(--bg_grouped_secondary_elevated);
+  padding: 6px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 12%);
+  color: var(--text_default_primary);
+  transform-origin: top left;
+  animation: webui-menu-enter 140ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+.webui-context-menu-item-wrap {
+  position: relative;
+}
+.webui-context-menu-item {
+  display: flex;
+  min-height: 30px;
+  width: 100%;
+  align-items: center;
+  gap: var(--spacing_8);
+  border: 0;
+  border-radius: var(--radius_8);
+  background: transparent;
+  padding: 4px 8px;
+  color: var(--text_default_primary);
+  font-size: var(--size_14);
+  line-height: var(--line_height_20);
+  text-align: left;
+}
+.webui-context-menu-item:not(:disabled):hover {
+  background: var(--bg_interaction_tertiary_hover);
+}
+.webui-context-menu-item:disabled {
+  cursor: default;
+  color: var(--text_default_tertiary);
+  opacity: 0.68;
+}
+.webui-context-menu-item.is-danger:not(:disabled) {
+  color: var(--text_label_danger_secondary_default);
+}
+.webui-context-menu-item-icon {
+  display: flex;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  align-items: center;
+  justify-content: center;
+}
+.webui-context-menu-item-label {
+  min-width: 0;
+  flex: 1;
+  white-space: nowrap;
+}
+.webui-context-menu-chevron {
+  flex: 0 0 16px;
+}
+.webui-context-menu-divider {
+  height: 1px;
+  margin: 5px 8px;
+  background: var(--border_light);
+}
+.webui-context-menu-submenu {
+  position: absolute;
+  top: -7px;
+  left: calc(100% + 5px);
+  z-index: 121;
+  display: flex;
+  width: 190px;
+  flex-direction: column;
+  gap: 1px;
+  border: 0.5px solid var(--border_light);
+  border-radius: 12px;
+  background: var(--bg_grouped_secondary_elevated);
+  padding: 6px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 12%);
+  transform-origin: top left;
+  animation: webui-menu-enter 140ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}

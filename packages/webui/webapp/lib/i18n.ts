@@ -219,6 +219,24 @@ const en = {
   "projectMenu.removeConfirm": "Remove",
   "projectMenu.cancel": "Cancel",
 
+  /* Session-row context menu (webui-parity 58 line B — the reference
+     SessionRail's `openSessionMenu` item set, zh labels verbatim from the
+     reference). Pin / archive / fork / reveal / feedback have no contract
+     here (the reference ships reveal and feedback disabled too) and render
+     disabled; rename / copy / delete are real. */
+  "sessionMenu.pin": "Pin",
+  "sessionMenu.rename": "Rename",
+  "sessionMenu.archive": "Archive",
+  "sessionMenu.forkCurrent": "Duplicate as new session",
+  "sessionMenu.forkWorktree": "Duplicate to new worktree",
+  "sessionMenu.revealInFolder": "Reveal in folder",
+  "sessionMenu.copy": "Copy",
+  "sessionMenu.copyWorkspaceDir": "Copy workspace directory",
+  "sessionMenu.copySessionId": "Copy session ID",
+  "sessionMenu.feedback": "Feedback",
+  "sessionMenu.delete": "Delete",
+  "sessionMenu.copied": "Copied",
+
   /* Home quick-capability capsules (ticket 55c, ref-28) — the desktop's
      cloud-skill chips under the composer. Labels match the reference
      screenshots verbatim; every chip is a placeholder that toasts
@@ -289,7 +307,7 @@ const en = {
   "files.noMatch": "No matching entries",
   // 01 — collapsible file tree additions
   "files.tree.empty": "Empty folder",
-  "files.tree.truncated": "还有 {n} 项未显示",
+  "files.tree.truncated": "{n} more not shown",
   "files.tree.hidden": "Show hidden files",
   "files.tree.shown": "Show non-hidden files",
   "files.tree.refresh": "Refresh",
@@ -489,6 +507,10 @@ const en = {
   "sidebar.projects": "Projects",
   "action.failed": "failed",
   "sidebar.openSession": "Open session",
+  // webui-parity 63 (defect E): a switch that lands on a session other than
+  // the row the user clicked used to be silent. This is the banner's detail
+  // line, so it reads as the cause under the "Open session — failed" head.
+  "sidebar.switchMismatch": "the engine is still on a different session",
   // webui-parity 47 (C3): the rail toggle's label flips with its state,
   // mirroring the reference shell's 展开/收起 pair. "navigation bar", not
   // "sidebar", because that is what the reference copy names.
@@ -843,7 +865,8 @@ const en = {
      the next time the user opens Files. The keyboard-reachable
      control is the only affordance; the announcement lives in
      the aria-label. */
-  "workspaceTabs.tree.close.aria": "Close the active surface and hide the navigation column",
+  "workspaceTabs.tree.close.aria":
+    "Close the active surface and hide the navigation column",
   "workspaceTabs.tree.close.search.aria":
     "Close the search surface and discard the current query",
   /* Slice 19b supersedes the slice-17 placeholder copy with a real
@@ -874,6 +897,142 @@ const en = {
     "The page stays in this theme no matter what your operating system does.",
   "appearance.hint.system":
     "The page follows your operating system's dark / light setting. Switches live, without refreshing.",
+  "common.save": "Save",
+  "common.cancel": "Cancel",
+  "common.close": "Close",
+  "settings.shortcuts.notice":
+    "Not applicable in the browser: the WebUI cannot register global shortcuts. The keys below are the desktop defaults, listed for reference only.",
+  "settings.shortcuts.group.miniChat": "Mini Chat",
+  "settings.shortcuts.group.common": "General",
+  "settings.shortcuts.item.miniChat": "Show or hide Mini Chat",
+  "settings.shortcuts.item.miniChatHint":
+    "Summon or dismiss the quick-input mini window from any app",
+  "settings.shortcuts.item.globalSearch": "Global search",
+  "settings.shortcuts.item.globalSearchHint":
+    "Search features, settings, and task sessions",
+  "settings.shortcuts.item.searchTasks": "Search tasks and sessions",
+  "settings.shortcuts.item.searchTasksHint":
+    "Open search results scoped to tasks and sessions only",
+  "settings.shortcuts.item.newTask": "New task",
+  "settings.shortcuts.item.newTaskHint": "Open a fresh task input page",
+  "settings.shortcuts.item.newTaskNoProject": "New task without a project",
+  "settings.shortcuts.item.newTaskNoProjectHint":
+    "Start a task right away without linking a project folder",
+  "settings.shortcuts.item.openFolder": "Open project folder",
+  "settings.shortcuts.item.openFolderHint":
+    "Choose a local folder as the workspace",
+  "settings.shortcuts.item.openSettings": "Open settings",
+  "settings.shortcuts.item.openSettingsHint": "Open the client settings page",
+  "settings.shortcuts.item.holdDictation": "Hold-to-dictate",
+  "settings.shortcuts.item.holdDictationHint":
+    "Hold the shortcut to start voice input; release to stop",
+  "settings.shortcuts.item.toggleDictation": "Toggle dictation",
+  "settings.shortcuts.item.toggleDictationHint":
+    "Press once to start voice input, press again to stop",
+  "settings.shortcuts.item.invertFollowUp": "Invert follow-up behaviour",
+  "settings.shortcuts.item.invertFollowUpHint":
+    "Send the drafted message the opposite of the follow-up setting (queue or send immediately), for this message only",
+  "settings.shortcuts.unset": "Not set",
+  "settings.shortcuts.clear": "Clear shortcut",
+  "settings.shortcuts.reset": "Reset shortcut",
+  "settings.voice.group.regular": "General",
+  "settings.voice.group.dictation": "Dictation",
+  "settings.voice.microphone": "Microphone",
+  "settings.voice.microphoneHint": "Used for dictation voice input",
+  "settings.voice.holdKey": "Hold-to-dictate shortcut",
+  "settings.voice.holdKeyHint":
+    "Hold it inside the app to dictate into the input box",
+  "settings.voice.toggleKey": "Toggle-dictation shortcut",
+  "settings.voice.toggleKeyHint":
+    "Press once inside the app to start dictating, press again to stop",
+  "settings.voice.unset": "Not set",
+  "settings.personal.instructions": "Custom instructions",
+  "settings.personal.instructionsPlaceholder":
+    "Define how agents should work, answer, and execute tasks — extra instructions and context for every agent on this device...",
+  "settings.personal.aboutYou": "About you",
+  "settings.personal.aboutYouPlaceholder":
+    "Tell agents about your background and long-term preferences…",
+  "settings.personal.memory": "Memory",
+  "settings.personal.memoryHint":
+    "Use saved memories in prompts, reminders, and follow-up upkeep",
+  "settings.personal.proactiveMemory": "Proactive memory",
+  "settings.personal.proactiveMemoryHint":
+    "Spot preferences and reusable know-how worth keeping long-term, and save them via Memory",
+  "settings.personal.memorySummary": "Memory summary",
+  "settings.personal.memorySummaryHint":
+    "View, edit, or delete the long-term memories MiniMax has organised.",
+  "settings.personal.manage": "Manage",
+  "settings.memory.title": "Memory summary",
+  "settings.memory.placeholder":
+    "Long-term memories curated by MiniMax appear here.",
+  "settings.memory.empty": "No memory summary generated yet",
+  "settings.memory.more": "More",
+  "settings.memory.close": "Close",
+  "settings.codeReview.hint":
+    "Customise how the built-in code-review instructions run, and set your review guidelines",
+  "settings.codeReview.method": "Review method",
+  "settings.codeReview.methodSubsession": "Sub-session",
+  "settings.codeReview.guidelines": "Custom review guidelines",
+  "settings.codeReview.guidelinesPlaceholder":
+    "Enter code-review rules to apply on every review",
+  /* Ticket 59 D3-4: the settings-modal port's hardcoded Chinese
+     moved into the dictionary (en side). */
+  "settings.nav.aria": "Settings sections",
+  "settings.account.info": "Account",
+  "settings.account.localLoggedOut": "Local mode, not signed in",
+  "settings.account.signOutUnavailable": "The local edition has no account service",
+  "settings.account.signOut": "Sign out",
+  "settings.archived.empty": "No archived tasks yet",
+  "settings.worktree.empty": "Worktree management is not available in the local edition yet",
+  "settings.mode.section": "Mode",
+  "settings.mode.coding": "Built for coding",
+  "settings.mode.codingHint": "Keeps technical detail and developer tooling",
+  "settings.mode.work": "Built for everyday work",
+  "settings.mode.workHint": "Just as capable, with less technical noise",
+  "settings.app.menuBar": "Show in menu bar",
+  "settings.app.menuBarHint": "Show the app icon in the menu bar / system tray",
+  "settings.app.autoStart": "Start at login",
+  "settings.app.autoStartHint": "Launch the app automatically at login",
+  "settings.app.notifications": "Desktop notifications",
+  "settings.app.notificationsHint": "Notify when a task finishes, fails, or waits on a permission decision",
+  "settings.app.earlyAccess": "Join early access",
+  "settings.app.earlyAccessHint": "Get the newest features first",
+  "settings.app.indexing": "Accelerated indexing",
+  "settings.app.indexingHint":
+    "MiniMax Code builds a semantic index of the workspace to speed up code search",
+  "settings.links.section": "Links",
+  "settings.links.web": "Where web links open",
+  "settings.links.webHint": "Default destination for public web links",
+  "settings.links.builtinBrowser": "Built-in browser",
+  "settings.links.local": "Where local links open",
+  "settings.links.localHint": "Default destination for local dev pages",
+  "settings.agentControl.section": "Agent permissions",
+  "settings.agentControl.browserPanel": "Open the browser panel automatically",
+  "settings.agentControl.browserPanelHint": "Open the side browser panel when the agent drives a web page",
+  "settings.preference.watermark": "Remove the AI watermark",
+  "settings.preference.watermarkHint":
+    "When off, downloads carry an explicit AI watermark; turning it on means you have read and agreed to the watermark-removal rules",
+  "settings.preference.dataOptIn": "Use data to improve the experience",
+  "settings.preference.dataOptInHint":
+    "Allow your conversations to improve MiniMax Code; your data stays private and secure",
+  "settings.about.section": "About",
+  "settings.about.uploadLogs": "Upload logs",
+  "settings.about.uploadLogsHint": "Upload app logs to help with troubleshooting",
+  "settings.about.uploadUnavailable": "The local edition cannot upload logs",
+  "settings.about.uploadAction": "Upload",
+  "settings.about.version": "App version",
+  "settings.about.updateUnavailable": "The local edition cannot check for updates",
+  "settings.about.checkUpdate": "Check for updates",
+  "settings.about.localUrl": "Local service URL",
+  "settings.about.lanUrl": "LAN service URL",
+  "usageModels.source.aria": "Choose the model source",
+  "usageModels.minimax.notEnabled": "Not enabled",
+  "usageModels.minimax.apiKeyPlaceholder": "Enter API key",
+  "usageModels.minimax.testAria": "Test connectivity",
+  "usageModels.minimax.unavailable": "The local edition has no MiniMax API key service",
+  "usageModels.minimax.saveAndUse": "Save and use",
+  "usage.banner.fiveHourLow": "5-hour quota is running low",
+  "usage.banner.weeklyLow": "Weekly quota is running low",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -1043,6 +1202,23 @@ const zh: Record<MessageKey, string> = {
   "projectMenu.removeProgress": "正在删除 {done}/{total}…",
   "projectMenu.removeConfirm": "移除",
   "projectMenu.cancel": "取消",
+
+  /* 会话行右键菜单（webui-parity 58 线 B —— 参照 SessionRail 的
+     `openSessionMenu` 菜单项，中文文案照抄参照）。置顶/归档/复制为新会话/
+     复制到新工作树暂无服务端契约；在文件夹中显示与问题反馈参照本身即为
+     禁用项，照搬；重命名/复制/删除为真实能力。 */
+  "sessionMenu.pin": "置顶",
+  "sessionMenu.rename": "重命名",
+  "sessionMenu.archive": "归档",
+  "sessionMenu.forkCurrent": "复制为新会话",
+  "sessionMenu.forkWorktree": "复制到新工作树",
+  "sessionMenu.revealInFolder": "在文件夹中显示",
+  "sessionMenu.copy": "复制",
+  "sessionMenu.copyWorkspaceDir": "复制工作目录",
+  "sessionMenu.copySessionId": "复制会话 ID",
+  "sessionMenu.feedback": "问题反馈",
+  "sessionMenu.delete": "删除",
+  "sessionMenu.copied": "已复制",
 
   /* 主页快捷能力胶囊（工单 55c，ref-28）—— 桌面版输入框下方的云端技能
      胶囊。文案逐字照参照截图；每颗都是占位，点击 toast `common.notLocal`，
@@ -1283,6 +1459,7 @@ const zh: Record<MessageKey, string> = {
   "sidebar.projects": "项目",
   "action.failed": "失败",
   "sidebar.openSession": "打开会话",
+  "sidebar.switchMismatch": "引擎仍停留在另一个会话",
   "sidebar.collapse": "收起导航栏",
   "sidebar.expand": "展开导航栏",
   "sidebar.loadError": "无法加载会话：",
@@ -1323,7 +1500,8 @@ const zh: Record<MessageKey, string> = {
   "settings.section.sessionManagement": "会话管理",
   "settings.section.preference": "偏好设置",
   "settings.file.openInNewTab": "在新的标签页打开文件",
-  "settings.file.openInNewTabHint": "关闭后，打开文件会替换当前预览标签页，而不是新增一个。",
+  "settings.file.openInNewTabHint":
+    "关闭后，打开文件会替换当前预览标签页，而不是新增一个。",
   "settings.file.lineWrap": "文件预览自动换行",
   "settings.file.lineWrapHint":
     "开启后，超出预览区域宽度的文本和代码会自动折行；关闭后可横向滚动查看。不修改文件内容。",
@@ -1473,7 +1651,8 @@ const zh: Record<MessageKey, string> = {
   "providers.dialog.field.maxOutput": "最大输出 Token",
   "providers.dialog.field.maxOutputNa": "本地版不适用：该字段暂不保存",
   "providers.dialog.field.thinking": "推理等级",
-  "providers.dialog.field.thinkingPlaceholder": "输入档位后按 Enter，如 low、medium、high",
+  "providers.dialog.field.thinkingPlaceholder":
+    "输入档位后按 Enter，如 low、medium、high",
   "providers.dialog.field.attachments": "支持的附件",
   "providers.dialog.attachments.image": "图片",
   "providers.dialog.attachments.pdf": "PDF",
@@ -1577,8 +1756,7 @@ const zh: Record<MessageKey, string> = {
      aria label announces the consequence so screen readers
      know what discarding a live query does. */
   "workspaceTabs.tree.close.aria": "关闭当前表面并收起导航栏",
-  "workspaceTabs.tree.close.search.aria":
-    "关闭搜索表面并丢弃当前查询",
+  "workspaceTabs.tree.close.search.aria": "关闭搜索表面并丢弃当前查询",
   /* Slice 19b supersedes the slice-17 placeholder copy — see the
      English block for the real exhaustive search above. */
   /* Slice 17 — plugins surface copy. */
@@ -1598,6 +1776,127 @@ const zh: Record<MessageKey, string> = {
   "appearance.hint.fixed": "页面始终保持该主题，不随操作系统的明暗切换而改变。",
   "appearance.hint.system":
     "页面跟随操作系统的明暗设置。系统切换时，页面会实时跟随，无需刷新。",
+  "common.save": "保存",
+  "common.cancel": "取消",
+  "common.close": "关闭",
+  "settings.shortcuts.notice":
+    "浏览器环境不适用：WebUI 无法注册全局快捷键。以下键位为桌面版默认值，仅供参考。",
+  "settings.shortcuts.group.miniChat": "Mini Chat",
+  "settings.shortcuts.group.common": "常用",
+  "settings.shortcuts.item.miniChat": "显示或隐藏 Mini Chat",
+  "settings.shortcuts.item.miniChatHint": "在任意应用中唤起或收起快捷输入小窗",
+  "settings.shortcuts.item.globalSearch": "全局搜索",
+  "settings.shortcuts.item.globalSearchHint": "搜索功能、设置和任务会话",
+  "settings.shortcuts.item.searchTasks": "搜索任务和会话",
+  "settings.shortcuts.item.searchTasksHint": "打开只包含任务和会话的搜索结果",
+  "settings.shortcuts.item.newTask": "新建任务",
+  "settings.shortcuts.item.newTaskHint": "打开一个新的任务输入页",
+  "settings.shortcuts.item.newTaskNoProject": "新建无项目任务",
+  "settings.shortcuts.item.newTaskNoProjectHint":
+    "不关联项目文件夹，直接新建任务",
+  "settings.shortcuts.item.openFolder": "打开项目文件夹",
+  "settings.shortcuts.item.openFolderHint": "选择一个本地文件夹作为工作区",
+  "settings.shortcuts.item.openSettings": "打开设置",
+  "settings.shortcuts.item.openSettingsHint": "打开客户端设置页面",
+  "settings.shortcuts.item.holdDictation": "按住听写",
+  "settings.shortcuts.item.holdDictationHint":
+    "按住快捷键开始语音输入，松开后停止",
+  "settings.shortcuts.item.toggleDictation": "切换听写",
+  "settings.shortcuts.item.toggleDictationHint":
+    "按一次开始语音输入，再按一次停止",
+  "settings.shortcuts.item.invertFollowUp": "反转跟进行为",
+  "settings.shortcuts.item.invertFollowUpHint":
+    "以与「跟进消息行为」相反的方式发送当前输入的消息（排队或立即发送），仅本次生效",
+  "settings.shortcuts.unset": "未设置",
+  "settings.shortcuts.clear": "清除快捷键",
+  "settings.shortcuts.reset": "重置快捷键",
+  "settings.voice.group.regular": "常规",
+  "settings.voice.group.dictation": "听写",
+  "settings.voice.microphone": "麦克风",
+  "settings.voice.microphoneHint": "用于听写语音输入",
+  "settings.voice.holdKey": "按住听写快捷键",
+  "settings.voice.holdKeyHint": "在应用内按住，即可在输入框中听写",
+  "settings.voice.toggleKey": "切换听写快捷键",
+  "settings.voice.toggleKeyHint": "在应用内按一次开始听写，再按一次停止",
+  "settings.voice.unset": "未设置",
+  "settings.personal.instructions": "自定义指令",
+  "settings.personal.instructionsPlaceholder":
+    "定义 Agent 应该如何工作、回答和执行任务，为此设备上的所有 Agent 提供额外指令和上下文...",
+  "settings.personal.aboutYou": "关于你",
+  "settings.personal.aboutYouPlaceholder": "告诉 Agent 你的背景和长期偏好……",
+  "settings.personal.memory": "记忆",
+  "settings.personal.memoryHint": "在提示词、提醒和后续维护中使用已保存的记忆",
+  "settings.personal.proactiveMemory": "主动记忆",
+  "settings.personal.proactiveMemoryHint":
+    "主动识别并通过 Memory 保存值得长期保留的偏好和可复用经验",
+  "settings.personal.memorySummary": "记忆摘要",
+  "settings.personal.memorySummaryHint":
+    "查看、编辑或删除 MiniMax 已整理的长期记忆。",
+  "settings.personal.manage": "管理",
+  "settings.memory.title": "记忆摘要",
+  "settings.memory.placeholder": "MiniMax 整理的长期记忆会显示在这里。",
+  "settings.memory.empty": "尚未生成记忆摘要",
+  "settings.memory.more": "更多",
+  "settings.memory.close": "关闭",
+  "settings.codeReview.hint": "自定义内置代码审查指令的执行方式与审查准则",
+  "settings.codeReview.method": "审查方式",
+  "settings.codeReview.methodSubsession": "子会话",
+  "settings.codeReview.guidelines": "自定义审查准则",
+  "settings.codeReview.guidelinesPlaceholder": "输入需要长期应用的代码审查规则",
+  /* 工单 59 D3-4：设置壳的硬编码中文收进字典（zh 侧原文照搬）。 */
+  "settings.nav.aria": "设置分类",
+  "settings.account.info": "账户信息",
+  "settings.account.localLoggedOut": "本地模式，未登录",
+  "settings.account.signOutUnavailable": "本地版未接入账户服务",
+  "settings.account.signOut": "退出登录",
+  "settings.archived.empty": "暂无已归档任务",
+  "settings.worktree.empty": "本地版暂不支持工作树管理",
+  "settings.mode.section": "模式",
+  "settings.mode.coding": "适用于编程开发",
+  "settings.mode.codingHint": "保留技术细节与开发工具",
+  "settings.mode.work": "适用于日常工作",
+  "settings.mode.workHint": "同样强大，减少技术细节干扰",
+  "settings.app.menuBar": "显示在菜单栏",
+  "settings.app.menuBarHint": "在菜单栏/系统托盘显示应用图标",
+  "settings.app.autoStart": "开机自启动",
+  "settings.app.autoStartHint": "登录时自动启动应用",
+  "settings.app.notifications": "桌面通知",
+  "settings.app.notificationsHint": "任务完成、出错、需要权限审批等阻塞状态时，发送系统通知提醒",
+  "settings.app.earlyAccess": "加入提前灰度",
+  "settings.app.earlyAccessHint": "优先体验最新版本功能",
+  "settings.app.indexing": "加速索引",
+  "settings.app.indexingHint": "开启后，MiniMax Code 会基于工作区生成语义索引，加快代码搜索的速度",
+  "settings.links.section": "链接",
+  "settings.links.web": "网页链接打开位置",
+  "settings.links.webHint": "公开网页链接默认打开位置",
+  "settings.links.builtinBrowser": "内置浏览器",
+  "settings.links.local": "本地链接打开位置",
+  "settings.links.localHint": "本地开发页面默认打开位置",
+  "settings.agentControl.section": "Agent 控制权限",
+  "settings.agentControl.browserPanel": "自动打开浏览器面板",
+  "settings.agentControl.browserPanelHint": "Agent 操作网页时，自动打开右侧浏览器面板",
+  "settings.preference.watermark": "去除 AI 生成水印",
+  "settings.preference.watermarkHint": "关闭时，下载内容将包含显式 AI 生成水印；开启去除水印即代表你已阅读并同意《去水印规则》",
+  "settings.preference.dataOptIn": "数据用于优化体验",
+  "settings.preference.dataOptInHint": "允许我们将你的对话内容用于优化 MiniMax Code 的使用体验。我们保障你的数据隐私安全。",
+  "settings.about.section": "关于",
+  "settings.about.uploadLogs": "上传日志",
+  "settings.about.uploadLogsHint": "上传应用日志以协助排查问题",
+  "settings.about.uploadUnavailable": "本地版未接入日志上传",
+  "settings.about.uploadAction": "上传",
+  "settings.about.version": "应用版本",
+  "settings.about.updateUnavailable": "本地版未接入更新检查",
+  "settings.about.checkUpdate": "检查更新",
+  "settings.about.localUrl": "本地服务地址",
+  "settings.about.lanUrl": "局域网服务地址",
+  "usageModels.source.aria": "选择模型来源",
+  "usageModels.minimax.notEnabled": "未启用",
+  "usageModels.minimax.apiKeyPlaceholder": "请输入API Key",
+  "usageModels.minimax.testAria": "测试连通性",
+  "usageModels.minimax.unavailable": "本地版未接入 MiniMax API Key 服务",
+  "usageModels.minimax.saveAndUse": "保存并使用",
+  "usage.banner.fiveHourLow": "5 小时限额即将用尽",
+  "usage.banner.weeklyLow": "周限额即将用尽",
 };
 
 const DICTIONARIES: Record<Locale, Record<MessageKey, string>> = { zh, en };

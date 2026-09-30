@@ -25,8 +25,13 @@
 
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { resolve, dirname } from "node:path";
 
 import { translate, type MessageKey } from "../lib/i18n";
+
+const here = dirname(fileURLToPath(import.meta.url));
 
 const NEW_KEYS = [
   "settings.appearanceHint",
@@ -74,6 +79,67 @@ const NEW_KEYS = [
   "usage.resetsIn",
   "usage.duration.minute",
   "usage.duration.hourMinute",
+  // Ticket 55a — the four pure-frontend sub-pages: the honesty notice,
+  // every row title / hint, the memory-summary dialog, the code-review
+  // card, and the shared save / cancel actions.
+  "common.save",
+  "common.cancel",
+  "settings.shortcuts.notice",
+  "settings.shortcuts.group.miniChat",
+  "settings.shortcuts.group.common",
+  "settings.shortcuts.item.miniChat",
+  "settings.shortcuts.item.miniChatHint",
+  "settings.shortcuts.item.globalSearch",
+  "settings.shortcuts.item.globalSearchHint",
+  "settings.shortcuts.item.searchTasks",
+  "settings.shortcuts.item.searchTasksHint",
+  "settings.shortcuts.item.newTask",
+  "settings.shortcuts.item.newTaskHint",
+  "settings.shortcuts.item.newTaskNoProject",
+  "settings.shortcuts.item.newTaskNoProjectHint",
+  "settings.shortcuts.item.openFolder",
+  "settings.shortcuts.item.openFolderHint",
+  "settings.shortcuts.item.openSettings",
+  "settings.shortcuts.item.openSettingsHint",
+  "settings.shortcuts.item.holdDictation",
+  "settings.shortcuts.item.holdDictationHint",
+  "settings.shortcuts.item.toggleDictation",
+  "settings.shortcuts.item.toggleDictationHint",
+  "settings.shortcuts.item.invertFollowUp",
+  "settings.shortcuts.item.invertFollowUpHint",
+  "settings.shortcuts.unset",
+  "settings.shortcuts.clear",
+  "settings.shortcuts.reset",
+  "settings.voice.group.regular",
+  "settings.voice.group.dictation",
+  "settings.voice.microphone",
+  "settings.voice.microphoneHint",
+  "settings.voice.holdKey",
+  "settings.voice.holdKeyHint",
+  "settings.voice.toggleKey",
+  "settings.voice.toggleKeyHint",
+  "settings.voice.unset",
+  "settings.personal.instructions",
+  "settings.personal.instructionsPlaceholder",
+  "settings.personal.aboutYou",
+  "settings.personal.aboutYouPlaceholder",
+  "settings.personal.memory",
+  "settings.personal.memoryHint",
+  "settings.personal.proactiveMemory",
+  "settings.personal.proactiveMemoryHint",
+  "settings.personal.memorySummary",
+  "settings.personal.memorySummaryHint",
+  "settings.personal.manage",
+  "settings.memory.title",
+  "settings.memory.placeholder",
+  "settings.memory.empty",
+  "settings.memory.more",
+  "settings.memory.close",
+  "settings.codeReview.hint",
+  "settings.codeReview.method",
+  "settings.codeReview.methodSubsession",
+  "settings.codeReview.guidelines",
+  "settings.codeReview.guidelinesPlaceholder",
 ] as const;
 
 const RETIRED_USAGE_KEYS = [
@@ -102,14 +168,25 @@ describe("i18n settings parity (ticket 37)", () => {
       const zh = translate("zh", messageKey);
       assert.notEqual(en, "", `en value for ${key} is empty`);
       assert.notEqual(zh, "", `zh value for ${key} is empty`);
-      assert.notEqual(en, key, `en value for ${key} is the raw key — fallback fired`);
-      assert.notEqual(zh, key, `zh value for ${key} is the raw key — fallback fired`);
+      assert.notEqual(
+        en,
+        key,
+        `en value for ${key} is the raw key — fallback fired`,
+      );
+      assert.notEqual(
+        zh,
+        key,
+        `zh value for ${key} is the raw key — fallback fired`,
+      );
       assert.notEqual(zh, undefined, `zh value for ${key} is missing entirely`);
     }
   });
 
   test("the usage-and-models tab keeps the desktop reference's Chinese name", () => {
-    assert.equal(translate("zh", "settings.tab.usageModels" as MessageKey), "用量与模型");
+    assert.equal(
+      translate("zh", "settings.tab.usageModels" as MessageKey),
+      "用量与模型",
+    );
   });
 
   test("ticket 48: the back label is the reference's Back to app, in both locales", () => {
@@ -121,8 +198,16 @@ describe("i18n settings parity (ticket 37)", () => {
     for (const key of RETIRED_POPOVER_KEYS) {
       const en = translate("en", key as unknown as MessageKey);
       const zh = translate("zh", key as unknown as MessageKey);
-      assert.equal(en, undefined, `${key} must be removed from the en dictionary`);
-      assert.equal(zh, undefined, `${key} must be removed from the zh dictionary`);
+      assert.equal(
+        en,
+        undefined,
+        `${key} must be removed from the en dictionary`,
+      );
+      assert.equal(
+        zh,
+        undefined,
+        `${key} must be removed from the zh dictionary`,
+      );
     }
   });
 
@@ -130,17 +215,37 @@ describe("i18n settings parity (ticket 37)", () => {
     for (const key of RETIRED_USAGE_KEYS) {
       const en = translate("en", key as unknown as MessageKey);
       const zh = translate("zh", key as unknown as MessageKey);
-      assert.equal(en, undefined, `${key} must be removed from the en dictionary`);
-      assert.equal(zh, undefined, `${key} must be removed from the zh dictionary`);
+      assert.equal(
+        en,
+        undefined,
+        `${key} must be removed from the en dictionary`,
+      );
+      assert.equal(
+        zh,
+        undefined,
+        `${key} must be removed from the zh dictionary`,
+      );
     }
   });
 
   test("ticket 53: the zh strings are the desktop reference's verbatim wording", () => {
-    assert.equal(translate("zh", "settings.tab.usageModels" as MessageKey), "用量与模型");
-    assert.equal(translate("zh", "usage.tab.tokenPlan" as MessageKey), "Token Plan");
+    assert.equal(
+      translate("zh", "settings.tab.usageModels" as MessageKey),
+      "用量与模型",
+    );
+    assert.equal(
+      translate("zh", "usage.tab.tokenPlan" as MessageKey),
+      "Token Plan",
+    );
     assert.equal(translate("zh", "usage.tab.inUse" as MessageKey), "使用中");
-    assert.equal(translate("zh", "usage.tab.customModels" as MessageKey), "自定义模型");
-    assert.equal(translate("zh", "usage.notLocal" as MessageKey), "本地版不适用");
+    assert.equal(
+      translate("zh", "usage.tab.customModels" as MessageKey),
+      "自定义模型",
+    );
+    assert.equal(
+      translate("zh", "usage.notLocal" as MessageKey),
+      "本地版不适用",
+    );
     assert.equal(translate("zh", "usage.plan.title" as MessageKey), "当前套餐");
     assert.equal(translate("zh", "usage.plan.upgrade" as MessageKey), "升级");
     assert.equal(translate("zh", "usage.plan.manage" as MessageKey), "管理");
@@ -161,12 +266,162 @@ describe("i18n settings parity (ticket 37)", () => {
     assert.equal(translate("zh", "usage.resetsIn" as MessageKey), "{t}后重置");
   });
 
+  test("ticket 55a: the zh strings are the desktop reference's verbatim wording", () => {
+    // The visible furniture of the four pure sub-pages — the reference's
+    // own labels (ref-08/09/10/11/22), not paraphrases.
+    assert.equal(
+      translate("zh", "settings.shortcuts.group.common" as MessageKey),
+      "常用",
+    );
+    assert.equal(
+      translate("zh", "settings.shortcuts.item.miniChat" as MessageKey),
+      "显示或隐藏 Mini Chat",
+    );
+    assert.equal(
+      translate("zh", "settings.shortcuts.unset" as MessageKey),
+      "未设置",
+    );
+    assert.equal(
+      translate("zh", "settings.voice.group.regular" as MessageKey),
+      "常规",
+    );
+    assert.equal(
+      translate("zh", "settings.personal.instructions" as MessageKey),
+      "自定义指令",
+    );
+    assert.equal(
+      translate("zh", "settings.personal.aboutYou" as MessageKey),
+      "关于你",
+    );
+    assert.equal(
+      translate("zh", "settings.personal.memory" as MessageKey),
+      "记忆",
+    );
+    assert.equal(
+      translate("zh", "settings.personal.proactiveMemory" as MessageKey),
+      "主动记忆",
+    );
+    assert.equal(
+      translate("zh", "settings.personal.memorySummary" as MessageKey),
+      "记忆摘要",
+    );
+    assert.equal(
+      translate("zh", "settings.personal.manage" as MessageKey),
+      "管理",
+    );
+    assert.equal(
+      translate("zh", "settings.memory.placeholder" as MessageKey),
+      "MiniMax 整理的长期记忆会显示在这里。",
+    );
+    assert.equal(
+      translate("zh", "settings.memory.empty" as MessageKey),
+      "尚未生成记忆摘要",
+    );
+    assert.equal(
+      translate("zh", "settings.codeReview.method" as MessageKey),
+      "审查方式",
+    );
+    assert.equal(
+      translate("zh", "settings.codeReview.methodSubsession" as MessageKey),
+      "子会话",
+    );
+    assert.equal(
+      translate("zh", "settings.codeReview.guidelines" as MessageKey),
+      "自定义审查准则",
+    );
+    assert.equal(translate("zh", "common.save" as MessageKey), "保存");
+    assert.equal(translate("zh", "common.cancel" as MessageKey), "取消");
+  });
+
   test("surviving keys: the appearance row label and the menu usage label", () => {
     for (const key of ["settings.appearance", "toolbar.usage"] as const) {
       const messageKey = key as MessageKey;
-      assert.notEqual(translate("en", messageKey), undefined, `${key} missing from en`);
-      assert.notEqual(translate("zh", messageKey), undefined, `${key} missing from zh`);
+      assert.notEqual(
+        translate("en", messageKey),
+        undefined,
+        `${key} missing from en`,
+      );
+      assert.notEqual(
+        translate("zh", messageKey),
+        undefined,
+        `${key} missing from zh`,
+      );
       assert.notEqual(translate("zh", messageKey), "", `${key} empty in zh`);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// English-dictionary hygiene (ticket 59): the 55a/56 batch shipped 66
+// en values that were copies of the zh text, and the feat-0929 merge
+// re-introduced 9 duplicated providers.dialog.* keys inside BOTH
+// dictionary blocks (main's English block and feat's Chinese block both
+// survived the auto-merge). Both failure modes are invisible to the
+// parity tests above: a Chinese value in `en` still "resolves", and a
+// duplicate key still typechecks as long as the values are identical.
+//
+// No whitelist: files.tree.truncated (the one historical offender,
+// present with a Chinese value since before this line of work) was
+// fixed in the same change — any CJK value in `en` is a regression.
+// ---------------------------------------------------------------------------
+
+describe("i18n en-dictionary hygiene (ticket 59)", () => {
+  const source = readFileSync(resolve(here, "../lib/i18n.ts"), "utf8");
+
+  // Keys in declaration order, per dictionary block. Matches both the
+  // single-line form ("key": "value") and the wrapped form where the
+  // value starts on the next line ("key":\n    "value") — the wrapped
+  // form is how prettier formats long values, and missing it once made
+  // an earlier audit undercount by exactly those keys.
+  const extractKeys = (block: "en" | "zh"): string[] => {
+    const lines = source.split("\n");
+    const keys: string[] = [];
+    let mode = "";
+    const opener = new RegExp(`^const ${block}\\b`);
+    const other = new RegExp(`^const ${block === "en" ? "zh" : "en"}\\b`);
+    for (const line of lines) {
+      if (opener.test(line)) mode = block;
+      else if (other.test(line)) mode = "";
+      const match = mode ? line.match(/^\s*"([\w.]+)":/) : null;
+      const key = match?.[1];
+      if (key) keys.push(key);
+    }
+    return keys;
+  };
+
+  test("no en value contains CJK ideographs (an English locale must read English)", () => {
+    const offenders: string[] = [];
+    for (const key of extractKeys("en")) {
+      const value = translate("en", key as MessageKey);
+      if (value !== undefined && /[\u4e00-\u9fa5]/.test(value)) {
+        offenders.push(`${key}: ${JSON.stringify(value)}`);
+      }
+    }
+    assert.deepEqual(
+      offenders,
+      [],
+      `en dictionary carries Chinese values:\n${offenders.join("\n")}`,
+    );
+  });
+
+  test("neither dictionary block declares a duplicate key", () => {
+    // A duplicate key inside one block means a merge kept both sides
+    // (or a paste landed twice); for identical values tsc stays silent
+    // and the LAST entry silently wins at runtime. The providers
+    // .dialog.* pair from the 59 merge was exactly this.
+    for (const block of ["en", "zh"] as const) {
+      const keys = extractKeys(block);
+      const seen = new Set<string>();
+      const duplicates: string[] = [];
+      for (const key of keys) {
+        if (seen.has(key)) duplicates.push(key);
+        seen.add(key);
+      }
+      assert.deepEqual(
+        duplicates,
+        [],
+        `${block} block declares duplicate keys: ${duplicates.join(", ")}`,
+      );
     }
   });
 });

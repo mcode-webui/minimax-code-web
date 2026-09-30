@@ -129,8 +129,19 @@ export const newSession = (workspace?: string) =>
     json: workspace ? { workspace } : {},
   });
 
+/**
+ * Activate a session.
+ *
+ * The response carries the session the engine actually landed on, not only an
+ * acknowledgement: webui-parity 63 has the caller compare it against the row
+ * the user clicked, because a switch that quietly lands somewhere else looks
+ * exactly like one that worked.
+ */
 export const switchSession = (id: string) =>
-  request<{ ok: boolean }>("/api/sessions/switch", { method: "POST", json: { id } });
+  request<{
+    ok: boolean;
+    session?: { id: string; mcodeSessionId: string | null; title: string };
+  }>("/api/sessions/switch", { method: "POST", json: { id } });
 
 export const deleteSession = (id: string) =>
   request<{ ok: boolean }>(`/api/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
