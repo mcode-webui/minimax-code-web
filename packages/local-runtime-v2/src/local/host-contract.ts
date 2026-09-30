@@ -5,6 +5,7 @@ import type {
   LocalRuntimeProductHostOptions as V1LocalRuntimeProductHostOptions,
 } from '@mavis/local-runtime';
 import type { LocalBrowserAdapter, LocalBrowserToolExposure } from '@mavis/agent-tools/desktop';
+import type { RuntimeApplications } from '../application/initialize.js';
 import type {
   MiniAppPresenter,
   LocalRuntimeApplication,
@@ -71,6 +72,13 @@ interface CreateLocalRuntimeHostOptions extends V1CreateLocalRuntimeHostOptions 
 /** Runtime V2 owner host with its process-local application facade. */
 interface CreatedLocalRuntimeHost extends V1CreatedLocalRuntimeHost {
   application?: LocalRuntimeApplication;
+  /**
+   * Feature applications (session.query/content/lifecycle/root/diff,
+   * queue). Distinct from `application`: the process-local product facade
+   * has no turn-diff use case, so an embedder that needs turn diff
+   * reads it from `applications.session.diff` here.
+   */
+  applications?: RuntimeApplications;
   cliService?: import('./cli-service.js').CliService;
 }
 

@@ -435,7 +435,12 @@ function createStartedHost(
 ): CreatedLocalRuntimeHost {
   return {
     ...v1,
-    ...(ownerRuntime ? { application: ownerRuntime.services.application } : {}),
+    ...(ownerRuntime
+      ? {
+          application: ownerRuntime.services.application,
+          applications: ownerRuntime.services.applications,
+        }
+      : {}),
     ...(cliService ? { cliService } : {}),
     apiHost: v1.apiHost,
     ready,

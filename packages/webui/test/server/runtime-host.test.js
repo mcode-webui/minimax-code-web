@@ -423,6 +423,88 @@ test("S2-RH-04: abortSession triggers bounded termination; no subprocess kill", 
 });
 
 // ============================================================
+// 5. The catalogue host hands the webui process the runtime's
+//    application handles. Ticket 79: the v2 host returned them and
+//    runtime-host.js dropped them on the floor, so no webui route
+//    could reach a feature application — turn diff above all.
+// ============================================================
+
+test("S2-RH-05: catalogue host exposes the runtime application handles, and turn diff is callable through them", async () => {
+  const dir = setupIsolatedDir("rh05");
+  const { createCatalogueHost } = await import(
+    "../../server/lib/runtime-host.js"
+  );
+  const host = await createCatalogueHost({ dataDir: dir });
+
+  // Both handles are present: the process-local product facade and the
+  // feature-application tree. Neither is optional in practice — the
+  // webui boots the v2 host as a `tui` owner with `cliEmbedded`, which
+  // is exactly the condition that materialises the owner runtime.
+  assert.ok(
+    host.application !== undefined,
+    "catalogue host must expose the runtime process-local application facade",
+  );
+  assert.ok(
+    host.applications !== undefined,
+    "catalogue host must expose the runtime feature applications",
+  );
+
+  // The turn-diff use case lives on `applications.session.diff`, NOT on
+  // `application` — the process-local facade declares no diff member.
+  const diff = host.applications.session.diff;
+  assert.ok(diff, "applications.session.diff must be reachable");
+  for (const method of [
+    "getSessionDiff",
+    "getTurnDiff",
+    "revertTurnDiff",
+    "reapplyTurnDiff",
+  ]) {
+    assert.equal(
+      typeof diff[method],
+      "function",
+      `applications.session.diff.${method} must be callable`,
+    );
+  }
+  assert.equal(
+    "diff" in host.application,
+    false,
+    "the process-local facade carries no diff member — reading diff off it yields undefined",
+  );
+
+  // Callable, not merely present: drive getTurnDiff against a real
+  // session. A session with no recorded turn diff resolves to a view,
+  // which proves the request travelled through requireTarget into the
+  // diff store rather than tripping over a missing wiring step.
+  const session = await host.adapter.createSession({
+    workspaceDir: dir,
+    mcpServers: [],
+  });
+  const view = await diff.getTurnDiff({}, { id: session.sessionId });
+  assert.equal(
+    typeof view,
+    "object",
+    `getTurnDiff must resolve a view for a known session — got ${JSON.stringify(view)}`,
+  );
+
+  // And the method body actually runs: an unknown session surfaces the
+  // application-layer error contract, not a TypeError from a severed
+  // handle. (AppError carries `key`; assert on the key, not the message.)
+  await assert.rejects(
+    () => diff.revertTurnDiff({}, { id: "session-does-not-exist" }),
+    (err) => {
+      assert.equal(
+        err && err.key,
+        "SESSION_NOT_FOUND",
+        "revertTurnDiff must reach the session-diff service and raise its own error contract",
+      );
+      return true;
+    },
+  );
+
+  await host.close();
+});
+
+// ============================================================
 // Helpers
 // ============================================================
 
