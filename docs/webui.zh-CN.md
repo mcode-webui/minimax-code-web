@@ -178,6 +178,47 @@ exec 回合的代价——以下都是当前真实存在的行为，选择权限
 
 权限模式接口与警告语义见 [`packages/webui/docs/API.md`](../packages/webui/docs/API.md) 的 `POST /api/permissions` 一节；面向贡献者的契约细节（判定代码位置、不变量）见 [`webui.md`](webui.md) 的 Transport selection 一节。
 
+## 客户端能力协商，以及引擎反向发来的请求
+
+ACP 握手是双向的，两个方向都由同一份 `initialize` 载荷决定。这一节说明 webui 声明了哪些能力、为什么清单这么短，以及引擎发来的请求在 webui 没有应答界面时会怎样。
+
+### webui 声明了什么
+
+`packages/webui/acp.mjs` 把能力放在 **`clientCapabilities`** 字段下——这才是引擎读取的 ACP v1 `InitializeRequest` 字段（`packages/tui/src/acp/agent.ts:434`）。取值是导出的常量 `CLIENT_CAPABILITIES`，目前只有一项：
+
+| 声明的能力 | 它打开的引擎行为 | webui 真的消费吗 |
+| --- | --- | --- |
+| `plan: {}` | `plan_update` 会话更新（开关在 `agent.ts:1328`，发送在 `agent.ts:1356`） | **消费**——`streamAcpPrompt` 写入 `cs.plan`（`server/lib/mcode-acp.js:1138`），计划弹窗渲染它 |
+| `elicitation.form` | `elicitation/create` 请求通道（`acp/interactions.ts:607`） | 不消费——没有表单界面 |
+| `auth.terminal` | initialize 响应里的 `authMethods`（`agent.ts:455`） | 不消费——没有终端可以跑 `mcode login` |
+| `_meta['minimax-code/extensions']` | goal / queue / delegation / 当前会话通知（`acp/extensions.ts:277`） | 不消费——没有代码订阅这些方法名 |
+
+能力是对「我会应答」的承诺，所以清单只放 webui 真的消费的那一项。没声明的三项并非零成本：`elicitation.form` 会让引擎发来 `elicitation/create` 请求，而本客户端只能拒绝，随后引擎会直接关掉那份运行时问卷（`acp/interactions.ts:647`）——一份用户在 TUI 里本来能答的问卷就这样消失了。扩展 `_meta` 则是纯粹的成本而无消费方：这些通知以顶层 ACP 方法的形式到达，而 webui 唯一处理的 `goal_update` 是 `session/update` 的子类型（`acp.mjs:305`），是另一条通道。
+
+字段名写错是静默失败，不是报错。引擎侧是 `params.clientCapabilities ?? {}`，意味着载荷放在任何别的键名下都等于什么都没协商，所有以能力为开关的投影全部保持关闭，且不会有任何错误提示。这就是本树的原状：webui 发的是 `capabilities: { mcpCapabilities: … }`——这个键根本不是 ACP v1 `ClientCapabilities` 类型的字段，里面的成员类型里也没有声明——于是计划投影从未运行过。
+
+### 来自引擎的请求
+
+引擎在同一条管道上发自己的请求：`session/request_permission`、`elicitation/create`、`fs/read_text_file`、`fs/write_text_file`、`terminal/*`。`McodeAcpClient#_dispatch` 会逐一应答。带 `id`、带 `method`、且既无 `result` 也无 `error` 的消息就是请求。JSON-RPC 的 id 是分方向编号的，引擎的请求可能复用了 webui 自己 outbound 调用用过的 id，两个编号空间不能混淆。
+
+在没有安装 `clientRequest` 处理器的情况下（就是当前状态），应答是一个 JSON-RPC 错误：`-32601`，并在消息里带上方法名。这里**沉默并不是安全的默认值**：
+
+- 引擎只用取消信号等待这些请求（`acp/interactions.ts:562`）。一个没人应答的请求会占住一个交互调度槽位直到连接结束；待处理队列一旦溢出，整条 ACP 连接会被关闭（`interactions.ts:242`，`MAX_PENDING_INTERACTIONS`）。结果是传输直接死掉，而不是降级。
+- 拒绝一个请求正是引擎自己的处理结果，不是新引入的行为。抛错的请求会得到 `decision = 'deny'`（`interactions.ts:581`）；答不出来的问卷会被 fail-closed 地关闭（`interactions.ts:647`）。
+
+用错误而不是伪造一个「已取消」结果，是为了明说本客户端压根没考虑过这个问题，同时把方法名带进引擎的日志。每次拒绝还会在 webui 侧打印 `[acp] declined unhandled client request: <method>`，这样「引擎在问本客户端做不到的事」是看得见的，而不是靠推测。
+
+留给真实交互界面的接缝是构造函数选项 `clientRequest`：`(method, params) => result | Promise<result>`。它的 resolved 值成为 JSON-RPC 的 `result`；抛错或 reject 变成错误响应，携带抛出的 `message` 与（若有）`code`，否则为 `-32603`。webui 目前没有安装任何处理器——把一次决定真正送到浏览器是另一件事，诚实的现状是 webui 没有可提供的交互界面。
+
+### 这次拿到了什么、没拿到什么
+
+`plan: {}` 打开的是**通知**，不是提问。计划评审只有一个 `approve` 选项，而运行时把 `allowOther: true` 固定在每一步上，所以引擎会走问卷通道 fail-closed 地了结它，而不会把它变成一次权限请求——这正是「声明 `plan`」对一个什么都答不了的客户端仍然安全的原因。权限请求通道是另一个开关，webui 从不打开它。
+
+有两个后果**不在**本次范围内，但接手的下一位必须知道：
+
+- 收到 `plan_update` 不等于能对它做决定。webui 的计划弹窗没有一条能到达引擎的决定通道，载荷映射也是另一个问题：引擎把正文嵌在 `update.plan = { type, planId, content }` 里，顶层一个字段都不放。
+- 问卷与权限两个界面仍然是黑的。webui 会拒绝自己答不了的问题，这稳定且诚实，但不等于「有能力回答」。
+
 ## 思考等级（哪些模型能调、调了会发生什么）
 
 输入框旁的思考等级控件只在模型声明了可调档位时出现；模型没给档位就不挂控件——挂一个点了没反应的控件比不挂更糟。当前各家的真实情况：

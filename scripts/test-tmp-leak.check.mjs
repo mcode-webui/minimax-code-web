@@ -252,6 +252,7 @@ const KNOWN_PREFIXES = [
   "sessions-single-id-",
   "state-bus-restore-",
   "webui-acp-answer-",
+  "webui-acp-fake-engine-",
   "webui-alerts-audit-",
   "webui-alerts-check-",
   "webui-authgate-events-",

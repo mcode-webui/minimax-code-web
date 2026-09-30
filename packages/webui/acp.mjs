@@ -10,6 +10,10 @@
 //   - prompt(sid, text, cbs)   → full lifecycle: init → stream chunks → stopReason
 //   - stop()                   → kill subprocess
 //
+// The engine also sends requests in the other direction (permission
+// prompts, elicitation forms, terminal and file operations). Every one is
+// answered — see `_answerClientRequest` and `CLIENT_CAPABILITIES` below.
+//
 // Event types from mcode 0.1.3 (verified via probe):
 //   - session/update {sessionUpdate: "available_commands_update"} → list of slash cmds
 //   - session/update {sessionUpdate: "agent_thought_chunk"} → {messageId, content: {type, text}}
@@ -24,6 +28,34 @@ import { join, resolve } from 'node:path'
 import { WEBUI_ROOT } from './server/lib/layout.js'
 
 const DEFAULT_CWD = process.cwd()
+
+// JSON-RPC error code for "the recipient does not implement this method"
+// (JSON-RPC 2.0 §5.1). Used to decline engine→client requests.
+const JSON_RPC_METHOD_NOT_FOUND = -32601
+const JSON_RPC_INTERNAL_ERROR = -32603
+
+/**
+ * The capabilities this client advertises in `initialize`.
+ *
+ * The engine reads them off `clientCapabilities` — the ACP v1
+ * `InitializeRequest` field (`packages/tui/src/acp/agent.ts:434`).
+ * Sending them under any other name negotiates nothing, and the engine
+ * prices each capability by what it switches on:
+ *
+ * | Capability | Switches on | webui consumes it? |
+ * | --- | --- | --- |
+ * | `plan` | the `plan_update` projection (`agent.ts:1328` → `agent.ts:1356`) | yes — `streamAcpPrompt` writes `cs.plan` (`server/lib/mcode-acp.js:1138`), the plan modal reads it |
+ * | `elicitation.form` | the `elicitation/create` request path (`acp/interactions.ts:607`) | no — there is no form UI to put a questionnaire on |
+ * | `auth.terminal` | `authMethods` in the initialize response (`agent.ts:455`) | no — there is no terminal to run `mcode login` in |
+ * | `_meta['minimax-code/extensions']` | the goal / queue / delegation notifications (`acp/extensions.ts:277`) | no — no handler subscribes to those method names |
+ *
+ * A capability is a promise to answer, so this list carries only what
+ * the webui really consumes. Advertising the other three would buy
+ * traffic the webui drops on the floor, and the engine's fail-closed
+ * handling of an unanswered `elicitation/create` dismisses the Runtime
+ * questionnaire outright (`acp/interactions.ts:647`).
+ */
+export const CLIENT_CAPABILITIES = Object.freeze({ plan: {} })
 
 // esbuild inlines every workspace module into the webui entry, so
 // `import.meta.url` math is the entry's URL for every module here.
@@ -46,11 +78,12 @@ function resolveMcodeCmd() {
 }
 
 export class McodeAcpClient extends EventEmitter {
-  constructor({ mcodeCmd = 'mcode', cwd = DEFAULT_CWD, debug = false } = {}) {
+  constructor({ mcodeCmd = 'mcode', cwd = DEFAULT_CWD, debug = false, clientRequest = null } = {}) {
     super()
     this.mcodeCmd = mcodeCmd
     this.cwd = cwd
     this.debug = debug
+    this.clientRequest = clientRequest
     this.child = null
     this.buf = ''
     this.nextId = 0
@@ -129,7 +162,7 @@ export class McodeAcpClient extends EventEmitter {
     this.capabilities = await this.request('initialize', {
       protocolVersion: 1,
       clientInfo: { name: 'mcode-webui', version: '0.1.0' },
-      capabilities: { mcpCapabilities: { http: false, sse: false } },
+      clientCapabilities: CLIENT_CAPABILITIES,
     })
     this.started = true
     this._alive = true
@@ -177,6 +210,15 @@ export class McodeAcpClient extends EventEmitter {
       return
     }
     if (msg.method) {
+      // A message carrying an id, a method and neither a result nor an
+      // error is a REQUEST from the engine, not a notification. JSON-RPC
+      // ids are per-direction, so `msg.id` may repeat an id this client
+      // used for its own outbound call — the two spaces never meet, and
+      // answering with the engine's own id is exactly what it waits for.
+      if (msg.id !== undefined && msg.id !== null) {
+        this._answerClientRequest(msg)
+        return
+      }
       this.emit('notification', msg)
       if (msg.method === 'session/update' && msg.params?.update) {
         const u = msg.params.update
@@ -188,25 +230,95 @@ export class McodeAcpClient extends EventEmitter {
     }
   }
 
+  /**
+   * Answer one engine→client request.
+   *
+   * `clientRequest(method, params)` is the policy seam: return the JSON-RPC
+   * result, or a promise for it. With no handler installed every request is
+   * declined, and that is deliberate rather than a placeholder:
+   *
+   *   - Silence is not neutral. The engine awaits these requests with only
+   *     a cancellation signal (`packages/tui/src/acp/interactions.ts:562`),
+   *     so an unanswered one holds an interaction-scheduler slot for the
+   *     life of the connection, and the pending queue overflowing closes
+   *     the whole ACP connection (`interactions.ts:242`).
+   *   - Declining is the engine's own outcome, not a new one: a request that
+   *     throws resolves to `decision = 'deny'`
+   *     (`interactions.ts:581`) and a questionnaire that cannot be answered
+   *     is dismissed fail-closed (`interactions.ts:647`).
+   *
+   * A JSON-RPC error — rather than a synthetic "cancelled" result — says
+   * plainly that this client never considered the question, and carries the
+   * method name into the engine's log.
+   */
+  _answerClientRequest(msg) {
+    if (!this.clientRequest) {
+      console.warn(`[acp] declined unhandled client request: ${msg.method}`)
+      this._writeMessage({
+        jsonrpc: '2.0',
+        id: msg.id,
+        error: {
+          code: JSON_RPC_METHOD_NOT_FOUND,
+          message: `mcode-webui handles no client requests; ${msg.method} is not implemented`,
+        },
+      })
+      return
+    }
+    let answer
+    try {
+      answer = this.clientRequest(msg.method, msg.params)
+    } catch (error) {
+      this._writeClientRequestError(msg.id, error)
+      return
+    }
+    Promise.resolve(answer).then(
+      (result) => this._writeMessage({
+        jsonrpc: '2.0',
+        id: msg.id,
+        result: result === undefined ? null : result,
+      }),
+      (error) => this._writeClientRequestError(msg.id, error),
+    )
+  }
+
+  _writeClientRequestError(id, error) {
+    const code = Number.isInteger(error?.code) ? error.code : JSON_RPC_INTERNAL_ERROR
+    const message = error instanceof Error ? error.message : String(error)
+    this._writeMessage({ jsonrpc: '2.0', id, error: { code, message } })
+  }
+
+  // Single choke point for every line written to the engine. Answering a
+  // request must never throw into `_dispatch` — an exception there would
+  // abandon the rest of the chunk's messages — so a dead child degrades to
+  // "the line was not sent" and the pending request still settles through
+  // `_rejectAllPending`.
+  _writeMessage(msg) {
+    if (!this.child) return false
+    try {
+      this.child.stdin.write(JSON.stringify(msg) + '\n')
+      return true
+    } catch (e) {
+      if (this.debug) process.stderr.write(`[acp] write failed: ${e.message}\n`)
+      return false
+    }
+  }
+
   request(method, params) {
     if (!this.child) return Promise.reject(new Error('acp not started'))
     const id = ++this.nextId
     const msg = { jsonrpc: '2.0', id, method, params }
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject, method })
-      try {
-        this.child.stdin.write(JSON.stringify(msg) + '\n')
-      } catch (e) {
+      if (!this._writeMessage(msg)) {
         this.pending.delete(id)
-        reject(new Error(`acp write failed: ${e.message}`))
+        reject(new Error(`acp write failed: ${this.mcodeCmd} is not accepting input`))
       }
     })
   }
 
   notify(method, params) {
     if (!this.child) throw new Error('acp not started')
-    const msg = { jsonrpc: '2.0', method, params }
-    this.child.stdin.write(JSON.stringify(msg) + '\n')
+    return this._writeMessage({ jsonrpc: '2.0', method, params })
   }
 
   async newSession(cwd = this.cwd) {
