@@ -33,6 +33,13 @@ export type SseAction =
    *  list is updated through the next state push. The payload is
    *  empty — the listener decides when to re-read. */
   | { kind: "tree-changed" }
+  /** webui-parity 83 — the files ON DISK changed underneath the app, and
+   *  the state snapshot carries no such signal: a turn diff revert rewrites
+   *  workspace files without touching `chat`, `running` or `config`. The
+   *  file tree, the open file preview and the git panel all have to re-read,
+   *  and none of them can notice from a snapshot. Like `tree-changed` the
+   *  payload is empty — the consumers re-read through the typed API. */
+  | { kind: "workspace-files-changed" }
   /** Keepalive; nothing to render. */
   | { kind: "heartbeat" }
   /** A frame we recognise but intentionally do not act on. */
@@ -55,6 +62,11 @@ export const NAMED_EVENTS = [
   // lands in the runtime db (tool_call → background_tasks.kind =
   // "subagent"), so the sidebar session tree can re-read its cache.
   "session-tree-changed",
+  // webui-parity 83 — fired after a turn-diff revert / reapply rewrote
+  // workspace files. Registered in the same list so the native EventSource
+  // subscription is opened for it; a frame whose event name is absent here
+  // is never delivered by the browser at all.
+  "workspace-files-changed",
   "heartbeat",
 ] as const;
 
@@ -120,6 +132,16 @@ export function parseSseFrame(event: string, data: string): SseAction {
         if (!parsed.ok) return { kind: "malformed", event, detail: parsed.detail };
       }
       return { kind: "tree-changed" };
+    }
+    case "workspace-files-changed": {
+      // webui-parity 83: no payload — the file tree, the open preview and
+      // the git panel each decide what to re-read. Same tolerant parse as
+      // `session-tree-changed`; the body is `{}` so this is a safe no-op.
+      if (data && data.trim() !== "" && data.trim() !== "{}") {
+        const parsed = parseJson<unknown>(data);
+        if (!parsed.ok) return { kind: "malformed", event, detail: parsed.detail };
+      }
+      return { kind: "workspace-files-changed" };
     }
     default:
       return { kind: "ignored", reason: `unknown event: ${event || "(none)"}` };
