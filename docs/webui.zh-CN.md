@@ -175,7 +175,7 @@ exec 回合的代价——以下都是当前真实存在的行为，选择权限
 - 回合进行期间看进程：`mcode … acp` 子进程是 ACP 回合，`mcode … exec --input - …` 是 exec 回合。
 - 行为特征：回复里没有任何 `→` 工具行、会话标题一直是初始名——大概率在 exec 上。
 
-**没有 `/exec` 命令。** 不存在通过聊天命令切换传输的入口；webui 按钮命令集是 `new` / `clear` / `status` / `sessions` / `review` / `help` / `usage` / `stop`（`server/lib/interaction/command-registry.js#CMD_BUTTON_COMMANDS`；`server/lib/acp-client.js#WEBUI_LOCAL_COMMANDS` 是引擎侧下发的调色板列表，不含 `review`）。切换传输只有上表的两个开关：环境变量与权限模式。
+**没有 `/exec` 命令。** 不存在通过聊天命令切换传输的入口；webui 按钮命令集是 `new` / `clear` / `status` / `sessions` / `review` / `help` / `usage` / `stop`（`server/lib/interaction/command-registry.js#CMD_BUTTON_COMMANDS`），且它是这份命令集的唯一声明处。`server/lib/acp-client.js` 的命令缓存直接用它填充 `webui` 组，所以 `/help` 与输入框的斜杠命令面板列出的命令，与 `POST /api/cmd` 实际接受的完全一致，`/review` 也在内（此前 `acp-client.js` 里另有一份手写清单漏了 `/review`，导致 `/help` 与面板和 400 分支给出的命令表对不上；该副本已删除，`packages/webui/test/lib/command-list-drift.check.mjs` 钉住了这个关系，不会再漂移）。切换传输只有上表的两个开关：环境变量与权限模式。
 
 权限模式接口与警告语义见 [`packages/webui/docs/API.md`](../packages/webui/docs/API.md) 的 `POST /api/permissions` 一节；面向贡献者的契约细节（判定代码位置、不变量）见 [`webui.md`](webui.md) 的 Transport selection 一节。
 

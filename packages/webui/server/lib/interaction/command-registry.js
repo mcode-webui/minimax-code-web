@@ -28,8 +28,20 @@
 // webapp/test/slash-routing.test.ts, which parses both switch bodies
 // out of the source and compares them to these arrays. The browser
 // mirror (webapp/lib/slash-routing.ts) is pinned by the same file.
+//
+// CMD_BUTTON_COMMANDS is ALSO the webui group of the command cache
+// (lib/acp-client.js fills it from here, not from a local list), so
+// /help, the 400 body and the composer's slash palette all name the
+// same commands this endpoint accepts. That second consumer had drifted
+// once — acp-client.js kept a 7-entry copy missing `review`, and since
+// it is the LIVE /help path while this array is the fallback, the same
+// /help printed two different tables. test/lib/command-list-drift.check.mjs
+// pins the live path to this array, so the copy cannot come back.
 
-/** Commands POST /api/cmd accepts. `desc` feeds the /help fallback. */
+/**
+ * Commands POST /api/cmd accepts. `desc` is what /help prints for each of
+ * them — both its live path (via the command cache) and its fallback.
+ */
 export const CMD_BUTTON_COMMANDS = Object.freeze([
   Object.freeze({ name: "new", desc: "新建会话" }),
   Object.freeze({ name: "clear", desc: "清空当前对话" }),

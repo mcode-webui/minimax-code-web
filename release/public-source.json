@@ -3572,6 +3572,7 @@
     "packages/webui/test/lib/auth.test.js",
     "packages/webui/test/lib/authorize.check.mjs",
     "packages/webui/test/lib/chat-looks-cumulative.test.js",
+    "packages/webui/test/lib/command-list-drift.check.mjs",
     "packages/webui/test/lib/config-bindhost.test.js",
     "packages/webui/test/lib/config.test.js",
     "packages/webui/test/lib/context-percent.test.js",
