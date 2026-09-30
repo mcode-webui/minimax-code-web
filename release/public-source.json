@@ -3552,6 +3552,7 @@
     "packages/webui/test/helpers/free-port.js",
     "packages/webui/test/helpers/mavis-sources.mjs",
     "packages/webui/test/helpers/tmp.js",
+    "packages/webui/test/helpers/turn-drain.mjs",
     "packages/webui/test/integration/chat-wiring.test.js",
     "packages/webui/test/integration/check-docs-alignment.test.js",
     "packages/webui/test/integration/default-bind.test.js",

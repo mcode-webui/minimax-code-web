@@ -47,6 +47,7 @@ import {rmSync} from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { mkTmpDir } from "../helpers/tmp.js";
+import { createTurnDrain } from "../helpers/turn-drain.mjs";
 
 // Isolation FIRST — lib/config.js resolves SESSIONS_DB / UPLOAD_DIR from
 // MCODE_WEBUI_DATA_DIR at import time. Neither this check nor the
@@ -245,27 +246,17 @@ async function waitFor(fn, what, timeoutMs = 2000) {
 // became eight red tests and a 14s run, which is what made this file look
 // like a "slow machine" problem in the CI logs.
 //
-// `trackTurn` therefore registers every turn this file starts, and
-// `afterEach` unblocks and drains whatever is still parked before the next
-// test's `beforeEach` throws the state away. The cleanup is a safety net,
-// not the assertion: a leak still fails the test that caused it.
+// The mechanism lives in test/helpers/turn-drain.mjs, shared with
+// chat-first-turn-session-guard.check.mjs (same registry, same failure
+// shape). The three actions below ARE everything this file can leave
+// behind, which is why they are written out here rather than hidden:
+//   unblock               — the `session/new` gate below, the only gate
+//                           this file parks a turn behind
+//   releaseParkedPrompts  — every prompt still on FakeMcodeAcpClient
+//   activeRunCount        — the post-condition, read from the real bus
+// The cleanup is a safety net, not the assertion: a leak still fails the
+// test that caused it.
 // ------------------------------------------------------------------
-const liveTurns = new Set();
-
-/** Register the promise `handleSend` returns so `afterEach` can drain it. */
-function trackTurn(turn) {
-  liveTurns.add(turn);
-  // `.then` with both arms (not `.finally`) so a rejecting turn settles
-  // the derived promise too — an unobserved rejection would crash the run.
-  turn.then(
-    () => liveTurns.delete(turn),
-    () => liveTurns.delete(turn),
-  );
-  return turn;
-}
-
-// The draft case parks a turn inside `session/new`, before any prompt
-// exists; releasing `pending` is not enough to let that turn finish.
 let newSessionReleaser = null;
 
 /** Park every subsequent `session/new` until the cleanup or the test says so. */
@@ -282,6 +273,15 @@ function releaseNewSessionGate() {
   newSessionReleaser = null;
   if (releaser) releaser();
 }
+
+const drain = createTurnDrain({
+  label: "chat-run-mirror",
+  activeRunCount: () => sb.activeRunCount(),
+  unblock: releaseNewSessionGate,
+  releaseParkedPrompts: () => {
+    while (FakeMcodeAcpClient.pending.length) FakeMcodeAcpClient.release();
+  },
+});
 
 const WS = _tmpDataDir; // mkdtempSync already created the leaf — assertWorkspacePath's realpathSync requires an existing path.
 
@@ -367,19 +367,7 @@ beforeEach(() => {
 // Runs after EVERY test, including one that failed or threw — which is
 // precisely the case that used to leak. The wait is bounded so a turn that
 // cannot be unblocked reports its own failure instead of hanging the file.
-afterEach(async () => {
-  releaseNewSessionGate();
-  while (FakeMcodeAcpClient.pending.length) FakeMcodeAcpClient.release();
-  if (liveTurns.size === 0) return;
-  const drained = Promise.allSettled([...liveTurns]);
-  let timer;
-  await Promise.race([
-    drained,
-    new Promise((r) => { timer = setTimeout(r, 5000); }),
-  ]);
-  clearTimeout(timer);
-  liveTurns.clear();
-});
+afterEach(drain.cleanup);
 
 after(() => {
   try {
@@ -399,7 +387,7 @@ async function setupTwoSessions(cid) {
   // Turn 1 — completes immediately; promotes the A record to the
   // engine identity (id → mvs_fake_1) and persists ["› hello", "● ok"].
   const res1 = fakeRes();
-  const turn1 = trackTurn(handleSend(fakeReq({ content: "hello" }), res1, { cs, cid }));
+  const turn1 = drain.track(handleSend(fakeReq({ content: "hello" }), res1, { cs, cid }));
   await waitFor(() => cs.mcodeSessionId, "turn 1 to bind the engine sid");
   FakeMcodeAcpClient.release();
   await turn1;
@@ -430,7 +418,7 @@ describe("run-mirror — mid-run switch keeps views and records isolated", () =>
     const { cs, sidA } = await setupTwoSessions(cid);
 
     const res2 = fakeRes();
-    const turn2 = trackTurn(handleSend(fakeReq({ content: "run A2" }), res2, { cs, cid }));
+    const turn2 = drain.track(handleSend(fakeReq({ content: "run A2" }), res2, { cs, cid }));
     await waitFor(
       () => FakeMcodeAcpClient.pending.length === 1,
       "turn 2 prompt to park",
@@ -535,7 +523,7 @@ describe("run-mirror — mid-run switch keeps views and records isolated", () =>
     const { cs, sidA } = await setupTwoSessions(cid);
 
     const res2 = fakeRes();
-    const turn2 = trackTurn(handleSend(fakeReq({ content: "run A2" }), res2, { cs, cid }));
+    const turn2 = drain.track(handleSend(fakeReq({ content: "run A2" }), res2, { cs, cid }));
     await waitFor(() => FakeMcodeAcpClient.pending.length === 1, "prompt parked");
     emitThought();
     emitToolAndAnswer();
@@ -600,7 +588,7 @@ describe("run-mirror — mid-run switch keeps views and records isolated", () =>
     storeRecord("sess-B", []);
 
     const res1 = fakeRes();
-    const turn1 = trackTurn(handleSend(fakeReq({ content: "first!" }), res1, { cs, cid }));
+    const turn1 = drain.track(handleSend(fakeReq({ content: "first!" }), res1, { cs, cid }));
     // handleSend created the draft record; the turn is parked BEFORE the
     // engine session id exists (inside session/new).
     await waitFor(() => cs.sessionId, "draft record created");
@@ -684,7 +672,7 @@ describe("finalize writes the turn coordinate into the transcript", () => {
   async function runTurn(cid, { sessionId, answer, lastAssistantMessageId }) {
     const cs = makeClient(cid, { sessionId });
     storeRecord(sessionId, []);
-    const turn = trackTurn(handleSend(fakeReq({ content: "改一下文件" }), fakeRes(), { cs, cid }));
+    const turn = drain.track(handleSend(fakeReq({ content: "改一下文件" }), fakeRes(), { cs, cid }));
     await waitFor(() => cs.mcodeSessionId, "the engine sid to bind");
     await waitFor(() => FakeMcodeAcpClient.pending.length === 1, "prompt parked");
     FakeMcodeAcpClient.emit({ kind: "message", text: answer });

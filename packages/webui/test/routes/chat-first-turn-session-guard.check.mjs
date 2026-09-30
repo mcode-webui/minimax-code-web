@@ -28,7 +28,7 @@
 //   3. Regression: cross-cid parallel turns on DIFFERENT sessions are
 //      not blocked and each turn gets its own engine session.
 
-import { test, describe, before, beforeEach, after } from "node:test";
+import { test, describe, before, beforeEach, afterEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
 import {rmSync} from "node:fs";
@@ -36,6 +36,7 @@ import {rmSync} from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { mkTmpDir } from "../helpers/tmp.js";
+import { createTurnDrain } from "../helpers/turn-drain.mjs";
 
 // Isolation FIRST — lib/config.js resolves SESSIONS_DB / UPLOAD_DIR from
 // MCODE_WEBUI_DATA_DIR at import time, and lib/events.js resolves the
@@ -236,6 +237,45 @@ function makeClient(cid, { mcodeSessionId = null } = {}) {
   return cs;
 }
 
+// ------------------------------------------------------------------
+// Turn bookkeeping — a test must never abandon a live turn.
+//
+// `beginRun` / `endRun` keep a PROCESS-WIDE registry (the cid claim plus
+// the engine-session claim in `runsBySid`), and `activeRunCount()` reads
+// `runsByCid.size` globally. Every assertion below that counts runs is
+// therefore reading a number this file shares with every case in the
+// process, and this file has no reset hook to scope it back.
+//
+// A case that aborts between `handleSend` and the finalize leaves its
+// turn parked on the fake transport: the route never reaches
+// `finally { endRun(cid) }`, so the claim stays registered and the cases
+// that follow read a count that includes a turn they never started. That
+// is the cascade this file shipped with: the first case's
+// `assert.equal(resB._status, 409)` is the only REAL failure, yet the two
+// regression cases after it go red on `1 !== 0` and `3 !== 2` — two
+// contracts blamed for a leak they did not cause. The abandoned finalize
+// also persists its chat record late, after the next case's `beforeEach`
+// already deleted the sessions store, which writes this case's turn into
+// the next case's storage.
+//
+// The mechanism lives in test/helpers/turn-drain.mjs, shared with
+// chat-run-mirror.check.mjs (same registry, same failure shape). The
+// actions below ARE everything this file can leave behind:
+//   releaseParkedPrompts — every prompt still on FakeMcodeAcpClient
+//   activeRunCount       — the post-condition, read from the real bus
+// There is no `session/new` gate here, so no `unblock` is supplied: a
+// turn that reaches this fake transport has always got past the session
+// handshake. The cleanup is a safety net, not the assertion — a leak
+// still fails the case that caused it.
+// ------------------------------------------------------------------
+const drain = createTurnDrain({
+  label: "chat-first-turn-session-guard",
+  activeRunCount: () => sb.activeRunCount(),
+  releaseParkedPrompts: () => {
+    while (FakeMcodeAcpClient.pending.length) FakeMcodeAcpClient.release();
+  },
+});
+
 before(async (t) => {
   await setupFirstTurnMocks(t);
   sb = await import(absPath("lib/state-bus.js"));
@@ -257,6 +297,11 @@ beforeEach(() => {
   FakeMcodeAcpClient.reset();
 });
 
+// Runs after EVERY test, including one that failed or threw — which is
+// precisely the case that used to leak. The wait is bounded so a turn that
+// cannot be unblocked reports its own failure instead of hanging the file.
+afterEach(drain.cleanup);
+
 after(() => {
   try {
     rmSync(_tmpDataDir, { recursive: true, force: true });
@@ -272,10 +317,10 @@ describe("POST /api/send — first-turn session-busy guard", () => {
     // Window A sends the first message of a brand-new session. Fire and
     // forget — the route acks 200 and the turn runs asynchronously.
     const resA = fakeRes();
-    const turnA = handleSend(fakeReq({ content: "hello" }), resA, {
+    const turnA = drain.track(handleSend(fakeReq({ content: "hello" }), resA, {
       cs: csA,
       cid: cidA,
-    });
+    }));
 
     // Mid-turn: the engine session came into existence, and the run
     // registry must now claim it (the backfill under test).
@@ -290,6 +335,10 @@ describe("POST /api/send — first-turn session-busy guard", () => {
     // session (sidebar switch / restore after draft promotion).
     const csB = makeClient(cidB, { mcodeSessionId: sid });
     const resB = fakeRes();
+    // Not tracked, and deliberately so: the 409 answers before the
+    // fire-and-forget section, so this call claims no run and parks no
+    // prompt — `activeRunCount() === 1` below is the proof. Tracking it
+    // anyway would only add a turn that can never leak.
     await handleSend(fakeReq({ content: "me too" }), resB, {
       cs: csB,
       cid: cidB,
@@ -317,10 +366,10 @@ describe("POST /api/send — first-turn session-busy guard", () => {
 
     // Now B may take the session, and continues the SAME engine session.
     const resB2 = fakeRes();
-    const turnB2 = handleSend(fakeReq({ content: "my turn now" }), resB2, {
+    const turnB2 = drain.track(handleSend(fakeReq({ content: "my turn now" }), resB2, {
       cs: csB,
       cid: cidB,
-    });
+    }));
     assert.equal(resB2._status, 200);
     await waitFor(
       () => FakeMcodeAcpClient.pending.length === 1,
@@ -341,7 +390,7 @@ describe("POST /api/send — first-turn session-busy guard", () => {
     const cs = makeClient(cid);
 
     const res1 = fakeRes();
-    const turn1 = handleSend(fakeReq({ content: "first" }), res1, { cs, cid });
+    const turn1 = drain.track(handleSend(fakeReq({ content: "first" }), res1, { cs, cid }));
     const sid = await waitFor(
       () => cs.mcodeSessionId,
       "first turn to bind the engine session",
@@ -355,7 +404,7 @@ describe("POST /api/send — first-turn session-busy guard", () => {
     // Second turn on the same cid + session: beginRun registered the real
     // sid itself, so nothing is blocked.
     const res2 = fakeRes();
-    const turn2 = handleSend(fakeReq({ content: "second" }), res2, { cs, cid });
+    const turn2 = drain.track(handleSend(fakeReq({ content: "second" }), res2, { cs, cid }));
     await waitFor(() => sb.getRunForCid(cid), "second turn to claim the cid");
     assert.equal(sb.getRunForCid(cid).sid, sid);
     FakeMcodeAcpClient.release();
@@ -374,8 +423,8 @@ describe("POST /api/send — first-turn session-busy guard", () => {
     // Two first turns, two brand-new engine sessions, in parallel.
     const res1 = fakeRes();
     const res2 = fakeRes();
-    const turn1 = handleSend(fakeReq({ content: "from one" }), res1, { cs: cs1, cid: cid1 });
-    const turn2 = handleSend(fakeReq({ content: "from two" }), res2, { cs: cs2, cid: cid2 });
+    const turn1 = drain.track(handleSend(fakeReq({ content: "from one" }), res1, { cs: cs1, cid: cid1 }));
+    const turn2 = drain.track(handleSend(fakeReq({ content: "from two" }), res2, { cs: cs2, cid: cid2 }));
     assert.equal(res1._status, 200);
     assert.equal(res2._status, 200);
 
