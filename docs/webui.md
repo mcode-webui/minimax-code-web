@@ -165,7 +165,7 @@ S2 invariants (must remain true on every later slice):
 
 Contract notes:
 
-- **There is no `/exec` command.** The webui button-command set is `CMD_BUTTON_COMMANDS` — `new`, `clear`, `status`, `sessions`, `review`, `help`, `usage`, `stop` (`server/lib/interaction/command-registry.js`; `server/lib/acp-client.js#WEBUI_LOCAL_COMMANDS` is the palette list the engine advertises, which omits `review`). Transport is never switched by a slash command; the two conditions above are the whole rule.
+- **There is no `/exec` command.** The webui button-command set is `CMD_BUTTON_COMMANDS` — `new`, `clear`, `status`, `sessions`, `review`, `help`, `usage`, `stop` (`server/lib/interaction/command-registry.js`) — and it is the only declaration of that set. The command cache in `server/lib/acp-client.js` fills its `webui` group from it, so `/help` and the composer's slash palette name exactly the commands `POST /api/cmd` accepts, `/review` included. (A second, hand-written list in `acp-client.js` used to omit `/review`, which is why `/help` and the palette disagreed with the 400 branch; it is gone, and `packages/webui/test/lib/command-list-drift.check.mjs` pins the relationship so it cannot come back.) Transport is never switched by a slash command; the two conditions above are the whole rule.
 - The permission mode is selectable in the composer (Ask / Auto / Full access; `webapp/components/composer.tsx#PERMISSION_MODES`) or via `POST /api/permissions`, which also accepts `read`. The route writes the label into `cs.permissions` unconditionally (`server/routes/model.js#handleSetPermissions`) — that label is what steers the **next** turn's transport.
 - An exec turn is not a degraded permission mode: the mode still reaches the engine as the `--permission` spawn flag (Ask→`ask`, Auto→`auto`, Read→`read`, else `full`; the mode mapping in `mcode-exec.js`), the session continues via `--session`, and the recorded model is passed via `--model`.
 - A live exec child has no RPC surface: `session/set_config_option` calls (model, permission) return `no_acp_session` and take effect on the next turn (`server/lib/mcode-rpc.js#noLiveClientFailure`); the same call lands on the live child immediately on an ACP turn. Warning semantics are documented in [`packages/webui/docs/API.md`](../packages/webui/docs/API.md) under `POST /api/permissions`.
@@ -238,12 +238,12 @@ Contract details:
 
 - `POST /api/set-model` `{model, thinking?}` records `thinking` in `cs.model.thinking` whatever the channel; `thinkingSynced` reports the pick actually reaching the engine — for the variant channel it is the model push carrying the level, and `mcodeSynced`/`thinkingSynced` describe that one push from both angles.
 - Session boot replays the pick (`applyRecordedModel`): effort models push model-then-effort; variant models push one variant-carrying model selection and skip the effort push. The order is load-bearing — the engine rejects a `thinkingEffort` set while no model is selected (`Select a Session model before changing thinking effort.`, engine `agent.ts#1003`), so reversing it silently drops the level. The `POST /api/set-model` path repeats the same model-then-effort order. A stale recorded level that the new model does not list is cleared by the composer on model switch (ticket 11 wire half).
-- `default_value` from `thinking_config` is not a response field. The control's initial state is "Use engine default" (`thinkingPicker.none`) until the user picks; for variant models an unpicked boot selects the engine's default variant (`default_value: 'true'` → thinking on).
+- `default_value` from `thinking_config` is not a response field. The control's initial state is "Default" (`thinkingPicker.none`) until the user picks; for variant models an unpicked boot selects the engine's default variant (`default_value: 'true'` → thinking on).
 - Engine-session entries appear in variant wire form (`m:...:v:thinking` / `:v:none-thinking`) because that is what the engine advertises for switchable models; both carry the same `thinkingLevels`.
 - A pick while a turn is running takes effect on the next turn (same semantics as a model switch mid-run).
 - A local pick owns its field for `PICK_DEFER_WINDOW_MS` (4 s): `applyConfigOptionUpdate` does not overwrite that field with the engine's wire-form `currentValue` inside the window, so an optimistic pick is not clobbered a few ms later. Model and thinking are stamped independently (`modelPickedAt` / `thinkingPickedAt`), so a thinking-only pick does not block a later cross-client model mirror. The window is defence-in-depth — the per-cid snapshot `revision` is the primary guard against wire reordering.
 - An operator's providers-config entry with the same id as a builtin wins wholesale (existing merge rule); such an entry shows levels only if the operator wrote them.
-- Ticket 49 batches 1–2 added a fourth display and a second editing entry inside the picker. The panel-bottom detail area renders the ACTIVE model's `thinkingLevels` as read-only badges. When a provider cascade is open, the fly-out renders as the reference picker's two-column popover — model rows on the left, a follow-focus settings column on the right — and that column's level control is **editable and shape-adaptive**: exactly `["off","on"]` renders one toggle switch; any other level list renders a radio group whose FIRST entry is always "Use engine default" (submitted as the empty string). Form only — the wire semantics stay the local `thinkingLevels` + `""` contract, never the reference's effortOptions/variant derivation (A9 was scoped out). A pick commits immediately without closing the menu, through the same `{thinking}` payload the composer-level control sends; a focused-but-not-active model renders the control disabled with a "preview" marker. A recorded level the target model does not support highlights nothing — the row-badge anti-stale rule (B11) applied to the control.
+- Ticket 49 batches 1–2 added a fourth display and a second editing entry inside the picker. The panel-bottom detail area renders the ACTIVE model's `thinkingLevels` as read-only badges. When a provider cascade is open, the fly-out renders as the reference picker's two-column popover — model rows on the left, a follow-focus settings column on the right — and that column's level control is **editable and shape-adaptive**: exactly `["off","on"]` renders one toggle switch; any other level list renders a radio group whose FIRST entry is always "Default" (submitted as the empty string). Form only — the wire semantics stay the local `thinkingLevels` + `""` contract, never the reference's effortOptions/variant derivation (A9 was scoped out). A pick commits immediately without closing the menu, through the same `{thinking}` payload the composer-level control sends; a focused-but-not-active model renders the control disabled with a "preview" marker. A recorded level the target model does not support highlights nothing — the row-badge anti-stale rule (B11) applied to the control.
 
 The operator-facing view — which models show what control, and why MiniMax-M3 only has on/off — is the thinking section of [`webui.zh-CN.md`](webui.zh-CN.md).
 
@@ -438,6 +438,52 @@ batch. The Agent Team badge, the `workspaceDir` secondary line and the
 reference's own shell, so they are not implemented here either. A later
 agent must not mistake any of these for "implemented but broken".
 
+## Conversation toolbar: the version badge (webui-parity 89)
+
+The conversation toolbar's right end of the title row carries a version badge:
+the branch name, the abbreviated commit id, and how long ago that commit
+landed. It answers "which checkout am I looking at" without opening a terminal,
+which is the question a user has when a build behaves unexpectedly and there
+is more than one checkout in play.
+
+| State | What renders |
+| --- | --- |
+| Repository with at least one commit | `branch` + `headSha` + relative commit time |
+| Directory that is not a repository | nothing — the whole element is absent from the DOM |
+| Repository with an unborn HEAD (`git init`, nothing committed) | nothing; there is no commit to name |
+| Detached HEAD | the sha alone, with no placeholder word standing in for a branch |
+| Request failed or has not answered yet | nothing |
+
+The absent cases are the contract, not an afterthought: an empty pill would be
+a control that looks live and carries no information, so
+`resolveVersionBadge` returns `null` and the component renders an empty
+string. `webapp/test/toolbar-version-badge.test.ts` pins the rendered output
+in both directions.
+
+**Placement.** The badge sits at the far end of the title row (`ml-auto`),
+opposite the session title it qualifies, and before that row's `pr-20` reserve
+— so the `fixed right-4` launcher cluster can never overlap it. It follows
+the running-turn indicator when one is showing. The relative time is the only
+part with a narrow-width rule (`hidden lg:inline`): the branch name and the
+sha are what identify a build, so they stay and the time gives way. Long
+branch names truncate rather than pushing the bar wider.
+
+**The click copies the short sha.** It is a real `<button>` with an
+`aria-label` and a transient 「已复制」 confirmation, not decorative text. A
+denied clipboard shows no confirmation rather than a confirmation the user
+acts on.
+
+**Data and cost.** One `GET /api/git/status` on workspace change — the same
+endpoint the right-panel Git panel reads, not a second source of truth. It
+does not poll: a `git status` on a large tree is a real index refresh, a
+version identity changes when the user commits or checks out a branch rather
+than on a schedule, and the Git panel already sets the precedent of fetching
+on workspace change plus an explicit Refresh. The relative-time half needs no
+refetch at all — it ticks off the toolbar's existing 1s ticker, which the
+elapsed-timer already pays for. While the Git panel is open, two requests for
+the endpoint are in flight; that is accepted rather than hoisting panel state
+into a provider above the shell for a panel the badge does not render.
+
 ## Context window (what the picker shows, and what a pick does today)
 
 The model picker's settings detail renders at **two levels** (ticket 49 batch 2). The panel-bottom area always describes the ACTIVE model; when a provider cascade is open, the fly-out renders as the reference picker's two-column popover — the provider's model rows on the left, a **follow-focus settings column** on the right. Hovering or keyboard-focusing a model row switches that column to the model without picking it; a cascade that just opened (nothing focused yet) falls back to the active model, mirroring the reference. Both areas read the same draft mirror (below), so a window pick made in either place highlights in both.
@@ -475,6 +521,7 @@ below cites the component file and one `data-testid` per surface.
 | Home quick-capability capsules (ticket 55c) | `components/chat.tsx#HomeState` | `home-quick-capabilities` |
 | Sidebar inbox (alerts flyout) | `components/inbox.tsx` | `inbox-flyout` |
 | Toolbar (top bar with model selector) | `components/toolbar.tsx` | `toolbar-session-status` |
+| Toolbar version badge (branch + short sha + commit time, webui-parity 89) | `components/version-badge.tsx` | `toolbar-version-badge` |
 | Composer + drop overlay | `components/composer.tsx` | `composer-drop-overlay`, `composer-send-button` |
 | Chat (virtual list ≥ 200 messages) | `components/chat.tsx` + `chat-virtual-list.tsx` | `chat-virtual-top-spacer` |
 | Turn process bar (composite summary + output rate since ticket 46 PR3) | `components/activity-group.tsx#TurnProcessDisclosure` | `turn-process-disclosure` |
@@ -906,11 +953,14 @@ deep-link — opens the desktop's modal instead of appending a rail draft:
 
 | Dialog region | Contract |
 | --- | --- |
-| Provider select (「请选择提供商」) | Options are `GET /api/providers/presets` plus a 「+ 其他（自定义）」 sentinel; choosing a preset fills id / label / protocol / baseURL / auth-type, choosing the sentinel expands the custom fields (id, display name, protocol, auth type, baseURL). DeepSeek / Zhipu AI（智谱）/ Moonshot AI (China) carry the reference's spellings; other local presets keep their catalogue labels. A 404 catalogue degrades to the custom-only dropdown |
+| Provider select (「请选择提供商」) | Options are `GET /api/providers/presets` plus a 「+ 其他（自定义）」 sentinel; choosing a preset fills id / label / auth-type / baseURL and seeds 「API 格式」, choosing the sentinel expands the custom fields (id, display name, auth type, baseURL). DeepSeek / Zhipu AI（智谱）/ Moonshot AI (China) carry the reference's spellings; other local presets keep their catalogue labels. A 404 catalogue degrades to the custom-only dropdown |
+| API 格式 | The desktop's **second** field, rendered for every provider rather than only for 「其他（自定义）」. It is the existing wire `protocol` under the desktop's labels — `OpenAI Completions` / `Anthropic Messages` / `Gemini` — so no new format reaches the backend. Choosing a preset seeds it from that preset's own protocol and it stays editable afterwards. The protocol select that used to sit inside the custom branch was removed rather than kept alongside: two controls bound to one value is how the preset and custom branches end up disagreeing about what gets saved |
+| 自定义 Headers | Rows of (name, value) with 「＋ 添加 Header」 and a per-row remove, held as a **list** rather than an object so a half-typed row survives editing. A blank name is dropped, a name is trimmed but a value is not, and a later duplicate wins — all three decided in one place (`headerPairsToRecord`), so the dialog, the PUT body and the server cannot disagree. Zero rows render an explicit placeholder rather than collapsing. The collapse result lands in `auth.headers` on the PUT body and comes back in `auth.headers` on `GET /api/providers` |
 | API key (`AntInput.Password`) | The eye toggle is safe here and only here: the field's value is what the user just typed, not a masked placeholder — the editor's no-reveal rule (keep-existing-key convention) is untouched |
 | Model entries (「模型 01…」 + connectivity test + ↻ reset + 🗑 delete) | Five fields: name → `id`, context window → `contextLimit`, max output tokens → **disabled with the 「本地版不适用」 marker** (the `/api/providers` PUT contract has no field to persist it), reasoning levels → `thinkingLevels` fed from `THINKING_LEVELS` (the low/medium/high contract is frozen; the reference's 「max」 placeholder example is deliberately not copied), attachments → four checkboxes 图片/PDF/视频/音频 mapping to `image`/`file`/`video`/`audio` (`file` joined `MODALITIES`; `text` passes through untouched) |
 | 「＋ 添加」 / 「自动获取」 | Add appends a blank entry; auto-fetch opens the 「已获取模型」 dialog listing the **selected preset's built-in catalogue** with the note that it is not a live per-key query — the local backend has no model-listing proxy. With no preset selected the dialog states the missing capability instead of inventing rows. 「全选（n/N）」 + 取消/添加 follow the reference; picked entries arrive with their catalogue metadata. Both actions carry tooltips spelling out the split (manual entry vs catalogue pick; auto-fetch reads the list only and saves nothing); with zero entries the models section renders a dashed placeholder naming both paths instead of collapsing |
-| 取消 / 保存 | Save validates (provider chosen, unique id, per-entry `validateModelRow`), appends the draft to the panel's list, and PUTs through the **unchanged** `draftToWire` + `api.putProviders({version: 2})` path; on failure the dialog stays open with the typed input intact. The pair sits in a dedicated footer region (hairline separator + 16px clearance) at the h-9 control height, the black primary carrying the token shadow |
+| 跳过连通检测 / 连通检测 | The desktop's **form-level** check, on the left of the footer bar. It reuses the existing `POST /api/providers/test` contract with the live form values (protocol, key, baseURL **and the custom headers**, so the probe exercises the request that will actually be sent) and records one verdict, rendered as 「可达 · Nms」 / 「不可达：错误」. This is a different scope from the per-entry 检测 on each model card — that one asks whether a model id responds, this one asks whether the provider is reachable at all — so both exist. Editing any probed input (provider, API 格式, key, baseURL, auth type, any header row) drops the verdict, because a verdict that survived an edit is a pass for a request the provider will never see. Header values are re-validated server-side on this path too, since the test endpoint takes `auth` straight from the body without the PUT normaliser |
+| 取消 / 保存 | Save validates (provider chosen, unique id, per-entry `validateModelRow`), appends the draft to the panel's list, and PUTs through the **unchanged** `draftToWire` + `api.putProviders({version: 2})` path; on failure the dialog stays open with the typed input intact. The pair sits in a dedicated footer region (hairline separator + 16px clearance) at the h-9 control height, the black primary carrying the token shadow. 保存 is **disabled until the form-level check passes**, matching the reference footer and the greyed 保存 in the reference screenshot; 跳过连通检测 is the escape hatch for an operator who cannot reach the endpoint, and a line states which of the two is blocking. A disabled control with a stated reason and two ways to lift it is not a dead button |
 
 Ticket 54 invariants — no server-contract change (the `/api/providers` PUT
 body, `/api/set-model`, and every endpoint are untouched; the whole delta is
@@ -990,6 +1040,57 @@ reference `design-ref/screenshots/byok-custom-model-official.png`):
   difference is the list's source (the local preset catalogue, not a
   live per-key query), which the fetch dialog already states
   honestly; no behaviour change was needed.
+
+**Ticket 85 — the three desktop fields the local dialog was missing**
+(`API 格式`, `自定义 Headers`, footer `连通检测` / `跳过连通检测`)
+
+The add surface was **already** dialog-based on this branch — that part of
+the request was a no-op, and no work was spent re-doing it. What was
+genuinely missing is below; the per-model-entry 检测 from ticket 56 and
+the page-inline **editing** flow are both untouched.
+
+`自定义 Headers` is the only one of the three that needed a contract
+change, so it is the one worth reading closely:
+
+| Layer | What it does |
+| --- | --- |
+| Dialog | Rows of (name, value). Held as a list, collapsed by `headerPairsToRecord` (blank names dropped, names trimmed, values not, later duplicate wins) |
+| `PUT /api/providers` | New **optional** field `providers[].auth.headers: Record<string,string>`. A body that omits it is byte-identical to the pre-ticket body and a stored provider without it loads to `{}` — the field is additive, not a migration |
+| `GET /api/providers` | Returns `auth.headers` **verbatim, unmasked** |
+| `engine-provider-sync` | Copies it to the engine's `options.headers`, omitted when empty. This is the load-bearing link: `local-runtime-v2` already merges `options.headers` into every upstream request for the provider (`catalog/provider-views.ts:218`), so no runtime change was needed |
+| `POST /api/providers/test` | Carries the headers into the probe, re-validated through the same grammar because this route takes `auth` from the body without the PUT normaliser |
+
+**Why headers are not masked, when `apiKey` is.** `apiKey` is masked
+because the server substitutes it on the operator's behalf — the operator
+never needs to read it back. A custom header is routing or tenant
+configuration the operator typed and must be able to edit, so masking it
+would create a write-only field. An operator who treats a header *value*
+as a secret has no way to express that here; the honest statement is that
+this field is not a place to keep credentials. The API Key field remains
+the only masked one.
+
+**Validation is a reject, not a strip.** Names must match the RFC 9110
+token grammar and values may not carry CR, LF or NUL; a record that fails
+rejects the whole PUT with an error naming the provider and the header.
+Silently stripping the character would leave the operator believing a
+header is in effect when the upstream never received it intact. Ceilings:
+20 headers, 128-char names, 4096-char values.
+
+**Probe asymmetry, stated.** The connectivity probe spreads operator
+headers FIRST, so the protocol's own required headers (`Content-Type`,
+`anthropic-version`, `Accept`) overwrite them. A probe answers "can I
+reach this provider", not "replay my headers exactly"; letting a
+mistyped `Content-Type` break the probe would make it answer a question
+the operator did not ask. The production request path has no such
+restriction.
+
+**Still not done** (deliberately, for the next batch): the desktop's
+「模型 01」 nested sub-card with 模型名称 / 上下文窗口 / 最大输出 Token is
+a **screenshot-only** shape — the reference implementation carries a
+single 模型名称 textarea instead, so the desktop is newer than the
+reference and there is no second source to check it against. Rebuilding
+the model-entry structure is a larger change than this batch and is left
+alone.
 
 **Ticket 53 invariants** — no server-contract change (the delta:
 `panels.tsx` / `usage-models-cards.tsx` / `icons.tsx` / `i18n.ts` plus two
@@ -1385,6 +1486,35 @@ thinking-level streaming marker (the `▍` cursor only marks the trailing
 assistant block), so this is the most honest signal the render layer can
 derive.
 
+### Streaming tail visibility (webui-parity ticket 88)
+
+**Invariant: while a turn streams, the tail of the transcript is inside the
+scroller's visible box.** Every token the engine emits must be readable without
+the reader scrolling. A turn appends a block and then grows it token by token,
+so the DOM below the reader grows while their `scrollTop` does not move; with
+nothing pinning the offset, the answer is laid out below the fold and the reader
+watches the thinking indicator for the whole turn. Reproduced on the unfixed
+build: over a 15-second turn `scrollTop` never left 0 while `scrollHeight` went
+688 → 1196.
+
+This is not virtualization. Below `VIRTUAL_LIST_THRESHOLD` (200 units) the
+window is `useVirtual: false` and every unit is in the DOM; the measured turn
+peaked at 8 units. The tail was rendered and simply off-screen.
+
+| Concern | Decision | Rejected alternative |
+| --- | --- | --- |
+| Who owns the offset | Exactly three: the tail follow, the reader, the persisted-position restore. Browser scroll anchoring is switched OFF on the scroller (`.chat-scroll`, `app/globals.css`) because it is a fourth, implicit owner — it adjusted `scrollTop` by 55 → 125 px on its own while the transcript grew above the viewport, which the follow reads as the reader leaving | Leaving anchoring on. A transcript that grows at the tail needs pinning, not anchoring; with it on the follow cannot attribute a move to its cause |
+| When the follow turns off | When the container moves off the pin the follow itself last wrote (`isAwayFromPin`, 2 px tolerance). Content is appended BELOW the reader, so growth alone never changes `scrollTop` | A nearness test (`isNearBottom`) at scroll-event time. Scroll events dispatch asynchronously, so by the time the handler runs the next SSE frame may already have grown the transcript and the test answers "no" for a reader who never left. Shipped once, measured latching off ~20 s into every turn, replaced |
+| When the follow re-arms | The reader scrolls back to the tail, or clicks the "jump to latest" pill (which calls `followNow()` — the pill's own scroll is about to change the position a re-arm would read) | Re-deriving from metrics every commit, which cannot tell "the reader moved" from "the transcript grew" |
+| Reader scrolled up | Left exactly where they are, for the rest of the turn; the pill stays available. Measured: 0 px drift across 157 samples / 40 s of continued streaming | Following anyway, on the argument that the reader will want the answer eventually. Dragging a reader who is reading history is the other half of the same annoyance |
+| While a turn is live | The persisted-position restore is gated off (`sessionRunning`). `initialScrollTop` is re-read from storage on every render, so the restore re-armed itself from the follow's own persisted writes and dragged the container back one frame after each pin | Letting both write. Two owners for one offset is the defect, not the fix |
+| Animation | Instant, not smooth — a smooth scroll chases a target that moves with every token, so it lags the stream and overshoots at turn end | `behavior: "smooth"` on the pin |
+| Virtualization | Untouched. The follow is orthogonal: one number written per commit, before paint, in a layout effect | Disabling virtualization above 200 units to keep the tail rendered. The tail was always rendered |
+
+The restore is unaffected for a settled session — that is the case it exists
+for. Reopening a session left on the tail lands on the tail; one left
+mid-history lands mid-history.
+
 ### Tool card (ticket 46, PR3)
 
 One tool call renders as a native `<details>` card (`ToolCard`), on the
@@ -1568,7 +1698,7 @@ Two sources, in strict order of authority, and never merged:
 | Source | What it is | What it can prove |
 |---|---|---|
 | **The engine's record** | `GET /api/turn-diff` with the turn's `assistantMessageId` | The real per-file `+N` / `-N`, the real file list (which includes edits made through tools whose arguments name no path), and the engine's own `canUndo` / `canReapply` |
-| **The transcript scan** | `collectTurnEditedFiles` (`webapp/lib/edited-files.ts`) over the turn's `RenderUnit`s | Only the file paths a `file-edit` tool named. No counts, no gates. |
+| **The transcript scan** | `collectEditedFilesByTurn` (`webapp/lib/edited-files.ts`), keyed by the layout turn ordinal | Only the file paths a `file-edit` tool named. No counts, no gates. |
 
 The engine's list REPLACES the scan rather than merging with it. A merge
 would double-count a file the two name differently, and the counts would
@@ -1645,12 +1775,21 @@ move, in this order:
 - The collapse state is **not** persisted in `localStorage`: a reload
   returns to collapsed. It is derived state, not a user preference, so
   red line 3 is untouched.
-- Cards are derived from the **full** `units` list, not the virtualised
-  `visibleUnits` window — otherwise scrolling past 200 units would make
-  them blink in and out. Each turn's card sits at **its own** turn's last
-  unit, so a three-turn session reads as three cards; the final turn's
-  card stays at the transcript tail, after the message-action row, which
-  is where ticket 77 put the single card and where the desktop puts it.
+- The **coordinates, the scan and the records** are all derived from the
+  **full** `units` list, never from the virtualised `visibleUnits` window, so
+  a turn outside the window is still fetched and its numbers do not change
+  under the user. The card itself, however, is a list child: it renders
+  inside the `visibleUnits` loop at its own turn's last unit. Above
+  `VIRTUAL_LIST_THRESHOLD` (200 units) a turn's card therefore appears and
+  disappears with the scroll window, the same as that turn's messages do.
+  This is the one place the card is windowed, and it is a deliberate trade —
+  a card pinned outside the window would render in a position the reader
+  cannot see. Non-virtualised transcripts (≤ 200 units, the overwhelming
+  majority) render every turn's card unconditionally.
+- Each turn's card sits at **its own** turn's last unit, so a three-turn
+  session reads as three cards. Ticket 77's single session-wide card at the
+  transcript tail is gone: the trailing message-action row is now the last
+  element in the column.
 - With no `onOpenFile` wired, a file row degrades to plain text rather
   than to a button that does nothing.
 - The route exposes `applications.session.diff` and nothing else; the
@@ -1854,6 +1993,103 @@ The composer restores the rejected text (merged after anything typed
 while the request was in flight) and shows the banner; a command routed
 to `/api/send` that the engine rejects surfaces as an error alert on the
 anomaly channel.
+
+### Who owns a transcript line
+
+`/api/cmd` output and engine output are both transcript lines, and they
+do not come from the same place.
+
+| Kind | Written by | In the engine runtime DB? | Survives a poll tick? |
+| --- | --- | --- | --- |
+| engine turn (`› ping`, `● pong`, tool blocks) | the engine, streamed into `cs.chat` | yes | yes, refreshed from the DB |
+| `/api/cmd` echo (`› /help`, `● 可用命令：…`, `● 当前 model=…`, `● 变更概览 …`) | `interaction/commands.js`, into `cs.chat` | **no — the engine never sees it** | yes, and it is the only thing that keeps it there |
+| a turn another client ran (desktop app, TUI) | the engine, for a different cid | yes | yes, pulled in — that is the poll's purpose |
+
+The four-second poll (`lib/transcript-sync.js`, `MCODE_WEBUI_TRANSCRIPT_SYNC_MS=0`
+disables it) re-reads the engine's view so a conversation driven elsewhere
+catches up in an open tab. It is a **merge**, not a replacement:
+`mergeEngineTranscript` (`lib/transcript.js`) walks the engine read and
+the lines already shown in lockstep, keeps any line the engine does not
+know about in place, and appends the engine's remainder.
+
+Server-written annotations — `§§ processed_duration=Nms`, `§§ turn_msg=<id>`,
+`##tc:<id>` — are the one class of engine line the merge may not treat as an
+ordinary line, because position is their entire meaning: the decoder resolves
+each one onto the block above it. A tab whose chat was recorded before its
+marker shipped does not carry the line, so the merge emits it at the cursor
+the engine put it at and never at the tail. Two consequences, both visible in
+the chat. A turn another client ran keeps **its own** turn coordinate instead
+of handing it to whatever the user ran next, which is the difference between
+the 「已编辑 N 个文件」 card reading this turn's diff and reading the engine's
+latest turn. And a transcript recorded before a marker shipped is annotated in
+place rather than replayed behind its own copy — the tail position duplicated
+the whole conversation instead, once annotated and once not.
+
+The alternative that was rejected: assign the read over `cs.chat`. It is
+one line, and it is what shipped. The consequence was that `/help` and
+`/status` returned `200`, cleared the composer, rendered their output for
+about four seconds, and then vanished — and `persistCurrentChat` recorded
+the deletion, so a reload did not bring them back. Measured on a live
+instance: the echo was on the wire at t+200 ms and gone by the next tick.
+An in-memory ledger of local lines was also considered and rejected: it
+would not survive the reload it was meant to protect, which is exactly the
+half of the defect users noticed.
+
+The merge assumes the engine **appends** and never rewrites a line it has
+already emitted. A rewrite would show up as the old line sitting next to
+its replacement rather than being replaced; the switch path's backfill rule
+(`routes/sessions.js`) already depends on the same assumption.
+
+## The send acknowledgement: "not confirmed" is not "failed"
+
+`POST /api/send` writes `200 {ok:true}` at the top of `handleSend` and
+runs the turn afterwards. The acknowledgement therefore reports *receipt*,
+and the deadline the browser imposes on it (`SEND_ACK_TIMEOUT_MS`, 30 s in
+`webapp/lib/api.ts`) reports *round trip*. Neither says whether the engine
+took the prompt — during a stalled proxy or a busy event loop the engine can
+be executing the message while the browser is still waiting.
+
+Reporting that as a failure is a claim about a side effect that may already
+have happened, and the composer's response to a "failure" — put the text
+back in the box — turned it into a duplicate execution. In testing, a
+`sleep 35` ran twice because the first attempt's acknowledgement was slow
+and the user pressed Enter again.
+
+| | Old | New |
+| --- | --- | --- |
+| Error shape | `Error("no response within 30000ms")`, matched by wording | `SendUnconfirmedError`, matched on an `unconfirmed` flag (`isSendUnconfirmed`) |
+| Deadline | 30 s | 30 s — **unchanged**; a longer one only moves the same false negative later |
+| Decision | none — the deadline was the verdict | `probeSend` asks `GET /api/state`, bounded to 3 reads over ~2.7 s |
+| Draft restored | always | only when the server positively holds no record of the send |
+| Banner | `消息发送失败: no response within 30000ms`, red | one of three, none of which claims failure |
+
+`probeSend` (`webapp/lib/send-confirmation.ts`) reduces its reads to one of
+three answers:
+
+| Answer | Evidence | Draft | Banner says |
+| --- | --- | --- | --- |
+| `accepted` | a turn is running for this cid, or the prompt's `›` echo is in the transcript | **not** restored | sent, never confirmed, the engine is running it — do not send it again |
+| `rejected` | the server answered and holds no record | restored | not delivered, the server has no record; the text is back in the box |
+| `unreachable` | no read came back | restored | status unknown, it may already be running — check the history before sending again |
+
+`accepted` is the case the whole design turns on: a send the engine may
+already be running must never come back as text one Enter can re-send.
+`unreachable` restores the draft even though the answer is unknown, because
+losing what the user typed is the worse defect, and the banner carries the
+"check the history first" instruction that makes the restore safe. The
+banner is also styled as secondary text rather than as an error.
+
+A client-generated idempotency key on `POST /api/send` would make the
+duplicate structurally impossible rather than merely unlikely. It is not
+implemented: it is a request-contract change, and it needs a
+server-side dedup store with a defined window. Treated as its own ticket,
+not folded into this fix.
+
+**How you would tell it works.** Send `/help` in a session that already has
+an engine turn, and leave the tab open: the output is still there ten
+seconds later, and it is still there after a reload. Force an
+acknowledgement timeout against a server that is running the turn: the
+banner says the engine is running the message, and the composer is empty.
 
 ## Endpoint catalog (against current source)
 

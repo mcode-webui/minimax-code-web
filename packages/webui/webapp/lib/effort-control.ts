@@ -32,7 +32,7 @@ export function effortControlShape(levels: string[]): "switch" | "radiogroup" | 
 /**
  * The radio group's option list.
  *
- * `default` (UI label "Use engine default", submitted as the empty
+ * `default` (UI label "Default", submitted as the empty
  * string) is always a legal choice — the reference prepends it the
  * same way, and the local wire treats `""` as "no override; the engine
  * picks". A defensive filter keeps a catalogue that ever ships a

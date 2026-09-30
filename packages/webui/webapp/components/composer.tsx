@@ -45,7 +45,28 @@ import {
 import { getActiveSessionId, useSessionContext } from "@/lib/store";
 import { routeSlashInput } from "@/lib/slash-routing";
 import { decodeTranscript } from "@/lib/transcript";
+import { isSendUnconfirmed } from "@/lib/api";
+import {
+  probeSend,
+  shouldRestoreDraft,
+  type SendProbeOutcome,
+} from "@/lib/send-confirmation";
 import { translate, type Locale, type MessageKey } from "@/lib/i18n";
+
+/**
+ * Which unconfirmed banner to render.
+ *
+ * `null` (no probe recorded — a path that set the kind without an outcome)
+ * maps to the "unreachable" wording on purpose: it is the only one of the
+ * three that does not claim to know whether the turn started, so it is the
+ * honest answer when the outcome is missing. It must never fall back to
+ * `error.send`, which reads as a refusal.
+ */
+function unconfirmedBannerKey(outcome: SendProbeOutcome | null): MessageKey {
+  if (outcome === "accepted") return "error.unconfirmed.accepted";
+  if (outcome === "rejected") return "error.unconfirmed.rejected";
+  return "error.unconfirmed.unreachable";
+}
 import { ContextMeter } from "./context-meter";
 import { Icon, type IconName } from "./icons";
 
@@ -145,6 +166,8 @@ export function Composer({
   const value = draft.value;
   const attachments = draft.attachments;
   const error = draft.error;
+  const errorKind = draft.errorKind;
+  const unconfirmedOutcome = draft.unconfirmed;
   const setValue = useCallback((next: string) => setComposerDraft({ value: next }), []);
   const [sending, setSending] = useState(false);
   const [models, setModels] = useState<
@@ -376,7 +399,7 @@ export function Composer({
     const dispatchCid = clientId();
     const dispatchSessionId = state?.sessionId ?? null;
     setSending(true);
-    setComposerDraft({ error: null });
+    setComposerDraft({ error: null, errorKind: null, unconfirmed: null });
     // Ticket 13 — optimistic clear. The backend does session
     // switching and transcript backfill before its ack, so waiting
     // for the await leaves the text sitting in the box for the whole
@@ -410,7 +433,23 @@ export function Composer({
       else await api.sendMessage({ content, attachments });
       completeComposerSent();
     } catch (cause) {
-      const errorMessage = cause instanceof Error ? cause.message : String(cause);
+      // An expired deadline is NOT a failure. Both send endpoints can already
+      // hold the request — `handleSend` writes its 200 before the turn runs —
+      // so the engine can be executing the prompt while the browser is still
+      // waiting. The old "failed" banner plus a refilled box is what made the
+      // user press Enter again and run `sleep 35` twice (webui-parity 81 D-2).
+      // Ask the server instead of guessing, over a bounded budget
+      // (`lib/send-confirmation.ts`), and let that answer decide both the
+      // words and whether the text comes back.
+      const unconfirmed = isSendUnconfirmed(cause);
+      const outcome: SendProbeOutcome | null = unconfirmed
+        ? await probeSend(content)
+        : null;
+      const errorMessage = unconfirmed
+        ? ""
+        : cause instanceof Error
+          ? cause.message
+          : String(cause);
       // Read the LIVE context at catch time. The dispatch-side
       // closure has the session id from when the user pressed
       // Enter; if the user has since switched sessions (e.g. via the
@@ -444,8 +483,10 @@ export function Composer({
       // the active session no longer matches the record (the banner
       // is in the module-scope draft store too, so it outlives a
       // session switch).
-      if (restored) {
-        // The user may have typed INTERIM text during the in-flight
+      if (restored && (outcome === null || shouldRestoreDraft(outcome))) {
+        // A send the server may already be running must NOT come back as text
+        // sitting in the box: one Enter would run it a second time. The
+        // user may have typed INTERIM text during the in-flight
         // window, and the command path now has failures worth
         // restoring from too (a 4xx from /api/cmd, a network failure):
         // "Nothing may vanish" applies to the rejected input and to
@@ -454,7 +495,11 @@ export function Composer({
         // instead of being re-derived from a React callback.
         setComposerDraft(mergeRestoredDraft(getComposerDraft(), restored));
       }
-      setComposerDraft({ error: errorMessage });
+      setComposerDraft({
+        error: errorMessage,
+        errorKind: unconfirmed ? "unconfirmed" : "rejected",
+        unconfirmed: outcome,
+      });
     } finally {
       setSending(false);
     }
@@ -839,9 +884,22 @@ export function Composer({
             {sending ? t("composer.sending") : t("composer.hint")}
           </span>
 
-          {error ? (
-            <span className="text-caption-small-strong text-text_status_error">
-              {t("error.send")}: {error}
+          {error || errorKind ? (
+            // Three different facts need three different sentences. An expired
+            // deadline is not a refusal, so it never wears the "could not
+            // send" headline nor the error colour — saying either would be a
+            // claim about a side effect that may already have happened, and it
+            // is what pushed the user into resending (webui-parity 81 D-2).
+            <span
+              className={
+                errorKind === "unconfirmed"
+                  ? "text-caption-small-strong text-text_default_secondary"
+                  : "text-caption-small-strong text-text_status_error"
+              }
+            >
+              {errorKind === "unconfirmed"
+                ? t(unconfirmedBannerKey(unconfirmedOutcome))
+                : `${t("error.send")}: ${error}`}
             </span>
           ) : null}
         </div>
@@ -1951,7 +2009,7 @@ function ModelSettingsDetail({
                  * switch. No `default` entry here — the reference
                  * treats switchable thinking as pure on/off; the
                  * engine-default reset stays reachable through the
-                 * composer-level control's "Use engine default" row
+                 * composer-level control's "Default" row
                  * and the radio group's `default` option elsewhere. */
                 <div className="flex items-center gap-2 px-0.5 py-0.5">
                   <button
@@ -2484,7 +2542,7 @@ const CascadeSubmenu = forwardRef<
  * Thinking-effort picker.
  *
  * Same shell and panel as the other selectors. The trigger is the
- * active level ("High" / "Medium" / …) or "Use engine default" when
+ * active level ("High" / "Medium" / …) or "Default" when
  * the user has not picked one (the recorded value is empty).
  *
  * The levels array comes from the active model's catalogue entry; the

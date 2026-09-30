@@ -1,4 +1,5 @@
 import type { GitStatusFile } from "./api";
+import { relativeMtimeBucket } from "./files-tree";
 
 /**
  * Pure routing / bucketing logic for the right-panel Git panel
@@ -132,4 +133,84 @@ export function previewDiff(diff: string | undefined | null, maxLines: number): 
     text: lines.slice(0, maxLines).join("\n"),
     truncated: true,
   };
+}
+
+/**
+ * The conversation toolbar's version badge (webui-parity 89).
+ *
+ * Decides *whether* the badge renders and *what* it says, from the
+ * `/api/git/status` payload. Both decisions are pure so they can be
+ * unit-tested without React (see webapp/test/git-panel.test.ts) — the
+ * rule that matters is the one that decides when the badge is absent:
+ * a workspace that is not a git repository, or a repository that has
+ * no commits yet, must render NOTHING. An empty pill would be a
+ * control that looks live and carries no information, which is the
+ * dead-control shape this tree rejects.
+ */
+export interface VersionBadgeInput {
+  /** `state.workspace.dir`; empty when no workspace is attached. */
+  workspaceDir?: string | null;
+  /** The `/api/git/status` payload, or null before the first answer. */
+  status: {
+    ok: boolean;
+    isRepo?: boolean;
+    branch?: string | null;
+    headSha?: string | null;
+    headCommittedAt?: string | null;
+    /** Carried for shape fidelity with `GitStatusPayload`; unused here. */
+    error?: string;
+  } | null;
+  /** True when the request itself failed (transport / containment). */
+  hasError?: boolean;
+}
+
+export interface VersionBadge {
+  branch: string | null;
+  shortSha: string;
+  /** Epoch ms of the commit, or null when the timestamp was unparseable. */
+  committedAtMs: number | null;
+}
+
+export function resolveVersionBadge(input: VersionBadgeInput): VersionBadge | null {
+  if (!input.workspaceDir) return null;
+  if (input.hasError) return null;
+  const status = input.status;
+  if (!status || !status.ok || status.isRepo === false) return null;
+  const shortSha = typeof status.headSha === "string" ? status.headSha.trim() : "";
+  if (!shortSha) return null;
+  const committedAtMs = parseCommittedAt(status.headCommittedAt);
+  return {
+    branch: typeof status.branch === "string" && status.branch.trim() ? status.branch : null,
+    shortSha,
+    committedAtMs,
+  };
+}
+
+/**
+ * The badge's time half: a coarse relative bucket rendered through
+ * `t()`, delegating to the file tree's own `relativeMtimeBucket`
+ * (lib/files-tree.ts) so the workspace's two time surfaces read
+ * identically instead of growing a second, drifting copy of the same
+ * bucket table. Returns "" when the timestamp is missing or in the
+ * future — a commit from the future is clock skew on the authoring
+ * machine, and printing "-2h ago" would be a lie. The absolute
+ * timestamp stays available in the badge's tooltip either way.
+ */
+export function versionBadgeTimeBucket(nowMs: number, committedAtMs: number | null): string {
+  if (committedAtMs === null || !Number.isFinite(committedAtMs)) return "";
+  if (committedAtMs > nowMs) return "";
+  return relativeMtimeBucket(nowMs, committedAtMs);
+}
+
+/**
+ * Parse the strict ISO 8601 string the server's `%cI` produces into
+ * epoch ms. Returns null for anything unparseable — a bad timestamp
+ * costs the badge its time half, never the whole badge, because the
+ * sha and the branch are the parts the user actually identifies a
+ * build by.
+ */
+function parseCommittedAt(value: string | null | undefined): number | null {
+  if (typeof value !== "string" || !value.trim()) return null;
+  const ms = Date.parse(value.trim());
+  return Number.isFinite(ms) ? ms : null;
 }

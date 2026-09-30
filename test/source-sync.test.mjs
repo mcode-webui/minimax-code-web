@@ -632,6 +632,12 @@ function verificationFixture(t) {
   // than running the real checks against an empty build tree.
   mkdirSync(path.join(root, 'scripts/lib'), { recursive: true });
   writeFileSync(path.join(root, 'scripts/check-webui-bundle.mjs'), `console.log('Web UI server bundle ok (fixture stub).');`);
+  // Same reasoning for the documentation-alignment gate, which verify.mjs
+  // also runs by direct path. Adding a gate is not self-registering: without
+  // this stub the fixture fails with MODULE_NOT_FOUND before it ever reaches
+  // the routing assertions.
+  mkdirSync(path.join(root, 'packages/webui/scripts'), { recursive: true });
+  writeFileSync(path.join(root, 'packages/webui/scripts/check-docs-alignment.mjs'), `console.log('Documentation alignment ok (fixture stub).');`);
   const manager = path.join(directory, 'manager.cjs');
   writeFileSync(manager, `
     const fs = require('node:fs');
@@ -746,7 +752,7 @@ test('documentation and archive profiles preserve their required validation gate
   const full = f.run(['--list']).stdout.trim().split('\n');
   const docs = f.run(['--profile', 'docs', '--list']);
   assert.equal(docs.status, 0, docs.stderr);
-  assert.deepEqual(docs.stdout.trim().split('\n'), ['check:source', 'check:tsconfig', 'export source preview', 'test:release-tools']);
+  assert.deepEqual(docs.stdout.trim().split('\n'), ['check:source', 'check:tsconfig', 'check:docs-alignment', 'export source preview', 'test:release-tools']);
   const archive = f.run(['--profile', 'archive', '--list']);
   assert.equal(archive.status, 0, archive.stderr);
   assert.deepEqual(archive.stdout.trim().split('\n'), full.filter(g => g !== 'export source preview'));
@@ -974,6 +980,7 @@ test('Windows contract profile selects focused gates', () => {
     assert.deepEqual(result.stdout.trim().split('\n'), [
       'check:source',
       'check:tsconfig',
+      'check:docs-alignment',
       'export source preview',
       'test:release-tools',
       'build',

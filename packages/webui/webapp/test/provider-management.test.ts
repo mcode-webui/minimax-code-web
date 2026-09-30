@@ -28,9 +28,11 @@ import {
   describeTestOutcome,
   draftFromView,
   draftToWire,
+  headerPairsToRecord,
   newDraftProvider,
   validateModelRow,
   validateProviderId,
+  type DraftHeaderRow,
   type DraftProvider,
 } from "../lib/provider-management";
 import type { ProviderView } from "../lib/api";
@@ -244,7 +246,7 @@ describe("draftToWire — draft → wire", () => {
       id: "p1",
       label: "P1",
       preset: "zhipu",
-      auth: { type: "byok", apiKey: "sk-x", baseURL: "https://api.example.com" },
+      auth: { type: "byok", apiKey: "sk-x", baseURL: "https://api.example.com", headers: [] },
       models: [{
         id: "m1",
         label: "M1",
@@ -301,7 +303,7 @@ describe("draftToWire — draft → wire", () => {
     const draft: DraftProvider = {
       ...newDraftProvider(),
       id: "p1",
-      auth: { type: "byok", apiKey: "sk-x", baseURL: "  " },
+      auth: { type: "byok", apiKey: "sk-x", baseURL: "  ", headers: [] },
     };
     const wire = draftToWire(draft);
     assert.equal(wire.auth.baseURL, undefined);
@@ -321,7 +323,7 @@ describe("draftToWire — draft → wire", () => {
     const draft: DraftProvider = {
       ...newDraftProvider(),
       id: "p1",
-      auth: { type: "byok", apiKey: "", baseURL: "" },
+      auth: { type: "byok", apiKey: "", baseURL: "", headers: [] },
     };
     const wire = draftToWire(draft);
     assert.equal(wire.auth.apiKey, "");
@@ -331,7 +333,7 @@ describe("draftToWire — draft → wire", () => {
     const draft: DraftProvider = {
       ...newDraftProvider(),
       id: "p1",
-      auth: { type: "byok", apiKey: "sk-realtype-12345", baseURL: "" },
+      auth: { type: "byok", apiKey: "sk-realtype-12345", baseURL: "", headers: [] },
     };
     const wire = draftToWire(draft);
     assert.equal(wire.auth.apiKey, "sk-realtype-12345");
@@ -485,5 +487,148 @@ describe("defaults — blank fields are well-formed", () => {
     const d = draftFromView(view());
     assert.equal(d.draftId, "p1");
     assert.equal(d.id, "p1");
+  });
+});
+// ---------------------------------------------------------------------
+// Custom headers (webui-parity ticket 85) — the client half of the
+// contract the server tests pin on the other side.
+//
+// The load-bearing property is END TO END: what the dialog's rows
+// become, what the PUT body carries, and what the dialog reads back on
+// reopen. A break anywhere in that chain produces a header the operator
+// can fill in, save, and never see again — a silent data loss that no
+// single-file test would catch.
+// ---------------------------------------------------------------------
+
+describe("headerPairsToRecord — the one place rows become a wire map", () => {
+  test("a blank name is dropped, not sent as an empty header", () => {
+    // The dialog keeps a row while it is being typed; sending the
+    // empty half would make the server reject the whole PUT over a
+    // field the operator never filled in.
+    assert.deepEqual(
+      headerPairsToRecord([
+        { name: "X-Tenant", value: "acme" },
+        { name: "   ", value: "orphan" },
+      ]),
+      { "X-Tenant": "acme" },
+    );
+  });
+
+  test("a name is trimmed but a value is NOT", () => {
+    // `X-Tenant : acme` should store `X-Tenant`; a leading space in a
+    // token value is part of the value and trimming it would corrupt it.
+    assert.deepEqual(
+      headerPairsToRecord([{ name: "  X-Tenant  ", value: "  acme  " }]),
+      { "X-Tenant": "  acme  " },
+    );
+  });
+
+  test("a later duplicate wins, matching what JSON would do on the wire", () => {
+    // The dialog cannot prevent a duplicate; it resolves it the same
+    // way the transport would, so what the operator sees saved is
+    // what actually gets sent.
+    assert.deepEqual(
+      headerPairsToRecord([
+        { name: "X-Dup", value: "first" },
+        { name: "X-Dup", value: "second" },
+      ]),
+      { "X-Dup": "second" },
+    );
+  });
+
+  test("no rows and all-blank rows both collapse to {}", () => {
+    assert.deepEqual(headerPairsToRecord([]), {});
+    assert.deepEqual(headerPairsToRecord([{ name: "", value: "" }]), {});
+  });
+
+  test("an empty VALUE is a legal header and must survive", () => {
+    // `X-Feature-Flag:` with no value is a real, meaningful request.
+    assert.deepEqual(
+      headerPairsToRecord([{ name: "X-Feature-Flag", value: "" }]),
+      { "X-Feature-Flag": "" },
+    );
+  });
+});
+
+describe("draftFromView / draftToWire — the header round trip (ticket 85)", () => {
+  const withHeaderRows = (rows: DraftHeaderRow[]): DraftProvider => ({
+    ...newDraftProvider(),
+    id: "p1",
+    auth: { ...blankAuth(), apiKey: "sk-x", headers: rows },
+  });
+
+  test("a stored header comes back as an editable row", () => {
+    const draft = draftFromView(
+      view({ auth: { ...view().auth, headers: { "X-Tenant": "acme" } } }),
+    );
+    assert.deepEqual(draft.auth.headers, [{ name: "X-Tenant", value: "acme" }]);
+  });
+
+  test("a view with no headers yields no rows, not one empty row", () => {
+    const draft = draftFromView(view());
+    assert.deepEqual(draft.auth.headers, []);
+  });
+
+  test("rows are sorted by name so a reopened dialog is stable", () => {
+    // A JS object has no order of its own. Without an explicit sort the
+    // list reshuffles between visits, which reads as the operator's own
+    // configuration changing under them.
+    const draft = draftFromView(
+      view({
+        auth: {
+          ...view().auth,
+          headers: { "X-Zebra": "z", "X-Alpha": "a", "X-Mid": "m" },
+        },
+      }),
+    );
+    assert.deepEqual(
+      draft.auth.headers.map((r) => r.name),
+      ["X-Alpha", "X-Mid", "X-Zebra"],
+    );
+  });
+
+  test("round trip: rows → wire → view → rows is stable", () => {
+    const rows: DraftHeaderRow[] = [
+      { name: "X-Tenant", value: "acme" },
+      { name: "X-Trace", value: "01H" },
+    ];
+    const wire = draftToWire(withHeaderRows(rows));
+    assert.deepEqual(wire.auth.headers, { "X-Tenant": "acme", "X-Trace": "01H" });
+    const back = draftFromView(view({ auth: { ...view().auth, headers: wire.auth.headers } }));
+    assert.deepEqual(back.auth.headers, rows);
+  });
+
+  test("a provider with no headers omits the key from the PUT body", () => {
+    // Omission keeps the request byte-identical to the pre-ticket one
+    // for the overwhelmingly common case of a provider with no headers.
+    const wire = draftToWire(withHeaderRows([]));
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(wire.auth, "headers"),
+      false,
+      "an empty header set must not add a key to the wire",
+    );
+  });
+
+  test("the auth key set is closed — headers is the only addition", () => {
+    // Extends ticket 54's closed-key-set intent to the auth sub-object.
+    // A populated baseURL is required for the assertion to be
+    // meaningful: `draftToWire` omits an empty one by design, so the
+    // blank fixture would see a three-key block and pass vacuously.
+    const draft: DraftProvider = {
+      ...newDraftProvider(),
+      id: "p1",
+      auth: {
+        type: "byok",
+        apiKey: "sk-x",
+        baseURL: "https://api.example.com",
+        headers: [{ name: "X-A", value: "v" }],
+      },
+    };
+    const wire = draftToWire(draft);
+    assert.deepEqual(
+      Object.keys(wire.auth).sort(),
+      ["apiKey", "baseURL", "headers", "type"],
+      "no field may join the auth block beyond the documented four",
+    );
   });
 });

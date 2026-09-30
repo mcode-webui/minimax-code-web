@@ -47,9 +47,13 @@ import {
   blankDialogCustom,
   collectDialogErrors,
   defaultChecked,
+  API_FORMAT_OPTIONS,
   PRESET_CHOICE_CUSTOM,
+  type DialogHeaderRow,
+  type EntryTestState,
   type PresetCatalogueEntry,
 } from "../components/add-model-dialog";
+import type { ProviderProtocol } from "../lib/api";
 import { blankModel, type DraftModel } from "../lib/provider-management";
 import { translate, type MessageKey } from "../lib/i18n";
 
@@ -85,6 +89,38 @@ const openTagOf = (markup: string, testid: string): string => {
   const start = markup.lastIndexOf("<", at);
   const end = markup.indexOf(">", at);
   return markup.slice(start, end + 1);
+};
+
+/**
+ * Whether a control renders DISABLED.
+ *
+ * Deliberately NOT a `/disabled/` match on the open tag: every one of
+ * these buttons carries Tailwind `disabled:` variants in its className,
+ * so the naive test passes on an ENABLED button and proves nothing.
+ * React renders the boolean attribute as `disabled=""` and omits it
+ * entirely when false, so the empty-string form is the only exact
+ * spelling that means "this control is actually off".
+ */
+const isDisabled = (markup: string, testid: string): boolean =>
+  /\sdisabled=""/.test(openTagOf(markup, testid));
+
+/**
+ * The source text of ONE `onXxx={...}` prop, from its opening to the
+ * start of the next prop at the same indentation.
+ *
+ * Slicing by the next `
+        on` marker is what makes the scope
+ * exact: every handler in this component is one prop wide, so the
+ * segment is precisely one handler. Regex-with-`[\s\S]*?` over the
+ * whole file cannot do this — the lazy match is free to run past the
+ * end of the handler it was meant to stop in, which is exactly how
+ * mutation M7 survived two earlier versions of the pin.
+ */
+const propHandlerBody = (prop: string): string => {
+  const start = dialogSource.indexOf(prop);
+  assert.ok(start >= 0, `${prop} must exist in the dialog source`);
+  const next = dialogSource.indexOf("\n        on", start + prop.length);
+  return dialogSource.slice(start, next < 0 ? start + 800 : next);
 };
 
 /** Escape a copy string for embedding in a RegExp — tooltips carry
@@ -123,24 +159,34 @@ const formProps = (overrides: Record<string, unknown> = {}) => ({
   t: tZh,
   presets: CATALOGUE,
   presetChoice: null as string | null,
+  apiFormat: "openai" as ProviderProtocol,
   custom: blankDialogCustom(),
   apiKey: "",
   revealed: false,
+  headers: [] as DialogHeaderRow[],
   entries: [] as DraftModel[],
   errors: [] as string[],
   busy: false,
   entryTests: {} as Record<number, never>,
   canTest: false,
+  formTest: null as EntryTestState | null,
+  skipTest: false,
   onPresetChoice: noop,
+  onApiFormat: noop,
   onCustomField: noop,
   onApiKey: noop,
   onRevealToggle: noop,
+  onHeaderChange: noop,
+  onHeaderAdd: noop,
+  onHeaderRemove: noop,
   onAddEntry: noop,
   onAutoFetch: noop,
   onEntryChange: noop,
   onEntryRemove: noop,
   onEntryReset: noop,
   onEntryTest: noop,
+  onFormTest: noop,
+  onSkipTestToggle: noop,
   onCancel: noop,
   onCommit: noop,
   ...overrides,
@@ -988,5 +1034,282 @@ describe("add-model dialog — bilingual keys", () => {
     assert.equal(translate("zh", "providers.dialog.apiKeyPlaceholder"), "请输入API Key");
     assert.equal(translate("zh", "providers.fetched.title"), "已获取模型");
     assert.equal(translate("zh", "providers.fetched.selectAll"), "全选");
+  });
+});
+
+
+// ---------------------------------------------------------------------
+// 7. Ticket 85 — the three desktop fields the local dialog was missing:
+//    「API 格式」, 「自定义 Headers」, and the footer 连通检测 /
+//    跳过连通检测 pair that gates 保存.
+//
+// The shell (antd Modal + state) is still out of reach of a static
+// render, so as above these are two layers: the CONTROLLED form surface
+// is rendered through `formProps` (the markup assertions), and each
+// stateful hand-off is pinned by an exact-literal source assertion
+// against `dialogSource` (the wiring assertions). Every pin names the
+// mutation it exists to catch; all were actually run — see
+// `.tickets/webui-parity/85-provider-modal-shell.md`.
+// ---------------------------------------------------------------------
+
+describe("add-model dialog — API 格式 (ticket 85)", () => {
+  test("the dropdown is rendered for EVERY provider, not just custom ones", () => {
+    // The regression this catches: moving the control back inside the
+    // 「其他（自定义）」 branch, where it was before this ticket.
+    for (const choice of [null, "zhipu", PRESET_CHOICE_CUSTOM]) {
+      const markup = render(
+        createElement(AddModelDialogForm, formProps({ presetChoice: choice })),
+      );
+      assert.ok(
+        markup.includes('data-testid="provider-dialog-api-format"'),
+        `API 格式 must render with presetChoice=${String(choice)}`,
+      );
+    }
+  });
+
+  test("it shows the desktop's labels over the three existing protocols", () => {
+    const markup = render(
+      createElement(
+        AddModelDialogForm,
+        formProps({ presetChoice: PRESET_CHOICE_CUSTOM, apiFormat: "anthropic" }),
+      ),
+    );
+    // antd renders a Select's options into a portal that a static
+    // render does not reach, so the VALUES are asserted from the
+    // constant and the LABELS from the dictionary.
+    assert.deepEqual(
+      API_FORMAT_OPTIONS.map((o) => o.value),
+      ["openai", "anthropic", "gemini"],
+      "the dropdown offers exactly the protocols this build supports",
+    );
+    assert.equal(translate("zh", "providers.dialog.apiFormat"), "API 格式");
+    assert.equal(
+      translate("zh", "providers.dialog.apiFormat.anthropic"),
+      "Anthropic Messages",
+    );
+  });
+
+  test("the old custom-branch protocol select is gone (one control, one value)", () => {
+    // Two controls bound to one value is how a preset branch and a
+    // custom branch end up disagreeing about what gets saved.
+    const markup = render(
+      createElement(
+        AddModelDialogForm,
+        formProps({ presetChoice: PRESET_CHOICE_CUSTOM }),
+      ),
+    );
+    assert.ok(
+      !markup.includes('data-testid="provider-dialog-custom-protocol"'),
+      "the duplicate protocol select must not come back",
+    );
+    assert.doesNotMatch(
+      dialogSource,
+      /protocol: custom\.protocol/,
+      "the commit path must read the top-level apiFormat, not a custom field",
+    );
+  });
+
+  test("picking a preset seeds the format from that preset", () => {
+    assert.match(
+      dialogSource,
+      /setApiFormat\(next\.protocol\)/,
+      "the preset's own protocol must seed the dropdown",
+    );
+  });
+});
+
+describe("add-model dialog — 自定义 Headers (ticket 85)", () => {
+  test("the section renders with the desktop's title and an add control", () => {
+    const markup = render(createElement(AddModelDialogForm, formProps()));
+    assert.ok(
+      markup.includes(translate("zh", "providers.dialog.headers")),
+      "the 自定义 Headers title renders",
+    );
+    assert.ok(
+      markup.includes('data-testid="provider-dialog-headers-add"'),
+      "the ＋ 添加 control renders even with zero rows",
+    );
+  });
+
+  test("zero rows render a placeholder, never a silently absent section", () => {
+    const empty = render(createElement(AddModelDialogForm, formProps()));
+    assert.ok(
+      empty.includes('data-testid="provider-dialog-headers-empty"'),
+      "an empty list is stated, not collapsed",
+    );
+    assert.ok(
+      !empty.includes('data-testid="provider-dialog-header-0"'),
+      "no phantom row",
+    );
+  });
+
+  test("each row is a name input, a value input and a remove control", () => {
+    const markup = render(
+      createElement(
+        AddModelDialogForm,
+        formProps({
+          headers: [{ name: "X-Tenant", value: "acme" }],
+        }),
+      ),
+    );
+    assert.ok(
+      markup.includes('data-testid="provider-dialog-header-0-name"'),
+      "the name input renders",
+    );
+    assert.ok(
+      markup.includes('data-testid="provider-dialog-header-0-value"'),
+      "the value input renders",
+    );
+    assert.ok(
+      markup.includes('data-testid="provider-dialog-header-0-remove"'),
+      "the row is removable",
+    );
+    // The name input carries the typed value, so a static render with
+    // props IS the round-trip proof for this field.
+    assert.match(
+      markup,
+      /data-testid="provider-dialog-header-0-name"[^>]*value="X-Tenant"/,
+      "the row renders the value it was given",
+    );
+  });
+
+  test("the remove control is named — an icon-only button needs a label", () => {
+    const markup = render(
+      createElement(
+        AddModelDialogForm,
+        formProps({ headers: [{ name: "X-Tenant", value: "acme" }] }),
+      ),
+    );
+    assert.ok(
+      markup.includes('aria-label="移除 Header X-Tenant"'),
+      "the trash button carries the header's name, not a bare glyph",
+    );
+  });
+
+  test("editing any header row invalidates the connectivity verdict", () => {
+    // Headers ride in the probe request. A verdict that survived an
+    // edit would be a pass for a request the provider never sees —
+    // and, worse, it is the verdict that unlocks 保存.
+    //
+    // Sliced by prop boundary, NOT by regex over the whole file. Two
+    // earlier attempts used a lazy `[\s\S]*?` that terminated on the
+    // NEXT handler's `setFormTest(null);` — mutation M7 stayed green
+    // through both of them while the invalidation was deleted outright.
+    // A lazy quantifier cannot express "before this handler ends".
+    for (const prop of ["onHeaderChange=", "onHeaderRemove="]) {
+      const body = propHandlerBody(prop);
+      assert.ok(
+        body.includes("setFormTest(null)"),
+        `${prop} must drop the form-level verdict`,
+      );
+      assert.ok(
+        body.includes("setEntryTests({})"),
+        `${prop} must drop the per-entry verdicts too — the headers are in their probe body`,
+      );
+    }
+  });
+
+  test("the commit path sends the collapsed header object, not the rows", () => {
+    assert.match(
+      dialogSource,
+      /const headerRecord = headerPairsToRecord\(headers\)/,
+      "the wire object is produced by the one shared helper",
+    );
+    assert.match(
+      dialogSource,
+      /headers: Object\.keys\(headerRecord\)\.length[\s\S]{0,400}?: \[\],/u,
+      "an empty header set lands as [], never as undefined",
+    );
+  });
+});
+
+describe("add-model dialog — footer 连通检测 / 跳过连通检测 (ticket 85)", () => {
+  test("保存 starts disabled and both lifters are present", () => {
+    const markup = render(createElement(AddModelDialogForm, formProps()));
+    assert.ok(
+      isDisabled(markup, "provider-dialog-save"),
+      "保存 is disabled before any verdict",
+    );
+    assert.ok(
+      markup.includes('data-testid="provider-dialog-skip-test"'),
+      "跳过连通检测 renders — the offline escape hatch",
+    );
+    assert.ok(
+      markup.includes('data-testid="provider-dialog-form-test"'),
+      "连通检测 renders",
+    );
+  });
+
+  test("a greyed 保存 states its reason — disabled is not dead", () => {
+    const markup = render(createElement(AddModelDialogForm, formProps()));
+    assert.ok(
+      markup.includes('data-testid="provider-dialog-save-blocked"'),
+      "the blocking reason is on screen, not left to be guessed",
+    );
+  });
+
+  test("a passing verdict enables 保存", () => {
+    const markup = render(
+      createElement(
+        AddModelDialogForm,
+        formProps({
+          canTest: true,
+          formTest: { status: "ok", latencyMs: 12 },
+        }),
+      ),
+    );
+    assert.ok(
+      !isDisabled(markup, "provider-dialog-save"),
+      "a passed probe unlocks 保存",
+    );
+    assert.ok(
+      !markup.includes('data-testid="provider-dialog-save-blocked"'),
+      "the blocking note clears once the probe passes",
+    );
+  });
+
+  test("a FAILED verdict keeps 保存 disabled and shows the error", () => {
+    const markup = render(
+      createElement(
+        AddModelDialogForm,
+        formProps({
+          canTest: true,
+          formTest: { status: "fail", error: "HTTP 401" },
+        }),
+      ),
+    );
+    assert.ok(
+      isDisabled(markup, "provider-dialog-save"),
+      "a failed probe must not unlock 保存",
+    );
+    assert.ok(
+      markup.includes("HTTP 401"),
+      "the server's reason is surfaced verbatim",
+    );
+  });
+
+  test("跳过连通检测 unlocks 保存 without a probe", () => {
+    const markup = render(
+      createElement(AddModelDialogForm, formProps({ skipTest: true })),
+    );
+    assert.ok(
+      !isDisabled(markup, "provider-dialog-save"),
+      "ticking 跳过连通检测 must be a real way to save",
+    );
+  });
+
+  test("both probes send the live headers", () => {
+    // One shared probe, so the footer button and each per-entry 检测
+    // cannot drift onto different request bodies.
+    assert.equal(
+      (dialogSource.match(/fetch\("\/api\/providers\/test"/g) ?? []).length,
+      1,
+      "there must be exactly one probe call site",
+    );
+    assert.match(
+      dialogSource,
+      /\.\.\.\(Object\.keys\(headerRecord\)\.length > 0 \? \{ headers: headerRecord \} : \{\}\)/,
+      "the probe body carries the collapsed headers",
+    );
   });
 });

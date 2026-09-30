@@ -38,6 +38,8 @@
    ┌──────────────────────────────────────────────────────────────────────┐
    │  server/router.js — declarative route table                          │
    │                                                                      │
+   │  Gate chain (Gates 1→5) live in server/lib/gates.js#runGates, which   │
+   │  router.js delegates to; both layers share it:                        │
    │  LAN guard: !isLocalRequest(req) && !getLanBroadcast() → 403         │
    │                                                                      │
    │  ┌─ static  ┐ ┌─ /api/health  ┐  ┌─ /api/state  ┐ ┌─ /api/sessions ┐ │
@@ -75,7 +77,7 @@
    │  mcode-session-delete · sessions · state-bus · acp-client         │
    │  mcode-rpc · mcode-acp · mcode-exec · chat-line · context-percent  │
    │  mavis-usage · usage · settings · upload · workspace · slash ·     │
-   │  static                                                           │
+   │  static · gates · auth · alerts · trajectory                       │
    └──────────────────────────────────────────────────────────────────────┘
                                   │                          ▲
                                   ▼                          │  JSON-RPC over stdio
@@ -179,7 +181,7 @@ sequenceDiagram
     participant A as acp.mjs (prompt callbacks)
     participant M as lib/mcode-acp.js<br/>streamAcpPrompt
     participant S as state-bus.js<br/>pushStateFor
-    participant B as Browser render.js<br/>parseChatLines → renderMessage
+    participant B as webapp/lib/transcript.ts<br/>decodeTranscript → components/chat.tsx
 
     loop per model chunk
         E-->>A: session/update agent_thought_chunk
@@ -223,7 +225,7 @@ Interactive surfaces and engine-side modules — who owns what:
 | **ask_user tool** | engine emits `ask_user` tool call | chat line `→ ask_user {json}` | modal with options/multi-select/Other; answer → `POST /api/send {isAskAnswer:true}` |
 | **Permission prompts** | engine requests approval for a tool call | permission events → modal (ask/auto/full) | answer forwarded on the send path |
 | **Plan mode** | `Plan:`-prefixed prompt → structured plan event | plan-review modal | agree / skip / add context → forwarded |
-| **Trajectory studio** | reads runtime SQLite projection (read-only) | `/api/trajectory/*` | `/trajectory/` panel (turns, tokens, compaction, subagents) |
+| **Trajectory studio** | reads runtime SQLite projection (read-only) | `/trajectory/api/*` (its own backend, `server/trajectory/http.mjs`) | `/trajectory/` panel (turns, tokens, compaction, subagents) |
 
 Round-trip for interactive prompts (ask_user / permission / plan):
 
@@ -285,7 +287,7 @@ flowchart TD
         K[("runtime-state.sqlite<br/>mcode engine sessions")]
     end
 
-    subgraph SIDEBAR["sidebar (renderSessions)"]
+    subgraph SIDEBAR["sidebar (webapp/components/session-tree.tsx)"]
         L["merge: mcode sessions (workspace-filtered)<br/>+ webui records, dedupe by mcodeSessionId<br/>kinds: mcode / webui-mcode / webui"]
     end
 
@@ -359,25 +361,37 @@ The chokepoint. Exports:
 
 | Function | Purpose |
 |---|---|
-| `getClient(cid)` | Returns the `clientState` object: `state`, `sse`, `activeChild`, `chatHistory`, `requestSeq`. Lazily creates on first call. |
-| `pushStateFor(cid, opts)` | Build a normalized `state` object and write it to `clientState.state`. Broadcasts to the SSE channel unless `opts.silent`. |
+| `getClient(cid)` | Returns the per-cid `clientState` object, created by `makeClientState()` and restored via `restoreLatestSession()` on first call. The object *is* the state — there is no `clientState.state` wrapper. The per-cid side tables live beside it, not inside it: `sseByCid` (SSE response per cid) and `activeChildByCid` (child process per cid). |
+| `pushStateFor(cid, opts)` | Build a normalized `state` object from `clientState` and broadcast it to the SSE channel unless `opts.silent`. |
 | `pushOnlineCount(lanBroadcast)` | Count `sseByCid.size` and broadcast to all clients. Called on connect/disconnect. |
 | `SSE_HEADERS` | Standard headers: `Content-Type: text/event-stream`, `Cache-Control: no-cache`, `Connection: keep-alive`, `X-Accel-Buffering: no`. |
 
-The `state` payload is documented in § 5 below. The `clientState.state`
+The `state` payload is documented in § 4 below. A `clientState`
 object is the **only** thing the rest of the codebase reads from.
 
-### `acp-client.js`
-Wraps mcode's JSON-RPC-over-stdio protocol. Exports:
+### `acp.mjs` and `acp-client.js`
+Two distinct files, and the split matters when you grep for a symbol:
 
-- `McodeAcpClient` class — `start()`, `request(method, params)`,
-  `notify(method, params)`, `stop()`, `events` EventEmitter.
-- `getMcodeAcpClient()` — process-wide singleton. Init is
-  `pInitPromise` de-duplicated so concurrent `start()` callers share a
-  single subprocess.
-- Cache: `mcodeSessionsCache` (in `acp-client.js`) and
-  `getCachedMcodeCommands()` (in `state-bus.js`) avoid
-  repeated JSON-RPC round-trips for `session/list` and
+- `acp.mjs` (at the package root, `packages/webui/acp.mjs`) is the
+  zero-dependency JSON-RPC-over-stdio transport. It **defines**
+  `class McodeAcpClient` — `start()`, `request(method, params)`,
+  `notify(method, params)`, `stop()`, `events` EventEmitter — and
+  answers every engine→client request.
+- `server/lib/acp-client.js` is the webui-side cache and lifecycle
+  wrapper *around* that transport. It imports `McodeAcpClient` from
+  `acp.mjs`; it does not define or re-export it. Its own exports:
+  `getMcodeAcpClient()` — the process-wide singleton, whose init is
+  de-duplicated by the module-level `_mcodeAcpInitPromise` so
+  concurrent callers share one subprocess — plus
+  `getCatalogueHost()`, `listAllMcodeSessions()`,
+  `getMcodeSessionsForWorkspace()`, `getMcodeSessionTitle()`,
+  `invalidateMcodeSessionsCache()`, `shutdownMcodeAcpSingleton()`,
+  `getMcodeServerInfo()`, `WEBUI_LOCAL_COMMANDS`, and
+  `ensureMcodeCommands()`.
+- Cache: `mcodeSessionsCache` and `getCachedMcodeCommands()` are both
+  module state of `acp-client.js`. `state-bus.js` only *imports*
+  `getCachedMcodeCommands()` when it builds a snapshot. Both caches
+  avoid repeated JSON-RPC round-trips for `session/list` and
   `session/commands`.
 
 ### `mcode-rpc.js`
@@ -435,10 +449,17 @@ is anything other than `Full access` (the first branch of
 opt-in; `mcode-rpc.js` does not select transports — it only talks to
 whatever child is currently registered.
 
-Both expose:
-- `runMcode(content, opts)` → `AsyncGenerator<NormalizedEvent>`
-- `stopExec()` → `void`
-- `isRunning()` → `boolean`
+Each exposes one entry point, named after its transport:
+- `mcode-acp.js` → `runMcodeAcp(content, opts)` → `AsyncGenerator<NormalizedEvent>`
+- `mcode-exec.js` → `runMcodeExec(content, opts)` → `AsyncGenerator<NormalizedEvent>`
+
+> **Removed symbols.** Earlier revisions of this section documented a shared
+> triple — `runMcode(content, opts)`, `stopExec()` and `isRunning()` — as
+> exported by both transports. None of the three exists any more. The single
+> entry point was split per transport, and the stop and status questions are
+> answered elsewhere: cancellation goes through `mcode-rpc.js#cancelSession`,
+> and run status is read off the `running` field of the per-cid `clientState`.
+> There is no rename you can follow here — these are gone, not moved.
 
 `NormalizedEvent` is a tagged union (`{type, …}`) with these types:
 `state`, `chat`, `delta`, `tool`, `permission`, `plan`, `ask`,
@@ -465,7 +486,7 @@ done \| stopped`) is a projection-layer product, not a stored value; webui does
 not import it but adopts the same shape. Unknown future statuses render as
 `idle`, never a false `running`.
 
-## 4. The `clientState.state` payload
+## 4. The `clientState` payload
 
 This is the shape every SSE `state` event contains. The webui mirrors
 it 1:1 into the `state` JS variable.
@@ -487,12 +508,11 @@ it 1:1 into the `state` JS variable.
            ctx: string,            // e.g. "512k"
            thinking: 'On'|'Off'|string },
   permissions: string,             // mcode-side: 'ask'|'auto'|'full'|'plan'|...
-  commands: Array<{                // mcode slash commands
-    cmd: string, zh: string, en: string,
-    description_zh?: string, description_en?: string,
-    hint?: string,
-    input_hint?: string,
-    destructive?: boolean }>,
+  availableCommands: Record<        // mcode slash commands, grouped
+    string,                         //   e.g. { mcode: [{name, description}, …] }
+    Array<{ name: string,
+            description?: string }>  // the composer flattens this to a name[] palette
+  >,
   sessions: Array<{                // webui-side session list (merged w/ mcode)
     id: string,
     title: string,
@@ -707,10 +727,11 @@ another thing the user had to install or whose absence could silently break
 the plugin; the safe answer was "no dependencies at all". That reasoning no
 longer holds: the webui is now an in-tree workspace member with a build step,
 its server is produced by `scripts/build.mjs` as `dist/webui/server.js`, and
-the published archive (`scripts/lib/cli-release.mjs` + `releaseManifest`) pins
-every external module. The cost of a hand-copied implementation is now higher
-than the cost of importing a real package, because the copy cannot be checked
-by the build pipeline.
+the published archive pins every external module: `cliExternalModules` in
+`scripts/lib/cli-release.mjs` lists the allow-list, and `releaseManifest()`
+in `scripts/package-cli-release.mjs` builds the manifest itself. The cost of
+a hand-copied implementation is now higher than the cost of importing a real
+package, because the copy cannot be checked by the build pipeline.
 
 The "no bundling" comment in `scripts/build.mjs` is owned by workstream 1 and
 will be removed when its bundle entry point lands. This document is the
@@ -724,7 +745,7 @@ stale.
 | mcode acp subprocess crashes | `child.on('exit')` listener | pushStateFor with `running.active=false`; client shows "agent stopped" toast |
 | mcode acp returns "Method not found" | `mcode-rpc.js` whitelist | returns `{ok:false, code:'unsupported'}` synchronously; route handler returns 501 Not Implemented; client shows toast |
 | SSE connection drops | `EventSource.onerror` | auto-reconnect with backoff; on reconnect, fetch `/api/state` and resync |
-| LAN request from a non-whitelisted IP | `router.js` L120 | 403 + friendly HTML page (or JSON for /api/*) |
+| LAN request from a non-whitelisted IP | `server/lib/gates.js#runGates` (called from `router.js`) | 403 + friendly HTML page (or JSON for /api/*) |
 | Server out of file descriptors | `installGlobalErrorHandlers` EMFILE sink | written to `.server.err`; user sees an empty page; reload usually fixes it |
 | mcode exec encoding is GBK (Windows) | Node defaults to UTF-8 in `spawn`; no fix needed | documented in README as a pitfall for future Python ports |
 
@@ -733,15 +754,21 @@ stale.
 The pattern (see `docs/DEVELOPMENT.md` for the full walk-through):
 
 1. Create `server/routes/foo.js`, export `async function handleFoo(req, res, ctx, pathname)`
-2. Import in `server/router.js`
-3. Add to the routes table:
-   ```js
-   { method: 'POST', match: (p) => p === '/api/foo', handler: fooRoute.handleFoo }
-   ```
-4. If the new endpoint mutates state, call `pushStateFor(cid, {...})` from
-   the handler. Never write to `clientState.state` directly.
-5. If the endpoint is invoked by the webui, add it to the fetch helper in
-   `packages/webui/webapp/lib/api.ts` (`API_SUFFIX` is automatically appended).
+2. Register it — with the layer that owns it today:
+   - Most endpoints are **Hono-owned**. Add the `METHOD /api/foo` literal to
+     `OWNED_ROUTES` in `server/app.js` and wire `app.post("/api/foo", …)`
+     there. `OWNED_ROUTES` is the ledger of what Hono serves.
+   - The legacy `ROUTES` table in `server/router.js` still owns a small set
+     (`/api/health`, `GET /api/events`, `GET /api/alerts`, `POST
+     /api/settings`) plus the static and `/trajectory/` handling. Add a
+     `{ method, match, handler }` entry only if the endpoint belongs there.
+3. If the new endpoint mutates state, call `pushStateFor(cid, {...})` from
+   the handler. Never write to the `clientState` object directly.
+4. If the endpoint is invoked by the webui, add a typed method to
+   `packages/webui/webapp/lib/api.ts`. It builds the request through the
+   local `request()` helper, which appends the `cid` query parameter
+   itself; there is no `API_SUFFIX` constant — earlier revisions of this
+   document named one, and it has been removed.
 
 ## 10. Future directions
 

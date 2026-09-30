@@ -1068,13 +1068,17 @@ walker runs.
 
 ### `GET /api/git/status?dir=<workspace>`
 
-Workspace status for the panel header. `dir` is required.
+Workspace status for the panel header and the conversation toolbar's
+version badge. `dir` is required.
 
 `status --porcelain=v1 -b` gives a deterministic stream: one header
 line (`## <branch>[...<upstream>] [ahead N, behind M]`) followed by
 the per-file entries. The route parses both halves; a detached HEAD
 or a branch with no upstream simply produces a `null` upstream /
-zero ahead/behind without an error.
+zero ahead/behind without an error. A second `git log -1` runs
+concurrently against the same already-gated `dir` for the two HEAD
+identity fields below, so the route still costs one `git` round trip
+in wall-clock terms.
 
 **Response 200**
 ```json
@@ -1085,6 +1089,8 @@ zero ahead/behind without an error.
   "upstream": "origin/feat/git-panel",
   "ahead": 0,
   "behind": 0,
+  "headSha": "0e99b45",
+  "headCommittedAt": "2026-10-01T09:12:33+08:00",
   "files": [
     { "x": "M", "y": " ", "path": "README.md", "origPath": null, "staged": true },
     { "x": "?", "y": "?", "path": "untracked.txt", "origPath": null, "staged": false }
@@ -1097,6 +1103,22 @@ zero ahead/behind without an error.
 (includes `M`, `A`, `D`, `R`, `C` in the index position). Renames
 carry `origPath` (the pre-rename path) alongside `path` (the new
 path). `isRepo:false` answers a non-git directory without an error.
+
+| Field | Meaning |
+| --- | --- |
+| `headSha` | `git log -1 --format=%h` — the abbreviated commit id at **git's own** abbreviation length (7 by default, longer where 7 would be ambiguous). Consumers must not hard-code 7. |
+| `headCommittedAt` | `git log -1 --format=%cI` — HEAD's **committer** time, strict ISO 8601. Committer, not author: a rebase, amend or cherry-pick moves the committer time forward while the author time stays at the original write, so the author time would report a freshly rebased branch as months old. |
+
+A repository with an unborn HEAD (`git init`, nothing committed yet)
+answers `ok:true, isRepo:true` with `headSha: null` and
+`headCommittedAt: null` — the workspace is a healthy repository, it
+simply has no commit to name. A directory that is not a repository at
+all omits both fields entirely, and so does a `dir` the containment
+gate refuses, which lets the toolbar's version badge treat "absent or
+null" as a single "render nothing" case.
+
+A detached HEAD still reports `headSha`; `branch` is `null` and the
+badge shows the sha alone.
 
 **Errors** — 400 missing `dir`; the body is `{ok:false, error}` and
 the status stays `200` (the panel reads `ok` rather than the HTTP

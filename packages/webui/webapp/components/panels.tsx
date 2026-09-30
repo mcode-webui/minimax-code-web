@@ -426,7 +426,7 @@ export function FilesPanel({
    *  pins. */
   onOpenFile: (path: string) => void;
 }) {
-  const { state } = useSessionContext();
+  const { state, workspaceRevision } = useSessionContext();
   const workspaceDir = state?.workspace.dir ?? "";
 
   // Slice 19b follow-up — sidebar 搜索 → click → reveal. The
@@ -895,6 +895,28 @@ export function FilesPanel({
     void fetchNode(workspaceDir, { force: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showHidden]);
+
+  // webui-parity 83 — a turn-diff revert / reapply rewrote real files on
+  // disk, and the server says so with a `workspace-files-changed` frame
+  // (nothing in the state snapshot reflects a file's content). Re-read the
+  // root and every directory the user has expanded, with `force` so a cached
+  // node cannot answer with the pre-revert listing. Collapsed directories are
+  // left alone: their listing is re-read the moment the user opens them.
+  //
+  // `expanded` is read through a ref rather than listed as a dep: the effect
+  // is keyed on the revision alone, and the ref keeps a concurrent
+  // expand/collapse from re-running the whole sweep.
+  const expandedRef = useRef<readonly string[]>(expanded);
+  expandedRef.current = expanded;
+  useEffect(() => {
+    if (!workspaceDir) return;
+    void fetchNode(workspaceDir, { force: true });
+    for (const path of expandedRef.current) {
+      if (path === workspaceDir) continue;
+      void fetchNode(path, { force: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspaceDir, workspaceRevision]);
 
   // Expand / collapse handlers. Both are no-ops if the path is
   // already in the requested state — a redundant setState would
@@ -1763,7 +1785,7 @@ function baseName(path: string): string {
  * than showing a red toast.
  */
 export function GitPanel({ t }: { t: (key: MessageKey) => string }) {
-  const { state } = useSessionContext();
+  const { state, workspaceRevision } = useSessionContext();
   const workspaceDir = state?.workspace.dir ?? "";
 
   const [status, setStatus] = useState<api.GitStatusPayload | null>(null);
@@ -1815,12 +1837,26 @@ export function GitPanel({ t }: { t: (key: MessageKey) => string }) {
   // Re-fetch on workspace change + manual refresh. The status helper
   // itself does not poll — the panel only refreshes on user request
   // (the Refresh button) or when the workspace dir changes.
+  //
+  // webui-parity 83 adds one more trigger: a turn-diff revert / reapply
+  // rewrote the working tree, so the staged/unstaged view the panel shows is
+  // now wrong and nothing in the state snapshot would ever say so. The
+  // selected-file diff is closed rather than re-read — a revert can delete
+  // the file it was showing, and a diff of a missing file would be a blank
+  // panel claiming there was nothing to see.
   useEffect(() => {
     void refreshStatus();
     setSelectedFile(null);
     setDiff(null);
     setSwitchResult(null);
   }, [refreshStatus]);
+
+  useEffect(() => {
+    void refreshStatus();
+    setSelectedFile(null);
+    setDiff(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspaceRevision]);
 
   const loadDiff = useCallback(
     async (file: string) => {

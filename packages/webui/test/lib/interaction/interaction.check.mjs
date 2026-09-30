@@ -24,6 +24,14 @@ const TEST_DIR = dirname(fileURLToPath(import.meta.url));
 const SERVER_DIR = resolve(TEST_DIR, "..", "..", "..", "server");
 const absPath = (rel) => pathToFileURL(resolve(SERVER_DIR, rel)).href;
 
+// The webui half of the command cache, as a real array. The stub below used to
+// hand-write these seven entries; it was a third copy of the /api/cmd command
+// set and had already missed `/review`, which made the /help assertion below
+// pass against a list the server never ships. The registry is the declaration.
+const { CMD_BUTTON_COMMANDS } = await import(
+  absPath("lib/interaction/command-registry.js")
+);
+
 // In-memory sessions store — mirrors the _setup.js mock for sessions.
 let _sessionsStore = [];
 function _save(arr) { _sessionsStore = [...arr]; }
@@ -63,15 +71,7 @@ before(async (t) => {
     namedExports: {
       ensureMcodeCommands: async () => ({
         mcode: [{ name: "exec", description: "exec" }],
-        webui: [
-          { name: "new", desc: "新建会话" },
-          { name: "clear", desc: "清空当前对话" },
-          { name: "status", desc: "查看当前状态" },
-          { name: "sessions", desc: "查看最近会话" },
-          { name: "help", desc: "可用命令" },
-          { name: "usage", desc: "查询用量" },
-          { name: "stop", desc: "停止当前任务" },
-        ],
+        webui: CMD_BUTTON_COMMANDS,
         fetchedAt: 1,
         source: "test-stub",
       }),
@@ -247,6 +247,22 @@ describe("commands.handleLocalSlash — text-typed slash", () => {
     const joined = cs.chat.join("\n");
     assert.ok(joined.includes("/new"));
     assert.ok(joined.includes("/exec"));
+  });
+
+  test("/help lists every /api/cmd command, with its desc", async () => {
+    // The user-visible half of the drift this file's stub used to hide: the
+    // command table /help prints must be the table POST /api/cmd accepts. A
+    // cache entry the server does not ship, or one that lost a command, fails
+    // here. /review is the command the old stub had already dropped.
+    const before = cs.chat.length;
+    await commands.handleLocalSlash("/help", cs, "cid-1");
+    const printed = cs.chat.slice(before).join("\n");
+    for (const command of CMD_BUTTON_COMMANDS) {
+      assert.ok(
+        printed.includes(`/${command.name} — ${command.desc}`),
+        `/help must offer /${command.name} with its registry desc`,
+      );
+    }
   });
 
   test("unknown /cmd falls through to mcode", async () => {

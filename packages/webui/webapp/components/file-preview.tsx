@@ -31,6 +31,7 @@ import {
 } from "@/lib/preview-edit";
 import { MarkdownToc } from "@/components/markdown-toc";
 import { tPreviewToolbar } from "@/lib/i18n-preview-toolbar";
+import { useSession } from "@/lib/store";
 import {
   classifyUnsupported,
   type UnsupportedReason,
@@ -119,6 +120,14 @@ export function FilePreview({
   const [payload, setPayload] = useState<FsFilePayload | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // webui-parity 83 — a turn-diff revert / reapply rewrote files on disk.
+  // Nothing in the state snapshot carries a file's content, so the preview
+  // re-reads off the `workspace-files-changed` counter through the SAME
+  // refresh channel the ↻ button uses: scroll position preserved, a deleted
+  // file reported as a named banner rather than a blank pane, and a dirty
+  // draft left alone (its baseline stays the version it was seeded from, so
+  // the save still conflict-checks).
+  const { workspaceRevision } = useSession();
   // Slice 27 — toolbar state.
   const [mode, setMode] = useState<"preview" | "edit">("preview");
   const [draft, setDraft] = useState<string | null>(null);
@@ -230,6 +239,15 @@ export function FilePreview({
     // initial read must run once per path, hence the separate effect.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [path]);
+
+  // Files on disk changed under us. Keyed on the revision alone — `load`
+  // changes identity with `draft`, and re-reading on every keystroke would
+  // fight the user's own typing.
+  useEffect(() => {
+    if (workspaceRevision === 0) return;
+    void load({ isRefresh: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspaceRevision]);
 
   // Restore the persisted scroll position. The restore fires
   // once per mount / file switch: after the body has had a chance

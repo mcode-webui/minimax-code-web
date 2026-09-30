@@ -201,7 +201,7 @@ Status legend: ✅ wired · ⚠ partial / path differs · ❌ no path · 🚧 re
 
 | Command | TUI | Web UI | Notes |
 | --- | --- | --- | --- |
-| `/help` | ✅ | ✅ | Web UI: `bodyHelp` lists webui-local + acp pass-through; falls back to `LOCAL_HELP_FALLBACK` if `ensureMcodeCommands()` is still pending. |
+| `/help` | ✅ | ✅ | Web UI: `bodyHelp` lists webui-local + acp pass-through; the webui-local half is `command-registry.js#CMD_BUTTON_COMMANDS` on both the live and the fallback path, so it matches what `POST /api/cmd` accepts. `LOCAL_HELP_FALLBACK` covers the window before `ensureMcodeCommands()` has returned. |
 | `/new` | ✅ | ✅ | Web UI: B03 authorize gate (`slash.clear`); clears chat and rebinds the session. |
 | `/clear` | ✅ | ✅ | Web UI: B03 authorize gate; clears chat without touching mcode. |
 | `/status` | ✅ | ✅ | Web UI: `bodyStatus` prints account / model / quota via `runUsageQuery`. |

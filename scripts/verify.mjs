@@ -40,6 +40,19 @@ const preview = path.join(temporary ?? tmpdir(), "minimax-code-source.tar.gz");
 const steps = [
   { name: "check:source", script: "check:source", docs: true, windows: true },
   { name: "check:tsconfig", script: "check:tsconfig", docs: true, windows: true },
+  // Documentation-vs-code alignment: capability names, registered endpoints,
+  // env vars exported by config.js, and the symbol→file citations in
+  // docs/ARCHITECTURE.md + its zh-CN mirror. Ticket 95 measured a 24%
+  // distortion rate on those citations, so they are now checked rather than
+  // trusted. It was previously reachable only via `pnpm --filter @mavis/webui
+  // check`, i.e. by nothing that runs on a change — a gate nobody invokes
+  // prevents no drift.
+  {
+    name: "check:docs-alignment",
+    docs: true,
+    windows: true,
+    command: ["packages/webui/scripts/check-docs-alignment.mjs"],
+  },
   {
     name: "export source preview",
     docs: true,

@@ -1,7 +1,7 @@
 "use client";
 
 import { ConversationUsageBanner, type ConversationUsageNotice } from "./conversation-usage-banner";
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState, Fragment } from "react";
 
 import { renderMarkdown } from "@/lib/markdown";
 import { MarkdownHtml } from "./markdown-html";
@@ -14,11 +14,17 @@ import {
   type TranscriptBlock,
 } from "@/lib/transcript";
 import { Icon } from "./icons";
-import { useChatVirtualization } from "./chat-virtual-list";
+import { useChatTailFollow, useChatVirtualization } from "./chat-virtual-list";
 import { ActivityPulse, isSessionActivityActive } from "./loading-states";
 import { ActivityGroup, TurnProcessDisclosure, assignActivityBlockKeys } from "./activity-group";
-import { collectEditedFiles } from "@/lib/edited-files";
+import {
+  collectEditedFilesByTurn,
+  isTurnTailUnit,
+  resolveEditedFiles,
+  turnCoordinatesByTurn,
+} from "@/lib/edited-files";
 import { EditedFilesCard } from "./edited-files-card";
+import { useTurnDiffs } from "@/lib/turn-diff";
 import {
   computeTurnLayout,
   computeTurnStatsByUnit,
@@ -222,12 +228,31 @@ export function Chat({
     });
   }, []);
 
-  // Ticket 77 — the 「已编辑 N 个文件」 card's data. Derived from the FULL
-  // `units` list, not the virtualized window: the card is a turn-level footer,
-  // so it must not appear or vanish as the user scrolls the window past 200
-  // units. `collectEditedFiles` returns only paths this turn's edit tools
-  // actually named, and an empty list means the card is not rendered at all.
-  const editedFiles = useMemo(() => collectEditedFiles(units), [units]);
+  // Webui-parity 83 — the 「已编辑 N 个文件」 card, once per TURN.
+  //
+  // Two sources, one authority per turn: the transcript's own scan of which
+  // paths a turn's edit tools named, and the engine's record for that turn
+  // (real `+N` / `-N`, and the `canUndo` / `canReapply` gates). The record is
+  // selected by the turn's `assistantMessageId` — the value the engine itself
+  // persisted the turn under — and NEVER by a turn ordinal, because the
+  // engine's selector silently falls back to the session's latest turn when
+  // handed no id, which would put another turn's numbers under this card.
+  //
+  // A turn with no coordinate (recorded before the marker shipped, read
+  // through the legacy probe, run over the exec transport) is never queried
+  // and keeps the ticket-77 path-only card: no counts, no buttons.
+  const turnCoordinates = useMemo(
+    () => turnCoordinatesByTurn(units, turnIndexByUnit),
+    [units, turnIndexByUnit],
+  );
+  const { diffs, errors, busy, revert, reapply } = useTurnDiffs(
+    state?.mcodeSessionId ?? null,
+    turnCoordinates,
+  );
+  const scannedFilesByTurn = useMemo(
+    () => collectEditedFilesByTurn(units, turnIndexByUnit),
+    [units, turnIndexByUnit],
+  );
 
   // Windowed rendering: above VIRTUAL_LIST_THRESHOLD (200) units we slice the
   // transcript to a visible window around the user's scroll position. The hook
@@ -242,11 +267,23 @@ export function Chat({
     [units, virtWindow.useVirtual, virtWindow.startIdx, virtWindow.endIdx],
   );
 
+  // Ticket 88 — the tail follow. Everything above positions the transcript
+  // when a session opens; nothing here moved the container while a turn was
+  // running, so the assistant body was laid out below the fold and the reader
+  // watched 「思考中」 until the turn settled. `units` is the revision: its
+  // identity changes on every SSE frame, so the pin re-applies as the last
+  // block grows. `sessionKey` re-measures the follow on session change.
+  const { followNow } = useChatTailFollow(scrollerRef, units, sessionKey);
+
   const scrollToBottom = useCallback(() => {
     const el = scrollerRef.current;
+    // Re-arm the tail follow first: a reader who clicked this has said they
+    // want the live tail back, and the pin alone would not re-arm — it only
+    // re-arms on a position reading, which the scroll below is about to change.
+    followNow();
     if (!el) return;
     el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
-  }, []);
+  }, [followNow]);
 
   // Webui-parity 07 — scroll position save (additive; slice 12 owns
   // this file). The page supplies `onScrollPersist`; we forward every
@@ -287,6 +324,7 @@ export function Chat({
   //      settle before jumping, otherwise the scroller clamps a too-
   //      large scrollTop to its (smaller) scrollHeight and ends up at
   //      the bottom.
+  //   3. A turn starts or ends — see the gate below.
   //
   // The persisted position is read from localStorage on every session
   // id change, NOT from the `initialScrollTop` useState initializer,
@@ -311,6 +349,23 @@ export function Chat({
 
   useEffect(() => {
     if (typeof window === "undefined") return;
+    // Ticket 88 — the restore does not run while a turn is live. Two owners
+    // for one scroll offset is the bug this gate removes.
+    //
+    // `initialScrollTop` is re-read from storage by the page on every render,
+    // so the effect above re-arms `restoredRef` each time the persisted value
+    // moves — including moves the tail follow itself caused. The restore then
+    // dragged the container back to the debounced persisted value one frame
+    // after the follow had pinned it, and the follow read that reverse drag as
+    // the reader scrolling away and switched itself off. Measured on the dev
+    // instance: the follow pinned to 342, the restore pulled it back to 263,
+    // and the answer was stranded below the fold for the rest of the turn.
+    //
+    // Reopening a SETTLED session is unaffected — that is the case the restore
+    // exists for, and `sessionRunning` is false there. When a turn ends the
+    // effect runs once more, and the target it reads is the position the
+    // reader (or the follow) actually left behind, so the jump is a no-op.
+    if (sessionRunning) return;
     const target = targetScrollRef.current;
     if (target === null) return;
     if (restoredRef.current === sessionKey) return;
@@ -323,7 +378,7 @@ export function Chat({
       restoredRef.current = sessionKey ?? null;
     });
     return () => window.cancelAnimationFrame(raf);
-  }, [units.length, sessionKey]);
+  }, [units.length, sessionKey, sessionRunning]);
 
   // The action row lives ONCE at the tail of the transcript, not inside every
   // block. It reveals when the chat has any assistant content AND the session
@@ -350,7 +405,7 @@ export function Chat({
       <div className="relative h-full w-full flex-1 overflow-visible">
         <div
           ref={scrollerRef}
-          className="scrollbar-hide relative h-full w-full overflow-x-hidden overflow-y-scroll"
+          className="chat-scroll scrollbar-hide relative h-full w-full overflow-x-hidden overflow-y-scroll"
         >
           {/* Slice 25 — measure cap lives on the CONTENT, not the
               column. The column absorbs all leftover (no ceiling);
@@ -396,30 +451,56 @@ export function Chat({
                 : localIndex;
               const turnIndex = turnIndexByUnit[originalIndex] ?? 0;
               const turnExpanded = turnProcessExpanded.get(turnIndex);
-              return unit.kind === "activity" ? (
-                <ActivityGroup
-                  key={originalIndex}
-                  blocks={unit.blocks}
-                  blockKeys={activityBlockKeys.get(originalIndex)}
-                  summary={unit.summary}
+              // The turn's card hangs off its LAST unit, so it renders as the
+              // turn's footer rather than one card for the whole transcript.
+              const turnFiles = isTurnTailUnit(turnIndexByUnit, originalIndex)
+                ? resolveEditedFiles(scannedFilesByTurn.get(turnIndex) ?? [], diffs.get(turnIndex))
+                : [];
+              const card = turnFiles.length > 0 ? (
+                <EditedFilesCard
+                  key={`edited-files-${turnIndex}`}
+                  files={turnFiles}
                   t={t}
                   onOpenFile={onOpenFile}
-                  streaming={originalIndex === streamingActivityIndex}
-                  startedAtMs={runningStartedAt}
-                  expanded={turnExpanded}
-                  onExpandedChange={turnExpanded === undefined ? undefined : (next) => setTurnExpanded(turnIndex, next)}
+                  canUndo={diffs.get(turnIndex)?.canUndo === true}
+                  canReapply={diffs.get(turnIndex)?.canReapply === true}
+                  onUndo={turnCoordinates.has(turnIndex) ? () => void revert(turnIndex) : undefined}
+                  onRedo={turnCoordinates.has(turnIndex) ? () => void reapply(turnIndex) : undefined}
+                  busy={busy.has(turnIndex)}
+                  error={errors.get(turnIndex) ?? null}
                 />
-              ) : (
-                <Block
-                  key={originalIndex}
-                  block={unit.block}
-                  t={t}
-                  turnStats={turnStatsByUnit.get(originalIndex)}
-                  turnIndex={turnIndex}
-                  turnProcessExpanded={turnExpanded}
-                  turnProcessDefaultExpanded={defaultExpandedByTurn.get(turnIndex) ?? true}
-                  onTurnProcessExpandedChange={setTurnExpanded}
-                />
+              ) : null;
+              return (
+                // The unit's container is the Fragment, because a turn's card
+                // (webui-parity 83) renders after the unit itself. Its key
+                // stays the ORIGINAL unit index, so React keeps the same DOM
+                // nodes when the virtual window shifts.
+                <Fragment key={originalIndex}>
+                  {unit.kind === "activity" ? (
+                    <ActivityGroup
+                      blocks={unit.blocks}
+                      blockKeys={activityBlockKeys.get(originalIndex)}
+                      summary={unit.summary}
+                      t={t}
+                      onOpenFile={onOpenFile}
+                      streaming={originalIndex === streamingActivityIndex}
+                      startedAtMs={runningStartedAt}
+                      expanded={turnExpanded}
+                      onExpandedChange={turnExpanded === undefined ? undefined : (next) => setTurnExpanded(turnIndex, next)}
+                    />
+                  ) : (
+                    <Block
+                      block={unit.block}
+                      t={t}
+                      turnStats={turnStatsByUnit.get(originalIndex)}
+                      turnIndex={turnIndex}
+                      turnProcessExpanded={turnExpanded}
+                      turnProcessDefaultExpanded={defaultExpandedByTurn.get(turnIndex) ?? true}
+                      onTurnProcessExpandedChange={setTurnExpanded}
+                    />
+                  )}
+                  {card}
+                </Fragment>
               );
             })}
             {virtWindow.useVirtual && virtWindow.bottomSpacer > 0 ? (
@@ -454,12 +535,10 @@ export function Chat({
                 />
               </div>
             ) : null}
-            {/* Ticket 77 (G3) — the turn's last block, matching where the
-                desktop puts the 「已编辑 N 个文件」 card. Derived from the full
-                unit list, so it is stable under virtual scrolling. */}
-            {editedFiles.length > 0 ? (
-              <EditedFilesCard files={editedFiles} t={t} onOpenFile={onOpenFile} />
-            ) : null}
+            {/* Webui-parity 83 moved the 「已编辑 N 个文件」 card from the end of
+                the whole transcript to the end of each turn, where the desktop
+                puts it; see the render loop above. The trailing message-action
+                row stays last. */}
           </div>
         </div>
 

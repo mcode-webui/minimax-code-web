@@ -77,6 +77,19 @@ export interface StoreSnapshot {
    * response handling consistent across the app.
    */
   treeRevision: number;
+  /**
+   * webui-parity 83 — the files on disk changed. Bumped on every
+   * `workspace-files-changed` frame, which the server emits after a turn-diff
+   * revert / reapply rewrote real workspace files. Three consumers listen:
+   * the file tree re-reads every expanded directory, the open file preview
+   * re-reads through its refresh channel, and the git panel re-reads status.
+   *
+   * A separate counter from `treeRevision` on purpose: the session tree lists
+   * SESSIONS, this one lists FILES. Sharing a counter would make an unrelated
+   * subagent row re-read the whole file tree, and a revert re-read the
+   * sidebar.
+   */
+  workspaceRevision: number;
 }
 
 const INITIAL: StoreSnapshot = {
@@ -91,6 +104,7 @@ const INITIAL: StoreSnapshot = {
   providersRevision: 0,
   stateRevision: -1,
   treeRevision: 0,
+  workspaceRevision: 0,
 };
 
 let snapshot: StoreSnapshot = INITIAL;
@@ -175,6 +189,12 @@ export function __testApplyAction(action: SseAction | { kind: "connected"; value
       // The masked payload carried by the SSE frame is NOT stored — the
       // consumers re-read through the typed API client.
       setSnapshot({ treeRevision: snapshot.treeRevision + 1 });
+      return snapshot;
+    case "workspace-files-changed":
+      // webui-parity 83: a revert rewrote workspace files. Nothing in the
+      // state snapshot reflects that, so the file tree / preview / git panel
+      // are driven off this counter instead.
+      setSnapshot({ workspaceRevision: snapshot.workspaceRevision + 1 });
       return snapshot;
     case "malformed":
       setSnapshot({ error: `malformed ${action.event || "message"} frame` });
@@ -279,6 +299,9 @@ export function connect(): () => void {
           // re-fetches. The server fires this on every subagent row
           // insertion (applyToolUpdate → recordSubagentForCid).
           setSnapshot({ treeRevision: snapshot.treeRevision + 1 });
+          break;
+        case "workspace-files-changed":
+          setSnapshot({ workspaceRevision: snapshot.workspaceRevision + 1 });
           break;
         case "malformed":
           setSnapshot({ error: `malformed ${action.event || "message"} frame` });

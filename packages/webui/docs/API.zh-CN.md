@@ -1008,12 +1008,15 @@ git 端点驱动右栏 Git 面板（slice 03 ——
 
 ### `GET /api/git/status?dir=<workspace>`
 
-面板头部用的工作区状态。`dir` 必填。
+面板头部与会话标题栏版本标识用的工作区状态。`dir` 必填。
 
 `status --porcelain=v1 -b` 给出确定性输出：一行头部
 （`## <branch>[...<upstream>] [ahead N, behind M]`），随后是逐
 文件条目。路由解析两半；detached HEAD 或没有 upstream 的分支
-只是得到 `null` upstream 与 0 ahead/behind，不算错误。
+只是得到 `null` upstream 与 0 ahead/behind，不算错误。下面两个
+HEAD 身份字段由第二次 `git log -1` 提供，它与上面这次查询并发
+执行、且跑在同一个已过闸的 `dir` 上，因此整条路由的墙钟耗时
+仍是一次 git 往返。
 
 **响应 200**
 ```json
@@ -1024,6 +1027,8 @@ git 端点驱动右栏 Git 面板（slice 03 ——
   "upstream": "origin/feat/git-panel",
   "ahead": 0,
   "behind": 0,
+  "headSha": "0e99b45",
+  "headCommittedAt": "2026-10-01T09:12:33+08:00",
   "files": [
     { "x": "M", "y": " ", "path": "README.md", "origPath": null, "staged": true },
     { "x": "?", "y": "?", "path": "untracked.txt", "origPath": null, "staged": false }
@@ -1036,6 +1041,21 @@ git 端点驱动右栏 Git 面板（slice 03 ——
 （索引位置上包含 `M`、`A`、`D`、`R`、`C`）。重命名同时带
 `origPath`（改名前路径）与 `path`（改名后路径）。
 `isRepo:false` 是对非 git 目录的无错应答。
+
+| 字段 | 含义 |
+| --- | --- |
+| `headSha` | `git log -1 --format=%h` —— 按 **git 自己的** 缩写长度给出的短编号（默认 7 位，7 位会歧义时更长）。消费方不得写死 7。 |
+| `headCommittedAt` | `git log -1 --format=%cI` —— HEAD 的**提交者**时间，严格 ISO 8601。取提交者时间而非作者时间：rebase、amend、cherry-pick 都会把提交者时间推后而作者时间停在最初那次写入，用作者时间会把刚 rebase 过的分支显示成几个月前。 |
+
+unborn HEAD（`git init` 后还没有任何提交）的仓库返回
+`ok:true, isRepo:true` 加 `headSha: null` 与 `headCommittedAt: null`
+—— 工作区是一个健康的仓库，只是还没有可指名的提交。根本不是
+仓库的目录两个字段都不出现，被越权门拒绝的 `dir` 同样不出现，
+所以标题栏的版本标识可以把「缺失」与「为 null」当成同一个
+「什么都不渲染」。
+
+detached HEAD 仍然返回 `headSha`；此时 `branch` 为 `null`，标识
+只显示短编号。
 
 **错误** —— 400：缺 `dir`；请求体是 `{ok:false, error}`，而 HTTP
 状态**保持 200**（面板读 `ok` 而不是 HTTP 码，所以非 git 目录

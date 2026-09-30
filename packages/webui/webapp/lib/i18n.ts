@@ -130,10 +130,12 @@ const en = {
   "modelSelector.modalityBadge.video": "video",
   "modelSelector.modalityBadge.file": "file",
   // Thinking-effort picker (off / low / medium / high). The
-  // `thinkingPicker.none` key is the "no level recorded" placeholder;
-  // it surfaces only between picking a model and the picker closing.
+  // `thinkingPicker.none` key is the "no level picked" placeholder; it
+  // surfaces only between picking a model and the picker closing.
+  // Wording is the user's word ("Default"), not the engine's — an
+  // interface should not narrate which layer is deciding.
   "thinkingPicker.label": "Thinking effort",
-  "thinkingPicker.none": "Use engine default",
+  "thinkingPicker.none": "Default",
   "thinkingPicker.off": "Off",
   "thinkingPicker.on": "On",
   "thinkingPicker.low": "Low",
@@ -154,6 +156,12 @@ const en = {
   "ask.title": "Question",
 
   "error.send": "Could not send the message",
+  "error.unconfirmed.accepted":
+    "Sent, but the server never confirmed it. The engine is running this message now — do not send it again.",
+  "error.unconfirmed.rejected":
+    "Not delivered: the server holds no record of this message. The text is back in the input box.",
+  "error.unconfirmed.unreachable":
+    "Status unknown: the server neither confirmed the message nor could be reached to check, so it may already be running. Check the conversation history before sending it again. The text is back in the input box.",
   "error.session": "Could not load sessions",
   "toolbar.workspace": "Workspace",
   "toolbar.browser": "Browser",
@@ -465,6 +473,14 @@ const en = {
   "activity.thinkingDone": "Finished thinking",
   "activity.expand": "Expand",
   "activity.collapse": "Collapse",
+  // webui-parity 83 — the turn-diff card's controls. They exist only where the
+  // engine's record says this turn can be undone / reapplied; a turn with no
+  // record draws no button at all, so neither string is ever a promise the
+  // engine has already refused.
+  "turnDiff.undo": "Undo",
+  "turnDiff.redo": "Redo",
+  "turnDiff.working": "Applying…",
+  "turnDiff.error": "Change not applied:",
   /* Tool-card status copy (ticket 46 D4). Five states on the reference
      desktop vocabulary; a completed call renders no chip on its summary
      row. The wire only ever writes completed/failed/in_progress —
@@ -514,7 +530,7 @@ const en = {
   // webui-parity 63 (defect E): a switch that lands on a session other than
   // the row the user clicked used to be silent. This is the banner's detail
   // line, so it reads as the cause under the "Open session — failed" head.
-  "sidebar.switchMismatch": "the engine is still on a different session",
+  "sidebar.switchMismatch": "the switch did not land — try again",
   // webui-parity 47 (C3): the rail toggle's label flips with its state,
   // mirroring the reference shell's 展开/收起 pair. "navigation bar", not
   // "sidebar", because that is what the reference copy names.
@@ -623,7 +639,7 @@ const en = {
   "git.file.openDiff": "View diff",
   "git.file.diff.empty": "No diff for this file",
   "git.file.diff.truncated":
-    "Diff truncated — full diff available on the engine",
+    "Diff truncated — open the file to see the rest",
   "git.file.diff.loading": "Loading diff…",
   "git.file.diff.failed": "Could not load diff",
   "git.refresh": "Refresh",
@@ -637,6 +653,22 @@ const en = {
   "git.switch.failed": "Could not switch branch: {{error}}",
   "git.switcher.title": "Switch branch",
   "git.switcher.empty": "No local branches",
+  /* webui-parity 89 — the conversation toolbar's version badge. The
+     badge is one string of identity (branch + short sha + how long ago
+     the commit landed) with a copy-to-clipboard action, so the keys
+     are its confirmation and its seven time buckets. The
+     buckets deliberately mirror files.tree.mtime.*: they are the same
+     relative-time ladder, and versionBadgeTimeBucket returns that
+     ladder's keys. */
+  "git.badge.copyAria": "Copy the commit id",
+  "git.badge.copied": "Copied",
+  "git.badge.now": "just now",
+  "git.badge.minutesAgo": "{n}m ago",
+  "git.badge.hoursAgo": "{n}h ago",
+  "git.badge.daysAgo": "{n}d ago",
+  "git.badge.weeksAgo": "{n}w ago",
+  "git.badge.monthsAgo": "{n}mo ago",
+  "git.badge.yearsAgo": "{n}y ago",
 
   /* Re-open state parity (webui-parity 07). The "session id is gone"
      hint fires when the URL deep-links to a session id the server no
@@ -755,6 +787,26 @@ const en = {
   "providers.dialog.attachments.audio": "Audio",
   "providers.dialog.cancel": "Cancel",
   "providers.dialog.save": "Save",
+  // API 格式 — the desktop's dropdown. The three values are the
+  // protocols this build already supports; the labels are the
+  // desktop's spelling, not a new set of formats.
+  "providers.dialog.apiFormat": "API format",
+  "providers.dialog.apiFormat.openai": "OpenAI Completions",
+  "providers.dialog.apiFormat.anthropic": "Anthropic Messages",
+  "providers.dialog.apiFormat.gemini": "Gemini",
+  // 自定义 Headers — outbound request headers merged into every call
+  // to this provider.
+  "providers.dialog.headers": "Custom headers",
+  "providers.dialog.headersAdd": "＋ Add header",
+  "providers.dialog.headerName": "Header name",
+  "providers.dialog.headerValue": "Header value",
+  "providers.dialog.headerRemove": "Remove header {{name}}",
+  // Footer connectivity check (form-level, gates 保存).
+  "providers.dialog.formTest": "Test connection",
+  "providers.dialog.formTestSkip": "Skip the connection test",
+  "providers.dialog.formTestHint":
+    "Saving is blocked until this provider answers, unless you skip the test",
+  "providers.dialog.formTestNeedProvider": "Choose a provider and enter a key first",
   "providers.dialog.errorProvider": "Select a provider first",
   "providers.dialog.errorDuplicate": "Provider id already exists: {{id}}",
   "providers.dialog.modelsEmpty":
@@ -1220,7 +1272,7 @@ const zh: Record<MessageKey, string> = {
   "modelSelector.modalityBadge.file": "文件",
   /* 思考等级选择器 (off / low / medium / high)。 */
   "thinkingPicker.label": "思考等级",
-  "thinkingPicker.none": "沿用引擎默认",
+  "thinkingPicker.none": "默认",
   "thinkingPicker.off": "关闭",
   "thinkingPicker.on": "开启",
   "thinkingPicker.low": "低",
@@ -1241,6 +1293,12 @@ const zh: Record<MessageKey, string> = {
   "ask.title": "提问",
 
   "error.send": "消息发送失败",
+  "error.unconfirmed.accepted":
+    "消息已发出，但服务器一直没有确认。引擎此刻正在执行这条消息 —— 请勿重复发送。",
+  "error.unconfirmed.rejected":
+    "未送达：服务器没有记录这条消息。原文已放回输入框。",
+  "error.unconfirmed.unreachable":
+    "状态未知：服务器既没有确认，也无法查询，它可能已经在执行。发送前请先查看会话历史确认。原文已放回输入框。",
   "error.session": "会话列表加载失败",
   "toolbar.workspace": "工作区",
   "toolbar.browser": "网页",
@@ -1514,6 +1572,13 @@ const zh: Record<MessageKey, string> = {
   "activity.thinkingDone": "已完成推理",
   "activity.expand": "展开",
   "activity.collapse": "收起",
+  // 工单 83 —— 回合 diff 卡的控件。只在引擎记录说该回合可撤销/可重做时
+  // 出现；没有记录的回合根本不画按钮，所以这两条文案永远不会变成
+  // 「引擎已经拒绝的动作」的承诺。
+  "turnDiff.undo": "撤销",
+  "turnDiff.redo": "重做",
+  "turnDiff.working": "正在应用…",
+  "turnDiff.error": "改动未生效：",
   /* 工具卡片状态文案（工单 46 D4）。五档状态取参照桌面的词表，中文与
      参照完全一致；已完成的调用在摘要行不显示状态。wire 只会写
      completed/failed/in_progress，补齐 pending 与 cancelled 是为了让
@@ -1556,7 +1621,7 @@ const zh: Record<MessageKey, string> = {
   "sidebar.projects": "项目",
   "action.failed": "失败",
   "sidebar.openSession": "打开会话",
-  "sidebar.switchMismatch": "引擎仍停留在另一个会话",
+  "sidebar.switchMismatch": "切换没有生效，请重试",
   "sidebar.collapse": "收起导航栏",
   "sidebar.expand": "展开导航栏",
   "sidebar.loadError": "无法加载会话：",
@@ -1644,7 +1709,7 @@ const zh: Record<MessageKey, string> = {
   "git.files.untracked": "未跟踪",
   "git.file.openDiff": "查看 diff",
   "git.file.diff.empty": "该文件无 diff",
-  "git.file.diff.truncated": "diff 已截断 — 完整内容请在引擎中查看",
+  "git.file.diff.truncated": "diff 已截断 — 打开文件可看完整内容",
   "git.file.diff.loading": "加载 diff 中…",
   "git.file.diff.failed": "diff 加载失败",
   "git.refresh": "刷新",
@@ -1658,6 +1723,17 @@ const zh: Record<MessageKey, string> = {
   "git.switch.failed": "切换分支失败：{{error}}",
   "git.switcher.title": "切换分支",
   "git.switcher.empty": "无本地分支",
+  /* webui-parity 89 — 会话标题栏的版本标识：分支 + commit 短编号 + 提交
+     距今多久，悬停显示绝对时间，点击复制短编号。 */
+  "git.badge.copyAria": "复制 commit 编号",
+  "git.badge.copied": "已复制",
+  "git.badge.now": "刚刚",
+  "git.badge.minutesAgo": "{n} 分钟前",
+  "git.badge.hoursAgo": "{n} 小时前",
+  "git.badge.daysAgo": "{n} 天前",
+  "git.badge.weeksAgo": "{n} 周前",
+  "git.badge.monthsAgo": "{n} 月前",
+  "git.badge.yearsAgo": "{n} 年前",
   /* 07 — 重开页面状态一致：URL 深链跳到的会话 ID 已不存在时的提示；
      短暂展示让用户知道是有意回到首页，不是静默丢失上下文。 */
   "session.hint.notFound": "该会话已不可用，已返回首页。",
@@ -1756,6 +1832,23 @@ const zh: Record<MessageKey, string> = {
   "providers.dialog.attachments.video": "视频",
   "providers.dialog.attachments.audio": "音频",
   "providers.dialog.cancel": "取消",
+  // API 格式 —— 桌面版的协议下拉。三个取值即本版本已支持的协议，
+  // 文案照桌面版写法，不新造格式。
+  "providers.dialog.apiFormat": "API 格式",
+  "providers.dialog.apiFormat.openai": "OpenAI Completions",
+  "providers.dialog.apiFormat.anthropic": "Anthropic Messages",
+  "providers.dialog.apiFormat.gemini": "Gemini",
+  // 自定义 Headers —— 随每次请求发往该供应商的附加头。
+  "providers.dialog.headers": "自定义 Headers",
+  "providers.dialog.headersAdd": "＋ 添加 Header",
+  "providers.dialog.headerName": "Header 名称",
+  "providers.dialog.headerValue": "Header 值",
+  "providers.dialog.headerRemove": "移除 Header {{name}}",
+  // 底部表单级连通检测（未通过则「保存」不可用）。
+  "providers.dialog.formTest": "连通检测",
+  "providers.dialog.formTestSkip": "跳过连通检测",
+  "providers.dialog.formTestHint": "该供应商连通检测通过前不可保存，可勾选跳过检测",
+  "providers.dialog.formTestNeedProvider": "请先选择提供商并填写 API Key",
   "providers.dialog.save": "保存",
   "providers.dialog.errorProvider": "请先选择提供商",
   "providers.dialog.errorDuplicate": "供应商 ID 已存在：{{id}}",

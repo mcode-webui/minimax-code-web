@@ -21,10 +21,17 @@
 //
 //   webui provider (v2) → engine custom_provider entry
 //     { id, label, protocol, auth, models }
-//     → { name, kind: 'custom', enabled, api, options: {apiKey, baseURL, authMode},
+//     → { name, kind: 'custom', enabled, api, options: {apiKey, baseURL, authMode, headers?},
 //         models: { modelId: { limit: {context}, thinking: {effortOptions}, modalities } } }
 //
 // Conversion rules (pinned by tests):
+//   - provider id → engine provider key (sluggified so the
+//     `custom_provider:<key>/...` runtime id stays alphanumeric + dot +
+//     underscore + hyphen)
+//   - `auth.headers` → `options.headers`, copied verbatim and omitted
+//     when empty. The runtime merges these into every upstream request
+//     for the provider, which is what makes a header typed in the
+//     add-provider dialog actually take effect.
 //   - provider id → engine provider key (sluggified so the
 //     `custom_provider:<key>/...` runtime id stays alphanumeric + dot +
 //     underscore + hyphen)
@@ -247,6 +254,21 @@ export function toEngineCustomProvider(provider) {
     typeof provider.protocol === "string" ? provider.protocol.trim() : "openai";
   const api = WEBUI_PROTOCOL_TO_ENGINE_API[protocol];
   if (!api) return null;
+  // Copy into a fresh object: the engine config is compared by value
+  // on the next sync, and handing it a live reference to the parsed
+  // providers.json would let a later mutation write through.
+  // Emptiness, not truthiness: `normaliseProvider` always materialises
+  // `auth.headers` (absent -> {}), and `{}` is TRUTHY, so the original
+  // `customHeaders ? …` test emitted `headers: {}` for every provider
+  // that never configured one. The end-to-end run caught this; the unit
+  // fixture, whose `auth` simply has no `headers` key at all, cannot.
+  const customHeaders =
+    provider.auth?.headers &&
+    typeof provider.auth.headers === "object" &&
+    !Array.isArray(provider.auth.headers) &&
+    Object.keys(provider.auth.headers).length > 0
+      ? { ...provider.auth.headers }
+      : null;
   const providerKey = providerKeyFromId(provider.id);
   if (!providerKey) return null;
   const name =
@@ -298,6 +320,18 @@ export function toEngineCustomProvider(provider) {
         apiKey,
         baseURL,
         authMode: "api-key",
+        // Custom headers are already validated by
+        // `normalizeCustomHeaders` on the PUT path, so this copy only
+        // has to be faithful. It is the load-bearing line for the
+        // whole feature: the runtime merges `options.headers` into
+        // every upstream request for this provider
+        // (`local-runtime-v2/.../catalog/provider-views.ts:218` →
+        // `mergeProviderHeaders(provider.options?.headers, ...)`), so
+        // without it a header the operator typed and read back would
+        // be stored, displayed, and never sent. Emitted only when
+        // non-empty so an untouched provider's engine entry keeps the
+        // exact shape it had before this field existed.
+        ...(customHeaders ? { headers: customHeaders } : {}),
       },
       ...(Object.keys(models).length > 0 ? { models } : {}),
     },
