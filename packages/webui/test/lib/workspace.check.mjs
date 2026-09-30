@@ -272,7 +272,7 @@ describe("browseWorkspace — MAX 500 truncation", () => {
 //   （tree 的 route 层覆盖在 routes-workspace.check.mjs）
 // ============================================================
 
-const { registerSessionsStore } = await import("../helpers/_setup.js");
+const { registerSessionsStore, getSessionsStore } = await import("../helpers/_setup.js");
 
 describe("resolveWorkspaceCandidates — 零弹窗目录名 → 绝对路径候选", () => {
   let home;
@@ -377,6 +377,90 @@ describe("assertWorkspaceParentPath — mkdir 落点围栏", () => {
       delete process.env.MCODE_WEBUI_WORKSPACE_ROOTS;
       try { rmSync(root, { recursive: true, force: true }); } catch {}
       try { rmSync(out, { recursive: true, force: true }); } catch {}
+    }
+  });
+});
+
+// ============================================================
+// session-ownership — workspace switch and the active record
+//
+// The sidebar session tree groups engine rows by their workspace_dir, and
+// the webui record's `workspace` is what a later switch re-points the view
+// to. Two pins:
+//   1. a DRAFT (no engine identity yet) follows the user's workspace pick —
+//      "+ New session" can precede the pick, and the draft's stored
+//      workspace must not keep the stale creation snapshot;
+//   2. a BOUND record (mcodeSessionId set) NEVER moves — the bind stamped
+//      the engine session's real cwd; re-homing it on a later switch is
+//      the same-conversation ghost-row bug.
+// Mutation tripwire: dropping the `!s.mcodeSessionId` filter in
+// handleWorkspaceChange makes pin 2 red; dropping the draft-follow block
+// makes pin 1 red.
+// ============================================================
+
+describe("handleWorkspaceChange — session-ownership (draft follows, bound never moves)", () => {
+  test("the active DRAFT's stored workspace follows the user's workspace pick", () => {
+    const tmp = mkTmpDir("webui-ws-own-draft-");
+    const tmpCanonical = realpathSync(tmp);
+    try {
+      registerSessionsStore({
+        initial: [
+          { id: "draft-1", title: "New session", workspace: "/stale/default", mcodeSessionId: null, chat: [], createdAt: 1, updatedAt: 2 },
+        ],
+      });
+      const cs = fakeCs("/stale/default");
+      cs.sessionId = "draft-1";
+      const r = ws.handleWorkspaceChange(cs, "cid-own-1", { action: "set", dir: tmp });
+      assert.equal(r.ok, true);
+      const rec = getSessionsStore().find((s) => s.id === "draft-1");
+      assert.equal(
+        rec.workspace,
+        tmpCanonical,
+        "draft record re-homed to the picked workspace",
+      );
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("a BOUND record is never re-homed by a workspace switch", () => {
+    const tmp = mkTmpDir("webui-ws-own-bound-");
+    try {
+      registerSessionsStore({
+        initial: [
+          { id: "mvs_" + "c".repeat(32), title: "Real session", workspace: "/original/ws", mcodeSessionId: "mvs_" + "c".repeat(32), chat: ["› hi"], createdAt: 1, updatedAt: 2 },
+        ],
+      });
+      const cs = fakeCs("/original/ws");
+      cs.sessionId = "mvs_" + "c".repeat(32);
+      const r = ws.handleWorkspaceChange(cs, "cid-own-2", { action: "set", dir: tmp });
+      assert.equal(r.ok, true);
+      const rec = getSessionsStore().find((s) => s.mcodeSessionId === "mvs_" + "c".repeat(32));
+      assert.equal(
+        rec.workspace,
+        "/original/ws",
+        "bound record keeps the engine-stamped workspace — switching the picker must not re-home it",
+      );
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("no active session (cs.sessionId null) → the store is untouched", () => {
+    const tmp = mkTmpDir("webui-ws-own-null-");
+    try {
+      registerSessionsStore({
+        initial: [
+          { id: "bystander", title: "S", workspace: "/keep", chat: [], createdAt: 1, updatedAt: 2 },
+        ],
+      });
+      const cs = fakeCs("/old");
+      cs.sessionId = null;
+      const r = ws.handleWorkspaceChange(cs, "cid-own-3", { action: "set", dir: tmp });
+      assert.equal(r.ok, true);
+      assert.equal(getSessionsStore().find((s) => s.id === "bystander").workspace, "/keep");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
     }
   });
 });

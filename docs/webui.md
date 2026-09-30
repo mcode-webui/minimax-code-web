@@ -337,6 +337,64 @@ writes into `cs.chat`; switched-away writes via
   `workspace` and `workspaceFallback` so post-mortems can answer
   "why did the file tree jump".
 
+## Session owns its workspace (session-ownership)
+
+A session record's `workspace` field is the answer to "which workspace
+does this conversation belong to", and the sidebar session tree groups
+engine rows by the same directory. Two writes keep that answer true;
+both were missing when the same conversation showed up as two sidebar
+rows (a ghost row under `DEFAULT_WORKSPACE` plus the real one under the
+directory it ran in — the 2026-10-01 run_261001 QA incident, where
+"which row does delete remove?" became unanswerable).
+
+### Contract
+
+1. **Bind stamps the engine cwd** (`lib/sessions.js`):
+   `bindDraftToMcodeSid` / `bindRecordToMcodeSid` / `promoteDraftToMcodeSid`
+   accept `{ workspace }`, and `lib/mcode-acp.js#runMcodeAcp` passes the
+   SAME value it handed to `loadSession`/`newSession`. When a draft
+   record is promoted to its engine identity, its stored `workspace` is
+   rewritten to that value. The bind moment is the first time the
+   conversation's real workspace is knowable; a draft's stored value is
+   only the record-creation snapshot (often `DEFAULT_WORKSPACE`, because
+   "+ New session" legitimately precedes the workspace pick). A record
+   that already carries an engine identity is NEVER re-homed by another
+   turn — the merge branch leaves `existing.workspace` untouched.
+2. **Drafts follow the user; bound records never move**
+   (`lib/workspace.js#handleWorkspaceChange`): a workspace switch also
+   re-writes the ACTIVE record's `workspace` — but only while it has no
+   `mcodeSessionId`. Once bound, the engine-stamped cwd is final.
+
+With both writes in place, a switch lands the view (and the next
+`loadSession`) on the directory the conversation ran in, so the engine
+load hits instead of falling back to `newSession` — which is what
+minted the second engine session behind the ghost row. One
+conversation → one engine session → one row; nothing is deduplicated
+at render time.
+
+### What the user sees
+
+- A session created before picking a workspace, then sent from the
+  picked one, belongs to the picked one — immediately after the first
+  reply, not only after a manual re-pick.
+- Switching workspaces never moves an existing conversation to another
+  project's group in the sidebar.
+- Deleting a sidebar row deletes that conversation — there is no second
+  row for the same conversation elsewhere in the tree.
+
+### What contributors will change
+
+- Mutation tripwires live in
+  `test/lib/sessions-single-identity.test.js` (bind stamps the engine
+  cwd; a bound record never moves for another turn) and
+  `test/lib/workspace.check.mjs` (draft follows the picker; a bound
+  record survives a switch). The end-to-end chain — bind stamps, switch
+  lands on the stamped value, exactly one record — is pinned in
+  `test/routes/sessions-switch-workspace-follow.check.mjs`.
+- The mock `lib/sessions.js` in `test/helpers/_setup.js` mirrors the
+  `{ workspace }` parameter; drift there silently re-enables the bug in
+  every route-level test that relies on the mock.
+
 ## Sidebar (webui-parity ticket 47)
 
 The sidebar was aligned with the reference client across three areas:

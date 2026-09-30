@@ -303,7 +303,10 @@ export async function setupMocks(t, overrides = {}) {
       },
       // session-isolation/02 (run-mirror): cs-driven draft bind — mirrors
       //   bindDraftToMcodeSid via the mock's promoteDraftToMcodeSid.
-      bindDraftToMcodeSid: (cs, sid) => {
+      //   session-ownership: opts.workspace re-homes the promoted draft to
+      //   the engine session's creation cwd, mirroring the real
+      //   lib/sessions.js contract (bound records never move).
+      bindDraftToMcodeSid: (cs, sid, opts = {}) => {
         if (!cs || !sid) return false;
         cs.mcodeSessionId = sid;
         // replicate the mock's promoteDraftToMcodeSid body
@@ -327,12 +330,13 @@ export async function setupMocks(t, overrides = {}) {
         if (!draft) return false;
         draft.id = cs.mcodeSessionId;
         draft.mcodeSessionId = cs.mcodeSessionId;
+        if (opts.workspace) draft.workspace = opts.workspace;
         draft.updatedAt = Date.now();
         cs.sessionId = draft.id;
         return true;
       },
       // session-isolation/02 (run-mirror): record-targeted bind (no cs).
-      bindRecordToMcodeSid: (webuiId, sid) => {
+      bindRecordToMcodeSid: (webuiId, sid, { workspace } = {}) => {
         if (!webuiId || !sid) return null;
         const bound = _sessionsStore.find((r) => r && r.mcodeSessionId === sid);
         if (bound) return bound.id;
@@ -353,6 +357,7 @@ export async function setupMocks(t, overrides = {}) {
         }
         draft.id = sid;
         draft.mcodeSessionId = sid;
+        if (workspace) draft.workspace = workspace;
         draft.updatedAt = Date.now();
         return draft.id;
       },

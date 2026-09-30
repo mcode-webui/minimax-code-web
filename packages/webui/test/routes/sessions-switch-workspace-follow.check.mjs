@@ -495,3 +495,62 @@ describe("handleSwitchSession — DEFAULT_WORKSPACE fallback never persists (web
     );
   });
 });
+
+// ============================================================
+// session-ownership — the run_261001 → demo002 ghost-row regression
+//
+// Incident chain (real-device QA, 2026-10-01): "+ New session" created the
+// draft under DEFAULT_WORKSPACE (demo002); the user then picked run_261001
+// and sent the first prompt there. The bind kept the stale draft workspace,
+// so switching back re-pointed the view (and the next loadSession) to
+// demo002; the engine load missed and the fallback minted a SECOND engine
+// session there — the same conversation rendered as two sidebar rows
+// (ghost under demo002 + real under run_261001). "Which row does delete
+ // remove?" — trust gone.
+//
+// The fix makes the bind stamp the engine session's creation cwd onto the
+// record, so a later switch lands where the conversation actually ran and
+// the load hits — one conversation, one engine session, one row.
+// ============================================================
+describe("session-ownership — bind stamps the real workspace, switch lands on it", () => {
+  test("a draft bound in another workspace switches the view to the ENGINE's cwd, not the stale snapshot", async () => {
+    const sessionsMock = await import(absPath("lib/sessions.js"));
+    const SID = "mvs_" + "d".repeat(32);
+    const REAL_WS = realWs("projectB"); // where the engine session was created
+    const STALE_WS = realWs("projectA"); // where "+ New session" happened
+
+    registerSessionsStore({
+      initial: [
+        { id: "draft-uuid", title: "New session", workspace: STALE_WS, mcodeSessionId: null, chat: [], createdAt: 1, updatedAt: 2 },
+      ],
+    });
+
+    // First prompt: the engine session is created in REAL_WS and bound.
+    const cs = newCs(REAL_WS);
+    cs.sessionId = "draft-uuid";
+    assert.equal(
+      sessionsMock.bindDraftToMcodeSid(cs, SID, { workspace: REAL_WS }),
+      true,
+      "bind promotes the draft",
+    );
+    const bound = getSessionsStore().find((s) => s.mcodeSessionId === SID);
+    assert.equal(bound.workspace, REAL_WS, "record carries the engine cwd");
+
+    // Later: the user browses elsewhere (STALE_WS) and clicks the session.
+    const browser = newCs(STALE_WS);
+    const { res, body } = await doSwitch(SID, browser);
+    assert.equal(res._status, 200, `switch failed: ${res._body}`);
+    assert.equal(body.ok, true);
+    assert.equal(
+      browser.workspace.dir,
+      REAL_WS,
+      "the switch must land on the workspace the conversation RAN in — landing on the stale snapshot is what minted the ghost row",
+    );
+    // Exactly one record for the conversation — the sidebar can only
+    // render one row for it.
+    assert.equal(
+      getSessionsStore().filter((s) => s.mcodeSessionId === SID).length,
+      1,
+    );
+  });
+});

@@ -292,6 +292,28 @@ ACP 握手是双向的，两个方向都由同一份 `initialize` 载荷决定�
 - 响应负载多了 `session.workspace` 和 `session.workspaceFallback`；尾部 `pushStateFor(cid)` 推 SSE 时原样带上新的 `cs.workspace.dir`，`FilesPanel` 通过 `useSessionContext()` 订阅自然重新渲染，前端**不**需要为了这次修复改动任何接线。
 - `routes/sessions.js#_eventsAppend("session.switch", …)` 写入 `workspace` 和 `workspaceFallback`，事后追查"为什么文件树跳了"时可以从审计链里直接定位。
 
+## 会话属于哪个工作区，由会话自己记住（session-ownership）
+
+会话记录的 `workspace` 字段回答的是「这段对话属于哪个工作区」，侧栏会话树对引擎行也是按同一目录分组的。同一对话曾在侧栏出现两行——一行幽灵挂在默认工作区（demo002），真身挂在它实际运行过的目录（run_261001），「删的是哪条」因此无法回答（2026-10-01 run_261001 真机质检事故）。让数据本身保持正确的写入有两处，事故发生时都缺失。
+
+### 契约
+
+1. **绑定时刻盖引擎 cwd**（`lib/sessions.js`）：`bindDraftToMcodeSid` / `bindRecordToMcodeSid` / `promoteDraftToMcodeSid` 接受 `{ workspace }` 参数，`lib/mcode-acp.js#runMcodeAcp` 传入的就是它交给 `loadSession`/`newSession` 的同一个值。草稿记录晋升为引擎身份时，存的 `workspace` 被改写为该值。绑定时刻是这段对话真实工作区第一次可知的时刻；草稿里存的只是建记录瞬间的快照（常常是 `DEFAULT_WORKSPACE`，因为「新建会话」完全可能发生在选工作区之前）。已带引擎身份的记录**永远不会**被别人的回合搬走——合并分支不碰 `existing.workspace`。
+2. **草稿跟着用户走；已绑定的永不搬家**（`lib/workspace.js#handleWorkspaceChange`）：切换工作区时，当前活跃记录的 `workspace` 一并更新——但仅当它还没有 `mcodeSessionId`。绑定之后，引擎盖的 cwd 就是终值。
+
+两处写入到位后，切换会话落点（以及下一次 `loadSession` 的参数）就是对话实际运行过的目录，引擎 load 命中，不会再走 `newSession` 兜底——那个兜底正是幽灵行背后第二个引擎会话的铸造点。一段对话 → 一个引擎会话 → 一行；渲染层没有任何去重逻辑。
+
+### 用户能看到什么
+
+- 先建会话、后选工作区、再在工作区里发出第一条消息的会话，属于**选中的那个**工作区——第一条回复之后立即成立，不需要手动重选。
+- 切换工作区不会把已有对话搬到侧栏另一个项目的分组里。
+- 删除侧栏某一行就是删除那段对话——同一对话不会在树的其他位置还有第二行。
+
+### 改动落在哪里（给后续维护者）
+
+- 变异哨兵在 `test/lib/sessions-single-identity.test.js`（绑定盖引擎 cwd；已绑定记录不因别人的回合搬家）和 `test/lib/workspace.check.mjs`（草稿跟随选择器；已绑定记录扛得住切换）。端到端链条——绑定盖章、切换落在盖章值、恰有一条记录——钉在 `test/routes/sessions-switch-workspace-follow.check.mjs`。
+- `test/helpers/_setup.js` 里 mock 的 `lib/sessions.js` 镜像了 `{ workspace }` 参数；那里一旦漂移，所有依赖 mock 的路由级测试会悄悄放行这个 bug。
+
 ## 左侧边栏（webui-parity ticket 47）
 
 左侧边栏对照参照实现做了三块对齐：折叠行为、导航项、会话列表。用户看到的变化与不变化如下。
