@@ -1532,53 +1532,118 @@ re-arranging the DOM.
 - Neither the `data-active` forced-open rule nor a group's own folding
   semantics change: a collapse intent never overrides forced open.
 
-## The 「已编辑 N 个文件」 card (ticket 77)
+## The 「已编辑 N 个文件」 card (tickets 77 + 83)
 
 The last block of a turn is the edited-files card — the one in the
-desktop screenshot `06-browser-tree-tasks-review.jpg`. It mounts in
-`chat.tsx` after `MessageActions`, matching the reference's mount point
-at `other-minimax-code/.../AssistantBody.tsx:340-380`. The header reuses
-the existing `activity.editedFiles` key; **no new i18n key was added**.
-The activity-group summary and this card are the same sentence, so they
-have to stay the same sentence.
+desktop screenshot `06-browser-tree-tasks-review.jpg`. Ticket 77 mounted
+it once, at the end of the transcript, from the file paths the turn's
+edit tools named, and recorded in this document that the desktop's line
+counts and undo button were unreachable. **Both became reachable in
+ticket 83**, and this section now describes what the card does with
+them.
+
+The header reuses the existing `activity.editedFiles` key for its
+sentence; ticket 83 added keys only for the new affordances (undo, redo,
+the failure copy). The activity-group summary and this card are the same
+sentence, so they have to stay the same sentence.
 
 ### Where the data comes from
 
-The three-tier fallback chain from ticket 61 §4.2 does not resolve at
-tier 1. The card lands on tier 2, but with better semantics than tier 2
-was sketched for: the source is not "the workspace's git changes" but
-**the file paths the turn's edit tools actually named in the transcript**,
-which is turn-scoped by construction.
+Two sources, in strict order of authority, and never merged:
 
-| Tier | Source | Finding |
+| Source | What it is | What it can prove |
 |---|---|---|
-| 1 — turn changeset | `SessionDiffApplication.getTurnDiff` | **Unreachable.** `local-runtime-v2` really does have it (`application/session/diff-application.ts:51`, backed by v1's `LocalTurnDiffCapability` over `SqliteLocalTurnDiffStore`, carrying per-file `additions`/`deletions` and `undo` snapshots). The blocker is addressing, not existence: the transcript is a flat array of glyph-prefixed strings carrying neither `turnId` nor `assistantMessageId`, and `findTurnDiffRecord` (`local-runtime/src/turns/diff-api.ts:209-220`) falls back to `latestForSession` when no selector is supplied — so every historical assistant message would render the same "last turn" card. Separately, `server/lib/runtime-host.js:176-178` forwards only `cliService` / `apiHost` / `controller` and drops the `application` the v2 host returns. Closing either gap means touching `local-runtime-v2`, which ticket 61 §6 risk 1 already reserves for a separate decision. |
-| 2 — the turn's file paths | the transcript's `file-edit` tool blocks | **Adopted.** `collectEditedFiles` (`webapp/lib/edited-files.ts`) walks every `RenderUnit`, reads `toolPaths` off the blocks `isFileEditTool` accepts, normalises separators, de-duplicates, and keeps first-seen order. |
-| 3 — nothing changed | the list is empty | **The card is not rendered at all** (A1). With no file to name there is no empty shell and no 「已编辑 0 个文件」 placeholder. |
+| **The engine's record** | `GET /api/turn-diff` with the turn's `assistantMessageId` | The real per-file `+N` / `-N`, the real file list (which includes edits made through tools whose arguments name no path), and the engine's own `canUndo` / `canReapply` |
+| **The transcript scan** | `collectTurnEditedFiles` (`webapp/lib/edited-files.ts`) over the turn's `RenderUnit`s | Only the file paths a `file-edit` tool named. No counts, no gates. |
+
+The engine's list REPLACES the scan rather than merging with it. A merge
+would double-count a file the two name differently, and the counts would
+then sit on the wrong row. When there is no record — a session recorded
+before the turn coordinate shipped, a legacy transcript read, the `exec`
+transport — the scan is the whole story and the card is exactly what
+ticket 77 shipped.
+
+### The turn coordinate
+
+The engine persists a turn's record under the msg_id of that turn's
+**last assistant message** (`local-runtime-v2/.../turn-outcome.ts` reads
+the last agent *message* response; a turn carries more than one id on
+the wire, one per message segment). The ACP transport already delivered
+that id; the server used to drop it.
+
+- **Live**: `acp.mjs#prompt` keeps the last `agent_message_chunk`
+  `messageId`; `mcode-acp.js#finalize` writes `§§ turn_msg=<id>` next to
+  the `§§ processed_duration=Nms` marker it already wrote. The `§§`
+  family is the established convention for server-written per-turn
+  metadata — third reuse, not a new grammar.
+- **Restored**: `server/lib/transcript.js`'s v2 probe now selects the
+  `turn_id` and `msg_id` columns the message table already carries, and
+  synthesises the same marker from the last assistant row of each turn.
+  Switching away and back gives an existing session its coordinates
+  without asking the engine anything.
+
+`decodeTranscript` consumes the marker and hangs the id on the turn's
+LAST assistant block. A transcript without the marker decodes exactly as
+it did before — every session older than the marker has to keep
+rendering, and a decoder that assumed the marker would throw on all of
+them.
 
 ### What each desktop element maps to
 
 | Desktop element | Here | Why |
 |---|---|---|
 | Header glyph | **Present** | The `pencil` icon from the existing `icons.tsx` set. |
-| 「已编辑 N 个文件」 | **Present** | N counts **distinct files**, not edit calls — a file edited five times is still one file. |
-| Green `+N` / red `-N` | **Absent** | The transcript carries no line statistics and there is no reachable turn-scoped source. Drawing one would be a fabricated number. |
-| 「撤销」 (undo) | **Absent** | No turn-scoped revert endpoint exists; the engine's `rewindTurnDiff` is a side effect of rewinding history, not a per-card undo. A dead button is worse than no button. |
-| 「Review」 | **Absent — the file rows replace it** | A file row opens the real preview through the existing `onOpenFile` chain (red line 4). That is the affordance this codebase can actually honour. |
+| 「已编辑 N 个文件」 | **Present** | N counts **distinct files**, not edit calls. With a record it is the engine's own file count; without one it is the count of paths the scan could name. |
+| Green `+N` / red `-N` | **Present, with a record** | The engine's own per-turn counts, summed in the header. **Absent without one** — a card showing `+0 -0` would say "this file did not change", which is a different and false claim. A zero side is not drawn as `+0` / `-0` either. |
+| 「撤销」 (undo) | **Present, gated on `canUndo`** | Calls `POST /api/turn-diff/revert`, which rewrites real workspace files. |
+| 「重做」 (redo) | **Present, gated on `canReapply`** | Calls `POST /api/turn-diff/reapply`. Appears independently of undo: a reverted turn offers redo and no undo. |
+| 「Review」 | **Absent — the file rows replace it** | A file row opens the real preview through the existing `onOpenFile` chain (red line 4). |
 | File row: type icon + name | **Present** | A `file` icon plus the path's trailing segment; the full path rides on `title` and `data-file-path`. |
-| Per-row added/deleted | **Absent** | Same reason as the header badge. |
+| Per-row added/deleted | **Present, with a record** | The engine's per-file counts, not the header total repeated. |
 | Collapse (3 rows, then expand) | **Present** | A pure client-side state machine, `reduceEditedFilesCardState`; the toggle appears only past three rows. |
+
+The two buttons are **not** greyed out when they cannot act; they are
+absent. Only the latest turn diff can be changed — the engine answers
+`canUndo:false` before the user clicks, and 409 `TURN_DIFF_CONFLICT`
+if they click anyway — so a disabled button would promise an action the
+engine has already refused. The card never re-derives "is this the last
+turn?" from the transcript; the whole coordinate system exists because
+that inference cannot be made safely.
+
+### What a successful undo refreshes
+
+A revert rewrites files the browser is already showing, so five things
+move, in this order:
+
+1. the server's session-tree cache (`invalidateSessionTree()`);
+2. a `session-tree-changed` broadcast (the sidebar);
+3. a `workspace-files-changed` broadcast — a new named SSE frame, no
+   payload, the only signal the webui has that files on disk moved;
+4. on that frame, the files tree re-reads every directory it has open
+   and the git panel re-reads status and branches;
+5. on the same frame, the open file preview re-reads through the refresh
+   path — scroll position preserved, a deleted file shown as a named
+   banner rather than a blank pane, and a **dirty draft left alone**,
+   because its baseline is what a later save conflict-checks against.
 
 ### Contract notes
 
 - The collapse state is **not** persisted in `localStorage`: a reload
   returns to collapsed. It is derived state, not a user preference, so
   red line 3 is untouched.
-- The card derives from the **full** `units` list, not the virtualised
+- Cards are derived from the **full** `units` list, not the virtualised
   `visibleUnits` window — otherwise scrolling past 200 units would make
-  it blink in and out.
+  them blink in and out. Each turn's card sits at **its own** turn's last
+  unit, so a three-turn session reads as three cards; the final turn's
+  card stays at the transcript tail, after the message-action row, which
+  is where ticket 77 put the single card and where the desktop puts it.
 - With no `onOpenFile` wired, a file row degrades to plain text rather
   than to a button that does nothing.
+- The route exposes `applications.session.diff` and nothing else; the
+  `applications` tree also carries `session.lifecycle`, which can delete
+  a session.
+- `previewState` is declared by the protocol and is always `undefined` on
+  this path. Nothing renders it.
 
 ## Loading states: transcript skeleton and streaming indicator (ticket U8)
 

@@ -1475,6 +1475,133 @@ use, both on a 200 answer; 403 in read-only mode.
 
 ---
 
+## Turn diff
+
+The runtime records, per turn, the files that turn changed — with real
+added / deleted line counts and the ability to put the workspace back
+the way it was. These three endpoints expose that record. They exist
+because the transcript alone cannot answer the question: it carries the
+file paths a tool named, never the line counts, and never the engine's
+decision about whether a turn can still be changed.
+
+| func_name | Endpoint | Card use |
+|---|---|---|
+| `sessions.diff.get_turn` | `GET /api/turn-diff` | Read a turn's counts and gates |
+| `sessions.diff.revert_turn` | `POST /api/turn-diff/revert` | Undo button |
+| `sessions.diff.reapply_turn` | `POST /api/turn-diff/reapply` | Redo button |
+
+### The turn coordinate
+
+Every request carries `assistantMessageId`: the msg_id of that turn's
+**last assistant message**, which is the value the runtime persisted the
+turn's record under. The webapp gets it from the transcript, where the
+server writes it as a `§§ turn_msg=<id>` marker line at prompt finalise
+(`server/lib/mcode-acp.js#finalize`) and the transcript backfill
+synthesises from the runtime's own `turn_id` / `msg_id` columns
+(`server/lib/transcript.js`).
+
+`assistantMessageId` is **mandatory on all three endpoints**, and its
+absence is not a client error — it is the "this turn has no coordinate"
+case, answered with `{"ok":true,"turnDiff":null}` and **no call to the
+engine**. The reason is the engine's own selector
+(`local-runtime/src/turns/diff-api.ts:209-220`): given no id it falls
+back to `latestForSession`, so a request that lost the coordinate would
+answer with a DIFFERENT turn's counts, and the undo button would rewrite
+that turn's files. A turn with no coordinate renders the path-only card.
+
+The route reaches exactly one member of the runtime's `applications`
+tree, `applications.session.diff`. The tree also carries
+`session.lifecycle`, which can delete a session; widening this surface
+to "the applications handle" would hand that to a diff endpoint.
+
+### `GET /api/turn-diff?sessionId=&assistantMessageId=`
+
+**func_name** `sessions.diff.get_turn`. `sessionId` is the ENGINE's
+session id (`mvs_` + 32 hex), the one on `state.mcodeSessionId`.
+
+**Response 200**
+```json
+{
+  "ok": true,
+  "turnDiff": {
+    "fileChanges": [
+      { "file": "webui-turn.txt", "additions": 2, "deletions": 0, "status": "added" }
+    ],
+    "sourceMessageId": "ed8b9ddd-9bb0-4b06-a8fc-e863036830e3",
+    "changeSetId": "cs_ffc8873c6",
+    "status": "active",
+    "undoable": true,
+    "canUndo": false,
+    "canReapply": false
+  }
+}
+```
+
+`canUndo` / `canReapply` are the engine's own answer, and the card must
+render its two buttons from them rather than deciding for itself. Only
+the LATEST turn diff can be changed; the engine reports that as
+`canUndo:false` before the user clicks, and refuses with 409 if they do.
+
+`additions` / `deletions` are the turn's own before/after line counts,
+not the workspace's diff against HEAD. `previewState` is declared by the
+protocol but this path never fills it — do not render it.
+
+**Responses**
+
+- `200 {"ok":true,"turnDiff":null}` — no coordinate on the request, or
+  no record for that id (a turn that changed nothing never gets one).
+- `400 {"ok":false,"code":"invalidRequest","error":"sessionId must look like mvs_<32 hex> …"}` — a malformed `sessionId`.
+- `404` — the engine does not know that session.
+- `200 {"ok":false,"code":"RUNTIME_UNAVAILABLE"}` — the runtime
+  application could not be booted.
+
+### `POST /api/turn-diff/revert`
+
+**func_name** `sessions.diff.revert_turn`. Body `{ "sessionId", "assistantMessageId" }`.
+
+Restores the workspace files to their pre-turn content: the engine
+verifies each file against the snapshot it captured, then writes or
+removes it. **This writes real files.** A file that changed since the
+turn was captured is refused rather than overwritten.
+
+**Response 200** `{"ok":true,"turnDiff":{…}}` — the record after the
+revert; `status` is `reverted` and `canReapply` is now true.
+
+**Errors** — 409 `TURN_DIFF_CONFLICT` with the engine's message when
+the turn is not the latest one (`Only the latest turn diff can be
+changed`) or when a file no longer matches the captured snapshot; 404 for
+an unknown session; 400 for a malformed `sessionId`; 403 in read-only
+mode. The client shows the engine's message verbatim — it is the only
+sentence that says which of the two refusals happened.
+
+### `POST /api/turn-diff/reapply`
+
+**func_name** `sessions.diff.reapply_turn`. Same body and same
+coordinate rule. Puts the turn's edits back after a revert.
+
+**Response 200** `{"ok":true,"turnDiff":{…}}` with `status:"active"`
+and `canUndo:true`. Same error set as revert.
+
+### What a successful mutation refreshes
+
+A revert or reapply changes files the browser is already showing, so the
+server does two things on success and the client does the rest off one
+frame:
+
+| Step | Who | What |
+|---|---|---|
+| Session-tree cache | server | `invalidateSessionTree()` — the cached tree no longer matches disk |
+| Broadcast | server | `session-tree-changed` then `workspace-files-changed` SSE frames |
+| Files tree | client | re-reads every directory it has open, on `workspaceRevision` |
+| File preview | client | re-reads the open file through the refresh path (scroll preserved; a dirty draft is left alone) |
+| Git panel | client | re-reads status and branches |
+
+`workspace-files-changed` is a new named SSE frame with no payload. It
+is the only signal the webui has that files on disk moved underneath it:
+the transcript does not change, and nothing in the turn stream says so.
+
+---
+
 ## Settings
 
 ### `GET /api/settings`
