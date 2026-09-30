@@ -98,21 +98,26 @@ mcode sqlite via `GET /api/acp-sessions` on init.
 
 ## Plan mode modal won't dismiss
 
-**Symptoms**: clicking "Skip" or pressing Esc doesn't close the
-plan modal.
+**Symptoms**: the plan-review modal stays on screen. "Agree",
+"Add context" and "Skip" all appear to do nothing, and Esc does
+nothing at all.
 
-**Cause**: the click handler is calling `hidePlan()` but the SSE
-event from mcode hasn't arrived yet, so the next render re-opens
-it.
+**Cause**: the same blocking chrome as the ask-user prompt below —
+no close button, no Escape handler, no backdrop dismissal
+(`modals.tsx:304-313`). All three buttons post to
+`POST /api/answer {type: "plan", option: …}` (modals.tsx:41-45),
+and that route is the legacy no-op described in the ask-user entry
+below, so the plan decision never reaches the engine and
+`state.plan.active` (modals.tsx:38-39) stays true.
 
 **Fix**:
-1. Wait 2-3 seconds for the SSE ack.
-2. If it still doesn't dismiss, click "Skip" again — sometimes
-   the first click is consumed by the focus ring and the second
-   click hits the button.
-3. If the modal is truly stuck, the underlying mcode state is
-   stuck. Send any user message — the plan context will be
-   superseded and the modal will close.
+1. None of the three buttons closes the modal while the route is
+   wired that way.
+2. Reloading the page does not help: `plan.active` is server state
+   re-pushed in the state snapshot.
+3. A new session clears it. If the engine ends the plan on its own,
+   the modal closes on the next state push — nothing in the browser
+   can make that happen sooner.
 
 ## Ask-user modal will not close
 
