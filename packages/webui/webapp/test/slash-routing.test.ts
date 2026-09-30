@@ -23,6 +23,11 @@
 //      dispatch site and must no longer branch on `startsWith("/")`.
 //      The reducers are pure, so a revert to the old branch would keep
 //      every other webapp test green — only this tripwire goes red.
+//   4. THE PALETTE MAY NOT TAKE ENTER, and whatever it does insert
+//      must still be the `/name` form the router above parses. The
+//      reported defect ("Enter only inserts, the command never runs")
+//      lived entirely in the keydown wiring, which nothing else
+//      exercises.
 //
 // The server module is imported through a file:// URL, the same way
 // credential-file.test.ts reaches the server side.
@@ -33,7 +38,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join, resolve } from "node:path";
 
-import { CMD_BUTTON_COMMANDS, routeSlashInput } from "../lib/slash-routing";
+import { CMD_BUTTON_COMMANDS, completeSlashWord, routeSlashInput, shouldCompleteSlashWord } from "../lib/slash-routing";
 import {
   getComposerDraft,
   mergeRestoredDraft,
@@ -363,5 +368,163 @@ describe("rejected submissions come back into the composer", () => {
         `setComposerDraft — a computed-but-unwritten restore silently ` +
         `drops the user's text; body: ${JSON.stringify(body)}`,
     );
+  });
+});
+
+describe("the slash palette's key semantics", () => {
+  test("Tab completes, Enter does not — for any number of candidates", () => {
+    // The candidate count is deliberately not an input. The engine
+    // advertises every command in two groups and the composer flattens
+    // both, so a fully-typed `/status` has two IDENTICAL candidates. The
+    // old rule ("Enter completes while the list is ambiguous") therefore
+    // fired on a completely unambiguous command and ate the keystroke
+    // that was supposed to run it.
+    for (const key of ["Tab"]) {
+      assert.equal(shouldCompleteSlashWord(key), true, key);
+    }
+    for (const key of ["Enter", "ArrowDown", "ArrowUp", "Escape", " "]) {
+      assert.equal(
+        shouldCompleteSlashWord(key),
+        false,
+        `${key} must not be consumed by the palette`,
+      );
+    }
+  });
+
+  test("completing a bare engine name re-attaches exactly one slash", () => {
+    // `availableCommands` reports `name: "status"`; the box needs
+    // `/status`. Writing the name back verbatim left `status `, and the
+    // next Enter sent a plain chat message instead of running the
+    // command.
+    assert.equal(completeSlashWord("status"), "/status ");
+    assert.equal(completeSlashWord("help"), "/help ");
+    for (const name of registry.CMD_BUTTON_COMMAND_NAMES) {
+      assert.equal(
+        completeSlashWord(name),
+        `/${name} `,
+        `${name} lost its leading slash`,
+      );
+    }
+  });
+
+  test("a completion can never produce a doubled slash", () => {
+    // Total function: whatever shape a command group ever reports, the
+    // box ends up with one slash. `//status` is what the engine would
+    // receive if this ever regressed.
+    for (const name of ["/status", "//status", "///status"]) {
+      const completed = completeSlashWord(name);
+      assert.equal(completed, "/status ", name);
+      assert.equal((completed.match(/\//g) ?? []).length, 1, name);
+    }
+  });
+
+  test("a completed candidate is still a command the router recognises", () => {
+    // The completion and the router are one contract: text the palette
+    // writes into the box must route exactly as the typed form does.
+    for (const name of registry.CMD_BUTTON_COMMAND_NAMES) {
+      assert.deepEqual(
+        routeSlashInput(completeSlashWord(name).trim()),
+        routeSlashInput(`/${name}`),
+        name,
+      );
+    }
+  });
+
+  test("the trailing space closes the palette (the value is one slash-word)", () => {
+    // The composer keeps the palette open only while the whole value is
+    // a single word with no whitespace, so a completion must end in a
+    // space or the panel stays open over the completed command.
+    assert.match(completeSlashWord("status"), / $/);
+  });
+});
+
+describe("composer wiring — the palette does not take Enter", () => {
+  test("the keydown branch delegates to shouldCompleteSlashWord", () => {
+    assert.ok(
+      /import\s+\{[^}]*\bshouldCompleteSlashWord\b[^}]*\}\s+from\s+["']@\/lib\/slash-routing["']/.test(
+        composerSource,
+      ),
+      "shouldCompleteSlashWord must be imported from @/lib/slash-routing",
+    );
+    assert.ok(
+      /if\s*\(shouldCompleteSlashWord\(event\.key\)\)/.test(composerSource),
+      "the palette's keydown branch must gate on shouldCompleteSlashWord(event.key)",
+    );
+  });
+
+  test("no Enter branch in the palette's keydown (this is the revert)", () => {
+    // Scoped to the palette block: the submit branch below it opens
+    // with `event.key === "Enter" && !event.shiftKey` and must keep
+    // doing so — what may not come back is a SECOND Enter test inside
+    // `if (slashOpen) { … }`.
+    const start = composerSource.indexOf("if (slashOpen) {");
+    const end = composerSource.indexOf(
+      'if (event.key === "Enter" && !event.shiftKey)',
+      start,
+    );
+    assert.ok(start > 0 && end > start, "the palette keydown block must exist");
+    const paletteBlock = composerSource.slice(start, end);
+    assert.ok(
+      !/event\.key === "Enter"/.test(paletteBlock),
+      "the slash palette must not test for Enter at all — that branch " +
+        "swallowed the keystroke instead of sending the command; block: " +
+        JSON.stringify(paletteBlock.slice(0, 400)),
+    );
+    assert.ok(
+      !/slashMatches\.length\s*>\s*1/.test(composerSource),
+      "the candidate count must not decide whether Enter completes; the " +
+        "engine reports every command in two groups, so a fully-typed " +
+        "`/status` has two candidates and the rule ate its own Enter",
+    );
+  });
+
+  test("both completion sites write the completed form, not the raw name", () => {
+    // The keydown branch …
+    assert.ok(
+      /setValue\(completeSlashWord\(picked\)\)/.test(composerSource),
+      "the Tab branch must write completeSlashWord(picked)",
+    );
+    // … and the palette row's onClick, which is the other way a
+    // candidate reaches the box.
+    assert.ok(
+      /onClick=\{\(\)\s*=>\s*setValue\(completeSlashWord\(command\)\)\}/.test(
+        composerSource,
+      ),
+      "a palette row must write completeSlashWord(command)",
+    );
+    assert.ok(
+      !/setValue\(`\$\{(?:picked|command)\} `\)/.test(composerSource),
+      "writing the bare engine name into the box is what turned `/status` " +
+        "into `status` — a plain message instead of a command",
+    );
+  });
+
+  test("Enter still reaches submit (the fall-through is intact)", () => {
+    // The palette block must `return` only on the keys it consumes, so
+    // Enter falls out of `if (slashOpen)` into the submit branch below.
+    const submitIdx = composerSource.indexOf('if (event.key === "Enter" && !event.shiftKey)');
+    assert.ok(submitIdx > 0, "the submit branch must exist");
+    const paletteIdx = composerSource.indexOf("if (slashOpen) {");
+    assert.ok(
+      paletteIdx > 0 && paletteIdx < submitIdx,
+      "the palette block sits above the submit branch, so Enter must fall through it",
+    );
+  });
+
+  test("the palette hint names the real bindings in both locales", () => {
+    const i18n = readFileSync(join(packageRoot, "webapp/lib/i18n.ts"), "utf8");
+    const hints = [...i18n.matchAll(/"slash\.hint": "([^"]+)"/g)].map(
+      (m) => m[1] ?? "",
+    );
+    assert.equal(hints.length, 2, "slash.hint must exist in both locales");
+    for (const hint of hints) {
+      assert.match(hint, /Enter/, hint);
+      assert.match(hint, /Tab/, hint);
+      assert.ok(
+        !/Esc/.test(hint),
+        `the hint still promises Esc, which clears the whole draft rather ` +
+          `than dismissing the panel: ${hint}`,
+      );
+    }
   });
 });

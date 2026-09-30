@@ -1959,6 +1959,48 @@ compares the mirror against the registry and against the `case` labels
 parsed out of both dispatchers in `interaction/commands.js`. A command
 added on one side alone fails the gate.
 
+### The slash palette: what Enter and Tab do
+
+While the composer holds a single `/`-word and at least one command
+matches, the palette is open. The keys mean this, and the meaning does
+not depend on how many candidates are showing:
+
+| Key | Effect |
+| --- | --- |
+| `Enter` | **sends** what is in the box, palette open or not |
+| `Tab` | accepts the highlighted candidate into the box; the box is not sent |
+| `↑` / `↓` | moves the highlight (wraps) |
+| clicking a row | accepts that row |
+| `Esc` | clears the draft, including a palette that was open |
+
+The candidate count is deliberately **not** an input to any of this.
+`availableCommands` reports every command in two groups — the engine's
+own `mcode` list and the webui button list — and the composer flattens
+both, so a fully typed `/status` has two identical candidates. A rule
+of the form "Enter completes while the list is ambiguous" therefore
+fired on an unambiguous command and swallowed the keystroke that was
+supposed to run it: the box kept its text, the command never ran, and
+the next `Enter` sent the bare word as a chat message. The decision
+lives in `shouldCompleteSlashWord` (`webapp/lib/slash-routing.ts`),
+which takes the key and nothing else.
+
+A second defect shared that key handler and is fixed with it:
+`availableCommands` carries **bare** names (`name: "status"`), so
+writing a candidate back verbatim produced `status ` — the leading
+slash was gone, and what left the composer was a message, not a
+command. `completeSlashWord` re-attaches exactly one slash and strips
+any the name already had, so the box can never come to hold `//`.
+
+| Design | Enter on an ambiguous prefix | Rejected because |
+| --- | --- | --- |
+| Enter always sends (shipped) | runs `/co`, which the engine rejects and the user sees at once | — |
+| Enter sends unless an arrow key moved the highlight | runs the highlighted candidate | one key then means two things depending on state the user did not necessarily set — hover moves the highlight too — and the failure is silent: a command nobody typed is what runs |
+| Enter always completes | inserts the first candidate | the reported defect; a typed command is unreachable without arrow keys |
+
+The palette does not replace the send button and the send button does
+not replace the palette. The composer's hint line states the two
+bindings outright: `Enter 发送,Tab 插入`.
+
 ### `POST /api/cmd` — four answers
 
 The response is written **after** the dispatch, so it describes the
