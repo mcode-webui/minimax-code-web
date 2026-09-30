@@ -513,10 +513,36 @@ export function loadTranscriptChatLines(mcodeSid, opts = {}) {
 // kept next to its replacement rather than being replaced. Nothing this
 // server produces does that.
 //
+// Annotations are not conversation lines. `§§ processed_duration=Nms`,
+// `§§ turn_msg=<assistantMessageId>` (webui-parity 83) and the slice-06
+// `##tc:<toolCallId>` marker carry per-turn metadata; `decodeTranscript`
+// consumes all three and none of them reaches the chat body. Each is written
+// into the very array the browser reads — the `§§` pair by
+// `mcode-{acp,exec}.js#finalize`, `##tc:` by the tool-call branch of the ACP
+// stream callback — and the v2 backfill synthesises the same `§§` lines from
+// the message rows' `turn_id` / `msg_id` columns, so an annotation is
+// routinely present in `read` and absent from `current` for a tab whose chat
+// was recorded before its marker shipped.
+//
+// Such a line is emitted where the ENGINE put it — at the cursor, before the
+// `current` line that failed to line up — never at the tail. Position is the
+// whole contract: the decoder resolves an annotation onto the assistant block
+// above it, so a relocated `§§ turn_msg=` hands the turn coordinate to a later
+// block (a `/status` echo would answer with another turn's file diff), and a
+// transcript recorded without markers would otherwise be replayed twice, once
+// annotated and once not.
+//
 // Capped reads (400 lines / 200KB) are the caller's concern, not this
 // function's: `transcript-sync.js` skips a capped read that would shrink
 // the view, so a truncated `read` here is always a prefix-preserving
 // window and every line it dropped is a line the engine no longer returns.
+//
+// Server-written turn metadata. Matched by prefix, not by an exact key
+// list: a new marker has to be recognised here the day it is written, and
+// the alternative — a whitelist that misses one — degrades silently into
+// the misplacement the comment above rules out.
+const ANNOTATION_LINE = /^(?:§§\s|##tc:)/;
+
 export function mergeEngineTranscript(read, current) {
   const dbLines = Array.isArray(read) ? read : [];
   const haveLines = Array.isArray(current) ? current : [];
@@ -528,6 +554,14 @@ export function mergeEngineTranscript(read, current) {
     if (j < dbLines.length && dbLines[j] === line) {
       merged.push(line);
       i += 1;
+      j += 1;
+      continue;
+    }
+    // An annotation the tab does not carry is emitted in the engine's
+    // position, and `current` keeps the cursor: it annotates the turn
+    // just aligned, not the webui line that is about to be kept.
+    if (j < dbLines.length && ANNOTATION_LINE.test(dbLines[j])) {
+      merged.push(dbLines[j]);
       j += 1;
       continue;
     }

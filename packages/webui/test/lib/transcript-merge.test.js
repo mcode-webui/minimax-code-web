@@ -153,6 +153,74 @@ describe("mergeEngineTranscript — the engine read is a spine, not a replacemen
       have: ["› ping", "› /help", "● 可用命令：", "  /new"],
       want: ["› ping", "› /help", "● 可用命令：", "  /new"],
     },
+    // --- the `§§` annotation family (webui-parity 83) -----------------------
+    // These three cases are one contract, stated per marker. An annotation is
+    // metadata about the turn above it, so the engine's position is the only
+    // position it can occupy: `decodeTranscript` resolves it onto the assistant
+    // block above it, and a `§§ turn_msg=` that lands after a `/status` echo
+    // answers that echo's "files edited" card with another turn's diff.
+    {
+      name: "a turn_msg the tab lacks stays on its own turn, ahead of a local echo",
+      read: ["› ping", "● pong", "§§ turn_msg=m2"],
+      have: ["› ping", "● pong", "› /status", "● 当前 model=X"],
+      want: ["› ping", "● pong", "§§ turn_msg=m2", "› /status", "● 当前 model=X"],
+    },
+    {
+      name: "processed_duration is placed by the same rule as turn_msg",
+      read: ["› ping", "● pong", "§§ processed_duration=1200ms", "§§ turn_msg=m2"],
+      have: ["› ping", "● pong", "› /help", "● 可用命令："],
+      want: [
+        "› ping",
+        "● pong",
+        "§§ processed_duration=1200ms",
+        "§§ turn_msg=m2",
+        "› /help",
+        "● 可用命令：",
+      ],
+    },
+    {
+      name: "the rule is marker-agnostic: a tool-call marker (`##tc:`) is placed the same way",
+      // `##tc:` is slice 06, not `§§`, and it is written the same way — into
+      // the array the browser reads, immediately before the `→ name` header it
+      // annotates. Pinned here so a future edit that special-cases the `§§`
+      // family by name cannot pass this suite.
+      read: ["› ping", "● pong", "##tc:call-7", "→ bash  {}", "  [completed]", "● 好了"],
+      have: ["› ping", "● pong", "→ bash  {}", "  [completed]", "● 好了", "› /status", "● 当前 model=X"],
+      want: [
+        "› ping",
+        "● pong",
+        "##tc:call-7",
+        "→ bash  {}",
+        "  [completed]",
+        "● 好了",
+        "› /status",
+        "● 当前 model=X",
+      ],
+    },
+    {
+      name: "an un-annotated chat is not replayed: every marker lands on its own turn",
+      // The regression this rule exists for. With the marker treated as an
+      // ordinary line the engine cursor stalls at the first `§§` and the whole
+      // remaining conversation is appended behind the tab's own copy.
+      read: ["› q1", "● a1", "§§ turn_msg=M1", "› q2", "● a2", "§§ turn_msg=M2"],
+      have: ["› q1", "● a1", "› q2", "● a2"],
+      want: ["› q1", "● a1", "§§ turn_msg=M1", "› q2", "● a2", "§§ turn_msg=M2"],
+    },
+    {
+      name: "a foreign turn keeps its marker when a local echo precedes it",
+      read: ["› ping", "● pong", "§§ turn_msg=m2", "› hi", "● hey", "§§ turn_msg=m3"],
+      have: ["› ping", "● pong", "› /status", "● 当前 model=X"],
+      want: [
+        "› ping",
+        "● pong",
+        "§§ turn_msg=m2",
+        "› /status",
+        "● 当前 model=X",
+        "› hi",
+        "● hey",
+        "§§ turn_msg=m3",
+      ],
+    },
   ];
 
   for (const c of CASES) {
@@ -229,9 +297,23 @@ describe("syncTranscriptsOnce — the /api/cmd echo survives a poll tick", () =>
 
     syncTranscriptsOnce({ dbPath });
 
+    // The engine read carries a third line: the v2 rows above give the turn the
+    // msg_id `m2`, and `messagesToChatLines` synthesises `§§ turn_msg=m2` for
+    // it (webui-parity 83). It has to be in the MERGED result — `decodeTranscript`
+    // consumes it into `assistantMessageId`, which is how the turn-diff card
+    // asks the engine for THIS turn instead of its latest one. It has to be
+    // right after `● pong` as well: the decoder resolves an annotation onto the
+    // assistant block above it, so a tail position would hand turn `m2`'s
+    // coordinate to the `/status` echo.
     assert.deepEqual(
       stateBus.clients.get("cid-d1").chat,
-      ["› ping", "● pong", "› /status", "● 当前 model=minimax_api/MiniMax-M3"],
+      [
+        "› ping",
+        "● pong",
+        "§§ turn_msg=m2",
+        "› /status",
+        "● 当前 model=minimax_api/MiniMax-M3",
+      ],
       "the command echo must still be in the transcript after the tick",
     );
   });

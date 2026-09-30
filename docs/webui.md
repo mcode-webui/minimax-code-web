@@ -1859,6 +1859,19 @@ catches up in an open tab. It is a **merge**, not a replacement:
 the lines already shown in lockstep, keeps any line the engine does not
 know about in place, and appends the engine's remainder.
 
+Server-written annotations — `§§ processed_duration=Nms`, `§§ turn_msg=<id>`,
+`##tc:<id>` — are the one class of engine line the merge may not treat as an
+ordinary line, because position is their entire meaning: the decoder resolves
+each one onto the block above it. A tab whose chat was recorded before its
+marker shipped does not carry the line, so the merge emits it at the cursor
+the engine put it at and never at the tail. Two consequences, both visible in
+the chat. A turn another client ran keeps **its own** turn coordinate instead
+of handing it to whatever the user ran next, which is the difference between
+the 「已编辑 N 个文件」 card reading this turn's diff and reading the engine's
+latest turn. And a transcript recorded before a marker shipped is annotated in
+place rather than replayed behind its own copy — the tail position duplicated
+the whole conversation instead, once annotated and once not.
+
 The alternative that was rejected: assign the read over `cs.chat`. It is
 one line, and it is what shipped. The consequence was that `/help` and
 `/status` returned `200`, cleared the composer, rendered their output for
