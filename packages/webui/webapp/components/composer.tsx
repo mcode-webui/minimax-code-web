@@ -22,6 +22,7 @@ import {
 } from "@/lib/effort-control";
 import {
   getComposerDraft,
+  mergeRestoredDraft,
   setComposerDraft,
   subscribeComposerDraft,
 } from "@/lib/composer-draft";
@@ -31,6 +32,7 @@ import {
   startComposerSent,
 } from "@/lib/composer-sent";
 import { getActiveSessionId, useSessionContext } from "@/lib/store";
+import { routeSlashInput } from "@/lib/slash-routing";
 import { decodeTranscript } from "@/lib/transcript";
 import { translate, type Locale, type MessageKey } from "@/lib/i18n";
 import { ContextMeter } from "./context-meter";
@@ -387,10 +389,18 @@ export function Composer({
     });
     setComposerDraft({ value: "", attachments: [] });
     try {
-      // A leading slash is a command, not a message: mcode parses those, and the
-      // webui's own slash commands are handled server-side too. The same
-      // record/clear/restore semantics apply to both branches.
-      if (content.startsWith("/")) await api.sendCommand(content);
+      // A slash input is a message OR a command, and only the eight
+      // webui button commands belong to /api/cmd — routing on the
+      // leading slash alone sent `/goal <text>` and `/compact` to an
+      // endpoint that never implemented them, which answered ok and
+      // dropped the input (webui-parity 62 D4). Everything else goes to
+      // /api/send, where handleLocalSlash consumes the typed webui
+      // commands and its default branch forwards the rest to the
+      // engine. The same record/clear/restore semantics apply to both
+      // branches; a 4xx from either one lands in the catch below, so
+      // the text comes back into the box instead of vanishing.
+      const route = routeSlashInput(content);
+      if (route.kind === "command") await api.sendCommand(route.cmd);
       else await api.sendMessage({ content, attachments });
       completeComposerSent();
     } catch (cause) {
@@ -430,26 +440,13 @@ export function Composer({
       // session switch).
       if (restored) {
         // The user may have typed INTERIM text during the in-flight
-        // window. We must not clobber it — "Nothing may vanish"
-        // applies to both the failed message and whatever the user
-        // typed since. Merge: put the restored text after the
-        // current draft with a blank-line separator. The error
-        // banner explains why the original bounced; both messages
-        // remain editable.
-        const current = getComposerDraft();
-        const interim = current.value.trim();
-        const mergedValue =
-          interim.length > 0
-            ? `${current.value}\n\n${restored.content}`
-            : restored.content;
-        // Restored attachments come first so the chip list reads in
-        // the order the user assembled it (the failed message's
-        // attachments, then any new attachments added meanwhile).
-        const mergedAttachments = [
-          ...restored.attachments,
-          ...current.attachments,
-        ];
-        setComposerDraft({ value: mergedValue, attachments: mergedAttachments });
+        // window, and the command path now has failures worth
+        // restoring from too (a 4xx from /api/cmd, a network failure):
+        // "Nothing may vanish" applies to the rejected input and to
+        // whatever was typed since. The merge rule lives in
+        // lib/composer-draft#mergeRestoredDraft so it is unit-tested
+        // instead of being re-derived from a React callback.
+        setComposerDraft(mergeRestoredDraft(getComposerDraft(), restored));
       }
       setComposerDraft({ error: errorMessage });
     } finally {

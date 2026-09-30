@@ -64,3 +64,38 @@ export function resetComposerDraftForTests(): void {
   draft = EMPTY_DRAFT;
   listeners.clear();
 }
+
+/**
+ * The patch that puts a rejected submission back into the composer
+ * without clobbering what the user typed while it was in flight.
+ *
+ * `restored` is the payload `failComposerSent` hands back when the
+ * dispatch context still matches. The user may have kept typing in the
+ * meantime, and the send was optimistically cleared at dispatch, so
+ * the rejected text lives ONLY in that payload — dropping it loses the
+ * user's input with no way back.
+ *
+ * Two rules, both about order: the interim text stays FIRST (it is what
+ * the user is looking at) and the restored text follows after a blank
+ * line, and the restored attachments come first in the chip list (the
+ * order the user assembled them in). A blank/whitespace-only interim
+ * draft counts as empty — otherwise a stray space typed during a slow
+ * send would separate the two messages by a blank line for nothing.
+ *
+ * The error banner is NOT part of the returned patch: the caller sets
+ * it separately, because the banner must appear even when nothing is
+ * restored (a failure in a session the user already left).
+ */
+export function mergeRestoredDraft(
+  current: ComposerDraft,
+  restored: { content: string; attachments: string[] },
+): Partial<ComposerDraft> {
+  const interim = current.value.trim();
+  return {
+    value:
+      interim.length > 0
+        ? `${current.value}\n\n${restored.content}`
+        : restored.content,
+    attachments: [...restored.attachments, ...current.attachments],
+  };
+}
