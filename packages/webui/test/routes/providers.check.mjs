@@ -627,3 +627,122 @@ describe("SSE broadcast — providers.updated payload is masked", () => {
     assert.equal(payload.providers[0].auth.hasKey, true);
   });
 });
+// ---------------------------------------------------------------------
+// Custom headers (webui-parity ticket 85).
+//
+// The end-to-end run against a live instance found what no unit test
+// could: the dialog sent `auth.headers` on `POST /api/providers/test`,
+// the route REBUILT `auth` field by field and dropped it, and the
+// probe went out without them. Every other layer was correct, so a
+// unit test on the config lib or the sync helper stayed green while
+// the feature silently did nothing on the one path where a user can
+// observe it.
+//
+// These pins are on the ROUTE, because the route is where the field
+// was being lost.
+// ---------------------------------------------------------------------
+
+describe("custom headers — route passthrough (ticket 85)", () => {
+  // A real loopback listener: the probe's whole job is to make an
+  // outbound request, and "did the header actually go out" is only
+  // answerable by something on the other end of a socket.
+  let echo;
+  let echoPort;
+  let lastHeaders;
+
+  before(async () => {
+    const { createServer } = await import("node:http");
+    echo = createServer((req, res) => {
+      lastHeaders = req.headers;
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ data: [] }));
+    });
+    await new Promise((resolve) => echo.listen(0, "127.0.0.1", resolve));
+    echoPort = echo.address().port;
+  });
+
+  after(async () => {
+    await new Promise((resolve) => echo.close(resolve));
+  });
+
+  test("GET returns stored headers; PUT accepts and persists them", async () => {
+    const putRes = fakeRes();
+    await providersRoute.handlePutProviders(
+      fakeReq({
+        version: 2,
+        providers: [
+          {
+            id: "hdrp",
+            label: "Hdr",
+            protocol: "openai",
+            auth: {
+              type: "byok",
+              apiKey: "sk-realkey-abcdefghij",
+              baseURL: "https://api.example.com",
+              headers: { "X-Tenant": "acme" },
+            },
+            models: [],
+          },
+        ],
+      }),
+      putRes,
+      {},
+    );
+    assert.equal(putRes._status, 200);
+
+    const getRes = fakeRes();
+    await providersRoute.handleGetProviders(fakeReq({}), getRes, {});
+    const body = JSON.parse(getRes._body);
+    const found = body.providers.find((p) => p.id === "hdrp");
+    assert.ok(found, "the provider is in the catalogue");
+    assert.deepEqual(found.auth.headers, { "X-Tenant": "acme" });
+  });
+
+  test("the probe transmits the headers on the wire", async () => {
+    const res = fakeRes();
+    await providersRoute.handleTestProvider(
+      fakeReq({
+        protocol: "openai",
+        auth: {
+          type: "byok",
+          apiKey: "sk-realkey-abcdefghij",
+          baseURL: `http://127.0.0.1:${echoPort}`,
+          headers: { "X-Tenant": "acme", "X-Trace-Id": "01HXYZ" },
+        },
+        timeoutMs: 4000,
+      }),
+      res,
+      {},
+    );
+    assert.equal(res._status, 200);
+    assert.equal(lastHeaders["x-tenant"], "acme", "the header must reach the upstream");
+    assert.equal(lastHeaders["x-trace-id"], "01HXYZ");
+    // The protocol's own required header still wins — see the probe
+    // asymmetry note in docs/webui.md.
+    assert.equal(lastHeaders["accept"], "application/json");
+  });
+
+  test("a header carrying CRLF is dropped, never injected into the request", async () => {
+    const res = fakeRes();
+    await providersRoute.handleTestProvider(
+      fakeReq({
+        protocol: "openai",
+        auth: {
+          type: "byok",
+          apiKey: "sk-realkey-abcdefghij",
+          baseURL: `http://127.0.0.1:${echoPort}`,
+          headers: { "X-Evil": "a\r\nX-Injected: yes" },
+        },
+        timeoutMs: 4000,
+      }),
+      res,
+      {},
+    );
+    assert.equal(
+      lastHeaders["x-injected"],
+      undefined,
+      "a stored value must never be able to add a header line",
+    );
+    assert.equal(lastHeaders["x-evil"], undefined, "the whole record is rejected");
+  });
+});

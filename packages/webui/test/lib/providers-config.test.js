@@ -1073,3 +1073,191 @@ describe("loadUserLevelProviders — user-layer-only loader", () => {
     }
   });
 });
+// ---------------------------------------------------------------------
+// Custom headers (webui-parity ticket 85).
+//
+// Three separate contracts live here and each one can fail silently,
+// so they get their own pins:
+//
+//   1. the VALIDATOR rejects a name/value that could break the header
+//      block of an outbound request (CR / LF / NUL), and accepts every
+//      name the RFC 9110 token grammar allows;
+//   2. NORMALISE persists the map, and a record without the field is
+//      unchanged by its presence (a config written before this field
+//      must load identically);
+//   3. PUBLICVIEW echoes the headers back — this is what makes the
+//      dialog's rows readable on reopen, and it is deliberately NOT
+//      masked, which is a stated trade rather than an oversight.
+// ---------------------------------------------------------------------
+
+describe("normalizeCustomHeaders — the header grammar", () => {
+  const norm = providersConfig.normalizeCustomHeaders;
+  // Built at runtime rather than written as a literal so this file
+  // stays free of a raw NUL byte.
+  const NUL = String.fromCharCode(0);
+
+  test("absent / empty / null normalise to an empty map", () => {
+    for (const input of [undefined, null, {}]) {
+      const r = norm(input);
+      assert.equal(r.ok, true, `input ${JSON.stringify(input)} must be accepted`);
+      assert.deepEqual(r.headers, {});
+    }
+  });
+
+  test("a well-formed map round-trips verbatim", () => {
+    const r = norm({ "X-Tenant": "acme", "X-Trace": "01H" });
+    assert.equal(r.ok, true);
+    assert.deepEqual(r.headers, { "X-Tenant": "acme", "X-Trace": "01H" });
+  });
+
+  test("every RFC 9110 token character is accepted in a name", () => {
+    // A real gateway asks for things like `X-Request-Id` and
+    // `anthropic-beta`; a filter too tight would reject valid config.
+    const r = norm({ "X-Request-Id!#$%&'*+-.^_`|~09": "v" });
+    assert.equal(r.ok, true, r.error);
+  });
+
+  test("a tab is legal in a VALUE (the grammar allows it)", () => {
+    const r = norm({ "X-Odd": "a\tb" });
+    assert.equal(r.ok, true, r.error);
+  });
+
+  test("CR / LF in a name or value is rejected, not stripped", () => {
+    // Rejecting is the only safe answer: stripping would leave the
+    // operator believing a header is in effect when the upstream never
+    // saw it intact.
+    for (const bad of [{ "X-A\nX-B": "v" }, { "X-A": "v\r\nX-B: w" }]) {
+      const r = norm(bad);
+      assert.equal(r.ok, false, `must reject ${JSON.stringify(bad)}`);
+      assert.equal(r.headers, undefined, "a rejected map yields no partial value");
+    }
+  });
+
+  test("NUL is rejected in a value", () => {
+    const r = norm({ "X-A": `v${NUL}` });
+    assert.equal(r.ok, false);
+  });
+
+  test("a space in a NAME is rejected (not a token character)", () => {
+    const r = norm({ "X Tenant": "v" });
+    assert.equal(r.ok, false);
+  });
+
+  test("a non-string value is rejected", () => {
+    assert.equal(norm({ "X-A": 42 }).ok, false);
+    assert.equal(norm({ "X-A": null }).ok, false);
+  });
+
+  test("an array is rejected — it is not a header map", () => {
+    assert.equal(norm(["X-A"]).ok, false);
+  });
+
+  test("the count and length ceilings are enforced", () => {
+    const many = {};
+    for (let i = 0; i < providersConfig.MAX_CUSTOM_HEADERS + 1; i++) {
+      many[`X-H${i}`] = "v";
+    }
+    assert.equal(norm(many).ok, false, "too many headers must be rejected");
+    assert.equal(
+      norm({ "X-Long": "v".repeat(providersConfig.MAX_HEADER_VALUE_LEN + 1) }).ok,
+      false,
+      "an over-long value must be rejected",
+    );
+    assert.equal(
+      norm({ ["X".repeat(providersConfig.MAX_HEADER_NAME_LEN + 1)]: "v" }).ok,
+      false,
+      "an over-long name must be rejected",
+    );
+  });
+
+  test("the result is a fresh object, never the caller's", () => {
+    // The engine config is compared by value on the next sync; handing
+    // out a live reference would let a later mutation write through.
+    const input = { "X-A": "v" };
+    const r = norm(input);
+    r.headers["X-A"] = "tampered";
+    assert.equal(input["X-A"], "v", "the caller's map must be untouched");
+  });
+});
+
+describe("normaliseProvider — custom headers (ticket 85)", () => {
+  const base = (auth) => ({
+    id: "p1",
+    label: "P1",
+    protocol: "openai",
+    auth,
+    models: [],
+  });
+
+  test("a record without auth.headers loads exactly as before", () => {
+    // Backward compatibility is the whole point of the optional field.
+    const r = providersConfig.normaliseProvider(
+      base({ type: "byok", apiKey: "sk-realkey-aaa", baseURL: "https://x.test" }),
+    );
+    assert.equal(r.ok, true);
+    assert.deepEqual(r.value.auth.headers, {}, "absent normalises to {}");
+  });
+
+  test("headers persist through normalisation", () => {
+    const r = providersConfig.normaliseProvider(
+      base({
+        type: "byok",
+        apiKey: "sk-realkey-aaa",
+        baseURL: "https://x.test",
+        headers: { "X-Tenant": "acme" },
+      }),
+    );
+    assert.equal(r.ok, true);
+    assert.deepEqual(r.value.auth.headers, { "X-Tenant": "acme" });
+  });
+
+  test("an invalid header rejects the whole provider, naming it", () => {
+    const r = providersConfig.normaliseProvider(
+      base({
+        type: "byok",
+        apiKey: "sk-realkey-aaa",
+        baseURL: "https://x.test",
+        headers: { "X-Bad\nInjected": "v" },
+      }),
+    );
+    assert.equal(r.ok, false);
+    assert.match(r.error, /provider 'p1'/, "the error names the provider");
+    assert.match(r.error, /X-Bad/, "the error names the header");
+  });
+});
+
+describe("publicView — custom headers echo back (ticket 85)", () => {
+  const withHeaders = (headers) => ({
+    id: "p",
+    label: "L",
+    protocol: "openai",
+    enabled: true,
+    auth: { type: "byok", apiKey: "sk-realkey-abcdefghij", baseURL: "https://x.test", headers },
+    models: [],
+  });
+
+  test("headers are returned verbatim so the dialog can reopen them", () => {
+    const view = providersConfig.publicView(withHeaders({ "X-Tenant": "acme" }));
+    assert.deepEqual(view.auth.headers, { "X-Tenant": "acme" });
+  });
+
+  test("the view's headers are a copy, not a live reference", () => {
+    const src = { "X-Tenant": "acme" };
+    const view = providersConfig.publicView(withHeaders(src));
+    view.auth.headers["X-Tenant"] = "tampered";
+    assert.equal(src["X-Tenant"], "acme", "the stored record must be unreachable from the view");
+  });
+
+  test("a provider stored before the field still yields an object", () => {
+    const view = providersConfig.publicView(withHeaders(undefined));
+    assert.deepEqual(view.auth.headers, {}, "absent must be {}, not undefined");
+  });
+
+  test("masking apiKey is unaffected by header values", () => {
+    // The masking contract is the security-critical one; adding a
+    // sibling field must not have weakened it.
+    const view = providersConfig.publicView(withHeaders({ "X-Tenant": "acme" }));
+    assert.equal(view.auth.apiKeyMasked, "sk-r***ghij");
+    assert.equal(JSON.stringify(view).includes("realkey"), false);
+  });
+});

@@ -755,6 +755,26 @@ const en = {
   "providers.dialog.attachments.audio": "Audio",
   "providers.dialog.cancel": "Cancel",
   "providers.dialog.save": "Save",
+  // API 格式 — the desktop's dropdown. The three values are the
+  // protocols this build already supports; the labels are the
+  // desktop's spelling, not a new set of formats.
+  "providers.dialog.apiFormat": "API format",
+  "providers.dialog.apiFormat.openai": "OpenAI Completions",
+  "providers.dialog.apiFormat.anthropic": "Anthropic Messages",
+  "providers.dialog.apiFormat.gemini": "Gemini",
+  // 自定义 Headers — outbound request headers merged into every call
+  // to this provider.
+  "providers.dialog.headers": "Custom headers",
+  "providers.dialog.headersAdd": "＋ Add header",
+  "providers.dialog.headerName": "Header name",
+  "providers.dialog.headerValue": "Header value",
+  "providers.dialog.headerRemove": "Remove header {{name}}",
+  // Footer connectivity check (form-level, gates 保存).
+  "providers.dialog.formTest": "Test connection",
+  "providers.dialog.formTestSkip": "Skip the connection test",
+  "providers.dialog.formTestHint":
+    "Saving is blocked until this provider answers, unless you skip the test",
+  "providers.dialog.formTestNeedProvider": "Choose a provider and enter a key first",
   "providers.dialog.errorProvider": "Select a provider first",
   "providers.dialog.errorDuplicate": "Provider id already exists: {{id}}",
   "providers.dialog.modelsEmpty":
@@ -1756,6 +1776,23 @@ const zh: Record<MessageKey, string> = {
   "providers.dialog.attachments.video": "视频",
   "providers.dialog.attachments.audio": "音频",
   "providers.dialog.cancel": "取消",
+  // API 格式 —— 桌面版的协议下拉。三个取值即本版本已支持的协议，
+  // 文案照桌面版写法，不新造格式。
+  "providers.dialog.apiFormat": "API 格式",
+  "providers.dialog.apiFormat.openai": "OpenAI Completions",
+  "providers.dialog.apiFormat.anthropic": "Anthropic Messages",
+  "providers.dialog.apiFormat.gemini": "Gemini",
+  // 自定义 Headers —— 随每次请求发往该供应商的附加头。
+  "providers.dialog.headers": "自定义 Headers",
+  "providers.dialog.headersAdd": "＋ 添加 Header",
+  "providers.dialog.headerName": "Header 名称",
+  "providers.dialog.headerValue": "Header 值",
+  "providers.dialog.headerRemove": "移除 Header {{name}}",
+  // 底部表单级连通检测（未通过则「保存」不可用）。
+  "providers.dialog.formTest": "连通检测",
+  "providers.dialog.formTestSkip": "跳过连通检测",
+  "providers.dialog.formTestHint": "该供应商连通检测通过前不可保存，可勾选跳过检测",
+  "providers.dialog.formTestNeedProvider": "请先选择提供商并填写 API Key",
   "providers.dialog.save": "保存",
   "providers.dialog.errorProvider": "请先选择提供商",
   "providers.dialog.errorDuplicate": "供应商 ID 已存在：{{id}}",
