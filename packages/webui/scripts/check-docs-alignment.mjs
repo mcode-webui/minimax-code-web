@@ -5,7 +5,8 @@
 // the manifest (`package.json`), the documentation set
 // (`README.md` + `docs/API.md` + `docs/CAPABILITIES.md` +
 // `docs/CAPABILITIES.zh-CN.md`), the security disclosure
-// (`references/SECURITY-NOTES.md`), and the
+// (`references/SECURITY-NOTES.md`), the architecture document pair
+// (`docs/ARCHITECTURE.md` + `docs/ARCHITECTURE.zh-CN.md`), and the
 // server code (`server/router.js`, `server/lib/config.js`).
 //
 // Each check prints a one-line PASS or a list of mismatches with the
@@ -19,7 +20,7 @@
 //
 // No external deps — Node 22+ stdlib only.
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
@@ -145,7 +146,7 @@ const configSrc = read("server/lib/config.js");
 //          English document (ticket 51 F3).
 // -----------------------------------------------------------------------
 
-console.log(`${TAG.dim("[1/6]")} package.json → README.md + docs/CAPABILITIES.md; zh-CN mirror alignment`);
+console.log(`${TAG.dim("[1/7]")} package.json → README.md + docs/CAPABILITIES.md; zh-CN mirror alignment`);
 
 // Ordered `## N. ` heading numbers of a CAPABILITIES document.
 function sectionNumbers(doc) {
@@ -221,7 +222,7 @@ check(
 // for the canonical list; we only assert on what README itself mentions.
 // -----------------------------------------------------------------------
 
-console.log(`${TAG.dim("[2/6]")} README.md endpoint mentions → server/router.js`);
+console.log(`${TAG.dim("[2/7]")} README.md endpoint mentions → server/router.js`);
 const readmeEndpoints = [
   ...readme.matchAll(/`(GET|POST|DELETE|PUT|PATCH)\s+(\/api\/[A-Za-z0-9_\-\/:.]+)`/g),
 ].map((m) => ({ method: m[1], path: m[2].split("?")[0] }));
@@ -251,7 +252,7 @@ for (const { method, path } of readmeEndpoints) {
 // scan those and assert each (method, path) is wired up in router.js.
 // -----------------------------------------------------------------------
 
-console.log(`${TAG.dim("[3/6]")} docs/API.md endpoints → server/router.js`);
+console.log(`${TAG.dim("[3/7]")} docs/API.md endpoints → server/router.js`);
 const apiEndpoints = [
   ...apiDoc.matchAll(/### `((?:GET|POST|DELETE|PUT|PATCH)(?:\s*\|\s*(?:GET|POST|DELETE|PUT|PATCH))*) (\/api\/[^`?]+)/g),
 ].map((m) => {
@@ -341,7 +342,7 @@ const KNOWN_ENV_VARS = new Set([
   "DEBUG_INJECT",
 ]);
 
-console.log(`${TAG.dim("[4/6]")} references/SECURITY-NOTES.md env vars → server/lib/config.js`);
+console.log(`${TAG.dim("[4/7]")} references/SECURITY-NOTES.md env vars → server/lib/config.js`);
 // Env-var tokens in SECURITY-NOTES are mostly `TOKEN`, `HOST`, `PORT`,
 // `MCODE_RUNTIME_DB`, `MCODE_WEBUI_UPLOAD_DIR`, `MCODE_WEBUI_SETTINGS_PATH`,
 // `MAVIS_DATA_DIR`, `MCODE_MODEL`, `MCODE_CMD`, `MCODE_WORKSPACE`,
@@ -383,7 +384,7 @@ if (envVars.size === 0) {
 // manifest is JSON-clean. Already done implicitly by parseJson() above.)
 // -----------------------------------------------------------------------
 
-console.log(`${TAG.dim("[5/6]")} package.json round-trip parse + capability shape`);
+console.log(`${TAG.dim("[5/7]")} package.json round-trip parse + capability shape`);
 const capsObjects = pkgJson.mcodeWebui?.capabilities ?? [];
 check(
   "package.json round-trip JSON parse",
@@ -432,7 +433,7 @@ check(
 // (Hono `OWNED_ROUTES` set). Either side satisfies the anti-pattern.
 // -----------------------------------------------------------------------
 
-console.log(`${TAG.dim("[6/6]")} known drift: cleanup-orphans endpoint consistency`);
+console.log(`${TAG.dim("[6/7]")} known drift: cleanup-orphans endpoint consistency`);
 const apiHasCleanup = apiDoc.includes("cleanup-orphans");
 // Legacy: `{ method: "POST", match: ... cleanup-orphans ... }` style.
 // Hono: a literal `"POST /api/sessions/cleanup-orphans"` in OWNED_ROUTES.
@@ -466,6 +467,262 @@ if (apiHasCleanup && !registeredAnywhere) {
     [],
   );
 }
+
+// -----------------------------------------------------------------------
+// Check 7: every `file#symbol` and bare-path citation in
+//          docs/ARCHITECTURE.md + docs/ARCHITECTURE.zh-CN.md resolves.
+//
+// Ticket 95 measured a 24% distortion rate on this document's
+// symbol→file citations (12 of 50 wrong, spread across all four
+// failure classes: wrong file, removed symbol, removed file, ambiguous
+// phrasing). Both reported cites were *plausible* — a reader greps,
+// lands on a real file, and reads the wrong code. A citation gate is
+// the only thing that catches that before review does.
+//
+// Three mechanical sub-checks, because each catches a different class:
+//   7a  a bare `path.ext` cited in either document exists on disk
+//       (catches "the file was deleted" — e.g. the old `render.js`)
+//   7b  a `file.ext#symbol` cite resolves AND that file *defines* the
+//       symbol, with import lines stripped so "X imports it" does not
+//       count as "X defines it" (catches the reported bug:
+//       `getCachedMcodeCommands()` cited as "(in `state-bus.js`)"
+//       when acp-client.js is the defining module)
+//   7c  both language mirrors cite the same file#symbol pairs, so a
+//       correction cannot land on one side only
+//
+// What this does NOT cover, stated plainly so nobody over-trusts it:
+// a symbol named in prose with no file binding ("Both expose
+// `stopExec()`") is invisible to a path-driven gate. Those still need
+// a human, or a bespoke assertion for that specific symbol.
+// -----------------------------------------------------------------------
+
+console.log(`${TAG.dim("[7/7]")} docs/ARCHITECTURE*.md symbol→file citations`);
+
+const REPO_ROOT = resolve(ROOT, "..", "..");
+const archDoc = read("docs/ARCHITECTURE.md");
+const archZhDoc = read("docs/ARCHITECTURE.zh-CN.md");
+
+// Paths a source checkout legitimately has no copy of. Keep this short
+// and justified — every entry is a path whose absence is correct.
+const NOT_ON_DISK = new Set([
+  "dist/webui/server.js", // build output; produced by scripts/build.mjs
+  "server/routes/foo.js", // the illustrative path in §9's recipe
+  "sessions.json", // runtime data under WEBUI_DATA_DIR, not a source file
+  "mcp.json", // user-authored MCP server config, not a source file
+  "index.html", // Next export output (webapp/out/index.html), not a source file
+]);
+
+// Filename-shaped tokens that are not citations of a file in this repo.
+const NOT_A_CITATION = new Set([
+  "Next.js", // "Next.js 14.2.35" — a framework version
+]);
+
+// A doc citation is relative to one of these roots, tried in order. The
+// architecture doc is written from several vantages at once — "config.js"
+// is a lib module, "app/page.tsx" sits under webapp/ — so a single root
+// would produce false failures.
+const PATH_ROOTS = [
+  ROOT,
+  resolve(ROOT, "webapp"),
+  resolve(ROOT, "webapp", "app"),
+  resolve(ROOT, "webapp", "components"),
+  resolve(ROOT, "webapp", "lib"),
+  resolve(ROOT, "webapp", "public"),
+  resolve(ROOT, "webapp", "styles"),
+  resolve(ROOT, "server"),
+  resolve(ROOT, "server", "lib"),
+  resolve(ROOT, "server", "routes"),
+  resolve(ROOT, "server", "trajectory"),
+  resolve(ROOT, "docs"),
+  resolve(ROOT, "public"),
+  resolve(ROOT, "public", "trajectory", "js"),
+  REPO_ROOT,
+  resolve(REPO_ROOT, "scripts"),
+];
+
+// File extensions a citation may carry. Extensionless tokens
+// (`agent-modules/skills`) and directory-ish tokens (`out/`) are
+// deliberately out of scope.
+const CITE_EXT = "(?:js|mjs|cjs|ts|tsx|css|html|json|md|yml|yaml)";
+
+function resolveDocPath(docPath) {
+  for (const base of PATH_ROOTS) {
+    const abs = resolve(base, docPath);
+    if (existsSync(abs) && statSync(abs).isFile()) return abs;
+  }
+  return null;
+}
+
+// `mcode-{acp,exec}.js#finalize` → ["mcode-acp.js#finalize",
+// "mcode-exec.js#finalize"]. Brace alternation is the only expansion the
+// documents use.
+function expandBraces(token) {
+  const m = token.match(/^([^{}]*)\{([^{}]*)\}([^{}]*)$/);
+  if (!m) return [token];
+  return m[2]
+    .split(",")
+    .flatMap((alt) => expandBraces(`${m[1]}${alt.trim()}${m[3]}`));
+}
+
+// Capture group 1 of every `re` match in `doc`, brace alternation expanded.
+// `matchAll`, not `match` — a global `String.match` yields full-match
+// STRINGS, so `m[1]` would index a character rather than a group.
+function expandAll(doc, re) {
+  return [...doc.matchAll(re)].flatMap((m) => expandBraces(m[1]));
+}
+
+// Does `fileAbs` *define* `symbol`? Import lines are stripped first: a
+// module that imports a symbol obviously mentions it, and accepting
+// that would let the very bug this check exists for pass silently.
+function definesSymbol(fileAbs, symbol) {
+  let src;
+  try {
+    src = readFileSync(fileAbs, "utf8");
+  } catch {
+    return false;
+  }
+  const body = src
+    .split("\n")
+    .filter(
+      (line) =>
+        !/^\s*import\b/.test(line) && !/^\s*export\b.*\bfrom\b/.test(line),
+    )
+    .join("\n");
+  const esc = escapeRegex(symbol);
+  return new RegExp(
+    [
+      `(?:^|[\\s;{(=])(?:export\\s+)?(?:default\\s+)?(?:async\\s+)?function\\*?\\s+${esc}\\b`,
+      `(?:export\\s+)?(?:const|let|var|class|type|interface|enum)\\s+${esc}\\b`,
+      `export\\s*(?:type\\s*)?\\{[^}]*\\b${esc}\\b[^}]*\\}`,
+    ].join("|"),
+  ).test(body);
+}
+
+// A path citation, matched ANYWHERE in the document — not only inside
+// backticks. The reported drift included a path written bare inside a
+// mermaid participant label (`participant B as Browser render.js`), which
+// a backtick-scoped pattern walks straight past.
+const BARE_RE = new RegExp(
+  "(?:^|[^\\w./@-])([\\w][\\w./@-]*\\.(?:" + CITE_EXT + "))(?![\\w])",
+  "g",
+);
+// `file.ext#symbol` — the compact cite form.
+const HASH_RE = new RegExp(
+  "`([^`\\s]+\\.(?:" + CITE_EXT + "))#([A-Za-z_$][\\w$]*)`",
+  "g",
+);
+// `symbol()` (in `file.ext`) and the Chinese equivalents
+// `symbol()`（位于 `file.ext`） / （在 `file.ext` 中） — the parenthetical
+// cite form. This is the shape the reported `getCachedMcodeCommands()`
+// defect actually used, so a gate that ignores it guards nothing.
+//
+// The paren class accepts half- and full-width forms; the zh-CN mirror
+// writes （）, and a gate that only understood the ASCII pair would pass
+// the Chinese document by never matching anything in it.
+const PAREN_RE = new RegExp(
+  "`([A-Za-z_$][\\w$]*)\\(\\)?`[^\\n]{0,24}?[(\\uFF08](?:in|位于|在)\\s+`" +
+    "([^`\\s]+\\.(?:" + CITE_EXT + "))`",
+  "g",
+);
+
+const barePaths = new Map(); // token → [doc names]
+const hashCites = new Map(); // "file#symbol" → [doc names]
+
+function note(map, key, docName) {
+  if (!map.has(key)) map.set(key, []);
+  const list = map.get(key);
+  if (!list.includes(docName)) list.push(docName);
+}
+
+for (const [name, doc] of [
+  ["ARCHITECTURE.md", archDoc],
+  ["ARCHITECTURE.zh-CN.md", archZhDoc],
+]) {
+  for (const token of expandAll(doc, BARE_RE)) {
+    if (token.includes("*") || NOT_ON_DISK.has(token)) continue;
+    // A product name that merely looks like a filename. `Next.js 14.2.35`
+    // is a version, not a citation — keep this list explicit and justified.
+    if (NOT_A_CITATION.has(token)) continue;
+    // A route table entry or a URL fragment is not a file citation.
+    if (token.startsWith("/") || token.startsWith("http")) continue;
+    note(barePaths, token, name);
+  }
+  // The parenthetical form names its symbol in a separate backtick span,
+  // so record it as a `file#symbol` pair and reuse the same verdict path.
+  for (const m of doc.matchAll(PAREN_RE)) {
+    for (const file of expandBraces(m[2])) {
+      note(hashCites, `${file}#${m[1]}`, name);
+    }
+  }
+  // Brace alternation can sit in the file half (`mcode-{acp,exec}.js#x`),
+  // so expand per match rather than over a pre-flattened token list.
+  for (const m of doc.matchAll(HASH_RE)) {
+    for (const file of expandBraces(m[1])) {
+      note(hashCites, `${file}#${m[2]}`, name);
+    }
+  }
+}
+
+if (barePaths.size === 0 && hashCites.size === 0) {
+  check(
+    "docs/ARCHITECTURE.md contains file citations to verify",
+    false,
+    ["no path or file#symbol citation was extracted — the extractor regex probably broke"],
+  );
+}
+
+for (const [token, docs] of [...barePaths].sort()) {
+  check(
+    `${docs.join(" + ")}: cited path \`${token}\` exists`,
+    resolveDocPath(token) !== null,
+    [
+      `\`${token}\` is cited in ${docs.join(" and ")} but no file with that name exists under packages/webui/ or the repo root.`,
+      "If it was removed, delete the citation or state what replaced it; if it is build output, add it to NOT_ON_DISK with a reason.",
+    ],
+  );
+}
+
+for (const [token, docs] of [...hashCites].sort()) {
+  const hashAt = token.indexOf("#");
+  const file = token.slice(0, hashAt);
+  const symbol = token.slice(hashAt + 1);
+  const abs = resolveDocPath(file);
+  if (abs === null) {
+    check(`${docs.join(" + ")}: cited path \`${file}\` exists`, false, [
+      `\`${file}#${symbol}\` is cited in ${docs.join(" and ")} but \`${file}\` does not exist.`,
+    ]);
+    continue;
+  }
+  check(
+    `${docs.join(" + ")}: \`${file}\` defines \`${symbol}\``,
+    definesSymbol(abs, symbol),
+    [
+      `\`${symbol}\` is cited in ${docs.join(" and ")} as living in \`${file}\`, but that file does not define it.`,
+      `It may have moved (locate it with: grep -rn "${symbol}" packages/webui) or the file may only import it — say which.`,
+    ],
+  );
+}
+
+const citeSet = (doc) =>
+  new Set(
+    [...doc.matchAll(HASH_RE)].flatMap((m) =>
+      expandBraces(m[1]).map((f) => `${f}#${m[2]}`),
+    ),
+  );
+
+const enCites = citeSet(archDoc);
+const zhCites = citeSet(archZhDoc);
+const onlyEn = [...enCites].filter((c) => !zhCites.has(c));
+const onlyZh = [...zhCites].filter((c) => !enCites.has(c));
+check(
+  "docs/ARCHITECTURE.md and .zh-CN.md cite the same file#symbol pairs",
+  onlyEn.length === 0 && onlyZh.length === 0,
+  [
+    ...onlyEn.map((c) => `cited only in ARCHITECTURE.md: ${c}`),
+    ...onlyZh.map((c) => `cited only in ARCHITECTURE.zh-CN.md: ${c}`),
+    "Both documents are hand-maintained at equal weight; a correction must land on both sides.",
+  ],
+);
 
 // -----------------------------------------------------------------------
 // Summary + exit code

@@ -33,6 +33,8 @@
    ┌──────────────────────────────────────────────────────────────────────┐
    │  server/router.js — declarative route table                          │
    │                                                                      │
+   │  门禁链（Gates 1→5）位于 server/lib/gates.js#runGates，             │
+   │  router.js 委派给它；两个 HTTP 层共用同一条链：                        │
    │  LAN guard: !isLocalRequest(req) && !getLanBroadcast() → 403         │
    │                                                                      │
    │  ┌─ static  ┐ ┌─ /api/health  ┐  ┌─ /api/state  ┐ ┌─ /api/sessions ┐ │
@@ -70,7 +72,7 @@
    │  mcode-session-delete · sessions · state-bus · acp-client         │
    │  mcode-rpc · mcode-acp · mcode-exec · chat-line · context-percent  │
    │  mavis-usage · usage · settings · upload · workspace · slash ·     │
-   │  static                                                           │
+   │  static · gates · auth · alerts · trajectory                       │
    └──────────────────────────────────────────────────────────────────────┘
                                   │                          ▲
                                   ▼                          │  JSON-RPC over stdio
@@ -174,7 +176,7 @@ sequenceDiagram
     participant A as acp.mjs（prompt 回调）
     participant M as lib/mcode-acp.js<br/>streamAcpPrompt
     participant S as state-bus.js<br/>pushStateFor
-    participant B as 浏览器 render.js<br/>parseChatLines → renderMessage
+    participant B as webapp/lib/transcript.ts<br/>decodeTranscript → components/chat.tsx
 
     loop 每个模型分块
         E-->>A: session/update agent_thought_chunk
@@ -218,7 +220,7 @@ sequenceDiagram
 | **ask_user 工具** | 引擎发出 `ask_user` 工具调用 | 聊天行 `→ ask_user {json}` | 带选项/多选/其他的弹窗；回答 → `POST /api/send {isAskAnswer:true}` |
 | **权限提示** | 引擎为某个工具调用请求批准 | 权限事件 → 弹窗（ask/auto/full） | 回答经发送路径转发 |
 | **计划模式（Plan mode）** | 以 `Plan:` 为前缀的提示词 → 结构化计划事件 | 计划评审弹窗 | 同意 / 跳过 / 补充上下文 → 转发 |
-| **轨迹工作室** | 读取运行时 SQLite 投影（只读） | `/api/trajectory/*` | `/trajectory/` 面板（回合、令牌、压缩、子代理） |
+| **轨迹工作室** | 读取运行时 SQLite 投影（只读） | `/trajectory/api/*`（自带后端，`server/trajectory/http.mjs`） | `/trajectory/` 面板（回合、令牌、压缩、子代理） |
 
 交互式提示（ask_user / 权限 / 计划）的往返流程：
 
@@ -277,7 +279,7 @@ flowchart TD
         K[("runtime-state.sqlite<br/>mcode 引擎会话")]
     end
 
-    subgraph SIDEBAR["侧栏（renderSessions）"]
+    subgraph SIDEBAR["侧栏（webapp/components/session-tree.tsx）"]
         L["合并：mcode 会话（按工作区过滤）<br/>+ webui 记录，按 mcodeSessionId 去重<br/>类别：mcode / webui-mcode / webui"]
     end
 
@@ -350,26 +352,33 @@ flowchart TD
 
 | 函数 | 用途 |
 |---|---|
-| `getClient(cid)` | 返回 `clientState` 对象：`state`、`sse`、`activeChild`、`chatHistory`、`requestSeq`。首次调用时惰性创建。 |
-| `pushStateFor(cid, opts)` | 构建规范化的 `state` 对象并写入 `clientState.state`。除非 `opts.silent`，否则向 SSE 通道广播。 |
+| `getClient(cid)` | 返回按 cid 的 `clientState` 对象，由 `makeClientState()` 创建、首次调用时经 `restoreLatestSession()` 恢复。该对象**本身就是**状态——不存在 `clientState.state` 这层包装。按 cid 的旁表位于它之外而非其中：`sseByCid`（每个 cid 的 SSE 响应）与 `activeChildByCid`（每个 cid 的子进程）。 |
+| `pushStateFor(cid, opts)` | 从 `clientState` 组装规范化的 `state` 对象，除非 `opts.silent`，否则向 SSE 通道广播。 |
 | `pushOnlineCount(lanBroadcast)` | 统计 `sseByCid.size` 并广播给所有客户端。在连接/断开时调用。 |
 | `SSE_HEADERS` | 标准头：`Content-Type: text/event-stream`、`Cache-Control: no-cache`、`Connection: keep-alive`、`X-Accel-Buffering: no`。 |
 
-`state` 载荷在下文 § 5 中说明。`clientState.state`
-对象是代码库其余部分**唯一**读取的东西。
+`state` 载荷在下文 § 4 中说明。`clientState` 对象是代码库其余部分
+**唯一**读取的东西。
 
-### `acp-client.js`
-封装 mcode 的基于 stdio 的 JSON-RPC 协议。导出：
+### `acp.mjs` 与 `acp-client.js`
+两个不同的文件，需要 grep 符号时务必分清：
 
-- `McodeAcpClient` 类——`start()`、`request(method, params)`、
-  `notify(method, params)`、`stop()`、`events` EventEmitter。
-- `getMcodeAcpClient()`——进程级单例。初始化由
-  `pInitPromise` 去重，因此并发的 `start()` 调用者共享
-  同一个子进程。
-- 缓存：`mcodeSessionsCache`（位于 `acp-client.js`）和
-  `getCachedMcodeCommands()`（位于 `state-bus.js`）避免
-  对 `session/list` 和 `session/commands` 的
-  重复 JSON-RPC 往返。
+- `acp.mjs`（位于包根 `packages/webui/acp.mjs`）是零依赖的、基于
+  stdio 的 JSON-RPC 传输层。它**定义** `class McodeAcpClient`——
+  `start()`、`request(method, params)`、`notify(method, params)`、
+  `stop()`、`events` EventEmitter——并应答引擎发往客户端的每一个请求。
+- `server/lib/acp-client.js` 是包裹该传输层的 webui 侧缓存与生命周期
+  管理器。它从 `acp.mjs` **导入** `McodeAcpClient`，既不定义也不再导出它。
+  它自己的导出是：`getMcodeAcpClient()`——进程级单例，其初始化由模块级
+  `_mcodeAcpInitPromise` 去重，因此并发调用者共享同一个子进程——以及
+  `getCatalogueHost()`、`listAllMcodeSessions()`、
+  `getMcodeSessionsForWorkspace()`、`getMcodeSessionTitle()`、
+  `invalidateMcodeSessionsCache()`、`shutdownMcodeAcpSingleton()`、
+  `getMcodeServerInfo()`、`WEBUI_LOCAL_COMMANDS`、`ensureMcodeCommands()`。
+- 缓存：`mcodeSessionsCache` 与 `getCachedMcodeCommands()` 同为
+  `acp-client.js` 的模块级状态。`state-bus.js` 只是**导入**
+  `getCachedMcodeCommands()` 来组装快照。两者都避免了
+  对 `session/list` 与 `session/commands` 的重复 JSON-RPC 往返。
 
 ### `mcode-rpc.js`
 acp 侧的封装。每一个公共函数（`setMode`、`setConfigOption`、
@@ -416,10 +425,15 @@ export const MCODE_ACP_CAPABILITIES = {
 ### `mcode-acp.js` 与 `mcode-exec.js`
 两种传输，共享同一形状。一个回合用哪种传输在引擎启动前就已决定，判定散落两处：`routes/chat.js#handleSend` 在服务端环境变量 `MCODE_USE_ACP=0` 时强制走 `mcode exec`（ACP 协议回归时的逃生阀）；`runMcodeAcp` 自身在会话权限模式不是 `Full access` 时改道 `runMcodeExec`（`runMcodeAcp` 的首个分支）。不存在 `/exec` 命令，也没有按请求的显式选择；`mcode-rpc.js` 不做传输选择——它只与当前已注册的子进程通信。
 
-两者都暴露：
-- `runMcode(content, opts)` → `AsyncGenerator<NormalizedEvent>`
-- `stopExec()` → `void`
-- `isRunning()` → `boolean`
+两者各自暴露一个入口，名字随传输方式而定：
+- `mcode-acp.js` → `runMcodeAcp(content, opts)` → `AsyncGenerator<NormalizedEvent>`
+- `mcode-exec.js` → `runMcodeExec(content, opts)` → `AsyncGenerator<NormalizedEvent>`
+
+> **已移除的符号。** 本节早期版本记载过一个由两种传输共同导出的三件套——
+> `runMcode(content, opts)`、`stopExec()` 与 `isRunning()`。三者如今都不存在。
+> 单一入口已按传输方式拆分；停止与状态这两个问题改由别处回答：取消走
+> `mcode-rpc.js#cancelSession`，运行状态读取按 cid 的 `clientState` 上的
+> `running` 字段。这里没有可追踪的改名——它们是被删掉了，不是搬走了。
 
 `NormalizedEvent` 是一个带标签的联合类型（`{type, …}`），包含这些类型：
 `state`、`chat`、`delta`、`tool`、`permission`、`plan`、`ask`、
@@ -444,7 +458,7 @@ db 原始值从不上线。`projectAgentStatus` 合成两列——任务列的 `
 queued \| done \| stopped`）是投影层产物、不是存储值；webui 不导入它，
 但采用同样的形状。未识别的未来状态渲染为 `idle`，绝不误报"运行中"。
 
-## 4. `clientState.state` 载荷
+## 4. `clientState` 载荷
 
 这是每个 SSE `state` 事件所包含的形状。webui 将其
 1:1 镜像到 `state` JS 变量中。
@@ -466,12 +480,11 @@ queued \| done \| stopped`）是投影层产物、不是存储值；webui 不导
            ctx: string,            // e.g. "512k"
            thinking: 'On'|'Off'|string },
   permissions: string,             // mcode-side: 'ask'|'auto'|'full'|'plan'|...
-  commands: Array<{                // mcode slash commands
-    cmd: string, zh: string, en: string,
-    description_zh?: string, description_en?: string,
-    hint?: string,
-    input_hint?: string,
-    destructive?: boolean }>,
+  availableCommands: Record<        // mcode 斜杠命令，按组划分
+    string,                         //   例如 { mcode: [{name, description}, …] }
+    Array<{ name: string,
+            description?: string }>  // composer 将其摊平成 name[] 补全面板
+  >,
   sessions: Array<{                // webui-side session list (merged w/ mcode)
     id: string,
     title: string,
@@ -668,9 +681,10 @@ standalone 边界都保持原状。第 1 / 第 2 / 第 3 层只适用于服务�
 都意味着用户必须再装一次，或者让插件因缺失依赖而无法启动；最稳妥的
 答案就是“无依赖”。这条推理今天已不再成立：webui 现在是 workspace
 内成员、有构建步骤，服务器由 `scripts/build.mjs` 产出为
-`dist/webui/server.js`，发布归档（`scripts/lib/cli-release.mjs` 与
-`releaseManifest`）会固定每一条外部模块。手抄实现现在的代价比真接
-一个包更高，因为副本无法被构建流水线验证。
+`dist/webui/server.js`，发布归档会固定每一条外部模块：
+`scripts/lib/cli-release.mjs` 的 `cliExternalModules` 给出允许清单，
+`scripts/package-cli-release.mjs` 的 `releaseManifest()` 负责生成清单本身。
+手抄实现现在的代价比真接一个包更高，因为副本无法被构建流水线验证。
 
 `scripts/build.mjs` 中的 “no bundling” 注释由 workstream 1 拥有，
 在其打包入口落地时会移除。本文档是策略权威；任何源码注释若与 §7
@@ -683,7 +697,7 @@ standalone 边界都保持原状。第 1 / 第 2 / 第 3 层只适用于服务�
 | mcode acp 子进程崩溃 | `child.on('exit')` 监听器 | 以 `running.active=false` 调用 pushStateFor；客户端显示「agent stopped」toast |
 | mcode acp 返回 "Method not found" | `mcode-rpc.js` 允许列表 | 同步返回 `{ok:false, code:'unsupported'}`；路由处理器返回 501 Not Implemented；客户端显示 toast |
 | SSE 连接断开 | `EventSource.onerror` | 带退避的自动重连；重连后拉取 `/api/state` 并重新同步 |
-| 来自非白名单 IP 的 LAN 请求 | `router.js` L120 | 403 + 友好的 HTML 页面（/api/* 则返回 JSON） |
+| 来自非白名单 IP 的 LAN 请求 | `server/lib/gates.js#runGates`（由 `router.js` 调用） | 403 + 友好的 HTML 页面（/api/* 则返回 JSON） |
 | 服务器文件描述符耗尽 | `installGlobalErrorHandlers` 的 EMFILE 兜底 | 写入 `.server.err`；用户看到空白页；重新加载通常可修复 |
 | mcode exec 编码为 GBK（Windows） | Node 在 `spawn` 中默认使用 UTF-8；无需修复 | 已在 README 中记录为面向未来 Python 移植的坑 |
 
@@ -692,15 +706,20 @@ standalone 边界都保持原状。第 1 / 第 2 / 第 3 层只适用于服务�
 模式（完整演练见 `docs/DEVELOPMENT.md`）：
 
 1. 创建 `server/routes/foo.js`，导出 `async function handleFoo(req, res, ctx, pathname)`
-2. 在 `server/router.js` 中导入
-3. 添加到路由表：
-   ```js
-   { method: 'POST', match: (p) => p === '/api/foo', handler: fooRoute.handleFoo }
-   ```
-4. 如果新端点会修改状态，在处理器中调用 `pushStateFor(cid, {...})`。
-   绝不要直接写入 `clientState.state`。
-5. 如果该端点由 webui 调用，将其添加到
-   `packages/webui/webapp/lib/api.ts` 中的 fetch 辅助函数（`API_SUFFIX` 会自动附加）。
+2. 注册到当前拥有它的那个层：
+   - 绝大多数端点由 **Hono 拥有**。在 `server/app.js` 的 `OWNED_ROUTES`
+     中加入 `METHOD /api/foo` 字面量，并在那里接上
+     `app.post("/api/foo", …)`。`OWNED_ROUTES` 就是 Hono 所服务内容的账本。
+   - 遗留的 `ROUTES` 表（`server/router.js`）仍拥有一小部分端点
+     （`/api/health`、`GET /api/events`、`GET /api/alerts`、
+     `POST /api/settings`）以及静态资源与 `/trajectory/` 的处理。
+     只有当端点确实属于那里时，才添加 `{ method, match, handler }` 条目。
+3. 如果新端点会修改状态，在处理器中调用 `pushStateFor(cid, {...})`。
+   绝不要直接写入 `clientState` 对象。
+4. 如果该端点由 webui 调用，在 `packages/webui/webapp/lib/api.ts` 中
+   添加一个带类型的方法。它经本地的 `request()` 辅助函数发请求，该函数
+   自己会追加 `cid` 查询参数；并不存在 `API_SUFFIX` 常量——本文档早期
+   版本提到过，它已被移除。
 
 ## 10. 未来方向
 
