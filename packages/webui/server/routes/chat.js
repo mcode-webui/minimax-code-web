@@ -26,6 +26,14 @@ import {
 //   chat.clear) for the destructive /clear and /new commands; importing the
 //   raw dispatcher bypassed both in production.
 import { handleLocalSlash, handleCmdCommand } from "../lib/slash.js";
+// Pure declaration data (the declared /api/cmd command set) — not a
+// dispatcher, so it carries no gate and needs no route through the
+// shell above. Used only to build the 400 body.
+import {
+  CMD_BUTTON_COMMAND_NAMES,
+  cmdButtonCommandList,
+  isSendSlashCommand,
+} from "../lib/interaction/command-registry.js";
 import { runMcodeAcp } from "../lib/mcode-acp.js";
 import { collectExecResult, runMcodeExec } from "../lib/mcode-exec.js";
 import { cancelSession } from "../lib/mcode-rpc.js";
@@ -467,12 +475,54 @@ export async function handleStop(_req, res, ctx) {
 }
 
 // POST /api/cmd — webui button-driven commands
+//
+// Four states (webui-parity 62 D4):
+//
+//   200 {ok:true, cmd}   the dispatcher claimed the command and ran it
+//   400 {ok:false, …}    the dispatcher did NOT claim it (handled:false)
+//   4xx / 5xx           the gate, the audit, or the handler itself threw
+//   (no silent 200)      a claimed-but-unchanged command still answers 200
+//
+// The old order — write 200 {ok:true}, THEN dispatch — made every
+// input a success, including `/goal <text>` and `/compact`, which this
+// endpoint does not implement: the input vanished and the UI reported
+// nothing. The response is now written AFTER the dispatch so it can
+// report what actually happened, and an unclaimed command is named in
+// the body instead of being dropped.
+//
+// Answering after the dispatch also moves the ack behind the handler
+// (an /api/cmd ack can now take as long as the command itself — `/help`
+// may wait on the engine's command list). That is the point: the ack
+// is now a statement about the command, not about having received it.
 export async function handleCmd(req, res, ctx) {
   const cs = ctx.cs;
   const cid = ctx.cid;
   const payload = await readJson(req);
   const cmd = (payload.cmd || "").trim();
+  const result = await handleCmdCommand(cmd, cs, cid);
+  if (!result || result.handled !== true) {
+    // Name-only extraction mirrors handleCmdCommand (strip the leading
+    // slash, match the whole remainder) so the hint agrees with what
+    // the dispatcher actually compared against.
+    const name = cmd.startsWith("/") ? cmd.slice(1) : cmd;
+    const sendPath = isSendSlashCommand(name);
+    const suggestion = sendPath
+      ? `/${name} 是 /api/send 路径的命令，请作为普通消息发送（composer 会自动路由）。`
+      : `未知命令。可用的命令：${cmdButtonCommandList()}；引擎命令（如 /compact）请作为普通消息发送。`;
+    res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
+    return res.end(
+      JSON.stringify({
+        ok: false,
+        // Shown verbatim in the composer's error banner — user-facing,
+        // so it names the fix instead of the internal reason.
+        error: `/api/cmd 不处理该命令：${cmd || "(空)"}。${suggestion}`,
+        reason: "unknown_command",
+        cmd,
+        knownCommands: CMD_BUTTON_COMMAND_NAMES,
+        suggestion,
+      }),
+    );
+  }
   res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-  res.end(JSON.stringify({ ok: true }));
-  await handleCmdCommand(cmd, cs, cid);
+  return res.end(JSON.stringify({ ok: true, cmd }));
 }

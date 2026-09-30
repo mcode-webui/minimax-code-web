@@ -174,7 +174,7 @@ exec 回合的代价——以下都是当前真实存在的行为，选择权限
 - 回合进行期间看进程：`mcode … acp` 子进程是 ACP 回合，`mcode … exec --input - …` 是 exec 回合。
 - 行为特征：回复里没有任何 `→` 工具行、会话标题一直是初始名——大概率在 exec 上。
 
-**没有 `/exec` 命令。** 不存在通过聊天命令切换传输的入口；webui 本地命令只有 `new` / `clear` / `status` / `sessions` / `usage` / `help` / `stop`（`server/lib/acp-client.js#WEBUI_LOCAL_COMMANDS`）。切换传输只有上表的两个开关：环境变量与权限模式。
+**没有 `/exec` 命令。** 不存在通过聊天命令切换传输的入口；webui 按钮命令集是 `new` / `clear` / `status` / `sessions` / `review` / `help` / `usage` / `stop`（`server/lib/interaction/command-registry.js#CMD_BUTTON_COMMANDS`；`server/lib/acp-client.js#WEBUI_LOCAL_COMMANDS` 是引擎侧下发的调色板列表，不含 `review`）。切换传输只有上表的两个开关：环境变量与权限模式。
 
 权限模式接口与警告语义见 [`packages/webui/docs/API.md`](../packages/webui/docs/API.md) 的 `POST /api/permissions` 一节；面向贡献者的契约细节（判定代码位置、不变量）见 [`webui.md`](webui.md) 的 Transport selection 一节。
 
@@ -986,6 +986,66 @@ loading-states 相同：让 SSR 渲染测试可以脱离 `chat.tsx` 的 `@/` 别
 错误。会话内每个 sessionId 单独存储滚动位置 —— 按会话恢复滚动位置
 是有意为之的契约。
 
+## 斜杠命令走哪个端点（webui-parity ticket 65）
+
+输入框里以 `/` 开头的一行**不等于**命令。两个端点都能消费斜杠输入，
+但实现的命令集不同，composer 在发出请求之前就要在两者之间做判断。
+
+| 输入 | 端点 | 原因 |
+| --- | --- | --- |
+| `/new` `/clear` `/status` `/sessions` `/review` `/help` `/usage` `/stop` —— 裸命令，不带参数 | `POST /api/cmd` | 按钮命令集；`/api/cmd` 只认这八个 |
+| `/goal <内容>`、`/goal-done`、`/goal-blocked` | `POST /api/send` | 手输的 webui 命令，由 `handleLocalSlash` 实现；`/goal` 需要参数，`/api/cmd` 没有对应实现 |
+| `/compact` 及其它引擎命令 | `POST /api/send` | `handleLocalSlash` 的 `default` 分支把原文转交 mcode —— 引擎命令本来就是这么走的 |
+| 任何未被认领的命令 | `POST /api/send` | 同样转交引擎，由引擎在对话流里回答 |
+| `/clear now`（认领的命令带了参数） | `POST /api/send` | `handleCmdCommand` 匹配斜杠后的整段文本，带参数就是另一个字符串；`handleLocalSlash` 会解析命令名并走同一道授权门 |
+
+`/api/send` 这一侧的命令集并不是与按钮集不相交的一份清单。
+`server/lib/interaction/command-registry.js` 声明了
+`SEND_SLASH_COMMANDS`（`goal` / `goal-done` / `goal-blocked` / `clear` /
+`new` / `status` / `review` / `help` / `usage`，共 9 个），其中 6 个
+（`clear` / `new` / `status` / `review` / `help` / `usage`）同时也是按钮
+命令。`handleLocalSlash` 消费它们，`/api/cmd` 的 400 分支因此先问
+`isSendSlashCommand(name)`，对这 6 个把 `suggestion` 写成「请作为普通
+消息发送」。路由本身仍然优先把裸命令送到 `/api/cmd`，
+`SEND_SLASH_COMMANDS` 不参与路由判断。
+
+判断函数是 `routeSlashInput`（`webapp/lib/slash-routing.ts`），由
+`composer.tsx#submit` 调用。它比对的那份清单在服务端只声明一次：
+`server/lib/interaction/command-registry.js` 的
+`CMD_BUTTON_COMMANDS`（`/api/cmd` 的 400 分支与 `/help` 的兜底列表都读它）。
+浏览器侧保留一份镜像——打包产物不能 import 服务端模块——由
+`webapp/test/slash-routing.test.ts` 把镜像与服务端注册表、以及从
+`interaction/commands.js` 两个分发器里解析出的 `case` 标签三方对比。
+只在一边加命令，门禁就会红。
+
+### `POST /api/cmd` 的四种回答
+
+响应写在**分发之后**，因此它描述的是命令本身，而不是“收到了请求”。
+
+| 状态码 | 响应体 | 含义 |
+| --- | --- | --- |
+| `200` | `{ok:true, cmd}` | 分发器认领了该命令并已执行 |
+| `400` | `{ok:false, error, reason:"unknown_command", cmd, knownCommands[], suggestion}` | 无人认领；未发生任何状态变更 |
+| `4xx` | 通用请求门禁在处理器之前拒绝 | `Origin` 不可信、token 无效（`403`）、限流（`429`） |
+| `5xx` | 授权、审计或命令体自身失败 | 写前审计按设计 fail-closed |
+
+`authorize("slash.clear")` 授权被拒**不是**错误状态：
+`handleCmdCommand` 追加 `● 已取消 /<cmd> (授权未通过: <decidedBy>)`
+到转录后仍回 `200 {ok:true, cmd}`，且未发生任何状态变更。
+因此 `200` 不能证明命令真的做了事——要读转录才知道。
+
+`error` 是直接显示在 composer 错误条上的中文提示；`reason` 是机器可读
+的判定位；`suggestion` 是修复办法——`/goal` 这类 send 路径命令会提示
+“作为普通消息发送”，其余情况列出本端点真正接受的命令。
+`knownCommands` 把接受集一并下发，客户端不必自己硬编码一份。
+
+本路由的早期版本在分发之前就写下 `200 {ok:true}`，于是任何输入都是
+成功——`/goal <内容>` 清空了输入框，却什么也没发生。
+
+被拒的命令不会改动任何状态：不写对话行、不设目标、不建会话。composer
+把被拒的原文回填（排在请求期间新输入的内容之后）并展示错误条；转到
+`/api/send` 后被引擎拒绝的命令，则通过异常通道的错误提醒呈现。
+
 ## 端点清单（依据当前源码）
 
 下表覆盖全部已注册的 `/api/*` 路由。`OWNED_ROUTES`（Hono，62 条）
@@ -1023,7 +1083,7 @@ createdAtMs, updatedAtMs}`）下发，按 `toolCallId` 幂等、上限 32 条、
 | `GET` | `/api/sessions/:id/export` | `routes/export.js` | `?format=md\|json[&download=true]`；非法 format → `400`；authorize 拒绝 → `403`；找不到 → `404` |
 | `POST` | `/api/send` | `routes/chat.js#handleSend` | 火即弃；`200 {ok}`；`400 content required`；`409 {reason:"cid-busy"\|"session-busy"\|"at-capacity", running?, limit?}`；空闲看门狗在连续静默 `MCODE_WEBUI_PROMPT_IDLE_TIMEOUT`（默认 120 秒）后中止该回合 |
 | `POST` | `/api/stop` | `routes/chat.js#handleStop` | `200 {ok, wasRunning, cancelled, hardKilled, note}` |
-| `POST` | `/api/cmd` | `routes/chat.js#handleCmd` | webui 按钮命令 |
+| `POST` | `/api/cmd` | `routes/chat.js#handleCmd` | 只接受那八个按钮命令；被认领 → `200 {ok, cmd}`，未被认领 → `400 {ok:false, reason:"unknown_command", knownCommands, suggestion}` —— 见[斜杠命令](#斜杠命令走哪个端点webui-parity-ticket-65) |
 | `POST` | `/api/usage` | `routes/usage.js#handleUsage` | 记录 + 投影 |
 | `POST` | `/api/usage-trigger` | `routes/usage.js#handleUsage` | 老客户端别名 |
 | `GET` | `/api/usage-real` | `routes/usage.js#handleUsageReal` | 真实 token 快照 |

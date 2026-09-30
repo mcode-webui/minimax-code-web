@@ -222,15 +222,65 @@ cascade is this same route, so a client that needs it re-issues `POST
 
 ### `POST /api/cmd`
 
-Send a raw slash command (e.g. `/compact`, `/clear`). The server sends
-the command to mcode and streams the result.
+Run one of the webui **button commands**. The accepted set is declared in
+`server/lib/interaction/command-registry.js#CMD_BUTTON_COMMANDS`:
+`new`, `clear`, `status`, `sessions`, `review`, `help`, `usage`, `stop`.
+The command must be the bare `/name` form — these handlers take no
+argument, and the dispatcher matches the whole text after the slash.
+
+This endpoint does **not** forward to mcode. Engine commands
+(`/compact` and friends) and the typed webui commands (`/goal <text>`,
+`/goal-done`, `/goal-blocked`) belong to `POST /api/send`, whose
+`handleLocalSlash` consumes the webui ones and forwards everything else
+to the engine unchanged.
+
+The response is written after the dispatch, so it reports the command's
+outcome, not the receipt.
 
 **Request**
 ```json
-{ "cmd": "/compact" }
+{ "cmd": "/clear" }
 ```
 
-**Response 200** `{ok: true}`
+**Response 200** — the dispatcher claimed the command and ran it:
+```json
+{ "ok": true, "cmd": "/clear" }
+```
+
+**Response 400** — no command claimed it; nothing was mutated:
+```json
+{
+  "ok": false,
+  "error": "/api/cmd 不处理该命令：/compact。未知命令。可用的命令：/new、/clear、/status、/sessions、/review、/help、/usage、/stop；引擎命令（如 /compact）请作为普通消息发送。",
+  "reason": "unknown_command",
+  "cmd": "/compact",
+  "knownCommands": ["new", "clear", "status", "sessions", "review", "help", "usage", "stop"],
+  "suggestion": "未知命令。可用的命令：/new、/clear、/status、/sessions、/review、/help、/usage、/stop；引擎命令（如 /compact）请作为普通消息发送。"
+}
+```
+
+- `error` — the one-line string the webui composer shows in its error
+  banner. It is a user-facing product string and is Chinese, like the
+  rest of the chat surface; do not parse it.
+- `reason` — the machine-readable discriminator. `unknown_command` is
+  the only reason this route produces itself. A **declined**
+  `authorize("slash.clear")` gate does **not** fail the request:
+  `handleCmdCommand` appends `● 已取消 /<cmd> (授权未通过: <decidedBy>)`
+  to the transcript and returns `handled:true`, so the answer is
+  `200 {ok:true, cmd}` with nothing mutated. A **failure** in the gate,
+  the write-ahead audit (fail-closed by design), or a command body
+  answers `5xx`; the shared request gates can reject before the handler
+  runs with `403` (untrusted `Origin`, bad token) or `429` (rate limit).
+- `knownCommands` — the accepted set, so a client never has to keep its
+  own copy of the list.
+- `suggestion` — for a `/api/send` command such as `/goal`, the body
+  says so explicitly ("send it as a normal message") instead of calling
+  it unknown.
+
+An earlier revision of this endpoint documented "the server sends the
+command to mcode"; that was never true of the route, and the response
+was written before the dispatch, so an unclaimed command answered
+`200 {ok:true}` and the input was lost.
 
 ---
 

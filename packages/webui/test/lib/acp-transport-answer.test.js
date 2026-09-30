@@ -259,7 +259,7 @@ before(async (t) => {
   t.mock.module(absPath("lib/slash.js"), {
     namedExports: {
       handleLocalSlash: async () => ({ handled: false, continueMcode: false }),
-      handleCmdCommand: async () => ({ ok: true }),
+      handleCmdCommand: async () => ({ handled: true, continueMcode: false }),
       matchSlash: (content) => {
         const m = content.match(/^\/([a-zA-Z][\w-]*)\b\s*(.*)/);
         if (!m) return null;

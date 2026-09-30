@@ -137,20 +137,37 @@ node server.js
 
 ## Adding a slash command (webui-side)
 
-These are commands the webui handles itself without forwarding to mcode
-(the set lives in `WEBUI_LOCAL_COMMANDS`, `server/lib/acp-client.js` —
-`/clear`, `/new`, `/status`, and so on; there is no `/exec` command,
-transport is not switched by a slash command).
+These are commands the webui handles itself without forwarding to mcode.
+There are two dispatchers, and they do not hold the same set:
 
-1. In `server/lib/slash.js`, add an entry:
-   ```js
-   { cmd: '/foo', handler: handleFoo, hidden: false }
-   ```
-2. `handleFoo` receives `(content, ctx)` and returns either:
-   - `null` (not handled, forward to mcode)
-   - `{ handled: true, response: '…' }` (handled, send to user as a
-     synthetic message)
-3. The webui displays `response` as if it came from mcode.
+- `handleLocalSlash` in `server/lib/interaction/commands.js` — the
+  `POST /api/send` path, for commands typed with an argument (`/goal
+  <text>`, `/goal-done`, `/goal-blocked`). Anything it does not claim is
+  forwarded to mcode unchanged, which is how engine commands like
+  `/compact` work at all.
+- `handleCmdCommand` in the same file — the `POST /api/cmd` path, for
+  the bare `/name` button commands (`new`, `clear`, `status`, `sessions`,
+  `review`, `help`, `usage`, `stop`). An unclaimed command answers `400
+  {reason:"unknown_command"}`; it is never silently dropped.
+
+To add one:
+
+1. Add the name to `server/lib/interaction/command-registry.js` — the
+   single declaration of the `/api/cmd` set (`CMD_BUTTON_COMMANDS`, and
+   `SEND_SLASH_COMMANDS` for the typed send-path set). `/help`'s fallback
+   and the 400 body read it.
+2. Add the `case "foo":` (plus a `bodyFoo`) to the right dispatcher in
+   `server/lib/interaction/commands.js`. Routes import the dispatchers
+   through `server/lib/slash.js`, which carries the `authorize()` gate
+   and the write-ahead audit — never import the raw dispatcher.
+3. If the command belongs to the `/api/cmd` set, mirror the name in
+   `webapp/lib/slash-routing.ts`; that is what routes a typed command to
+   the right endpoint. `webapp/test/slash-routing.test.ts` fails when the
+   mirror, the registry, and the dispatchers' `case` labels disagree, so
+   a missing step 1 or 3 is a red test rather than a silent 400.
+
+Destructive commands (`/clear`, `/new`) are gated by
+`authorize("slash.clear")` inside the shell; do not add a second gate.
 
 ## Adding a mcode-translated slash command
 

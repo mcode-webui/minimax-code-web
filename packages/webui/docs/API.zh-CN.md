@@ -204,15 +204,57 @@ stdin。
 
 ### `POST /api/cmd`
 
-发送一条原始斜杠命令（例如 `/compact`、`/clear`）。服务器将
-命令发送给 mcode 并流式返回结果。
+执行一条 webui **按钮命令**。接受集声明在
+`server/lib/interaction/command-registry.js#CMD_BUTTON_COMMANDS`：
+`new`、`clear`、`status`、`sessions`、`review`、`help`、`usage`、`stop`。
+命令必须是裸的 `/name` 形式——这些命令体不接受参数，分发器匹配的是
+斜杠后的整段文本。
+
+本端点**不会**把命令转交 mcode。引擎命令（`/compact` 之类）与手输的
+webui 命令（`/goal <内容>`、`/goal-done`、`/goal-blocked`）属于
+`POST /api/send`：那里的 `handleLocalSlash` 消费 webui 命令，其余原文
+转交引擎。
+
+响应写在分发之后，因此它报告的是命令的结果，而不是“收到了请求”。
 
 **请求体**
 ```json
-{ "cmd": "/compact" }
+{ "cmd": "/clear" }
 ```
 
-**响应 200** `{ok: true}`
+**响应 200** —— 分发器认领了该命令并已执行：
+```json
+{ "ok": true, "cmd": "/clear" }
+```
+
+**响应 400** —— 无人认领；未发生任何状态变更：
+```json
+{
+  "ok": false,
+  "error": "/api/cmd 不处理该命令：/compact。未知命令。可用的命令：/new、/clear、/status、/sessions、/review、/help、/usage、/stop；引擎命令（如 /compact）请作为普通消息发送。",
+  "reason": "unknown_command",
+  "cmd": "/compact",
+  "knownCommands": ["new", "clear", "status", "sessions", "review", "help", "usage", "stop"],
+  "suggestion": "未知命令。可用的命令：/new、/clear、/status、/sessions、/review、/help、/usage、/stop；引擎命令（如 /compact）请作为普通消息发送。"
+}
+```
+
+- `error` —— webui composer 错误条直接显示的字符串。它是面向用户的
+  产品文案，与对话界面其余部分一致，使用中文；**不要**拿它做解析。
+- `reason` —— 机器可读的判定位。`unknown_command` 是本路由自身产生的
+  唯一 reason。`authorize("slash.clear")` 授权被拒**不会**让请求失败：
+  `handleCmdCommand` 追加 `● 已取消 /<cmd> (授权未通过: <decidedBy>)`
+  到转录后返回 `handled:true`，因此应答仍是 `200 {ok:true, cmd}`，
+  且未发生任何状态变更。授权、写前审计（按设计 fail-closed）或命令体
+  **自身抛错**才会变成 `5xx`；通用请求门禁会在处理器之前以 `403`
+  （`Origin` 不可信、token 无效）或 `429`（限流）拒绝。
+- `knownCommands` —— 接受集一并下发，客户端不必自己维护一份清单。
+- `suggestion` —— 对 `/goal` 这类 send 路径命令，正文会明确说“请作为
+  普通消息发送”，而不是笼统地报未知。
+
+本端点早期版本写的是“服务器将命令发送给 mcode”——路由从来不是这样，
+而且响应写在分发之前，于是一条无人认领的命令会得到 `200 {ok:true}`，
+输入就此丢失。
 
 ---
 
