@@ -6202,6 +6202,84 @@ describe('MiniMax Code ACP agent', () => {
   });
 });
 
+// The webui client (packages/webui/acp.mjs) negotiates exactly
+// `clientCapabilities: { plan: {} }` and nothing else. This block pins the
+// other half of that contract — the engine side — so the two cannot drift:
+// the payload the webui sends is the payload that switches the `plan_update`
+// projection on (agent.ts:1328 → agent.ts:1356), and the pre-fix shape
+// (`capabilities: { mcpCapabilities: … }`, which the engine never read)
+// negotiates nothing.
+//
+// The wire half — that the client really sends that key — is pinned in
+// packages/webui/test/lib/acp-client-requests.test.js, where the
+// initialize request is captured off a real child process.
+describe('webui client capability negotiation', () => {
+  it.each([
+    {
+      name: 'the payload mcode-webui sends',
+      clientCapabilities: { plan: {} } as acp.ClientCapabilities,
+      expectsPlanUpdate: true,
+    },
+    {
+      name: 'an empty capability set',
+      clientCapabilities: {} as acp.ClientCapabilities,
+      expectsPlanUpdate: false,
+    },
+  ] satisfies readonly {
+    readonly name: string;
+    readonly clientCapabilities: acp.ClientCapabilities;
+    readonly expectsPlanUpdate: boolean;
+  }[])('projects a plan review for $name', async (testCase) => {
+    const { runtime, emitRuntimeEvent } = createRuntime();
+    const updates: acp.SessionNotification[] = [];
+    const clientRequests: string[] = [];
+    const agent = createTuiAcpAgent({ runtime, version: '1.2.3' });
+    const client = acp
+      .client({ name: 'mcode-webui' })
+      .onNotification(acp.methods.client.session.update, ({ params }) => updates.push(params))
+      .onRequest(acp.methods.client.session.requestPermission, ({ method }) => {
+        clientRequests.push(method);
+        return { outcome: { outcome: 'selected', optionId: 'deny' } };
+      });
+
+    await client.connectWith(agent, async (connection) => {
+      await connection.request(acp.methods.agent.initialize, {
+        protocolVersion: acp.PROTOCOL_VERSION,
+        clientCapabilities: testCase.clientCapabilities,
+      });
+      await connection.request(acp.methods.agent.session.new, {
+        cwd: '/workspace',
+        mcpServers: [],
+      });
+      emitRuntimeEvent(planReviewEvent(1));
+
+      if (testCase.expectsPlanUpdate) {
+        await vi.waitFor(() =>
+          expect(updates).toContainEqual({
+            sessionId: 'session-1',
+            update: {
+              sessionUpdate: 'plan_update',
+              plan: { type: 'markdown', planId: 'plan-1', content: '# Plan 1' },
+            },
+          }),
+        );
+      } else {
+        // Nothing gates on the other capability shapes, so give the
+        // projection scheduler room to deliver before concluding silence.
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(updates.filter((entry) => entry.update.sessionUpdate === 'plan_update')).toEqual([]);
+      }
+    });
+
+    // A plan review carries a single `approve` option and the Runtime pins
+    // `allowOther: true` on every step, so the engine answers it fail-closed
+    // (acp/interactions.ts:647) instead of turning it into a permission
+    // request. That is why advertising `plan` is safe for a client with no
+    // interactive surface: it adds a notification, not a question.
+    expect(clientRequests).toEqual([]);
+  });
+});
+
 function permissionEvent(requestId: string, sessionId = 'session-1'): TuiRuntimeEvent {
   return {
     type: 'permission.ask',

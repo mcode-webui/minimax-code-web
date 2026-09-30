@@ -178,6 +178,47 @@ Known costs of an exec turn — all of these are current behaviour of this tree,
 
 This section records what the current source tree does, not a frozen contract. During a turn the two transports are distinguishable in the process list: an `mcode … acp` child is an ACP turn, an `mcode … exec --input -` child is exec. The operator-facing view — when you hit each transport, what it costs, and what to do — is the transport section of [`webui.zh-CN.md`](webui.zh-CN.md).
 
+## Client capability negotiation, and the requests the engine sends back
+
+The ACP handshake is bidirectional, and both directions are decided by one `initialize` payload. This section records what the webui advertises, why the list is that short, and what happens to a request the engine sends when the webui has no surface to answer it on.
+
+### What the webui advertises
+
+`packages/webui/acp.mjs` sends its capabilities under **`clientCapabilities`** — the ACP v1 `InitializeRequest` field the engine reads (`packages/tui/src/acp/agent.ts:434`). The value is the exported `CLIENT_CAPABILITIES` constant, and today it is exactly one entry:
+
+| Advertised | Engine behaviour it switches on | Does the webui consume it? |
+| --- | --- | --- |
+| `plan: {}` | the `plan_update` session update (`agent.ts:1328` gates, `agent.ts:1356` sends) | **yes** — `streamAcpPrompt` writes `cs.plan` (`server/lib/mcode-acp.js:1138`) and the plan modal renders it |
+| `elicitation.form` | the `elicitation/create` request path (`acp/interactions.ts:607`) | no — no form UI exists |
+| `auth.terminal` | `authMethods` in the initialize response (`agent.ts:455`) | no — no terminal to run `mcode login` in |
+| `_meta['minimax-code/extensions']` | goal / queue / delegation / current-session notifications (`acp/extensions.ts:277`) | no — nothing subscribes to those method names |
+
+A capability is a promise to answer, so the list carries only what the webui really consumes. The three omitted entries are not free. `elicitation.form` makes the engine send an `elicitation/create` request that this client can only decline, and the engine then dismisses the Runtime questionnaire outright (`acp/interactions.ts:647`) — a questionnaire the user could have answered in the TUI simply disappears. The extension `_meta` is pure cost with no consumer: those notifications arrive as top-level ACP methods, and the only `goal_update` the webui handles is a `session/update` sub-kind (`acp.mjs:305`), a different channel.
+
+Reading a capability off the wrong field is silent, not loud. The engine's `params.clientCapabilities ?? {}` means a payload sent under any other key negotiates nothing, and every capability-gated projection stays switched off with no error anywhere. That was the state of this tree: the webui sent `capabilities: { mcpCapabilities: … }` — a key that is not a field of the ACP v1 `ClientCapabilities` type, holding a member the type does not declare — and the plan projection never ran.
+
+### Requests from the engine
+
+The engine issues its own requests over the same pipe: `session/request_permission`, `elicitation/create`, `fs/read_text_file`, `fs/write_text_file`, `terminal/*`. `McodeAcpClient#_dispatch` answers every one of them. A message carrying an `id`, a `method`, and neither a `result` nor an `error` is a request. JSON-RPC ids are per-direction, so the engine's request may reuse an id the webui already used for its own outbound call, and the two spaces must not be confused.
+
+With no `clientRequest` handler installed — today's state — the answer is a JSON-RPC error, `-32601`, naming the method. Silence is **not** the safe default here:
+
+- The engine awaits these requests with only a cancellation signal (`acp/interactions.ts:562`). An unanswered request occupies an interaction-scheduler slot for the life of the connection, and when the pending queue overflows the whole ACP connection is closed (`interactions.ts:242`, `MAX_PENDING_INTERACTIONS`). The transport dies rather than degrading.
+- A declined request is the engine's own outcome, not a new one. A request that throws resolves to `decision = 'deny'` (`interactions.ts:581`), and a questionnaire that cannot be answered is dismissed fail-closed (`interactions.ts:647`).
+
+An error rather than a synthetic "cancelled" result says plainly that this client never considered the question, and carries the method name into the engine's log. Every declined request also logs `[acp] declined unhandled client request: <method>` on the webui side, so an engine asking for something this client cannot do is visible rather than inferred.
+
+The seam for a real surface is the `clientRequest` constructor option: `(method, params) => result | Promise<result>`. Its resolved value becomes the JSON-RPC `result`; a throw or rejection becomes an error response carrying the thrown `message` and, when it has one, its `code` (otherwise `-32603`). Nothing in the webui installs a handler yet — routing a decision through to the browser is separate work, and the honest current state is that the webui has no interactive surface to offer.
+
+### What this does and does not buy
+
+`plan: {}` turns on a **notification**, not a question. A plan review carries a single `approve` option and the Runtime pins `allowOther: true` on every step, so the engine settles it fail-closed through the questionnaire path rather than turning it into a permission request — which is why advertising `plan` is safe for a client that cannot answer anything. The permission-request path is a separate switch the webui never turns on.
+
+Two consequences are **not** in scope here, and both matter to whoever picks this up next:
+
+- Receiving `plan_update` is not the same as being able to act on it. The webui's plan modal has no reachable decision channel to the engine, and the payload mapping is its own question: the engine nests the body as `update.plan = { type, planId, content }` and puts nothing at the update's top level.
+- The questionnaire and permission surfaces stay dark. The webui declines what it cannot answer, which is stable and honest, but it is not the same as being able to answer.
+
 ## Thinking levels (which models can be tuned, and how)
 
 The composer mounts a thinking control only for models whose `/api/models` entry carries `thinkingLevels`. A model with no list never shows one — by design, a no-op control is worse than none. Where the list comes from, and what a pick actually does on the wire, depends on which of the engine's two thinking schemas describes the model:
