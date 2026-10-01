@@ -120,6 +120,7 @@
       "usage": "GET|POST /api/usage[-real|-trigger|/refresh]",
       "git": "GET /api/git/status|branches|diff, POST /api/git/checkout",
       "protocol": "GET|POST /api/protocol/* (acp shim)",
+      "engineCapabilities": "GET /api/engine-capabilities (14-key engine provider capability declaration + degradation summary; ?provider= selects, unknown ids answer 404)",
       "debug": "GET|POST /api/debug/* (DEBUG_INJECT gated)"
     }
   },

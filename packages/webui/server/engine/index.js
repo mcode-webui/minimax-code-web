@@ -1,0 +1,106 @@
+// webui/server/engine/index.js
+//
+// Engine-provider facade — the one place webui code asks "which engine
+// surfaces exist?" (engine-abstraction batch B1 / migration step M1).
+//
+// What ships in THIS batch (and what deliberately does not):
+//
+//   - Declarations as the first source of truth: each provider module
+//     exports a static, reviewed 14-key capability object. This is the
+//     design doc §2.3 rule — capabilities are declared, not guessed at
+//     runtime.
+//   - `GET /api/engine-capabilities` (routes/engine-capabilities.js)
+//     exposes the declarations plus the degradation summary, so the
+//     frontend can render capability-driven UI without hard-coding
+//     provider names.
+//   - `assertEngineCapability` + `EngineCapabilityNotSupportedError`
+//     (→ HTTP 501) give every future route a one-line gate that can
+//     never degrade into a silent empty implementation (#110
+//     fake-success discipline).
+//
+//   - NOT in this batch: runtime probing (design §2.3 step 2 — a
+//     read-only probe after catalogue-host ready that could downgrade a
+//     declared "full" to "partial" when the environment disagrees, e.g.
+//     non-v2 SQLite layouts). Deferred on purpose: no route consumes a
+//     probe result yet, and wiring one means touching the catalogue
+//     host's lifecycle, which M1 explicitly leaves alone. It lands with
+//     the A-batch routes that first need it.
+//   - NOT in this batch: transport selection (registry by
+//     MCODE_WEBUI_TRANSPORT, acp/exec providers). That is M4; today the
+//     only registered host provider is local-runtime-v2, with the
+//     TuiRuntimeAdapter surface declared alongside it.
+//
+// Migration state (design §2.4): M1 done — the host construction moved
+// into providers/local-runtime-v2.js and runtime-host.js re-exports it;
+// no route's behaviour changed. M2–M4 will route new consumers through
+// this facade one endpoint family at a time.
+
+import { ENGINE_CAPABILITY_KEYS } from "./capabilities.js";
+// Declarations only — importing the provider *host-construction* modules
+// here would pull the @mavis/* TypeScript tree into every server boot
+// (the /api/engine-capabilities route loads this file from app.js).
+// Host construction stays behind the lazy boundary runtime-host.js
+// always had; nothing on the boot path may import
+// providers/local-runtime-v2.js or providers/acp.js-style host modules.
+import { LOCAL_RUNTIME_V2_CAPABILITIES } from "./providers/local-runtime-v2.capabilities.js";
+import { TUI_RUNTIME_ADAPTER_CAPABILITIES } from "./providers/tui-runtime-adapter.js";
+
+export { ENGINE_CAPABILITY_KEYS };
+export { assertEngineCapability, summarizeUnavailableCapabilities, validateEngineCapabilities } from "./capabilities.js";
+export {
+  EngineCapabilityNotSupportedError,
+  engineCapabilityHttpResponse,
+  isEngineCapabilityNotSupportedError,
+} from "./errors.js";
+export { LOCAL_RUNTIME_V2_CAPABILITIES } from "./providers/local-runtime-v2.capabilities.js";
+export { TUI_RUNTIME_ADAPTER_CAPABILITIES } from "./providers/tui-runtime-adapter.js";
+
+/**
+ * Registered providers. `transport` records which wire form the provider
+ * speaks — both current entries are the in-process runtime ("runtime");
+ * M4 adds "acp" and "exec" entries when those become providers.
+ */
+const PROVIDERS = Object.freeze({
+  "local-runtime-v2": {
+    id: "local-runtime-v2",
+    transport: "runtime",
+    capabilities: LOCAL_RUNTIME_V2_CAPABILITIES,
+  },
+  "tui-runtime-adapter": {
+    id: "tui-runtime-adapter",
+    transport: "runtime",
+    capabilities: TUI_RUNTIME_ADAPTER_CAPABILITIES,
+  },
+});
+
+/** The provider new engine work should target first (the v2 host). */
+export const DEFAULT_ENGINE_PROVIDER_ID = "local-runtime-v2";
+
+/**
+ * Read a provider's capability declaration.
+ *
+ * @param {string} [providerId] Provider id; defaults to
+ *        DEFAULT_ENGINE_PROVIDER_ID. Unknown ids throw a plain Error
+ *        (caller confusion, not an engine limitation — the HTTP layer
+ *        maps that case to 404, never to 501).
+ * @returns {{id: string, transport: string, capabilities: object}}
+ */
+export function getEngineProvider(providerId = DEFAULT_ENGINE_PROVIDER_ID) {
+  const provider = PROVIDERS[providerId];
+  if (!provider) {
+    // `code` lets the HTTP layer distinguish caller confusion (404)
+    // from engine limitations (501) without string matching. Everything
+    // else thrown across this seam must propagate unchanged.
+    const err = new Error(
+      `getEngineProvider: unknown provider "${providerId}" (known: ${Object.keys(PROVIDERS).join(", ")})`,
+    );
+    err.code = "unknown_engine_provider";
+    throw err;
+  }
+  return provider;
+}
+
+/** All registered provider ids (for the endpoint's consumer listing). */
+export function listEngineProviderIds() {
+  return Object.keys(PROVIDERS);
+}

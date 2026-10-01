@@ -458,6 +458,43 @@ db 原始值从不上线。`projectAgentStatus` 合成两列——任务列的 `
 queued \| done \| stopped`）是投影层产物、不是存储值；webui 不导入它，
 但采用同样的形状。未识别的未来状态渲染为 `idle`，绝不误报"运行中"。
 
+### `engine/`（能力声明 + local-runtime-v2 host）
+
+引擎抽象层位于 `server/engine/`（engine-abstraction 批次 B1；迁移
+状态 M1）。五个文件，各管一件事：
+
+| 文件 | 职责 |
+| --- | --- |
+| `engine/capabilities.js` | 契约本体：`ENGINE_CAPABILITY_KEYS`（14 个矩阵键）、`validateEngineCapabilities`、`assertEngineCapability`、`summarizeUnavailableCapabilities` |
+| `engine/errors.js` | `EngineCapabilityNotSupportedError` 与 `engineCapabilityHttpResponse`（501 载荷形状） |
+| `engine/index.js` | 门面：`getEngineProvider`、`listEngineProviderIds`（按 provider id 的注册表；按 `MCODE_WEBUI_TRANSPORT` 选传输在迁移步 M4 引入） |
+| `engine/providers/local-runtime-v2.js` | `createCatalogueHost`（自 `runtime-host.js` 原样移入，后者转发导出）+ `LOCAL_RUNTIME_V2_CAPABILITIES` |
+| `engine/providers/tui-runtime-adapter.js` | `TUI_RUNTIME_ADAPTER_CAPABILITIES`（仅声明——adapter 本体在 v2 host 内构造） |
+
+声明纪律（未来任何 provider 的准入规则，由
+`test/lib/engine/capabilities.test.js` 的快照测试强制）：
+
+1. 14 键全声明——不存在「缺键当作 none」。`partial` 必须枚举 `missing`
+   子项并附 `reason`；`none` 必须附 `reason`，并区分「接口无」与
+   「实现无」。
+2. 声明是静态模块常量——第一真源，走代码评审。不经重新审计就翻转档位，
+   CI 直接红（测试钉住每个 provider 的每个键）。
+3. 调用未声明的能力抛 `EngineCapabilityNotSupportedError`；两个 HTTP 层
+   （`server/app.js#invokeHandler`、`server/router.js`）统一映射为
+   `501 engine_capability_not_supported`。**禁止空实现**——缺能力必须在
+   调用前可读、调用后响亮（#110 假成功纪律）。
+4. 每 provider 进程内单 host：`createCatalogueHost` 仍是运行时实例的
+   唯一所有者（`acp-client.js#getCatalogueHost` 的「绝不建第二个 host」
+   规则不变）；`close()` 保持有界。
+5. 驱动 UI 的是档位，不是 provider 名单：前端读
+   `GET /api/engine-capabilities`
+   （`routes/engine-capabilities.js#handleEngineCapabilities`），
+   按 `full` / `partial`（+missing）/ `none` 三档渲染——UI 代码里不出现
+   硬编码的 provider 名单。
+
+运行时探测（环境不符时把声明档位降级）本批刻意未做——理由见
+`engine/index.js` 头注释。
+
 ## 4. `clientState` 载荷
 
 这是每个 SSE `state` 事件所包含的形状。webui 将其
@@ -720,6 +757,10 @@ standalone 边界都保持原状。第 1 / 第 2 / 第 3 层只适用于服务�
    添加一个带类型的方法。它经本地的 `request()` 辅助函数发请求，该函数
    自己会追加 `cid` 查询参数；并不存在 `API_SUFFIX` 常量——本文档早期
    版本提到过，它已被移除。
+5. 如果端点依赖某个引擎能力，分发前先用
+   `server/engine/capabilities.js` 的 `assertEngineCapability` 门控：
+   未声明的能力会自动答出结构化的 `501 engine_capability_not_supported`
+   （两个 HTTP 层都做了映射）。引擎没有的能力，绝不返回空实现。
 
 ## 10. 未来方向
 

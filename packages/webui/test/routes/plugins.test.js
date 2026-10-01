@@ -928,8 +928,11 @@ describe("catalogue host wiring", () => {
   test("createCatalogueHost returns the bare cliService", () => {
     // The TUI adapter's plugin surface has no preview / import / listEnabled,
     // so without this field two of the ten endpoints have no data source.
+    // Engine-abstraction M1 moved createCatalogueHost verbatim into
+    // engine/providers/local-runtime-v2.js (runtime-host.js re-exports
+    // it); the tripwire follows the code to its new home.
     assert.match(
-      read("lib/runtime-host.js"),
+      read("engine/providers/local-runtime-v2.js"),
       /cliService:\s*host\.cliService/,
       "createCatalogueHost must return the bare cliService",
     );
