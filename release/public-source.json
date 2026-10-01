@@ -3928,6 +3928,7 @@
     "packages/webui/webapp/test/message-enter-animation.test.ts",
     "packages/webui/webapp/test/modals-decision-channels.test.ts",
     "packages/webui/webapp/test/open-file.test.ts",
+    "packages/webui/webapp/test/page-hydration.test.ts",
     "packages/webui/webapp/test/plugins-surface.test.ts",
     "packages/webui/webapp/test/preview-edit.test.ts",
     "packages/webui/webapp/test/provider-management.test.ts",

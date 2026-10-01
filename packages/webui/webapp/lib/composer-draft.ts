@@ -1,6 +1,6 @@
 /**
  * Composer draft store — the typed text, the `@path` attachment chips, and
- * the send-error banner, held OUTSIDE the React tree.
+ * the send-error banner, held OUTSIDE the React tree and keyed BY SESSION.
  *
  * Why module scope instead of component state: `app/page.tsx` swaps the
  * composer between two tree positions — `<HomeState><Composer inline/></
@@ -14,11 +14,26 @@
  * upstream, an error boundary) would wipe the same fields again, so the
  * fix must not depend on where the component sits in the tree.
  *
- * The store is deliberately tiny — one object, last write wins — and is
+ * Why PER-SESSION keys (webui-parity 106, smoke-report P5): the first
+ * version of this store was one shared bucket, so everything above — text,
+ * attachments, banner — rode along when the user switched sessions. The
+ * smoke run captured the result: session 2's view showed session 1's typed
+ * draft, session 1's 409 banner, and misled the user about what a send
+ * would do. The store is now a `Map` keyed by the active session id (the
+ * same `state?.sessionId ?? ""` string the composer already derives);
+ * switching sessions swaps the whole box, and both boxes keep their
+ * contents. The empty key `""` is the no-session bucket (the home screen,
+ * before the first snapshot names a session). Drafts are deliberately NOT
+ * persisted to storage: they are working state for the current page visit,
+ * and the persisted surface (UI state, tabs, scroll) is `lib/persist.ts`'s
+ * contract, not this one.
+ *
+ * The store is deliberately tiny — one map, last write wins — and is
  * consumed through `useSyncExternalStore` (see `components/composer.tsx`)
- * so a remounting instance reads the same draft a previous instance wrote.
- * This module must stay React-free: `webapp/test/composer-draft.test.ts`
- * imports it directly under the plain Node test runner.
+ * with a keyed getter, so a session change swaps drafts synchronously
+ * during render instead of a frame later. This module must stay
+ * React-free: `webapp/test/composer-draft.test.ts` imports it directly
+ * under the plain Node test runner.
  */
 
 // Type-only, so the runtime dependency graph is unchanged — this store stays
@@ -73,23 +88,36 @@ const EMPTY_DRAFT: ComposerDraft = {
   attachments: [],
 };
 
-let draft: ComposerDraft = EMPTY_DRAFT;
+/** Per-session buckets. Entries appear on first write and live for the
+ *  page visit; each is a few small fields, so no pruning is needed. */
+const drafts = new Map<string, ComposerDraft>();
 const listeners = new Set<() => void>();
 
 export type ComposerDraftPatch =
   | Partial<ComposerDraft>
   | ((current: ComposerDraft) => Partial<ComposerDraft>);
 
-/** Write a patch (or an updater, mirroring `setState` semantics). */
-export function setComposerDraft(patch: ComposerDraftPatch): void {
-  const resolved = typeof patch === "function" ? patch(draft) : patch;
-  draft = { ...draft, ...resolved };
-  for (const listener of listeners) listener();
+/**
+ * Read the draft of ONE session. Stable identity between writes — the
+ * returned object only changes when that session's draft is written, and
+ * the shared `EMPTY_DRAFT` singleton stands in for sessions without one,
+ * so `useSyncExternalStore` can compare by reference.
+ */
+export function getComposerDraft(sessionKey: string): ComposerDraft {
+  return drafts.get(sessionKey) ?? EMPTY_DRAFT;
 }
 
-/** Read the current draft. Stable identity between writes. */
-export function getComposerDraft(): ComposerDraft {
-  return draft;
+/** Write a patch (or an updater, mirroring `setState` semantics) into ONE
+ *  session's draft. Other sessions' drafts are untouched — that is the
+ *  isolation contract the smoke report's P5 depends on. */
+export function setComposerDraft(
+  sessionKey: string,
+  patch: ComposerDraftPatch,
+): void {
+  const current = drafts.get(sessionKey) ?? EMPTY_DRAFT;
+  const resolved = typeof patch === "function" ? patch(current) : patch;
+  drafts.set(sessionKey, { ...current, ...resolved });
+  for (const listener of listeners) listener();
 }
 
 /** `useSyncExternalStore` subscription. Returns the unsubscribe thunk. */
@@ -98,12 +126,6 @@ export function subscribeComposerDraft(listener: () => void): () => void {
   return () => {
     listeners.delete(listener);
   };
-}
-
-/** Test-only: reset the draft to empty between cases. */
-export function resetComposerDraftForTests(): void {
-  draft = EMPTY_DRAFT;
-  listeners.clear();
 }
 
 /**
@@ -139,4 +161,38 @@ export function mergeRestoredDraft(
         : restored.content,
     attachments: [...restored.attachments, ...current.attachments],
   };
+}
+
+/**
+ * The patch to apply when a turn ends, or `null` for "nothing to do".
+ *
+ * The unconfirmed banner's three-value display semantics are #126's and are
+ * NOT touched here — this only owns WHEN the banner goes away. A send whose
+ * acknowledgement timed out leaves a grey "the engine is running this
+ * message — do not resend" banner; once the turn it warned about is over,
+ * the warning describes nothing and must disappear (smoke-report P4: after
+ * `sleep 35` completed, the banner stayed until the next send or reload).
+ * A real `rejected` refusal is a different fact and stays until the user
+ * acts on it.
+ *
+ * The turn-end signal is the running flag falling: `prevRunning === true`
+ * and `running === false`. A banner that appears while no turn runs (the
+ * fast-turn echo path) never sees that fall inside the same mount, so it
+ * keeps the pre-existing dismiss paths — the next send in the same session
+ * clears it, as does a session switch (per-session isolation, above).
+ */
+export function unconfirmedPatchOnTurnEnd(
+  prevRunning: boolean,
+  running: boolean,
+  errorKind: ComposerErrorKind | null,
+): ComposerDraftPatch | null {
+  if (!(prevRunning && !running)) return null;
+  if (errorKind !== "unconfirmed") return null;
+  return { error: null, errorKind: null, unconfirmed: null };
+}
+
+/** Test-only: reset every session's draft and the listeners between cases. */
+export function resetComposerDraftForTests(): void {
+  drafts.clear();
+  listeners.clear();
 }
