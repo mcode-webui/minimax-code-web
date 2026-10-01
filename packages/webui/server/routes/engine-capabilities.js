@@ -17,13 +17,13 @@
 //
 // This endpoint is read-only and declaration-backed: it does not boot a
 // host and does not probe. Runtime probing (design §2.3 step 2) is a
-// later batch; see lib/engine/index.js for why.
+// later batch; see engine/index.js for why.
 
 import {
   getEngineProvider,
   listEngineProviderIds,
   summarizeUnavailableCapabilities,
-} from "../lib/engine/index.js";
+} from "../engine/index.js";
 
 function respond(res, code, payload) {
   res.writeHead(code, { "Content-Type": "application/json; charset=utf-8" });

@@ -23,12 +23,12 @@ import {
   validateEngineCapabilities,
   getEngineProvider,
   listEngineProviderIds,
-} from "../../../server/lib/engine/index.js";
+} from "../../../server/engine/index.js";
 import {
   EngineCapabilityNotSupportedError,
   engineCapabilityHttpResponse,
   isEngineCapabilityNotSupportedError,
-} from "../../../server/lib/engine/errors.js";
+} from "../../../server/engine/errors.js";
 
 // ---------------------------------------------------------------------------
 // Contract shape

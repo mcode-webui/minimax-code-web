@@ -1,4 +1,4 @@
-// webui/server/lib/engine/providers/tui-runtime-adapter.js
+// webui/server/engine/providers/tui-runtime-adapter.js
 //
 // Capability declaration for the TuiRuntimeAdapter engine surface
 // (`@minimax/code/runtime-adapter`, source: packages/tui/src/runtime/adapter.ts).

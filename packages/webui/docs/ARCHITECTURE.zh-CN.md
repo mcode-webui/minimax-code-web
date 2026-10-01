@@ -460,7 +460,7 @@ queued \| done \| stopped`）是投影层产物、不是存储值；webui 不导
 
 ### `engine/`（能力声明 + local-runtime-v2 host）
 
-引擎抽象层位于 `server/lib/engine/`（engine-abstraction 批次 B1；迁移
+引擎抽象层位于 `server/engine/`（engine-abstraction 批次 B1；迁移
 状态 M1）。五个文件，各管一件事：
 
 | 文件 | 职责 |
@@ -758,7 +758,7 @@ standalone 边界都保持原状。第 1 / 第 2 / 第 3 层只适用于服务�
    自己会追加 `cid` 查询参数；并不存在 `API_SUFFIX` 常量——本文档早期
    版本提到过，它已被移除。
 5. 如果端点依赖某个引擎能力，分发前先用
-   `server/lib/engine/capabilities.js` 的 `assertEngineCapability` 门控：
+   `server/engine/capabilities.js` 的 `assertEngineCapability` 门控：
    未声明的能力会自动答出结构化的 `501 engine_capability_not_supported`
    （两个 HTTP 层都做了映射）。引擎没有的能力，绝不返回空实现。
 

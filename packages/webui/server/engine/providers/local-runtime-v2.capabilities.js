@@ -1,4 +1,4 @@
-// webui/server/lib/engine/providers/local-runtime-v2.capabilities.js
+// webui/server/engine/providers/local-runtime-v2.capabilities.js
 //
 // Capability declaration for the local-runtime-v2 provider — declaration
 // ONLY, no `@mavis/*` imports. This split is deliberate and

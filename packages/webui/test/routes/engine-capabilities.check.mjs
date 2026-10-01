@@ -13,7 +13,7 @@
 // test/helpers/_setup.js — node:test module mocks only affect imports
 // that happen after registration), then app.js and the route module are
 // imported dynamically. The error class itself is NOT mocked —
-// invokeHandler matches with instanceof against lib/engine/errors.js,
+// invokeHandler matches with instanceof against engine/errors.js,
 // so the test must throw the real class.
 
 import { test, describe, before } from "node:test";
@@ -22,9 +22,9 @@ import { Readable } from "node:stream";
 import { absPath } from "../helpers/_setup.js";
 
 const { EngineCapabilityNotSupportedError } = await import(
-  absPath("lib/engine/errors.js")
+  absPath("engine/errors.js")
 );
-const realEngine = await import(absPath("lib/engine/index.js"));
+const realEngine = await import(absPath("engine/index.js"));
 
 // Dispatch-through: registered once, per-test behaviour flips the impl.
 let getEngineProviderImpl = realEngine.getEngineProvider;
@@ -36,7 +36,7 @@ before(async (t) => {
   // Note the option key: this Node line uses `namedExports` (same as
   // test/helpers/_setup.js); a `named` key is silently ignored and the
   // mock namespace comes up empty.
-  t.mock.module(absPath("lib/engine/index.js"), {
+  t.mock.module(absPath("engine/index.js"), {
     namedExports: {
       ...realEngine,
       getEngineProvider: (id) => getEngineProviderImpl(id),

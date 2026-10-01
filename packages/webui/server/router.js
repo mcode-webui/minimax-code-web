@@ -52,7 +52,7 @@ import { runGates } from "./lib/gates.js";
 import {
   EngineCapabilityNotSupportedError,
   engineCapabilityHttpResponse,
-} from "./lib/engine/errors.js";
+} from "./engine/errors.js";
 import { serveStatic, serveIndex } from "./lib/static.js";
 import { getTrajectoryPanelHandler } from "./lib/trajectory.js";
 import { isRequestAuthorized, writeAuthRequired } from "./lib/auth.js";

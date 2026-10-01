@@ -1,4 +1,4 @@
-// webui/server/lib/engine/providers/local-runtime-v2.js
+// webui/server/engine/providers/local-runtime-v2.js
 //
 // The local-runtime-v2 engine provider: the in-process runtime host
 // (`@mavis/local-runtime-v2` CliService wrapped in a TuiRuntimeAdapter)

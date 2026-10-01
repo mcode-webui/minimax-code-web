@@ -181,7 +181,7 @@ This section records what the current source tree does, not a frozen contract. D
 
 ## Engine capability declaration (engine-abstraction batch B1)
 
-The server carries an internal engine layer, `packages/webui/server/lib/engine/`, whose first job is a **capability declaration**: every engine surface webui is wired to declares, as a reviewed module constant, which of 14 capability keys it supports and — for partial support — exactly which sub-items are missing. The design decision and the audited matrix behind every value live in `doc/engine-abstraction-design.md` (out-of-tree working document); the declaration itself is the code source of truth.
+The server carries an internal engine layer, `packages/webui/server/engine/`, whose first job is a **capability declaration**: every engine surface webui is wired to declares, as a reviewed module constant, which of 14 capability keys it supports and — for partial support — exactly which sub-items are missing. The design decision and the audited matrix behind every value live in `doc/engine-abstraction-design.md` (out-of-tree working document); the declaration itself is the code source of truth.
 
 Why declarations instead of try-and-see: a missing capability must be a **fact the UI can read before calling**, not an exception discovered mid-call, and it must never be a silent empty implementation — an empty list or `{ok:true}` would tell the user "succeeded with nothing", the fake-success failure mode fixed in #110 and refused here by construction.
 
@@ -189,7 +189,7 @@ The 14 keys (one per row of the design matrix; key ↔ matrix row in parentheses
 
 `sessionCrud` (会话 CRUD), `streamingSend` (流式发送), `interrupt` (中断), `toolSkillInvocation` (工具/技能调用), `turnDiff` (回合级 diff 查询), `turnRewindRedo` (回合撤销/重做), `plugins` (插件管理), `mcp` (MCP), `subagents` (子 agent), `usageStats` (用量统计), `authCredentials` (认证/凭据), `updateCheck` (更新检查), `fileReadWrite` (文件读写), `gitOperations` (Git 操作).
 
-Levels and rules (`server/lib/engine/capabilities.js`):
+Levels and rules (`server/engine/capabilities.js`):
 
 - `full` — the surface is complete.
 - `partial` — must enumerate `missing` sub-items and carry a `reason`. Never "half works, nobody knows which half".
@@ -229,7 +229,7 @@ Default provider is `local-runtime-v2` (the only registered host provider until 
 
 ### Calling an undeclared capability → 501
 
-`server/lib/engine/errors.js` defines `EngineCapabilityNotSupportedError` (structured: `capability`, `provider`, `missing`, `reason`). `assertEngineCapability(capabilities, key, provider, subItem?)` throws it for level `none` and for the missing half of a `partial`. Both HTTP layers (`server/app.js#invokeHandler` and the legacy `server/router.js` dispatcher, same centralisation as the existing 413 body-cap mapping) turn it into:
+`server/engine/errors.js` defines `EngineCapabilityNotSupportedError` (structured: `capability`, `provider`, `missing`, `reason`). `assertEngineCapability(capabilities, key, provider, subItem?)` throws it for level `none` and for the missing half of a `partial`. Both HTTP layers (`server/app.js#invokeHandler` and the legacy `server/router.js` dispatcher, same centralisation as the existing 413 body-cap mapping) turn it into:
 
 ```
 501 { ok: false, code: "engine_capability_not_supported", capability, provider, missing?, reason?, error }
@@ -239,7 +239,7 @@ Default provider is `local-runtime-v2` (the only registered host provider until 
 
 ### Migration state and constraints
 
-- **M1 done in this batch**: host construction (`createCatalogueHost`) moved verbatim into `server/lib/engine/providers/local-runtime-v2.js`; `runtime-host.js` re-exports it, so every existing importer is untouched. No existing route's behaviour changed; `GET /api/engine-capabilities` is a new, additive endpoint.
+- **M1 done in this batch**: host construction (`createCatalogueHost`) moved verbatim into `server/engine/providers/local-runtime-v2.js`; `runtime-host.js` re-exports it, so every existing importer is untouched. No existing route's behaviour changed; `GET /api/engine-capabilities` is a new, additive endpoint.
 - **Capability probing (design §2.3 step 2) is deliberately not in this batch**: no route consumes a probe result yet, and wiring one would touch the catalogue host lifecycle that M1 leaves alone. It lands with the first A-batch route that needs it.
 - **New-provider admission rules** (enforced by the snapshot tests in `packages/webui/test/lib/engine/capabilities.test.js`): all 14 keys declared; `partial` enumerates `missing` + `reason`; declaration levels are pinned — a level flip without re-auditing the surface goes red in CI; calling an undeclared capability answers the structured 501, never an empty implementation.
 

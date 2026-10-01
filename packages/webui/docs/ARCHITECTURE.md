@@ -488,7 +488,7 @@ not import it but adopts the same shape. Unknown future statuses render as
 
 ### `engine/` (capability declarations + the local-runtime-v2 host)
 
-The engine abstraction lives at `server/lib/engine/` (engine-abstraction
+The engine abstraction lives at `server/engine/` (engine-abstraction
 batch B1; migration state M1). Five files, one job each:
 
 | File | Owns |
@@ -810,7 +810,7 @@ The pattern (see `docs/DEVELOPMENT.md` for the full walk-through):
    itself; there is no `API_SUFFIX` constant — earlier revisions of this
    document named one, and it has been removed.
 5. If the endpoint depends on an engine capability, gate it with
-   `assertEngineCapability` from `server/lib/engine/capabilities.js`
+   `assertEngineCapability` from `server/engine/capabilities.js`
    before dispatching: an undeclared capability then answers the
    structured `501 engine_capability_not_supported` automatically (both
    HTTP layers map it). Never return an empty implementation for a

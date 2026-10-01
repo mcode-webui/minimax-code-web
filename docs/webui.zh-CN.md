@@ -181,13 +181,13 @@ exec 回合的代价——以下都是当前真实存在的行为，选择权限
 
 ## 引擎能力声明（engine-abstraction 批次 B1）
 
-webui 服务端新增了一个内部引擎层 `packages/webui/server/lib/engine/`，它的第一件事是**能力声明**：webui 实际接入的每一个引擎面，都以「代码评审管住的模块常量」形式声明自己在 14 个能力键上支持到什么程度；部分支持（`partial`）必须**枚举缺哪些子项**。设计结论与每个取值的取证矩阵在工作文档 `doc/engine-abstraction-design.md`；代码里的声明才是运行时真源。
+webui 服务端新增了一个内部引擎层 `packages/webui/server/engine/`，它的第一件事是**能力声明**：webui 实际接入的每一个引擎面，都以「代码评审管住的模块常量」形式声明自己在 14 个能力键上支持到什么程度；部分支持（`partial`）必须**枚举缺哪些子项**。设计结论与每个取值的取证矩阵在工作文档 `doc/engine-abstraction-design.md`；代码里的声明才是运行时真源。
 
 为什么用声明而不是「调一下试试」：一项能力缺失必须是**调用之前就能读到的事实**，而不是调用中途撞上的异常；更绝不能是静默的空实现——返回空列表或 `{ok:true}` 等于告诉用户「成功了一无所获」，这是本仓库 #110 修掉的假成功失败模式，本层在结构上杜绝它。
 
 14 个能力键（键 ↔ 设计矩阵行）：`sessionCrud`（会话 CRUD）、`streamingSend`（流式发送）、`interrupt`（中断）、`toolSkillInvocation`（工具/技能调用）、`turnDiff`（回合级 diff 查询）、`turnRewindRedo`（回合撤销/重做）、`plugins`（插件管理）、`mcp`（MCP）、`subagents`（子 agent）、`usageStats`（用量统计）、`authCredentials`（认证/凭据）、`updateCheck`（更新检查）、`fileReadWrite`（文件读写）、`gitOperations`（Git 操作）。
 
-三档语义（规则在 `server/lib/engine/capabilities.js`）：
+三档语义（规则在 `server/engine/capabilities.js`）：
 
 | 档位 | 含义 | 前端呈现原则（后续 UI 批次执行） |
 | --- | --- | --- |
@@ -229,7 +229,7 @@ GET  /api/engine-capabilities[?provider=<id>]
 
 ### 调了未声明的能力 → 501
 
-`server/lib/engine/errors.js` 定义 `EngineCapabilityNotSupportedError`（结构化字段：`capability` / `provider` / `missing` / `reason`）。`assertEngineCapability` 在能力为 `none`、或 `partial` 命中缺失子项时抛它。两个 HTTP 层（Hono 层 `app.js#invokeHandler` 与旧分发器 `router.js`，与既有 413 请求体上限映射同一处集中处理）统一转成：
+`server/engine/errors.js` 定义 `EngineCapabilityNotSupportedError`（结构化字段：`capability` / `provider` / `missing` / `reason`）。`assertEngineCapability` 在能力为 `none`、或 `partial` 命中缺失子项时抛它。两个 HTTP 层（Hono 层 `app.js#invokeHandler` 与旧分发器 `router.js`，与既有 413 请求体上限映射同一处集中处理）统一转成：
 
 ```
 501 { ok: false, code: "engine_capability_not_supported", capability, provider, missing?, reason?, error }

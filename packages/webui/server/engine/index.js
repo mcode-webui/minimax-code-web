@@ -1,4 +1,4 @@
-// webui/server/lib/engine/index.js
+// webui/server/engine/index.js
 //
 // Engine-provider facade — the one place webui code asks "which engine
 // surfaces exist?" (engine-abstraction batch B1 / migration step M1).

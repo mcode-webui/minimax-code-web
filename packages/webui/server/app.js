@@ -48,7 +48,7 @@ import { BodyTooLargeError } from "./lib/read-json.js";
 import {
   EngineCapabilityNotSupportedError,
   engineCapabilityHttpResponse,
-} from "./lib/engine/errors.js";
+} from "./engine/errors.js";
 import { getCidFromReq, getClient } from "./lib/state-bus.js";
 
 import * as accountRoute from "./routes/account.js";

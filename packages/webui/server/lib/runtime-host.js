@@ -5,7 +5,7 @@
 // MIGRATION NOTE (engine-abstraction M1): the catalogue-host
 // construction — the two hard-wired imports (`@mavis/local-runtime-v2`,
 // `@minimax/code/runtime-adapter`) and the `createCatalogueHost` body —
-// moved verbatim to server/lib/engine/providers/local-runtime-v2.js,
+// moved verbatim to server/engine/providers/local-runtime-v2.js,
 // which also carries that surface's capability declaration. This file
 // re-exports it so every existing importer (acp-client.js, the test
 // suites, and module mocks registered against this path) is untouched.
@@ -43,7 +43,7 @@
 
 // M1 verbatim-move re-export: same binding, new home. Importers of
 // "./runtime-host.js" see no difference.
-export { createCatalogueHost } from "./engine/providers/local-runtime-v2.js";
+export { createCatalogueHost } from "../engine/providers/local-runtime-v2.js";
 
 /** Maximum time `abortSession` will wait for the stream to terminate. */
 const TURN_ABORT_BOUND_MS = 5_000;
@@ -82,7 +82,7 @@ const TURN_ABORT_BOUND_MS = 5_000;
  * time to drain — design R2 says we MUST NOT depend on subprocess
  * kill (there are no subprocesses anymore).
  *
- * @param {Awaited<ReturnType<typeof import("./engine/providers/local-runtime-v2.js").createCatalogueHost>>} catalogueHost
+ * @param {Awaited<ReturnType<typeof import("../engine/providers/local-runtime-v2.js").createCatalogueHost>>} catalogueHost
  * @returns {TurnHost}
  */
 export function createTurnHost(catalogueHost) {

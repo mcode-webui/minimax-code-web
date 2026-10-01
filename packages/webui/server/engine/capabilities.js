@@ -1,4 +1,4 @@
-// webui/server/lib/engine/capabilities.js
+// webui/server/engine/capabilities.js
 //
 // The capability-declaration contract: 14 keys, one per row of the
 // capability matrix in doc/engine-abstraction-design.md §1.2, plus the

@@ -1,4 +1,4 @@
-// webui/server/lib/engine/errors.js
+// webui/server/engine/errors.js
 //
 // Structured error for "this engine provider does not offer capability X".
 // The engine abstraction's hard rule (design doc §2.2, option C rejected):
