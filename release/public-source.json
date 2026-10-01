@@ -3587,6 +3587,7 @@
     "packages/webui/test/lib/engine-catalogue.test.js",
     "packages/webui/test/lib/engine-provider-sync.test.js",
     "packages/webui/test/lib/engine/capabilities.test.js",
+    "packages/webui/test/lib/engine/capability-snapshot.test.js",
     "packages/webui/test/lib/events-concurrency.test.js",
     "packages/webui/test/lib/events-hash.test.js",
     "packages/webui/test/lib/events.test.js",

@@ -523,6 +523,40 @@ by the snapshot tests in `test/lib/engine/capabilities.test.js`):
    and renders `full` / `partial`(+missing) / `none` — no hard-coded
    provider lists in UI code.
 
+### Declaration-vs-implementation snapshot (M2)
+
+A declaration is only as honest as the check behind it.
+`test/lib/engine/capability-snapshot.test.js#auditProviderCapabilities`
+audits every `full`/`partial` key of both registered providers against a
+REAL catalogue host booted once per run on an isolated tmp data dir
+(`MINIMAX_DATA_DIR` plus every `MCODE_WEBUI_*` path pinned BEFORE the
+provider import — setting only `MCODE_WEBUI_DATA_DIR` would leave the
+engine dir falling back to `~/.minimax` and rewriting the user's real
+config):
+
+- `full` — every tracked method of the key must be a function on the
+  declared surface member (`adapter`, `cliService`, or
+  `applications.session.diff`);
+- `partial` — the present half must exist; every method-named `missing`
+  item must be genuinely absent; an absent method that dropped out of
+  `missing` goes red (under-declaration); and kebab-case sub-capability
+  names (`file-write`, `git-diff`, …) go red the moment a covering
+  method appears on the surface — a future `getWorkspaceGitDiff` forces
+  the `git-diff` entry to be re-audited;
+- `none` — deliberately not method-checked; a provider may expose no
+  surface for the capability.
+
+The tracked method table (`REQUIRED_METHODS` in the same file) was
+derived from the live surfaces themselves (prototype-chain reflection:
+91 adapter methods, 94 CliService methods, the session.diff facade), not
+copied from the design matrix. The audit is a pure function over
+(declaration, method sets), and the mutation tests in the same file pin
+that each drift class — a flipped level, a deleted method, a grown
+sub-capability — turns it red. A registry-driven static guard sweeps
+every REGISTERED provider (`engine/index.js#listEngineProviderIds`) for
+the exact 14-key set, so a typo'd or unknown key cannot pass silently,
+and providers registered by M4 will be swept without editing the test.
+
 Runtime probing (downgrading a declared level when the environment
 disagrees) is deliberately absent in this batch — see `engine/index.js`
 for the reasoning.

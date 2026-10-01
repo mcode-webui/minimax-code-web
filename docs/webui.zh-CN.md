@@ -240,6 +240,7 @@ GET  /api/engine-capabilities[?provider=<id>]
 ### 迁移状态与边界
 
 - **本批只做迁移第一步 M1**：host 构造（`createCatalogueHost`）原样移入 `engine/providers/local-runtime-v2.js`，`runtime-host.js` 转发导出，既有引用方零改动；没有任何现有路由行为变化，`GET /api/engine-capabilities` 是纯新增端点。
+- **M2 已做（声明与实现的快照校验）**：`packages/webui/test/lib/engine/capability-snapshot.test.js` 在隔离的临时数据目录上起**真实** catalogue host（`MINIMAX_DATA_DIR` 与全部 `MCODE_WEBUI_*` 路径在 provider import 前钉死），审计两个 provider 的每个 `full`/`partial` 键——`full` 要求跟踪的方法在声明的 surface（`adapter` / `cliService` / `applications.session.diff`）上全部存在；`partial` 要求存在的部分在、方法名形态的 `missing` 项真的不存在、kebab-case 子能力（`file-write`、`git-diff`）没有覆盖方法；`none` 不做方法校验。方法跟踪表是对真实 surface 的反射取证（adapter 91 个 / CliService 94 个方法），不是抄设计矩阵；同文件的变异测试钉住改档位、删方法、子能力长出方法各自必然红。注册表驱动的守卫（`engine/index.js#listEngineProviderIds`）拒绝任何携带 14 键契约之外键的 provider 声明，拼错无法静默通过。
 - **启动只读探测（设计稿 §2.3 第 2 步）本批刻意不做**：尚无路由消费探测结果，而接探测要动 M1 明确不动的 catalogue host 生命周期；随第一个需要它的 A 批路由一起落。
 - **新 provider 准入规则**（由 `packages/webui/test/lib/engine/capabilities.test.js` 快照测试钉住）：14 键全声明；`partial` 必须枚举 `missing` 与 `reason`；声明档位被测试钉死——不经重新审计改档位，CI 直接红；调未声明能力一律答结构化 501，绝不给空实现。
 

@@ -493,6 +493,32 @@ queued \| done \| stopped`）是投影层产物、不是存储值；webui 不导
    按 `full` / `partial`（+missing）/ `none` 三档渲染——UI 代码里不出现
    硬编码的 provider 名单。
 
+### 声明与实现的快照校验（M2）
+
+声明有多诚实，取决于背后的校验有多硬。
+`test/lib/engine/capability-snapshot.test.js#auditProviderCapabilities`
+对两个已注册 provider 的每个 `full`/`partial` 键做审计，对象是**真实**
+的 catalogue host——每次运行在隔离的临时数据目录上起一个
+（`MINIMAX_DATA_DIR` 与全部 `MCODE_WEBUI_*` 路径在 provider import
+**之前**钉死；只设 `MCODE_WEBUI_DATA_DIR` 不够，引擎目录会回落到
+`~/.minimax` 改写用户真实配置）：
+
+- `full`——该键跟踪的方法必须在声明的 surface 成员上
+  （`adapter`、`cliService` 或 `applications.session.diff`）全部为函数；
+- `partial`——存在的部分必须在；方法名形态的 `missing` 项必须真的
+  不存在；某缺席方法从 `missing` 里被拿掉会红（声明不完整）；kebab-case
+  子能力名（`file-write`、`git-diff` 等）在 surface 上出现覆盖方法的那一刻
+  变红——将来引擎长出 `getWorkspaceGitDiff`，`git-diff` 这条就必须重新审计；
+- `none`——刻意不做方法校验；provider 允许对该能力完全不设接口面。
+
+方法跟踪表（同文件内的 `REQUIRED_METHODS`）取自真实 surface 本身
+（原型链反射：adapter 91 个方法、CliService 94 个、session.diff 门面），
+不是从设计矩阵抄的。审计是对（声明, 方法集）的纯函数，同文件的变异测试
+钉住每类漂移——改档位、删方法、子能力长出方法——各自必然变红。另有
+注册表驱动的静态守卫扫过每个**已注册** provider
+（`engine/index.js#listEngineProviderIds`）的 14 键集合，拼错或多写的键
+无法静默通过；M4 注册 acp/exec provider 时无需改测试即被覆盖。
+
 运行时探测（环境不符时把声明档位降级）本批刻意未做——理由见
 `engine/index.js` 头注释。
 

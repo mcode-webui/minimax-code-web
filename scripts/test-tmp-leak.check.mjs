@@ -241,6 +241,7 @@ const KNOWN_PREFIXES = [
   "mcode-webui-d02-router-",
   "mcode-webui-d02-sse-",
   "mcode-webui-d1-merge-",
+  "mcode-webui-engine-snapshot-",
   "mcode-webui-libsettings-iso-",
   "mcode-webui-mock-",
   "mcode-webui-port-fallback-",
