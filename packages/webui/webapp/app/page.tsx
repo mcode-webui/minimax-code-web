@@ -23,7 +23,6 @@ import { useLocale } from "@/lib/use-locale";
 import {
   DEFAULT_UI_STATE,
   DEFAULT_WORKSPACE_TABS_STATE,
-  readScrollPosition,
   readUiState,
   readWorkspaceTabs,
   writeScrollPosition,
@@ -78,24 +77,38 @@ export default function Page() {
 function App() {
   const { locale, setLocale, t } = useLocale();
   const { state, connected, error } = useSessionContext();
-  // Webui-parity 07 — restore UI state synchronously from localStorage
-  // BEFORE the first paint, so a refresh on /?session=A lands on the
-  // same right-panel / sidebar collapsed choice the user previously
-  // had open rather than flashing the default first.
-  const [persisted] = useState<UiState>(() => readUiState());
-  // Slice 17 — restore the workspace-tabs payload (open tabs +
-  // per-column active ids + column widths + collapsed flags) the
-  // same way. The first paint already knows whether the preview /
-  // tree columns should be open and which tabs are inside them, so
-  // a refresh on the new shell does not flash the empty launcher
-  // before restoring the saved tabs.
-  const [workspaceTabs] = useState<WorkspaceTabsState>(() => readWorkspaceTabs());
+  // Webui-parity 07 — restore UI state from localStorage so a refresh on
+  // /?session=A lands on the same right-panel / sidebar collapsed choice
+  // the user previously had open rather than flashing the default first.
+  //
+  // webui-parity 106 (smoke-report P7-b): the reads moved OUT of the render
+  // phase. This page is prerendered by the Next.js static export, so the
+  // server HTML and the client's first (hydration) render must be identical;
+  // a storage-read state initializer returns defaults on the server but
+  // stored values on the client, which is a hydration mismatch waiting for
+  // the first change to the `!state` skeleton to go off. The
+  // first frame therefore renders from DEFAULT_UI_STATE — the same constants
+  // the server used — and the effect below applies the stored values right
+  // after mount, while the skeleton is still up (the SSE snapshot has not
+  // arrived either). By the time real content replaces the skeleton, the
+  // restored layout is already in place, so the pre-106 no-flash restore
+  // behaviour is preserved.
+  const [persisted, setPersisted] = useState<UiState>(DEFAULT_UI_STATE);
+  // Slice 17 — restore the workspace-tabs payload (open tabs + per-column
+  // active ids + column widths + collapsed flags) the same way: defaults on
+  // the first frame, storage values applied by the mount effect below, so
+  // a refresh does not flash the empty launcher before the saved tabs land
+  // — and does not read storage during hydration either.
+  const [workspaceTabs, setWorkspaceTabs] = useState<WorkspaceTabsState>(
+    DEFAULT_WORKSPACE_TABS_STATE,
+  );
   // The legacy `panel` mirror is still kept around so the
   // toolbar's existing "active panel" highlight survives the
   // refactor without a fresh state mirror — slice 17 keeps the
   // toolbar / panel highlight working through the new tab strip
   // system (the active tab's kind is the toolbar highlight).
-  const [panel, setPanel] = useState<typeof persisted.panel>(persisted.panel);
+  // Seeded null (the default) and restored by the mount effect.
+  const [panel, setPanel] = useState<typeof persisted.panel>(null);
   // Settings is a dialog rather than a drawer panel, so it has its own state.
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<"general" | "connection" | "providers">("general");
@@ -104,23 +117,44 @@ function App() {
   const [sessionHint, setSessionHint] = useState<{ kind: "not-found"; sessionId: string } | null>(null);
   const alertCount = useAlertCount();
 
-  // Workspace tabs live-state (slice 17). The `useState` initializer
-  // seeds from the persisted payload; subsequent edits mutate via
-  // the pure reducers and the effect below mirrors them back into
-  // `lib/persist.ts` storage.
-  const [tabState, setTabState] = useState<TabStripState>(workspaceTabs.tabStrip);
-  const [columnState, setColumnState] = useState<typeof DEFAULT_COLUMN_LAYOUT>(workspaceTabs.columnLayout);
-  // Slice 17 — WorkspaceColumns self-measures via
-  // ResizeObserver, so the page does not need to feed
-  // containerWidth anymore. viewportWidth is still threaded
-  // through for the future auto-collapse ladder; today it is
-  // accepted but unused inside computeColumnLayout.
-  const viewportWidth = typeof window !== "undefined" ? window.innerWidth : 1280;
+  // Workspace tabs live-state (slice 17). Seeded from the DEFAULT tab strip
+  // (see the hydration note above); the mount effect below applies the
+  // persisted payload, and subsequent edits mutate via the pure reducers,
+  // mirrored back into `lib/persist.ts` storage by the gated effect.
+  const [tabState, setTabState] = useState<TabStripState>(
+    DEFAULT_WORKSPACE_TABS_STATE.tabStrip,
+  );
+  const [columnState, setColumnState] = useState<typeof DEFAULT_COLUMN_LAYOUT>(
+    DEFAULT_WORKSPACE_TABS_STATE.columnLayout,
+  );
+  // webui-parity 106 — false until the mount effect has applied the stored
+  // UI state. The three write-back mirrors below are gated on it: without
+  // the gate, the first (defaults-seeded) render would overwrite the user's
+  // stored payload with DEFAULT_UI_STATE before the restore ever ran.
+  const [uiRestored, setUiRestored] = useState(false);
+
+  // The one client-side storage read. Runs after mount — never during
+  // render, never during hydration — and applies everything in one batch,
+  // so the skeleton frame the user is still looking at is the last frame
+  // painted from defaults.
+  useEffect(() => {
+    const restoredUi = readUiState();
+    const restoredTabs = readWorkspaceTabs();
+    setPersisted(restoredUi);
+    setWorkspaceTabs(restoredTabs);
+    setTabState(restoredTabs.tabStrip);
+    setColumnState(restoredTabs.columnLayout);
+    setPanel(restoredUi.panel);
+    setUiRestored(true);
+  }, []);
 
   // Mirror panel changes into localStorage. The write helper is
   // debounced; mounting/de-mounting the panel quickly during a
-  // refresh never floods storage.
+  // refresh never floods storage. Gated on `uiRestored` so the
+  // defaults-seeded first render cannot clobber the stored payload
+  // (webui-parity 106).
   useEffect(() => {
+    if (!uiRestored) return;
     writeUiState({
       ...DEFAULT_UI_STATE,
       ...persisted,
@@ -129,15 +163,23 @@ function App() {
     // intentionally not adding `persisted` to deps — the persist
     // module already guards the debounced write.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [panel]);
+  }, [panel, uiRestored]);
 
   // Slice 17 — mirror workspace-tabs state into localStorage. The
   // debounced writer coalesces open + activate + scroll edits into
-  // one write.
+  // one write. Gated on `uiRestored` for the same reason as above.
   useEffect(() => {
+    if (!uiRestored) return;
     writeWorkspaceTabs({ tabStrip: tabState, columnLayout: columnState });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tabState, columnState]);
+  }, [tabState, columnState, uiRestored]);
+
+  // Slice 17 — WorkspaceColumns self-measures via
+  // ResizeObserver, so the page does not need to feed
+  // containerWidth anymore. viewportWidth is still threaded
+  // through for the future auto-collapse ladder; today it is
+  // accepted but unused inside computeColumnLayout.
+  const viewportWidth = typeof window !== "undefined" ? window.innerWidth : 1280;
 
   // ============================================================
   // Workspace tabs reducers (the page wires every action through
@@ -477,6 +519,12 @@ function App() {
 
   useEffect(() => {
     if (!urlRestored) return;
+    // webui-parity 106 — same gate as the other write mirrors: this effect
+    // can fire before the mount restore has applied the stored payload
+    // (SSE sometimes names a session before the restore batch lands), and
+    // writing from the defaults-seeded `persisted` would drop the stored
+    // appearance / sidebar choice.
+    if (!uiRestored) return;
     const active = state?.mcodeSessionId ?? null;
     writeUiState({
       ...DEFAULT_UI_STATE,
@@ -485,7 +533,7 @@ function App() {
       lastSessionId: active,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state?.mcodeSessionId, urlRestored]);
+  }, [state?.mcodeSessionId, urlRestored, uiRestored]);
 
   useEffect(() => {
     const onPop = () => {
@@ -739,7 +787,16 @@ function App() {
 }
 
 /**
- * Scroll-restored chat wrapper — unchanged from slice 07.
+ * Scroll-restored chat wrapper.
+ *
+ * webui-parity 106: the page no longer reads the scroll position out of
+ * localStorage during render (the pre-106 render-phase read was the third
+ * instance of the hydration bomb). `Chat` already re-reads the SAME
+ * per-session key (`webui:scroll:v1:<cid>:<sessionId>`) inside its own
+ * post-mount restore effect whenever `sessionKey` changes, and it falls back
+ * to that read whenever no explicit scroll target arrives — so passing
+ * nothing restores the identical number, from an effect that only runs
+ * client-side. The page keeps only the write half of the contract.
  */
 function ScrollRestoredChat({
   t,
@@ -752,13 +809,11 @@ function ScrollRestoredChat({
   sessionId: string | null;
   onOpenFile?: (path: string) => void;
 }) {
-  const initial = sessionId ? readScrollPosition(sessionId) : 0;
   return (
     <Chat
       t={t}
       locale={locale}
       sessionKey={sessionId}
-      initialScrollTop={initial}
       onScrollPersist={(top) => {
         if (!sessionId) return;
         writeScrollPosition(sessionId, top);
@@ -769,10 +824,9 @@ function ScrollRestoredChat({
 }
 
 // keep the unused-export lint happy: slice 17 deliberately does
-// not pull `panel` / `openPanel` / `openSettings` / `DEFAULT_UI_STATE`
-// from the legacy path. They stay in scope so a future ticket can
-// revive them without re-importing the modules.
+// not pull `panel` / `openPanel` / `openSettings` from the legacy
+// path. They stay in scope so a future ticket can revive them
+// without re-importing the modules.
 void PreviewColumn;
-void DEFAULT_WORKSPACE_TABS_STATE;
 void isHtmlPath;
 void useRef;

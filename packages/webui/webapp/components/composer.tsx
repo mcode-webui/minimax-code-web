@@ -36,6 +36,7 @@ import {
   mergeRestoredDraft,
   setComposerDraft,
   subscribeComposerDraft,
+  unconfirmedPatchOnTurnEnd,
 } from "@/lib/composer-draft";
 import {
   completeComposerSent,
@@ -159,21 +160,38 @@ export function Composer({
   onAddProvider?: () => void;
 }) {
   const { state, providersRevision } = useSessionContext();
+  // The session this composer is standing in. Derived before the draft
+  // subscription because the draft store is keyed BY SESSION (webui-parity
+  // 106, smoke-report P5): the getter below reads this session's box, so a
+  // session switch swaps text, attachments and the banner synchronously in
+  // the same render instead of bleeding the previous session's state in.
+  // `""` is the no-session bucket (home screen, before the first snapshot).
+  const modelKey = state?.model?.name ?? "";
+  const sessionKey = state?.sessionId ?? "";
   // Text, attachments, and the error banner live in the module-scope draft
   // store (lib/composer-draft.ts) rather than useState: page.tsx swaps this
   // component between two tree positions when the first conversation line
   // lands in a state push, and a `useState`-held draft died with the
   // unmounted instance. The store survives the swap, so whatever the user
   // typed — and the failure banner they need to read — outlives any
-  // remount. `sending` stays local: it is per-submit bookkeeping, not user
-  // input worth preserving.
-  const draft = useSyncExternalStore(subscribeComposerDraft, getComposerDraft, getComposerDraft);
+  // remount. Since 106 the store is per-session: the keyed getter keeps
+  // session A's draft out of session B's composer, and both drafts survive
+  // the round trip. `sending` stays local: it is per-submit bookkeeping, not
+  // user input worth preserving.
+  const draft = useSyncExternalStore(
+    subscribeComposerDraft,
+    () => getComposerDraft(sessionKey),
+    () => getComposerDraft(""),
+  );
   const value = draft.value;
   const attachments = draft.attachments;
   const error = draft.error;
   const errorKind = draft.errorKind;
   const unconfirmedOutcome = draft.unconfirmed;
-  const setValue = useCallback((next: string) => setComposerDraft({ value: next }), []);
+  const setValue = useCallback(
+    (next: string) => setComposerDraft(sessionKey, { value: next }),
+    [sessionKey],
+  );
   const [sending, setSending] = useState(false);
   const [models, setModels] = useState<
     {
@@ -240,6 +258,26 @@ export function Composer({
   /** Nothing to send yet — the send button is rendered but inert. */
   const empty = value.trim().length === 0 && attachments.length === 0;
 
+  // Smoke-report P4 (webui-parity 106): the grey unconfirmed banner must not
+  // outlive the turn it warned about. When the acknowledgement timed out, the
+  // probe answered "the engine is running this message — do not resend"; once
+  // `running.active` falls, that warning describes a turn that is over, and
+  // after `sleep 35` it used to sit under the input until the next send or a
+  // reload. The decision lives in `unconfirmedPatchOnTurnEnd` (unit-tested);
+  // the wiring here only feeds it the running-flag fall. #126's three-value
+  // display semantics are untouched — this owns dismissal, not display, and
+  // a real `rejected` refusal keeps its dismiss paths.
+  const prevRunningRef = useRef(running);
+  useEffect(() => {
+    const patch = unconfirmedPatchOnTurnEnd(
+      prevRunningRef.current,
+      running,
+      errorKind,
+    );
+    prevRunningRef.current = running;
+    if (patch) setComposerDraft(sessionKey, patch);
+  }, [running, errorKind, sessionKey]);
+
   // The model catalogue comes from the server; the chip shows the active model
   // from the state snapshot so it tracks changes made elsewhere.
   //
@@ -251,18 +289,10 @@ export function Composer({
   // binary or a saved models.json takes effect on the next chip open. We
   // re-fetch when the session or the active model changes rather than only
   // on mount.
-  const modelKey = state?.model?.name ?? "";
-  const sessionKey = state?.sessionId ?? "";
-  // The failure banner is scoped to the session it failed in. `composer-draft`
-  // is a module-scope store shared by every composer instance (it has to be —
-  // page.tsx swaps the composer between two tree positions), so without this
-  // reset a rejection recorded in session A rode along when the user switched
-  // to session B and painted B's composer red for a send B never made. The
-  // typed draft is deliberately NOT cleared: the user's words belong to them,
-  // and the restored-draft merge below already owns cross-session text rules.
-  useEffect(() => {
-    setComposerDraft({ error: null, errorKind: null, unconfirmed: null });
-  }, [sessionKey]);
+  // The banner no longer needs a sessionKey-keyed clear effect: since 106 the
+  // draft store itself is keyed by session, so a banner recorded in session A
+  // simply lives in A's box and session B reads its own (empty) one. The
+  // typed draft stays with its session for the same reason.
   useEffect(() => {
     void api
       .listModels()
@@ -404,10 +434,20 @@ export function Composer({
     // The outbox record stores these, so a later failure can identify
     // its owner. They are NOT the values the catch branch compares
     // against; the catch branch reads the LIVE context (see below).
+    // `dispatchDraftKey` is the same identity in the per-session draft
+    // store: the banner a failed send leaves behind must land in the
+    // session that attempted it, so the user finds it when they come
+    // back — never pasted into whichever session they are looking at
+    // by then (smoke-report P5, the s28 capture).
     const dispatchCid = clientId();
     const dispatchSessionId = state?.sessionId ?? null;
+    const dispatchDraftKey = dispatchSessionId ?? "";
     setSending(true);
-    setComposerDraft({ error: null, errorKind: null, unconfirmed: null });
+    setComposerDraft(dispatchDraftKey, {
+      error: null,
+      errorKind: null,
+      unconfirmed: null,
+    });
     // Ticket 13 — optimistic clear. The backend does session
     // switching and transcript backfill before its ack, so waiting
     // for the await leaves the text sitting in the box for the whole
@@ -424,7 +464,7 @@ export function Composer({
       content,
       attachments,
     });
-    setComposerDraft({ value: "", attachments: [] });
+    setComposerDraft(dispatchDraftKey, { value: "", attachments: [] });
     try {
       // A slash input is a message OR a command, and only the eight
       // webui button commands belong to /api/cmd — routing on the
@@ -481,16 +521,22 @@ export function Composer({
       // failComposerSent returns the restore payload only when the
       // LIVE context still matches the dispatch context — a session
       // switch mid-flight must never paste the old session's text
-      // into the new session's composer.
+      // into the new session's composer. When it does match, the live
+      // session IS the dispatch session, so keying the merge by the
+      // live draft key writes the same box the user is looking at.
       const restored = failComposerSent({
         cid: liveCid,
         sessionId: liveSessionId,
         error: errorMessage,
       });
-      // Always set the error banner — the failure is real even when
-      // the active session no longer matches the record (the banner
-      // is in the module-scope draft store too, so it outlives a
-      // session switch).
+      // Always set the error banner — but in the DISPATCH session's
+      // draft box, not the live one. The failure is real even when the
+      // active session no longer matches the record; with the per-
+      // session store, writing it into the owning session means the
+      // user finds the banner when they return to that session, and
+      // the session they switched TO never paints red for a send it
+      // never made (the s28 bleed in the smoke report). The submit-
+      // path clear above already keyed the same box.
       if (restored && (outcome === null || shouldRestoreDraft(outcome))) {
         // A send the server may already be running must NOT come back as text
         // sitting in the box: one Enter would run it a second time. The
@@ -501,9 +547,12 @@ export function Composer({
         // whatever was typed since. The merge rule lives in
         // lib/composer-draft#mergeRestoredDraft so it is unit-tested
         // instead of being re-derived from a React callback.
-        setComposerDraft(mergeRestoredDraft(getComposerDraft(), restored));
+        setComposerDraft(
+          dispatchDraftKey,
+          mergeRestoredDraft(getComposerDraft(dispatchDraftKey), restored),
+        );
       }
-      setComposerDraft({
+      setComposerDraft(dispatchDraftKey, {
         error: errorMessage,
         errorKind: unconfirmed ? "unconfirmed" : "rejected",
         unconfirmed: outcome,
@@ -521,13 +570,17 @@ export function Composer({
         const result = await api.uploadFile(file);
         if (result?.path) picked.push(`@${result.path}`);
       } catch (cause) {
-        setComposerDraft({ error: cause instanceof Error ? cause.message : String(cause) });
+        setComposerDraft(sessionKey, {
+          error: cause instanceof Error ? cause.message : String(cause),
+        });
       }
     }
     if (picked.length) {
-      setComposerDraft((current) => ({ attachments: [...current.attachments, ...picked] }));
+      setComposerDraft(sessionKey, (current) => ({
+        attachments: [...current.attachments, ...picked],
+      }));
     }
-  }, []);
+  }, [sessionKey]);
 
   // Drag-and-drop file upload. `preventDefault` on `dragover` is required:
   // without it the browser opens the file in the tab. Text drags (selecting
@@ -764,6 +817,7 @@ export function Composer({
                 groups={groups}
                 value={state?.model.name}
                 label={currentModelLabel}
+                sessionKey={sessionKey}
                 thinking={state?.model?.thinking ?? ""}
                 contextWindow={currentContextWindow}
                 onAddProvider={onAddProvider}
@@ -1127,6 +1181,7 @@ function ModelSelect({
   groups,
   value,
   label,
+  sessionKey,
   thinking,
   contextWindow,
   onPick,
@@ -1136,6 +1191,13 @@ function ModelSelect({
   onAddProvider,
 }: {
   t: (key: MessageKey) => string;
+  /** The active session id. The picker's local UI state (open cascade,
+   *  previewed row, per-model draft mirror) is session-scoped bookkeeping:
+   *  on a session switch it resets, so no session-A menu state visually
+   *  persists into session B's view (webui-parity 106, smoke-report P5).
+   *  The chip VALUE is not local — it reads the server's state snapshot —
+   *  so per-session model truth rides the same SSE path as before. */
+  sessionKey: string;
   models: {
     id: string;
     label: string;
@@ -1218,6 +1280,18 @@ function ModelSelect({
   const [drafts, setDrafts] = useState<
     Record<string, { thinking?: string; contextWindow?: number }>
   >({});
+  // webui-parity 106 — the four local states above belong to ONE session's
+  // picker interaction. A session switch that arrived while the cascade was
+  // open (or a preview row focused) used to carry all of it into the next
+  // session's view. The reset is a no-op while the session is stable — the
+  // effect only fires on a real key change, and closing an already-closed
+  // cascade writes nothing.
+  useEffect(() => {
+    setOpen(false);
+    setSubmenuFor(null);
+    setFocusedModelId(null);
+    setDrafts({});
+  }, [sessionKey]);
   /** Ref to the provider row that owns the open submenu. */
   const submenuAnchorRef = useRef<HTMLDivElement | null>(null);
   /** Ref to the provider row that contains the active model, so the

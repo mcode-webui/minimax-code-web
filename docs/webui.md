@@ -2040,6 +2040,17 @@ failure mode we care about is the `app/global-error.tsx` crash, not a quota
 error here. Per-session scroll keys are deliberate: a refresh restores
 the user's place in each conversation independently.
 
+One timing invariant guards all of it (webui-parity 106): the page root
+never reads these keys during render. The prerendered server HTML and the
+client's first (hydration) render must be identical, and a render-phase
+storage read breaks that equality the moment the `state === null` skeleton
+changes shape. `app/page.tsx` renders its first frame from the shared
+DEFAULT constants and applies the stored payload in one post-mount effect;
+the three write-back mirrors are gated on that restore having run, so the
+defaults-seeded first render cannot overwrite the stored payload. What the
+user sees is unchanged: the skeleton is still up while the restore lands,
+and by the time the first snapshot arrives the saved layout is in place.
+
 ## Slash commands: which endpoint answers them (webui-parity ticket 65)
 
 A `/`-prefixed line in the composer is not automatically a command. Two
@@ -2252,6 +2263,23 @@ losing what the user typed is the worse defect, and the banner carries the
 "check the history first" instruction that makes the restore safe. The
 banner is also styled as secondary text rather than as an error.
 
+The banner's *display* semantics are the three answers above; its *dismissal*
+is separate (webui-parity 106). While `running.active` is up, the warning is
+doing its job. When the flag falls — the turn it warned about is over — the
+grey banner goes with it (`unconfirmedPatchOnTurnEnd` in
+`webapp/lib/composer-draft.ts`, applied by a composer effect that watches the
+running-flag fall): after `sleep 35` finished, the banner used to sit under
+the input until the next send or a reload. A real `rejected` refusal keeps
+its dismiss paths; no display rule changed.
+
+The banner is also addressed, not broadcast. The draft store is keyed by
+session, and the catch branch writes the banner into the key of the session
+the send was dispatched FROM — so a failure recorded in session A while the
+user has already switched to session B never paints B red; the user finds
+the banner when they return to A. The previous behaviour (a module-scope
+shared box, then #141's clear-on-switch) either bled the banner across
+sessions or destroyed the returning session's own unread one.
+
 A client-generated idempotency key on `POST /api/send` would make the
 duplicate structurally impossible rather than merely unlikely. It is not
 implemented: it is a request-contract change, and it needs a
@@ -2263,6 +2291,38 @@ an engine turn, and leave the tab open: the output is still there ten
 seconds later, and it is still there after a reload. Force an
 acknowledgement timeout against a server that is running the turn: the
 banner says the engine is running the message, and the composer is empty.
+Wait for the turn to finish: the grey banner disappears on its own.
+
+## The composer's state is per-session (webui-parity 106)
+
+Everything the user has parked in the composer — typed text, attachment
+chips, the send-error banner — is stored under the active session's key
+(`webapp/lib/composer-draft.ts`, a `Map` keyed by `state.sessionId`; `""` is
+the no-session home-screen bucket). Switching sessions swaps the whole box:
+session B never shows session A's draft or banner, and both survive the
+round trip. The smoke run's s28 capture was the shared-bucket version of
+this store: session 2's view showing session 1's draft, 409 banner and
+model chip at the same time.
+
+Per-session storage, not clear-on-switch, is the deliberate choice: a
+clear-on-switch effect (the #141 interim fix) also fires when the user
+comes BACK, destroying the very draft and unread banner they returned for.
+Keyed storage keeps the good half of the old global behaviour (nothing is
+lost when hopping between sessions) while removing the bleed. Drafts are
+not persisted to `localStorage` — they are working state for the current
+page visit; the persisted surface stays `lib/persist.ts`'s contract.
+
+The model picker's chip VALUE always read the server snapshot and needs no
+isolation; its local UI state (open cascade, previewed row, per-model draft
+mirror) resets when the session key changes, so no menu state from session A
+visually persists into session B's view. Whether a model pick made in one
+session's view can land in another session's engine config is a
+server-side `applyConfigOptionUpdate` question and out of this ticket's
+frontend scope.
+
+**How you would tell it works.** Type a draft in session A, switch to
+session B: B's composer is empty and the chip follows B's server model.
+Switch back: A's draft and any unread failure banner are exactly as left.
 
 ## Endpoint catalog (against current source)
 
