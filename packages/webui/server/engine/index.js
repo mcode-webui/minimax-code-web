@@ -60,6 +60,28 @@ export {
 } from "./errors.js";
 // The lazy host getter: a function definition, no host, no @mavis/* import.
 export { getEngineCatalogueHost } from "./host.js";
+// The directory-read family's gated reads (step M3, batch B1). Re-exported
+// here so the facade is the one import site for engine reads, but the
+// dependency runs the other way too — session-reads.js consults
+// getEngineProvider. That cycle is safe for one concrete reason:
+// session-reads.js reads NOTHING from this module while it is being
+// evaluated. Its own module-scope constant is a literal table, and every
+// binding it needs from here (getEngineProvider, DEFAULT_ENGINE_PROVIDER_ID)
+// is read inside a function body, so a cold `import("./engine/index.js")`
+// can never hit a temporal dead zone. Keep it that way: a new top-level
+// `const X = SOMETHING_FROM_INDEX` in session-reads.js breaks the re-export.
+// It also stays off the boot path for the reason host.js does —
+// lib/acp-client.js and lib/config.js are reached through dynamic import()
+// inside the read functions.
+export {
+  SESSION_READ_ENDPOINTS,
+  assertSessionReadCapability,
+  readEngineSessionList,
+  readEngineSessionListForWorkspace,
+  readEngineSessionTitle,
+  readEngineVersion,
+  resolveSessionReadProvider,
+} from "./session-reads.js";
 export { LOCAL_RUNTIME_V2_CAPABILITIES } from "./providers/local-runtime-v2.capabilities.js";
 export { TUI_RUNTIME_ADAPTER_CAPABILITIES } from "./providers/tui-runtime-adapter.js";
 

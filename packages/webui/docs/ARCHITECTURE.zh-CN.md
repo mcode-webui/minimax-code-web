@@ -461,7 +461,7 @@ queued \| done \| stopped`）是投影层产物、不是存储值；webui 不导
 ### `engine/`（能力声明 + local-runtime-v2 host）
 
 引擎抽象层位于 `server/engine/`（engine-abstraction 批次 B1；迁移
-状态 M1，外加 M3 的首批 B0）。七个文件，各管一件事：
+状态 M1，外加 M3 的 B0 与 B1 两批）。八个文件，各管一件事：
 
 | 文件 | 职责 |
 | --- | --- |
@@ -472,6 +472,7 @@ queued \| done \| stopped`）是投影层产物、不是存储值；webui 不导
 | `engine/providers/local-runtime-v2.capabilities.js` | `LOCAL_RUNTIME_V2_CAPABILITIES`——**只有声明，且这个拆分是有承重意义的**：它唯一的 import 是 `../capabilities.js`，所以 `/api/engine-capabilities` 读能力表时**不会把 v2 host 的 TypeScript 依赖树（首次编译约 4.7 秒）拖进 boot 路径**。那棵依赖树仍留在 `acp-client.js` 早已注明的 lazy 边界之后 |
 | `engine/providers/local-runtime-v2.js` | `createCatalogueHost`（自 `runtime-host.js` 原样移入，后者转发导出）+ 转发导出上面的声明，消费方的 import 形状因此不变。它是重的那一个——`@mavis/local-runtime-v2`、`@mavis/config`、`@minimax/code/runtime-adapter`——`app.js` 能触达的文件里绝不许 import 它 |
 | `engine/providers/tui-runtime-adapter.js` | `TUI_RUNTIME_ADAPTER_CAPABILITIES`（仅声明——adapter 本体在 v2 host 内构造） |
+| `engine/session-reads.js` | 目录读族的面板调用（`readEngineSessionList`、`readEngineSessionListForWorkspace`、`readEngineSessionTitle`、`readEngineVersion`）与端点→能力对照表 `SESSION_READ_ENDPOINTS`（迁移步 M3 批次 B1） |
 
 路由从门面取 host，不从 `lib/acp-client.js` 取：`routes/plugins.js` 与
 `routes/turn-diff.js` 调 `getEngineCatalogueHost()`。两者都保留 `deps`
@@ -535,6 +536,42 @@ handler 层测试因此保持封闭。
 学费才换来这条（server 启动 209ms → 2700ms；声明与构造拆成两个文件后，
 门面自身加载 4685ms → 5ms）。`test/lib/engine/host-facade.test.js`
 对着真实模块图强制它，而不是对着源码文本。
+`engine/session-reads.js` 服从同一条纪律：它的静态 import 只有
+`engine/capabilities.js` 与 `engine/index.js`，`lib/acp-client.js` + `lib/config.js`
+都在函数体内用 `await import()` 触达。
+
+#### 哪些端点走门面读（迁移步 M3 批次 B1）
+
+`engine/session-reads.js` 覆盖 5 个目录读端点。每一行写明它门控的
+能力键与它依赖的 provider 方法，因此一份恰好缺该方法的 `partial`
+声明会 501 并点名是哪个方法：
+
+| 端点 | 能力 · 子项 | 取值来源 |
+| --- | --- | --- |
+| `GET /api/acp-sessions` | `sessionCrud` · `listSessions` | `acp-client.js#getMcodeSessionsForWorkspace`（30s 缓存 + cwd 归一化） |
+| `GET /api/acp-session-title` | `sessionCrud` · `getSession` | `acp-client.js#getMcodeSessionTitle` |
+| `GET /api/protocol/list-sessions` | `sessionCrud` · `listSessions` | `acp-client.js#listAllMcodeSessions`；cwd 过滤仍留在路由里 |
+| `GET /api/state` | `sessionCrud` · `listSessions` | 只作用于 `mcodeSessions` 镜像——`snapshotViewFields` / `mcodeSessionsSnapshotFields` 一字未动 |
+| `GET /api/health` | 14 键中无对应键 | ACP `initialize` 的 `agentInfo.version` 镜像；catalogue host 没有版本访问器，面板如实报告来源而不是凭空造一个方法 |
+
+本层守住三条性质，每条背后都有测试：
+
+1. **只有一个 normalizer。** runtime 路径由
+   `lib/catalogue-sessions.js#projectTuiSessionToAcp` 投影，逐条镜像
+   ACP adapter 的 `toAcpSessionInfo` 规则——`title` 与 `updatedAt`
+   缺失时**省略该键**，绝不输出 `null`。面板原样转发这份投影，不做
+   二次投影。
+2. **字节来自哪里是报告出来的，不是假设的。** 每次读都回答一个
+   `source`：`catalogue` / `acp` / `acp-fallback`（传输要了 catalogue
+   host 但拿到 `null`）。它是元数据，不上线——端点载荷在接面板前后
+   逐字节相同。
+3. **门控是真的。** 已注册的 provider 声明 `sessionCrud` 为 `full`，
+   所以今天没有任何端点会 501；测试用一份缺 `listSessions` 的样本声明
+   驱动出 501 载荷。没人跑过的门控与没有门控无法区分。
+
+传输→provider 表目前只有 `runtime` 一条。默认 `acp` 传输下尚无已注册
+provider，于是门控报告 `unregistered-transport` 并放行——M4 注册 ACP
+provider 后该表补上对应行。放行不等于声称支持，二者刻意分开报告。
 
 ## 4. `clientState` 载荷
 

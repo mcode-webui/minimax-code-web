@@ -28,10 +28,21 @@ function fakeIncoming({ method = "GET", url = "/api/health", origin, remoteAddre
   };
 }
 
-/** Run the legacy health handler and return its captured status/headers/body. */
-function legacyHealth() {
+/**
+ * Run the legacy health handler and return its captured status/headers/body.
+ *
+ * Async since M3-B1: `mcodeVersion` moved behind the engine facade
+ * (`server/engine/session-reads.js#readEngineVersion`), which resolves its
+ * acp-client dependency with a dynamic import, so `handleHealth` returns a
+ * promise. The legacy dispatcher awaits every handler
+ * (`server/router.js`: `await route.handler(req, res, ctx, pathname)`), so
+ * awaiting here matches production — a synchronous read here would compare
+ * the Hono body against an empty capture and pass/fail for the wrong
+ * reason.
+ */
+async function legacyHealth() {
   const capture = createResponseCapture();
-  healthRoute.handleHealth(fakeIncoming(), capture);
+  await healthRoute.handleHealth(fakeIncoming(), capture);
   return capture.result();
 }
 
@@ -190,7 +201,7 @@ describe("app.js — Hono route parity with the legacy dispatcher", () => {
   test("GET /api/health returns the legacy payload byte for byte", async () => {
     const res = await app.request("/api/health", {}, { incoming: fakeIncoming() });
     assert.equal(res.status, 200);
-    const expected = legacyHealth();
+    const expected = await legacyHealth();
     assert.equal(await res.text(), expected.body);
     assert.equal(res.headers.get("content-type"), expected.headers.get("content-type"));
   });

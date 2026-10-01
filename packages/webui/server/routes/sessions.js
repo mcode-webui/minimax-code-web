@@ -16,7 +16,6 @@ import {
 import { deleteMcodeSessionFromDb } from "../lib/mcode-session-delete.js";
 import {
   getMcodeSessionTitle,
-  getMcodeSessionsForWorkspace,
   getMcodeSessionsCacheSync,
   getMcodeSessionsStaleSync,
   shutdownMcodeAcpSingleton,
@@ -35,6 +34,15 @@ import {
 } from "../lib/state-bus.js";
 import { MCODE_RUNTIME_DB, DEFAULT_WORKSPACE } from "../lib/config.js";
 import { getSessionTree, invalidateSessionTree } from "../lib/session-tree.js";
+// M3-B1 (engine facade): #9 and #10 read the engine through the declared
+// capability rather than straight off the ACP client. Both facade
+// functions forward to the same acp-client exports this module already
+// imported, so the wire shape, the cache and the transport switch are
+// unchanged — only the gate in front of them is new.
+import {
+  readEngineSessionListForWorkspace,
+  readEngineSessionTitle,
+} from "../engine/session-reads.js";
 import { authorize } from "../lib/authorize.js";
 import { pushAlert } from "../lib/alerts.js";
 import { append as _eventsAppend } from "../lib/events.js";
@@ -1036,17 +1044,32 @@ export function handleSessionTree(req, res, _ctx) {
 }
 
 // GET /api/acp-sessions?cwd=... — mcode acp session/list
+//
+// M3-B1: the read goes through the engine facade
+// (engine/session-reads.js) so the sidebar's data source is a DECLARED
+// capability rather than "whatever the transport happens to be". A
+// provider that does not declare `sessionCrud.listSessions` answers 501
+// through app.js#invokeHandler instead of an empty list. The response
+// shape is byte-for-byte what it was: the facade forwards to the same
+// `getMcodeSessionsForWorkspace` (same 30s cache, same cwd
+// normalisation, same `catalogue-sessions.js` projection on the runtime
+// path).
 export async function handleAcpSessions(req, res, ctx) {
   const cs = ctx.cs;
   const url = new URL(req.url, "http://localhost");
   const cwd =
     url.searchParams.get("cwd") || (cs.workspace && cs.workspace.dir) || "";
-  const sessions = await getMcodeSessionsForWorkspace(cwd);
+  const { sessions } = await readEngineSessionListForWorkspace({ cwd });
   res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
   return res.end(JSON.stringify({ ok: true, cwd, sessions }));
 }
 
 // GET /api/acp-session-title?sessionId=...
+//
+// M3-B1: gated on `sessionCrud.getSession` — the engine method the ACP
+// `session/list` title lookup corresponds to. `title` stays `null` for
+// both "no such session" and "engine has no title": the endpoint has
+// always collapsed those two and callers depend on it.
 export async function handleAcpSessionTitle(req, res, _ctx) {
   const url = new URL(req.url, "http://localhost");
   const sid = url.searchParams.get("sessionId") || "";
@@ -1054,7 +1077,7 @@ export async function handleAcpSessionTitle(req, res, _ctx) {
     res.writeHead(400, { "Content-Type": "application/json" });
     return res.end(JSON.stringify({ ok: false, error: "sessionId required" }));
   }
-  const title = await getMcodeSessionTitle(sid);
+  const { title } = await readEngineSessionTitle({ sessionId: sid });
   res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
   return res.end(
     JSON.stringify({ ok: true, sessionId: sid, title: title || null }),

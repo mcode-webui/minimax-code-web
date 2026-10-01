@@ -489,7 +489,7 @@ not import it but adopts the same shape. Unknown future statuses render as
 ### `engine/` (capability declarations + the local-runtime-v2 host)
 
 The engine abstraction lives at `server/engine/` (engine-abstraction
-batch B1; migration state M1, plus M3's first batch B0). Seven files,
+batch B1; migration state M1, plus M3 batches B0 and B1). Eight files,
 one job each:
 
 | File | Owns |
@@ -501,6 +501,7 @@ one job each:
 | `engine/providers/local-runtime-v2.capabilities.js` | `LOCAL_RUNTIME_V2_CAPABILITIES` — **declaration only, and the split is load-bearing**: its sole import is `../capabilities.js`, so `/api/engine-capabilities` can read the capability table without pulling the v2 host's TypeScript dependency tree (~4.7 s of first-compile) into the boot path. That tree stays behind the same lazy boundary `acp-client.js` already documented |
 | `engine/providers/local-runtime-v2.js` | `createCatalogueHost` (moved verbatim from `runtime-host.js`, which re-exports it) + re-exports the declaration above, so consumers keep one import shape. This is the heavy one — `@mavis/local-runtime-v2`, `@mavis/config`, `@minimax/code/runtime-adapter` — and no file `app.js` reaches may import it |
 | `engine/providers/tui-runtime-adapter.js` | `TUI_RUNTIME_ADAPTER_CAPABILITIES` (declaration only — the adapter itself is constructed inside the v2 host) |
+| `engine/session-reads.js` | The directory-read family's facade calls (`readEngineSessionList`, `readEngineSessionListForWorkspace`, `readEngineSessionTitle`, `readEngineVersion`) and the endpoint→capability table `SESSION_READ_ENDPOINTS` (step M3, batch B1) |
 
 Routes take the host from the facade and never from `lib/acp-client.js`:
 `routes/plugins.js` and `routes/turn-diff.js` call
@@ -578,6 +579,47 @@ everything it imports statically must stay free of `@mavis/*`,
 (209ms → 2700ms at server start; the facade's own load 4685ms → 5ms after
 declaration and construction were split). `test/lib/engine/host-facade.test.js`
 enforces it against the real module graph rather than against source text.
+`engine/session-reads.js` lives under the same rule: its static imports are
+`engine/capabilities.js` and `engine/index.js` only, and `lib/acp-client.js` +
+`lib/config.js` are reached through `await import()` inside the functions.
+
+#### Which endpoints read through the facade (step M3, batch B1)
+
+`engine/session-reads.js` covers the five directory-read endpoints. Each
+row names the capability it gates on and the provider method it depends
+on, so a `partial` declaration that drops exactly that method answers 501
+naming it:
+
+| Endpoint | Capability · sub-item | Value source |
+| --- | --- | --- |
+| `GET /api/acp-sessions` | `sessionCrud` · `listSessions` | `acp-client.js#getMcodeSessionsForWorkspace` (30s cache, cwd normalisation) |
+| `GET /api/acp-session-title` | `sessionCrud` · `getSession` | `acp-client.js#getMcodeSessionTitle` |
+| `GET /api/protocol/list-sessions` | `sessionCrud` · `listSessions` | `acp-client.js#listAllMcodeSessions`; the route keeps its own cwd filter |
+| `GET /api/state` | `sessionCrud` · `listSessions` | the `mcodeSessions` mirror only — `snapshotViewFields` / `mcodeSessionsSnapshotFields` are untouched |
+| `GET /api/health` | none of the 14 keys | the ACP `initialize` `agentInfo.version` mirror; the catalogue host exposes no version accessor, so the facade reports the source instead of inventing one |
+
+Three properties this layer holds, each with a test behind it:
+
+1. **One normalizer.** The runtime path is projected by
+   `lib/catalogue-sessions.js#projectTuiSessionToAcp`, which mirrors the
+   ACP adapter's `toAcpSessionInfo` rule for rule — `title` and
+   `updatedAt` are omitted when absent, never emitted as `null`. The
+   facade forwards that projection; it does not re-project it.
+2. **Where the bytes came from is reported, not assumed.** Every read
+   answers a `source` of `catalogue`, `acp` or `acp-fallback` (the
+   transport asked for the catalogue host and got `null`). It is
+   metadata, not wire — the endpoints' payloads are byte-identical before
+   and after the facade.
+3. **The gate is real.** The registered provider declares `sessionCrud`
+   `full`, so nothing 501s today; the tests drive a fixture declaration
+   that lacks `listSessions` and assert the 501 payload. A gate nobody
+   ever exercises is indistinguishable from no gate.
+
+The transport→provider table has one entry (`runtime`). Under the default
+`acp` transport no provider is registered yet, so the gate reports
+`unregistered-transport` and passes through — M4 registers the ACP
+provider and the table gains its row. Passing through is not the same as
+claiming support, and the two are reported differently on purpose.
 
 ## 4. The `clientState` payload
 

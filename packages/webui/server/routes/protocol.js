@@ -18,9 +18,14 @@ import {
   cancelSession,
   loadSession,
   activateSession,
-  listSessions,
   mcodePermissionToWebui,
 } from "../lib/mcode-rpc.js";
+// M3-B1 (engine facade): only #72 (`list-sessions`) is gated in this
+// batch. The other five handlers here still call mcode-rpc directly —
+// they belong to B4 (#73 capabilities) and B7/B9 (cancel, load, activate,
+// set-mode, set-config-option), each of which lands its own facade call
+// with its own regression evidence.
+import { readEngineSessionList } from "../engine/session-reads.js";
 import { loadSessions, saveSessions, resetContext } from "../lib/sessions.js";
 import { pushStateFor } from "../lib/state-bus.js";
 import { readJson } from "../lib/read-json.js";
@@ -227,11 +232,21 @@ export async function handleActivateSession(req, res, ctx) {
 // ============================================================
 // GET /api/protocol/list-sessions?cwd=...
 // 列 mcode session, 供前端 "远控 TUI" UI 用
+//
+// M3-B1: the list now comes from the engine facade
+// (`server/engine/session-reads.js`) instead of `mcode-rpc.js#listSessions`
+// directly, so this endpoint is gated on the same declared
+// `sessionCrud.listSessions` as the sidebar's #9 and #72 share. The
+// facade forwards to the same `listAllMcodeSessions()` the rpc wrapper
+// called, which means the runtime path already went through
+// `lib/catalogue-sessions.js`; the cwd filter below and the response
+// shape are untouched — `mcode-rpc.js#listSessions` is still exported
+// for the write-family callers that arrive with later batches.
 // ============================================================
 export async function handleListSessions(req, res, ctx) {
   const url = new URL(req.url, "http://localhost");
   const cwd = url.searchParams.get("cwd") || ctx?.cs?.workspace?.dir || "";
-  const all = await listSessions();
+  const { sessions: all } = await readEngineSessionList();
   if (!cwd) return respond(res, 200, { ok: true, sessions: all });
   // 按 cwd 过滤 (norm 路径对齐)
   const norm = (p) =>
