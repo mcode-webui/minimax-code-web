@@ -764,6 +764,16 @@ Token Plan 视图是桌面的五区块（页签 + 四卡）：
 
 回归钉在 `webapp/test/shell-elements-parity.test.ts`，分三层：全部 55c 文案键的双语覆盖（zh 逐字对照参照截图）；静态源码 tripwire（菜单行集、可用/禁用分界、危险色、批量删除接线——含确认弹窗必须引用真实删除集而非角标主会话数——以及胶囊点击接线与胶囊区不发请求）；以及 `lib/cap-toast.ts` 的**行为级**测试——toast 状态机特意拆成零依赖模块，点击→替换→按时戳消失的契约在 node:test 下直接跑，无需渲染 harness（质检 M6 轮：掏空点击处理函数体曾让所有源码断言全绿）。每层都做过针对各自目标变异的红绿验证。
 
+### 会话删除语义
+
+**删除要么立即在所有读面都不可见，要么等于没删。** `DELETE /api/sessions/:id` 的 `200` 就是分界线：紧随其后、不带任何延迟、不刷新、不加破缓存参数的那一次 `GET /api/sessions`，不得再用这条会话的任何身份答出它；紧随其后的 `GET /api/session-tree` 也不得再带它的行。不存在「侧栏已经没这条会话、列表却还答得出来」的窗口期，这条契约与删除耗时无关。
+
+存储结构让这一点并不显然，所以写进文档。一个会话有两重身份：webui 记录自身的 `id`，以及它绑定的引擎 `mcodeSessionId`；两个读面又落在不同的文件上——侧栏树由引擎库 `local_runtime_sessions` 投影而来，`GET /api/sessions` 读的是 webui 会话存储。而同一段对话可以持有多条 webui 记录：`lib/sessions.js#ensureOverlayForMcodeSid` 按引擎会话 id 生成叠加记录，`lib/mcode-acp.js` 又把 `mcodeSessionId` 改绑到「跑那一轮的那条记录」上，而那条记录的 `id` 可能是更早的另一个引擎 id。于是「按单一身份键取首个命中」的查找只摘走一条记录，孪生记录留在存储里：引擎行与侧栏行没了，对话却还在列表里。把删除目标解析成一个**集合**（两个键任一命中的记录，外加与任一命中记录共享 `mcodeSessionId` 的记录），契约才成立。响应体里的 `removedRecords` 报告本次摘掉了几条记录，大于 1 即孪生情形。
+
+真实删除在失效会话树缓存之后，还会广播既有的 `session-tree-changed` 帧（`lib/state-bus.js#pushSessionTreeChanged`），让没发起删除的那个标签页停止渲染该行，而不是等它自己下一次刷新。`?dryRun=true` 预览不改任何东西，因此也不广播。
+
+同一规则带来两个连带效果。其一，活动会话命中**任一**被摘身份的客户端都要重置，而不只是发起删除的那个标签页——仍指向已删 id 的标签页会在下一次交互时为它新建一条 wrapper，等于把刚删掉的东西复活。其二，`server/routes/sessions.js#handleDeleteSession` 仍会把删除镜像到引擎库、杀掉常驻 ACP 子进程并从推送缓存剔除该 sid，引擎才不会把这条会话写回来。
+
 
 
 ## Markdown 里的 Mermaid 图（slice 23）
@@ -1541,7 +1551,7 @@ createdAtMs, updatedAtMs}`）下发，按 `toolCallId` 幂等、上限 32 条、
 | `POST` | `/api/sessions/rename` | `routes/sessions.js#handleRenameSession` | 重命名（B03 authorize 守门） |
 | `GET` | `/api/sessions/search` | `routes/sessions.js#handleSearchSessions` | 跨工作区模糊搜索（B03 守门） |
 | `POST` | `/api/sessions/cleanup-orphans` | `routes/sessions.js#handleCleanupOrphans` | 清理 webui 未引用的 mcode 会话（`scope=orphans\|all`） |
-| `DELETE` | `/api/sessions/:id` | `routes/sessions.js#handleDeleteSession` | B03 守门；同时删除 webui 与 mcode sqlite 记录 |
+| `DELETE` | `/api/sessions/:id` | `routes/sessions.js#handleDeleteSession` | B03 守门；同时删除 webui 与 mcode sqlite 记录；`200` 体里的 `removedRecords` 是本次摘掉的 wrapper 记录条数（见上文「会话删除语义」） |
 | `GET` | `/api/session-tree` | `routes/sessions.js#handleSessionTree` | 侧栏树投影 |
 | `GET` | `/api/acp-sessions` | `routes/sessions.js#handleAcpSessions` | mcode acp 会话列表 |
 | `GET` | `/api/acp-session-title` | `routes/sessions.js#handleAcpSessionTitle` | `?sid=…` 标题助手 |

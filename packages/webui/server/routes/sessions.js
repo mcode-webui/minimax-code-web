@@ -32,6 +32,7 @@ import {
   pushStateFor,
   clients,
   runChatViewChat,
+  pushSessionTreeChanged,
 } from "../lib/state-bus.js";
 import { MCODE_RUNTIME_DB, DEFAULT_WORKSPACE } from "../lib/config.js";
 import { getSessionTree, invalidateSessionTree } from "../lib/session-tree.js";
@@ -745,12 +746,47 @@ export async function handleDeleteSession(req, res, ctx) {
     `[delete] cid=${cid} incoming id=${id.substring(0, 12)}… isMcodeSid=${/^mvs_[a-f0-9]{32}$/.test(id)} dryRun=${dryRun}`,
   );
   const all = loadSessions();
-  let idx = all.findIndex((s) => s.id === id);
-  let matchKind = idx >= 0 ? "webuiId" : null;
-  if (idx < 0) {
-    idx = all.findIndex((s) => s.mcodeSessionId === id);
-    if (idx >= 0) matchKind = "mcodeSessionId";
-  }
+  // Target resolution is a SET, not a single index (webui-parity 103).
+  //
+  // A webui record answers to two identity keys — its own `id` and the engine
+  // `mcodeSessionId` it is bound to — and the store legitimately holds more
+  // than one record per conversation: `ensureOverlayForMcodeSid`
+  // (lib/sessions.js) mints an overlay per engine sid, while
+  // `mcode-acp.js#finalize` re-points `mcodeSessionId` on a record whose `id`
+  // is a DIFFERENT (older) sid. A first-match lookup over one key therefore
+  // removes exactly one record and leaves its twin behind: the engine rows
+  // and the sidebar row are gone, but GET /api/sessions keeps listing the
+  // deleted conversation — permanently, not until the next refresh.
+  //
+  // Collect every record that resolves to the same conversation, so a delete
+  // is immediately invisible in the list that produced the row.
+  const matched = all
+    .map((s, i) => ({ s, i }))
+    .filter(({ s }) => s && (s.id === id || s.mcodeSessionId === id));
+  // Second pass: anything bound to the same ENGINE session as a direct match
+  // (the twin case). Keyed on the matched records' mcodeSessionId so a
+  // record that only carries the shared sid is caught too.
+  const matchedSids = new Set(
+    matched.map(({ s }) => s.mcodeSessionId).filter(Boolean),
+  );
+  const targets = matched.concat(
+    all
+      .map((s, i) => ({ s, i }))
+      .filter(
+        ({ s, i }) =>
+          s &&
+          s.mcodeSessionId &&
+          matchedSids.has(s.mcodeSessionId) &&
+          !matched.some((m) => m.i === i),
+      ),
+  );
+  const idx = targets.length > 0 ? targets[0].i : -1;
+  const matchKind =
+    idx < 0
+      ? null
+      : all[idx].id === id
+        ? "webuiId"
+        : "mcodeSessionId";
   // B03: real-delete path must pass per-request authorize() before
   //   mutating db / saveSessions / killMcodeSessionResurrection.
   //   dryRun=true bypasses (preview only — no side effects to gate).
@@ -762,6 +798,7 @@ export async function handleDeleteSession(req, res, ctx) {
       isMcodeSid: /^mvs_[a-f0-9]{32}$/.test(id),
       isOrphan: idx < 0,
       chatLen: idx >= 0 && all[idx] && Array.isArray(all[idx].chat) ? all[idx].chat.length : 0,
+      twinCount: Math.max(0, targets.length - 1),
     });
     if (!authResult.approved) {
       console.log(
@@ -806,8 +843,12 @@ export async function handleDeleteSession(req, res, ctx) {
       const mcodeDbDel = deleteMcodeSessionFromDb(id, { MCODE_RUNTIME_DB, dryRun });
       // Same reason as the wrapper-delete path below: this removes rows from
       // the db the cached sidebar tree is built from. Skipped on a dry run,
-      // which mutates nothing.
-      if (!dryRun) invalidateSessionTree();
+      // which mutates nothing. The broadcast rides along so no tab keeps
+      // rendering a row whose engine rows are already gone.
+      if (!dryRun) {
+        invalidateSessionTree();
+        pushSessionTreeChanged();
+      }
       console.log(
         `[delete] cid=${cid} ORPHAN mcode session sid=${id.substring(0, 12)}… ok=${mcodeDbDel.ok}` +
           (mcodeDbDel.ok
@@ -914,7 +955,12 @@ export async function handleDeleteSession(req, res, ctx) {
     );
   }
   const deletedItem = all[idx];
-  all.splice(idx, 1);
+  // Drop EVERY record that resolves to this conversation (webui-parity 103),
+  // not just the first match — a surviving twin keeps the deleted session
+  // listed in GET /api/sessions while the engine rows and the sidebar row
+  // are already gone. Descending order keeps the earlier indexes valid.
+  const removedIndexes = targets.map((t) => t.i).sort((a, b) => b - a);
+  for (const i of removedIndexes) all.splice(i, 1);
   saveSessions(all);
   // The sidebar tree is assembled from `local_runtime_sessions` in the runtime
   // db, and it is cached for CACHE_TTL_MS (the git probe per directory is the
@@ -927,6 +973,12 @@ export async function handleDeleteSession(req, res, ctx) {
   // Invalidate before the engine delete below, so the next read cannot repopulate
   // from a db this call is about to change.
   invalidateSessionTree();
+  // ...and say so on the wire. Without the frame, every OTHER tab (and any
+  // panel that only re-reads on the event) keeps rendering the deleted row
+  // until its own next refresh — the same "gone in one place, still there in
+  // another" split the cache invalidation alone left behind. Named frame, no
+  // new event type: see state-bus.js#pushSessionTreeChanged.
+  pushSessionTreeChanged();
   // Mirror the delete on the mcode side when this record has an mcode sid.
   const mcodeSid = deletedItem.mcodeSessionId;
   let mcodeDbDel = null;
@@ -944,8 +996,23 @@ export async function handleDeleteSession(req, res, ctx) {
   // its mcode sibling) — otherwise the next interaction in that tab
   // silently recreates a webui wrapper for the same mvs sid.
   let touchedCids = [];
+  // Every identity the removed records answered to, so a tab parked on ANY
+  // of them is cleared — leaving one pointing at a deleted sid is what lets
+  // the next interaction in that tab mint a fresh wrapper for it.
+  const removedIds = new Set(
+    targets.map((t) => t.s.id).filter(Boolean),
+  );
+  const removedSids = new Set(
+    targets.map((t) => t.s.mcodeSessionId).filter(Boolean),
+  );
   for (const [c, ccs] of clients) {
-    if (ccs.sessionId === deletedItem.id || ccs.mcodeSessionId === id) {
+    if (
+      removedIds.has(ccs.sessionId) ||
+      removedIds.has(ccs.mcodeSessionId) ||
+      removedSids.has(ccs.sessionId) ||
+      removedSids.has(ccs.mcodeSessionId) ||
+      ccs.mcodeSessionId === id
+    ) {
       ccs.sessionId = null;
       ccs.mcodeSessionId = null;
       ccs.sessionTitle = "Untitled";
@@ -979,6 +1046,7 @@ export async function handleDeleteSession(req, res, ctx) {
         matchKind,
         dryRun: false,
         remaining: all.length,
+        removedRecords: targets.length,
         touchedCids: touchedCids.length,
         mcodeRowsAffected: mcodeDbDel && mcodeDbDel.log ? mcodeDbDel.log.length : 0,
         title: deletedItem.title,
@@ -988,7 +1056,7 @@ export async function handleDeleteSession(req, res, ctx) {
     return _auditFail(res, e, "session.delete");
   }
   console.log(
-    `[delete] cid=${cid} OK match=${matchKind} deleted.webuiId=${deletedItem.id.substring(0, 8)}… remaining=${all.length}`,
+    `[delete] cid=${cid} OK match=${matchKind} deleted.webuiId=${deletedItem.id.substring(0, 8)}… removed=${targets.length} remaining=${all.length}`,
   );
   res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
   return res.end(
@@ -998,6 +1066,10 @@ export async function handleDeleteSession(req, res, ctx) {
       matchKind,
       dryRun: false,
       remaining: all.length,
+      // How many wrapper records this delete took down. >1 means the store
+      // held twins for one conversation; they are all gone now, so an
+      // immediate GET /api/sessions cannot still answer with the session.
+      removedRecords: targets.length,
       mcodeDbDel,
     }),
   );

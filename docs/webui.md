@@ -1204,6 +1204,47 @@ it, with the A1 marker keeping the limits stated rather than implied.
   leaves the surviving project its customizations — and the clear runs
   through the tree's state so memory and localStorage stay in step.
 
+### Session delete semantics
+
+**A delete is visible immediately, everywhere, or it did not happen.** The
+`200` from `DELETE /api/sessions/:id` is the boundary: the next
+`GET /api/sessions` — sent with no delay, no refresh, no cache-buster —
+must not name that session under any of its identities, and the next
+`GET /api/session-tree` must not carry its row. There is no window in
+which the sidebar has dropped the conversation while the list still
+answers with it, and nothing about this depends on how long the delete
+takes.
+
+The store makes that non-obvious, which is why it is written down. A
+session has two identities: the webui record's own `id` and the engine
+`mcodeSessionId` it is bound to, and the two read surfaces are backed by
+different files — the sidebar tree is projected from `local_runtime_sessions`
+in the engine database, `GET /api/sessions` from the webui session store.
+One conversation can also own more than one webui record:
+`lib/sessions.js#ensureOverlayForMcodeSid` mints an overlay per engine
+session id, and `lib/mcode-acp.js` re-points `mcodeSessionId` on whichever
+record ran a turn, whose `id` may be an older engine id. So a first-match
+lookup over one identity key removes one record and leaves its twin
+behind: engine rows and sidebar row gone, the conversation still listed.
+Resolving the target as a set — every record matching either key, plus
+every record sharing a matched record's `mcodeSessionId` — is what makes
+the contract hold. `removedRecords` in the response body reports how many
+records the call took down; anything above `1` is the twin case.
+
+A real delete also broadcasts the existing `session-tree-changed` frame
+(`lib/state-bus.js#pushSessionTreeChanged`) after invalidating the tree
+cache, so a tab that did not issue the delete stops rendering the row
+instead of waiting for its own next refresh. `?dryRun=true` previews
+mutate nothing and therefore broadcast nothing.
+
+Two side effects follow from the same rule. Every client whose active
+session matches **any** removed identity is reset, not only the tab that
+asked — a tab left pointing at a deleted id mints a fresh wrapper for it
+on its next interaction, which resurrects what was just deleted. And
+`server/routes/sessions.js#handleDeleteSession` still mirrors the delete
+into the engine database, kills the resident ACP child and drops the sid
+from the push cache, so the engine cannot write the session back.
+
 **Home quick-capability capsules** (ref-28): the home screen renders the
 desktop's five chips under the composer row — 视频生成 (H3 badge) /
 Vibe Coding / 设计视觉 / 产品运营 / 询问 MCode — as white pills with
@@ -2126,7 +2167,7 @@ marker), not by tool name.
 | `POST` | `/api/sessions/rename` | `routes/sessions.js#handleRenameSession` | retitles a session (B03 authorize-gated) |
 | `GET` | `/api/sessions/search` | `routes/sessions.js#handleSearchSessions` | cross-workspace fuzzy search (B03 authorize-gated) |
 | `POST` | `/api/sessions/cleanup-orphans` | `routes/sessions.js#handleCleanupOrphans` | drops mcode sessions no webui record references (`scope=orphans\|all`) |
-| `DELETE` | `/api/sessions/:id` | `routes/sessions.js#handleDeleteSession` | B03 authorize-gated; deletes from webui + mcode sqlite |
+| `DELETE` | `/api/sessions/:id` | `routes/sessions.js#handleDeleteSession` | B03 authorize-gated; deletes from webui + mcode sqlite; `removedRecords` in the 200 body counts the wrapper records taken down (see "Session delete semantics" below) |
 | `GET` | `/api/session-tree` | `routes/sessions.js#handleSessionTree` | sidebar tree projection |
 | `GET` | `/api/acp-sessions` | `routes/sessions.js#handleAcpSessions` | mcode acp session list |
 | `GET` | `/api/acp-session-title` | `routes/sessions.js#handleAcpSessionTitle` | title helper for `?sid=...` |
