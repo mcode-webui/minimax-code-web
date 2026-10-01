@@ -32,8 +32,11 @@
 //
 // Migration state (design §2.4): M1 done — the host construction moved
 // into providers/local-runtime-v2.js and runtime-host.js re-exports it;
-// no route's behaviour changed. M2–M4 will route new consumers through
-// this facade one endpoint family at a time.
+// no route's behaviour changed. M3's first batch (B0) done — the
+// catalogue host itself is now reached through this facade too
+// (engine/host.js), so the plugins and turn-diff routes no longer name
+// lib/acp-client.js. The rest of M3, then M4, will route new consumers
+// through this facade one endpoint family at a time.
 
 import { ENGINE_CAPABILITY_KEYS } from "./capabilities.js";
 // Declarations only — importing the provider *host-construction* modules
@@ -42,6 +45,9 @@ import { ENGINE_CAPABILITY_KEYS } from "./capabilities.js";
 // Host construction stays behind the lazy boundary runtime-host.js
 // always had; nothing on the boot path may import
 // providers/local-runtime-v2.js or providers/acp.js-style host modules.
+// The same rule applies one level up: engine/host.js reaches
+// lib/acp-client.js through a dynamic import, so re-exporting it here
+// costs a function, not a module load.
 import { LOCAL_RUNTIME_V2_CAPABILITIES } from "./providers/local-runtime-v2.capabilities.js";
 import { TUI_RUNTIME_ADAPTER_CAPABILITIES } from "./providers/tui-runtime-adapter.js";
 
@@ -52,6 +58,8 @@ export {
   engineCapabilityHttpResponse,
   isEngineCapabilityNotSupportedError,
 } from "./errors.js";
+// The lazy host getter: a function definition, no host, no @mavis/* import.
+export { getEngineCatalogueHost } from "./host.js";
 export { LOCAL_RUNTIME_V2_CAPABILITIES } from "./providers/local-runtime-v2.capabilities.js";
 export { TUI_RUNTIME_ADAPTER_CAPABILITIES } from "./providers/tui-runtime-adapter.js";
 

@@ -19,8 +19,9 @@
 // stays in the runtime.
 //
 // Data source: the catalogue host's `cliService`, reached through the
-// exported `getCatalogueHost()` singleton in `lib/acp-client.js`. The host is
-// booted unconditionally on first call, on purpose:
+// engine facade's `getEngineCatalogueHost()` (server/engine/host.js), which
+// forwards to the `getCatalogueHost()` singleton in `lib/acp-client.js`.
+// The host is booted unconditionally on first call, on purpose:
 //
 //   - `MCODE_WEBUI_TRANSPORT` defaults to `acp`, and `transportWantsCatalogue()`
 //     only gates *session-list* traffic. ACP has no plugin method at all, so
@@ -47,7 +48,7 @@
 // ("official" | "local") so the webapp never has to import the protocol
 // package to tell the two apart (`@mavis/webui` does not depend on it).
 
-import { getCatalogueHost } from "../lib/acp-client.js";
+import { getEngineCatalogueHost } from "../engine/index.js";
 import { readJson } from "../lib/read-json.js";
 
 /** Page size when the caller sends no `limit`; matches the facade default. */
@@ -78,7 +79,7 @@ function json(res, status, payload) {
 
 /** The default data source: the catalogue host singleton's bare cliService. */
 async function defaultGetCliService() {
-  const host = await getCatalogueHost();
+  const host = await getEngineCatalogueHost();
   return host ? host.cliService : null;
 }
 

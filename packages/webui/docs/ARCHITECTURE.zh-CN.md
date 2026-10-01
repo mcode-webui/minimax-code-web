@@ -461,16 +461,22 @@ queued \| done \| stopped`）是投影层产物、不是存储值；webui 不导
 ### `engine/`（能力声明 + local-runtime-v2 host）
 
 引擎抽象层位于 `server/engine/`（engine-abstraction 批次 B1；迁移
-状态 M1）。六个文件，各管一件事：
+状态 M1，外加 M3 的首批 B0）。七个文件，各管一件事：
 
 | 文件 | 职责 |
 | --- | --- |
 | `engine/capabilities.js` | 契约本体：`ENGINE_CAPABILITY_KEYS`（14 个矩阵键）、`validateEngineCapabilities`、`assertEngineCapability`、`summarizeUnavailableCapabilities` |
 | `engine/errors.js` | `EngineCapabilityNotSupportedError` 与 `engineCapabilityHttpResponse`（501 载荷形状） |
-| `engine/index.js` | 门面：`getEngineProvider`、`listEngineProviderIds`（按 provider id 的注册表；按 `MCODE_WEBUI_TRANSPORT` 选传输在迁移步 M4 引入） |
+| `engine/host.js` | `getEngineCatalogueHost`——通往那唯一 catalogue host 的惰性桥。对 host 模块零静态 import：函数体里是 `lib/acp-client.js` 的动态 `import()`，所以门面付出的是一个函数，不是一次模块加载 |
+| `engine/index.js` | 门面：`getEngineProvider`、`listEngineProviderIds`、`getEngineCatalogueHost`（按 provider id 的注册表；按 `MCODE_WEBUI_TRANSPORT` 选传输在迁移步 M4 引入） |
 | `engine/providers/local-runtime-v2.capabilities.js` | `LOCAL_RUNTIME_V2_CAPABILITIES`——**只有声明，且这个拆分是有承重意义的**：它唯一的 import 是 `../capabilities.js`，所以 `/api/engine-capabilities` 读能力表时**不会把 v2 host 的 TypeScript 依赖树（首次编译约 4.7 秒）拖进 boot 路径**。那棵依赖树仍留在 `acp-client.js` 早已注明的 lazy 边界之后 |
-| `engine/providers/local-runtime-v2.js` | `createCatalogueHost`（自 `runtime-host.js` 原样移入，后者转发导出）+ 转发导出上面的声明，消费方的 import 形状因此不变 |
+| `engine/providers/local-runtime-v2.js` | `createCatalogueHost`（自 `runtime-host.js` 原样移入，后者转发导出）+ 转发导出上面的声明，消费方的 import 形状因此不变。它是重的那一个——`@mavis/local-runtime-v2`、`@mavis/config`、`@minimax/code/runtime-adapter`——`app.js` 能触达的文件里绝不许 import 它 |
 | `engine/providers/tui-runtime-adapter.js` | `TUI_RUNTIME_ADAPTER_CAPABILITIES`（仅声明——adapter 本体在 v2 host 内构造） |
+
+路由从门面取 host，不从 `lib/acp-client.js` 取：`routes/plugins.js` 与
+`routes/turn-diff.js` 调 `getEngineCatalogueHost()`。两者都保留 `deps`
+注入的数据源（`deps.getCliService`、`deps.getDiffApplication`），
+handler 层测试因此保持封闭。
 
 声明纪律（未来任何 provider 的准入规则，由
 `test/lib/engine/capabilities.test.js` 的快照测试强制）：
@@ -485,8 +491,10 @@ queued \| done \| stopped`）是投影层产物、不是存储值；webui 不导
    `501 engine_capability_not_supported`。**禁止空实现**——缺能力必须在
    调用前可读、调用后响亮（#110 假成功纪律）。
 4. 每 provider 进程内单 host：`createCatalogueHost` 仍是运行时实例的
-   唯一所有者（`acp-client.js#getCatalogueHost` 的「绝不建第二个 host」
-   规则不变）；`close()` 保持有界。
+   唯一所有者，触达它的唯一入口是门面的 `getEngineCatalogueHost()`
+   （转发到 `acp-client.js#getCatalogueHost`，其「绝不建第二个 host」
+   规则不变）；`close()` 保持有界。同一 dataDir 上两个 `CliService`
+   实例是对 plugin / local-disable 表的脑裂，不是冗余。
 5. 驱动 UI 的是档位，不是 provider 名单：前端读
    `GET /api/engine-capabilities`
    （`routes/engine-capabilities.js#handleEngineCapabilities`），
@@ -521,6 +529,12 @@ queued \| done \| stopped`）是投影层产物、不是存储值；webui 不导
 
 运行时探测（环境不符时把声明档位降级）本批刻意未做——理由见
 `engine/index.js` 头注释。
+
+启动路径纪律：`app.js` 会触达 `engine/index.js`，因此该文件及其全部
+静态依赖必须不含 `@mavis/*`、`@minimax/*` 与任何 host 模块。M1 是交过
+学费才换来这条（server 启动 209ms → 2700ms；声明与构造拆成两个文件后，
+门面自身加载 4685ms → 5ms）。`test/lib/engine/host-facade.test.js`
+对着真实模块图强制它，而不是对着源码文本。
 
 ## 4. `clientState` 载荷
 

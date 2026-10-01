@@ -489,16 +489,24 @@ not import it but adopts the same shape. Unknown future statuses render as
 ### `engine/` (capability declarations + the local-runtime-v2 host)
 
 The engine abstraction lives at `server/engine/` (engine-abstraction
-batch B1; migration state M1). Six files, one job each:
+batch B1; migration state M1, plus M3's first batch B0). Seven files,
+one job each:
 
 | File | Owns |
 | --- | --- |
 | `engine/capabilities.js` | The contract: `ENGINE_CAPABILITY_KEYS` (the 14 matrix keys), `validateEngineCapabilities`, `assertEngineCapability`, `summarizeUnavailableCapabilities` |
 | `engine/errors.js` | `EngineCapabilityNotSupportedError` + `engineCapabilityHttpResponse` (the 501 payload shape) |
-| `engine/index.js` | The facade: `getEngineProvider`, `listEngineProviderIds` (registry by provider id; transport selection arrives with migration step M4) |
+| `engine/host.js` | `getEngineCatalogueHost` — the lazy bridge to the one catalogue host. No static import of the host module: the getter body is a dynamic `import()` of `lib/acp-client.js`, so the facade costs a function, not a module load |
+| `engine/index.js` | The facade: `getEngineProvider`, `listEngineProviderIds`, `getEngineCatalogueHost` (registry by provider id; transport selection arrives with migration step M4) |
 | `engine/providers/local-runtime-v2.capabilities.js` | `LOCAL_RUNTIME_V2_CAPABILITIES` — **declaration only, and the split is load-bearing**: its sole import is `../capabilities.js`, so `/api/engine-capabilities` can read the capability table without pulling the v2 host's TypeScript dependency tree (~4.7 s of first-compile) into the boot path. That tree stays behind the same lazy boundary `acp-client.js` already documented |
-| `engine/providers/local-runtime-v2.js` | `createCatalogueHost` (moved verbatim from `runtime-host.js`, which re-exports it) + re-exports the declaration above, so consumers keep one import shape |
+| `engine/providers/local-runtime-v2.js` | `createCatalogueHost` (moved verbatim from `runtime-host.js`, which re-exports it) + re-exports the declaration above, so consumers keep one import shape. This is the heavy one — `@mavis/local-runtime-v2`, `@mavis/config`, `@minimax/code/runtime-adapter` — and no file `app.js` reaches may import it |
 | `engine/providers/tui-runtime-adapter.js` | `TUI_RUNTIME_ADAPTER_CAPABILITIES` (declaration only — the adapter itself is constructed inside the v2 host) |
+
+Routes take the host from the facade and never from `lib/acp-client.js`:
+`routes/plugins.js` and `routes/turn-diff.js` call
+`getEngineCatalogueHost()`. Both keep a `deps`-injected data source
+(`deps.getCliService`, `deps.getDiffApplication`) so the handler suites stay
+hermetic.
 
 Declaration discipline (admission rules for any future provider, enforced
 by the snapshot tests in `test/lib/engine/capabilities.test.js`):
@@ -516,8 +524,11 @@ by the snapshot tests in `test/lib/engine/capabilities.test.js`):
    forbidden** — a missing capability must be legible before the call
    and loud after it (#110 fake-success discipline).
 4. One host per provider process-wide: `createCatalogueHost` remains the
-   single owner of the runtime instance (`acp-client.js#getCatalogueHost`
-   keeps its "Never build a second host" rule); `close()` stays bounded.
+   single owner of the runtime instance, and the only way to reach it is the
+   facade's `getEngineCatalogueHost()` (which forwards to
+   `acp-client.js#getCatalogueHost` and its "Never build a second host" rule);
+   `close()` stays bounded. Two `CliService` instances over one dataDir is a
+   split brain against the plugin / local-disable tables, not a redundancy.
 5. Levels drive the UI, never provider names: the frontend reads
    `GET /api/engine-capabilities` (`routes/engine-capabilities.js#handleEngineCapabilities`)
    and renders `full` / `partial`(+missing) / `none` — no hard-coded
@@ -560,6 +571,13 @@ and providers registered by M4 will be swept without editing the test.
 Runtime probing (downgrading a declared level when the environment
 disagrees) is deliberately absent in this batch — see `engine/index.js`
 for the reasoning.
+
+Boot-path discipline: `app.js` reaches `engine/index.js`, so that file and
+everything it imports statically must stay free of `@mavis/*`,
+`@minimax/*` and the host modules. M1 learned that by paying for it
+(209ms → 2700ms at server start; the facade's own load 4685ms → 5ms after
+declaration and construction were split). `test/lib/engine/host-facade.test.js`
+enforces it against the real module graph rather than against source text.
 
 ## 4. The `clientState` payload
 
