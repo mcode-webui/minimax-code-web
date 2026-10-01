@@ -179,6 +179,70 @@ exec 回合的代价——以下都是当前真实存在的行为，选择权限
 
 权限模式接口与警告语义见 [`packages/webui/docs/API.md`](../packages/webui/docs/API.md) 的 `POST /api/permissions` 一节；面向贡献者的契约细节（判定代码位置、不变量）见 [`webui.md`](webui.md) 的 Transport selection 一节。
 
+## 引擎能力声明（engine-abstraction 批次 B1）
+
+webui 服务端新增了一个内部引擎层 `packages/webui/server/lib/engine/`，它的第一件事是**能力声明**：webui 实际接入的每一个引擎面，都以「代码评审管住的模块常量」形式声明自己在 14 个能力键上支持到什么程度；部分支持（`partial`）必须**枚举缺哪些子项**。设计结论与每个取值的取证矩阵在工作文档 `doc/engine-abstraction-design.md`；代码里的声明才是运行时真源。
+
+为什么用声明而不是「调一下试试」：一项能力缺失必须是**调用之前就能读到的事实**，而不是调用中途撞上的异常；更绝不能是静默的空实现——返回空列表或 `{ok:true}` 等于告诉用户「成功了一无所获」，这是本仓库 #110 修掉的假成功失败模式，本层在结构上杜绝它。
+
+14 个能力键（键 ↔ 设计矩阵行）：`sessionCrud`（会话 CRUD）、`streamingSend`（流式发送）、`interrupt`（中断）、`toolSkillInvocation`（工具/技能调用）、`turnDiff`（回合级 diff 查询）、`turnRewindRedo`（回合撤销/重做）、`plugins`（插件管理）、`mcp`（MCP）、`subagents`（子 agent）、`usageStats`（用量统计）、`authCredentials`（认证/凭据）、`updateCheck`（更新检查）、`fileReadWrite`（文件读写）、`gitOperations`（Git 操作）。
+
+三档语义（规则在 `server/lib/engine/capabilities.js`）：
+
+| 档位 | 含义 | 前端呈现原则（后续 UI 批次执行） |
+| --- | --- | --- |
+| `full` | 面完整 | 正常渲染 |
+| `partial` | 必须附 `missing` 子项清单与 `reason` | 控件可用，缺失子项对应的次级操作隐藏/禁用并带说明 |
+| `none` | 必须附 `reason`，区分「接口无」（面上根本没有该方法）与「实现无」（上层有、该面未开窗） | 入口整体不渲染，不留永远失败的按钮 |
+
+两个已接入面的当前声明（取值逐格照取证矩阵誊录，并在 `26043e9b` 基线上对着实际方法面复核——adapter 91 个方法、CliService 94 个方法加 `applications.session.diff` 门面）：
+
+| 键 | local-runtime-v2 | tui-runtime-adapter |
+| --- | --- | --- |
+| sessionCrud | full | full |
+| streamingSend | full | full |
+| interrupt | full | full |
+| toolSkillInvocation | full | full |
+| turnDiff | full | none（adapter 实现无） |
+| turnRewindRedo | full | partial——缺 `reapplyTurnDiff` |
+| plugins | full | partial——缺 `previewGithubPlugin`、`importGithubPlugin`、`listEnabledPlugins` |
+| mcp | full | full |
+| subagents | partial——缺 `getDelegationSnapshot`、`stopDelegation`（在 adapter 上下文，不在 CliService 面） | full |
+| usageStats | full | full |
+| authCredentials | full | full |
+| updateCheck | none（接口无） | none（实现无） |
+| fileReadWrite | partial——缺 `file-write` | partial——缺 `file-write` |
+| gitOperations | partial——缺 `git-diff`、`git-commit`、`git-branch` | partial——缺 `git-diff`、`git-commit`、`git-branch` |
+
+### `GET /api/engine-capabilities`
+
+只读、声明直出（不起 host、不探测）。返回一个面的声明，附「哪些能力不可用」的汇总——后续能力驱动的 UI 以此渲染，**代码里不出现按引擎名单隐藏功能的逻辑**：
+
+```
+GET  /api/engine-capabilities[?provider=<id>]
+200  { ok, provider, transport, capabilities: { <键>: {level, missing?, reason?} × 14 },
+       unavailable: { none: [键…], partial: [{key, missing}…] } }
+404  { ok: false, code: "unknown_engine_provider", knownProviders: [...] }   // 调用方写错了 id
+```
+
+默认返回 `local-runtime-v2`（M4 把 ACP/exec 包成 provider 之前唯一注册的 host 面）。`?provider=` 写错答 404——它不可能与保留给「引擎缺能力」的 501 混淆。
+
+### 调了未声明的能力 → 501
+
+`server/lib/engine/errors.js` 定义 `EngineCapabilityNotSupportedError`（结构化字段：`capability` / `provider` / `missing` / `reason`）。`assertEngineCapability` 在能力为 `none`、或 `partial` 命中缺失子项时抛它。两个 HTTP 层（Hono 层 `app.js#invokeHandler` 与旧分发器 `router.js`，与既有 413 请求体上限映射同一处集中处理）统一转成：
+
+```
+501 { ok: false, code: "engine_capability_not_supported", capability, provider, missing?, reason?, error }
+```
+
+用 501 而非 400/404/500：请求本身没写错，是**引擎面缺这个功能**——与 `routes/protocol.js` 既有的 `unsupported` → 501 同款。前端把 `engine_capability_not_supported` 当作**预期降级**（按上表三档隐藏入口），不弹错误提示。
+
+### 迁移状态与边界
+
+- **本批只做迁移第一步 M1**：host 构造（`createCatalogueHost`）原样移入 `engine/providers/local-runtime-v2.js`，`runtime-host.js` 转发导出，既有引用方零改动；没有任何现有路由行为变化，`GET /api/engine-capabilities` 是纯新增端点。
+- **启动只读探测（设计稿 §2.3 第 2 步）本批刻意不做**：尚无路由消费探测结果，而接探测要动 M1 明确不动的 catalogue host 生命周期；随第一个需要它的 A 批路由一起落。
+- **新 provider 准入规则**（由 `packages/webui/test/lib/engine/capabilities.test.js` 快照测试钉住）：14 键全声明；`partial` 必须枚举 `missing` 与 `reason`；声明档位被测试钉死——不经重新审计改档位，CI 直接红；调未声明能力一律答结构化 501，绝不给空实现。
+
 ## 客户端能力协商，以及引擎反向发来的请求
 
 ACP 握手是双向的，两个方向都由同一份 `initialize` 载荷决定。这一节说明 webui 声明了哪些能力、为什么清单这么短，以及引擎发来的请求在 webui 没有应答界面时会怎样。

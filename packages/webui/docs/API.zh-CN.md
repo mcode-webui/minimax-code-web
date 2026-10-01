@@ -2363,6 +2363,39 @@ chunk URL 都做内容寻址，rebuild 时自动失效。
 
 ---
 
+## 引擎能力
+
+### `GET /api/engine-capabilities?provider=`
+
+只读、声明直出：返回某个 provider 在 14 个引擎能力键上的支持档位，
+附前端能力驱动渲染所用的 `unavailable` 汇总。不起 host、不探测。
+`?provider=` 缺省为 `local-runtime-v2`；另一个已注册面是
+`tui-runtime-adapter`。
+
+**Response 200**
+```json
+{
+  "ok": true,
+  "provider": "local-runtime-v2",
+  "transport": "runtime",
+  "capabilities": {
+    "sessionCrud": { "level": "full" },
+    "plugins": { "level": "partial", "missing": ["…"], "reason": "…" },
+    "updateCheck": { "level": "none", "reason": "interface-absent: …" }
+  },
+  "unavailable": { "none": ["updateCheck"], "partial": [{ "key": "plugins", "missing": ["…"] }] }
+}
+```
+（`capabilities` 实际含全部 14 键；此处示例 3 个。）
+
+**错误** —— `?provider=` 写错答 `404 {"ok":false,"code":"unknown_engine_provider","knownProviders":[…]}`（调用方的错，绝不会是 501）。未来任何按能力门控的路由，调到未声明能力答 `501 {"ok":false,"code":"engine_capability_not_supported","capability","provider","missing"?,"reason"?}`——这是预期降级、不是服务端故障；按「隐藏入口」处理，不弹错误提示。
+
+契约细节（14 键总表、两个 provider 的档位、迁移状态）见
+[`docs/webui.zh-CN.md`](../../../docs/webui.zh-CN.md) 的
+「引擎能力声明」一节。
+
+---
+
 ## 错误响应
 
 所有错误均遵循以下结构之一：

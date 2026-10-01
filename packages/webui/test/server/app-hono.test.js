@@ -124,6 +124,7 @@ describe("app.js — migration ledger", () => {
       "POST /api/protocol/activate-session",
       "GET /api/protocol/list-sessions",
       "GET /api/protocol/capabilities",
+      "GET /api/engine-capabilities",
     ]);
   });
 

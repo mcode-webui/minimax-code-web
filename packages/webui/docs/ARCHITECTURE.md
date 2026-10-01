@@ -486,6 +486,46 @@ done \| stopped`) is a projection-layer product, not a stored value; webui does
 not import it but adopts the same shape. Unknown future statuses render as
 `idle`, never a false `running`.
 
+### `engine/` (capability declarations + the local-runtime-v2 host)
+
+The engine abstraction lives at `server/lib/engine/` (engine-abstraction
+batch B1; migration state M1). Five files, one job each:
+
+| File | Owns |
+| --- | --- |
+| `engine/capabilities.js` | The contract: `ENGINE_CAPABILITY_KEYS` (the 14 matrix keys), `validateEngineCapabilities`, `assertEngineCapability`, `summarizeUnavailableCapabilities` |
+| `engine/errors.js` | `EngineCapabilityNotSupportedError` + `engineCapabilityHttpResponse` (the 501 payload shape) |
+| `engine/index.js` | The facade: `getEngineProvider`, `listEngineProviderIds` (registry by provider id; transport selection arrives with migration step M4) |
+| `engine/providers/local-runtime-v2.js` | `createCatalogueHost` (moved verbatim from `runtime-host.js`, which re-exports it) + `LOCAL_RUNTIME_V2_CAPABILITIES` |
+| `engine/providers/tui-runtime-adapter.js` | `TUI_RUNTIME_ADAPTER_CAPABILITIES` (declaration only — the adapter itself is constructed inside the v2 host) |
+
+Declaration discipline (admission rules for any future provider, enforced
+by the snapshot tests in `test/lib/engine/capabilities.test.js`):
+
+1. All 14 keys declared — no "absent means none". `partial` must enumerate
+   `missing` sub-items and a `reason`; `none` must carry a `reason`
+   distinguishing `interface-absent` from `implementation-absent`.
+2. Declarations are static module constants — the first source of truth,
+   code-reviewed. A level flip without re-auditing the provider surface
+   goes red in CI (the tests pin every key of every provider).
+3. Calling an undeclared capability throws
+   `EngineCapabilityNotSupportedError`; both HTTP layers
+   (`server/app.js#invokeHandler`, `server/router.js`) map it to
+   `501 engine_capability_not_supported`. **Empty implementations are
+   forbidden** — a missing capability must be legible before the call
+   and loud after it (#110 fake-success discipline).
+4. One host per provider process-wide: `createCatalogueHost` remains the
+   single owner of the runtime instance (`acp-client.js#getCatalogueHost`
+   keeps its "Never build a second host" rule); `close()` stays bounded.
+5. Levels drive the UI, never provider names: the frontend reads
+   `GET /api/engine-capabilities` (`routes/engine-capabilities.js#handleEngineCapabilities`)
+   and renders `full` / `partial`(+missing) / `none` — no hard-coded
+   provider lists in UI code.
+
+Runtime probing (downgrading a declared level when the environment
+disagrees) is deliberately absent in this batch — see `engine/index.js`
+for the reasoning.
+
 ## 4. The `clientState` payload
 
 This is the shape every SSE `state` event contains. The webui mirrors
@@ -769,6 +809,12 @@ The pattern (see `docs/DEVELOPMENT.md` for the full walk-through):
    local `request()` helper, which appends the `cid` query parameter
    itself; there is no `API_SUFFIX` constant — earlier revisions of this
    document named one, and it has been removed.
+5. If the endpoint depends on an engine capability, gate it with
+   `assertEngineCapability` from `server/lib/engine/capabilities.js`
+   before dispatching: an undeclared capability then answers the
+   structured `501 engine_capability_not_supported` automatically (both
+   HTTP layers map it). Never return an empty implementation for a
+   capability the engine does not have.
 
 ## 10. Future directions
 

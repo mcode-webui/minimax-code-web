@@ -45,6 +45,10 @@ import { getRequestListener } from "@hono/node-server";
 
 import { runGates } from "./lib/gates.js";
 import { BodyTooLargeError } from "./lib/read-json.js";
+import {
+  EngineCapabilityNotSupportedError,
+  engineCapabilityHttpResponse,
+} from "./lib/engine/errors.js";
 import { getCidFromReq, getClient } from "./lib/state-bus.js";
 
 import * as accountRoute from "./routes/account.js";
@@ -65,6 +69,7 @@ import * as providersRoute from "./routes/providers.js";
 import * as gitRoute from "./routes/git.js";
 import * as pluginsRoute from "./routes/plugins.js";
 import * as turnDiffRoute from "./routes/turn-diff.js";
+import * as engineCapabilitiesRoute from "./routes/engine-capabilities.js";
 import * as authorizeRoute from "./lib/authorize.js";
 
 /**
@@ -202,6 +207,9 @@ export const OWNED_ROUTES = new Set([
   "POST /api/protocol/activate-session",
   "GET /api/protocol/list-sessions",
   "GET /api/protocol/capabilities",
+  // Engine capability declaration (engine-abstraction batch B1).
+  // Read-only, declaration-backed — see routes/engine-capabilities.js.
+  "GET /api/engine-capabilities",
 ]);
 
 /**
@@ -356,6 +364,19 @@ function invokeHandler(c, capture, handler) {
         },
       },
     );
+  // An engine capability the active provider did not declare answers 501
+  // with a structured payload (engine_capability_not_supported). Centralising
+  // it here — same rationale as 413 above — means no route can forget the
+  // gate, and the error can never silently degrade into a fake success
+  // (#110 discipline). Expected degradation, not a server fault: the
+  // frontend treats this code as "hide the entry point", not as a toast.
+  const capabilityUnsupported = (cause) => {
+    const { status, payload } = engineCapabilityHttpResponse(cause);
+    return new Response(JSON.stringify(payload), {
+      status,
+      headers: { "Content-Type": "application/json; charset=utf-8" },
+    });
+  };
   try {
     const handled = handler(c.env.incoming, capture, ctx);
     if (handled && typeof handled.then === "function") {
@@ -365,6 +386,9 @@ function invokeHandler(c, capture, handler) {
         () => responseFromCapture(c, capture),
         (cause) => {
           if (cause instanceof BodyTooLargeError) return tooLarge();
+          if (cause instanceof EngineCapabilityNotSupportedError) {
+            return capabilityUnsupported(cause);
+          }
           throw cause;
         },
       );
@@ -372,6 +396,9 @@ function invokeHandler(c, capture, handler) {
     return responseFromCapture(c, capture);
   } catch (cause) {
     if (cause instanceof BodyTooLargeError) return tooLarge();
+    if (cause instanceof EngineCapabilityNotSupportedError) {
+      return capabilityUnsupported(cause);
+    }
     throw cause;
   }
 }
@@ -719,6 +746,15 @@ export function createHonoApp() {
   );
   app.get("/api/protocol/capabilities", (c) =>
     invokeHandler(c, c.get(CAPTURE_KEY), protocolRoute.handleCapabilities),
+  );
+
+  // ----- Engine capability declaration (batch B1) -----
+  // Read-only: returns a provider's 14-key declaration + degradation
+  // summary. Unknown ?provider= answers 404 (caller confusion), while
+  // capability gates on future routes answer 501 via invokeHandler's
+  // EngineCapabilityNotSupportedError mapping above.
+  app.get("/api/engine-capabilities", (c) =>
+    invokeHandler(c, c.get(CAPTURE_KEY), engineCapabilitiesRoute.handleEngineCapabilities),
   );
 
   return app;

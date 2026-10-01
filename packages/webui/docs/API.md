@@ -2557,6 +2557,40 @@ There is no manual `?v=N` cache-bust any more — every chunk URL under
 
 ---
 
+## Engine capabilities
+
+### `GET /api/engine-capabilities?provider=`
+
+Read-only, declaration-backed: which of the 14 engine capability keys a
+provider supports, plus the `unavailable` summary the capability-driven
+UI renders from. Boots no host and runs no probe. `?provider=` defaults
+to `local-runtime-v2`; the other registered surface is
+`tui-runtime-adapter`.
+
+**Response 200**
+```json
+{
+  "ok": true,
+  "provider": "local-runtime-v2",
+  "transport": "runtime",
+  "capabilities": {
+    "sessionCrud": { "level": "full" },
+    "plugins": { "level": "partial", "missing": ["…"], "reason": "…" },
+    "updateCheck": { "level": "none", "reason": "interface-absent: …" }
+  },
+  "unavailable": { "none": ["updateCheck"], "partial": [{ "key": "plugins", "missing": ["…"] }] }
+}
+```
+(`capabilities` carries all 14 keys; three are shown.)
+
+**Errors** — `404 {"ok":false,"code":"unknown_engine_provider","knownProviders":[…]}` for an unknown `?provider=` (caller confusion — never 501). Any future route gated on an undeclared capability answers `501 {"ok":false,"code":"engine_capability_not_supported","capability","provider","missing"?,"reason"?}` — expected degradation, not a server fault; treat it as "hide the entry point", not as an error toast.
+
+Contract details (the 14-key table, both providers' levels, the
+migration state) live in [`docs/webui.md`](../../../docs/webui.md)
+under "Engine capability declaration".
+
+---
+
 ## Error responses
 
 All errors follow one of these shapes:

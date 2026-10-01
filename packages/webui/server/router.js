@@ -49,6 +49,10 @@ import {
 } from "./lib/settings.js";
 import { getClient, getCidFromReq } from "./lib/state-bus.js";
 import { runGates } from "./lib/gates.js";
+import {
+  EngineCapabilityNotSupportedError,
+  engineCapabilityHttpResponse,
+} from "./lib/engine/errors.js";
 import { serveStatic, serveIndex } from "./lib/static.js";
 import { getTrajectoryPanelHandler } from "./lib/trajectory.js";
 import { isRequestAuthorized, writeAuthRequired } from "./lib/auth.js";
@@ -214,17 +218,26 @@ export async function handleRequest(req, res) {
           // both layers must agree or the same request answers differently
           // depending on which layer happened to own the route.
           const tooLarge = e && e.name === "BodyTooLargeError";
-          res.writeHead(tooLarge ? 413 : 500, {
+          // Same 501 the Hono layer answers: an undeclared engine
+          // capability is expected degradation with a structured payload,
+          // not a server fault — and both layers must agree for the same
+          // reason as the 413 above.
+          const capabilityUnsupported = e instanceof EngineCapabilityNotSupportedError;
+          const { status, payload } = capabilityUnsupported
+            ? engineCapabilityHttpResponse(e)
+            : {
+                status: tooLarge ? 413 : 500,
+                payload: {
+                  ok: false,
+                  error: e.message,
+                  ...(tooLarge ? { code: "BODY_TOO_LARGE" } : {}),
+                },
+              };
+          res.writeHead(status, {
             "Content-Type": "application/json; charset=utf-8",
             ...(tooLarge ? { Connection: "close" } : {}),
           });
-          res.end(
-            JSON.stringify({
-              ok: false,
-              error: tooLarge ? e.message : e.message,
-              ...(tooLarge ? { code: "BODY_TOO_LARGE" } : {}),
-            }),
-          );
+          res.end(JSON.stringify(payload));
         }
       } catch {}
       return;
