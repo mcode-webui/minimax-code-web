@@ -1,0 +1,492 @@
+// webui/test/lib/engine/capability-snapshot.test.js
+//
+// M2 — capability-declaration snapshot audit against the REAL host
+// (design doc §2.4, migration step M2; doc/engine-abstraction-design.md).
+//
+// M1 (test/lib/engine/capabilities.test.js) pins every declared LEVEL
+// against the audited matrix. That alone cannot catch the more dangerous
+// drift: the declaration saying "full"/"partial" while the live object no
+// longer carries the promised methods (or has grown the ones `missing`
+// denies). This file closes that gap by booting ONE real catalogue host
+// against an isolated tmp data dir and auditing every full/partial key
+// against the reflected method surfaces:
+//
+//   full    → every REQUIRED_METHODS entry must be typeof "function" on
+//             the declared surface member;
+//   partial → methods of the key that ARE named in `missing` must be
+//             absent; the ones NOT named must be present; kebab-case
+//             `missing` items (sub-capability names such as "file-write")
+//             must have NO method on the surface whose name contains all
+//             their segments (a future getWorkspaceGitDiff would make the
+//             "git-diff" entry go red until the declaration is re-audited);
+//   none    → not method-checked (a provider may legitimately expose no
+//             surface for the capability).
+//
+// The audit function is a PURE function over (declaration, method-name
+// sets), so the mutation checks below feed it hand-built mutant surfaces
+// and assert it reports the drift — the "flip a level / delete a method
+// must go red" requirement is thereby pinned as a test of the checker
+// itself, not just performed once by hand.
+//
+// Isolation: the host boots against a per-run tmp dir via mkTmpDir and
+// MINIMAX_DATA_DIR / MCODE_WEBUI_* are pinned BEFORE the dynamic import
+// of the engine provider (node:test runs each file in its own process;
+// setting only MCODE_WEBUI_DATA_DIR is NOT enough — the engine dir would
+// fall back to ~/.minimax and rewrite the user's real config).
+
+import { test, describe, before, after } from "node:test";
+import { strict as assert } from "node:assert";
+
+import { mkTmpDir, rmTmpDir } from "../../helpers/tmp.js";
+
+// Set BEFORE any dynamic import of config-reading / host modules below.
+const tmpBase = mkTmpDir("mcode-webui-engine-snapshot-");
+process.env.MINIMAX_DATA_DIR = tmpBase;
+process.env.MCODE_WEBUI_DATA_DIR = tmpBase;
+process.env.MCODE_WEBUI_SETTINGS_PATH = `${tmpBase}/settings.json`;
+process.env.MCODE_WEBUI_EVENTS_PATH = `${tmpBase}/events.jsonl`;
+process.env.MCODE_WEBUI_SESSIONS_DB = `${tmpBase}/sessions.db`;
+process.env.MCODE_WEBUI_UPLOAD_DIR = `${tmpBase}/uploads`;
+
+// Declaration modules are import-light (no @mavis/* tree), and the env
+// above is already pinned, so loading them at top level is safe here.
+const {
+  ENGINE_CAPABILITY_KEYS,
+  LOCAL_RUNTIME_V2_CAPABILITIES,
+  TUI_RUNTIME_ADAPTER_CAPABILITIES,
+  getEngineProvider,
+  listEngineProviderIds,
+  validateEngineCapabilities,
+} = await import("../../../server/lib/engine/index.js");
+
+// ---------------------------------------------------------------------------
+// REQUIRED_METHODS — what each capability key means ON THE OBJECTS.
+// ---------------------------------------------------------------------------
+//
+// Provenance (how this table was derived, per ticket 104): a one-off
+// audit script booted the real catalogue host exactly like this file
+// does, walked the prototype chains of host.adapter / host.cliService /
+// host.applications.session.diff with getOwnPropertyNames, and dumped
+// the full method sets — 91 adapter methods, 94 CliService methods, and
+// the session.diff facade (getSessionDiff/getTurnDiff/revertTurnDiff/
+// reapplyTurnDiff + the internal requireTarget). The lists below name
+// exactly the methods each declaration's own evidence comments cite
+// (server/lib/engine/providers/*.js), each re-verified present/absent on
+// those dumped sets. `on` is the host member the method must live on:
+// the tui-runtime-adapter provider declares the adapter surface; the
+// local-runtime-v2 provider declares cliService + applications.
+
+/** Which host member each provider's surface lives on. */
+const SURFACE_MEMBERS = {
+  "tui-runtime-adapter": ["adapter"],
+  "local-runtime-v2": ["cliService", "applications.session.diff"],
+};
+
+function resolveMember(host, dottedPath) {
+  return dottedPath.split(".").reduce((obj, key) => (obj == null ? obj : obj[key]), host);
+}
+
+/**
+ * REQUIRED_METHODS[providerId][capabilityKey] pins what the capability
+ * key MEANS on that provider's surface:
+ *   - `on`: the host member the key's methods live on;
+ *   - `methods`: methods that MUST exist when the key is full (and, for
+ *     a partial, the parts that are present);
+ *   - `absent`: method-NAMED sub-items the partial declarations list in
+ *     `missing` — methods of this capability's domain that genuinely do
+ *     not exist on this surface (reapplyTurnDiff on the adapter,
+ *     getDelegationSnapshot on the bare CliService). They are part of
+ *     the snapshot so "missing must really be absent" is checked, and a
+ *     partial that stops listing one goes red (under-declaration).
+ */
+const REQUIRED_METHODS = {
+  "tui-runtime-adapter": {
+    sessionCrud: { on: "adapter", methods: ["createSession", "listSessions", "getSession", "renameSession", "archiveSession", "deleteSession", "forkSession"] },
+    streamingSend: { on: "adapter", methods: ["sendMessage", "watchSessionTurn", "watchEvents"] },
+    interrupt: { on: "adapter", methods: ["abortSession", "steer"] },
+    toolSkillInvocation: { on: "adapter", methods: ["listSkills", "listPendingPermissions", "replyPermission"] },
+    turnRewindRedo: { on: "adapter", methods: ["rewindSession", "getSessionRewindPreview"], absent: ["reapplyTurnDiff"] },
+    plugins: { on: "adapter", methods: ["listInstalledPlugins", "listMarketplacePlugins", "mutatePlugin", "refreshPlugins"], absent: ["previewGithubPlugin", "importGithubPlugin", "listEnabledPlugins"] },
+    mcp: { on: "adapter", methods: ["configureSessionMcpServers", "clearSessionMcpServers", "inspectProjectMcp", "listMcpServers"] },
+    subagents: { on: "adapter", methods: ["getDelegationSnapshot", "stopDelegation", "listBackgroundTasks"] },
+    usageStats: { on: "adapter", methods: ["getSessionUsage", "getSessionUsageSummary", "watchSessionUsageCommits"] },
+    authCredentials: { on: "adapter", methods: ["getAccountStatus", "getCodexOAuthStatus", "startCodexOAuthLogin", "cancelCodexOAuthLogin", "getMiniMaxApiKeyStatus", "upsertMiniMaxApiKey", "listUserModelProviders", "createUserModelProvider", "updateUserModelProvider", "deleteUserModelProvider", "testUserModelProvider", "discoverUserModelsCandidate"] },
+    fileReadWrite: { on: "adapter", methods: ["listWorkspaceFileTree", "searchWorkspaceFiles"] },
+    gitOperations: { on: "adapter", methods: ["getWorkspaceGitMetadata"] },
+  },
+  "local-runtime-v2": {
+    sessionCrud: { on: "cliService", methods: ["createSession", "updateSession", "archiveSession", "deleteSession", "forkSession", "getSessionForkOptions"] },
+    streamingSend: { on: "cliService", methods: ["sendMessage", "resumeSession", "steerSession", "watchEvents"] },
+    interrupt: { on: "cliService", methods: ["abortSession"] },
+    toolSkillInvocation: { on: "cliService", methods: ["listSkills", "listRuntimeSkills", "listPendingPermissions", "replyPermission"] },
+    turnDiff: { on: "applications.session.diff", methods: ["getSessionDiff", "getTurnDiff", "revertTurnDiff", "reapplyTurnDiff"] },
+    turnRewindRedo: { on: "cliService", methods: ["getSessionRewindPreview", "rewindSession", "editSessionMessage"] },
+    plugins: { on: "cliService", methods: ["refreshPlugins", "listMarketplacePlugins", "listInstalledPlugins", "listEnabledPlugins", "installPlugin", "enablePlugin", "disablePlugin", "uninstallPlugin", "previewGithubPlugin", "importGithubPlugin"] },
+    mcp: { on: "cliService", methods: ["configureSessionMcpServers", "inspectProjectMcp", "clearSessionMcpServers", "listMcpServers"] },
+    subagents: { on: "cliService", methods: ["listBackgroundTasks"], absent: ["getDelegationSnapshot", "stopDelegation"] },
+    usageStats: { on: "cliService", methods: ["getSessionUsage", "getSessionUsageSummary", "watchSessionUsageCommits"] },
+    authCredentials: { on: "cliService", methods: ["getAccountStatus", "getCodexOAuthStatus", "startCodexOAuthLogin", "cancelCodexOAuthLogin", "getMiniMaxApiKeyStatus", "upsertMiniMaxApiKey", "listUserModelProviders", "createUserModelProvider", "updateUserModelProvider", "deleteUserModelProvider", "testUserModel", "discoverUserModelsCandidate"] },
+    fileReadWrite: { on: "cliService", methods: ["listWorkspaceFileTree", "searchWorkspaceFiles"] },
+    gitOperations: { on: "cliService", methods: ["getWorkspaceGitMetadata", "getWorkspaceReviewLink"] },
+  },
+};
+
+// ---------------------------------------------------------------------------
+// The pure audit — errors are values (a problems list), so the mutation
+// checks can feed it synthetic surfaces and pin that it reports drift.
+// ---------------------------------------------------------------------------
+
+/**
+ * Walk an object's prototype chain and collect every own function name
+ * (skipping Object.prototype noise). This is the same reflection the
+// one-off provenance audit used, so "exists" means exactly what the
+ * table was derived against — class methods live on prototypes, so a
+ * plain Object.keys() would see none of them.
+ */
+export function collectMethodNames(obj) {
+  const names = new Set();
+  let proto = obj;
+  const seen = new Set();
+  while (proto && proto !== Object.prototype && !seen.has(proto)) {
+    seen.add(proto);
+    for (const name of Object.getOwnPropertyNames(proto)) {
+      if (name === "constructor") continue;
+      try {
+        if (typeof obj[name] === "function") names.add(name);
+      } catch {
+        // getter that throws — not a method
+      }
+    }
+    proto = Object.getPrototypeOf(proto);
+  }
+  return [...names].sort();
+}
+
+/**
+ * Does any method name on the surface cover all segments of a
+ * kebab-case sub-capability name ("file-write" → ["file","write"])?
+ * Both segments must appear in the SAME method name: getWorkspaceGit-
+ * Metadata contains "git" but not "diff", so it does not satisfy
+ * "git-diff"; a future getWorkspaceGitDiff would.
+ */
+function subCapabilityHasMethods(missingItem, allMethodNames) {
+  const segments = missingItem.split("-").map((s) => s.toLowerCase());
+  return allMethodNames.filter((name) => {
+    const lower = name.toLowerCase();
+    return segments.every((segment) => lower.includes(segment));
+  });
+}
+
+/**
+ * Audit one provider's declaration against the live host.
+ *
+ * @param {string} providerId
+ * @param {Record<string, {level: string, missing?: string[]}>} declaration
+ * @param {object} host the real catalogue host (adapter/cliService/…)
+ * @returns {string[]} problems; empty means the declaration matches the
+ *           implementation for every full/partial key.
+ */
+export function auditProviderCapabilities(providerId, declaration, host) {
+  const problems = [];
+  const required = REQUIRED_METHODS[providerId] || {};
+  const surfaceMethodsByMember = new Map();
+  const methodTypeOf = (on, method) => {
+    const member = resolveMember(host, on);
+    if (member === undefined || member === null) return "undefined";
+    try {
+      return typeof member[method];
+    } catch {
+      return "throws";
+    }
+  };
+  const surfaceMethodNames = (on) => {
+    if (!surfaceMethodsByMember.has(on)) {
+      const member = resolveMember(host, on);
+      surfaceMethodsByMember.set(on, member ? collectMethodNames(member) : []);
+    }
+    return surfaceMethodsByMember.get(on);
+  };
+
+  for (const key of Object.keys(required)) {
+    const entry = declaration[key];
+    if (!entry) continue; // shape problems are M1's validate, not this audit
+    const { on, methods, absent = [] } = required[key];
+
+    if (entry.level === "full") {
+      for (const method of methods) {
+        if (methodTypeOf(on, method) !== "function") {
+          problems.push(
+            `${providerId}.${key}: declared full but ${on}.${method} is not a function`,
+          );
+        }
+      }
+      continue;
+    }
+
+    if (entry.level === "partial") {
+      const missing = entry.missing || [];
+      // Present part: every tracked method must exist (none of them may
+      // appear in `missing` — see the coverage sweep below).
+      for (const method of methods) {
+        if (methodTypeOf(on, method) !== "function") {
+          problems.push(
+            `${providerId}.${key}: declared partial, not listing ${on}.${method} as missing, yet it is absent`,
+          );
+        }
+      }
+      // Absent part: each method-named missing item must be tracked
+      // (else the audit would be vacuous for it) and genuinely absent.
+      for (const item of missing) {
+        if (item.includes("-")) continue; // sub-capability name, swept below
+        if (!absent.includes(item)) {
+          problems.push(
+            `${providerId}.${key}: missing lists "${item}" which this snapshot does not track as absent for the key`,
+          );
+          continue;
+        }
+        if (methodTypeOf(on, item) === "function") {
+          problems.push(
+            `${providerId}.${key}: missing lists ${on}.${item} but it exists on the surface`,
+          );
+        }
+      }
+      // Under-declaration: a tracked absent method the declaration
+      // stopped listing would hide a real gap behind "partial".
+      for (const item of absent) {
+        if (!missing.includes(item)) {
+          problems.push(
+            `${providerId}.${key}: ${on}.${item} is absent from the surface but the declaration does not list it as missing`,
+          );
+        }
+      }
+      // Kebab-case missing items name sub-capabilities, not methods:
+      // they must have NO covering method on the key's surface.
+      for (const item of missing) {
+        if (!item.includes("-")) continue;
+        const covered = subCapabilityHasMethods(item, surfaceMethodNames(on));
+        if (covered.length > 0) {
+          problems.push(
+            `${providerId}.${key}: missing lists sub-capability "${item}" but surface method(s) ${covered.join(", ")} cover it`,
+          );
+        }
+      }
+      continue;
+    }
+    // "none": deliberately not method-checked.
+  }
+  return problems;
+}
+
+// ---------------------------------------------------------------------------
+// Static guard — registry-driven key-set assertion (no host needed).
+// ---------------------------------------------------------------------------
+
+describe("M2 static guard — declarations carry exactly the 14 contract keys", () => {
+  test("every REGISTERED provider declares exactly ENGINE_CAPABILITY_KEYS — no typos can pass silently", () => {
+    // Registry-driven on purpose: M4 will register acp/exec providers,
+    // and this sweep picks them up without editing the test. A key the
+    // contract does not know (typo, rename) or a dropped key fails here
+    // even before any host is booted.
+    const ids = listEngineProviderIds();
+    assert.ok(ids.length >= 2, `expected both M1 providers registered, got ${ids.join(", ")}`);
+    const expected = [...ENGINE_CAPABILITY_KEYS].sort();
+    for (const id of ids) {
+      const { capabilities } = getEngineProvider(id);
+      assert.deepEqual(
+        Object.keys(capabilities).sort(),
+        expected,
+        `${id} must declare exactly the 14 contract keys`,
+      );
+      assert.deepEqual(
+        validateEngineCapabilities(capabilities),
+        [],
+        `${id} declaration must pass contract validation`,
+      );
+    }
+  });
+
+  test("REQUIRED_METHODS covers every non-none key of every audited provider (and no others)", () => {
+    for (const [providerId, required] of Object.entries(REQUIRED_METHODS)) {
+      const { capabilities } = getEngineProvider(providerId);
+      for (const key of Object.keys(required)) {
+        assert.ok(
+          capabilities[key] && capabilities[key].level !== "none",
+          `${providerId}.${key} is audited but declared none — none keys are not method-checked`,
+        );
+        assert.ok(
+          SURFACE_MEMBERS[providerId].includes(required[key].on) ||
+            required[key].on.startsWith("applications."),
+          `${providerId}.${key} surface "${required[key].on}" must be a declared surface member`,
+        );
+      }
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Live-host audit — one real catalogue host, both providers audited.
+// ---------------------------------------------------------------------------
+
+describe("M2 snapshot — declarations vs the REAL catalogue host", () => {
+  let host;
+  let declarations;
+
+  before(async () => {
+    // Dynamic import AFTER env is pinned: the provider module pulls the
+    // @mavis/* TS tree and constructs the real in-process runtime.
+    const { createCatalogueHost } = await import(
+      "../../../server/lib/engine/providers/local-runtime-v2.js"
+    );
+    declarations = {
+      "local-runtime-v2": LOCAL_RUNTIME_V2_CAPABILITIES,
+      "tui-runtime-adapter": TUI_RUNTIME_ADAPTER_CAPABILITIES,
+    };
+    host = await createCatalogueHost({ dataDir: tmpBase });
+  });
+
+  after(async () => {
+    if (host) await host.close();
+    rmTmpDir(tmpBase);
+  });
+
+  test("the host exposes the surfaces the declarations talk about", () => {
+    // Precondition tripwire: if the host contract loses a member the
+    // audit below would silently degrade to checking nothing.
+    assert.equal(typeof host.adapter?.sendMessage, "function", "host.adapter missing");
+    assert.equal(typeof host.cliService?.createSession, "function", "host.cliService missing");
+    assert.equal(
+      typeof host.applications?.session?.diff?.getTurnDiff,
+      "function",
+      "host.applications.session.diff missing",
+    );
+  });
+
+  for (const providerId of Object.keys(REQUIRED_METHODS)) {
+    test(`${providerId}: every full/partial key matches the live surface (none keys unchecked)`, () => {
+      const problems = auditProviderCapabilities(
+        providerId,
+        declarations[providerId],
+        host,
+      );
+      assert.deepEqual(
+        problems,
+        [],
+        `declaration/implementation drift must be empty — a non-empty list is the CI red light M2 exists for:\n  ${problems.join("\n  ")}`,
+      );
+    });
+  }
+
+  test("method-surface sizes stay in the audited ballpark (gross-loss tripwire)", () => {
+    // Not an exact pin (the engine may add methods freely) — this only
+    // catches a wholesale surface loss (e.g. a proxy/wrapper hiding the
+    // prototype chain) that per-method checks above could otherwise
+    // never distinguish from a legitimately smaller surface.
+    assert.ok(collectMethodNames(host.adapter).length > 80, "adapter surface collapsed");
+    assert.ok(collectMethodNames(host.cliService).length > 85, "cliService surface collapsed");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Mutation checks — the checker itself must go red on drift. These pin
+// the ticket's mutation matrix against synthetic surfaces, so the red
+// light is guaranteed by tests, not by a one-time manual run.
+// ---------------------------------------------------------------------------
+
+describe("M2 mutation checks — auditProviderCapabilities reports drift", () => {
+  /** A minimal fake host from method-name lists per surface member. */
+  function fakeHost(adapterNames, cliServiceNames, diffNames) {
+    const toObject = (names) =>
+      Object.fromEntries(names.map((n) => [n, () => {}]));
+    return {
+      adapter: toObject(adapterNames),
+      cliService: toObject(cliServiceNames),
+      applications: { session: { diff: toObject(diffNames) } },
+    };
+  }
+
+  const ADAPTER_ALL = REQUIRED_METHODS["tui-runtime-adapter"];
+  const V2_ALL = REQUIRED_METHODS["local-runtime-v2"];
+
+  /** Method names per surface member, gathered from REQUIRED_METHODS. */
+  function namesBySurface(provider) {
+    const byOn = {};
+    for (const { on, methods } of Object.values(provider)) {
+      byOn[on] = [...(byOn[on] || []), ...methods];
+    }
+    return byOn;
+  }
+
+  test("MUT-1: flipping a full to partial (missing a method that EXISTS) goes red", () => {
+    // usageStats exists in full on cliService; declaring it partial and
+    // listing getSessionUsage as missing must fail the audit — this is
+    // the ticket's "flip a full to partial → red" mutation, pinned as a
+    // property of the checker.
+    const v2 = namesBySurface(V2_ALL);
+    const mutated = {
+      ...LOCAL_RUNTIME_V2_CAPABILITIES,
+      usageStats: { level: "partial", missing: ["getSessionUsage"], reason: "mutant" },
+    };
+    const problems = auditProviderCapabilities(
+      "local-runtime-v2",
+      mutated,
+      fakeHost([], v2.cliService, v2["applications.session.diff"]),
+    );
+    assert.ok(
+      problems.some((p) => p.includes("usageStats") && p.includes("getSessionUsage")),
+      `expected the full→partial flip to be reported, got: ${JSON.stringify(problems)}`,
+    );
+  });
+
+  test("MUT-2: deleting a method implementation goes red (full key)", () => {
+    const byOn = namesBySurface(V2_ALL);
+    const withoutDisablePlugin = byOn.cliService.filter((m) => m !== "disablePlugin");
+    const problems = auditProviderCapabilities(
+      "local-runtime-v2",
+      LOCAL_RUNTIME_V2_CAPABILITIES,
+      fakeHost([], withoutDisablePlugin, byOn["applications.session.diff"]),
+    );
+    assert.ok(
+      problems.some((p) => p.includes("plugins") && p.includes("disablePlugin")),
+      `expected the deleted method to be reported, got: ${JSON.stringify(problems)}`,
+    );
+  });
+
+  test("MUT-3: deleting a method a partial relies on goes red", () => {
+    const byOn = namesBySurface(ADAPTER_ALL);
+    const withoutRewind = byOn.adapter.filter((m) => m !== "rewindSession");
+    const problems = auditProviderCapabilities(
+      "tui-runtime-adapter",
+      TUI_RUNTIME_ADAPTER_CAPABILITIES,
+      fakeHost(withoutRewind, [], []),
+    );
+    assert.ok(
+      problems.some((p) => p.includes("turnRewindRedo") && p.includes("rewindSession")),
+      `expected the deleted partial method to be reported, got: ${JSON.stringify(problems)}`,
+    );
+  });
+
+  test("MUT-4: a missing sub-capability that GREW a covering method goes red", () => {
+    // The engine grows getWorkspaceGitDiff while the declaration still
+    // denies "git-diff" — the snapshot must force a re-audit.
+    const byOn = namesBySurface(ADAPTER_ALL);
+    const problems = auditProviderCapabilities(
+      "tui-runtime-adapter",
+      TUI_RUNTIME_ADAPTER_CAPABILITIES,
+      fakeHost([...byOn.adapter, "getWorkspaceGitDiff"], [], []),
+    );
+    assert.ok(
+      problems.some((p) => p.includes("gitOperations") && p.includes("getWorkspaceGitDiff")),
+      `expected the grown sub-capability to be reported, got: ${JSON.stringify(problems)}`,
+    );
+  });
+
+  test("MUT-5: a partial listing an absent method as missing is fine; listing a present one is not", () => {
+    const byOn = namesBySurface(ADAPTER_ALL);
+    const ok = auditProviderCapabilities(
+      "tui-runtime-adapter",
+      TUI_RUNTIME_ADAPTER_CAPABILITIES,
+      fakeHost(byOn.adapter, [], []),
+    );
+    assert.deepEqual(ok, [], "the pristine declaration over the real method set is clean");
+  });
+});
