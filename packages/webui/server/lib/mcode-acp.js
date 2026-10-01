@@ -355,7 +355,8 @@ export async function runMcodeAcp(content, opts = {}) {
         console.warn(`[webui] bindDraftToMcodeSid: ${e.message}`);
       }
       // First-turn session-busy guard: `handleSend` claimed the run with
-      // `beginRun(cid, cs.mcodeSessionId)` BEFORE this turn existed, so on
+      // `beginRun(cid, cs.mcodeSessionId, cs.sessionId)` BEFORE this turn
+      // existed, so on
       // a session's first turn the claim was registered with `sid: null`
       // and `runsBySid` never guarded the engine session — a second window
       // could send to the same brand-new session and get a 200, then lose
@@ -363,7 +364,9 @@ export async function runMcodeAcp(content, opts = {}) {
       // The turn's sid is now known: backfill the claim mid-turn (idempotent
       // when beginRun already carried a real sid; re-points the claim when a
       // failed session/load fell back to a fresh engine session above).
-      updateRunSid(cid, sid);
+      // `owningWebuiSessionId`, not `cs.sessionId`: a mid-run switch already
+      // re-pointed cs at the other conversation.
+      updateRunSid(cid, sid, owningWebuiSessionId);
     }
     return await streamAcpPrompt(
       client,
@@ -395,7 +398,10 @@ export async function runMcodeAcp(content, opts = {}) {
       thinking: null,
     };
   } finally {
-    clearActiveChild(cid);
+    // Scoped to this turn's engine session — a sibling conversation's child
+    // in the same tab survives (and `sid` is null on the pre-session
+    // failure paths above, which is the same key it was registered under).
+    clearActiveChild(cid, sid);
     client.stop();
   }
 }
@@ -744,7 +750,7 @@ function streamAcpPrompt(
       tps: 0,
     };
     cs.context.thinkingStatus = "Running";
-    setActiveChild(cid, client);
+    setActiveChild(cid, client, sid);
     pushStateFor(cid);
     // session-isolation/02 (run-mirror): create the per-(cid,
     // owning-session) buffer that captures every stream write
@@ -753,7 +759,10 @@ function streamAcpPrompt(
     // switched mid-run). The buffer is drained at finalize back
     // into either cs.chat (same session still viewing) or the
     // owning session's persisted record (user switched away).
-    createRunChat(cid, sid, []);
+    // `owningWebuiSessionId` scopes the replace to THIS run's previous
+    // key: a sibling conversation streaming in the same tab keeps its own
+    // buffer, and its lines must not be dropped here.
+    createRunChat(cid, sid, [], owningWebuiSessionId);
     // Idle watchdog — every stream event (thought / message / tool_call /
     // tool_update / usage / other) refreshes cs.running.lastDeltaAt,
     // so a long but healthy turn never trips this; only a silent
@@ -821,7 +830,9 @@ function streamAcpPrompt(
           msgTarget.push(`§§ turn_msg=${r.assistantMessageId}`);
         }
       }
-      clearActiveChild(cid);
+      // Scoped to this turn's engine session: a sibling conversation
+      // running in the same tab has its own child and must keep it.
+      clearActiveChild(cid, sid);
       cs.running = {
         active: false,
         prompt: null,

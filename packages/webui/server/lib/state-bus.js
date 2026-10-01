@@ -138,7 +138,12 @@ export function makeClientState() {
 
 export const clients = new Map(); // cid -> clientState
 export const sseByCid = new Map(); // cid -> SSE response
-export const activeChildByCid = new Map(); // cid -> child process
+// cid -> Map<engineSessionId, child process>.  Parallel turns: one tab may
+// run two sessions at once, and every one of them owns its own child process,
+// so a single child per cid would mis-target `/api/stop` and the session RPCs
+// (see `getActiveChild`).  `undefined` is the "engine session not known yet"
+// key — the first turn of a brand-new conversation, and the exec transport.
+export const activeChildByCid = new Map();
 
 // ============================================================
 // Per-cid monotonic snapshot revision (ticket 08 — set-model SSE race).
@@ -677,21 +682,77 @@ export function pushOnlineCount(lanBroadcast) {
   }
 }
 
-export function setActiveChild(cid, child) {
-  if (cid) activeChildByCid.set(cid, child);
+/**
+ * Register `child` as the live child of one ENGINE session of `cid`.
+ *
+ * `engineSid` is the engine (mcode) session the child serves. A tab may run
+ * two conversations at once and each has its own subprocess, so the child has
+ * to be addressable per session — otherwise `/api/stop` and the session RPCs
+ * pick whichever turn registered last and signal the wrong process.
+ * Omitting it is supported (tests, and any pre-session registration) and
+ * keeps the historical "one child per cid" behaviour.
+ */
+export function setActiveChild(cid, child, engineSid) {
+  if (!cid) return;
+  const m = activeChildByCid.get(cid) || new Map();
+  m.set(engineSid, child);
+  activeChildByCid.set(cid, m);
 }
 
-export function getActiveChild(cid) {
-  return activeChildByCid.get(cid) || null;
+/**
+ * The live child for `cid`, optionally narrowed to one engine session.
+ *
+ * With `engineSid`: the child serving that engine session. When the cid holds
+ * exactly one child the answer is unambiguous even if the key misses (a turn
+ * that re-pointed its engine session after a `session/load` fallback), so that
+ * one is returned; with two or more, a miss is a real miss — returning an
+ * arbitrary sibling would target the wrong turn, so this returns null and lets
+ * the caller fall back to the shared singleton.
+ *
+ * Without it: the most recently registered child — the pre-parallel
+ * behaviour, used where "the cid has a turn in flight" is the only question.
+ */
+export function getActiveChild(cid, engineSid) {
+  const m = activeChildByCid.get(cid);
+  if (!m || m.size === 0) return null;
+  if (engineSid === undefined) {
+    let last;
+    for (const child of m.values()) last = child;
+    return last || null;
+  }
+  const exact = m.get(engineSid);
+  if (exact) return exact;
+  if (m.size === 1) {
+    let only;
+    for (const child of m.values()) only = child;
+    return only || null;
+  }
+  return null;
 }
 
-export function clearActiveChild(cid) {
-  if (cid) activeChildByCid.delete(cid);
+/** True when `cid` has at least one live child — the "a turn is in flight"
+ *  question that does not care which session it belongs to. */
+export function hasActiveChild(cid) {
+  const m = activeChildByCid.get(cid);
+  return !!m && m.size > 0;
+}
+
+export function clearActiveChild(cid, engineSid) {
+  if (!cid) return;
+  const m = activeChildByCid.get(cid);
+  if (!m) return;
+  if (engineSid === undefined) {
+    activeChildByCid.delete(cid);
+    return;
+  }
+  // Scoped release: a sibling session's turn in the same tab keeps its child.
+  m.delete(engineSid);
+  if (m.size === 0) activeChildByCid.delete(cid);
 }
 
 // ============================================================
-// Run registry — one live turn per cid, one per engine session, and
-// a global ceiling.
+// Run registry — one live turn per (tab, conversation), one per engine
+// session, and a global ceiling.
 //
 // Why this exists. Every prompt spawns its own engine subprocess
 // (`runMcodeAcp` builds a `new McodeAcpClient`, `runMcodeExec` a raw
@@ -711,23 +772,84 @@ export function clearActiveChild(cid) {
 // faster one's, which can silently discard a live streamed turn. Hence the
 // second index, keyed by engine session.
 //
+// The third index — the WEBUI session id — is what makes two conversations
+// in ONE tab able to run at the same time. The registry was originally keyed
+// by cid alone, and `cid` is the browser-tab identity (lib/cid.ts: one
+// `localStorage['webui_cid']` per tab, deliberately stable across a session
+// switch so the client keeps one state object, one SSE channel and one
+// engine connection). Keying the CLAIM by it therefore serialized every
+// conversation in a tab onto one lock: a 40-second turn in session B made
+// session A's composer answer 409 `cid-busy` until B finished. The claim
+// belongs to a conversation, not to a tab, so the primary index is
+// (cid → webui session id). `null` is a first-class key: it is the tab's
+// unsaved draft, which is itself a conversation, and a tab has at most one.
+//
+// Everything else in the module stays tab-scoped on purpose: the client
+// state, the SSE channel, the coalesce/revision bookkeeping and the
+// `mcode acp` transport connection are per-tab by design.
+//
 // Callers: `beginRun` / `endRun` from `routes/chat.js#handleSend`. The check
 // runs BEFORE the fire-and-forget 200 ack so a rejected double-send is a real
 // 409 the client surfaces, rather than a silent second run.
-const runsByCid = new Map(); // cid -> { sid, startedAt }
-const runsBySid = new Map(); // mcodeSessionId -> cid
+const runsByCid = new Map(); // cid -> Map<webuiSessionId|null, run>
+const runsBySid = new Map(); // engineSessionId -> run
+let runCount = 0; // live turns across every cid — the real resource count
+
+/** The run registry entry for one conversation of one tab, or null. */
+function runFor(key, webuiSessionId) {
+  const m = runsByCid.get(key);
+  if (!m) return null;
+  return m.get(webuiSessionId) || null;
+}
+
+/** True when any conversation of this tab is streaming to the engine. */
+function hasEngineBoundRun(key) {
+  const m = runsByCid.get(key);
+  if (!m) return false;
+  for (const run of m.values()) if (run.sid) return true;
+  return false;
+}
+
+/** The run a client's current view belongs to, or null.
+ *
+ *  The webui record id is the right key but not a stable one: a first turn's
+ *  draft is promoted to the engine identity mid-turn (`bindDraftToMcodeSid`)
+ *  and `cs.sessionId` follows it, so the key a run was claimed under stops
+ *  matching the view. The engine session id does not change, so it is the
+ *  fallback — and it is unique across tabs, hence the `cid` check.
+ */
+function runForView(key, cs) {
+  if (!cs) return null;
+  const byConversation = runFor(key, cs.sessionId || null);
+  if (byConversation) return byConversation;
+  if (cs.mcodeSessionId) {
+    const byEngine = runsBySid.get(cs.mcodeSessionId);
+    if (byEngine && byEngine.cid === key) return byEngine;
+  }
+  return null;
+}
 
 /**
  * Claim the right to run a turn.
  *
  * @param {string} cid
  * @param {string|null} sid engine session this turn will continue, if known
+ * @param {string|null} [webuiSessionId] conversation within the tab; `null`
+ *   for the tab's unsaved draft
  * @returns {{ok:true}|{ok:false, reason:'cid-busy'|'session-busy'|'at-capacity', detail?:string, running?:number, limit?:number}}
  */
-export function beginRun(cid, sid) {
+export function beginRun(cid, sid, webuiSessionId = null) {
   const key = cid || "default";
-  if (runsByCid.has(key)) {
-    return { ok: false, reason: "cid-busy", detail: "a turn is already running for this client" };
+  const wsid = webuiSessionId || null;
+  // A second send into the SAME conversation — the duplicate-execution guard
+  // (ticket #126 D-2). A different conversation of the same tab is a
+  // different key and runs in parallel.
+  if (runFor(key, wsid)) {
+    return {
+      ok: false,
+      reason: "cid-busy",
+      detail: "a turn is already running for this session",
+    };
   }
   // A second tab on the same conversation: both cids are idle, the engine
   // session is not. Refuse rather than let two processes fight over it.
@@ -738,17 +860,21 @@ export function beginRun(cid, sid) {
       detail: "this conversation is already running in another window",
     };
   }
-  if (runsByCid.size >= MAX_CONCURRENT) {
+  if (runCount >= MAX_CONCURRENT) {
     return {
       ok: false,
       reason: "at-capacity",
       detail: `server is already running ${MAX_CONCURRENT} turns`,
-      running: runsByCid.size,
+      running: runCount,
       limit: MAX_CONCURRENT,
     };
   }
-  runsByCid.set(key, { sid: sid || null, startedAt: Date.now() });
-  if (sid) runsBySid.set(sid, key);
+  const run = { cid: key, webuiSessionId: wsid, sid: sid || null, startedAt: Date.now(), bufferSid: null };
+  const m = runsByCid.get(key) || new Map();
+  m.set(wsid, run);
+  runsByCid.set(key, m);
+  runCount += 1;
+  if (sid) runsBySid.set(sid, run);
   return { ok: true };
 }
 
@@ -769,22 +895,33 @@ const runChatByCid = new Map(); // cid -> Map<sessionId, { chat: string[] }>
  * Create the run-time chat buffer for (cid, sessionId). Lines written
  * by the engine during this turn land here instead of in `cs.chat`.
  *
- * Replaces any existing buffer for this cid: `beginRun` allows at most
- * ONE live turn per cid, so the previous entry is either the same turn
- * re-created before its first write (handleSend seeds the buffer at
- * claim time, streamAcpPrompt re-creates it at stream start) or a stale
- * empty entry from a turn whose `session/load` failed and fell back to
- * a fresh engine session (the buffer re-keys with the new sid — the old
- * key never received a line and must not linger). Replacing before the
- * first engine write loses nothing.
+ * Replaces THIS RUN's own previous buffer, and only that one. The old code
+ * replaced the whole per-cid map, which was safe while `beginRun` allowed a
+ * single turn per cid; with a tab able to run two conversations at once it
+ * would drop a sibling session's live buffer and lose its streamed lines.
+ * What still has to be replaced, and is why this is not just a `set`:
+ *
+ *   - handleSend seeds the buffer at claim time and streamAcpPrompt
+ *     re-creates it at stream start — same key, same turn;
+ *   - a turn whose `session/load` failed re-keys onto a fresh engine
+ *     session (the old key never received a line and must not linger).
+ *
+ * `webuiSessionId` identifies which run is speaking so the previous key can
+ * be found; without it no stale key is pruned and the call is a plain set.
  */
-export function createRunChat(cid, sessionId, baseLines = []) {
+export function createRunChat(cid, sessionId, baseLines = [], webuiSessionId) {
   if (!cid || !sessionId) return;
-  runChatByCid.set(cid, new Map([
-    [sessionId, {
-      chat: Array.isArray(baseLines) ? [...baseLines] : [],
-    }],
-  ]));
+  const key = cid || "default";
+  const m = runChatByCid.get(key) || new Map();
+  const run = webuiSessionId === undefined ? null : runFor(key, webuiSessionId || null);
+  if (run && run.bufferSid && run.bufferSid !== sessionId) {
+    m.delete(run.bufferSid);
+  }
+  m.set(sessionId, {
+    chat: Array.isArray(baseLines) ? [...baseLines] : [],
+  });
+  runChatByCid.set(key, m);
+  if (run) run.bufferSid = sessionId;
 }
 
 /** Append one line to the run-time buffer. No-op if the buffer does
@@ -875,13 +1012,16 @@ const IDLE_RUNNING_VIEW = Object.freeze({
   tps: 0,
 });
 
-/** True when the session `cs` currently displays OWNS this cid's live
- * run (the run registry carries the turn's engine sid, and the viewed
- * session is bound to that same engine sid). */
+/** True when the session `cs` currently displays OWNS a live run — the
+ * run claimed for that very conversation (its webui session id) is still
+ * streaming, and the viewed session is bound to that run's engine sid.
+ * Keyed by conversation, not by tab: a tab may run two of them at once, and
+ * only the one the user is looking at may claim "thinking" in this view. */
 export function viewOwnsLiveRun(cid, cs) {
-  const run = runsByCid.get(cid || "default");
+  if (!cs) return false;
+  const run = runForView(cid || "default", cs);
   if (!run || !run.sid) return false;
-  return !!cs && cs.mcodeSessionId === run.sid;
+  return cs.mcodeSessionId === run.sid;
 }
 
 /** The chat array a snapshot should carry for `cs`: the viewed
@@ -917,7 +1057,7 @@ export function snapshotViewFields(cid, cs) {
     // (the run registry holds it). Project the live run back onto the
     // snapshot so the owning view keeps its running indicator (ticket 02
     // acceptance #3) without mutating cs behind the switch route's back.
-    const run = runsByCid.get(key);
+    const run = runForView(key, cs);
     if (run && run.sid && cs && cs.running && !cs.running.active) {
       fields.running = {
         active: true,
@@ -939,13 +1079,15 @@ export function snapshotViewFields(cid, cs) {
     }
     return fields;
   }
-  const run = runsByCid.get(key);
-  if (!run || !run.sid) {
-    // No live run anywhere on this cid — nothing to scope.
+  if (!hasEngineBoundRun(key)) {
+    // No live turn on this tab — nothing to scope.
     return chatChanged ? { chat } : {};
   }
-  // A turn is live on this cid and the viewed session is NOT the
+  // A turn is live on this tab and the viewed session is NOT the
   // owning one: keep this view's own chat and force the run claim off.
+  // With parallel turns this is per-conversation, not per-tab: a sibling
+  // session streaming in the background must not paint "thinking" on a
+  // session that is idle, and must not be able to switch it off either.
   const context = cs && cs.context
     ? { ...cs.context, thinkingStatus: "Idle", tps: 0 }
     : undefined;
@@ -955,22 +1097,54 @@ export function snapshotViewFields(cid, cs) {
 }
 
 /** Release a turn claimed by `beginRun`. Safe to call when nothing is held. */
-export function endRun(cid) {
+export function endRun(cid, webuiSessionId = null) {
   const key = cid || "default";
-  const entry = runsByCid.get(key);
+  const wsid = webuiSessionId || null;
+  const entry = runFor(key, wsid);
   if (!entry) return;
-  runsByCid.delete(key);
-  // Only drop the sid claim if this cid still owns it — a later run on the
-  // same session may have re-registered it.
-  if (entry.sid && runsBySid.get(entry.sid) === key) runsBySid.delete(entry.sid);
+  const m = runsByCid.get(key);
+  m.delete(wsid);
+  if (m.size === 0) runsByCid.delete(key);
+  runCount -= 1;
+  // Only drop the sid claim if this very run still owns it — a later run on
+  // the same engine session may have re-registered it.
+  if (entry.sid && runsBySid.get(entry.sid) === entry) runsBySid.delete(entry.sid);
+}
+
+/**
+ * Move a live run from one conversation key to another.
+ *
+ * Why this exists: `handleSend` claims the turn BEFORE it materialises a
+ * conversation id — a brand-new session has `cs.sessionId === null` at claim
+ * time and only gets a record further down, in the same synchronous block
+ * (no `await` in between, so no second request can observe the gap). The
+ * claim therefore has to follow the record, or the next send into that
+ * conversation would find a free key and start a duplicate turn.
+ *
+ * Idempotent, and a no-op when `to` is already claimed by another run.
+ *
+ * @returns {boolean} true when the run now lives under `to`
+ */
+export function moveRunSession(cid, from, to) {
+  const key = cid || "default";
+  const fromKey = from || null;
+  const toKey = to || null;
+  if (fromKey === toKey) return runFor(key, toKey) !== null;
+  const entry = runFor(key, fromKey);
+  if (!entry) return false;
+  if (runFor(key, toKey)) return false;
+  runsByCid.get(key).delete(fromKey);
+  runsByCid.get(key).set(toKey, entry);
+  entry.webuiSessionId = toKey;
+  return true;
 }
 
 /**
  * Backfill (or re-point) the engine-session claim of a live run.
  *
  * Why this exists: during a session's FIRST turn `handleSend` calls
- * `beginRun(cid, cs.mcodeSessionId)` while `cs.mcodeSessionId` is still
- * null — the engine session id only comes into existence inside
+ * `beginRun(cid, cs.mcodeSessionId, cs.sessionId)` while `cs.mcodeSessionId`
+ * is still null — the engine session id only comes into existence inside
  * `runMcodeAcp`'s `session/new`. The run was therefore registered with
  * `sid: null`, `runsBySid` never guarded that session, and a second
  * window (a different cid that had already learned the new session id)
@@ -994,42 +1168,52 @@ export function endRun(cid) {
  *
  * @param {string} cid client whose live run should claim `sid`
  * @param {string|null|undefined} sid the engine session id now in use
+ * @param {string|null} [webuiSessionId] the conversation the turn belongs to
  * @returns {boolean} true when the run's sid claim is (already) `sid`
  */
-export function updateRunSid(cid, sid) {
+export function updateRunSid(cid, sid, webuiSessionId = null) {
   if (!sid) return false;
   const key = cid || "default";
-  const entry = runsByCid.get(key);
-  // No live run for this cid (endRun already released it, or beginRun
-  // was never this cid's) — nothing to backfill, and no claim may be
-  // created out of thin air.
+  const entry = runFor(key, webuiSessionId || null);
+  // No live run for this conversation (endRun already released it, or
+  // beginRun was never called for it) — nothing to backfill, and no claim
+  // may be created out of thin air.
   if (!entry) return false;
   // Idempotent: the run already carries this exact sid (e.g. a turn
   // that loaded an existing session — beginRun registered it).
   if (entry.sid === sid) return true;
-  // Never steal another cid's claim. If a different cid is registered
-  // for this sid, the guard missed it earlier; overwriting here would
-  // let `endRun` on this cid drop the OTHER cid's protection.
+  // Never steal another run's claim. If a different run is registered for
+  // this sid, the guard missed it earlier; overwriting here would let that
+  // other run's `endRun` drop THIS run's protection.
   const owner = runsBySid.get(sid);
-  if (owner && owner !== key) return false;
+  if (owner && owner !== entry) return false;
   // Release the stale claim this run held (load-failure fallback
   // re-pointed the turn onto a fresh engine session).
-  if (entry.sid && runsBySid.get(entry.sid) === key) {
+  if (entry.sid && runsBySid.get(entry.sid) === entry) {
     runsBySid.delete(entry.sid);
   }
   entry.sid = sid;
-  runsBySid.set(sid, key);
+  runsBySid.set(sid, entry);
   return true;
 }
 
-/** Live turn count, for diagnostics and tests. */
+/** Live turn count, for diagnostics and tests. Counts TURNS, not busy
+ *  clients: one tab running two conversations holds two engine
+ *  subprocesses, which is what MAX_CONCURRENT exists to bound. */
 export function activeRunCount() {
-  return runsByCid.size;
+  return runCount;
 }
 
-/** The run currently held by a cid, or null. */
-export function getRunForCid(cid) {
-  return runsByCid.get(cid || "default") || null;
+/** The run currently held for one conversation of a cid, or null. */
+export function getRunForSession(cid, webuiSessionId = null) {
+  return runFor(cid || "default", webuiSessionId || null);
+}
+
+/** Every live run of a cid, as [webuiSessionId, run] pairs. Diagnostics
+ *  and tests; the hot paths use `runFor` through the exported helpers. */
+export function getRunsForCid(cid) {
+  const m = runsByCid.get(cid || "default");
+  return m ? Array.from(m.entries()) : [];
 }
 
 // Find every cid bound to the same mcodeSessionId — used to notify

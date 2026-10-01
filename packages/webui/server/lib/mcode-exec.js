@@ -209,8 +209,10 @@ export function runMcodeExec(prompt, opts = {}) {
   });
   child.stdin.write(prompt, "utf8");
   child.stdin.end();
-  // v0.5.ai: per-cid child tracker（/api/stop 按 cid 找 child）
-  setActiveChild(cid, child);
+  // v0.5.ai: per-cid child tracker（/api/stop 按 cid 找 child）。
+  // 按引擎会话分桶：一个标签页可并行跑两个会话，各自一个子进程，
+  // /api/stop 只应命中当前查看会话的那一个。
+  setActiveChild(cid, child, sessionId || null);
   return { child, args, label, model, workspace, sessionId, cs, cid };
 }
 
@@ -231,7 +233,7 @@ export function collectExecResult(childPromise) {
     };
     let buf = "";
     const t0 = Date.now();
-    const { child, label, model, cs, cid } = childPromise;
+    const { child, label, model, cs, cid, sessionId } = childPromise;
     cs.running = {
       active: true,
       prompt: label,
@@ -342,7 +344,9 @@ export function collectExecResult(childPromise) {
         ];
       }
       if (r._stopped) r.status = "stopped";
-      clearActiveChild(cid);
+      // Scoped to this turn's engine session — a sibling conversation's
+      // child in the same tab survives.
+      clearActiveChild(cid, sessionId || null);
       cs.running = {
         active: false,
         prompt: null,

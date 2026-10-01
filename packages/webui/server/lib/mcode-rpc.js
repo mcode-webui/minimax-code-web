@@ -51,10 +51,17 @@ function fail(error, code) {
  *
  * Falls back to the singleton when there is no active child, because the
  * commands-probe and session/list paths still need it.
+ *
+ * `sessionId` narrows the lookup to the subprocess that actually serves that
+ * engine session. A tab may run two conversations at once, and each has its
+ * own subprocess: a `session/cancel` or `session/set_config_option` routed
+ * to the sibling lands on a process that never loaded the session, where
+ * `requireAttachedSession` refuses it and the route reports "not synced"
+ * while the turn keeps running.
  */
-async function clientForCid(cid, requireLive) {
+async function clientForCid(cid, requireLive, sessionId) {
   if (cid) {
-    const child = getActiveChild(cid);
+    const child = getActiveChild(cid, sessionId);
     // Require the RPC surface, not merely a liveness flag. `activeChildByCid`
     // holds two different kinds of object: an `McodeAcpClient` (ACP transport,
     // has `.request` / `.notify` / `.alive`) and a raw `ChildProcess` (exec
@@ -94,8 +101,10 @@ export { clientForCid };
  * Returning a distinct `code` lets the route word its warning accurately
  * instead of implying the engine refused a change it was never asked to make.
  */
-function noLiveClientFailure(cid) {
-  const child = cid ? getActiveChild(cid) : null;
+function noLiveClientFailure(cid, sessionId) {
+  // Same session narrowing as clientForCid — the answer must describe the
+  // subprocess the call would have used, not a sibling's.
+  const child = cid ? getActiveChild(cid, sessionId) : null;
   if (child && typeof child.request !== "function") {
     return fail(
       new Error(
@@ -108,9 +117,13 @@ function noLiveClientFailure(cid) {
 }
 
 async function callRpc(method, params, opts = {}) {
-  const client = await clientForCid(opts.cid, opts.requireLive);
+  // Every session-bound method carries `sessionId` in `params`; passing it
+  // through is what pins the call on the owning subprocess (see clientForCid).
+  const client = await clientForCid(opts.cid, opts.requireLive, params && params.sessionId);
   if (!client) {
-    return opts.requireLive ? noLiveClientFailure(opts.cid) : fail(new Error("mcode acp client unavailable"), "no_client");
+    return opts.requireLive
+      ? noLiveClientFailure(opts.cid, params && params.sessionId)
+      : fail(new Error("mcode acp client unavailable"), "no_client");
   }
   try {
     const r = await client.request(method, params);
@@ -123,9 +136,11 @@ async function callRpc(method, params, opts = {}) {
 }
 
 async function notifyRpc(method, params, opts = {}) {
-  const client = await clientForCid(opts.cid, opts.requireLive);
+  const client = await clientForCid(opts.cid, opts.requireLive, params && params.sessionId);
   if (!client) {
-    return opts.requireLive ? noLiveClientFailure(opts.cid) : fail(new Error("mcode acp client unavailable"), "no_client");
+    return opts.requireLive
+      ? noLiveClientFailure(opts.cid, params && params.sessionId)
+      : fail(new Error("mcode acp client unavailable"), "no_client");
   }
   try {
     await client.notify(method, params);

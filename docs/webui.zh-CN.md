@@ -279,6 +279,49 @@ ACP 握手是双向的，两个方向都由同一份 `initialize` 载荷决定�
 
 回合正在跑的时候切换会话**不会**打断这个回合。回合的所有权和流缓冲以 `(cid, mcodeSessionId)` 为键存在 `lib/state-bus.js#runChatByCid`，与工作区无关。引擎子进程持有回合开始时的 cwd，新的 `cs.workspace.dir` 只是"接下来要在哪个工作区里看"。终态时（`routes/chat.js` finalize drain）的行为保持不变——仍在查看就写进 `cs.chat`，已切走就走 `appendChatToSession(owningSid, lines)`。
 
+### 同一标签页内的跨会话并行
+
+一个标签页可以同时跑两个会话。`POST /api/send` 取的回合占用以
+`(cid, 会话)` 为键，不再只按 `cid`。
+
+`cid` 是**浏览器标签页**级标识——`localStorage['webui_cid']` 只生成一次，
+并且有意跨会话切换保持不变，好让一个标签页始终只持有一份客户端状态、
+一条 SSE 通道、一套合并/修订簿记和一条 `mcode acp` 传输连接。这些保持标签页
+级是有意为之。回合占用不在此列：只按 `cid` 加锁时，一个会话里的长回合会把
+同一标签页内其他**所有**会话的发送一并用 `409 cid-busy` 拒掉，直到它结束。
+
+| 情形 | 结果 |
+| --- | --- |
+| 会话 B 的回合在跑，同时往会话 A 发送（同一标签页） | `200`，并行执行 |
+| 同一会话在其回合运行中再次发送 | `409 cid-busy`——防重复执行守卫（#126 D-2） |
+| 另一个标签页/客户端已在跑同一个引擎会话 | `409 session-busy` |
+| 全服活动回合数超过 `MCODE_MAX_CONCURRENT` | `409 at-capacity` |
+
+会话键是 webui 记录 id，其中 `null` 是一等键：它代表该标签页尚未落盘的草稿，
+而草稿本身就是一个会话，且一个标签页至多有一个。`handleSend` 在该记录尚不存在
+时就先占用（全新会话此时还没有 id），并在几条语句之后创建它——中间没有
+`await`，所以占用会由 `moveRunSession` 重新指向新 id；否则往该会话的第二次
+发送会找到一个空闲键，从而起一个重复回合。
+
+「会话是一等键」带来两条需要在别处依赖的后果，值得写明：
+
+- **首回合的记录 id 会在回合运行中改变。** 草稿会在回合中途被提升为引擎身份
+  （`bindDraftToMcodeSid`），`cs.sessionId` 随之改变，于是占用时的那个键不再
+  与当前视图匹配。因此每个回答「这个会话是不是正在流式输出的那个」的查找，
+  都会回退到引擎会话 id——它是不变的。这也是为什么在回填落地之后，往一个
+  首回合会话的重复发送得到的是 `session-busy` 而不是 `cid-busy`：两者都拒绝。
+- **`MAX_CONCURRENT` 计的是回合数，不是忙碌客户端数。** 一个标签页跑两个会话
+  会占用两个名额，因为这本来就是两个引擎子进程——这正是该上限要约束的资源。
+
+保持标签页级的部分，以及在两个活动回合下为何依然正确：
+
+| 关注点 | 键 | 仍然正确的原因 |
+| --- | --- | --- |
+| 客户端状态、SSE 通道、快照修订、推送合并 | `cid` | 一个标签页一份投影本就是契约；快照内部由 `snapshotViewFields` 按会话收窄 |
+| 流式行缓冲（`runChatByCid`） | `(cid, engineSessionId)` | 本来就是按会话的。`createRunChat` 只替换调用方自己那个回合的键——原先整标签页替换会抹掉兄弟会话正在写的行 |
+| 运行指示器 / 「思考中」状态 | 当前查看的会话 | `viewOwnsLiveRun` 解析的是所查看会话的回合，兄弟会话的回合既不会点亮也不会熄灭本视图的指示器 |
+| 引擎子进程、`/api/stop`、会话 RPC | `(cid, engineSessionId)` | 每个回合一个子进程。`/api/stop` 与 `session/cancel` / `session/set_config_option` 都指向**当前查看**会话的子进程；按标签页查找会信号到错误的回合 |
+
 ### 用户能看到什么
 
 - **侧效**：文件树面板在新工作区下重新取根；旧工作区的展开/过滤/显示隐藏项仍存在 `sessionStorage` 里，新工作区从它自己存过的展开态（若从未打开则为空）开始。
@@ -1582,7 +1625,7 @@ createdAtMs, updatedAtMs}`）下发，按 `toolCallId` 幂等、上限 32 条、
 | `GET` | `/api/acp-sessions` | `routes/sessions.js#handleAcpSessions` | mcode acp 会话列表 |
 | `GET` | `/api/acp-session-title` | `routes/sessions.js#handleAcpSessionTitle` | `?sid=…` 标题助手 |
 | `GET` | `/api/sessions/:id/export` | `routes/export.js` | `?format=md\|json[&download=true]`；非法 format → `400`；authorize 拒绝 → `403`；找不到 → `404` |
-| `POST` | `/api/send` | `routes/chat.js#handleSend` | 火即弃；`200 {ok}`；`400 content required`；`409 {reason:"cid-busy"\|"session-busy"\|"at-capacity", running?, limit?}`；空闲看门狗在连续静默 `MCODE_WEBUI_PROMPT_IDLE_TIMEOUT`（默认 120 秒）后中止该回合 |
+| `POST` | `/api/send` | `routes/chat.js#handleSend` | 火即弃；`200 {ok}`；`400 content required`；`409 {reason:"cid-busy"\|"session-busy"\|"at-capacity", running?, limit?}`；占用按会话计，同一标签页的第二个会话不会被阻塞——见「同一标签页内的跨会话并行」；空闲看门狗在连续静默 `MCODE_WEBUI_PROMPT_IDLE_TIMEOUT`（默认 120 秒）后中止该回合 |
 | `POST` | `/api/stop` | `routes/chat.js#handleStop` | `200 {ok, wasRunning, cancelled, hardKilled, note}` |
 | `POST` | `/api/cmd` | `routes/chat.js#handleCmd` | 只接受那八个按钮命令；被认领 → `200 {ok, cmd}`，未被认领 → `400 {ok:false, reason:"unknown_command", knownCommands, suggestion}` —— 见[斜杠命令](#斜杠命令走哪个端点webui-parity-ticket-65) |
 | `POST` | `/api/usage` | `routes/usage.js#handleUsage` | 记录 + 投影 |

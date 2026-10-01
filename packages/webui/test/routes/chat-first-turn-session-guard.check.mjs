@@ -183,6 +183,7 @@ async function setupFirstTurnMocks(t) {
 }
 
 let handleSend;
+let switchSession;
 let sb; // real state-bus
 let sessions; // real sessions lib (redirected store)
 let alerts;
@@ -240,15 +241,15 @@ function makeClient(cid, { mcodeSessionId = null } = {}) {
 // ------------------------------------------------------------------
 // Turn bookkeeping — a test must never abandon a live turn.
 //
-// `beginRun` / `endRun` keep a PROCESS-WIDE registry (the cid claim plus
-// the engine-session claim in `runsBySid`), and `activeRunCount()` reads
-// `runsByCid.size` globally. Every assertion below that counts runs is
+// `beginRun` / `endRun` keep a PROCESS-WIDE registry (the per-conversation
+// claim plus the engine-session claim in `runsBySid`), and
+// `activeRunCount()` counts every live turn globally. Every assertion below that counts runs is
 // therefore reading a number this file shares with every case in the
 // process, and this file has no reset hook to scope it back.
 //
 // A case that aborts between `handleSend` and the finalize leaves its
 // turn parked on the fake transport: the route never reaches
-// `finally { endRun(cid) }`, so the claim stays registered and the cases
+// `finally { endRun(cid, sessionId) }`, so the claim stays registered and the cases
 // that follow read a count that includes a turn they never started. That
 // is the cascade this file shipped with: the first case's
 // `assert.equal(resB._status, 409)` is the only REAL failure, yet the two
@@ -283,6 +284,7 @@ before(async (t) => {
   alerts = await import(absPath("lib/alerts.js"));
   const chatMod = await import(absPath("routes/chat.js"));
   handleSend = chatMod.handleSend;
+  switchSession = (await import(absPath("routes/sessions.js"))).handleSwitchSession;
 });
 
 beforeEach(() => {
@@ -324,8 +326,15 @@ describe("POST /api/send — first-turn session-busy guard", () => {
 
     // Mid-turn: the engine session came into existence, and the run
     // registry must now claim it (the backfill under test).
+    // The run is keyed by (cid, conversation) — the claim starts on the
+    // tab's draft (`sessionId: null`) and follows the record the draft
+    // block creates, which is then promoted to the engine identity. Enumerate
+    // the tab's runs rather than re-deriving the key: the id changes under
+    // the turn, which is exactly why the view router falls back to the engine
+    // sid.
+    const runOf = (cid) => sb.getRunsForCid(cid).map(([, run]) => run)[0] || null;
     const sid = await waitFor(
-      () => sb.getRunForCid(cidA) && sb.getRunForCid(cidA).sid,
+      () => runOf(cidA) && runOf(cidA).sid,
       "run registry to carry the first turn's engine sid",
     );
     assert.match(sid, /^mvs_fake_/);
@@ -362,7 +371,7 @@ describe("POST /api/send — first-turn session-busy guard", () => {
     await turnA;
     assert.equal(resA._status, 200);
     await waitFor(() => sb.activeRunCount() === 0, "run registry to drain");
-    assert.equal(sb.getRunForCid(cidA), null);
+    assert.equal(runOf(cidA), null);
 
     // Now B may take the session, and continues the SAME engine session.
     const resB2 = fakeRes();
@@ -405,8 +414,8 @@ describe("POST /api/send — first-turn session-busy guard", () => {
     // sid itself, so nothing is blocked.
     const res2 = fakeRes();
     const turn2 = drain.track(handleSend(fakeReq({ content: "second" }), res2, { cs, cid }));
-    await waitFor(() => sb.getRunForCid(cid), "second turn to claim the cid");
-    assert.equal(sb.getRunForCid(cid).sid, sid);
+    await waitFor(() => sb.getRunsForCid(cid).length === 1, "second turn to claim the session");
+    assert.equal(sb.getRunsForCid(cid).map(([, run]) => run)[0].sid, sid);
     FakeMcodeAcpClient.release();
     await turn2;
     assert.equal(res2._status, 200);
@@ -445,5 +454,171 @@ describe("POST /api/send — first-turn session-busy guard", () => {
     assert.equal(sb.activeRunCount(), 0);
     assert.deepEqual(chatLines(cs1), ["› from one", "● ok"]);
     assert.deepEqual(chatLines(cs2), ["› from two", "● ok"]);
+  });
+});
+
+
+// ============================================================
+// Cross-session parallel turns in ONE tab.
+//
+// Same harness as above (real chat.js → runMcodeAcp → sessions.js →
+// state-bus, only the ACP transport is faked), because the contract under
+// test IS the wiring: `handleSend` must claim the run against the
+// CONVERSATION it is sending into, not against the tab.
+//
+// The bug: `beginRun` was keyed by `cid` alone, and `cid` is the browser-TAB
+// identity (one `localStorage['webui_cid']`, stable across a session switch
+// so one tab keeps one state object, one SSE channel and one engine
+// connection). A long turn in session B therefore answered 409 `cid-busy`
+// for every send into session A of the same tab until it finished —
+// measured on a running instance (~/tmp/run_261001_001842/smoke-report.md).
+// The guard that must survive the fix is the same-conversation one
+// (#126 D-2): a second send into the SAME session is still a duplicate
+// turn and is still refused.
+// ============================================================
+describe("POST /api/send — parallel turns in one tab", () => {
+  /** Persist a conversation record and switch the tab's view onto it. */
+  async function switchTo(cid, cs, record) {
+    sessions.saveSessions([...sessions.loadSessions(), record]);
+    const res = fakeRes();
+    await switchSession(fakeReq({ id: record.id }), res, { cs, cid });
+    assert.equal(res._status, 200, `switch to ${record.id} must succeed`);
+    assert.equal(cs.sessionId, record.id);
+  }
+
+  test("a send into session A is accepted while session B's turn runs", async () => {
+    const cid = "cid-one-tab-two-sessions";
+    const cs = makeClient(cid);
+
+    // Session B: a first turn that stays in flight (the fake transport
+    // parks its prompt, so B is still running for the rest of the case).
+    const resB = fakeRes();
+    const turnB = drain.track(handleSend(fakeReq({ content: "long task in B" }), resB, { cs, cid }));
+    assert.equal(resB._status, 200);
+    const sidB = await waitFor(() => cs.mcodeSessionId, "B to bind its engine session");
+    const idB = await waitFor(() => cs.sessionId, "B's draft record to exist");
+    await waitFor(() => FakeMcodeAcpClient.pending.length === 1, "B's prompt to park");
+
+    // The user opens session A in the same tab and sends while B streams.
+    // `workspace: ""` — the switch route runs the target through the
+    // containment gate, and an empty value resolves to DEFAULT_WORKSPACE
+    // (the tmp `WS` above is not a real directory, so a stored value
+    // pointing at it is refused with 400 — a different contract, covered
+    // by routes/sessions*.test.js).
+    await switchTo(cid, cs, {
+      id: "web-session-A",
+      title: "A",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      chat: [],
+      workspace: "",
+    });
+    assert.equal(cs.mcodeSessionId, null, "A is a different conversation");
+    const resA = fakeRes();
+    const turnA = drain.track(handleSend(fakeReq({ content: "meanwhile in A" }), resA, { cs, cid }));
+    const sidA = await waitFor(() => cs.mcodeSessionId, "A to bind its engine session");
+    assert.equal(resA._status, 200, "session A must NOT be refused by session B's turn");
+    assert.notEqual(sidA, sidB, "each conversation gets its own engine session");
+    assert.equal(sb.activeRunCount(), 2, "two live turns, two slots");
+
+    // Both drain; neither turn's lines landed in the other's conversation.
+    await waitFor(() => FakeMcodeAcpClient.pending.length === 2, "A's prompt to park");
+    FakeMcodeAcpClient.release();
+    FakeMcodeAcpClient.release();
+    await Promise.all([turnA, turnB]);
+    assert.equal(sb.activeRunCount(), 0);
+    // A's own view carries exactly A's turn.
+    assert.deepEqual(chatLines(cs), ["› meanwhile in A", "● ok"]);
+    // B's turn was written back to B's persisted record, not into A's view.
+    const storedB =
+      sessions.loadSessions().find((s) => s.id === idB || s.mcodeSessionId === sidB);
+    assert.ok(storedB, "B's record still exists");
+    assert.ok(
+      storedB.chat.includes("● ok"),
+      "B's answer reached B's own record",
+    );
+    assert.equal(
+      storedB.chat.includes("› meanwhile in A"),
+      false,
+      "A's message must not appear in B's record",
+    );
+  });
+
+  // The narrow window the engine-session index cannot cover: a conversation
+  // whose FIRST turn has claimed the run but whose engine session does not
+  // exist yet (it is minted inside runMcodeAcp and backfilled mid-turn).
+  // Only the conversation key can refuse a duplicate here, so this case is
+  // what separates "the guard is keyed by conversation" from "the guard is
+  // keyed by conversation AND the engine session happens to be known".
+  test("a duplicate send before the engine session exists is still refused", async () => {
+    const cid = "cid-duplicate-before-sid";
+    const cs = makeClient(cid);
+
+    const res1 = fakeRes();
+    const turn1 = drain.track(handleSend(fakeReq({ content: "once" }), res1, { cs, cid }));
+    // No wait: fire the duplicate into the same conversation while the first
+    // turn is still short of its `session/new`.
+    const res2 = fakeRes();
+    await handleSend(fakeReq({ content: "twice" }), res2, { cs, cid });
+
+    assert.equal(res2._status, 409, "a duplicate send is refused even with no engine session yet");
+    const body = JSON.parse(res2._body);
+    assert.equal(body.reason, "cid-busy", "the conversation key is what refuses it");
+    assert.equal(sb.activeRunCount(), 1, "the refused send must not claim a slot");
+    assert.equal(cs.mcodeSessionId, null, "the first turn has not bound an engine session yet");
+    assert.deepEqual(chatLines(cs), ["› once"]);
+
+    await waitFor(() => FakeMcodeAcpClient.pending.length === 1, "the first prompt to park");
+    FakeMcodeAcpClient.release();
+    await turn1;
+    assert.equal(sb.activeRunCount(), 0);
+  });
+
+  test("a second send into the SAME session is still refused", async () => {
+    const cid = "cid-same-session-twice";
+    const cs = makeClient(cid);
+
+    const res1 = fakeRes();
+    const turn1 = drain.track(handleSend(fakeReq({ content: "once" }), res1, { cs, cid }));
+    assert.equal(res1._status, 200);
+    const sid = await waitFor(() => cs.mcodeSessionId, "the first turn to bind");
+    await waitFor(() => FakeMcodeAcpClient.pending.length === 1, "the first prompt to park");
+
+    // #126 D-2: the duplicate-execution guard. Same conversation, same tab.
+    const res2 = fakeRes();
+    await handleSend(fakeReq({ content: "twice" }), res2, { cs, cid });
+    assert.equal(res2._status, 409, "a duplicate send into the same session is refused");
+    const body = JSON.parse(res2._body);
+    assert.equal(body.ok, false);
+    // Either guard may catch it: a first turn's record is promoted from its
+    // draft uuid to the engine identity mid-run, so by now the ENGINE-session
+    // index is what still recognises the conversation. Both refuse.
+    assert.ok(
+      ["cid-busy", "session-busy"].includes(body.reason),
+      `unexpected refusal reason: ${body.reason}`,
+    );
+    assert.equal(sb.activeRunCount(), 1, "the refused send must not claim a slot");
+    // And nothing was written into the conversation.
+    assert.deepEqual(chatLines(cs), ["› once"]);
+    assert.equal(cs.mcodeSessionId, sid, "the refused send did not disturb the live turn");
+
+    FakeMcodeAcpClient.release();
+    await turn1;
+    assert.equal(res1._status, 200);
+    assert.equal(sb.activeRunCount(), 0);
+    assert.deepEqual(chatLines(cs), ["› once", "● ok"]);
+
+    // Once it finished, the same session accepts a new turn.
+    const res3 = fakeRes();
+    const turn3 = drain.track(handleSend(fakeReq({ content: "later" }), res3, { cs, cid }));
+    // Wait for the prompt to park before releasing — `handleSend` acks
+    // asynchronously, so an immediate release would find an empty queue and
+    // the turn would never settle.
+    await waitFor(() => FakeMcodeAcpClient.pending.length === 1, "the third prompt to park");
+    assert.equal(res3._status, 200);
+    FakeMcodeAcpClient.release();
+    await turn3;
+    assert.equal(sb.activeRunCount(), 0);
+    assert.deepEqual(chatLines(cs), ["› once", "● ok", "› later", "● ok"]);
   });
 });
