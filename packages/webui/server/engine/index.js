@@ -82,6 +82,27 @@ export {
   readEngineVersion,
   resolveSessionReadProvider,
 } from "./session-reads.js";
+// Step M3, batch B2: the session-tree read (#8) and the export
+// enrichment read (#11). Two modules, not one, because their gate
+// policies are opposite and a single file would force one of them to
+// inherit the other's: #8 is 100% engine data and gates HARD (501 via
+// `assertSessionTreeCapability`), while #11's primary source is
+// `sessions.json` and gates SOFT (`checkSessionExportCapability`
+// reports, never throws) so a provider that cannot serve a transcript
+// degrades the enrichment instead of the export. The same TDZ rule as
+// B1 applies to both: read nothing from this module at module scope.
+export {
+  SESSION_TREE_ENDPOINTS,
+  assertSessionTreeCapability,
+  readEngineSessionTree,
+  resolveSessionTreeProvider,
+} from "./session-tree-reads.js";
+export {
+  SESSION_EXPORT_ENDPOINTS,
+  checkSessionExportCapability,
+  readEngineSessionTranscript,
+  resolveSessionExportProvider,
+} from "./session-export.js";
 export { LOCAL_RUNTIME_V2_CAPABILITIES } from "./providers/local-runtime-v2.capabilities.js";
 export { TUI_RUNTIME_ADAPTER_CAPABILITIES } from "./providers/tui-runtime-adapter.js";
 

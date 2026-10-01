@@ -489,7 +489,7 @@ not import it but adopts the same shape. Unknown future statuses render as
 ### `engine/` (capability declarations + the local-runtime-v2 host)
 
 The engine abstraction lives at `server/engine/` (engine-abstraction
-batch B1; migration state M1, plus M3 batches B0 and B1). Eight files,
+batch B1; migration state M1, plus M3 batches B0, B1 and B2). Ten files,
 one job each:
 
 | File | Owns |
@@ -502,6 +502,8 @@ one job each:
 | `engine/providers/local-runtime-v2.js` | `createCatalogueHost` (moved verbatim from `runtime-host.js`, which re-exports it) + re-exports the declaration above, so consumers keep one import shape. This is the heavy one — `@mavis/local-runtime-v2`, `@mavis/config`, `@minimax/code/runtime-adapter` — and no file `app.js` reaches may import it |
 | `engine/providers/tui-runtime-adapter.js` | `TUI_RUNTIME_ADAPTER_CAPABILITIES` (declaration only — the adapter itself is constructed inside the v2 host) |
 | `engine/session-reads.js` | The directory-read family's facade calls (`readEngineSessionList`, `readEngineSessionListForWorkspace`, `readEngineSessionTitle`, `readEngineVersion`) and the endpoint→capability table `SESSION_READ_ENDPOINTS` (step M3, batch B1) |
+| `engine/session-tree-reads.js` | The session-tree family's facade call (`readEngineSessionTree`) and the endpoint→capability table `SESSION_TREE_ENDPOINTS` (step M3, batch B2). Gates **hard**: `assertSessionTreeCapability` throws → 501, because the tree is entirely engine data. Forwards to `lib/session-tree.js#getSessionTree`; the assembler is not duplicated |
+| `engine/session-export.js` | The export family's facade call (`readEngineSessionTranscript`) and the endpoint→capability table `SESSION_EXPORT_ENDPOINTS` (step M3, batch B2). Gates **soft**: `checkSessionExportCapability` reports and never throws, because export's primary source is `sessions.json`, not the engine |
 
 Routes take the host from the facade and never from `lib/acp-client.js`:
 `routes/plugins.js` and `routes/turn-diff.js` call
@@ -582,6 +584,10 @@ enforces it against the real module graph rather than against source text.
 `engine/session-reads.js` lives under the same rule: its static imports are
 `engine/capabilities.js` and `engine/index.js` only, and `lib/acp-client.js` +
 `lib/config.js` are reached through `await import()` inside the functions.
+Batch B2's two files hold to it identically — `lib/session-tree.js` and
+`lib/transcript.js` are reached through `await import()`, and neither file
+statically imports `engine/capabilities.js` beyond the single
+`assertEngineCapability` binding the tree family actually calls.
 
 #### Which endpoints read through the facade (step M3, batch B1)
 
@@ -620,6 +626,74 @@ The transport→provider table has one entry (`runtime`). Under the default
 `unregistered-transport` and passes through — M4 registers the ACP
 provider and the table gains its row. Passing through is not the same as
 claiming support, and the two are reported differently on purpose.
+
+#### Which endpoints read through the facade (step M3, batch B2)
+
+Batch B2 adds two endpoints, and they are the first two whose gate policies
+**differ**. They are separate files for that reason; merging them would force
+one to inherit the other's.
+
+| Endpoint | Capability · sub-item | Enforcement | Value source |
+| --- | --- | --- | --- |
+| `GET /api/session-tree` | `sessionCrud` · `listSessions` | hard — 501 | `lib/session-tree.js#getSessionTree`, forwarded verbatim |
+| `GET /api/sessions/:id/export` | `sessionCrud` · `getSession` | soft — reported | `lib/transcript.js#readMcodeTranscript` (the enrichment only) |
+
+**Why one gate throws and the other does not.** `/api/session-tree` is
+entirely engine data: the hierarchy is assembled from `local_runtime_sessions`
+in the runtime db, so a provider that cannot list sessions genuinely has no
+tree to return, and 501 is the honest answer. `/api/sessions/:id/export` is
+mostly *not* engine data — the conversation comes from `sessions.json`, and
+the engine only contributes a best-effort transcript enrichment the endpoint
+has always promised never to block on. Gating it hard would delete working
+functionality in response to a declaration about a capability the endpoint
+does not depend on. So `checkSessionExportCapability` answers what the
+provider declared and returns; the caller degrades `_meta.mcode_unavailable`
+through the endpoint's own pre-existing channel, and the export still serves
+the full webui chat. `test/lib/engine/session-export.test.js` pins this by
+swapping in a provider that declares `sessionCrud: none` and asserting that
+export reports while the tree family throws on the same fixture.
+
+Four properties this batch holds, each with a test behind it:
+
+1. **The node shape is unchanged, and it is asymmetric.** A root node
+   carries `{id, title, agent, kind, status, updatedAt, children}`; a child
+   node carries the same fields **without** `children`, because
+   `buildTree` adds that key only in the output map that wraps each root.
+   Measured on the real tree: 233 root nodes carry `children`, all 66 child
+   nodes do not. "Normalising" this would change 66 nodes' shape in the
+   sidebar.
+2. **There is no `parent_session_id` in the response.** The hierarchy is
+   structural — expressed through `children` — and `parent_session_id`
+   exists only inside the db read. A future addition of that key to the node
+   is a client-visible change, so the exact key set is asserted per depth.
+3. **One assembler.** `buildTree` remains the only thing that decides which
+   rows attach to which parent, and the route does not re-derive the
+   hierarchy. Rows that cannot attach — an orphan whose parent is not in the
+   row set, a cross-directory parent, a grandchild, a child of a `root`
+   container row, anything in a cycle — are dropped, as they always were.
+   That is why the batch was verified by exporting the tree before and
+   after and diffing every node, not by counting rows.
+4. **The tree's 501 is not swallowed.** The route's existing `try/catch`
+   would otherwise fold the capability error into its own
+   `{ok:false, reason:"session_tree_failed"}` soft-fail body and turn a 501
+   into a 200. The route re-throws `EngineCapabilityNotSupportedError` and
+   keeps the soft-fail path for everything else.
+
+**`source` is not transport-switched for the tree.** The tree is read from
+the engine's own runtime db, which both the `runtime` and the `acp`
+transport can see, so `readEngineSessionTree` reports `source: "runtime-db"`
+under every transport rather than claiming a catalogue answer. The
+declaration check is still transport-keyed: which provider is active is a
+transport question even when the read itself is not.
+
+**Export's enrichment is currently inert against the v2 schema, by
+design.** `lib/transcript.js` keeps its `v2-data-json` probe OUT of the
+default probe set so that export's behaviour does not change, and the live
+`local_runtime_message_rows` has no `content` column. So on a current
+runtime db the enrichment answers `no_matching_table` and every export
+reports `_meta.mcode_unavailable: true` with
+`_meta.source: "webui"`. That is pre-existing and deliberately preserved —
+re-enabling it is a behaviour change for a later slice, not a refactor.
 
 ## 4. The `clientState` payload
 

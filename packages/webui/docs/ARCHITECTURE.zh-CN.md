@@ -461,7 +461,7 @@ queued \| done \| stopped`）是投影层产物、不是存储值；webui 不导
 ### `engine/`（能力声明 + local-runtime-v2 host）
 
 引擎抽象层位于 `server/engine/`（engine-abstraction 批次 B1；迁移
-状态 M1，外加 M3 的 B0 与 B1 两批）。八个文件，各管一件事：
+状态 M1，外加 M3 的 B0、B1 与 B2 三批）。十个文件，各管一件事：
 
 | 文件 | 职责 |
 | --- | --- |
@@ -473,6 +473,8 @@ queued \| done \| stopped`）是投影层产物、不是存储值；webui 不导
 | `engine/providers/local-runtime-v2.js` | `createCatalogueHost`（自 `runtime-host.js` 原样移入，后者转发导出）+ 转发导出上面的声明，消费方的 import 形状因此不变。它是重的那一个——`@mavis/local-runtime-v2`、`@mavis/config`、`@minimax/code/runtime-adapter`——`app.js` 能触达的文件里绝不许 import 它 |
 | `engine/providers/tui-runtime-adapter.js` | `TUI_RUNTIME_ADAPTER_CAPABILITIES`（仅声明——adapter 本体在 v2 host 内构造） |
 | `engine/session-reads.js` | 目录读族的面板调用（`readEngineSessionList`、`readEngineSessionListForWorkspace`、`readEngineSessionTitle`、`readEngineVersion`）与端点→能力对照表 `SESSION_READ_ENDPOINTS`（迁移步 M3 批次 B1） |
+| `engine/session-tree-reads.js` | 会话树族的面板调用 `readEngineSessionTree` 与端点→能力对照表 `SESSION_TREE_ENDPOINTS`（迁移步 M3 批次 B2）。**硬门控**：`assertSessionTreeCapability` 抛出 → 501，因为树完全由引擎数据构成。转发到 `lib/session-tree.js#getSessionTree`，树的装配逻辑不复制第二份 |
+| `engine/session-export.js` | 导出族的面板调用 `readEngineSessionTranscript` 与端点→能力对照表 `SESSION_EXPORT_ENDPOINTS`（迁移步 M3 批次 B2）。**软门控**：`checkSessionExportCapability` 只报告、从不抛出，因为导出的主数据源是 `sessions.json` 而非引擎 |
 
 路由从门面取 host，不从 `lib/acp-client.js` 取：`routes/plugins.js` 与
 `routes/turn-diff.js` 调 `getEngineCatalogueHost()`。两者都保留 `deps`
@@ -538,7 +540,10 @@ handler 层测试因此保持封闭。
 对着真实模块图强制它，而不是对着源码文本。
 `engine/session-reads.js` 服从同一条纪律：它的静态 import 只有
 `engine/capabilities.js` 与 `engine/index.js`，`lib/acp-client.js` + `lib/config.js`
-都在函数体内用 `await import()` 触达。
+都在函数体内用 `await import()` 触达。批次 B2 的两个文件同样守住它：
+`lib/session-tree.js` 与 `lib/transcript.js` 都用 `await import()` 触达，
+且除树族真正调用的那一个 `assertEngineCapability` 绑定外，
+两个文件都没有静态 import `engine/capabilities.js`。
 
 #### 哪些端点走门面读（迁移步 M3 批次 B1）
 
@@ -572,6 +577,61 @@ handler 层测试因此保持封闭。
 传输→provider 表目前只有 `runtime` 一条。默认 `acp` 传输下尚无已注册
 provider，于是门控报告 `unregistered-transport` 并放行——M4 注册 ACP
 provider 后该表补上对应行。放行不等于声称支持，二者刻意分开报告。
+
+#### 哪些端点走门面读（迁移步 M3 批次 B2）
+
+批次 B2 收编 2 个端点，它们是前两个**门控策略不同**的端点。正因如此才
+拆成两个文件：合并会迫使其中一个继承另一个的策略。
+
+| 端点 | 能力 · 子项 | 强制方式 | 取值来源 |
+| --- | --- | --- | --- |
+| `GET /api/session-tree` | `sessionCrud` · `listSessions` | 硬——501 | `lib/session-tree.js#getSessionTree`，原样转发 |
+| `GET /api/sessions/:id/export` | `sessionCrud` · `getSession` | 软——只报告 | `lib/transcript.js#readMcodeTranscript`（仅增强部分） |
+
+**为什么一个门控抛错、另一个不抛。** `/api/session-tree` 完全是引擎数据：
+层级由运行时库 `local_runtime_sessions` 装配，所以一个列不出会话的
+provider 确实没有树可返回，501 才是诚实答案。
+`/api/sessions/:id/export` 则**主要不是**引擎数据——对话来自
+`sessions.json`，引擎只贡献一份尽力而为的 transcript 增强，而该端点一直
+承诺绝不因此阻断导出。把它改成硬门控，等于因为一条关于「本端点并不依赖的
+能力」的声明而删掉本来能用的功能。所以 `checkSessionExportCapability`
+只回答 provider 声明了什么然后返回；调用方通过端点既有的通道降级
+`_meta.mcode_unavailable`，导出照旧完整返回 webui 的对话。
+`test/lib/engine/session-export.test.js` 用一份声明 `sessionCrud: none`
+的 provider 钉住这一点：同一份样本下，导出族报告、树族抛错。
+
+本批守住的四条性质，每条背后都有测试：
+
+1. **节点形状未变，而且它是不对称的。** 根节点带
+   `{id, title, agent, kind, status, updatedAt, children}`；子节点带同样
+   这些字段但**没有** `children`——因为 `buildTree` 只在包裹每个根节点的
+   输出映射里补这个键。在真实树上实测：233 个根节点带 `children`，
+   66 个子节点全都不带。「顺手规范化」会让侧边栏里 66 个节点的形状改变。
+2. **响应里没有 `parent_session_id`。** 层级是结构性的——由 `children`
+   表达——`parent_session_id` 只存在于读库阶段。将来把这个键加到节点上
+   就是客户端可见的变更，所以测试按深度逐字断言键集合。
+3. **只有一个装配器。** `buildTree` 仍是唯一决定哪些行挂到哪个父节点
+   的地方，路由不重新推导层级。挂不上的行——父节点不在结果集里的孤儿、
+   跨目录的父节点、孙节点、挂在 `root` 容器行下的子节点、任何处于环中的
+   行——照旧被丢弃。正因如此，本批的验证方式是改前改后各导一次树、
+   逐节点比对，而不是数行数。
+4. **树的 501 不被吞掉。** 路由原有的 `try/catch` 否则会把能力错误
+   折进它自己的 `{ok:false, reason:"session_tree_failed"}` 软失败体里，
+   把 501 变成 200。路由重新抛出 `EngineCapabilityNotSupportedError`，
+   其余错误仍走软失败。
+
+**树的 `source` 不随传输切换。** 树读自引擎自己的运行时库，`runtime`
+与 `acp` 两种传输都看得到，所以 `readEngineSessionTree` 在任何传输下都
+报告 `source: "runtime-db"`，而不是假称拿到了目录宿主。声明检查仍按传输
+分派：当前哪个 provider 生效是传输问题，即使这次读本身不是。
+
+**export 的增强在 v2 表结构下当前是失效的，且这是刻意为之。**
+`lib/transcript.js` 把 `v2-data-json` 探针留在默认探针集**之外**，
+以保证 export 的行为不变；而线上真实的 `local_runtime_message_rows`
+根本没有 `content` 列。因此在当前运行时库上增强会返回
+`no_matching_table`，每次导出都报告 `_meta.mcode_unavailable: true` 与
+`_meta.source: "webui"`。这是既有行为且被刻意保留——重新启用它是一次行为
+变更，属于后续切片，不属于这次收编。
 
 ## 4. `clientState` 载荷
 

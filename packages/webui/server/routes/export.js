@@ -25,14 +25,18 @@
 //   - ?download=true → Content-Disposition: attachment; filename="<slug>-<ts>.<ext>"
 
 import { loadSessions } from "../lib/sessions.js";
-// v2 (2026-09-20 webui-manual-audit): _readMcodeTranscript's core moved to
+// v2 (2026-09-20 webui-manual-audit): the transcript read moved to
 // lib/transcript.js so POST /api/sessions/switch can share the exact same
 // table-probing + fail-soft logic. Default probe set there is the legacy
 // 3-candidate list carried over VERBATIM (same SQL, same row mapping, same
 // reason strings) — export behavior is unchanged. existsSync /
 // MCODE_RUNTIME_DB / getMcodeBetterSqlite3 are no longer imported here
 // because only the extracted reader used them.
-import { readMcodeTranscript } from "../lib/transcript.js";
+//
+// M3-B2: this route no longer names that reader at all. The engine-facing
+// half of the export goes through engine/session-export.js, which owns the
+// soft gate and forwards the same `readMcodeTranscript` values verbatim.
+import { readEngineSessionTranscript } from "../engine/session-export.js";
 import { authorize } from "../lib/authorize.js";
 import { pushAlert } from "../lib/alerts.js";
 import {
@@ -239,15 +243,6 @@ function _parseChatLines(lines) {
   });
 }
 
-// Best-effort: read mcode session transcript from runtime-state.sqlite.
-// Returns { messages, ok } — ok=false means we set _meta.mcode_unavailable.
-// v2 (2026-09-20 webui-manual-audit): body extracted to lib/transcript.js
-// (readMcodeTranscript) — legacy probe set only, so this stays a pass-through
-// and export behavior is byte-identical to the inline version.
-function _readMcodeTranscript(mcodeSid) {
-  return readMcodeTranscript(mcodeSid);
-}
-
 // Merge webui messages + mcode transcript. Strategy: webui is authoritative
 // for the user-visible chat; mcode is best-effort enrichment (token usage,
 // full tool call payloads). When both exist for the same turn, mcode wins
@@ -382,12 +377,19 @@ export async function handleExport(req, res, ctx) {
   // Parse webui chat → structured messages
   const webuiMsgs = _parseChatLines(Array.isArray(session.chat) ? session.chat : []);
 
-  // Best-effort mcode enrichment
+  // Best-effort mcode enrichment.
+  //
+  // M3-B2: the read goes through the engine facade, which reports the
+  // provider's declaration instead of enforcing it — export's primary
+  // source is `sessions.json`, not the engine, so a provider that cannot
+  // serve a transcript degrades THIS enrichment and nothing else. That is
+  // the "never block export" contract, kept verbatim: the `_meta` keys,
+  // the reason strings and the merged output are all unchanged.
   let mcodeMsgs = [];
   let mcodeUnavailable = false;
   let mcodeUnavailableReason = null;
   if (session.mcodeSessionId) {
-    const r = _readMcodeTranscript(session.mcodeSessionId);
+    const r = await readEngineSessionTranscript({ mcodeSessionId: session.mcodeSessionId });
     if (r.ok) {
       mcodeMsgs = r.messages;
     } else {
