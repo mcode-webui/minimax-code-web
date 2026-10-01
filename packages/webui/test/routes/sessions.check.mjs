@@ -136,7 +136,7 @@ function fakeRes() {
 let handleSwitchSession, handleNewSession;
 let handleDeleteSession, handleListSessions, handleAcpSessions, handleAcpSessionTitle;
 let handleRenameSession;
-let makeClientState, clients;
+let makeClientState, clients, stateBus;
 let initialSessions;
 
 before(async (t) => {
@@ -151,6 +151,7 @@ before(async (t) => {
   const sb = await import(absPath("lib/state-bus.js"));
   makeClientState = sb.makeClientState;
   clients = sb.clients;
+  stateBus = sb;
   const mod = await import(absPath("routes/sessions.js"));
   handleSwitchSession = mod.handleSwitchSession;
   handleNewSession = mod.handleNewSession;
@@ -713,6 +714,193 @@ describe("handleDeleteSession — v1.0 anti-resurrection", () => {
     assert.deepEqual(cs2.chat, []);
     assert.equal(cs3.sessionId, "webui-B", "unrelated client untouched");
     assert.deepEqual(cs3.chat, ["keep"]);
+  });
+});
+
+// ============================================================
+// webui-parity 103: 删除后立即不可见 (delete ⇒ immediately invisible).
+//
+// 现象：侧栏删掉一行、引擎行也没了，但紧接着 GET /api/sessions
+// 仍然答得出这条会话，刷新页面才消失。
+//
+// 根因不是「删除慢」——sessions.json 的摘除是同步的（先量过：
+// DELETE 200 之后立刻 list，0 命中）。真正的原因是身份键双轨：
+// 一条 wrapper 记录同时以 `id` 和 `mcodeSessionId` 回答身份，而
+// 同一个引擎会话可以有多条 wrapper（ensureOverlayForMcodeSid 按
+// sid 造 overlay，mcode-acp.js#finalize 又把 mcodeSessionId 改绑
+// 到一条 id 不同的旧记录上）。旧的 first-match 查找只摘一条，
+// 孪生记录留在 store 里 —— 侧栏读引擎 db（干净了），/api/sessions
+// 读 sessions.json（还脏），两边永久分叉。
+//
+// 这里钉住契约：DELETE 200 之后，紧接着的那一次 list 必须答不出
+// 这条会话的任何一个身份。
+// ============================================================
+describe("handleDeleteSession — webui-parity 103: delete ⇒ immediately invisible", () => {
+  const SID = "mvs_10331111222233334444555566667777";
+  const OTHER_SID = "mvs_10339999888877776666555544443333";
+
+  // Two wrapper records bound to the SAME engine session — the shape
+  // ensureOverlayForMcodeSid + mcode-acp.js#finalize#re-bind can leave.
+  function registerTwinStore() {
+    registerSessionsStore({
+      initial: [
+        ...initialSessions,
+        {
+          id: SID, // overlay minted for the engine sid (id === sid)
+          mcodeSessionId: SID,
+          title: "twin overlay",
+          workspace: WS_A,
+          createdAt: 5,
+          updatedAt: 5,
+          chat: [],
+        },
+        {
+          id: "webui-legacy-twin", // older record, re-bound to the same sid
+          mcodeSessionId: SID,
+          title: "twin legacy",
+          workspace: WS_A,
+          createdAt: 4,
+          updatedAt: 4,
+          chat: [],
+        },
+        {
+          id: OTHER_SID,
+          mcodeSessionId: OTHER_SID,
+          title: "bystander",
+          workspace: WS_B,
+          createdAt: 6,
+          updatedAt: 6,
+          chat: [],
+        },
+      ],
+    });
+  }
+
+  // The read side of the contract: whatever the delete answered, the
+  // very next GET /api/sessions must not name this session again.
+  function listIdsFor(sid) {
+    const res = fakeRes();
+    handleListSessions({}, res);
+    assert.equal(res._status, 200);
+    return JSON.parse(res._body).sessions
+      .filter((s) => s.id === sid || s.mcodeSessionId === sid)
+      .map((s) => s.id);
+  }
+
+  test("after deleting by webui id, the immediate list has no record of it", async () => {
+    const cs = makeClientState();
+    cs.workspace = { dir: WS_A, branch: null, tree: null };
+    const cid = "cid-1";
+    clients.set(cid, cs);
+    const res = fakeRes();
+    const ctx = { cs, cid, pathname: "/api/sessions/webui-A" };
+    await withDecisions(() => handleDeleteSession(fakeReq({}), res, ctx));
+    assert.equal(res._status, 200);
+    assert.deepEqual(listIdsFor("webui-A"), [], "deleted session must be gone at once");
+  });
+
+  test("deleting one twin takes the whole conversation out of the list", async () => {
+    registerTwinStore();
+    const cs = makeClientState();
+    cs.workspace = { dir: WS_A, branch: null, tree: null };
+    const cid = "cid-1";
+    clients.set(cid, cs);
+    const res = fakeRes();
+    const ctx = { cs, cid, pathname: "/api/sessions/webui-legacy-twin" };
+    await withDecisions(() => handleDeleteSession(fakeReq({}), res, ctx));
+    assert.equal(res._status, 200);
+    const body = JSON.parse(res._body);
+    assert.equal(body.removedRecords, 2, "both wrappers of the one conversation go");
+    assert.deepEqual(
+      listIdsFor(SID),
+      [],
+      "no record may still answer to the deleted session's engine id",
+    );
+    // The bystander conversation is a different session — untouched.
+    assert.equal(getSessionsStore().length, 3, "only the two twins were removed");
+  });
+
+  test("deleting by the engine sid (what the sidebar sends) clears the twins too", async () => {
+    registerTwinStore();
+    const cs = makeClientState();
+    cs.workspace = { dir: WS_A, branch: null, tree: null };
+    const cid = "cid-1";
+    clients.set(cid, cs);
+    const res = fakeRes();
+    const ctx = { cs, cid, pathname: "/api/sessions/" + SID };
+    await withDecisions(() => handleDeleteSession(fakeReq({}), res, ctx));
+    assert.equal(res._status, 200);
+    assert.deepEqual(listIdsFor(SID), [], "engine-sid delete must clear every wrapper");
+  });
+
+  test("a tab parked on a twin's id is reset, not left to resurrect it", async () => {
+    registerTwinStore();
+    const cs = makeClientState();
+    cs.sessionId = "webui-legacy-twin";
+    cs.mcodeSessionId = null;
+    cs.chat = ["x"];
+    clients.set("tab-twin", cs);
+    const res = fakeRes();
+    const ctx = { cs, cid: "tab-twin", pathname: "/api/sessions/" + SID };
+    await withDecisions(() => handleDeleteSession(fakeReq({}), res, ctx));
+    assert.equal(res._status, 200);
+    assert.equal(cs.sessionId, null, "the twin's id must not stay live in any tab");
+    assert.deepEqual(cs.chat, []);
+  });
+
+  test("a real delete broadcasts session-tree-changed (no new event invented)", async () => {
+    registerSessionsStore({ initial: initialSessions });
+    const cs = makeClientState();
+    cs.workspace = { dir: WS_A, branch: null, tree: null };
+    const cid = "cid-1";
+    clients.set(cid, cs);
+    // A second tab is connected: without the frame it keeps rendering the
+    // deleted row until its own next refresh.
+    const written = [];
+    const sse = {
+      write: (chunk) => written.push(chunk),
+      writableEnded: false,
+      destroyed: false,
+    };
+    stateBus.setSseClient("cid-other", sse);
+    try {
+      const res = fakeRes();
+      const ctx = { cs, cid, pathname: "/api/sessions/webui-A" };
+      await withDecisions(() => handleDeleteSession(fakeReq({}), res, ctx));
+      assert.equal(res._status, 200);
+      assert.ok(
+        written.some((c) => c.startsWith("event: session-tree-changed\n")),
+        `delete must broadcast the existing named frame, got ${JSON.stringify(written)}`,
+      );
+    } finally {
+      stateBus.endSseClient("cid-other", sse);
+    }
+  });
+
+  test("?dryRun=true broadcasts nothing and keeps every record", async () => {
+    registerTwinStore();
+    const cs = makeClientState();
+    cs.workspace = { dir: WS_A, branch: null, tree: null };
+    const cid = "cid-1";
+    clients.set(cid, cs);
+    const written = [];
+    const sse = {
+      write: (chunk) => written.push(chunk),
+      writableEnded: false,
+      destroyed: false,
+    };
+    stateBus.setSseClient("cid-other", sse);
+    try {
+      const res = fakeRes();
+      const req = { url: "/api/sessions/" + SID + "?dryRun=true" };
+      const ctx = { cs, cid, pathname: "/api/sessions/" + SID };
+      await handleDeleteSession(req, res, ctx);
+      assert.equal(res._status, 200);
+      assert.equal(written.length, 0, "a preview mutates nothing and says nothing");
+      assert.equal(listIdsFor(SID).length, 2, "preview keeps both wrappers");
+    } finally {
+      stateBus.endSseClient("cid-other", sse);
+    }
   });
 });
 
