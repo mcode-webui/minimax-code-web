@@ -40,6 +40,29 @@
 //
 // Test style follows test/lib/engine/session-reads.test.js (batch B1):
 // table-driven, one row per case.
+//
+// Two module-mock traps, both learned in B3 while adding the sibling
+// `usage-reads.test.js`, and both recorded here because this suite is where
+// a future batch will look for the answer:
+//
+//   1. `t.mock.module` REPLACES THE WHOLE NAMESPACE, it does not merge. A
+//      mock that names only the export the test cares about leaves every
+//      other name undefined, and a consumer that imports more than one name
+//      from the mocked module then fails at INSTANTIATION with
+//      `SyntaxError: The requested module '…' does not provide an export
+//      named '…'` — a failure that reads like a product bug and is not
+//      one. In this suite it does not bite, because `routes/sessions.js`
+//      imports exactly one name from `engine/session-tree-reads.js`; in
+//      `routes/usage.js` it does, because that route binds three reads at
+//      module scope. When a facade grows a second call, the mock has to
+//      grow with it — stub the rest with something that throws, so an
+//      unexpected call is loud instead of returning a plausible payload.
+//   2. `mock.module` only re-evaluates the MOCKED specifier. A consumer
+//      already in the registry keeps its old LIVE BINDING, so a second test
+//      in the same file silently reuses the first test's mock and passes for
+//      the wrong reason. Every route re-import below therefore carries a
+//      fresh `?bust=N`; deleting that query turns nine tests in this file
+//      red, which is the cheapest proof the mechanism is load-bearing.
 
 import { test, describe, after } from "node:test";
 import assert from "node:assert/strict";
@@ -649,6 +672,10 @@ describe("handleSessionTree — the route passes the facade payload through", ()
   // facade specifier, which is what picks up the new mock. (These tests need
   // the `--experimental-test-module-mocks` flag that the `test:unit` and
   // `test` scripts already pass.)
+  //
+  // A mutation that deletes the `?bust=N` from this suite's re-import turns
+  // NINE of its tests red at once; that is the cheapest proof the mechanism
+  // is load-bearing rather than decorative.
   let bust = 0;
 
   test("a facade payload is written to the response byte-for-byte", async (t) => {
