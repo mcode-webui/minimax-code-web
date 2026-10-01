@@ -49,6 +49,7 @@ import {
   isNearBottom,
   decideScrollBehavior,
   estimateDomNodeCount,
+  chatVirtualMetricsEqual,
 } from "../components/chat-virtual-list";
 
 // ============================================================
@@ -604,6 +605,85 @@ describe("chat.tsx wires the tail follow into the render path", () => {
       source,
       /isAwayFromPin\(\{\s*scrollTop: metrics\.scrollTop,\s*pinnedTop/,
       "the off-switch must compare against the pin, not against nearness",
+    );
+  });
+});
+
+describe("chatVirtualMetricsEqual — the bail-out that breaks the observer loop", () => {
+  // useChatVirtualization's recompute runs from scroll, ResizeObserver, and a
+  // post-render rAF. Each driver used to build a fresh metrics object, and
+  // React compares by reference — an unchanged layout still re-rendered, the
+  // re-render could move scrollHeight, the ResizeObserver re-fired, and the
+  // identity loop spun (same mechanism markdown-toc fixed for its outline
+  // width). The hook must bail out when every field is unchanged; this pins
+  // the comparison the bail-out rides on.
+
+  const base = computeVirtualWindow({ totalCount: 0, scrollTop: 0, clientHeight: 0 });
+  const metricsOf = (window_: typeof base, isNearBottom = true, stuck = false) => ({
+    window: window_,
+    isNearBottom,
+    stuck,
+  });
+
+  test("equal fields with DIFFERENT object references compare equal", () => {
+    // The whole point: the recompute always builds a fresh window object, so
+    // reference equality would always report "changed". Field equality is what
+    // lets React bail out.
+    const a = metricsOf(base);
+    const b = metricsOf({ ...base });
+    assert.notEqual(a.window, b.window, "precondition: distinct references");
+    assert.notEqual(a, b, "precondition: distinct objects");
+    assert.equal(chatVirtualMetricsEqual(a, b), true);
+  });
+
+  test("any moved field breaks the equality", () => {
+    const a = metricsOf(base);
+    assert.equal(
+      chatVirtualMetricsEqual(a, metricsOf({ ...base, startIdx: 1 })),
+      false,
+      "window.startIdx",
+    );
+    assert.equal(
+      chatVirtualMetricsEqual(a, metricsOf({ ...base, topSpacer: 40 })),
+      false,
+      "window.topSpacer",
+    );
+    assert.equal(
+      chatVirtualMetricsEqual(a, metricsOf({ ...base }, false)),
+      false,
+      "isNearBottom",
+    );
+    assert.equal(
+      chatVirtualMetricsEqual(a, metricsOf({ ...base }, true, true)),
+      false,
+      "stuck",
+    );
+  });
+
+  test("the hook commits through the bail-out, never a bare new-object setMetrics", () => {
+    const source = readFileSync(
+      new URL("../components/chat-virtual-list.tsx", import.meta.url),
+      "utf8",
+    );
+    // The mutation that reintroduces the loop is a recompute writing
+    // `setMetrics({window: computeVirtualWindow(...), ...})` directly — a new
+    // reference on every call. All commit paths must go through the
+    // field-comparing setter.
+    assert.match(
+      source,
+      /const setMetricsIfChanged = useCallback\(/,
+      "useChatVirtualization must define the field-comparing setter",
+    );
+    assert.match(
+      source,
+      /chatVirtualMetricsEqual\(current, next\) \? current : next/,
+      "the setter must return the current reference when fields are equal",
+    );
+    assert.doesNotMatch(
+      source,
+      /setMetrics\(\{/,
+      "recompute must never setMetrics a fresh object literal — that is the " +
+        "identity loop (reference-inequal even when the layout is unchanged)",
     );
   });
 });

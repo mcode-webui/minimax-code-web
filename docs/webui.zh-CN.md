@@ -1462,18 +1462,30 @@ loading-states 相同：让 SSR 渲染测试可以脱离 `chat.tsx` 的 `@/` 别
 | `Esc` | 清空草稿，面板开着也一样 |
 
 候选条数被**刻意排除**在这套语义之外。`availableCommands` 把每条命令
-报了两遍——引擎自己的 `mcode` 组与 webui 按钮命令组——composer 又把两组
-拍平，因此一个完整敲出的 `/status` 会有两条一模一样的候选。于是
-「候选有歧义时 Enter 负责补全」这条规则恰好在最没有歧义的命令上生效，
+报了两遍——引擎自己的 `mcode` 组与 webui 按钮命令组——同一个名字因此可能
+出现多次，一个完整敲出的 `/status` 到 composer 手里就是两条一模一样的候选。
+于是「候选有歧义时 Enter 负责补全」这条规则恰好在最没有歧义的命令上生效，
 吞掉了本该用来执行命令的那次回车：输入框里的文字留着，命令没跑，再按一次
 回车就把一个光秃秃的单词当普通消息发了出去。判断落在
 `shouldCompleteSlashWord`（`webapp/lib/slash-routing.ts`），它只接收按键。
+去重是在**送到屏幕上之前**做的，不参与上面这个判断：两个缺陷彼此独立，
+谁也不是谁的前提条件。
 
 与它共用同一段 keydown 处理、并且一并修掉的还有第二个缺陷：
 `availableCommands` 里是**裸名**（`name: "status"`），把候选原样写回输入框
 得到的是 `status ` —— 开头的斜杠没了，发出去的是一条消息而不是一条命令。
 `completeSlashWord` 会补回恰好一个斜杠，并先剥掉名字里已有的斜杠，
 因此输入框不可能出现 `//`。
+
+面板里的行来自 `flattenAvailableCommands`（`webapp/lib/slash-routing.ts`）：
+把 `availableCommands` 字典拍平，并**按首次出现去重**。`mcode` 组（ACP
+引擎命令）与 `webui` 组各有一个 `help`，而面板行以 name 为 key——
+不去重时同一个 key 渲染两行，React 会在控制台报
+"Encountered two children with the same key"，用户也会看到两条一模一样的
+`help`。重复项对用户是同一个斜杠命令（输入后走 `routeSlashInput`
+路由，与点哪一行无关），因此面板每个名字只显示一次。
+`webapp/test/slash-commands.test.ts` 钉住去重规则，测试直接 import
+composer 实际调用的那个函数。
 
 | 方案 | 前缀有歧义时按 Enter | 否决理由 |
 | --- | --- | --- |

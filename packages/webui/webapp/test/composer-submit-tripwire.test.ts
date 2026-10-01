@@ -246,3 +246,38 @@ describe("composer submit ordering — ticket 13 wiring tripwire", () => {
     );
   });
 });
+describe("switching sessions clears the failure banner", () => {
+  // The error banner lives in the module-scope composer-draft store, which is
+  // shared by every composer instance (page.tsx swaps the composer between two
+  // tree positions, so a useState-held draft would die on the swap). Without a
+  // per-session reset, a rejection recorded in session A kept painting
+  // session B's composer red after the switch — a send B never made, with a
+  // red "消息发送失败: HTTP 500" banner appearing "on switching" (P5/P6 of the
+  // 100-ticket smoke report). The draft TEXT is deliberately not cleared: the
+  // restored-draft merge owns cross-session text rules.
+  test("an effect keyed on sessionKey resets error/errorKind/unconfirmed", () => {
+    // The effect body and the submit-path reset must carry the same three
+    // fields — a banner kind added later has to join both, and a revert that
+    // drops the effect (or re-keys it to something that never changes, like a
+    // stable ref) fails the dependency-array assertion.
+    assert.match(
+      composerSource,
+      /useEffect\(\(\) => \{\s*setComposerDraft\(\{\s*error: null,\s*errorKind: null,\s*unconfirmed: null,?\s*\}\);\s*\}, \[sessionKey\]\);/,
+      "composer must reset the banner fields in an effect keyed on sessionKey — " +
+        "the module-scope draft store outlives sessions, so the banner must be " +
+        "scoped to the session it failed in",
+    );
+  });
+
+  test("the submit path still clears the banner before dispatching", () => {
+    // The session-switch reset is additive; it must not replace the
+    // clear-on-submit (a retry in the SAME session also has to clear the old
+    // rejection before the new attempt is judged).
+    assert.match(
+      composerSource,
+      /setSending\(true\);\s*setComposerDraft\(\{\s*error: null,\s*errorKind: null,\s*unconfirmed: null,?\s*\}\);/,
+      "submit must clear the banner right after setSending(true), before the " +
+        "optimistic park — a same-session retry starts clean",
+    );
+  });
+});

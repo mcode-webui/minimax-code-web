@@ -9,32 +9,19 @@
 // not a function` — the unit tests never exercised the rendering path, so it
 // only surfaced in the live browser. This file pins the contract at the level
 // it matters: the function the composer relies on.
+//
+// The flatten step used to live here as a standalone re-implementation (a
+// mirror of composer.tsx's inline derivation), which meant the suite could
+// pass while the component drifted. It now imports the real
+// `flattenAvailableCommands` from `lib/slash-routing.ts` — the exact function
+// the composer calls — and pins the dedupe rule that fixes the live
+// "Encountered two children with the same key: help" console error: the mcode
+// group and the webui group both report a `help`, the palette keys rows by
+// name, so without the dedupe the same key rendered twice.
 
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-
-/**
- * The flatten step in a standalone re-implementation, so the regression does not
- * import React. The shape mirrors `composer.tsx`'s `slashCommands` derivation.
- */
-function flattenAvailableCommands(raw: unknown): string[] {
-  if (!raw || typeof raw !== "object") return [];
-  const out: string[] = [];
-  for (const group of Object.values(raw as Record<string, unknown>)) {
-    if (!Array.isArray(group)) continue;
-    for (const entry of group) {
-      if (
-        entry &&
-        typeof entry === "object" &&
-        "name" in entry &&
-        typeof (entry as { name: unknown }).name === "string"
-      ) {
-        out.push((entry as { name: string }).name);
-      }
-    }
-  }
-  return out;
-}
+import { flattenAvailableCommands } from "../lib/slash-routing";
 
 function filterCommands(commands: string[], word: string, limit = 8): string[] {
   const needle = word.toLowerCase();
@@ -95,6 +82,37 @@ describe("flattenAvailableCommands — server's dict shape", () => {
   test("tolerates a group whose value is not an array", () => {
     const raw = { mcode: [{ name: "help" }], bad: "not-an-array" };
     assert.deepEqual(flattenAvailableCommands(raw), ["help"]);
+  });
+});
+
+describe("flattenAvailableCommands — cross-group dedupe (same-key regression)", () => {
+  test("keeps one `help` when mcode and webui both report it", () => {
+    // The live console error: the palette renders `key={name}`, and both
+    // groups carry a `help` — React saw two children with the same key.
+    const raw = {
+      mcode: [{ name: "help" }, { name: "new" }, { name: "model" }],
+      webui: [{ name: "new" }, { name: "clear" }, { name: "help" }],
+    };
+    assert.deepEqual(flattenAvailableCommands(raw), ["help", "new", "model", "clear"]);
+  });
+
+  test("dedupes within a single group too", () => {
+    const raw = { mcode: [{ name: "help" }, { name: "help" }] };
+    assert.deepEqual(flattenAvailableCommands(raw), ["help"]);
+  });
+
+  test("a `/h` filter after dedupe can no longer yield duplicate keys", () => {
+    // End-to-end shape of the composer pipeline: flatten → filter → palette
+    // rows keyed by name. Duplicated keys are impossible when the flattened
+    // list itself has no duplicates.
+    const raw = {
+      mcode: [{ name: "help" }, { name: "history" }],
+      webui: [{ name: "help" }, { name: "usage" }],
+    };
+    const flat = flattenAvailableCommands(raw);
+    const matches = flat.filter((c) => c.toLowerCase().includes("h"));
+    assert.deepEqual(matches, ["help", "history"]);
+    assert.equal(new Set(matches).size, matches.length);
   });
 });
 

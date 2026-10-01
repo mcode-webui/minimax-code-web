@@ -56,6 +56,42 @@ export const CMD_BUTTON_COMMANDS = [
 export type CmdButtonCommand = (typeof CMD_BUTTON_COMMANDS)[number];
 
 /**
+ * Flatten the server's `availableCommands` dict into palette name strings.
+ *
+ * The server's shape is `{ <group>: [{name, description}, ...] }` — a dict of
+ * command groups, not a flat array. Names are deduped on FIRST occurrence:
+ * the `mcode` group (engine commands over ACP) and the `webui` group
+ * (`CMD_BUTTON_COMMANDS`) both carry a `help`, and the palette renders each
+ * flattened entry with `key={name}` — a duplicated name produced React's
+ * "Encountered two children with the same key" warning and drew two identical
+ * rows. The duplicate is semantically the same slash command to the user
+ * (typing `/help` routes through `routeSlashInput`, not through the palette
+ * row), so keeping the first occurrence loses nothing.
+ */
+export function flattenAvailableCommands(raw: unknown): string[] {
+  if (!raw || typeof raw !== "object") return [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const group of Object.values(raw as Record<string, unknown>)) {
+    if (!Array.isArray(group)) continue;
+    for (const entry of group) {
+      if (
+        entry &&
+        typeof entry === "object" &&
+        "name" in entry &&
+        typeof (entry as { name: unknown }).name === "string"
+      ) {
+        const name = (entry as { name: string }).name;
+        if (seen.has(name)) continue;
+        seen.add(name);
+        out.push(name);
+      }
+    }
+  }
+  return out;
+}
+
+/**
  * Where a composer submission must go.
  *
  * `command` — POST /api/cmd, carrying the bare `/name` form.
