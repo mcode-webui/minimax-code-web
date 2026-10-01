@@ -57,7 +57,7 @@ const {
   getEngineProvider,
   listEngineProviderIds,
   validateEngineCapabilities,
-} = await import("../../../server/lib/engine/index.js");
+} = await import("../../../server/engine/index.js");
 
 // ---------------------------------------------------------------------------
 // REQUIRED_METHODS — what each capability key means ON THE OBJECTS.
@@ -71,7 +71,7 @@ const {
 // the session.diff facade (getSessionDiff/getTurnDiff/revertTurnDiff/
 // reapplyTurnDiff + the internal requireTarget). The lists below name
 // exactly the methods each declaration's own evidence comments cite
-// (server/lib/engine/providers/*.js), each re-verified present/absent on
+// (server/engine/providers/*.js), each re-verified present/absent on
 // those dumped sets. `on` is the host member the method must live on:
 // the tui-runtime-adapter provider declares the adapter surface; the
 // local-runtime-v2 provider declares cliService + applications.
@@ -335,7 +335,7 @@ describe("M2 snapshot — declarations vs the REAL catalogue host", () => {
     // Dynamic import AFTER env is pinned: the provider module pulls the
     // @mavis/* TS tree and constructs the real in-process runtime.
     const { createCatalogueHost } = await import(
-      "../../../server/lib/engine/providers/local-runtime-v2.js"
+      "../../../server/engine/providers/local-runtime-v2.js"
     );
     declarations = {
       "local-runtime-v2": LOCAL_RUNTIME_V2_CAPABILITIES,
