@@ -43,7 +43,11 @@ import {
   startComposerSent,
 } from "@/lib/composer-sent";
 import { getActiveSessionId, useSessionContext } from "@/lib/store";
-import { routeSlashInput } from "@/lib/slash-routing";
+import {
+  completeSlashWord,
+  routeSlashInput,
+  shouldCompleteSlashWord,
+} from "@/lib/slash-routing";
 import { decodeTranscript } from "@/lib/transcript";
 import { isSendUnconfirmed } from "@/lib/api";
 import {
@@ -657,12 +661,14 @@ export function Composer({
                     setSlashIndex((index) => (index - 1 + slashMatches.length) % slashMatches.length);
                     return;
                   }
-                  if (event.key === "Tab" || (event.key === "Enter" && slashMatches.length > 1)) {
-                    // Tab always completes; Enter completes only while the list is
-                    // ambiguous, so a fully-typed command still sends on Enter.
+                  if (shouldCompleteSlashWord(event.key)) {
+                    // Tab only. Enter falls through to submit below — see
+                    // shouldCompleteSlashWord for why the candidate count
+                    // does not get a say, and completeSlashWord for why the
+                    // leading slash is re-attached.
                     event.preventDefault();
                     const picked = slashMatches[slashIndex];
-                    if (picked) setValue(`${picked} `);
+                    if (picked) setValue(completeSlashWord(picked));
                     return;
                   }
                   if (event.key === "Escape") {
@@ -706,7 +712,7 @@ export function Composer({
                     key={command}
                     type="button"
                     onMouseEnter={() => setSlashIndex(index)}
-                    onClick={() => setValue(`${command} `)}
+                    onClick={() => setValue(completeSlashWord(command))}
                     className={[
                       "flex items-center rounded-lg px-2 py-1 text-left font-family-code text-sm transition-colors",
                       index === slashIndex
