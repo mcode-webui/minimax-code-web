@@ -461,14 +461,15 @@ queued \| done \| stopped`）是投影层产物、不是存储值；webui 不导
 ### `engine/`（能力声明 + local-runtime-v2 host）
 
 引擎抽象层位于 `server/engine/`（engine-abstraction 批次 B1；迁移
-状态 M1）。五个文件，各管一件事：
+状态 M1）。六个文件，各管一件事：
 
 | 文件 | 职责 |
 | --- | --- |
 | `engine/capabilities.js` | 契约本体：`ENGINE_CAPABILITY_KEYS`（14 个矩阵键）、`validateEngineCapabilities`、`assertEngineCapability`、`summarizeUnavailableCapabilities` |
 | `engine/errors.js` | `EngineCapabilityNotSupportedError` 与 `engineCapabilityHttpResponse`（501 载荷形状） |
 | `engine/index.js` | 门面：`getEngineProvider`、`listEngineProviderIds`（按 provider id 的注册表；按 `MCODE_WEBUI_TRANSPORT` 选传输在迁移步 M4 引入） |
-| `engine/providers/local-runtime-v2.js` | `createCatalogueHost`（自 `runtime-host.js` 原样移入，后者转发导出）+ `LOCAL_RUNTIME_V2_CAPABILITIES` |
+| `engine/providers/local-runtime-v2.capabilities.js` | `LOCAL_RUNTIME_V2_CAPABILITIES`——**只有声明，且这个拆分是有承重意义的**：它唯一的 import 是 `../capabilities.js`，所以 `/api/engine-capabilities` 读能力表时**不会把 v2 host 的 TypeScript 依赖树（首次编译约 4.7 秒）拖进 boot 路径**。那棵依赖树仍留在 `acp-client.js` 早已注明的 lazy 边界之后 |
+| `engine/providers/local-runtime-v2.js` | `createCatalogueHost`（自 `runtime-host.js` 原样移入，后者转发导出）+ 转发导出上面的声明，消费方的 import 形状因此不变 |
 | `engine/providers/tui-runtime-adapter.js` | `TUI_RUNTIME_ADAPTER_CAPABILITIES`（仅声明——adapter 本体在 v2 host 内构造） |
 
 声明纪律（未来任何 provider 的准入规则，由
