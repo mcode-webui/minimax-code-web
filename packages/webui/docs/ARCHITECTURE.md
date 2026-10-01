@@ -489,8 +489,8 @@ not import it but adopts the same shape. Unknown future statuses render as
 ### `engine/` (capability declarations + the local-runtime-v2 host)
 
 The engine abstraction lives at `server/engine/` (engine-abstraction
-batch B1; migration state M1, plus M3 batches B0, B1 and B2). Ten files,
-one job each:
+batch B1; migration state M1, plus M3 batches B0, B1, B2 and B3). Eleven
+files, one job each:
 
 | File | Owns |
 | --- | --- |
@@ -504,6 +504,7 @@ one job each:
 | `engine/session-reads.js` | The directory-read family's facade calls (`readEngineSessionList`, `readEngineSessionListForWorkspace`, `readEngineSessionTitle`, `readEngineVersion`) and the endpoint→capability table `SESSION_READ_ENDPOINTS` (step M3, batch B1) |
 | `engine/session-tree-reads.js` | The session-tree family's facade call (`readEngineSessionTree`) and the endpoint→capability table `SESSION_TREE_ENDPOINTS` (step M3, batch B2). Gates **hard**: `assertSessionTreeCapability` throws → 501, because the tree is entirely engine data. Forwards to `lib/session-tree.js#getSessionTree`; the assembler is not duplicated |
 | `engine/session-export.js` | The export family's facade call (`readEngineSessionTranscript`) and the endpoint→capability table `SESSION_EXPORT_ENDPOINTS` (step M3, batch B2). Gates **soft**: `checkSessionExportCapability` reports and never throws, because export's primary source is `sessions.json`, not the engine |
+| `engine/usage-reads.js` | The usage family's facade calls (`readEngineAccountQuota`, `readEngineSessionUsage`, `readEngineQuotaForecast`), the derived figure `contextUsedTokens`, and the endpoint→capability table `USAGE_READ_ENDPOINTS` (step M3, batch B3). Gates **hard** on the two engine reads and declares **no capability at all** for #19, which touches no engine surface |
 
 Routes take the host from the facade and never from `lib/acp-client.js`:
 `routes/plugins.js` and `routes/turn-diff.js` call
@@ -581,13 +582,14 @@ everything it imports statically must stay free of `@mavis/*`,
 (209ms → 2700ms at server start; the facade's own load 4685ms → 5ms after
 declaration and construction were split). `test/lib/engine/host-facade.test.js`
 enforces it against the real module graph rather than against source text.
-`engine/session-reads.js` lives under the same rule: its static imports are
-`engine/capabilities.js` and `engine/index.js` only, and `lib/acp-client.js` +
-`lib/config.js` are reached through `await import()` inside the functions.
-Batch B2's two files hold to it identically — `lib/session-tree.js` and
-`lib/transcript.js` are reached through `await import()`, and neither file
-statically imports `engine/capabilities.js` beyond the single
-`assertEngineCapability` binding the tree family actually calls.
+`engine/session-reads.js`, `engine/session-tree-reads.js`,
+`engine/session-export.js` and `engine/usage-reads.js` all live under the
+same rule: their static imports are `engine/capabilities.js` and
+`engine/index.js` only, and every heavier dependency —
+`lib/acp-client.js`, `lib/config.js`, `lib/session-tree.js`,
+`lib/transcript.js`, `lib/usage.js`, `lib/mavis-usage.js` and
+`lib/quota-forecast.js` — is reached through `await import()` inside the
+functions.
 
 #### Which endpoints read through the facade (step M3, batch B1)
 
@@ -620,6 +622,58 @@ Three properties this layer holds, each with a test behind it:
    `full`, so nothing 501s today; the tests drive a fixture declaration
    that lacks `listSessions` and assert the 501 payload. A gate nobody
    ever exercises is indistinguishable from no gate.
+
+#### Which endpoints read through the facade (step M3, batch B3)
+
+`engine/usage-reads.js` covers the four usage endpoints (#15, #16, #17,
+#19). This family is where a refactor can be entirely silent, because three
+of its four numbers are derived rather than counted — so the table below is
+as much about where each number comes from as about which capability gates
+it:
+
+| Endpoint | Capability · sub-item | Value source |
+| --- | --- | --- |
+| `POST /api/usage` | `authCredentials` · `getAccountStatus` | `lib/usage.js#runUsageQuery` — the engine's `mcode/account/status` projection, copied into `cs.usage`; the payload is written byte-for-byte, `ok:false` / `error` shape included |
+| `POST /api/usage-trigger` | `authCredentials` · `getAccountStatus` | the same read; the two endpoints differ only in the client's `record` flag, which is the difference between a reading and a measurement |
+| `GET /api/usage-real` | `usageStats` · `getSessionUsage` | `lib/mavis-usage.js` over the engine's own `local_runtime_token_usage` table. `contextUsed` is derived here by `contextUsedTokens` |
+| `GET /api/usage/forecast` | none of the 14 keys | webui's own `~/.mcode-webui/usage-history.ndjson`, via `lib/quota-forecast.js`. It calls no engine surface, so it declares none |
+
+Four properties this family holds, each with a test behind it:
+
+1. **`contextUsed` is cumulative, and the cache counters are not in it.**
+   `totalInput + totalOutput + totalReasoning`. The cache counters are a
+   SUBSET of `input`, so adding them double-counts; `totalCacheWrite` is
+   not part of the context window at all. This is also NOT the chat flow's
+   `lastTurnContextTokens`: the context bar shows one turn's worth, `#17`
+   shows the session's spend, and `test/lib/engine/usage-reads.test.js`
+   perturbs each of the seven numeric fields one at a time so a merged or
+   "simplified" formula flips a row instead of quietly shipping.
+2. **`totalReasoning` is the database's own `SUM`, forwarded.** The
+   snapshot test reads the same aggregate with plain SQL and compares; a
+   facade that re-derived it from anything else fails.
+3. **The forecast is a pure function of a history prefix.** Every prefix of
+   a growing history is compared against the module's own
+   `forecastExhaustion(readHistory())` at the same instant, and the sample
+   count's flat stretch across the deliberately-null sample is asserted, so
+   a read that re-filtered, re-sorted or re-sampled would break the
+   sequence rather than the shape.
+4. **A `none` / `partial`-missing declaration would 501.** The registered
+   provider declares both `authCredentials` and `usageStats` `full`, so only
+   the fixture-driven tests can prove the gate bites. #19's `null` row is
+   the counter-example with a reason: gating a read that touches no engine
+   surface would remove a working endpoint in response to a declaration
+   about something it does not depend on.
+
+`#17` declares `usageStats` · `getSessionUsage` but does not yet CALL that
+method; it reads the same SQLite table the method reads, through
+`lib/mavis-usage.js`. Three measured reasons, stated in the module header:
+the catalogue host only exists under the `runtime` transport
+(`acp-client.js#transportWantsCatalogue`), and `acp` is the default;
+`getSessionUsage` answers `{summary, rows: UsageView[]}` where the endpoint
+answers a per-column aggregate with `rows` as a COUNT, so switching would
+mean rebuilding `totalReasoning` and `contextUsed` from a different
+starting point; and it would put the v2 TypeScript tree on an endpoint that
+needs nothing from it. M4 is where the two are allowed to meet.
 
 The transport→provider table has one entry (`runtime`). Under the default
 `acp` transport no provider is registered yet, so the gate reports

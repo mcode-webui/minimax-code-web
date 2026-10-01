@@ -461,7 +461,7 @@ queued \| done \| stopped`）是投影层产物、不是存储值；webui 不导
 ### `engine/`（能力声明 + local-runtime-v2 host）
 
 引擎抽象层位于 `server/engine/`（engine-abstraction 批次 B1；迁移
-状态 M1，外加 M3 的 B0、B1 与 B2 三批）。十个文件，各管一件事：
+状态 M1，外加 M3 的 B0、B1、B2 与 B3 四批）。十一个文件，各管一件事：
 
 | 文件 | 职责 |
 | --- | --- |
@@ -475,6 +475,7 @@ queued \| done \| stopped`）是投影层产物、不是存储值；webui 不导
 | `engine/session-reads.js` | 目录读族的面板调用（`readEngineSessionList`、`readEngineSessionListForWorkspace`、`readEngineSessionTitle`、`readEngineVersion`）与端点→能力对照表 `SESSION_READ_ENDPOINTS`（迁移步 M3 批次 B1） |
 | `engine/session-tree-reads.js` | 会话树族的面板调用 `readEngineSessionTree` 与端点→能力对照表 `SESSION_TREE_ENDPOINTS`（迁移步 M3 批次 B2）。**硬门控**：`assertSessionTreeCapability` 抛出 → 501，因为树完全由引擎数据构成。转发到 `lib/session-tree.js#getSessionTree`，树的装配逻辑不复制第二份 |
 | `engine/session-export.js` | 导出族的面板调用 `readEngineSessionTranscript` 与端点→能力对照表 `SESSION_EXPORT_ENDPOINTS`（迁移步 M3 批次 B2）。**软门控**：`checkSessionExportCapability` 只报告、从不抛出，因为导出的主数据源是 `sessions.json` 而非引擎 |
+| `engine/usage-reads.js` | 用量族的面板调用（`readEngineAccountQuota`、`readEngineSessionUsage`、`readEngineQuotaForecast`）、派生量 `contextUsedTokens`，与端点→能力对照表 `USAGE_READ_ENDPOINTS`（迁移步 M3 批次 B3）。两个引擎读**硬门控**；#19 **完全不声明能力**，因为它不触达任何引擎面 |
 
 路由从门面取 host，不从 `lib/acp-client.js` 取：`routes/plugins.js` 与
 `routes/turn-diff.js` 调 `getEngineCatalogueHost()`。两者都保留 `deps`
@@ -538,12 +539,13 @@ handler 层测试因此保持封闭。
 学费才换来这条（server 启动 209ms → 2700ms；声明与构造拆成两个文件后，
 门面自身加载 4685ms → 5ms）。`test/lib/engine/host-facade.test.js`
 对着真实模块图强制它，而不是对着源码文本。
-`engine/session-reads.js` 服从同一条纪律：它的静态 import 只有
-`engine/capabilities.js` 与 `engine/index.js`，`lib/acp-client.js` + `lib/config.js`
-都在函数体内用 `await import()` 触达。批次 B2 的两个文件同样守住它：
-`lib/session-tree.js` 与 `lib/transcript.js` 都用 `await import()` 触达，
-且除树族真正调用的那一个 `assertEngineCapability` 绑定外，
-两个文件都没有静态 import `engine/capabilities.js`。
+`engine/session-reads.js`、`engine/session-tree-reads.js`、
+`engine/session-export.js` 与 `engine/usage-reads.js` 全部服从同一条
+纪律：静态 import 只有 `engine/capabilities.js` 与 `engine/index.js`，
+而每个更重的依赖——`lib/acp-client.js`、`lib/config.js`、
+`lib/session-tree.js`、`lib/transcript.js`、`lib/usage.js`、
+`lib/mavis-usage.js` 与 `lib/quota-forecast.js`——都在函数体内用
+`await import()` 触达。
 
 #### 哪些端点走门面读（迁移步 M3 批次 B1）
 
@@ -573,6 +575,49 @@ handler 层测试因此保持封闭。
 3. **门控是真的。** 已注册的 provider 声明 `sessionCrud` 为 `full`，
    所以今天没有任何端点会 501；测试用一份缺 `listSessions` 的样本声明
    驱动出 501 载荷。没人跑过的门控与没有门控无法区分。
+
+#### 哪些端点走门面读（迁移步 M3 批次 B3）
+
+`engine/usage-reads.js` 覆盖 4 个用量端点（#15、#16、#17、#19）。
+这一族是「重构全程静默」的重灾区：四个数字里有三个是**算出来的**
+而不是数出来的，所以下表不只写门控哪个能力，更写清每个数字从哪来：
+
+| 端点 | 能力 · 子项 | 取值来源 |
+| --- | --- | --- |
+| `POST /api/usage` | `authCredentials` · `getAccountStatus` | `lib/usage.js#runUsageQuery`——引擎的 `mcode/account/status` 投影，抄进 `cs.usage`；载荷逐字节写出，含 `ok:false` / `error` 形状 |
+| `POST /api/usage-trigger` | `authCredentials` · `getAccountStatus` | 同一次读；两个端点只差客户端的 `record` 标志，而它决定这次是「读数」还是「采样」 |
+| `GET /api/usage-real` | `usageStats` · `getSessionUsage` | `lib/mavis-usage.js` 读引擎自己的 `local_runtime_token_usage` 表；`contextUsed` 由 `contextUsedTokens` 在此派生 |
+| `GET /api/usage/forecast` | 14 键中无对应键 | webui 自己的 `~/.mcode-webui/usage-history.ndjson`，经 `lib/quota-forecast.js`。它不触达任何引擎面，所以不声明任何能力 |
+
+本层守住四条性质，每条背后都有测试：
+
+1. **`contextUsed` 是累计值，且不含缓存计数。** 公式是
+   `totalInput + totalOutput + totalReasoning`。缓存计数是 `input` 的
+   **子集**，加上会重复计数；`totalCacheWrite` 根本不在上下文窗口里。
+   它也**不是**聊天流程的 `lastTurnContextTokens`：上下文条显示的是
+   一轮的量，`#17` 显示的是整会话的花费。
+   `test/lib/engine/usage-reads.test.js` 对七个数值字段逐个扰动，
+   被合并或被「简化」的公式会翻掉某一行，而不是悄悄发版。
+2. **`totalReasoning` 是数据库自己的 `SUM`，原样转发。** 快照测试用
+   裸 SQL 独立算出同一个聚合再比对；门面若从别处重新派生，此测试即红。
+3. **预测是历史前缀的纯函数。** 增长中的历史的每一个前缀，都在同一时刻
+   与模块自己的 `forecastExhaustion(readHistory())` 比对，并且断言样本数
+   在那条故意置 `null` 的样本处出现的「平台期」——所以重新过滤、重新排序
+   或重新采样会破坏**序列**而不只是破坏形状。
+4. **`none` / 缺子项的 `partial` 声明会 501。** 已注册的 provider 把
+   `authCredentials` 与 `usageStats` 都声明为 `full`，所以只有样本驱动
+   的测试能证明门控会咬。#19 那一行 `null` 是带理由的反例：给一个
+   根本不触达引擎面的读加硬门控，等于用一条与它无关的声明去关掉一个
+   正常工作的端点。
+
+`#17` 声明了 `usageStats` · `getSessionUsage`，但**尚未调用**该方法：
+它经 `lib/mavis-usage.js` 读的是该方法读的同一张 SQLite 表。三条实测
+理由写在模块头注释里——catalogue host 只在 `runtime` 传输下存在
+（`acp-client.js#transportWantsCatalogue`），而 `acp` 是默认值；
+`getSessionUsage` 回答的是 `{summary, rows: UsageView[]}`，端点回答的是
+按列聚合且 `rows` 是 COUNT 的形状，换过去就意味着从另一个起点重建
+`totalReasoning` 与 `contextUsed`；而且它会把 v2 的 TypeScript 依赖树压到
+一个本来不需要它的端点的应答路径上。M4 才是两者允许会合的地方。
 
 传输→provider 表目前只有 `runtime` 一条。默认 `acp` 传输下尚无已注册
 provider，于是门控报告 `unregistered-transport` 并放行——M4 注册 ACP

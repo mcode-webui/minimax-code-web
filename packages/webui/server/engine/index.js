@@ -35,8 +35,9 @@
 // no route's behaviour changed. M3's first batch (B0) done — the
 // catalogue host itself is now reached through this facade too
 // (engine/host.js), so the plugins and turn-diff routes no longer name
-// lib/acp-client.js. The rest of M3, then M4, will route new consumers
-// through this facade one endpoint family at a time.
+// lib/acp-client.js. M3 batches B1 (#9 #10 #72 #74 #75) and B3 (#15 #16
+// #17 #19) done. B2 (#8 #11) and the rest of M3, then M4, will route
+// their consumers through this facade one endpoint family at a time.
 
 import { ENGINE_CAPABILITY_KEYS } from "./capabilities.js";
 // Declarations only — importing the provider *host-construction* modules
@@ -103,6 +104,22 @@ export {
   readEngineSessionTranscript,
   resolveSessionExportProvider,
 } from "./session-export.js";
+// The usage family's gated reads (step M3, batch B3). Same cycle, same
+// rule, same reasoning as session-reads.js above: usage-reads.js reads
+// NOTHING from this module at module scope — its `USAGE_READ_ENDPOINTS`
+// table is a literal and every binding it needs (`getEngineProvider`,
+// `DEFAULT_ENGINE_PROVIDER_ID`) is read inside a function body. A new
+// top-level `const X = SOMETHING_FROM_INDEX` in usage-reads.js breaks the
+// re-export exactly as it would in session-reads.js.
+export {
+  USAGE_READ_ENDPOINTS,
+  assertUsageReadCapability,
+  contextUsedTokens,
+  readEngineAccountQuota,
+  readEngineQuotaForecast,
+  readEngineSessionUsage,
+  resolveUsageReadProvider,
+} from "./usage-reads.js";
 export { LOCAL_RUNTIME_V2_CAPABILITIES } from "./providers/local-runtime-v2.capabilities.js";
 export { TUI_RUNTIME_ADAPTER_CAPABILITIES } from "./providers/tui-runtime-adapter.js";
 
