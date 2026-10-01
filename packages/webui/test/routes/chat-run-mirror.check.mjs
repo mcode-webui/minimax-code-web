@@ -52,8 +52,23 @@ import { createTurnDrain } from "../helpers/turn-drain.mjs";
 // Isolation FIRST — lib/config.js resolves SESSIONS_DB / UPLOAD_DIR from
 // MCODE_WEBUI_DATA_DIR at import time. Neither this check nor the
 // operator's real ~/.mcode-webui may see the other.
+//
+// SESSIONS_DB is pinned EXPLICITLY, not left to the DATA_DIR default.
+// config.js resolves it as `MCODE_WEBUI_SESSIONS_DB || join(WEBUI_DATA_DIR,
+// "sessions.json")`, so an outer MCODE_WEBUI_SESSIONS_DB — which an
+// isolation-minded gate command sets to keep a spawned server.js off the
+// real store — outranks the default and silently redirects the store this
+// file's `beforeEach` then fails to clear. The result is not a missing-file
+// error but a worse one: every run reads the previous run's records, the
+// mid-run switch resolves an id whose workspace belongs to a tmp dir that no
+// longer exists (`workspace_containment` refusal), and the buffer and the
+// record assertions both diverge. Pinning the variable here makes the store
+// this file reads and the store this file cleans the same path, whatever the
+// caller exports.
 const _tmpDataDir = mkTmpDir("webui-run-mirror-");
+const _sessionsDb = join(_tmpDataDir, "sessions.json");
 process.env.MCODE_WEBUI_DATA_DIR = _tmpDataDir;
+process.env.MCODE_WEBUI_SESSIONS_DB = _sessionsDb;
 process.env.MCODE_WEBUI_EVENTS_PATH = join(_tmpDataDir, "events.ndjson");
 
 const SERVER_DIR = resolve(import.meta.dirname, "..", "..", "server");
@@ -357,7 +372,7 @@ beforeEach(() => {
   sb.clients.clear();
   sb.resetCoalesceState();
   try {
-    rmSync(join(_tmpDataDir, "sessions.json"), { force: true });
+    rmSync(_sessionsDb, { force: true });
   } catch {}
   sessions._resetSessionsCacheForTests();
   alerts._resetForTests();

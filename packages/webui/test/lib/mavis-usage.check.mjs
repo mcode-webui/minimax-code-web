@@ -32,8 +32,23 @@ import { setupMocks, absPath } from "../helpers/_setup.js";
 // Point config.js's MAVIS_DATA_DIR at our fixture dir BEFORE mavis-usage.js
 // is imported. config.js reads process.env.MAVIS_DATA_DIR at module-load
 // time, so the env var must be set before the dynamic import below.
+//
+// BOTH names must be set, not just MAVIS_DATA_DIR. config.js#resolveDataDir
+// reads `MINIMAX_DATA_DIR ?? MAVIS_DATA_DIR` — the newer name wins — and
+// MAVIS_DB_PATH (the fixture sqlite this suite queries) is derived from it.
+// A gate command that isolates the runtime data dir exports MINIMAX_DATA_DIR
+// pointing at a scratch directory, and that scratch directory has no
+// runtime-state.sqlite, so every DB-backed case here resolved null.
+//
+// The test's own fixture must outrank whatever the outer environment exports
+// or the suite is only green when run bare — which is the trap this pins
+// shut. The production precedence in config.js is deliberate and shared with
+// packages/config, so the fix belongs here, not there: a test that wants a
+// fixture owns the variable, and it owns it by exporting the name that wins.
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
-process.env.MAVIS_DATA_DIR = resolve(TEST_DIR, "..", "fixtures");
+const _fixtureDataDir = resolve(TEST_DIR, "..", "fixtures");
+process.env.MAVIS_DATA_DIR = _fixtureDataDir;
+process.env.MINIMAX_DATA_DIR = _fixtureDataDir;
 
 // Fixture session IDs (created by scripts/create-test-db.mjs).
 // MUST match /mvs_[a-f0-9]{16,}/i — only hex chars allowed (no 'l', 'u' etc).
