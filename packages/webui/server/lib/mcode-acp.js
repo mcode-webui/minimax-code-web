@@ -347,9 +347,18 @@ export async function runMcodeAcp(content, opts = {}) {
     if (sid) {
       try {
         if (stillViewingAtBind) {
-          bindDraftToMcodeSid(cs, sid);
+          // session-ownership: `workspace` is the SAME value the
+          // loadSession/newSession call above used, so the record's
+          // stored workspace becomes the engine session's real cwd —
+          // not the stale snapshot from when the record was created.
+          // A wrong stored value re-homes the conversation: the next
+          // switch lands the view (and the next loadSession) in a
+          // directory the session never ran in, and the load failure
+          // fallback silently mints a second engine session — the
+          // same-conversation ghost row in the sidebar.
+          bindDraftToMcodeSid(cs, sid, { workspace });
         } else {
-          bindRecordToMcodeSid(owningWebuiSessionId, sid);
+          bindRecordToMcodeSid(owningWebuiSessionId, sid, { workspace });
         }
       } catch (e) {
         console.warn(`[webui] bindDraftToMcodeSid: ${e.message}`);
