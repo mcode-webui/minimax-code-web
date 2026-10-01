@@ -45,6 +45,7 @@ import {
 import { getActiveSessionId, useSessionContext } from "@/lib/store";
 import {
   completeSlashWord,
+  flattenAvailableCommands,
   routeSlashInput,
   shouldCompleteSlashWord,
 } from "@/lib/slash-routing";
@@ -252,6 +253,16 @@ export function Composer({
   // on mount.
   const modelKey = state?.model?.name ?? "";
   const sessionKey = state?.sessionId ?? "";
+  // The failure banner is scoped to the session it failed in. `composer-draft`
+  // is a module-scope store shared by every composer instance (it has to be —
+  // page.tsx swaps the composer between two tree positions), so without this
+  // reset a rejection recorded in session A rode along when the user switched
+  // to session B and painted B's composer red for a send B never made. The
+  // typed draft is deliberately NOT cleared: the user's words belong to them,
+  // and the restored-draft merge below already owns cross-session text rules.
+  useEffect(() => {
+    setComposerDraft({ error: null, errorKind: null, unconfirmed: null });
+  }, [sessionKey]);
   useEffect(() => {
     void api
       .listModels()
@@ -293,20 +304,13 @@ export function Composer({
    * and the list becomes noise.
    */
   const slashWord = value.startsWith("/") && !/\s/.test(value) ? value.slice(1).toLowerCase() : null;
-  const slashCommands: string[] = useMemo(() => {
-    const raw = state?.availableCommands;
-    if (!raw || typeof raw !== "object") return [];
-    const out: string[] = [];
-    for (const group of Object.values(raw as Record<string, unknown>)) {
-      if (!Array.isArray(group)) continue;
-      for (const entry of group) {
-        if (entry && typeof entry === "object" && "name" in entry && typeof (entry as { name: unknown }).name === "string") {
-          out.push((entry as { name: string }).name);
-        }
-      }
-    }
-    return out;
-  }, [state?.availableCommands]);
+  // flattenAvailableCommands dedupes names across groups — the mcode and webui
+  // groups both report a `help`, and the palette keys rows by name, so the
+  // duplicates would collide (React same-key warning) and draw twice.
+  const slashCommands: string[] = useMemo(
+    () => flattenAvailableCommands(state?.availableCommands),
+    [state?.availableCommands],
+  );
   const slashMatches = slashWord === null
     ? []
     : slashCommands

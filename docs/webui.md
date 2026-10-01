@@ -2026,14 +2026,17 @@ not depend on how many candidates are showing:
 
 The candidate count is deliberately **not** an input to any of this.
 `availableCommands` reports every command in two groups — the engine's
-own `mcode` list and the webui button list — and the composer flattens
-both, so a fully typed `/status` has two identical candidates. A rule
-of the form "Enter completes while the list is ambiguous" therefore
-fired on an unambiguous command and swallowed the keystroke that was
-supposed to run it: the box kept its text, the command never ran, and
-the next `Enter` sent the bare word as a chat message. The decision
-lives in `shouldCompleteSlashWord` (`webapp/lib/slash-routing.ts`),
-which takes the key and nothing else.
+own `mcode` list and the webui button list — and a name can therefore
+arrive more than once, so a fully typed `/status` reaches the composer
+as two identical candidates. A rule of the form "Enter completes while
+the list is ambiguous" therefore fired on an unambiguous command and
+swallowed the keystroke that was supposed to run it: the box kept its
+text, the command never ran, and the next `Enter` sent the bare word as
+a chat message. The decision lives in `shouldCompleteSlashWord`
+(`webapp/lib/slash-routing.ts`), which takes the key and nothing else.
+Dedupe is applied on the way to the screen, not inside that decision —
+see below — because the two defects are independent and neither is the
+other's precondition.
 
 A second defect shared that key handler and is fixed with it:
 `availableCommands` carries **bare** names (`name: "status"`), so
@@ -2041,6 +2044,18 @@ writing a candidate back verbatim produced `status ` — the leading
 slash was gone, and what left the composer was a message, not a
 command. `completeSlashWord` re-attaches exactly one slash and strips
 any the name already had, so the box can never come to hold `//`.
+
+The rows themselves come from `flattenAvailableCommands`
+(`webapp/lib/slash-routing.ts`), which flattens the `availableCommands`
+dict **deduped on first occurrence**: the `mcode` group (engine
+commands over ACP) and the `webui` group both carry a `help`, and the
+palette keys its rows by name, so an unchecked flatten rendered the same
+key twice — React logged "Encountered two children with the same key"
+and the user saw two identical rows. The duplicate is the same slash
+command to the user (typing it routes through `routeSlashInput`, not the
+row), so the palette shows one entry per name.
+`webapp/test/slash-commands.test.ts` pins the dedupe against the real
+function the composer calls.
 
 | Design | Enter on an ambiguous prefix | Rejected because |
 | --- | --- | --- |

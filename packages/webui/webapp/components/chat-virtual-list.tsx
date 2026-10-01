@@ -155,6 +155,32 @@ export interface UseChatVirtualizationOptions {
   stuckThreshold?: number;
 }
 
+/**
+ * Field-wise equality for `ChatVirtualMetrics`.
+ *
+ * Exported for the unit suite (`chat-virtual-list.test.ts`): the
+ * observer→render→observer loop described in `useChatVirtualization` is broken
+ * exactly here, so the comparison itself is pinned — adding a field to
+ * `ChatVirtualMetrics` and forgetting it here keeps the bail-out honest for
+ * the old fields only, and the test below fails until the new field joins.
+ */
+export function chatVirtualMetricsEqual(
+  a: ChatVirtualMetrics,
+  b: ChatVirtualMetrics,
+): boolean {
+  return (
+    a.isNearBottom === b.isNearBottom &&
+    a.stuck === b.stuck &&
+    a.window.startIdx === b.window.startIdx &&
+    a.window.endIdx === b.window.endIdx &&
+    a.window.topSpacer === b.window.topSpacer &&
+    a.window.bottomSpacer === b.window.bottomSpacer &&
+    a.window.useVirtual === b.window.useVirtual &&
+    a.window.visibleStart === b.window.visibleStart &&
+    a.window.visibleEnd === b.window.visibleEnd
+  );
+}
+
 // ============================================================
 // Pure functions
 // ============================================================
@@ -378,6 +404,25 @@ export function useChatVirtualization(
     stuck: false,
   }));
 
+  /**
+   * Commit only when a field actually moved.
+   *
+   * `recompute` runs from three re-entrant drivers — scroll, ResizeObserver,
+   * and the post-render rAF — and a naive setState with a freshly-built
+   * metrics object literal builds a new reference every time. React compares by reference, so an
+   * unchanged layout still re-rendered; the re-render could move scrollHeight,
+   * which re-fires the ResizeObserver, which setMetrics again — an
+   * observer→render→observer loop riding on nothing but object identity (the
+   * same mechanism once bit markdown-toc's outline width, see the comment
+   * there). Under a streaming turn totalCount shifts every frame, so this
+   * hook sat on the hottest path in the app. Bail out instead: React skips
+   * the re-render when the reducer returns the same reference, which breaks
+   * the identity loop at its only setState.
+   */
+  const setMetricsIfChanged = useCallback((next: ChatVirtualMetrics) => {
+    setMetrics((current) => (chatVirtualMetricsEqual(current, next) ? current : next));
+  }, []);
+
   useEffect(() => {
     const el = scrollerRef.current;
     if (!el) return;
@@ -386,7 +431,7 @@ export function useChatVirtualization(
       const scrollTop = el.scrollTop;
       const clientHeight = el.clientHeight;
       const scrollHeight = el.scrollHeight;
-      setMetrics({
+      setMetricsIfChanged({
         window: computeVirtualWindow({ totalCount, scrollTop, clientHeight }),
         isNearBottom: isNearBottom({ scrollTop, clientHeight, scrollHeight }),
         stuck: scrollHeight - scrollTop - clientHeight > stuckThreshold,
@@ -407,7 +452,7 @@ export function useChatVirtualization(
       el.removeEventListener("scroll", recompute);
       if (ro) ro.disconnect();
     };
-  }, [scrollerRef, totalCount, stuckThreshold]);
+  }, [scrollerRef, totalCount, stuckThreshold, setMetricsIfChanged]);
 
   // After `totalCount` shifts (new blocks appended at the tail) the scroll
   // event does not always fire — the user's scrollTop has not changed. Run a
@@ -421,14 +466,14 @@ export function useChatVirtualization(
       const scrollTop = el.scrollTop;
       const clientHeight = el.clientHeight;
       const scrollHeight = el.scrollHeight;
-      setMetrics({
+      setMetricsIfChanged({
         window: computeVirtualWindow({ totalCount, scrollTop, clientHeight }),
         isNearBottom: isNearBottom({ scrollTop, clientHeight, scrollHeight }),
         stuck: scrollHeight - scrollTop - clientHeight > stuckThreshold,
       });
     });
     return () => cancelAnimationFrame(raf);
-  }, [totalCount, scrollerRef, stuckThreshold]);
+  }, [totalCount, scrollerRef, stuckThreshold, setMetricsIfChanged]);
 
   return metrics;
 }
