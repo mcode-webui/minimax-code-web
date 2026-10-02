@@ -64,6 +64,51 @@ import {
   withDecisions,
 } from "../../helpers/_setup.js";
 import { mkTmpDir, rmTmpDir } from "../../helpers/tmp.js";
+
+// ---------------------------------------------------------------------------
+// Per-file path isolation (B5 test-hygiene fix)
+// ---------------------------------------------------------------------------
+// `readOrphanSessionWriteIds` reads `lib/config.js#SESSIONS_DB`, and that
+// constant is frozen when config.js is FIRST evaluated — which happens inside
+// the first test that pulls `engine/index.js` into the registry, long before
+// the preview test below runs. So the pin has to sit at module scope: setting
+// it inside the test body would be a no-op dressed up as isolation.
+//
+// The bug this kills: the preview test asserted `count:0` because the
+// developer's `~/.mcode-webui/sessions.json` "does not exist in this
+// environment". On any machine that has actually used the app it DOES exist,
+// and the assertion was a statement about the developer's home directory
+// rather than about the facade — green on a clean CI runner, red on every
+// workstation, and unfixable by editing the product.
+//
+// Four variables, all rooted in one tracked temp directory (SPEC §7's
+// isolation trio plus the file under test):
+//
+//   MCODE_WEBUI_SESSIONS_DB   — the file the sweep reads; the one that leaked
+//   MCODE_WEBUI_DATA_DIR     — its parent, so every other path config.js
+//                              derives from the data dir lands here too
+//   MCODE_WEBUI_SETTINGS_PATH — settings.json, which config.js reads at import
+//   MINIMAX_DATA_DIR         — the engine's data dir; without it the
+//                              MCODE_RUNTIME_DB contract still resolves
+//                              against the real ~/.minimax
+//
+// SESSIONS_DB is deliberately left NON-EXISTENT. The empty sweep is the shape
+// this red line pins, and after this change it is guaranteed by construction
+// instead of by the absence of a file the test never created.
+const ISOLATED_DIR = mkTmpDir("webui-session-writes-b5-");
+process.env.MCODE_WEBUI_SESSIONS_DB = join(ISOLATED_DIR, "sessions.json");
+process.env.MCODE_WEBUI_DATA_DIR = ISOLATED_DIR;
+process.env.MCODE_WEBUI_SETTINGS_PATH = join(ISOLATED_DIR, "settings.json");
+process.env.MINIMAX_DATA_DIR = ISOLATED_DIR;
+
+after(() => {
+  rmTmpDir(ISOLATED_DIR);
+  delete process.env.MCODE_WEBUI_SESSIONS_DB;
+  delete process.env.MCODE_WEBUI_DATA_DIR;
+  delete process.env.MCODE_WEBUI_SETTINGS_PATH;
+  delete process.env.MINIMAX_DATA_DIR;
+});
+
 // Type discrimination goes through the exported predicate, never
 // `err.name`. `engine/capabilities.js` is never `mock.module`d by this
 // file, so the `instanceof` inside it resolves against the same class the
@@ -989,9 +1034,11 @@ describe("M3-B5 — session write family", () => {
       // notice a reshuffle.
       await setupMocks(t, { acp: {} });
       const mod = await import(`${absPath("engine/session-writes.js")}?shape=${bust++}`);
-      // The store read is against the real config's SESSIONS_DB, which
-      // does not exist in this environment, so the answer is the empty
-      // case — which is the shape most likely to be "simplified".
+      // The store read is against the SESSIONS_DB pinned at module scope, a
+      // path that intentionally does not exist, so the answer is the empty
+      // case — which is the shape most likely to be "simplified". The same
+      // assertion held on a CI runner by accident; here it holds because the
+      // test owns the path it reads.
       const sweep = await mod.readOrphanSessionWriteIds({ transport: RUNTIME });
       assert.equal(
         JSON.stringify(sweep.payload),
