@@ -150,9 +150,17 @@ export {
 // The capability-declaration read (step M3, batch B4). Declares NO
 // capability for #73 — it IS the declaration endpoint, and gating the
 // gate would let a `none` hide the declaration that says so. It is the
-// one endpoint in the migration whose response body gains a key
-// (`engine`, the engine-capabilities view); see the module header for
-// why that is additive rather than a replacement.
+// one endpoint in the migration whose response CONTRACT changed:
+// `capabilities` used to carry `MCODE_ACP_CAPABILITIES`, the flat ACP
+// wire table, and now carries the provider's DECLARED 14-key object — a
+// user-authorised replacement, not an addition. The `engine` key an
+// earlier shape of this batch shipped was removed rather than kept,
+// because with the declaration already under `capabilities` it would
+// have carried the same 14 keys a second time in one response; what
+// survives is the provenance (`capabilitiesProvider` /
+// `capabilitiesProviderFor`) and the derived `capabilitiesUnavailable`.
+// See the module header for the full statement and the debt note on the
+// now-unconsumed constant.
 export {
   CAPABILITY_READ_ENDPOINTS,
   checkCapabilityReadCapability,

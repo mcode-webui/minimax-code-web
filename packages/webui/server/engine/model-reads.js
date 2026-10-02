@@ -102,7 +102,11 @@ import {
 } from "../lib/engine-catalogue.js";
 import { getBuiltinModelsFromMcode } from "../lib/models.js";
 import { loadProvidersConfig } from "../lib/providers-config.js";
-import { assertEngineCapability } from "./capabilities.js";
+// `assertEngineCapability` is deliberately NOT imported: this family's
+// gate is soft, so it INSPECTS the declaration (`checkModelReadCapability`
+// below) and reports what it found rather than delegating the verdict to
+// the throwing helper. Importing it here would be a dead import that
+// reads as if the soft path could still throw.
 import { DEFAULT_ENGINE_PROVIDER_ID, getEngineProvider } from "./index.js";
 
 /**
@@ -671,7 +675,8 @@ function defaultParseWireStub() {
  * route's handler signature is part of its contract: `app.js#invokeHandler`
  * accepts both shapes, but a caller that does not await gets a
  * half-written response from an async handler and a complete one from a
- * sync handler, and this batch is a收编, not a scheduling change.
+ * sync handler, and this batch is an absorption, not a scheduling
+ * change.
  *
  * Every source is re-read on every call, exactly as before: editing
  * `models.json`, `~/.mcode-webui/providers.json` or the engine's
