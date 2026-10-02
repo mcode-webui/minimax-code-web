@@ -478,7 +478,7 @@ queued \| done \| stopped`）是投影层产物、不是存储值；webui 不导
 | `engine/usage-reads.js` | 用量族的面板调用（`readEngineAccountQuota`、`readEngineSessionUsage`、`readEngineQuotaForecast`）、派生量 `contextUsedTokens`，与端点→能力对照表 `USAGE_READ_ENDPOINTS`（迁移步 M3 批次 B3）。两个引擎读**硬门控**；#19 **完全不声明能力**，因为它不触达任何引擎面 |
 | `engine/account-reads.js` | 账户族的面板调用 `readEngineAccount` 与端点→能力对照表 `ACCOUNT_READ_ENDPOINTS`（迁移步 M3 批次 B4）。**硬门控**，门控在 `authCredentials` · `getAccountStatus`——与 `engine/usage-reads.js` 同一对、同一个 provider 方法，因为 #20 与 #15/#16 读的是同一份引擎投影。它的读是**同步的**，见下面的启动路径说明 |
 | `engine/model-reads.js` | 模型目录族的面板调用 `readEngineModelCatalogue`、整套投影的具名纯函数（`projectModelCatalogue`、`deriveModelSelection`、`buildModelCataloguePayload`、`catalogueSourceLabel`、`webuiFullModelId`、`providerOfModelId`、`attachContextWindowOptions`、`configOption`），与端点→能力对照表 `MODEL_READ_ENDPOINTS`（迁移步 M3 批次 B4）。**软门控**：`checkModelReadCapability` 只报告、从不抛出，因为目录的主数据源是 webui 自己拥有的文件。它的读是**同步的**，并且它是唯一一个**没有**从 `engine/index.js` 转发导出的引擎模块——见下面的启动路径说明 |
-| `engine/capability-reads.js` | 能力声明族的面板调用 `readEngineCapabilityView` 与端点→能力对照表 `CAPABILITY_READ_ENDPOINTS`（迁移步 M3 批次 B4）。#73 **不声明任何能力**——它本身就是声明端点，给门控上门控会让某个 `none` 把声明它的那份声明藏起来。它是本次迁移中唯一一个响应体新增了一个键的端点（`engine`，即 engine-capabilities 视图） |
+| `engine/capability-reads.js` | 能力声明族的面板调用 `readEngineCapabilityView` 与端点→能力对照表 `CAPABILITY_READ_ENDPOINTS`（迁移步 M3 批次 B4）。#73 **不声明任何能力**——它本身就是声明端点，给门控上门控会让某个 `none` 把声明它的那份声明藏起来。它是本次迁移中唯一一个响应**契约**发生变更的端点（`capabilities` 现在是 14 键声明，顶替了 ACP wire 表） |
 
 路由从门面取 host，不从 `lib/acp-client.js` 取：`routes/plugins.js` 与
 `routes/turn-diff.js` 调 `getEngineCatalogueHost()`。两者都保留 `deps`
@@ -712,7 +712,7 @@ provider 确实没有树可返回，501 才是诚实答案。
 | --- | --- | --- | --- |
 | `GET /api/account` | `authCredentials` · `getAccountStatus` | 硬——501 | `lib/mcode-rpc.js#getAccountStatus`，即引擎的 `mcode/account/status` 投影。响应体由门面组装：成功是 `{ok:true, ...data}`，失败在 HTTP 200 上是 `{ok:false, reason}` |
 | `GET /api/models` | `authCredentials` · `listModelProviders` | 软——只报告 | 三个分层来源：引擎会话的 `model` 配置项、合并后的 provider 配置（webui 的 `env > cwd > user` 叠在引擎 `custom_provider` 树之上，经 `lib/engine-catalogue.js`）、以及内建 cli 包抽取 |
-| `GET /api/protocol/capabilities` | 14 个键里的任何一个都不适用 | 不门控——门控是「被报告的空操作」 | 已注册 provider 的 14 键声明加 `summarizeUnavailableCapabilities`，以及 ACP `initialize` 的 `agentInfo` 镜像 |
+| `GET /api/protocol/capabilities` | 14 个键里的任何一个都不适用 | 不门控——门控是「被报告的空操作」 | 已注册 provider 的 14 键声明、它的 `summarizeUnavailableCapabilities` 汇总，以及 ACP `initialize` 的 `agentInfo` 镜像 |
 
 **为什么 #20 硬门控而 #57 不硬。** 账户卡 100% 由引擎数据构成：
 「我是谁」和「什么套餐」都没有 webui 侧的兜底，所以报不出账户的
@@ -756,13 +756,21 @@ webui 自己拥有、不依赖引擎就能读的文件——`models.json`、
    模型段解析不出来、或模型不在树里，产出的就是一个无这些字段的条目，
    绝不会是「半吊子标注」。扰动那棵树的那一节断言了：哪条引擎记录会让
    哪些条目发生变化。
-4. **#73 的变更是增量的，且它的兜底是带标签的。** 响应恰好新增一个键
-   `engine`，位置紧跟 `capabilities` 之后；每个既有键的名字、位置与取值
-   都不变，ACP wire 表**没有**被 14 个矩阵键替换（两者回答的是不同问题，
-   `docs/API.md` 两者都记录了）。视图内部的 `providerFor` 说明这份声明
-   来自当前传输的 provider，还是来自「当前传输还没有任何 provider 声明」
-   时顶替的默认 provider——一个能力探测端点绝不能把顶替声明当作已连接
-   引擎的声明报出去。
+4. **#73 的契约是「变更」了，且是刻意的，声明只出现一次。** `capabilities`
+   过去是 `MCODE_ACP_CAPABILITIES`——一张手工维护的扁平 `{方法: 布尔}`
+   表，描述 ACP JSON-RPC 面；现在是引擎**声明的** 14 键对象，按引用
+   转发。那 12 个旧访问器被断言为**已消失**，所以读
+   `capabilities.set_mode` 的消费方拿到 `undefined`、响亮地失败，而不是
+   收到一个真值对象字段。这是本次迁移里唯一一处经用户授权的端点契约
+   变更；它的第一个形状——在旧表旁边增一个 `engine` 块承载视图——在评审
+   中被否掉，正因为那会让同一份 14 键声明在一次响应里出现两次。留下来的是
+   出处信息，上提为 `capabilitiesProvider` /
+   `capabilitiesProviderFor`，外加派生汇总
+   `capabilitiesUnavailable`。测试用结构化计数断言声明的出现次数，所以再
+   引入第二个承载者就是一条红条。`providerFor` 是诚实位：能力探测端点
+   绝不能把顶替声明当作已连接引擎的声明报出去，而在默认 `acp` 传输下，
+   直到 M4 之前这种顶替都是常态。`docs/API.md`、`docs/webui.md`、
+   `docs/tui-capabilities.md` 都以两种语言记录了新形状。
 
 **三个「当前生效」的量只派生一次。** `current` 优先取引擎的
 `currentValue`，回落到记录在案的会话前选择；`currentThinking` 优先取引擎的

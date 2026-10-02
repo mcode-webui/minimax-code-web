@@ -2,26 +2,30 @@
 //
 // M3-B4: the capability-declaration read's engine facade (#73).
 //
-// This is the one endpoint in the migration that CHANGES its response,
-// so the tests here are mostly about pinning exactly how much changed
-// and why the rest did not:
+// This is the one endpoint in the migration whose RESPONSE CONTRACT
+// changes, by explicit decision: `capabilities` used to be
+// `MCODE_ACP_CAPABILITIES`, a hand-maintained flat `{method: boolean}`
+// table of the ACP JSON-RPC surface, and it is now the engine's
+// DECLARED 14-key capability object. So the tests here pin the
+// replacement, not an absence of change:
 //
-//   1. THE ADDITIVE CHANGE. #73 gains one key, `engine`, carrying the
-//      engine-capabilities view. Every key that existed before keeps
-//      its exact name, position and value — the ACP wire table stays
-//      under `capabilities`, the `initialize` mirror stays under
-//      `mcodeVersion` / `mcodeName` / `mcodeTitle`, and `notes` stays
-//      last. Section 4 asserts the full key order of the response, so a
-//      future "let me just replace the wire table with the 14 keys"
-//      cannot land without a reviewer seeing the test fail.
+//   1. THE REPLACEMENT. `capabilities` carries the declaration, forwarded
+//      by identity, and the twelve old accessors are asserted GONE — a
+//      consumer that still reads `capabilities.set_mode` must get
+//      `undefined` and fail loudly rather than silently receive a
+//      truthy object field. The declaration must appear exactly once in
+//      the serialised body: the `engine` key an earlier shape of this
+//      batch shipped was removed precisely because it carried the same
+//      14 keys a second time. `mcodeVersion` / `mcodeName` /
+//      `mcodeTitle` and `notes` are untouched, and `notes` stays last.
 //
-//   2. `providerFor`. The view must say whether the declaration came
-//      from the ACTIVE transport's provider or from the default
-//      provider standing in for a transport nothing claims yet (M4).
-//      A capability-detection endpoint that reported a standing-in
-//      declaration as though it were the connected engine's is the
-//      same lie B1 declined for `/api/health` — and this is the one
-//      endpoint where it is most tempting, because the fallback is
+//   2. `capabilitiesProviderFor`. The response must say whether the
+//      declaration came from the ACTIVE transport's provider or from the
+//      default provider standing in for a transport nothing claims yet
+//      (M4). A capability-detection endpoint that reported a
+//      standing-in declaration as though it were the connected engine's
+//      is the same lie B1 declined for `/api/health` — and this is the
+//      one endpoint where it is most tempting, because the fallback is
 //      silent and always succeeds.
 //
 //   3. THE EMPTY-DECLARATION RULE. #73 must never answer an empty
@@ -41,7 +45,7 @@
 import { test, describe, after } from "node:test";
 import assert from "node:assert/strict";
 
-import { setupMocks, absPath, registerAcpMock, registerRpcMock } from "../../helpers/_setup.js";
+import { setupMocks, absPath, registerAcpMock } from "../../helpers/_setup.js";
 
 const {
   CAPABILITY_READ_ENDPOINTS,
@@ -58,11 +62,9 @@ const RUNTIME = "runtime";
 const ACP = "acp";
 
 const AGENT_INFO = { name: "mcode", title: "Mcode", version: "0.5.5" };
-const WIRE = { set_mode: true, set_config_option: true, cancel: true, activate: true };
 
 after(() => {
   registerAcpMock({ getMcodeServerInfo: () => null });
-  registerRpcMock({ MCODE_ACP_CAPABILITIES: WIRE });
 });
 
 // ---------------------------------------------------------------------------
@@ -146,26 +148,34 @@ describe("resolveCapabilityReadProvider — it never returns nothing", () => {
 // ---------------------------------------------------------------------------
 
 describe("readEngineCapabilityView", () => {
-  test("the view is the engine-capabilities payload /api/engine-capabilities serves", async (t) => {
-    // Same four facts, same source objects. If the two endpoints ever
+  test("the read is the engine-capabilities payload /api/engine-capabilities serves", async (t) => {
+    // Same declaration, same source object. If the two endpoints ever
     // answer different declarations there are two truths in webui, and
     // this assertion is what stops that.
     await setupMocks(t, { acp: { getMcodeServerInfo: () => AGENT_INFO } });
-    registerRpcMock({ MCODE_ACP_CAPABILITIES: WIRE });
     const read = await readEngineCapabilityView({ transport: RUNTIME });
-    assert.deepEqual(Object.keys(read.engine), [
+    // The read's key set, asserted exactly: the ACP wire table is gone
+    // from this layer, and a `wire` field reappearing here would put a
+    // second "what can the engine do" answer back in the facade.
+    assert.deepEqual(Object.keys(read), [
+      "declaration",
+      "unavailable",
       "provider",
       "providerFor",
+      "engineTransport",
+      "agent",
+      "source",
+      "gate",
       "transport",
-      "capabilities",
-      "unavailable",
     ]);
-    assert.deepEqual(Object.keys(read.engine.capabilities), [...ENGINE_CAPABILITY_KEYS]);
-    assert.equal(read.engine.capabilities, LOCAL_RUNTIME_V2_CAPABILITIES);
+    assert.deepEqual(Object.keys(read.declaration), [...ENGINE_CAPABILITY_KEYS]);
+    assert.equal(read.declaration, LOCAL_RUNTIME_V2_CAPABILITIES);
     assert.deepEqual(
-      read.engine.unavailable,
+      read.unavailable,
       summarizeUnavailableCapabilities(LOCAL_RUNTIME_V2_CAPABILITIES),
     );
+    assert.equal(read.provider, "local-runtime-v2");
+    assert.equal(read.engineTransport, "runtime");
     assert.equal(read.source, "declaration");
     assert.equal(read.transport, RUNTIME);
   });
@@ -183,8 +193,7 @@ describe("readEngineCapabilityView", () => {
   for (const [info, expected] of AGENT_CASES) {
     test(`agentInfo ${JSON.stringify(info)} → ${JSON.stringify(expected)}`, async (t) => {
       await setupMocks(t, { acp: { getMcodeServerInfo: () => info } });
-      registerRpcMock({ MCODE_ACP_CAPABILITIES: WIRE });
-      const read = await readEngineCapabilityView({ transport: RUNTIME });
+        const read = await readEngineCapabilityView({ transport: RUNTIME });
       assert.deepEqual(read.agent, expected);
       assert.deepEqual(Object.keys(read.agent), ["version", "name", "title"]);
     });
@@ -204,12 +213,11 @@ describe("readEngineCapabilityView", () => {
   for (const [transport, expected] of PROVIDER_FOR) {
     test(`the view reports providerFor=${expected} on transport ${JSON.stringify(transport)}`, async (t) => {
       await setupMocks(t, { acp: {} });
-      registerRpcMock({ MCODE_ACP_CAPABILITIES: WIRE });
-      const read = await readEngineCapabilityView({ transport });
-      assert.equal(read.engine.providerFor, expected);
+        const read = await readEngineCapabilityView({ transport });
+      assert.equal(read.providerFor, expected);
       // And the two halves cannot disagree: `providerFor: "transport"`
       // with a provider the transport does not own is the lie.
-      assert.equal(read.engine.providerFor === "transport", transport === RUNTIME);
+      assert.equal(read.providerFor === "transport", transport === RUNTIME);
     });
   }
 
@@ -221,29 +229,55 @@ describe("readEngineCapabilityView", () => {
     // expected value depends on the ambient env is a test that is green
     // on one transport and red on the other.
     await setupMocks(t, { acp: {} });
-    registerRpcMock({ MCODE_ACP_CAPABILITIES: WIRE });
     const { MCODE_WEBUI_TRANSPORT } = await import(absPath("lib/config.js"));
     const read = await readEngineCapabilityView({ transport: "" });
     assert.equal(read.transport, MCODE_WEBUI_TRANSPORT);
     assert.equal(
-      read.engine.providerFor,
+      read.providerFor,
       MCODE_WEBUI_TRANSPORT === RUNTIME ? "transport" : "default",
     );
   });
 
-  test("the ACP wire table is forwarded by REFERENCE, not copied", async (t) => {
-    // A copy would be a second answer to "which ACP methods exist",
-    // freezable in a way the source is not. Identity pins the
-    // forwarding.
+  test("the declaration is forwarded by IDENTITY, and there is no ACP wire field", async (t) => {
+    // A copy would be a second thing that can drift from the reviewed
+    // declaration, which is the failure this endpoint had before M3-B4.
+    // Identity pins the forwarding; the absence assertion pins the
+    // replacement, so re-adding `MCODE_ACP_CAPABILITIES` anywhere in
+    // this layer is a red bar rather than a silent second answer.
     await setupMocks(t, { acp: {} });
-    registerRpcMock({ MCODE_ACP_CAPABILITIES: WIRE });
     const read = await readEngineCapabilityView({ transport: RUNTIME });
-    assert.equal(read.wire, WIRE);
+    assert.equal(read.declaration, LOCAL_RUNTIME_V2_CAPABILITIES);
+    assert.equal("wire" in read, false);
+    // And the facade must not even REACH for the rpc module any more:
+    // the field it used to carry is the only reason it did. Asserted on
+    // the SOURCE, because an unused import is behaviourally inert and no
+    // behavioural test can tell it apart from a clean module — but it
+    // would put `lib/mcode-rpc.js` (and its `acp.mjs` / settings chain)
+    // back on the lazy-import path of a boot-reachable module for
+    // nothing. A static tripwire is the honest instrument here.
+    const { readFileSync } = await import("node:fs");
+    const { fileURLToPath } = await import("node:url");
+    const source = readFileSync(
+      fileURLToPath(new URL(absPath("engine/capability-reads.js"))),
+      "utf8",
+    );
+    // Matched on the IMPORT FORM, not the bare file name: this module's
+    // header deliberately names `lib/mcode-rpc.js` in prose (the debt
+    // note, the boot-path note), and a tripwire that fired on the prose
+    // would be a tripwire nobody could satisfy.
+    assert.equal(
+      /\bimport\s*\(?\s*["'][^"']*lib\/mcode-rpc\.js/.test(source),
+      false,
+      "capability-reads.js must not import lib/mcode-rpc.js — the ACP wire table is no longer part of this read",
+    );
+    // The constant itself is untouched; it is simply unconsumed (see
+    // the KNOWN DEBT note in the module header).
+    const rpc = await import(absPath("lib/mcode-rpc.js"));
+    assert.equal(typeof rpc.MCODE_ACP_CAPABILITIES, "object");
   });
 
   test("the gate is evaluated and reported, and never blocks the read", async (t) => {
     await setupMocks(t, { acp: {} });
-    registerRpcMock({ MCODE_ACP_CAPABILITIES: WIRE });
     // Every transport, including one no provider claims. A read that
     // gated would throw here; a read that skipped the check entirely
     // would have no `gate` field at all.
@@ -256,7 +290,6 @@ describe("readEngineCapabilityView", () => {
 
   test("an unknown endpoint key is a plain Error, not 501 material", async (t) => {
     await setupMocks(t, { acp: {} });
-    registerRpcMock({ MCODE_ACP_CAPABILITIES: WIRE });
     await assert.rejects(
       () => readEngineCapabilityView({ endpoint: "GET /api/nope", transport: RUNTIME }),
       (err) => {
@@ -268,10 +301,10 @@ describe("readEngineCapabilityView", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 4. The route — the additive change, pinned key by key
+// 4. The route — the REPLACEMENT, pinned key by key
 // ---------------------------------------------------------------------------
 
-describe("handleCapabilities — one key added, nothing else touched", () => {
+describe("handleCapabilities — capabilities is the engine-capabilities view", () => {
   let bust = 0;
   const loadRoute = async () => import(`${absPath("routes/protocol.js")}?bust=${bust++}`);
 
@@ -303,25 +336,26 @@ describe("handleCapabilities — one key added, nothing else touched", () => {
     };
   }
 
+  const DECLARATION = { sessionCrud: { level: "full" } };
+  const UNAVAILABLE = { none: [], partial: [] };
   const VIEW = {
-    engine: {
-      provider: "local-runtime-v2",
-      providerFor: "transport",
-      transport: "runtime",
-      capabilities: { sessionCrud: { level: "full" } },
-      unavailable: { none: [], partial: [] },
-    },
+    declaration: DECLARATION,
+    unavailable: UNAVAILABLE,
+    provider: "local-runtime-v2",
+    providerFor: "transport",
+    engineTransport: "runtime",
     agent: { version: "0.5.5", name: "mcode", title: "Mcode" },
-    wire: WIRE,
   };
+  const stub = () => ({ ...VIEW, source: "declaration", gate: {}, transport: RUNTIME });
 
-  test("the response key order is the endpoint's, with `engine` inserted once", async (t) => {
-    // This is the assertion that makes "we only added a key" a fact
-    // rather than a claim. The order is the endpoint's, `engine` sits
-    // directly after the wire table it complements, and `notes` stays
-    // last.
+  test("the response key order is the endpoint's, in four `capabilities*` siblings", async (t) => {
+    // The four `capabilities*` keys form one group — declaration, which
+    // provider answered, how it was chosen, the derived roll-up — and
+    // `notes` stays last. A route that nested them under an `engine`
+    // key, or that ordered them differently, is a contract change the
+    // key-set assertion catches.
     await setupMocks(t, { acp: {} });
-    mockFacade(t, { readEngineCapabilityView: async () => ({ ...VIEW, source: "declaration", gate: {}, transport: RUNTIME }) });
+    mockFacade(t, { readEngineCapabilityView: async () => stub() });
     const route = await loadRoute();
     const res = mkRes();
     await route.handleCapabilities(null, res);
@@ -333,22 +367,39 @@ describe("handleCapabilities — one key added, nothing else touched", () => {
       "mcodeName",
       "mcodeTitle",
       "capabilities",
-      "engine",
+      "capabilitiesProvider",
+      "capabilitiesProviderFor",
+      "capabilitiesUnavailable",
       "notes",
     ]);
   });
 
-  test("every pre-existing key keeps its exact value", async (t) => {
+  test("`capabilities` IS the 14-key declaration, and the ACP wire table is gone", async (t) => {
     await setupMocks(t, { acp: {} });
-    mockFacade(t, { readEngineCapabilityView: async () => ({ ...VIEW, source: "declaration", gate: {}, transport: RUNTIME }) });
+    mockFacade(t, { readEngineCapabilityView: async () => stub() });
     const route = await loadRoute();
     const res = mkRes();
     await route.handleCapabilities(null, res);
     const body = JSON.parse(res.written[1].body);
     assert.equal(body.ok, true);
-    // The ACP wire table is still the ACP wire table — the 14 matrix
-    // keys did NOT replace it.
-    assert.deepEqual(body.capabilities, WIRE);
+    // The declared taxonomy replaced the flat `{method: boolean}` one.
+    // The old accessors are asserted ABSENT: a consumer that still read
+    // `capabilities.set_mode` must get `undefined` and fail loudly, not
+    // silently receive a truthy object field.
+    for (const gone of ["set_mode", "set_config_option", "cancel", "activate", "fork", "resume", "delete", "load", "close", "list", "new", "prompt"]) {
+      assert.equal(gone in body.capabilities, false, `capabilities.${gone} must be gone`);
+    }
+    // The four group members, each forwarded as the facade gave them.
+    // `deepEqual`, not identity: the body has been through
+    // `JSON.parse`, so reference identity is gone by construction — the
+    // identity assertion that actually matters (the facade forwarding
+    // the reviewed declaration rather than a copy) lives in section 3,
+    // one layer below the JSON.
+    assert.deepEqual(body.capabilities, DECLARATION);
+    assert.equal(body.capabilitiesProvider, "local-runtime-v2");
+    assert.equal(body.capabilitiesProviderFor, "transport");
+    assert.deepEqual(body.capabilitiesUnavailable, UNAVAILABLE);
+    // The `initialize` mirror is untouched by all of this.
     assert.equal(body.mcodeVersion, "0.5.5");
     assert.equal(body.mcodeName, "mcode");
     assert.equal(body.mcodeTitle, "Mcode");
@@ -357,20 +408,43 @@ describe("handleCapabilities — one key added, nothing else touched", () => {
     assert.deepEqual(Object.keys(body.notes), ["set_mode", "set_config_option", "cancel", "activate", "fork"]);
   });
 
-  test("the whole view is carried, and the route adds nothing to it", async (t) => {
+  test("the declaration appears EXACTLY ONCE in the serialised body", async (t) => {
+    // The reason the `engine` key this batch first shipped was removed:
+    // with the declaration already under `capabilities`, an `engine`
+    // block carrying it again would put the same 14 keys in the
+    // response twice, and a consumer could not tell which one is the
+    // contract. This counts them structurally, not textually.
     await setupMocks(t, { acp: {} });
-    mockFacade(t, { readEngineCapabilityView: async () => ({ ...VIEW, source: "declaration", gate: {}, transport: RUNTIME }) });
+    mockFacade(t, { readEngineCapabilityView: async () => stub() });
     const route = await loadRoute();
     const res = mkRes();
     await route.handleCapabilities(null, res);
     const body = JSON.parse(res.written[1].body);
-    // Identity, not equality: a route that re-projected the view would
-    // be a second place for the 14 keys to be reshaped.
-    assert.deepEqual(body.engine, VIEW.engine);
-    // And the facade's own bookkeeping (`source`, `gate`, `transport`)
-    // stays INSIDE the facade — it is diagnostic vocabulary, not part
-    // of this endpoint's contract.
-    for (const key of ["source", "gate"]) {
+    const asJson = JSON.stringify(DECLARATION);
+    const carriers = Object.entries(body).filter(([, v]) => JSON.stringify(v) === asJson);
+    assert.deepEqual(carriers.map(([k]) => k), ["capabilities"]);
+    // And no nested key repeats it either: one declaration, one home.
+    assert.equal(JSON.stringify(body).split(asJson).length - 1, 1);
+    assert.equal("engine" in body, false);
+  });
+
+  test("the route adds nothing to the view and leaks none of its bookkeeping", async (t) => {
+    await setupMocks(t, { acp: {} });
+    mockFacade(t, { readEngineCapabilityView: async () => stub() });
+    const route = await loadRoute();
+    const res = mkRes();
+    await route.handleCapabilities(null, res);
+    const body = JSON.parse(res.written[1].body);
+    // A route that re-projected either half would be a second place for
+    // the taxonomy to be reshaped; `deepEqual` is the strongest
+    // statement available after `JSON.parse`, and section 3 pins the
+    // reference identity one layer down.
+    assert.deepEqual(body.capabilities, VIEW.declaration);
+    assert.deepEqual(body.capabilitiesUnavailable, VIEW.unavailable);
+    // The facade's own bookkeeping (`source`, `gate`, the ambient
+    // `transport`, the provider's `engineTransport`) is diagnostic
+    // vocabulary, not part of this endpoint's contract.
+    for (const key of ["source", "gate", "engineTransport"]) {
       assert.equal(key in body, false, `${key} leaked into the response`);
     }
   });
@@ -448,12 +522,11 @@ describe("handleCapabilities — one key added, nothing else touched", () => {
     // route to the REAL facade, so the body carries the actual
     // registered declaration rather than the fixture's.
     await setupMocks(t, { acp: { getMcodeServerInfo: () => AGENT_INFO } });
-    registerRpcMock({ MCODE_ACP_CAPABILITIES: WIRE });
     const route = await loadRoute();
     const res = mkRes();
     await route.handleCapabilities(null, res);
     const body = JSON.parse(res.written[1].body);
-    assert.equal(body.engine.provider, "local-runtime-v2");
+    assert.equal(body.capabilitiesProvider, "local-runtime-v2");
     // The real view must SAY whether it is standing in. Under the
     // default `acp` transport that is `"default"`; reporting
     // `"transport"` there would be the one lie this endpoint cannot
@@ -463,15 +536,16 @@ describe("handleCapabilities — one key added, nothing else touched", () => {
     // both gate legs.
     const { MCODE_WEBUI_TRANSPORT } = await import(absPath("lib/config.js"));
     assert.equal(
-      body.engine.providerFor,
+      body.capabilitiesProviderFor,
       MCODE_WEBUI_TRANSPORT === "runtime" ? "transport" : "default",
     );
-    assert.equal(body.engine.transport, "runtime");
     // `setupMocks`'s acp holder is process-global and an earlier case
     // left the agent mirror in it, so the version here is the real
     // `initialize` mirror's, not the fixture's.
     assert.equal(body.mcodeVersion, "0.5.5");
-    assert.deepEqual(Object.keys(body.engine.capabilities), [...ENGINE_CAPABILITY_KEYS]);
-    assert.equal(body.engine.unavailable.none.length >= 1, true);
+    // And the declaration served is the REAL reviewed one, key for key.
+    assert.deepEqual(Object.keys(body.capabilities), [...ENGINE_CAPABILITY_KEYS]);
+    assert.deepEqual(body.capabilities, LOCAL_RUNTIME_V2_CAPABILITIES);
+    assert.equal(body.capabilitiesUnavailable.none.length >= 1, true);
   });
 });

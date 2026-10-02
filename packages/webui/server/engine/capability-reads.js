@@ -20,21 +20,30 @@
 // `engine/capabilities.js` and the registry in `engine/index.js`, and
 // `GET /api/engine-capabilities` already serves it. So webui was
 // carrying two parallel answers to "what can the engine do", able to
-// disagree, with no test able to notice. After M3-B4 #73 carries the
-// engine-capabilities VIEW alongside the ACP wire table: the route no
-// longer reaches into `lib/mcode-rpc.js` and `lib/acp-client.js` on
-// its own, and the two answers sit in one response where a consumer
-// (or a reviewer) can see both and their disagreement.
+// disagree, with no test able to notice. After M3-B4 `capabilities` IS
+// the engine-capabilities view: the route no longer reaches into
+// `lib/mcode-rpc.js` and `lib/acp-client.js` on its own, and there is
+// one answer rather than two.
 //
-// The wire table is KEPT, not replaced. `capabilities` still answers
-// "which ACP method does the frontend's control map onto", which is
-// not what the 14 matrix keys answer ("does the engine have this
-// capability at all"). Dropping it would break `docs/API.md`'s
-// documented response and every consumer that reads
-// `capabilities.set_mode`; the engine view is ADDITIVE. That is the
-// one place in this batch where the response body gains a key, and it
-// is a deliberate, reviewed decision rather than a refactor side
-// effect — the existing keys keep their exact values.
+// The ACP wire table is REPLACED, not kept alongside — a reviewed,
+// user-authorised endpoint contract change, not a refactor side effect.
+// `MCODE_ACP_CAPABILITIES` described a different taxonomy (which ACP
+// JSON-RPC method exists) and it had drifted into being the endpoint's
+// headline field while nothing in the webapp read it. Carrying both
+// would have meant the 14-key declaration appeared twice in one
+// response, once as the answer and once as a decoration, so the extra
+// `engine` key this batch first shipped was removed rather than kept.
+// What survives from that first shape is the honest provenance — which
+// provider answered, and whether it was standing in — hoisted to
+// `capabilitiesProvider` / `capabilitiesProviderFor`.
+//
+// KNOWN DEBT, recorded rather than acted on: `MCODE_ACP_CAPABILITIES`
+// in `lib/mcode-rpc.js` now has no consumer. It is still exported and
+// still pinned by `test/lib/mcode-rpc.check.mjs`, and `docs/CAPABILITIES.md`
+// cites it as a fact about the ENGINE's ACP surface (which it still
+// is), so deleting it is a separate decision about dead code, not a
+// side effect of replacing a response field. `test/helpers/_setup.js`
+// mirrors the export for the same reason.
 //
 // Why this endpoint declares NO capability. It is the declaration
 // endpoint: gating the gate is circular, and a `none` anywhere in the
@@ -65,10 +74,12 @@
 // Boot-path weight. `app.js` imports `routes/protocol.js`, the route
 // imports this file, so this file is on the boot path. It statically
 // imports nothing heavier than `capabilities.js` and `index.js`;
-// `lib/mcode-rpc.js` and `lib/acp-client.js` are reached through
+// `lib/acp-client.js` and `lib/config.js` are reached through
 // `await import()` inside the read — the M1 lesson, and the reason the
 // route's own `await import(...)` lines moved behind this boundary
-// rather than being duplicated.
+// rather than being duplicated. (`lib/mcode-rpc.js` was in that list
+// while the endpoint still served the ACP wire table; replacing the
+// field removed the dependency, not just the field.)
 
 import { DEFAULT_ENGINE_PROVIDER_ID, getEngineProvider } from "./index.js";
 
@@ -141,9 +152,7 @@ export function checkCapabilityReadCapability(endpoint, transport) {
 }
 
 /**
- * The engine-capabilities VIEW — the same four facts
- * `GET /api/engine-capabilities` serves, plus HOW the provider was
- * chosen.
+ * How the declaration that answered was chosen.
  *
  * `providerFor` is the honest bit: `"transport"` means the active
  * transport's own provider answered; `"default"` means no provider
@@ -159,32 +168,39 @@ export function checkCapabilityReadCapability(endpoint, transport) {
  *   provider: string,
  *   providerFor: "transport"|"default",
  *   transport: string,
- *   capabilities: object,
- *   unavailable: {none: string[], partial: Array<{key: string, missing: string[]}>},
- * }} EngineCapabilityView
+ * }} EngineCapabilityProvenance
  */
 
 /**
  * The #73 (`GET /api/protocol/capabilities`) read.
  *
- * `wire` is `MCODE_ACP_CAPABILITIES` forwarded verbatim — the ACP
- * method table, NOT the engine declaration, and kept under its own
- * name in the response for exactly that reason. `agent` is the ACP
- * `initialize` mirror: `{version, name, title}` with the endpoint's own
- * `"unknown"` / `null` fallbacks, applied here so the route does not
- * repeat them.
+ * `declaration` is the provider's 14-key capability object FORWARDED BY
+ * IDENTITY — not a copy, not a re-projection. A copy would be a second
+ * thing that can drift from the reviewed declaration, which is the whole
+ * failure this endpoint had before M3-B4.
+ *
+ * `unavailable` is the DERIVED roll-up (`summarizeUnavailableCapabilities`)
+ * and is the one field here that is not the declaration itself: a
+ * `none` key means hide the entry point, a `partial` key means hide or
+ * disable exactly the listed sub-actions (design §4.2). It is kept
+ * because it is the shape the capability-driven UI renders from, and a
+ * consumer should not have to re-derive it from a taxonomy that has
+ * three levels and two optional fields.
+ *
+ * `agent` is the ACP `initialize` mirror: `{version, name, title}` with
+ * the endpoint's own `"unknown"` / `null` fallbacks, applied here so
+ * the route does not repeat them.
  *
  * @param {object} [options]
  * @param {string} [options.endpoint]   Endpoint key for the declaration
  *        check; defaults to `/api/protocol/capabilities`.
  * @param {string} [options.transport]  Transport override; defaults to the
  *        active `MCODE_WEBUI_TRANSPORT`.
- * @returns {Promise<{engine: EngineCapabilityView, agent: {version: string, name: string|null, title: string|null}, wire: object, source: "declaration", gate: object, transport: string}>}
+ * @returns {Promise<{declaration: object, unavailable: {none: string[], partial: Array<{key: string, missing: string[]}>}, provider: string, providerFor: "transport"|"default", engineTransport: string, agent: {version: string, name: string|null, title: string|null}, source: "declaration", gate: object, transport: string}>}
  */
 export async function readEngineCapabilityView(options = {}) {
   const endpoint = options.endpoint || "GET /api/protocol/capabilities";
-  const [rpc, acp, config, capabilities] = await Promise.all([
-    import("../lib/mcode-rpc.js"),
+  const [acp, config, capabilities] = await Promise.all([
     import("../lib/acp-client.js"),
     import("../lib/config.js"),
     import("./capabilities.js"),
@@ -196,19 +212,21 @@ export async function readEngineCapabilityView(options = {}) {
   // `serverInfo`); the mirror is empty until something attaches.
   const agentInfo = acp.getMcodeServerInfo();
   return {
-    engine: {
-      provider: provider.id,
-      providerFor,
-      transport: provider.transport,
-      capabilities: provider.capabilities,
-      unavailable: capabilities.summarizeUnavailableCapabilities(provider.capabilities),
-    },
+    declaration: provider.capabilities,
+    unavailable: capabilities.summarizeUnavailableCapabilities(provider.capabilities),
+    provider: provider.id,
+    providerFor,
+    // The PROVIDER's wire form, named apart from the ambient
+    // `transport` the read ran under: under the default `acp` transport
+    // the declaration served belongs to a `runtime` provider, and
+    // collapsing the two into one field would say exactly the thing
+    // `providerFor` exists to prevent.
+    engineTransport: provider.transport,
     agent: {
       version: (agentInfo && agentInfo.version) || "unknown",
       name: (agentInfo && agentInfo.name) || null,
       title: (agentInfo && agentInfo.title) || null,
     },
-    wire: rpc.MCODE_ACP_CAPABILITIES,
     source: "declaration",
     gate,
     transport,

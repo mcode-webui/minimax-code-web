@@ -3,9 +3,17 @@
 //
 // Why this test exists: mcode-rpc.js is the clean wrapper around mcode 0.1.5
 // acp JSON-RPC. PERMISSION_MODES + mcodePermissionToWebui are the enum used
-// by routes/model.js. MCODE_ACP_CAPABILITIES drives the capability detection
-// in routes/protocol.js. Bugs here = wrong permission labels shown to user
-// or capability detection thinks mcode supports methods it doesn't.
+// by routes/model.js. Bugs here = wrong permission labels shown to user.
+//
+// MCODE_ACP_CAPABILITIES is KNOWN DEBT as of M3-B4: `GET
+// /api/protocol/capabilities` used to serve this table under `capabilities`
+// and now serves the engine's DECLARED 14-key capability object instead
+// (a user-authorised endpoint contract change — see
+// engine/capability-reads.js). The constant is still exported and still
+// pinned here, because it remains a true statement about the ENGINE's
+// ACP surface and `docs/CAPABILITIES.md` cites it as one. It has no
+// webui consumer left; deleting it is a separate dead-code decision, not
+// a side effect of the replacement.
 //
 // Test strategy: NO setupMocks. We import the REAL mcode-rpc.js so we test
 // the actual exports. We only test the safe-to-call functions:

@@ -272,31 +272,40 @@ export async function handleListSessions(req, res, ctx) {
 // M3-B4: the handler no longer names `lib/mcode-rpc.js` or
 // `lib/acp-client.js` — both moved behind
 // `engine/capability-reads.js#readEngineCapabilityView`, which also
-// resolves the provider whose DECLARED 14-key surface and its
-// degradation summary this endpoint now carries under `engine`.
+// resolves the provider whose DECLARED surface this endpoint now serves.
 //
-// `capabilities` itself is unchanged: it is still `MCODE_ACP_CAPABILITIES`,
-// the ACP JSON-RPC method table the frontend's control map is keyed on.
-// The 14 matrix keys answer a different question ("does the engine have
-// this capability at all"), so the view is additive rather than a
-// replacement — `docs/API.md` documents both, in both languages.
-// `providerFor` says whether the declaration came from the active
-// transport's provider or from the default provider standing in for a
-// transport no provider claims yet (M4), so a consumer never mistakes a
-// standing-in declaration for the connected engine's.
+// `capabilities` IS the 14-key engine-capabilities view: a replacement
+// for the `MCODE_ACP_CAPABILITIES` ACP wire table this field used to
+// carry, approved as an endpoint contract change. The four
+// `capabilities*` keys form one group — the declaration, which provider
+// answered, how it was chosen, and the derived degradation roll-up — and
+// the declaration appears exactly once.
+//
+// `capabilitiesProviderFor` says whether the declaration came from the
+// active transport's provider or from the default provider standing in
+// for a transport no provider claims yet (M4), so a consumer never
+// mistakes a standing-in declaration for the connected engine's.
 //
 // `notes` stays here: it is prose about webui's own routes, not an
 // engine read, and the facade has no business restating it.
 // ============================================================
 export async function handleCapabilities(_req, res) {
-  const { engine, agent, wire } = await readEngineCapabilityView();
+  const {
+    declaration,
+    unavailable,
+    provider,
+    providerFor,
+    agent,
+  } = await readEngineCapabilityView();
   return respond(res, 200, {
     ok: true,
     mcodeVersion: agent.version,
     mcodeName: agent.name,
     mcodeTitle: agent.title,
-    capabilities: wire,
-    engine,
+    capabilities: declaration,
+    capabilitiesProvider: provider,
+    capabilitiesProviderFor: providerFor,
+    capabilitiesUnavailable: unavailable,
     notes: {
       set_mode: "Takes a modeId from the session's availableModes.",
       set_config_option:

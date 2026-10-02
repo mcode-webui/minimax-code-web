@@ -507,7 +507,7 @@ files, one job each:
 | `engine/usage-reads.js` | The usage family's facade calls (`readEngineAccountQuota`, `readEngineSessionUsage`, `readEngineQuotaForecast`), the derived figure `contextUsedTokens`, and the endpoint→capability table `USAGE_READ_ENDPOINTS` (step M3, batch B3). Gates **hard** on the two engine reads and declares **no capability at all** for #19, which touches no engine surface |
 | `engine/account-reads.js` | The account family's facade call (`readEngineAccount`) and the endpoint→capability table `ACCOUNT_READ_ENDPOINTS` (step M3, batch B4). Gates **hard** on `authCredentials` · `getAccountStatus` — the same pair and the same provider method as `engine/usage-reads.js`, because #20 and #15/#16 read the same engine projection. Its read is **synchronous**; see the boot-path note below |
 | `engine/model-reads.js` | The model-catalogue family's facade call (`readEngineModelCatalogue`), the whole projection as named pure functions (`projectModelCatalogue`, `deriveModelSelection`, `buildModelCataloguePayload`, `catalogueSourceLabel`, `webuiFullModelId`, `providerOfModelId`, `attachContextWindowOptions`, `configOption`), and the endpoint→capability table `MODEL_READ_ENDPOINTS` (step M3, batch B4). Gates **soft**: `checkModelReadCapability` reports and never throws, because the catalogue's primary sources are files webui owns. Its read is **synchronous**, and it is the one engine module **not** re-exported from `engine/index.js` — see the boot-path note below |
-| `engine/capability-reads.js` | The capability-declaration family's facade call (`readEngineCapabilityView`) and the endpoint→capability table `CAPABILITY_READ_ENDPOINTS` (step M3, batch B4). Declares **no capability for #73** — it IS the declaration endpoint, and gating the gate would let a `none` hide the declaration that says so. It is the only endpoint in the migration whose response body gains a key (`engine`, the engine-capabilities view) |
+| `engine/capability-reads.js` | The capability-declaration family's facade call (`readEngineCapabilityView`) and the endpoint→capability table `CAPABILITY_READ_ENDPOINTS` (step M3, batch B4). Declares **no capability for #73** — it IS the declaration endpoint, and gating the gate would let a `none` hide the declaration that says so. It is the only endpoint in the migration whose response CONTRACT changed (`capabilities` is now the 14-key declaration, replacing the ACP wire table) |
 
 Routes take the host from the facade and never from `lib/acp-client.js`:
 `routes/plugins.js` and `routes/turn-diff.js` call
@@ -787,7 +787,7 @@ would force one family to inherit another's policy.
 | --- | --- | --- | --- |
 | `GET /api/account` | `authCredentials` · `getAccountStatus` | hard — 501 | `lib/mcode-rpc.js#getAccountStatus`, the engine's `mcode/account/status` projection. The response body is built by the facade: `{ok:true, ...data}` on success, `{ok:false, reason}` at HTTP 200 otherwise |
 | `GET /api/models` | `authCredentials` · `listModelProviders` | soft — reported | three layered sources: the engine session's `model` config option, the merged providers config (webui `env > cwd > user` over the engine's `custom_provider` tree, via `lib/engine-catalogue.js`), and the builtin cli-bundle extraction |
-| `GET /api/protocol/capabilities` | none of the 14 keys | none — the gate is a reported no-op | the registered provider's 14-key declaration plus `summarizeUnavailableCapabilities`, and the ACP `initialize` `agentInfo` mirror |
+| `GET /api/protocol/capabilities` | none of the 14 keys | none — the gate is a reported no-op | the registered provider's 14-key declaration, its `summarizeUnavailableCapabilities` roll-up, and the ACP `initialize` `agentInfo` mirror |
 
 **Why #20 gates hard and #57 does not.** The account card is 100% engine
 data: there is no webui-side fallback for "who am I" or for a plan tier, so
@@ -838,16 +838,27 @@ Four properties this batch holds, each with a test behind it:
    model absent from the tree, produces a field-free entry — never a
    half-annotation. The section that perturbs the tree asserts which entries
    move for which record.
-4. **#73's change is additive and its fallback is labelled.** The response
-   gains exactly one key, `engine`, placed after `capabilities`; every
-   pre-existing key keeps its exact name, position and value, and the ACP
-   wire table is **not** replaced by the 14 matrix keys (they answer a
-   different question, and `docs/API.md` documents both). Inside the view,
-   `providerFor` says whether the declaration came from the active
-   transport's provider or from the default provider standing in for a
-   transport no provider claims yet — a capability-detection endpoint must
-   not report a standing-in declaration as though it were the connected
-   engine's.
+4. **#73's contract CHANGED, deliberately, and the declaration appears
+   once.** `capabilities` used to be `MCODE_ACP_CAPABILITIES`, a
+   hand-maintained flat `{method: boolean}` table of the ACP JSON-RPC
+   surface; it is now the engine's **declared** 14-key object, forwarded by
+   identity. The twelve old accessors are asserted gone, so a consumer
+   reading `capabilities.set_mode` gets `undefined` and fails loudly
+   rather than receiving a truthy object field. This is the one
+   user-authorised endpoint contract change in the migration, and the
+   first shape of it — an additive `engine` block carrying the view
+   beside the old table — was rejected in review precisely because it
+   would have carried the same 14 keys twice in one response. What
+   survives from that shape is the provenance, hoisted to
+   `capabilitiesProvider` / `capabilitiesProviderFor`, plus
+   `capabilitiesUnavailable` for the derived roll-up. The test counts the
+   declaration's occurrences structurally, so re-introducing a second
+   carrier is a red bar. `providerFor` is the honest bit: a
+   capability-detection endpoint must not report a standing-in
+   declaration as though it were the connected engine's, and under the
+   default `acp` transport that standing-in is the normal case until M4.
+   `docs/API.md`, `docs/webui.md` and `docs/tui-capabilities.md` all
+   record the new shape in both languages.
 
 **The three "what is active" figures are derived once.** `current` prefers
 the engine's `currentValue` and falls back to the recorded pre-session pick;

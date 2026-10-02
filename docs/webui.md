@@ -2411,7 +2411,7 @@ marker), not by tool name.
 | `POST` | `/api/protocol/load-session` | `routes/protocol.js#handleLoadSession` | `?cwd=`, fallback to current |
 | `POST` | `/api/protocol/activate-session` | `routes/protocol.js#handleActivateSession` | one acp client tracks one active session |
 | `GET` | `/api/protocol/list-sessions` | `routes/protocol.js#handleListSessions` | `?cwd=` filtered |
-| `GET` | `/api/protocol/capabilities` | `routes/protocol.js#handleCapabilities` | `{mcodeVersion, mcodeName?, mcodeTitle?, capabilities: MCODE_ACP_CAPABILITIES, notes}` |
+| `GET` | `/api/protocol/capabilities` | `routes/protocol.js#handleCapabilities` | `{mcodeVersion, mcodeName?, mcodeTitle?, capabilities, capabilitiesProvider, capabilitiesProviderFor, capabilitiesUnavailable, notes}` — `capabilities` is the engine's declared 14-key capability object (it was the ACP wire table `MCODE_ACP_CAPABILITIES` before M3-B4) |
 
 ### Legacy dispatcher (`server/router.js`)
 

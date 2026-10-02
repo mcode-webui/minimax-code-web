@@ -220,7 +220,11 @@ Status legend: ✅ wired · ⚠ partial / path differs · ❌ no path · 🚧 re
 
 The webui does not yet expose `/fork`, `/resume`, or a "rewind last turn"
 action — those acp methods (`fork`, `resume`) are reported by
-`MCODE_ACP_CAPABILITIES` but no webui route wraps them.
+`MCODE_ACP_CAPABILITIES` but no webui route wraps them. (Since M3-B4 that
+table is no longer what `GET /api/protocol/capabilities` returns; the
+endpoint serves the engine's declared 14-key capability object instead.
+The table is still exported and still pinned by
+`test/lib/mcode-rpc.check.mjs`.)
 
 ## ACP Skill commands
 
@@ -252,7 +256,15 @@ entries by default.
   mcodeVersion,
   mcodeName?,
   mcodeTitle?,
-  capabilities: MCODE_ACP_CAPABILITIES,   // see packages/webui/server/lib/mcode-rpc.js
+  // The engine's DECLARED 14-key capability object, served by
+  // packages/webui/server/engine/capability-reads.js. Before M3-B4 this
+  // field carried MCODE_ACP_CAPABILITIES (the ACP wire table in
+  // packages/webui/server/lib/mcode-rpc.js), which is still exported
+  // there and still a true statement about the ENGINE's ACP surface.
+  capabilities: <14-key declaration>,
+  capabilitiesProvider,        // which provider's declaration answered
+  capabilitiesProviderFor,     // "transport" | "default" (see API.md)
+  capabilitiesUnavailable,     // the degradation roll-up
   notes: {
     set_mode, set_config_option, cancel, activate, fork,
     load, list, close, new, prompt,
