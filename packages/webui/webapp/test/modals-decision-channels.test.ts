@@ -134,6 +134,151 @@ describe("ticket 70 — the plan prompt offers no decision it cannot deliver", (
   });
 });
 
+describe("UAT fix — the authorize button's label is legible in BOTH themes", () => {
+  // The reported symptom was a blank 「批准」 button. The string was always
+  // there (pinned above); the LABEL COLOUR was the defect, so a
+  // string assertion could never have caught it. These tests resolve the
+  // real design tokens out of styles/tokens.css and assert the pair the
+  // button renders is legible in each theme.
+
+  const tokensCss = readFileSync(resolve(here, "../styles/tokens.css"), "utf8");
+
+  /**
+   * The declarations of every top-level `:root { }` / `.dark { }` block,
+   * merged. tokens.css is split into many sibling blocks (primitives, then
+   * one per semantic group) rather than a single one, so a reader that
+   * stops at the first block would only ever see the colour ramp.
+   */
+  const blockVars = (selector: ":root" | ".dark"): Map<string, string> => {
+    const vars = new Map<string, string>();
+    const open = new RegExp(`^${selector} \\{`, "gm");
+    let match: RegExpExecArray | null;
+    while ((match = open.exec(tokensCss)) !== null) {
+      const body = tokensCss.slice(match.index, tokensCss.indexOf("\n}", match.index));
+      for (const line of body.split("\n")) {
+        const declaration = /^\s*(--[\w-]+):\s*(.+?);\s*$/.exec(line);
+        if (declaration) vars.set(declaration[1]!, declaration[2]!);
+      }
+    }
+    assert.ok(vars.size > 0, `no ${selector} block found in tokens.css`);
+    return vars;
+  };
+
+  /** Follow `var(--x)` indirections until a literal value is reached. */
+  const resolveToken = (vars: Map<string, string>, name: string, depth = 0): string => {
+    if (depth > 8) throw new Error(`token cycle at ${name}`);
+    const value = vars.get(name);
+    if (value === undefined) throw new Error(`token ${name} is not defined`);
+    const inner = /^var\((--[\w-]+)\)$/.exec(value);
+    return inner ? resolveToken(vars, inner[1]!, depth + 1) : value.trim();
+  };
+
+  // `.dark` only carries the semantic overrides; the primitives stay in
+  // `:root`, so the dark resolution layers the two.
+  const light = blockVars(":root");
+  const dark = new Map([...light, ...blockVars(".dark")]);
+
+  /**
+   * Composite a text colour over an opaque fill — the colour a pixel of the
+   * label actually takes.
+   *
+   * Needed because the old label is not pure white: the dark theme sets it
+   * to 80%-white (`#fffc`, the four-digit `#rgba` CSS form). Over an opaque
+   * white fill that composites to exactly the fill, which is why comparing
+   * the raw hex strings would have missed the defect while the button was
+   * plainly unreadable.
+   */
+  const compositeOver = (text: string, fill: string): string => {
+    /** `#rgb` / `#rgba` / `#rrggbb` / `#rrggbbaa` → [r, g, b, a] with a in 0..1. */
+    const channels = (value: string): [number, number, number, number] => {
+      const digits = value.slice(1).toLowerCase();
+      assert.match(digits, /^([0-9a-f]{3,8})$/, `unsupported colour literal: ${value}`);
+      const wide = digits.length <= 4
+        ? [...digits].map((digit) => digit + digit).join("")
+        : digits;
+      const byte = (index: number) => Number.parseInt(wide.slice(index, index + 2), 16);
+      return [byte(0), byte(2), byte(4), wide.length === 8 ? byte(6) / 255 : 1];
+    };
+    const [tr, tg, tb, alpha] = channels(text);
+    const [fr, fg, fb] = channels(fill);
+    const over = (t: number, f: number) =>
+      Math.round(t * alpha + f * (1 - alpha))
+        .toString(16)
+        .padStart(2, "0");
+    return `#${over(tr, fr)}${over(tg, fg)}${over(tb, fb)}`;
+  };
+
+  test("the defect is reproducible on the token pair the button used to render", () => {
+    // Regression context, stated as an executable claim: the old pairing
+    // composited to the fill in the dark theme. If a future token
+    // regeneration ever themes `--text_default_inverted_static`, this stops
+    // holding and the note in modals.tsx must be revisited.
+    const background = resolveToken(dark, "--bg_interaction_primary_default");
+    const oldLabel = resolveToken(dark, "--text_default_inverted_static");
+    assert.equal(
+      compositeOver(oldLabel, background),
+      compositeOver(background, background),
+      "the dark theme is expected to invert the primary fill to white and leave " +
+        "the label 80%-white — that pair is what made 「批准」 unreadable",
+    );
+    // Light theme was never affected, and saying so keeps the fix honest
+    // about what it changes.
+    const lightFill = resolveToken(light, "--bg_interaction_primary_default");
+    const lightLabel = resolveToken(light, "--text_default_inverted_static");
+    assert.notEqual(
+      compositeOver(lightLabel, lightFill),
+      compositeOver(lightFill, lightFill),
+    );
+  });
+
+  test("the label token the button now uses contrasts with the fill in BOTH themes", () => {
+    for (const theme of [
+      { name: ":root", vars: light },
+      { name: ".dark", vars: dark },
+    ]) {
+      const background = resolveToken(theme.vars, "--bg_interaction_primary_default");
+      const label = resolveToken(theme.vars, "--text_label_primary_default");
+      assert.notEqual(
+        compositeOver(label, background),
+        compositeOver(background, background),
+        `${theme.name}: the primary button would render its label invisibly ` +
+          `(${label} on ${background})`,
+      );
+    }
+  });
+
+  test("PrimaryButton pairs the primary fill with the matching label token", () => {
+    // The same pairing the upstream `.mavis-button.black` rule uses
+    // (styles/official-utilities.css), so this button now matches the
+    // reference skin in both themes.
+    const primary = /<button[\s\S]*?className="([^"]*bg-bg_interaction_primary_default[^"]*)"/.exec(
+      modalsCode,
+    );
+    assert.ok(primary, "PrimaryButton must keep the primary fill");
+    assert.match(
+      primary[1]!,
+      /text-text_label_primary_default/,
+      "the label must use --text_label_primary_default, the token that pairs with the fill",
+    );
+    assert.doesNotMatch(
+      primary[1]!,
+      /text-text_default_inverted_static/,
+      "--text_default_inverted_static is near-white in BOTH themes and vanishes on the dark fill",
+    );
+  });
+
+  test("the upstream reference rule agrees on the pairing", () => {
+    const utilities = readFileSync(
+      resolve(here, "../styles/official-utilities.css"),
+      "utf8",
+    );
+    assert.match(
+      utilities,
+      /\.mavis-button\.black \{[^}]*background-color:var\(--bg_interaction_primary_default\);color:var\(--text_label_primary_default\)/,
+    );
+  });
+});
+
 describe("ticket 70 — dictionary parity for the changed keys", () => {
   const LOCALES = ["en", "zh"] as const;
 

@@ -509,6 +509,8 @@ const NOT_ON_DISK = new Set([
   "server/routes/foo.js", // the illustrative path in §9's recipe
   "sessions.json", // runtime data under WEBUI_DATA_DIR, not a source file
   "mcp.json", // user-authored MCP server config, not a source file
+  "models.json", // operator-authored provider catalogue (cwd layer), not a source file
+  "config.yaml", // the ENGINE's own config under its data dir, not a source file
   "index.html", // Next export output (webapp/out/index.html), not a source file
 ]);
 

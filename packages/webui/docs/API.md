@@ -2416,10 +2416,25 @@ insensitive, trailing slash-insensitive, `\` and `/` interchangeable).
 
 ### `GET /api/protocol/capabilities`
 
-Returns the engine's `agentInfo` (from the `initialize` reply) plus the
-capability table webui knows about (`MCODE_ACP_CAPABILITIES` in
-`server/lib/mcode-rpc.js`). Used by the webui to decide which UI
-controls to enable.
+Returns the engine's `agentInfo` (from the `initialize` reply) and the
+**engine-capabilities view**: the declared 14-key capability surface of the
+active engine provider, the same declaration `GET /api/engine-capabilities`
+serves. Used by the webui to decide which UI controls to enable.
+
+**This field's contract changed in M3 batch B4.** `capabilities` used to
+carry `MCODE_ACP_CAPABILITIES`, a hand-maintained flat `{method: boolean}`
+table of the ACP JSON-RPC surface (`set_mode`, `set_config_option`,
+`cancel`, `activate`, `fork`, `resume`, `delete`, `load`, `close`, `list`,
+`new`, `prompt`). Those twelve keys are **gone**: a consumer reading
+`capabilities.set_mode` now gets `undefined` and must fail loudly. What
+replaced them answers a different question — **"does the engine have this
+capability at all"** — with the 14 matrix keys, each
+`{level, missing?, reason?}`. The ACP wire table is still exported from
+`server/lib/mcode-rpc.js` and is still a true statement about the
+engine's ACP surface; it simply no longer travels on this endpoint.
+
+The declaration appears exactly once, under `capabilities`, and three
+sibling keys say where it came from and what to do about its gaps.
 
 **Response 200**
 ```json
@@ -2429,18 +2444,45 @@ controls to enable.
   "mcodeName": "mcode",
   "mcodeTitle": "mcode",
   "capabilities": {
-    "set_mode": true,
-    "set_config_option": true,
-    "cancel": true,
-    "activate": true,
-    "fork": true,
-    "resume": true,
-    "delete": false,
-    "load": true,
-    "close": true,
-    "list": true,
-    "new": true,
-    "prompt": true
+    "sessionCrud": { "level": "full" },
+    "streamingSend": { "level": "full" },
+    "interrupt": { "level": "full" },
+    "toolSkillInvocation": { "level": "full" },
+    "turnDiff": { "level": "full" },
+    "turnRewindRedo": { "level": "full" },
+    "plugins": { "level": "full" },
+    "mcp": { "level": "full" },
+    "subagents": {
+      "level": "partial",
+      "missing": ["getDelegationSnapshot", "stopDelegation"],
+      "reason": "delegation snapshot/stop live on the TuiRuntimeAdapter access-context, not on the v2 CliService surface (design §1.3 v2)"
+    },
+    "usageStats": { "level": "full" },
+    "authCredentials": { "level": "full" },
+    "updateCheck": {
+      "level": "none",
+      "reason": "interface-absent: no update-check method anywhere in local-runtime-v2 (design §1.3 v2)"
+    },
+    "fileReadWrite": {
+      "level": "partial",
+      "missing": ["file-write"],
+      "reason": "workspace read browsing only; no write API — writes go through in-turn tools (design §1.3 v2)"
+    },
+    "gitOperations": {
+      "level": "partial",
+      "missing": ["git-diff", "git-commit", "git-branch"],
+      "reason": "read-only metadata + review link; change mutation is outside this package (same discipline as v1's read-only Git facade)"
+    }
+  },
+  "capabilitiesProvider": "local-runtime-v2",
+  "capabilitiesProviderFor": "transport",
+  "capabilitiesUnavailable": {
+    "none": ["updateCheck"],
+    "partial": [
+      { "key": "subagents", "missing": ["getDelegationSnapshot", "stopDelegation"] },
+      { "key": "fileReadWrite", "missing": ["file-write"] },
+      { "key": "gitOperations", "missing": ["git-diff", "git-commit", "git-branch"] }
+    ]
   },
   "notes": {
     "set_mode": "Takes a modeId from the session's availableModes.",
@@ -2454,6 +2496,23 @@ controls to enable.
 
 `mcodeVersion` is `"unknown"` before a client has attached (no `initialize`
 reply yet); the endpoint does not invent a version.
+
+`capabilitiesProvider` is the provider whose declaration answered, and
+`capabilitiesProviderFor` says HOW it was chosen. A consumer should
+branch on the second one:
+
+- `"transport"` — the active `MCODE_WEBUI_TRANSPORT`'s own registered
+  provider answered.
+- `"default"` — no provider claims that transport yet (arrives with M4), so
+  the default provider's declaration is standing in. The view is still a
+  real, reviewed declaration, but it is not necessarily the connected
+  engine's, and reporting it as such would be a lie.
+
+`capabilitiesUnavailable` is the degradation summary the capability-driven
+UI renders from: a `none` key means hide the entry point, a `partial` key
+means hide or disable exactly the listed sub-actions. It is the one field
+that is not the declaration itself, and a consumer should not have to
+re-derive it from a taxonomy with three levels and two optional fields.
 
 ---
 

@@ -351,7 +351,22 @@ describe("ThinkingRow — the thinking block (D2)", () => {
     assert.match(html, /data-testid="thinking-summary-icon"/);
     assert.match(html, /data-tool-icon-type="thinking"/);
     assert.match(html, /已完成推理/);
-    assert.doesNotMatch(html, /思考过程/);
+    // Scoped to the thinking SUMMARY ROW, which is what this test names:
+    // the reference's `WebuiThinkingBlock` defaults `showDetailHeading` to
+    // false, so the body must not open with a 「思考过程」 heading. The
+    // assertion used to run over the whole group markup, which made it a
+    // de-facto ban on the string anywhere — including the group header,
+    // which now labels a thoughts-only run 「思考过程」 (see the UAT block
+    // below). Reading the whole document here tested more than it claimed.
+    const summaryStart = html.indexOf('data-testid="thinking-summary"');
+    const rowStart = html.lastIndexOf("<summary", summaryStart);
+    const rowEnd = html.indexOf("</summary>", summaryStart);
+    assert.ok(rowStart >= 0 && rowEnd > summaryStart, "the thinking summary row is missing");
+    assert.doesNotMatch(
+      html.slice(rowStart, rowEnd),
+      /思考过程/,
+      "the thinking summary row must carry the status copy, not a body heading",
+    );
   });
 
   test("the body renders through the Markdown pipeline, not plain text", () => {
@@ -758,6 +773,88 @@ describe("TurnProcessDisclosure — the turn bar (D6, PR3)", () => {
     const html = renderBar();
     assert.match(html, /data-testid="turn-process-separator"/);
     assert.match(html, /border-b-\[0\.5px\]/);
+  });
+});
+
+describe("UAT fix — 「思考 N 次」 is labelled once per turn, not twice", () => {
+  /** The header row alone: the assertion must not be satisfied (or
+   *  broken) by anything in the folded body. */
+  const headerOf = (html: string): string => {
+    const start = html.indexOf('data-testid="activity-group-header"');
+    const open = html.lastIndexOf("<summary", start);
+    const end = html.indexOf("</summary>", start);
+    assert.ok(open >= 0 && end > start, "the group header row is missing");
+    return html.slice(open, end);
+  };
+
+  test("a thoughts-only run labels the group qualitatively, not with the count", () => {
+    const header = headerOf(
+      renderGroup([thinkingBlock("let me check")], thoughtsOnlySummary),
+    );
+    // Regression: the header used to read 「思考 1 次」 — byte-identical to
+    // the turn bar under the same turn's answer.
+    assert.doesNotMatch(
+      header,
+      /思考 1 次/,
+      "the group header must not repeat the turn bar's thinking count",
+    );
+    assert.match(header, /思考过程/);
+  });
+
+  test("a mixed run keeps its tool contributions and drops only the count", () => {
+    const header = headerOf(
+      renderGroup(
+        [thinkingBlock("let me check"), richToolBlock()],
+        mixedSummary,
+      ),
+    );
+    assert.doesNotMatch(header, /思考 1 次/);
+    assert.match(header, /执行 1 条命令/);
+  });
+
+  test("the turn bar still carries the count (the one surviving label)", () => {
+    // The count must not simply be deleted: the turn bar is the row that
+    // survives the group's collapse, and it is where the reference
+    // `WebuiTurnProcess` puts it.
+    const html = renderToStaticMarkup(
+      createElement(TurnProcessDisclosure, {
+        stats: { thinking: 1, tools: 0, answerChars: 0 },
+        processedDurationMs: 5000,
+        t,
+      }),
+    );
+    assert.match(html, /思考 1 次，共执行 5 秒/);
+  });
+
+  test("a whole turn states the count exactly once", () => {
+    // The rendered end-to-end shape the UAT screenshot captured: a
+    // thoughts-only group, then the turn bar for the same turn. The bar
+    // carries the summary twice in its markup (the `data-summary-text`
+    // mirror plus the visible text), so the attribute is stripped first —
+    // this counts what the reader sees, not what the DOM stores.
+    const group = renderGroup([thinkingBlock("let me check")], thoughtsOnlySummary);
+    const bar = renderToStaticMarkup(
+      createElement(TurnProcessDisclosure, {
+        stats: { thinking: 1, tools: 0, answerChars: 0 },
+        processedDurationMs: 5000,
+        t,
+      }),
+    );
+    const visible = (group + bar).replace(/ data-summary-text="[^"]*"/g, "");
+    const occurrences = visible.match(/思考 1 次/g) ?? [];
+    assert.equal(
+      occurrences.length,
+      1,
+      `「思考 1 次」 must appear once per turn, found ${occurrences.length}`,
+    );
+  });
+
+  test("the leading icon of a thoughts-only run is unchanged", () => {
+    // The fix filters the LABEL, not the summary: `iconType` still comes
+    // from the `thinking` contribution, so the ⓘ glyph does not regress to
+    // the generic tool icon.
+    const html = renderGroup([thinkingBlock("let me check")], thoughtsOnlySummary);
+    assert.match(html, /data-tool-icon-type="thinking"/);
   });
 });
 

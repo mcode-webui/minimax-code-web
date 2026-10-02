@@ -461,7 +461,7 @@ queued \| done \| stopped`）是投影层产物、不是存储值；webui 不导
 ### `engine/`（能力声明 + local-runtime-v2 host）
 
 引擎抽象层位于 `server/engine/`（engine-abstraction 批次 B1；迁移
-状态 M1，外加 M3 的 B0、B1、B2 与 B3 四批）。十一个文件，各管一件事：
+状态 M1，外加 M3 的 B0、B1、B2、B3 与 B4 五批）。十四个文件，各管一件事：
 
 | 文件 | 职责 |
 | --- | --- |
@@ -476,6 +476,9 @@ queued \| done \| stopped`）是投影层产物、不是存储值；webui 不导
 | `engine/session-tree-reads.js` | 会话树族的面板调用 `readEngineSessionTree` 与端点→能力对照表 `SESSION_TREE_ENDPOINTS`（迁移步 M3 批次 B2）。**硬门控**：`assertSessionTreeCapability` 抛出 → 501，因为树完全由引擎数据构成。转发到 `lib/session-tree.js#getSessionTree`，树的装配逻辑不复制第二份 |
 | `engine/session-export.js` | 导出族的面板调用 `readEngineSessionTranscript` 与端点→能力对照表 `SESSION_EXPORT_ENDPOINTS`（迁移步 M3 批次 B2）。**软门控**：`checkSessionExportCapability` 只报告、从不抛出，因为导出的主数据源是 `sessions.json` 而非引擎 |
 | `engine/usage-reads.js` | 用量族的面板调用（`readEngineAccountQuota`、`readEngineSessionUsage`、`readEngineQuotaForecast`）、派生量 `contextUsedTokens`，与端点→能力对照表 `USAGE_READ_ENDPOINTS`（迁移步 M3 批次 B3）。两个引擎读**硬门控**；#19 **完全不声明能力**，因为它不触达任何引擎面 |
+| `engine/account-reads.js` | 账户族的面板调用 `readEngineAccount` 与端点→能力对照表 `ACCOUNT_READ_ENDPOINTS`（迁移步 M3 批次 B4）。**硬门控**，门控在 `authCredentials` · `getAccountStatus`——与 `engine/usage-reads.js` 同一对、同一个 provider 方法，因为 #20 与 #15/#16 读的是同一份引擎投影。它的读是**异步的**，服从普通的 `await import()` 启动路径纪律 |
+| `engine/model-reads.js` | 模型目录族的面板调用 `readEngineModelCatalogue`、整套投影的具名纯函数（`projectModelCatalogue`、`deriveModelSelection`、`buildModelCataloguePayload`、`catalogueSourceLabel`、`webuiFullModelId`、`providerOfModelId`、`attachContextWindowOptions`、`configOption`），与端点→能力对照表 `MODEL_READ_ENDPOINTS`（迁移步 M3 批次 B4）。**软门控**：`checkModelReadCapability` 只报告、从不抛出，因为目录的主数据源是 webui 自己拥有的文件。它的读是**同步的**，并且它是唯一一个**没有**从 `engine/index.js` 转发导出的引擎模块——见下面的启动路径说明 |
+| `engine/capability-reads.js` | 能力声明族的面板调用 `readEngineCapabilityView` 与端点→能力对照表 `CAPABILITY_READ_ENDPOINTS`（迁移步 M3 批次 B4）。#73 **不声明任何能力**——它本身就是声明端点，给门控上门控会让某个 `none` 把声明它的那份声明藏起来。它是本次迁移中唯一一个响应**契约**发生变更的端点（`capabilities` 现在是 14 键声明，顶替了 ACP wire 表） |
 
 路由从门面取 host，不从 `lib/acp-client.js` 取：`routes/plugins.js` 与
 `routes/turn-diff.js` 调 `getEngineCatalogueHost()`。两者都保留 `deps`
@@ -540,12 +543,33 @@ handler 层测试因此保持封闭。
 门面自身加载 4685ms → 5ms）。`test/lib/engine/host-facade.test.js`
 对着真实模块图强制它，而不是对着源码文本。
 `engine/session-reads.js`、`engine/session-tree-reads.js`、
-`engine/session-export.js` 与 `engine/usage-reads.js` 全部服从同一条
+`engine/session-export.js`、`engine/usage-reads.js`、
+`engine/account-reads.js` 与 `engine/capability-reads.js` 全部服从同一条
 纪律：静态 import 只有 `engine/capabilities.js` 与 `engine/index.js`，
 而每个更重的依赖——`lib/acp-client.js`、`lib/config.js`、
 `lib/session-tree.js`、`lib/transcript.js`、`lib/usage.js`、
-`lib/mavis-usage.js` 与 `lib/quota-forecast.js`——都在函数体内用
-`await import()` 触达。
+`lib/mavis-usage.js`、`lib/quota-forecast.js`、`lib/mcode-rpc.js`——都在
+函数体内用 `await import()` 触达。
+
+`engine/model-reads.js` 是唯一一处刻意例外，而且它在 import 的**两侧**
+都刻意偏离。它的四个数据源——`lib/config.js`、
+`lib/engine-catalogue.js`、`lib/models.js`、`lib/providers-config.js`——
+是静态 import，因为 M3-B4 之前 `routes/model.js` 就静态 import 了这四个，
+所以 server 的启动成本分文未增。但它们会经 `lib/config.js` 抵达
+`@mavis/shared/local-runtime-paths`、经 `engine-provider-sync.js` 抵达
+`js-yaml`，所以这个模块**刻意没有**从 `engine/index.js` 转发导出：让
+共享门面——整个 server 唯一的共享 import 站点，也是
+`routes/plugins.js` 必须保持轻量的那个——比它历来更重，换不来任何东西。
+因此 `routes/model.js` 直接 import `../engine/model-reads.js`，这与
+`routes/protocol.js` 对 `engine/session-reads.js` 的写法同形。
+`test/lib/engine/host-facade.test.js` 正是逼出这个决定的那道门禁，而它
+是对的。
+
+代价是一次**同步**读。把那四个 import 改成动态的，就能让这个模块重新
+被门面前转发，代价是把 `handleGetModels` 变成异步处理器——这对任何不
+await 的调用方都是契约变更，也正是本批承诺不做的那件事。等目录读变成
+异步时（M4，接上 provider 支撑的数据源），这个模块就可以退回
+`await import()` 之后，与其余各族一起被转发导出。
 
 #### 哪些端点走门面读（迁移步 M3 批次 B1）
 
@@ -677,6 +701,86 @@ provider 确实没有树可返回，501 才是诚实答案。
 `no_matching_table`，每次导出都报告 `_meta.mcode_unavailable: true` 与
 `_meta.source: "webui"`。这是既有行为且被刻意保留——重新启用它是一次行为
 变更，属于后续切片，不属于这次收编。
+
+#### 哪些端点走门面读（迁移步 M3 批次 B4）
+
+批次 B4 加入 3 个端点，它们是首批**门控策略彼此全都不同**的三个：
+一个硬门控、一个软门控、一个声明为「什么都不声明」。因此是三个模块，
+理由与 B2 相同——共用一张表会逼其中一族继承另一族的策略。
+
+| 端点 | 能力 · 子项 | 强制方式 | 取值来源 |
+| --- | --- | --- | --- |
+| `GET /api/account` | `authCredentials` · `getAccountStatus` | 硬——501 | `lib/mcode-rpc.js#getAccountStatus`，即引擎的 `mcode/account/status` 投影。响应体由门面组装：成功是 `{ok:true, ...data}`，失败在 HTTP 200 上是 `{ok:false, reason}` |
+| `GET /api/models` | `authCredentials` · `listModelProviders` | 软——只报告 | 三个分层来源：引擎会话的 `model` 配置项、合并后的 provider 配置（webui 的 `env > cwd > user` 叠在引擎 `custom_provider` 树之上，经 `lib/engine-catalogue.js`）、以及内建 cli 包抽取 |
+| `GET /api/protocol/capabilities` | 14 个键里的任何一个都不适用 | 不门控——门控是「被报告的空操作」 | 已注册 provider 的 14 键声明、它的 `summarizeUnavailableCapabilities` 汇总，以及 ACP `initialize` 的 `agentInfo` 镜像 |
+
+**为什么 #20 硬门控而 #57 不硬。** 账户卡 100% 由引擎数据构成：
+「我是谁」和「什么套餐」都没有 webui 侧的兜底，所以报不出账户的
+provider 确实无物可报，501 才是诚实答案。模型目录不是：它的主数据源是
+webui 自己拥有、不依赖引擎就能读的文件——`models.json`、
+`~/.mcode-webui/providers.json`、cli 包抽取——再加上引擎自己的
+`config.yaml`。对 #57 硬门控，等于用一份它并不依赖的能力声明去删掉一个
+能用的选择器，这与 `engine/session-export.js` 为 #11 记下的理由同源。所以
+`checkModelReadCapability` 只报告然后返回；这次读不受它报告结果的影响。
+
+**为什么 #73 什么都不声明。** 它就是声明端点。给它上门控是循环论证，而且
+声明里任何一处 `none` 都能把声明它的那份声明藏起来——这与 B1 的
+`/api/health`、B3 的 `/api/usage/forecast` 不声明能力同源。即便如此
+`checkCapabilityReadCapability` 仍然导出，好让与其他各族的对称关系可见、
+可测。
+
+本批持有的四条性质，每条背后都有一个测试：
+
+1. **#57 是全量快照，且预言机取自收编前的代码。**
+   `test/lib/engine/model-reads.test.js` 用一套内容丰富的 fixture 做投影
+   ——引擎会话配置项、引擎 `custom_provider` 层、webui 配置层、内建层、
+   一个与配置项**撞 id** 的内建模型、一个可切换 variant 模型、一个
+   effort 列表模型、一个 `forced_on` 模型、两个上游模型 id 重叠的
+   provider、一个有 key 与一个没 key 的 provider——并把整个响应体逐字段、
+   逐键地与一份从 `3362c9be` 抓下来的字面量比对。预言机不是被测函数自己
+   算出来的。承重的是**缺席**的那部分：配置层整体接管了
+   `minimax_api/MiniMax-M3` 这个位置，所以该条目只出现一次，带着运维的
+   label 与 `contextLimit`，而**没有**内建模型的 `thinkingLevels` 与
+   `contextWindowOptions`。
+2. **分组按 provider，去重也按 provider。** webui id 恒为
+   `<providerKey>/<engineModelKey>`，即使上游模型 id 本身已含 `/`
+   （ticket 09-02）。`nousresearch/z-ai/glm-5.3` 与
+   `zai-max/z-ai/glm-5.3` 是两组里的两行；旧行为会让其中一个吞掉另一个。
+   内建外壳**无论当前记录选了什么**都归到 `minimax_api`——这正是
+   「8 个配置 + 6 个错位的内建 = `nousresearch` 里 14 个」那次回放的
+   结论。
+3. **两棵内建树投影会抵达两个站点，而「查不到」就是查不到。**
+   `readEngineBuiltinThinking` 与 `readEngineBuiltinContextWindows` 是
+   `provider.minimax.models` 的两个视图，每次请求读一次，分别在引擎会话
+   站点（按 wire 形式的**裸**模型 id 查）与内建外壳处被消费。wire 形式的
+   模型段解析不出来、或模型不在树里，产出的就是一个无这些字段的条目，
+   绝不会是「半吊子标注」。扰动那棵树的那一节断言了：哪条引擎记录会让
+   哪些条目发生变化。
+4. **#73 的契约是「变更」了，且是刻意的，声明只出现一次。** `capabilities`
+   过去是 `MCODE_ACP_CAPABILITIES`——一张手工维护的扁平 `{方法: 布尔}`
+   表，描述 ACP JSON-RPC 面；现在是引擎**声明的** 14 键对象，按引用
+   转发。那 12 个旧访问器被断言为**已消失**，所以读
+   `capabilities.set_mode` 的消费方拿到 `undefined`、响亮地失败，而不是
+   收到一个真值对象字段。这是本次迁移里唯一一处经用户授权的端点契约
+   变更；它的第一个形状——在旧表旁边增一个 `engine` 块承载视图——在评审
+   中被否掉，正因为那会让同一份 14 键声明在一次响应里出现两次。留下来的是
+   出处信息，上提为 `capabilitiesProvider` /
+   `capabilitiesProviderFor`，外加派生汇总
+   `capabilitiesUnavailable`。测试用结构化计数断言声明的出现次数，所以再
+   引入第二个承载者就是一条红条。`providerFor` 是诚实位：能力探测端点
+   绝不能把顶替声明当作已连接引擎的声明报出去，而在默认 `acp` 传输下，
+   直到 M4 之前这种顶替都是常态。`docs/API.md`、`docs/webui.md`、
+   `docs/tui-capabilities.md` 都以两种语言记录了新形状。
+
+**三个「当前生效」的量只派生一次。** `current` 优先取引擎的
+`currentValue`，回落到记录在案的会话前选择；`currentThinking` 优先取引擎的
+`thinkingEffort` 配置项；`currentContextWindow` 是记录在案的窗口，回落
+到当前模型在目录里的 `contextLimit`。两者都没有时答案是 `null`，而不是
+某个默认模型——旧行为会凭空造出一个引擎从未确认的活跃模型，而 composer
+的芯片会把它当成正在跑的模型宣称出去。
+
+**`handleGetModels` 仍是同步处理器。** 门面的读同样是同步的，测试对此有
+断言：处理器返回时响应体必须已经写完，因为这是 M3 之前处理器给出的保证。
 
 ## 4. `clientState` 载荷
 

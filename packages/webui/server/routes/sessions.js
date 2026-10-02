@@ -4,41 +4,34 @@
 // GET /api/acp-sessions, GET /api/acp-session-title,
 // GET /api/sessions/search (Lease C05 — cross-workspace fuzzy match)
 // (v0.5.bx-33: 删 POST /api/sessions/cleanup-orphans — Wzdhehe 不要这个 UI,API 一起删)
+//
+// What is left in this file after M3 is the HTTP surface of the session
+// endpoints: parse the request, pick the status code, run the fail-closed
+// audit, push the SSE frame, answer. Every endpoint that crosses the
+// engine seam now asks `engine/` instead of this file's own imports —
+// #9 #10 #72 #74 #75 (B1), #8 #11 (B2), #15 #16 #17 #19 (B3),
+// #20 #57 #73 (B4), #7 #4 #6 (B5), #3 (B6) — and the imports that
+// remain below are the ones that are genuinely webui-local: the session
+// store, the workspace gate and the audit sink.
 
 import { randomUUID } from "node:crypto";
 import {
   loadSessions,
   saveSessions,
   resetContext,
-  ensureOverlayForMcodeSid,
-  findOverlayForMcodeSid,
 } from "../lib/sessions.js";
-import { deleteMcodeSessionFromDb } from "../lib/mcode-session-delete.js";
-import {
-  getMcodeSessionTitle,
-  getMcodeSessionsCacheSync,
-  getMcodeSessionsStaleSync,
-  shutdownMcodeAcpSingleton,
-  dropMcodeSessionFromCache,
-} from "../lib/acp-client.js";
-// Switch-path transcript backfill — load mcode session history from
-// the runtime DB so switching to an mvs_ session with no webui wrapper
-// shows real chat instead of "No messages yet".
-import { loadTranscriptChatLines } from "../lib/transcript.js";
-import { applyMavisUsageToCs } from "../lib/mavis-usage.js";
-import { getMcodeModelLimit } from "../lib/models.js";
-import {
-  pushStateFor,
-  clients,
-  runChatViewChat,
-} from "../lib/state-bus.js";
-import { MCODE_RUNTIME_DB, DEFAULT_WORKSPACE } from "../lib/config.js";
-import { invalidateSessionTree } from "../lib/session-tree.js";
+// `pushStateFor` stays a direct import: it is a pure SSE write with no
+// I/O and no engine surface, and three of this module's handlers call it
+// on their way out. `clients` and `runChatViewChat` left this file in
+// M3-B5 and M3-B6 respectively — the delete fan-out enumerates clients
+// inside the facade, and the run-mirror projection belongs with the
+// switch that produces it.
+import { pushStateFor } from "../lib/state-bus.js";
 // M3-B1 (engine facade): #9 and #10 read the engine through the declared
 // capability rather than straight off the ACP client. Both facade
-// functions forward to the same acp-client exports this module already
-// imported, so the wire shape, the cache and the transport switch are
-// unchanged — only the gate in front of them is new.
+// functions forward to the same acp-client exports this module used to
+// import directly, so the wire shape, the cache and the transport switch
+// are unchanged — only the gate in front of them is new.
 import {
   readEngineSessionListForWorkspace,
   readEngineSessionTitle,
@@ -46,11 +39,59 @@ import {
 // M3-B2 (engine facade): #8 asks the facade, which checks the provider's
 // declaration (sessionCrud.listSessions → 501 when absent) and then
 // forwards to the same `getSessionTree` this module used to call
-// directly. `invalidateSessionTree` stays a direct import: it is a
-// synchronous cache drop with no I/O, it is called from the rename and
-// delete paths, and routing a one-line invalidation through an async
-// facade would make those paths wait on a module load to do nothing.
+// directly. `invalidateSessionTree` was a direct import here from B2
+// through B4 on the grounds that it is a synchronous cache drop with no
+// I/O and routing a one-line invalidation through an async facade would
+// make the caller wait on a module load to do nothing. M3-B5 retired
+// that exception: the only three call sites were the rename and delete
+// paths, and those moved into `engine/session-writes.js` as part of the
+// ordered write sequences they belong to. A cache drop is not a
+// standalone concern here — it is step two of a three-step resurrection
+// guard, and keeping it addressable from the route was what made it
+// possible to call it out of order.
 import { readEngineSessionTree } from "../engine/session-tree-reads.js";
+// M3-B5 (engine facade): #7 delete, #4 rename and #6 cleanup-orphans are
+// the three WRITES of this module, and they ask the engine facade rather
+// than driving the store, the caches and the engine's own `local_runtime_*`
+// tables from the route. The split is deliberate and is the reason the
+// handlers below shrank rather than grew:
+//
+//   - The gate in front of each write is the facade's, not this file's.
+//     #7 and #6 gate hard on `sessionCrud` · `deleteSession` (the rows
+//     they destroy are the engine's own); #4 declares no capability at
+//     all, because a rename writes webui's store and nothing else.
+//   - The load→resolve→authorize→intent-audit→mutate ORDER is still
+//     this file's, and had to stay: the write-ahead audit has to land
+//     between "know what the user asked to delete" and "delete it". So
+//     the facade exposes a plan/commit pair rather than one
+//     `deleteSession(options)` that would have swallowed the ordering.
+//   - The response BODIES are built in the facade, once. #6's dryRun
+//     shape is a byte-for-byte red line for this batch, so it is pinned
+//     there by test instead of re-assembled in two places here.
+//   - `deleteMcodeSessionFromDb` and the 32-table SQL stay in
+//     `lib/mcode-session-delete.js` and are reached by the facade through
+//     a dynamic import; see KNOWN DEBT in `engine/session-writes.js`.
+import {
+  applyEngineSessionRename,
+  commitEngineOrphanSessionDelete,
+  commitEngineSessionDelete,
+  isMcodeSessionId,
+  planEngineSessionDelete,
+  previewEngineSessionDelete,
+  readOrphanSessionWriteIds,
+} from "../engine/session-writes.js";
+// M3-B6 (engine facade): #3 switch. This is the endpoint that emptied the
+// most imports out of this file — the walked-session title cache
+// (`lib/acp-client.js`), the transcript read (`lib/transcript.js`), the
+// usage sync (`lib/mavis-usage.js` + `lib/models.js`), the switch
+// workspace gate (`lib/workspace.js#assertWorkspacePath`, still imported
+// for handleNewSession) and `DEFAULT_WORKSPACE` / `MCODE_RUNTIME_DB`
+// (`lib/config.js`, now referenced by no route in this file at all)
+// all live behind `applyEngineSessionSwitch` now. See that module's
+// header for the four load-bearing facts it took over, and KNOWN DEBT 1
+// for why the 3-candidate transcript probe it forwards to survives this
+// batch while the route's direct reach for it does not.
+import { applyEngineSessionSwitch } from "../engine/session-switch.js";
 // The capability-error predicate `handleSessionTree` uses to tell the gate's
 // 501 apart from a soft-fail. Taken from the facade entry, which re-exports
 // the same binding `app.js#invokeHandler` matches on, so the two ends of this
@@ -67,102 +108,6 @@ import { append as _eventsAppend } from "../lib/events.js";
 // funnel through lib/workspace.js). Reuse assertWorkspacePath so every
 // workspace write lands on the same boundary.
 import { assertWorkspacePath } from "../lib/workspace.js";
-
-// _resolveSwitchWorkspace — pick the workspace the switched-into session
-// "belongs to" and run it through the same containment gate that the
-// workspace picker / handleNewSession / browseWorkspace all funnel through.
-//
-// Source priority (s39 — webui-parity ticket 39: file tree must follow the
-// switched session):
-//
-//   1. The target session's stored `workspace` field — that IS the
-//      workspace the user was in when they last had it open, modulo any
-//      pollution the old code introduced. Real existence + containment
-//      are checked; an out-of-bounds or stale value surfaces as a 400
-//      so the user can either widen the allowed roots or pick a fresh
-//      workspace, instead of silently landing on the previous project.
-//
-//   2. DEFAULT_WORKSPACE (env MCODE_WORKSPACE > mcode TUI cwd.json > homedir)
-//      when the stored value is empty. Empty is also the value seen for
-//      (a) records created by the old code that polled freshly-typed mvs
-//      sessions with the current cs.workspace (the data-corruption bug
-//      this ticket fixes), and (b) older sessions that pre-date the
-//      workspace field. DEFAULT_WORKSPACE is already in the default
-//      allowed-roots surface (see getAllowedWorkspaceRoots), so the
-//      containment check accepts it without env setup.
-//
-// Critical invariants:
-//   - The switch NEVER keeps cs.workspace on the prior project. The
-//     user-reported symptom was exactly that: "the file tree still
-//     shows the previous project's files". Falling back to current ws
-//     when target.workspace is empty is the bug we are removing.
-//   - The switch NEVER writes cs.workspace.dir to a path the
-//     containment gate rejected. A 400 with the gate's actionable
-//     error is the only acceptable outcome.
-//   - The switch NEVER overwrites a target session's stored workspace
-//     with the current cs.workspace. That was the ② pollution path —
-//     re-introducing it would re-break the regression we just fixed.
-//     New overlay records (mvs_ first-touch) get workspace:"" here; the
-//     target-first read picks DEFAULT_WORKSPACE for them.
-function _resolveSwitchWorkspace(target, currentWs) {
-  const raw = target && typeof target.workspace === "string" ? target.workspace.trim() : "";
-  // Empty / non-string / null → DEFAULT_WORKSPACE. Never the current cs
-  // workspace — that's the user-reported "stays on the old project"
-  // failure mode this fix removes.
-  const candidate = raw || DEFAULT_WORKSPACE;
-  const gate = assertWorkspacePath(candidate);
-  if (!gate.ok) {
-    return { ok: false, error: gate.error, attempted: candidate };
-  }
-  return { ok: true, dir: gate.path, real: gate.real, fallback: !raw };
-}
-
-/**
- * Detect the cumulative-render pollution pattern in a stored chat
- * buffer (session-isolation/06). When the engine emits each segment
- * of an `agent_message`, streamUpdateLine writes a new `●` line; a
- * non-cumulative buffer has each line containing only its own
- * segment's text. A cumulative buffer — the bug — has at least one
- * later `●` line whose text is a strict superset of an earlier
- * `●` line (because the accumulator never reset between segments and
- * every later line re-wrote every prior segment's text). This
- * predicate is O(n^2) in the number of `●` lines but a single
- * session's `chat` is bounded (~400 lines by the transcript cap) so
- * the worst case is a few thousand substring checks per switch —
- * cheap enough.
- *
- * Returns true when the buffer is clearly cumulative (an earlier
- * `●` line is a strict substring of a later one AND the longer line
- * strictly extends the shorter). Conservative on both sides:
- *   - a single-`●`-line buffer is never cumulative;
- *   - non-`●` lines (system, tool, ▲ thought) are ignored — only
- *     `●` rows matter, since the cumulative bug only affects message
- *     segments;
- *   - ties (equal-length `●` lines) are NOT cumulative — same
- *     length, no superset relation.
- */
-function chatLooksCumulative(chat) {
-  if (!Array.isArray(chat) || chat.length === 0) return false;
-  const dots = [];
-  for (const line of chat) {
-    if (typeof line !== "string") continue;
-    // Match the same prefix the streamer writes: `● ` then text.
-    // Also accept bare `●` at end-of-line (transcript-sync appends
-    // stripped-down `●` markers in some paths).
-    if (line.startsWith("● ")) dots.push(line.slice(2));
-    else if (line === "●") continue;
-    else continue;
-  }
-  for (let i = 0; i < dots.length; i += 1) {
-    for (let j = i + 1; j < dots.length; j += 1) {
-      const a = dots[i];
-      const b = dots[j];
-      if (b.length <= a.length) continue; // strict superset ⇒ longer
-      if (b.includes(a)) return true;
-    }
-  }
-  return false;
-}
 
 // _auditFail — shared failure sink for audit writes. events.js#append
 // THROWS on write failure; a governance action must not complete with
@@ -189,58 +134,17 @@ function _auditFail(res, e, what) {
   return undefined;
 }
 
-// Prevent "deleted session reappears": the long-lived mcode acp child
-// still holds the session in memory and will rewrite the registry row
-// on its next request — so we must (1) kill the child, (2) SQL-delete
-// the rows, (3) drop ONLY the deleted sid from the in-memory cache (not
-// the whole cache — invalidating the whole cache sends an empty
-// placeholder to the sidebar which flashes from 42 → 16 → 42 entries,
-// looking like the delete failed).
-function killMcodeSessionResurrection(mcodeSid) {
-  try {
-    shutdownMcodeAcpSingleton();
-  } catch {}
-  dropMcodeSessionFromCache(mcodeSid);
-}
-
-
-// Title fast path — resolve an mvs_ session's title from the
-// in-memory walked-session cache (the same cache behind
-// GET /api/acp-sessions via getMcodeSessionsForWorkspace) BEFORE
-// awaiting getMcodeSessionTitle. The fallback boots the ACP child; with
-// a missing/broken mcode binary that path measured ~2.17s end-to-end
-// AND degraded the title to the "Mcode session" placeholder even
-// though the cache already held the real title. Cache getters are sync
-// and spawn nothing, so a hit keeps the switch hot path at zero ACP
-// cost.
-//
-// Cross-workspace matching within what the module exposes: the cache
-// holds ONE workspace's list, keyed by ws. We probe the client's
-// current ws with both the fresh (30s TTL) and stale (same-ws,
-// TTL-expired) readers, plus the "" key — getMcodeSessionsForWorkspace("")
-// caches the UNFILTERED list, so a cache walked without a workspace
-// still answers. A miss returns null and the caller falls back to
-// getMcodeSessionTitle.
-function _lookupCachedMcodeTitle(mcodeSessionId, ws) {
-  if (!mcodeSessionId) return null;
-  const keys = [ws || "", ""];
-  for (const wsKey of keys) {
-    for (const getter of [getMcodeSessionsCacheSync, getMcodeSessionsStaleSync]) {
-      let sessions = null;
-      try {
-        sessions = getter(wsKey);
-      } catch {
-        sessions = null;
-      }
-      if (!Array.isArray(sessions)) continue;
-      const hit = sessions.find(
-        (s) => s && s.sessionId === mcodeSessionId && s.title,
-      );
-      if (hit && hit.title) return hit.title;
-    }
-  }
-  return null;
-}
+// Prevent "deleted session reappears" — moved to the engine facade in
+// M3-B5. The long-lived mcode acp child still holds the session in
+// memory and will rewrite the registry row on its next request, so the
+// delete has to (1) kill the child, (2) SQL-delete the rows, (3) drop
+// ONLY the deleted sid from the in-memory cache (not the whole cache —
+// invalidating the whole cache sends an empty placeholder to the sidebar
+// which flashes from 42 → 16 → 42 entries, looking like the delete
+// failed). That sequence is now
+// `engine/session-writes.js`, where it is named and tested step by step
+// instead of being a two-line helper a route could call in the wrong
+// order.
 
 // GET /api/sessions — list
 // qa (session-workspace-crud): 响应瘦身为 sidebar 元数据 — 与 docs/API.md
@@ -333,8 +237,37 @@ export async function handleNewSession(req, res, ctx) {
 }
 
 // POST /api/sessions/switch — switch to session by webui id or mvs_xxx
+//
+// M3-B6 (engine facade): everything this endpoint does to the engine —
+// resolve, first-touch overlay creation, the cache-first title lookup,
+// the transcript backfill decision and its read, the workspace
+// containment gate, the per-client state mutation and the response body
+// — happens in `engine/session-switch.js#applyEngineSessionSwitch`, and
+// the response shape is built there once. What stays HERE is what is
+// genuinely the route's, and the split is the same one B5 drew for the
+// write family:
+//
+//   - HTTP request parsing and the ONE validation body this endpoint
+//     has. A missing id is a 400 with `{ok:false,error:"id required"}`
+//     and a bare "application/json" content type, and that body has
+//     nothing to do with the engine.
+//   - THE STATUS CODES. The facade returns outcomes (`ok`,
+//     `not_found`, `workspace_refused`) and never learns what a status
+//     is; `statusHint` carries the number so the mapping is one table
+//     here instead of three branches inside the engine layer.
+//   - THE AUDIT, fail-closed. `_eventsAppend` THROWS on write failure
+//     and a governance action must not complete with a missing audit
+//     trail, so the append sits between the facade's work and the
+//     response, and its failure answers 500 through `_auditFail`.
+//   - The state push and the two log lines that bracket the response.
+//
+// The ordering constraint the facade could not own is the reason the
+// audit stays put: the switch has ALREADY mutated `cs` by the time this
+// append runs (that is pre-existing behaviour — a failed audit leaves
+// the client switched and reports 500, which is what the operator sees
+// today), and the SSE push must not fire when that append failed. Both
+// properties are the route's to keep.
 export async function handleSwitchSession(req, res, ctx) {
-  const cs = ctx.cs;
   const cid = ctx.cid;
   const payload = await readJson(req);
   const id = (payload.id || "").trim();
@@ -342,290 +275,31 @@ export async function handleSwitchSession(req, res, ctx) {
     res.writeHead(400, { "Content-Type": "application/json" });
     return res.end(JSON.stringify({ ok: false, error: "id required" }));
   }
-  const all = loadSessions();
-  console.log(
-    `[switch] cid=${cid} incoming id=${id.substring(0, 12)}… isMcodeSid=${/^mvs_[a-f0-9]{32}$/.test(id)} allTotal=${all.length}`,
-  );
-  // 优先按 mcode session id 找（v0.5.bv: 1:1 关联）
-  let target = all.find((s) => s.mcodeSessionId === id);
-  let matchKind = target ? "mcodeSessionId" : null;
-  if (!target) {
-    target = all.find((s) => s.id === id);
-    if (target) matchKind = "webuiId";
+  const r = await applyEngineSessionSwitch({ id, cs: ctx.cs, cid });
+  if (r.outcome !== "ok") {
+    const contentType =
+      r.outcome === "workspace_refused"
+        ? "application/json; charset=utf-8"
+        : "application/json";
+    res.writeHead(r.statusHint, { "Content-Type": contentType });
+    return res.end(JSON.stringify(r.payload));
   }
-  console.log(
-    `[switch] cid=${cid} match=${matchKind || "NONE"} target.id=${target ? target.id.substring(0, 8) : "null"}… target.mcodeSid=${target && target.mcodeSessionId ? target.mcodeSessionId.substring(0, 12) : "null"}… target.chatLen=${target ? (target.chat ? target.chat.length : 0) : 0} target.title="${target ? (target.title || "").substring(0, 30) : ""}"`,
-  );
-  if (!target) {
-    const isMcodeSid = /^mvs_[a-f0-9]{32}$/.test(id);
-    if (isMcodeSid) {
-      // Cache-first title — the walked session cache usually already
-      // holds the real title (the sidebar just rendered it). Only a
-      // total cache miss pays the getMcodeSessionTitle cost, which
-      // boots the ACP child (~2.17s measured with a broken mcode
-      // binary) and used to degrade every first switch to the
-      // "Mcode session" placeholder.
-      const ws = (cs.workspace && cs.workspace.dir) || "";
-      let title = _lookupCachedMcodeTitle(id, ws);
-      let titleSource = title ? "cache" : "acp";
-      if (!title) {
-        title = (await getMcodeSessionTitle(id)) || "Mcode session";
-      }
-      // Single base session — overlay record id === mcode session id,
-      // idempotent create. Old model gave each mvs_ switch a fresh
-      // uuid wrapper → the same conversation had two identities, the
-      // direct cause of the "extra untitled entry" sidebar confusion.
-      // Repeated switches now hit the same record.
-      //
-      // s39 (webui-parity ticket 39): the workspace argument is GONE.
-      // The old `workspace: ws` here stamped the freshly-created overlay
-      // with the CURRENT cs.workspace, so every first-touch of an mvs_
-      // session from project A inherited project A's path. Switching
-      // back to that mvs_ session from project B then either (a) was
-      // ignored by the read-only switch path, leaving the file tree
-      // stuck on B, or (b) — under the prior mutation — overwrote the
-      // overlay's workspace with B's path, polluting every per-project
-      // grouping. New overlays start with workspace:"" (set inside
-      // ensureOverlayForMcodeSid when no value is passed); the
-      // target-first read below then lands on DEFAULT_WORKSPACE for
-      // first-touch mvs_ switches, with no per-session pollution.
-      const existed = findOverlayForMcodeSid(all, id);
-      target = ensureOverlayForMcodeSid(all, id, { title });
-      target.updatedAt = Date.now();
-      saveSessions(all);
-      console.log(
-        `[switch] cid=${cid} ${existed ? "reused" : "created"} overlay ${target.id.substring(0, 12)}… (id=mcode sid) title="${title}" titleSource=${titleSource}`,
-      );
-    } else {
-      console.log(
-        `[switch] cid=${cid} 404 id=${id} not found and not mcode sid`,
-      );
-      res.writeHead(404, { "Content-Type": "application/json" });
-      return res.end(JSON.stringify({ ok: false, error: "session not found" }));
-    }
-  } else if (
-    // Placeholder refresh — wrappers created during a broken-title
-    // window carry "Mcode session" forever. If the walked cache now
-    // has the real title, repair the stored wrapper. Cache-only (sync,
-    // no ACP boot): an existing wrapper must never make the hot path
-    // slower.
-    target.title === "Mcode session" &&
-    target.mcodeSessionId &&
-    /^mvs_[a-f0-9]{32}$/.test(target.mcodeSessionId)
-  ) {
-    const cachedTitle = _lookupCachedMcodeTitle(
-      target.mcodeSessionId,
-      (cs.workspace && cs.workspace.dir) || "",
-    );
-    if (cachedTitle) {
-      target.title = cachedTitle;
-      target.updatedAt = Date.now();
-      saveSessions(all);
-      console.log(
-        `[switch] cid=${cid} refreshed placeholder title for ${target.id.substring(0, 8)}… → "${cachedTitle}"`,
-      );
-    }
-  }
-  // Transcript backfill — when the resolved target has NO webui chat
-  // yet but IS a real mvs_ session, load the mcode transcript from
-  // the runtime DB (read-only) and map it into the webui chat-line
-  // grammar BEFORE responding, so response session.chat and cs.chat
-  // carry history. Caps inside (last 400 lines / 200KB) keep the SSE
-  // state push bounded; a 1000+-message session must not balloon it.
-  //
-  // session-isolation/06 (persist hygiene): the original rule only
-  // backfilled when target.chat was empty, so a polluted buffer
-  // (the cumulative-render bug from Item 1, before its fix) would
-  // persist via saveSessions and win forever. The new rule is:
-  //   - if stored chat is empty → backfill (unchanged).
-  //   - if stored chat looks cumulative → prefer DB read and re-persist.
-  //     "cumulative" = at least two `●` lines whose text is a strict
-  //     superset of an earlier `●` line (the engine emits each
-  //     segment's full text per line, so a non-cumulative buffer has
-  //     no such inclusion pair).
-  //   - otherwise → keep stored chat. DB-authoritative: transcript-sync
-  //     overwrites the stored chat from the engine DB on the next tick
-  //     (~4s later), so any stored-only lines a user typed into the
-  //     composer but never sent will be lost. The rule above does not
-  //     promise draft preservation; it promises to NOT clobber a
-  //     clean stored buffer with the DB read on every switch. Draft
-  //     preservation is a separate concern (the composer keeps its
-  //     own draft in its own state, see composer-draft.test.ts).
-  // FAILURE MUST NOT BREAK SWITCHING: any error logs and continues
-  // with the original chat — the switch itself always succeeds.
-  if (
-    target.mcodeSessionId &&
-    /^mvs_[a-f0-9]{32}$/.test(target.mcodeSessionId)
-  ) {
-    const storedHasChat = Array.isArray(target.chat) && target.chat.length > 0;
-    const storedCumulative = storedHasChat && chatLooksCumulative(target.chat);
-    const shouldBackfill =
-      !storedHasChat || storedCumulative;
-    if (shouldBackfill) {
-      try {
-        const r = loadTranscriptChatLines(target.mcodeSessionId, {
-          dbPath: MCODE_RUNTIME_DB,
-        });
-        if (r.ok && r.lines.length > 0) {
-          const dbEmpty = target.chat.length === 0;
-          const dbShrinks = r.lines.length < target.chat.length;
-          const reason = dbEmpty
-            ? "empty"
-            : storedCumulative
-              ? "stored_cumulative"
-              : "stored_shrinks";
-          target.chat = r.lines;
-          target.updatedAt = Date.now();
-          saveSessions(all); // persist the populated wrapper (updatedAt bumped)
-          console.log(
-            `[switch] cid=${cid} transcript backfill ${target.id.substring(0, 8)}… mcode=${target.mcodeSessionId.substring(0, 12)}… reason=${reason} lines=${r.lines.length} msgs=${r.messageCount} probe=${r.probe}${r.truncated ? " (capped)" : ""}`,
-          );
-        } else if (!r.ok) {
-          console.log(
-            `[switch] cid=${cid} transcript unavailable for ${target.mcodeSessionId.substring(0, 12)}… reason=${r.reason || "unknown"}`,
-          );
-        } else if (storedCumulative) {
-          // Cumulative buffer + DB read came back empty — preserve
-          // the stored chat (which is at least the user's last view)
-          // and log the discrepancy so a post-mortem can see what
-          // happened.
-          console.log(
-            `[switch] cid=${cid} stored chat looked cumulative but DB read returned no lines; preserving stored chat for ${target.mcodeSessionId.substring(0, 12)}…`,
-          );
-        }
-      } catch (e) {
-        console.warn(
-          `[switch] cid=${cid} transcript backfill failed for ${target.mcodeSessionId.substring(0, 12)}… (continuing with stored chat):`,
-          e && e.message ? e.message : e,
-        );
-      }
-    }
-  }
-  const prevSid = cs.sessionId;
-  // s39 (webui-parity ticket 39): resolve the target session's workspace
-  // and re-point cs.workspace.dir to it BEFORE any other cs mutation,
-  // so the SSE state push (pushStateFor at the end) and the response
-  // session payload both carry the new workspace in lockstep with the
-  // session-id switch. The pre-fix behaviour read cs.workspace without
-  // writing it, which left the file tree bound to the previous project;
-  // this is the user-reported defect the ticket fixes.
-  //
-  // Containment gate is mandatory (s39 boundary): session-stored
-  // workspace is historical input — it may point to a directory the
-  // user removed from the allowed roots since the session was last
-  // opened, or to a path that was legal at the time but no longer is.
-  // assertWorkspacePath runs the same boundary the workspace picker,
-  // browseWorkspace, and the new-session POST funnel through; refusing
-  // here keeps that boundary singular.
-  const currentWs = (cs && cs.workspace && cs.workspace.dir) || "";
-  const switchWs = _resolveSwitchWorkspace(target, currentWs);
-  if (!switchWs.ok) {
-    console.log(
-      `[switch] cid=${cid} REFUSED id=${id.substring(0, 12)}… reason=workspace_containment attempted="${switchWs.attempted}"`,
-    );
-    res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
-    return res.end(JSON.stringify({
-      ok: false,
-      error: switchWs.error,
-      attempted: switchWs.attempted,
-    }));
-  }
-  // cs.sessionId / mcodeSessionId / title / chat come first; the
-  // workspace write is paired with the session-id swap. Last-used-ws
-  // is intentionally untouched (a switch is browsing, not a workspace
-  // change — see the comment on handleWorkspaceChange for the same
-  // reasoning that protects lastUsedWorkspace from the switch path).
-  cs.sessionId = target.id;
-  cs.mcodeSessionId = target.mcodeSessionId || null;
-  cs.sessionTitle = target.title || "Untitled";
-  cs.chat = Array.isArray(target.chat) ? target.chat : [];
-  cs.usage = {
-    ...cs.usage,
-    sessionInput: 0,
-    sessionOutput: 0,
-    sessionTotal: 0,
-  };
-  cs.workspace = {
-    dir: switchWs.dir,
-    branch: null,
-    tree: null,
-  };
-  if (switchWs.fallback) {
-    console.log(
-      `[switch] cid=${cid} target ${target.id.substring(0, 8)}… had no workspace — fell back to DEFAULT_WORKSPACE=${switchWs.dir}`,
-    );
-  }
-  // Switching session must NOT mutate cs.lastUsedWorkspace — last-used
-  // is written only by handleSend (workspace change / send prompt);
-  // switching is browsing; pinning the browsed workspace to the top of
-  // the sidebar was the user-reported "click any session in C and C
-  // auto-sorts first" behavior.
-  resetContext(cs);
-  // Sync real token usage from mavis db on switch to a historical session
-  if (cs.mcodeSessionId) {
-    const switchedSid = cs.mcodeSessionId;
-    applyMavisUsageToCs(cs, switchedSid, { getMcodeModelLimit })
-      .then(() => pushStateFor(cid))
-      .catch((e) => {
-        if (process.env.MCODE_USAGE_DEBUG)
-          console.warn(`[switch.mavis] cid=${cid} error: ${e.message}`);
-      });
-  }
-  // B01: session switch — record which session was activated and from
-  // which prior session. matchKind tells us whether we matched by
-  // mcodeSessionId or webuiId (useful when debugging "why did this
-  // resolve to session X"). prevSid is the prior session id (or "" if
-  // this was the first switch). Fail-closed → 5xx + alert.
   try {
-    _eventsAppend("session.switch", {
-      target: cs.sessionId,
-      cid,
-      actor: "user",
-      payload: {
-        from: prevSid || "",
-        matchKind: matchKind || "new_from_mcode",
-        mcodeSessionId: cs.mcodeSessionId || "",
-        title: cs.sessionTitle,
-        // s39 (webui-parity ticket 39): record which workspace the
-        // switch landed on, plus whether it was a fallback to
-        // DEFAULT_WORKSPACE. Both pieces are useful when auditing
-        // "why did the file tree change" or "why is the sidebar
-        // sorting by a directory I never opened".
-        workspace: switchWs.dir,
-        workspaceFallback: !!switchWs.fallback,
-      },
+    _eventsAppend(r.audit.event, {
+      target: r.audit.target,
+      cid: r.audit.cid,
+      actor: r.audit.actor,
+      payload: r.audit.payload,
     });
   } catch (e) {
-    return _auditFail(res, e, "session.switch");
+    return _auditFail(res, e, r.audit.event);
   }
   pushStateFor(cid);
   console.log(
-    `[switch] cid=${cid} OK prev.sessionId=${prevSid ? prevSid.substring(0, 8) : "null"}… → new.sessionId=${cs.sessionId.substring(0, 8)}… title="${cs.sessionTitle}" chatLen=${cs.chat.length} workspace=${switchWs.dir}${switchWs.fallback ? " (DEFAULT_WORKSPACE fallback)" : ""}`,
+    `[switch] cid=${cid} OK prev.sessionId=${(r.audit.payload.from || "").substring(0, 8)}… → new.sessionId=${r.payload.session.id.substring(0, 8)}… title="${r.payload.session.title}" chatLen=${r.payload.session.chat.length} workspace=${r.payload.session.workspace}${r.payload.session.workspaceFallback ? " (DEFAULT_WORKSPACE fallback)" : ""}`,
   );
   res.writeHead(200, { "Content-Type": "application/json" });
-  return res.end(
-    JSON.stringify({
-      ok: true,
-      session: {
-        id: target.id,
-        mcodeSessionId: cs.mcodeSessionId,
-        title: cs.sessionTitle,
-        // s39 (webui-parity ticket 39): surface the new workspace in
-        // the response so the client (url-restore + session-tree) can
-        // update its in-memory state without waiting for the SSE
-        // state-bus push to land — important for the file-tree panel
-        // that re-roots under the new workspaceDir on first render.
-        workspace: switchWs.dir,
-        workspaceFallback: !!switchWs.fallback,
-        // session-isolation/02 (run-mirror): switching back to the
-        // session that is mid-run must show what it produced so far.
-        // cs.chat holds the record's lines; the live turn's output is
-        // still in the runChat buffer — re-attach it for the owning
-        // view (same contract as every state snapshot).
-        chat: runChatViewChat(cid, cs),
-      },
-    }),
-  );
+  return res.end(JSON.stringify(r.payload));
 }
 
 // POST /api/sessions/rename — rename a session (CRUD "update").
@@ -638,6 +312,16 @@ export async function handleSwitchSession(req, res, ctx) {
 // overlay record to carry the title (single-identity rule, same as the switch
 // path). Audit: session.rename records from → to, fail-closed. Not behind the
 // authorize() modal — renaming is reversible; only destructive actions prompt.
+//
+// M3-B5: the write itself — resolve, overlay, title write, store save, tree
+// cache drop, cross-tab title fan-out — happens in
+// `engine/session-writes.js#applyEngineSessionRename`, and the response body
+// is built there. What stays HERE is what is genuinely the route's: the three
+// 400 bodies (request validation the facade has no business reproducing), the
+// 404 status for the facade's `not_found` outcome, the fail-closed audit, and
+// the log line. The facade's gate for this endpoint declares NO capability —
+// a rename writes webui's own store and touches no engine surface; see the
+// `SESSION_WRITE_ENDPOINTS` row for the full argument.
 export async function handleRenameSession(req, res, ctx) {
   const cid = ctx.cid;
   const payload = await readJson(req);
@@ -657,95 +341,64 @@ export async function handleRenameSession(req, res, ctx) {
       JSON.stringify({ ok: false, error: "title too long (max 200)" }),
     );
   }
-  const all = loadSessions();
-  let idx = all.findIndex((s) => s.id === id);
-  let matchKind = idx >= 0 ? "webuiId" : null;
-  if (idx < 0) {
-    idx = all.findIndex((s) => s.mcodeSessionId === id);
-    if (idx >= 0) matchKind = "mcodeSessionId";
+  const w = await applyEngineSessionRename({ id, title, cid });
+  if (w.outcome === "not_found") {
+    res.writeHead(404, { "Content-Type": "application/json; charset=utf-8" });
+    return res.end(JSON.stringify(w.payload));
   }
-  let item;
-  if (idx < 0) {
-    // 纯 mcode 会话（sidebar 的 mvs_ 条目还没有 webui 壳）→ 建壳承接改名。
-    // 其余 id 不硬造记录：404，让调用方知道 id 写错了。
-    if (/^mvs_[a-f0-9]{32}$/.test(id)) {
-      // webui-parity 63 (defect F): no workspace argument, for the same
-      // reason the switch path dropped it (see the s39 note above) — and here
-      // it was the last remaining writer. Stamping cs.workspace.dir onto
-      // someone else's record attributes a workspace the session never ran
-      // in, and cs.workspace.dir is not even necessarily a real one: a
-      // switch to a session that stores no workspace leaves it holding the
-      // DEFAULT_WORKSPACE fallback, which then got persisted and re-rooted
-      // the file tree on every later switch. Unknown stays unknown ("");
-      // the target-first read picks the fallback at read time instead.
-      item = ensureOverlayForMcodeSid(all, id);
-      matchKind = "orphan_mcode";
-    } else {
-      res.writeHead(404, { "Content-Type": "application/json; charset=utf-8" });
-      return res.end(JSON.stringify({ ok: false, error: "session not found" }));
-    }
-  } else {
-    item = all[idx];
-  }
-  const from = item.title || "";
-  item.title = title;
-  item.titleCustom = true;
-  item.updatedAt = Date.now();
-  saveSessions(all);
-  // The sidebar tree reads titles from the runtime db, so drop its cache or the
-  // renamed title stays hidden for up to CACHE_TTL_MS.
-  invalidateSessionTree();
-  // 所有把该会话当"当前会话"的 client 同步 sessionTitle（多 tab 一致）。
-  let touchedCids = [];
-  for (const [c, ccs] of clients) {
-    if (
-      ccs.sessionId === item.id ||
-      (item.mcodeSessionId && ccs.mcodeSessionId === item.mcodeSessionId)
-    ) {
-      ccs.sessionTitle = title;
-      touchedCids.push(c);
-    }
-  }
-  if (touchedCids.length === 0) touchedCids = [cid];
-  for (const c of touchedCids) pushStateFor(c);
   try {
     _eventsAppend("session.rename", {
-      target: item.id,
+      target: w.item.id,
       cid,
       actor: "user",
       payload: {
-        matchKind,
-        from,
-        to: title,
-        mcodeSessionId: item.mcodeSessionId || "",
+        matchKind: w.matchKind,
+        from: w.from,
+        to: w.to,
+        mcodeSessionId: w.item.mcodeSessionId || "",
       },
     });
   } catch (e) {
     return _auditFail(res, e, "session.rename");
   }
   console.log(
-    `[rename] cid=${cid} OK match=${matchKind} id=${item.id.substring(0, 8)}… "${from}" → "${title}"`,
+    `[rename] cid=${cid} OK match=${w.matchKind} id=${w.item.id.substring(0, 8)}… "${w.from}" → "${w.to}"`,
   );
   res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-  return res.end(
-    JSON.stringify({
-      ok: true,
-      session: {
-        id: item.id,
-        mcodeSessionId: item.mcodeSessionId || null,
-        title: item.title,
-        titleCustom: true,
-      },
-    }),
-  );
+  return res.end(JSON.stringify(w.payload));
 }
 
 // DELETE /api/sessions/:id — delete a session.
 //
 // ?dryRun=true takes the readonly SQL path (counts rows per table,
 // mutates nothing). Real delete passes authorize() and only then
-// touches db / saveSessions / killMcodeSessionResurrection (the gate
-// is the only async hop on the real path).
+// touches db / saveSessions / the caches (the gate is the only async hop
+// on the real path).
+//
+// M3-B5: this handler is now a PLAN → GOVERN → COMMIT sequence, and that
+// shape is the point rather than an accident of the refactor.
+//
+//   planEngineSessionDelete      resolves the id and runs the gate. No
+//                                mutation, so it is safe to run BEFORE
+//                                the user is asked anything.
+//   authorize() + intent audit   unchanged, and still strictly between
+//                                the plan and the commit. The write-ahead
+//                                intent line has to be durably recorded
+//                                before any row is removed, and it
+//                                records the match kind and chat length
+//                                the plan produced.
+//   commit*EngineSessionDelete   splices the store, drops the tree cache,
+//                                mirrors the delete into the engine's
+//                                `local_runtime_*` tables and fans the
+//                                cleared state out to every tab. The
+//                                ORDER of those steps inside the facade
+//                                is the resurrection guard; see the
+//                                facade's module header.
+//
+// Every status code and every response body below is unchanged. The
+// bodies are now BUILT in the facade rather than here, which is what lets
+// the dryRun shape be pinned byte-for-byte by a unit test instead of by a
+// route test that has to stand up the whole request.
 export async function handleDeleteSession(req, res, ctx) {
   const cs = ctx.cs;
   const cid = ctx.cid;
@@ -764,26 +417,20 @@ export async function handleDeleteSession(req, res, ctx) {
     }
   } catch {}
   console.log(
-    `[delete] cid=${cid} incoming id=${id.substring(0, 12)}… isMcodeSid=${/^mvs_[a-f0-9]{32}$/.test(id)} dryRun=${dryRun}`,
+    `[delete] cid=${cid} incoming id=${id.substring(0, 12)}… isMcodeSid=${isMcodeSessionId(id)} dryRun=${dryRun}`,
   );
-  const all = loadSessions();
-  let idx = all.findIndex((s) => s.id === id);
-  let matchKind = idx >= 0 ? "webuiId" : null;
-  if (idx < 0) {
-    idx = all.findIndex((s) => s.mcodeSessionId === id);
-    if (idx >= 0) matchKind = "mcodeSessionId";
-  }
+  const plan = await planEngineSessionDelete({ id });
   // B03: real-delete path must pass per-request authorize() before
-  //   mutating db / saveSessions / killMcodeSessionResurrection.
+  //   mutating db / saveSessions / the caches.
   //   dryRun=true bypasses (preview only — no side effects to gate).
   if (!dryRun) {
     const authResult = await authorize("session.delete", {
       cid,
       targetSessionId: id,
-      matchKind: matchKind || (idx < 0 ? "unknown" : "webuiId"),
-      isMcodeSid: /^mvs_[a-f0-9]{32}$/.test(id),
-      isOrphan: idx < 0,
-      chatLen: idx >= 0 && all[idx] && Array.isArray(all[idx].chat) ? all[idx].chat.length : 0,
+      matchKind: plan.matchKind || (plan.isOrphan ? "unknown" : "webuiId"),
+      isMcodeSid: isMcodeSessionId(id),
+      isOrphan: plan.isOrphan,
+      chatLen: plan.chatLen,
     });
     if (!authResult.approved) {
       console.log(
@@ -809,9 +456,9 @@ export async function handleDeleteSession(req, res, ctx) {
         cid,
         actor: "user",
         payload: {
-          matchKind: matchKind || "unknown",
-          isOrphan: idx < 0,
-          chatLen: idx >= 0 && all[idx] && Array.isArray(all[idx].chat) ? all[idx].chat.length : 0,
+          matchKind: plan.matchKind || "unknown",
+          isOrphan: plan.isOrphan,
+          chatLen: plan.chatLen,
           decidedBy: authResult.decidedBy,
         },
       });
@@ -822,68 +469,41 @@ export async function handleDeleteSession(req, res, ctx) {
   // Fallback: id is mvs_xxx but absent from webui session db —
   // treat it as an orphan mcode session and delete the SQL rows
   // directly (the webui side has no wrapper to remove).
-  if (idx < 0) {
-    if (/^mvs_[a-f0-9]{32}$/.test(id)) {
-      if (!dryRun) killMcodeSessionResurrection(id);
-      const mcodeDbDel = deleteMcodeSessionFromDb(id, { MCODE_RUNTIME_DB, dryRun });
-      // Same reason as the wrapper-delete path below: this removes rows from
-      // the db the cached sidebar tree is built from. Skipped on a dry run,
-      // which mutates nothing.
-      if (!dryRun) invalidateSessionTree();
+  if (plan.isOrphan) {
+    if (isMcodeSessionId(id)) {
+      const w = await commitEngineOrphanSessionDelete({ plan, cs, cid, dryRun });
       console.log(
-        `[delete] cid=${cid} ORPHAN mcode session sid=${id.substring(0, 12)}… ok=${mcodeDbDel.ok}` +
-          (mcodeDbDel.ok
-            ? ` log=[${(mcodeDbDel.log || []).join(",")}]`
-            : ` reason=${mcodeDbDel.reason || "-"} error=${mcodeDbDel.error || "-"}`),
+        `[delete] cid=${cid} ORPHAN mcode session sid=${id.substring(0, 12)}… ok=${w.mcodeDbDel.ok}` +
+          (w.mcodeDbDel.ok
+            ? ` log=[${(w.mcodeDbDel.log || []).join(",")}]`
+            : ` reason=${w.mcodeDbDel.reason || "-"} error=${w.mcodeDbDel.error || "-"}`),
       );
-      if (mcodeDbDel.ok) {
-        if (cs.mcodeSessionId === id) {
-          cs.mcodeSessionId = null;
-          cs.sessionId = null;
-          cs.sessionTitle = "Untitled";
-          cs.chat = [];
-          resetContext(cs);
-          pushStateFor(cid);
-        }
-        // B01: orphan mcode session deletion (no webui session row).
-        // Outcome event; the intent line was written before the gate
-        // fan-out above. Failure → 5xx + alert (rows are already gone;
-        // the operator must see the audit gap, not a silent success).
-        try {
-          _eventsAppend("session.delete", {
-            target: id,
-            cid,
-            actor: "user",
-            payload: {
-              matchKind: "orphan_mcode",
-              dryRun,
-              rowsAffected: (mcodeDbDel.log || []).length,
-            },
-          });
-        } catch (e) {
-          return _auditFail(res, e, "session.delete(orphan_mcode)");
-        }
-        res.writeHead(200, {
-          "Content-Type": "application/json; charset=utf-8",
-        });
-        return res.end(
-          JSON.stringify({
-            ok: true,
-            deleted: id,
+      if (w.failed) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        return res.end(JSON.stringify(w.payload));
+      }
+      // B01: orphan mcode session deletion (no webui session row).
+      // Outcome event; the intent line was written before the gate
+      // fan-out above. Failure → 5xx + alert (rows are already gone;
+      // the operator must see the audit gap, not a silent success).
+      try {
+        _eventsAppend("session.delete", {
+          target: id,
+          cid,
+          actor: "user",
+          payload: {
             matchKind: "orphan_mcode",
             dryRun,
-            mcodeDbDel,
-          }),
-        );
+            rowsAffected: (w.mcodeDbDel.log || []).length,
+          },
+        });
+      } catch (e) {
+        return _auditFail(res, e, "session.delete(orphan_mcode)");
       }
-      res.writeHead(500, { "Content-Type": "application/json" });
-      return res.end(
-        JSON.stringify({
-          ok: false,
-          error: "orphan mcode delete failed",
-          mcodeDbDel,
-        }),
-      );
+      res.writeHead(200, {
+        "Content-Type": "application/json; charset=utf-8",
+      });
+      return res.end(JSON.stringify(w.payload));
     }
     console.log(`[delete] cid=${cid} 404 id=${id.substring(0, 12)}… not found`);
     res.writeHead(404, { "Content-Type": "application/json" });
@@ -891,12 +511,9 @@ export async function handleDeleteSession(req, res, ctx) {
   }
   // dryRun: 不真删 webui session entry,只预览 mcode db 影响
   if (dryRun) {
-    const mcodeSid = all[idx].mcodeSessionId;
-    const mcodeDbDel = mcodeSid
-      ? deleteMcodeSessionFromDb(mcodeSid, { MCODE_RUNTIME_DB, dryRun: true })
-      : { ok: true, dryRun: true, log: [], totalRows: 0 };
+    const w = await previewEngineSessionDelete({ plan });
     console.log(
-      `[delete] cid=${cid} DRYRUN id=${id.substring(0, 12)}… mcodeDbDel=${JSON.stringify(mcodeDbDel)}`,
+      `[delete] cid=${cid} DRYRUN id=${id.substring(0, 12)}… mcodeDbDel=${JSON.stringify(w.mcodeDbDel)}`,
     );
     // B01: dryRun is itself a state-touching action — the operator
     // is previewing a delete, so record the preview but never the
@@ -910,9 +527,9 @@ export async function handleDeleteSession(req, res, ctx) {
         cid,
         actor: "user",
         payload: {
-          matchKind,
+          matchKind: plan.matchKind,
           dryRun: true,
-          previewedRows: mcodeDbDel.totalRows || 0,
+          previewedRows: w.mcodeDbDel.totalRows || 0,
         },
       });
     } catch (e) {
@@ -921,69 +538,9 @@ export async function handleDeleteSession(req, res, ctx) {
     res.writeHead(200, {
       "Content-Type": "application/json; charset=utf-8",
     });
-    return res.end(
-      JSON.stringify({
-        ok: true,
-        dryRun: true,
-        matchKind,
-        mcodeDbDel,
-        webuiEntryWouldBeDeleted: {
-          id: all[idx].id,
-          title: all[idx].title,
-          mcodeSessionId: mcodeSid,
-        },
-      }),
-    );
+    return res.end(JSON.stringify(w.payload));
   }
-  const deletedItem = all[idx];
-  all.splice(idx, 1);
-  saveSessions(all);
-  // The sidebar tree is assembled from `local_runtime_sessions` in the runtime
-  // db, and it is cached for CACHE_TTL_MS (the git probe per directory is the
-  // expensive part). A delete removes rows from that db, so the cache has to go
-  // or the row stays in the sidebar — still clickable — for up to 15s. This
-  // was the one mutation that missed it; rename had been handled, and
-  // switch/new were never wrong (switch does not change the set, and a new
-  // webui session has no engine row until its first prompt).
-  //
-  // Invalidate before the engine delete below, so the next read cannot repopulate
-  // from a db this call is about to change.
-  invalidateSessionTree();
-  // Mirror the delete on the mcode side when this record has an mcode sid.
-  const mcodeSid = deletedItem.mcodeSessionId;
-  let mcodeDbDel = null;
-  if (mcodeSid) {
-    killMcodeSessionResurrection(mcodeSid);
-    mcodeDbDel = deleteMcodeSessionFromDb(mcodeSid, { MCODE_RUNTIME_DB });
-    console.log(
-      `[delete] cid=${cid} mcode db delete sid=${mcodeSid.substring(0, 12)}… ok=${mcodeDbDel.ok}` +
-        (mcodeDbDel.ok
-          ? ` log=[${(mcodeDbDel.log || []).join(",")}]`
-          : ` reason=${mcodeDbDel.reason || "-"} error=${mcodeDbDel.error || "-"}`),
-    );
-  }
-  // Clear active session on every client that pointed at this id (or
-  // its mcode sibling) — otherwise the next interaction in that tab
-  // silently recreates a webui wrapper for the same mvs sid.
-  let touchedCids = [];
-  for (const [c, ccs] of clients) {
-    if (ccs.sessionId === deletedItem.id || ccs.mcodeSessionId === id) {
-      ccs.sessionId = null;
-      ccs.mcodeSessionId = null;
-      ccs.sessionTitle = "Untitled";
-      ccs.chat = [];
-      ccs.usage = {
-        ...ccs.usage,
-        sessionInput: 0,
-        sessionOutput: 0,
-        sessionTotal: 0,
-      };
-      resetContext(ccs);
-      touchedCids.push(c);
-    }
-  }
-  if (touchedCids.length === 0) touchedCids = [cid];
-  for (const c of touchedCids) pushStateFor(c);
+  const w = await commitEngineSessionDelete({ plan, cid });
   // B01: real session delete (the dangerous one). Record which webui
   // session was deleted, what the match kind was, how many cids had
   // their active session cleared (this is the "fan-out" effect that
@@ -998,31 +555,22 @@ export async function handleDeleteSession(req, res, ctx) {
       cid,
       actor: "user",
       payload: {
-        matchKind,
+        matchKind: plan.matchKind,
         dryRun: false,
-        remaining: all.length,
-        touchedCids: touchedCids.length,
-        mcodeRowsAffected: mcodeDbDel && mcodeDbDel.log ? mcodeDbDel.log.length : 0,
-        title: deletedItem.title,
+        remaining: w.records.length,
+        touchedCids: w.touchedCids.length,
+        mcodeRowsAffected: w.mcodeDbDel && w.mcodeDbDel.log ? w.mcodeDbDel.log.length : 0,
+        title: w.deletedItem.title,
       },
     });
   } catch (e) {
     return _auditFail(res, e, "session.delete");
   }
   console.log(
-    `[delete] cid=${cid} OK match=${matchKind} deleted.webuiId=${deletedItem.id.substring(0, 8)}… remaining=${all.length}`,
+    `[delete] cid=${cid} OK match=${plan.matchKind} deleted.webuiId=${w.deletedItem.id.substring(0, 8)}… remaining=${w.records.length}`,
   );
   res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-  return res.end(
-    JSON.stringify({
-      ok: true,
-      deleted: id,
-      matchKind,
-      dryRun: false,
-      remaining: all.length,
-      mcodeDbDel,
-    }),
-  );
+  return res.end(JSON.stringify(w.payload));
 }
 
 // GET /api/session-tree — the sidebar's Project → directory → session → subagent
@@ -1279,38 +827,22 @@ export async function handleSearchSessions(req, res, ctx) {
 //   The cleanup targets: default-named webui sessions (New session /
 //   Untitled / 对话 N) whose chat is empty AND whose updatedAt is older
 //   than 24h — same rule as cleanupEmptyDefaultSessions() in lib/sessions.js.
-import { existsSync, readFileSync } from "node:fs";
-import { SESSIONS_DB } from "../lib/config.js";
+//
+// M3-B5: the SELECTION moved into the facade
+// (`engine/session-writes.js#readOrphanSessionWriteIds`), together with
+// the store read it applies the rule to and with the two response bodies
+// the batch's red line pins byte-for-byte. The rule and the file it reads
+// are one decision; splitting them across two modules is how a sweep ends
+// up pruning a different store than the one it was written for.
+//
+// The DELEGATION stays here and is not an oversight. Each selected id is
+// routed back through `handleDeleteSession` precisely so that every
+// orphan costs the same `session.delete.intent` / `session.delete` audit
+// pair, the same authorize() decision and the same cross-tab fan-out that
+// a hand-deleted session costs. Re-implementing the delete inside the
+// sweep would produce a cheaper path that is not the same path, and the
+// audit chain is the thing this endpoint exists to preserve.
 import { readJson } from "../lib/read-json.js";
-
-const ORPHAN_STALE_MS = 24 * 60 * 60 * 1000;
-
-function _findOrphanIds() {
-  if (!existsSync(SESSIONS_DB)) return [];
-  let all;
-  try {
-    let raw = readFileSync(SESSIONS_DB, "utf8");
-    if (raw.charCodeAt(0) === 0xfeff) raw = raw.slice(1); // 剥 BOM
-    all = JSON.parse(raw);
-  } catch {
-    return [];
-  }
-  if (!Array.isArray(all) || all.length === 0) return [];
-  const now = Date.now();
-  return all
-    .filter((s) => {
-      if (!s || !s.id) return false;
-      const hasChat = Array.isArray(s.chat) && s.chat.length > 0;
-      if (hasChat) return false;
-      const t = (s.title || "").trim();
-      const isDefault =
-        t === "New session" || t === "Untitled" || /^对话 \d+$/.test(t);
-      if (!isDefault) return false;
-      if (s.updatedAt && now - s.updatedAt < ORPHAN_STALE_MS) return false;
-      return true;
-    })
-    .map((s) => s.id);
-}
 
 export async function handleCleanupOrphans(req, res, ctx) {
   const cid = (ctx && ctx.cid) || "";
@@ -1322,19 +854,17 @@ export async function handleCleanupOrphans(req, res, ctx) {
       dryRun = params.get("dryRun") === "true";
     }
   } catch {}
-  const targetIds = _findOrphanIds();
-  // Preview path: no authorize gate (no side effects).
+  const sweep = await readOrphanSessionWriteIds();
+  const targetIds = sweep.ids;
+  // Preview path: no authorize gate (no side effects). The body is
+  // `{ok, dryRun, count, ids}` — four keys, in that order — and it is
+  // built in the facade so that shape has exactly one home.
   if (dryRun) {
     console.log(
       `[cleanup-orphans] cid=${cid} DRYRUN would-delete=${targetIds.length}`,
     );
     res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-    return res.end(JSON.stringify({
-      ok: true,
-      dryRun: true,
-      count: targetIds.length,
-      ids: targetIds,
-    }));
+    return res.end(JSON.stringify(sweep.payload));
   }
   // Real path: gate with authorize() before touching any session.
   if (targetIds.length === 0) {

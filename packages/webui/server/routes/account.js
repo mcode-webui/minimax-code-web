@@ -1,7 +1,21 @@
 // webui/server/routes/account.js
 // GET /api/account — the account card's data.
+//
+// M3-B4: the read now goes through the engine facade
+// (`server/engine/account-reads.js`) instead of naming
+// `lib/mcode-rpc.js` directly, so the endpoint is gated on the same
+// declared `authCredentials.getAccountStatus` the usage popover
+// (#15 / #16) is gated on — the two read the SAME engine projection
+// through the SAME `mcode/account/status` method, and a provider that
+// drops it must take both down together.
+//
+// Nothing about the wire changed. The facade builds the response body
+// (success spreads the engine's projection verbatim; failure keeps the
+// `{ok:false, reason}` soft-fail shape), and the HTTP status stays 200
+// in both cases: the REQUEST succeeded, and the card renders its empty
+// state from `ok:false`.
 
-import { getAccountStatus } from "../lib/mcode-rpc.js";
+import { readEngineAccount } from "../engine/account-reads.js";
 
 /**
  * Fetched on demand rather than pushed in the state snapshot.
@@ -12,14 +26,13 @@ import { getAccountStatus } from "../lib/mcode-rpc.js";
  * no credential (see acp/extensions.ts), and nothing here logs the response.
  *
  * A failure is a soft one, like /api/session-tree: the card renders its empty
- * state rather than the route inventing a name or a plan.
+ * state rather than the route inventing a name or a plan. The capability gate is
+ * a different question from that one — "may this provider report an account at
+ * all" versus "could we read the account this time" — and only the first one
+ * produces a 501, through `app.js#invokeHandler`.
  */
 export async function handleGetAccount(_req, res, ctx) {
-  const cs = ctx && ctx.cs;
-  const r = await getAccountStatus(cs && cs.mcodeSessionId);
+  const { payload } = await readEngineAccount({ cs: ctx && ctx.cs });
   res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-  if (!r.ok) {
-    return res.end(JSON.stringify({ ok: false, reason: r.code || "account_unavailable" }));
-  }
-  return res.end(JSON.stringify({ ok: true, ...(r.data || {}) }));
+  return res.end(JSON.stringify(payload));
 }

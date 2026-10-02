@@ -176,7 +176,7 @@ export default function RouteError({ error, reset }: ErrorBoundaryProps) {
             type="button"
             onClick={onReset}
             data-testid="route-error-reload"
-            className="h-8 rounded-[8px] bg-bg_interaction_primary_default px-4 text-sm font-weight_medium text-text_default_inverted_static transition-colors hover:bg-bg_interaction_primary_hover"
+            className="h-8 rounded-[8px] bg-bg_interaction_primary_default px-4 text-sm font-weight_medium text-text_label_primary_default transition-colors hover:bg-bg_interaction_primary_hover"
           >
             {t("webui.errorBoundary.reload")}
           </button>

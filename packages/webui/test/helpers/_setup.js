@@ -294,6 +294,41 @@ export async function setupMocks(t, overrides = {}) {
         }
       },
       persistCurrentChat: () => {},
+      // M3-B5: lib/sessions.js really exports this one — the
+      // single-identity rule, an overlay record whose `id` IS the engine
+      // sid — and routes/sessions.js has imported it since the switch
+      // path added it, but the mock never grew it. Every consumer so far
+      // either never called it or owned its own store mock, and a missing
+      // name only bites at module-instantiation time. M3-B5 moved the
+      // RENAME path's call into the engine facade, whose orphan-mcode
+      // branch calls it, so the omission became reachable from this
+      // shared helper rather than from a test that could stub around it.
+      // Mirrors the real body, including the placeholder-title repair and
+      // the unshift, so a test that renames a bare mvs_ id sees the
+      // record it would see in production.
+      ensureOverlayForMcodeSid: (all, sid, { title, workspace } = {}) => {
+        if (!Array.isArray(all) || !sid) return null;
+        let rec = all.find((s) => s && s.mcodeSessionId === sid) || null;
+        if (rec) {
+          if (title && rec.title === "Mcode session") rec.title = title;
+          return rec;
+        }
+        rec = {
+          id: sid,
+          mcodeSessionId: sid,
+          title: title || "Mcode session",
+          workspace: workspace || "",
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          chat: [],
+        };
+        all.unshift(rec);
+        return rec;
+      },
+      findOverlayForMcodeSid: (all, sid) => {
+        if (!Array.isArray(all) || !sid) return null;
+        return all.find((s) => s && s.mcodeSessionId === sid) || null;
+      },
       // session-isolation/02 (run-mirror): the buffer-drain finalize path
       //   (routes/chat.js) writes the turn back to the owning session's
       //   persisted record; mirror the real lookup (by webui id, then by

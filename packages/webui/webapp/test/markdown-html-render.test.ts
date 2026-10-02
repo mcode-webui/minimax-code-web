@@ -62,7 +62,7 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 
-import { renderMarkdown } from "../lib/markdown";
+import { parseMarkdown, renderMarkdown } from "../lib/markdown";
 import "../lib/mermaid-renderer"; // auto-registers the mermaid language renderer
 import {
   _stripMermaidInitForTest,
@@ -70,7 +70,8 @@ import {
   _mermaidConfigKeyForTest,
   _mermaidFontFamilyForTest,
 } from "../components/mermaid-block";
-import { findMermaidSourceBefore } from "../components/markdown-html";
+import { findMermaidSourceBefore, htmlToReact } from "../components/markdown-html";
+import { withDomParserShim } from "./helpers/dom-shim";
 
 describe("MarkdownHtml render path — registry-side evidence", () => {
   test("a mermaid fence produces the placeholder pair the walker expects", () => {
@@ -214,6 +215,163 @@ describe("MermaidBlock — sanitiser hooks (test-only exports)", () => {
 // change cannot silently re-introduce any of the three defects even if the
 // full mermaid render path is not exercised in the unit harness.
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// UAT fix — the walker's output must satisfy React's `validateTextNesting`.
+//
+// The defect: `marked` indents every line of a GFM table, so the sanitised
+// HTML carries `\n` as real text nodes under <table>/<thead>/<tbody>/<tr>.
+// React DOM (dev build) rejects ANY text child of those elements and logs
+// "In HTML, whitespace text nodes cannot be a child of <table>. This will
+// cause a hydration error." once per tag per page load. The walker now
+// drops whitespace-only text under the table family; table layout never
+// painted it, so no visual output changes.
+//
+// This is the first test in the file that drives the REAL walker: the
+// earlier ones had to assert inputs and exported helpers because Node has
+// no DOMParser. `test/helpers/dom-shim.ts` supplies one over parse5, so the
+// contract is now checked where it actually lives — on the React tree the
+// component mounts.
+// ---------------------------------------------------------------------------
+
+/** The tags React's `validateTextNesting` refuses text children under. */
+const TABLE_STRUCTURE_TAGS = ["table", "thead", "tbody", "tfoot", "tr"] as const;
+
+type ReactLikeNode =
+  | string
+  | ReactLikeNode[]
+  | { type?: unknown; props?: { children?: ReactLikeNode } };
+
+/** Every whitespace-only string anywhere in the tree, with its parent tag. */
+function whitespaceTextUnderTableTags(
+  node: ReactLikeNode,
+  parentTag: string | null = null,
+  found: { parentTag: string; text: string }[] = [],
+): { parentTag: string; text: string }[] {
+  if (typeof node === "string") {
+    if (parentTag !== null && /^\s+$/.test(node)) found.push({ parentTag, text: node });
+    return found;
+  }
+  // `htmlToReact` returns the body's children as one array; elements nest
+  // their own children as an array or a single node.
+  if (Array.isArray(node)) {
+    for (const child of node) whitespaceTextUnderTableTags(child, parentTag, found);
+    return found;
+  }
+  const tag = typeof node.type === "string" ? node.type : parentTag;
+  if (node.props?.children !== undefined) {
+    whitespaceTextUnderTableTags(node.props.children, tag, found);
+  }
+  return found;
+}
+
+/** Every element tag in the tree, in document order. */
+function collectTags(node: ReactLikeNode, tags: string[] = []): string[] {
+  if (typeof node === "string") return tags;
+  if (Array.isArray(node)) {
+    for (const child of node) collectTags(child, tags);
+    return tags;
+  }
+  if (typeof node.type === "string") tags.push(node.type);
+  if (node.props?.children !== undefined) collectTags(node.props.children, tags);
+  return tags;
+}
+
+describe("markdown-html — the table React tree has no text children", () => {
+  const GFM_TABLE = [
+    "| 名称 | 说明 |",
+    "| --- | :---: |",
+    "| 端口 | 监听端口 |",
+    "| 路径 | 根路径 |",
+  ].join("\n");
+
+  test("a GFM table yields no whitespace text node under any table-family tag", () => {
+    // Sanitising needs a DOM too, so drive the parser directly: the walker
+    // is the unit under test, and the raw marked output is what it is fed
+    // (lib/markdown.ts#renderMarkdown hands it `sanitize(parseMarkdown(...))`,
+    // and the sanitiser never touches text nodes).
+    const tree = withDomParserShim(() => htmlToReact(parseMarkdown(GFM_TABLE), "light"));
+
+    const offenders = whitespaceTextUnderTableTags(tree as ReactLikeNode);
+    assert.deepEqual(
+      offenders,
+      [],
+      `whitespace text nodes reached a table-family element: ${JSON.stringify(offenders)}`,
+    );
+  });
+
+  test("the mutation guard — marked really does emit that whitespace", () => {
+    // Without this, the test above would also pass if `marked` stopped
+    // indenting its tables, i.e. for the wrong reason.
+    const html = parseMarkdown(GFM_TABLE);
+    assert.match(html, /<table>[\s\S]*\n[\s\S]*<\/table>/);
+    assert.match(html, /<tr>[\s\S]*\n[\s\S]*<\/tr>/);
+  });
+
+  test("the table keeps every cell — only whitespace was dropped", () => {
+    const tree = withDomParserShim(() => htmlToReact(parseMarkdown(GFM_TABLE), "light"));
+    const tags = collectTags(tree as ReactLikeNode);
+    assert.deepEqual(
+      tags,
+      [
+        "table",
+        "thead",
+        "tr",
+        "th", "th",
+        "tbody",
+        "tr", "td", "td",
+        "tr", "td", "td",
+      ],
+      "the element structure of a GFM table must survive the fix untouched",
+    );
+  });
+
+  test("cell text is preserved verbatim", () => {
+    const tree = withDomParserShim(() => htmlToReact(parseMarkdown(GFM_TABLE), "light"));
+    const rendered = JSON.stringify(tree, (key, value) =>
+      typeof value === "function" ? "[fn]" : value,
+    );
+    for (const cell of ["名称", "说明", "端口", "监听端口", "路径", "根路径"]) {
+      assert.ok(rendered.includes(cell), `cell ${cell} disappeared from the React tree`);
+    }
+  });
+
+  test("whitespace between BLOCK tags is still rendered (prose is not a table)", () => {
+    // The drop is scoped to the table family. A paragraph's inter-block
+    // newlines are renderable whitespace and must survive — dropping them
+    // everywhere would reflow prose the markdown never asked to reflow.
+    const tree = withDomParserShim(() =>
+      htmlToReact(parseMarkdown("# Title\n\nbody text\n"), "light"),
+    );
+    const texts = whitespaceTextUnderTableTags(tree as ReactLikeNode);
+    assert.deepEqual(
+      texts,
+      [],
+      "a <p> is not a table tag, so this guard is about the block level",
+    );
+    // The `\n` between `</h1>` and `<p>` sits at body level: the walker
+    // keeps it, and so must the tree.
+    const topLevel = (tree as ReactLikeNode[]).filter(
+      (node): node is string => typeof node === "string",
+    );
+    assert.ok(
+      topLevel.some((text) => /^\s+$/.test(text)),
+      "inter-block whitespace outside tables must still reach the tree",
+    );
+  });
+
+  test("text with content under a table tag is still rendered (not over-trimmed)", () => {
+    // A `<td>` may legitimately hold leading/trailing spaces around its
+    // content ("  a  "). Only WHITESPACE-ONLY nodes may be dropped.
+    const tree = withDomParserShim(() =>
+      htmlToReact(parseMarkdown("| a |\n| --- |\n|   padded   |"), "light"),
+    );
+    const rendered = JSON.stringify(tree, (key, value) =>
+      typeof value === "function" ? "[fn]" : value,
+    );
+    assert.ok(rendered.includes("padded"), "cell content was lost");
+  });
+});
 
 describe("markdown-html — findMermaidSourceBefore (blocker 1: copy-source byte-exact)", () => {
   /**

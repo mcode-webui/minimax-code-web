@@ -688,7 +688,7 @@ export function AddModelDialogForm({
           disabled={busy || (!skipTest && formTest?.status !== "ok")}
           aria-busy={busy || undefined}
           onClick={onCommit}
-          className="h-9 min-w-20 rounded-lg bg-bg_interaction_primary_default px-5 text-sm font-weight_medium text-text_default_inverted_static shadow-[var(--shadow_default)] transition-colors hover:bg-bg_interaction_primary_hover disabled:cursor-not-allowed disabled:opacity-50"
+          className="h-9 min-w-20 rounded-lg bg-bg_interaction_primary_default px-5 text-sm font-weight_medium text-text_label_primary_default shadow-[var(--shadow_default)] transition-colors hover:bg-bg_interaction_primary_hover disabled:cursor-not-allowed disabled:opacity-50"
         >
           {busy ? t("providers.saving") : t("providers.dialog.save")}
         </button>
@@ -1527,7 +1527,7 @@ export function FetchedModelsDialogBody({
             data-testid="fetched-models-add"
             disabled={!presetMode || checked.size === 0}
             onClick={onAdd}
-            className="h-9 min-w-20 rounded-lg bg-bg_interaction_primary_default px-5 text-sm font-weight_medium text-text_default_inverted_static shadow-[var(--shadow_default)] transition-colors hover:bg-bg_interaction_primary_hover disabled:cursor-not-allowed disabled:opacity-50"
+            className="h-9 min-w-20 rounded-lg bg-bg_interaction_primary_default px-5 text-sm font-weight_medium text-text_label_primary_default shadow-[var(--shadow_default)] transition-colors hover:bg-bg_interaction_primary_hover disabled:cursor-not-allowed disabled:opacity-50"
           >
             {t("providers.fetched.add")}
           </button>

@@ -20,12 +20,19 @@ import {
   activateSession,
   mcodePermissionToWebui,
 } from "../lib/mcode-rpc.js";
-// M3-B1 (engine facade): only #72 (`list-sessions`) is gated in this
+// M3-B1 (engine facade): only #72 (`list-sessions`) is gated in that
 // batch. The other five handlers here still call mcode-rpc directly —
-// they belong to B4 (#73 capabilities) and B7/B9 (cancel, load, activate,
-// set-mode, set-config-option), each of which lands its own facade call
-// with its own regression evidence.
+// they belong to B7/B9 (cancel, load, activate, set-mode,
+// set-config-option), each of which lands its own facade call with its
+// own regression evidence.
 import { readEngineSessionList } from "../engine/session-reads.js";
+// M3-B4 (engine facade): #73 (`capabilities`) now reads the engine's
+// declared capability surface through the facade instead of reaching
+// into `lib/mcode-rpc.js` and `lib/acp-client.js` from inside the
+// handler. See `engine/capability-reads.js` for why the response gains
+// the `engine` view rather than replacing the ACP wire table, and why
+// this endpoint declares no capability of its own.
+import { readEngineCapabilityView } from "../engine/capability-reads.js";
 import { loadSessions, saveSessions, resetContext } from "../lib/sessions.js";
 import { pushStateFor } from "../lib/state-bus.js";
 import { readJson } from "../lib/read-json.js";
@@ -261,19 +268,44 @@ export async function handleListSessions(req, res, ctx) {
 // 列出 mcode acp 实际支持的能力 — 供前端 capability detection,
 //   决定按钮是否 disable / 降级路径
 // mcode version 动态从 acp client initialize 响应读 (不再 hardcode)
+//
+// M3-B4: the handler no longer names `lib/mcode-rpc.js` or
+// `lib/acp-client.js` — both moved behind
+// `engine/capability-reads.js#readEngineCapabilityView`, which also
+// resolves the provider whose DECLARED surface this endpoint now serves.
+//
+// `capabilities` IS the 14-key engine-capabilities view: a replacement
+// for the `MCODE_ACP_CAPABILITIES` ACP wire table this field used to
+// carry, approved as an endpoint contract change. The four
+// `capabilities*` keys form one group — the declaration, which provider
+// answered, how it was chosen, and the derived degradation roll-up — and
+// the declaration appears exactly once.
+//
+// `capabilitiesProviderFor` says whether the declaration came from the
+// active transport's provider or from the default provider standing in
+// for a transport no provider claims yet (M4), so a consumer never
+// mistakes a standing-in declaration for the connected engine's.
+//
+// `notes` stays here: it is prose about webui's own routes, not an
+// engine read, and the facade has no business restating it.
 // ============================================================
 export async function handleCapabilities(_req, res) {
-  const { MCODE_ACP_CAPABILITIES } = await import("../lib/mcode-rpc.js");
-  const { getMcodeServerInfo } = await import("../lib/acp-client.js");
-  // initialize answers with `agentInfo: { name, title, version }` (not `serverInfo`).
-  const agentInfo = getMcodeServerInfo();
-  const mcodeVersion = (agentInfo && agentInfo.version) || "unknown";
+  const {
+    declaration,
+    unavailable,
+    provider,
+    providerFor,
+    agent,
+  } = await readEngineCapabilityView();
   return respond(res, 200, {
     ok: true,
-    mcodeVersion,
-    mcodeName: (agentInfo && agentInfo.name) || null,
-    mcodeTitle: (agentInfo && agentInfo.title) || null,
-    capabilities: MCODE_ACP_CAPABILITIES,
+    mcodeVersion: agent.version,
+    mcodeName: agent.name,
+    mcodeTitle: agent.title,
+    capabilities: declaration,
+    capabilitiesProvider: provider,
+    capabilitiesProviderFor: providerFor,
+    capabilitiesUnavailable: unavailable,
     notes: {
       set_mode: "Takes a modeId from the session's availableModes.",
       set_config_option:

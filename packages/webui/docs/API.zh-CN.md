@@ -2230,9 +2230,24 @@ code, killEndpoint: "/api/stop" }`。温和版→SIGKILL 的级联
 
 ### `GET /api/protocol/capabilities`
 
-返回引擎的 `agentInfo`（取自 `initialize` 应答）以及 webui
-已知的 capability 表（`server/lib/mcode-rpc.js` 里的
-`MCODE_ACP_CAPABILITIES`）。webui 用它来决定启用哪些 UI 控件。
+返回引擎的 `agentInfo`（取自 `initialize` 应答）与
+**engine-capabilities 视图**：当前引擎 provider 声明的 14 键能力面，
+也就是 `GET /api/engine-capabilities` 所服务的同一份声明。webui 用它来
+决定启用哪些 UI 控件。
+
+**这个字段的契约在 M3 批次 B4 变更过。** `capabilities` 过去承载
+`MCODE_ACP_CAPABILITIES`——一张手工维护的扁平 `{方法: 布尔}` 表，描述
+ACP JSON-RPC 面（`set_mode`、`set_config_option`、`cancel`、`activate`、
+`fork`、`resume`、`delete`、`load`、`close`、`list`、`new`、
+`prompt`）。这 12 个键**已经没有了**：读 `capabilities.set_mode` 的消费方
+现在拿到 `undefined`，会响亮地失败。顶替它们回答的是另一个问题
+——**「引擎到底有没有这项能力」**——用 14 个矩阵键，每项形如
+`{level, missing?, reason?}`。ACP wire 表仍从
+`server/lib/mcode-rpc.js` 导出，且仍是对**引擎** ACP 面的真实陈述；
+它只是不再随这个端点返回。
+
+声明在响应里只出现一次，就在 `capabilities` 下；三个兄弟键说明它从哪来
+以及该拿它的缺口怎么办。
 
 **响应 200**
 ```json
@@ -2242,18 +2257,45 @@ code, killEndpoint: "/api/stop" }`。温和版→SIGKILL 的级联
   "mcodeName": "mcode",
   "mcodeTitle": "mcode",
   "capabilities": {
-    "set_mode": true,
-    "set_config_option": true,
-    "cancel": true,
-    "activate": true,
-    "fork": true,
-    "resume": true,
-    "delete": false,
-    "load": true,
-    "close": true,
-    "list": true,
-    "new": true,
-    "prompt": true
+    "sessionCrud": { "level": "full" },
+    "streamingSend": { "level": "full" },
+    "interrupt": { "level": "full" },
+    "toolSkillInvocation": { "level": "full" },
+    "turnDiff": { "level": "full" },
+    "turnRewindRedo": { "level": "full" },
+    "plugins": { "level": "full" },
+    "mcp": { "level": "full" },
+    "subagents": {
+      "level": "partial",
+      "missing": ["getDelegationSnapshot", "stopDelegation"],
+      "reason": "delegation snapshot/stop live on the TuiRuntimeAdapter access-context, not on the v2 CliService surface (design §1.3 v2)"
+    },
+    "usageStats": { "level": "full" },
+    "authCredentials": { "level": "full" },
+    "updateCheck": {
+      "level": "none",
+      "reason": "interface-absent: no update-check method anywhere in local-runtime-v2 (design §1.3 v2)"
+    },
+    "fileReadWrite": {
+      "level": "partial",
+      "missing": ["file-write"],
+      "reason": "workspace read browsing only; no write API — writes go through in-turn tools (design §1.3 v2)"
+    },
+    "gitOperations": {
+      "level": "partial",
+      "missing": ["git-diff", "git-commit", "git-branch"],
+      "reason": "read-only metadata + review link; change mutation is outside this package (same discipline as v1's read-only Git facade)"
+    }
+  },
+  "capabilitiesProvider": "local-runtime-v2",
+  "capabilitiesProviderFor": "transport",
+  "capabilitiesUnavailable": {
+    "none": ["updateCheck"],
+    "partial": [
+      { "key": "subagents", "missing": ["getDelegationSnapshot", "stopDelegation"] },
+      { "key": "fileReadWrite", "missing": ["file-write"] },
+      { "key": "gitOperations", "missing": ["git-diff", "git-commit", "git-branch"] }
+    ]
   },
   "notes": {
     "set_mode": "Takes a modeId from the session's availableModes.",
@@ -2267,6 +2309,21 @@ code, killEndpoint: "/api/stop" }`。温和版→SIGKILL 的级联
 
 `mcodeVersion` 在尚无客户端挂接（还没收到 `initialize` 应答）
 时为 `"unknown"`；本端点不会臆造一个版本号。
+
+`capabilitiesProvider` 是应答了的那份声明所属的 provider，
+`capabilitiesProviderFor` 说明它是**怎么**被选中的。消费方应当对后者
+分支：
+
+- `"transport"`——当前 `MCODE_WEBUI_TRANSPORT` 自己的已注册 provider
+  应答的。
+- `"default"`——尚无任何 provider 声明该传输（M4 引入），由默认
+  provider 的声明顶替。这份视图仍是一份真实且经评审的声明，但它未必
+  是已连接引擎的那份；把它当成后者报出去就是撒谎。
+
+`capabilitiesUnavailable` 是能力驱动型 UI 据以渲染的降级摘要：`none`
+的键意味着隐藏整个入口，`partial` 的键意味着恰好隐藏或禁用列出的那些
+子动作。它是唯一一个并非声明本身的字段，消费方不该被迫从一个有三级
+两可选字段的分类法里重新推导它。
 
 ---
 
