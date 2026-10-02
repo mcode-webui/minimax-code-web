@@ -10,16 +10,18 @@ import {
   loadSessions,
   saveSessions,
   resetContext,
+  // Still a direct import: `handleSwitchSession` creates the first-touch
+  // overlay itself. Rename used to call it too and no longer does — that
+  // write moved to `engine/session-writes.js` — but the switch path is a
+  // read-with-a-side-effect and stayed put, so this symbol has not
+  // finished migrating.
   ensureOverlayForMcodeSid,
   findOverlayForMcodeSid,
 } from "../lib/sessions.js";
-import { deleteMcodeSessionFromDb } from "../lib/mcode-session-delete.js";
 import {
   getMcodeSessionTitle,
   getMcodeSessionsCacheSync,
   getMcodeSessionsStaleSync,
-  shutdownMcodeAcpSingleton,
-  dropMcodeSessionFromCache,
 } from "../lib/acp-client.js";
 // Switch-path transcript backfill — load mcode session history from
 // the runtime DB so switching to an mvs_ session with no webui wrapper
@@ -33,7 +35,6 @@ import {
   runChatViewChat,
 } from "../lib/state-bus.js";
 import { MCODE_RUNTIME_DB, DEFAULT_WORKSPACE } from "../lib/config.js";
-import { invalidateSessionTree } from "../lib/session-tree.js";
 // M3-B1 (engine facade): #9 and #10 read the engine through the declared
 // capability rather than straight off the ACP client. Both facade
 // functions forward to the same acp-client exports this module already
@@ -46,11 +47,47 @@ import {
 // M3-B2 (engine facade): #8 asks the facade, which checks the provider's
 // declaration (sessionCrud.listSessions → 501 when absent) and then
 // forwards to the same `getSessionTree` this module used to call
-// directly. `invalidateSessionTree` stays a direct import: it is a
-// synchronous cache drop with no I/O, it is called from the rename and
-// delete paths, and routing a one-line invalidation through an async
-// facade would make those paths wait on a module load to do nothing.
+// directly. `invalidateSessionTree` was a direct import here from B2
+// through B4 on the grounds that it is a synchronous cache drop with no
+// I/O and routing a one-line invalidation through an async facade would
+// make the caller wait on a module load to do nothing. M3-B5 retired
+// that exception: the only three call sites were the rename and delete
+// paths, and those moved into `engine/session-writes.js` as part of the
+// ordered write sequences they belong to. A cache drop is not a
+// standalone concern here — it is step two of a three-step resurrection
+// guard, and keeping it addressable from the route was what made it
+// possible to call it out of order.
 import { readEngineSessionTree } from "../engine/session-tree-reads.js";
+// M3-B5 (engine facade): #7 delete, #4 rename and #6 cleanup-orphans are
+// the three WRITES of this module, and they ask the engine facade rather
+// than driving the store, the caches and the engine's own `local_runtime_*`
+// tables from the route. The split is deliberate and is the reason the
+// handlers below shrank rather than grew:
+//
+//   - The gate in front of each write is the facade's, not this file's.
+//     #7 and #6 gate hard on `sessionCrud` · `deleteSession` (the rows
+//     they destroy are the engine's own); #4 declares no capability at
+//     all, because a rename writes webui's store and nothing else.
+//   - The load→resolve→authorize→intent-audit→mutate ORDER is still
+//     this file's, and had to stay: the write-ahead audit has to land
+//     between "know what the user asked to delete" and "delete it". So
+//     the facade exposes a plan/commit pair rather than one
+//     `deleteSession(options)` that would have swallowed the ordering.
+//   - The response BODIES are built in the facade, once. #6's dryRun
+//     shape is a byte-for-byte red line for this batch, so it is pinned
+//     there by test instead of re-assembled in two places here.
+//   - `deleteMcodeSessionFromDb` and the 32-table SQL stay in
+//     `lib/mcode-session-delete.js` and are reached by the facade through
+//     a dynamic import; see KNOWN DEBT in `engine/session-writes.js`.
+import {
+  applyEngineSessionRename,
+  commitEngineOrphanSessionDelete,
+  commitEngineSessionDelete,
+  isMcodeSessionId,
+  planEngineSessionDelete,
+  previewEngineSessionDelete,
+  readOrphanSessionWriteIds,
+} from "../engine/session-writes.js";
 // The capability-error predicate `handleSessionTree` uses to tell the gate's
 // 501 apart from a soft-fail. Taken from the facade entry, which re-exports
 // the same binding `app.js#invokeHandler` matches on, so the two ends of this
@@ -189,20 +226,17 @@ function _auditFail(res, e, what) {
   return undefined;
 }
 
-// Prevent "deleted session reappears": the long-lived mcode acp child
-// still holds the session in memory and will rewrite the registry row
-// on its next request — so we must (1) kill the child, (2) SQL-delete
-// the rows, (3) drop ONLY the deleted sid from the in-memory cache (not
-// the whole cache — invalidating the whole cache sends an empty
-// placeholder to the sidebar which flashes from 42 → 16 → 42 entries,
-// looking like the delete failed).
-function killMcodeSessionResurrection(mcodeSid) {
-  try {
-    shutdownMcodeAcpSingleton();
-  } catch {}
-  dropMcodeSessionFromCache(mcodeSid);
-}
-
+// Prevent "deleted session reappears" — moved to the engine facade in
+// M3-B5. The long-lived mcode acp child still holds the session in
+// memory and will rewrite the registry row on its next request, so the
+// delete has to (1) kill the child, (2) SQL-delete the rows, (3) drop
+// ONLY the deleted sid from the in-memory cache (not the whole cache —
+// invalidating the whole cache sends an empty placeholder to the sidebar
+// which flashes from 42 → 16 → 42 entries, looking like the delete
+// failed). That sequence is now
+// `engine/session-writes.js`, where it is named and tested step by step
+// instead of being a two-line helper a route could call in the wrong
+// order.
 
 // Title fast path — resolve an mvs_ session's title from the
 // in-memory walked-session cache (the same cache behind
@@ -638,6 +672,16 @@ export async function handleSwitchSession(req, res, ctx) {
 // overlay record to carry the title (single-identity rule, same as the switch
 // path). Audit: session.rename records from → to, fail-closed. Not behind the
 // authorize() modal — renaming is reversible; only destructive actions prompt.
+//
+// M3-B5: the write itself — resolve, overlay, title write, store save, tree
+// cache drop, cross-tab title fan-out — happens in
+// `engine/session-writes.js#applyEngineSessionRename`, and the response body
+// is built there. What stays HERE is what is genuinely the route's: the three
+// 400 bodies (request validation the facade has no business reproducing), the
+// 404 status for the facade's `not_found` outcome, the fail-closed audit, and
+// the log line. The facade's gate for this endpoint declares NO capability —
+// a rename writes webui's own store and touches no engine surface; see the
+// `SESSION_WRITE_ENDPOINTS` row for the full argument.
 export async function handleRenameSession(req, res, ctx) {
   const cid = ctx.cid;
   const payload = await readJson(req);
@@ -657,95 +701,64 @@ export async function handleRenameSession(req, res, ctx) {
       JSON.stringify({ ok: false, error: "title too long (max 200)" }),
     );
   }
-  const all = loadSessions();
-  let idx = all.findIndex((s) => s.id === id);
-  let matchKind = idx >= 0 ? "webuiId" : null;
-  if (idx < 0) {
-    idx = all.findIndex((s) => s.mcodeSessionId === id);
-    if (idx >= 0) matchKind = "mcodeSessionId";
+  const w = await applyEngineSessionRename({ id, title, cid });
+  if (w.outcome === "not_found") {
+    res.writeHead(404, { "Content-Type": "application/json; charset=utf-8" });
+    return res.end(JSON.stringify(w.payload));
   }
-  let item;
-  if (idx < 0) {
-    // 纯 mcode 会话（sidebar 的 mvs_ 条目还没有 webui 壳）→ 建壳承接改名。
-    // 其余 id 不硬造记录：404，让调用方知道 id 写错了。
-    if (/^mvs_[a-f0-9]{32}$/.test(id)) {
-      // webui-parity 63 (defect F): no workspace argument, for the same
-      // reason the switch path dropped it (see the s39 note above) — and here
-      // it was the last remaining writer. Stamping cs.workspace.dir onto
-      // someone else's record attributes a workspace the session never ran
-      // in, and cs.workspace.dir is not even necessarily a real one: a
-      // switch to a session that stores no workspace leaves it holding the
-      // DEFAULT_WORKSPACE fallback, which then got persisted and re-rooted
-      // the file tree on every later switch. Unknown stays unknown ("");
-      // the target-first read picks the fallback at read time instead.
-      item = ensureOverlayForMcodeSid(all, id);
-      matchKind = "orphan_mcode";
-    } else {
-      res.writeHead(404, { "Content-Type": "application/json; charset=utf-8" });
-      return res.end(JSON.stringify({ ok: false, error: "session not found" }));
-    }
-  } else {
-    item = all[idx];
-  }
-  const from = item.title || "";
-  item.title = title;
-  item.titleCustom = true;
-  item.updatedAt = Date.now();
-  saveSessions(all);
-  // The sidebar tree reads titles from the runtime db, so drop its cache or the
-  // renamed title stays hidden for up to CACHE_TTL_MS.
-  invalidateSessionTree();
-  // 所有把该会话当"当前会话"的 client 同步 sessionTitle（多 tab 一致）。
-  let touchedCids = [];
-  for (const [c, ccs] of clients) {
-    if (
-      ccs.sessionId === item.id ||
-      (item.mcodeSessionId && ccs.mcodeSessionId === item.mcodeSessionId)
-    ) {
-      ccs.sessionTitle = title;
-      touchedCids.push(c);
-    }
-  }
-  if (touchedCids.length === 0) touchedCids = [cid];
-  for (const c of touchedCids) pushStateFor(c);
   try {
     _eventsAppend("session.rename", {
-      target: item.id,
+      target: w.item.id,
       cid,
       actor: "user",
       payload: {
-        matchKind,
-        from,
-        to: title,
-        mcodeSessionId: item.mcodeSessionId || "",
+        matchKind: w.matchKind,
+        from: w.from,
+        to: w.to,
+        mcodeSessionId: w.item.mcodeSessionId || "",
       },
     });
   } catch (e) {
     return _auditFail(res, e, "session.rename");
   }
   console.log(
-    `[rename] cid=${cid} OK match=${matchKind} id=${item.id.substring(0, 8)}… "${from}" → "${title}"`,
+    `[rename] cid=${cid} OK match=${w.matchKind} id=${w.item.id.substring(0, 8)}… "${w.from}" → "${w.to}"`,
   );
   res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-  return res.end(
-    JSON.stringify({
-      ok: true,
-      session: {
-        id: item.id,
-        mcodeSessionId: item.mcodeSessionId || null,
-        title: item.title,
-        titleCustom: true,
-      },
-    }),
-  );
+  return res.end(JSON.stringify(w.payload));
 }
 
 // DELETE /api/sessions/:id — delete a session.
 //
 // ?dryRun=true takes the readonly SQL path (counts rows per table,
 // mutates nothing). Real delete passes authorize() and only then
-// touches db / saveSessions / killMcodeSessionResurrection (the gate
-// is the only async hop on the real path).
+// touches db / saveSessions / the caches (the gate is the only async hop
+// on the real path).
+//
+// M3-B5: this handler is now a PLAN → GOVERN → COMMIT sequence, and that
+// shape is the point rather than an accident of the refactor.
+//
+//   planEngineSessionDelete      resolves the id and runs the gate. No
+//                                mutation, so it is safe to run BEFORE
+//                                the user is asked anything.
+//   authorize() + intent audit   unchanged, and still strictly between
+//                                the plan and the commit. The write-ahead
+//                                intent line has to be durably recorded
+//                                before any row is removed, and it
+//                                records the match kind and chat length
+//                                the plan produced.
+//   commit*EngineSessionDelete   splices the store, drops the tree cache,
+//                                mirrors the delete into the engine's
+//                                `local_runtime_*` tables and fans the
+//                                cleared state out to every tab. The
+//                                ORDER of those steps inside the facade
+//                                is the resurrection guard; see the
+//                                facade's module header.
+//
+// Every status code and every response body below is unchanged. The
+// bodies are now BUILT in the facade rather than here, which is what lets
+// the dryRun shape be pinned byte-for-byte by a unit test instead of by a
+// route test that has to stand up the whole request.
 export async function handleDeleteSession(req, res, ctx) {
   const cs = ctx.cs;
   const cid = ctx.cid;
@@ -764,26 +777,20 @@ export async function handleDeleteSession(req, res, ctx) {
     }
   } catch {}
   console.log(
-    `[delete] cid=${cid} incoming id=${id.substring(0, 12)}… isMcodeSid=${/^mvs_[a-f0-9]{32}$/.test(id)} dryRun=${dryRun}`,
+    `[delete] cid=${cid} incoming id=${id.substring(0, 12)}… isMcodeSid=${isMcodeSessionId(id)} dryRun=${dryRun}`,
   );
-  const all = loadSessions();
-  let idx = all.findIndex((s) => s.id === id);
-  let matchKind = idx >= 0 ? "webuiId" : null;
-  if (idx < 0) {
-    idx = all.findIndex((s) => s.mcodeSessionId === id);
-    if (idx >= 0) matchKind = "mcodeSessionId";
-  }
+  const plan = await planEngineSessionDelete({ id });
   // B03: real-delete path must pass per-request authorize() before
-  //   mutating db / saveSessions / killMcodeSessionResurrection.
+  //   mutating db / saveSessions / the caches.
   //   dryRun=true bypasses (preview only — no side effects to gate).
   if (!dryRun) {
     const authResult = await authorize("session.delete", {
       cid,
       targetSessionId: id,
-      matchKind: matchKind || (idx < 0 ? "unknown" : "webuiId"),
-      isMcodeSid: /^mvs_[a-f0-9]{32}$/.test(id),
-      isOrphan: idx < 0,
-      chatLen: idx >= 0 && all[idx] && Array.isArray(all[idx].chat) ? all[idx].chat.length : 0,
+      matchKind: plan.matchKind || (plan.isOrphan ? "unknown" : "webuiId"),
+      isMcodeSid: isMcodeSessionId(id),
+      isOrphan: plan.isOrphan,
+      chatLen: plan.chatLen,
     });
     if (!authResult.approved) {
       console.log(
@@ -809,9 +816,9 @@ export async function handleDeleteSession(req, res, ctx) {
         cid,
         actor: "user",
         payload: {
-          matchKind: matchKind || "unknown",
-          isOrphan: idx < 0,
-          chatLen: idx >= 0 && all[idx] && Array.isArray(all[idx].chat) ? all[idx].chat.length : 0,
+          matchKind: plan.matchKind || "unknown",
+          isOrphan: plan.isOrphan,
+          chatLen: plan.chatLen,
           decidedBy: authResult.decidedBy,
         },
       });
@@ -822,68 +829,41 @@ export async function handleDeleteSession(req, res, ctx) {
   // Fallback: id is mvs_xxx but absent from webui session db —
   // treat it as an orphan mcode session and delete the SQL rows
   // directly (the webui side has no wrapper to remove).
-  if (idx < 0) {
-    if (/^mvs_[a-f0-9]{32}$/.test(id)) {
-      if (!dryRun) killMcodeSessionResurrection(id);
-      const mcodeDbDel = deleteMcodeSessionFromDb(id, { MCODE_RUNTIME_DB, dryRun });
-      // Same reason as the wrapper-delete path below: this removes rows from
-      // the db the cached sidebar tree is built from. Skipped on a dry run,
-      // which mutates nothing.
-      if (!dryRun) invalidateSessionTree();
+  if (plan.isOrphan) {
+    if (isMcodeSessionId(id)) {
+      const w = await commitEngineOrphanSessionDelete({ plan, cs, cid, dryRun });
       console.log(
-        `[delete] cid=${cid} ORPHAN mcode session sid=${id.substring(0, 12)}… ok=${mcodeDbDel.ok}` +
-          (mcodeDbDel.ok
-            ? ` log=[${(mcodeDbDel.log || []).join(",")}]`
-            : ` reason=${mcodeDbDel.reason || "-"} error=${mcodeDbDel.error || "-"}`),
+        `[delete] cid=${cid} ORPHAN mcode session sid=${id.substring(0, 12)}… ok=${w.mcodeDbDel.ok}` +
+          (w.mcodeDbDel.ok
+            ? ` log=[${(w.mcodeDbDel.log || []).join(",")}]`
+            : ` reason=${w.mcodeDbDel.reason || "-"} error=${w.mcodeDbDel.error || "-"}`),
       );
-      if (mcodeDbDel.ok) {
-        if (cs.mcodeSessionId === id) {
-          cs.mcodeSessionId = null;
-          cs.sessionId = null;
-          cs.sessionTitle = "Untitled";
-          cs.chat = [];
-          resetContext(cs);
-          pushStateFor(cid);
-        }
-        // B01: orphan mcode session deletion (no webui session row).
-        // Outcome event; the intent line was written before the gate
-        // fan-out above. Failure → 5xx + alert (rows are already gone;
-        // the operator must see the audit gap, not a silent success).
-        try {
-          _eventsAppend("session.delete", {
-            target: id,
-            cid,
-            actor: "user",
-            payload: {
-              matchKind: "orphan_mcode",
-              dryRun,
-              rowsAffected: (mcodeDbDel.log || []).length,
-            },
-          });
-        } catch (e) {
-          return _auditFail(res, e, "session.delete(orphan_mcode)");
-        }
-        res.writeHead(200, {
-          "Content-Type": "application/json; charset=utf-8",
-        });
-        return res.end(
-          JSON.stringify({
-            ok: true,
-            deleted: id,
+      if (w.failed) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        return res.end(JSON.stringify(w.payload));
+      }
+      // B01: orphan mcode session deletion (no webui session row).
+      // Outcome event; the intent line was written before the gate
+      // fan-out above. Failure → 5xx + alert (rows are already gone;
+      // the operator must see the audit gap, not a silent success).
+      try {
+        _eventsAppend("session.delete", {
+          target: id,
+          cid,
+          actor: "user",
+          payload: {
             matchKind: "orphan_mcode",
             dryRun,
-            mcodeDbDel,
-          }),
-        );
+            rowsAffected: (w.mcodeDbDel.log || []).length,
+          },
+        });
+      } catch (e) {
+        return _auditFail(res, e, "session.delete(orphan_mcode)");
       }
-      res.writeHead(500, { "Content-Type": "application/json" });
-      return res.end(
-        JSON.stringify({
-          ok: false,
-          error: "orphan mcode delete failed",
-          mcodeDbDel,
-        }),
-      );
+      res.writeHead(200, {
+        "Content-Type": "application/json; charset=utf-8",
+      });
+      return res.end(JSON.stringify(w.payload));
     }
     console.log(`[delete] cid=${cid} 404 id=${id.substring(0, 12)}… not found`);
     res.writeHead(404, { "Content-Type": "application/json" });
@@ -891,12 +871,9 @@ export async function handleDeleteSession(req, res, ctx) {
   }
   // dryRun: 不真删 webui session entry,只预览 mcode db 影响
   if (dryRun) {
-    const mcodeSid = all[idx].mcodeSessionId;
-    const mcodeDbDel = mcodeSid
-      ? deleteMcodeSessionFromDb(mcodeSid, { MCODE_RUNTIME_DB, dryRun: true })
-      : { ok: true, dryRun: true, log: [], totalRows: 0 };
+    const w = await previewEngineSessionDelete({ plan });
     console.log(
-      `[delete] cid=${cid} DRYRUN id=${id.substring(0, 12)}… mcodeDbDel=${JSON.stringify(mcodeDbDel)}`,
+      `[delete] cid=${cid} DRYRUN id=${id.substring(0, 12)}… mcodeDbDel=${JSON.stringify(w.mcodeDbDel)}`,
     );
     // B01: dryRun is itself a state-touching action — the operator
     // is previewing a delete, so record the preview but never the
@@ -910,9 +887,9 @@ export async function handleDeleteSession(req, res, ctx) {
         cid,
         actor: "user",
         payload: {
-          matchKind,
+          matchKind: plan.matchKind,
           dryRun: true,
-          previewedRows: mcodeDbDel.totalRows || 0,
+          previewedRows: w.mcodeDbDel.totalRows || 0,
         },
       });
     } catch (e) {
@@ -921,69 +898,9 @@ export async function handleDeleteSession(req, res, ctx) {
     res.writeHead(200, {
       "Content-Type": "application/json; charset=utf-8",
     });
-    return res.end(
-      JSON.stringify({
-        ok: true,
-        dryRun: true,
-        matchKind,
-        mcodeDbDel,
-        webuiEntryWouldBeDeleted: {
-          id: all[idx].id,
-          title: all[idx].title,
-          mcodeSessionId: mcodeSid,
-        },
-      }),
-    );
+    return res.end(JSON.stringify(w.payload));
   }
-  const deletedItem = all[idx];
-  all.splice(idx, 1);
-  saveSessions(all);
-  // The sidebar tree is assembled from `local_runtime_sessions` in the runtime
-  // db, and it is cached for CACHE_TTL_MS (the git probe per directory is the
-  // expensive part). A delete removes rows from that db, so the cache has to go
-  // or the row stays in the sidebar — still clickable — for up to 15s. This
-  // was the one mutation that missed it; rename had been handled, and
-  // switch/new were never wrong (switch does not change the set, and a new
-  // webui session has no engine row until its first prompt).
-  //
-  // Invalidate before the engine delete below, so the next read cannot repopulate
-  // from a db this call is about to change.
-  invalidateSessionTree();
-  // Mirror the delete on the mcode side when this record has an mcode sid.
-  const mcodeSid = deletedItem.mcodeSessionId;
-  let mcodeDbDel = null;
-  if (mcodeSid) {
-    killMcodeSessionResurrection(mcodeSid);
-    mcodeDbDel = deleteMcodeSessionFromDb(mcodeSid, { MCODE_RUNTIME_DB });
-    console.log(
-      `[delete] cid=${cid} mcode db delete sid=${mcodeSid.substring(0, 12)}… ok=${mcodeDbDel.ok}` +
-        (mcodeDbDel.ok
-          ? ` log=[${(mcodeDbDel.log || []).join(",")}]`
-          : ` reason=${mcodeDbDel.reason || "-"} error=${mcodeDbDel.error || "-"}`),
-    );
-  }
-  // Clear active session on every client that pointed at this id (or
-  // its mcode sibling) — otherwise the next interaction in that tab
-  // silently recreates a webui wrapper for the same mvs sid.
-  let touchedCids = [];
-  for (const [c, ccs] of clients) {
-    if (ccs.sessionId === deletedItem.id || ccs.mcodeSessionId === id) {
-      ccs.sessionId = null;
-      ccs.mcodeSessionId = null;
-      ccs.sessionTitle = "Untitled";
-      ccs.chat = [];
-      ccs.usage = {
-        ...ccs.usage,
-        sessionInput: 0,
-        sessionOutput: 0,
-        sessionTotal: 0,
-      };
-      resetContext(ccs);
-      touchedCids.push(c);
-    }
-  }
-  if (touchedCids.length === 0) touchedCids = [cid];
-  for (const c of touchedCids) pushStateFor(c);
+  const w = await commitEngineSessionDelete({ plan, cid });
   // B01: real session delete (the dangerous one). Record which webui
   // session was deleted, what the match kind was, how many cids had
   // their active session cleared (this is the "fan-out" effect that
@@ -998,31 +915,22 @@ export async function handleDeleteSession(req, res, ctx) {
       cid,
       actor: "user",
       payload: {
-        matchKind,
+        matchKind: plan.matchKind,
         dryRun: false,
-        remaining: all.length,
-        touchedCids: touchedCids.length,
-        mcodeRowsAffected: mcodeDbDel && mcodeDbDel.log ? mcodeDbDel.log.length : 0,
-        title: deletedItem.title,
+        remaining: w.records.length,
+        touchedCids: w.touchedCids.length,
+        mcodeRowsAffected: w.mcodeDbDel && w.mcodeDbDel.log ? w.mcodeDbDel.log.length : 0,
+        title: w.deletedItem.title,
       },
     });
   } catch (e) {
     return _auditFail(res, e, "session.delete");
   }
   console.log(
-    `[delete] cid=${cid} OK match=${matchKind} deleted.webuiId=${deletedItem.id.substring(0, 8)}… remaining=${all.length}`,
+    `[delete] cid=${cid} OK match=${plan.matchKind} deleted.webuiId=${w.deletedItem.id.substring(0, 8)}… remaining=${w.records.length}`,
   );
   res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-  return res.end(
-    JSON.stringify({
-      ok: true,
-      deleted: id,
-      matchKind,
-      dryRun: false,
-      remaining: all.length,
-      mcodeDbDel,
-    }),
-  );
+  return res.end(JSON.stringify(w.payload));
 }
 
 // GET /api/session-tree — the sidebar's Project → directory → session → subagent
@@ -1279,38 +1187,22 @@ export async function handleSearchSessions(req, res, ctx) {
 //   The cleanup targets: default-named webui sessions (New session /
 //   Untitled / 对话 N) whose chat is empty AND whose updatedAt is older
 //   than 24h — same rule as cleanupEmptyDefaultSessions() in lib/sessions.js.
-import { existsSync, readFileSync } from "node:fs";
-import { SESSIONS_DB } from "../lib/config.js";
+//
+// M3-B5: the SELECTION moved into the facade
+// (`engine/session-writes.js#readOrphanSessionWriteIds`), together with
+// the store read it applies the rule to and with the two response bodies
+// the batch's red line pins byte-for-byte. The rule and the file it reads
+// are one decision; splitting them across two modules is how a sweep ends
+// up pruning a different store than the one it was written for.
+//
+// The DELEGATION stays here and is not an oversight. Each selected id is
+// routed back through `handleDeleteSession` precisely so that every
+// orphan costs the same `session.delete.intent` / `session.delete` audit
+// pair, the same authorize() decision and the same cross-tab fan-out that
+// a hand-deleted session costs. Re-implementing the delete inside the
+// sweep would produce a cheaper path that is not the same path, and the
+// audit chain is the thing this endpoint exists to preserve.
 import { readJson } from "../lib/read-json.js";
-
-const ORPHAN_STALE_MS = 24 * 60 * 60 * 1000;
-
-function _findOrphanIds() {
-  if (!existsSync(SESSIONS_DB)) return [];
-  let all;
-  try {
-    let raw = readFileSync(SESSIONS_DB, "utf8");
-    if (raw.charCodeAt(0) === 0xfeff) raw = raw.slice(1); // 剥 BOM
-    all = JSON.parse(raw);
-  } catch {
-    return [];
-  }
-  if (!Array.isArray(all) || all.length === 0) return [];
-  const now = Date.now();
-  return all
-    .filter((s) => {
-      if (!s || !s.id) return false;
-      const hasChat = Array.isArray(s.chat) && s.chat.length > 0;
-      if (hasChat) return false;
-      const t = (s.title || "").trim();
-      const isDefault =
-        t === "New session" || t === "Untitled" || /^对话 \d+$/.test(t);
-      if (!isDefault) return false;
-      if (s.updatedAt && now - s.updatedAt < ORPHAN_STALE_MS) return false;
-      return true;
-    })
-    .map((s) => s.id);
-}
 
 export async function handleCleanupOrphans(req, res, ctx) {
   const cid = (ctx && ctx.cid) || "";
@@ -1322,19 +1214,17 @@ export async function handleCleanupOrphans(req, res, ctx) {
       dryRun = params.get("dryRun") === "true";
     }
   } catch {}
-  const targetIds = _findOrphanIds();
-  // Preview path: no authorize gate (no side effects).
+  const sweep = await readOrphanSessionWriteIds();
+  const targetIds = sweep.ids;
+  // Preview path: no authorize gate (no side effects). The body is
+  // `{ok, dryRun, count, ids}` — four keys, in that order — and it is
+  // built in the facade so that shape has exactly one home.
   if (dryRun) {
     console.log(
       `[cleanup-orphans] cid=${cid} DRYRUN would-delete=${targetIds.length}`,
     );
     res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-    return res.end(JSON.stringify({
-      ok: true,
-      dryRun: true,
-      count: targetIds.length,
-      ids: targetIds,
-    }));
+    return res.end(JSON.stringify(sweep.payload));
   }
   // Real path: gate with authorize() before touching any session.
   if (targetIds.length === 0) {

@@ -36,9 +36,9 @@
 // catalogue host itself is now reached through this facade too
 // (engine/host.js), so the plugins and turn-diff routes no longer name
 // lib/acp-client.js. M3 batches B1 (#9 #10 #72 #74 #75), B2 (#8 #11),
-// B3 (#15 #16 #17 #19) and B4 (#20 #57 #73) done. The rest of M3, then
-// M4, will route their consumers through this facade one endpoint
-// family at a time.
+// B3 (#15 #16 #17 #19), B4 (#20 #57 #73) and B5 (#7 #4 #6) done. The
+// rest of M3, then M4, will route their consumers through this facade one
+// endpoint family at a time.
 
 import { ENGINE_CAPABILITY_KEYS } from "./capabilities.js";
 // Declarations only — importing the provider *host-construction* modules
@@ -183,6 +183,48 @@ export {
   readEngineSessionUsage,
   resolveUsageReadProvider,
 } from "./usage-reads.js";
+// The session WRITE family (step M3, batch B5): #7 delete, #4 rename,
+// #6 cleanup-orphans. Same cycle, same TDZ rule, same reasoning as
+// session-reads.js above: session-writes.js reads NOTHING from this
+// module at module scope — its `SESSION_WRITE_ENDPOINTS` table is a
+// literal and every binding it needs (`getEngineProvider`,
+// `DEFAULT_ENGINE_PROVIDER_ID`) is read inside a function body. A new
+// top-level `const X = SOMETHING_FROM_INDEX` in session-writes.js breaks
+// the re-export exactly as it would in session-reads.js. Its static
+// imports are `engine/capabilities.js`, `engine/index.js` and `node:fs`
+// (a builtin); all six of its storage dependencies are reached through
+// `await import()` inside the functions, so the boot-path rule the other
+// families follow holds here too.
+//
+// Two of its three endpoints gate HARD on `sessionCrud` · `deleteSession`
+// — #7 and #6, both because they destroy rows in the engine's own
+// `local_runtime_*` tables — and the third, #4, declares NO capability
+// because a rename writes webui's own session store and touches no engine
+// surface at all. The policy is decided by who owns the rows the write
+// destroys, which is a different question from the read families' and
+// does not have the same answer twice in a row here. See the module
+// header for the full argument and for the known debt this batch records
+// rather than settles.
+export {
+  ORPHAN_STALE_MS,
+  SESSION_WRITE_ENDPOINTS,
+  applyDeletedSessionToClientState,
+  applyEngineSessionRename,
+  applyRenamedSessionToClientState,
+  assertSessionWriteCapability,
+  clientMatchesDeletedSession,
+  clientMatchesRenamedSession,
+  commitEngineOrphanSessionDelete,
+  commitEngineSessionDelete,
+  isMcodeSessionId,
+  isOrphanSessionRecord,
+  planEngineSessionDelete,
+  previewEngineSessionDelete,
+  readOrphanSessionWriteIds,
+  resolveSessionTarget,
+  resolveSessionWriteProvider,
+  selectOrphanSessionIds,
+} from "./session-writes.js";
 export { LOCAL_RUNTIME_V2_CAPABILITIES } from "./providers/local-runtime-v2.capabilities.js";
 export { TUI_RUNTIME_ADAPTER_CAPABILITIES } from "./providers/tui-runtime-adapter.js";
 

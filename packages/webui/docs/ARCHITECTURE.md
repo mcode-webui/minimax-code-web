@@ -489,8 +489,8 @@ not import it but adopts the same shape. Unknown future statuses render as
 ### `engine/` (capability declarations + the local-runtime-v2 host)
 
 The engine abstraction lives at `server/engine/` (engine-abstraction
-batch B1; migration state M1, plus M3 batches B0, B1, B2, B3 and B4). Fourteen
-files, one job each:
+batch B1; migration state M1, plus M3 batches B0, B1, B2, B3, B4 and B5).
+Fifteen files, one job each:
 
 | File | Owns |
 | --- | --- |
@@ -508,6 +508,7 @@ files, one job each:
 | `engine/account-reads.js` | The account family's facade call (`readEngineAccount`) and the endpoint→capability table `ACCOUNT_READ_ENDPOINTS` (step M3, batch B4). Gates **hard** on `authCredentials` · `getAccountStatus` — the same pair and the same provider method as `engine/usage-reads.js`, because #20 and #15/#16 read the same engine projection. Its read is **asynchronous** and it lives under the ordinary `await import()` boot-path rule |
 | `engine/model-reads.js` | The model-catalogue family's facade call (`readEngineModelCatalogue`), the whole projection as named pure functions (`projectModelCatalogue`, `deriveModelSelection`, `buildModelCataloguePayload`, `catalogueSourceLabel`, `webuiFullModelId`, `providerOfModelId`, `attachContextWindowOptions`, `configOption`), and the endpoint→capability table `MODEL_READ_ENDPOINTS` (step M3, batch B4). Gates **soft**: `checkModelReadCapability` reports and never throws, because the catalogue's primary sources are files webui owns. Its read is **synchronous**, and it is the one engine module **not** re-exported from `engine/index.js` — see the boot-path note below |
 | `engine/capability-reads.js` | The capability-declaration family's facade call (`readEngineCapabilityView`) and the endpoint→capability table `CAPABILITY_READ_ENDPOINTS` (step M3, batch B4). Declares **no capability for #73** — it IS the declaration endpoint, and gating the gate would let a `none` hide the declaration that says so. It is the only endpoint in the migration whose response CONTRACT changed (`capabilities` is now the 14-key declaration, replacing the ACP wire table) |
+| `engine/session-writes.js` | The session WRITE family's facade calls (`planEngineSessionDelete`, `commitEngineSessionDelete`, `commitEngineOrphanSessionDelete`, `previewEngineSessionDelete`, `applyEngineSessionRename`, `readOrphanSessionWriteIds`), the pure derivations they are built from (`resolveSessionTarget`, `isMcodeSessionId`, `isOrphanSessionRecord`, `selectOrphanSessionIds`, the two fan-out predicates, the per-client state resets), and the endpoint→capability table `SESSION_WRITE_ENDPOINTS` (step M3, batch B5). Gates **hard** on `sessionCrud` · `deleteSession` for #7 and #6, and declares **no capability at all** for #4. Forwards the 32-table SQL to `lib/mcode-session-delete.js` rather than moving it — see the write-path section below |
 
 Routes take the host from the facade and never from `lib/acp-client.js`:
 `routes/plugins.js` and `routes/turn-diff.js` call
@@ -587,13 +588,19 @@ declaration and construction were split). `test/lib/engine/host-facade.test.js`
 enforces it against the real module graph rather than against source text.
 `engine/session-reads.js`, `engine/session-tree-reads.js`,
 `engine/session-export.js`, `engine/usage-reads.js`,
-`engine/account-reads.js` and `engine/capability-reads.js` all live under the
+`engine/account-reads.js`, `engine/capability-reads.js` and
+`engine/session-writes.js` all live under the
 same rule: their static imports are `engine/capabilities.js` and
 `engine/index.js` only, and every heavier dependency —
 `lib/acp-client.js`, `lib/config.js`, `lib/session-tree.js`,
 `lib/transcript.js`, `lib/usage.js`, `lib/mavis-usage.js`,
 `lib/quota-forecast.js`, `lib/mcode-rpc.js` — is reached through
-`await import()` inside the functions.
+`await import()` inside the functions. `engine/session-writes.js` adds
+`node:fs` at module scope (a builtin, and `engine/usage-reads.js`
+already does the same) and reaches `lib/sessions.js`,
+`lib/mcode-session-delete.js`, `lib/state-bus.js` and
+`lib/config.js` dynamically — all six of its storage dependencies, which
+is what lets it be re-exported from `engine/index.js` at all.
 
 `engine/model-reads.js` is the one deliberate exception, and it deviates on
 **both** sides of the import. Its four sources — `lib/config.js`,
@@ -997,6 +1004,116 @@ The webui treats each event as an idempotent update; replaying the
 same event is safe. The server uses an at-most-once delivery model
 (SSE drops on disconnect → no retry), which the client handles by
 fetching `/api/state` on reconnect.
+
+#### Which endpoints write through the facade (step M3, batch B5)
+
+Batch B5 is the first family in the migration whose endpoints **destroy**
+data rather than read it, and that changes what the gate question is
+asking. For a read, hard or soft is decided by "is the data the engine's
+or webui's". For a write it is decided by **who owns the rows the write
+destroys** — and in this family that question does not have the same
+answer twice in a row.
+
+| Endpoint | Capability · sub-item | Enforcement | Value source |
+| --- | --- | --- | --- |
+| `DELETE /api/sessions/:id` (#7) | `sessionCrud` · `deleteSession` | hard — 501 | the webui session store, the in-memory ACP session cache, the sidebar tree cache, and the engine's own `local_runtime_*` rows via `lib/mcode-session-delete.js` |
+| `POST /api/sessions/rename` (#4) | none of the 14 keys | none — the gate is a reported no-op | webui's own session store, and nothing else. The engine's title is not written |
+| `POST /api/sessions/cleanup-orphans` (#6) | `sessionCrud` · `deleteSession` | hard — 501 | the same store, plus each selected id delegated to #7, so it reaches the same engine rows |
+
+**Why #7 and #6 gate hard.** Both destroy rows in the engine's own
+`local_runtime_*` tables, and there is no webui-side copy of a transcript
+that survives: once those rows are gone, the conversation is gone. A
+provider that declares no session deletion genuinely cannot have these
+endpoints serve a truthful answer, so 501 is the honest one. #6
+deliberately declares the *same* pair as #7 — the sweep selects webui-side
+orphan records, but each selected id goes through #7's real-delete branch,
+and a record carrying an `mcodeSessionId` takes the engine's rows with it.
+Gating the sweep soft would let a provider that cannot delete engine
+sessions reach those tables through a back door, and would also produce a
+worse failure than a 501: an authorized destructive sweep that writes its
+intent audit event and then fails every single delegated delete.
+
+**Why #4 declares nothing.** Rename writes `title` / `titleCustom` /
+`updatedAt` into webui's own store and touches no engine surface at all.
+Its one engine touch is `invalidateSessionTree()` — a cache drop, which is
+the read-side consequence of the sidebar projecting titles from the engine,
+and that projection is B2's `GET /api/session-tree` with its own gate.
+Naming a capability here would be a lie of the kind B3 declined for
+`GET /api/usage/forecast`: gating a working endpoint on a declaration
+about something it does not depend on.
+
+This family also deviates from its siblings in one deliberate way: every
+row of `SESSION_WRITE_ENDPOINTS` carries the same three keys —
+`capability`, `subItem`, `enforcement` — including the row that has no
+capability. B3 expressed "no engine surface" as a `null` table entry;
+here two of three endpoints *do* cross the seam, and a `null` hole in the
+middle of the table reads like "not filled in yet" rather than like a
+decision. The gate **descriptor** keeps the six fields every family
+returns, plus `enforcement`.
+
+**The plan/commit split, and why the route did not shrink to nothing.**
+#7 is exported as a pair rather than one `deleteSession(options)`:
+
+1. `planEngineSessionDelete` resolves the id and runs the gate. It
+   mutates nothing, so it is safe to run *before* the user is asked
+   anything.
+2. `authorize()` and the write-ahead `session.delete.intent` audit happen
+   **between** the plan and the commit. The intent line has to be durably
+   recorded before any row is removed, and it records the match kind and
+   chat length the plan produced.
+3. `commitEngineSessionDelete` / `commitEngineOrphanSessionDelete` /
+   `previewEngineSessionDelete` perform the write and fan-out.
+
+A facade that owned the whole operation would have had to swallow that
+ordering into a callback. The route keeps request parsing, the authorize
+modal, the audit ordering and every status code; the facade keeps the
+sequencing, the gate and the response bodies.
+
+**The ordering inside a commit is the feature, and it is asserted as a
+sequence.** `test/lib/engine/session-writes.test.js` journals every
+mutation and asserts the order, because an end-state assertion cannot see
+a resurrected session:
+
+```
+invalidate-tree → kill-acp-child → drop-cache:<sid> → sql:<sid> → push:<cid>
+```
+
+The tree cache is dropped *before* the engine write so a concurrent read
+cannot repopulate it from the pre-delete database. The ACP child is
+stopped *before* the rows are removed, because it holds the session in
+memory and rewrites its registry row on its next request — that is the
+"deleted session reappears" bug. Only the **one** deleted sid leaves the
+cache: invalidating the whole cache empties the sidebar, refills it, and
+reads to the user like the delete failed.
+
+**The 32-table SQL was not moved, and that is recorded rather than
+quietly dropped.** The plan for this batch annotated
+`lib/mcode-session-delete.js` "delete". It is kept because
+`lib/acp-client.js` imports `deleteMcodeSessionFromDb` from it and four
+test files bind to that specifier; collecting it means moving those
+first. The facade reaches it through `await import()` and issues no SQL
+of its own — the same split B3 drew for `lib/mavis-usage.js` and B4 for
+`lib/mcode-rpc.js`. A test asserts both halves: the table list is still
+32 entries exported from the lib module, and the facade contains no SQL
+verb at all.
+
+**Three things this batch records as known debt instead of deciding:**
+
+1. The 32-table SQL is still in `lib/mcode-session-delete.js`, for the
+   consumer reasons above.
+2. A rename is a **webui-side label only**. The engine's own title in
+   `local_runtime_sessions` is untouched while the sidebar tree reads its
+   titles from the engine, so for an engine-backed session a rename can be
+   visible in the wrapper list and not in the tree. This is pre-existing
+   behaviour and the batch did not change it; closing it means deciding
+   which store is authoritative for a display title, which is a product
+   call.
+3. #7 does not detect "this session is running right now". Deleting an
+   in-flight session stops the ACP child out from under the turn and then
+   proceeds. That is the pre-facade behaviour and arguably the correct
+   one (the user asked), but refusing to delete a running session is a
+   defensible alternative and the choice is not the batch's to make. A
+   test pins the semantics that exist so the behaviour is at least stated.
 
 ## 6. Frontend topology
 

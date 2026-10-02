@@ -313,6 +313,7 @@ const KNOWN_PREFIXES = [
   "webui-sec-net-settings-",
   "webui-sessdb-",
   "webui-session-delete-test-",
+  "webui-session-writes-b5-",
   "webui-sessions-search-check-",
   "webui-sessions-test-events-",
   "webui-settings-test-events-",
