@@ -3941,6 +3941,7 @@
     "packages/webui/webapp/test/fs-tree-reveal.test.ts",
     "packages/webui/webapp/test/git-panel.test.ts",
     "packages/webui/webapp/test/greeting.test.ts",
+    "packages/webui/webapp/test/helpers/dom-shim.ts",
     "packages/webui/webapp/test/i18n-appearance.test.ts",
     "packages/webui/webapp/test/i18n-browser.test.ts",
     "packages/webui/webapp/test/i18n-file-open.test.ts",

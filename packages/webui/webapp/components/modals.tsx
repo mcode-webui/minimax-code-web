@@ -392,6 +392,20 @@ export function Modal({
   );
 }
 
+/**
+ * The primary (filled) button of a confirm modal.
+ *
+ * UAT fix — the label colour. The label used
+ * `text-text_default_inverted_static`, which the design system defines as
+ * "text on an inverted surface" and never re-themes: it stays near-white
+ * in BOTH `:root` (95%) and `.dark` (80%) — see `styles/tokens.css`. The
+ * dark theme inverts `--bg_interaction_primary_default` to `--gray_0`
+ * (white), so the pair composited to white on white and the 「批准」 label
+ * disappeared — an unlabelled button, not a missing string. The token that
+ * actually pairs with this background is `--text_label_primary_default`
+ * (white on light, near-black on dark), the same pairing the upstream
+ * `.mavis-button.black` rule uses (`styles/official-utilities.css`).
+ */
 function PrimaryButton({
   disabled,
   onClick,
@@ -406,7 +420,7 @@ function PrimaryButton({
       type="button"
       disabled={disabled}
       onClick={onClick}
-      className="h-8 rounded-lg bg-bg_interaction_primary_default px-3 text-sm font-weight_medium text-text_default_inverted_static transition-colors hover:bg-bg_interaction_primary_hover disabled:opacity-50"
+      className="h-8 rounded-lg bg-bg_interaction_primary_default px-3 text-sm font-weight_medium text-text_label_primary_default transition-colors hover:bg-bg_interaction_primary_hover disabled:opacity-50"
     >
       {children}
     </button>

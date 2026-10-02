@@ -94,6 +94,15 @@ export function MarkdownHtml({ html }: { html: string }) {
 }
 
 /**
+ * Elements whose children React accepts only as elements — never as text.
+ *
+ * Mirrors React DOM's own `validateTextNesting` table for the tags
+ * `lib/markdown.ts` allowlists. `<colgroup>` and `<col>` are absent from
+ * that allowlist, so they are absent here too.
+ */
+const TABLE_STRUCTURE_TAGS = new Set(["table", "thead", "tbody", "tfoot", "tr"]);
+
+/**
  * Walk a sanitised HTML string and convert it to a React tree.
  *
  * The walker:
@@ -109,12 +118,19 @@ export function MarkdownHtml({ html }: { html: string }) {
  *     attributes (`class`, `href`, `title`, `align`) so a markdown
  *     document looks the same as before — only the mermaid fences
  *     are upgraded from inert HTML to a live component.
+ *   - drops whitespace-only text under a table-family element (see
+ *     `TABLE_STRUCTURE_TAGS`): React refuses those children, and table
+ *     layout never paints them.
  *
  * Returns a single `dangerouslySetInnerHTML` element from inside the
  * tree on SSR (when `DOMParser` is undefined); the prerender still
  * produces a non-empty HTML response.
+ *
+ * Exported for the render-harness test, which drives this walker over a
+ * real `marked` table and asserts the React tree it produces — the only
+ * place the hydration contract is actually checkable without a browser.
  */
-function htmlToReact(html: string, theme: "light" | "dark"): ReactNode {
+export function htmlToReact(html: string, theme: "light" | "dark"): ReactNode {
   if (typeof DOMParser === "undefined") {
     return (
       <div
@@ -132,12 +148,24 @@ function htmlToReact(html: string, theme: "light" | "dark"): ReactNode {
   // Keep a counter for stable React keys across the walk.
   let key = 0;
 
-  const walkChildren = (parent: Element | Document): ReactNode[] => {
+  const walkChildren = (parent: Element | Document, parentTag: string | null): ReactNode[] => {
     const out: ReactNode[] = [];
     for (const child of [...parent.childNodes]) {
       if (child.nodeType === 3 /* text */) {
         const text = child.textContent ?? "";
         if (text.length === 0) continue;
+        // UAT fix — `validateTextNesting` (React DOM, dev builds) rejects
+        // ANY text node under a table-family element, whitespace included,
+        // and answers with "In HTML, whitespace text nodes cannot be a
+        // child of <table>. This will cause a hydration error." `marked`
+        // indents every table line, so the sanitised HTML the walker is
+        // handed carries those newlines as real text nodes under
+        // <table>/<thead>/<tbody>/<tr>. Table layout collapses inter-tag
+        // whitespace and never paints it, so dropping it here removes the
+        // console flood and the hydration error without moving a pixel.
+        if (parentTag !== null && TABLE_STRUCTURE_TAGS.has(parentTag) && /^\s*$/.test(text)) {
+          continue;
+        }
         out.push(text);
         continue;
       }
@@ -178,7 +206,7 @@ function htmlToReact(html: string, theme: "light" | "dark"): ReactNode {
           props[attr.name] = attr.value;
         }
       }
-      const children = walkChildren(el);
+      const children = walkChildren(el, tag);
       out.push(
         createElement(tag, props, children.length > 0 ? children : undefined),
       );
@@ -186,7 +214,7 @@ function htmlToReact(html: string, theme: "light" | "dark"): ReactNode {
     return out;
   };
 
-  return walkChildren(doc.body);
+  return walkChildren(doc.body, null);
 }
 
 /**

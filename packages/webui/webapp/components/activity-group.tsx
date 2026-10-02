@@ -187,18 +187,33 @@ export function ActivityGroup({
   // While a call is in flight upstream names it instead of listing categories
   // ("已使用 3 次工具｜bash"); once the turn settles it lists the per-category
   // contributions joined with ", " (「查看 2 个文件, 执行 1 条命令」).
+  //
+  // The `thinking` category is counted but NOT printed. UAT fix: the group
+  // header and the turn bar are both inside the same turn, and both used the
+  // same 「思考 N 次」 wording for the same count, so a thinking-only run read
+  // 「思考 1 次」 twice (header above the thought, turn bar under the answer).
+  // The turn bar keeps it — that is where the reference `WebuiTurnProcess`
+  // puts it (`processSummaryParts` in the desktop `AssistantBody`), and it is
+  // the one row that survives the group's collapse. A run with nothing but
+  // thoughts therefore falls back to the qualitative 「思考过程」 label: still
+  // one label for the fold, and never a second copy of the count.
+  const printable = summary.contributions.filter(
+    (entry) => entry.category !== "thinking",
+  );
   const label = summary.activeTool
     ? t("activity.activeTool")
         .replace("{{count}}", String(summary.tools))
         .replace("{{tool}}", summary.activeTool)
-    : summary.contributions
-        .map((entry) =>
-          t((SUMMARY_CATEGORY_KEY[entry.category] ?? "activity.usedTools") as MessageKey).replace(
-            "{{count}}",
-            String(entry.count),
-          ),
-        )
-        .join(", ");
+    : printable.length > 0
+      ? printable
+          .map((entry) =>
+            t((SUMMARY_CATEGORY_KEY[entry.category] ?? "activity.usedTools") as MessageKey).replace(
+              "{{count}}",
+              String(entry.count),
+            ),
+          )
+          .join(", ")
+      : t("activity.thoughtProcess");
 
   // The forced-open state (active tool, or streaming thought). While it
   // holds, a user click on the summary must not collapse the group.
