@@ -28,6 +28,7 @@
     ".github/workflows/sync-issue-to-feishu.yml",
     ".gitignore",
     ".gitleaks.toml",
+    ".gitleaksignore",
     ".npmrc",
     "AGENTS.md",
     "CONTRIBUTING.md",

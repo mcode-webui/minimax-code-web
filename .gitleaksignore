@@ -1,0 +1,7 @@
+# gitleaks fingerprints for deliberate fake-credential fixtures in tests.
+# Both files exist to handle fake key material (a leak-prevention tripwire and
+# a credential-guard canary); the flagged content is synthetic by construction.
+985b78803621f04efa6498384319ed588b361dff:packages/webui/test/routes/fs-credential-guard.test.js:private-key:79
+985b78803621f04efa6498384319ed588b361dff:packages/webui/test/routes/fs-credential-guard.test.js:private-key:81
+985b78803621f04efa6498384319ed588b361dff:packages/webui/test/lib/engine/model-reads.test.js:generic-api-key:149
+985b78803621f04efa6498384319ed588b361dff:packages/webui/test/lib/engine/model-reads.test.js:generic-api-key:117
