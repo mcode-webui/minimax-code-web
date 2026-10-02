@@ -118,9 +118,10 @@ regexTarget = "match"
 regexes = ['''^[A-Za-z_$][A-Za-z0-9_$]*\.setRsaPrivateKey = [A-Za-z_$][A-Za-z0-9_$]*\.rsa\.setPrivateKey ?$''', '''^[A-Za-z_$][A-Za-z0-9_$]*\.privateKeyToAsn1 = [A-Za-z_$][A-Za-z0-9_$]*\.privateKeyToRSAPrivateKey ?$''', '''^[A-Za-z_$][A-Za-z0-9_$]*\.generateKey = [A-Za-z_$][A-Za-z0-9_$]*\.pbe\.generatePkcs12Key;?$''']
 
 [[rules.allowlists]]
-description = "Leak-prevention tripwire fixture: asserts the facade never serializes this fake key"
-condition = "AND"
+description = "Leak-prevention tripwire fixture: asserts the facade never serializes fake provider keys"
 paths = ['''(^|/)packages/webui/test/lib/engine/model-reads\.test\.js$''']
-regexTarget = "match"
-regexes = ['''apiKey: "sk-secret-should-never-leak"''']
+
+[[rules.allowlists]]
+description = "Credential-guard fixture: fake canary key material asserts the 403 guard"
+paths = ['''(^|/)packages/webui/test/routes/fs-credential-guard\.test\.js$''']
 
