@@ -36,9 +36,9 @@
 // catalogue host itself is now reached through this facade too
 // (engine/host.js), so the plugins and turn-diff routes no longer name
 // lib/acp-client.js. M3 batches B1 (#9 #10 #72 #74 #75), B2 (#8 #11),
-// B3 (#15 #16 #17 #19), B4 (#20 #57 #73) and B5 (#7 #4 #6) done. The
-// rest of M3, then M4, will route their consumers through this facade one
-// endpoint family at a time.
+// B3 (#15 #16 #17 #19), B4 (#20 #57 #73), B5 (#7 #4 #6) and B6 (#3)
+// done. The rest of M3, then M4, will route their consumers through
+// this facade one endpoint family at a time.
 
 import { ENGINE_CAPABILITY_KEYS } from "./capabilities.js";
 // Declarations only — importing the provider *host-construction* modules
@@ -225,6 +225,41 @@ export {
   resolveSessionWriteProvider,
   selectOrphanSessionIds,
 } from "./session-writes.js";
+// The session SWITCH family (step M3, batch B6): #3
+// POST /api/sessions/switch. Same cycle, same TDZ rule, same reasoning as
+// session-writes.js above: session-switch.js reads NOTHING from this module
+// at module scope — its `SESSION_SWITCH_ENDPOINTS` table is a literal and
+// every binding it needs (`getEngineProvider`, `DEFAULT_ENGINE_PROVIDER_ID`)
+// is read inside a function body. A new top-level `const X =
+// SOMETHING_FROM_INDEX` in session-switch.js breaks the re-export exactly as
+// it would in session-writes.js. Its ONLY static import beyond this module
+// is `engine/capabilities.js`; the session store, the ACP client, the
+// transcript reader, the usage tables, the workspace gate, the state bus
+// and the config are all reached through `await import()` inside the
+// data-plane function.
+//
+// It gates SOFT (`checkSessionSwitchCapability` reports, never throws) for
+// the reason `session-export.js` does: the switch's primary data is webui's
+// own session record, and both of its engine touches (the title and the
+// transcript) have a defined degradation. Gating hard would remove a
+// working endpoint in response to a declaration about an enrichment it can
+// live without — and would do it on the default `acp` transport first,
+// where the enrichment is the only part in question. The 501 machinery
+// stays unused by this family, and the suite pins that.
+export {
+  SESSION_SWITCH_ENDPOINTS,
+  applyEngineSessionSwitch,
+  applySwitchedSessionToClientState,
+  chatLooksCumulative,
+  checkSessionSwitchCapability,
+  isSwitchableMcodeSessionId,
+  lookupCachedMcodeTitle,
+  readEngineSwitchTranscript,
+  resolveSessionSwitchProvider,
+  resolveSwitchTarget,
+  resolveSwitchWorkspace,
+  selectTranscriptBackfill,
+} from "./session-switch.js";
 export { LOCAL_RUNTIME_V2_CAPABILITIES } from "./providers/local-runtime-v2.capabilities.js";
 export { TUI_RUNTIME_ADAPTER_CAPABILITIES } from "./providers/tui-runtime-adapter.js";
 
