@@ -2979,7 +2979,7 @@ function WorkspaceBrowseTab({
           disabled={busy || !listing?.dir}
           onClick={() => void pick()}
           data-testid="workspace-picker-confirm"
-          className="h-8 rounded-lg bg-bg_interaction_primary_default px-3 text-sm font-weight_medium text-text_default_inverted_static transition-colors hover:bg-bg_interaction_primary_hover disabled:opacity-50"
+          className="h-8 rounded-lg bg-bg_interaction_primary_default px-3 text-sm font-weight_medium text-text_label_primary_default transition-colors hover:bg-bg_interaction_primary_hover disabled:opacity-50"
         >
           {t("workspace.picker.useWorkspace")}
         </button>

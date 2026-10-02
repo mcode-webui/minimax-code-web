@@ -3975,6 +3975,7 @@
     "packages/webui/webapp/test/sse.test.ts",
     "packages/webui/webapp/test/store-revision.test.ts",
     "packages/webui/webapp/test/stream-cursor.test.ts",
+    "packages/webui/webapp/test/theme-token-pairing.test.ts",
     "packages/webui/webapp/test/theme.test.ts",
     "packages/webui/webapp/test/thinking-phrase-rotation.test.ts",
     "packages/webui/webapp/test/tool-paths.test.ts",

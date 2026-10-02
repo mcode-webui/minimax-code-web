@@ -537,7 +537,7 @@ export function ProviderManagementPanel({
               disabled={busy || !validation.ok}
               aria-busy={busy || undefined}
               onClick={() => void save()}
-              className="flex h-8 items-center gap-1.5 rounded-lg bg-bg_interaction_primary_default px-3 text-sm font-weight_medium text-text_default_inverted_static transition-colors hover:bg-bg_interaction_primary_hover disabled:cursor-not-allowed disabled:opacity-50"
+              className="flex h-8 items-center gap-1.5 rounded-lg bg-bg_interaction_primary_default px-3 text-sm font-weight_medium text-text_label_primary_default transition-colors hover:bg-bg_interaction_primary_hover disabled:cursor-not-allowed disabled:opacity-50"
             >
               {busy ? (
                 <span

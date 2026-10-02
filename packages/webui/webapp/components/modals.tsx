@@ -214,7 +214,7 @@ function AskModal({ t }: { t: (key: MessageKey) => string }) {
                   "flex flex-none items-center justify-center text-caption-small-strong text-text_default_secondary",
                   multiSelect
                     ? isPicked
-                      ? "size-5 rounded bg-bg_interaction_primary_default text-text_default_inverted_static"
+                      ? "size-5 rounded bg-bg_interaction_primary_default text-text_label_primary_default"
                       : "size-5 rounded border border-border_default bg-bg_grouped_primary"
                     : "size-5 rounded-full bg-bg_grouped_primary",
                 ].join(" ")}
@@ -396,7 +396,7 @@ export function Modal({
  * The primary (filled) button of a confirm modal.
  *
  * UAT fix — the label colour. The label used
- * `text-text_default_inverted_static`, which the design system defines as
+ * `text-text_label_primary_default`, which the design system defines as
  * "text on an inverted surface" and never re-themes: it stays near-white
  * in BOTH `:root` (95%) and `.dark` (80%) — see `styles/tokens.css`. The
  * dark theme inverts `--bg_interaction_primary_default` to `--gray_0`
