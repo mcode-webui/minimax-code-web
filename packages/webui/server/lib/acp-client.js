@@ -36,14 +36,22 @@ let _catalogueHostInitPromise = null;
 /**
  * The process-lifetime catalogue host singleton, booted on first call.
  *
- * Exported because `/api/plugins/*` (routes/plugins.js) needs the runtime's
- * `cliService` as its only data source, and the host is the single owner of
- * that service. Routing plugins through the exported getter is deliberate:
- * `transportWantsCatalogue()` below gates *session-list* traffic only — in
- * ACP protocol there is no plugin method at all, so gating plugins on the
- * transport would leave the panel dead in the default `acp` mode. Callers
- * must never construct a second host: two CliService instances on one dataDir
- * is both wasteful and a split-brain against the plugin/local-disable tables.
+ * Exported because `/api/plugins/*` (routes/plugins.js) and
+ * `/api/turn-diff*` (routes/turn-diff.js) need the runtime's `cliService`
+ * and `applications.session.diff` as their only data sources, and the host
+ * is the single owner of both. Since migration step M3's first batch (B0)
+ * those routes no longer import this module: they call the facade's
+ * `getEngineCatalogueHost()` (server/engine/host.js), which forwards here
+ * through a dynamic import, because `app.js` loads the engine facade at
+ * boot and this module carries the ACP client tree. The reasons below are
+ * the facade's reasons now, and the facade forwards them unchanged.
+ *
+ * Routing plugins through the host is deliberate: `transportWantsCatalogue()`
+ * below gates *session-list* traffic only — in ACP protocol there is no
+ * plugin method at all, so gating plugins on the transport would leave the
+ * panel dead in the default `acp` mode. Callers must never construct a
+ * second host: two CliService instances on one dataDir is both wasteful and
+ * a split-brain against the plugin/local-disable tables.
  *
  * Resolves to `null` when the runtime fails to boot; callers answer
  * `RUNTIME_UNAVAILABLE` rather than falling back to another path.

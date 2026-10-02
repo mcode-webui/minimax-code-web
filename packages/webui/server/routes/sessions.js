@@ -16,7 +16,6 @@ import {
 import { deleteMcodeSessionFromDb } from "../lib/mcode-session-delete.js";
 import {
   getMcodeSessionTitle,
-  getMcodeSessionsForWorkspace,
   getMcodeSessionsCacheSync,
   getMcodeSessionsStaleSync,
   shutdownMcodeAcpSingleton,
@@ -34,7 +33,30 @@ import {
   runChatViewChat,
 } from "../lib/state-bus.js";
 import { MCODE_RUNTIME_DB, DEFAULT_WORKSPACE } from "../lib/config.js";
-import { getSessionTree, invalidateSessionTree } from "../lib/session-tree.js";
+import { invalidateSessionTree } from "../lib/session-tree.js";
+// M3-B1 (engine facade): #9 and #10 read the engine through the declared
+// capability rather than straight off the ACP client. Both facade
+// functions forward to the same acp-client exports this module already
+// imported, so the wire shape, the cache and the transport switch are
+// unchanged — only the gate in front of them is new.
+import {
+  readEngineSessionListForWorkspace,
+  readEngineSessionTitle,
+} from "../engine/session-reads.js";
+// M3-B2 (engine facade): #8 asks the facade, which checks the provider's
+// declaration (sessionCrud.listSessions → 501 when absent) and then
+// forwards to the same `getSessionTree` this module used to call
+// directly. `invalidateSessionTree` stays a direct import: it is a
+// synchronous cache drop with no I/O, it is called from the rename and
+// delete paths, and routing a one-line invalidation through an async
+// facade would make those paths wait on a module load to do nothing.
+import { readEngineSessionTree } from "../engine/session-tree-reads.js";
+// The capability-error predicate `handleSessionTree` uses to tell the gate's
+// 501 apart from a soft-fail. Taken from the facade entry, which re-exports
+// the same binding `app.js#invokeHandler` matches on, so the two ends of this
+// protocol cannot drift onto two different notions of "is this the gate's
+// error".
+import { isEngineCapabilityNotSupportedError } from "../engine/index.js";
 import { authorize } from "../lib/authorize.js";
 import { pushAlert } from "../lib/alerts.js";
 import { append as _eventsAppend } from "../lib/events.js";
@@ -1011,13 +1033,34 @@ export async function handleDeleteSession(req, res, ctx) {
 // `?refresh=1` bypasses the 15s cache. A db that cannot be read is not a client
 // error: `ok:false` + `reason` lets the sidebar fall back to the wrapper list
 // instead of rendering an empty tree.
-export function handleSessionTree(req, res, _ctx) {
+//
+// M3-B2: the read goes through the engine facade, which gates it on the
+// provider's declared `sessionCrud.listSessions` and then forwards to the very
+// same `getSessionTree`. The payload below is `tree` verbatim — same keys, same
+// node shape, same `ok:false` soft-fail. The subtree hierarchy is built by
+// `buildTree` from `parent_session_id` and is NOT re-derived here; a child that
+// fails to attach to its parent is a subagent the user cannot see, so the tree
+// has exactly one assembler and it is not this route.
+export async function handleSessionTree(req, res, _ctx) {
   const url = new URL(req.url, "http://localhost");
   const force = url.searchParams.get("refresh") === "1";
   let payload;
   try {
-    payload = getSessionTree({ force });
+    ({ tree: payload } = await readEngineSessionTree({ force }));
   } catch (cause) {
+    // Re-throw the capability gate, and only it. `invokeHandler` maps
+    // `EngineCapabilityNotSupportedError` to 501 — the deliberate "this
+    // provider cannot list sessions" answer — whereas this catch exists
+    // for the OTHER failures (a db that cannot be read, an assembler bug),
+    // which the sidebar is built to degrade on. Folding the capability
+    // error in here would answer `200 {ok:false}` to a request the server
+    // is refusing on purpose: the fake success the gate exists to prevent.
+    //
+    // The test is the class's own `instanceof` helper, not a `.name`
+    // compare. `name` is a writable instance property, so one stray
+    // `err.name = "…"` upstream would silently turn that 501 back into the
+    // soft failure — a failure mode that reads as a passing test.
+    if (isEngineCapabilityNotSupportedError(cause)) throw cause;
     payload = {
       ok: false,
       reason: "session_tree_failed",
@@ -1036,17 +1079,32 @@ export function handleSessionTree(req, res, _ctx) {
 }
 
 // GET /api/acp-sessions?cwd=... — mcode acp session/list
+//
+// M3-B1: the read goes through the engine facade
+// (engine/session-reads.js) so the sidebar's data source is a DECLARED
+// capability rather than "whatever the transport happens to be". A
+// provider that does not declare `sessionCrud.listSessions` answers 501
+// through app.js#invokeHandler instead of an empty list. The response
+// shape is byte-for-byte what it was: the facade forwards to the same
+// `getMcodeSessionsForWorkspace` (same 30s cache, same cwd
+// normalisation, same `catalogue-sessions.js` projection on the runtime
+// path).
 export async function handleAcpSessions(req, res, ctx) {
   const cs = ctx.cs;
   const url = new URL(req.url, "http://localhost");
   const cwd =
     url.searchParams.get("cwd") || (cs.workspace && cs.workspace.dir) || "";
-  const sessions = await getMcodeSessionsForWorkspace(cwd);
+  const { sessions } = await readEngineSessionListForWorkspace({ cwd });
   res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
   return res.end(JSON.stringify({ ok: true, cwd, sessions }));
 }
 
 // GET /api/acp-session-title?sessionId=...
+//
+// M3-B1: gated on `sessionCrud.getSession` — the engine method the ACP
+// `session/list` title lookup corresponds to. `title` stays `null` for
+// both "no such session" and "engine has no title": the endpoint has
+// always collapsed those two and callers depend on it.
 export async function handleAcpSessionTitle(req, res, _ctx) {
   const url = new URL(req.url, "http://localhost");
   const sid = url.searchParams.get("sessionId") || "";
@@ -1054,7 +1112,7 @@ export async function handleAcpSessionTitle(req, res, _ctx) {
     res.writeHead(400, { "Content-Type": "application/json" });
     return res.end(JSON.stringify({ ok: false, error: "sessionId required" }));
   }
-  const title = await getMcodeSessionTitle(sid);
+  const { title } = await readEngineSessionTitle({ sessionId: sid });
   res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
   return res.end(
     JSON.stringify({ ok: true, sessionId: sid, title: title || null }),

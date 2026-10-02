@@ -82,8 +82,8 @@ describe("composer submit ordering — ticket 13 wiring tripwire", () => {
     );
     const clearDraftIdx = indexOfOrThrow(
       composerSource,
-      'setComposerDraft({ value: "", attachments: [] })',
-      'setComposerDraft({ value: "", attachments: [] })',
+      'setComposerDraft(dispatchDraftKey, { value: "", attachments: [] })',
+      'setComposerDraft(dispatchDraftKey, { value: "", attachments: [] })',
     );
     const awaitSendIdx = indexOfOrThrow(
       composerSource,
@@ -246,38 +246,161 @@ describe("composer submit ordering — ticket 13 wiring tripwire", () => {
     );
   });
 });
-describe("switching sessions clears the failure banner", () => {
-  // The error banner lives in the module-scope composer-draft store, which is
-  // shared by every composer instance (page.tsx swaps the composer between two
-  // tree positions, so a useState-held draft would die on the swap). Without a
-  // per-session reset, a rejection recorded in session A kept painting
-  // session B's composer red after the switch — a send B never made, with a
-  // red "消息发送失败: HTTP 500" banner appearing "on switching" (P5/P6 of the
-  // 100-ticket smoke report). The draft TEXT is deliberately not cleared: the
-  // restored-draft merge owns cross-session text rules.
-  test("an effect keyed on sessionKey resets error/errorKind/unconfirmed", () => {
-    // The effect body and the submit-path reset must carry the same three
-    // fields — a banner kind added later has to join both, and a revert that
-    // drops the effect (or re-keys it to something that never changes, like a
-    // stable ref) fails the dependency-array assertion.
+describe("the draft store is keyed by session (webui-parity 106, smoke P5)", () => {
+  // The pre-106 store was ONE shared bucket: session A's draft, chips and
+  // failure banner rode into session B's view on a switch (the s28 capture
+  // in the smoke report). #141 papered over the banner half with a
+  // sessionKey-keyed clear effect — which also destroyed the banner of the
+  // session the user was RETURNING to. Since 106 the isolation is
+  // structural: the composer reads and writes the store THROUGH the active
+  // session key, and the catch branch writes the banner into the DISPATCH
+  // session's box. These tripwires pin that wiring; the store-level
+  // behaviour itself is unit-tested in composer-draft.test.ts.
+
+  test("the composer's draft snapshot is read through the session key", () => {
+    // A revert to the shared bucket re-appears as `getComposerDraft` being
+    // called with NO key in the useSyncExternalStore call.
     assert.match(
       composerSource,
-      /useEffect\(\(\) => \{\s*setComposerDraft\(\{\s*error: null,\s*errorKind: null,\s*unconfirmed: null,?\s*\}\);\s*\}, \[sessionKey\]\);/,
-      "composer must reset the banner fields in an effect keyed on sessionKey — " +
-        "the module-scope draft store outlives sessions, so the banner must be " +
-        "scoped to the session it failed in",
+      /useSyncExternalStore\(\s*subscribeComposerDraft,\s*\(\) => getComposerDraft\(sessionKey\),\s*\(\) => getComposerDraft\(""\),?\s*\)/,
+      "the draft snapshot must be read through the session key so a switch " +
+        "swaps boxes synchronously — a key-less getter is the shared-bucket " +
+        "regression this ticket fixes",
+    );
+  });
+
+  test("the #141 clear effect is gone — isolation is structural now", () => {
+    // The clear-on-switch effect destroyed a RETURNING session's own
+    // unread banner. With per-session boxes it is wrong in every case.
+    assert.ok(
+      !/useEffect\(\(\) => \{\s*setComposerDraft\(\{?\s*error: null,\s*errorKind: null,\s*unconfirmed: null,?\s*\}?\);?\s*\}, \[sessionKey\]\);/.test(
+        composerSource,
+      ),
+      "the sessionKey-keyed banner-clear effect must not come back — the " +
+        "keyed store already isolates banners per session, and clearing on " +
+        "switch loses the session the user returns to",
+    );
+  });
+
+  test("every submit-path write carries a session key", () => {
+    // A key-less setComposerDraft call site would write into whatever
+    // box... nothing — it is a type error; the tripwire pins the two
+    // load-bearing literals so a refactor that drops the key from them
+    // fails here rather than silently changing boxes.
+    assert.ok(
+      /setComposerDraft\(dispatchDraftKey, \{\s*error: null,\s*errorKind: null,\s*unconfirmed: null,?\s*\}\)/.test(
+        composerSource,
+      ),
+      "submit must clear the banner in the DISPATCH session's box",
+    );
+    assert.match(
+      composerSource,
+      /setComposerDraft\(dispatchDraftKey, \{ value: "", attachments: \[\] \}\)/,
+      "the optimistic clear must write the dispatch session's box",
+    );
+  });
+
+  test("the catch branch writes the banner into the dispatch session's box", () => {
+    // The failure belongs to the session that attempted the send. Writing
+    // it into the LIVE key would repaint the session the user switched TO
+    // — the exact bleed the s28 capture shows.
+    const catchStartIdx = indexOfOrThrow(
+      composerSource,
+      "} catch (cause) {",
+      "} catch (cause) {",
+    );
+    const catchBody = composerSource.slice(catchStartIdx);
+    assert.match(
+      catchBody,
+      /setComposerDraft\(dispatchDraftKey, \{\s*error: errorMessage,/,
+      "the banner must be keyed by dispatchDraftKey inside the catch branch",
+    );
+    assert.ok(
+      !/setComposerDraft\(sessionKey, \{[^}]*errorMessage/.test(catchBody),
+      "the banner must NOT be written into the live session's box — a send " +
+        "that failed in session A must never paint session B red",
     );
   });
 
   test("the submit path still clears the banner before dispatching", () => {
-    // The session-switch reset is additive; it must not replace the
-    // clear-on-submit (a retry in the SAME session also has to clear the old
-    // rejection before the new attempt is judged).
+    // A same-session retry also has to clear the old rejection before the
+    // new attempt is judged.
     assert.match(
       composerSource,
-      /setSending\(true\);\s*setComposerDraft\(\{\s*error: null,\s*errorKind: null,\s*unconfirmed: null,?\s*\}\);/,
+      /setSending\(true\);\s*setComposerDraft\(dispatchDraftKey, \{\s*error: null,\s*errorKind: null,\s*unconfirmed: null,?\s*\}\);/,
       "submit must clear the banner right after setSending(true), before the " +
         "optimistic park — a same-session retry starts clean",
     );
+  });
+});
+
+describe("the unconfirmed banner retires when its turn ends (webui-parity 106, smoke P4)", () => {
+  // After `sleep 35` finished, the grey "服务器一直没有确认" banner stayed
+  // under the input until the next send or a reload. The decision
+  // (running-flag fall + errorKind === "unconfirmed") is unit-tested in
+  // composer-draft.test.ts; this pins the WIRING: the composer must feed
+  // the turn-end transition into it and apply the patch it returns.
+
+  test("the composer watches the running flag and applies the turn-end patch", () => {
+    assert.match(
+      composerSource,
+      /const prevRunningRef = useRef\(running\);/,
+      "the previous running value must be captured per render",
+    );
+    const effectIdx = indexOfOrThrow(
+      composerSource,
+      "unconfirmedPatchOnTurnEnd(",
+      "unconfirmedPatchOnTurnEnd( call",
+    );
+    const wiring = composerSource.slice(effectIdx - 200, effectIdx + 400);
+    assert.match(
+      wiring,
+      /prevRunningRef\.current,\s*running,\s*errorKind,/,
+      "the decision must receive (previous running, running, errorKind)",
+    );
+    assert.match(
+      wiring,
+      /prevRunningRef\.current = running;/,
+      "the reference must advance after the decision, or one stale value " +
+        "would clear (or keep) the banner on unrelated re-renders",
+    );
+    assert.match(
+      wiring,
+      /if \(patch\) setComposerDraft\(sessionKey, patch\);/,
+      "a non-null patch must be applied to the ACTIVE session's box",
+    );
+  });
+
+  test("the turn-end decision is imported from the draft module", () => {
+    assert.match(
+      composerSource,
+      /import\s+\{[^}]*\bunconfirmedPatchOnTurnEnd\b[^}]*\}\s+from\s+["']@\/lib\/composer-draft["']/,
+      "the decision must be the product function, not an inline re-derivation",
+    );
+  });
+});
+
+describe("the model picker's local state resets on a session switch (webui-parity 106, smoke P5)", () => {
+  // The chip VALUE reads the server snapshot, but the cascade's open flag,
+  // previewed row and per-model draft mirror are component-local; without a
+  // reset, session A's open menu / preview state visually persisted into
+  // session B's view.
+
+  test("ModelSelect receives the session key", () => {
+    assert.match(
+      composerSource,
+      /<ModelSelect\s[^>]*sessionKey=\{sessionKey\}/,
+      "the composer must pass the session key down to the picker",
+    );
+  });
+
+  test("the picker resets its local states in an effect keyed on sessionKey", () => {
+    const resetIdx = indexOfOrThrow(
+      composerSource,
+      "setOpen(false);\n    setSubmenuFor(null);\n    setFocusedModelId(null);\n    setDrafts({});",
+      "ModelSelect's four local-state resets",
+    );
+    const deps = composerSource.slice(resetIdx, resetIdx + 200);
+    assert.match(deps, /\}, \[sessionKey\]\);/, "the reset must be keyed on sessionKey");
   });
 });

@@ -42,8 +42,20 @@ import { createTurnDrain } from "../helpers/turn-drain.mjs";
 // MCODE_WEBUI_DATA_DIR at import time, and lib/events.js resolves the
 // audit-log path per append (alerts audit-writes on failed sends). Neither
 // this check nor the operator's real ~/.mcode-webui may see the other.
+//
+// SESSIONS_DB is pinned EXPLICITLY, for the same reason as its sibling
+// chat-run-mirror.check.mjs: config.js resolves it as
+// `MCODE_WEBUI_SESSIONS_DB || join(WEBUI_DATA_DIR, "sessions.json")`, so an
+// outer MCODE_WEBUI_SESSIONS_DB outranks the default and would leave the
+// `beforeEach` below clearing a file this suite never reads. The assertions
+// here happen to tolerate a store carrying records from an earlier run, so
+// the hazard is latent rather than red — but a suite that writes to a store
+// it does not own is one refactor away from the red sibling, and it still
+// pollutes whatever store the caller pointed it at.
 const _tmpDataDir = mkTmpDir("webui-first-turn-guard-");
+const _sessionsDb = join(_tmpDataDir, "sessions.json");
 process.env.MCODE_WEBUI_DATA_DIR = _tmpDataDir;
+process.env.MCODE_WEBUI_SESSIONS_DB = _sessionsDb;
 process.env.MCODE_WEBUI_EVENTS_PATH = join(_tmpDataDir, "events.ndjson");
 
 const SERVER_DIR = resolve(import.meta.dirname, "..", "..", "server");
@@ -292,7 +304,7 @@ beforeEach(() => {
   sb.resetCoalesceState();
   // Fresh redirected sessions store per case.
   try {
-    rmSync(join(_tmpDataDir, "sessions.json"), { force: true });
+    rmSync(_sessionsDb, { force: true });
   } catch {}
   sessions._resetSessionsCacheForTests();
   alerts._resetForTests();

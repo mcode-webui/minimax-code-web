@@ -17,7 +17,7 @@
 // Test strategy: USE setupMocks to mock mcode-rpc.js. We can control the
 // returned code per test to verify each branch of the status-code mapping.
 
-import { test, describe, before } from "node:test";
+import { test, describe, before, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
 import { setupMocks, absPath } from "../helpers/_setup.js";
@@ -246,30 +246,63 @@ describe("handleActivateSession — /api/protocol/activate-session", () => {
 });
 
 describe("handleListSessions — /api/protocol/list-sessions", () => {
-  // Note: the real listSessions returns an array (not {sessions: [...]}).
-  // We need to override the default mock to return [].
-  before(async () => {
+  // The handler reads the engine through the facade
+  // (server/engine/session-reads.js → acp-client.js#listAllMcodeSessions),
+  // so that is the seam a test has to drive. It used to reach for
+  // `mcode-rpc.js#listSessions` and the override below landed on
+  // `registerAcpMock({ listSessions })` — a key nothing read, which made
+  // both cases assert against a hard-coded empty list. M3-B1 drives the
+  // real seam so "the filter works" is actually proven.
+  //
+  // Note: the engine answer is an array (not `{sessions: [...]}`).
+  const WIRE = [
+    { sessionId: "mvs_x", cwd: "/ws-X", title: "X", updatedAt: "2026-10-03T00:00:00.000Z" },
+    { sessionId: "mvs_y", cwd: "/ws-Other" },
+  ];
+
+  beforeEach(async () => {
     const { registerAcpMock } = await import("../helpers/_setup.js");
-    registerAcpMock({ listSessions: async () => [] });
+    registerAcpMock({ listAllMcodeSessions: async () => [...WIRE] });
   });
 
-  test("returns 200 + sessions array (no cwd filter)", async () => {
-    const req = { url: "/api/protocol/list-sessions" };
+  test("returns 200 + the unfiltered list when neither ?cwd nor cs.workspace.dir is set", async () => {
+    // `fakeCs()` carries workspace.dir = "/ws-X", which the handler uses as
+    // the cwd fallback — so the unfiltered branch needs a cs without one.
     const res = fakeRes();
-    await protoRoute.handleListSessions(req, res, { cs: fakeCs(), cid: "cid-1" });
+    await protoRoute.handleListSessions(
+      { url: "/api/protocol/list-sessions" },
+      res,
+      { cs: { workspace: { dir: null } }, cid: "cid-1" },
+    );
     assert.equal(res._status, 200);
     const body = JSON.parse(res._body);
     assert.equal(body.ok, true);
-    assert.ok(Array.isArray(body.sessions));
+    assert.deepEqual(body.sessions, WIRE);
+    // No cwd to filter by means the endpoint does not echo a cwd key.
+    assert.equal("cwd" in body, false);
   });
 
-  test("returns 200 + filtered sessions when cwd query is provided", async () => {
+  test("returns 200 + the cwd-filtered list when cwd query is provided", async () => {
     const req = { url: "/api/protocol/list-sessions?cwd=/ws-X" };
     const res = fakeRes();
     await protoRoute.handleListSessions(req, res, { cs: fakeCs(), cid: "cid-1" });
     assert.equal(res._status, 200);
     const body = JSON.parse(res._body);
     assert.equal(body.cwd, "/ws-X");
+    assert.deepEqual(body.sessions, [WIRE[0]]);
+  });
+
+  test("falls back to cs.workspace.dir when ?cwd is absent", async () => {
+    // fakeCs() is exactly that case: no ?cwd, workspace.dir = "/ws-X".
+    const res = fakeRes();
+    await protoRoute.handleListSessions(
+      { url: "/api/protocol/list-sessions" },
+      res,
+      { cs: fakeCs(), cid: "cid-1" },
+    );
+    const body = JSON.parse(res._body);
+    assert.equal(body.cwd, "/ws-X");
+    assert.deepEqual(body.sessions, [WIRE[0]]);
   });
 });
 

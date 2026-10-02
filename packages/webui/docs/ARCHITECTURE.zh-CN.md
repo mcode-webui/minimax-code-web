@@ -461,15 +461,26 @@ queued \| done \| stopped`）是投影层产物、不是存储值；webui 不导
 ### `engine/`（能力声明 + local-runtime-v2 host）
 
 引擎抽象层位于 `server/engine/`（engine-abstraction 批次 B1；迁移
-状态 M1）。五个文件，各管一件事：
+状态 M1，外加 M3 的 B0、B1、B2 与 B3 四批）。十一个文件，各管一件事：
 
 | 文件 | 职责 |
 | --- | --- |
 | `engine/capabilities.js` | 契约本体：`ENGINE_CAPABILITY_KEYS`（14 个矩阵键）、`validateEngineCapabilities`、`assertEngineCapability`、`summarizeUnavailableCapabilities` |
 | `engine/errors.js` | `EngineCapabilityNotSupportedError` 与 `engineCapabilityHttpResponse`（501 载荷形状） |
-| `engine/index.js` | 门面：`getEngineProvider`、`listEngineProviderIds`（按 provider id 的注册表；按 `MCODE_WEBUI_TRANSPORT` 选传输在迁移步 M4 引入） |
-| `engine/providers/local-runtime-v2.js` | `createCatalogueHost`（自 `runtime-host.js` 原样移入，后者转发导出）+ `LOCAL_RUNTIME_V2_CAPABILITIES` |
+| `engine/host.js` | `getEngineCatalogueHost`——通往那唯一 catalogue host 的惰性桥。对 host 模块零静态 import：函数体里是 `lib/acp-client.js` 的动态 `import()`，所以门面付出的是一个函数，不是一次模块加载 |
+| `engine/index.js` | 门面：`getEngineProvider`、`listEngineProviderIds`、`getEngineCatalogueHost`（按 provider id 的注册表；按 `MCODE_WEBUI_TRANSPORT` 选传输在迁移步 M4 引入） |
+| `engine/providers/local-runtime-v2.capabilities.js` | `LOCAL_RUNTIME_V2_CAPABILITIES`——**只有声明，且这个拆分是有承重意义的**：它唯一的 import 是 `../capabilities.js`，所以 `/api/engine-capabilities` 读能力表时**不会把 v2 host 的 TypeScript 依赖树（首次编译约 4.7 秒）拖进 boot 路径**。那棵依赖树仍留在 `acp-client.js` 早已注明的 lazy 边界之后 |
+| `engine/providers/local-runtime-v2.js` | `createCatalogueHost`（自 `runtime-host.js` 原样移入，后者转发导出）+ 转发导出上面的声明，消费方的 import 形状因此不变。它是重的那一个——`@mavis/local-runtime-v2`、`@mavis/config`、`@minimax/code/runtime-adapter`——`app.js` 能触达的文件里绝不许 import 它 |
 | `engine/providers/tui-runtime-adapter.js` | `TUI_RUNTIME_ADAPTER_CAPABILITIES`（仅声明——adapter 本体在 v2 host 内构造） |
+| `engine/session-reads.js` | 目录读族的面板调用（`readEngineSessionList`、`readEngineSessionListForWorkspace`、`readEngineSessionTitle`、`readEngineVersion`）与端点→能力对照表 `SESSION_READ_ENDPOINTS`（迁移步 M3 批次 B1） |
+| `engine/session-tree-reads.js` | 会话树族的面板调用 `readEngineSessionTree` 与端点→能力对照表 `SESSION_TREE_ENDPOINTS`（迁移步 M3 批次 B2）。**硬门控**：`assertSessionTreeCapability` 抛出 → 501，因为树完全由引擎数据构成。转发到 `lib/session-tree.js#getSessionTree`，树的装配逻辑不复制第二份 |
+| `engine/session-export.js` | 导出族的面板调用 `readEngineSessionTranscript` 与端点→能力对照表 `SESSION_EXPORT_ENDPOINTS`（迁移步 M3 批次 B2）。**软门控**：`checkSessionExportCapability` 只报告、从不抛出，因为导出的主数据源是 `sessions.json` 而非引擎 |
+| `engine/usage-reads.js` | 用量族的面板调用（`readEngineAccountQuota`、`readEngineSessionUsage`、`readEngineQuotaForecast`）、派生量 `contextUsedTokens`，与端点→能力对照表 `USAGE_READ_ENDPOINTS`（迁移步 M3 批次 B3）。两个引擎读**硬门控**；#19 **完全不声明能力**，因为它不触达任何引擎面 |
+
+路由从门面取 host，不从 `lib/acp-client.js` 取：`routes/plugins.js` 与
+`routes/turn-diff.js` 调 `getEngineCatalogueHost()`。两者都保留 `deps`
+注入的数据源（`deps.getCliService`、`deps.getDiffApplication`），
+handler 层测试因此保持封闭。
 
 声明纪律（未来任何 provider 的准入规则，由
 `test/lib/engine/capabilities.test.js` 的快照测试强制）：
@@ -484,16 +495,188 @@ queued \| done \| stopped`）是投影层产物、不是存储值；webui 不导
    `501 engine_capability_not_supported`。**禁止空实现**——缺能力必须在
    调用前可读、调用后响亮（#110 假成功纪律）。
 4. 每 provider 进程内单 host：`createCatalogueHost` 仍是运行时实例的
-   唯一所有者（`acp-client.js#getCatalogueHost` 的「绝不建第二个 host」
-   规则不变）；`close()` 保持有界。
+   唯一所有者，触达它的唯一入口是门面的 `getEngineCatalogueHost()`
+   （转发到 `acp-client.js#getCatalogueHost`，其「绝不建第二个 host」
+   规则不变）；`close()` 保持有界。同一 dataDir 上两个 `CliService`
+   实例是对 plugin / local-disable 表的脑裂，不是冗余。
 5. 驱动 UI 的是档位，不是 provider 名单：前端读
    `GET /api/engine-capabilities`
    （`routes/engine-capabilities.js#handleEngineCapabilities`），
    按 `full` / `partial`（+missing）/ `none` 三档渲染——UI 代码里不出现
    硬编码的 provider 名单。
 
+### 声明与实现的快照校验（M2）
+
+声明有多诚实，取决于背后的校验有多硬。
+`test/lib/engine/capability-snapshot.test.js#auditProviderCapabilities`
+对两个已注册 provider 的每个 `full`/`partial` 键做审计，对象是**真实**
+的 catalogue host——每次运行在隔离的临时数据目录上起一个
+（`MINIMAX_DATA_DIR` 与全部 `MCODE_WEBUI_*` 路径在 provider import
+**之前**钉死；只设 `MCODE_WEBUI_DATA_DIR` 不够，引擎目录会回落到
+`~/.minimax` 改写用户真实配置）：
+
+- `full`——该键跟踪的方法必须在声明的 surface 成员上
+  （`adapter`、`cliService` 或 `applications.session.diff`）全部为函数；
+- `partial`——存在的部分必须在；方法名形态的 `missing` 项必须真的
+  不存在；某缺席方法从 `missing` 里被拿掉会红（声明不完整）；kebab-case
+  子能力名（`file-write`、`git-diff` 等）在 surface 上出现覆盖方法的那一刻
+  变红——将来引擎长出 `getWorkspaceGitDiff`，`git-diff` 这条就必须重新审计；
+- `none`——刻意不做方法校验；provider 允许对该能力完全不设接口面。
+
+方法跟踪表（同文件内的 `REQUIRED_METHODS`）取自真实 surface 本身
+（原型链反射：adapter 91 个方法、CliService 94 个、session.diff 门面），
+不是从设计矩阵抄的。审计是对（声明, 方法集）的纯函数，同文件的变异测试
+钉住每类漂移——改档位、删方法、子能力长出方法——各自必然变红。另有
+注册表驱动的静态守卫扫过每个**已注册** provider
+（`engine/index.js#listEngineProviderIds`）的 14 键集合，拼错或多写的键
+无法静默通过；M4 注册 acp/exec provider 时无需改测试即被覆盖。
+
 运行时探测（环境不符时把声明档位降级）本批刻意未做——理由见
 `engine/index.js` 头注释。
+
+启动路径纪律：`app.js` 会触达 `engine/index.js`，因此该文件及其全部
+静态依赖必须不含 `@mavis/*`、`@minimax/*` 与任何 host 模块。M1 是交过
+学费才换来这条（server 启动 209ms → 2700ms；声明与构造拆成两个文件后，
+门面自身加载 4685ms → 5ms）。`test/lib/engine/host-facade.test.js`
+对着真实模块图强制它，而不是对着源码文本。
+`engine/session-reads.js`、`engine/session-tree-reads.js`、
+`engine/session-export.js` 与 `engine/usage-reads.js` 全部服从同一条
+纪律：静态 import 只有 `engine/capabilities.js` 与 `engine/index.js`，
+而每个更重的依赖——`lib/acp-client.js`、`lib/config.js`、
+`lib/session-tree.js`、`lib/transcript.js`、`lib/usage.js`、
+`lib/mavis-usage.js` 与 `lib/quota-forecast.js`——都在函数体内用
+`await import()` 触达。
+
+#### 哪些端点走门面读（迁移步 M3 批次 B1）
+
+`engine/session-reads.js` 覆盖 5 个目录读端点。每一行写明它门控的
+能力键与它依赖的 provider 方法，因此一份恰好缺该方法的 `partial`
+声明会 501 并点名是哪个方法：
+
+| 端点 | 能力 · 子项 | 取值来源 |
+| --- | --- | --- |
+| `GET /api/acp-sessions` | `sessionCrud` · `listSessions` | `acp-client.js#getMcodeSessionsForWorkspace`（30s 缓存 + cwd 归一化） |
+| `GET /api/acp-session-title` | `sessionCrud` · `getSession` | `acp-client.js#getMcodeSessionTitle` |
+| `GET /api/protocol/list-sessions` | `sessionCrud` · `listSessions` | `acp-client.js#listAllMcodeSessions`；cwd 过滤仍留在路由里 |
+| `GET /api/state` | `sessionCrud` · `listSessions` | 只作用于 `mcodeSessions` 镜像——`snapshotViewFields` / `mcodeSessionsSnapshotFields` 一字未动 |
+| `GET /api/health` | 14 键中无对应键 | ACP `initialize` 的 `agentInfo.version` 镜像；catalogue host 没有版本访问器，面板如实报告来源而不是凭空造一个方法 |
+
+本层守住三条性质，每条背后都有测试：
+
+1. **只有一个 normalizer。** runtime 路径由
+   `lib/catalogue-sessions.js#projectTuiSessionToAcp` 投影，逐条镜像
+   ACP adapter 的 `toAcpSessionInfo` 规则——`title` 与 `updatedAt`
+   缺失时**省略该键**，绝不输出 `null`。面板原样转发这份投影，不做
+   二次投影。
+2. **字节来自哪里是报告出来的，不是假设的。** 每次读都回答一个
+   `source`：`catalogue` / `acp` / `acp-fallback`（传输要了 catalogue
+   host 但拿到 `null`）。它是元数据，不上线——端点载荷在接面板前后
+   逐字节相同。
+3. **门控是真的。** 已注册的 provider 声明 `sessionCrud` 为 `full`，
+   所以今天没有任何端点会 501；测试用一份缺 `listSessions` 的样本声明
+   驱动出 501 载荷。没人跑过的门控与没有门控无法区分。
+
+#### 哪些端点走门面读（迁移步 M3 批次 B3）
+
+`engine/usage-reads.js` 覆盖 4 个用量端点（#15、#16、#17、#19）。
+这一族是「重构全程静默」的重灾区：四个数字里有三个是**算出来的**
+而不是数出来的，所以下表不只写门控哪个能力，更写清每个数字从哪来：
+
+| 端点 | 能力 · 子项 | 取值来源 |
+| --- | --- | --- |
+| `POST /api/usage` | `authCredentials` · `getAccountStatus` | `lib/usage.js#runUsageQuery`——引擎的 `mcode/account/status` 投影，抄进 `cs.usage`；载荷逐字节写出，含 `ok:false` / `error` 形状 |
+| `POST /api/usage-trigger` | `authCredentials` · `getAccountStatus` | 同一次读；两个端点只差客户端的 `record` 标志，而它决定这次是「读数」还是「采样」 |
+| `GET /api/usage-real` | `usageStats` · `getSessionUsage` | `lib/mavis-usage.js` 读引擎自己的 `local_runtime_token_usage` 表；`contextUsed` 由 `contextUsedTokens` 在此派生 |
+| `GET /api/usage/forecast` | 14 键中无对应键 | webui 自己的 `~/.mcode-webui/usage-history.ndjson`，经 `lib/quota-forecast.js`。它不触达任何引擎面，所以不声明任何能力 |
+
+本层守住四条性质，每条背后都有测试：
+
+1. **`contextUsed` 是累计值，且不含缓存计数。** 公式是
+   `totalInput + totalOutput + totalReasoning`。缓存计数是 `input` 的
+   **子集**，加上会重复计数；`totalCacheWrite` 根本不在上下文窗口里。
+   它也**不是**聊天流程的 `lastTurnContextTokens`：上下文条显示的是
+   一轮的量，`#17` 显示的是整会话的花费。
+   `test/lib/engine/usage-reads.test.js` 对七个数值字段逐个扰动，
+   被合并或被「简化」的公式会翻掉某一行，而不是悄悄发版。
+2. **`totalReasoning` 是数据库自己的 `SUM`，原样转发。** 快照测试用
+   裸 SQL 独立算出同一个聚合再比对；门面若从别处重新派生，此测试即红。
+3. **预测是历史前缀的纯函数。** 增长中的历史的每一个前缀，都在同一时刻
+   与模块自己的 `forecastExhaustion(readHistory())` 比对，并且断言样本数
+   在那条故意置 `null` 的样本处出现的「平台期」——所以重新过滤、重新排序
+   或重新采样会破坏**序列**而不只是破坏形状。
+4. **`none` / 缺子项的 `partial` 声明会 501。** 已注册的 provider 把
+   `authCredentials` 与 `usageStats` 都声明为 `full`，所以只有样本驱动
+   的测试能证明门控会咬。#19 那一行 `null` 是带理由的反例：给一个
+   根本不触达引擎面的读加硬门控，等于用一条与它无关的声明去关掉一个
+   正常工作的端点。
+
+`#17` 声明了 `usageStats` · `getSessionUsage`，但**尚未调用**该方法：
+它经 `lib/mavis-usage.js` 读的是该方法读的同一张 SQLite 表。三条实测
+理由写在模块头注释里——catalogue host 只在 `runtime` 传输下存在
+（`acp-client.js#transportWantsCatalogue`），而 `acp` 是默认值；
+`getSessionUsage` 回答的是 `{summary, rows: UsageView[]}`，端点回答的是
+按列聚合且 `rows` 是 COUNT 的形状，换过去就意味着从另一个起点重建
+`totalReasoning` 与 `contextUsed`；而且它会把 v2 的 TypeScript 依赖树压到
+一个本来不需要它的端点的应答路径上。M4 才是两者允许会合的地方。
+
+传输→provider 表目前只有 `runtime` 一条。默认 `acp` 传输下尚无已注册
+provider，于是门控报告 `unregistered-transport` 并放行——M4 注册 ACP
+provider 后该表补上对应行。放行不等于声称支持，二者刻意分开报告。
+
+#### 哪些端点走门面读（迁移步 M3 批次 B2）
+
+批次 B2 收编 2 个端点，它们是前两个**门控策略不同**的端点。正因如此才
+拆成两个文件：合并会迫使其中一个继承另一个的策略。
+
+| 端点 | 能力 · 子项 | 强制方式 | 取值来源 |
+| --- | --- | --- | --- |
+| `GET /api/session-tree` | `sessionCrud` · `listSessions` | 硬——501 | `lib/session-tree.js#getSessionTree`，原样转发 |
+| `GET /api/sessions/:id/export` | `sessionCrud` · `getSession` | 软——只报告 | `lib/transcript.js#readMcodeTranscript`（仅增强部分） |
+
+**为什么一个门控抛错、另一个不抛。** `/api/session-tree` 完全是引擎数据：
+层级由运行时库 `local_runtime_sessions` 装配，所以一个列不出会话的
+provider 确实没有树可返回，501 才是诚实答案。
+`/api/sessions/:id/export` 则**主要不是**引擎数据——对话来自
+`sessions.json`，引擎只贡献一份尽力而为的 transcript 增强，而该端点一直
+承诺绝不因此阻断导出。把它改成硬门控，等于因为一条关于「本端点并不依赖的
+能力」的声明而删掉本来能用的功能。所以 `checkSessionExportCapability`
+只回答 provider 声明了什么然后返回；调用方通过端点既有的通道降级
+`_meta.mcode_unavailable`，导出照旧完整返回 webui 的对话。
+`test/lib/engine/session-export.test.js` 用一份声明 `sessionCrud: none`
+的 provider 钉住这一点：同一份样本下，导出族报告、树族抛错。
+
+本批守住的四条性质，每条背后都有测试：
+
+1. **节点形状未变，而且它是不对称的。** 根节点带
+   `{id, title, agent, kind, status, updatedAt, children}`；子节点带同样
+   这些字段但**没有** `children`——因为 `buildTree` 只在包裹每个根节点的
+   输出映射里补这个键。在真实树上实测：233 个根节点带 `children`，
+   66 个子节点全都不带。「顺手规范化」会让侧边栏里 66 个节点的形状改变。
+2. **响应里没有 `parent_session_id`。** 层级是结构性的——由 `children`
+   表达——`parent_session_id` 只存在于读库阶段。将来把这个键加到节点上
+   就是客户端可见的变更，所以测试按深度逐字断言键集合。
+3. **只有一个装配器。** `buildTree` 仍是唯一决定哪些行挂到哪个父节点
+   的地方，路由不重新推导层级。挂不上的行——父节点不在结果集里的孤儿、
+   跨目录的父节点、孙节点、挂在 `root` 容器行下的子节点、任何处于环中的
+   行——照旧被丢弃。正因如此，本批的验证方式是改前改后各导一次树、
+   逐节点比对，而不是数行数。
+4. **树的 501 不被吞掉。** 路由原有的 `try/catch` 否则会把能力错误
+   折进它自己的 `{ok:false, reason:"session_tree_failed"}` 软失败体里，
+   把 501 变成 200。路由重新抛出 `EngineCapabilityNotSupportedError`，
+   其余错误仍走软失败。
+
+**树的 `source` 不随传输切换。** 树读自引擎自己的运行时库，`runtime`
+与 `acp` 两种传输都看得到，所以 `readEngineSessionTree` 在任何传输下都
+报告 `source: "runtime-db"`，而不是假称拿到了目录宿主。声明检查仍按传输
+分派：当前哪个 provider 生效是传输问题，即使这次读本身不是。
+
+**export 的增强在 v2 表结构下当前是失效的，且这是刻意为之。**
+`lib/transcript.js` 把 `v2-data-json` 探针留在默认探针集**之外**，
+以保证 export 的行为不变；而线上真实的 `local_runtime_message_rows`
+根本没有 `content` 列。因此在当前运行时库上增强会返回
+`no_matching_table`，每次导出都报告 `_meta.mcode_unavailable: true` 与
+`_meta.source: "webui"`。这是既有行为且被刻意保留——重新启用它是一次行为
+变更，属于后续切片，不属于这次收编。
 
 ## 4. `clientState` 载荷
 

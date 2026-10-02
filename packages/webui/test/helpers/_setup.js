@@ -51,6 +51,12 @@ const _acpMock = {
   getMcodeAcpClient: async () => null,
   listAllMcodeSessions: async () => [],
   getMcodeServerInfo: () => null,
+  // M3-B1: the engine facade (server/engine/session-reads.js) asks whether
+  // the in-process catalogue host answered before it reports where a read's
+  // bytes came from. Default null = "the host never booted", i.e. the
+  // acp-fallback case. Tests that want the catalogue case register
+  // `getCatalogueHost: async () => ({ adapter: {} })`.
+  getCatalogueHost: async () => null,
   invalidateMcodeSessionsCache: () => {},
   shutdownMcodeAcpSingleton: () => {},
   dropMcodeSessionFromCache: () => {}, // v1.0: 删除路由防复活用
@@ -217,6 +223,9 @@ export async function setupMocks(t, overrides = {}) {
       getMcodeAcpClient: (...a) => _acpMock.getMcodeAcpClient(...a),
       listAllMcodeSessions: (...a) => _acpMock.listAllMcodeSessions(...a),
       getMcodeServerInfo: (...a) => _acpMock.getMcodeServerInfo(...a),
+      // M3-B1: engine/session-reads.js asks this to report whether a read
+      // came from the in-process catalogue host or from the ACP mirror.
+      getCatalogueHost: (...a) => _acpMock.getCatalogueHost(...a),
       invalidateMcodeSessionsCache: (...a) =>
         _acpMock.invalidateMcodeSessionsCache(...a),
       shutdownMcodeAcpSingleton: (...a) =>

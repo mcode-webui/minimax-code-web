@@ -14,10 +14,13 @@ import {
   sessionsListForSnapshot,
   nextRevisionFor,
 } from "../lib/state-bus.js";
-import {
-  getMcodeSessionsForWorkspace,
-  getCachedMcodeCommands,
-} from "../lib/acp-client.js";
+import { getCachedMcodeCommands } from "../lib/acp-client.js";
+// M3-B1 (engine facade): the declared-capability gate in front of the
+// mcodeSessions mirror. The SSE first frame below keeps calling
+// `mcodeSessionsSnapshotFields` directly — the SSE channel is a P2
+// migration, out of scope for this batch, and it must keep its exact
+// pending/stale semantics.
+import { readEngineSessionListForWorkspace } from "../engine/session-reads.js";
 import { getLanBroadcast } from "../lib/settings.js";
 import { applyMavisUsageToCs } from "../lib/mavis-usage.js";
 import { getMcodeModelLimit } from "../lib/models.js";
@@ -110,9 +113,20 @@ const SSE_HEADERS = {
 
 export async function handleState(req, res, ctx) {
   const cs = getClient(ctx.cid);
-  const mcodeSessions = await getMcodeSessionsForWorkspace(
-    cs.workspace && cs.workspace.dir,
-  );
+  // M3-B1: the mcodeSessions mirror now comes from the engine facade,
+  // which gates it on the declared `sessionCrud.listSessions` and reports
+  // (in the return value, not on the wire) whether the in-process host or
+  // the ACP mirror answered. The VALUE is the same array the endpoint
+  // built before — `readEngineSessionListForWorkspace` forwards to the
+  // same `getMcodeSessionsForWorkspace`, cache and cwd normalisation
+  // included. The snapshot body below is unchanged field for field:
+  // `snapshotViewFields` / `mcodeSessionsSnapshotFields` are the
+  // frontend's first-frame contract and this batch adds and removes
+  // nothing.
+  const { sessions: mcodeSessions } = await readEngineSessionListForWorkspace({
+    cwd: (cs.workspace && cs.workspace.dir) || "",
+    endpoint: "GET /api/state",
+  });
   res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
   // v0.5.bx-29: /api/state 也尝试 hydrate mavis db 真值 (best-effort)
   //   SSE 客户端 (EventSource) 也会调这个端点, 所以 hydrate 也能发生在 reconnect 时

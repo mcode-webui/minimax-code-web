@@ -312,7 +312,7 @@ describe("the composer is wired to the probe, not to the deadline", () => {
 describe("the draft store carries the kind, not a string to match on", () => {
   test("reset gives a clean record", () => {
     resetComposerDraftForTests();
-    assert.deepEqual(getComposerDraft(), {
+    assert.deepEqual(getComposerDraft("s1"), {
       value: "",
       error: null,
       errorKind: null,
@@ -323,8 +323,8 @@ describe("the draft store carries the kind, not a string to match on", () => {
 
   test("the kind and the outcome are independent fields", () => {
     resetComposerDraftForTests();
-    setComposerDraft({ error: "", errorKind: "unconfirmed", unconfirmed: "accepted" });
-    assert.equal(getComposerDraft().errorKind, "unconfirmed");
-    assert.equal(getComposerDraft().unconfirmed, "accepted");
+    setComposerDraft("s1", { error: "", errorKind: "unconfirmed", unconfirmed: "accepted" });
+    assert.equal(getComposerDraft("s1").errorKind, "unconfirmed");
+    assert.equal(getComposerDraft("s1").unconfirmed, "accepted");
   });
 });

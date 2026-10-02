@@ -296,14 +296,15 @@ describe("rejected submissions come back into the composer", () => {
     // merged patch into it is the difference between "the text came
     // back" and "the text came back until the next re-render".
     resetComposerDraftForTests();
-    setComposerDraft({ value: "", attachments: [] });
+    setComposerDraft("s1", { value: "", attachments: [] });
     setComposerDraft(
-      mergeRestoredDraft(getComposerDraft(), {
+      "s1",
+      mergeRestoredDraft(getComposerDraft("s1"), {
         content: "/stop",
         attachments: [],
       }),
     );
-    assert.equal(getComposerDraft().value, "/stop");
+    assert.equal(getComposerDraft("s1").value, "/stop");
     resetComposerDraftForTests();
   });
 
@@ -361,7 +362,7 @@ describe("rejected submissions come back into the composer", () => {
     const guardEnd = composerSource.indexOf("}", guardIdx + guard.length);
     const body = composerSource.slice(guardIdx, guardEnd);
     assert.ok(
-      /setComposerDraft\(\s*mergeRestoredDraft\(getComposerDraft\(\),\s*restored\)\s*\)/.test(
+      /setComposerDraft\(\s*dispatchDraftKey,\s*mergeRestoredDraft\(getComposerDraft\(dispatchDraftKey\),\s*restored\),?\s*\)/.test(
         body,
       ),
       `the guarded body must write mergeRestoredDraft(…) back through ` +

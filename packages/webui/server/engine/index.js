@@ -32,8 +32,12 @@
 //
 // Migration state (design §2.4): M1 done — the host construction moved
 // into providers/local-runtime-v2.js and runtime-host.js re-exports it;
-// no route's behaviour changed. M2–M4 will route new consumers through
-// this facade one endpoint family at a time.
+// no route's behaviour changed. M3's first batch (B0) done — the
+// catalogue host itself is now reached through this facade too
+// (engine/host.js), so the plugins and turn-diff routes no longer name
+// lib/acp-client.js. M3 batches B1 (#9 #10 #72 #74 #75) and B3 (#15 #16
+// #17 #19) done. B2 (#8 #11) and the rest of M3, then M4, will route
+// their consumers through this facade one endpoint family at a time.
 
 import { ENGINE_CAPABILITY_KEYS } from "./capabilities.js";
 // Declarations only — importing the provider *host-construction* modules
@@ -42,6 +46,9 @@ import { ENGINE_CAPABILITY_KEYS } from "./capabilities.js";
 // Host construction stays behind the lazy boundary runtime-host.js
 // always had; nothing on the boot path may import
 // providers/local-runtime-v2.js or providers/acp.js-style host modules.
+// The same rule applies one level up: engine/host.js reaches
+// lib/acp-client.js through a dynamic import, so re-exporting it here
+// costs a function, not a module load.
 import { LOCAL_RUNTIME_V2_CAPABILITIES } from "./providers/local-runtime-v2.capabilities.js";
 import { TUI_RUNTIME_ADAPTER_CAPABILITIES } from "./providers/tui-runtime-adapter.js";
 
@@ -52,6 +59,67 @@ export {
   engineCapabilityHttpResponse,
   isEngineCapabilityNotSupportedError,
 } from "./errors.js";
+// The lazy host getter: a function definition, no host, no @mavis/* import.
+export { getEngineCatalogueHost } from "./host.js";
+// The directory-read family's gated reads (step M3, batch B1). Re-exported
+// here so the facade is the one import site for engine reads, but the
+// dependency runs the other way too — session-reads.js consults
+// getEngineProvider. That cycle is safe for one concrete reason:
+// session-reads.js reads NOTHING from this module while it is being
+// evaluated. Its own module-scope constant is a literal table, and every
+// binding it needs from here (getEngineProvider, DEFAULT_ENGINE_PROVIDER_ID)
+// is read inside a function body, so a cold `import("./engine/index.js")`
+// can never hit a temporal dead zone. Keep it that way: a new top-level
+// `const X = SOMETHING_FROM_INDEX` in session-reads.js breaks the re-export.
+// It also stays off the boot path for the reason host.js does —
+// lib/acp-client.js and lib/config.js are reached through dynamic import()
+// inside the read functions.
+export {
+  SESSION_READ_ENDPOINTS,
+  assertSessionReadCapability,
+  readEngineSessionList,
+  readEngineSessionListForWorkspace,
+  readEngineSessionTitle,
+  readEngineVersion,
+  resolveSessionReadProvider,
+} from "./session-reads.js";
+// Step M3, batch B2: the session-tree read (#8) and the export
+// enrichment read (#11). Two modules, not one, because their gate
+// policies are opposite and a single file would force one of them to
+// inherit the other's: #8 is 100% engine data and gates HARD (501 via
+// `assertSessionTreeCapability`), while #11's primary source is
+// `sessions.json` and gates SOFT (`checkSessionExportCapability`
+// reports, never throws) so a provider that cannot serve a transcript
+// degrades the enrichment instead of the export. The same TDZ rule as
+// B1 applies to both: read nothing from this module at module scope.
+export {
+  SESSION_TREE_ENDPOINTS,
+  assertSessionTreeCapability,
+  readEngineSessionTree,
+  resolveSessionTreeProvider,
+} from "./session-tree-reads.js";
+export {
+  SESSION_EXPORT_ENDPOINTS,
+  checkSessionExportCapability,
+  readEngineSessionTranscript,
+  resolveSessionExportProvider,
+} from "./session-export.js";
+// The usage family's gated reads (step M3, batch B3). Same cycle, same
+// rule, same reasoning as session-reads.js above: usage-reads.js reads
+// NOTHING from this module at module scope — its `USAGE_READ_ENDPOINTS`
+// table is a literal and every binding it needs (`getEngineProvider`,
+// `DEFAULT_ENGINE_PROVIDER_ID`) is read inside a function body. A new
+// top-level `const X = SOMETHING_FROM_INDEX` in usage-reads.js breaks the
+// re-export exactly as it would in session-reads.js.
+export {
+  USAGE_READ_ENDPOINTS,
+  assertUsageReadCapability,
+  contextUsedTokens,
+  readEngineAccountQuota,
+  readEngineQuotaForecast,
+  readEngineSessionUsage,
+  resolveUsageReadProvider,
+} from "./usage-reads.js";
 export { LOCAL_RUNTIME_V2_CAPABILITIES } from "./providers/local-runtime-v2.capabilities.js";
 export { TUI_RUNTIME_ADAPTER_CAPABILITIES } from "./providers/tui-runtime-adapter.js";
 

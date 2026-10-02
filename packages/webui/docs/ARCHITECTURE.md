@@ -489,15 +489,28 @@ not import it but adopts the same shape. Unknown future statuses render as
 ### `engine/` (capability declarations + the local-runtime-v2 host)
 
 The engine abstraction lives at `server/engine/` (engine-abstraction
-batch B1; migration state M1). Five files, one job each:
+batch B1; migration state M1, plus M3 batches B0, B1, B2 and B3). Eleven
+files, one job each:
 
 | File | Owns |
 | --- | --- |
 | `engine/capabilities.js` | The contract: `ENGINE_CAPABILITY_KEYS` (the 14 matrix keys), `validateEngineCapabilities`, `assertEngineCapability`, `summarizeUnavailableCapabilities` |
 | `engine/errors.js` | `EngineCapabilityNotSupportedError` + `engineCapabilityHttpResponse` (the 501 payload shape) |
-| `engine/index.js` | The facade: `getEngineProvider`, `listEngineProviderIds` (registry by provider id; transport selection arrives with migration step M4) |
-| `engine/providers/local-runtime-v2.js` | `createCatalogueHost` (moved verbatim from `runtime-host.js`, which re-exports it) + `LOCAL_RUNTIME_V2_CAPABILITIES` |
+| `engine/host.js` | `getEngineCatalogueHost` — the lazy bridge to the one catalogue host. No static import of the host module: the getter body is a dynamic `import()` of `lib/acp-client.js`, so the facade costs a function, not a module load |
+| `engine/index.js` | The facade: `getEngineProvider`, `listEngineProviderIds`, `getEngineCatalogueHost` (registry by provider id; transport selection arrives with migration step M4) |
+| `engine/providers/local-runtime-v2.capabilities.js` | `LOCAL_RUNTIME_V2_CAPABILITIES` — **declaration only, and the split is load-bearing**: its sole import is `../capabilities.js`, so `/api/engine-capabilities` can read the capability table without pulling the v2 host's TypeScript dependency tree (~4.7 s of first-compile) into the boot path. That tree stays behind the same lazy boundary `acp-client.js` already documented |
+| `engine/providers/local-runtime-v2.js` | `createCatalogueHost` (moved verbatim from `runtime-host.js`, which re-exports it) + re-exports the declaration above, so consumers keep one import shape. This is the heavy one — `@mavis/local-runtime-v2`, `@mavis/config`, `@minimax/code/runtime-adapter` — and no file `app.js` reaches may import it |
 | `engine/providers/tui-runtime-adapter.js` | `TUI_RUNTIME_ADAPTER_CAPABILITIES` (declaration only — the adapter itself is constructed inside the v2 host) |
+| `engine/session-reads.js` | The directory-read family's facade calls (`readEngineSessionList`, `readEngineSessionListForWorkspace`, `readEngineSessionTitle`, `readEngineVersion`) and the endpoint→capability table `SESSION_READ_ENDPOINTS` (step M3, batch B1) |
+| `engine/session-tree-reads.js` | The session-tree family's facade call (`readEngineSessionTree`) and the endpoint→capability table `SESSION_TREE_ENDPOINTS` (step M3, batch B2). Gates **hard**: `assertSessionTreeCapability` throws → 501, because the tree is entirely engine data. Forwards to `lib/session-tree.js#getSessionTree`; the assembler is not duplicated |
+| `engine/session-export.js` | The export family's facade call (`readEngineSessionTranscript`) and the endpoint→capability table `SESSION_EXPORT_ENDPOINTS` (step M3, batch B2). Gates **soft**: `checkSessionExportCapability` reports and never throws, because export's primary source is `sessions.json`, not the engine |
+| `engine/usage-reads.js` | The usage family's facade calls (`readEngineAccountQuota`, `readEngineSessionUsage`, `readEngineQuotaForecast`), the derived figure `contextUsedTokens`, and the endpoint→capability table `USAGE_READ_ENDPOINTS` (step M3, batch B3). Gates **hard** on the two engine reads and declares **no capability at all** for #19, which touches no engine surface |
+
+Routes take the host from the facade and never from `lib/acp-client.js`:
+`routes/plugins.js` and `routes/turn-diff.js` call
+`getEngineCatalogueHost()`. Both keep a `deps`-injected data source
+(`deps.getCliService`, `deps.getDiffApplication`) so the handler suites stay
+hermetic.
 
 Declaration discipline (admission rules for any future provider, enforced
 by the snapshot tests in `test/lib/engine/capabilities.test.js`):
@@ -515,16 +528,226 @@ by the snapshot tests in `test/lib/engine/capabilities.test.js`):
    forbidden** — a missing capability must be legible before the call
    and loud after it (#110 fake-success discipline).
 4. One host per provider process-wide: `createCatalogueHost` remains the
-   single owner of the runtime instance (`acp-client.js#getCatalogueHost`
-   keeps its "Never build a second host" rule); `close()` stays bounded.
+   single owner of the runtime instance, and the only way to reach it is the
+   facade's `getEngineCatalogueHost()` (which forwards to
+   `acp-client.js#getCatalogueHost` and its "Never build a second host" rule);
+   `close()` stays bounded. Two `CliService` instances over one dataDir is a
+   split brain against the plugin / local-disable tables, not a redundancy.
 5. Levels drive the UI, never provider names: the frontend reads
    `GET /api/engine-capabilities` (`routes/engine-capabilities.js#handleEngineCapabilities`)
    and renders `full` / `partial`(+missing) / `none` — no hard-coded
    provider lists in UI code.
 
+### Declaration-vs-implementation snapshot (M2)
+
+A declaration is only as honest as the check behind it.
+`test/lib/engine/capability-snapshot.test.js#auditProviderCapabilities`
+audits every `full`/`partial` key of both registered providers against a
+REAL catalogue host booted once per run on an isolated tmp data dir
+(`MINIMAX_DATA_DIR` plus every `MCODE_WEBUI_*` path pinned BEFORE the
+provider import — setting only `MCODE_WEBUI_DATA_DIR` would leave the
+engine dir falling back to `~/.minimax` and rewriting the user's real
+config):
+
+- `full` — every tracked method of the key must be a function on the
+  declared surface member (`adapter`, `cliService`, or
+  `applications.session.diff`);
+- `partial` — the present half must exist; every method-named `missing`
+  item must be genuinely absent; an absent method that dropped out of
+  `missing` goes red (under-declaration); and kebab-case sub-capability
+  names (`file-write`, `git-diff`, …) go red the moment a covering
+  method appears on the surface — a future `getWorkspaceGitDiff` forces
+  the `git-diff` entry to be re-audited;
+- `none` — deliberately not method-checked; a provider may expose no
+  surface for the capability.
+
+The tracked method table (`REQUIRED_METHODS` in the same file) was
+derived from the live surfaces themselves (prototype-chain reflection:
+91 adapter methods, 94 CliService methods, the session.diff facade), not
+copied from the design matrix. The audit is a pure function over
+(declaration, method sets), and the mutation tests in the same file pin
+that each drift class — a flipped level, a deleted method, a grown
+sub-capability — turns it red. A registry-driven static guard sweeps
+every REGISTERED provider (`engine/index.js#listEngineProviderIds`) for
+the exact 14-key set, so a typo'd or unknown key cannot pass silently,
+and providers registered by M4 will be swept without editing the test.
+
 Runtime probing (downgrading a declared level when the environment
 disagrees) is deliberately absent in this batch — see `engine/index.js`
 for the reasoning.
+
+Boot-path discipline: `app.js` reaches `engine/index.js`, so that file and
+everything it imports statically must stay free of `@mavis/*`,
+`@minimax/*` and the host modules. M1 learned that by paying for it
+(209ms → 2700ms at server start; the facade's own load 4685ms → 5ms after
+declaration and construction were split). `test/lib/engine/host-facade.test.js`
+enforces it against the real module graph rather than against source text.
+`engine/session-reads.js`, `engine/session-tree-reads.js`,
+`engine/session-export.js` and `engine/usage-reads.js` all live under the
+same rule: their static imports are `engine/capabilities.js` and
+`engine/index.js` only, and every heavier dependency —
+`lib/acp-client.js`, `lib/config.js`, `lib/session-tree.js`,
+`lib/transcript.js`, `lib/usage.js`, `lib/mavis-usage.js` and
+`lib/quota-forecast.js` — is reached through `await import()` inside the
+functions.
+
+#### Which endpoints read through the facade (step M3, batch B1)
+
+`engine/session-reads.js` covers the five directory-read endpoints. Each
+row names the capability it gates on and the provider method it depends
+on, so a `partial` declaration that drops exactly that method answers 501
+naming it:
+
+| Endpoint | Capability · sub-item | Value source |
+| --- | --- | --- |
+| `GET /api/acp-sessions` | `sessionCrud` · `listSessions` | `acp-client.js#getMcodeSessionsForWorkspace` (30s cache, cwd normalisation) |
+| `GET /api/acp-session-title` | `sessionCrud` · `getSession` | `acp-client.js#getMcodeSessionTitle` |
+| `GET /api/protocol/list-sessions` | `sessionCrud` · `listSessions` | `acp-client.js#listAllMcodeSessions`; the route keeps its own cwd filter |
+| `GET /api/state` | `sessionCrud` · `listSessions` | the `mcodeSessions` mirror only — `snapshotViewFields` / `mcodeSessionsSnapshotFields` are untouched |
+| `GET /api/health` | none of the 14 keys | the ACP `initialize` `agentInfo.version` mirror; the catalogue host exposes no version accessor, so the facade reports the source instead of inventing one |
+
+Three properties this layer holds, each with a test behind it:
+
+1. **One normalizer.** The runtime path is projected by
+   `lib/catalogue-sessions.js#projectTuiSessionToAcp`, which mirrors the
+   ACP adapter's `toAcpSessionInfo` rule for rule — `title` and
+   `updatedAt` are omitted when absent, never emitted as `null`. The
+   facade forwards that projection; it does not re-project it.
+2. **Where the bytes came from is reported, not assumed.** Every read
+   answers a `source` of `catalogue`, `acp` or `acp-fallback` (the
+   transport asked for the catalogue host and got `null`). It is
+   metadata, not wire — the endpoints' payloads are byte-identical before
+   and after the facade.
+3. **The gate is real.** The registered provider declares `sessionCrud`
+   `full`, so nothing 501s today; the tests drive a fixture declaration
+   that lacks `listSessions` and assert the 501 payload. A gate nobody
+   ever exercises is indistinguishable from no gate.
+
+#### Which endpoints read through the facade (step M3, batch B3)
+
+`engine/usage-reads.js` covers the four usage endpoints (#15, #16, #17,
+#19). This family is where a refactor can be entirely silent, because three
+of its four numbers are derived rather than counted — so the table below is
+as much about where each number comes from as about which capability gates
+it:
+
+| Endpoint | Capability · sub-item | Value source |
+| --- | --- | --- |
+| `POST /api/usage` | `authCredentials` · `getAccountStatus` | `lib/usage.js#runUsageQuery` — the engine's `mcode/account/status` projection, copied into `cs.usage`; the payload is written byte-for-byte, `ok:false` / `error` shape included |
+| `POST /api/usage-trigger` | `authCredentials` · `getAccountStatus` | the same read; the two endpoints differ only in the client's `record` flag, which is the difference between a reading and a measurement |
+| `GET /api/usage-real` | `usageStats` · `getSessionUsage` | `lib/mavis-usage.js` over the engine's own `local_runtime_token_usage` table. `contextUsed` is derived here by `contextUsedTokens` |
+| `GET /api/usage/forecast` | none of the 14 keys | webui's own `~/.mcode-webui/usage-history.ndjson`, via `lib/quota-forecast.js`. It calls no engine surface, so it declares none |
+
+Four properties this family holds, each with a test behind it:
+
+1. **`contextUsed` is cumulative, and the cache counters are not in it.**
+   `totalInput + totalOutput + totalReasoning`. The cache counters are a
+   SUBSET of `input`, so adding them double-counts; `totalCacheWrite` is
+   not part of the context window at all. This is also NOT the chat flow's
+   `lastTurnContextTokens`: the context bar shows one turn's worth, `#17`
+   shows the session's spend, and `test/lib/engine/usage-reads.test.js`
+   perturbs each of the seven numeric fields one at a time so a merged or
+   "simplified" formula flips a row instead of quietly shipping.
+2. **`totalReasoning` is the database's own `SUM`, forwarded.** The
+   snapshot test reads the same aggregate with plain SQL and compares; a
+   facade that re-derived it from anything else fails.
+3. **The forecast is a pure function of a history prefix.** Every prefix of
+   a growing history is compared against the module's own
+   `forecastExhaustion(readHistory())` at the same instant, and the sample
+   count's flat stretch across the deliberately-null sample is asserted, so
+   a read that re-filtered, re-sorted or re-sampled would break the
+   sequence rather than the shape.
+4. **A `none` / `partial`-missing declaration would 501.** The registered
+   provider declares both `authCredentials` and `usageStats` `full`, so only
+   the fixture-driven tests can prove the gate bites. #19's `null` row is
+   the counter-example with a reason: gating a read that touches no engine
+   surface would remove a working endpoint in response to a declaration
+   about something it does not depend on.
+
+`#17` declares `usageStats` · `getSessionUsage` but does not yet CALL that
+method; it reads the same SQLite table the method reads, through
+`lib/mavis-usage.js`. Three measured reasons, stated in the module header:
+the catalogue host only exists under the `runtime` transport
+(`acp-client.js#transportWantsCatalogue`), and `acp` is the default;
+`getSessionUsage` answers `{summary, rows: UsageView[]}` where the endpoint
+answers a per-column aggregate with `rows` as a COUNT, so switching would
+mean rebuilding `totalReasoning` and `contextUsed` from a different
+starting point; and it would put the v2 TypeScript tree on an endpoint that
+needs nothing from it. M4 is where the two are allowed to meet.
+
+The transport→provider table has one entry (`runtime`). Under the default
+`acp` transport no provider is registered yet, so the gate reports
+`unregistered-transport` and passes through — M4 registers the ACP
+provider and the table gains its row. Passing through is not the same as
+claiming support, and the two are reported differently on purpose.
+
+#### Which endpoints read through the facade (step M3, batch B2)
+
+Batch B2 adds two endpoints, and they are the first two whose gate policies
+**differ**. They are separate files for that reason; merging them would force
+one to inherit the other's.
+
+| Endpoint | Capability · sub-item | Enforcement | Value source |
+| --- | --- | --- | --- |
+| `GET /api/session-tree` | `sessionCrud` · `listSessions` | hard — 501 | `lib/session-tree.js#getSessionTree`, forwarded verbatim |
+| `GET /api/sessions/:id/export` | `sessionCrud` · `getSession` | soft — reported | `lib/transcript.js#readMcodeTranscript` (the enrichment only) |
+
+**Why one gate throws and the other does not.** `/api/session-tree` is
+entirely engine data: the hierarchy is assembled from `local_runtime_sessions`
+in the runtime db, so a provider that cannot list sessions genuinely has no
+tree to return, and 501 is the honest answer. `/api/sessions/:id/export` is
+mostly *not* engine data — the conversation comes from `sessions.json`, and
+the engine only contributes a best-effort transcript enrichment the endpoint
+has always promised never to block on. Gating it hard would delete working
+functionality in response to a declaration about a capability the endpoint
+does not depend on. So `checkSessionExportCapability` answers what the
+provider declared and returns; the caller degrades `_meta.mcode_unavailable`
+through the endpoint's own pre-existing channel, and the export still serves
+the full webui chat. `test/lib/engine/session-export.test.js` pins this by
+swapping in a provider that declares `sessionCrud: none` and asserting that
+export reports while the tree family throws on the same fixture.
+
+Four properties this batch holds, each with a test behind it:
+
+1. **The node shape is unchanged, and it is asymmetric.** A root node
+   carries `{id, title, agent, kind, status, updatedAt, children}`; a child
+   node carries the same fields **without** `children`, because
+   `buildTree` adds that key only in the output map that wraps each root.
+   Measured on the real tree: 233 root nodes carry `children`, all 66 child
+   nodes do not. "Normalising" this would change 66 nodes' shape in the
+   sidebar.
+2. **There is no `parent_session_id` in the response.** The hierarchy is
+   structural — expressed through `children` — and `parent_session_id`
+   exists only inside the db read. A future addition of that key to the node
+   is a client-visible change, so the exact key set is asserted per depth.
+3. **One assembler.** `buildTree` remains the only thing that decides which
+   rows attach to which parent, and the route does not re-derive the
+   hierarchy. Rows that cannot attach — an orphan whose parent is not in the
+   row set, a cross-directory parent, a grandchild, a child of a `root`
+   container row, anything in a cycle — are dropped, as they always were.
+   That is why the batch was verified by exporting the tree before and
+   after and diffing every node, not by counting rows.
+4. **The tree's 501 is not swallowed.** The route's existing `try/catch`
+   would otherwise fold the capability error into its own
+   `{ok:false, reason:"session_tree_failed"}` soft-fail body and turn a 501
+   into a 200. The route re-throws `EngineCapabilityNotSupportedError` and
+   keeps the soft-fail path for everything else.
+
+**`source` is not transport-switched for the tree.** The tree is read from
+the engine's own runtime db, which both the `runtime` and the `acp`
+transport can see, so `readEngineSessionTree` reports `source: "runtime-db"`
+under every transport rather than claiming a catalogue answer. The
+declaration check is still transport-keyed: which provider is active is a
+transport question even when the read itself is not.
+
+**Export's enrichment is currently inert against the v2 schema, by
+design.** `lib/transcript.js` keeps its `v2-data-json` probe OUT of the
+default probe set so that export's behaviour does not change, and the live
+`local_runtime_message_rows` has no `content` column. So on a current
+runtime db the enrichment answers `no_matching_table` and every export
+reports `_meta.mcode_unavailable: true` with
+`_meta.source: "webui"`. That is pre-existing and deliberately preserved —
+re-enabling it is a behaviour change for a later slice, not a refactor.
 
 ## 4. The `clientState` payload
 

@@ -8,8 +8,9 @@
 // Zero new backend. Every endpoint is a thin projection over
 // `applications.session.diff` (getTurnDiff / revertTurnDiff / reapplyTurnDiff)
 // on the catalogue host — the same runtime application `routes/plugins.js`
-// reaches through `getCatalogueHost()`. This file owns input validation, the
-// wire shape, and the post-mutation refresh; it owns no diff logic.
+// reaches through the engine facade's `getEngineCatalogueHost()`. This file
+// owns input validation, the wire shape, and the post-mutation refresh; it
+// owns no diff logic.
 //
 // Two deliberate constraints, both from the real-run verification in
 // `.tickets/webui-parity/82-coord-premise-verification.md`:
@@ -43,7 +44,7 @@
 // "Only the latest turn diff can be changed" / content-conflict gate, and the
 // card shows that message verbatim instead of a generic failure.
 
-import { getCatalogueHost } from "../lib/acp-client.js";
+import { getEngineCatalogueHost } from "../engine/index.js";
 import { readJson } from "../lib/read-json.js";
 import { invalidateSessionTree } from "../lib/session-tree.js";
 import {
@@ -96,7 +97,7 @@ function readSelector(source) {
 
 /** `applications.session.diff` — and only that. */
 async function defaultGetDiffApplication() {
-  const host = await getCatalogueHost();
+  const host = await getEngineCatalogueHost();
   const diff = host && host.applications ? host.applications.session?.diff : undefined;
   return diff ?? null;
 }
