@@ -1,5 +1,18 @@
 // webui/server/routes/model.js
 // GET /api/models, POST /api/set-model, POST /api/permissions, POST /api/answer (legacy)
+//
+// M3-B4: `GET /api/models` now reads the catalogue through the engine
+// facade (`server/engine/model-reads.js`) instead of assembling it
+// here. The three sources (the engine session's `model` config option,
+// the merged providers config with the engine's `custom_provider`
+// tree as its bottom layer, the builtin cli-bundle extraction), the
+// two builtin-tree annotations (variant-style thinking levels and
+// context-window options) and the three derived "what is active" figures
+// all moved with it, as named pure functions pinned on their inputs.
+//
+// The response is byte-identical. This batch only moves the READ: the
+// WRITE half (`handleSetModel`) stays here for B7/B9, together with the
+// two other handlers below.
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -11,70 +24,26 @@ import {
   webuiPermissionToMcode,
   PERMISSION_MODES,
 } from "../lib/mcode-rpc.js";
-import { getBuiltinModelsFromMcode } from "../lib/models.js";
-import { loadProvidersConfig } from "../lib/providers-config.js";
-import {
-  readEngineCatalogue,
-  readEngineBuiltinThinking,
-  readEngineBuiltinContextWindows,
-  parseEngineModelWireValue,
-  variantChannelFor,
-  resolveModelId,
-  mergeEngineAndWebuiProviders,
-} from "../lib/engine-catalogue.js";
+import { readEngineModelCatalogue } from "../engine/model-reads.js";
+import { variantChannelFor, resolveModelId } from "../lib/engine-catalogue.js";
 import { webuiModeToLabel } from "../lib/interaction/permission-presets.js";
 import { readJson } from "../lib/read-json.js";
 
-/** The engine's `select` config option with this id, or null before a session exists. */
-function configOption(cs, id) {
-  const options = Array.isArray(cs && cs.configOptions) ? cs.configOptions : [];
-  return options.find((o) => o && o.id === id) || null;
-}
-
 /**
- * Attach the engine's context-window metadata (U6) onto a builtin
- * `minimax_api` catalogue entry, mutating `entry`.
- *
- * `contextWindowOptions` / `contextWindowOptionHints` come from the
- * engine's materialised builtin tree (same read as the thinking
- * projection — see `lib/engine-catalogue.js`). Only the minimax_api
- * builtin entries carry them today: the engine's ACP `model` config
- * option (the engine-session entries' source) does not advertise the
- * metadata, so those entries are annotated through the same builtin
- * projection keyed by the wire form's model id. Custom-provider /
- * config-layer entries never get the fields — a model without options
- * must stay field-free so the composer mounts no control.
- *
- * `contextLimit` (the CURRENT effective window, from the engine tree's
- * `limit.context`) is attached when the entry has none yet — a config
- * layer entry keeps its own value; builtin shell entries get the
- * engine's current window so the picker can show the active radio
- * before the user's first in-webui pick.
- */
-function attachContextWindowOptions(entry, projection) {
-  if (!projection) return;
-  entry.contextWindowOptions = [...projection.options];
-  if (projection.hints) {
-    entry.contextWindowOptionHints = { ...projection.hints };
-  }
-  if (entry.contextLimit === undefined && projection.currentLimit !== undefined) {
-    entry.contextLimit = projection.currentLimit;
-  }
-}
-
-/**
- * Read the optional providers-config file.
+ * Read the optional providers-config file — the v1 single-file reader.
  *
  * Path precedence: `MCODE_WEBUI_MODELS_CONFIG` env → `<cwd>/models.json`.
  * Shape: `{ providers: [{ id, label, models: [{ id, label?, contextLimit? }] }] }`.
- * Re-read on every request: editing the file does not require a server restart.
  * Missing / unreadable / malformed → null (treated as "no config").
  *
- * v2 layered resolution lives in `loadProvidersConfig()` (env > cwd >
- * user-level with deep merge). The /api/models route now reads
- * through that helper, so an env override of `MCODE_WEBUI_MODELS_CONFIG`
- * continues to win over the cwd file (matching the v1 contract), and
- * a `~/.mcode-webui/providers.json` layer is layered under both.
+ * KNOWN DEBT, kept deliberately: nothing calls this any more. The v2
+ * layered resolution in `loadProvidersConfig()` (env > cwd > user-level
+ * with deep merge) replaced it when #57 moved into
+ * `engine/model-reads.js`, and the function was already unreferenced
+ * before that move. It is retained rather than deleted because it is
+ * the written record of the v1 contract `loadProvidersConfig`'s own
+ * header cites; delete it in a batch whose subject is dead code, not as
+ * a side effect of moving a read.
  */
 function readModelsConfig() {
   const path =
@@ -90,93 +59,20 @@ function readModelsConfig() {
 }
 
 /**
- * Layered resolver used by /api/models. Returns the merged
- * `{ providers }` (v2 shape) or `null` when every layer is missing.
- *
- * Ticket 06: the engine's `custom_provider` tree is the new bottom
- * layer; the webui layers (env > cwd > user, already merged inside
- * `loadProvidersConfig`) win on id collision. The merge itself
- * lives in `mergeEngineAndWebuiProviders()` — see its file header
- * for the precedence rules. The helper here just shapes its
- * return into the legacy `{ providers: [...] }` view that
- * handleGetModels already understood.
- */
-function readProvidersConfigForModels() {
-  try {
-    const cfg = loadProvidersConfig();
-    const webuiProviders = (cfg && Array.isArray(cfg.providers)) ? cfg.providers : [];
-    // Engine catalogue read is best-effort: a missing `config.yaml`
-    // or a YAML parse error yields []. The merge below treats an
-    // empty engine catalogue as "no engine layer" and returns the
-    // webui layers verbatim — matching the pre-ticket-06 behaviour
-    // for installs without an engine config.
-    const engineProviders = readEngineCatalogue();
-    const merged = mergeEngineAndWebuiProviders(engineProviders, webuiProviders);
-    if (merged.length === 0) return null;
-    return { providers: merged };
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Coerce a provider prefix out of a model id.
- *
- * `minimax_api/MiniMax-M3` → `minimax_api`. Bare `MiniMax-M3` falls back to
- * `minimax_api` (the engine's only shipping builtin provider) so a user-typed
- * short id still resolves to a known group instead of orphaning itself.
- *
- * Used only for engine session entries (their ids are the engine's wire
- * form `m:<encodedProvider>:<model>:u`); webui-side entries now carry the
- * provider as an explicit `entry.provider = p.id` field, and the multi-segment
- * model id stays whole (see `webuiFullModelId`).
- */
-function providerOf(modelId, fallback = "minimax_api") {
-  if (!modelId) return fallback;
-  const i = modelId.indexOf("/");
-  if (i <= 0) return fallback;
-  return modelId.slice(0, i);
-}
-
-/**
- * Build the webui internal id for a catalogue entry: `<providerKey>/<modelId>`.
- *
- * The webui id is always two segments where the first is the provider key
- * and the second is the engine-side model id verbatim (the engine allows
- * `/` inside model ids — see engine-catalogue.js; the wire form
- * `formatModelKey(<providerId>, <modelId>) = <providerId>/<modelId>` uses
- * `/` as the only structural separator, so a downstream `<provider>/<model>`
- * webui form survives the round-trip through `resolveModelId`).
- *
- * Ticket 09-02 (grouping attribution): the previous implementation
- * skipped the prefix when `m.id.includes("/")` and let the bare upstream
- * id stand. That pushed the picker into the wrong group (the id's first
- * segment was used as a fallback for `providerOf`) and let two providers
- * with overlapping upstream ids collide on the `seen` dedupe (e.g.
- * `z-ai/glm-5.3` in `nousresearch` ate the sibling `zai-max/glm-5.3`).
- * Always prefixing — even when the model id already contains `/` —
- * keys every entry by `(providerKey, modelId)` and the dedupe is per
- * provider, as the ticket requires.
- */
-function webuiFullModelId(providerKey, modelId) {
-  return `${providerKey}/${modelId}`;
-}
-
-/**
  * Translate a webui-recorded model id to the engine's wire form.
  *
  * The webui records `cs.model.name` in `<providerKey>/<engineModelKey>`
- * form (see `webuiFullModelId`). The engine's `set_config_option` for
- * `configId: "model"` rejects anything that isn't the wire form
- * `m:<encodedProvider>:<encodedModel>:u` (see
+ * form (see `engine/model-reads.js#webuiFullModelId`). The engine's
+ * `set_config_option` for `configId: "model"` rejects anything that
+ * isn't the wire form `m:<encodedProvider>:<encodedModel>:u` (see
  * packages/tui/src/acp/control-state.ts#modelConfigValue / agent.ts
  * `parseModelConfigValue`). Without this translation a mid-session
  * pick of a multi-segment model id (`nousresearch/deepseek/x`) would
  * 400 from the engine.
  *
- * `resolveModelId` (in `lib/mcode-acp.js`) owns the resolver — it is
- * the same code path `applyRecordedModel` uses on session boot, so the
- * mid-session push and the boot-time replay share one source of
+ * `resolveModelId` (in `lib/engine-catalogue.js`) owns the resolver —
+ * it is the same code path `applyRecordedModel` uses on session boot, so
+ * the mid-session push and the boot-time replay share one source of
  * truth. Returns `null` when the engine has no matching option yet
  * (the engine configOptions list is empty before the first session
  * event lands); the caller falls back to the recorded id and the
@@ -195,321 +91,41 @@ function translateWebuiModelIdToEngineValue(cs, modelId, resolveOpts) {
 }
 
 /**
- * GET /api/models — catalogue, with priority-aware merging.
+ * GET /api/models — the composer model picker, through the engine
+ * facade.
  *
- * Priority order (highest wins for `current`, first wins for each id):
- *   1. Engine session's `model` config option. Its `options[].value` is
- *      the engine's encoded id (e.g. `m:<provider>:<model>:v:<variant>`),
- *      so it round-trips straight through `POST /api/set-model`. Used
- *      when a session is active.
- *   2. Optional `MCODE_WEBUI_MODELS_CONFIG` / `models.json` providers
- *      config. Per-provider groups with labels and `contextLimit`s.
- *      Ticket 06: this layer is the webui-side merge of
- *      `env > cwd > user-level`, with the engine's
- *      `custom_provider` tree as a new bottom layer — see
- *      `lib/engine-catalogue.js` for the merge rules.
- *   3. `getBuiltinModelsFromMcode()` — extracted from mcode's own
- *      cli.js bundle, so the list tracks mcode's TUI without a webui
- *      release.
+ * The endpoint's whole contract is the payload the facade built:
  *
- * `current` resolution:
- *   - With an active session config option: `option.currentValue`.
- *   - Without one: the recorded pre-session choice (`cs.model.name`),
- *     which `handleSetModel` already writes — so the selector shows
- *     the user's pick even before the engine attaches.
+ *   - `models` — the flat list, every entry carrying `id` / `label` /
+ *     `provider` / `source` plus whatever that source contributes
+ *     (`contextLimit`, `protocol`, `thinkingLevels`, `modalities`,
+ *     `contextWindowOptions`).
+ *   - `groups` — the same entries grouped by provider, so the picker can
+ *     render sections instead of a flat list. This is red line five's
+ *     "模型按供应商分组": the group id is the provider key, and the
+ *     builtin shell is always `minimax_api` regardless of the recorded
+ *     pick.
+ *   - `current` / `currentThinking` / `currentContextWindow` — the three
+ *     derived figures, resolved engine-value-first and never invented
+ *     from a default.
+ *   - `source` — which layer won.
+ *   - `reason: "no_catalogue"` — the soft marker, spread last and only
+ *     when the catalogue came out empty.
  *
- * Response carries `groups` so the UI can render provider sections,
- * alongside the flat `models` array for callers that do not care
- * about grouping.
+ * `engine/model-reads.js` owns the projection rules and their
+ * derivations; this route writes the body. The facade re-reads every
+ * source on every request, so editing `models.json`,
+ * `~/.mcode-webui/providers.json` or the engine's `config.yaml` still
+ * takes effect without a restart.
+ *
+ * Still a SYNCHRONOUS handler, exactly as before: the facade's read is
+ * synchronous too, because every source it needs was already a static
+ * import of this route (see the boot-path note in the engine module).
  */
 export function handleGetModels(_req, res, ctx) {
-  const cs = ctx.cs;
-  const option = configOption(cs, "model");
-  const engineOption = option; // keep the alias so reviewers can read priority order
-
-  const list = [];
-  const groups = [];
-  const seen = new Set();
-  // Ticket 36 — the engine's materialised builtin tree (provider.
-  // minimax.models) carries the variant-style thinking schema that
-  // /api/models never projected: switchable models became a two-state
-  // ["off","on"] toggle, forced_on+effortOptions models expose the
-  // engine's depth list verbatim, everything else stays metadata-free.
-  // One read serves both annotation sites below (engine-session
-  // entries and the builtin shell).
-  const builtinThinking = readEngineBuiltinThinking();
-  // U6 — same tree, context-window projection. One read serves both
-  // annotation sites below (engine-session entries and the builtin
-  // shell), exactly like `builtinThinking`.
-  const builtinContextWindows = readEngineBuiltinContextWindows();
-
-  // 1) Engine session config option — authoritative when present. We keep
-  //    its encoded ids verbatim so /api/set-model round-trips. Both `name`
-  //    and `label` are set on engine-sourced entries because pre-existing
-  //    callers (the composer chip) read `name`, while the new
-  //    provider-grouped panel reads `label`.
-  if (engineOption) {
-    const engineGroupId = "__engine";
-    const engineGroup = {
-      id: engineGroupId,
-      label: "Engine session",
-      models: [],
-    };
-    for (const o of Array.isArray(engineOption.options) ? engineOption.options : []) {
-      const id = o && typeof o.value === "string" ? o.value : null;
-      if (!id) continue;
-      if (seen.has(id)) continue;
-      seen.add(id);
-      const displayName = (o && o.name) || id;
-      const entry = {
-        id,
-        name: displayName,
-        label: displayName,
-        provider: providerOf(id),
-        source: "engine",
-      };
-      // Ticket 36: applyConfigOptionUpdate mirrors the engine's
-      // wire-form currentValue into cs.model.name outside the pick
-      // window, and the composer matches the active model by id —
-      // annotate the wire-form entries too so the thinking control
-      // survives a cross-client change.
-      const wire = parseEngineModelWireValue(id);
-      if (wire && wire.providerId === "minimax_api") {
-        const proj = builtinThinking.get(wire.modelId);
-        if (proj) entry.thinkingLevels = [...proj.levels];
-        // U6: annotate the wire-form entries with the engine's
-        // context-window options too, so the picker's detail area
-        // survives a cross-client model change (same reasoning as the
-        // thinkingLevels annotation above).
-        attachContextWindowOptions(entry, builtinContextWindows.get(wire.modelId));
-      }
-      engineGroup.models.push(entry);
-      list.push(entry);
-    }
-    if (engineGroup.models.length > 0) groups.push(engineGroup);
-  }
-
-  // 2) Providers config — read every request so editing the file does not
-  //    require a restart. Config wins on id collision with the builtin
-  //    catalogue so providers can override labels and contextLimit.
-  //
-  //    v2 layered resolution (env > cwd > user-level) is provided by
-  //    `loadProvidersConfig()`; the v1 single-file reader stays as a
-  //    fallback for callers that pass the legacy `models.json`
-  //    through a different code path (none today, but keeping it
-  //    documents the contract).
-  //
-  //    Ticket 06: the engine's `custom_provider` tree is also a
-  //    catalogue source — readEngineCatalogue() projects it to the
-  //    v2 shape (no key material) and mergeEngineAndWebuiProviders()
-  //    unions it with the webui layers (webui wins on collision).
-  const config = readProvidersConfigForModels();
-  if (config) {
-    for (const p of config.providers) {
-      if (!p || typeof p.id !== "string" || !p.id) continue;
-      const models = [];
-      for (const m of Array.isArray(p.models) ? p.models : []) {
-        if (!m || typeof m.id !== "string" || !m.id) continue;
-        // Ticket 09-02: always prefix the webui id with `<p.id>`. The
-        // upstream-style model id (`deepseek/x`, `z-ai/glm-5.3`,
-        // `openai/gpt-5.6-sol`) is kept verbatim inside the model id
-        // portion — the engine allows `/` inside model keys, the wire
-        // form `<provider>/<model>` uses `/` only as the structural
-        // separator, and the `seen` dedupe is per provider (so two
-        // sibling providers with overlapping upstream ids stay
-        // distinct instead of one swallowing the other).
-        const fullId = webuiFullModelId(p.id, m.id);
-        if (seen.has(fullId)) continue;
-        seen.add(fullId);
-        const entry = {
-          id: fullId,
-          label: typeof m.label === "string" && m.label ? m.label : m.id,
-          provider: p.id,
-          source: "config",
-        };
-        if (typeof m.contextLimit === "number" && m.contextLimit > 0) {
-          entry.contextLimit = m.contextLimit;
-        }
-        // v2 schema surfaces: each model carries protocol +
-        // thinkingLevels + modalities so the selector can pick the
-        // right controls without a second round-trip. `auth` only
-        // exposes hasKey + type — apiKey NEVER reaches this response.
-        if (typeof p.protocol === "string" && p.protocol) {
-          entry.protocol = p.protocol;
-        }
-        if (Array.isArray(m.thinkingLevels) && m.thinkingLevels.length > 0) {
-          entry.thinkingLevels = [...m.thinkingLevels];
-        }
-        if (Array.isArray(m.modalities) && m.modalities.length > 0) {
-          entry.modalities = [...m.modalities];
-        }
-        models.push(entry);
-        list.push(entry);
-      }
-      // Auth shape: only `hasKey` and `type`; no apiKey/baseURL.
-      // Operators see "configured or not" without leaking the secret.
-      // Ticket 06: the merged layer (engine + webui) may carry
-      // `hasKey` either via `p.auth.apiKey` (webui-side plaintext —
-      // masked elsewhere) or via `p.auth.hasKey` (engine-side
-      // boolean, set by `lib/engine-catalogue.js`). Either signal
-      // means the provider is configurable from the picker.
-      const groupHasKey = !!(
-        (p.auth && p.auth.apiKey) ||
-        (p.auth && p.auth.hasKey)
-      );
-      groups.push({
-        id: p.id,
-        label: typeof p.label === "string" && p.label ? p.label : p.id,
-        auth: {
-          hasKey: groupHasKey,
-          type: p.auth && typeof p.auth.type === "string" ? p.auth.type : "byok",
-        },
-        protocol: typeof p.protocol === "string" ? p.protocol : "openai",
-        models,
-      });
-    }
-  }
-
-  // 3) Builtin catalogue (extracted from mcode's cli.js bundle). The
-  //    builtins all belong to the engine's `minimax_api` provider
-  //    (see `lib/models.js#getBuiltinModelsFromMcode` — the cli.js
-  //    extraction regex targets `MiniMax-M*`). The builtin shell is
-  //    keyed by `minimax_api` regardless of the recorded pick, so a
-  //    pick of `nousresearch/openai/gpt-5.6-sol` doesn't drag the
-  //    MiniMax builtins into the `nousresearch` group. The previous
-  //    behaviour derived the builtin group's id from
-  //    `currentName.split("/")[0]`, which landed the builtins under
-  //    whichever provider the user happened to have picked (the
-  //    ticket 09-02 acceptance replay caught this as "8 config + 6
-  //    misplaced MiniMax builtins = 14 in `nousresearch`").
-  const builtins = getBuiltinModelsFromMcode();
-  const BUILTIN_PROVIDER = "minimax_api";
-  // The recorded pre-session pick — used below for `current`, NOT for
-  // builtin-group attribution (the builtin shell is keyed by
-  // BUILTIN_PROVIDER above).
-  const currentName =
-    (cs.model && typeof cs.model.name === "string" && cs.model.name) || "";
-  let builtinGroup = groups.find((g) => g.id === BUILTIN_PROVIDER);
-  if (!builtinGroup) {
-    builtinGroup = { id: BUILTIN_PROVIDER, label: BUILTIN_PROVIDER, models: [] };
-    groups.push(builtinGroup);
-  }
-  for (const m of builtins) {
-    const fullId = `${BUILTIN_PROVIDER}/${m}`;
-    if (seen.has(fullId)) continue;
-    seen.add(fullId);
-    const entry = {
-      id: fullId,
-      label: m,
-      provider: BUILTIN_PROVIDER,
-      source: "builtin",
-    };
-    // Ticket 36: attach the engine's thinking metadata for this
-    // builtin. `thinkingLevels` is exactly what the engine's tree
-    // supports — ["off","on"] for a switchable variant toggle, the
-    // engine's effort list when the model has one, and ABSENT for a
-    // forced_on model with nothing user-settable (the composer then
-    // mounts no control, by design). A config-layer entry with the
-    // same id has already taken the slot (seen dedupe) — the
-    // operator's config wins wholesale, unchanged rule.
-    const proj = builtinThinking.get(m);
-    if (proj) entry.thinkingLevels = [...proj.levels];
-    // U6: the engine's context-window options for this builtin, plus
-    // its current effective window as the `contextLimit` fallback.
-    attachContextWindowOptions(entry, builtinContextWindows.get(m));
-    list.push(entry);
-    builtinGroup.models.push(entry);
-  }
-
-  // Drop the empty builtin shell — a no-bundle empty group is noise.
-  // The drop is gated on "no providers config" so a fresh install with
-  // a config that names no models still has somewhere to attach the
-  // builtins once mcode reports them.
-  if (builtinGroup && builtinGroup.models.length === 0 && !config) {
-    const idx = groups.indexOf(builtinGroup);
-    if (idx >= 0) groups.splice(idx, 1);
-  }
-
-  // `current` is the engine's value when one exists; otherwise the
-  // recorded pre-session choice (`cs.model.name`, written by
-  // `handleSetModel`). When neither exists we report `null` rather than
-  // falling back to `DEFAULT_MODEL` — the old behaviour invented an
-  // active model the engine never confirmed, and the chip ended up
-  // claiming a model the session was not actually running. The chip
-  // renders a neutral label when `current` is `null` (see composer.tsx
-  // currentModelLabel).
-  const current =
-    (option && option.currentValue) ||
-    currentName ||
-    null;
-
-  // Current thinking-effort level: read the engine's `thinkingEffort`
-  // option when present; otherwise fall back to `cs.model.thinking`,
-  // which `handleSetModel` writes (pre-session record) and which the
-  // engine's `config_option_update` notification refreshes via
-  // `applyConfigOptionUpdate` (see lib/mcode-acp.js). The selector
-  // reads this to highlight the active level and to skip the picker
-  // when the active model has no `thinkingLevels`.
-  const thinkingEffortOption =
-    Array.isArray(cs && cs.configOptions) ? cs.configOptions.find((o) => o && o.id === "thinkingEffort") : null;
-  const currentThinking =
-    (thinkingEffortOption && typeof thinkingEffortOption.currentValue === "string"
-      ? thinkingEffortOption.currentValue
-      : null) ||
-    (cs && cs.model && typeof cs.model.thinking === "string" && cs.model.thinking) ||
-    null;
-
-  // U6 — the recorded context-window choice (`handleSetModel` writes
-  // `cs.model.contextWindow`). There is no engine config option behind
-  // it (the engine's ACP surface has no context channel — see the
-  // handleSetModel header), so unlike `currentThinking` there is no
-  // engine-value branch: the recorded pick is the only source. A
-  // recorded value the current model no longer advertises is still
-  // reported verbatim — the stale-pick display rule lives in the
-  // composer (same split as the thinking level's stale-suffix guard).
-  const recordedContextWindow =
-    cs && cs.model && Number.isSafeInteger(cs.model.contextWindow) && cs.model.contextWindow > 0
-      ? cs.model.contextWindow
-      : null;
-  // Fallback: the current model's catalogue `contextLimit` (the
-  // engine's current effective window), so the picker can highlight
-  // the active radio before the user's first in-webui pick.
-  const currentModelEntry = current ? list.find((m) => m.id === current) : null;
-  const currentContextWindow =
-    recordedContextWindow ??
-    (currentModelEntry &&
-    Number.isSafeInteger(currentModelEntry.contextLimit) &&
-    currentModelEntry.contextLimit > 0
-      ? currentModelEntry.contextLimit
-      : null);
-
-  const source =
-    option && Array.isArray(option.options) && option.options.length > 0
-      ? "acp-session-config"
-      : config
-        ? "config+mcode-cli-bundle"
-        : "mcode-cli-bundle";
-
+  const { payload } = readEngineModelCatalogue({ cs: ctx && ctx.cs });
   res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-  return res.end(
-    JSON.stringify({
-      ok: true,
-      models: list,
-      groups,
-      current,
-      currentThinking,
-      currentContextWindow,
-      source,
-      // Backwards-compat: surface the same soft-failure marker the older
-      // engine-only build did when nothing could be sourced. With the
-      // merge it should be rare (builtin catalogue + providers config
-      // cover most installs), but a missing mcode bundle AND an absent
-      // config leaves the catalogue empty — and a caller that wants to
-      // know "is this a hard failure or just no engine attached?" still
-      // gets the same hint.
-      ...(list.length === 0 ? { reason: "no_catalogue" } : {}),
-    }),
-  );
+  return res.end(JSON.stringify(payload));
 }
 
 // POST /api/set-model — only updates cs.model; with a session the same value

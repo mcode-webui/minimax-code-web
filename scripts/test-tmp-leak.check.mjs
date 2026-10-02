@@ -287,6 +287,7 @@ const KNOWN_PREFIXES = [
   "webui-first-turn-guard-",
   "webui-lan-gate-test-events-",
   "webui-model-engine-cat-",
+  "webui-model-reads-",
   "webui-model-user-level-",
   "webui-models-merge-",
   "webui-origingate-events-",

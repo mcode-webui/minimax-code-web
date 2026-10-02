@@ -2230,9 +2230,22 @@ code, killEndpoint: "/api/stop" }`。温和版→SIGKILL 的级联
 
 ### `GET /api/protocol/capabilities`
 
-返回引擎的 `agentInfo`（取自 `initialize` 应答）以及 webui
-已知的 capability 表（`server/lib/mcode-rpc.js` 里的
-`MCODE_ACP_CAPABILITIES`）。webui 用它来决定启用哪些 UI 控件。
+返回引擎的 `agentInfo`（取自 `initialize` 应答）、webui 已知的
+capability 表（`server/lib/mcode-rpc.js` 里的
+`MCODE_ACP_CAPABILITIES`），以及——自 M3 批次 B4 起——**engine-capabilities
+视图**：当前引擎 provider 声明的 14 键能力面加它的降级摘要，也就是
+`GET /api/engine-capabilities` 所服务的同一份声明。webui 用它来决定启用
+哪些 UI 控件。
+
+两张表、两个问题，都保留：
+
+- `capabilities` 回答的是**「这个控件对应哪个 ACP JSON-RPC 方法」**——
+  一张扁平的 `{方法: 布尔}` 表。
+- `engine.capabilities` 回答的是**「引擎到底有没有这项能力」**——
+  14 个矩阵键，每项形如 `{level, missing?, reason?}`。
+
+两者可以合法地不一致（ACP 面与能力矩阵不是同一套分类法），所以谁也
+不替换谁。
 
 **响应 200**
 ```json
@@ -2255,6 +2268,22 @@ code, killEndpoint: "/api/stop" }`。温和版→SIGKILL 的级联
     "new": true,
     "prompt": true
   },
+  "engine": {
+    "provider": "local-runtime-v2",
+    "providerFor": "transport",
+    "transport": "runtime",
+    "capabilities": {
+      "sessionCrud": { "level": "full" },
+      "updateCheck": {
+        "level": "none",
+        "reason": "interface-absent: no update-check method anywhere in local-runtime-v2 (design §1.3 v2)"
+      }
+    },
+    "unavailable": {
+      "none": ["updateCheck"],
+      "partial": [{ "key": "gitOperations", "missing": ["git-diff", "git-commit", "git-branch"] }]
+    }
+  },
   "notes": {
     "set_mode": "Takes a modeId from the session's availableModes.",
     "set_config_option": "With configId 'permissionMode' this changes the mode mid-session.",
@@ -2267,6 +2296,17 @@ code, killEndpoint: "/api/stop" }`。温和版→SIGKILL 的级联
 
 `mcodeVersion` 在尚无客户端挂接（还没收到 `initialize` 应答）
 时为 `"unknown"`；本端点不会臆造一个版本号。
+
+`engine.providerFor` 说明这份声明来自哪里，消费方应当据此分支：
+
+- `"transport"`——当前 `MCODE_WEBUI_TRANSPORT` 自己的已注册 provider
+  应答的。
+- `"default"`——尚无任何 provider 声明该传输（M4 引入），由默认
+  provider 的声明顶替。这份视图仍是一份真实且经评审的声明，但它未必
+  是已连接引擎的那份；把它当成后者报出去就是撒谎。
+
+`engine.unavailable` 是能力驱动型 UI 据以渲染的降级摘要：`none` 的键
+意味着隐藏整个入口，`partial` 的键意味着恰好隐藏或禁用列出的那些子动作。
 
 ---
 

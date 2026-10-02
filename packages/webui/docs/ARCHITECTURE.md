@@ -489,7 +489,7 @@ not import it but adopts the same shape. Unknown future statuses render as
 ### `engine/` (capability declarations + the local-runtime-v2 host)
 
 The engine abstraction lives at `server/engine/` (engine-abstraction
-batch B1; migration state M1, plus M3 batches B0, B1, B2 and B3). Eleven
+batch B1; migration state M1, plus M3 batches B0, B1, B2, B3 and B4). Fourteen
 files, one job each:
 
 | File | Owns |
@@ -505,6 +505,9 @@ files, one job each:
 | `engine/session-tree-reads.js` | The session-tree family's facade call (`readEngineSessionTree`) and the endpoint→capability table `SESSION_TREE_ENDPOINTS` (step M3, batch B2). Gates **hard**: `assertSessionTreeCapability` throws → 501, because the tree is entirely engine data. Forwards to `lib/session-tree.js#getSessionTree`; the assembler is not duplicated |
 | `engine/session-export.js` | The export family's facade call (`readEngineSessionTranscript`) and the endpoint→capability table `SESSION_EXPORT_ENDPOINTS` (step M3, batch B2). Gates **soft**: `checkSessionExportCapability` reports and never throws, because export's primary source is `sessions.json`, not the engine |
 | `engine/usage-reads.js` | The usage family's facade calls (`readEngineAccountQuota`, `readEngineSessionUsage`, `readEngineQuotaForecast`), the derived figure `contextUsedTokens`, and the endpoint→capability table `USAGE_READ_ENDPOINTS` (step M3, batch B3). Gates **hard** on the two engine reads and declares **no capability at all** for #19, which touches no engine surface |
+| `engine/account-reads.js` | The account family's facade call (`readEngineAccount`) and the endpoint→capability table `ACCOUNT_READ_ENDPOINTS` (step M3, batch B4). Gates **hard** on `authCredentials` · `getAccountStatus` — the same pair and the same provider method as `engine/usage-reads.js`, because #20 and #15/#16 read the same engine projection. Its read is **synchronous**; see the boot-path note below |
+| `engine/model-reads.js` | The model-catalogue family's facade call (`readEngineModelCatalogue`), the whole projection as named pure functions (`projectModelCatalogue`, `deriveModelSelection`, `buildModelCataloguePayload`, `catalogueSourceLabel`, `webuiFullModelId`, `providerOfModelId`, `attachContextWindowOptions`, `configOption`), and the endpoint→capability table `MODEL_READ_ENDPOINTS` (step M3, batch B4). Gates **soft**: `checkModelReadCapability` reports and never throws, because the catalogue's primary sources are files webui owns. Its read is **synchronous**, and it is the one engine module **not** re-exported from `engine/index.js` — see the boot-path note below |
+| `engine/capability-reads.js` | The capability-declaration family's facade call (`readEngineCapabilityView`) and the endpoint→capability table `CAPABILITY_READ_ENDPOINTS` (step M3, batch B4). Declares **no capability for #73** — it IS the declaration endpoint, and gating the gate would let a `none` hide the declaration that says so. It is the only endpoint in the migration whose response body gains a key (`engine`, the engine-capabilities view) |
 
 Routes take the host from the facade and never from `lib/acp-client.js`:
 `routes/plugins.js` and `routes/turn-diff.js` call
@@ -583,13 +586,37 @@ everything it imports statically must stay free of `@mavis/*`,
 declaration and construction were split). `test/lib/engine/host-facade.test.js`
 enforces it against the real module graph rather than against source text.
 `engine/session-reads.js`, `engine/session-tree-reads.js`,
-`engine/session-export.js` and `engine/usage-reads.js` all live under the
+`engine/session-export.js`, `engine/usage-reads.js`,
+`engine/account-reads.js` and `engine/capability-reads.js` all live under the
 same rule: their static imports are `engine/capabilities.js` and
 `engine/index.js` only, and every heavier dependency —
 `lib/acp-client.js`, `lib/config.js`, `lib/session-tree.js`,
-`lib/transcript.js`, `lib/usage.js`, `lib/mavis-usage.js` and
-`lib/quota-forecast.js` — is reached through `await import()` inside the
-functions.
+`lib/transcript.js`, `lib/usage.js`, `lib/mavis-usage.js`,
+`lib/quota-forecast.js`, `lib/mcode-rpc.js` — is reached through
+`await import()` inside the functions.
+
+`engine/model-reads.js` is the one deliberate exception, and it deviates on
+**both** sides of the import. Its four sources — `lib/config.js`,
+`lib/engine-catalogue.js`, `lib/models.js`, `lib/providers-config.js` — are
+static imports, because `routes/model.js` already imported all four
+**before** M3-B4 and the server's boot cost is therefore exactly what it
+was. They reach `@mavis/shared/local-runtime-paths` (via `lib/config.js`)
+and `js-yaml` (via `engine-provider-sync.js`), so the module is deliberately
+**not** re-exported from `engine/index.js`: making the shared facade — the
+one import site the whole server shares, and the one `routes/plugins.js`
+must stay light through — heavier than it has ever been would buy nothing.
+`routes/model.js` therefore imports `../engine/model-reads.js` directly,
+the same shape `routes/protocol.js` already uses for `engine/session-reads.js`.
+`test/lib/engine/host-facade.test.js` is the gate that forced this, and it
+is right to.
+
+The price is a **synchronous** read. Making the four imports dynamic would
+let the module re-export from the facade again, at the cost of turning
+`handleGetModels` into an async handler — a contract change for any caller
+that does not await, and the one thing this batch promises not to do. When
+the catalogue read becomes async (M4, with a provider-backed source) the
+module can move back behind `await import()` and be re-exported with the
+rest.
 
 #### Which endpoints read through the facade (step M3, batch B1)
 
@@ -748,6 +775,91 @@ runtime db the enrichment answers `no_matching_table` and every export
 reports `_meta.mcode_unavailable: true` with
 `_meta.source: "webui"`. That is pre-existing and deliberately preserved —
 re-enabling it is a behaviour change for a later slice, not a refactor.
+
+#### Which endpoints read through the facade (step M3, batch B4)
+
+Batch B4 adds three endpoints, and they are the first three whose gate
+policies are **all different from each other**: one hard, one soft, one
+declared-as-nothing. Three modules, for the reason B2 gave — a shared table
+would force one family to inherit another's policy.
+
+| Endpoint | Capability · sub-item | Enforcement | Value source |
+| --- | --- | --- | --- |
+| `GET /api/account` | `authCredentials` · `getAccountStatus` | hard — 501 | `lib/mcode-rpc.js#getAccountStatus`, the engine's `mcode/account/status` projection. The response body is built by the facade: `{ok:true, ...data}` on success, `{ok:false, reason}` at HTTP 200 otherwise |
+| `GET /api/models` | `authCredentials` · `listModelProviders` | soft — reported | three layered sources: the engine session's `model` config option, the merged providers config (webui `env > cwd > user` over the engine's `custom_provider` tree, via `lib/engine-catalogue.js`), and the builtin cli-bundle extraction |
+| `GET /api/protocol/capabilities` | none of the 14 keys | none — the gate is a reported no-op | the registered provider's 14-key declaration plus `summarizeUnavailableCapabilities`, and the ACP `initialize` `agentInfo` mirror |
+
+**Why #20 gates hard and #57 does not.** The account card is 100% engine
+data: there is no webui-side fallback for "who am I" or for a plan tier, so
+a provider that cannot report an account has nothing to return and 501 is the
+honest answer. The model catalogue is not: its primary sources are files
+webui owns and can read without the engine — `models.json`,
+`~/.mcode-webui/providers.json`, and a cli-bundle extraction — plus the
+engine's own `config.yaml`. Gating #57 hard would delete a working picker in
+response to a declaration about a capability it does not depend on, which is
+the same reasoning `engine/session-export.js` records for #11. So
+`checkModelReadCapability` reports and returns; the read is unaffected by
+what it reports.
+
+**Why #73 declares nothing.** It is the declaration endpoint. A gate on it
+would be circular, and a `none` anywhere in the declaration could hide the
+declaration that says so — the same reason B1's `/api/health` and B3's
+`/api/usage/forecast` declare no capability. `checkCapabilityReadCapability`
+is exported anyway, so the symmetry with the other families is visible and
+testable.
+
+Four properties this batch holds, each with a test behind it:
+
+1. **#57 is a full snapshot, and the oracle is the pre-refactor code.**
+   `test/lib/engine/model-reads.test.js` projects one rich fixture — engine
+   session option, engine `custom_provider` layer, webui config layer,
+   builtin layer, a builtin that **collides** with a config entry, a
+   switchable variant model, an effort-list model, a `forced_on` model, two
+   providers with overlapping upstream model ids, one provider with a key
+   and one without — and compares the whole response body, field for field
+   and key for key, against a literal captured from `3362c9be`. The oracle
+   is not recomputed by the functions under test. The load-bearing part is
+   what is **absent**: the config layer takes the `minimax_api/MiniMax-M3`
+   slot wholesale, so that entry appears once, with the operator's label and
+   `contextLimit`, and **without** the builtin's `thinkingLevels` and
+   `contextWindowOptions`.
+2. **Grouping is by provider, and the dedupe is per provider.** The webui id
+   is always `<providerKey>/<engineModelKey>`, even when the upstream model id
+   already contains `/` (ticket 09-02). `nousresearch/z-ai/glm-5.3` and
+   `zai-max/z-ai/glm-5.3` are two rows in two groups; the previous
+   behaviour let one swallow the other. The builtin shell is keyed by
+   `minimax_api` **regardless of the recorded pick**, which is the
+   "8 config + 6 misplaced builtins = 14 in `nousresearch`" replay.
+3. **The two builtin-tree projections reach two sites, and a miss is a miss.**
+   `readEngineBuiltinThinking` and `readEngineBuiltinContextWindows` are two
+   views of `provider.minimax.models`, read once per request and consumed at
+   the engine-session site (keyed by the wire form's **bare** model id) and at
+   the builtin shell. A wire form whose model segment does not parse, or a
+   model absent from the tree, produces a field-free entry — never a
+   half-annotation. The section that perturbs the tree asserts which entries
+   move for which record.
+4. **#73's change is additive and its fallback is labelled.** The response
+   gains exactly one key, `engine`, placed after `capabilities`; every
+   pre-existing key keeps its exact name, position and value, and the ACP
+   wire table is **not** replaced by the 14 matrix keys (they answer a
+   different question, and `docs/API.md` documents both). Inside the view,
+   `providerFor` says whether the declaration came from the active
+   transport's provider or from the default provider standing in for a
+   transport no provider claims yet — a capability-detection endpoint must
+   not report a standing-in declaration as though it were the connected
+   engine's.
+
+**The three "what is active" figures are derived once.** `current` prefers
+the engine's `currentValue` and falls back to the recorded pre-session pick;
+`currentThinking` prefers the engine's `thinkingEffort` option; and
+`currentContextWindow` is the recorded window with the current model's
+catalogue `contextLimit` as the fallback. When neither exists the answer is
+`null`, never a default model — the old behaviour invented an active model
+the engine never confirmed and the composer chip claimed it.
+
+**`handleGetModels` is still a synchronous handler.** The facade read is
+synchronous too, and the test asserts it: the body must be complete when the
+handler returns, because that is what the pre-M3 handler guaranteed.
 
 ## 4. The `clientState` payload
 

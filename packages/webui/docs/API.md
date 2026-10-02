@@ -2416,10 +2416,23 @@ insensitive, trailing slash-insensitive, `\` and `/` interchangeable).
 
 ### `GET /api/protocol/capabilities`
 
-Returns the engine's `agentInfo` (from the `initialize` reply) plus the
+Returns the engine's `agentInfo` (from the `initialize` reply), the
 capability table webui knows about (`MCODE_ACP_CAPABILITIES` in
-`server/lib/mcode-rpc.js`). Used by the webui to decide which UI
-controls to enable.
+`server/lib/mcode-rpc.js`), and — since M3 batch B4 — the
+**engine-capabilities view**: the declared 14-key capability surface of
+the active engine provider plus its degradation summary, the same
+declaration `GET /api/engine-capabilities` serves. Used by the webui to
+decide which UI controls to enable.
+
+Two tables, two questions, both kept:
+
+- `capabilities` answers **"which ACP JSON-RPC method does this control
+  map onto"** — a flat `{method: boolean}` map.
+- `engine.capabilities` answers **"does the engine have this capability at
+  all"** — the 14 matrix keys, each `{level, missing?, reason?}`.
+
+They can legitimately disagree (the ACP surface and the capability matrix
+are not the same taxonomy), so neither replaces the other.
 
 **Response 200**
 ```json
@@ -2442,6 +2455,22 @@ controls to enable.
     "new": true,
     "prompt": true
   },
+  "engine": {
+    "provider": "local-runtime-v2",
+    "providerFor": "transport",
+    "transport": "runtime",
+    "capabilities": {
+      "sessionCrud": { "level": "full" },
+      "updateCheck": {
+        "level": "none",
+        "reason": "interface-absent: no update-check method anywhere in local-runtime-v2 (design §1.3 v2)"
+      }
+    },
+    "unavailable": {
+      "none": ["updateCheck"],
+      "partial": [{ "key": "gitOperations", "missing": ["git-diff", "git-commit", "git-branch"] }]
+    }
+  },
   "notes": {
     "set_mode": "Takes a modeId from the session's availableModes.",
     "set_config_option": "With configId 'permissionMode' this changes the mode mid-session.",
@@ -2454,6 +2483,20 @@ controls to enable.
 
 `mcodeVersion` is `"unknown"` before a client has attached (no `initialize`
 reply yet); the endpoint does not invent a version.
+
+`engine.providerFor` says where the declaration came from, and a consumer
+should branch on it:
+
+- `"transport"` — the active `MCODE_WEBUI_TRANSPORT`'s own registered
+  provider answered.
+- `"default"` — no provider claims that transport yet (arrives with M4), so
+  the default provider's declaration is standing in. The view is still a
+  real, reviewed declaration, but it is not necessarily the connected
+  engine's, and reporting it as such would be a lie.
+
+`engine.unavailable` is the degradation summary the capability-driven UI
+renders from: a `none` key means hide the entry point, a `partial` key means
+hide or disable exactly the listed sub-actions.
 
 ---
 
