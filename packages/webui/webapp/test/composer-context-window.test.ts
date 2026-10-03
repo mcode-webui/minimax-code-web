@@ -462,12 +462,13 @@ describe("ticket 49 batch 1 — follow-focus wiring survives batch 2 (kept tripw
     );
     // B2 ③ — the editable composer-level control stays outside the picker.
     assert.match(composerSource, /data-testid="thinking-effort-trigger"/);
-    // B10 — the U6 testids survive through the prefix family.
+    // B10 — the U6 testids survive through the prefix family. The list is
+    // in place inside the fly-out, so there is no collapsed-row value
+    // label left to carry — the ✓ on the option row is the value.
     for (const anchor of [
       'contextPrefix="model-settings-context"',
       '${testIdPrefix}-select',
       '${testIdPrefix}-option-${windowValue}',
-      '${testIdPrefix}-select-value',
       '${testIdPrefix}-hint-higher-usage',
     ]) {
       assert.ok(composerSource.includes(anchor), `anchor must survive: ${anchor}`);
@@ -475,13 +476,14 @@ describe("ticket 49 batch 1 — follow-focus wiring survives batch 2 (kept tripw
   });
 });
 
-describe("ticket 49 batch 2 (A1) — the cascade's two tiers", () => {
+describe("ticket 49 batch 2 (A1) — the cascade's fly-out", () => {
   test("one list, and the settings fly out from the row that owns them", () => {
     // The picker is a CASCADE: the list is the only thing in the panel,
     // and a model's settings fly out one tier deeper than its row
-    // (展示右侧一), with the context options one tier deeper again
-    // (展示右侧二). An earlier revision read the reference as a permanent
-    // two-column panel; these guards are what keeps it a cascade.
+    // (展示右侧一), carrying the context sizes in place. An earlier
+    // revision read the reference as a permanent two-column panel, and a
+    // later one took 展示右侧二 as a third floating tier — which landed
+    // back over the model list. These guards keep it one fly-out deep.
     assert.doesNotMatch(
       composerSource,
       /model-select-panel-detail-column/,

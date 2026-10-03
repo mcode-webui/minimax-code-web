@@ -1243,9 +1243,8 @@ function PermissionSelect({
  * the viewport, and clamps vertically so a fly-out near the bottom edge
  * stays on screen.
  *
- * ONE engine for BOTH tiers of the picker's cascade — the model→settings
- * fly-out and the context-window→options fly-out nested inside it — so the
- * two tiers cannot drift apart in flip or clamp behaviour.
+ * ONE engine for the picker's cascade — the model→settings fly-out — so
+ * that reopening it can never disagree with the previous placement.
  *
  * `deps` is the caller's re-measure trigger (what about the content changed
  * its size). The position is deliberately NOT recomputed on every render:
@@ -1300,9 +1299,8 @@ function useFlyoutPosition(
  * One tier of the picker's cascading fly-out.
  *
  * The reference picker is NOT a two-column panel: hovering a model flies
- * out a settings surface one tier deeper than that row, and the context
- * window inside it flies out ANOTHER tier deeper than itself. This is the
- * shared shell for both tiers — `position: fixed` placement via
+ * out a settings surface one tier deeper than that row. This is that
+ * tier's shell — `position: fixed` placement via
  * `useFlyoutPosition`, a `role="menu"`, Escape / ArrowLeft handing focus
  * back to the row that opened it, and the hover grace the parent owns
  * (`onMouseEnter` cancels the close timer so the cursor can cross the gap
@@ -1454,7 +1452,7 @@ function ModelSelect({
   const [open, setOpen] = useState(false);
 
   /**
-   * The model whose settings fly-out is open — the cascade's first tier.
+   * The model whose settings fly-out is open.
    *
    * The reference picker does not reserve a column for settings: hovering
    * (or keyboard-focusing) a model row flies the surface out one tier
@@ -1480,9 +1478,9 @@ function ModelSelect({
    * hovered its node is already in it.
    */
   const flyoutAnchorsRef = useRef(new Map<string, HTMLDivElement>());
-  /** Pending close timer for the first tier. Set when the cursor leaves
-   *  the row, so a brief traversal from the row into its fly-out (or into
-   *  the second tier nested inside it) does not retract the surface. */
+  /** Pending close timer for the fly-out. Set when the cursor leaves
+   *  the row, so a brief traversal from the row into its fly-out does not
+   *  retract the surface. */
   const flyoutCloseTimerRef = useRef<number | null>(null);
 
   const cancelFlyoutClose = useCallback(() => {
@@ -1586,9 +1584,9 @@ function ModelSelect({
    * "没有二次菜单的，则直接点击后就完成" rule.
    *
    * A model with neither a thinking level nor a real context choice has
-   * no second tier, so hovering it shows nothing and clicking it is the
-   * whole selection. Rendering a fly-out for it would be an empty panel
-   * over a row that could have been picked outright.
+   * no settings to fly out, so hovering it shows nothing and clicking it
+   * is the whole selection. Rendering a fly-out for it would be an empty
+   * panel over a row that could have been picked outright.
    *
    * `contextWindowOptions` is normalised before counting, and the
    * >= 2 threshold matches `ModelSettingsDetail`'s mount gate: a
@@ -1655,15 +1653,14 @@ function ModelSelect({
    * `{thinking}` / `{model, contextWindow}` payloads the composer-level
    * controls send. No request body changes.
    *
-   * The two tiers close differently, and that asymmetry IS the
+   * The two controls close differently, and that asymmetry IS the
    * reference's completion rule ("有二级菜单的，点击二级菜单后才是整个
    * 选择逻辑完成"):
    *
-   *   - the thinking switch lives in the FIRST tier, so it records and
-   *     leaves the fly-out open — a level and a context window are meant
-   *     to be adjusted in one visit;
-   *   - a context window can only be chosen in the SECOND tier, so that
-   *     pick is where the whole selection completes and the menu closes.
+   *   - the thinking switch records and leaves the fly-out open — a level
+   *     and a context window are meant to be adjusted in one visit;
+   *   - a context window is a commitment, so that pick is where the whole
+   *     selection completes and the menu closes.
    */
   const handleDetailThinkingPick = useCallback(
     (level: string) => {
@@ -1681,7 +1678,7 @@ function ModelSelect({
         [value]: { ...prev[value], contextWindow: windowValue },
       }));
       onContextPick?.(windowValue);
-      // The second tier is the completing tier — see the note above.
+      // Choosing a window is where the selection completes.
       setFlyoutFor(null);
       setOpen(false);
     },
@@ -1697,7 +1694,7 @@ function ModelSelect({
   // NB: the active model changing does NOT retract the fly-out. Picking a
   // model row is the step that makes its fly-out LIVE (it leaves preview
   // and becomes the recorded model), so clearing the fly-out on `value`
-  // would close the surface between the pick and the second-tier pick
+  // would close the surface between the pick and the window pick
   // that completes the selection — the exact flow the reference has.
 
   /**
@@ -1810,12 +1807,14 @@ function ModelSelect({
       popupRender={() => (
         <SelectPanel ref={panelRef} testId="model-select-panel">
           {/*
-            The reference picker's two-column dialog shape
-            (`webui-model-menu--two-column`): a left list column and a
-            right settings column in ONE popup, so the focused model's
-            effort / context settings are visible without leaving the
-            list. The left column's provider GROUPING is the
-            reference's own shape, not an exception to it.
+            The list is the whole popup. The reference picker reserves no
+            width for settings — they fly out beside the hovered row — so
+            a panel with a settings column in it is the shape the
+            reference does NOT have. That shape was tried here and
+            reverted; the tripwires in model-picker-layout.test.ts fail
+            if its class name ever reappears here, comments included.
+            The left column's provider GROUPING is the reference's own
+            shape, not an exception to it.
           */}
           {models.length === 0 ? (
             <SelectRow testId="model-select-empty" label={t("composer.noModels")} />
@@ -1839,15 +1838,13 @@ function ModelSelect({
               ) : null}
               {/*
                 The list, in the reference's own shape: a provider group
-                header, and under it one row per MODEL. No cascade — the
-                models ARE the rows, so every name in the catalogue is
-                readable without a second click, and there is only one
-                navigation model for one list.
+                header, and under it one row per MODEL. Every name in the
+                catalogue is readable without a second click, and there is
+                only one navigation model for one list.
 
-                A model row is also the settings column's follow-focus
-                target: hovering or keyboard-focusing it points
-                `focusedModelId` at that model, and the column falls back
-                to the active model when nothing is focused.
+                A model row is also the fly-out's anchor: hovering or
+                keyboard-focusing it points `flyoutFor` at that model, and
+                the fly-out describes it.
 
                 `disabled` is the GROUP's no-key verdict, applied to every
                 row under it: a provider without an API key cannot reach
@@ -1933,9 +1930,9 @@ function ModelSelect({
                             onMouseEnter={() => {
                               if (disabled) return;
                               cancelFlyoutClose();
-                              // A model with nothing to configure has no
-                              // second tier, so it never grows a fly-out —
-                              // its click IS the whole selection.
+                              // A model with nothing to configure never
+                              // grows a fly-out — its click IS the whole
+                              // selection.
                               if (hasSettings) setFlyoutFor(model.id);
                             }}
                             onMouseLeave={() => {
@@ -1964,15 +1961,14 @@ function ModelSelect({
                               if (hasSettings) {
                                 // Not complete yet: the pick makes this
                                 // model's fly-out live instead of a preview,
-                                // and the selection finishes in the second
-                                // tier (a context window) — or simply by
-                                // leaving this row, for a model that only
-                                // has the thinking switch.
+                                // and the selection finishes on a window
+                                // pick — or simply by leaving this row, for
+                                // a model that only has the thinking switch.
                                 cancelFlyoutClose();
                                 setFlyoutFor(model.id);
                                 return;
                               }
-                              // No second tier → the click is the whole
+                              // Nothing to configure → the click is the whole
                               // selection, so the picker closes on it.
                               setFlyoutFor(null);
                               setOpen(false);
@@ -1986,7 +1982,7 @@ function ModelSelect({
                 })}
               </div>
                 {/*
-                  The cascade's FIRST TIER: the hovered (or focused)
+                  The cascade's FLY-OUT: the hovered (or focused)
                   model's settings, flying out one tier deeper than the
                   row that owns it. Not a column — the reference reserves
                   no width for settings, and a permanent column is what
@@ -2194,8 +2190,8 @@ function ModelSettingsDetail({
             question the list just answered.
 
             Two rows, in the reference's order: 思考 with its control on the
-            right of the label, then 上下文窗口 with the current value as a
-            row that opens the SECOND tier.
+            right of the label, then 上下文窗口 with its sizes listed
+            straight below, marked where you are.
           */}
           {levels.length > 0 ? (
             <div data-testid={`${detailPrefix}-levels`} className="px-1 pb-1">
@@ -2242,8 +2238,8 @@ function ModelSettingsDetail({
                    * screen-reader contract for nothing.
                    *
                    * A pick records immediately and does NOT close the
-                   * menu: this is the FIRST tier, so the visit continues
-                   * into the context window's second tier. */
+                   * menu: a level is a mid-visit edit, so the visit
+                   * continues into the window list below. */
                   <div
                     role="radiogroup"
                     aria-label={t("modelSelector.thinkingLevels")}
@@ -2300,19 +2296,12 @@ function ModelSettingsDetail({
               <div className="pb-0.5 text-caption-small-strong uppercase tracking-wide text-text_default_tertiary">
                 {t("modelSelector.contextWindow")}
               </div>
-              {/*
-                `key={target.id}` resets the select's open state when the
-                fly-out follows the cursor to another model, so a second
-                tier left open on one model does not greet the next one.
-              */}
               <ContextWindowSelect
-                key={target.id}
                 t={t}
                 testIdPrefix={contextPrefix}
                 options={contextOptions}
                 hints={contextHints}
                 current={contextCurrent}
-                effective={contextWindow}
                 disabled={preview}
                 onContextPick={onContextPick}
               />
@@ -2582,21 +2571,13 @@ function normalizeContextWindowOptions(options: unknown): number[] {
 }
 
 /**
- * The context-window row — and the cascade's second tier.
+ * The context-window list, in place inside the settings fly-out.
  *
- * The collapsed row shows the current value and a chevron; the options
- * themselves fly out one tier deeper than that row, which is what makes
- * this the reference's 展示右侧二 rather than an in-place disclosure.
- *
- * Its own component so the open state has a home: the open state follows
- * the FIRST tier (it unmounts with it) and is the one piece of this
- * fly-out that changes without the model changing, so hoisting it into
- * the parent would re-render the whole surface on every toggle.
- *
- * What the collapsed row shows is the honest answer to "which window am
- * I on": the effective value when the model confirms one, and otherwise
- * the FIRST option in a muted style — a placeholder, not a selection. A
- * previewed (unpicked) model therefore shows no highlight at all.
+ * Its own component so the fly-out's body has a home; there is no local
+ * open state to own any more, because the options are always shown (see
+ * below). Before that, the collapsed row's open state was the one piece
+ * of this fly-out that changed without the model changing, which is why
+ * it never got hoisted into the parent.
  */
 function ContextWindowSelect({
   t,
@@ -2604,7 +2585,6 @@ function ContextWindowSelect({
   options,
   hints,
   current,
-  effective,
   disabled,
   onContextPick,
 }: {
@@ -2614,169 +2594,79 @@ function ContextWindowSelect({
   hints?: Record<string, string>;
   /** The value that carries the ✓ — `null` in preview, by design. */
   current: number | null;
-  /** The recorded/effective value, independent of the preview gate. */
-  effective?: number | null;
   disabled?: boolean;
   onContextPick?: (value: number) => void;
 }) {
   /**
-   * The second tier starts OPEN.
+   * The context window, as a list of the sizes the model offers.
    *
-   * The reference shows both tiers at once: hovering a model brings up
-   * the settings surface AND the context options beside it. Requiring a
-   * click on the context row first made the options a second interaction
-   * to discover, and the row's own chevron had nothing left to announce
-   * — a disclosure arrow over a list that is already showing.
+   * NOT a collapsed row that opens a third tier. Every step of that
+   * nesting was one affordance too many: the fly-out already says which
+   * model it describes, so a row restating the current value, an arrow
+   * over it, and then a separate panel carrying the same values are
+   * three ways to answer one question — and the third of them was a
+   * floating panel landing back over the model list it was describing.
    *
-   * It stays collapsible: the chevron still collapses and re-opens it,
-   * which is what a user who wants a compact fly-out uses. `key={target.id}`
-   * on the caller re-mounts this per model, so a tier the user collapsed
-   * on one model does not stay collapsed on the next one.
+   * The list IS the answer. The current size carries the ✓, the same
+   * marker every other picker in this app uses, and a previewed model
+   * (not the active one) carries none — the record belongs to the active
+   * model, so there is nothing to mark. `role=listbox` / `role=option` /
+   * `aria-selected` is unchanged from when this list was in place.
    */
-  const [open, setOpen] = useState(true);
-  /** The row the SECOND tier anchors to. Same engine as the first tier
-   *  (`useFlyoutPosition`), one tier deeper in the DOM. */
-  const triggerRef = useRef<HTMLButtonElement | null>(null);
-  /** The second tier's own close grace, independent of the first tier's:
-   *  the cursor has to be able to cross the gap out of the context row,
-   *  into these options, and back. */
-  const closeTimerRef = useRef<number | null>(null);
-
-  const cancelClose = useCallback(() => {
-    if (closeTimerRef.current != null) {
-      window.clearTimeout(closeTimerRef.current);
-      closeTimerRef.current = null;
-    }
-  }, []);
-
-  const scheduleClose = useCallback(() => {
-    cancelClose();
-    closeTimerRef.current = window.setTimeout(() => {
-      setOpen(false);
-      closeTimerRef.current = null;
-    }, 120);
-  }, [cancelClose]);
-
-  useEffect(() => {
-    if (!open) cancelClose();
-  }, [open, cancelClose]);
-  useEffect(() => cancelClose, [cancelClose]);
-
-  const confirmed =
-    typeof effective === "number" && options.includes(effective) ? effective : null;
-  const shown = confirmed ?? options[0]!;
   return (
     <div data-testid={`${testIdPrefix}-select`}>
-      <button
-        ref={triggerRef}
-        type="button"
-        aria-haspopup="listbox"
-        aria-expanded={open}
+      <div
+        role="listbox"
         aria-label={t("modelSelector.contextWindow")}
-        disabled={disabled}
-        title={disabled ? t("modelSelector.detailPreviewHint") : undefined}
-        data-testid={`${testIdPrefix}-select-trigger`}
-        onMouseEnter={cancelClose}
-        onMouseLeave={scheduleClose}
-        onFocus={cancelClose}
-        onClick={() => {
-          cancelClose();
-          setOpen((prev) => !prev);
-        }}
-        className={[
-          "flex w-full items-center gap-1.5 rounded-[8px] border border-border_default px-2 py-1 text-caption-small text-text_default_primary transition-colors",
-          disabled
-            ? "cursor-not-allowed opacity-50"
-            : "hover:bg-bg_interaction_tertiary_hover",
-        ].join(" ")}
+        data-testid={`${testIdPrefix}-select-list`}
+        className="flex flex-col"
       >
-        <span
-          data-testid={`${testIdPrefix}-select-value`}
-          className={confirmed === null ? "text-text_default_tertiary" : undefined}
-        >
-          {formatContextWindow(shown)}
-        </span>
-        <Icon
-          name="chevronDown"
-          size={14}
-          aria-hidden="true"
-          className="ml-auto text-icon_default_tertiary"
-        />
-      </button>
-      {open ? (
-        /*
-          The cascade's SECOND TIER — the reference's 展示右侧二. The
-          options fly out one tier deeper than the row that shows the
-          current value, rather than unfolding in place, because a list
-          that grows in place inside the first tier makes the first tier's
-          own height jump under the cursor.
-
-          It carries the same `role=listbox` / `role=option` /
-          `aria-selected` contract the in-place list had: the cascade got
-          deeper, the semantics did not change.
-        */
-        <SettingsFlyout
-          testId={`${testIdPrefix}-select-list`}
-          ariaLabel={t("modelSelector.contextWindow")}
-          anchorRef={triggerRef}
-          onMouseEnter={cancelClose}
-          onMouseLeave={scheduleClose}
-          onFocusEnter={cancelClose}
-          onBack={() => setOpen(false)}
-        >
-          <div
-            role="listbox"
-            aria-label={t("modelSelector.contextWindow")}
-            className="flex flex-col"
-          >
-            {options.map((windowValue) => {
-              const active = current === windowValue;
-              const higherUsage = hints?.[String(windowValue)] === "higher_usage";
-              return (
-                <button
-                  key={windowValue}
-                  type="button"
-                  role="option"
-                  aria-selected={active}
-                  disabled={disabled}
-                  data-testid={`${testIdPrefix}-option-${windowValue}`}
-                  onClick={() => {
-                    setOpen(false);
-                    onContextPick?.(windowValue);
-                  }}
-                  className={[
-                    "flex items-center gap-1.5 rounded-[8px] px-2 py-1 text-left text-caption-small transition-colors",
-                    active
-                      ? "bg-bg_interaction_tertiary_hover text-text_default_primary"
-                      : "text-text_default_secondary",
-                    disabled ? "cursor-not-allowed" : "hover:bg-bg_interaction_tertiary_hover",
-                  ].join(" ")}
+        {options.map((windowValue) => {
+          const active = current === windowValue;
+          const higherUsage = hints?.[String(windowValue)] === "higher_usage";
+          return (
+            <button
+              key={windowValue}
+              type="button"
+              role="option"
+              aria-selected={active}
+              disabled={disabled}
+              title={disabled ? t("modelSelector.detailPreviewHint") : undefined}
+              data-testid={`${testIdPrefix}-option-${windowValue}`}
+              onClick={() => {
+                onContextPick?.(windowValue);
+              }}
+              className={[
+                "flex items-center gap-1.5 rounded-[8px] px-2 py-1 text-left text-caption-small transition-colors",
+                active
+                  ? "bg-bg_interaction_tertiary_hover text-text_default_primary"
+                  : "text-text_default_secondary",
+                disabled ? "cursor-not-allowed opacity-60" : "hover:bg-bg_interaction_tertiary_hover",
+              ].join(" ")}
+            >
+              <span className="min-w-0 flex-1 truncate">
+                {formatContextWindow(windowValue)}
+              </span>
+              {higherUsage ? (
+                <span
+                  data-testid={`${testIdPrefix}-hint-higher-usage`}
+                  className="shrink-0 text-text_default_tertiary"
                 >
-                  <span className="min-w-0 flex-1 truncate">
-                    {formatContextWindow(windowValue)}
-                  </span>
-                  {higherUsage ? (
-                    <span
-                      data-testid={`${testIdPrefix}-hint-higher-usage`}
-                      className="shrink-0 text-text_default_tertiary"
-                    >
-                      {t("modelSelector.contextWindowHigherUsage")}
-                    </span>
-                  ) : null}
-                  {active ? (
-                    <Icon
-                      name="checkSmall"
-                      size={14}
-                      aria-hidden="true"
-                      className="text-text_default_primary"
-                    />
-                  ) : null}
-                </button>
-              );
-            })}
-          </div>
-        </SettingsFlyout>
-      ) : null}
+                  {t("modelSelector.contextWindowHigherUsage")}
+                </span>
+              ) : null}
+              {active ? (
+                <Icon
+                  name="checkSmall"
+                  size={14}
+                  aria-hidden="true"
+                  className="text-text_default_primary"
+                />
+              ) : null}
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }

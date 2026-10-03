@@ -3,15 +3,16 @@
 // The model picker is a CASCADE, pinned against the official desktop's
 // existing implementation (the two reference screenshots: hover a model
 // and a settings surface flies out one tier deeper than that row —
-// 展示右侧一 — then hover the context window inside it and the options
-// fly out one tier deeper again — 展示右侧二).
+// 展示右侧一 — with the context window's sizes listed in it).
 //
-// An earlier version of this file pinned the OPPOSITE shape: a permanent
-// two-column panel with the settings rendered in a fixed right column. That
-// was a misreading of the reference — the screenshots' captions
-// (展示右侧一 / 展示右侧二) are the giveaway, and "one popup showing two
-// models' worth of controls side by side" is not what they show. These
-// guards exist to keep the cascade from being flattened again.
+// 展示右侧二 is not a second floating tier. Reading it that way put a
+// panel back on top of the model list it was describing; the caption
+// says the sizes are shown to the right of the row, which an in-place
+// list inside the fly-out already does. An earlier version of this file
+// pinned the OPPOSITE shape — a permanent two-column panel with the
+// settings rendered in a fixed right column. Both readings were
+// misreadings of the reference, in opposite directions. These guards
+// exist to keep the fly-out from being flattened or deepened again.
 //
 // These are source tripwires, and that is a deliberate trade this file
 // states rather than hides: `ModelSelect` lives in `components/composer.tsx`
@@ -34,8 +35,9 @@
 //     clicks would need a click before anything appeared.
 //   - C3: the first tier is anchored to the row that owns it. A fly-out
 //     without an anchor is a panel in a corner.
-//   - C4: the context window opens a SECOND tier rather than unfolding in
-//     place, so the first tier's height does not jump under the cursor.
+//   - C4: the context window is in place inside the fly-out, not behind a
+//     third tier. It was 展示右侧二 taken one step too literally: a third
+//     floating panel is what landed on top of the model list.
 //   - C5: both tiers share ONE positioning engine. Two copies of the
 //     flip/clamp math is how two tiers of one cascade end up disagreeing
 //     about which way to open.
@@ -43,9 +45,9 @@
 //     click completes the selection — the reference's 「没有二次菜单的，
 //     则直接点击后就完成」. Gating on settings is what makes that
 //     distinction possible at all.
-//   - C7: the SECOND tier is the completing tier. Clicking a context
-//     option closes the picker; a thinking toggle does not. That asymmetry
-//     IS the reference's 「点击二级菜单后才是整个选择逻辑完成」, and
+//   - C7: the context list is the completing control. Clicking a size
+//     closes the picker; a thinking toggle does not. That asymmetry IS
+//     the reference's 「点击二级菜单后才是整个选择逻辑完成」, and
 //     flattening it back to "picks never close" is the easy regression.
 //   - C8: the list container appears exactly ONCE. Rewriting the list left
 //     a stale opening `<div data-testid="model-select-list">` behind, so
@@ -137,17 +139,17 @@ describe("C2 — a model row's hover opens its fly-out", () => {
     const shell = composer.match(/function SettingsFlyout\([\s\S]*?\n}\n/);
     assert.ok(shell, "SettingsFlyout must exist");
     assert.match(shell[0]!, /onFocus=\{onFocusEnter\}/);
-    // Both tiers wire it to their own cancel.
+    // And the one fly-out wires it to the grace's cancel.
     const cancels = composer.match(/onFocusEnter=\{cancel\w+\}/g) ?? [];
     assert.equal(
       cancels.length,
-      2,
-      `expected both tiers to cancel the grace on focus entry, found ${cancels.length}`,
+      1,
+      `expected the fly-out to cancel the grace on focus entry, found ${cancels.length}`,
     );
   });
 });
 
-describe("C3/C4 — the cascade is two tiers deep", () => {
+describe("C3/C4 — one fly-out, anchored to the row that owns it", () => {
   test("the first tier is anchored to the row that owns it", () => {
     assert.match(composer, /anchorRef=\{flyoutAnchor\}/);
     assert.match(
@@ -176,40 +178,51 @@ describe("C3/C4 — the cascade is two tiers deep", () => {
     );
   });
 
-  test("the context window opens a second fly-out, not an in-place list", () => {
-    // The second tier is the whole point of 「展示右侧二」; unfolding in
-    // place would grow the first tier under the cursor instead.
+  test("the context window is in place, not a third tier", () => {
+    // Every step of the third tier was one affordance too many: the
+    // fly-out already says which model it describes, so a row restating
+    // the current value, a chevron over it, and then a separate panel
+    // carrying the same values were three ways to answer one question —
+    // and the third of them was a floating panel landing back over the
+    // model list it was describing.
     const selectBody = composer.match(
       /function ContextWindowSelect\([\s\S]*?\n}\n/,
     );
     assert.ok(selectBody, "ContextWindowSelect must exist");
-    assert.match(selectBody[0]!, /<SettingsFlyout/);
-    assert.match(selectBody[0]!, /anchorRef=\{triggerRef\}/);
-  });
-
-  test("the second tier is shown directly, not behind a click", () => {
-    // The reference brings up BOTH tiers at once. Requiring a click on
-    // the context row first made the options a second interaction to
-    // discover, and left the row's chevron as a disclosure arrow over a
-    // list that was already showing.
-    const selectBody = composer.match(
-      /function ContextWindowSelect\([\s\S]*?\n}\n/,
-    );
-    assert.ok(selectBody, "ContextWindowSelect must exist");
-    assert.match(
+    assert.doesNotMatch(
       selectBody[0]!,
-      /const \[open, setOpen\] = useState\(true\)/,
-      "the second tier mounts open",
+      /SettingsFlyout/,
+      "the options must not open a fly-out of their own",
+    );
+    assert.doesNotMatch(
+      selectBody[0]!,
+      /-select-trigger/,
+      "there is no collapsed row left to click open",
     );
   });
 
-  test("the second tier keeps the listbox semantics the in-place list had", () => {
+  test("the options need no click to appear", () => {
+    // The reference shows the sizes as soon as the fly-out does. A
+    // disclosure row on top of an already-short list only added a
+    // second interaction between arriving and choosing.
+    const selectBody = composer.match(
+      /function ContextWindowSelect\([\s\S]*?\n}\n/,
+    );
+    assert.ok(selectBody, "ContextWindowSelect must exist");
+    assert.doesNotMatch(
+      selectBody[0]!,
+      /useState/,
+      "there is no local open state left to own",
+    );
+  });
+
+  test("the in-place list keeps the listbox semantics it always had", () => {
     const selectBody = composer.match(
       /function ContextWindowSelect\([\s\S]*?\n}\n/,
     );
     assert.ok(selectBody);
-    // The cascade got deeper; the contract a screen reader is told about
-    // did not change.
+    // The cascade got shallower; the contract a screen reader is told
+    // about did not change.
     assert.match(selectBody[0]!, /role="listbox"/);
     assert.match(selectBody[0]!, /role="option"/);
     assert.match(selectBody[0]!, /aria-selected=\{active\}/);
@@ -240,7 +253,7 @@ describe("C13 — the thinking switch is the app's own toggle", () => {
   });
 });
 
-describe("C5 — one positioning engine for both tiers", () => {
+describe("C5 — one positioning engine", () => {
   test("the fly-out shell is the only consumer of the placement hook", () => {
     const consumers = composer.match(/useFlyoutPosition\(/g) ?? [];
     // One declaration + one call site. Two call sites would be two copies
@@ -252,12 +265,14 @@ describe("C5 — one positioning engine for both tiers", () => {
     );
   });
 
-  test("both tiers render through the same shell", () => {
+  test("there is one fly-out shell, and it is the cascade's only tier", () => {
+    // A second `<SettingsFlyout` is a second copy of the flip/clamp math
+    // — or a third tier creeping back in.
     const shells = composer.match(/<SettingsFlyout/g) ?? [];
     assert.equal(
       shells.length,
-      2,
-      `expected two fly-out tiers, found ${shells.length}`,
+      1,
+      `expected one fly-out, found ${shells.length}`,
     );
   });
 });
@@ -284,7 +299,7 @@ describe("C6 — a model with no settings completes on its own click", () => {
   });
 });
 
-describe("C7 — the second tier is the completing tier", () => {
+describe("C7 — the context list is the completing control", () => {
   test("a context pick closes the picker", () => {
     const handler = composer.match(
       /const handleDetailContextPick = useCallback\([\s\S]*?\n  \);/,
@@ -295,9 +310,9 @@ describe("C7 — the second tier is the completing tier", () => {
   });
 
   test("a thinking pick does not close it", () => {
-    // The thinking switch lives in the FIRST tier, so the visit continues
-    // into the context window's second tier. Closing here would make a
-    // level and a window impossible to set in one visit.
+    // The switch sits in the same fly-out as the window list, so a
+    // toggle is a mid-visit edit, not the visit's end. Closing here
+    // would make a level and a window impossible to set in one visit.
     const handler = composer.match(
       /const handleDetailThinkingPick = useCallback\([\s\S]*?\n  \);/,
     );
