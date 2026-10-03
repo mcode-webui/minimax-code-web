@@ -10,6 +10,14 @@
 // silent fallback to "approved" is the root cause of accidental
 // destructive actions).
 //
+// The timeout is the budget for a HUMAN who was shown a modal. It is
+// not the right answer to "nobody was ever shown one": when the
+// request's target has no live SSE connection, the decision channel is
+// empty, the fail-closed answer is already determined, and the caller
+// is told so at once (`auth.unreachable`) instead of holding a
+// destructive HTTP request open for the full budget. See
+// `state-bus.js#hasDecisionListener`.
+//
 // Audit: every approve / reject / timeout writes one NDJSON event via
 // the static import of `server/lib/events.js`. The DECISION-OUTCOME
 // audit write (auth.approve/reject/timeout/cancelled) is
@@ -37,9 +45,11 @@
 //   token.reset             rotate the LAN auth token
 //   slash.clear             /clear and /new on the chat stream
 //   startup.cleanup         boot-time orphan sweep
+//   auth.unreachable        (audit kind, not an action) the request was
+//                           raised with no connected client to answer it
 
 import { randomUUID } from "node:crypto";
-import { pushAuthRequest, pushAuthDecision } from "./state-bus.js";
+import { pushAuthRequest, pushAuthDecision, hasDecisionListener } from "./state-bus.js";
 import { pushAlert } from "./alerts.js";
 import { append as _eventsAppend } from "./events.js";
 import { readJson } from "./read-json.js";
@@ -67,6 +77,12 @@ function _isValidAction(action) {
 
 // requestId → { resolve, timer, action, ctx, requestedAt, expiresAt }
 const _pending = new Map();
+
+// Test-only: true while an in-process decision driver is attached. See
+// `_setInProcessDeciderAttached` — it is false for the whole of a
+// production process, and it can only ever turn the unreachability
+// short-circuit OFF, never on.
+let _inProcessDeciderAttached = false;
 
 // ---------- audit ----------
 
@@ -165,6 +181,55 @@ export function authorize(action, ctx = {}, opts = {}) {
   const safeCtx = ctx && typeof ctx === "object" ? ctx : {};
 
   return new Promise((resolve) => {
+    // Can this request be decided at all? The gate is a push to a live
+    // SSE response, so "no connected client" is not a slow answer, it is
+    // the absence of one: the only outcome still reachable is the
+    // fail-closed timeout, `timeoutMs` from now. Making the caller wait
+    // out the whole budget to arrive at an answer that was already
+    // determined is what a destructive request looks like when it hangs —
+    // an open socket, no status, no body, for five minutes.
+    //
+    // So reach that answer now instead. This is a wait that is removed,
+    // not a wait that is shortened: the resolution value, the
+    // `authorization_decided` frame other tabs mirror, and the fail-closed
+    // posture are the timeout path's, and nothing is ever approved
+    // without a decision.
+    //
+    // A bus that cannot answer the question — an older build, a test
+    // double that does not model the connection registry — is NOT
+    // evidence that nobody is listening, so it keeps the previous
+    // behaviour and waits for the timeout. Only a bus that positively
+    // reports an empty channel short-circuits.
+    let answerable = true;
+    try {
+      answerable = hasDecisionListener(cid) !== false;
+    } catch {
+      answerable = true;
+    }
+    if (!answerable && !_inProcessDeciderAttached) {
+      const decidedAt = Date.now();
+      _tryWriteEvent({
+        kind: "auth.unreachable",
+        target: action,
+        cid: cid || null,
+        data: {
+          requestId,
+          requestedAt,
+          expiresAt,
+          timeoutMs,
+          reason: "no_connected_client",
+          metadata: opts.metadata || null,
+        },
+      });
+      // Same frame the timeout path emits, so a tab that reconnects and
+      // replays its state closes any modal it may have optimistically
+      // opened on its own request.
+      try {
+        pushAuthDecision({ requestId, approved: false, decidedBy: "timeout" });
+      } catch {}
+      resolve({ approved: false, decidedBy: "timeout", decidedAt });
+      return;
+    }
     const timer = setTimeout(() => {
       const entry = _pending.get(requestId);
       if (!entry) return;
@@ -279,6 +344,50 @@ export function getPendingCount() {
 
 export function getPendingRequestIds() {
   return Array.from(_pending.keys());
+}
+
+/**
+ * The pending requests with the client each one is waiting on.
+ *
+ * Exists beside `getPendingRequestIds` for one reason: a request only
+ * stays pending while its target has a live connection
+ * (`state-bus.js#hasDecisionListener`), so a caller that drives decisions
+ * in-process has to present a connection for the right client before it
+ * can decide anything. A test that models only the decision and not the
+ * channel is not modelling the product.
+ *
+ * @returns {Array<{requestId: string, cid: string, action: string}>}
+ */
+export function getPendingTargets() {
+  return Array.from(_pending, ([requestId, entry]) => ({
+    requestId,
+    cid: (entry.ctx && entry.ctx.cid) || "",
+    action: entry.action,
+  }));
+}
+
+/**
+ * Declare that a decision driver is attached in-process, which makes a
+ * pending request answerable regardless of the connection registry.
+ *
+ * The unreachability short-circuit above asks "could anybody be asked?",
+ * and in production the only thing that can answer is a live SSE
+ * connection. A test harness that drives decisions through
+ * `_decideForTests` IS that somebody — it just has no socket — and it
+ * cannot know which cid a route is about to use before the route runs.
+ * This flag is how it says so, and it is the same claim the harness
+ * already makes by deciding the request at all.
+ *
+ * It is false for the whole of a production process, and it can only
+ * DISABLE the short-circuit — it can never turn an empty channel into an
+ * approval, and it never bypasses the gate itself. A test that wants the
+ * short-circuit's behaviour simply does not attach a decider, which is
+ * how `test/routes/sessions.check.mjs` pins the unreachable DELETE.
+ *
+ * @param {boolean} attached
+ */
+export function _setInProcessDeciderAttached(attached) {
+  _inProcessDeciderAttached = !!attached;
 }
 
 export function _resetForTests() {

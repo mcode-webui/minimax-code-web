@@ -714,6 +714,149 @@ describe("handleDeleteSession — v1.0 anti-resurrection", () => {
     assert.equal(cs3.sessionId, "webui-B", "unrelated client untouched");
     assert.deepEqual(cs3.chat, ["keep"]);
   });
+
+  // -------------------------------------------------------------------
+  // The two halves of "delete", and the wait that used to sit in front
+  // of both of them.
+  //
+  // A webui-only record (no `mcodeSessionId` — it never reached the
+  // engine) and an engine-linked one take deliberately different paths:
+  // the first is webui's own store splice, the second also kills the ACP
+  // child, drops the sid from the push cache and deletes the engine's own
+  // `local_runtime_*` rows. Neither half ever waits on the OTHER one.
+  //
+  // What used to sit in front of both was `authorize()`, which holds the
+  // caller's request open for the whole human round-trip. With no client
+  // connected to receive the modal that wait had no possible end other
+  // than the 5-minute fail-closed timeout — a destructive request that
+  // looks exactly like a hang. These cases pin both halves: the
+  // unanswerable one now ends at once with the unchanged decline body,
+  // and the answerable one still waits for a real human decision.
+  // -------------------------------------------------------------------
+  test("webui-only 会话 DELETE 在无人可裁决时立即返回正确响应，且不触引擎", async () => {
+    const calls = trackAntiResurrection();
+    registerSessionsStore({
+      initial: [
+        ...initialSessions,
+        {
+          id: "webui-only",
+          title: "never reached the engine",
+          workspace: WS_A,
+          createdAt: 9,
+          updatedAt: 9,
+          chat: [],
+        },
+      ],
+    });
+    const cs = makeClientState();
+    cs.workspace = { dir: WS_A, branch: null, tree: null };
+    // No SSE response is registered for this cid — nothing can answer.
+    const res = fakeRes();
+    const ctx = { cs, cid: "cid-offline", pathname: "/api/sessions/webui-only" };
+    const startedAt = Date.now();
+    await handleDeleteSession(fakeReq({}), res, ctx);
+    const elapsed = Date.now() - startedAt;
+
+    assert.ok(elapsed < 2000, `挂起复现：不可达的裁决通道等了 ${elapsed}ms（预算上限 300000ms）`);
+    assert.equal(res._status, 403);
+    const body = JSON.parse(res._body);
+    assert.deepEqual(Object.keys(body), [
+      "ok",
+      "error",
+      "decidedBy",
+      "decidedAt",
+    ], "拒绝体逐键不变 —— 既有响应形状不能因为修挂起而变");
+    assert.equal(body.ok, false);
+    assert.equal(body.error, "authorize declined");
+    assert.equal(body.decidedBy, "timeout", "与超时同解：失败即关闭，绝不放行破坏性操作");
+    assert.equal(typeof body.decidedAt, "number");
+
+    // 门禁仍然有效：没人裁决就没有删除。
+    assert.ok(
+      getSessionsStore().some((s) => s.id === "webui-only"),
+      "未获裁决不得删除任何一行",
+    );
+    // webui-only 半边：引擎侧完全没有记录，也就完全没有触碰。
+    assert.equal(calls.shutdown, 0, "webui-only 会话不得牵动 ACP 子进程");
+    assert.deepEqual(calls.drop, [], "webui-only 会话不得动引擎会话缓存");
+  });
+
+  test("webui-only 会话 DELETE 在标签页在线时走 webui-only 支路，200 且不触引擎（反向半边的前置）", async () => {
+    const calls = trackAntiResurrection();
+    registerSessionsStore({
+      initial: [
+        ...initialSessions,
+        {
+          id: "webui-only-2",
+          title: "still webui-only",
+          workspace: WS_A,
+          createdAt: 9,
+          updatedAt: 9,
+          chat: [],
+        },
+      ],
+    });
+    const cs = makeClientState();
+    cs.workspace = { dir: WS_A, branch: null, tree: null };
+    const res = fakeRes();
+    clients.set("cid-live", cs);
+    const ctx = { cs, cid: "cid-live", pathname: "/api/sessions/webui-only-2" };
+    await withDecisions(() => handleDeleteSession(fakeReq({}), res, ctx));
+
+    assert.equal(res._status, 200);
+    const body = JSON.parse(res._body);
+    assert.equal(body.ok, true);
+    assert.equal(body.deleted, "webui-only-2");
+    assert.equal(body.matchKind, "webuiId");
+    assert.equal(body.mcodeDbDel, null, "无引擎 sid ⇒ 没有任何引擎行需要删");
+    assert.equal(
+      getSessionsStore().some((s) => s.id === "webui-only-2"),
+      false,
+      "webui 侧的会话条目确实被摘掉",
+    );
+    assert.equal(calls.shutdown, 0, "webui-only 支路不牵动 ACP 子进程");
+    assert.deepEqual(calls.drop, []);
+  });
+
+  test("反向半边：带 mcodeSessionId 的会话 DELETE 会触引擎（kill + 缓存 + 引擎行）", async () => {
+    // The same request against a record that DOES have an engine sid.
+    // Paired with the two cases above on purpose: the asymmetry is the
+    // contract. A "fix" that made both halves wait on the engine, or
+    // both skip it, would pass either test alone.
+    const calls = trackAntiResurrection();
+    registerSessionsStore({
+      initial: [
+        ...initialSessions,
+        {
+          id: "webui-linked",
+          mcodeSessionId: MVS_SID,
+          title: "engine-linked",
+          workspace: WS_A,
+          createdAt: 9,
+          updatedAt: 9,
+          chat: [],
+        },
+      ],
+    });
+    const cs = makeClientState();
+    cs.workspace = { dir: WS_A, branch: null, tree: null };
+    const res = fakeRes();
+    clients.set("cid-live", cs);
+    const ctx = { cs, cid: "cid-live", pathname: "/api/sessions/" + MVS_SID };
+    await withDecisions(() => handleDeleteSession(fakeReq({}), res, ctx));
+
+    assert.equal(res._status, 200);
+    const body = JSON.parse(res._body);
+    assert.equal(body.ok, true);
+    assert.equal(body.matchKind, "mcodeSessionId");
+    assert.equal(calls.shutdown, 1, "引擎关联会话必须先杀掉会写回注册表的子进程");
+    assert.deepEqual(calls.drop, [MVS_SID]);
+    assert.equal(
+      getSessionsStore().some((s) => s.id === "webui-linked"),
+      false,
+      "webui 包装条目同样被摘掉",
+    );
+  });
 });
 
 // ============================================================

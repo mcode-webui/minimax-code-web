@@ -506,6 +506,16 @@ export function loadTranscriptChatLines(mcodeSid, opts = {}) {
 // remainder of `read` is engine content this tab has not seen yet (the
 // foreign-client case the poll exists for) and is appended.
 //
+// One exception, added after that rule shipped: a `current` line that is a
+// LOSSY MIRROR of the engine's own output is not authored content, it is a
+// whitespace-folded copy of it, and keeping it alongside the engine's
+// line-by-line version is what rendered every assistant answer, tool block and
+// thinking chain twice. Such a line retires — the engine's lines take its
+// place. The identification is a positive content-identity test described
+// under "Retiring a lossy mirror" below; it never fires on a line the engine
+// read does not already contain, so the slash-command echo this function was
+// built to protect cannot be caught by it.
+//
 // The one assumption is that the engine APPENDS — it does not rewrite an
 // already-emitted line. The switch path has always relied on that (it only
 // backfills an empty or visibly-cumulative stored chat), and the merge adds
@@ -543,6 +553,133 @@ export function loadTranscriptChatLines(mcodeSid, opts = {}) {
 // the misplacement the comment above rules out.
 const ANNOTATION_LINE = /^(?:§§\s|##tc:)/;
 
+// ============================================================
+// Retiring a lossy mirror
+// ============================================================
+//
+// The rule above keeps every `current` line the engine did not match. That
+// is right for the lines this server authors and wrong for the lines it
+// MIRRORS. While a turn streams, `mcode-acp.js` (and the runtime-transport
+// twin, and `routes/chat.js` on finalize) write a lossy copy of the engine's
+// own output into the very array the browser reads:
+//
+//   · an answer or a thinking segment is flattened to ONE line
+//     (`r.answer.replace(/\n+/g, " ").trim()`), where the engine keeps one
+//     array entry per source line;
+//   · a tool header is written as `→ bash` when the frame carried no
+//     `rawInput`, where the engine writes `→ bash  {"command":…}`.
+//
+// Those two shapes can never be byte-equal to the engine's line-by-line copy,
+// so the walk above classified every one of them as "webui-authored" and kept
+// it — and then appended the engine's whole spine behind it. The user saw the
+// assistant answer, the tool block and the thinking chain TWICE, and
+// `persistCurrentChat` made the duplicate permanent. Reproduced on a live
+// session: 81 stored lines, 14 of them a second copy of engine content that
+// had not been there a minute earlier.
+//
+// The fix is to make a mirror RETIRE when the engine read proves it is one.
+//
+// The proof is content identity under whitespace folding, anchored at the
+// lockstep cursor — not a shape heuristic:
+//
+//   · a prose mirror (`●`/`▲`/`›`/`○`) retires when the maximal run of engine
+//     lines carrying the SAME glyph, starting at the cursor, folds — their
+//     texts joined with a single space, all whitespace runs collapsed — to
+//     exactly the mirror's folded text;
+//   · a tool header retires when the engine line at the cursor is a header for
+//     the same tool name; the whole indented block on both sides goes with it,
+//     because the body the mirror wrote is the same lossy copy.
+//
+// Why this cannot mistake a genuinely short local message for a mirror: the
+// engine must already contain that exact text at that exact cursor position.
+// A local line the engine has never seen (`› /help`, `● 当前 model=…`,
+// `● 可用命令：`, a `! [warn]` notice) has no fold to match and is kept, which
+// is the #126 behaviour this function exists for. A local line that DOES fold
+// onto engine text is the same sentence the engine already has, so retiring
+// it removes a duplicate rather than content.
+//
+// Why the failure direction is safe: every judgement here is a positive
+// identity test. When it misses — an answer with unusual spacing, a tool block
+// the engine has not finished writing — the mirror is kept and the result is
+// exactly the old double render, which is the bug we already had. No path in
+// this function drops a line the engine read did not account for.
+
+// One conversation line, split into its role glyph and its text. The glyphs
+// are the four `lib/chat-line.js` writers use for prose; a `→ name` header is
+// a tool block, not prose, and is handled separately.
+const PROSE_LINE = /^(›|●|▲|○) (.*)$/;
+// `→ name` with an optional two-space args tail. The name is the first
+// whitespace-delimited token, so a mirror that lost its args still names the
+// same tool as the engine's complete header.
+const TOOL_HEADER = /^→ (\S+)/;
+// The indented body of a tool block. A bare whitespace-only line counts: the
+// streaming writer emits one as a block terminator (`"  "`), and cutting the
+// body short there would leave the rest of the mirror stranded.
+const INDENTED_LINE = /^\s{2,}/;
+
+/** Collapse every whitespace run to one space and trim — the fold a lossy
+ *  mirror applies, and the only normalisation applied to engine text. */
+function _fold(text) {
+  return String(text == null ? "" : text).replace(/\s+/g, " ").trim();
+}
+
+/** End of the `current` line's block: the line itself plus any indented
+ *  tool body under it. A prose line is never followed by an indented line, so
+ *  this is the identity for the prose case. */
+function _blockEnd(lines, at) {
+  let k = at + 1;
+  while (k < lines.length && INDENTED_LINE.test(lines[k])) k += 1;
+  return k;
+}
+
+/** End of the maximal run of same-glyph prose lines starting at `at`. */
+function _proseRunEnd(lines, at, glyph) {
+  let k = at;
+  while (k < lines.length) {
+    const m = PROSE_LINE.exec(lines[k]);
+    if (!m || m[1] !== glyph) break;
+    k += 1;
+  }
+  return k;
+}
+
+/**
+ * How many `dbLines` the `current` line at `i` is a lossy mirror of, or 0.
+ *
+ * Returns a span, not a boolean: the engine's own lines in that span are what
+ * the caller emits, so a mirror spanning nine `▲` entries is replaced by all
+ * nine, and none of them is appended a second time at the tail.
+ */
+function _mirrorSpan(haveLines, i, dbLines, j) {
+  const line = haveLines[i];
+  if (typeof line !== "string") return 0;
+
+  const prose = PROSE_LINE.exec(line);
+  if (prose) {
+    const target = _fold(prose[2]);
+    // A bare `● ` placeholder is a blank line of a multi-line message, not a
+    // fold of anything; the engine emits those too and they pair by equality.
+    if (!target) return 0;
+    const end = _proseRunEnd(dbLines, j, prose[1]);
+    if (end === j) return 0;
+    const parts = [];
+    for (let k = j; k < end; k += 1) parts.push(PROSE_LINE.exec(dbLines[k])[2]);
+    return _fold(parts.join(" ")) === target ? end - j : 0;
+  }
+
+  const tool = TOOL_HEADER.exec(line);
+  if (tool) {
+    const head = TOOL_HEADER.exec(typeof dbLines[j] === "string" ? dbLines[j] : "");
+    // Ordered consumption: the walk is in lockstep, so "the same tool name at
+    // the cursor" already means the Nth `→ name` on each side are the same
+    // call, however many calls of that name the turn made.
+    if (!head || head[1] !== tool[1]) return 0;
+    return _blockEnd(dbLines, j) - j;
+  }
+
+  return 0;
+}
+
 export function mergeEngineTranscript(read, current) {
   const dbLines = Array.isArray(read) ? read : [];
   const haveLines = Array.isArray(current) ? current : [];
@@ -563,6 +700,16 @@ export function mergeEngineTranscript(read, current) {
     if (j < dbLines.length && ANNOTATION_LINE.test(dbLines[j])) {
       merged.push(dbLines[j]);
       j += 1;
+      continue;
+    }
+    // A lossy mirror of engine content the cursor is sitting on. The engine's
+    // own lines take the mirror's place — emitted here, so the tab sees the
+    // complete per-line version, and not re-appended at the tail below.
+    const span = _mirrorSpan(haveLines, i, dbLines, j);
+    if (span > 0) {
+      for (let k = j; k < j + span; k += 1) merged.push(dbLines[k]);
+      j += span;
+      i = _blockEnd(haveLines, i);
       continue;
     }
     // Not the engine's line at this position — keep it and leave the

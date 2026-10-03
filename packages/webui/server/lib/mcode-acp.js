@@ -44,6 +44,49 @@ import {
   isSubagentDispatch,
   readSubagentStatusForToolCall,
 } from "./agent-team-detect.js";
+// M3-B8 (engine facade): the RUNTIME transport branch's stream bridge.
+// Imported from `engine/streaming-send.js` directly rather than through
+// `engine/index.js` for the same reason `routes/protocol.js` imports
+// `session-reads.js` directly — this file is on the boot path and the
+// facade's re-export of this module would be a second name for the
+// same bindings. Everything reached from here is either a pure
+// derivation or a data-plane function that reaches the host through
+// `await import()`, so the import adds no host-construction weight to
+// an acp-only server.
+//
+// These names are the whole contract between the two transports: the
+// ACP runner derives its line syntax from the engine's session-update
+// vocabulary, and the runtime runner derives the SAME syntax from the
+// engine's frame vocabulary, through these functions.
+import {
+  SEND_EVENT_KINDS,
+  classifySendEvent,
+  openEngineSendStream,
+  sendSegmentAdvance,
+  sendStillViewing,
+  sendTerminalOutcome,
+  sendToolHeaderLine,
+  sendToolUpdate,
+  sendUsageTotals,
+} from "../engine/streaming-send.js";
+
+/**
+ * The one-line form of a multi-line answer or thinking segment.
+ *
+ * Byte-identical to the normalization the route applies to `r.answer`
+ * after the turn (`routes/chat.js#handleSend`) and to the one the ACP
+ * callback applies per chunk, because the final `●` line has to be
+ * rewritten with the SAME text whichever transport produced it. It
+ * lives here rather than in `lib/chat-line.js` because `chat-line.js`
+ * is the pure line writer and this is a policy about what counts as
+ * one line — a different question, on a different axis.
+ *
+ * @param {string|null|undefined} text
+ * @returns {string}
+ */
+function oneLineOf(text) {
+  return (text || "").replace(/\n+/g, " ").trim();
+}
 
 // runMcodeAcp / streamAcpPrompt — mcode acp protocol streaming.
 //
@@ -1291,5 +1334,539 @@ function streamAcpPrompt(
         });
         finalize();
       });
+  });
+}
+
+// ===========================================================================
+// M3-B8: the RUNTIME transport branch — runMcodeRuntime
+// ===========================================================================
+//
+// Everything above this line is the ACP transport and is unchanged by
+// this batch, byte for byte. That is the batch's survival condition:
+// under the default `MCODE_WEBUI_TRANSPORT=acp` this file behaves
+// exactly as it did at 32277c3a, and `runMcodeAcp` / `streamAcpPrompt`
+// were not edited to get there.
+//
+// What follows is the SIBLING runner for the in-process runtime. It
+// exists here rather than in a new module for two reasons, both of
+// which are about not duplicating the run-mirror: it must produce the
+// SAME `r` object shape (the route's finalize drain, the ● rewrite and
+// the draft promotion all read that shape and none of them know which
+// transport produced it), and it must write through the SAME
+// per-(cid, session) run-chat buffer. Both are facts about the
+// accumulator, not about the transport, so the second runner reuses
+// the first one's helpers wholesale rather than re-deriving them.
+//
+// The one thing that IS transport-specific — which line each engine
+// event produces, and which line family the accumulator is currently
+// in — is NOT here. It lives in `engine/streaming-send.js` as pure
+// functions, because that is the part where a regression is invisible
+// (a missing `●` line does not crash; the answer just disappears) and
+// a pure function is the only shape in which "invisible" is testable.
+//
+// What this runner deliberately does NOT do:
+//
+//   - It does not register an active child. The runtime has no
+//     subprocess, and B7's `/api/stop` cascade kills `getActiveChild`.
+//     Registering the turn host there would be a second interrupt
+//     protocol invented outside B7's family; see KNOWN DEBT 1 in
+//     engine/streaming-send.js for the follow-up and for what the user
+//     sees in the meantime (a truthful "I could not stop it", not a
+//     fake success).
+//   - It does not re-implement the finalize's title read-back or the
+//     mavis usage re-query. Both are already transport-aware:
+//     `getMcodeSessionTitle` prefers the catalogue host when the
+//     transport is `runtime`, and `applyMavisUsageToCs` reads the
+//     runtime's own SQLite either way. Duplicating them here would be
+//     a second copy of a decision `acp-client.js` already makes.
+//   - It does not pre-apply the recorded model pick. `applyRecordedModel`
+//     pushes through ACP's `session/set_config_option`, which has no
+//     runtime equivalent in this batch; the runtime picks its own
+//     default. B10 owns set-model on the runtime transport. Recorded
+//     here rather than silently omitted.
+
+/**
+ * Run one turn on the in-process runtime transport.
+ *
+ * The mirror of `runMcodeAcp`, down to the parts that are not
+ * transport-specific: the owning webui record is captured BEFORE the
+ * first await, the draft→engine bind is applied through the same two
+ * helpers, and the first-turn session-busy guard is backfilled with
+ * the same `updateRunSid` call at the same point.
+ *
+ * @param {string} content Prompt text.
+ * @param {object} [opts]
+ * @param {string} [opts.label]
+ * @param {string|null} [opts.sessionId] Existing engine session id.
+ * @param {object} opts.cs
+ * @param {string} [opts.cid]
+ * @param {object[]} [opts.attachments]
+ * @param {string} [opts.owningWebuiSessionId]
+ * @returns {Promise<object>} The same result shape `runMcodeAcp` resolves.
+ */
+export async function runMcodeRuntime(content, opts = {}) {
+  const label = opts.label || "prompt";
+  const existingSid = opts.sessionId || null;
+  const cs = opts.cs;
+  const cid = opts.cid;
+  const owningWebuiSessionId =
+    (typeof opts.owningWebuiSessionId === "string" && opts.owningWebuiSessionId) ||
+    (cs && cs.sessionId) ||
+    null;
+  const attachments = Array.isArray(opts.attachments) ? opts.attachments : [];
+  const workspace = (cs && cs.workspace && cs.workspace.dir) || DEFAULT_WORKSPACE;
+  let opened;
+  try {
+    opened = await openEngineSendStream({
+      sessionId: existingSid,
+      content,
+      attachments,
+      workspaceDir: workspace,
+    });
+  } catch (e) {
+    // Opening the stream is the runtime's `client.start()` + `session/new`
+    // equivalent, and its failures are the same class: a start-phase
+    // failure that never reaches finalize. Same alert, same shape.
+    pushAlert({
+      level: "error",
+      msg: `[runtime-send.start] ${e.message}`,
+      src: "runtime-send",
+      cid: cid || null,
+      sessionId: existingSid,
+      data: { phase: "open" },
+    });
+    return {
+      status: "failed",
+      error: { message: e.message },
+      sessionId: existingSid,
+      answer: null,
+      thinking: null,
+    };
+  }
+  if (!opened.ok) {
+    pushAlert({
+      level: "error",
+      msg: `[runtime-send.start] ${opened.message}`,
+      src: "runtime-send",
+      cid: cid || null,
+      sessionId: opened.sessionId,
+      data: { phase: "open" },
+    });
+    return {
+      status: "failed",
+      error: { message: opened.message },
+      sessionId: opened.sessionId,
+      answer: null,
+      thinking: null,
+    };
+  }
+  const sid = opened.sessionId;
+  // qa (两条记录), same instant as the ACP runner: the draft is bound
+  // when the engine session is KNOWN, not when the turn ends. A first
+  // turn otherwise spends its whole run as a uuid orphan and the
+  // sidebar shows two records for one conversation.
+  const stillViewingAtBind = sendStillViewing(cs, owningWebuiSessionId, sid);
+  try {
+    if (stillViewingAtBind) {
+      bindDraftToMcodeSid(cs, sid);
+    } else {
+      bindRecordToMcodeSid(owningWebuiSessionId, sid);
+    }
+  } catch (e) {
+    console.warn(`[runtime-send] bindDraftToMcodeSid: ${e.message}`);
+  }
+  // First-turn session-busy guard, backfilled at the same moment as the
+  // ACP path: `handleSend` claimed the run before this turn existed, so
+  // on a session's first turn the claim was registered with
+  // `sid: null` and `runsBySid` never guarded the engine session.
+  updateRunSid(cid, sid, owningWebuiSessionId);
+  return await streamRuntimePrompt(
+    opened.stream,
+    sid,
+    label,
+    cs,
+    cid,
+    owningWebuiSessionId,
+    opened.turnHost,
+  );
+}
+
+/**
+ * Drain one runtime turn's event stream into the webui line syntax.
+ *
+ * Structurally the same machine as `streamAcpPrompt`: an accumulator
+ * `r`, a per-event write into the run-chat buffer, a bounded idle
+ * watchdog, and a `finalize()` that is idempotent and runs exactly
+ * once. The differences are all visible in the event handler.
+ *
+ * @param {AsyncIterable<object>} stream Runtime events.
+ * @param {string} sid The engine session the turn runs on.
+ * @param {string} label
+ * @param {object} cs
+ * @param {string} [cid]
+ * @param {string|null} owningWebuiSessionId
+ * @param {object} [turnHost] Kept on `r` for a future abortSession wiring.
+ * @returns {Promise<object>}
+ */
+function streamRuntimePrompt(stream, sid, label, cs, cid, owningWebuiSessionId, turnHost) {
+  return new Promise((resolve) => {
+    const r = {
+      answer: null,
+      thinking: null,
+      status: "unknown",
+      error: null,
+      usage: null,
+      sessionId: sid,
+      durationMs: null,
+      stopReason: null,
+      tps: null,
+      // session-isolation/06: the per-segment discriminator, the same
+      // field the ACP path keeps. A tool call breaks the chain so the
+      // next text chunk starts a NEW `●` line instead of appending to
+      // the previous segment's.
+      lastChunkKind: null,
+      // session-isolation/02 (run-mirror): identical role to the ACP
+      // accumulator's — see the comment there.
+      owningSessionId: sid,
+      owningWebuiSessionId,
+      turnHost: turnHost || null,
+      chatArray() {
+        const m = runChatLinesFor(cid, sid);
+        return m !== null ? m : cs.chat;
+      },
+    };
+    const t0 = Date.now();
+    cs.running = {
+      active: true,
+      prompt: label,
+      // No pid: the runtime is in-process, and a number here would be
+      // a fabricated one. The field is the ACP path's shape and the
+      // panel reads `active`, not `pid`.
+      pid: null,
+      startedAt: t0,
+      model: cs.model ? cs.model.name : null,
+      sessionId: sid,
+      lastDeltaAt: t0,
+      tps: 0,
+    };
+    cs.context.thinkingStatus = "Running";
+    pushStateFor(cid);
+    // session-isolation/02 (run-mirror): the per-(cid, owning-session)
+    // buffer, created before the first event can arrive, scoped to THIS
+    // run's previous key so a sibling conversation in the same tab keeps
+    // its own lines.
+    createRunChat(cid, sid, [], owningWebuiSessionId);
+    const idleSeconds = Math.round(PROMPT_IDLE_TIMEOUT_MS / 1000);
+    const safetyTimeout = createIdleWatchdog({
+      idleMs: PROMPT_IDLE_TIMEOUT_MS,
+      activityAt: () => cs.running.lastDeltaAt || t0,
+      onTimeout: () => {
+        if (r.status === "unknown") {
+          r.status = "timeout";
+          r.error = {
+            message: `mcode runtime prompt inactive for ${idleSeconds}s (no stream events)`,
+          };
+          pushAlert({
+            level: "warn",
+            msg: `[runtime-send.timeout] prompt inactive for ${idleSeconds}s`,
+            src: "runtime-send",
+            cid: cid || null,
+            sessionId: sid || null,
+            data: { phase: "stream" },
+          });
+          finalize();
+        }
+      },
+    });
+    function finalize() {
+      if (r._finalized) return;
+      r._finalized = true;
+      safetyTimeout.stop();
+      r.durationMs = r.durationMs || Date.now() - t0;
+      const chatTarget = r.chatArray();
+      if (typeof r.durationMs === "number" && r.durationMs > 0 && Array.isArray(chatTarget)) {
+        chatTarget.push(`§§ processed_duration=${Math.round(r.durationMs)}ms`);
+      }
+      if (typeof r.assistantMessageId === "string" && r.assistantMessageId && Array.isArray(chatTarget)) {
+        chatTarget.push(`§§ turn_msg=${r.assistantMessageId}`);
+      }
+      // The per-turn wrapper owns no resources of its own, but it holds
+      // an AbortController and a set of live stream references; dropping
+      // it here is what keeps a long-lived tab from accumulating one
+      // per turn.
+      if (r.turnHost && typeof r.turnHost.close === "function") {
+        try {
+          r.turnHost.close();
+        } catch {}
+      }
+      cs.running = {
+        active: false,
+        prompt: null,
+        pid: null,
+        startedAt: null,
+        model: null,
+        sessionId: null,
+        lastDeltaAt: null,
+        tps: 0,
+      };
+      cs.context.thinkingStatus = "Idle";
+      cs.context.tps = 0;
+      if (Array.isArray(chatTarget)) {
+        for (let i = 0; i < chatTarget.length; i += 1) {
+          const line = chatTarget[i];
+          if (typeof line === "string" && line.endsWith(" ▍")) {
+            chatTarget[i] = line.slice(0, -2);
+          }
+        }
+      }
+      if (r.usage) {
+        cs.context.tokens = (cs.context.tokens || 0) + (r.usage.totalTokens || 0);
+        cs.context.used = cs.context.tokens;
+        cs.context.percent = computeContextPercent(cs.context.tokens, cs.context.limit);
+        cs.context.lastUsageAt = Date.now();
+        cs.usage.sessionInput = (cs.usage.sessionInput || 0) + (r.usage.inputTokens || 0);
+        cs.usage.sessionOutput = (cs.usage.sessionOutput || 0) + (r.usage.outputTokens || 0);
+        cs.usage.sessionTotal = cs.usage.sessionInput + cs.usage.sessionOutput;
+        cs.context.estimated = false;
+      }
+      // session-isolation/02 (run-mirror): the same still-viewing test
+      // as the ACP finalize, now one shared function so the two
+      // transports cannot drift.
+      const stillViewingAtFinalize = sendStillViewing(cs, owningWebuiSessionId, r.sessionId);
+      if (r.sessionId && stillViewingAtFinalize) {
+        cs.mcodeSessionId = r.sessionId;
+      }
+      if (r.sessionId) {
+        const finalSid = r.sessionId;
+        const bindTargetId = stillViewingAtFinalize ? cs.sessionId : owningWebuiSessionId;
+        // The same fire-and-forget DB re-query the ACP finalize does.
+        // `applyMavisUsageToCs` reads the runtime's own SQLite, so it
+        // is the same code path on this transport, not a second
+        // implementation of it.
+        setTimeout(() => {
+          applyMavisUsageToCs(cs, finalSid, { getMcodeModelLimit })
+            .then(() => pushStateFor(cid))
+            .catch((e) => {
+              if (process.env.MCODE_USAGE_DEBUG) {
+                console.warn(`[usage.mavis.runtime] cid=${cid} error: ${e.message}`);
+              }
+              pushStateFor(cid);
+            });
+        }, 400);
+        // Title read-back. `getMcodeSessionTitle` is already
+        // transport-aware (it prefers the catalogue host under
+        // `runtime`), so this is the SAME call the ACP finalize makes,
+        // not a runtime-only one.
+        getMcodeSessionTitle(finalSid)
+          .then((title) => {
+            if (bindTargetId) {
+              try {
+                const all = loadSessions();
+                const item =
+                  all.find((s) => s && s.id === bindTargetId) ||
+                  all.find((s) => s && s.mcodeSessionId === finalSid);
+                if (item && item.mcodeSessionId !== finalSid) {
+                  item.mcodeSessionId = finalSid;
+                  item.updatedAt = Date.now();
+                  saveSessions(all);
+                }
+              } catch (e) {
+                console.warn(`[runtime-send] save mcodeSid failed: ${e.message}`);
+              }
+            }
+            if (!title) return;
+            const isDefault =
+              !cs.sessionTitle ||
+              cs.sessionTitle === "New session" ||
+              cs.sessionTitle === "Untitled";
+            if (isDefault && cs.mcodeSessionId === finalSid) {
+              cs.sessionTitle = title;
+            }
+            try {
+              const all = loadSessions();
+              const item =
+                all.find((s) => s && s.id === bindTargetId) ||
+                all.find((s) => s && s.mcodeSessionId === finalSid);
+              if (item && !item.titleCustom && item.title !== title) {
+                const recordIsDefault =
+                  !item.title ||
+                  item.title === "New session" ||
+                  item.title === "Untitled" ||
+                  item.title === "Mcode session";
+                if (recordIsDefault) {
+                  item.title = title;
+                  item.updatedAt = Date.now();
+                  saveSessions(all);
+                }
+              }
+            } catch (e) {
+              console.warn(`[runtime-send] save title failed: ${e.message}`);
+            }
+            if (stillViewingAtFinalize) pushStateFor(cid);
+          })
+          .catch((e) => console.warn(`[runtime-send] getMcodeSessionTitle: ${e.message}`));
+        invalidateMcodeSessionsCache();
+        getMcodeSessionsForWorkspace(cs.workspace && cs.workspace.dir)
+          .then(() => pushStateFor(cid))
+          .catch(() => {});
+      }
+      pushStateFor(cid);
+      resolve(r);
+    }
+    /**
+     * Fold one classified event into the accumulator and the line
+     * buffer. Kept as a closure so `finalize` is in scope for the
+     * terminal branches.
+     *
+     * @param {object} event A runtime stream event.
+     */
+    function onEvent(event) {
+      const now = Date.now();
+      if (cs.running.lastDeltaAt) {
+        const dt = (now - cs.running.lastDeltaAt) / 1000;
+        if (dt > 0) cs.running.tps = Math.round(1 / dt);
+      }
+      cs.running.lastDeltaAt = now;
+      cs.context.tps = cs.running.tps;
+
+      const c = classifySendEvent(event);
+      if (c.kind === SEND_EVENT_KINDS.TOOL) {
+        if (!r.toolIndexById) r.toolIndexById = new Map();
+        const toolChat = r.chatArray();
+        for (const tc of c.toolCalls) {
+          const u = sendToolUpdate(tc);
+          // A call that was ALREADY announced contributes no second
+          // `→ name` header: the runtime re-sends the whole call on
+          // every chunk of its lifecycle (Preparing → Prepared →
+          // Finished), and the ACP path emitted one header per event.
+          // The header for a NEW id is written here — with its
+          // arguments, which `applyToolUpdate`'s synthesized header
+          // deliberately omits — and the index is pre-registered so
+          // the shared reducer takes its "header already known" branch
+          // and writes only the body.
+          if (typeof u.toolCallId === "string" && u.toolCallId && !r.toolIndexById.has(u.toolCallId)) {
+            toolChat.push(`##tc:${u.toolCallId}`);
+            toolChat.push(sendToolHeaderLine(u));
+            r.toolIndexById.set(u.toolCallId, toolChat.length - 1);
+          }
+          applyToolUpdate(r, cs, u, { cid });
+        }
+        r.lastChunkKind = "tool_call";
+        if (typeof c.text === "string" && c.text) {
+          const step = sendSegmentAdvance(r.lastChunkKind, SEND_EVENT_KINDS.MESSAGE, r.answer || "", c.text);
+          r.answer = step.text;
+          r.lastChunkKind = step.lastKind;
+          streamUpdateLine(r.chatArray(), "●", oneLineOf(r.answer));
+        }
+        pushStateFor(cid);
+        return;
+      }
+      if (c.kind === SEND_EVENT_KINDS.MESSAGE) {
+        const step = sendSegmentAdvance(r.lastChunkKind, SEND_EVENT_KINDS.MESSAGE, r.answer || "", c.text);
+        r.answer = step.text;
+        r.lastChunkKind = step.lastKind;
+        streamUpdateLine(r.chatArray(), "●", oneLineOf(r.answer));
+        pushStateFor(cid);
+        return;
+      }
+      if (c.kind === SEND_EVENT_KINDS.THOUGHT) {
+        const step = sendSegmentAdvance(r.lastChunkKind, SEND_EVENT_KINDS.THOUGHT, r.thinking || "", c.text);
+        r.thinking = step.text;
+        r.lastChunkKind = step.lastKind;
+        streamUpdateLine(r.chatArray(), "▲", oneLineOf(r.thinking));
+        pushStateFor(cid);
+        return;
+      }
+      if (c.kind === SEND_EVENT_KINDS.AUTHORITATIVE) {
+        // The settled message. It OVERWRITES the accumulated segment
+        // rather than appending, which is the whole reason the runtime
+        // can be lossless where the ACP path is approximate: whatever
+        // the deltas dropped or duplicated, this is the turn's real
+        // text. An empty settled message does not clear a good
+        // accumulation — a runtime that closes with a tool-only message
+        // would otherwise erase the answer.
+        if (typeof c.text === "string" && c.text.trim()) r.answer = c.text;
+        if (typeof c.thinking === "string" && c.thinking.trim()) r.thinking = c.thinking;
+        if (c.usage) {
+          const totals = sendUsageTotals(c.usage);
+          if (totals) r.usage = totals;
+        }
+        if (typeof c.finishReason === "string") r.stopReason = c.finishReason;
+        if (typeof c.messageId === "string" && c.messageId) r.assistantMessageId = c.messageId;
+        pushStateFor(cid);
+        return;
+      }
+      if (c.kind === SEND_EVENT_KINDS.TERMINAL) {
+        if (c.status) {
+          const outcome = sendTerminalOutcome(c.status);
+          r.status = outcome.status;
+          if (outcome.errorMessage) r.error = { message: c.errorMessage || outcome.errorMessage };
+        } else {
+          r.status = "failed";
+          r.error = { message: c.errorMessage || "Runtime stream failed" };
+          pushAlert({
+            level: "error",
+            msg: `[runtime-send.stream] ${r.error.message}`,
+            src: "runtime-send",
+            cid: cid || null,
+            sessionId: sid || null,
+            data: { phase: "stream" },
+          });
+        }
+        if (r.status === "succeeded") {
+          const note = buildEmptyTurnNote(r.stopReason, r.answer);
+          if (note) r.chatArray().push(note);
+        }
+        finalize();
+        return;
+      }
+      // STREAM and IGNORE produce no line. `resync-required` is the one
+      // IGNORE worth an operator's attention: it means webui's view of
+      // the turn diverged from the runtime's, and the log line is the
+      // only place that fact surfaces.
+      if (event && event.type === "resync-required") {
+        console.warn(
+          `[runtime-send] runtime asked for a resync mid-turn (cid=${cid} sid=${sid}); the webui line buffer keeps the last rendered state`,
+        );
+      }
+      pushStateFor(cid);
+    }
+
+    (async () => {
+      try {
+        for await (const event of stream) {
+          onEvent(event);
+          if (r._finalized) break;
+        }
+        if (!r._finalized) {
+          // The stream ended without a terminal event. The runtime
+          // closes with `[DONE]` mapped to `{type:'done'}`, so this is
+          // only reachable if a transport-level truncation dropped the
+          // last frames; treating it as success would render an
+          // unfinished turn as a complete one.
+          r.status = "failed";
+          r.error = { message: "Runtime stream ended without a terminal event" };
+          finalize();
+        }
+      } catch (e) {
+        // The per-turn wrapper already converts engine throws into
+        // `{type:'error'}` frames, so a rejection here means the
+        // ITERATOR itself failed (a broken async generator, a bad
+        // `return()`). Same class as the ACP `.catch`.
+        if (!r._finalized) {
+          r.status = "failed";
+          r.error = { message: e.message };
+          pushAlert({
+            level: "error",
+            msg: `[runtime-send.stream] ${e.message}`,
+            src: "runtime-send",
+            cid: cid || null,
+            sessionId: sid || null,
+            data: { phase: "iterator" },
+          });
+          finalize();
+        }
+      }
+    })();
   });
 }

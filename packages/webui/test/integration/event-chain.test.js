@@ -631,8 +631,17 @@ describe("event-chain: gate-blocking (decline / timeout / approve)", () => {
         // approved:false on timeout and record auth.timeout on the
         // isolated chain. Route-level behavior of a timeout is the same
         // 403 branch covered in (a) (approved:false → declined).
+        // The target needs a LIVE connection for the request to stay
+        // pending at all: with nobody to ask, authorize() answers
+        // fail-closed immediately as `auth.unreachable` rather than
+        // waiting out the budget (state-bus.js#hasDecisionListener). This
+        // case is specifically about the BUDGET expiring, so it presents
+        // the tab whose modal the user then walks away from.
         const eventsPath = join(server.tmpDir, "timeout-events.ndjson");
         process.env.MCODE_WEBUI_EVENTS_PATH = eventsPath;
+        const stateBus = await import(absPath("lib/state-bus.js"));
+        const liveRes = { writableEnded: false, destroyed: false, write: () => true };
+        stateBus.setSseClient("cid-timeout", liveRes);
         try {
             const auth = await import(absPath("lib/authorize.js"));
             auth._resetForTests();
@@ -660,6 +669,7 @@ describe("event-chain: gate-blocking (decline / timeout / approve)", () => {
             // Restore the shared env + drop any in-process pending
             // requests so later tests are unaffected.
             delete process.env.MCODE_WEBUI_EVENTS_PATH;
+            stateBus.endSseClient("cid-timeout", liveRes);
             try {
                 const auth = await import(absPath("lib/authorize.js"));
                 auth._resetForTests();

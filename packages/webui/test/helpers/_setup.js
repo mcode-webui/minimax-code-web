@@ -93,6 +93,20 @@ const _mcodeAcpMock = {
     sessionId: null,
   }),
   streamAcpPrompt: async () => ({ status: "succeeded", answer: "mocked" }),
+  // M3-B8: the RUNTIME transport branch. `routes/chat.js` imports this
+  // name unconditionally, so omitting it from this mock makes every
+  // suite that imports the chat route fail at module-INSTANTIATION time
+  // with "does not provide an export named 'runMcodeRuntime'" — a
+  // failure that reads like a product bug and is not one (mock trap #1,
+  // see the engine suites' headers). The default mirrors the acp
+  // default byte-for-byte so no existing case changes behaviour; the
+  // runtime branch's own cases register their own through
+  // registerMcodeAcpMock().
+  runMcodeRuntime: async () => ({
+    status: "succeeded",
+    answer: "mocked",
+    sessionId: null,
+  }),
 };
 
 let _lanBroadcast = false;
@@ -536,6 +550,11 @@ export async function setupMocks(t, overrides = {}) {
     namedExports: {
       runMcodeAcp: (...a) => _mcodeAcpMock.runMcodeAcp(...a),
       streamAcpPrompt: (...a) => _mcodeAcpMock.streamAcpPrompt(...a),
+      // M3-B8: the runtime transport branch. Same dispatch-through
+      // wrapper as the two above — a spread would snapshot the function
+      // at setupMocks() time and a later registerMcodeAcpMock() would
+      // not take effect.
+      runMcodeRuntime: (...a) => _mcodeAcpMock.runMcodeRuntime(...a),
       // Ticket 09-02: routes/model.js#handleSetModel translates the
       // webui id to the engine wire form via `resolveModelId`. The
       // pure helper is also re-exported through `mcode-acp.js` for
@@ -622,6 +641,15 @@ export async function setupMocks(t, overrides = {}) {
 //     mocked) authorize module. Works in both suite modes.
 //   - Robust to handlers that only reach authorize() after an await
 //     (e.g. body parsing): a short interval polls while fn() runs.
+//   - Presents a LIVE SSE response for each pending request's client.
+//     authorize() only keeps a request pending while its target has a
+//     live connection (state-bus.js#hasDecisionListener) — with nobody
+//     connected the gate fails closed at once, which is correct in
+//     production and would make every gated test answer "declined".
+//     Registering the response models the tab whose modal the decision
+//     stands in for. When the state bus is a test double that does not
+//     model the connection registry, there is nothing to register and
+//     the gate keeps its previous behaviour.
 //
 // Usage:
 //   const res = await withDecisions(
@@ -641,6 +669,31 @@ export async function withDecisions(fn, { approve = true } = {}) {
   ) {
     return fn();
   }
+  const bus = await import(absPath("lib/state-bus.js"));
+  const canHostListener =
+    typeof bus.setSseClient === "function" && typeof bus.endSseClient === "function";
+  // A request only stays pending while its target can be reached at all.
+  // A live SSE response is how production reaches it; this harness IS the
+  // decider and has no socket, and it cannot know which cid the route is
+  // about to use before the route runs. So it both presents connections
+  // for the cids the test has already registered and declares itself as
+  // the in-process decider. Neither can approve anything on its own — a
+  // test that wants the unreachable path simply does not call this.
+  const setDecider = typeof mod._setInProcessDeciderAttached === "function"
+    ? mod._setInProcessDeciderAttached
+    : null;
+  if (setDecider) setDecider(true);
+  const targets = canHostListener ? mod.getPendingTargets : null;
+  const hosted = new Map(); // cid -> fake ServerResponse
+  const hostListener = (cid) => {
+    if (!canHostListener || !cid || hosted.has(cid)) return;
+    const res = { writableEnded: false, destroyed: false, write() { return true; } };
+    hosted.set(cid, res);
+    bus.setSseClient(cid, res);
+  };
+  if (canHostListener) {
+    for (const cid of bus.clients.keys()) hostListener(cid);
+  }
   // Requests that were already pending when withDecisions started
   // belong to someone else — only decide requests created by fn().
   const preExisting = new Set(mod.getPendingRequestIds());
@@ -657,9 +710,16 @@ export async function withDecisions(fn, { approve = true } = {}) {
   //   hold the loop). Same fix shape as lib-authorize's REF'd watchdog
   //   (run 35493384574) — liveness only, zero assertion change.
   const poll = setInterval(() => {
+    if (canHostListener) {
+      for (const cid of bus.clients.keys()) hostListener(cid);
+    }
     for (const id of mod.getPendingRequestIds()) {
       if (decided.has(id) || preExisting.has(id)) continue;
       decided.add(id);
+      if (targets) {
+        const hit = targets().find((t) => t.requestId === id);
+        if (hit) hostListener(hit.cid);
+      }
       mod._decideForTests(id, approve);
     }
   }, 2);
@@ -683,6 +743,13 @@ export async function withDecisions(fn, { approve = true } = {}) {
   } finally {
     clearTimeout(bail);
     clearInterval(poll);
+    if (setDecider) setDecider(false);
+    for (const [cid, res] of hosted) {
+      try {
+        bus.endSseClient(cid, res);
+      } catch {}
+    }
+    hosted.clear();
   }
 }
 
