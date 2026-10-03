@@ -2698,6 +2698,7 @@
     "packages/local-runtime/src/website-management/deployed-website-source.ts",
     "packages/local-runtime/src/website-management/local-website-management-client.ts",
     "packages/local-runtime/src/worktrees/branch.ts",
+    "packages/local-runtime/test/unit/agent-name-conflict-migration-lock.test.ts",
     "packages/local-runtime/test/unit/background-task-test-helpers.ts",
     "packages/local-runtime/test/unit/child-bash-lifecycle.test.ts",
     "packages/local-runtime/test/unit/content-safety-api-fail-policy.test.ts",
