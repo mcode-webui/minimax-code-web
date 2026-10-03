@@ -139,14 +139,17 @@ function providerByTransport() {
  * the UI already reported success, which is the defect the third branch
  * of the cascade was written for.
  *
- * The value is 2000 ms. The batch plan transcribes this bound as "abort
- * 5s"; the file the plan was written against says 2s and the file is
- * what runs. See KNOWN DEBT 1 — the number is pinned by a named test
- * either way, so a future change to it is a deliberate one.
+ * The value is 5000 ms. The file this batch migrated ran 2000 ms; the
+ * batch plan transcribed the bound as "abort 5s" and the product call
+ * (2026-10-03) is to take the plan's value — the longer grace gives
+ * stubborn children more time to finalize, at the cost of "already
+ * stopped" staying a lie for three extra seconds. See KNOWN DEBT 1 —
+ * the number is pinned by a named test either way, so a future change
+ * to it is a deliberate one.
  *
  * @type {number}
  */
-export const STOP_FORCE_KILL_MS = 2000;
+export const STOP_FORCE_KILL_MS = 5000;
 
 // ---------------------------------------------------------------------------
 // The declaration, and the gate policy that goes with it
@@ -473,16 +476,13 @@ export async function sendEngineSessionCancel(options = {}) {
 // Recorded here rather than fixed, because each item is a decision that
 // belongs to a human and not to a refactor:
 //
-//   1. THE PLAN SAYS 5s AND THE CODE SAYS 2s. The B7 row of
-//      `doc/m3-batch-plan.md` transcribes this red line as "abort 5s 有界";
-//      `STOP_FORCE_KILL_MS` is 2000, and it was 2000 before this batch.
-//      The file wins over the transcription, so the bound shipped as-is
-//      and is pinned by a named test. Which number is right is a product
-//      call: 2 s is what the escalation has always used and what the
-//      runner's own teardown is tuned against; a longer window gives a
+//   1. THE PLAN SAID 5s AND THE CODE SAID 2s — RESOLVED 2026-10-03: the
+//      product call took the plan's value, `STOP_FORCE_KILL_MS` is now
+//      5000 (it was 2000 before this batch). The longer grace gives a
 //      stubborn child more time to finalize but makes "已停止" lie for
-//      longer. Changing the constant is a one-line edit; deciding it is
-//      not this batch's to do.
+//      three extra seconds; that trade was accepted explicitly. The
+//      named test pins the new value, so a future change stays a
+//      deliberate one.
 //
 //   2. #13 KILLS A RUNNING TURN WITHOUT ASKING WHETHER IT MAY. A stop
 //      on an in-flight session SIGKILLs the engine subprocess, and the

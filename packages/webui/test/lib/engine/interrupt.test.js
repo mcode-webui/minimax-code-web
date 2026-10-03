@@ -288,13 +288,13 @@ describe("the interrupt family's declaration and soft gate", () => {
 // 2. The four red lines
 // ===========================================================================
 describe("RED LINE 1 — the escalation is bounded", () => {
-  test("the bound is 2000 ms — the file's value, not the plan's 5 s", async (t) => {
+  test("the bound is 5000 ms — the plan's value, taken by product call", async (t) => {
     const facade = await bootFacade(t);
-    // KNOWN DEBT 1: doc/m3-batch-plan.md transcribes this red line as
-    // "abort 5s 有界". The code said 2000 before this batch and still
-    // does; the file wins over the transcription. The number is pinned
-    // here so a future change to it has to be a deliberate edit.
-    assert.equal(facade.STOP_FORCE_KILL_MS, 2000);
+    // KNOWN DEBT 1, resolved 2026-10-03: doc/m3-batch-plan.md transcribes
+    // this red line as "abort 5s 有界"; the migrated file said 2000. The
+    // product call took the plan's value. The number is pinned here so a
+    // future change to it has to be a deliberate edit.
+    assert.equal(facade.STOP_FORCE_KILL_MS, 5000);
   });
 
   test("the escalation is armed at exactly that bound, and is unref'd", async (t) => {
