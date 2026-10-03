@@ -2263,6 +2263,139 @@ SSE 事件，让每个已连接客户端刷新目录。下一次 `/api/models` �
 
 ---
 
+## 模型来源（SB-1）
+
+「用量与模型」页的三来源切换头、「使用中」徽标与 MiniMax API Key
+一行的四个端点。每一个都是引擎既有方法
+（`packages/local-runtime-v2/src/local/cli-service.ts` 的
+`getMiniMaxModelSource`、`setMiniMaxModelSource`、
+`upsertMiniMaxApiKey`、`testUserModel`）的薄窗口，此前没有 HTTP 出口。
+
+**这一族不是供应商目录。** `/api/providers*` 是 webui 自有存储里的
+自定义 BYOK 端点；本族是**引擎**侧的 MiniMax 凭据状态，即引擎自己的
+`config.yaml` 里的 `minimaxModelSource` 与 `minimax_api.apiKey`。两者
+在界面上相邻、共用掩码约定，但存储与校验完全不共享。
+
+**门控。** 四个方法挂在 v2 cli-service 自己的 `modelProviders` 要求上，
+而它不是 14 个已声明能力键之一，因此本族按**活成员**门控而非按声明门控：
+没有运行时启动时 `503 engine_host_unavailable`，已启动的宿主不带该方法时
+`501 engine_member_unavailable`。见 `server/engine/model-source.js`。
+
+**掩码。** `apiKey` 在任何响应里都是掩码，且是引擎自己的掩码
+（`service/model-system/secret.js`）原样透传；本路由没有任何代码路径
+能把它还原。
+
+### `GET /api/model-source`
+
+设置页打开时读的那一次：当前来源，加上已存密钥的掩码投影。
+
+**响应 200**
+```json
+{
+  "ok": true,
+  "source": "token_plan",
+  "apiKey": {
+    "available": true,
+    "hasKey": false,
+    "masked": null,
+    "testState": null,
+    "lastTestedAtMs": null
+  }
+}
+```
+
+`source` 取 `token_plan`（托管的 Token Plan 凭据）或
+`minimax_api_key`（用户自带的 BYOK 密钥）。`apiKey.available: false`
+**不等于** `hasKey: false`：前者是宿主根本读不到密钥半边，后者是读到了
+"没有存密钥"。把两者合并渲染，会告诉一个已经存了密钥的用户"你没有密钥"。
+
+- `501 engine_member_unavailable` —— 宿主没有 `getMiniMaxModelSource`。
+- `503 engine_host_unavailable` —— 没有已启动的运行时。
+- `502 UNKNOWN_MODEL_SOURCE` —— 引擎报出了其自身类型之外的值。拒绝而
+  不是渲染，因为界面无法从一个叫不出名字的来源里退出来。
+
+### `PUT /api/model-source`
+
+切换当前来源。响应报的是引擎**已持久化**的值而不是请求值，因此徽标
+不可能与配置不一致。
+
+**请求** `{ "source": "token_plan" | "minimax_api_key" }`
+
+**响应 200** `{ "ok": true, "source": "minimax_api_key" }`
+
+- `400 INVALID_MODEL_SOURCE` —— 缺失或未知的 `source`。在触达引擎之前
+  就判定，因此一次笔误不会付出一次运行时往返。
+- `400 BAD_FIELD_TYPE` —— `source` 不是字符串。
+- `400 NO_API_KEY` —— 引擎因为没有存密钥而拒绝了 BYOK 方向。这个码是
+  界面把用户指向密钥输入框的信号，而不是弹一个失败提示。
+
+### `PUT /api/model-source/api-key`
+
+写入（upsert）BYOK 密钥，可选在同一调用里切到它。
+
+**请求** `{ "apiKey": "<原始密钥>", "saveAndUse": true }`
+
+**保留密钥哨兵。** `apiKey` 缺失、为空或只有空白时保留已存密钥，
+不调用任何引擎写，并返回 `200` + `changed: false` + 当前掩码状态。
+它存在的原因是：`GET` 只能返回掩码，而引擎把掩码当密钥提交会拒绝
+（`INVALID_API_KEY`）——一个把自己读到的掩码回写的前端会让每次保存都
+失败。约定与拼写都跟 `PUT /api/providers` 一致（空串即保留）。
+
+`saveAndUse` 是引擎自带的标志：它在一个事务里既写密钥又把来源切成
+`minimax_api_key`，因此界面不会出现"密钥已存、来源没切"的中间态。
+
+**响应 200**
+```json
+{
+  "ok": true,
+  "source": "minimax_api_key",
+  "apiKey": { "available": true, "hasKey": true, "masked": "sk-a*******6789" },
+  "changed": true,
+  "saveAndUse": true
+}
+```
+
+- `400 BAD_FIELD_TYPE` —— `apiKey` 不是字符串，或 `saveAndUse` 不是
+  布尔值。非字符串密钥被拒绝而不是当作"保留"，否则客户端的 bug 会变成
+  一次"成功但什么都没做"的调用。
+- `400 INVALID_API_KEY` —— 引擎自身的拒绝（空值或掩码形态）。
+- `500 engine_error` —— 没有引擎状态的抛出。异常消息被**替换**而非
+  透传：来自不可识别抛出者的异常字符串是唯一仍可能回显凭据的地方。
+
+### `POST /api/model-source/test`
+
+连通性检测。**请求** `{ "modelId"?: "MiniMax-M3" }`；缺省时引擎回落到
+第一个已配置的 MiniMax 模型，未知 id 则是引擎自身的 404。
+
+检测始终针对**已保存的密钥**、在 `minimax_api` 供应商上进行，并在
+`tested: "stored_key"` 里说明这一点。两条限制来自引擎契约而非本路由的
+选择：v2 的 `testUserModel` 不接受密钥覆写，因此未保存的密钥无法被检测；
+托管的 Token Plan 凭据也不是模型服务的密钥，Token Plan 来源在这里没有
+可检测的对象。
+
+**响应 200** —— 检测跑完即 200，无论成功与否：
+```json
+{
+  "ok": true,
+  "success": true,
+  "providerId": "minimax_api",
+  "modelId": null,
+  "tested": "stored_key",
+  "status": {
+    "state": "available",
+    "lastTestedAt": 1700000000000,
+    "lastErrorCode": null,
+    "lastErrorMessage": null
+  }
+}
+```
+
+`success: false` 是一次**跑完**的检测且被测模型没有应答，因此仍是 200
+——与 `POST /api/providers/test` 的切分一致。只有"拒绝去试"才是非 200：
+门控给出的 `503` / `501`，或没有可测密钥时引擎的 `400 NO_API_KEY`。
+
+---
+
 ## 用量
 
 ### `POST /api/usage` 与 `POST /api/usage-trigger`

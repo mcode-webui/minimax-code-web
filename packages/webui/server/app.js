@@ -66,6 +66,7 @@ import * as modelRoute from "./routes/model.js";
 import * as debugRoute from "./routes/debug.js";
 import * as protocolRoute from "./routes/protocol.js";
 import * as providersRoute from "./routes/providers.js";
+import * as modelSourceRoute from "./routes/model-source.js";
 import * as gitRoute from "./routes/git.js";
 import * as pluginsRoute from "./routes/plugins.js";
 import * as turnDiffRoute from "./routes/turn-diff.js";
@@ -213,6 +214,20 @@ export const OWNED_ROUTES = new Set([
   // Preset providers (ticket 02): gallery + one-click enable.
   "GET /api/providers/presets",
   "POST /api/providers/preset/:id/enable",
+  // SB-1 — the 「用量与模型」 tab's model-source family. Four windows
+  // over engine methods that existed all along
+  // (`cli-service.ts`: getMiniMaxModelSource / setMiniMaxModelSource /
+  // upsertMiniMaxApiKey / testUserModel) and had no route: the source
+  // switcher was `useState` plus a comment claiming the backend did not
+  // exist, and the two key buttons were permanently disabled. The key
+  // write sits on its own sub-resource so its handler can carry the
+  // keep-key sentinel (an absent key keeps the stored one) without a
+  // body flag that would read as "clear my key" by accident. See
+  // `engine/model-source.js` for the gate and the KNOWN DEBT list.
+  "GET /api/model-source",
+  "PUT /api/model-source",
+  "PUT /api/model-source/api-key",
+  "POST /api/model-source/test",
   // Debug injection (gated by DEBUG_INJECT=1).
   "POST /api/debug/inject",
   "GET /api/debug/state",
@@ -752,6 +767,25 @@ export function createHonoApp() {
       (req, res, ctx) =>
         providersRoute.handleEnablePreset(req, res, ctx, { id: c.req.param("id") }),
     ),
+  );
+
+  // ----- SB-1: model source + MiniMax API key -----
+  // Registered after the provider family and in the same order as
+  // `OWNED_ROUTES`. The three literal paths share the `/api/model-source`
+  // prefix, so the order between them does not shadow anything — but the
+  // sub-resource (`/api/model-source/api-key`) is a distinct path, not a
+  // suffix match, and the router resolves it on its own literal.
+  app.get("/api/model-source", (c) =>
+    invokeHandler(c, c.get(CAPTURE_KEY), modelSourceRoute.handleGetModelSource),
+  );
+  app.put("/api/model-source", (c) =>
+    invokeHandler(c, c.get(CAPTURE_KEY), modelSourceRoute.handleSetModelSource),
+  );
+  app.put("/api/model-source/api-key", (c) =>
+    invokeHandler(c, c.get(CAPTURE_KEY), modelSourceRoute.handlePutModelSourceApiKey),
+  );
+  app.post("/api/model-source/test", (c) =>
+    invokeHandler(c, c.get(CAPTURE_KEY), modelSourceRoute.handleTestModelSource),
   );
 
   // ----- Debug injection (gated by DEBUG_INJECT=1) -----

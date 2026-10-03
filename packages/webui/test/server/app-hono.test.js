@@ -138,6 +138,13 @@ describe("app.js — migration ledger", () => {
       "POST /api/providers/test",
       "GET /api/providers/presets",
       "POST /api/providers/preset/:id/enable",
+      // SB-1: the model-source family. Four windows over engine methods
+      // that existed all along; the key write sits on a sub-resource so
+      // its handler can carry the keep-key sentinel.
+      "GET /api/model-source",
+      "PUT /api/model-source",
+      "PUT /api/model-source/api-key",
+      "POST /api/model-source/test",
       "POST /api/debug/inject",
       "GET /api/debug/state",
       "POST /api/protocol/set-mode",

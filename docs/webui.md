@@ -1204,7 +1204,7 @@ missing feature. Only Worktree is genuinely not implemented.
 | Preferences | Voice | implemented, placeholder controls — the microphone dropdown is disabled with a single 「本地版不适用」 option, and both dictation rows show 未设置 (no device enumeration, no dictation input in a browser) |
 | Preferences | Shortcuts | implemented — 10 desktop rows, each stating what the browser can do with it: 3 rebindable and live, 1 live on macOS only, 6 blocked with the specific reason (see **Shortcuts — what the browser can intercept**) |
 | Preferences | Personalization | implemented — 自定义指令 and 关于你 persist to `localStorage`; both memory switches render off and disabled with the not-applicable marker, and 管理 opens the 记忆摘要 dialog in its permanent empty state |
-| Management | Usage & models | implemented; the three sources are a **view switcher** — they do not switch the model source in use |
+| Management | Usage & models | implemented; since SB-1 the two engine sources are real (Token Plan / MiniMax API switch the engine's credential, the 「使用中」 badge reads the engine back, and the MiniMax API key can be saved and probed) — the third pill, Custom models, stays a VIEW onto the provider catalogue |
 | Management | Connection | implemented |
 | Management | Account | implemented as a placeholder — 账户信息 reads 「本地模式，未登录」, 退出登录 is disabled (no account service locally) |
 | Coding | Code review | implemented — 自定义审查准则 persists to `localStorage`; 审查方式 is a disabled single-option dropdown showing 子会话 |
@@ -1613,6 +1613,59 @@ were placeholders in this round, which the settings-modal port (58) has
 since given content. The dead `if (!section)` branch inside `SettingsPanel`
 was removed and the `section` prop made required — every reachable tab
 resolves a section, so the branch could never render.
+
+### Usage & models: the source switcher is real (SB-1)
+
+**What the user sees.** Opening the 用量与模型 tab reads the engine
+once and settles three things that used to be local guesses: which
+credential the engine is actually using, whether a MiniMax API key is
+stored, and what the last connectivity probe found. The pill is still
+the *view*; the 「使用中」 badge beside it is the engine's answer, and it
+moves only when a write has been confirmed. Picking Token Plan or MiniMax
+API in the dropdown switches the view AND writes the engine
+(`PUT /api/model-source`); a refusal — the engine's `NO_API_KEY` when no
+BYOK key is stored — leaves the view where the user put it, so the key
+field they need is the panel that stays on screen, while the badge keeps
+showing what is really in use.
+
+**Why the badge and the view are separate values.** They were one value
+before, which is what made the old build's claim false: a `useState`
+switcher could render a source as selected while the engine kept using
+the other one. A badge that claims 使用中 for a source the engine never
+accepted is the fake-success shape this codebase keeps refusing, so the
+badge is fed exclusively by a read-back.
+
+**The key row.** A stored key shows as the engine's mask, never as
+plaintext, and typing a new value replaces it on save. 保存并使用 is one
+request, not two: the engine writes the key and switches the source in a
+single transaction, so the tab never shows a saved key beside a source
+that was not switched. An empty submission is the **keep** sentinel
+(`changed: false`, no engine write) — the same convention
+`PUT /api/providers` uses, and it exists because the read can only
+return a mask while the engine rejects a mask submitted as a key.
+
+**What the probe does and does not test.** 检测 probes the STORED key on
+the `minimax_api` provider and the response says so (`tested:
+"stored_key"`). Two limits are the engine's contract, not this UI's:
+`testUserModel` takes no key override, so an unsaved value cannot be
+probed — the button is disabled with a title saying so while the field
+holds one — and the managed Token Plan credential is not a model-service
+key, so the Token Plan source has nothing to probe here. A probe that
+ran and failed is a completed probe, not an error: it renders the
+engine's status.
+
+**Cost.** One extra read per settings-tab open. The read boots the
+engine runtime if none is up, which is the write-side contract and is
+acceptable here because the user opened the tab; a future change that
+moves this fetch to page level must use the non-booting host getter
+instead (`server/engine/model-source.js` KNOWN DEBT 2).
+
+**What this did not do.** The add-model dialog's 「自动获取」 still
+resolves against the built-in preset directory: v2 has no per-provider
+catalogue query for an arbitrary key, so a live per-key fetch has no
+engine method behind it. The Token Plan cards stay on decision A1
+(本地版不适用) — wiring them to `/api/usage` and `/api/account` is a
+separate, undecided item, not a side effect of this one.
 
 ## Main-surface elements: user menu / project context menu / home capsules (ticket 55c)
 
@@ -2823,6 +2876,10 @@ marker), not by tool name.
 | `POST` | `/api/providers/test` | `routes/providers.js#handleTestProvider` | `{provider}`; structured codes → status |
 | `GET` | `/api/providers/presets` | `routes/providers.js#handleGetPresets` | gallery |
 | `POST` | `/api/providers/preset/:id/enable` | `routes/providers.js#handleEnablePreset` | one-click enable |
+| `GET` | `/api/model-source` | `routes/model-source.js#handleGetModelSource` | `{ok, source, apiKey:{available,hasKey,masked,testState,lastTestedAtMs}}`; `501` when the host has no `getMiniMaxModelSource`, `503` when no runtime is booted, `502 {code:"UNKNOWN_MODEL_SOURCE"}` for a value outside the engine's own two. `available:false` is not `hasKey:false` |
+| `PUT` | `/api/model-source` | `routes/model-source.js#handleSetModelSource` | `{source}`; `400 {code:"INVALID_MODEL_SOURCE"\|"BAD_FIELD_TYPE"}`, `400 {code:"NO_API_KEY"}` when the engine refuses the BYOK direction; the response carries what the engine PERSISTED |
+| `PUT` | `/api/model-source/api-key` | `routes/model-source.js#handlePutModelSourceApiKey` | `{apiKey, saveAndUse?}`; an absent/empty/whitespace `apiKey` is the KEEP sentinel → `200 {changed:false}` with no engine write; `400 {code:"BAD_FIELD_TYPE"\|"INVALID_API_KEY"}`; `500 {code:"engine_error"}` never carries the thrown message |
+| `POST` | `/api/model-source/test` | `routes/model-source.js#handleTestModelSource` | `{modelId?}`; always 200 for a COMPLETED probe (`{ok, success, providerId:"minimax_api", tested:"stored_key", status}`) including `success:false`; non-200 only when the probe is refused (`503`/`501`, or the engine's `400 NO_API_KEY`) |
 | `POST` | `/api/debug/inject` | `routes/debug.js#handleDebugInject` | `DEBUG_INJECT=1` gate |
 | `GET` | `/api/debug/state` | `routes/debug.js#handleDebugState` | same gate |
 | `POST` | `/api/protocol/set-mode` | `routes/protocol.js#handleSetMode` | mid-session mode change |

@@ -85,17 +85,47 @@ export function isSendUnconfirmed(cause: unknown): cause is SendUnconfirmedError
  * The `reason` is optional: an endpoint that answers 4xx without one (a
  * malformed body, an older server) still produces a usable `ApiHttpError`,
  * and the composer falls back to the generic banner for it.
+ *
+ * The `code` is the same idea one layer in, and it is NOT a rename of
+ * `reason`: `reason` is the composer's "which banner" vocabulary
+ * (`cid-busy`, `session-busy`), while `code` is an endpoint's own
+ * machine key — the engine's refusal code forwarded verbatim by
+ * `/api/model-source` (`NO_API_KEY` means "save a key first", which is a
+ * pointer, not a failure). A response may carry either, both or neither,
+ * and every existing consumer of `reason` is unaffected.
  */
 export class ApiHttpError extends Error {
   readonly status: number;
   readonly reason: string | null;
+  /** The endpoint's own machine key, when its failure body carried one. */
+  readonly code: string | null;
 
-  constructor(status: number, message: string, reason: string | null = null) {
+  constructor(
+    status: number,
+    message: string,
+    reason: string | null = null,
+    code: string | null = null,
+  ) {
     super(message);
     this.name = "ApiHttpError";
     this.status = status;
     this.reason = reason;
+    this.code = code;
   }
+}
+
+/**
+ * The endpoint's machine `code` carried by an `ApiHttpError`, or `null`.
+ *
+ * Read structurally, like `isConversationBusy` above, so a second copy of
+ * the class across module realms still answers correctly.
+ *
+ * @param cause The rejected value.
+ * @param code The code being looked for, e.g. `"NO_API_KEY"`.
+ */
+export function hasApiErrorCode(cause: unknown, code: string): boolean {
+  if (typeof cause !== "object" || cause === null) return false;
+  return (cause as { code?: unknown }).code === code;
 }
 
 /**
@@ -162,7 +192,11 @@ async function request<T>(
       payload && typeof payload === "object" && typeof (payload as { reason?: unknown }).reason === "string"
         ? String((payload as { reason: string }).reason)
         : null;
-    throw new ApiHttpError(response.status, message, reason);
+    const code =
+      payload && typeof payload === "object" && typeof (payload as { code?: unknown }).code === "string"
+        ? String((payload as { code: string }).code)
+        : null;
+    throw new ApiHttpError(response.status, message, reason, code);
   }
   return payload as T;
 }
@@ -836,6 +870,131 @@ export async function testProviderConnection(payload: {
   }
   return parsed;
 }
+
+// ---------------------------------------------------------------------------
+// SB-1 — the 「用量与模型」 tab's model source.
+//
+// A separate family from the provider catalogue above, and deliberately
+// so: `/api/providers` is webui's OWN store of custom BYOK endpoints
+// (`lib/providers-config.js`), while `/api/model-source` is the ENGINE's
+// MiniMax credential state (`minimaxModelSource` / `minimax_api.apiKey`
+// in the engine's own `config.yaml`, written through `cliService`). The
+// two happen to sit on adjacent tabs and share a masking convention; they
+// share no storage and no validation.
+// ---------------------------------------------------------------------------
+
+/** The two model sources the engine accepts. See `engine/model-source.js`. */
+export type ModelSource = "token_plan" | "minimax_api_key";
+
+/**
+ * The stored BYOK key's projection. `masked` is the engine's own mask
+ * (`service/model-system/secret.js`) — the ONLY shape an apiKey takes on
+ * the wire, in this family and in the provider one.
+ *
+ * `available: false` is not the same as `hasKey: false`: the first means
+ * the server could not report the key half at all, the second means it
+ * reported that no key is stored. The UI renders them differently, so the
+ * type keeps them apart.
+ */
+export interface ModelSourceApiKeyStatus {
+  available: boolean;
+  hasKey: boolean;
+  masked: string | null;
+  /** Engine cache state of the last connectivity probe, when there was one. */
+  testState: string | null;
+  lastTestedAtMs: number | null;
+}
+
+export interface ModelSourceSnapshot {
+  ok: true;
+  source: ModelSource;
+  apiKey: ModelSourceApiKeyStatus;
+}
+
+export interface ModelSourcePutResult {
+  ok: true;
+  source: ModelSource;
+  apiKey: ModelSourceApiKeyStatus;
+  /** False for a keep (an absent or empty `apiKey`). */
+  changed: boolean;
+  saveAndUse: boolean;
+}
+
+export interface ModelSourceTestStatus {
+  state: string | null;
+  lastTestedAt: number | null;
+  lastErrorCode: string | null;
+  lastErrorMessage: string | null;
+}
+
+export interface ModelSourceTestResult {
+  ok: true;
+  /** False means the probe RAN and the model did not answer. */
+  success: boolean;
+  providerId: string;
+  modelId: string | null;
+  /**
+   * Always `"stored_key"` today: v2's `testUserModel` takes no key
+   * override, so the probe can only ever test the saved credential. The
+   * field is on the wire so the UI can never imply otherwise.
+   */
+  tested: "stored_key";
+  status: ModelSourceTestStatus;
+}
+
+/**
+ * GET /api/model-source — the active source plus the key's masked
+ * status. Called when the settings tab opens, not at page level: the
+ * server boots the engine runtime to answer it, and a boot belongs to a
+ * user action.
+ */
+export const getModelSource = () => request<ModelSourceSnapshot>("/api/model-source");
+
+/**
+ * PUT /api/model-source — switch the source.
+ *
+ * Rejects (throws) with the server's structured `code` when the engine
+ * refuses: `NO_API_KEY` means "save a BYOK key first", which the UI
+ * renders as a pointer to the key field rather than as a failure.
+ */
+export const setModelSource = (source: ModelSource) =>
+  request<{ ok: true; source: ModelSource }>("/api/model-source", {
+    method: "PUT",
+    json: { source },
+  });
+
+/**
+ * PUT /api/model-source/api-key — upsert the BYOK key.
+ *
+ * `apiKey: ""` is the KEEP sentinel (the server's own convention, the
+ * same one `PUT /api/providers` uses): it keeps the stored key and
+ * answers `{changed: false}` with the current masked status. It exists
+ * because the GET can only return a mask, and the engine rejects a mask
+ * submitted as a key — a UI that round-tripped its own state would turn
+ * every save into a failure.
+ *
+ * `saveAndUse` writes the key AND switches the source in one engine
+ * transaction.
+ */
+export const putModelSourceApiKey = (payload: { apiKey: string; saveAndUse?: boolean }) =>
+  request<ModelSourcePutResult>("/api/model-source/api-key", {
+    method: "PUT",
+    json: payload,
+  });
+
+/**
+ * POST /api/model-source/test — connectivity probe for the stored key.
+ *
+ * 200 in BOTH outcomes: `success: false` is a completed probe of a model
+ * that did not answer, and the caller renders `status` rather than an
+ * error. Only a refusal to try (no engine, no such method, no stored
+ * key) throws.
+ */
+export const testModelSourceModel = (payload: { modelId?: string } = {}) =>
+  request<ModelSourceTestResult>("/api/model-source/test", {
+    method: "POST",
+    json: payload,
+  });
 
 /**
  * The account card's data, from the engine's `mcode/account/status` method.

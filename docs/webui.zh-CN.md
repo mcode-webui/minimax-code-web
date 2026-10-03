@@ -1003,7 +1003,7 @@ slice 22 增强：
 | 偏好 | 语音 | 已实装，控制件为诚实占位——麦克风下拉禁用且只有「本地版不适用」一个选项，两条听写快捷键显示「未设置」（浏览器里既没有设备枚举也没有听写输入） |
 | 偏好 | 快捷键 | 已实装——10 行逐行说明浏览器到底能做什么：3 行可改键且真实生效，1 行仅 macOS 生效，6 行不可用并写明原因（见**快捷键：浏览器能截获什么**） |
 | 偏好 | 个性化 | 已实装——「自定义指令」与「关于你」真存 `localStorage`；两个记忆开关关闭且禁用、行内标注「本地版不适用」，「管理」按钮打开「记忆摘要」弹窗且恒为空态 |
-| 管理 | 用量与模型 | 已实装；三来源是**视图切换器**——不切换实际使用的模型来源 |
+| 管理 | 用量与模型 | 已实装；自 SB-1 起两个引擎来源是真切换（Token Plan / MiniMax API 真切引擎凭据，「使用中」徽标回读引擎真值，MiniMax API Key 可保存可检测）——第三个胶囊「自定义模型」仍是**视图**，落点是供应商目录 |
 | 管理 | 连接 | 已实装 |
 | 管理 | 账户 | 诚实占位——「账户信息」显示「本地模式，未登录」，「退出登录」禁用（本地版未接入账户服务） |
 | 编码 | 代码审查 | 已实装——「自定义审查准则」真存 `localStorage`；「审查方式」是禁用单选下拉，显示「子会话」 |
@@ -1100,8 +1100,7 @@ slice 22 增强：
 | --- | --- |
 | 账户页 | 页签按桌面形态渲染，但本地没有 `getAccountStatus` / `signOut` 类后端契约，账户行显示「本地模式，未登录」、退出登录禁用 |
 | 已归档任务页 | 页签渲染空态；列表、恢复与删除需归档会话契约 |
-| 用量与模型的三来源切换 | 分段页签已按桌面形态落地（工单 53），但它是**视图切换器**——不切换实际使用的模型来源；真实的 Token Plan / MiniMax API / 自定义模型来源切换与来源徽标仍需模型路由契约 |
-| MiniMax API Key 面板 | 输入 + 测试连通性 + 保存并使用 |
+| 添加模型弹窗的「自动获取」live per-key 模型目录 | v2 无按任意密钥查询供应商目录的方法（`cli-service.ts#listModels` 回答的是"本应用已配置了哪些模型"，是另一个问题）；维持内置 preset 目录方案 |
 | 自定义模型拖拽排序、逐模型启停、预设选择器 | 需 provider 契约扩展；增删改已全部收敛到同一弹窗（本批），列表只负责展示与删除 |
 | 搜索关键词高亮 | 参照自己也没接线（定义了组件与动画但无调用点） |
 | 通用页 dataDir 底注 | 见上表 |
@@ -1122,6 +1121,20 @@ Token Plan 视图是桌面的五区块（页签 + 四卡）：
 当前套餐卡正是工单 53 的 A1 拍板被修订之处。A1 写的是「无源即占位」，并把这条整卡套用；但本地服务端其实有数据源（配额窗口走 `POST /api/usage`，套餐档位走 `GET /api/account`），这条拍板夸大了缺口。修订的做法是按数据源拆卡，而不是按卡拆：服务端读得到的就渲染，属于云端账户域的数值则填上点名该域的诚实文案。被否的备选有两个——一是整卡维持占位（引擎已经报出档位时那不是缺口）；二是把积分 / 到期 / 发票也一并接真（自托管的浏览器会话拿不到该账户的凭据，在那里放一个看起来真实的数值，正是 A1 要防的造假）。
 
 自定义模型视图是原有供应商面板（API Key、协议、模型清单、连接测试、预设一键启用）；工单 54 把**添加**流程重做成桌面同款弹窗（见下节），本批把**编辑**也并入同一弹窗（见「弹窗同时承载编辑」一节）——面板现在只剩列表与删除，没有第二个编辑面。
+
+**三来源切换与 MiniMax API Key（SB-1）**
+
+**用户能看到什么。** 打开「用量与模型」页会读一次引擎，落定三件原本靠本地 state 猜的事：引擎当前用的是哪个凭据、有没有存 MiniMax API Key、上一次连通检测的结果。胶囊仍然是**视图**；旁边的「使用中」徽标是引擎的回答，且只在写入被确认之后才移动。在下拉里点 Token Plan 或 MiniMax API，会同时切视图并写引擎（`PUT /api/model-source`）；被拒绝时——引擎在没有存 BYOK 密钥时返回 `NO_API_KEY`——视图停在用户放的位置，于是"需要填的密钥框"正好留在屏幕上，而徽标继续显示真正在用的那一个。
+
+**为什么徽标与视图是两个值。** 此前它们是同一个 `useState`，这正是旧实现那句声明为假的原因：切换器可以把一个来源渲染成"已选"，而引擎仍在用另一个。为引擎从未接受的来源打上「使用中」，正是本仓库一贯拒绝的假成功形态，因此徽标只由回读喂数据。
+
+**密钥行。** 已存的密钥显示为引擎的掩码，绝不显示明文；输入新值即在保存时替换。「保存并使用」是一次请求而不是两次：引擎在一个事务里既写密钥又切来源，因此界面不会出现"密钥已存、来源没切"的中间态。提交空值即**保留**哨兵（`changed: false`，不调用任何引擎写）——与 `PUT /api/providers` 同一约定；它存在的原因是读接口只能返回掩码，而引擎拒绝把掩码当密钥提交。
+
+**检测测的是什么、不测什么。** 检测针对 `minimax_api` 供应商上的**已存密钥**，并在响应里说明这一点（`tested: "stored_key"`）。两条限制来自引擎契约而非本界面：`testUserModel` 不接受密钥覆写，因此未保存的值无法被检测（输入框里有未保存内容时按钮禁用并给出原因），而托管的 Token Plan 凭据不是模型服务的密钥，Token Plan 来源在这里没有可检测对象。跑完但失败的检测是一次"跑完的检测"而不是错误，它渲染引擎给出的状态。
+
+**代价。** 每次打开该设置页多一次读；这次读在没有运行时时会启动引擎，属于写侧契约，在这里可以接受（是用户打开了页签）。若将来把这次读取挪到页面级，必须改用不启动运行时的宿主 getter（见 `server/engine/model-source.js` KNOWN DEBT 2）。
+
+**本批没有做的事。** 添加模型弹窗的「自动获取」仍走内置 preset 目录（v2 没有按任意密钥查询供应商目录的方法）；Token Plan 四张卡维持 A1 决策的「本地版不适用」——把它们接到 `/api/usage` 与 `/api/account` 是另一个尚未拍板的独立项，不是本批的副作用。
 
 **添加模型弹窗（工单 54，53b）**
 
@@ -2204,6 +2217,10 @@ createdAtMs, updatedAtMs}`）下发，按 `toolCallId` 幂等、上限 32 条、
 | `POST` | `/api/providers/test` | `routes/providers.js#handleTestProvider` | `{provider}`；结构化 code → status |
 | `GET` | `/api/providers/presets` | `routes/providers.js#handleGetPresets` | 画廊 |
 | `POST` | `/api/providers/preset/:id/enable` | `routes/providers.js#handleEnablePreset` | 一键启用 |
+| `GET` | `/api/model-source` | `routes/model-source.js#handleGetModelSource` | `{ok, source, apiKey:{available,hasKey,masked,testState,lastTestedAtMs}}`；宿主没有 `getMiniMaxModelSource` → `501`；没有运行时 → `503`；引擎报出其两值之外的值 → `502 {code:"UNKNOWN_MODEL_SOURCE"}`。`available:false` 不等于 `hasKey:false` |
+| `PUT` | `/api/model-source` | `routes/model-source.js#handleSetModelSource` | `{source}`；`400 {code:"INVALID_MODEL_SOURCE"\|"BAD_FIELD_TYPE"}`；引擎因无密钥拒绝 BYOK 方向 → `400 {code:"NO_API_KEY"}`；响应带的是引擎**已持久化**的值 |
+| `PUT` | `/api/model-source/api-key` | `routes/model-source.js#handlePutModelSourceApiKey` | `{apiKey, saveAndUse?}`；`apiKey` 缺失/空/仅空白即**保留**哨兵 → `200 {changed:false}` 且不写引擎；`400 {code:"BAD_FIELD_TYPE"\|"INVALID_API_KEY"}`；`500 {code:"engine_error"}` 绝不携带抛出的异常消息 |
+| `POST` | `/api/model-source/test` | `routes/model-source.js#handleTestModelSource` | `{modelId?}`；**跑完**的检测恒 200（`{ok, success, providerId:"minimax_api", tested:"stored_key", status}`），含 `success:false`；非 200 只出现在拒绝去试时（`503`/`501`，或引擎的 `400 NO_API_KEY`） |
 | `POST` | `/api/debug/inject` | `routes/debug.js#handleDebugInject` | `DEBUG_INJECT=1` 守门 |
 | `GET` | `/api/debug/state` | `routes/debug.js#handleDebugState` | 同上 |
 | `POST` | `/api/protocol/set-mode` | `routes/protocol.js#handleSetMode` | 会话中途切换 mode |
