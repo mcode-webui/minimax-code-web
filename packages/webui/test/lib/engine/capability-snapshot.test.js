@@ -101,6 +101,19 @@ function resolveMember(host, dottedPath) {
  *     claim). They are part of the snapshot so "missing must really be
  *     absent" is checked, and a partial that stops listing one goes red
  *     (under-declaration).
+ *
+ * M3-B10 added `selectModel` and `setPermissionMode` to `authCredentials`
+ * on BOTH surfaces. They are the two sub-items
+ * `MODE_WRITE_BRIDGED_CONFIG_IDS` (server/engine/mode-writes.js) names,
+ * and until this batch they were the one part of a hard gate that no
+ * audit could check: `absent` proves a name is NOT on the surface, and a
+ * name that is merely "not in `missing`" proves nothing. Both were
+ * verified present by reflection on a booted host BEFORE being added
+ * here, and the live audit below keeps proving it — which closes the
+ * bridge question B9 recorded as its KNOWN DEBT 2. Neither surface
+ * carries a `setThinkingEffort` / `selectThinkingEffort`; that absence
+ * is the fact the B10 KNOWN DEBT about gating `/api/set-model` turns on,
+ * and a surface that grows one must add it here at the same time.
  */
 const REQUIRED_METHODS = {
   "tui-runtime-adapter": {
@@ -113,7 +126,7 @@ const REQUIRED_METHODS = {
     mcp: { on: "adapter", methods: ["configureSessionMcpServers", "clearSessionMcpServers", "inspectProjectMcp", "listMcpServers"] },
     subagents: { on: "adapter", methods: ["getDelegationSnapshot", "stopDelegation", "listBackgroundTasks"] },
     usageStats: { on: "adapter", methods: ["getSessionUsage", "getSessionUsageSummary", "watchSessionUsageCommits"] },
-    authCredentials: { on: "adapter", methods: ["getAccountStatus", "getCodexOAuthStatus", "startCodexOAuthLogin", "cancelCodexOAuthLogin", "getMiniMaxApiKeyStatus", "upsertMiniMaxApiKey", "listUserModelProviders", "createUserModelProvider", "updateUserModelProvider", "deleteUserModelProvider", "testUserModelProvider", "discoverUserModelsCandidate"], absent: ["setConfigOption"] },
+    authCredentials: { on: "adapter", methods: ["getAccountStatus", "getCodexOAuthStatus", "startCodexOAuthLogin", "cancelCodexOAuthLogin", "getMiniMaxApiKeyStatus", "upsertMiniMaxApiKey", "selectModel", "setPermissionMode", "listUserModelProviders", "createUserModelProvider", "updateUserModelProvider", "deleteUserModelProvider", "testUserModelProvider", "discoverUserModelsCandidate"], absent: ["setConfigOption"] },
     fileReadWrite: { on: "adapter", methods: ["listWorkspaceFileTree", "searchWorkspaceFiles"] },
     gitOperations: { on: "adapter", methods: ["getWorkspaceGitMetadata"] },
   },
@@ -128,7 +141,7 @@ const REQUIRED_METHODS = {
     mcp: { on: "cliService", methods: ["configureSessionMcpServers", "inspectProjectMcp", "clearSessionMcpServers", "listMcpServers"] },
     subagents: { on: "cliService", methods: ["listBackgroundTasks"], absent: ["getDelegationSnapshot", "stopDelegation"] },
     usageStats: { on: "cliService", methods: ["getSessionUsage", "getSessionUsageSummary", "watchSessionUsageCommits"] },
-    authCredentials: { on: "cliService", methods: ["getAccountStatus", "getCodexOAuthStatus", "startCodexOAuthLogin", "cancelCodexOAuthLogin", "getMiniMaxApiKeyStatus", "upsertMiniMaxApiKey", "listUserModelProviders", "createUserModelProvider", "updateUserModelProvider", "deleteUserModelProvider", "testUserModel", "discoverUserModelsCandidate"], absent: ["setConfigOption"] },
+    authCredentials: { on: "cliService", methods: ["getAccountStatus", "getCodexOAuthStatus", "startCodexOAuthLogin", "cancelCodexOAuthLogin", "getMiniMaxApiKeyStatus", "upsertMiniMaxApiKey", "selectModel", "setPermissionMode", "listUserModelProviders", "createUserModelProvider", "updateUserModelProvider", "deleteUserModelProvider", "testUserModel", "discoverUserModelsCandidate"], absent: ["setConfigOption"] },
     fileReadWrite: { on: "cliService", methods: ["listWorkspaceFileTree", "searchWorkspaceFiles"] },
     gitOperations: { on: "cliService", methods: ["getWorkspaceGitMetadata", "getWorkspaceReviewLink"] },
   },

@@ -1,32 +1,38 @@
 // webui/server/routes/model.js
 // GET /api/models, POST /api/set-model, POST /api/permissions, POST /api/answer (legacy)
 //
-// M3-B4: `GET /api/models` now reads the catalogue through the engine
-// facade (`server/engine/model-reads.js`) instead of assembling it
-// here. The three sources (the engine session's `model` config option,
-// the merged providers config with the engine's `custom_provider`
-// tree as its bottom layer, the builtin cli-bundle extraction), the
-// two builtin-tree annotations (variant-style thinking levels and
-// context-window options) and the three derived "what is active" figures
-// all moved with it, as named pure functions pinned on their inputs.
+// M3-B4 moved the READ (`GET /api/models`) behind the engine facade
+// (`server/engine/model-reads.js`). M3-B10 moved the WRITE half: the
+// model-id translation, the variant-channel decision, the two
+// `set_config_option` pushes and the permission label mapping now live in
+// `server/engine/model-writes.js`.
 //
-// The response is byte-identical. This batch only moves the READ: the
-// WRITE half (`handleSetModel`) stays here for B7/B9, together with the
-// two other handlers below.
+// What stayed here, and why: the body parsing and its 400s (caller
+// confusion, not an engine limitation), the `cs.model` / `cs.permissions`
+// writes, `pushStateFor`, and the response bodies. The mirror rule for
+// `cs.configOptions` is the one seam that is half-and-half — the RULE
+// (`applyThinkingEffortMirror`) is the facade's, the WRITE stays here,
+// because `cs` is webui's own state. See that module's header for the
+// full boundary table.
+//
+// The wire is byte-identical to the pre-B10 route: every status, field
+// order, warning string and push order is pinned as a value in
+// `test/lib/engine/model-writes.test.js` and, end to end through this
+// route, in `test/routes/model.check.mjs`.
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { pushStateFor } from "../lib/state-bus.js";
-import {
-  mcodePermissionToWebui,
-  setConfigOption,
-  webuiPermissionToMcode,
-  PERMISSION_MODES,
-} from "../lib/mcode-rpc.js";
+import { mcodePermissionToWebui, PERMISSION_MODES } from "../lib/mcode-rpc.js";
 import { readEngineModelCatalogue } from "../engine/model-reads.js";
-import { variantChannelFor, resolveModelId } from "../lib/engine-catalogue.js";
-import { webuiModeToLabel } from "../lib/interaction/permission-presets.js";
+import {
+  applyThinkingEffortMirror,
+  planModelPickStamps,
+  pushEngineModelSelection,
+  pushEnginePermissionMode,
+  resolvePermissionSelection,
+} from "../engine/model-writes.js";
 import { readJson } from "../lib/read-json.js";
 
 /**
@@ -56,38 +62,6 @@ function readModelsConfig() {
   } catch {
     return null;
   }
-}
-
-/**
- * Translate a webui-recorded model id to the engine's wire form.
- *
- * The webui records `cs.model.name` in `<providerKey>/<engineModelKey>`
- * form (see `engine/model-reads.js#webuiFullModelId`). The engine's
- * `set_config_option` for `configId: "model"` rejects anything that
- * isn't the wire form `m:<encodedProvider>:<encodedModel>:u` (see
- * packages/tui/src/acp/control-state.ts#modelConfigValue / agent.ts
- * `parseModelConfigValue`). Without this translation a mid-session
- * pick of a multi-segment model id (`nousresearch/deepseek/x`) would
- * 400 from the engine.
- *
- * `resolveModelId` (in `lib/engine-catalogue.js`) owns the resolver —
- * it is the same code path `applyRecordedModel` uses on session boot, so
- * the mid-session push and the boot-time replay share one source of
- * truth. Returns `null` when the engine has no matching option yet
- * (the engine configOptions list is empty before the first session
- * event lands); the caller falls back to the recorded id and the
- * next session event re-attempts the apply via `applyRecordedModel`.
- *
- * `resolveOpts` (ticket 36) passes straight through to
- * `resolveModelId` — today only `preferVariant`, used to fold a
- * switchable builtin's on/off level into the model selection.
- */
-function translateWebuiModelIdToEngineValue(cs, modelId, resolveOpts) {
-  if (!modelId || typeof modelId !== "string") return null;
-  const allOpts = Array.isArray(cs && cs.configOptions) ? cs.configOptions : [];
-  const modelOption = allOpts.find((o) => o && o.id === "model");
-  if (!modelOption) return null;
-  return resolveModelId(modelId, modelOption, resolveOpts);
 }
 
 /**
@@ -211,92 +185,21 @@ export async function handleSetModel(req, res, ctx) {
   //   would re-assert its wire-form `currentValue` over the user's
   //   recorded pick a few ms after the optimistic write, causing the
   //   chip to flicker between user-friendly form and engine wire form.
+  //   One timestamp for the whole request, and only the fields the body
+  //   actually carried — see `planModelPickStamps`.
   const pickAt = Date.now();
-  if (modelId) cs.model.modelPickedAt = pickAt;
-  if (thinkingWasProvided) cs.model.thinkingPickedAt = pickAt;
-  if (contextWindowWasProvided) cs.model.contextWindowPickedAt = pickAt;
-  const sid = cs.mcodeSessionId;
-  let mcodeSynced = false;
-  let thinkingSynced = false;
-  let warning = sid ? null : "no mcode session yet — recorded for the next one";
-  // Ticket 36 — variant channel. Switchable builtin models (the
-  // engine's `thinking_config.mode: switchable` + variant tree,
-  // e.g. MiniMax-M3) have NO engine effort vocabulary: the engine
-  // rejects every `thinkingEffort` value for them ("Thinking effort
-  // is not advertised for the selected model"). Their on/off level
-  // rides the MODEL selection instead — the engine advertises such
-  // models only as variant wire forms (`m:...:v:thinking` /
-  // `m:...:v:none-thinking`). When the target model rides the
-  // variant channel, one model push carries both the model and the
-  // level; the thinkingEffort push below is skipped entirely.
-  const variantTarget = modelId || (cs.model && cs.model.name) || "";
-  const variantPlan = sid ? variantChannelFor(variantTarget) : null;
-  // Engine contract: model first, then thinkingEffort (the engine
-  // rejects a thinkingEffort set when no model is selected). Only push
-  // when BOTH the recorded model and the new (or unchanged) thinking
-  // are concrete — the engine will validate the level against the
-  // selected model's effortOptions and reject unknown values.
-  if (sid && variantPlan) {
-    const level = variantPlan.level(
-      thinkingWasProvided ? thinking : cs.model && cs.model.thinking,
-    );
-    const engineValue =
-      translateWebuiModelIdToEngineValue(cs, variantTarget, {
-        preferVariant: variantPlan.variant[level],
-      }) ?? variantTarget;
-    const r = await setConfigOption(sid, "model", engineValue, ctx.cid);
-    if (modelId) mcodeSynced = r.ok;
-    // "thinking synced" reports the level actually carried by the
-    // push: an explicit pick, or a previously recorded one. An
-    // engine-default variant (no user-chosen level) is not a sync.
-    const carriedLevel = thinkingWasProvided ? !!thinking : !!(cs.model && cs.model.thinking);
-    thinkingSynced = r.ok && carriedLevel;
-    if (!r.ok) warning = r.error;
-  } else if (sid) {
-    if (modelId) {
-      // The engine wire form is `m:<encodedProvider>:<encodedModel>:u`
-      // (see packages/tui/src/acp/control-state.ts#modelConfigValue).
-      // The webui id is `<providerKey>/<engineModelKey>` — translate it
-      // to the engine wire form so `parseModelConfigValue` accepts it.
-      // The same resolver used by `applyRecordedModel` lives in
-      // `lib/mcode-acp.js#resolveModelId` and exports the helper we
-      // need; the route layer keeps the apply path's reasoning
-      // (single source of truth for "recorded → engine option.value").
-      const engineValue = translateWebuiModelIdToEngineValue(cs, modelId) ?? modelId;
-      const r = await setConfigOption(sid, "model", engineValue, ctx.cid);
-      mcodeSynced = r.ok;
-      if (!r.ok) warning = r.error;
-    }
-    if (thinkingWasProvided && thinking) {
-      const r = await setConfigOption(sid, "thinkingEffort", thinking, ctx.cid);
-      thinkingSynced = r.ok;
-      if (!r.ok && (!warning || warning === null || warning === "no mcode session yet — recorded for the next one")) {
-        warning = r.error;
-      }
-      if (r.ok) {
-        // Mirror the apply on the local configOptions snapshot so a
-        // follow-up /api/models reads the engine's new currentValue
-        // before the SSE flush lands (same reason as
-        // applyRecordedModel's cs.configOptions write).
-        const opts = Array.isArray(cs.configOptions) ? cs.configOptions : [];
-        for (const o of opts) {
-          if (o && o.id === "thinkingEffort") {
-            o.currentValue = thinking;
-          }
-        }
-      }
-    } else if (thinkingWasProvided && !thinking && modelId) {
-      // Model changed AND effort cleared. The engine picks its own
-      // default for the new model; we drop the local mirror so a
-      // subsequent /api/models doesn't keep showing the cleared value.
-      const opts = Array.isArray(cs.configOptions) ? cs.configOptions : [];
-      for (const o of opts) {
-        if (o && o.id === "thinkingEffort") {
-          delete o.currentValue;
-        }
-      }
-    }
-  }
+  Object.assign(
+    cs.model,
+    planModelPickStamps({ modelId, thinkingWasProvided, contextWindowWasProvided }, pickAt),
+  );
+  const { mcodeSynced, thinkingSynced, warning, thinkingMirror } = await pushEngineModelSelection({
+    cs,
+    cid,
+    modelId,
+    thinkingWasProvided,
+    thinking,
+  });
+  applyThinkingEffortMirror(cs.configOptions, thinkingMirror);
   pushStateFor(cid);
   res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
   return res.end(
@@ -315,21 +218,18 @@ export async function handleSetModel(req, res, ctx) {
 // POST /api/permissions — mid-session permission mode change, through
 //   session/set_config_option{configId:'permissionMode'}.
 // body: { mode: 'ask'|'auto'|'read'|'full' 或 mcode 原值 }
+//
+// `resolvePermissionSelection` is the one seam that produces both forms
+// of the mode — the webui label recorded on `cs.permissions` and pushed
+// to every tab, and the engine value forwarded — so the two mappers
+// cannot drift apart. The push itself, and the "no session yet" warning,
+// belong to `engine/model-writes.js#pushEnginePermissionMode`.
 export async function handleSetPermissions(req, res, ctx) {
   const cs = ctx.cs;
   const cid = ctx.cid;
   const payload = await readJson(req);
-  const webuiMode = (payload.mode || "full").toLowerCase();
-  const label = webuiModeToLabel(webuiMode);
-  const mcodeValue = webuiPermissionToMcode(webuiMode);
-  const sid = cs.mcodeSessionId;
-  let mcodeSynced = false;
-  let warning = sid ? null : "no mcode session yet — applies to the next one";
-  if (sid && mcodeValue) {
-    const r = await setConfigOption(sid, "permissionMode", mcodeValue, ctx.cid);
-    mcodeSynced = r.ok;
-    if (!r.ok) warning = r.error;
-  }
+  const { label, mcodeValue } = await resolvePermissionSelection(payload.mode);
+  const { mcodeSynced, warning } = await pushEnginePermissionMode({ cs, cid, mcodeValue });
   cs.permissions = label;
   pushStateFor(cid);
   res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
