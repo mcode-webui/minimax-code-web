@@ -1778,6 +1778,194 @@ the facade at all.
    second place that knows provider ids before one exists is precisely
    the thing M4 exists to remove. This batch deliberately does not create
    a premature registry.
+#### Which endpoints route through the facade (step M3, batch B10)
+
+Batch B10 takes the write half of the model / permission family — the half B4 left
+behind when it moved the read side into `engine/model-reads.js` — into
+`engine/model-writes.js`. It is the first write family in this migration with
+**zero observable change**: every status, every field and field order, every
+warning string and every push order #58 and #59 produce is the one they produced
+before the batch, and the suite pins each of them as a value. What moved is
+*where the reasoning lives*. The webui-id → engine-wire translation, the
+variant-versus-effort channel decision, the two `set_config_option` pushes and
+the permission label mapping are now named, exported and testable on their own
+inputs instead of being inline branches in a route; `routes/model.js` is net
+−100 lines as a result.
+
+| Endpoint | Facade function | Capability · sub-item | Enforcement | Value source |
+| --- | --- | --- | --- | --- |
+| `POST /api/set-model` (#58) | `engine/model-writes.js#pushEngineModelSelection` | none declared | **not gated** | `mcode-rpc.js#setConfigOption` at most twice; everything recorded lands in webui's own `cs.model` |
+| `POST /api/permissions` (#59) | `engine/model-writes.js#pushEnginePermissionMode` | none declared | **not gated** | `mcode-rpc.js#setConfigOption` once; the recorded label is webui's own `cs.permissions` |
+
+The concern split inside those two rows is the shape B9 drew for the mode-write
+family: the engine-facing half moved, the client-state half stayed.
+
+| Concern | Home after B10 |
+| --- | --- |
+| webui model id → the engine's wire value | `engine/model-writes.js#resolveEngineModelConfigValue` |
+| the model a request is aimed at | `engine/model-writes.js#modelSelectionTarget` |
+| variant channel vs effort channel, and what each push carries | `engine/model-writes.js#planModelSelectionPush` |
+| the `set_config_option` pushes, in the plan's order | `engine/model-writes.js#pushEngineModelSelection` |
+| permission mode → label **and** engine value | `engine/model-writes.js#resolvePermissionSelection` |
+| the permission-mode push | `engine/model-writes.js#pushEnginePermissionMode` |
+| the `configOptions` snapshot mirror rule | `engine/model-writes.js#applyThinkingEffortMirror` (the rule here, the write in the route) |
+| the `*PickedAt` race stamps | `engine/model-writes.js#planModelPickStamps` |
+| body parsing, the 400s, the 200, `cs.model` / `cs.permissions`, `state-bus.js#pushStateFor` | `routes/model.js#handleSetModel` and `routes/model.js#handleSetPermissions` |
+
+**The id translation exists because the two sides spell a model differently.**
+webui records `cs.model.name` in `<providerKey>/<engineModelKey>` form; the
+engine's `model` config id accepts only its own wire encoding, and rejects
+anything else. Without the translation a mid-session pick of a multi-segment id
+(`nousresearch/deepseek/x`) would 400 from the engine.
+`engine/model-writes.js#resolveEngineModelConfigValue` is the seam, and it
+returns `null` — rather than guessing — when the engine has no `model` option in
+the snapshot yet, which is the state before the first session event lands. The
+caller then falls back to the recorded id and `mcode-acp.js#applyRecordedModel`
+re-applies it on the next boot, so the mid-session push and the boot-time replay
+share one resolver instead of two.
+
+**The two channels are mutually exclusive, and the order is the engine's
+contract.** `engine/model-writes.js#planModelSelectionPush` returns a plan — data,
+not a side effect — and the plan has one of two shapes:
+
+| Channel | When | Pushes | Why |
+| --- | --- | --- | --- |
+| `variant` | the target is a switchable builtin (the engine advertises `thinking_config.mode: switchable` plus a variant tree) | **one** `model` push carrying both the model and the on/off level; `thinkingPush` is null | such a model has no effort vocabulary at all — the engine rejects every `thinkingEffort` value for it and advertises the level only as part of the model wire value, so a second push has nothing to say |
+| `effort` | everything else | a `model` push when the request names a model, then a `thinkingEffort` push when it names a non-empty level | the engine rejects a `thinkingEffort` set while no model is selected, so model first, effort second — the order is a contract, not a style |
+
+`engine/model-writes.js#modelSelectionTarget` is what makes the effort channel's
+model-only request possible: the fallback to the already-recorded model is why a
+thinking-only update on a switchable builtin lands at all, and it is exported
+rather than inlined so the executor and the planner cannot derive it twice and
+drift.
+
+**What counts as "carried" differs per channel, on purpose.** A plan field,
+`carriedThinking`, answers "did *this* push carry a level". On the variant
+channel an unchanged recorded level is still carried by the model push, so an
+absent `thinking` field falls back to the recorded value. On the effort channel
+a level is carried only when the request carried one — an absent field means
+"leave the recorded effort alone", and there is no wire form here that could
+carry it without also re-selecting the model. A **cleared** field is carried on
+neither channel. Collapsing the three into one predicate reads like a
+simplification and changes `thinkingSynced` on real, successful pushes, so the
+test pins them separately.
+
+**`mcodeSynced` reports the model, and only the model.** It is false for a
+thinking-only update even when that update succeeded, because the field means
+"the model is in the engine" and there was no model in the request;
+`thinkingSynced` reports the level. On the effort channel a second failure only
+escalates the warning when the model push left it untouched, so a model
+rejection is never overwritten by the effort rejection it caused — and that is
+why a three-way disjunction in the old route collapsed to a two-way one here.
+
+**The permission endpoint needs two forms of one mode, and the seam that
+produces both is the point.** `engine/model-writes.js#resolvePermissionSelection`
+answers a label *and* an engine value from one input, because the endpoint needs
+both and a fifth form added to one mapper and forgotten in the other is the
+failure this prevents.
+
+| webui mode | label recorded and pushed to every tab (`server/lib/interaction/permission-presets.js#webuiModeToLabel`) | engine value (`mcode-rpc.js#webuiPermissionToMcode`) |
+| --- | --- | --- |
+| `ask` | Ask | `default` |
+| `auto` | Auto | `auto` |
+| `read` | Read | `read` |
+| `off` | Off | `off` |
+| `full` | Full access | `bypassPermissions` |
+| anything else | Full access | **null** |
+
+The last row is load-bearing, not an oversight. The two mappers **disagree on
+purpose** about an unrecognised mode: the label mapper falls back to `full` so
+the UI always has something to render, while the engine mapper returns null
+because there is no engine word for a mode the user invented. So
+`POST /api/permissions {"mode":"nonsense"}` records "Full access", pushes
+nothing, and answers `mcodeSynced:false` with no warning — and that guard is the
+difference between "the engine is in this mode" and "we hope it is".
+
+**The 4-second window is a two-sided contract, and this batch owns the write
+side of it.** The engine's `config_option_update` re-asserts its own wire-form
+`currentValue`; without a marker it lands that wire form on the user's pick a
+few milliseconds after the optimistic write, and the composer chip flickers
+between the friendly recorded form and the engine's. `mcode-acp.js` reads
+`modelPickedAt` / `thinkingPickedAt` and defers its mirror while the stamp is
+fresh (`mcode-acp.js#PICK_DEFER_WINDOW_MS`, 4000). The reader is not this
+batch's to change; `engine/model-writes.js#planModelPickStamps` is the writer's
+half, and it carries two properties the suite pins separately:
+
+| Property | Form | The half of the race it closes |
+| --- | --- | --- |
+| **one** timestamp for every field of one request | the caller passes `pickAt` in, taken once before the engine is called, and all stamped fields share it by construction | the forward half — a pick that takes 30 ms must not leave the model field expiring 30 ms before the effort field |
+| **only** the fields the body actually carried | `modelPickedAt` only when a model was named, `thinkingPickedAt` only when `thinking` was present in the body, `contextWindowPickedAt` only when `contextWindow` was | the reverse half — a thinking-only update must not refresh `modelPickedAt`, or a later cross-client model change is suppressed by a pick the user never made; a "stamp everything" simplification breaks this silently |
+
+`contextWindowPickedAt` rides along for symmetry with the two fields the mirror
+reads. It is recorded and nothing consumes it today, because the engine has no
+context-window channel; it was stamped before this batch and stays stamped.
+
+**The mirror rule is half in the facade and half in the route, and the split is
+B9's.** `engine/model-writes.js#applyThinkingEffortMirror` owns the *rule* —
+after an accepted effort push the local snapshot should claim the engine's new
+value; after a cleared pick it should claim none — and returns how many options
+it touched, which is what makes "no `thinkingEffort` option in the snapshot yet"
+observable instead of a silent no-op. The *write* stays in the route, because
+`cs.configOptions` is webui's own view and is mutated in place exactly as before,
+on exactly the same conditions. The three arms:
+
+| Mirror | When | Local `configOptions` |
+| --- | --- | --- |
+| `{kind: "set", value}` | a non-empty level was pushed and the engine accepted it | claim the engine's new `currentValue` |
+| `{kind: "clear"}` | the level was cleared **and** a model also changed | **drop** the local value — the engine picks its own default for the new model, so a mirror left showing the cleared value would be a state the engine never reported |
+| `null` | every other case, including a clear on its own | untouched |
+
+A clear on its own is deliberately **not** mirrored: the next
+`config_option_update` applies it, and dropping locally would invent an engine
+state. The clear also does not depend on the model push having succeeded, which
+is pre-existing behaviour and is preserved as-is rather than tidied up.
+
+**Three things this batch records as known debt instead of deciding:**
+
+1. **Neither endpoint is gated, and that is a decision left open for a human.**
+   B9's gate already exempts exactly the two config ids these endpoints write —
+   `model` → `selectModel`, `permissionMode` → `setPermissionMode`, the table in
+   `engine/mode-writes.js#MODE_WRITE_BRIDGED_CONFIG_IDS` — so both sub-items are known
+   names and neither needs rediscovering. What stops the gate from being armed
+   here is one more config id, and it is #58's:
+
+   | Branch | Cost | Benefit |
+   | --- | --- | --- |
+   | **(a) bridge** `thinkingEffort` as a third id in `MODE_WRITE_BRIDGED_CONFIG_IDS`, pointed at a sub-item meaning "the dedicated thinking-effort writer" | a third name in a table the frontend mirrors, and a third declaration the snapshot audit must then prove exists on both surfaces — today's probe found no `setThinkingEffort` / `selectThinkingEffort` on either, so the name has to be agreed with the engine team first | #58 becomes gateable on the same table as #59, and the two controls stay symmetric |
+   | **(b) accept** the 501 and degrade the UI | the thinking-effort control disappears for every provider that denies the generic config write — under M4's ACP provider, most of them — and #58 loses a working half to keep an enrichment; `engine-capabilities.ts` would need a third bridged id for the control to follow the same fail-open rule | the capability declaration stops being a lie about a control that still works |
+
+   `thinkingEffort` is a **generic** config id — the one the plan (§3a, row 68)
+   says has nowhere to be delivered under a provider with no generic write — so
+   gating #58 the way #59 could be gated makes the thinking-effort control answer
+   501 for the same reason #68 does for an unrecognised id. Until a human picks
+   a branch, #58 keeps its pre-B10 behaviour. **#59 alone is the zero-risk half:**
+   gating it hard on `engine/capabilities.js#assertEngineCapability` is behaviourally
+   inert today (no registered provider lists that sub-item as missing, and the
+   snapshot audit proves both providers really have the method) and is safe
+   against the shipped UI, which already hides the permission selector under
+   exactly that declaration (`webapp/lib/engine-capabilities.ts` +
+   `webapp/components/composer.tsx`). It is still not taken here, because taking
+   it would be making a product decision by capability table, with no changelog
+   and no frontend work — the same argument B7 recorded for #71. The module is
+   gate-ready either way: the push is one call site per endpoint, so arming
+   either gate is one line.
+2. **`contextWindow` is recorded and never pushed.** The engine's ACP surface has
+   no channel for it — `session/set_config_option` accepts exactly three config
+   ids and the model wire encoding has no context segment — so the pick is a
+   webui-side preference the picker reflects immediately. Pre-existing, unchanged
+   here, and listed because this batch is the one that owns the whole #58 write:
+   a reader of the facade should not assume the whole request reaches the
+   engine. Wiring it is engine-side work, and the seam is the output of
+   `engine/model-writes.js#planModelSelectionPush`, which a future engine
+   channel would extend with a third push.
+3. **B9's bridge-naming debt is closed by this batch, and the record is the
+   snapshot audit.** `selectModel` and `setPermissionMode` are now in
+   `REQUIRED_METHODS`, so
+   `test/lib/engine/capability-snapshot.test.js#auditProviderCapabilities`
+   asserts they are functions on both the adapter and the cliService surface of
+   a real booted host. They were verified present before being added.
+   `engine/mode-writes.js` is a read-only reference in this batch, so its own
+   debt text is left exactly as written; this entry is the closure record.
 
 ## 6. Frontend topology
 
