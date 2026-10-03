@@ -491,9 +491,64 @@ because they are load-bearing elsewhere:
   falls back to the engine session id, which does not change. This is why a
   duplicate send into a first-turn conversation is answered `session-busy`
   rather than `cid-busy` once the backfill has landed — both refuse.
+- **The claim moves with the id, and remembers where it was.** The promotion
+  is the one instant the conversation's identity changes, so `mcode-acp.js`
+  re-keys the claim there (`moveRunSession`) on both transports. The registry
+  keeps the retired key as an alias on the entry, which is what lets the
+  route's `finally { endRun(cid, runSessionId) }` — still holding the key it
+  claimed under — find and release the re-keyed claim.
+
+  Without the re-key the guard has a hole, and the hole is about
+  acknowledgement rather than about locking. `beginRun` cannot see a turn
+  whose key the view no longer presents, and its remaining guard
+  (`runsBySid`) is populated by a separate mid-turn backfill. In a window
+  where neither matches, the server answers `200` and hands a **second
+  concurrent turn** to an engine session that is already executing — while
+  the new turn's `›` echo lands in a live `cs.chat` that the run-mirror's
+  finalize then writes over from a snapshot taken before it. The result is
+  the one failure this whole area exists to prevent: the engine ran the
+  message and the webui holds no record of it, so the user gets neither the
+  bubble nor the history entry and the text is gone. (Observed in the 16:00
+  UAT round, 2026-10-03, exception #1.) A guard that cannot see a turn must
+  not ack it.
 - **`MAX_CONCURRENT` counts turns, not busy clients.** One tab running two
   conversations spends two of the slots, because that is two engine
   subprocesses; that is the resource the ceiling exists to bound.
+
+### Sending while a turn is running
+
+A message sent into a conversation that is already running a turn is
+**refused, not queued**. `POST /api/send` answers `409` with
+`reason: "cid-busy"` or `"session-busy"`, the turn is never handed to the
+engine, the `›` line is never written, and nothing reaches the persisted
+record. The refused text comes back to the composer.
+
+The 409's `error` field is written for the person reading it — it names the
+decision and the next action — because the composer renders it verbatim.
+`reason` is the stable machine-readable key, and it is what the client
+branches on rather than on the wording.
+
+There is no queue, and the three send outcomes in the composer are kept
+distinct because they ask for opposite behaviour:
+
+| State | What the server did | What the banner says | What the user should do |
+| --- | --- | --- | --- |
+| accepted | `200`; the turn runs | — | nothing |
+| refused, conversation busy | `409 cid-busy` / `session-busy`; the engine has nothing | not delivered, text is back, wait for the turn | send again when the turn ends |
+| unconfirmed | no answer, and the probe against the server could not establish whether the turn started | status unknown, or "the engine is running it, do not resend" | read the history first |
+
+The third state is the one that must never lie about a side effect. It used
+to treat "a turn is running" as proof that *this* send was accepted — the
+reasoning being that a busy conversation answers `409` immediately, so a turn
+seen after a deadline expiry is this one. That is false for the case that
+actually produced the field report: the send was made **into** a running
+conversation, so the running turn the probe sees is the previous one. The
+banner then told the user "the engine is running your message, do not send it
+again" about a message the engine never received. `stateAcceptsSend` now
+requires the prompt's own echo line in the transcript, and consults the
+running flag only when the snapshot carries no transcript at all — the one
+place it cannot be contradicted, and where ignoring it is what made
+`sleep 35` execute twice under webui-parity 81 D-2.
 
 What stays tab-scoped, and why it is safe under two live turns:
 

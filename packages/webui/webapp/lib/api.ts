@@ -68,6 +68,50 @@ export function isSendUnconfirmed(cause: unknown): cause is SendUnconfirmedError
   );
 }
 
+/**
+ * A non-2xx answer from the API, with its status and machine-readable
+ * `reason` kept.
+ *
+ * Why the status matters: the composer's banner is chosen by WHAT the
+ * server decided, not by the wording of its message. A 409 whose `reason`
+ * is `cid-busy` / `session-busy` is the server saying "this conversation
+ * is already running, your message was not delivered" — a different fact
+ * from "your send failed" (retrying is wrong for one, right for the other)
+ * and a completely different fact from "the engine may already be running
+ * it, do not resend". Before this type the 409 arrived as a bare
+ * `new Error(string)`, so the composer could only render it as a generic
+ * failure and the user read a refused send as a broken one (P16).
+ *
+ * The `reason` is optional: an endpoint that answers 4xx without one (a
+ * malformed body, an older server) still produces a usable `ApiHttpError`,
+ * and the composer falls back to the generic banner for it.
+ */
+export class ApiHttpError extends Error {
+  readonly status: number;
+  readonly reason: string | null;
+
+  constructor(status: number, message: string, reason: string | null = null) {
+    super(message);
+    this.name = "ApiHttpError";
+    this.status = status;
+    this.reason = reason;
+  }
+}
+
+/**
+ * The server's stable machine key for "this conversation is already
+ * running a turn", or null for any other answer.
+ *
+ * Read structurally (like `isSendUnconfirmed`) so a second copy of the
+ * class across module realms still answers correctly.
+ */
+export function isConversationBusy(cause: unknown): boolean {
+  if (typeof cause !== "object" || cause === null) return false;
+  const http = cause as { status?: unknown; reason?: unknown };
+  if (http.status !== 409) return false;
+  return http.reason === "cid-busy" || http.reason === "session-busy";
+}
+
 async function request<T>(
   path: string,
   init?: RequestInit & { json?: unknown; timeoutMs?: number },
@@ -114,7 +158,11 @@ async function request<T>(
       payload && typeof payload === "object" && "error" in payload
         ? String((payload as { error: unknown }).error)
         : `HTTP ${response.status}`;
-    throw new Error(message);
+    const reason =
+      payload && typeof payload === "object" && typeof (payload as { reason?: unknown }).reason === "string"
+        ? String((payload as { reason: string }).reason)
+        : null;
+    throw new ApiHttpError(response.status, message, reason);
   }
   return payload as T;
 }

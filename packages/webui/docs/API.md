@@ -191,6 +191,19 @@ not a total-turn ceiling.
   `"at-capacity"` (the server is at `MAX_CONCURRENT`, which `/api/health`
   reports as `maxConcurrent`)
 
+**A 409 is terminal for that message, and it is not a failure.** The turn is
+never handed to the engine, the `›` line is never written, and nothing reaches
+the persisted record — a refused send cannot be half-applied, and cannot be
+one the engine ran while the transcript lost. There is no send queue: "refused,
+try again when the turn ends" is the whole contract.
+
+`error` is the user-facing sentence (the composer renders it verbatim) and
+`reason` is the stable machine-readable key; branch on `reason`. For
+`cid-busy` and `session-busy` that sentence states the conversation is already
+running a turn and the message was not delivered, rather than repeating the
+internal detail — which reads "another window" and is wrong for the common
+case of the same tab sending again a moment later.
+
 ### `POST /api/stop`
 
 Cancel the current run. Tries `session/cancel` via acp (the cancel

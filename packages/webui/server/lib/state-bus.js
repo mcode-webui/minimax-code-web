@@ -795,11 +795,30 @@ const runsByCid = new Map(); // cid -> Map<webuiSessionId|null, run>
 const runsBySid = new Map(); // engineSessionId -> run
 let runCount = 0; // live turns across every cid — the real resource count
 
-/** The run registry entry for one conversation of one tab, or null. */
+/**
+ * The run registry entry for one conversation of one tab, or null.
+ *
+ * A conversation's key is NOT stable: a first turn's draft record is
+ * promoted to the engine identity mid-turn (`promoteDraftToMcodeSid`
+ * rewrites the record id and follows it on `cs.sessionId`), and
+ * `moveRunSession` re-registers the claim under the new key. The key the
+ * claim was TAKEN under therefore stops matching the view, and a second
+ * send into that conversation would look like a fresh conversation. The
+ * entry keeps the retired keys in `aliases` for exactly that reason — a
+ * send carrying a key this run has already held is a send into a
+ * conversation that is already running, and must be refused (P16: the
+ * guard missing that let a second turn be acked and handed to the engine
+ * while its echo was lost from the persisted record).
+ */
 function runFor(key, webuiSessionId) {
   const m = runsByCid.get(key);
   if (!m) return null;
-  return m.get(webuiSessionId) || null;
+  const direct = m.get(webuiSessionId) || null;
+  if (direct) return direct;
+  for (const entry of m.values()) {
+    if (entry.aliases && entry.aliases.has(webuiSessionId)) return entry;
+  }
+  return null;
 }
 
 /** True when any conversation of this tab is streaming to the engine. */
@@ -869,7 +888,7 @@ export function beginRun(cid, sid, webuiSessionId = null) {
       limit: MAX_CONCURRENT,
     };
   }
-  const run = { cid: key, webuiSessionId: wsid, sid: sid || null, startedAt: Date.now(), bufferSid: null };
+  const run = { cid: key, webuiSessionId: wsid, sid: sid || null, startedAt: Date.now(), bufferSid: null, aliases: new Set() };
   const m = runsByCid.get(key) || new Map();
   m.set(wsid, run);
   runsByCid.set(key, m);
@@ -1103,7 +1122,7 @@ export function endRun(cid, webuiSessionId = null) {
   const entry = runFor(key, wsid);
   if (!entry) return;
   const m = runsByCid.get(key);
-  m.delete(wsid);
+  m.delete(entry.webuiSessionId);
   if (m.size === 0) runsByCid.delete(key);
   runCount -= 1;
   // Only drop the sid claim if this very run still owns it — a later run on
@@ -1123,6 +1142,14 @@ export function endRun(cid, webuiSessionId = null) {
  *
  * Idempotent, and a no-op when `to` is already claimed by another run.
  *
+ * The retired `from` key is remembered on the entry (`aliases`, see
+ * `runFor`): a turn that outlives its own conversation key — the draft
+ * record it was claimed under is promoted to the engine `mvs_` id while
+ * the turn runs — must still be findable by the key `handleSend`'s
+ * `finally` releases, and by the key the NEXT send presents. Without the
+ * alias the release silently misses and the claim leaks until the process
+ * ends, refusing every later send in that conversation.
+ *
  * @returns {boolean} true when the run now lives under `to`
  */
 export function moveRunSession(cid, from, to) {
@@ -1132,9 +1159,13 @@ export function moveRunSession(cid, from, to) {
   if (fromKey === toKey) return runFor(key, toKey) !== null;
   const entry = runFor(key, fromKey);
   if (!entry) return false;
-  if (runFor(key, toKey)) return false;
-  runsByCid.get(key).delete(fromKey);
+  // A key this very entry retired is not a collision — moving back onto
+  // it is the same run, and refusing it would strand the claim under a key
+  // the view no longer uses.
+  if (runFor(key, toKey) && runFor(key, toKey) !== entry) return false;
+  runsByCid.get(key).delete(entry.webuiSessionId);
   runsByCid.get(key).set(toKey, entry);
+  entry.aliases.add(entry.webuiSessionId);
   entry.webuiSessionId = toKey;
   return true;
 }

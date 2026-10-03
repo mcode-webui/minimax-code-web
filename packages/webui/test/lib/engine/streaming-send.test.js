@@ -1675,8 +1675,14 @@ describe("routes/chat.js#handleSend on the runtime transport", () => {
       assert.equal(seen.status, 409);
       assert.equal(
         seen.body,
-        '{"ok":false,"error":"a turn is already running for this session","reason":"cid-busy"}',
-        "the pre-M3 409 body, byte for byte",
+        // P16: the refusal is user-facing — the composer renders `error`
+        // verbatim in its banner, and the internal detail reads "a turn is
+        // already running for this session", which names neither the
+        // decision nor the next action. `reason` stays the machine key.
+        '{"ok":false,"error":"This conversation is already running a turn. ' +
+          'The message was NOT delivered — wait for the turn to finish, then send it again.",' +
+          '"reason":"cid-busy"}',
+        "the 409 body, byte for byte",
       );
       assert.equal(
         siblingSeen && siblingSeen.ok,

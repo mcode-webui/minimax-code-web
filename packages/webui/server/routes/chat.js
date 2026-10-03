@@ -179,11 +179,23 @@ export async function handleSend(req, res, ctx) {
   let runSessionId = (cs && cs.sessionId) || null;
   const claim = beginRun(cid, cs && cs.mcodeSessionId, runSessionId);
   if (!claim.ok) {
+    // A refusal is a decision, and the browser shows this `error` string
+    // verbatim in the composer's banner. The internal `detail` above is
+    // written for the server log ("another window" is wrong for the
+    // common case — the very same tab sending again a moment later), so
+    // the user-facing field carries the decision and the next action
+    // instead, and `reason` stays the stable machine-readable key. This
+    // refusal is TERMINAL for the send: nothing below this point runs, so
+    // the engine is never handed a prompt the webui will not record
+    // (P16 — a refused send must never reach the engine).
+    const busy = claim.reason === "cid-busy" || claim.reason === "session-busy";
     res.writeHead(409, { "Content-Type": "application/json; charset=utf-8" });
     return res.end(
       JSON.stringify({
         ok: false,
-        error: claim.detail,
+        error: busy
+          ? "This conversation is already running a turn. The message was NOT delivered — wait for the turn to finish, then send it again."
+          : claim.detail,
         reason: claim.reason,
         ...(claim.reason === "at-capacity"
           ? { running: claim.running, limit: claim.limit }

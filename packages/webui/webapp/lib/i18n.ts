@@ -156,6 +156,14 @@ const en = {
   "ask.title": "Question",
 
   "error.send": "Could not send the message",
+  /* P16 — the third send state. A message sent into a conversation that is
+     already running is REFUSED by the server (409 cid-busy / session-busy):
+     the engine never receives it, so the text comes back to the box and the
+     only thing left to say is that the turn has to finish first. Distinct
+     from `error.send` (the send is not broken) and from the unconfirmed
+     banners (nothing is in flight — resending is safe and necessary). */
+  "error.busy":
+    "Not delivered: this conversation is already running a turn. The text is back in the input box — send it again once the turn finishes.",
   "error.unconfirmed.accepted":
     "Sent, but the server never confirmed it. The engine is running this message now — do not send it again.",
   "error.unconfirmed.rejected":
@@ -1293,6 +1301,12 @@ const zh: Record<MessageKey, string> = {
   "ask.title": "提问",
 
   "error.send": "消息发送失败",
+  /* P16 —— 第三种发送态。会话进行中发的消息由服务器明确拒绝（409
+     cid-busy / session-busy）：引擎根本没有收到，原文回到输入框，要说的只
+     有「等本回合跑完再发」。既不是 error.send（发送没坏），也不是下面三条
+     unconfirmed（引擎侧没有任何东西在跑，重发是安全且必要的）。 */
+  "error.busy":
+    "未送达：本会话正在跑一个回合。原文已放回输入框 —— 等回合结束后再发送即可。",
   "error.unconfirmed.accepted":
     "消息已发出，但服务器一直没有确认。引擎此刻正在执行这条消息 —— 请勿重复发送。",
   "error.unconfirmed.rejected":

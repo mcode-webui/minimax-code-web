@@ -53,7 +53,7 @@ import {
   shouldCompleteSlashWord,
 } from "@/lib/slash-routing";
 import { decodeTranscript } from "@/lib/transcript";
-import { isSendUnconfirmed } from "@/lib/api";
+import { isConversationBusy, isSendUnconfirmed } from "@/lib/api";
 import {
   probeSend,
   shouldRestoreDraft,
@@ -501,6 +501,15 @@ export function Composer({
       // (`lib/send-confirmation.ts`), and let that answer decide both the
       // words and whether the text comes back.
       const unconfirmed = isSendUnconfirmed(cause);
+      // A 409 `cid-busy` / `session-busy` is the server saying this
+      // conversation is already running a turn and the message was NOT
+      // delivered. It is a refusal — restore the text, and say so in
+      // words that name the turn rather than in a raw server string
+      // (P16). It is emphatically NOT the unconfirmed path: nothing is in
+      // flight on the engine, so the probe is not asked and its "do not
+      // resend, the engine is running it" wording would be the exact
+      // opposite of the truth.
+      const busy = !unconfirmed && isConversationBusy(cause);
       const outcome: SendProbeOutcome | null = unconfirmed
         ? await probeSend(content)
         : null;
@@ -565,7 +574,7 @@ export function Composer({
       }
       setComposerDraft(dispatchDraftKey, {
         error: errorMessage,
-        errorKind: unconfirmed ? "unconfirmed" : "rejected",
+        errorKind: unconfirmed ? "unconfirmed" : busy ? "busy" : "rejected",
         unconfirmed: outcome,
       });
     } finally {
@@ -971,21 +980,29 @@ export function Composer({
           </span>
 
           {error || errorKind ? (
-            // Three different facts need three different sentences. An expired
+            // Four different facts need four different sentences. An expired
             // deadline is not a refusal, so it never wears the "could not
             // send" headline nor the error colour — saying either would be a
             // claim about a side effect that may already have happened, and it
-            // is what pushed the user into resending (webui-parity 81 D-2).
+            // is what pushed the user into resending (webui-parity 81 D-2). A
+            // busy conversation is a refusal too, but the reader is told the
+            // turn is running and the text was NOT delivered, so the message
+            // is not resendable yet — a distinct sentence, not the generic
+            // failure line with a raw server string glued to it (P16).
             <span
               className={
                 errorKind === "unconfirmed"
                   ? "text-caption-small-strong text-text_default_secondary"
-                  : "text-caption-small-strong text-text_status_error"
+                  : errorKind === "busy"
+                    ? "text-caption-small-strong text-text_status_warning"
+                    : "text-caption-small-strong text-text_status_error"
               }
             >
               {errorKind === "unconfirmed"
                 ? t(unconfirmedBannerKey(unconfirmedOutcome))
-                : `${t("error.send")}: ${error}`}
+                : errorKind === "busy"
+                  ? t("error.busy")
+                  : `${t("error.send")}: ${error}`}
             </span>
           ) : null}
         </div>
