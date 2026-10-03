@@ -12,6 +12,12 @@ export interface GitRunResult {
   code: number;
   stdout: string;
   stderr: string;
+  /**
+   * Set only when `git` never ran — a missing binary or an unusable working
+   * directory. Absent means Git produced a verdict, so `code` is a real exit
+   * status that callers may branch on instead of parsing a translated message.
+   */
+  spawnError?: string;
 }
 
 export async function git(args: string[], workspace: string): Promise<GitRunResult> {
@@ -29,6 +35,7 @@ export async function git(args: string[], workspace: string): Promise<GitRunResu
       code: typeof err.code === 'number' ? err.code : 1,
       stdout: bufferToString(err.stdout),
       stderr: bufferToString(err.stderr) || err.message,
+      ...(typeof err.code === 'string' ? { spawnError: err.code } : {}),
     };
   }
 }

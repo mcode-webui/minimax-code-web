@@ -110,6 +110,8 @@
       "packages/local-runtime/test/unit/thread-goal/host-integration-settlement.test.ts",
       "packages/local-runtime/test/unit/thread-goal/host-integration-verifier-charge-rearm.test.ts",
       "packages/local-runtime/test/unit/token-counter-adapter-routing.test.ts",
+      "packages/local-runtime/test/unit/worktree-discovery-code.test.ts",
+      "packages/local-runtime/test/unit/worktree-locale-parity.test.ts",
       "packages/mcode-tools-host/test/unit/lease-broker.test.ts",
       "packages/mcode-tools-host/test/unit/resource-manifest.test.ts",
       "packages/mcode-tools-host/test/unit/resource.test.ts",
