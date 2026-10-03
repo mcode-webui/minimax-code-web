@@ -1117,6 +1117,42 @@ slice 22 增强：
 | `file_line_wrap` | `true` | **是**。开启时超宽行自动折行；关闭时横向滚动。覆盖两类表面：代码文件预览（工单 48）与 markdown 代码块——聊天消息、活动组、markdown 文件预览（工单 52）；语言标签不随代码行折行。对之后打开的预览/之后挂载的消息生效（已打开的不重排）；文件预览折行后行号与第二视觉行不对齐，是已知取舍 |
 | `webui-context-window-usage` | `false` | **是**。开启时在输入区工具栏（紧挨模型选择器左侧）绘制上下文用量计量；关闭时该处不渲染任何内容。计量本身的形态不变——圆环、百分比、分类明细、套餐各行仍照旧来自会话快照。拨动开关无需刷新页面即生效 |
 | `webui-follow-up-behavior` | `queue`（可选 `off`、`steer`） | 否。决定回合运行中发送的去向；`off` 是 webui 自有的第三态（参照只有两态） |
+| `webui-desktop-notifications` | `false` | **是**。开启时在回合结束、工具等待授权确认、回合失败三种情形下弹出浏览器通知，且仅在本页处于后台时弹出。详见下文**桌面通知（SB-9）** |
+
+**桌面通知（SB-9）**
+
+通用页「应用」分区里的「桌面通知」是该分区唯一一个既非操作系统集成、
+也非占位的开关。是否弹出的判断是
+`webapp/lib/desktop-notify.ts#shouldShowDesktopNotification` 里的纯函数，
+输入只有四个事实：存储的开关、浏览器实时的 `Notification.permission`、
+浏览器是否支持该 API、以及 `document.visibilityState`。所有浏览器调用
+只出现在该模块的边界上，别处一律不碰。
+
+| 问题 | 结论 | 理由 |
+| --- | --- | --- |
+| 哪些事件会通知 | 回合结束、`needs_authorization` 授权请求到达、告警流上落下一条 `error` 级异常 | 三者本来就各自落在本客户端已订阅的流上，因此没有新增任何服务端通道。子代理完成与计划评审**有意不单列**：它们都以 `needs_authorization` 的形式到达，再加第四个触发点只是多一个可能出错的地方 |
+| 什么情况下不弹 | `document.visibilityState === "visible"` 时**三种一律不弹** | 重复屏幕上已有内容的通知就是噪音。三种情形在屏幕上都有对应的落点：结束的会话就在用户正看着的标签页里，等待确认是阻塞式弹窗，失败已经进了告警徽标与操作错误横幅。桌面参照没有这条规则，因为它没有「用户正在看的页面」这回事 |
+| 回合失败会弹几条 | 一条，不是两条 | 错误与回合结束走的是**两条不同的 SSE 连接**（告警流与事件流），两个 HTTP 响应之间没有任何顺序保证，所以两种到达顺序都可能。错误按会话记下，落在 5 秒窗口内的结束通知被吞掉；超出窗口的陈旧记录直接忽略，不会压掉一小时后的另一个回合。记录用后即消费 |
+| 在繁忙服务端上打开新标签页会怎样 | 告警流的首帧快照是历史，不是新消息 | `GET /api/alerts` 打开时先下发一个最多 200 条的环形缓冲快照。`lib/alerts.ts#historySealed` 报告该帧是否已到，未到之前缓冲里的内容一律不播报。只依据帧自身的种类判断，绝不靠列表是否为空来猜——「空历史」与「第一条未被观看的失败」在一个列表里长得一模一样 |
+| 点击通知做什么 | 先聚焦浏览器窗口；若通知指向的会话不是当前会话，再切过去 | 桌面参照的点击目标是它自己标签条里的某个标签页。本客户端一个浏览器标签页就是一个会话，所以浏览器窗口**就是**那个标签页；该行为由 `app/page.tsx` 通过 `registerDesktopNotifyFocusHandler` 注册，通知模块自己不伸手去调 `lib/api` |
+| 开关做什么 | **打开开关即发起授权请求**，且只有在浏览器返回 `granted` 时才真正落到 ON | 浏览器已经拒绝而开关显示 ON 是不诚实状态，而且它一条也弹不出来。关闭开关不会发起任何请求 |
+| 被拒绝后显示什么 | 该行原有的说明文字下多出第二句，用状态色写明「已拒绝」与解法 | 权限在设置页每次挂载时实时读取，且从不落盘——存下来的 `granted` 会比用户在浏览器站点设置里的撤销活得更久。因此重新打开设置页就能看到拒绝态 |
+| 权限会被持久化吗 | 不会 | `Notification.permission` 归浏览器所有，且可在页面之外撤销 |
+
+`Notification.requestPermission()` 只在开关的 `onChange` 里被调用，
+绝不会在加载时自动弹出。在用户尚未表达意图前索要权限正是浏览器会惩罚的
+模式，而开关本身就是那个请求。因此默认值是 `false`：从未碰过这个开关的
+配置既不询问也不弹任何东西。
+
+**如何验证它真的工作**
+
+1. 设置 → 通用 → 桌面通知，打开开关，在浏览器弹窗中同意。
+2. 回合运行中把页面切到另一个浏览器标签页（或窗口）。
+3. 回合结束时收到一条通知；点击后窗口回到前台，并落在那个会话上。
+4. 制造一次回合失败（一条无法识别的 `/cmd` 会产生 `[chat.send]` 告警）：
+   收到失败通知，且**不会**再多出一条「已完成」。
+5. 在浏览器站点设置里撤销通知权限后重新打开设置页：开关显示为关，
+   且拒绝文案就在该行说明里。
 
 **上下文用量计量**
 
@@ -2042,6 +2078,7 @@ loading-states 相同：让 SSR 渲染测试可以脱离 `chat.tsx` 的 `@/` 别
 | `file_line_wrap` | `localStorage` | `webapp/lib/settings-local.ts` | 工单 48 + 52 | 纯 `"true"\|"false"` 字符串，参照共享命名；默认 `"true"`；每次挂载读取方为 `components/code-view.tsx`（代码文件预览）与 `components/markdown-html.tsx`（markdown 代码块：聊天、活动组、文件预览） |
 | `webui-context-window-usage` | `localStorage` | `webapp/lib/settings-local.ts` | 工单 48 | 纯 `"true"\|"false"` 字符串，参照共享命名；默认 `"false"`；`components/context-meter.tsx` 挂载时读取一次，并通过 `subscribeContextWindowUsage` 实时跟随 |
 | `webui-follow-up-behavior` | `localStorage` | `webapp/lib/settings-local.ts` | 工单 48 / SB-4 | 纯 `"off"\|"queue"\|"steer"` 字符串（其他值读取为 `"queue"`），参照共享命名；由 `components/composer.tsx` 读取，每次写入都会重新发布 |
+| `webui-desktop-notifications` | `localStorage` | `webapp/lib/settings-local.ts` | SB-9 | 纯 `"true"\|"false"` 字符串；默认 `"false"`；由通用页「桌面通知」行写入，每次写入都发布给 `subscribeDesktopNotifications`。只存用户的**意图**——浏览器的 `Notification.permission` 由 `webapp/lib/desktop-notify.ts` 实时读取，从不落盘 |
 | `webui-shortcut-bindings` | `localStorage` | `webapp/lib/shortcuts.ts` | 工单 55c（设置快捷键页） | `{"global-search":"Ctrl+Shift+P", …}`——**已生效**行的改键记录，用户录入新组合时写入，清掉最后一条时整个键删除。读取时按注册表重新校验：已不再分发的行 id、或已无法解析的组合一律丢弃，手工改过的存储项无法借此扩大页面的分发面。`app/page.tsx` 每次键盘事件经 `effectiveBindings` 读取，设置页每次挂载读取一次 |
 | `webui:project-custom:v1` | `localStorage` | `webapp/lib/project-custom.ts` | 工单 55c（项目右键菜单） | `{version:1, titles:{<项目key>:<自定义名>}, pinned:[<项目key>]}`。**不按 cid 命名空间**（有意）：重命名与置顶描述的是项目本身而非某个浏览器会话，同一浏览器的所有标签页共享。写入尽力而为，失败静默；项目被完整移除（全部会话删除成功）时同步清除其条目 |
 

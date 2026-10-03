@@ -41,14 +41,23 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement, t
 import * as api from "@/lib/api";
 import {
   commitContextWindowUsage,
+  commitDesktopNotifications,
   commitFileLineWrap,
   commitFileOpenInNewTab,
   commitFollowUpBehavior,
   readContextWindowUsage,
+  readDesktopNotifications,
   readFileLineWrap,
   readFileOpenInNewTab,
   readFollowUpBehavior,
 } from "@/lib/settings-local";
+// SB-9：权限读取与授权请求；策略在 lib/desktop-notify.ts，此处只用这两个
+// 浏览器边界调用。
+import {
+  desktopNotifyPermission,
+  requestDesktopNotifyPermission,
+  type DesktopNotifyPermission,
+} from "@/lib/desktop-notify";
 import { applyAppearance, currentAppearance } from "@/lib/theme";
 import type { Locale, MessageKey } from "@/lib/i18n";
 import { ProviderManagementPanel } from "./provider-management";
@@ -557,6 +566,93 @@ export function SettingsModalPort({
   );
 }
 
+// --- 桌面通知（SB-9）--------------------------------------------------------
+
+/**
+ * The 桌面通知 row, wired for real.
+ *
+ * Two independent facts decide what this row shows, and conflating them is the
+ * defect this component exists to avoid:
+ *
+ *   the switch   — the user's stored intent, `webui-desktop-notifications`.
+ *   the permission — the browser's live `Notification.permission`, which the
+ *                  user can revoke from the browser's site settings at any
+ *                  time without this page hearing about it.
+ *
+ * So the permission is read on mount, never stored, and never inferred from
+ * the switch: a switch that is ON while the permission is `denied` is a
+ * dishonest state, and turning it ON is the moment the permission is asked
+ * for. A refusal leaves the switch OFF and states the refusal, rather than
+ * leaving an enabled switch that silently notifies nobody.
+ *
+ * The note renders on its own terms — a user who revoked the permission in the
+ * browser and then reopened the settings page must be told, not left to
+ * discover it by noticing that nothing arrives.
+ */
+function DesktopNotificationsRow({
+  t,
+}: {
+  readonly t: (key: MessageKey) => string;
+}): ReactElement {
+  const [enabled, setEnabled] = useState(() => readDesktopNotifications());
+  const [permission, setPermission] = useState<DesktopNotifyPermission>(() =>
+    desktopNotifyPermission(),
+  );
+
+  const apply = useCallback((value: boolean) => {
+    commitDesktopNotifications(setEnabled, value);
+  }, []);
+
+  const onToggle = useCallback(
+    (next: boolean) => {
+      if (!next) {
+        apply(false);
+        return;
+      }
+      // Turning ON is the request. The switch only latches once the browser
+      // has actually granted, so it never claims a capability it lacks.
+      void requestDesktopNotifyPermission().then((granted) => {
+        setPermission(granted);
+        apply(granted === "granted");
+      });
+    },
+    [apply],
+  );
+
+  const note =
+    permission === "unsupported"
+      ? t("settings.app.notificationsUnsupported")
+      : permission === "denied"
+        ? t("settings.app.notificationsDenied")
+        : null;
+
+  return (
+    <SettingRow
+      title={t("settings.app.notifications")}
+      description={
+        note === null ? (
+          t("settings.app.notificationsHint")
+        ) : (
+          <>
+            <span>{t("settings.app.notificationsHint")}</span>
+            <span className="webui-generic-row-note" data-testid="desktop-notifications-note">
+              {note}
+            </span>
+          </>
+        )
+      }
+      testId="desktop-notifications-row"
+    >
+      <ToggleSwitch
+        checked={enabled}
+        label={t("settings.app.notifications")}
+        onChange={onToggle}
+        testId="desktop-notifications-switch"
+      />
+    </SettingRow>
+  );
+}
+
 // --- 通用页（参照 GenericPage 全区块）--------------------------------------
 
 function GenericPage({
@@ -588,7 +684,6 @@ function GenericPage({
       <ToggleSwitch checked={false} label={title} disabled />
     </SettingRow>
   );
-
   return (
     <div data-testid="content-body" className="webui-generic-page">
       <GenericSection title={t("settings.mode.section")} testId="app-mode-section">
@@ -616,7 +711,7 @@ function GenericPage({
         <RowDivider />
         {off(t("settings.app.autoStart"), t("settings.app.autoStartHint"))}
         <RowDivider />
-        {off(t("settings.app.notifications"), t("settings.app.notificationsHint"))}
+        <DesktopNotificationsRow t={t} />
         <RowDivider />
         {off(t("settings.app.earlyAccess"), t("settings.app.earlyAccessHint"), "early-access-update-switch")}
         <RowDivider />

@@ -8,6 +8,9 @@ import { Composer } from "@/components/composer";
 import { TranscriptSkeleton } from "@/components/loading-states";
 import { Modals } from "@/components/modals";
 import { ActionErrorBanner } from "@/components/action-error-banner";
+// SB-9：桌面通知的唯一挂载点（见该组件文件头的分工说明）。
+import { DesktopNotifySync } from "@/components/desktop-notify-sync";
+import { registerDesktopNotifyFocusHandler } from "@/lib/desktop-notify";
 // Settings modal port (webui-parity 58): the reference SettingsModal
 // structure; the shim keeps this import shape unchanged.
 import { SettingsModal } from "@/components/settings-modal-port";
@@ -17,7 +20,7 @@ import { WorkspaceColumns } from "@/components/workspace-columns";
 import { PreviewColumn, PreviewColumnMounted } from "@/components/workspace-tabs";
 import { TreeColumn } from "@/components/workspace-tree-column";
 import { runAction } from "@/lib/action-errors";
-import { SessionProvider, useSessionContext } from "@/lib/store";
+import { SessionProvider, getActiveSessionId, useSessionContext } from "@/lib/store";
 import { decodeTranscript } from "@/lib/transcript";
 import { useLocale } from "@/lib/use-locale";
 import {
@@ -212,6 +215,30 @@ function App() {
         return nextTabs;
       });
     },
+    [],  );
+
+  /**
+   * SB-9 — what a desktop notification's click does.
+   *
+   * The page root is the only place that knows how a session switch is
+   * performed, so it registers that behaviour with `lib/desktop-notify.ts`
+   * rather than letting the notifier reach into `lib/api` itself. The contract
+   * is one sentence: bring the named session into view, and do nothing when it
+   * is already the one on screen (a notification for the current session is
+   * still worth clicking — it raises the browser window — but it must not
+   * re-issue a switch that would reload the conversation).
+   *
+   * The desktop reference's click target is a tab in its own tab strip. webui
+   * has no equivalent: one browser tab is one conversation, so "the tab" is the
+   * browser window, which `lib/desktop-notify.ts` focuses before calling this.
+   */
+  useEffect(
+    () =>
+      registerDesktopNotifyFocusHandler((sessionId) => {
+        if (!sessionId) return;
+        if (getActiveSessionId() === sessionId) return;
+        void api.switchSession(sessionId);
+      }),
     [],
   );
 
@@ -797,6 +824,7 @@ function App() {
         </div>
       ) : null}
       <ActionErrorBanner t={t} />
+      <DesktopNotifySync />
       <Modals t={t} />
     </>
   );

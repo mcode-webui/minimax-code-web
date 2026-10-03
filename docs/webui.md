@@ -1348,6 +1348,46 @@ clients:
 | `file_line_wrap` | `"true"` | **Yes.** On wraps over-wide lines; off scrolls horizontally. Covers both code-file previews (ticket 48) and markdown codeblocks — chat messages, activity groups and markdown file previews (ticket 52); the language label never wraps. Applies to previews opened / messages mounted after the switch (an already-open one does not reflow); a wrapped file-preview line's gutter number aligns with its first visual row — a known trade-off |
 | `webui-context-window-usage` | `"false"` | **Yes.** On draws the context-window readout in the composer's toolbar, immediately left of the model chip; off renders nothing there. The readout's own form is unchanged — the ring, the percentage, the breakdown and the plan rows all come from the session snapshot as before. Flipping the switch takes effect without a reload |
 | `webui-follow-up-behavior` | `"queue"` (or `"off"`, `"steer"`) | No. Decides what a send does while a turn runs; `"off"` is webui's own third position (the reference has two) |
+| `webui-desktop-notifications` | `"false"` | **Yes.** On raises a browser notification when a turn finishes, when a tool needs a decision, or when a turn fails — and only while this page is in the background. See **Desktop notifications (SB-9)** below |
+
+**Desktop notifications (SB-9)**
+
+The 桌面通知 row on the General page is the one switch in the 应用 block that
+is neither an OS integration nor a placeholder. The decision about *whether*
+to notify is a pure function over four facts in
+`webapp/lib/desktop-notify.ts#shouldShowDesktopNotification` — the stored
+switch, the browser's live `Notification.permission`, whether the browser
+supports the API at all, and `document.visibilityState`. The browser calls
+live at the edges of that module and nowhere else.
+
+| Question | Answer | Why |
+| --- | --- | --- |
+| Which events notify? | turn settled, a `needs_authorization` request arrived, an `error`-level anomaly landed on the alerts stream | Each already arrives on a stream this client subscribes to, so no new server channel was added. Subagent completion and plan review are deliberately not separate triggers: both arrive as `needs_authorization`, and a fourth trigger would be a fourth thing to get wrong |
+| When is a notification suppressed? | whenever `document.visibilityState === "visible"`, for **all three** kinds | A notification that duplicates something already on screen is noise. Each of the three has an on-screen face: the finished conversation is in the tab in front of the user, the decision prompt is a blocking modal, and the failure is already in the alerts badge and the action-error banner. The reference has no such rule because it has no page to be looking at |
+| What happens when a turn fails? | one notification, not two | The error and the settle arrive on **two different SSE connections** (alerts vs. events) and nothing orders two HTTP responses, so either order is possible. The error is remembered against its session and a completion on that session inside a 5 s window is swallowed; outside the window the stale entry is ignored, so it cannot suppress an unrelated turn later. The entry is consumed on use |
+| What about a tab opened over a busy server? | the alerts opening snapshot is history, not news | `GET /api/alerts` opens with a ring buffer of up to 200 pre-load alerts. `lib/alerts.ts#historySealed` reports whether that frame has arrived, and until it has nothing in the buffer is announced. Told by the frame's own kind, never guessed from whether the list happens to be empty — an empty history and an unwatched first failure are identical in a list |
+| What does the click do? | focuses the browser window, then switches to the named session if it is not the one on screen | The reference's click target is a tab in its own tab strip. Here one browser tab is one conversation, so the browser window *is* the tab; `app/page.tsx` registers that behaviour with `registerDesktopNotifyFocusHandler` rather than letting the notifier reach into `lib/api` |
+| What does the switch do? | turning it **on** is the permission request; it latches only on `granted` | A switch that reads ON while the browser has refused is a dishonest state, and it would notify nobody. Turning it off never asks anything |
+| What is shown after a refusal? | the row's own hint gains a second sentence naming the refusal and the way out, in the status colour | The permission is read live on every mount of the settings page and is never persisted — a stored `granted` would outlive the user revoking it in the browser's site settings. Reopening the settings page is therefore enough to see the refusal |
+| Is the permission ever stored? | no | `Notification.permission` is owned by the browser and revocable outside the page |
+
+`Notification.requestPermission()` is only ever called from the switch's
+`onChange` — never at load. A permission prompt raised before the user has
+expressed any intent is the pattern browsers penalise, and the switch *is*
+the request. The default is therefore `"false"`: a profile that never touched
+the switch asks for nothing and shows nothing.
+
+**How to tell it works**
+
+1. Settings → General → 桌面通知, turn it on, accept the browser prompt.
+2. Switch to another browser tab (or window) while a turn is running.
+3. On the settle you get one notification; clicking it brings the window back
+   and lands on that session.
+4. Raise a turn failure (an unknown `/cmd` produces an `[chat.send]`
+   anomaly): you get the failure notification, and **not** a second
+   "finished" one.
+5. Revoke the permission in the browser's site settings and reopen the
+   settings page: the switch reads off and the refusal sentence is there.
 
 **The context-window readout**
 
@@ -2765,6 +2805,7 @@ Invariants worth keeping when touching either branch:
 | `file_line_wrap` | `localStorage` | `webapp/lib/settings-local.ts` | tickets 48 + 52 | bare `"true"\|"false"` string, reference-shared namespace; default `"true"`; read per mount by `components/code-view.tsx` (code-file previews) and `components/markdown-html.tsx` (markdown codeblocks: chat, activity groups, file previews) |
 | `webui-context-window-usage` | `localStorage` | `webapp/lib/settings-local.ts` | ticket 48 | bare `"true"\|"false"` string, reference-shared namespace; default `"false"`; read at mount and followed live by `components/context-meter.tsx` through `subscribeContextWindowUsage` |
 | `webui-follow-up-behavior` | `localStorage` | `webapp/lib/settings-local.ts` | ticket 48 / SB-4 | bare `"off"\|"queue"\|"steer"` string (anything else reads as `"queue"`), reference-shared namespace; read by `components/composer.tsx` and republished on every write |
+| `webui-desktop-notifications` | `localStorage` | `webapp/lib/settings-local.ts` | SB-9 | bare `"true"\|"false"` string; default `"false"`; written by the General page's 桌面通知 row, published on every write for `subscribeDesktopNotifications`. Stores the user's **intent only** — the browser's `Notification.permission` is read live from `webapp/lib/desktop-notify.ts` and is never persisted |
 | `webui-shortcut-bindings` | `localStorage` | `webapp/lib/shortcuts.ts` | ticket 55c (settings Shortcuts page) | `{"global-search":"Ctrl+Shift+P", …}` — rebindings of the **live** shortcut rows only, written when the user records a new combination and removed entirely when the last one is cleared. Re-validated against the registry on read: a stored id that is no longer dispatched, or a chord that no longer parses, is dropped rather than honoured, so a hand-edited entry cannot widen what the page dispatches. Read at every keydown by `app/page.tsx` (through `effectiveBindings`) and once per mount by the settings page |
 | `webui:project-custom:v1` | `localStorage` | `webapp/lib/project-custom.ts` | ticket 55c (project context menu) | `{version:1, titles:{<projectKey>:<customName>}, pinned:[<projectKey>]}`. **Deliberately not cid-namespaced**: a rename or a pin describes the project, not a browser session, so every tab of this browser shares it. Best-effort write, silent failure; a project's entries are cleared when its remove completed with every session deleted |
 

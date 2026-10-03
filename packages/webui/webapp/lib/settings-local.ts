@@ -58,6 +58,24 @@ export const FOLLOW_UP_BEHAVIOR_KEY = "webui-follow-up-behavior";
 // `SettingsModal.tsx`), so these live in the `webui-` namespace rather than
 // pretending to a sharing contract nobody verified. Same bare-string wire
 // format: the value is stored verbatim, empty string included.
+/**
+ * SB-9 — the desktop-notifications switch.
+ *
+ * In the `webui-` namespace rather than among the four reference-shared keys
+ * above, for the same reason as the long-text preferences: the desktop stores
+ * this preference through its own OS notification service, and a bare-string
+ * key it reads is not a contract this client can honour. Same wire format
+ * (bare `"true"` / `"false"`), same `subscribe*` channel shape as
+ * `subscribeContextWindowUsage` — the settings page and the notification
+ * listener are on screen at once, so the switch must take effect without a
+ * reload.
+ *
+ * What the key does NOT record is the browser's own permission. That is
+ * `Notification.permission`, owned by the browser and revocable outside the
+ * page, so it is read live and never persisted: a stored "granted" would
+ * outlive the user clicking "block" in the site settings.
+ */
+export const DESKTOP_NOTIFICATIONS_KEY = "webui-desktop-notifications";
 export const CUSTOM_INSTRUCTIONS_KEY = "webui-custom-instructions";
 export const ABOUT_USER_KEY = "webui-about-user";
 export const CODE_REVIEW_GUIDELINES_KEY = "webui-code-review-guidelines";
@@ -257,8 +275,54 @@ export function commitFollowUpBehavior(
   setState(value);
 }
 
-// --- long-text preferences (ticket 55a) --------------------------------------
+// --- desktop notifications (SB-9) -------------------------------------------
 
+/** Whether the user asked for desktop notifications. Default `false`: a
+ *  permission prompt the page never asked for is the only way to learn
+ *  whether the browser will grant one, and prompting on first load — before
+ *  the user has expressed any intent — is exactly the pattern browsers
+ *  penalise. The switch is the request. */
+export function readDesktopNotifications(): boolean {
+  return readFlag(DESKTOP_NOTIFICATIONS_KEY, false);
+}
+
+type DesktopNotificationsListener = (value: boolean) => void;
+
+const desktopNotificationsListeners = new Set<DesktopNotificationsListener>();
+
+/** Subscribe to writes of `webui-desktop-notifications`. Same shape and
+ *  same reason as `subscribeContextWindowUsage`. */
+export function subscribeDesktopNotifications(
+  listener: DesktopNotificationsListener,
+): () => void {
+  desktopNotificationsListeners.add(listener);
+  return () => {
+    desktopNotificationsListeners.delete(listener);
+  };
+}
+
+export function writeDesktopNotifications(value: boolean): void {
+  writeFlag(DESKTOP_NOTIFICATIONS_KEY, value);
+  // Published unconditionally, after the write — see writeFollowUpBehavior.
+  for (const listener of [...desktopNotificationsListeners]) {
+    try {
+      listener(value);
+    } catch {
+      // One broken subscriber must not cost the others their update, and
+      // must not turn a settings toggle into an uncaught error.
+    }
+  }
+}
+
+export function commitDesktopNotifications(
+  setState: (value: boolean) => void,
+  value: boolean,
+): void {
+  writeDesktopNotifications(value);
+  setState(value);
+}
+
+// --- long-text preferences (ticket 55a) --------------------------------------
 /** Read one of the three long-text preferences verbatim. Missing key,
  *  corrupted storage, or no `window` (SSR pass) all read as the empty
  *  string — an unset preference and an absent one are the same state to
