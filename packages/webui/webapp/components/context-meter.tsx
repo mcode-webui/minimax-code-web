@@ -8,6 +8,7 @@ import {
   contextBreakdownRows,
   formatPercent,
   quotaPlanRows,
+  showPlanSection,
 } from "@/lib/context-breakdown";
 import { Icon } from "./icons";
 import { UsageBar, resetCaption } from "./usage-models-cards";
@@ -123,7 +124,12 @@ export function ContextMeter({ t }: { t: (key: MessageKey) => string }) {
   // affordance for a vertical one.
   const [expanded, setExpanded] = useState(false);
   const breakdown = contextBreakdownRows(context.breakdown, used);
+  // Token Plan meters MiniMax usage, so the section belongs to the model in
+  // play and not to the account — see `showPlanSection`. The rows are still
+  // built unconditionally (they cost nothing) so the decision stays in one
+  // testable place rather than being spread across the JSX.
   const planRows = quotaPlanRows(quota);
+  const showPlan = showPlanSection(state?.model?.name);
   const planTitle = state?.usage?.plan;
 
   return (
@@ -132,7 +138,11 @@ export function ContextMeter({ t }: { t: (key: MessageKey) => string }) {
         ref={triggerRef}
         type="button"
         aria-label={t("context.show")}
-        title={t("context.show")}
+        // The hover text NAMES the control ("上下文窗口"); the aria-label
+        // states the ACTION ("显示上下文窗口用量"). The panel's own title
+        // already says 上下文窗口, so a tooltip repeating the action told the
+        // user nothing they could not read off the button they were pointing at.
+        title={t("context.title")}
         aria-expanded={open}
         data-testid="context-meter"
         onClick={() => setOpen((value) => !value)}
@@ -263,31 +273,37 @@ export function ContextMeter({ t }: { t: (key: MessageKey) => string }) {
                   through the settings page's own `UsageBar`, so a figure can
                   never read differently in the two places it appears. The
                   section renders even with no figure: `UsageBar` then prints
-                  its placeholder, which is what the settings card does too. */}
-              <section
-                className="border-t-[0.5px] border-border_default pt-3"
-                data-testid="context-plan-section"
-              >
-                <div className="desktop-text-ui-body mb-2 flex w-full items-center justify-between gap-4 text-sm leading-5">
-                  <span className="text-text_default_secondary">
-                    {t("context.planTitle")}
-                    {planTitle ? ` · ${planTitle}` : ""}
-                  </span>
-                </div>
-                <div className="flex flex-col gap-3">
-                  {planRows.map((row) => (
-                    <UsageBar
-                      key={row.key}
-                      testId={`context-quota-${row.key}`}
-                      label={t(row.labelKey)}
-                      used={row.used}
-                      withTotal={row.withTotal}
-                      placeholder={t(row.placeholderKey)}
-                      caption={row.used !== null && row.resetAt ? resetCaption(row.resetAt, t) : null}
-                    />
-                  ))}
-                </div>
-              </section>
+                  its placeholder, which is what the settings card does too.
+                  It is a MINIMAX section though: a Token Plan meters MiniMax
+                  usage, so showing it beside a BYOK model from another
+                  provider would be reading one plan's allowance against a
+                  model that does not spend it. */}
+              {showPlan ? (
+                <section
+                  className="border-t-[0.5px] border-border_default pt-3"
+                  data-testid="context-plan-section"
+                >
+                  <div className="desktop-text-ui-body mb-2 flex w-full items-center justify-between gap-4 text-sm leading-5">
+                    <span className="text-text_default_secondary">
+                      {t("context.planTitle")}
+                      {planTitle ? ` · ${planTitle}` : ""}
+                    </span>
+                  </div>
+                  <div className="flex flex-col gap-3">
+                    {planRows.map((row) => (
+                      <UsageBar
+                        key={row.key}
+                        testId={`context-quota-${row.key}`}
+                        label={t(row.labelKey)}
+                        used={row.used}
+                        withTotal={row.withTotal}
+                        placeholder={t(row.placeholderKey)}
+                        caption={row.used !== null && row.resetAt ? resetCaption(row.resetAt, t) : null}
+                      />
+                    ))}
+                  </div>
+                </section>
+              ) : null}
             </div>,
             document.body,
           )

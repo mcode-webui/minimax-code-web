@@ -26,6 +26,7 @@ import {
   contextBreakdownRows,
   formatPercent,
   quotaPlanRows,
+  showPlanSection,
 } from "../lib/context-breakdown";
 import type { QuotaSnapshot } from "../lib/api";
 
@@ -237,6 +238,45 @@ describe("quotaPlanRows — the settings page's two figures, read the same way",
   });
 });
 
+describe("showPlanSection — Token Plan meters MiniMax usage, so it follows the model", () => {
+  test("a MiniMax builtin model gets the section", () => {
+    for (const name of ["minimax_api/MiniMax-M3", "minimax_api/MiniMax-M3.1-Flash-Preview", "minimax_api/MiniMax-M2"]) {
+      assert.equal(showPlanSection(name), true, name);
+    }
+  });
+
+  test("every other provider's model does not", () => {
+    // The case this rule exists for: a Token Plan subscriber driving a BYOK
+    // model. The 5-hour and weekly windows meter MiniMax usage, so beside
+    // glm-5.3 they are a factually wrong reading rather than a stale one.
+    for (const name of [
+      "zhipu-ai-coding-plan/glm-5.3",
+      "openai_compat/gpt-4o-mini",
+      "anthropic/claude-sonnet-4",
+      "__engine/m:minimax_api:MiniMax-M3:u",
+    ]) {
+      assert.equal(showPlanSection(name), false, name);
+    }
+  });
+
+  test("no model, or an id with no readable provider, hides it", () => {
+    // The failure directions are not symmetric: hiding the block costs a
+    // missing section, showing MiniMax's plan next to someone else's model is
+    // a wrong fact. Anything unrecognised therefore takes the safe branch.
+    for (const name of [null, undefined, "", "   ", "MiniMax-M3", "/MiniMax-M3", "minimax_api/"]) {
+      assert.equal(showPlanSection(name), false, JSON.stringify(name));
+    }
+  });
+
+  test("the decision reads the provider prefix, not a substring of the model name", () => {
+    // A BYOK provider may legitimately ship a model NAMED something with
+    // "minimax" in it; matching anywhere in the string would grant it the
+    // MiniMax plan.
+    assert.equal(showPlanSection("openai_compat/my-MiniMax-M3-clone"), false);
+    assert.equal(showPlanSection("not_minimax_api/MiniMax-M3"), false);
+  });
+});
+
 /**
  * The component's code with its comments removed.
  *
@@ -356,5 +396,21 @@ describe("the panel is the reference's, not a shape of its own", () => {
     );
     assert.match(meterSource, /<span aria-hidden="true">—<\/span>/);
     assert.match(meterSource, /sr-only">\{t\("context\.breakdown\.unreported"\)\}/);
+  });
+
+  test("the 套餐 section is gated on the model, not left unconditional", () => {
+    // The pure `showPlanSection` tests above pin the decision; this pins the
+    // wiring, because a panel that computed the flag and then rendered the
+    // section anyway would leave every one of them green.
+    assert.match(meterCode, /const showPlan = showPlanSection\(state\?\.model\?\.name\)/);
+    assert.match(meterCode, /\{showPlan \? \(\s*<section/, "the section is conditional");
+  });
+
+  test("the ring's hover names the control; the aria-label keeps the action", () => {
+    // A tooltip that repeats the aria-label told the user nothing they could
+    // not read off the button they were pointing at — and the panel's own
+    // title already says 上下文窗口.
+    assert.match(meterSource, /title=\{t\("context\.title"\)\}/);
+    assert.match(meterSource, /aria-label=\{t\("context\.show"\)\}/);
   });
 });

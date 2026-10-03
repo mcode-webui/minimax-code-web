@@ -141,8 +141,44 @@ export function contextBreakdownRows(
   });
 }
 
-export interface QuotaPlanRow {
-  key: "fiveHour" | "weekly";
+/**
+ * The provider id the engine files its own MiniMax models under — the same
+ * `BUILTIN_PROVIDER` the server's catalogue uses (`server/engine/
+ * model-reads.js`). It is the prefix of a wire model id
+ * (`minimax_api/MiniMax-M3`).
+ */
+export const MINIMAX_PROVIDER_ID = "minimax_api";
+
+/**
+ * Whether the panel's 套餐 section belongs to the model in play.
+ *
+ * Token Plan is MiniMax's subscription: its 5-hour and weekly quotas meter
+ * *MiniMax* usage, so they are meaningless — and quietly wrong — beside a
+ * BYOK model from another provider. A user on a Token Plan who switches to
+ * `zhipu-ai-coding-plan/glm-5.3` would be reading MiniMax's allowance
+ * against a model that does not spend it.
+ *
+ * The wire id's provider prefix decides it, not the account. An account may
+ * be subscribed and still be driving a foreign model, and vice versa, and
+ * only the second is what this section has anything to say about.
+ *
+ * The failure directions are not symmetric, so the default is chosen: an
+ * unrecognised shape (no `/`, an empty prefix, no model at all) HIDES the
+ * section. Hiding it costs a missing block; showing MiniMax's plan next to
+ * someone else's model is a factually wrong one.
+ */
+export function showPlanSection(modelName: string | null | undefined): boolean {
+  const value = (modelName ?? "").trim();
+  if (!value) return false;
+  const slash = value.indexOf("/");
+  // Both halves have to be there. A missing separator means the id is not in
+  // `<provider>/<model>` form, and a trailing separator means it names no
+  // model at all — neither identifies anything the section could belong to.
+  if (slash <= 0 || slash === value.length - 1) return false;
+  return value.slice(0, slash) === MINIMAX_PROVIDER_ID;
+}
+
+export interface QuotaPlanRow {  key: "fiveHour" | "weekly";
   labelKey: MessageKey;
   /** Used percent, or null when there is no figure to draw a gauge from. */
   used: number | null;

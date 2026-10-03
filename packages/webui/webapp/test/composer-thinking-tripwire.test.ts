@@ -190,7 +190,50 @@ describe("the thinking controls: the brain says whether, the level says which", 
     // unless it names itself. Nothing else in the suite would catch it.
     assert.ok(toggle);
     assert.match(toggle, /aria-label=\{t\("thinkingPicker\.label"\)\}/);
-    assert.match(toggle, /title=\{levelLabel\}/);
+    // The HOVER text answers a different question from the aria-label. The
+    // label names the control (「思考等级」); the hover states whether
+    // thinking is ON. It used to carry the level word, which left a
+    // settings-less M3 saying 「默认」 on hover — the absence of an answer,
+    // on a control whose blue/grey colour is already claiming a state.
+    assert.match(toggle, /title=\{stateLabel\}/);
+    assert.doesNotMatch(
+      toggle,
+      /title=\{levelLabel\}/,
+      "the level word belongs to the level control, not to the brain",
+    );
+  });
+
+  test("the brain's hover has all three states, and unknown is not 'off'", () => {
+    // `isThinkingOn` is three-valued and the third value is not a flavour of
+    // the second: an unset or stale thinking value means the engine owns the
+    // default and never reported which, so 「已关闭」 there would be a claim
+    // this process cannot make — the same rule the icon's grey colour follows.
+    assert.ok(toggle);
+    assert.match(
+      composerSource,
+      /const stateLabel =\s*\n\s*thinkingOn === null\s*\n\s*\? t\("thinkingToggle\.unknown"\)\s*\n\s*: thinkingOn\s*\n\s*\? t\("thinkingToggle\.on"\)\s*\n\s*: t\("thinkingToggle\.off"\);/,
+    );
+    // Both brains carry it — the clickable one and the read-only depth-tier
+    // span are the same element by decision, so a hover that differed between
+    // them would re-introduce the split that decision removed.
+    assert.match(
+      composerSource.slice(composerSource.indexOf('data-testid="thinking-state"') - 400),
+      /title=\{stateLabel\}/,
+    );
+  });
+
+  test("the three hover strings exist in both dictionaries", () => {
+    const i18n = readFileSync(
+      resolve(dirname(fileURLToPath(import.meta.url)), "../lib/i18n.ts"),
+      "utf8",
+    );
+    for (const key of ["thinkingToggle.on", "thinkingToggle.off", "thinkingToggle.unknown"]) {
+      assert.equal(
+        (i18n.match(new RegExp(`"${key.replace(".", "\\.")}"`, "g")) ?? []).length,
+        2,
+        `${key} must exist in the en and zh buckets`,
+      );
+    }
   });
 
   test("the level control names the level and offers the menu", () => {

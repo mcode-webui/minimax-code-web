@@ -2529,6 +2529,22 @@ function ThinkingEffortSelect({
   const thinkingOn = isThinkingOn(levels, value);
   const binary = effortControlShape(levels) === "switch";
   const reading = thinkingOn === null ? "unknown" : thinkingOn ? "on" : "off";
+  /**
+   * What the BRAIN says on hover. The brain answers "is thinking on"; the
+   * level control beside it answers "which level", and keeps `levelLabel`
+   * for that. Borrowing the level word for the brain left a settings-less
+   * M3 saying 「默认」 on hover — which is the absence of an answer, not the
+   * answer, and the brain's blue/grey colour is already claiming a state.
+   * The three branches mirror `isThinkingOn`: `null` is its own case because
+   * an unset value means the engine owns the default and never reported
+   * which, so 「关闭」 there would be a claim this process cannot make.
+   */
+  const stateLabel =
+    thinkingOn === null
+      ? t("thinkingToggle.unknown")
+      : thinkingOn
+        ? t("thinkingToggle.on")
+        : t("thinkingToggle.off");
   const brainClass = disabled
     ? "text-text_default_tertiary"
     : thinkingOn
@@ -2551,7 +2567,7 @@ function ThinkingEffortSelect({
            */
           aria-label={t("thinkingPicker.label")}
           aria-pressed={thinkingOn === true}
-          title={levelLabel}
+          title={stateLabel}
           disabled={disabled}
           onClick={() => {
             onPick(thinkingOn ? "off" : "on");
@@ -2575,7 +2591,7 @@ function ThinkingEffortSelect({
         <span
           data-testid="thinking-state"
           data-thinking={reading}
-          title={levelLabel}
+          title={stateLabel}
           className="flex size-8 shrink-0 items-center justify-center"
         >
           <Icon name="brain" size={16} className={brainClass} />

@@ -141,6 +141,17 @@ const en = {
   "thinkingPicker.xhigh": "Extra high",
   "thinkingPicker.max": "Max",
 
+  // The BRAIN's hover text. The brain answers "is thinking on", which is a
+  // different question from the level control's "which level" — so it gets
+  // its own words rather than borrowing `thinkingPicker.on`/`.off`, which
+  // are the level ROWS' labels and read as bare level names in a tooltip.
+  // `.default` is the third state, not a synonym for `.off`: an unset
+  // thinking value means the engine owns the default and never reported
+  // which it chose, so the honest answer is that we cannot see it.
+  "thinkingToggle.on": "Thinking is on",
+  "thinkingToggle.off": "Thinking is off",
+  "thinkingToggle.unknown": "Thinking follows the engine default",
+
   "permission.label": "Permission mode",
   "permission.ask": "Ask",
   "permission.auto": "Auto",
@@ -1274,6 +1285,15 @@ const zh: Record<MessageKey, string> = {
   "thinkingPicker.high": "高",
   "thinkingPicker.xhigh": "极高",
   "thinkingPicker.max": "最大",
+
+  // 大脑的 hover 文案。回答的是「思考开没开」，和等级控件的「第几档」是两个
+  // 问题，所以另起一组词，而不是借用 `thinkingPicker.on` / `.off`——那两个是
+  // 等级行的标签，放进提示里读起来像个孤零零的档位名。`.unknown` 是第三种
+  // 状态，不是 `.off` 的同义词：思考值没设 = 引擎拿走默认值且从不上报它选了
+  // 哪一档，唯一诚实的回答是「看不到」。
+  "thinkingToggle.on": "思考已开启",
+  "thinkingToggle.off": "思考已关闭",
+  "thinkingToggle.unknown": "思考由引擎默认决定",
 
   "permission.label": "权限模式",
   "permission.ask": "主动询问",

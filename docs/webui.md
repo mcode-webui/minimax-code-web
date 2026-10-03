@@ -375,7 +375,7 @@ Beside the model chip sit up to two separate controls, because they answer two s
 | exactly `["off","on"]` — a switchable builtin, today `MiniMax-M3` | a **button**: click flips `on` ⇄ `off` | none | suppressed |
 | a depth scale (`low`/`medium`/`high`/…) | a plain **indicator**, not clickable | `[高 ⌄]` — the level word, opening the menu | kept |
 
-The brain is the same element in both rows — same glyph, same colours, same `data-thinking` — and only the level control is conditional.
+The brain is the same element in both rows — same glyph, same colours, same `data-thinking` — and only the level control is conditional. Its **hover** follows the same split: the brain says *whether* thinking is on (思考已开启 / 思考已关闭), the level control says *which* level, and keeps the level word for that. The brain used to carry the level word too, which left a settings-less `MiniMax-M3` saying 「默认」 on hover — the absence of an answer, on a control whose blue/grey colour is already claiming a state. Hover gets its own strings (`thinkingToggle.on` / `.off` / `.unknown`) rather than borrowing `thinkingPicker.on` / `.off`, because those are the level ROWS' labels and read as bare level names in a tooltip. All three branches are needed: `isThinkingOn` is three-valued and the third value is not a flavour of the second — an unset or stale thinking value means the engine owns the default and never reported which, so 「已关闭」 there would be a claim this process cannot make, the same rule the icon's grey colour already follows.
 
 **A two-state model gets the brain alone, and it is a button.** There is nothing to choose between, so a level control would be a three-row menu for two states, and its "Default" row is the one state a toggle cannot express, on a model whose engine default is already "on". It offers a choice the user does not have. These models also stop saying `· 开启` in the chip: that word is this icon's answer, printed again two controls away, and it was the copy a user had to read before noticing the icon had said it all along. The chip's suppression asks `effortControlShape(...) === "switch"` — the same call the control asks — rather than re-checking `includes("off")` its own way, so the two cannot drift into disagreeing about which models are binary.
 
@@ -737,9 +737,12 @@ Honest boundary — a pick is recorded, not yet engine-applied. `POST /api/set-m
 ## The context-window panel (what the ring beside the composer opens)
 
 The ring next to the composer is a 14px progress ring on a bare 30px square —
-no percentage next to it, because the percentage lives in the panel. Opening
-it gives a 400px portalled panel that is a row-for-row replica of the
-reference's:
+no percentage next to it, because the percentage lives in the panel. Its hover
+names the control (上下文窗口) while its `aria-label` states the action
+(显示上下文窗口用量): the panel's own title already reads 上下文窗口, so a
+tooltip repeating the action told the user nothing they could not read off the
+button they were pointing at. Opening it gives a 400px portalled panel that is
+a row-for-row replica of the reference's:
 
 ```
 上下文窗口                    29% ⌄     ← title + percent, and a disclosure
@@ -790,27 +793,33 @@ suite pins each of the three states separately, because collapsing "reported
 zero" into "unreported" is the easy regression and it is invisible in the UI
 until the engine starts sending the block.
 
-**The quota rows are the settings page's rows.** Same two figures, same
-`remaining → used` inversion, same reset caption, drawn through the settings
-page's own `UsageBar` component — so a figure cannot read differently in the
-two places it appears. The section renders even with no figure; `UsageBar` then
-prints its placeholder, which is what the settings card does. A missing figure
-stays `null` and never becomes 0%: "we know nothing" and "you have used
-nothing" are different facts. The 视频限额 row the settings card carries is
-deliberately not here — the reference's flyout shows two rows, and the third
-is a video figure this edition has no source for in a context panel. The
-header reads `套餐用量 · <tier>` when the engine names a plan and bare
-`套餐用量` when it does not.
+**The quota rows are the settings page's rows, and they follow the MODEL, not
+the account.** Same two figures, same `remaining → used` inversion, same reset
+caption, drawn through the settings page's own `UsageBar` component — so a
+figure cannot read differently in the two places it appears. The section
+renders even with no figure; `UsageBar` then prints its placeholder, which is
+what the settings card does. A missing figure stays `null` and never becomes
+0%: "we know nothing" and "you have used nothing" are different facts. The
+视频限额 row the settings card carries is deliberately not here — the
+reference's flyout shows two rows, and the third is a video figure this
+edition has no source for in a context panel. The header reads
+`套餐用量 · <tier>` when the engine names a plan and bare `套餐用量` when it
+does not.
 
-**Nothing is invented.** `context.breakdown` is `null` today — the engine does
-not emit it, and `server/lib/state-bus.js` says so at the field itself — so
-the panel draws the bar alone. A row is drawn only for a category the engine
-reported a non-zero token count for, and a category reported as zero is not
-drawn at all: a zero row would be a claim that the category occupies no
-tokens, which is exactly the kind of fact this process cannot make up. The
-rows appear, in the reference's order (消息 → 工具 → 记忆 → 技能 → 其他 →
-系统提示词), with no change here, if and when the engine starts sending the
-block.
+The gate is the active model, because Token Plan is MiniMax's subscription
+and its two windows meter **MiniMax** usage. Showing the section beside a
+BYOK model from another provider reads one plan's allowance against a model
+that does not spend it — not a stale figure, a wrong one. `showPlanSection`
+reads the model id's provider prefix (`minimax_api/MiniMax-M3` →
+`minimax_api`), and the two failure directions are not symmetric, so an
+unrecognised shape (no `/`, an empty model segment, no model at all) HIDES
+the section: hiding costs a missing block, showing MiniMax's plan next to
+someone else's model is a factually wrong block. An account may be
+subscribed and driving a foreign model, or driving MiniMax without a
+subscription; only the second is what this section has anything to say about,
+which is why the account's own `tokenPlanQuotaState` is not consulted here —
+that field describes whether the engine could read the plan, not whose usage
+the plan meters, and it does not reach this panel's state block anyway.
 
 Two things this round removed. The 已用 `used / limit` row went, because the
 header's percentage already says it and printing it twice is two answers to
@@ -850,7 +859,15 @@ reported `0` collapsed to unknown, the `isFinite` guard dropped so `NaN`
 reaches the panel, the zero-total guard dropped so a share of nothing divides
 by zero, the section re-gated on `length > 0`, the `=== null` test deleted,
 the share optional-chained, the dash losing its screen-reader words, and
-`context.breakdown.unreported` missing from the zh dictionary. The guard that
+`context.breakdown.unreported` missing from the zh dictionary, plus twelve more
+from the round that followed — the plan section showing for any model, the
+provider prefix becoming a whole-string substring match, a separator-less id
+counting as MiniMax, an id naming no model still counting, the verdict being
+computed and never wired to the JSX, the gate becoming constantly true, the
+ring's hover reverting to repeating the action, the brain's hover reverting to
+the level word, the unknown branch folded into off, the on/off branches
+swapped, the read-only depth-tier brain losing the new hover, and the new
+hover string missing from the zh dictionary. The guard that
 reads "the panel does not read `context.plan`" strips the file's comments first
 and excludes `context.planTitle`: a plain substring match fired on the file's
 own prose explaining that it used to read the field, and on the legitimate
