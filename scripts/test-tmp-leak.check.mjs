@@ -348,6 +348,11 @@ const KNOWN_PREFIXES = [
   "webui-wsroots-a-",
   "webui-wsscratch-",
   "mcode-webui-runtime-host-",
+  // PB-8 (host services window): the same runtime and the same
+  // better-sqlite3 fd profile as the suite above — its parent reuses
+  // that prefix, its children need their own.
+  "pb8-svc-",
+  "pb8-svc-shape-",
   "webui-t36-engine-",
   // Catch-all prefixes (last — matching stops on the first prefix that
   // matches, so every entry above this point wins over these). Round-3

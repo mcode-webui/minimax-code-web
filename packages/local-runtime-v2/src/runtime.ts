@@ -439,6 +439,13 @@ function createStartedHost(
       ? {
           application: ownerRuntime.services.application,
           applications: ownerRuntime.services.applications,
+          // The owner graph itself, for embedders whose product facade
+          // carries no use case for a capability the services do own
+          // (the process-local facade declares no `agent` member, while
+          // `services.agent` is a full AgentApplication). Same object,
+          // same lifetime: `services.close()` stays reached only through
+          // the host's own shutdown path.
+          services: ownerRuntime.services,
         }
       : {}),
     ...(cliService ? { cliService } : {}),

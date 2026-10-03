@@ -6,6 +6,7 @@ import type {
 } from '@mavis/local-runtime';
 import type { LocalBrowserAdapter, LocalBrowserToolExposure } from '@mavis/agent-tools/desktop';
 import type { RuntimeApplications } from '../application/initialize.js';
+import type { RuntimeServices } from '../services.js';
 import type {
   MiniAppPresenter,
   LocalRuntimeApplication,
@@ -80,6 +81,21 @@ interface CreatedLocalRuntimeHost extends V1CreatedLocalRuntimeHost {
    */
   applications?: RuntimeApplications;
   cliService?: import('./cli-service.js').CliService;
+  /**
+   * The composed V2 service owners (`managedWorktrees`, `pinService`,
+   * `agent`, `mcp`, `skill`, `modelSystem`, …), handed to the embedder
+   * as-is. Distinct from `application` / `applications`: those two are
+   * the PRODUCT use cases, this is the OWNER graph behind them, so a
+   * consumer that finds no use case it can call (`agent` has none on
+   * the process-local facade) still has a real path to the capability.
+   *
+   * Optional because a host without the V2 compatibility slice
+   * (`compatibility === undefined`) has no service owners at all — the
+   * member is absent rather than an empty object, so "no owner" and
+   * "owner with no members" cannot be confused. Every member is
+   * `readonly`; lifecycle stays with the host's `close()`.
+   */
+  services?: RuntimeServices;
 }
 
 export type {

@@ -81,6 +81,16 @@ export {
 } from "./errors.js";
 // The lazy host getter: a function definition, no host, no @mavis/* import.
 export { getEngineCatalogueHost } from "./host.js";
+// The host-services window (placeholder batch PB-8): the read side of the
+// V2 owner graph, for the capability families the product facades do not
+// carry — PB-7 (agents, `services.agent`), PB-3 (worktrees,
+// `services.managedWorktrees`) and anything else that finds no use case on
+// `host.application` / `host.applications`. It is a window and nothing
+// more: no route consumes it yet, and each consumer batch owns its own
+// capability gate. Its only static import is `engine/host.js`, so the
+// boot-path rule the header above states holds here unchanged —
+// re-exporting it costs a function, not a module load.
+export { getHostServices } from "./host-services.js";
 // The directory-read family's gated reads (step M3, batch B1). Re-exported
 // here so the facade is the one import site for engine reads, but the
 // dependency runs the other way too — session-reads.js consults
