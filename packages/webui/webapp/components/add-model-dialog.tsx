@@ -24,6 +24,19 @@
  *     the commit path. Rendered only by the provider panel.
  *   - `collectDialogErrors` / `defaultChecked` / `blankDialogCustom`
  *     — pure helpers the shells call and the tests drive directly.
+ *   - `blankDialogSeed` / `editSeedFromDraft` — the two OPENING
+ *     states of this one dialog. 「+ 新增」 seeds blank; a click on an
+ *     existing provider row seeds from that provider. Keeping both
+ *     entry points in one component is what makes the retired flat
+ *     editor unnecessary rather than merely replaced.
+ *   - `API_FORMAT_SPECS` — what the 「API 格式」 selection actually
+ *     changes, transcribed from the server's probe.
+ *
+ * Two entry points, one form: the panel passes `editTarget` and the
+ * dialog seeds from it. `enabled`, `preset` and `draftId` are
+ * properties of the RECORD, so the commit starts from the stored
+ * draft rather than rebuilding one — rebuilding would re-enable a
+ * disabled provider or detach it from its preset.
  *
  * Data honesty (ticket 54): 「自动获取」 lists the SELECTED PRESET's
  * built-in catalogue with an explicit note that it is not a live
@@ -110,12 +123,17 @@ export const ATTACHMENT_LABEL_KEYS: Record<
  *  「API 格式」 dropdown (ticket 85) because the desktop shows that
  *  control for EVERY provider, not only for custom ones — keeping it
  *  here would have meant two controls bound to one value, with the
- *  preset branch's copy invisible. */
+ *  preset branch's copy invisible.
+ *
+ *  `baseURL` moved OUT for the same reason (this slice): the desktop
+ *  renders 「接口地址」 for EVERY provider, seeded from the chosen
+ *  provider and editable afterwards. Leaving it inside the
+ *  「其他（自定义）」 branch made the field — the very one the
+ *  「API 格式」 selection changes — invisible for every preset. */
 export interface DialogCustomFields {
   id: string;
   label: string;
   authType: ProviderAuthType;
-  baseURL: string;
 }
 
 export function blankDialogCustom(): DialogCustomFields {
@@ -123,7 +141,6 @@ export function blankDialogCustom(): DialogCustomFields {
     id: "",
     label: "",
     authType: "byok",
-    baseURL: "",
   };
 }
 
@@ -143,6 +160,116 @@ export const API_FORMAT_OPTIONS: ReadonlyArray<{
 /** One row of the 自定义 Headers list. Both halves are raw user input;
  *  the wire object is produced by `headerPairsToRecord`. */
 export type DialogHeaderRow = DraftHeaderRow;
+
+/**
+ * What the 「API 格式」 selection actually CHANGES, per protocol.
+ *
+ * Every value here is transcribed from the server's probe
+ * (`server/lib/providers-config.js`): `probe()` sends a different
+ * request per protocol, and `DEFAULT_BASE_URL` holds the fallback
+ * host each one resolves against when the field is left blank. The
+ * dialog surfaces that difference instead of letting the operator
+ * discover it by a failed 连通检测.
+ *
+ * Field-presence note (honesty, not an omission): the three protocols
+ * share ONE wire shape — the providers PUT contract carries the same
+ * fields for all of them — so there is no field this build can
+ * legitimately hide per format. The linkage is therefore the endpoint
+ * placeholder, the exact request the probe will make, and the
+ * credential's transport (a query parameter for Gemini, a header for
+ * the other two). Inventing a hidden field would be a form the
+ * backend cannot save.
+ */
+export const API_FORMAT_SPECS: Record<
+  ProviderProtocol,
+  {
+    /** The server's `DEFAULT_BASE_URL[protocol]` — shown as the
+     *  接口地址 placeholder so the default is visible before typing. */
+    defaultBaseURL: string;
+    /** The request `probe()` builds, with `{baseURL}` for the field. */
+    probeRequest: string;
+    /** How the API key travels on that request. */
+    credentialKey: MessageKey;
+  }
+> = {
+  openai: {
+    defaultBaseURL: "https://api.openai.com",
+    probeRequest: "GET {baseURL}/v1/models",
+    credentialKey: "providers.dialog.credential.openai",
+  },
+  anthropic: {
+    defaultBaseURL: "https://api.anthropic.com",
+    probeRequest: "POST {baseURL}/v1/messages",
+    credentialKey: "providers.dialog.credential.anthropic",
+  },
+  gemini: {
+    defaultBaseURL: "https://generativelanguage.googleapis.com",
+    probeRequest: "GET {baseURL}/v1beta/models?key=…",
+    credentialKey: "providers.dialog.credential.gemini",
+  },
+};
+
+/** The seeded values a dialog opens with — one shape for 「+ 新增」
+ *  (blank) and 「编辑」 (pre-filled from an existing provider), so the
+ *  two entry points cannot drift into two different forms. */
+export interface DialogSeed {
+  presetChoice: string | null;
+  custom: DialogCustomFields;
+  apiFormat: ProviderProtocol;
+  baseURL: string;
+  apiKey: string;
+  headers: DialogHeaderRow[];
+  entries: DraftModel[];
+}
+
+/**
+ * The 「+ 新增」 seed — every field blank, the format on the first
+ * supported protocol.
+ */
+export function blankDialogSeed(): DialogSeed {
+  return {
+    presetChoice: null,
+    custom: blankDialogCustom(),
+    apiFormat: "openai",
+    baseURL: "",
+    apiKey: "",
+    headers: [],
+    entries: [],
+  };
+}
+
+/**
+ * The 「编辑」 seed — an existing provider projected onto the same form.
+ *
+ * Three decisions worth stating:
+ *
+ *   - `presetChoice` is the provider's `preset` when it was
+ *     materialised from the catalogue, and 「+ 其他（自定义）」
+ *     otherwise — so reopening an edit lands the operator on the
+ *     branch the provider actually lives on.
+ *   - `apiKey` is ALWAYS empty. The providers GET returns only a
+ *     masked key, and an empty apiKey on the PUT is the server's
+ *     keep-the-existing-key sentinel, so an untouched edit preserves
+ *     the stored credential; a typed one replaces it.
+ *   - `baseURL` and `headers` are carried verbatim — they are the
+ *     values the provider is already using, and blanking them would
+ *     silently reset a working configuration.
+ */
+export function editSeedFromDraft(draft: DraftProvider): DialogSeed {
+  return {
+    presetChoice: draft.preset ?? PRESET_CHOICE_CUSTOM,
+    custom: {
+      id: draft.id,
+      label: draft.label,
+      authType: draft.auth.type,
+    },
+    apiFormat: draft.protocol,
+    baseURL: draft.auth.baseURL,
+    apiKey: "",
+    headers: draft.auth.headers.map((row) => ({ ...row })),
+    entries: draft.models.map((m) => ({ ...m })),
+  };
+}
 
 /** Entry-card header — the reference's 「模型 01」 zero-padded form. */
 export function dialogEntryTitle(
@@ -226,7 +353,9 @@ export function AddModelDialogForm({
   presetChoice,
   apiFormat,
   custom,
+  baseURL,
   apiKey,
+  apiKeyPlaceholder,
   revealed,
   headers,
   entries,
@@ -239,6 +368,7 @@ export function AddModelDialogForm({
   onPresetChoice,
   onApiFormat,
   onCustomField,
+  onBaseURL,
   onApiKey,
   onRevealToggle,
   onHeaderChange,
@@ -261,8 +391,17 @@ export function AddModelDialogForm({
   /** The 「API 格式」 selection — the wire `protocol`, for presets and
    *  custom providers alike. */
   apiFormat: ProviderProtocol;
+  /** The custom-provider branch's editable fields. */
   custom: DialogCustomFields;
+  /** The 接口地址 value — top level, because the desktop shows the
+   *  field for EVERY provider and it is the field the 「API 格式」
+   *  selection changes. */
+  baseURL: string;
   apiKey: string;
+  /** The key input's placeholder. In 「编辑」 mode the shell passes the
+   *  server's MASKED value, so the operator can see what is stored
+   *  without the form ever round-tripping the mask as a real key. */
+  apiKeyPlaceholder: string;
   /** Drives the key input's `type` — the eye toggle is a prop, not
    *  buried widget state, so a static render per state IS the
    *  round-trip proof. */
@@ -289,6 +428,7 @@ export function AddModelDialogForm({
   onPresetChoice: (value: string) => void;
   onApiFormat: (value: ProviderProtocol) => void;
   onCustomField: (patch: Partial<DialogCustomFields>) => void;
+  onBaseURL: (value: string) => void;
   onApiKey: (value: string) => void;
   onRevealToggle: () => void;
   onHeaderChange: (index: number, patch: Partial<DialogHeaderRow>) => void;
@@ -308,11 +448,28 @@ export function AddModelDialogForm({
   onCancel: () => void;
   onCommit: () => void;
 }) {
+  // The 「API 格式」 selection's whole visible consequence, resolved
+  // once so every dependent surface below reads the same spec (see
+  // API_FORMAT_SPECS). An unknown protocol cannot reach here — the
+  // dropdown only offers the three the server whitelists — but the
+  // lookup is total anyway, so a future protocol added to one side
+  // and not the other renders the openai spec instead of crashing.
+  const formatSpec = API_FORMAT_SPECS[apiFormat] ?? API_FORMAT_SPECS.openai;
+  // The endpoint the probe will ACTUALLY hit: the typed base URL, or
+  // the protocol default the server falls back to when the field is
+  // blank. Showing the resolved target (not the raw template) is what
+  // makes an empty field understandable.
+  const probeTarget = formatSpec.probeRequest.replace(
+    "{baseURL}",
+    baseURL.trim() || formatSpec.defaultBaseURL,
+  );
+
   return (
     <div
       className="flex max-h-[calc(90vh-64px)] flex-col"
       data-testid="provider-dialog"
     >
+      <div className="thin-scrollbar flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pb-2">
       {/* Scrollable body region — every field section; the commit
        * pair lives in its own separated footer region below. The
        * 90vh clamp keeps the footer reachable on short viewports:
@@ -321,7 +478,6 @@ export function AddModelDialogForm({
        * scrollable, and 取消/保存 end up below the fold with no
        * way to reach them (found live in the ticket-56 verify
        * round: 884px of content in a 633px viewport). */}
-      <div className="thin-scrollbar flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pb-2">
       {/* 提供商 —— desktop placeholder 「请选择提供商」; options are
        * the local preset catalogue plus the 「+ 其他」 escape hatch
        * that keeps the custom-provider capability (B4). */}
@@ -400,17 +556,42 @@ export function AddModelDialogForm({
               />
             </Field>
           </div>
-          <Field label={t("providers.field.baseURL")}>
-            <AntInput
-              value={custom.baseURL}
-              data-testid="provider-dialog-custom-baseURL"
-              onChange={(e) => onCustomField({ baseURL: e.target.value })}
-              className="mavis-input"
-              placeholder={t("providers.field.baseURLHint")}
-            />
-          </Field>
         </div>
       ) : null}
+
+      {/* 接口地址 — top level, for EVERY provider (desktop order: it
+       *  sits directly under 「API 格式」 and is never inside the
+       *  「其他（自定义）」 branch). A preset seeds it with the
+       *  catalogue's endpoint; the operator may override it, and an
+       *  empty field defers to the protocol default the server also
+       *  uses — the same value the placeholder names.
+       *
+       *  The two lines under the input are the format's spec, not
+       *  decoration: they state the request 连通检测 will send and
+       *  where the key travels on it, so a mismatched endpoint fails
+       *  with an explanation on screen instead of a bare HTTP 404. */}
+      <Field label={t("providers.field.baseURL")}>
+        <AntInput
+          value={baseURL}
+          data-testid="provider-dialog-base-url"
+          onChange={(e) => onBaseURL(e.target.value)}
+          className="mavis-input"
+          placeholder={formatSpec.defaultBaseURL}
+          data-protocol={apiFormat}
+        />
+        <p
+          data-testid="provider-dialog-base-url-hint"
+          className="text-caption-small-strong text-text_default_tertiary"
+        >
+          {t("providers.dialog.probeHint").replace("{{request}}", probeTarget)}
+        </p>
+        <p
+          data-testid="provider-dialog-credential-hint"
+          className="text-caption-small-strong text-text_default_tertiary"
+        >
+          {t(formatSpec.credentialKey)}
+        </p>
+      </Field>
 
       {/* API Key —— password input with the desktop's eye toggle. The
        * reveal is safe here (unlike the editor's field): the value is
@@ -425,7 +606,7 @@ export function AddModelDialogForm({
           data-testid="provider-dialog-api-key"
           onChange={(e) => onApiKey(e.target.value)}
           className="mavis-input"
-          placeholder={t("providers.dialog.apiKeyPlaceholder")}
+          placeholder={apiKeyPlaceholder}
           suffix={
             <button
               type="button"
@@ -898,14 +1079,21 @@ export function AddModelDialog({
   t,
   open,
   existingIds,
+  editTarget = null,
   onCancel,
   onSave,
 }: {
   t: (key: MessageKey) => string;
   open: boolean;
   /** ids already configured — the dialog refuses to create a
-   *  duplicate (the server would reject the whole PUT). */
+   *  duplicate (the server would reject the whole PUT). The panel
+   *  excludes the provider being EDITED, whose own id is not a
+   *  duplicate of itself. */
   existingIds: string[];
+  /** The provider being edited, or null for 「+ 新增」. One component,
+   *  two entry points: the panel opens the same dialog pre-filled
+   *  from `editSeedFromDraft` instead of a second editor surface. */
+  editTarget?: DraftProvider | null;
   onCancel: () => void;
   /** Panel-owned commit: merge + PUT. Resolves false on failure so
    *  the dialog stays open with the user's input intact. */
@@ -919,6 +1107,9 @@ export function AddModelDialog({
   // operator can still override it.
   const [apiFormat, setApiFormat] = useState<ProviderProtocol>("openai");
   const [custom, setCustom] = useState<DialogCustomFields>(blankDialogCustom);
+  // 接口地址 — top level since it moved out of the custom branch; the
+  // chosen provider seeds it, the operator may override it.
+  const [baseURL, setBaseURL] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [revealed, setRevealed] = useState(false);
   // 自定义 Headers rows (ticket 85) — a list, so a half-typed row is not
@@ -978,6 +1169,7 @@ export function AddModelDialog({
     setPresetChoice(null);
     setApiFormat("openai");
     setCustom(blankDialogCustom());
+    setBaseURL("");
     setApiKey("");
     setRevealed(false);
     setHeaders([]);
@@ -988,8 +1180,38 @@ export function AddModelDialog({
     setSkipTest(false);
   }, []);
 
+  // Seed the form from the entry point. The `seededFor` ref keys the
+  // effect to ONE (target, open-epoch) pair: without it, a re-render
+  // caused by the presets fetch landing would wipe the operator's
+  // typing by re-seeding, and an effect keyed only to `open` would
+  // miss the edit target changing while the dialog stays open.
+  const [seededFor, setSeededFor] = useState<string | null>(null);
+  const seedKey = open ? (editTarget ? `edit:${editTarget.draftId}` : "add") : null;
+  useEffect(() => {
+    if (seedKey === null || seededFor === seedKey) return;
+    const seed = editTarget ? editSeedFromDraft(editTarget) : blankDialogSeed();
+    setPresetChoice(seed.presetChoice);
+    setApiFormat(seed.apiFormat);
+    setCustom(seed.custom);
+    setBaseURL(seed.baseURL);
+    setApiKey(seed.apiKey);
+    setRevealed(false);
+    setHeaders(seed.headers);
+    setEntries(seed.entries);
+    setErrors([]);
+    setEntryTests({});
+    // An edit opens with no verdict: 保存 stays gated until the
+    // operator runs 连通检测 (or ticks 跳过) against the edited
+    // values, exactly as on 「+ 新增」. Silently inheriting a pass
+    // would let an unverified change through.
+    setFormTest(null);
+    setSkipTest(false);
+    setSeededFor(seedKey);
+  }, [seedKey, seededFor, editTarget]);
+
   const close = useCallback(() => {
     resetForm();
+    setSeededFor(null);
     setFetchedOpen(false);
     onCancel();
   }, [resetForm, onCancel]);
@@ -1014,46 +1236,51 @@ export function AddModelDialog({
     // wire body and the server can never disagree about what the
     // operator typed.
     const headerRecord = headerPairsToRecord(headers);
+    // An EDIT reuses the stored provider as its base: `draftId`,
+    // `enabled`, `preset` and the keep-key `apiKey` sentinel are
+    // properties of the record, not of the form, and rebuilding them
+    // from scratch would silently re-enable a disabled provider or
+    // detach it from its preset. Only the fields the operator can
+    // reach in the dialog are taken from the form state.
+    const base: DraftProvider = editTarget ?? { ...newDraftProvider() };
+    const sharedAuth = {
+      // Edit: an untouched field is "" — the server's
+      // keep-the-existing-key sentinel, which is why the seed leaves
+      // `apiKey` empty and the mask rides in the placeholder only.
+      apiKey,
+      baseURL,
+      headers: Object.keys(headerRecord).length
+        ? Object.entries(headerRecord).map(([name, value]) => ({ name, value }))
+        : [],
+    };
     const draft: DraftProvider =
       presetChoice === PRESET_CHOICE_CUSTOM
         ? {
-            ...newDraftProvider(),
+            ...base,
+            isNew: false,
             id: custom.id.trim(),
             label: custom.label.trim() || custom.id.trim(),
             protocol: apiFormat,
-            auth: {
-              type: custom.authType,
-              apiKey,
-              baseURL: custom.baseURL,
-              headers: Object.keys(headerRecord).length
-                ? Object.entries(headerRecord).map(([name, value]) => ({ name, value }))
-                : [],
-            },
+            auth: { type: custom.authType, ...sharedAuth },
             models: entries,
           }
         : {
-            ...newDraftProvider(),
-            id: selectedPreset?.id ?? "",
+            ...base,
+            isNew: false,
+            id: selectedPreset?.id ?? base.id,
             label: selectedPreset
               ? PRESET_DISPLAY_LABELS[selectedPreset.id] ?? selectedPreset.label
-              : "",
+              : base.label,
             protocol: apiFormat,
-            auth: {
-              type: selectedPreset?.auth.type ?? "byok",
-              apiKey,
-              baseURL: selectedPreset?.auth.baseURL ?? "",
-              headers: Object.keys(headerRecord).length
-                ? Object.entries(headerRecord).map(([name, value]) => ({ name, value }))
-                : [],
-            },
-            preset: selectedPreset?.id ?? null,
+            auth: { type: selectedPreset?.auth.type ?? "byok", ...sharedAuth },
+            preset: selectedPreset?.id ?? base.preset,
             models: entries,
           };
     setBusy(true);
     const ok = await onSave(draft);
     setBusy(false);
     if (ok) close();
-  }, [t, presetChoice, custom, existingIds, entries, selectedPreset, apiKey, headers, apiFormat, onSave, close]);
+  }, [t, presetChoice, custom, existingIds, entries, selectedPreset, apiKey, baseURL, headers, apiFormat, editTarget, onSave, close]);
 
   // -------------------------------------------------------------------
   // 连通检测 (I3) — official semantics: the button next to a model
@@ -1094,10 +1321,6 @@ export function AddModelDialog({
       presetChoice === PRESET_CHOICE_CUSTOM
         ? custom.authType
         : (selectedPreset?.auth.type ?? "byok");
-    const baseURL =
-      presetChoice === PRESET_CHOICE_CUSTOM
-        ? custom.baseURL
-        : (selectedPreset?.auth.baseURL ?? "");
     const headerRecord = headerPairsToRecord(headers);
     if (!presetChoice || !protocol) {
       // Unreachable through the disabled button — kept as the
@@ -1140,7 +1363,7 @@ export function AddModelDialog({
         error: cause instanceof Error ? cause.message : String(cause),
       };
     }
-  }, [apiFormat, presetChoice, custom, apiKey, headers, selectedPreset, t]);
+  }, [apiFormat, presetChoice, custom.authType, apiKey, baseURL, headers, selectedPreset, t]);
 
   const testEntry = useCallback(
     async (index: number) => {
@@ -1221,7 +1444,9 @@ export function AddModelDialog({
           data-testid="provider-dialog-title"
           className="text-base font-medium text-text_default_primary"
         >
-          {t("providers.dialog.title")}
+          {t(
+            editTarget ? "providers.dialog.editTitle" : "providers.dialog.title",
+          )}
         </span>
       }
     >
@@ -1231,7 +1456,15 @@ export function AddModelDialog({
         presetChoice={presetChoice}
         apiFormat={apiFormat}
         custom={custom}
+        baseURL={baseURL}
         apiKey={apiKey}
+        apiKeyPlaceholder={
+          // The mask is a PLACEHOLDER, never a value: writing it back
+          // would replace the stored key with its own abbreviation. An
+          // empty controlled value is the keep-the-key sentinel, so an
+          // untouched edit preserves the credential on disk.
+          editTarget?.apiKeyMasked || t("providers.dialog.apiKeyPlaceholder")
+        }
         revealed={revealed}
         headers={headers}
         entries={entries}
@@ -1247,13 +1480,16 @@ export function AddModelDialog({
           // now an answer to a different question.
           setEntryTests({});
           setFormTest(null);
-          // Seed 「API 格式」 from the newly chosen preset so the
-          // dropdown lands on the format that preset actually speaks;
-          // 「其他（自定义）」 has none to seed from and keeps the
-          // previous choice, which is what the operator last saw.
+          // Seed 「API 格式」 and 「接口地址」 from the newly chosen
+          // preset so both land on what that preset actually speaks and
+          // dials; 「其他（自定义）」 has none to seed from and keeps the
+          // previous values, which is what the operator last saw.
           if (value !== PRESET_CHOICE_CUSTOM) {
             const next = presets?.find((p) => p.id === value);
-            if (next) setApiFormat(next.protocol);
+            if (next) {
+              setApiFormat(next.protocol);
+              setBaseURL(next.auth.baseURL ?? "");
+            }
           }
         }}
         onApiFormat={(value) => {
@@ -1263,11 +1499,19 @@ export function AddModelDialog({
           setEntryTests({});
           setFormTest(null);
         }}
+        onBaseURL={(value) => {
+          setBaseURL(value);
+          // The endpoint IS the probe target; a verdict for the old
+          // one says nothing about the new one.
+          setEntryTests({});
+          setFormTest(null);
+        }}
         onCustomField={(patch) => {
           setCustom((c) => ({ ...c, ...patch }));
-          // baseURL / authType all land in the probe body — a stale
-          // verdict must not survive any of them changing.
-          if (patch.baseURL !== undefined || patch.authType !== undefined) {
+          // authType lands in the probe body — a stale verdict must
+          // not survive it changing. (baseURL has its own handler now
+          // that the field is top level.)
+          if (patch.authType !== undefined) {
             setEntryTests({});
             setFormTest(null);
           }
