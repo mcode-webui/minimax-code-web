@@ -155,40 +155,40 @@ describe("contextDetail — render-branch decision table", () => {
 });
 
 describe("U6 wiring tripwires — composer.tsx / api.ts / i18n.ts", () => {
-  test("composer renders a radiogroup with radio roles and per-option testids", () => {
-    // Batch 2: the radio group lives in `ModelSettingsDetail`, whose
-    // testids derive from the per-placement prefixes — the bottom
-    // area keeps the U6 ids (`model-context-*`), the cascade side
-    // column gets its own family (`model-cascade-context-*`).
+  test("composer renders the context window as a single-select listbox", () => {
+    // The reference draws the context window as ONE control: the current
+    // value with a chevron, opening to the option rows — not two window
+    // buttons permanently side by side. The testids derive from the
+    // placement prefix, and the picker has exactly one placement now.
     assert.match(
       composerSource,
-      /data-testid=\{`\$\{contextPrefix\}-group`\}/,
-      "the radio group testid derives from the placement prefix",
+      /testIdPrefix=\{contextPrefix\}/,
+      "the select is handed the placement prefix",
     );
     assert.match(
       composerSource,
-      /contextPrefix="model-context"/,
-      "the bottom area keeps the U6 model-context prefix",
+      /data-testid=\{`\$\{testIdPrefix\}-select`\}/,
+      "the select wrapper testid derives from the placement prefix",
     );
     assert.match(
       composerSource,
-      /contextPrefix="model-cascade-context"/,
-      "the side column carries its own prefix (no duplicate ids)",
+      /contextPrefix="model-panel-context"/,
+      "the settings column keeps its own prefix",
     );
     assert.match(
       composerSource,
-      /role="radiogroup"/,
-      "the group carries role=radiogroup (a11y semantics, not decoration)",
+      /role="listbox"/,
+      "the option list carries role=listbox",
     );
     assert.match(
       composerSource,
-      /data-testid=\{`\$\{contextPrefix\}-option-\$\{windowValue\}`\}/,
+      /data-testid=\{`\$\{testIdPrefix\}-option-\$\{windowValue\}`\}/,
       "each option carries a per-value testid",
     );
     assert.match(
       composerSource,
-      /aria-checked=\{active\}/,
-      "options are aria-checked radios",
+      /aria-selected=\{active\}/,
+      "options are aria-selected listbox options",
     );
   });
 
@@ -287,17 +287,12 @@ describe("ticket 49 batch 1 — follow-focus wiring survives batch 2 (kept tripw
     assert.match(
       composerSource,
       /<div data-testid=\{containerTestId\} aria-live="polite" className=\{className\}>/,
-      "ModelSettingsDetail renders the live region; both placements inherit it",
+      "ModelSettingsDetail renders the live region",
     );
     assert.match(
       composerSource,
-      /containerTestId="model-context-detail"/,
-      "the bottom area keeps the U6 container testid",
-    );
-    assert.match(
-      composerSource,
-      /containerTestId="model-cascade-detail"/,
-      "the side column carries its own container testid",
+      /containerTestId="model-panel-detail"/,
+      "the settings column carries the container testid",
     );
   });
 
@@ -309,7 +304,11 @@ describe("ticket 49 batch 1 — follow-focus wiring survives batch 2 (kept tripw
     );
   });
 
-  test("hover/keyboard focus on a cascade row feeds the side column (A2)", () => {
+  test("hover/keyboard focus on a model row feeds the settings column (A2)", () => {
+    // The report used to come from the cascade's `onItemFocus`. With the
+    // models IN the list, the row itself reports: the list is one level
+    // shallower, and a follow-focus column that only tracked a fly-out
+    // would freeze.
     assert.match(
       composerSource,
       /const \[focusedModelId, setFocusedModelId\] = useState<string \| null>\(null\);/,
@@ -317,25 +316,24 @@ describe("ticket 49 batch 1 — follow-focus wiring survives batch 2 (kept tripw
     );
     assert.match(
       composerSource,
-      /onItemFocus\?: \(id: string\) => void;/,
-      "CascadeSubmenu accepts an optional onItemFocus prop",
+      /onMouseEnter\?: \(\) => void;/,
+      "SelectRow accepts an optional onMouseEnter prop",
     );
     assert.match(
       composerSource,
-      /onMouseEnter=\{\(\) => \{ if \(!item\.disabled\) onItemFocus\?\.\(item\.id\); \}\}/,
-      "row mouseenter reports the hovered item",
+      /onFocus\?: \(\) => void;/,
+      "SelectRow accepts an optional onFocus prop",
     );
     assert.match(
       composerSource,
-      /onFocus=\{\(\) => \{ if \(!item\.disabled\) onItemFocus\?\.\(item\.id\); \}\}/,
-      "row focus reports the keyboard-focused item",
+      /onMouseEnter=\{\(\) => \{\s*if \(!disabled\) setFocusedModelId\(model\.id\);/,
+      "row mouseenter reports the hovered model",
     );
     assert.match(
       composerSource,
-      /onItemFocus=\{setFocusedModelId\}/,
-      "the model cascade hands focus reports to the focused-row state",
+      /onFocus=\{\(\) => \{\s*if \(!disabled\) setFocusedModelId\(model\.id\);/,
+      "row focus reports the keyboard-focused model",
     );
-    // Batch 2 (A1): the follow-focus target now feeds the SIDE column.
     assert.match(
       composerSource,
       /const isDetailPreview = detailTarget != null && detailTarget\.id !== value;/,
@@ -344,7 +342,7 @@ describe("ticket 49 batch 1 — follow-focus wiring survives batch 2 (kept tripw
     assert.match(
       composerSource,
       /target=\{detailTarget\}\s*\n\s+preview=\{isDetailPreview\}/,
-      "the side column describes the follow-focus target",
+      "the settings column describes the follow-focus target",
     );
   });
 
@@ -397,24 +395,29 @@ describe("ticket 49 batch 1 — follow-focus wiring survives batch 2 (kept tripw
     );
   });
 
-  test("the bottom area renders the active model's levels as read-only badges", () => {
-    // Batch 2: the bottom detail area describes the ACTIVE model with
-    // the badge row (batch 1's display); the side column is where the
-    // adaptive control lives.
+  test("one level control, and it highlights only a recorded level (no badge twin)", () => {
+    // The picker used to render the active model's levels TWICE — an
+    // editable adaptive control in the column and a read-only badge row
+    // in a panel-bottom area. One settings surface means one level
+    // control; two renderings of the same fact is not a feature, and a
+    // badge that says "high" next to a list that says "low" is a lie
+    // nobody has to author to ship.
+    assert.doesNotMatch(
+      composerSource,
+      /effortControl=/,
+      "the read-only badge variant is gone with its only caller",
+    );
+    const mounts = composerSource.match(/<ModelSettingsDetail/g) ?? [];
+    assert.equal(mounts.length, 1, "exactly one settings surface");
     assert.match(
       composerSource,
-      /effortControl="badges"/,
-      "the bottom area renders the badge form",
+      /data-testid=\{`\$\{detailPrefix\}-level-list`\}/,
+      "the levels render as the reference's vertical list of rows",
     );
     assert.match(
       composerSource,
-      /data-testid=\{`\$\{detailPrefix\}-level-\$\{level\}`\}/,
-      "each level badge carries a per-level testid",
-    );
-    assert.match(
-      composerSource,
-      /const isCurrent = !preview && thinking === level;/,
-      "a level is highlighted only when the target carries the record",
+      /const effortCurrent = resolveEffortCurrent\(levels, thinking, preview\);/,
+      "the highlight still comes from the preview-aware product function",
     );
   });
 
@@ -454,16 +457,19 @@ describe("ticket 49 batch 1 — follow-focus wiring survives batch 2 (kept tripw
     assert.match(composerSource, /data-testid=\{`model-select-group-label-\$\{group\.id\}`\}/);
     assert.match(composerSource, /sticky top-0 z-10/);
     // B2 ① — the active model row's level badge.
-    assert.match(composerSource, /data-testid=\{`model-select-row-level-badge-\$\{modelSlug\(m\.id\)\}`\}/);
+    assert.match(
+      composerSource,
+      /data-testid=\{`model-select-row-level-badge-\$\{modelSlug\(model\.id\)\}`\}/,
+    );
     // B2 ③ — the editable composer-level control stays outside the picker.
     assert.match(composerSource, /data-testid="thinking-effort-trigger"/);
     // B10 — the U6 testids survive through the prefix family.
     for (const anchor of [
-      'contextPrefix="model-context"',
-      '${contextPrefix}-group',
-      '${contextPrefix}-option-${windowValue}',
-      '${contextPrefix}-value-${windowValue}',
-      '${contextPrefix}-hint-higher-usage',
+      'contextPrefix="model-panel-context"',
+      '${testIdPrefix}-select',
+      '${testIdPrefix}-option-${windowValue}',
+      '${testIdPrefix}-select-value',
+      '${testIdPrefix}-hint-higher-usage',
     ]) {
       assert.ok(composerSource.includes(anchor), `anchor must survive: ${anchor}`);
     }
@@ -471,70 +477,40 @@ describe("ticket 49 batch 1 — follow-focus wiring survives batch 2 (kept tripw
 });
 
 describe("ticket 49 batch 2 (A1) — two-column fly-out wiring", () => {
-  test("CascadeSubmenu accepts a detail node and renders it as the side column", () => {
-    assert.match(
-      composerSource,
-      /detail\?: React\.ReactNode;/,
-      "the detail prop is declared",
-    );
-    assert.match(
-      composerSource,
-      /data-testid=\{`\$\{testId\}-detail-column`\}/,
-      "the side column carries a per-cascade testid",
-    );
-    assert.match(
-      composerSource,
-      /detail=\{\s*<ModelSettingsDetail/,
-      "the model cascade hands its follow-focus detail to the fly-out",
-    );
-  });
-
-  test("the fly-out clamps to the viewport and scrolls inside its columns (QA ③)", () => {
-    assert.match(
+  test("one flat list beside one settings column — no fly-out, no bottom twin", () => {
+    // The picker used to be three surfaces: a provider row that opened a
+    // positioned fly-out of models, a follow-focus column inside that
+    // fly-out, and a panel-bottom area describing the active model. The
+    // reference has one list and one settings column, so the fly-out and
+    // the bottom area are gone — and with them the clamping and scrolling
+    // they needed, because two columns inside ONE popup cannot occlude
+    // each other. The two-column container is the whole layout now.
+    assert.doesNotMatch(composerSource, /CascadeSubmenu/, "no fly-out remains");
+    assert.doesNotMatch(composerSource, /<CascadeSubmenu/);
+    assert.doesNotMatch(
       composerSource,
       /maxHeight: "calc\(100vh - 16px\)"/,
-      "the two-column container caps at the viewport",
+      "the fly-out's viewport clamp left with it",
     );
     assert.match(
       composerSource,
-      /className="thin-scrollbar min-h-0 w-56 shrink-0 overflow-y-auto border-l border-border_default p-1"/,
-      "the side column owns its vertical scrollbar",
+      /data-testid="model-select-panel-detail-column"/,
+      "the settings column is part of the panel, not a fly-out",
     );
     assert.match(
       composerSource,
-      /className="thin-scrollbar min-h-0 flex-1 overflow-y-auto p-1"/,
-      "the rows column owns its vertical scrollbar",
-    );
-  });
-
-  test("the bottom area stays put: it describes the ACTIVE model (U6/B9 placement)", () => {
-    assert.match(
-      composerSource,
-      /const activeModel = useMemo\(\(\) => models\.find\(\(m\) => m\.id === value\) \?\? null, \[models, value\]\);/,
-      "the bottom target derives from the active model only",
+      /className="thin-scrollbar max-h-\[60vh\] w-64 shrink-0 self-stretch overflow-y-auto border-l border-border_default py-1 pl-1"/,
+      "the settings column owns its own vertical scroll",
     );
     assert.match(
       composerSource,
-      /target=\{activeModel\}\s*\n\s+preview=\{false\}/,
-      "the bottom area is never a preview",
+      /className="thin-scrollbar max-h-\[60vh\] w-60 overflow-y-auto"/,
+      "the list owns its own vertical scroll",
     );
     assert.match(
       composerSource,
-      /className="mt-1 border-t border-border_default px-1 pb-1 pt-1"/,
-      "the bottom area keeps its U6 chrome (border-t under the list)",
-    );
-    // P4 (acceptance): the bottom window radios must actually pick.
-    // Batch 2 shipped this instance without onContextPick — a visible,
-    // enabled-looking control whose clicks did nothing (B9 regression,
-    // acceptance P1) — and the suite stayed green because nothing
-    // asserted the bottom instance's wiring. `effortControl="badges"`
-    // is unique to the bottom call (the side column passes "adaptive"),
-    // so this linear anchor pins the bottom instance's wiring without
-    // a wildcard over the source.
-    assert.match(
-      composerSource,
-      /effortControl="badges"\s*\n\s*onContextPick=\{handleDetailContextPick\}\s*\n\s*\/>/,
-      "the bottom window radios must ride the same pick handler as the side column (P1/P4)",
+      /onKeyDown=\{handleListKeyDown\}/,
+      "the list carries the arrow-key engine the fly-out used to own",
     );
   });
 
@@ -556,8 +532,8 @@ describe("ticket 49 batch 2 (A1) — two-column fly-out wiring", () => {
     );
     assert.match(
       composerSource,
-      /data-testid=\{`\$\{detailPrefix\}-level-group`\}/,
-      "the multi-level form renders a radiogroup with a testid",
+      /data-testid=\{`\$\{detailPrefix\}-level-list`\}/,
+      "the multi-level form renders the reference's vertical level list",
     );
     assert.match(
       composerSource,
@@ -566,7 +542,7 @@ describe("ticket 49 batch 2 (A1) — two-column fly-out wiring", () => {
     );
     assert.match(
       composerSource,
-      /option === "default" \? t\("thinkingPicker\.none"\) : thinkingLevelLabel\(t, option\)/,
+      /option === "default"\s*\n?\s*\?\s*t\("thinkingPicker\.none"\)\s*\n?\s*:\s*thinkingLevelLabel\(t, option\)/,
       "the default option reuses the composer control's label",
     );
   });
@@ -634,33 +610,29 @@ describe("ticket 49 batch 2 (A7) — draft mirror wiring", () => {
 
 describe("ticket 49 batch 2 — QA registry pins", () => {
   test("QA ① — every focusedModelId cleanup path stays wired (delete any one and this goes red)", () => {
-    // Six cleanup sites existed at batch-2 time; each is pinned by its
-    // surrounding context so removing the call (or the enclosing
-    // handler) fails exactly one readable assertion below.
+    // Six cleanup sites existed at batch-2 time, all but one belonging to
+    // the cascade's hover grace, the cascade's back path, and the
+    // cross-provider hover. With the models in the list there is no
+    // fly-out to leave, so the remaining three are the whole set: a
+    // stale preview surviving a pick, a session switch, or the panel
+    // closing would leave the settings column describing a model the
+    // user is no longer looking at.
     const pins: [name: string, re: RegExp][] = [
       [
-        "hover-out grace timer",
-        /window\.setTimeout\(\(\) => \{\s*\n\s*setSubmenuFor\(null\);[\s\S]{0,220}setFocusedModelId\(null\);/,
+        "active model change effect",
+        /useEffect\(\(\) => \{\s*\n\s*setFocusedModelId\(null\);\s*\n\s*\}, \[value\]\);/,
       ],
       [
-        "active model change effect",
-        /useEffect\(\(\) => \{\s*\n\s*setSubmenuFor\(null\);\s*\n\s*setFocusedModelId\(null\);\s*\n\s*cancelSubmenuClose\(\);\s*\n\s*\}, \[value, cancelSubmenuClose\]\);/,
+        "session switch",
+        /setFocusedModelId\(null\);\s*\n\s*setDrafts\(\{\}\);/,
       ],
       [
         "dropdown close",
-        /if \(!next\) \{\s*\n\s*setSubmenuFor\(null\);\s*\n\s*setFocusedModelId\(null\);/,
-      ],
-      [
-        "entering another provider's row",
-        /setFocusedModelId\(null\);\s*\n\s*setSubmenuFor\(group\.id\);/,
+        /if \(!next\) setFocusedModelId\(null\);/,
       ],
       [
         "model pick",
-        /setOpen\(false\);\s*\n\s*setSubmenuFor\(null\);\s*\n\s*setFocusedModelId\(null\);\s*\n\s*cancelSubmenuClose\(\);\s*\n\s*onPick\(modelId\);/,
-      ],
-      [
-        "cascade back (ArrowLeft/Escape)",
-        /onBack=\{\(\) => \{\s*\n\s*setSubmenuFor\(null\);\s*\n\s*setFocusedModelId\(null\);/,
+        /setOpen\(false\);\s*\n\s*setFocusedModelId\(null\);/,
       ],
     ];
     for (const [name, re] of pins) {
@@ -686,23 +658,23 @@ describe("ticket 49 batch 2 — QA registry pins", () => {
     );
     assert.match(
       composerSource,
-      /"button:not\(\[disabled\]\)"/,
-      "focus skips disabled rows (no-key providers)",
+      /'\[data-testid\^="model-select-model-option-"\]:not\(\[disabled\]\)'/,
+      "focus lands on a MODEL row and skips a no-key provider's disabled ones",
     );
-    // The provider row's ArrowRight handler focuses the cascade's
-    // first item through `submenuRef` — the ref was never wired in
-    // batch 1, so the focus call ran against a permanently-null ref
-    // (dead code the live check caught). Pin BOTH halves: the ref
-    // handoff and the double-rAF that waits out React 18's commit.
+    // The list carries the between-rows engine the fly-out used to own:
+    // without it, removing the cascade would quietly remove
+    // keyboard-only reachability with it. Home/End matter more now, not
+    // less — a flat list of every model is longer than one provider's
+    // cascade ever was.
     assert.match(
       composerSource,
-      /<CascadeSubmenu\s*\n\s*ref=\{submenuRef\}/,
-      "the cascade hands its DOM node to submenuRef (the focus target)",
+      /event\.key === "ArrowDown" \? 1 : event\.key === "ArrowUp" \? -1 : 0;/,
+      "the list engine moves by row",
     );
     assert.match(
       composerSource,
-      /requestAnimationFrame\(\(\) => \{\s*\n\s*requestAnimationFrame\(\(\) => \{\s*\n\s*const first = submenuRef\.current\?\.querySelector<HTMLElement>\(/,
-      "the first-item focus waits two frames for the submenu commit",
+      /event\.key === "Home" \? "first" : event\.key === "End" \? "last" : null/,
+      "Home/End still jump to the ends of a long catalogue",
     );
   });
 });

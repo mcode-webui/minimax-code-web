@@ -24,7 +24,6 @@ import {
 } from "@/lib/effort-control";
 import {
   chipLevelSuffix,
-  filterModelGroups,
   groupModelsByProvider,
   isGroupDisabled,
   modalityBadgeKey,
@@ -1309,21 +1308,7 @@ function ModelSelect({
   onAddProvider?: () => void;
 }) {
   const [open, setOpen] = useState(false);
-  /** The search box's query (roadmap module H, 「模型搜索」). Session-scoped
-   *  with the other picker state: a half-typed query must not follow the
-   *  user into the next session's list, for the same reason the cascade
-   *  and the draft mirror reset. Cleared on close too, so reopening always
-   *  starts from the full catalogue — a filter left over from a previous
-   *  open would hide rows with nothing on screen to explain why. */
-  const [query, setQuery] = useState("");
-  // Ticket 11: the dropdown is now PROVIDER → MODEL. The cascade
-  // submenu is keyed by provider id (the row that opens it), not by
-  // model id. `null` when the dropdown is closed or no provider row
-  // is hovered/focused. The submenu is the same `CascadeSubmenu`
-  // component ticket 10 introduced for the model → level cascade;
-  // the positioning / flip / clamp / keyboard engine is shared.
-  const [submenuFor, setSubmenuFor] = useState<string | null>(null);
-  /** Ticket 49 — the model row the detail area follows. Hover or
+  /** Ticket 49 — the model row the settings column follows.  /** Ticket 49 — the model row the detail area follows. Hover or
    *  keyboard focus inside a cascade submenu sets it; closing the
    *  submenu (hover-out grace, ArrowLeft/Escape, a model pick) or
    *  the dropdown itself clears it, at which point the detail area
@@ -1345,59 +1330,26 @@ function ModelSelect({
   const [drafts, setDrafts] = useState<
     Record<string, { thinking?: string; contextWindow?: number }>
   >({});
-  // webui-parity 106 — the four local states above belong to ONE session's
-  // picker interaction. A session switch that arrived while the cascade was
-  // open (or a preview row focused) used to carry all of it into the next
-  // session's view. The reset is a no-op while the session is stable — the
-  // effect only fires on a real key change, and closing an already-closed
-  // cascade writes nothing.
+  // webui-parity 106 — the two local states above belong to ONE session's
+  // picker interaction. A session switch that arrived while a preview row
+  // was focused used to carry both of them into the next session's view —
+  // and the draft mirror is the one that matters: a window or level the
+  // user half-adjusted in session A must not be showing as pending in
+  // session B. The reset is a no-op while the session is stable; the
+  // effect only fires on a real key change.
   useEffect(() => {
     setOpen(false);
-    setSubmenuFor(null);
     setFocusedModelId(null);
     setDrafts({});
-    setQuery("");
   }, [sessionKey]);
-  /** Ref to the provider row that owns the open submenu. */
-  const submenuAnchorRef = useRef<HTMLDivElement | null>(null);
-  /** Ref to the provider row that contains the active model, so the
-   *  scroll-into-view effect has a stable target. */
-  const selectedRowRef = useRef<HTMLDivElement | null>(null);
   /** Ref to the inner scrollable list. */
   const listScrollRef = useRef<HTMLDivElement | null>(null);
-  /** Ref to the search input, so the clear button can hand the caret back
-   *  to it. */
-  const searchInputRef = useRef<HTMLInputElement | null>(null);
-  /** Pending close timer — set when the cursor leaves the row, so a
-   *  brief traversal into the submenu keeps it open. Cleared when
-   *  the cursor re-enters the row OR the submenu. */
-  const submenuCloseTimerRef = useRef<number | null>(null);
-  /** Ref to the submenu element. Used by keyboard nav to focus the
-   *  first menuitem on activation and to navigate between menuitems
-   *  with arrow keys. */
-  const submenuRef = useRef<HTMLDivElement | null>(null);
+  /** Ref to the ACTIVE MODEL's row, so the scroll-into-view effect has a
+   *  stable target that is not re-queried on every render. */
+  const selectedRowRef = useRef<HTMLDivElement | null>(null);
   /** Ref to the dropdown panel — the trigger's arrow-key handler
    *  focuses its first (or last) focusable row after opening. */
   const panelRef = useRef<HTMLDivElement | null>(null);
-
-  const cancelSubmenuClose = useCallback(() => {
-    if (submenuCloseTimerRef.current != null) {
-      window.clearTimeout(submenuCloseTimerRef.current);
-      submenuCloseTimerRef.current = null;
-    }
-  }, []);
-
-  const scheduleSubmenuClose = useCallback(() => {
-    cancelSubmenuClose();
-    submenuCloseTimerRef.current = window.setTimeout(() => {
-      setSubmenuFor(null);
-      // Ticket 49: the grace period lapsed — the cursor really left
-      // the submenu, so the detail area stops previewing the last
-      // hovered row and falls back to the active model.
-      setFocusedModelId(null);
-      submenuCloseTimerRef.current = null;
-    }, 120);
-  }, [cancelSubmenuClose]);
 
   // Group by provider, preserving the catalogue order. A provider-less entry
   // (engine-encoded ids whose prefix wasn't coerced) falls into "Other" so it
@@ -1407,21 +1359,6 @@ function ModelSelect({
   const grouped = useMemo(
     () => groupModelsByProvider(models, groups, t("modelSelector.other")),
     [models, groups, t],
-  );
-
-  /**
-   * The list the picker actually renders: `grouped` narrowed by the search
-   * query (roadmap module H, 「模型搜索」).
-   *
-   * The cascade reads THIS, not `grouped` — see `providerItems`. Filtering
-   * only the list would leave a provider row that reads as one match while
-   * its fly-out still lists all twenty of its models, which is worse than
-   * no search at all: the row and the submenu would disagree about what
-   * the query selected.
-   */
-  const visibleGroups = useMemo(
-    () => filterModelGroups(grouped, query),
-    [grouped, query],
   );
 
   // The provider id of the active model — `__other` for ungrouped
@@ -1520,91 +1457,55 @@ function ModelSelect({
     if (!open) setDrafts({});
   }, [open]);
 
-  // Drop any open cascade when the active model changes (e.g. after
-  // a session reset). The next hover/click on a provider row will
-  // re-open a fresh submenu anchored to that row.
+  // The active model changing (a pick, a session reset) ends the
+  // preview: the settings column falls back to describing whatever is
+  // now active, not whatever the pointer was last over.
   useEffect(() => {
-    setSubmenuFor(null);
     setFocusedModelId(null);
-    cancelSubmenuClose();
-  }, [value, cancelSubmenuClose]);
+  }, [value]);
 
   /**
-   * Compose the cascade items for a provider's fly-out.
+   * Move between model rows with the arrow keys.
    *
-   * Each model becomes one `CascadeItem`. The active model is marked
-   * via `activeId` so the ✓ lands on the right row. The trailing
-   * adornment is the modality badges + (for the active model) the
-   * level badge — same shape the chip uses, so the cascade and the
-   * chip agree on what the user has picked.
+   * The cascade used to own this: the fly-out had its own engine, and
+   * the trigger's ArrowDown only ever reached the first provider row.
+   * Now that the list is flat, the engine belongs HERE — otherwise
+   * removing the cascade would quietly remove keyboard-only reachability
+   * with it, which is a red line rather than a nicety.
    *
-   * `rightAdornment` is gated on the level still being supported
-   * (same "follow model" rule the chip applies) so a model with a
-   * stale recorded level doesn't show a dangling badge in the
-   * cascade.
+   * `Home`/`End` jump to the ends for the same reason the cascade had
+   * them: a long catalogue makes walking row by row the only way to
+   * reach the far end.
    */
-  const providerItems = useCallback(
-    (providerId: string): CascadeItem[] => {
-      // `visibleGroups`, not `grouped`: while a query is active the
-      // fly-out must list the same rows the provider row was filtered to.
-      // Reading `grouped` here would let a row advertise one match and
-      // then open a submenu full of everything else.
-      const group = visibleGroups.find((g) => g.id === providerId);
-      if (!group) return [];
-      return group.models.map((m) => {
-        const isActiveModel = m.id === value;
-        const supported = m.thinkingLevels ?? [];
-        const levelBadge =
-          isActiveModel && thinking && supported.includes(thinking) ? (
-            <span
-              data-testid={`model-select-row-level-badge-${modelSlug(m.id)}`}
-              className="rounded-md border border-border_default px-1 py-0.5 text-[10px] uppercase tracking-wide text-text_default_tertiary"
-            >
-              {thinkingLevelLabel(t, thinking)}
-            </span>
-          ) : null;
-        const modalityBadges =
-          m.modalities && m.modalities.length > 0 ? (
-            <ModalityBadges t={t} modalities={m.modalities} />
-          ) : null;
-        return {
-          id: m.id,
-          label: modelDisplayName(m.label),
-          rightAdornment: (
-            <>
-              {modalityBadges}
-              {levelBadge}
-            </>
-          ),
-        };
-      });
-    },
-    [visibleGroups, value, thinking, t],
-  );
+  const handleListKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    const list = listScrollRef.current;
+    if (!list) return;
+    const delta =
+      event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : 0;
+    const jump = event.key === "Home" ? "first" : event.key === "End" ? "last" : null;
+    if (delta === 0 && !jump) return;
+    const rows = Array.from(
+      list.querySelectorAll<HTMLElement>(
+        '[data-testid^="model-select-model-option-"]:not([disabled])',
+      ),
+    );
+    if (rows.length === 0) return;
+    event.preventDefault();
+    if (jump === "first") {
+      rows[0]?.focus();
+      return;
+    }
+    if (jump === "last") {
+      rows[rows.length - 1]?.focus();
+      return;
+    }
+    const current = rows.indexOf(document.activeElement as HTMLElement);
+    const base = current >= 0 ? current : 0;
+    rows[((base + delta) % rows.length + rows.length) % rows.length]?.focus();
+  }, []);
 
   /**
-   * Cascade open predicate.
-   *
-   * A provider's submenu is open iff:
-   *   1. The dropdown itself is open (otherwise nothing shows), AND
-   *   2. The provider has at least one model (otherwise the row has
-   *      nothing to fly out), AND
-   *   3. The provider is not disabled (no-key providers can't be
-   *      picked, so opening the cascade would be misleading), AND
-   *   4. `submenuFor` names this provider.
-   */
-  const cascadeOpenFor = useCallback(
-    (providerId: string, group: typeof grouped[number]): boolean => {
-      if (!open) return false;
-      if (group.models.length === 0) return false;
-      if (isGroupDisabled(group)) return false;
-      return submenuFor === providerId;
-    },
-    [open, submenuFor],
-  );
-
-  /**
-   * Scroll the active provider row into view when the dropdown opens.
+   * Scroll the active model row into view when the dropdown opens.
    *
    * The list caps at ~60vh (see `max-h-[60vh]` below), so a long
    * catalogue puts the active provider's row out of frame. A
@@ -1640,66 +1541,31 @@ function ModelSelect({
     return () => window.cancelAnimationFrame(handleId);
   }, [open, activeProviderId]);
 
-  /**
-   * Put the caret in the search box when the panel opens.
-   *
-   * Deferred by a frame for the same reason the scroll effect is: the
-   * panel renders into a portal, so the input is not mounted until after
-   * this commit.
-   *
-   * This is why the trigger's arrow-key handler cannot simply be left to
-   * focus "the first focusable row": the search box IS the first
-   * focusable thing in the panel now, and a keyboard user who opens the
-   * picker to look for a model should be able to type straight away.
-   * ArrowDown from the input still reaches the provider rows, because the
-   * input does not consume the arrow keys.
-   */
-  useEffect(() => {
-    if (!open) return;
-    const handleId = window.requestAnimationFrame(() => {
-      searchInputRef.current?.focus();
-    });
-    return () => window.cancelAnimationFrame(handleId);
-  }, [open]);
-
   return (
     <Dropdown
       open={open}
       onOpenChange={(next) => {
         setOpen(next);
-        if (!next) {
-          setSubmenuFor(null);
-          setFocusedModelId(null);
-          // Drop the query with the other picker-local state: reopening
-          // must show the full catalogue, not the tail of whatever the
-          // user was last typing, with nothing on screen to explain the
-          // missing rows.
-          setQuery("");
-          cancelSubmenuClose();
-        }
+        if (!next) setFocusedModelId(null);
       }}
       trigger={["click"]}
       placement="bottomRight"
       overlayClassName="mavis-dropdown mavis-dropdown-compact mavis-dropdown-custom-content"
       popupRender={() => (
         <SelectPanel ref={panelRef} testId="model-select-panel">
+          {/*
+            The reference picker's two-column dialog shape
+            (`webui-model-menu--two-column`): a left list column and a
+            right settings column in ONE popup, so the focused model's
+            effort / context settings are visible without leaving the
+            list. The left column's provider GROUPING is the
+            reference's own shape, not an exception to it.
+          */}
           {models.length === 0 ? (
             <SelectRow testId="model-select-empty" label={t("composer.noModels")} />
           ) : (
-            <div className="flex flex-col">
-              {/* Ticket 58 (port line C) — the reference picker's
-                  two-column dialog shape (webui-model-menu--two-column):
-                  a left list column and a right settings column in ONE
-                  popup, so the active model's effort/context settings
-                  are visible without opening the cascade. The left
-                  column keeps OUR provider grouping (B1 explicit
-                  exception to the reference's flat list) and the whole
-                  cascade flow below it is untouched; the right column
-                  embeds OUR ModelSettingsDetail (adaptive effort
-                  control + context radios) — the reference's detail
-                  column position, our control implementation. */}
-              <div className="flex items-stretch" data-webui-model-menu="true">
-                <div className="flex flex-col">
+            <div className="flex items-stretch" data-webui-model-menu="true">
+              <div className="flex flex-col">
               {/* Top "Add provider" affordance (ticket 09). One-click
                   jump to the management panel's add flow. */}
               {onAddProvider ? (
@@ -1717,120 +1583,43 @@ function ModelSelect({
                 </button>
               ) : null}
               {/*
-                Search box (roadmap module H, 「模型搜索」). Sits between
-                the add-provider row and the list, so it filters the rows
-                below without scrolling the affordance that adds one out
-                of reach.
+                The list, in the reference's own shape: a provider group
+                header, and under it one row per MODEL. No cascade — the
+                models ARE the rows, so every name in the catalogue is
+                readable without a second click, and there is only one
+                navigation model for one list.
 
-                The clear button is a real `<button type="button">`
-                rather than a glyph: the panel is arrow-key driven, and an
-                `<input type="search">`'s native clear is not reachable
-                that way. Escape clears a live query and stops there —
-                a second Escape, with an empty field, is the user asking
-                to close, so the event is allowed to reach the panel.
+                A model row is also the settings column's follow-focus
+                target: hovering or keyboard-focusing it points
+                `focusedModelId` at that model, and the column falls back
+                to the active model when nothing is focused.
 
-                Deliberately NOT autocompleting or selecting a row from
-                the keystroke: picking a model is an explicit act here
-                (the cascade, then the row), and a search that commits
-                on the third letter would send to a model the user only
-                started to type.
-              */}
-              <div className="relative mx-1 mt-1">
-                <span className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-icon_default_tertiary">
-                  <Icon name="search" size={14} />
-                </span>
-                <input
-                  ref={searchInputRef}
-                  type="text"
-                  role="searchbox"
-                  value={query}
-                  data-testid="model-select-search"
-                  aria-label={t("modelSelector.searchPlaceholder")}
-                  placeholder={t("modelSelector.searchPlaceholder")}
-                  onChange={(event) => setQuery(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Escape" && query) {
-                      event.preventDefault();
-                      // Stop the panel's own Escape handling from also
-                      // closing the dropdown on the same press.
-                      event.stopPropagation();
-                      setQuery("");
-                    }
-                  }}
-                  className="h-7 w-full rounded-[8px] border border-border_default bg-bg_interaction_primary_hover pl-7 pr-7 text-caption-small-strong text-text_default_primary outline-none placeholder:text-text_default_tertiary focus:border-border_heavy"
-                />
-                {query ? (
-                  <button
-                    type="button"
-                    data-testid="model-select-search-clear"
-                    aria-label={t("modelSelector.searchClear")}
-                    title={t("modelSelector.searchClear")}
-                    onClick={() => {
-                      setQuery("");
-                      // Return the caret: after clearing, the user is
-                      // most likely typing a corrected query, not
-                      // reaching for the keyboard.
-                      searchInputRef.current?.focus();
-                    }}
-                    className="absolute right-1 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center rounded-[6px] text-icon_default_tertiary transition-colors hover:bg-bg_interaction_tertiary_hover hover:text-text_default_primary"
-                  >
-                    <Icon name="close" size={12} />
-                  </button>
-                ) : null}
-              </div>
-              {/* Zero-match state. Rendered in place of the list rather
-                  than as an empty container: an empty provider column
-                  gives the user nothing to tell "no match" from "still
-                  loading".
-
-                  A plain div, NOT `SelectRow`: that component renders a
-                  `<button>`, and the panel's arrow-key engine focuses
-                  the first focusable row on ArrowDown — a dead button
-                  in the keyboard path is worse than no row at all. */}
-              {query && visibleGroups.length === 0 ? (
-                <div
-                  data-testid="model-select-no-results"
-                  className="mx-1 mt-1 px-2 py-1.5 text-sm text-text_default_tertiary"
-                >
-                  {t("modelSelector.searchNoResults")}
-                </div>
-              ) : null}
-              {/*
-                Scrollable list of provider rows. Each provider has a
-                sticky header (kept from ticket 09) and ONE row that
-                flies out a cascade of that provider's models. The
-                selected provider carries the ✓ marker; the active
-                model's name shows in the right adornment slot so the
-                user sees which model is currently in use without
-                opening the cascade.
+                `disabled` is the GROUP's no-key verdict, applied to every
+                row under it: a provider without an API key cannot reach
+                any of its models, and greying them one by one is the
+                honest rendering of that. The header carries the reason.
               */}
               <div
                 ref={listScrollRef}
                 data-testid="model-select-list"
                 data-webui-model-menu-list="true"
+                onKeyDown={handleListKeyDown}
                 className="thin-scrollbar max-h-[60vh] w-60 overflow-y-auto"
               >
-              {visibleGroups.map((group, groupIndex) => {
+                {grouped.map((group, groupIndex) => {
                 const disabled = isGroupDisabled(group);
-                const isActiveProvider = group.id === activeProviderId;
-                const submenuOpen = cascadeOpenFor(group.id, group);
-                const activeModel = isActiveProvider
-                  ? models.find((m) => m.id === value)
-                  : null;
                 return (
                   <div
                     key={group.id}
                     data-testid={`model-select-group-${group.id}`}
                     data-disabled={disabled ? "true" : "false"}
-                    data-has-active-model={isActiveProvider ? "true" : "false"}
                     className={groupIndex === 0 ? "" : "mt-1 border-t border-border_default pt-1"}
                   >
                     {/*
-                      Sticky group header — the provider label sits
-                      here, with the "no key" hint for disabled
-                      providers. The sticky behaviour keeps the active
-                      provider in view while the user scrolls the
-                      list.
+                      Group header — the provider label, with the
+                      "no key" hint for a provider whose models are all
+                      disabled below. Sticky, so the group a model sits
+                      in stays visible while the list scrolls.
                     */}
                     <div
                       data-testid={`model-select-group-label-${group.id}`}
@@ -1847,171 +1636,83 @@ function ModelSelect({
                         </span>
                       ) : null}
                     </div>
-                    {/*
-                      Provider row. Hover (or ArrowRight) opens the
-                      cascade; click also opens the cascade (one
-                      extra click inside the submenu picks the model
-                      — interaction budget ≤2 per ticket 11).
-                      Disabled rows (no-key providers) do not open a
-                      submenu and ignore clicks.
-                    */}
-                    <div
-                      ref={(node) => {
-                        if (isActiveProvider) selectedRowRef.current = node;
-                        if (submenuOpen) submenuAnchorRef.current = node;
-                      }}
-                      data-testid={`model-select-provider-row-wrap-${group.id}`}
-                      data-active-provider={isActiveProvider ? "true" : "false"}
-                      data-submenu-open={submenuOpen ? "true" : "false"}
-                      onMouseEnter={() => {
-                        if (disabled || group.models.length === 0) return;
-                        cancelSubmenuClose();
-                        // Ticket 49: crossing into a different
-                        // provider's row ends the previous preview —
-                        // the detail area falls back to the active
-                        // model until a row in THIS submenu is
-                        // hovered/focused.
-                        setFocusedModelId(null);
-                        setSubmenuFor(group.id);
-                      }}
-                      onMouseLeave={() => {
-                        if (submenuOpen) scheduleSubmenuClose();
-                      }}
-                      onKeyDown={(event) => {
-                        if (event.key !== "ArrowRight") return;
-                        if (disabled || group.models.length === 0) return;
-                        event.preventDefault();
-                        cancelSubmenuClose();
-                        setSubmenuFor(group.id);
-                        // Two frames, not one: React 18's concurrent
-                        // commit can land after the first
-                        // requestAnimationFrame, leaving the submenu
-                        // unmounted when a single-frame callback ran —
-                        // measured as "cascade opens but focus stays
-                        // on the provider row" (the QA item ④ chain
-                        // broke here).
-                        requestAnimationFrame(() => {
-                          requestAnimationFrame(() => {
-                            const first = submenuRef.current?.querySelector<HTMLElement>(
-                              '[role="menuitemradio"]',
-                            );
-                            first?.focus();
-                          });
-                        });
-                      }}
-                      className="rounded-[8px]"
-                    >
-                      <SelectRow
-                        testId={`model-select-provider-option-${group.id}`}
-                        label={group.label}
-                        rightAdornment={
-                          <>
-                            {/* The active model's name (or fallback
-                                to the provider's first model) — gives
-                                the user a one-glance read of what's
-                                in use right now without opening the
-                                cascade. Empty when the provider has
-                                no models or the active model isn't
-                                in this provider. */}
-                            {activeModel ? (
-                              <span
-                                data-testid={`model-select-provider-active-model-${group.id}`}
-                                className="text-text_default_tertiary"
-                              >
-                                {modelDisplayName(activeModel.label)}
-                              </span>
-                            ) : null}
-                            {disabled ? (
-                              <span className="text-text_default_tertiary">
-                                {t("modelSelector.noKeyHint")}
-                              </span>
-                            ) : (
-                              <Icon
-                                name="chevronRight"
-                                size={14}
-                                aria-hidden="true"
-                                className="text-icon_default_tertiary"
-                              />
-                            )}
-                          </>
-                        }
-                        selected={isActiveProvider}
-                        disabled={disabled}
-                        onClick={() => {
-                          if (disabled || group.models.length === 0) return;
-                          cancelSubmenuClose();
-                          setSubmenuFor(group.id);
-                        }}
-                      />
-                      {submenuOpen ? (
-                        <CascadeSubmenu
-                          ref={submenuRef}
-                          testId={`model-select-cascade-${group.id}`}
-                          ariaLabel={group.label}
-                          items={providerItems(group.id)}
-                          activeId={isActiveProvider ? value : undefined}
-                          anchorRef={submenuAnchorRef}
-                          onMouseEnter={cancelSubmenuClose}
-                          onMouseLeave={scheduleSubmenuClose}
-                          onItemFocus={setFocusedModelId}
-                          detail={
-                            <ModelSettingsDetail
-                              t={t}
-                              containerTestId="model-cascade-detail"
-                              detailPrefix="model-cascade-detail"
-                              contextPrefix="model-cascade-context"
-                              target={detailTarget}
-                              preview={isDetailPreview}
-                              thinking={activeThinking}
-                              contextWindow={activeContextWindow}
-                              effortControl="adaptive"
-                              thinkingDisabled={thinkingDisabled}
-                              onThinkingPick={handleDetailThinkingPick}
-                              onContextPick={handleDetailContextPick}
-                            />
-                          }
-                          onPick={(modelId) => {
-                            // ticket 11: cascade click selects MODEL
-                            // only. The parent's onPick handler decides
-                            // whether to also clear the recorded
-                            // effort (when the new model doesn't
-                            // support it). Server contract from ticket
-                            // 08: model first, then effort; thinking
-                            // "" clears the local mirror.
-                            setOpen(false);
-                            setSubmenuFor(null);
-                            setFocusedModelId(null);
-                            cancelSubmenuClose();
-                            onPick(modelId);
+                    {group.models.map((model) => {
+                      const isActiveModel = model.id === value;
+                      const supported = model.thinkingLevels ?? [];
+                      return (
+                        <div
+                          key={model.id}
+                          ref={(node) => {
+                            if (isActiveModel) selectedRowRef.current = node;
                           }}
-                          onBack={() => {
-                            setSubmenuFor(null);
-                            setFocusedModelId(null);
-                            cancelSubmenuClose();
-                            const row = submenuAnchorRef.current;
-                            row?.querySelector<HTMLElement>("button")?.focus();
-                          }}
-                        />
-                      ) : null}
-                    </div>
+                          data-testid={`model-select-model-wrap-${modelSlug(model.id)}`}
+                          data-active-model={isActiveModel ? "true" : "false"}
+                          className="rounded-[8px]"
+                        >
+                          <SelectRow
+                            testId={`model-select-model-option-${modelSlug(model.id)}`}
+                            label={modelDisplayName(model.label)}
+                            selected={isActiveModel}
+                            disabled={disabled}
+                            rightAdornment={
+                              <>
+                                {model.modalities && model.modalities.length > 0 ? (
+                                  <ModalityBadges t={t} modalities={model.modalities} />
+                                ) : null}
+                                {isActiveModel &&
+                                thinking &&
+                                supported.includes(thinking) ? (
+                                  <span
+                                    data-testid={`model-select-row-level-badge-${modelSlug(model.id)}`}
+                                    className="rounded-md border border-border_default px-1 py-0.5 text-[10px] uppercase tracking-wide text-text_default_tertiary"
+                                  >
+                                    {thinkingLevelLabel(t, thinking)}
+                                  </span>
+                                ) : null}
+                              </>
+                            }
+                            onMouseEnter={() => {
+                              if (!disabled) setFocusedModelId(model.id);
+                            }}
+                            onFocus={() => {
+                              if (!disabled) setFocusedModelId(model.id);
+                            }}
+                            onClick={() => {
+                              if (disabled) return;
+                              setOpen(false);
+                              setFocusedModelId(null);
+                              // The wire path is unchanged: the model id
+                              // travels alone, and the parent decides
+                              // whether the recorded effort has to be
+                              // cleared with it (the new model may not
+                              // offer the level that was recorded).
+                              onPick(model.id);
+                            }}
+                          />
+                        </div>
+                      );
+                    })}
                   </div>
                 );
-              })}
+                })}
               </div>
-                </div>
+            </div>
                 {/*
-                  Ticket 58 (port line C) — the reference picker's
-                  detail column (its `webui-model-menu-detail`), now in
-                  the main panel. It follows the SAME `detailTarget` the
-                  cascade side column follows (focused cascade row →
-                  preview; nothing focused → the active model), renders
-                  OUR adaptive effort control and context radios through
-                  the shared ModelSettingsDetail, and every pick rides
-                  the SAME draft mirror (A7) and wire path —
-                  `{thinking}` / `{model, contextWindow}` — with no
-                  request-body change (A9) and no menu close on a
-                  setting pick (A4). Its own testid family avoids
-                  duplicate ids with the two pinned placements.
+                  The reference picker's detail column (its
+                  `webui-model-menu-detail`), in the main panel. It follows
+                  the focused model row (preview; nothing focused → the
+                  active model), renders the adaptive effort control and
+                  the context single-select through the shared
+                  ModelSettingsDetail, and every pick rides the SAME draft
+                  mirror (A7) and wire path — `{thinking}` /
+                  `{model, contextWindow}` — with no request-body change
+                  (A9) and no menu close on a setting pick (A4).
+
+                  This is the picker's ONLY settings surface. It used to
+                  render a second copy of the same controls in a
+                  panel-bottom area: one popup, two copies of the same
+                  switches, and no way for a user to tell which one was
+                  authoritative.
                 */}
                 <div
                   data-testid="model-select-panel-detail-column"
@@ -2026,52 +1727,12 @@ function ModelSelect({
                     preview={isDetailPreview}
                     thinking={activeThinking}
                     contextWindow={activeContextWindow}
-                    effortControl="adaptive"
                     thinkingDisabled={thinkingDisabled}
                     onThinkingPick={handleDetailThinkingPick}
                     onContextPick={handleDetailContextPick}
                   />
                 </div>
               </div>
-              {/*
-                Ticket 49 batch 2 — the panel-bottom detail area. Batch
-                1 made it follow the focused row; batch 2 (A1) moved
-                that follow-focus rendering into the fly-out's side
-                column (see the `detail` prop above), so this area is
-                back to its U6/B9 role: it describes the ACTIVE model
-                with the first-batch testids, the read-only LEVEL
-                badges (level editing lives in the side column and the
-                composer control), and the interactive context-window
-                radios — window picks ride the same
-                `handleDetailContextPick` the side column uses, so
-                both areas read the same draft mirror (A7) and a pick
-                made in either place highlights in both.
-
-                The three render branches live in `ModelSettingsDetail`:
-                nothing describable → the "select a model" hint; the
-                target has nothing adjustable → the per-model hint
-                (with the model name — QA item ②: an aria-live region
-                announcing only "no adjustable settings" leaves a
-                screen-reader user without the context of WHICH model);
-                otherwise the model name, level display, and window
-                radios. `aria-live="polite"` announces the active-model
-                switch; the side column carries its own live region for
-                the focus follow.
-              */}
-              <ModelSettingsDetail
-                t={t}
-                containerTestId="model-context-detail"
-                detailPrefix="model-select-detail"
-                contextPrefix="model-context"
-                className="mt-1 border-t border-border_default px-1 pb-1 pt-1"
-                target={activeModel}
-                preview={false}
-                thinking={activeThinking}
-                contextWindow={activeContextWindow}
-                effortControl="badges"
-                onContextPick={handleDetailContextPick}
-              />
-            </div>
           )}
         </SelectPanel>
       )}
@@ -2103,7 +1764,7 @@ function ModelSelect({
           if (!open) setOpen(true);
           requestAnimationFrame(() => {
             const rows = panelRef.current?.querySelectorAll<HTMLElement>(
-              "button:not([disabled])",
+              '[data-testid^="model-select-model-option-"]:not([disabled])',
             );
             if (!rows || rows.length === 0) return;
             (event.key === "ArrowUp" ? rows[rows.length - 1]! : rows[0]!).focus();
@@ -2165,7 +1826,6 @@ function ModelSettingsDetail({
   preview,
   thinking,
   contextWindow,
-  effortControl,
   thinkingDisabled,
   onThinkingPick,
   onContextPick,
@@ -2194,8 +1854,6 @@ function ModelSettingsDetail({
   /** The draft-mirror-resolved recorded window (tokens; `null`/`undefined`
    *  = nothing confirmed). */
   contextWindow?: number | null;
-  /** `badges` (bottom, read-only) or `adaptive` (side, A3 control). */
-  effortControl: "badges" | "adaptive";
   thinkingDisabled?: boolean;
   onThinkingPick?: (level: string) => void;
   onContextPick?: (value: number) => void;
@@ -2259,30 +1917,7 @@ function ModelSettingsDetail({
               <div className="pb-0.5 text-caption-small-strong uppercase tracking-wide text-text_default_tertiary">
                 {t("modelSelector.thinkingLevels")}
               </div>
-              {effortControl === "badges" ? (
-                /* Batch 1's read-only badge row: the DISPLAY-only form
-                 * (the bottom area's level surface; editing lives in
-                 * the side column and the composer control). */
-                <div className="flex flex-wrap gap-1">
-                  {levels.map((level) => {
-                    const isCurrent = !preview && thinking === level;
-                    return (
-                      <span
-                        key={level}
-                        data-testid={`${detailPrefix}-level-${level}`}
-                        className={[
-                          "rounded-md border px-1 py-0.5 text-[10px] uppercase tracking-wide",
-                          isCurrent
-                            ? "border-border_heavy bg-bg_interaction_tertiary_hover text-text_default_primary"
-                            : "border-border_default text-text_default_tertiary",
-                        ].join(" ")}
-                      >
-                        {thinkingLevelLabel(t, level)}
-                      </span>
-                    );
-                  })}
-                </div>
-              ) : effortShape === "switch" ? (
+              {effortShape === "switch" ? (
                 /* A3 binary form: the off/on pair renders as one
                  * switch. No `default` entry here — the reference
                  * treats switchable thinking as pure on/off; the
@@ -2324,14 +1959,24 @@ function ModelSettingsDetail({
                   </span>
                 </div>
               ) : (
-                /* A3 multi-level form: a radio group whose first entry
-                 * is always `default` (submitted as `""`). A pick
-                 * commits immediately and does NOT close the menu. */
+                /* The reference's level scale: one pickable ROW per
+                 * level, `default` first (submitted as `""`). Rows, not
+                 * pills — a wrapped pill row reads as a set of chips
+                 * rather than as a scale, and the two forms disagree
+                 * about which entry is current at a glance. Still a
+                 * `radiogroup` of `radio`s: a single-select from a set
+                 * of options is exactly that, and changing the semantics
+                 * to look more like the reference would cost the
+                 * screen-reader contract for nothing.
+                 *
+                 * A pick commits immediately and does NOT close the menu,
+                 * so a level and a context window can be adjusted in one
+                 * visit. */
                 <div
                   role="radiogroup"
                   aria-label={t("modelSelector.thinkingLevels")}
-                  data-testid={`${detailPrefix}-level-group`}
-                  className="flex flex-wrap gap-1"
+                  data-testid={`${detailPrefix}-level-list`}
+                  className="flex flex-col"
                 >
                   {effortOptions.map((option) => {
                     const active = effortCurrent === option;
@@ -2348,16 +1993,20 @@ function ModelSettingsDetail({
                           onThinkingPick?.(option === "default" ? "" : option);
                         }}
                         className={[
-                          "flex items-center gap-1.5 rounded-[8px] border px-2 py-1 text-caption-small transition-colors",
+                          "flex items-center gap-1.5 rounded-[8px] px-2 py-1 text-left text-caption-small transition-colors",
                           active
-                            ? "border-border_heavy bg-bg_interaction_tertiary_hover text-text_default_primary"
-                            : "border-border_default text-text_default_secondary",
+                            ? "bg-bg_interaction_tertiary_hover text-text_default_primary"
+                            : "text-text_default_secondary",
                           preview || thinkingDisabled
                             ? "cursor-not-allowed"
                             : "hover:bg-bg_interaction_tertiary_hover",
                         ].join(" ")}
                       >
-                        {option === "default" ? t("thinkingPicker.none") : thinkingLevelLabel(t, option)}
+                        <span className="min-w-0 flex-1 truncate">
+                          {option === "default"
+                            ? t("thinkingPicker.none")
+                            : thinkingLevelLabel(t, option)}
+                        </span>
                         {active ? (
                           <Icon
                             name="checkSmall"
@@ -2378,56 +2027,22 @@ function ModelSettingsDetail({
               <div className="pb-0.5 text-caption-small-strong uppercase tracking-wide text-text_default_tertiary">
                 {t("modelSelector.contextWindow")}
               </div>
-              <div
-                role="radiogroup"
-                aria-label={t("modelSelector.contextWindow")}
-                data-testid={`${contextPrefix}-group`}
-                className="flex flex-wrap gap-1"
-              >
-                {contextOptions.map((windowValue) => {
-                  const active = contextCurrent === windowValue;
-                  const higherUsage = contextHints?.[String(windowValue)] === "higher_usage";
-                  return (
-                    <button
-                      key={windowValue}
-                      type="button"
-                      role="radio"
-                      aria-checked={active}
-                      disabled={preview}
-                      title={preview ? t("modelSelector.detailPreviewHint") : undefined}
-                      data-testid={`${contextPrefix}-option-${windowValue}`}
-                      onClick={() => onContextPick?.(windowValue)}
-                      className={[
-                        "flex items-center gap-1.5 rounded-[8px] border px-2 py-1 text-caption-small transition-colors",
-                        active
-                          ? "border-border_heavy bg-bg_interaction_tertiary_hover text-text_default_primary"
-                          : "border-border_default text-text_default_secondary",
-                        preview ? "cursor-not-allowed" : "hover:bg-bg_interaction_tertiary_hover",
-                      ].join(" ")}
-                    >
-                      <span data-testid={`${contextPrefix}-value-${windowValue}`}>
-                        {formatContextWindow(windowValue)}
-                      </span>
-                      {higherUsage ? (
-                        <span
-                          data-testid={`${contextPrefix}-hint-higher-usage`}
-                          className="text-text_default_tertiary"
-                        >
-                          {t("modelSelector.contextWindowHigherUsage")}
-                        </span>
-                      ) : null}
-                      {active ? (
-                        <Icon
-                          name="checkSmall"
-                          size={14}
-                          aria-hidden="true"
-                          className="text-text_default_primary"
-                        />
-                      ) : null}
-                    </button>
-                  );
-                })}
-              </div>
+              {/*
+                `key={target.id}` resets the select's open state when the
+                settings column follows the pointer to another model, so
+                a list left open on one model does not greet the next one.
+              */}
+              <ContextWindowSelect
+                key={target.id}
+                t={t}
+                testIdPrefix={contextPrefix}
+                options={contextOptions}
+                hints={contextHints}
+                current={contextCurrent}
+                effective={contextWindow}
+                disabled={preview}
+                onContextPick={onContextPick}
+              />
             </div>
           ) : null}
         </>
@@ -2474,6 +2089,8 @@ function SelectRow({
   disabled,
   rightAdornment,
   onClick,
+  onMouseEnter,
+  onFocus,
 }: {
   testId: string;
   icon?: IconName;
@@ -2482,6 +2099,12 @@ function SelectRow({
   disabled?: boolean;
   rightAdornment?: React.ReactNode;
   onClick?: () => void;
+  /** Report this row as the settings column's preview target. Both a
+   *  mouse and the keyboard count — the arrow-key engine moves focus,
+   *  and a column that only followed the mouse would freeze for a
+   *  keyboard user. */
+  onMouseEnter?: () => void;
+  onFocus?: () => void;
 }) {
   return (
     <button
@@ -2491,6 +2114,8 @@ function SelectRow({
       data-disabled={disabled ? "true" : "false"}
       disabled={disabled}
       onClick={onClick}
+      onMouseEnter={onMouseEnter}
+      onFocus={onFocus}
       className={[
         "flex w-full items-center gap-2 rounded-[8px] px-2 py-1 text-left transition-colors",
         disabled
@@ -2544,277 +2169,6 @@ function ModalityBadges({
     </>
   );
 }
-
-/**
- * A classic cascading fly-out — the same surface one tier deeper than
- * the row that opens it. Ticket 10 introduced this shape for the
- * model → thinking-level cascade; ticket 11 reuses it for the new
- * provider → model cascade so the two selectors share one
- * positioning / flip / clamp / keyboard engine.
- *
- * Positioning:
- *   `position: fixed` so the submenu escapes the parent's `overflow-y:
- *   auto` (a descendant would be clipped). Anchors to the right of
- *   the opening row by default; flips to the left when the right
- *   edge would spill past the viewport. Vertical clamp keeps it
- *   inside the viewport on tall flyouts near the bottom edge.
- *
- * Hover:
- *   The parent owns the close-timer: `onMouseEnter` on the submenu
- *   cancels the timer (so the cursor can cross the row/submenu gap
- *   without the submenu disappearing), `onMouseLeave` restarts it.
- *   The 120ms constant lives in `ModelSelect`.
- *
- * Keyboard:
- *   ArrowDown / ArrowUp cycle through menuitems (with wraparound).
- *   ArrowLeft / Escape hand focus back to the row via `onBack`.
- *   Home / End jump to first / last. Tab continues normally.
- *
- * `prefers-reduced-motion`: no animation by default; the reduced-
- * motion user sees the same instant snap as the regular user.
- */
-interface CascadeItem {
-  id: string;
-  label: React.ReactNode;
-  /** Trailing content slot — used for modality badges, level badges, etc. */
-  rightAdornment?: React.ReactNode;
-  /** Visual-only marker — applies the same disabled styling as a disabled row. */
-  disabled?: boolean;
-}
-
-const CascadeSubmenu = forwardRef<
-  HTMLDivElement,
-  {
-    testId: string;
-    ariaLabel: string;
-    items: CascadeItem[];
-    /** Which item id is the current selection; gets the ✓ marker. */
-    activeId?: string;
-    /** Optional separator item appended at the bottom (e.g. "use
-     *  engine default"). Rendered under a border-t so the boundary
-     *  is obvious. Identified by id === DEFAULT_ITEM_ID. */
-    defaultItem?: CascadeItem;
-    anchorRef: React.RefObject<HTMLDivElement>;
-    onMouseEnter: () => void;
-    onMouseLeave: () => void;
-    /** Ticket 49 — report the hovered/keyboard-focused item so the
-     *  caller's detail area can follow the cursor through the
-     *  submenu. Fires on `onMouseEnter` and `onFocus` of each row
-     *  button, mirroring the reference picker's focused-key sync
-     *  (no custom arrow navigation is added; the existing keyboard
-     *  engine already moves focus, which is what triggers this). */
-    onItemFocus?: (id: string) => void;
-    /** Ticket 49 batch 2 (A1) — the side settings column. When set,
-     *  the fly-out renders as the reference picker's two-column
-     *  popover: the model rows on the left, this node on the right,
-     *  in ONE fixed-positioned container. Co-locating the two is
-     *  what fixes the QA item ③ occlusion: the detail column can no
-     *  longer be covered by the cascade, because they move, clamp,
-     *  and scroll together (`maxHeight: 100vh - 16px`, each column
-     *  scrolls its own overflow). */
-    detail?: React.ReactNode;
-    onPick: (id: string) => void;
-    onBack: () => void;
-  }
->(function CascadeSubmenu(
-  { testId, ariaLabel, items, activeId, defaultItem, anchorRef, onMouseEnter, onMouseLeave, onItemFocus, detail, onPick, onBack },
-  ref,
-) {
-  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
-  const menuRef = useRef<HTMLDivElement | null>(null);
-  const setRefs = useCallback(
-    (node: HTMLDivElement | null) => {
-      menuRef.current = node;
-      if (typeof ref === "function") ref(node);
-      else if (ref) (ref as React.MutableRefObject<HTMLDivElement | null>).current = node;
-    },
-    [ref],
-  );
-  useLayoutEffect(() => {
-    const anchor = anchorRef.current;
-    const menu = menuRef.current;
-    if (!anchor || !menu) return;
-    const update = () => {
-      const anchorRect = anchor.getBoundingClientRect();
-      const menuRect = menu.getBoundingClientRect();
-      const gap = 6;
-      let left = anchorRect.right + gap;
-      if (left + menuRect.width > window.innerWidth - 8) {
-        left = anchorRect.left - menuRect.width - gap;
-        if (left < 8) left = Math.max(8, window.innerWidth - menuRect.width - 8);
-      }
-      let top = anchorRect.top;
-      if (top + menuRect.height > window.innerHeight - 8) {
-        top = Math.max(8, window.innerHeight - menuRect.height - 8);
-      }
-      if (top < 8) top = 8;
-      setPos({ top, left });
-    };
-    update();
-    window.addEventListener("resize", update);
-    window.addEventListener("scroll", update, true);
-    let ro: ResizeObserver | null = null;
-    if (typeof ResizeObserver !== "undefined") {
-      ro = new ResizeObserver(() => update());
-      ro.observe(menu);
-    }
-    return () => {
-      window.removeEventListener("resize", update);
-      window.removeEventListener("scroll", update, true);
-      if (ro) ro.disconnect();
-    };
-  }, [anchorRef, items.length, defaultItem]);
-
-  const moveFocus = useCallback((delta: number) => {
-    const menu = menuRef.current;
-    if (!menu) return;
-    const items = Array.from(
-      menu.querySelectorAll<HTMLElement>('[role="menuitemradio"]'),
-    );
-    if (items.length === 0) return;
-    const current = items.indexOf(document.activeElement as HTMLElement);
-    const base = current >= 0 ? current : 0;
-    const target = ((base + delta) % items.length + items.length) % items.length;
-    items[target]?.focus();
-  }, []);
-
-  const renderItem = (
-    item: CascadeItem,
-    options: { separator: boolean; testIdSuffix: string }
-  ) => {
-    const isActive = activeId !== undefined && item.id === activeId;
-    return (
-      <button
-        key={item.id}
-        type="button"
-        role="menuitemradio"
-        aria-checked={isActive}
-        aria-disabled={item.disabled ? "true" : undefined}
-        data-testid={`${testId}-option-${options.testIdSuffix}`}
-        data-active={isActive ? "true" : "false"}
-        data-disabled={item.disabled ? "true" : "false"}
-        disabled={item.disabled}
-        onClick={() => { if (!item.disabled) onPick(item.id); }}
-        onMouseEnter={() => { if (!item.disabled) onItemFocus?.(item.id); }}
-        onFocus={() => { if (!item.disabled) onItemFocus?.(item.id); }}
-        className={[
-          "flex w-full items-center gap-2 rounded-[8px] px-2 py-1 text-left transition-colors",
-          item.disabled
-            ? "cursor-not-allowed text-text_default_tertiary"
-            : "hover:bg-bg_interaction_tertiary_hover focus:bg-bg_interaction_tertiary_hover focus:outline-none",
-        ].join(" ")}
-      >
-        <span className="min-w-0 flex-1 truncate text-sm font-normal leading-5 text-text_default_primary">
-          {item.label}
-        </span>
-        {item.rightAdornment ? (
-          <span className="flex shrink-0 items-center gap-1">{item.rightAdornment}</span>
-        ) : null}
-        <span className="w-3.5 flex-shrink-0">
-          {isActive ? (
-            <Icon name="checkSmall" size={14} className="text-text_default_primary" />
-          ) : null}
-        </span>
-      </button>
-    );
-  };
-
-  return (
-    <div
-      ref={setRefs}
-      data-testid={testId}
-      role="menu"
-      aria-label={ariaLabel}
-      onMouseEnter={onMouseEnter}
-      onMouseLeave={onMouseLeave}
-      onKeyDown={(event) => {
-        if (event.key === "Escape" || event.key === "ArrowLeft") {
-          event.preventDefault();
-          onBack();
-          return;
-        }
-        if (event.key === "ArrowDown") {
-          event.preventDefault();
-          moveFocus(1);
-          return;
-        }
-        if (event.key === "ArrowUp") {
-          event.preventDefault();
-          moveFocus(-1);
-          return;
-        }
-        if (event.key === "Home") {
-          event.preventDefault();
-          const first = menuRef.current?.querySelector<HTMLElement>(
-            '[role="menuitemradio"]',
-          );
-          first?.focus();
-          return;
-        }
-        if (event.key === "End") {
-          event.preventDefault();
-          const items = menuRef.current?.querySelectorAll<HTMLElement>(
-            '[role="menuitemradio"]',
-          );
-          const last = items ? items[items.length - 1] : null;
-          last?.focus();
-          return;
-        }
-      }}
-      style={
-        pos
-          ? {
-              position: "fixed",
-              top: `${pos.top}px`,
-              left: `${pos.left}px`,
-              zIndex: 1100,
-              maxHeight: "calc(100vh - 16px)",
-            }
-          : {
-              position: "fixed",
-              top: 0,
-              left: 0,
-              opacity: 0,
-              pointerEvents: "none",
-              zIndex: 1100,
-              maxHeight: "calc(100vh - 16px)",
-            }
-      }
-      className="flex min-w-[200px] overflow-hidden rounded-[12px] border border-border_default bg-bg_grouped_secondary_elevated shadow-[0_0_20px_rgba(10,10,10,0.08)]"
-    >
-      {/*
-        The model-rows column. `min-h-0` + `overflow-y-auto` so a tall
-        catalogue scrolls INSIDE the column when the container hits its
-        viewport clamp, instead of the container overflowing past the
-        bottom edge (the pre-batch-2 behaviour QA item ③ logged: the
-        fly-out covered the detail area's level badges on short
-        viewports).
-      */}
-      <div className="thin-scrollbar min-h-0 flex-1 overflow-y-auto p-1">
-        {items.map((item) => renderItem(item, { separator: false, testIdSuffix: item.id }))}
-        {defaultItem ? (
-          <div className="mt-1 border-t border-border_default pt-1">
-            {renderItem(defaultItem, { separator: true, testIdSuffix: "default" })}
-          </div>
-        ) : null}
-      </div>
-      {/*
-        The side settings column (A1). Fixed width so the popover does
-        not reflow while the detail content switches between models;
-        own vertical scrollbar for the same short-viewport clamp as the
-        rows column.
-      */}
-      {detail ? (
-        <div
-          data-testid={`${testId}-detail-column`}
-          className="thin-scrollbar min-h-0 w-56 shrink-0 overflow-y-auto border-l border-border_default p-1"
-        >
-          {detail}
-        </div>
-      ) : null}
-    </div>
-  );
-});
 
 /**
  * Thinking-effort picker.
@@ -2940,6 +2294,134 @@ function modelDisplayName(name?: string | null): string {
 function normalizeContextWindowOptions(options: unknown): number[] {
   if (!Array.isArray(options)) return [];
   return [...new Set(options.filter((v) => Number.isSafeInteger(v) && v > 0))];
+}
+
+/**
+ * The context-window single-select.
+ *
+ * Its own component so the disclosure state has a home: this is the only
+ * part of the settings column that opens rather than sitting flat, and
+ * hoisting that state into the parent would make every level pick
+ * re-render an unrelated `useState`.
+ *
+ * What the collapsed row shows is the honest answer to "which window am
+ * I on": the effective value when the model confirms one, and otherwise
+ * the FIRST option in a muted style — a placeholder, not a selection. A
+ * previewed (unpicked) model therefore shows no highlight at all, which
+ * is what the preview marker beside it is for.
+ */
+function ContextWindowSelect({
+  t,
+  testIdPrefix,
+  options,
+  hints,
+  current,
+  effective,
+  disabled,
+  onContextPick,
+}: {
+  t: (key: MessageKey) => string;
+  testIdPrefix: string;
+  options: number[];
+  hints?: Record<string, string>;
+  /** The value that carries the ✓ — `null` in preview, by design. */
+  current: number | null;
+  /** The recorded/effective value, independent of the preview gate. */
+  effective?: number | null;
+  disabled?: boolean;
+  onContextPick?: (value: number) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const confirmed =
+    typeof effective === "number" && options.includes(effective) ? effective : null;
+  const shown = confirmed ?? options[0]!;
+  return (
+    <div data-testid={`${testIdPrefix}-select`}>
+      <button
+        type="button"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-label={t("modelSelector.contextWindow")}
+        disabled={disabled}
+        title={disabled ? t("modelSelector.detailPreviewHint") : undefined}
+        data-testid={`${testIdPrefix}-select-trigger`}
+        onClick={() => setOpen((prev) => !prev)}
+        className={[
+          "flex w-full items-center gap-1.5 rounded-[8px] border border-border_default px-2 py-1 text-caption-small text-text_default_primary transition-colors",
+          disabled
+            ? "cursor-not-allowed opacity-50"
+            : "hover:bg-bg_interaction_tertiary_hover",
+        ].join(" ")}
+      >
+        <span
+          data-testid={`${testIdPrefix}-select-value`}
+          className={confirmed === null ? "text-text_default_tertiary" : undefined}
+        >
+          {formatContextWindow(shown)}
+        </span>
+        <Icon
+          name="chevronDown"
+          size={14}
+          aria-hidden="true"
+          className="ml-auto text-icon_default_tertiary"
+        />
+      </button>
+      {open ? (
+        <div
+          role="listbox"
+          aria-label={t("modelSelector.contextWindow")}
+          data-testid={`${testIdPrefix}-select-list`}
+          className="mt-0.5 flex flex-col"
+        >
+          {options.map((windowValue) => {
+            const active = current === windowValue;
+            const higherUsage = hints?.[String(windowValue)] === "higher_usage";
+            return (
+              <button
+                key={windowValue}
+                type="button"
+                role="option"
+                aria-selected={active}
+                disabled={disabled}
+                data-testid={`${testIdPrefix}-option-${windowValue}`}
+                onClick={() => {
+                  setOpen(false);
+                  onContextPick?.(windowValue);
+                }}
+                className={[
+                  "flex items-center gap-1.5 rounded-[8px] px-2 py-1 text-left text-caption-small transition-colors",
+                  active
+                    ? "bg-bg_interaction_tertiary_hover text-text_default_primary"
+                    : "text-text_default_secondary",
+                  disabled ? "cursor-not-allowed" : "hover:bg-bg_interaction_tertiary_hover",
+                ].join(" ")}
+              >
+                <span className="min-w-0 flex-1 truncate">
+                  {formatContextWindow(windowValue)}
+                </span>
+                {higherUsage ? (
+                  <span
+                    data-testid={`${testIdPrefix}-hint-higher-usage`}
+                    className="shrink-0 text-text_default_tertiary"
+                  >
+                    {t("modelSelector.contextWindowHigherUsage")}
+                  </span>
+                ) : null}
+                {active ? (
+                  <Icon
+                    name="checkSmall"
+                    size={14}
+                    aria-hidden="true"
+                    className="text-text_default_primary"
+                  />
+                ) : null}
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 /**
