@@ -2697,8 +2697,10 @@ There is no manual `?v=N` cache-bust any more — every chunk URL under
 Read-only, declaration-backed: which of the 14 engine capability keys a
 provider supports, plus the `unavailable` summary the capability-driven
 UI renders from. Boots no host and runs no probe. `?provider=` defaults
-to `local-runtime-v2`; the other registered surface is
-`tui-runtime-adapter`.
+to `local-runtime-v2` — unchanged since B1, so every existing caller keeps the
+declaration it had; the other two registered providers are `tui-runtime-adapter`
+(the in-process adapter surface) and `acp` (the `mcode acp` subprocess
+protocol).
 
 **Response 200**
 ```json
@@ -2715,6 +2717,16 @@ to `local-runtime-v2`; the other registered surface is
 }
 ```
 (`capabilities` carries all 14 keys; three are shown.)
+
+A `none` entry may carry an extra `servedBy: "<providerId>"` alongside its
+`reason`. It does not change the level or the `unavailable` roll-up — the
+provider really has none of that capability. It records that webui still
+serves the endpoint, from another provider's in-process host. The `acp`
+provider uses it for exactly two keys (`turnDiff`, `plugins`): the protocol has
+no diff method and no plugin method, yet those thirteen endpoints work on the
+default acp transport because they project the in-process local-runtime-v2
+host. A client that wants to know who answers a request should treat `servedBy`
+as "not a degradation" — and must not read it as the capability being present.
 
 **Errors** — `404 {"ok":false,"code":"unknown_engine_provider","knownProviders":[…]}` for an unknown `?provider=` (caller confusion — never 501). Any future route gated on an undeclared capability answers `501 {"ok":false,"code":"engine_capability_not_supported","capability","provider","missing"?,"reason"?}` — expected degradation, not a server fault; treat it as "hide the entry point", not as an error toast.
 

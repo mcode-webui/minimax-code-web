@@ -194,8 +194,9 @@ Levels and rules (`server/engine/capabilities.js`):
 - `full` — the surface is complete.
 - `partial` — must enumerate `missing` sub-items and carry a `reason`. Never "half works, nobody knows which half".
 - `none` — must carry a `reason` distinguishing `interface-absent` (no such method on the surface at all) from `implementation-absent` (the layer above has it, this surface does not open it).
+- `servedBy` — **optional, and only on a `none` entry.** Names the provider whose in-process host actually answers the request when this provider does not implement the capability itself. Rejected on `full` and `partial` (a provider that partly implements a capability is not "served elsewhere"), and a `servedBy` naming an unregistered provider is a boot-time throw, not a runtime 404.
 
-Current declarations (both transcribed from the audited matrix and re-verified against the live method surfaces at the `26043e9b` baseline — 91 adapter methods, 94 CliService methods plus the `applications.session.diff` facade):
+Current declarations (the two runtime surfaces transcribed from the audited matrix and re-verified against the live method surfaces at the `26043e9b` baseline — 91 adapter methods, 94 CliService methods plus the `applications.session.diff` facade):
 
 | Key | local-runtime-v2 | tui-runtime-adapter |
 | --- | --- | --- |
@@ -214,6 +215,31 @@ Current declarations (both transcribed from the audited matrix and re-verified a
 | fileReadWrite | partial — missing `file-write` | partial — missing `file-write` |
 | gitOperations | partial — missing `git-diff`, `git-commit`, `git-branch` | partial — missing `git-diff`, `git-commit`, `git-branch` |
 
+The third registered provider is the **`acp` transport** (M4-1) — a transport rather than an in-process surface, declared in `server/engine/providers/acp.capabilities.js` and audited against `MCODE_ACP_CAPABILITIES`, the protocol's live wire table, because a subprocess has no object to reflect:
+
+| Key | acp |
+| --- | --- |
+| sessionCrud | partial — missing `deleteSession`, `renameSession`, `archiveSession` (`session/new` · `load` · `list` · `close` · `resume` · `fork` · `activate` are on the wire, and `session/delete` is registered with no handler) |
+| streamingSend | full (`session/prompt`) |
+| interrupt | none — interface-absent: `session/cancel` IS registered, but it is a **notification**, and a delivered cancel certifies that it was sent, never that the turn stopped |
+| toolSkillInvocation | partial — missing `listSkills`, `listRuntimeSkills` (the protocol has no skill enumeration) |
+| turnDiff | none — interface-absent, **servedBy `local-runtime-v2`** |
+| turnRewindRedo | none — interface-absent |
+| plugins | none — interface-absent, **servedBy `local-runtime-v2`** |
+| mcp | partial — missing `mcp-configure`, `mcp-inspect`, `mcp-clear`, `mcp-list` (MCP servers take effect inside a turn; nothing configures or inspects them) |
+| subagents | partial — missing `getDelegationSnapshot`, `stopDelegation`, `listBackgroundTasks` (activity is parsed off the event stream only) |
+| usageStats | partial — missing `getSessionUsage`, `getSessionUsageSummary`, `watchSessionUsageCommits` (plan quota is queryable over `mcode/account/status`; the token detail webui shows beside it is read from the runtime DB, not the engine) |
+| authCredentials | partial — missing the OAuth flow, the API-key surface and the user model-provider CRUD. The config-option write IS present, and dispatches the `model` and `permissionMode` config ids |
+| updateCheck | none — interface-absent (`available_commands_update` refreshes the advertised command catalogue, which is not an update check) |
+| fileReadWrite | none — interface-absent (webui's `/api/fs` family is its own `node:fs` implementation) |
+| gitOperations | none — interface-absent (webui's `/api/git` family wraps the OS git binary) |
+
+Two cells are **stronger** here than on either runtime surface, and flattening them would be the unearned claim the design matrix forbids: the protocol registers `session/set_mode` as a real request, so `toolSkillInvocation` does *not* miss `setMode` over acp; and `session/set_config_option` dispatches the `model` and `permissionMode` config ids, so two of the three bridged writers of `MODE_WRITE_BRIDGED_CONFIG_IDS` are genuinely reachable.
+
+**`servedBy` is the plan's one reverse exception, and it is load-bearing.** `turnDiff` and `plugins` are honestly `none` on the protocol, and the three `/api/turn-diff` and ten `/api/plugins` endpoints still work on the default acp transport, because they project the in-process local-runtime-v2 host through `getEngineCatalogueHost()` and are gated on no provider declaration. Reading the level alone would eventually 501 two working features the moment a frontend consulted the transport's provider instead of the default one. `summarizeCapabilityHosting(capabilities)` and `resolveCapabilityHostProvider(providerId, key)` expose the routing fact; the hosted keys deliberately stay in `summarizeUnavailableCapabilities`, because the provider really has none and that `{none, partial}` shape is already on the wire.
+
+**Registering a provider is not routing to it.** Every capability gate resolves its provider through a transport→provider table in its own family module, and none of them lists `acp`: a miss there means "no provider claims this transport yet", and the gate passes. So M4-1 changed no gate's verdict on any transport. Making the acp provider actually reachable — `chat.js` transport selection reading the registry — is M4-3, and the test that keeps the two apart walks all sixteen `resolve*Provider` functions.
+
 ### `GET /api/engine-capabilities`
 
 Read-only, declaration-backed (boots no host, runs no probe). Returns one provider's declaration plus the degradation summary the future capability-driven UI renders from:
@@ -225,7 +251,7 @@ GET  /api/engine-capabilities[?provider=<id>]
 404  { ok: false, code: "unknown_engine_provider", knownProviders: [...] }   // caller confusion
 ```
 
-Default provider is `local-runtime-v2` (the only registered host provider until migration step M4 wraps ACP/exec as providers). Unknown `?provider=` answers 404 — it cannot collide with the 501 reserved for engine limitations.
+Default provider is `local-runtime-v2` — unchanged since B1, and deliberately so: M4-1 added a provider, not a default, so every existing caller (including the webapp's own degradation test) keeps seeing the declaration it saw before. The registered ids are `local-runtime-v2`, `tui-runtime-adapter` and `acp`. Unknown `?provider=` answers 404 with the id list — it cannot collide with the 501 reserved for engine limitations.
 
 ### Calling an undeclared capability → 501
 

@@ -2487,8 +2487,9 @@ chunk URL 都做内容寻址，rebuild 时自动失效。
 
 只读、声明直出：返回某个 provider 在 14 个引擎能力键上的支持档位，
 附前端能力驱动渲染所用的 `unavailable` 汇总。不起 host、不探测。
-`?provider=` 缺省为 `local-runtime-v2`；另一个已注册面是
-`tui-runtime-adapter`。
+`?provider=` 缺省为 `local-runtime-v2`（自 B1 起未变）；另外两个已注册的
+provider 是 `tui-runtime-adapter`（进程内 adapter 面）与 `acp`
+（`mcode acp` 子进程协议，传输面）。
 
 **Response 200**
 ```json
@@ -2505,6 +2506,14 @@ chunk URL 都做内容寻址，rebuild 时自动失效。
 }
 ```
 （`capabilities` 实际含全部 14 键；此处示例 3 个。）
+
+`none` 条目除 `reason` 外还可带一个 `servedBy: "<providerId>"`。它**不改变**
+档位，也不改变 `unavailable` 汇总——该 provider 确实没有这个能力。它记录的是
+webui 仍从另一个 provider 的进程内 host 服务该端点。`acp` provider 只对两个
+键用它（`turnDiff`、`plugins`）：协议既无 diff 方法也无插件方法，但那十三个
+端点在缺省 acp 传输上可用，因为它们投影的是进程内 local-runtime-v2 host。
+客户端若想知道「由谁应答」，应把 `servedBy` 读作「这不是降级」——但绝不可
+读作该能力可用。
 
 **错误** —— `?provider=` 写错答 `404 {"ok":false,"code":"unknown_engine_provider","knownProviders":[…]}`（调用方的错，绝不会是 501）。未来任何按能力门控的路由，调到未声明能力答 `501 {"ok":false,"code":"engine_capability_not_supported","capability","provider","missing"?,"reason"?}`——这是预期降级、不是服务端故障；按「隐藏入口」处理，不弹错误提示。
 

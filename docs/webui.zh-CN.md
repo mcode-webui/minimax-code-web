@@ -194,8 +194,9 @@ webui 服务端新增了一个内部引擎层 `packages/webui/server/engine/`，
 | `full` | 面完整 | 正常渲染 |
 | `partial` | 必须附 `missing` 子项清单与 `reason` | 控件可用，缺失子项对应的次级操作隐藏/禁用并带说明 |
 | `none` | 必须附 `reason`，区分「接口无」（面上根本没有该方法）与「实现无」（上层有、该面未开窗） | 入口整体不渲染，不留永远失败的按钮 |
+| `servedBy` | **可选，且只允许出现在 `none` 条目上**：指明该能力实际由哪个 provider 的进程内 host 应答。在 `full` 与 `partial` 上会被拒（部分实现的 provider 不叫「由别处服务」）；指向未注册的 provider 是**启动时抛错**，不是运行期 404 | 不改变渲染——被托管的键仍留在 `none` 桶里，UI 规则不动 |
 
-两个已接入面的当前声明（取值逐格照取证矩阵誊录，并在 `26043e9b` 基线上对着实际方法面复核——adapter 91 个方法、CliService 94 个方法加 `applications.session.diff` 门面）：
+两个已接入**面**的当前声明（取值逐格照取证矩阵誊录，并在 `26043e9b` 基线上对着实际方法面复核——adapter 91 个方法、CliService 94 个方法加 `applications.session.diff` 门面）：
 
 | 键 | local-runtime-v2 | tui-runtime-adapter |
 | --- | --- | --- |
@@ -214,6 +215,50 @@ webui 服务端新增了一个内部引擎层 `packages/webui/server/engine/`，
 | fileReadWrite | partial——缺 `file-write` | partial——缺 `file-write` |
 | gitOperations | partial——缺 `git-diff`、`git-commit`、`git-branch` | partial——缺 `git-diff`、`git-commit`、`git-branch` |
 
+第三个已注册 provider 是 **`acp` 传输**（M4-1）——它是传输而非进程内的面，
+声明在 `server/engine/providers/acp.capabilities.js`。审计对象不是可反射的
+host 对象（子进程没有对象可反射），而是线路表 `MCODE_ACP_CAPABILITIES`
+——`lib/mcode-rpc.js` 为前端导出的那份在库常量：
+
+| 键 | acp |
+| --- | --- |
+| sessionCrud | partial——缺 `deleteSession`、`renameSession`、`archiveSession`（线路上有 `session/new` · `load` · `list` · `close` · `resume` · `fork` · `activate`；`session/delete` 注册了但无 handler） |
+| streamingSend | full（`session/prompt`） |
+| interrupt | none——接口无。`session/cancel` **确实注册了**，但它是**通知**：送达只证明「已发出」，永远不证明回合停了 |
+| toolSkillInvocation | partial——缺 `listSkills`、`listRuntimeSkills`（协议没有技能枚举面） |
+| turnDiff | none——接口无，**servedBy `local-runtime-v2`** |
+| turnRewindRedo | none——接口无 |
+| plugins | none——接口无，**servedBy `local-runtime-v2`** |
+| mcp | partial——缺 `mcp-configure`、`mcp-inspect`、`mcp-clear`、`mcp-list`（MCP 服务器在回合内生效，无任何配置或探查面） |
+| subagents | partial——缺 `getDelegationSnapshot`、`stopDelegation`、`listBackgroundTasks`（只能从事件流里解析活动） |
+| usageStats | partial——缺 `getSessionUsage`、`getSessionUsageSummary`、`watchSessionUsageCommits`（套餐配额可经 `mcode/account/status` 查；webui 并排显示的 token 明细读的是 runtime DB，不是引擎） |
+| authCredentials | partial——缺 OAuth 流、API key 面、用户模型 provider 的 CRUD。**配置项写入面是有的**，且会派发 `model` 与 `permissionMode` 两个配置 id |
+| updateCheck | none——接口无（`available_commands_update` 刷新的是命令目录，不是更新检查） |
+| fileReadWrite | none——接口无（webui 的 `/api/fs` 族是自带的 `node:fs` 实现） |
+| gitOperations | none——接口无（webui 的 `/api/git` 族包的是系统 git 二进制） |
+
+有两格比两个运行时面**更强**，抹平它们正是设计矩阵所禁止的无功声称：协议把
+`session/set_mode` 注册为真正的 request，所以 acp 的
+`toolSkillInvocation` **不**缺 `setMode`；且 `session/set_config_option` 会派发
+`model` 与 `permissionMode` 两个配置 id，因此 `MODE_WRITE_BRIDGED_CONFIG_IDS`
+的三个桥接写入者里有两个在 acp 上确实可达。
+
+**`servedBy` 是计划里唯一的反向例外，且有承重意义。** `turnDiff` 与 `plugins`
+在协议上如实 `none`，而那三个 `/api/turn-diff` 与十个 `/api/plugins` 端点在缺省
+acp 传输上一直可用——它们投影的是进程内 local-runtime-v2 host（经
+`getEngineCatalogueHost()`），且不按任何 provider 声明门控。只读档位，
+总有一天会在前端改读传输的 provider 而非缺省 provider 的那一刻，把两个能用
+的功能 501 掉。`summarizeCapabilityHosting(capabilities)` 与
+`resolveCapabilityHostProvider(providerId, key)` 暴露这条路由事实；被托管的键
+**刻意**仍留在 `summarizeUnavailableCapabilities` 里，因为该 provider 确实没有
+这个能力，而那个 `{none, partial}` 形状已经在线上。
+
+**注册 provider ≠ 路由到它。** 每道能力门控都经自己家族模块里的「传输→provider」
+表解析 provider，而它们都不列 `acp`：那里 miss 的含义是「尚无 provider 认领这条
+传输」，门控原样通过。所以 M4-1 没有改变任何传输上任何门控的判定。真正让 acp
+provider 可达（`chat.js` 的传输选择读注册表）是 M4-3，而把这两件事分开的测试会
+遍历全部十六个 `resolve*Provider` 函数。
+
 ### `GET /api/engine-capabilities`
 
 只读、声明直出（不起 host、不探测）。返回一个面的声明，附「哪些能力不可用」的汇总——后续能力驱动的 UI 以此渲染，**代码里不出现按引擎名单隐藏功能的逻辑**：
@@ -225,7 +270,7 @@ GET  /api/engine-capabilities[?provider=<id>]
 404  { ok: false, code: "unknown_engine_provider", knownProviders: [...] }   // 调用方写错了 id
 ```
 
-默认返回 `local-runtime-v2`（M4 把 ACP/exec 包成 provider 之前唯一注册的 host 面）。`?provider=` 写错答 404——它不可能与保留给「引擎缺能力」的 501 混淆。
+默认返回 `local-runtime-v2`——自 B1 起未变，且是刻意的：M4-1 增加的是一个 provider，不是一个缺省值，所以每个既有调用方（包括 webui 自己的降级测试）看到的声明与之前完全一致。已注册 id 为 `local-runtime-v2`、`tui-runtime-adapter` 与 `acp`。`?provider=` 写错答 404 并附 id 列表——它不可能与保留给「引擎缺能力」的 501 混淆。
 
 ### 调了未声明的能力 → 501
 

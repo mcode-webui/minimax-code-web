@@ -63,6 +63,7 @@ process.env.MCODE_WEBUI_UPLOAD_DIR = `${tmpBase}/uploads`;
 // Declaration modules are import-light (no @mavis/* tree), and the env
 // above is already pinned, so loading them at top level is safe here.
 const {
+  ACP_CAPABILITIES,
   ENGINE_CAPABILITY_KEYS,
   LOCAL_RUNTIME_V2_CAPABILITIES,
   MODE_WRITE_BRIDGED_CONFIG_IDS,
@@ -71,6 +72,177 @@ const {
   listEngineProviderIds,
   validateEngineCapabilities,
 } = await import("../../../server/engine/index.js");
+
+// The acp wire surface, checked in as the flat method→boolean table
+// `server/lib/mcode-rpc.js` exports for the frontend's own capability
+// detection. It is the closest thing the acp protocol has to a
+// reflectable surface: the protocol is a subprocess, so there is no
+// object to walk a prototype chain over, and the audit below runs
+// against this table instead. Unlike a hand-typed list it is LIVE — it
+// is the same constant the routes read — so a protocol method that
+// appears here without a re-audit turns the audit red rather than
+// leaving the declaration quietly out of date.
+const { MCODE_ACP_CAPABILITIES } = await import("../../../server/lib/mcode-rpc.js");
+
+// ---------------------------------------------------------------------------
+// ACP_WIRE — the acp protocol's declared surface, in wire-method terms
+// ---------------------------------------------------------------------------
+//
+// M4-1 gave the acp transport a declaration. Two runtime providers are
+// audited by REFLECTING a real host object; the acp protocol cannot be,
+// because it is a subprocess behind a stdio JSON-line wire. So this
+// table states, per capability key, what the wire offers:
+//
+//   present      — wire methods that exist, so the key can be full or
+//                 partial with this much covered;
+//   absent       — wire methods that are registered but unavailable
+//                 (`MCODE_ACP_CAPABILITIES.<name> === false`), which is
+//                 what makes a `partial` honest rather than pessimistic;
+//   notification — wire methods that exist but are NOTIFICATIONS. This
+//                 third bucket is the one that matters: `cancel` is
+//                 `true` on the wire and the declaration is still
+//                 `none`, because a notification carries no reply and
+//                 therefore cannot certify that a turn stopped (see
+//                 server/engine/interrupt.js fact 1). A declaration
+//                 that read the wire table alone would call it `full`.
+//
+// For the `none` keys the check runs the other way: NONE_CAPABILITY_NAME
+// FRAGMENTS lists, per key, the substrings a wire method would have to
+// contain to serve it. A protocol that grew `session/diff` would make
+// the turnDiff entry go red until someone re-audited the declaration —
+// the same tripwire `subCapabilityHasMethods` provides for the runtime
+// surfaces' kebab-case sub-items.
+
+const ACP_WIRE = {
+  sessionCrud: {
+    present: ["new", "load", "list", "close", "fork", "resume", "activate"],
+    absent: ["delete"],
+  },
+  streamingSend: { present: ["prompt"] },
+  interrupt: { notification: ["cancel"] },
+  // `session/set_mode` is a real request here (packages/tui/src/acp/
+  // agent.ts:924), which neither runtime surface has — the acp column
+  // is genuinely STRONGER on this key than the v2 one.
+  toolSkillInvocation: { present: ["set_mode"] },
+  authCredentials: { present: ["set_config_option"] },
+};
+
+/** For each `none` key: substrings any wire method would need to match. */
+const NONE_CAPABILITY_NAME_FRAGMENTS = {
+  turnDiff: ["diff"],
+  turnRewindRedo: ["rewind", "redo", "revert", "reapply"],
+  plugins: ["plugin"],
+  mcp: ["mcp"],
+  subagents: ["delegation", "background_task"],
+  usageStats: ["usage"],
+  updateCheck: ["update", "upgrade"],
+  fileReadWrite: ["file", "workspace"],
+  gitOperations: ["git"],
+};
+
+/**
+ * The config ids `session/set_config_option` actually dispatches
+ * (packages/tui/src/acp/agent.ts:956 branches on exactly these two;
+ * the engine names them ACP_CONFIG_MODEL / ACP_CONFIG_PERMISSION_MODE
+ * in packages/tui/src/acp/control-state.ts:14-15). This is what makes
+ * the declaration's claim that the two bridged writers of
+ * MODE_WRITE_BRIDGED_CONFIG_IDS are reachable over acp checkable, and
+ * what pins the third bridge in the `unimplemented` slot.
+ */
+const ACP_CONFIG_OPTION_IDS = ["model", "permissionMode"];
+
+/**
+ * Audit the acp declaration against the protocol's wire table.
+ *
+ * @param {Record<string, {level: string, missing?: string[]}>} declaration
+ * @param {Record<string, boolean>} wireTable  The flat method→boolean table.
+ * @param {string[]} configIds  Config ids set_config_option dispatches.
+ * @returns {string[]} problems; empty means the declaration matches the wire.
+ */
+export function auditAcpCapabilities(declaration, wireTable, configIds) {
+  const problems = [];
+  for (const [key, wire] of Object.entries(ACP_WIRE)) {
+    const entry = declaration[key];
+    if (!entry) continue; // shape problems are validate's job, not this audit's
+    for (const method of wire.present || []) {
+      if (wireTable[method] !== true) {
+        problems.push(
+          `acp.${key}: declared as covered by wire method "${method}", but MCODE_ACP_CAPABILITIES.${method} is not true`,
+        );
+      }
+    }
+    for (const method of wire.absent || []) {
+      if (wireTable[method] !== false) {
+        problems.push(
+          `acp.${key}: declared as denied by wire method "${method}", but MCODE_ACP_CAPABILITIES.${method} is now ${wireTable[method]} — re-audit the declaration`,
+        );
+      }
+    }
+    // A notification-only method must NOT be what makes the key
+    // servable. `interrupt` is the live case: `cancel` is `true` on
+    // the wire, and the declaration is `none` precisely because a
+    // notification cannot answer. Declaring it `full` would be the
+    // flattering claim this audit exists to refuse.
+    for (const method of wire.notification || []) {
+      if (wireTable[method] !== true) {
+        problems.push(
+          `acp.${key}: the notification-only wire method "${method}" is no longer on the wire — re-audit whether this key is still none`,
+        );
+      }
+      if (entry.level === "full") {
+        problems.push(
+          `acp.${key}: declared full, but "${method}" is a NOTIFICATION — a delivered cancel certifies that it was sent, never that the turn stopped`,
+        );
+      }
+      if (entry.level === "none" && !entry.reason.includes(method)) {
+        problems.push(
+          `acp.${key}: declared none because "${method}" cannot answer, but the reason does not name it — the reader would have to rediscover the notification`,
+        );
+      }
+    }
+  }
+
+  // A `full` key must be covered by at least one real (non-notification)
+  // wire method, or `full` is a claim with nothing under it.
+  for (const key of ENGINE_CAPABILITY_KEYS) {
+    const entry = declaration[key];
+    if (!entry || entry.level !== "full") continue;
+    const wire = ACP_WIRE[key];
+    if (!wire || !(wire.present || []).length) {
+      problems.push(`acp.${key}: declared full with no covering wire method in ACP_WIRE`);
+    }
+  }
+
+  // A `none` key must have NO wire method whose name could serve it.
+  for (const [key, fragments] of Object.entries(NONE_CAPABILITY_NAME_FRAGMENTS)) {
+    const entry = declaration[key];
+    if (!entry || entry.level !== "none") continue;
+    const matched = Object.keys(wireTable).filter((name) =>
+      fragments.some((fragment) => name.toLowerCase().includes(fragment)),
+    );
+    if (matched.length > 0) {
+      problems.push(
+        `acp.${key}: declared none, but the protocol now exposes wire method(s) ${matched.join(", ")} — re-audit`,
+      );
+    }
+  }
+
+  // The bridged config ids must be the ones the protocol dispatches,
+  // and the effort writer must be among the ids it does NOT. Compared
+  // by METHOD name — `MODE_WRITE_BRIDGED_CONFIG_IDS.thinkingEffort` is
+  // the writer, not the config id. Comparing the ids would make the
+  // check vacuously false, and MUT-G would then pass for the wrong
+  // reason, which is worse than having no check.
+  for (const [configId, method] of Object.entries(MODE_WRITE_BRIDGED_CONFIG_IDS)) {
+    const isEffortWriter = method === MODE_WRITE_BRIDGED_CONFIG_IDS.thinkingEffort;
+    if (configIds.includes(configId) && isEffortWriter) {
+      problems.push(
+        `acp: ${method} is a bridged forward contract the declaration has no method for, but session/set_config_option NOW dispatches the "${configId}" config id — re-audit the bridge and let the control come back`,
+      );
+    }
+  }
+  return problems;
+}
 
 // ---------------------------------------------------------------------------
 // REQUIRED_METHODS — what each capability key means ON THE OBJECTS.
@@ -666,5 +838,142 @@ describe("M2 mutation checks — auditProviderCapabilities reports drift", () =>
       fakeHost(byOn.adapter, [], []),
     );
     assert.deepEqual(ok, [], "the pristine declaration over the real method set is clean");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M4-1 — the acp declaration against the protocol's wire table
+// ---------------------------------------------------------------------------
+
+describe("M4-1 acp snapshot — declaration vs the protocol's wire table", () => {
+  test("the acp declaration passes the wire audit (the CI red light this provider needs)", () => {
+    const problems = auditAcpCapabilities(ACP_CAPABILITIES, MCODE_ACP_CAPABILITIES, ACP_CONFIG_OPTION_IDS);
+    assert.deepEqual(
+      problems,
+      [],
+      `declaration/wire drift must be empty:\n  ${problems.join("\n  ")}`,
+    );
+  });
+
+  // The subtlety this whole provider turns on. `cancel` IS on the wire
+  // and IS true; the declaration is still `none`. If a future edit
+  // promotes interrupt to `full` because "the protocol has a cancel",
+  // the audit above goes red with the reason spelled out — which is
+  // the difference between a re-audit and a silent regression.
+  test("interrupt is none DESPITE `cancel` being a live wire method", () => {
+    assert.equal(MCODE_ACP_CAPABILITIES.cancel, true, "the wire really does carry cancel");
+    assert.equal(ACP_CAPABILITIES.interrupt.level, "none");
+    assert.match(ACP_CAPABILITIES.interrupt.reason, /cancel/, "the reason must name the notification");
+  });
+
+  // Same shape, opposite direction: the protocol registers
+  // `session/delete` with NO handler, so the wire table says `false`
+  // and the declaration's partial is honest rather than pessimistic.
+  test("sessionCrud is partial because `delete` is registered without a handler", () => {
+    assert.equal(MCODE_ACP_CAPABILITIES.delete, false);
+    assert.equal(ACP_CAPABILITIES.sessionCrud.level, "partial");
+    assert.equal(ACP_CAPABILITIES.sessionCrud.missing.includes("deleteSession"), true);
+  });
+
+  // The acp column is stronger than the v2 column on exactly one key,
+  // and the suite says so out loud so nobody "harmonises" it away.
+  test("acp covers setMode, which neither runtime surface can", () => {
+    assert.equal(MCODE_ACP_CAPABILITIES.set_mode, true);
+    assert.equal(ACP_CAPABILITIES.toolSkillInvocation.missing.includes("setMode"), false);
+  });
+
+  // M3-B14's closure mechanism, extended to the new provider: the
+  // effort writer is named by the bridge and implemented by nobody, so
+  // it belongs in `unimplemented` and NOT in any `missing` list.
+  test("setThinkingEffort is unimplemented over acp, and no declaration claims it missing", () => {
+    assert.equal(ACP_CONFIG_OPTION_IDS.includes(MODE_WRITE_BRIDGED_CONFIG_IDS.thinkingEffort), false);
+    for (const [name, decl] of [
+      ["acp", ACP_CAPABILITIES],
+      ["local-runtime-v2", LOCAL_RUNTIME_V2_CAPABILITIES],
+      ["tui-runtime-adapter", TUI_RUNTIME_ADAPTER_CAPABILITIES],
+    ]) {
+      assert.equal(
+        (decl.authCredentials.missing || []).includes(MODE_WRITE_BRIDGED_CONFIG_IDS.thinkingEffort),
+        false,
+        `${name}: listing the effort writer as missing would remove the control for every user today`,
+      );
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Mutation checks for the acp audit — the checker is itself under test
+// ---------------------------------------------------------------------------
+
+describe("M4-1 acp audit — mutation checks", () => {
+  const wire = () => ({ ...MCODE_ACP_CAPABILITIES });
+  const decl = () => structuredClone({ ...ACP_CAPABILITIES });
+  const clean = (d, w = wire(), ids = ACP_CONFIG_OPTION_IDS) => auditAcpCapabilities(d, w, ids);
+
+  test("MUT-A: a `full` resting only on a notification is refused", () => {
+    const d = decl();
+    d.interrupt = { level: "full" };
+    const problems = clean(d);
+    assert.ok(
+      problems.some((p) => p.includes("NOTIFICATION") && p.startsWith("acp.interrupt")),
+      problems.join("; "),
+    );
+  });
+
+  test("MUT-B: a `full` with no covering wire method is refused", () => {
+    const d = decl();
+    d.mcp = { level: "full" };
+    const problems = clean(d);
+    assert.ok(problems.some((p) => p.includes("acp.mcp") && p.includes("no covering wire method")), problems.join("; "));
+  });
+
+  test("MUT-C: a wire method that appears out of nowhere must not go unnoticed", () => {
+    // The drift this suite exists to catch: the protocol grows
+    // `session/rewind`, the wire table learns about it, and the
+    // declaration still says `none`.
+    const w = wire();
+    w.rewind = true;
+    const problems = clean(decl(), w);
+    assert.ok(problems.some((p) => p.startsWith("acp.turnRewindRedo") && p.includes("rewind")), problems.join("; "));
+  });
+
+  test("MUT-D: a `present` method the wire no longer has is refused", () => {
+    const w = wire();
+    w.fork = false;
+    const problems = clean(decl(), w);
+    assert.ok(problems.some((p) => p.includes("wire method \"fork\"")), problems.join("; "));
+  });
+
+  test("MUT-E: `delete` becoming available must force a sessionCrud re-audit", () => {
+    const w = wire();
+    w.delete = true;
+    const problems = clean(decl(), w);
+    assert.ok(problems.some((p) => p.includes("denied by wire method \"delete\"")), problems.join("; "));
+  });
+
+  test("MUT-F: a none key whose reason stops naming the notification is refused", () => {
+    const d = decl();
+    d.interrupt = { level: "none", reason: "interface-absent: the protocol has no cancel method" };
+    // The reason still says "cancel", so this must be CLEAN — a
+    // mutation that proves the check is name-based, not a blanket one.
+    assert.deepEqual(clean(d), []);
+    d.interrupt = { level: "none", reason: "interface-absent: nothing here" };
+    const problems = clean(d);
+    assert.ok(problems.some((p) => p.includes("does not name it")), problems.join("; "));
+  });
+
+  test("MUT-G: the effort writer appearing on the wire must go red", () => {
+    const problems = clean(decl(), wire(), [...ACP_CONFIG_OPTION_IDS, "thinkingEffort"]);
+    assert.ok(problems.some((p) => p.includes("setThinkingEffort") && p.includes("re-audit the bridge")), problems.join("; "));
+  });
+
+  test("MUT-H: dropping the host exception is a DELETE, not a silent change", () => {
+    // The reverse exception is data, so removing it changes
+    // `summarizeCapabilityHosting` — and this asserts the registry
+    // still reports both keys, so a deletion cannot pass unnoticed.
+    const d = decl();
+    for (const key of ["turnDiff", "plugins"]) delete d[key].servedBy;
+    assert.equal(getEngineProvider("acp").capabilities.turnDiff.servedBy, "local-runtime-v2");
+    assert.deepEqual(clean(d), [], "the wire audit does not police servedBy — that is its own test");
   });
 });

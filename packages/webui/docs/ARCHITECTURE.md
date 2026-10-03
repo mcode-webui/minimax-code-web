@@ -494,13 +494,14 @@ Fifteen files, one job each:
 
 | File | Owns |
 | --- | --- |
-| `engine/capabilities.js` | The contract: `ENGINE_CAPABILITY_KEYS` (the 14 matrix keys), `validateEngineCapabilities`, `assertEngineCapability`, `summarizeUnavailableCapabilities` |
+| `engine/capabilities.js` | The contract: `ENGINE_CAPABILITY_KEYS` (the 14 matrix keys), `validateEngineCapabilities`, `assertEngineCapability`, `summarizeUnavailableCapabilities`, `summarizeCapabilityHosting` |
 | `engine/errors.js` | `EngineCapabilityNotSupportedError` + `engineCapabilityHttpResponse` (the 501 payload shape) |
 | `engine/host.js` | `getEngineCatalogueHost` — the lazy bridge to the one catalogue host. No static import of the host module: the getter body is a dynamic `import()` of `lib/acp-client.js`, so the facade costs a function, not a module load |
-| `engine/index.js` | The facade: `getEngineProvider`, `listEngineProviderIds`, `getEngineCatalogueHost` (registry by provider id; transport selection arrives with migration step M4) |
+| `engine/index.js` | The facade and the registry: `getEngineProvider`, `listEngineProviderIds`, `resolveCapabilityHostProvider`, `getEngineCatalogueHost`. **Registering a provider and a consumer reaching it are separate decisions** (step M4) — a registry entry is a declaration, and nothing routes to it until its `providerByTransport()` table says so |
 | `engine/providers/local-runtime-v2.capabilities.js` | `LOCAL_RUNTIME_V2_CAPABILITIES` — **declaration only, and the split is load-bearing**: its sole import is `../capabilities.js`, so `/api/engine-capabilities` can read the capability table without pulling the v2 host's TypeScript dependency tree (~4.7 s of first-compile) into the boot path. That tree stays behind the same lazy boundary `acp-client.js` already documented |
 | `engine/providers/local-runtime-v2.js` | `createCatalogueHost` (moved verbatim from `runtime-host.js`, which re-exports it) + re-exports the declaration above, so consumers keep one import shape. This is the heavy one — `@mavis/local-runtime-v2`, `@mavis/config`, `@minimax/code/runtime-adapter` — and no file `app.js` reaches may import it |
 | `engine/providers/tui-runtime-adapter.js` | `TUI_RUNTIME_ADAPTER_CAPABILITIES` (declaration only — the adapter itself is constructed inside the v2 host) |
+| `engine/providers/acp.capabilities.js` | `ACP_CAPABILITIES` — the `mcode acp` protocol's 14-key declaration, and the first provider that is a **transport** rather than an in-process surface (step M4-1). Declaration only, like its siblings: no protocol client is constructed, so `?provider=acp` is answerable from the boot path |
 | `engine/session-reads.js` | The directory-read family's facade calls (`readEngineSessionList`, `readEngineSessionListForWorkspace`, `readEngineSessionTitle`, `readEngineVersion`) and the endpoint→capability table `SESSION_READ_ENDPOINTS` (step M3, batch B1) |
 | `engine/session-tree-reads.js` | The session-tree family's facade call (`readEngineSessionTree`) and the endpoint→capability table `SESSION_TREE_ENDPOINTS` (step M3, batch B2). Gates **hard**: `assertSessionTreeCapability` throws → 501, because the tree is entirely engine data. Forwards to `lib/session-tree.js#getSessionTree`; the assembler is not duplicated |
 | `engine/session-export.js` | The export family's facade call (`readEngineSessionTranscript`) and the endpoint→capability table `SESSION_EXPORT_ENDPOINTS` (step M3, batch B2). Gates **soft**: `checkSessionExportCapability` reports and never throws, because export's primary source is `sessions.json`, not the engine |
@@ -579,6 +580,108 @@ and providers registered by M4 will be swept without editing the test.
 Runtime probing (downgrading a declared level when the environment
 disagrees) is deliberately absent in this batch — see `engine/index.js`
 for the reasoning.
+
+### Transports become providers (M4-1)
+
+Everything above describes providers as *surfaces*: two of them, both
+in-process, both reached through the same facade. M4-1 adds a third kind
+— a **transport**. The `mcode acp` subprocess protocol is not an object
+webui can call a method on; it is a stdio JSON-line wire, and it is what
+`MCODE_WEBUI_TRANSPORT` has defaulted to since before the engine layer
+existed. It had no declaration anywhere, which meant the one question
+the whole capability layer exists to answer — "what can this transport
+do?" — was unanswerable for the transport almost every deployment runs.
+
+Registering it changes no routing, and that is the whole design:
+
+```mermaid
+graph LR
+    ENV["MCODE_WEBUI_TRANSPORT"] -->|default acp| CHAT["routes/chat.js"]
+    ENV -->|runtime| CHAT
+    CHAT --> ACPRUN["runMcodeAcp<br/>(acp.mjs subprocess)"]
+    CHAT --> RTRUN["runMcodeRuntime<br/>(in-process v2 host)"]
+
+    CHAT --> GATE{"assertStreamingSendCapability"}
+    GATE -->|resolve*Provider(transport)| TBL["providerByTransport()<br/>{ runtime: local-runtime-v2 }"]
+    TBL -.->|no acp entry — M4-3 adds it| ACP["acp provider<br/>(registered M4-1)"]
+
+    ACP --> DECL["ACP_CAPABILITIES<br/>14 keys, honestly none"]
+    ACP --> HOSTED["turnDiff / plugins<br/>level none + servedBy"]
+    HOSTED --> V2["local-runtime-v2 host<br/>via getEngineCatalogueHost()"]
+
+    TD["/api/turn-diff ×3<br/>/api/plugins ×10"] --> V2
+```
+
+Two facts carry the batch.
+
+**Registering is not routing.** Every capability gate resolves its
+provider through a transport→provider table that lives in its own
+family module and maps only `runtime`. A `null` there means "no provider
+claims this transport yet" and the gate passes untouched. So adding the
+`acp` entry to the registry — and nothing else — leaves every gate's
+verdict exactly where it was, on every transport, for every caller. The
+test that says this is not a comment: `test/lib/engine/capabilities.test.js` walks all
+sixteen `resolve*Provider` functions and asserts the acp transport still
+resolves to no provider, then asserts the same functions still resolve
+`runtime` correctly, so a sweep that passed vacuously would be caught.
+
+**A `none` that is still served needs a second field.** `turnDiff` and
+`plugins` are the M3 plan's one reverse exception. The protocol has no
+diff method and no plugin method at all — `routes/plugins.js` says so in
+its own words — yet the three `/api/turn-diff` and ten `/api/plugins`
+endpoints have always worked on the default acp transport, because they
+project the **in-process v2 host** through `getEngineCatalogueHost()` and
+are gated on no provider declaration. Declaring them `none` and stopping
+there would be the honest level and a regression: the first time a
+frontend read the transport's provider instead of the default one, the
+capability-driven UI would delete two working features.
+
+So `none` entries may carry an optional `servedBy`, naming the provider
+whose host actually answers:
+
+| Field | Question it answers | acp `turnDiff` |
+| --- | --- | --- |
+| `level` | what can this provider itself do | `none` |
+| `servedBy` | who answers the request instead | `local-runtime-v2` |
+
+The rules are deliberately narrow. `servedBy` is rejected on `full` and
+`partial` — a provider that partly implements a capability is not
+"served elsewhere", and letting the word mean two things is how a gate
+ends up trusting the wrong field. A `servedBy` naming a provider that is
+not registered is a **boot-time throw**, not a runtime 404, because a
+hosted capability with no host would otherwise show up as a 501 from a
+route nobody gated. And the hosted keys stay in
+`summarizeUnavailableCapabilities`: the provider really has none, and
+the roll-up is the shipped `{none, partial}` response shape, so the
+routing fact is read through a separate function
+(`summarizeCapabilityHosting`, plus `resolveCapabilityHostProvider` for
+the gates M4-3 will write) rather than by changing an endpoint's answer
+for every existing caller.
+
+The acp declaration is audited the way the other two are, against a
+different surface. The runtime providers are checked by reflecting a
+real host object; a subprocess protocol has no object to reflect, so
+`test/lib/engine/capability-snapshot.test.js` checks the declaration against
+`MCODE_ACP_CAPABILITIES` — the flat wire table `lib/mcode-rpc.js`
+exports for the frontend, which is a live, checked-in constant rather
+than a hand-typed list. The check has three buckets, and the third is
+the one that matters: `present` (the wire has it), `absent` (registered
+with no handler — `session/delete` is the live case, which is what makes
+`sessionCrud` a `partial` rather than a pessimistic `full`), and
+`notification`. `cancel` is `true` on the wire and `interrupt` is
+declared `none` anyway, because a notification carries no reply and
+therefore cannot certify that a turn stopped. Promoting `interrupt` to
+`full` on the strength of "the protocol has a cancel" makes the audit
+red, with that reason attached.
+
+Two places where the acp column is *stronger* than the runtime one, and
+where flattening it would be the unearned claim the matrix forbids: the
+protocol registers `session/set_mode` as a real request (so
+`toolSkillInvocation` does **not** miss `setMode` here, unlike both
+runtime surfaces), and `session/set_config_option` dispatches the
+`model` and `permissionMode` config ids, so two of the three bridged
+writers of `MODE_WRITE_BRIDGED_CONFIG_IDS` are genuinely reachable over
+acp.
 
 Boot-path discipline: `app.js` reaches `engine/index.js`, so that file and
 everything it imports statically must stay free of `@mavis/*`,

@@ -465,13 +465,14 @@ queued \| done \| stopped`）是投影层产物、不是存储值；webui 不导
 
 | 文件 | 职责 |
 | --- | --- |
-| `engine/capabilities.js` | 契约本体：`ENGINE_CAPABILITY_KEYS`（14 个矩阵键）、`validateEngineCapabilities`、`assertEngineCapability`、`summarizeUnavailableCapabilities` |
+| `engine/capabilities.js` | 契约本体：`ENGINE_CAPABILITY_KEYS`（14 个矩阵键）、`validateEngineCapabilities`、`assertEngineCapability`、`summarizeUnavailableCapabilities`、`summarizeCapabilityHosting` |
 | `engine/errors.js` | `EngineCapabilityNotSupportedError` 与 `engineCapabilityHttpResponse`（501 载荷形状） |
 | `engine/host.js` | `getEngineCatalogueHost`——通往那唯一 catalogue host 的惰性桥。对 host 模块零静态 import：函数体里是 `lib/acp-client.js` 的动态 `import()`，所以门面付出的是一个函数，不是一次模块加载 |
-| `engine/index.js` | 门面：`getEngineProvider`、`listEngineProviderIds`、`getEngineCatalogueHost`（按 provider id 的注册表；按 `MCODE_WEBUI_TRANSPORT` 选传输在迁移步 M4 引入） |
+| `engine/index.js` | 门面兼注册表：`getEngineProvider`、`listEngineProviderIds`、`resolveCapabilityHostProvider`、`getEngineCatalogueHost`。**「注册一个 provider」与「某个消费方触达它」是两个独立决定**（迁移步 M4）——注册表条目是声明，在它自己的 `providerByTransport()` 表点头之前，没有任何路由会走到它 |
 | `engine/providers/local-runtime-v2.capabilities.js` | `LOCAL_RUNTIME_V2_CAPABILITIES`——**只有声明，且这个拆分是有承重意义的**：它唯一的 import 是 `../capabilities.js`，所以 `/api/engine-capabilities` 读能力表时**不会把 v2 host 的 TypeScript 依赖树（首次编译约 4.7 秒）拖进 boot 路径**。那棵依赖树仍留在 `acp-client.js` 早已注明的 lazy 边界之后 |
 | `engine/providers/local-runtime-v2.js` | `createCatalogueHost`（自 `runtime-host.js` 原样移入，后者转发导出）+ 转发导出上面的声明，消费方的 import 形状因此不变。它是重的那一个——`@mavis/local-runtime-v2`、`@mavis/config`、`@minimax/code/runtime-adapter`——`app.js` 能触达的文件里绝不许 import 它 |
 | `engine/providers/tui-runtime-adapter.js` | `TUI_RUNTIME_ADAPTER_CAPABILITIES`（仅声明——adapter 本体在 v2 host 内构造） |
+| `engine/providers/acp.capabilities.js` | `ACP_CAPABILITIES`——`mcode acp` 协议的 14 键声明，也是第一个**传输**而非进程内**面**的 provider（迁移步 M4-1）。同样只有声明：不构造任何协议客户端，所以 `?provider=acp` 可从 boot 路径作答 |
 | `engine/session-reads.js` | 目录读族的面板调用（`readEngineSessionList`、`readEngineSessionListForWorkspace`、`readEngineSessionTitle`、`readEngineVersion`）与端点→能力对照表 `SESSION_READ_ENDPOINTS`（迁移步 M3 批次 B1） |
 | `engine/session-tree-reads.js` | 会话树族的面板调用 `readEngineSessionTree` 与端点→能力对照表 `SESSION_TREE_ENDPOINTS`（迁移步 M3 批次 B2）。**硬门控**：`assertSessionTreeCapability` 抛出 → 501，因为树完全由引擎数据构成。转发到 `lib/session-tree.js#getSessionTree`，树的装配逻辑不复制第二份 |
 | `engine/session-export.js` | 导出族的面板调用 `readEngineSessionTranscript` 与端点→能力对照表 `SESSION_EXPORT_ENDPOINTS`（迁移步 M3 批次 B2）。**软门控**：`checkSessionExportCapability` 只报告、从不抛出，因为导出的主数据源是 `sessions.json` 而非引擎 |
@@ -536,6 +537,86 @@ handler 层测试因此保持封闭。
 
 运行时探测（环境不符时把声明档位降级）本批刻意未做——理由见
 `engine/index.js` 头注释。
+
+### 传输成为 provider（M4-1）
+
+以上描述的 provider 都是**面**：两个，都是进程内的，都经同一门面触达。
+M4-1 加入第三类——**传输**。`mcode acp` 子进程协议不是 webui 能调方法的
+对象，而是一条 stdio JSON 行线路；自引擎层存在之前，`MCODE_WEBUI_TRANSPORT`
+的缺省值就是它。它在任何地方都没有声明，于是整个能力层唯一要回答的问题
+——「这条传输能做什么？」——对几乎所有部署实际使用的那条传输，是无解的。
+
+注册它不改变任何路由，这正是设计的要点：
+
+```mermaid
+graph LR
+    ENV["MCODE_WEBUI_TRANSPORT"] -->|缺省 acp| CHAT["routes/chat.js"]
+    ENV -->|runtime| CHAT
+    CHAT --> ACPRUN["runMcodeAcp<br/>（acp.mjs 子进程）"]
+    CHAT --> RTRUN["runMcodeRuntime<br/>（进程内 v2 host）"]
+
+    CHAT --> GATE{"assertStreamingSendCapability"}
+    GATE -->|resolve*Provider(transport)| TBL["providerByTransport()<br/>{ runtime: local-runtime-v2 }"]
+    TBL -.->|无 acp 条目——M4-3 才加| ACP["acp provider<br/>（M4-1 已注册）"]
+
+    ACP --> DECL["ACP_CAPABILITIES<br/>14 键，如实 none"]
+    ACP --> HOSTED["turnDiff / plugins<br/>level none + servedBy"]
+    HOSTED --> V2["local-runtime-v2 host<br/>经 getEngineCatalogueHost()"]
+
+    TD["/api/turn-diff ×3<br/>/api/plugins ×10"] --> V2
+```
+
+两条事实承载整批。
+
+**注册不等于路由。** 每道能力门控都经自己家族模块里的「传输→provider」
+表解析 provider，那张表只映射 `runtime`。那里出现 `null` 意为「尚无
+provider 认领这条传输」，门控原样通过。于是只往注册表加一条 `acp` 条目、
+别的什么都不动，就能让每道门控的判定在每条传输、每个调用方上分毫不差地
+留在原处。说出这一点的不是注释而是测试：`test/lib/engine/capabilities.test.js` 遍历全部
+十六个 `resolve*Provider` 函数，断言 acp 传输仍解析不到 provider，再断言
+同样这些函数在 `runtime` 上仍解析正确——空转的遍历会被抓住。
+
+**「none 但仍被服务」需要第二个字段。** `turnDiff` 与 `plugins` 是 M3 计划
+里唯一的反向例外。协议既无 diff 方法也无插件方法——`routes/plugins.js`
+自己就是这么写的——然而那三个 `/api/turn-diff` 与十个 `/api/plugins`
+端点在缺省 acp 传输上一直可用，因为它们投影的是**进程内 v2 host**
+（经 `getEngineCatalogueHost()`），且不按任何 provider 声明门控。只声明成
+`none` 就收手，是诚实的档位，也是一次回归：前端第一次改为读传输的 provider
+而非缺省 provider 时，能力驱动 UI 会删掉两个能用的功能。
+
+因此 `none` 条目可带一个可选的 `servedBy`，指明**实际应答**的 provider：
+
+| 字段 | 回答的问题 | acp 的 `turnDiff` |
+| --- | --- | --- |
+| `level` | 这个 provider 自己能做什么 | `none` |
+| `servedBy` | 那请求由谁应答 | `local-runtime-v2` |
+
+规则刻意收得很窄。`servedBy` 在 `full` 与 `partial` 上被拒——部分实现的
+provider 不叫「由别处服务」，让这个词有两种含义，门控迟早会信错字段。
+`servedBy` 指向未注册的 provider 是**启动时抛错**，不是运行期 404，因为
+「有托管声明却无 host」否则会以某道没人门控过的路由的 501 形式现身。
+被托管的键仍留在 `summarizeUnavailableCapabilities` 里：provider 确实没有
+该能力，而那份 roll-up 是已发布的 `{none, partial}` 应答形状，所以路由事实
+改由另一个函数读（`summarizeCapabilityHosting`，外加供 M4-3 门控用的
+`resolveCapabilityHostProvider`），而不是去改变一个既有调用方的应答。
+
+acp 声明的审计方式与另两个一致，只是审计对象不同。两个运行时 provider 靠
+反射真实 host 对象核对；子进程协议没有对象可反射，于是
+`test/lib/engine/capability-snapshot.test.js` 改为核对 `MCODE_ACP_CAPABILITIES`——
+`lib/mcode-rpc.js` 为前端导出的那份扁平线路表，它是在库常量而非手打清单。
+检查分三桶，第三桶最要紧：`present`（线路上有）、`absent`（注册了但无
+handler——线上活例是 `session/delete`，正是它让 `sessionCrud` 成为诚实的
+`partial` 而非悲观的 `full`）、`notification`。`cancel` 在线路上是 `true`，
+`interrupt` 仍声明为 `none`——通知不带应答，因此无法证明回合真的停了。
+若有人凭「协议有 cancel」把 `interrupt` 提为 `full`，审计会转红，并把这条
+理由附在报错里。
+
+有两处 acp 列比运行时列**更强**，抹平它们才是矩阵所禁止的无功声称：协议把
+`session/set_mode` 注册为真正的 request（所以这里的
+`toolSkillInvocation` **不**缺 `setMode`，与两个运行时面都不同）；且
+`session/set_config_option` 会派发 `model` 与 `permissionMode` 两个配置
+id，因此 `MODE_WRITE_BRIDGED_CONFIG_IDS` 的三个桥接写入者里有两个在 acp
+上确实可达。
 
 启动路径纪律：`app.js` 会触达 `engine/index.js`，因此该文件及其全部
 静态依赖必须不含 `@mavis/*`、`@minimax/*` 与任何 host 模块。M1 是交过
