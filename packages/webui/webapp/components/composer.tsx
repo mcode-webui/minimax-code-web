@@ -827,7 +827,13 @@ export function Composer({
               ) : null}
             </div>
 
-            <div className="flex min-w-0 shrink items-center gap-3" data-message-input-toolbar-right>
+            {/* The right cluster is five 32px controls in a row — ring, model
+                chip, brain, mic, send — so the gap between them is the only
+                thing setting how wide it reads. At 12px it was a third of a
+                control's width and the row came out longer than the things it
+                controls. 6px keeps the hit areas distinguishable without
+                spending that width on air. */}
+            <div className="flex min-w-0 shrink items-center gap-1.5" data-message-input-toolbar-right>
               {/* Context-window readout, immediately left of the model selector. */}
               <ContextMeter t={t} />
               {/* M3-B9: same rule, same reason, for the model chip. The
