@@ -285,6 +285,38 @@ Two forms the picker deals with are deliberately different and stay that way. Wh
 
 **The bridge is no longer an unverified exemption.** `selectModel` and `setPermissionMode` — the two sub-items `MODE_WRITE_BRIDGED_CONFIG_IDS` names — are now in the snapshot audit's `REQUIRED_METHODS`, so a real booted host is checked for both of them on the adapter *and* the CliService surface, and a declaration that stops listing one goes red. Neither surface carries a `setThinkingEffort` / `selectThinkingEffort`, which is the fact the gating decision above turns on.
 
+### M3-B11: the provider family moves behind the facade, and the two provider files become one (storage change)
+
+`GET /api/providers` (#62), `PUT /api/providers` (#63), `POST /api/providers/test` (#64), `GET /api/providers/presets` (#65) and `POST /api/providers/preset/:id/enable` (#66) are the last catalogue family in the migration, and the only one that changes where a user's data lives.
+
+**What changed.** webui kept two files describing the same providers: `~/.mcode-webui/providers.json` (the v2 catalogue, ordered, lossless) and the engine's `<engine data dir>/config.yaml` `custom_provider` tree (a projection of the first, written by a double-write that had no transaction across it). The projection was lossy and the loss was invisible precisely because nothing read it back: a disabled provider, a `coding-plan` provider, a `preset` name and the gemini-vs-openai protocol distinction all vanished on the way to the engine, and the catalogue's ordering came from the file that was about to stop being authoritative. There is now one file. Each webui-managed entry carries its webui record beside its engine fields:
+
+```yaml
+custom_provider:
+  acme-gateway:
+    name: Acme Gateway
+    kind: custom
+    api: openai-completions
+    options: { apiKey: …, baseURL: …, authMode: api-key }
+    models: { glm-5.3: { limit: { context: 128000 } } }
+    _webui_owned: true        # ownership: webui wrote this entry
+    _webui_provider: { … }    # the authoritative v2 record, verbatim
+```
+
+Both marker fields are ignored by the engine, which parses `config.yaml` through js-yaml with no schema rejection and reads named fields. A provider the engine cannot express still gets its key, its marker and its record — it simply has no engine fields, which is the whole difference from the double write.
+
+**The migration, and the fallback.** While the store carries no `_webui_provider_migration` marker, the deprecated `providers.json` is still the authority; webui folds it into the store on the next read and stamps the marker on success, after which the file is never read again. A migration that fails — an unparseable `config.yaml`, a write that could not complete — leaves the store byte-identical and the old format readable, and the next read retries. The marker is a field rather than an inference ("the tree has webui entries") for one concrete reason: an operator who deletes every provider leaves a tree with no webui entries, and an inferred marker would hand authority back to the stale file and resurrect what they had just removed.
+
+Field-by-field equivalence and both fallback paths are pinned in `packages/webui/test/lib/engine/provider-migration.test.js`, on a fixture built to break every assumption the migration could be quietly making: several providers, every schema field, and the boundary values (empty label, absent `preset`, disabled, `coding-plan`, the gemini protocol, a zero context limit, empty thinking levels, a model id the engine key grammar rejects, unicode, a 4096-character key).
+
+**PUT atomicity is now structural.** There is one file and one `rename`, so the two-file disagreement the old arrangement allowed — the catalogue committed, the engine projection failed, a 200 with a warning nobody had to read — cannot be constructed. A refused write (an unparseable `config.yaml` is refused, never overwritten, because rewriting it would destroy every engine setting the store does not own) or a failed write leaves the previous document intact, and a concurrent reader always sees a whole catalogue.
+
+**The gates.** The two write endpoints declare `authCredentials` and gate **hard** on `updateUserModelProvider` / `createUserModelProvider`: the catalogue the operator is about to see is read by the engine, so a provider that cannot write providers cannot truthfully answer 200. The three read endpoints declare the same capability and gate **soft** — a provider with no provider surface still serves a well-defined catalogue, so hard-gating them would delete a working UI over an enrichment. As in B9, an unregistered transport (`acp`, until M4) is not a 501.
+
+**What a client observes.** The endpoint shapes, statuses, masking rule, keep-key convention, probe semantics and the `providers.updated` SSE frame are unchanged. Two response *values* moved with the storage: `PUT`'s `path` is now the engine's `config.yaml`, and it also reports `engineSync: {ok, written, keys}` for the store write itself. `GET`'s `sources` and `userPath` are unchanged in both field and value — they still name the deprecated file, because "which files did the server resolve" is a question an operator asks when a provider is missing, and the answer is now carried by the bilingual docs rather than by a renamed field.
+
+**Three decisions are recorded rather than taken.** `POST /api/providers/test` names `testUserModelProvider` in its gate, and that method cannot answer it: the engine's tester is keyed on a *persisted* provider, while the endpoint tests an unsaved candidate from a form. The probe stays webui-local, which is also the only option that keeps its two load-bearing properties (the local key-format check runs before any network call, and the apiKey goes to the configured baseURL and nowhere else). The preset gallery is still webui's own template list, and the engine has a different one; the two are not the same taxonomy, so the plan's "align the two template sets" is made visible rather than closed. And a webui provider whose engine key collides with an operator's hand-written entry still overwrites it, because the key *is* the runtime id and a silent rename would turn a recorded model pick into an unresolvable one. All three are costed in the KNOWN DEBT sections of `provider-reads.js` and `provider-writes.js`.
+
 ### Migration state and constraints
 
 - **M1 done in this batch**: host construction (`createCatalogueHost`) moved verbatim into `server/engine/providers/local-runtime-v2.js`; `runtime-host.js` re-exports it, so every existing importer is untouched. No existing route's behaviour changed; `GET /api/engine-capabilities` is a new, additive endpoint.

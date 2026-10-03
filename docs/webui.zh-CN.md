@@ -285,6 +285,38 @@ GET  /api/engine-capabilities[?provider=<id>]
 
 **桥接不再是未经核实的豁免。** `selectModel` 与 `setPermissionMode`——`MODE_WRITE_BRIDGED_CONFIG_IDS` 点名的两个子项——现已进入快照审计的 `REQUIRED_METHODS`，因此真实启动的 host 会在 adapter **与** CliService 两个面上被检查这两个方法，而停止列出其中之一的声明会变红。两个面都没有 `setThinkingEffort` / `selectThinkingEffort`，这正是上面那个挂门决策所依据的事实。
 
+### M3-B11：provider 端点族搬进引擎门面，两个 provider 文件合为一个（存储变更）
+
+`GET /api/providers`（#62）、`PUT /api/providers`（#63）、`POST /api/providers/test`（#64）、`GET /api/providers/presets`（#65）与 `POST /api/providers/preset/:id/enable`（#66）是迁移里最后一个目录族，也是唯一一个会改变用户数据落盘位置的一批。
+
+**变了什么。** webui 曾经用两个文件描述同一批 provider：`~/.mcode-webui/providers.json`（v2 目录，有序、无损）与引擎的 `<引擎数据目录>/config.yaml` 里 `custom_provider` 节点（第一个文件的投影，由一次跨不过事务的双写产生）。那个投影有损，而这份损失不可见，恰恰因为没有任何代码把它读回来：被禁用的 provider、`coding-plan` 类型的 provider、`preset` 名、以及 gemini 与 openai 的协议区分，都在通往引擎的路上蒸发了；而目录的顺序来自那个即将不再权威的文件。现在只有一个文件。每条 webui 管理的条目在自己的引擎字段旁边带着它的 webui 记录：
+
+```yaml
+custom_provider:
+  acme-gateway:
+    name: Acme Gateway
+    kind: custom
+    api: openai-completions
+    options: { apiKey: …, baseURL: …, authMode: api-key }
+    models: { glm-5.3: { limit: { context: 128000 } } }
+    _webui_owned: true        # 归属标记：这条是 webui 写的
+    _webui_provider: { … }    # 权威的 v2 记录，逐字保留
+```
+
+两个标记字段都会被引擎忽略——引擎用 js-yaml 解析 `config.yaml`，不做 schema 拒绝，读取的是具名字段。引擎表达不了的 provider 照样拿到自己的 key、标记与记录，只是没有引擎字段——这正是它与旧双写的全部差别。
+
+**迁移与回退。** 存储上没有 `_webui_provider_migration` 标记时，已废弃的 `providers.json` 仍是权威来源；webui 在下一次读取时把它折叠进存储，成功后打上标记，此后该文件不再被读取。迁移失败——无法解析的 `config.yaml`、没能完成的写入——会让存储逐字节保持原样，旧格式继续可读，下一次读取会重试。标记是一个字段而不是推断（「树里有 webui 条目」），理由很具体：运维删光所有 provider 之后，树里一条 webui 条目都没有，若按推断判定，就会把权威交还给那份陈旧文件，把刚删掉的东西复活。
+
+逐字段等价与两条回退路径由 `packages/webui/test/lib/engine/provider-migration.test.js` 钉死，fixture 专门用来打破迁移可能暗中依赖的每一个假设：多个 provider、schema 的每个字段，以及边界值（空 label、缺失的 `preset`、被禁用、`coding-plan`、gemini 协议、零 contextLimit、空的 thinkingLevels、引擎 key 语法拒绝的模型 id、unicode、4096 字符长的密钥）。
+
+**PUT 原子性现在是结构性的。** 一个文件、一次 `rename`，因此旧安排允许的那种两文件分歧——目录已落盘、引擎投影失败、回一个带 warning 的 200 而没人必须读它——无法被构造。被拒绝的写入（无法解析的 `config.yaml` 会被拒绝、绝不覆盖，因为覆盖会毁掉存储并不拥有的全部引擎配置）与失败的写入都让前一份文档保持完整，并发读到的永远是一份完整的目录。
+
+**门控。** 两个写端点声明 `authCredentials`，对自己的 `updateUserModelProvider` / `createUserModelProvider` 做**硬**门控：运维马上要看到的目录是引擎读的那份，因此管不了 provider 的 provider 无法如实回 200。三个读端点声明同一能力，做**软**门控——没有 provider 面的 provider 依然能给出定义良好的目录，硬门控等于为一个 enrichment 删掉一个能用的 UI。与 B9 相同，未注册的传输（M4 之前的 `acp`）不算 501。
+
+**客户端能观察到什么。** 端点形态、状态码、掩码规则、keep-key 约定、探测语义与 `providers.updated` SSE 帧都不变。有两个**取值**随存储一起搬了家：`PUT` 的 `path` 现在是引擎的 `config.yaml`，并额外回报这次存储写入本身 `engineSync: {ok, written, keys}`。`GET` 的 `sources` 与 `userPath` 字段与取值都不变——它们仍然指向那份已废弃的文件，因为「服务端解析了哪些文件」正是 provider 缺失时运维要问的问题，而新答案由双语文档承载，而不是靠改字段名。
+
+**三处只记录、未拍板的决策。** `POST /api/providers/test` 在门里写了 `testUserModelProvider`，而那个方法答不了它：引擎的探测器以**已持久化**的 provider 为键，而这个端点探测的是一份还没保存的候选配置。因此探测留在 webui 本地——这也是唯一能保住它两条承重性质的选项（本地 key 格式校验发生在任何网络调用之前；apiKey 只发往配置的 baseURL）。preset 画廊仍然是 webui 自己的模板列表，而引擎有另一套；两者不是同一套分类法，所以计划里的「两套模板对齐」在本批只是变得可见，并没有关闭。还有，引擎 key 与运维手写条目冲突的 webui provider 依然会覆盖对方，因为这个 key **就是**运行时 id，静默改名会把用户已选的模型变成无法解析的。三处都在 `provider-reads.js` 与 `provider-writes.js` 的 KNOWN DEBT 里逐条算了账。
+
 ### 迁移状态与边界
 
 - **本批只做迁移第一步 M1**：host 构造（`createCatalogueHost`）原样移入 `engine/providers/local-runtime-v2.js`，`runtime-host.js` 转发导出，既有引用方零改动；没有任何现有路由行为变化，`GET /api/engine-capabilities` 是纯新增端点。

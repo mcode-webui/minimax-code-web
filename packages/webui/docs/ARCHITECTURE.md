@@ -608,7 +608,7 @@ is what lets it be re-exported from `engine/index.js` at all.
 static imports, because `routes/model.js` already imported all four
 **before** M3-B4 and the server's boot cost is therefore exactly what it
 was. They reach `@mavis/shared/local-runtime-paths` (via `lib/config.js`)
-and `js-yaml` (via `engine-provider-sync.js`), so the module is deliberately
+and `js-yaml` (via `engine/provider-store.js`), so the module is deliberately
 **not** re-exported from `engine/index.js`: making the shared facade — the
 one import site the whole server shares, and the one `routes/plugins.js`
 must stay light through — heavier than it has ever been would buy nothing.

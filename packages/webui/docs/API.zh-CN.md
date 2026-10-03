@@ -1812,8 +1812,14 @@ Multipart 文件上传。保存到 `MCODE_WEBUI_UPLOAD_DIR` 并返回
 现网配置来自哪个文件。
 
 分层解析顺序：`MCODE_WEBUI_MODELS_CONFIG` 环境变量 → cwd 下的
-`models.json` → 用户级 `~/.mcode-webui/providers.json`（PUT 的写入
-目标）。同 id 的 provider 做深合并；模型按 id 去重，高层胜出。
+`models.json` → 引擎的 `<引擎数据目录>/config.yaml` 里的
+`custom_provider` 节点（PUT 的写入目标）。同 id 的 provider 做深
+合并；模型按 id 去重，高层胜出。
+
+env 与 cwd 两层由部署方拥有，任何 handler 都不写。第三层过去是
+webui 自己的文件（`~/.mcode-webui/providers.json`），现在是引擎
+自己的 provider 存储；那个文件已**废弃**，详见下文 `PUT /api/providers`
+一节。
 
 **响应 200**
 ```json
@@ -1856,14 +1862,22 @@ Multipart 文件上传。保存到 `MCODE_WEBUI_UPLOAD_DIR` 并返回
   与 `scripts/check-docs-alignment.mjs` 一起把这条规则钉死：无论
   密钥来自哪一层，明文 key 都绝不允许出现在任何
   `/api/providers*` 响应中。
+- `sources.user` 与 `userPath` 仍然指向**已废弃**的
+  `~/.mcode-webui/providers.json`。字段没变，取值也没变：两者的
+  文档语义都是「服务端解析了哪些文件」，运维排查 provider 缺失时
+  仍然需要知道该看哪里。变的是答案——该文件只在迁移完成前被读取，
+  此后不再被写入。真正的目录在引擎存储里，`GET /api/models` 也
+  是从那里读的。
 - `MCODE_WEBUI_MODELS_CONFIG` 未设置时 `sources.env` 为 `null`；
   此时 `sources.cwd` 也从层级集合中省略（环境变量覆盖的就是 cwd
   那个文件）。
 
 ### `PUT /api/providers`
 
-校验并持久化一份 v2 provider 配置到用户级文件
-（`~/.mcode-webui/providers.json`，即本 handler 写入的文件）。
+校验并持久化一份 v2 provider 配置到**引擎的 provider 存储**——
+`<引擎数据目录>/config.yaml` 的 `custom_provider` 节点，文件权限
+`0600`。env / cwd 两层由部署方拥有，本 handler 不写；已废弃的
+`~/.mcode-webui/providers.json` 同样不写。
 env / cwd 两层归部署方所有，永远不在这里被写。
 
 handler 通过 rename 原子写入（磁盘上不会出现半写文件），下一次
@@ -1895,14 +1909,40 @@ handler 通过 rename 原子写入（磁盘上不会出现半写文件），下�
 {
   "ok": true,
   "providers": [ /* 掩码视图，形态与 GET 相同 */ ],
-  "path": "/home/you/.mcode-webui/providers.json"
+  "path": "/home/you/.minimax/config.yaml",
+  "engineSync": { "ok": true, "written": true, "keys": ["openai_compat"] }
 }
 ```
 
+- `path` 是本 handler 实际写入的文件：引擎的 `config.yaml`。它
+  过去是 `~/.mcode-webui/providers.json`。
+- `engineSync` 报告这次存储写入本身。`written: false` 表示文档
+  内容不会变化——空转的 PUT 不会去重设运维刚手工编辑过的文件权限。
+  只要存储接受了写入，它就是 `ok: true`。
+
+**能力门控。** 两个写端点（`PUT /api/providers` 与
+`POST /api/providers/preset/:id/enable`）声明 `authCredentials`
+能力，并对自己的子项（`updateUserModelProvider` /
+`createUserModelProvider`）做**硬**门控。声明缺失该子项的 provider
+会得到 `501 {ok:false, code:"engine_capability_not_supported", …}`，
+而不是确认一份引擎永远不会读取的配置。在默认的 `acp` 传输下尚未
+注册任何 provider，门控报告 `unregistered-transport`，写入照常进行。
+三个读端点声明同一能力，做**软**门控——只报告降级，继续服务。
+
+**存量迁移。** 引擎存储里没有迁移标记时，已废弃的
+`providers.json` 仍然是权威来源：webui 会在每次读取时尝试把它
+无损折叠进存储，成功后写入标记，该文件此后再不被读取。迁移失败
+（引擎配置无法解析、写入失败）时存储保持原样，旧格式继续可读，
+下一次读取会重试。目录字段逐项等价由
+`packages/webui/test/lib/engine/provider-migration.test.js` 钉死。
+
 - `400 BAD_BODY` —— provider 形态非法、协议未知，或校验失败
   （每条错误都带一条可读的 `error` 文本，指出出问题的字段）。
-- `500 WRITE_FAILED` —— 磁盘 I/O 失败（内存中的状态没有变化；
-  运维应重试）。
+- `500 WRITE_FAILED` —— 存储拒绝或未能完成写入。两种成因，其
+  中第二种才是重点：无法解析的 `config.yaml` 会被**拒绝，绝不覆盖**，
+  因为覆盖会连带毁掉存储并不拥有的全部引擎配置。两种情况下前一份
+  文档都保持完整，随后的 `GET` 返回客户端原本就有的目录，运维可以
+  直接重试。
 
 ### `POST /api/providers/test`
 
@@ -2018,8 +2058,11 @@ SSE 事件，让每个已连接客户端刷新目录。下一次 `/api/models` �
 ```
 
 - `400 UNKNOWN_PRESET` —— `:id` 不是已知模板。
-- `500 WRITE_FAILED` —— 磁盘 I/O 失败（内存中的状态没有变化；
-  运维应重试）。
+- `500 WRITE_FAILED` —— 存储拒绝或未能完成写入。两种成因，其
+  中第二种才是重点：无法解析的 `config.yaml` 会被**拒绝，绝不覆盖**，
+  因为覆盖会连带毁掉存储并不拥有的全部引擎配置。两种情况下前一份
+  文档都保持完整，随后的 `GET` 返回客户端原本就有的目录，运维可以
+  直接重试。
 
 ---
 

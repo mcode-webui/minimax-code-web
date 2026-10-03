@@ -73,7 +73,7 @@
 // server's boot cost is exactly what it was. What they must not do is
 // reach `@mavis/*` or `js-yaml` through the SHARED facade — and they
 // do reach `@mavis/shared/local-runtime-paths` (via `lib/config.js`)
-// and `js-yaml` (via `engine-provider-sync.js`). That is why this module
+// and `js-yaml` (via `engine/provider-store.js`, since M3-B11). That is why this module
 // is deliberately NOT re-exported from `engine/index.js`, and why
 // `routes/model.js` imports it directly: `test/lib/engine/host-facade.test.js`
 // guards `engine/index.js` and `routes/plugins.js` against exactly that
