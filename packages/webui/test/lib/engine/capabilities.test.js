@@ -116,14 +116,14 @@ describe("LOCAL_RUNTIME_V2_CAPABILITIES", () => {
     sessionCrud: "full",
     streamingSend: "full",
     interrupt: "full",
-    toolSkillInvocation: "full",
+    toolSkillInvocation: "partial",
     turnDiff: "full",
     turnRewindRedo: "full",
     plugins: "full",
     mcp: "full",
     subagents: "partial",
     usageStats: "full",
-    authCredentials: "full",
+    authCredentials: "partial",
     updateCheck: "none",
     fileReadWrite: "partial",
     gitOperations: "partial",
@@ -148,6 +148,16 @@ describe("LOCAL_RUNTIME_V2_CAPABILITIES", () => {
       "stopDelegation",
     ]);
   });
+
+  // M3-B9: the two B9 partials name exactly the sub-item each is for,
+  // and the generic config-option entry must NOT grow to swallow the
+  // bridged ones — `model` and `permissionMode` pass a provider that
+  // denies `setConfigOption`, so listing them here would silently
+  // disable the bridge this batch exists to keep working.
+  test("the two B9 partials enumerate exactly their own sub-item", () => {
+    assert.deepEqual(LOCAL_RUNTIME_V2_CAPABILITIES.toolSkillInvocation.missing, ["setMode"]);
+    assert.deepEqual(LOCAL_RUNTIME_V2_CAPABILITIES.authCredentials.missing, ["setConfigOption"]);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -164,14 +174,14 @@ describe("TUI_RUNTIME_ADAPTER_CAPABILITIES", () => {
     sessionCrud: "full",
     streamingSend: "full",
     interrupt: "full",
-    toolSkillInvocation: "full",
+    toolSkillInvocation: "partial",
     turnDiff: "none",
     turnRewindRedo: "partial",
     plugins: "partial",
     mcp: "full",
     subagents: "full",
     usageStats: "full",
-    authCredentials: "full",
+    authCredentials: "partial",
     updateCheck: "none",
     fileReadWrite: "partial",
     gitOperations: "partial",
@@ -312,21 +322,36 @@ describe("engineCapabilityHttpResponse", () => {
 // ---------------------------------------------------------------------------
 
 describe("summarizeUnavailableCapabilities", () => {
-  test("local-runtime-v2: updateCheck alone is none; three keys are partial", () => {
+  // M3-B9 added two more `partial` keys to this declaration — the
+  // session-mode write and the generic config-option write, both absent
+  // from the audited v2 surface (see the declaration's own comments and
+  // `engine/mode-writes.js`). The roll-up is the frontend's input, so
+  // the list is pinned as a value rather than a count.
+  test("local-runtime-v2: updateCheck alone is none; five keys are partial", () => {
     const summary = summarizeUnavailableCapabilities(LOCAL_RUNTIME_V2_CAPABILITIES);
     assert.deepEqual(summary.none, ["updateCheck"]);
     assert.deepEqual(
       summary.partial.map((p) => p.key).sort(),
-      ["fileReadWrite", "gitOperations", "subagents"],
+      ["authCredentials", "fileReadWrite", "gitOperations", "subagents", "toolSkillInvocation"],
     );
   });
 
-  test("tui-runtime-adapter: turnDiff and updateCheck are none; four keys are partial", () => {
+  // Same M3-B9 amendment as the v2 column above, and for the same two
+  // reasons: neither the adapter nor the cliService opens a session-mode
+  // write or a generic config-option write.
+  test("tui-runtime-adapter: turnDiff and updateCheck are none; six keys are partial", () => {
     const summary = summarizeUnavailableCapabilities(TUI_RUNTIME_ADAPTER_CAPABILITIES);
     assert.deepEqual(summary.none, ["turnDiff", "updateCheck"]);
     assert.deepEqual(
       summary.partial.map((p) => p.key).sort(),
-      ["fileReadWrite", "gitOperations", "plugins", "turnRewindRedo"],
+      [
+        "authCredentials",
+        "fileReadWrite",
+        "gitOperations",
+        "plugins",
+        "toolSkillInvocation",
+        "turnRewindRedo",
+      ],
     );
   });
 });

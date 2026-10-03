@@ -15,6 +15,8 @@ import { createPortal } from "react-dom";
 
 import * as api from "@/lib/api";
 import { clientId } from "@/lib/cid";
+import { bridgedControlAvailability, readEngineCapabilities } from "@/lib/engine-capabilities";
+import type { ControlAvailability, EngineCapabilities } from "@/lib/engine-capabilities";
 import {
   effortControlShape,
   effortOptionsWithDefault,
@@ -254,6 +256,15 @@ export function Composer({
   // pick another mode and see nothing change (reported as "完全不能做出选择"
   // together with the occluded popup). Resolve either form.
   const permission = resolvePermissionMode(state?.permissions);
+  // M3-B9: the two engine-backed controls below are hidden outright when
+  // the connected provider declares the matching write absent. Not
+  // disabled, not a toast — the engine has never been able to perform the
+  // write, so a visible control would be advertising an action that
+  // cannot happen. See `lib/engine-capabilities.ts` for the fail-open
+  // rule and `webapp/test/engine-capabilities-degradation.test.ts` for
+  // the coverage of both halves.
+  const permissionControl = useEngineControlAvailability("permissionMode");
+  const modelControl = useEngineControlAvailability("model");
   const hasConversation = decodeTranscript(state?.chat ?? []).length > 0;
   /** Nothing to send yet — the send button is rendered but inert. */
   const empty = value.trim().length === 0 && attachments.length === 0;
@@ -801,19 +812,29 @@ export function Composer({
                 <Icon name="attach" size={18} />
               </RoundButton>
 
-              <PermissionSelect
-                t={t}
-                value={permission}
-                onPick={(id) => void api.setPermissions(id)}
-              />
+              {/* M3-B9: hidden outright when the provider declares no
+                  permission-mode write — see the declaration comment on
+                  `permissionControl` above. */}
+              {permissionControl.available ? (
+                <PermissionSelect
+                  t={t}
+                  value={permission}
+                  onPick={(id) => void api.setPermissions(id)}
+                />
+              ) : null}
             </div>
 
             <div className="flex min-w-0 shrink items-center gap-3" data-message-input-toolbar-right>
               {/* Context-window readout, immediately left of the model selector. */}
               <ContextMeter t={t} />
-              <ModelSelect
-                t={t}
-                models={models}
+              {/* M3-B9: same rule, same reason, for the model chip. The
+                  context-window readout next to it stays — it READS state
+                  webui already has and does not ask the engine to change
+                  anything, so it is not part of this capability. */}
+              {modelControl.available ? (
+                <ModelSelect
+                  t={t}
+                  models={models}
                 groups={groups}
                 value={state?.model.name}
                 label={currentModelLabel}
@@ -876,7 +897,8 @@ export function Composer({
                   void api.setModel({ thinking: level });
                 }}
                 thinkingDisabled={running}
-              />
+                />
+              ) : null}
               {/* Thinking-effort picker (ticket 04). Only rendered when
                   the active model carries a `thinkingLevels` list; the
                   picker is gated so models without reasoning controls
@@ -1055,6 +1077,41 @@ const SelectPanel = forwardRef<
     </div>
   );
 });
+
+/**
+ * M3-B9 — the two engine-backed controls' availability, from the
+ * server's capability declaration.
+ *
+ * Starts as `null` and stays `null` until the probe answers or fails,
+ * which is what makes the degradation fail-open: a control is shown until
+ * something positively says the engine cannot do it. The probe is a
+ * single request shared by both controls (see `readEngineCapabilities`'s
+ * module-level cache), and it is never re-run — a provider's declaration
+ * does not change while the page is open.
+ *
+ * `null` and `{available:true}` are deliberately the same rendering
+ * decision. There is no intermediate "disabled while loading" state: a
+ * control that appears a moment later is worse than one that was always
+ * there, because the user can click it in between.
+ */
+function useEngineControlAvailability(
+  configId: "model" | "permissionMode",
+): ControlAvailability {
+  const [declaration, setDeclaration] = useState<EngineCapabilities>(null);
+  useEffect(() => {
+    let live = true;
+    void readEngineCapabilities().then((caps) => {
+      if (live) setDeclaration(caps);
+    });
+    return () => {
+      live = false;
+    };
+  }, []);
+  return useMemo(
+    () => bridgedControlAvailability(declaration, configId),
+    [declaration, configId],
+  );
+}
 
 /**
  * One row of a `SelectPanel`.

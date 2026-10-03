@@ -235,6 +235,7 @@ const KNOWN_PREFIXES = [
   "mcode-resolver-mac-",
   "mcode-resolver-valid-",
   "mcode-resolver-win-",
+  "mcode-webui-b9-mode-write-",
   "mcode-webui-bind-",
   "mcode-webui-c08-",
   "mcode-webui-d02-chain-",
