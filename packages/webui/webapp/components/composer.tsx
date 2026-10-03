@@ -829,13 +829,17 @@ export function Composer({
 
             {/* The right cluster is five 32px controls in a row — ring, model
                 chip, brain, mic, send — so the gap between them is the only
-                thing setting how wide it reads. At 12px it was a third of a
-                control's width and the row came out longer than the things it
-                controls; 6px was still visibly loose next to controls this
-                small, so it is 4px. That is the floor: the hit areas are
-                neighbouring 32px squares, and 0 or 2px stops reading as
-                five controls and starts reading as one striped block. */}
-            <div className="flex min-w-0 shrink items-center gap-1" data-message-input-toolbar-right>
+                thing setting how wide it reads. Written as an arbitrary value
+                rather than a scale step on purpose: Tailwind here is v3, whose
+                spacing scale is a fixed enumeration, so `gap-0.8` is not a
+                class that exists and would silently render a ZERO gap instead
+                of the 3.2px asked for. 12px → 6px → 4px → 3.2px across three
+                rounds; the controls still read as five separate hit areas at
+                this spacing, which is the only property worth defending. */}
+            <div
+              className="flex min-w-0 shrink items-center gap-[3.2px]"
+              data-message-input-toolbar-right
+            >
               {/* Context-window readout, immediately left of the model selector. */}
               <ContextMeter t={t} />
               {/* M3-B9: same rule, same reason, for the model chip. The
