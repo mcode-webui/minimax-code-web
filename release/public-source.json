@@ -3987,6 +3987,7 @@
     "packages/webui/webapp/test/markdown-code-wrap.test.ts",
     "packages/webui/webapp/test/markdown-html-render.test.ts",
     "packages/webui/webapp/test/markdown-math.test.ts",
+    "packages/webui/webapp/test/markdown-raw-html.test.ts",
     "packages/webui/webapp/test/markdown-registry.test.ts",
     "packages/webui/webapp/test/markdown-toc.test.ts",
     "packages/webui/webapp/test/markdown.test.ts",

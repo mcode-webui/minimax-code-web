@@ -1648,6 +1648,27 @@ implementation accident:
 The `mermaid` dependency (11.12.1, MIT) is recorded in
 `release/dependency-licenses.json`.
 
+### Raw HTML in Markdown is text, never markup (P17)
+
+HTML written into a Markdown source — an assistant message, an activity
+group, a `.md` file preview — is **shown as the source text**. It is never
+parsed into DOM elements. That is the whole contract; the rest is how it is
+kept, and how you would notice a regression.
+
+| Aspect | Contract | Backed by |
+| --- | --- | --- |
+| Author HTML | Inline and block HTML are escaped, so a pasted `<svg><path …/></svg>`, a `<div onclick=…>`, or a `<script>` block appears verbatim as text. The prose around it is unaffected — one snippet does not blank the message | `webapp/lib/markdown.ts` (the `renderer.html` override) |
+| Why the parser and not the sanitiser | `marked` has no "no raw HTML" option: without the override the snippet reached the tag allowlist, which admits `svg`/`path` for KaTeX geometry, and `components/markdown-html.tsx` then called `createElement("path")` — an unknown host element, and one `The tag <path> is unrecognized in this browser` console error per occurrence (nine in a single UAT round; `doc/uat/2026-10-03-16-master-sub-agent-comm-redline1.md`, anomaly #2) | `webapp/lib/markdown.ts`, `components/markdown-html.tsx` (`htmlToReact`) |
+| Generated HTML is exempt | Markup this app *generates* never passes through that override: KaTeX arrives from the `webuiMath` inline extension and every fenced language from `registerLanguageRenderer`, both of which return their HTML directly. Formula geometry — real `<svg>`/`<path>` — therefore still renders | `webapp/lib/math-renderer.ts`, `webapp/lib/markdown.ts` (`safeLanguageRenderer`) |
+| Line structure | A block snippet keeps its original line breaks; escaping never collapses a multi-line paste onto one line | `webapp/lib/markdown.ts`, `webapp/test/markdown-raw-html.test.ts` |
+| How to tell it works | The regression suite asserts the React tree, not just the string: no `svg`/`g`/`path` element is ever created for author HTML, and a formula still creates `svg` + `path`. A change that lets a tag through turns the suite red, and so does one that over-tightens and kills formula geometry | `webapp/test/markdown-raw-html.test.ts` |
+
+Rejected alternatives: **rendering model-authored SVG** (an XSS surface — an
+`<svg>` can carry `<foreignObject>`, animation and event handlers, and the
+product intent is a transcript, not a renderer); **adding DOMPurify** (a
+multi-megabyte dependency to defend markup the app never needs, when the
+parser can refuse it outright).
+
 ### Code block wrapping and scrollbars (ticket 52)
 
 Every markdown codeblock — chat messages, activity groups and markdown
