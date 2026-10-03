@@ -24,7 +24,16 @@
 
 import { test, describe, before, after, beforeEach } from "node:test";
 import { strict as assert } from "node:assert";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import yaml from "js-yaml";
 
@@ -66,13 +75,28 @@ function rec(raw) {
 const A = { id: "a", label: "A", protocol: "openai", auth: { type: "byok", apiKey: "sk-key-aaaa", baseURL: "https://a" }, models: [] };
 const B = { id: "b", label: "B", protocol: "openai", auth: { type: "byok", apiKey: "sk-key-bbbb", baseURL: "https://b" }, models: [] };
 
-function storeDoc() {
-  if (!existsSync(configPath)) return null;
-  return yaml.load(readFileSync(configPath, "utf8"));
+/**
+ * The parsed store document, or null when the file is absent.
+ *
+ * @param {string} [at]  Defaults to the file-level store path. A test
+ *        that points `MINIMAX_DATA_DIR` somewhere else passes the
+ *        resolved path explicitly, so the assertion reads the file the
+ *        write actually produced rather than the default one.
+ * @returns {object|null}
+ */
+function storeDoc(at = configPath) {
+  if (!existsSync(at)) return null;
+  return yaml.load(readFileSync(at, "utf8"));
 }
 
-function storeRecords() {
-  const doc = storeDoc();
+/**
+ * The webui records the store holds, in key order.
+ *
+ * @param {string} [at]
+ * @returns {object[]}
+ */
+function storeRecords(at = configPath) {
+  const doc = storeDoc(at);
   if (!doc) return [];
   return Object.values(doc.custom_provider || {})
     .map((e) => e && e._webui_provider)
@@ -268,6 +292,84 @@ describe("commitProviderCatalogueWrite — one document, one rename", () => {
     const doc = storeDoc();
     assert.deepEqual(doc.provider, seed.provider);
     assert.equal(doc.defaultModel, seed.defaultModel);
+  });
+});
+
+// =====================================================================
+// The path the write lands on — the security surface
+// =====================================================================
+
+describe("the write path is the same path the read resolves", () => {
+  // The store is written with mode 0600 through a tmp file and a
+  // rename, and it carries every plaintext apiKey in the catalogue. So
+  // "which file did that land in" is a security question, not a
+  // cosmetic one: a write that resolved its path differently from the
+  // read would put the keys in a file the catalogue never looks at —
+  // invisible, not deletable by the next PUT, and still on disk.
+  //
+  // The two sides must agree by CONSTRUCTION: there is one resolver,
+  // `getEngineConfigPath()`, and both call it. These tests pin that
+  // agreement rather than the implementation, and the symlink is the
+  // case where a future "helpful" normalisation could split them.
+
+  test("read and write name the same file, through a symlinked data dir", async () => {
+    // `resolveEngineDataDir` returns the env value verbatim and no
+    // getcwd/realpath is involved, so both sides must use the literal
+    // and the bytes must land in the REAL file. The assertion is on the
+    // result, not on the string.
+    const realDir = join(tmpBase, "engine-symlink-target");
+    const alias = join(tmpBase, "engine-symlink-alias");
+    mkdirSync(realDir, { recursive: true });
+    rmSync(alias, { force: true, recursive: true });
+    symlinkSync(realDir, alias);
+
+    const before = process.env.MINIMAX_DATA_DIR;
+    process.env.MINIMAX_DATA_DIR = alias;
+    try {
+      const w = await commitProviderCatalogueWrite({ records: [rec(A)] });
+      assert.equal(w.ok, true);
+      assert.equal(existsSync(join(realDir, "config.yaml")), true, "the write landed in the real file");
+      assert.deepEqual(
+        storeRecords(join(realDir, "config.yaml")).map((r) => r.id),
+        ["a"],
+        "and the read finds them there",
+      );
+      // No stray document or leftover tmp file beside the symlink: a
+      // key must not be able to end up in a file the store never reads.
+      const stray = readdirSync(tmpBase).filter(
+        (f) => f === "config.yaml" || f.startsWith(".config-tmp-"),
+      );
+      assert.deepEqual(stray, [], "no document written beside the symlink");
+    } finally {
+      if (before === undefined) delete process.env.MINIMAX_DATA_DIR;
+      else process.env.MINIMAX_DATA_DIR = before;
+      rmSync(alias, { force: true });
+    }
+  });
+
+  test("the file the write creates is 0600 even when reached through a symlink", async () => {
+    // The permission must not depend on how the operator spelled the
+    // path. POSIX mode bits travel with the file across a rename, and
+    // the tmp file is created 0600 before it is renamed, so the
+    // symlinked route lands in exactly the same mode.
+    const realDir = join(tmpBase, "engine-mode-target");
+    const alias = join(tmpBase, "engine-mode-alias");
+    mkdirSync(realDir, { recursive: true });
+    rmSync(alias, { force: true, recursive: true });
+    symlinkSync(realDir, alias);
+
+    const before = process.env.MINIMAX_DATA_DIR;
+    process.env.MINIMAX_DATA_DIR = alias;
+    try {
+      const r = await commitProviderCatalogueWrite({ records: [rec(A)] });
+      assert.equal(r.ok, true);
+      const mode = statSync(join(realDir, "config.yaml")).mode & 0o777;
+      assert.equal(mode, 0o600, `expected 0600 through the symlinked dir, got ${mode.toString(8)}`);
+    } finally {
+      if (before === undefined) delete process.env.MINIMAX_DATA_DIR;
+      else process.env.MINIMAX_DATA_DIR = before;
+      rmSync(alias, { force: true });
+    }
   });
 });
 

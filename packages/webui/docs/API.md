@@ -2044,6 +2044,16 @@ store, and that file is **deprecated** — see "Provider storage" below.
   in this surface. A test (and `scripts/check-docs-alignment.mjs`)
   pins the rule: the plaintext key MUST NEVER appear in any
   `/api/providers*` response, regardless of which layer held it.
+**Path forms are reported as the server resolved them, and nothing is
+re-resolved.** `sources.cwd` is `<process.cwd()>/models.json`, and
+`process.cwd()` is the kernel-reported working directory — on macOS
+that is the fully-resolved form, so a server started under `/var`
+reports `/private/var/...`. That is the correct answer to "which file
+did you read", and the write side uses the same resolver, so the file
+the response names is the file the `PUT` will land in. `sources.user`
+and `userPath` come straight from `MCODE_WEBUI_DATA_DIR` and are
+reported exactly as configured.
+
 - `sources.env` is `null` when `MCODE_WEBUI_MODELS_CONFIG` is unset;
   `sources.cwd` is omitted from the layer set in that case (the env
   override is the cwd file).

@@ -1878,6 +1878,14 @@ webui 自己的文件（`~/.mcode-webui/providers.json`），现在是引擎
   仍然需要知道该看哪里。变的是答案——该文件只在迁移完成前被读取，
   此后不再被写入。真正的目录在引擎存储里，`GET /api/models` 也
   是从那里读的。
+**路径按服务端解析出的形态上报，不做二次解析。** `sources.cwd` 是
+`<process.cwd()>/models.json`，而 `process.cwd()` 是内核返回的工作
+目录——在 macOS 上它是完全解析后的形态，因此从 `/var` 下启动的服务会
+上报 `/private/var/...`。这正是「你到底读了哪个文件」的正确答案；
+写入侧用的是同一个解析器，所以响应里指名的文件就是 `PUT` 会落到的
+文件。`sources.user` 与 `userPath` 直接来自 `MCODE_WEBUI_DATA_DIR`，
+按配置原样上报。
+
 - `MCODE_WEBUI_MODELS_CONFIG` 未设置时 `sources.env` 为 `null`；
   此时 `sources.cwd` 也从层级集合中省略（环境变量覆盖的就是 cwd
   那个文件）。

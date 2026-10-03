@@ -26,7 +26,15 @@
 
 import { test, describe } from "node:test";
 import { strict as assert } from "node:assert";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import yaml from "js-yaml";
 
@@ -210,12 +218,68 @@ describe("readEngineProviderCatalogue — the shape the route consumes", () => {
     // answer behind them moved: an operator diagnosing a missing
     // provider still needs to be told which files the server resolved,
     // and the bilingual docs carry the new answer.
+    //
+    // The cwd expectation is built from `process.cwd()` rather than
+    // from the string this file chdir'd into. Those two differ whenever
+    // the temp path has a symlink component, and they are not the same
+    // kind of thing: `process.cwd()` is `getcwd(2)`, which returns a
+    // fully-resolved path on every POSIX platform, while the chdir
+    // argument is whatever the caller typed. The product's contract is
+    // "the cwd layer is `<process.cwd()>/models.json`", so that is what
+    // is asserted — see the symlink test below for the case this exists
+    // to cover.
     reset();
     const c = await readEngineProviderCatalogue();
     assert.equal(c.sources.user, legacyFile);
-    assert.equal(c.sources.cwd, join(cwdDir, "models.json"));
+    assert.equal(c.sources.cwd, join(process.cwd(), "models.json"));
     assert.equal(c.sources.env, null);
     assert.equal(c.userPath, legacyFile);
+  });
+
+  test("a symlinked cwd does not change the cwd layer's path — the product does not re-resolve it", async () => {
+    // The macOS CI red, reproduced on any POSIX platform. macOS makes
+    // `/var` a symlink to `/private/var`, and `os.tmpdir()` lands under
+    // it, so a test that chdir'd into a temp dir and then asserted on
+    // the literal path it passed got `/private/var/...` back and
+    // failed. Linux CI never showed it because `/tmp` is a real
+    // directory — a symlink makes the same mismatch happen here.
+    //
+    // What is pinned is the product's behaviour, not the platform's:
+    // the path is `process.cwd()` + the file name, and webui applies
+    // NO additional resolution of its own. That is the correct
+    // direction for a value the API hands an operator to look at, and
+    // it is load-bearing for the store below — a read path that
+    // re-resolved and a write path that did not would make the write
+    // land in a different file than the read looked in.
+    reset();
+    const realDir = join(tmpBase, "symlink-target");
+    const alias = join(tmpBase, "symlink-alias");
+    mkdirSync(realDir, { recursive: true });
+    rmSync(alias, { force: true });
+    symlinkSync(realDir, alias);
+    process.chdir(alias);
+    try {
+      assert.notEqual(process.cwd(), alias, "the platform resolved the symlink, as getcwd always has");
+      const c = await readEngineProviderCatalogue();
+      assert.equal(
+        c.sources.cwd,
+        join(process.cwd(), "models.json"),
+        "the reported path tracks process.cwd(), with no second resolution layered on top",
+      );
+      assert.equal(c.sources.cwd.startsWith(alias), false, "webui does not re-expand the symlink either");
+      // The EXPECTED side is normalised here, never the actual. On
+      // macOS the temp ROOT is itself a symlink (`/var` →
+      // `/private/var`), so `realDir` as spelled here is not what
+      // `getcwd` will report — comparing against `realpathSync` is what
+      // makes this assertion mean the same thing on both platforms.
+      assert.equal(
+        c.sources.cwd.startsWith(realpathSync(realDir)),
+        true,
+        "it reports what getcwd reported",
+      );
+    } finally {
+      process.chdir(_origCwd);
+    }
   });
 
   test("the env override suppresses the cwd layer, as it always did", async () => {

@@ -140,4 +140,39 @@ describe("A5 — the config.yaml bypass stays deleted", () => {
     );
     assert.deepEqual(definitions.map(rel), ["server/engine/provider-store.js"]);
   });
+
+  test("no provider path resolution applies a SECOND, different normalisation", () => {
+    // The macOS CI red, and why the PRODUCT is not the thing to change.
+    //
+    // `process.cwd()` is `getcwd(2)`, which returns a fully-resolved
+    // path on every POSIX platform — on macOS that is why a temp dir
+    // under `/var` comes back as `/private/var`. A `realpathSync` (or
+    // any equivalent) layered on top would be a SECOND normalisation
+    // that agrees with the first today and can drift from it the day
+    // either side changes. On the write side that drift is a security
+    // bug rather than a cosmetic one: the store is written 0600 through
+    // a rename and carries every plaintext apiKey, so a write that
+    // resolved its path differently from the read would put the keys in
+    // a file the catalogue never looks at — invisible, and not
+    // deletable by the next PUT.
+    //
+    // The correct direction is the one the code already takes: report
+    // what the resolver reported, and use the SAME resolver on both
+    // sides. `provider-reads.test.js` and `provider-writes.test.js`
+    // pin that behaviour against a real symlink, on any POSIX
+    // platform; this tripwire is what stops the next person from
+    // "fixing" the symptom in product code.
+    const RESOLVERS =
+      /getUserLevelPath|getCwdLayerPath|getEngineConfigPath|resolveEngineDataDir|loadProvidersConfig|readProviderStore|commitProviderStoreWrite|commitProviderCatalogueWrite/;
+    const offenders = SERVER_FILES.filter((f) => {
+      const text = readFileSync(f, "utf8");
+      if (!text.includes("realpath")) return false;
+      return RESOLVERS.test(text);
+    });
+    assert.deepEqual(
+      offenders.map(rel),
+      [],
+      "a second normalisation in the path resolution is the bug, not the fix",
+    );
+  });
 });
