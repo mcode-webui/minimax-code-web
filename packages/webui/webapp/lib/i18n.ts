@@ -56,7 +56,6 @@ const en = {
      which this server does not publish (see components/context-meter.tsx). */
   "context.show": "Show context window usage",
   "context.title": "Context window",
-  "context.used": "Used",
   "context.speed": "Output speed",
   // Used when the round-to-integer percent is zero but the underlying ratio
   // is positive (e.g. 1521/512000 = 0.3%). Showing "0%" hid that any usage
@@ -1213,7 +1212,6 @@ const zh: Record<MessageKey, string> = {
      的占用明细, 本服务端没有该数据 (见 components/context-meter.tsx)。 */
   "context.show": "显示上下文窗口用量",
   "context.title": "上下文窗口",
-  "context.used": "已用",
   "context.speed": "输出速度",
   // 后端 percent 用 1 位小数；整数四舍五入为 0 但实际用量 > 0 时，用 "<1%" 让小占用可见。
   "context.lessThanOne": "<1%",

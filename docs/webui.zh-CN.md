@@ -583,6 +583,39 @@ ACP 握手是双向的，两个方向都由同一份 `initialize` 载荷决定�
 
 接口契约见 [`webui.md`](webui.md) 的 Context window 一节。
 
+## 上下文窗口面板（输入框旁那个环点开的东西）
+
+输入框旁那个环是画在 30px 方框里的 14px 进度环——旁边**不**带百分比，百分比在面板里。点开是一块 400px 的 portal 面板，逐行复刻参照版：
+
+```
+上下文窗口                    29% ⌄     ← 标题 + 百分比，一个折叠控件
+▓▓▓▓░░░░░░░░░░░░░░░░░░░░░░░              ← 一条进度条，一个颜色
+■ 消息        71.9%            ← 构成明细，引擎报了才画
+■ 工具        13.1%
+  …
+────────────────────────────
+套餐用量 · Explore
+5 小时限额          0% / 100%
+▓░░░░░░░░░░░░░░░░░░░░░░
+4小时57分后重置
+周限额              16% / 100%
+▓▓▓░░░░░░░░░░░░░░░░░░░
+4天2小时后重置
+```
+
+它画的三样东西来自三个不同的地方，把它们分开正是它们不会各自漂移的原因。
+
+**窗口本身**来自状态快照的 `context` 块——`used` / `limit` / `percent`，以及引擎真发时才有的 `breakdown`。标题百分比有五档：没有用量是 `0%`；有用量但四舍五入到零是 `<1%`（长会话在缓慢累积要看得见）；10% 以下一位小数；10% 以上整数。**即使有 breakdown，进度条也只画一段**：构成由下面那些行承载，同一个事实在 4px 高的条里再编码一次，那个尺寸根本读不出来。
+
+**套餐那两行就是设置页的那两行。** 同样的两个数字、同样的「剩余 → 已用」取反、同样的重置提示，而且直接用设置页自己的 `UsageBar` 组件画——所以同一个数字不可能在两处显示得不一样。没有数据时这一区照样渲染，`UsageBar` 打它的占位文案，和设置页的用量卡一致。缺失的数字保持 `null`，绝不变成 0%：「我们不知道」和「你一点没用」是两件事。设置页用量卡里的「视频限额」这一行**故意不搬**——参照版的悬浮层就两行，第三行是本地版在上下文面板里没有来源的视频数字。标题在引擎报了套餐名时打「套餐用量 · <档位>」，没报时就是光秃秃的「套餐用量」。
+
+**什么都不编。** `context.breakdown` 今天是 `null`——引擎不发，`server/lib/state-bus.js` 就写在那个字段旁边——所以面板只画那条进度条。某一类只有引擎报了非零 token 数才画一行；引擎报 0 的那一类**一行都不画**：画一行 0 等于声称「这一类一个 token 都没占」，而这恰好是本进程编不出来的那种事实。引擎哪天开始发这个块，这些行会按参照版的次序（消息 → 工具 → 记忆 → 技能 → 其他 → 系统提示词）出现，这边不用改。
+
+本轮删掉两样。一是「已用 used / limit」那行——标题的百分比已经说了这件事，同一个问题印两遍就是两个答案；`context.used` 这个文案键因此失去最后一个消费者，两份词典里一起删掉。二是 `context.plan` 字段——面板原先读的那块**从来没有任何东西写入**，这正是套餐区压根画不出来的原因；既无生产者又无消费者的字段，和上一轮模型选择器的新增入口那条链是同一件事，所以 `ContextPlanSection`、`ContextPlanRow` 和服务端那句 `context.plan: null` 一并删掉，而不是留成一个承诺。
+
+怎么验。纯逻辑部分——`formatPercent`、`contextBreakdownRows`、`quotaPlanRows`——落在 `packages/webui/webapp/lib/context-breakdown.ts`，在 `webapp/test/context-meter-format.test.ts` 里当产品函数驱动，覆盖同样那五档百分比、类别次序、「剩余 → 已用」取反、以及「缺失不是 0%」这条。那个文件原先在测试里自己重写了一份 `formatPercent` 并断言它自己的副本，改组件根本不会让它红；那份镜像已经删掉。面板**形态**则是同一文件里的源码 tripwire——单测看不见组件调用的是不是那些函数：一个自己内联百分比算法、或改回去读 `context.plan` 的面板，会让上面所有纯函数断言全绿。对着它变异测了十二种合理的回退（chevron 方向、分段进度条、「已用」那行、组件或链路任一处复活 `context.plan`、旧类别次序、画一行 0、百分比取反、多出第三行视频、读失败当成有数据、套餐名无条件打印），每一种都让一条具名断言转红。那条「面板不读 `context.plan`」的守卫先剥掉文件里的注释、并排除 `context.planTitle`：朴素的子串匹配会命中文件自己那段解释「原先读的是这个字段」的正文，也会命中合法的「套餐用量」文案键。
+
+
 ## 文件树（已发布的 UI）
 
 下方每个已发布的文件树、面板与列都给出组件文件锚点与一个
@@ -620,7 +653,7 @@ ACP 握手是双向的，两个方向都由同一份 `initialize` 载荷决定�
 | 工作区选择器（模态） | `components/workspace-picker.tsx` | `workspace-picker` |
 | Provider 配置 | `components/provider-management.tsx` | `providers-panel` |
 | 添加模型弹窗 + 已获取模型弹窗（工单 54；验收第二轮拆为独立文件以便渲染级测试；工单 56 视觉对齐） | `components/add-model-dialog.tsx#AddModelDialog` / `#FetchedModelsDialog`（受控面 `#AddModelDialogForm` / `#FetchedModelsDialogBody`，纯函数 `#collectDialogErrors` / `#defaultChecked`） | `provider-dialog`（字段 `provider-dialog-provider-select` / `-api-key` / `-api-key-reveal` / `-model-add` / `-autofetch` / `-models-empty` / `-cancel` / `-save` / `-footer` / `-errors`；条目 `provider-dialog-entry-{n}` 含 `-name` / `-context` / `-max-output` / `-thinking` / `-attachment-{mod}` / `-test` / `-test-result` / `-reset` / `-remove`）/ `fetched-models-dialog`（`fetched-models-title` / `-item-{id}` / `-select-all` / `-cancel` / `-add`） |
-| 上下文窗口 | `components/context-meter.tsx` | `context-meter` |
+| 上下文窗口面板 | `components/context-meter.tsx`（纯逻辑在 `lib/context-breakdown.ts`；套餐两行走设置页的 `UsageBar`） | `context-meter` / `context-panel`（`-usage-expand-icon` / `-progress-bar` / `-breakdown` / `-plan-section`，套餐进度条 `context-quota-fiveHour` / `-weekly`） |
 | 设置模态 | `components/panels.tsx#SettingsModal` | `settings-modal` |
 | 设置页「用量与模型」节的分段页签（工单 53） | `components/panels.tsx#UsageModelsSection` | `usage-models-segment`（页签 `usage-models-tab-token-plan` / `usage-models-tab-custom-models`） |
 | 设置页「用量与模型」节的套餐卡 / 用量卡 / 积分卡 / 发票卡（工单 37 起，工单 53 重构） | `components/panels.tsx#PlanCard` / `#UsageCard` / `#CreditsCard` / `#InvoiceCard` | `settings-plan-card` / `settings-usage-card`（进度条 `usage-bar-fiveHour` / `-weekly` / `-video`）/ `settings-credits-card` / `settings-invoice-card`（`invoice-apply-link`） |

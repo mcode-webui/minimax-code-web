@@ -732,7 +732,93 @@ Testability of those two exceptions: the derivations behind them are exported pu
 
 Honest boundary — a pick is recorded, not yet engine-applied. `POST /api/set-model` accepts `contextWindow` (tokens; `null` clears), validates it, records it in `cs.model.contextWindow`, and echoes it in the response. The engine's ACP surface has no channel for it: `session/set_config_option` accepts exactly three config ids, and the `model` value's wire encoding (`m:<provider>:<model>:u|v:<variant>`, packages/tui `control-state.ts#modelConfigValue`) has no context segment — verified against the shipped engine bundle (0.5.5) as well as this repo's source, whose runtime `models.select` does accept a `contextLimit` but is reachable only from the TUI/runtime clients. The recorded pick is therefore a webui-side preference the picker reflects immediately; the model switch that always accompanies it does reach the engine through the existing `set_config_option{configId:"model"}` push. Wiring the value into an engine-side apply is the engine ticket's work, and the route's shape (validate → record → echo) is the seam it plugs into. The same follow-the-model rule as thinking applies: switching to a model that does not list the recorded window clears it (`contextWindow: null`) in the same request.
 
-## File tree (delivered UI)
+## The context-window panel (what the ring beside the composer opens)
+
+The ring next to the composer is a 14px progress ring on a bare 30px square —
+no percentage next to it, because the percentage lives in the panel. Opening
+it gives a 400px portalled panel that is a row-for-row replica of the
+reference's:
+
+```
+上下文窗口                    29% ⌄     ← title + percent, and a disclosure
+▓▓▓▓░░░░░░░░░░░░░░░░░░░░░░░              ← ONE bar, one colour
+■ 消息        71.9%            ← the composition, when the engine reports it
+■ 工具        13.1%
+  …
+────────────────────────────
+套餐用量 · Explore
+5 小时限额          0% / 100%
+▓░░░░░░░░░░░░░░░░░░░░░░
+4小时57分后重置
+周限额              16% / 100%
+▓▓▓░░░░░░░░░░░░░░░░░░░
+4天2小时后重置
+```
+
+The three things it draws come from three different places, and keeping them
+separate is what stops them drifting from their own source.
+
+**The window itself** comes from the state snapshot's `context` block —
+`used` / `limit` / `percent`, and `breakdown` when the engine sends it. The
+header percentage has five bands: `0%` for nothing, `<1%` for a real reading
+that rounds to zero (so a long session is visibly accumulating), one decimal
+below 10%, integer above. The bar is ONE segment even when a breakdown exists:
+the rows carry the composition, and a second encoding of the same fact in a
+4px strip is not readable at that size.
+
+**The quota rows are the settings page's rows.** Same two figures, same
+`remaining → used` inversion, same reset caption, drawn through the settings
+page's own `UsageBar` component — so a figure cannot read differently in the
+two places it appears. The section renders even with no figure; `UsageBar` then
+prints its placeholder, which is what the settings card does. A missing figure
+stays `null` and never becomes 0%: "we know nothing" and "you have used
+nothing" are different facts. The 视频限额 row the settings card carries is
+deliberately not here — the reference's flyout shows two rows, and the third
+is a video figure this edition has no source for in a context panel. The
+header reads `套餐用量 · <tier>` when the engine names a plan and bare
+`套餐用量` when it does not.
+
+**Nothing is invented.** `context.breakdown` is `null` today — the engine does
+not emit it, and `server/lib/state-bus.js` says so at the field itself — so
+the panel draws the bar alone. A row is drawn only for a category the engine
+reported a non-zero token count for, and a category reported as zero is not
+drawn at all: a zero row would be a claim that the category occupies no
+tokens, which is exactly the kind of fact this process cannot make up. The
+rows appear, in the reference's order (消息 → 工具 → 记忆 → 技能 → 其他 →
+系统提示词), with no change here, if and when the engine starts sending the
+block.
+
+Two things this round removed. The 已用 `used / limit` row went, because the
+header's percentage already says it and printing it twice is two answers to
+one question; its `context.used` label lost its last consumer and left both
+dictionaries. And the `context.plan` field went with it — the panel used to
+read a block that nothing ever populates, which is why the 套餐 section could
+not render at all; a field with no producer and no reader is the same dead
+chain the model picker's add-provider deep-link was, so `ContextPlanSection`,
+`ContextPlanRow` and the server's `context.plan: null` are deleted rather than
+left as a promise.
+
+What you would tell it works. The pure parts — `formatPercent`,
+`contextBreakdownRows`, `quotaPlanRows` — live in
+`packages/webui/webapp/lib/context-breakdown.ts` and are driven as product
+functions in `webapp/test/context-meter-format.test.ts`, alongside the same
+five percent bands, the category order, the `remaining → used` inversion, and
+the null-not-zero rule. That file previously re-declared `formatPercent`
+locally and asserted its own copy, so editing the component could not fail it;
+the mirror is gone. The panel's SHAPE is a source tripwire in the same file,
+because a unit test cannot see that the component calls the right things — a
+panel that inlined its own percentage math, or went back to reading
+`context.plan`, would leave every pure-function assertion green. Twelve
+plausible reverts were mutation-tested against it (chevron direction,
+segmented bar, the 已用 row, `context.plan` in either the component or the
+wire, the old category order, a zero row, the inverted percentage, a third
+video row, a failed read treated as a figure, an unconditional plan name) and
+every one turns a named assertion red. The guard that reads "the panel does
+not read `context.plan`" strips the file's comments first and excludes
+`context.planTitle`: a plain substring match fired on the file's own prose
+explaining that it used to read the field, and on the legitimate 套餐用量
+label key.
+
 
 Every shipped file tree, panel and column evidence is `grep`-able. The list
 below cites the component file and one `data-testid` per surface.
@@ -769,7 +855,7 @@ below cites the component file and one `data-testid` per surface.
 | Workspace picker (modal) | `components/workspace-picker.tsx` | `workspace-picker` |
 | Provider management | `components/provider-management.tsx` | `providers-panel` |
 | Add-model dialog + fetched-models dialog (ticket 54; lifted to its own file in acceptance round 2 so the suite can render-test it; ticket 56 visual parity) | `components/add-model-dialog.tsx#AddModelDialog` / `#FetchedModelsDialog` (controlled surfaces `#AddModelDialogForm` / `#FetchedModelsDialogBody`, pure helpers `#collectDialogErrors` / `#defaultChecked`) | `provider-dialog` (fields `provider-dialog-provider-select` / `-api-key` / `-api-key-reveal` / `-model-add` / `-autofetch` / `-models-empty` / `-cancel` / `-save` / `-footer` / `-errors`; per-entry `provider-dialog-entry-{n}` with `-name` / `-context` / `-max-output` / `-thinking` / `-attachment-{mod}` / `-test` / `-test-result` / `-reset` / `-remove`) / `fetched-models-dialog` (`fetched-models-title` / `-item-{id}` / `-select-all` / `-cancel` / `-add`) |
-| Context meter / panel | `components/context-meter.tsx` | `context-meter` |
+| Context meter / panel | `components/context-meter.tsx` (pure logic in `lib/context-breakdown.ts`; the plan rows draw the settings page's `UsageBar`) | `context-meter` / `context-panel` (`-usage-expand-icon` / `-progress-bar` / `-breakdown` / `-plan-section`, quota bars `context-quota-fiveHour` / `-weekly`) |
 | Settings modal | `components/panels.tsx#SettingsModal` | `settings-modal` |
 | Segmented tabs of the Usage & models section (ticket 53) | `components/panels.tsx#UsageModelsSection` | `usage-models-segment` (tabs `usage-models-tab-token-plan` / `usage-models-tab-custom-models`) |
 | Plan / usage / credits / invoice cards of the Usage & models section (ticket 37, reworked 53) | `components/panels.tsx#PlanCard` / `#UsageCard` / `#CreditsCard` / `#InvoiceCard` | `settings-plan-card` / `settings-usage-card` (bars `usage-bar-fiveHour` / `-weekly` / `-video`) / `settings-credits-card` / `settings-invoice-card` (`invoice-apply-link`) |

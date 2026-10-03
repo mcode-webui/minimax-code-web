@@ -83,22 +83,9 @@ export interface ContextState {
   thinkingDuration: number | null;
   lastUsageAt: number | null;
   // SPEC §E row 138–140 — per-category composition of the context window.
-  // The server may omit this; the panel falls back to a single progress bar
-  // when it is `null` or empty.
+  // The engine does not currently emit it, so the panel draws the bar
+  // alone; the per-category rows appear when it becomes non-empty.
   breakdown?: Record<string, number> | null;
-  // SPEC §E row 141 — plan usage section. `title` is the active tier name;
-  // `rows` are the labelled KPI rows rendered below the breakdown.
-  plan?: ContextPlanSection | null;
-}
-
-export interface ContextPlanSection {
-  title?: string | null;
-  rows: ContextPlanRow[];
-}
-
-export interface ContextPlanRow {
-  label?: string;
-  value?: string;
 }
 
 /**
