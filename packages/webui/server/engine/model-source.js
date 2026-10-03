@@ -310,14 +310,9 @@ export function publicApiKeyStatus(status) {
   const record = status && typeof status === "object" ? status : {};
   const cached = record.cachedStatus && typeof record.cachedStatus === "object" ? record.cachedStatus : {};
   const lastTested = typeof cached.lastTestedAt === "number" ? cached.lastTestedAt : null;
-  // Destructured, not read as `record.hasApiKey` in the projection: the bundler
-  // renames `record` to a generated identifier, and a `hasKey: <renamed>.<member>`
-  // pair reads to the credential scanner as `hasKey = <16+ char secret>` inside the
-  // bundled distribution, failing the release audit on a boolean comparison.
-  const { hasApiKey } = record;
   return {
     available: true,
-    hasKey: hasApiKey === true,
+    hasKey: record.hasApiKey === true,
     masked: typeof record.maskedApiKey === "string" ? record.maskedApiKey : null,
     testState: typeof cached.state === "string" ? cached.state : null,
     lastTestedAtMs: lastTested,
