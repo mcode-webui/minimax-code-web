@@ -556,7 +556,7 @@ handler 层测试因此保持封闭。
 `lib/engine-catalogue.js`、`lib/models.js`、`lib/providers-config.js`——
 是静态 import，因为 M3-B4 之前 `routes/model.js` 就静态 import 了这四个，
 所以 server 的启动成本分文未增。但它们会经 `lib/config.js` 抵达
-`@mavis/shared/local-runtime-paths`、经 `engine-provider-sync.js` 抵达
+`@mavis/shared/local-runtime-paths`、经 `engine/provider-store.js` 抵达
 `js-yaml`，所以这个模块**刻意没有**从 `engine/index.js` 转发导出：让
 共享门面——整个 server 唯一的共享 import 站点，也是
 `routes/plugins.js` 必须保持轻量的那个——比它历来更重，换不来任何东西。

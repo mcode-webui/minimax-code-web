@@ -23,10 +23,12 @@ import { test, describe, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
 import {rmSync, writeFileSync, existsSync, readFileSync} from "node:fs";
+import yaml from "js-yaml";
 
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { mkTmpDir } from "../helpers/tmp.js";
+import { setupMocks } from "../helpers/_setup.js";
 
 const absPath = (rel) =>
   pathToFileURL(join(import.meta.dirname, "..", "..", "server", rel)).href;
@@ -36,17 +38,27 @@ const providersConfig = await import(absPath("lib/providers-config.js"));
 
 let _tmpDataDir;
 let _tmpCwd;
+let _tmpEngineDir;
 let _origDataDir;
+let _origEngineDir;
 let _origCwdEnv;
 let _origCwd;
 
 before(async () => {
   _tmpDataDir = mkTmpDir("webui-providers-route-");
   _tmpCwd = mkTmpDir("webui-providers-route-cwd-");
+  // M3-B11: the catalogue now lives in the ENGINE config, so this suite
+  // needs an isolated engine data dir. Without one the route would
+  // write the developer's real ~/.minimax/config.yaml — the same
+  // isolation contract test/lib/engine/capability-snapshot.test.js
+  // states, for the same reason.
+  _tmpEngineDir = mkTmpDir("webui-providers-engine-");
   _origDataDir = process.env.MCODE_WEBUI_DATA_DIR;
+  _origEngineDir = process.env.MINIMAX_DATA_DIR;
   _origCwdEnv = process.env.MCODE_WEBUI_MODELS_CONFIG;
   _origCwd = process.cwd();
   process.env.MCODE_WEBUI_DATA_DIR = _tmpDataDir;
+  process.env.MINIMAX_DATA_DIR = _tmpEngineDir;
   process.env.MCODE_WEBUI_MODELS_CONFIG = "";
   process.chdir(_tmpCwd);
 });
@@ -54,19 +66,51 @@ before(async () => {
 after(async () => {
   if (_origDataDir === undefined) delete process.env.MCODE_WEBUI_DATA_DIR;
   else process.env.MCODE_WEBUI_DATA_DIR = _origDataDir;
+  if (_origEngineDir === undefined) delete process.env.MINIMAX_DATA_DIR;
+  else process.env.MINIMAX_DATA_DIR = _origEngineDir;
   if (_origCwdEnv === undefined) delete process.env.MCODE_WEBUI_MODELS_CONFIG;
   else process.env.MCODE_WEBUI_MODELS_CONFIG = _origCwdEnv;
   try { process.chdir(_origCwd); } catch {}
   if (_tmpDataDir) try { rmSync(_tmpDataDir, { recursive: true, force: true }); } catch {}
   if (_tmpCwd) try { rmSync(_tmpCwd, { recursive: true, force: true }); } catch {}
+  if (_tmpEngineDir) try { rmSync(_tmpEngineDir, { recursive: true, force: true }); } catch {}
 });
 
 beforeEach(() => {
-  const cwdFile = join(_tmpCwd, "models.json");
-  if (existsSync(cwdFile)) rmSync(cwdFile);
-  const userFile = join(_tmpDataDir, "providers.json");
-  if (existsSync(userFile)) rmSync(userFile);
+  // BOTH halves of the pre-B11 dual source are cleared: the deprecated
+  // providers.json (the fallback authority) and the engine store (the
+  // authority once the marker is stamped). Leaving either behind would
+  // let one test's write decide the next test's fixture.
+  for (const f of [
+    join(_tmpCwd, "models.json"),
+    join(_tmpCwd, "env.json"),
+    join(_tmpCwd, "env-only.json"),
+    join(_tmpDataDir, "providers.json"),
+    join(_tmpEngineDir, "config.yaml"),
+  ]) {
+    if (existsSync(f)) rmSync(f);
+  }
 });
+
+/**
+ * The provider records the store holds, read straight off disk.
+ *
+ * The store is a YAML document keyed by engine provider key, so the
+ * assertions below read the `_webui_provider` record each webui-owned
+ * entry carries rather than the engine projection beside it: the record
+ * is what the catalogue API serialises, so it is the thing a test must
+ * compare against.
+ *
+ * @returns {object[]}
+ */
+function readStoreRecords() {
+  const file = join(_tmpEngineDir, "config.yaml");
+  if (!existsSync(file)) return [];
+  const doc = yaml.load(readFileSync(file, "utf8")) || {};
+  return Object.values(doc.custom_provider || {})
+    .map((entry) => entry && entry._webui_provider)
+    .filter(Boolean);
+}
 
 function fakeReq(body) {
   return Readable.from([Buffer.from(JSON.stringify(body), "utf8")]);
@@ -89,9 +133,9 @@ function getBody(res) {
 // =====================================================================
 
 describe("handleGetProviders — /api/providers GET", () => {
-  test("empty config returns ok + empty providers + sources", () => {
+  test("empty config returns ok + empty providers + sources", async () => {
     const res = fakeRes();
-    providersRoute.handleGetProviders(null, res, {});
+    await providersRoute.handleGetProviders(null, res, {});
     assert.equal(res._status, 200);
     const body = getBody(res);
     assert.equal(body.ok, true);
@@ -101,7 +145,7 @@ describe("handleGetProviders — /api/providers GET", () => {
     assert.ok(body.userPath, "userPath present");
   });
 
-  test("user-level file is read on every call (hot reload)", () => {
+  test("the deprecated file is read on every call (hot reload)", async () => {
     writeFileSync(
       join(_tmpDataDir, "providers.json"),
       JSON.stringify({
@@ -118,14 +162,14 @@ describe("handleGetProviders — /api/providers GET", () => {
       }),
     );
     const res = fakeRes();
-    providersRoute.handleGetProviders(null, res, {});
+    await providersRoute.handleGetProviders(null, res, {});
     const body = getBody(res);
     assert.equal(body.providers.length, 1);
     assert.equal(body.providers[0].id, "u1");
     assert.equal(body.providers[0].label, "User One");
   });
 
-  test("apiKey is masked in every provider (no plaintext anywhere)", () => {
+  test("apiKey is masked in every provider (no plaintext anywhere)", async () => {
     const key = "sk-realkey-this-is-the-secret-1234";
     writeFileSync(
       join(_tmpDataDir, "providers.json"),
@@ -150,7 +194,7 @@ describe("handleGetProviders — /api/providers GET", () => {
       }),
     );
     const res = fakeRes();
-    providersRoute.handleGetProviders(null, res, {});
+    await providersRoute.handleGetProviders(null, res, {});
     const body = getBody(res);
     // Pinned: the plaintext key MUST NOT appear in any response shape.
     const json = res._body;
@@ -165,13 +209,13 @@ describe("handleGetProviders — /api/providers GET", () => {
     assert.equal(p1.auth.baseURL, "");
   });
 
-  test("sources.{env,cwd,user} point at the resolved paths", () => {
+  test("sources.{env,cwd,user} point at the resolved paths", async () => {
     const envFile = join(_tmpCwd, "env.json");
     writeFileSync(envFile, JSON.stringify({ providers: [] }));
     process.env.MCODE_WEBUI_MODELS_CONFIG = envFile;
     try {
       const res = fakeRes();
-      providersRoute.handleGetProviders(null, res, {});
+      await providersRoute.handleGetProviders(null, res, {});
       const body = getBody(res);
       assert.equal(body.sources.env, envFile, "env override is reported");
       // When env override is set, the cwd path is NOT read — the
@@ -190,7 +234,7 @@ describe("handleGetProviders — /api/providers GET", () => {
 // =====================================================================
 
 describe("handlePutProviders — /api/providers PUT", () => {
-  test("valid body persists to user-level file and returns masked shape", async () => {
+  test("valid body persists to the engine store and returns masked shape", async () => {
     const res = fakeRes();
     await providersRoute.handlePutProviders(
       fakeReq({
@@ -216,9 +260,7 @@ describe("handlePutProviders — /api/providers PUT", () => {
     // Plaintext key NEVER appears anywhere in the response.
     assert.equal(res._body.includes("realkey"), false);
     // File persisted.
-    const onDisk = JSON.parse(
-      readFileSync(providersConfig.getUserLevelPath(), "utf8"),
-    );
+    const onDisk = { providers: readStoreRecords() };
     assert.equal(onDisk.providers[0].id, "p1");
     assert.equal(onDisk.providers[0].auth.apiKey, "sk-realkey-aaaa");
   });
@@ -294,14 +336,14 @@ describe("handlePutProviders — /api/providers PUT", () => {
     assert.equal(put._status, 200);
     // GET picks it up.
     const get = fakeRes();
-    providersRoute.handleGetProviders(null, get, {});
+    await providersRoute.handleGetProviders(null, get, {});
     const body = getBody(get);
     const found = body.providers.find((p) => p.id === "newprov");
     assert.ok(found, "newprov visible after PUT");
     assert.equal(found.models.length, 1);
   });
 
-  test("keep-existing-key: empty apiKey in PUT preserves the key on disk", async () => {
+  test("keep-existing-key: empty apiKey in PUT preserves the key in the store", async () => {
     // Seed: write a provider with a plaintext key.
     await providersRoute.handlePutProviders(
       fakeReq({
@@ -338,9 +380,7 @@ describe("handlePutProviders — /api/providers PUT", () => {
       fakeRes(),
       {},
     );
-    const onDisk = JSON.parse(
-      readFileSync(providersConfig.getUserLevelPath(), "utf8"),
-    );
+    const onDisk = { providers: readStoreRecords() };
     const kp = onDisk.providers.find((p) => p.id === "kp");
     assert.equal(kp.auth.apiKey, "sk-original-plaintext-aaaa");
     assert.equal(kp.label, "KP renamed");
@@ -380,9 +420,7 @@ describe("handlePutProviders — /api/providers PUT", () => {
       fakeRes(),
       {},
     );
-    const onDisk = JSON.parse(
-      readFileSync(providersConfig.getUserLevelPath(), "utf8"),
-    );
+    const onDisk = { providers: readStoreRecords() };
     const kp = onDisk.providers.find((p) => p.id === "kp2");
     assert.equal(kp.auth.apiKey, "sk-new-plaintext-bbbb");
   });
@@ -425,9 +463,7 @@ describe("handlePutProviders — /api/providers PUT", () => {
       fakeRes(),
       {},
     );
-    const onDisk = JSON.parse(
-      readFileSync(providersConfig.getUserLevelPath(), "utf8"),
-    );
+    const onDisk = { providers: readStoreRecords() };
     const row = onDisk.providers.find((p) => p.id === "abs");
     assert.equal(row.auth.apiKey, "sk-on-disk-original-aaaa");
     assert.equal(row.label, "Absent renamed");
@@ -476,9 +512,7 @@ describe("handlePutProviders — /api/providers PUT", () => {
         fakeRes(),
         {},
       );
-      const onDisk = JSON.parse(
-        readFileSync(providersConfig.getUserLevelPath(), "utf8"),
-      );
+      const onDisk = { providers: readStoreRecords() };
       const row = onDisk.providers.find((p) => p.id === "envprov");
       // The user-level record MUST NOT carry the env secret. The
       // env secret is deployment-managed and stays at the env layer.
@@ -598,7 +632,7 @@ describe("handleTestProvider — /api/providers/test POST", () => {
 // =====================================================================
 
 describe("SSE broadcast — providers.updated payload is masked", () => {
-  test("the named SSE event carries the masked provider shape", () => {
+  test("the named SSE event carries the masked provider shape", async () => {
     writeFileSync(
       join(_tmpDataDir, "providers.json"),
       JSON.stringify({
@@ -614,7 +648,7 @@ describe("SSE broadcast — providers.updated payload is masked", () => {
         ],
       }),
     );
-    const frame = providersRoute._peekProvidersUpdatedFrame();
+    const frame = await providersRoute._peekProvidersUpdatedFrame();
     // Plaintext apiKey NEVER in the SSE frame.
     assert.equal(frame.includes("realkey"), false);
     assert.equal(frame.includes("secret"), false);
@@ -744,5 +778,145 @@ describe("custom headers — route passthrough (ticket 85)", () => {
       "a stored value must never be able to add a header line",
     );
     assert.equal(lastHeaders["x-evil"], undefined, "the whole record is rejected");
+  });
+});
+
+// ---------------------------------------------------------------------
+// PROOF — the route really calls the engine facade
+// ---------------------------------------------------------------------
+//
+// Everything above runs against the REAL engine modules, which is what
+// makes those tests worth having. It also means none of them can
+// distinguish "the route called the facade" from "the route kept its
+// own copy of the logic and the facade happens to agree" — a route that
+// inlined a second implementation of the same decision would pass all
+// of them.
+//
+// The proof is a marker. `mock.module` replaces the write half of the
+// facade with a stub that throws a unique error, the route is
+// re-imported under a fresh `?bust=N` (without it the route keeps its
+// previous LIVE BINDING to the real module and the marker is never
+// thrown), and the test asserts the error escapes by IDENTITY. The
+// CONTROL below then runs the same request with no mock and asserts
+// the real commit landed — so the two PROOF cases cannot both be
+// passing for the wrong reason.
+
+let _bust = 0;
+
+/**
+ * A fresh copy of `routes/providers.js`.
+ *
+ * @returns {Promise<object>}
+ */
+const loadRoute = async () =>
+  import(`${absPath("routes/providers.js")}?bust=${_bust++}`);
+
+describe("PROOF — the provider route is bound to the engine facade", () => {
+  test("PROOF: a marker error from the write facade escapes handlePutProviders", async (t) => {
+    await setupMocks(t, { acp: {} });
+    const marker = new Error("B11-MOCK-WAS-NOT-HONOURED");
+    t.mock.module(absPath("engine/provider-writes.js"), {
+      namedExports: {
+        commitProviderCatalogueWrite: async () => {
+          throw marker;
+        },
+        // Every other name the route imports from this module is the
+        // real one. A namespace mock REPLACES the whole module, so
+        // anything not listed here would be undefined at the call site
+        // and the test would fail for a reason that has nothing to do
+        // with the marker.
+        assertProviderWriteCapability: () => ({
+          endpoint: "PUT /api/providers",
+          provider: "local-runtime-v2",
+          capability: "authCredentials",
+          subItem: "updateUserModelProvider",
+          enforcement: "hard",
+          gate: "checked",
+        }),
+        planProviderCatalogueWrite: (existing, incoming) =>
+          (incoming || []).map((p) => {
+            if (!p || !p.auth) return p;
+            if (p.auth.apiKey) return p;
+            const prev = (existing || []).find((e) => e && e.id === p.id);
+            return { ...p, auth: { ...p.auth, apiKey: prev ? prev.auth.apiKey : "" } };
+          }),
+        resolveProviderWriteProvider: () => ({ id: "local-runtime-v2" }),
+      },
+    });
+    const route = await loadRoute();
+    let caught = null;
+    try {
+      await route.handlePutProviders(fakeReq({ version: 2, providers: [] }), fakeRes(), {});
+    } catch (err) {
+      caught = err;
+    }
+    assert.ok(caught, "the route swallowed the facade error — either the mock did not take, or the route grew a catch");
+    assert.equal(caught, marker, "the error is the mock's, by identity");
+  });
+
+  test("PROOF: a marker error from the read facade escapes handleGetProviders", async (t) => {
+    await setupMocks(t, { acp: {} });
+    const marker = new Error("B11-READ-MOCK-WAS-NOT-HONOURED");
+    t.mock.module(absPath("engine/provider-reads.js"), {
+      namedExports: {
+        readEngineProviderCatalogue: async () => {
+          throw marker;
+        },
+        checkProviderReadCapability: () => ({
+          endpoint: "GET /api/providers",
+          provider: "local-runtime-v2",
+          capability: "authCredentials",
+          subItem: "listUserModelProviders",
+          enforcement: "soft",
+          gate: "checked",
+          degraded: false,
+          reason: null,
+        }),
+      },
+    });
+    const route = await loadRoute();
+    let caught = null;
+    try {
+      await route.handleGetProviders(null, fakeRes(), {});
+    } catch (err) {
+      caught = err;
+    }
+    assert.ok(caught, "the GET route reached its own data plane instead of the facade");
+    assert.equal(caught, marker, "the error is the mock's, by identity");
+  });
+
+  test("CONTROL: with no facade mock, PUT runs the real commit and lands in the store", async (t) => {
+    // The other half of the proof. A `?bust=` re-import under a fresh
+    // test hook gives a route bound to the REAL facade, so the request
+    // runs the real plan → commit sequence against the real store. If
+    // this answered from a mock, the two PROOF cases above would be
+    // proving nothing.
+    await setupMocks(t, { acp: {} });
+    const route = await loadRoute();
+    const res = fakeRes();
+    await route.handlePutProviders(
+      fakeReq({
+        version: 2,
+        providers: [
+          {
+            id: "ctl",
+            label: "Control",
+            protocol: "openai",
+            auth: { type: "byok", apiKey: "sk-control-aaaa", baseURL: "https://ctl" },
+            models: [],
+          },
+        ],
+      }),
+      res,
+      {},
+    );
+    assert.equal(res._status, 200);
+    const body = getBody(res);
+    assert.equal(body.ok, true);
+    assert.deepEqual(body.engineSync.keys, ["ctl"]);
+    const stored = readStoreRecords();
+    assert.equal(stored.length, 1);
+    assert.equal(stored[0].id, "ctl");
+    assert.equal(stored[0].auth.apiKey, "sk-control-aaaa");
   });
 });

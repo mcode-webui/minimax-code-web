@@ -26,16 +26,22 @@
 //     is the one listed missing.
 //   - the capability is `none` → HIDE.
 //
-// Two controls are the reason this file exists: the permission-mode
-// selector and the model selector. Both are declared by
-// `MODE_WRITE_BRIDGED_CONFIG_IDS` on the server, the two config ids the
-// mode-write gate exempts from the generic-write refusal, so a provider
-// that refuses generic config options still serves both. That table is
-// mirrored here — one small literal — and
+// Three controls are the reason this file exists: the permission-mode
+// selector, the model selector and the thinking-effort selector. All
+// three are declared by `MODE_WRITE_BRIDGED_CONFIG_IDS` on the server —
+// the config ids the mode-write gate exempts from the generic-write
+// refusal — so a provider that refuses generic config options still
+// serves all three. That table is mirrored here — one small literal — and
 // `webapp/test/engine-capabilities-degradation.test.ts` reads the server
 // module's source and fails if the two ever disagree. A mirror without
 // that tripwire would be exactly the kind of drift this repository has
 // been bitten by before.
+//
+// M3-B14 added the third. The thinking-effort selector is the control
+// whose absence is hardest to notice if it is missing, because the
+// model chip next to it also carries a level on some models: leaving it
+// visible and letting it answer 501 is the one outcome this file exists
+// to prevent.
 
 /** One declared capability, as the server serialises it. */
 export interface EngineCapabilityEntry {
@@ -48,7 +54,7 @@ export interface EngineCapabilityEntry {
 export type EngineCapabilities = Record<string, EngineCapabilityEntry> | null;
 
 /**
- * The two config ids the mode-write gate bridges, and the engine
+ * The three config ids the mode-write gate bridges, and the engine
  * sub-item each asks for instead of the generic one.
  *
  * Mirrors `MODE_WRITE_BRIDGED_CONFIG_IDS` in
@@ -58,9 +64,10 @@ export type EngineCapabilities = Record<string, EngineCapabilityEntry> | null;
 export const BRIDGED_CONFIG_SUB_ITEMS = Object.freeze({
   model: "selectModel",
   permissionMode: "setPermissionMode",
+  thinkingEffort: "setThinkingEffort",
 } as const);
 
-/** The two config ids with a dedicated engine write behind them. */
+/** The config ids with a dedicated engine write behind them. */
 export type BridgedConfigId = keyof typeof BRIDGED_CONFIG_SUB_ITEMS;
 
 /** What a control should do, and why — `reason` is for logs, not for the user. */
@@ -108,7 +115,7 @@ export function controlAvailability(
   return { available: true, reason: null };
 }
 
-/** `controlAvailability` for one of the two bridged controls. */
+/** `controlAvailability` for one of the three bridged controls. */
 export function bridgedControlAvailability(
   declaration: EngineCapabilities,
   configId: BridgedConfigId,
@@ -119,8 +126,8 @@ export function bridgedControlAvailability(
 /**
  * Read the declaration once per page and share it.
  *
- * Module-level cache with an in-flight promise, because the two controls
- * mount together and a per-component fetch would double the request on
+ * Module-level cache with an in-flight promise, because the three controls
+ * mount together and a per-component fetch would triple the request on
  * every composer mount. The cache is deliberately NOT invalidated: a
  * provider's declaration does not change while the page is open, and a
  * poller here would be a new failure surface for no benefit.

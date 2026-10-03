@@ -22,6 +22,18 @@
 //   none    → not method-checked (a provider may legitimately expose no
 //             surface for the capability).
 //
+//   PLUS, INDEPENDENT OF THE LEVEL ABOOVE:
+//
+//   unimplemented → a method-named sub-item that a bridge in
+//             `MODE_WRITE_BRIDGED_CONFIG_IDS` points at and that NO
+//             surface implements. The audit asserts it is ABSENT and
+//             goes red the moment a surface grows one. This is the
+//             honesty slot, added in M3-B14, and it is the reason the
+//             third bridge is not an unchecked exemption: without it a
+//             gate that asks for a method nobody implements would be
+//             indistinguishable, in this file, from a gate that asks
+//             for a method both surfaces really carry.
+//
 // The audit function is a PURE function over (declaration, method-name
 // sets), so the mutation checks below feed it hand-built mutant surfaces
 // and assert it reports the drift — the "flip a level / delete a method
@@ -53,6 +65,7 @@ process.env.MCODE_WEBUI_UPLOAD_DIR = `${tmpBase}/uploads`;
 const {
   ENGINE_CAPABILITY_KEYS,
   LOCAL_RUNTIME_V2_CAPABILITIES,
+  MODE_WRITE_BRIDGED_CONFIG_IDS,
   TUI_RUNTIME_ADAPTER_CAPABILITIES,
   getEngineProvider,
   listEngineProviderIds,
@@ -100,20 +113,38 @@ function resolveMember(host, dottedPath) {
  *     the mode-write family's hard gate an audited fact rather than a
  *     claim). They are part of the snapshot so "missing must really be
  *     absent" is checked, and a partial that stops listing one goes red
- *     (under-declaration).
+ *     (under-declaration);
+ *   - `unimplemented`: method-NAMED sub-items a bridge in
+ *     `MODE_WRITE_BRIDGED_CONFIG_IDS` points at that NO surface has yet.
+ *     Unlike `absent`, these are deliberately NOT in any declaration's
+ *     `missing` list — the bridge exempts them from the generic write,
+ *     and a provider does not deny a sub-item it simply does not have.
+ *     The audit asserts they are absent anyway, because the failure this
+ *     catches is silence: a surface quietly growing the method while the
+ *     gate and the declaration still treat it as a forward contract.
  *
  * M3-B10 added `selectModel` and `setPermissionMode` to `authCredentials`
- * on BOTH surfaces. They are the two sub-items
+ * on BOTH surfaces. They are two of the three sub-items
  * `MODE_WRITE_BRIDGED_CONFIG_IDS` (server/engine/mode-writes.js) names,
- * and until this batch they were the one part of a hard gate that no
+ * and until that batch they were the one part of a hard gate that no
  * audit could check: `absent` proves a name is NOT on the surface, and a
  * name that is merely "not in `missing`" proves nothing. Both were
  * verified present by reflection on a booted host BEFORE being added
- * here, and the live audit below keeps proving it — which closes the
- * bridge question B9 recorded as its KNOWN DEBT 2. Neither surface
- * carries a `setThinkingEffort` / `selectThinkingEffort`; that absence
- * is the fact the B10 KNOWN DEBT about gating `/api/set-model` turns on,
- * and a surface that grows one must add it here at the same time.
+ * here, and the live audit below keeps proving it, which closes the
+ * bridge question B9 recorded as its KNOWN DEBT 2.
+ *
+ * M3-B14 added the THIRD id, `thinkingEffort` —> `setThinkingEffort`, and
+ * it is the one this table cannot express with the existing two lists.
+ * The method does not exist on either surface, so putting it in
+ * `methods` would be a lie the audit reports as drift on every run, and
+ * putting it in `absent` would be a second lie: `absent` means "this
+ * partial declares it missing", and no provider does. So it goes in
+ * `unimplemented`, which asserts exactly one thing — THIS SURFACE MUST
+ * NOT HAVE IT — and which turns red the moment either surface grows a
+ * `setThinkingEffort`. That is the whole closure mechanism for the third
+ * bridge, and it is deliberately one-directional: a surface acquiring the
+ * dedicated writer is an engine-side event nobody here can schedule, and
+ * the audit is what makes it impossible to miss.
  */
 const REQUIRED_METHODS = {
   "tui-runtime-adapter": {
@@ -126,7 +157,7 @@ const REQUIRED_METHODS = {
     mcp: { on: "adapter", methods: ["configureSessionMcpServers", "clearSessionMcpServers", "inspectProjectMcp", "listMcpServers"] },
     subagents: { on: "adapter", methods: ["getDelegationSnapshot", "stopDelegation", "listBackgroundTasks"] },
     usageStats: { on: "adapter", methods: ["getSessionUsage", "getSessionUsageSummary", "watchSessionUsageCommits"] },
-    authCredentials: { on: "adapter", methods: ["getAccountStatus", "getCodexOAuthStatus", "startCodexOAuthLogin", "cancelCodexOAuthLogin", "getMiniMaxApiKeyStatus", "upsertMiniMaxApiKey", "selectModel", "setPermissionMode", "listUserModelProviders", "createUserModelProvider", "updateUserModelProvider", "deleteUserModelProvider", "testUserModelProvider", "discoverUserModelsCandidate"], absent: ["setConfigOption"] },
+    authCredentials: { on: "adapter", methods: ["getAccountStatus", "getCodexOAuthStatus", "startCodexOAuthLogin", "cancelCodexOAuthLogin", "getMiniMaxApiKeyStatus", "upsertMiniMaxApiKey", "selectModel", "setPermissionMode", "listUserModelProviders", "createUserModelProvider", "updateUserModelProvider", "deleteUserModelProvider", "testUserModelProvider", "discoverUserModelsCandidate"], absent: ["setConfigOption"], unimplemented: ["setThinkingEffort"] },
     fileReadWrite: { on: "adapter", methods: ["listWorkspaceFileTree", "searchWorkspaceFiles"] },
     gitOperations: { on: "adapter", methods: ["getWorkspaceGitMetadata"] },
   },
@@ -141,7 +172,7 @@ const REQUIRED_METHODS = {
     mcp: { on: "cliService", methods: ["configureSessionMcpServers", "inspectProjectMcp", "clearSessionMcpServers", "listMcpServers"] },
     subagents: { on: "cliService", methods: ["listBackgroundTasks"], absent: ["getDelegationSnapshot", "stopDelegation"] },
     usageStats: { on: "cliService", methods: ["getSessionUsage", "getSessionUsageSummary", "watchSessionUsageCommits"] },
-    authCredentials: { on: "cliService", methods: ["getAccountStatus", "getCodexOAuthStatus", "startCodexOAuthLogin", "cancelCodexOAuthLogin", "getMiniMaxApiKeyStatus", "upsertMiniMaxApiKey", "selectModel", "setPermissionMode", "listUserModelProviders", "createUserModelProvider", "updateUserModelProvider", "deleteUserModelProvider", "testUserModel", "discoverUserModelsCandidate"], absent: ["setConfigOption"] },
+    authCredentials: { on: "cliService", methods: ["getAccountStatus", "getCodexOAuthStatus", "startCodexOAuthLogin", "cancelCodexOAuthLogin", "getMiniMaxApiKeyStatus", "upsertMiniMaxApiKey", "selectModel", "setPermissionMode", "listUserModelProviders", "createUserModelProvider", "updateUserModelProvider", "deleteUserModelProvider", "testUserModel", "discoverUserModelsCandidate"], absent: ["setConfigOption"], unimplemented: ["setThinkingEffort"] },
     fileReadWrite: { on: "cliService", methods: ["listWorkspaceFileTree", "searchWorkspaceFiles"] },
     gitOperations: { on: "cliService", methods: ["getWorkspaceGitMetadata", "getWorkspaceReviewLink"] },
   },
@@ -226,7 +257,26 @@ export function auditProviderCapabilities(providerId, declaration, host) {
   for (const key of Object.keys(required)) {
     const entry = declaration[key];
     if (!entry) continue; // shape problems are M1's validate, not this audit
-    const { on, methods, absent = [] } = required[key];
+    const { on, methods, absent = [], unimplemented = [] } = required[key];
+
+    // `unimplemented` is checked BEFORE the level dispatch and never
+    // consults the declaration. It is not a statement about what this
+    // provider claims; it is a statement about the SURFACE — "this
+    // surface must not carry a method, whatever the declaration says",
+    // because the bridge names it as a forward contract and the only
+    // event that should move it is the engine shipping the writer. A
+    // surface that grows one here has outrun its own declaration, and
+    // the message says so in the words a reader needs ("re-audit"),
+    // rather than reporting a missing entry.
+    for (const method of unimplemented) {
+      if (methodTypeOf(on, method) === "function") {
+        problems.push(
+          `${providerId}.${key}: ${on}.${method} is a bridged forward contract the ` +
+            `declaration has no method for, but the surface NOW HAS it — re-audit the bridge ` +
+            `(move it out of \`unimplemented\` and into the declaration)`,
+        );
+      }
+    }
 
     if (entry.level === "full") {
       for (const method of methods) {
@@ -392,6 +442,72 @@ describe("M2 snapshot — declarations vs the REAL catalogue host", () => {
     });
   }
 
+  // -------------------------------------------------------------------------
+  // M3-B14 — THE THIRD BRIDGE IS PROVEN ABSENT, NOT ASSUMED ABSENT
+  // -------------------------------------------------------------------------
+  //
+  // The other two bridged sub-items (`selectModel`, `setPermissionMode`)
+  // are in `methods`, so this file proves they EXIST. The third one cannot
+  // be proven that way — no surface has it — so the only honest thing
+  // to do is prove the absence, by reflection, on the same real host, and
+  // say so in a test that fails if that ever stops being true.
+  //
+  // These assertions deliberately do NOT mock the surface as present. A
+  // suite that asserted "the host has setThinkingEffort" to make the gate
+  // look justified would be asserting a falsehood, and the falsehood is
+  // the whole risk this block exists to remove: a bridge that reads as
+  // verified while resting on a method nobody wrote.
+  for (const [providerId, required] of Object.entries(REQUIRED_METHODS)) {
+    const [on] = [required.authCredentials.on];
+    test(`${providerId}: ${on} has NO ${MODE_WRITE_BRIDGED_CONFIG_IDS.thinkingEffort} method`, () => {
+      // A live probe over the real prototype chain — the same
+      // reflection the provenance audit used, not a hand-typed list.
+      const names = collectMethodNames(resolveMember(host, on));
+      assert.equal(
+        names.includes(MODE_WRITE_BRIDGED_CONFIG_IDS.thinkingEffort),
+        false,
+        `the surface grew ${MODE_WRITE_BRIDGED_CONFIG_IDS.thinkingEffort} — move it out of ` +
+          `\`unimplemented\`, re-audit the bridge, and let the control come back`,
+      );
+      // The audit's own verdict on the same fact, from the table rather
+      // than from this test's ad-hoc probe. Both halves, because a probe
+      // that passes while the audit table has drifted is a probe of the
+      // wrong thing.
+      const problems = auditProviderCapabilities(
+        providerId,
+        declarations[providerId],
+        host,
+      );
+      assert.deepEqual(problems, []);
+    });
+  }
+
+  test("the name the bridge points at is the name the snapshot tracks as unimplemented", () => {
+    // The two tables and the bridge share one fact. Nothing in the server
+    // asserts this — the tables are separate literals in separate files
+    // — so it is asserted here, where both are in scope, by VALUE.
+    for (const [providerId, required] of Object.entries(REQUIRED_METHODS)) {
+      assert.deepEqual(
+        required.authCredentials.unimplemented,
+        [MODE_WRITE_BRIDGED_CONFIG_IDS.thinkingEffort],
+        providerId,
+      );
+      assert.equal(
+        required.authCredentials.methods.includes(MODE_WRITE_BRIDGED_CONFIG_IDS.thinkingEffort),
+        false,
+        `${providerId}: it must not ALSO be claimed present — the two would contradict`,
+      );
+      assert.equal(
+        (declarations[providerId].authCredentials.missing || []).includes(
+          MODE_WRITE_BRIDGED_CONFIG_IDS.thinkingEffort,
+        ),
+        false,
+        `${providerId}: no provider declares the effort writer missing — listing it would ` +
+          `remove the control for every user today`,
+      );
+    }
+  });
+
   test("method-surface sizes stay in the audited ballpark (gross-loss tripwire)", () => {
     // Not an exact pin (the engine may add methods freely) — this only
     // catches a wholesale surface loss (e.g. a proxy/wrapper hiding the
@@ -494,6 +610,52 @@ describe("M2 mutation checks — auditProviderCapabilities reports drift", () =>
       problems.some((p) => p.includes("gitOperations") && p.includes("getWorkspaceGitDiff")),
       `expected the grown sub-capability to be reported, got: ${JSON.stringify(problems)}`,
     );
+  });
+
+  test("MUT-6: a surface that GROWS the bridged effort writer goes red", () => {
+    // The engine team lands `setThinkingEffort`. Nothing in the gate, in
+    // the bridge table or in any declaration changes — the surface
+    // simply starts having the method the bridge was a contract FOR. The
+    // audit is the only thing in this repository that can notice, so it
+    // has to notice: this is the check that makes the third bridge a
+    // forward contract with a closing mechanism rather than an
+    // unverified exemption.
+    for (const [providerId, required] of Object.entries(REQUIRED_METHODS)) {
+      const byOn = namesBySurface(required);
+      const declared = providerId === "local-runtime-v2"
+        ? LOCAL_RUNTIME_V2_CAPABILITIES
+        : TUI_RUNTIME_ADAPTER_CAPABILITIES;
+      const host = fakeHost(
+        [...(byOn.adapter || []), MODE_WRITE_BRIDGED_CONFIG_IDS.thinkingEffort],
+        [...(byOn.cliService || []), MODE_WRITE_BRIDGED_CONFIG_IDS.thinkingEffort],
+        [...(byOn["applications.session.diff"] || []), MODE_WRITE_BRIDGED_CONFIG_IDS.thinkingEffort],
+      );
+      const problems = auditProviderCapabilities(providerId, declared, host);
+      assert.ok(
+        problems.some(
+          (p) => p.includes("authCredentials") && p.includes(MODE_WRITE_BRIDGED_CONFIG_IDS.thinkingEffort),
+        ),
+        `${providerId}: the grown forward contract was not reported, got: ${JSON.stringify(problems)}`,
+      );
+    }
+  });
+
+  test("MUT-7: the SAME surface WITHOUT the writer is clean, on both providers", () => {
+    // The reverse half of MUT-6, and the reason the check is worth having
+    // at all: a rule that reports drift unconditionally is a rule nobody
+    // reads. Both providers, both surfaces, no problems.
+    for (const [providerId, required] of Object.entries(REQUIRED_METHODS)) {
+      const byOn = namesBySurface(required);
+      const declared = providerId === "local-runtime-v2"
+        ? LOCAL_RUNTIME_V2_CAPABILITIES
+        : TUI_RUNTIME_ADAPTER_CAPABILITIES;
+      const problems = auditProviderCapabilities(
+        providerId,
+        declared,
+        fakeHost(byOn.adapter || [], byOn.cliService || [], byOn["applications.session.diff"] || []),
+      );
+      assert.deepEqual(problems, [], providerId);
+    }
   });
 
   test("MUT-5: a partial listing an absent method as missing is fine; listing a present one is not", () => {

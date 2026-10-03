@@ -643,3 +643,95 @@ describe("POST /api/send — parallel turns in one tab", () => {
     assert.deepEqual(chatLines(cs), ["› once", "● ok", "› later", "● ok"]);
   });
 });
+
+// ------------------------------------------------------------------
+// P16 — the SAME tab sending again into its own live conversation.
+//
+// The case above is refused by the engine-session index (`runsBySid`), which
+// the runner backfills mid-turn. The one below is the wiring P16 fixed: it
+// runs the REAL chat.js → runMcodeAcp → sessions.js → state-bus chain, so
+// it fails if the `moveRunSession` re-key is removed from `mcode-acp.js` —
+// the registry-level suite cannot see that call, and a test that restates
+// the fix inside its own runner proves nothing about production.
+//
+// What the UAT saw (2026-10-03 16点轮 异常 #1): a second message sent into
+// a running conversation was ACKed, the engine ran it (the produced file
+// contained the idiom named only in that message), and the webui transcript
+// and the persisted record never contained it — because the turn's echo went
+// into a live `cs.chat` that the run-mirror's finalize then wrote over from
+// a snapshot taken before it. "The engine ran it and the webui does not know
+// it" is the exact shape this contract forbids.
+// ------------------------------------------------------------------
+describe("POST /api/send — P16: a send into this tab's own live turn", () => {
+  test("is refused, and reaches neither the engine nor the transcript", async () => {
+    const cid = "cid-P16-inflight";
+    const cs = makeClient(cid);
+
+    const res1 = fakeRes();
+    const turn1 = drain.track(handleSend(fakeReq({ content: "first" }), res1, { cs, cid }));
+    // Mid-turn the record is promoted from its draft uuid to the engine id,
+    // and the claim has to follow it. Wait for the PROMOTED identity, not
+    // for the draft: that is the state in which the UAT's second send
+    // arrived, and the one the re-key exists for.
+    const sid = await waitFor(
+      () => (cs.mcodeSessionId ? cs.sessionId : null),
+      "the draft to be promoted to the engine identity",
+    );
+    assert.match(sid, /^mvs_fake_/);
+    // The claim is registered under the identity the VIEW now presents. This
+    // is the production assertion: it reads the registry, not a runner the
+    // test controls.
+    assert.equal(
+      sb.getRunForSession(cid, sid),
+      sb.getRunsForCid(cid)[0]?.[1] ?? null,
+      "the live claim must be findable under the promoted conversation id",
+    );
+
+    // The second send, from the SAME tab, into the SAME conversation.
+    const res2 = fakeRes();
+    await handleSend(fakeReq({ content: "守株待兔，水墨国风，滚动叙事长页" }), res2, { cs, cid });
+
+    assert.equal(res2._status, 409, "a send into a live turn must be refused, not acked");
+    const body = JSON.parse(res2._body);
+    assert.equal(body.ok, false);
+    assert.ok(
+      ["cid-busy", "session-busy"].includes(body.reason),
+      `unexpected refusal reason: ${body.reason}`,
+    );
+    assert.match(body.error, /NOT delivered/, "the refusal must state it was not delivered");
+
+    // ---- the reverse half -------------------------------------------------
+    // One prompt is parked on the fake transport. A second one would mean the
+    // engine was handed a turn the webui had already refused.
+    assert.equal(
+      FakeMcodeAcpClient.pending.length,
+      1,
+      "a refused send must never reach the engine",
+    );
+    assert.deepEqual(
+      chatLines(cs),
+      ["› first"],
+      "a refused send must not be echoed into the live transcript",
+    );
+    assert.equal(sb.activeRunCount(), 1, "the refused send must not claim a slot");
+
+    // The record on disk carries the turn that ran, and nothing else.
+    const stored = sessions.loadSessions().find((s) => s.id === sid);
+    assert.ok(stored, "the promoted record must exist");
+    assert.ok(
+      !stored.chat.some((line) => String(line).includes("守株待兔")),
+      "a refused send must not reach the persisted record",
+    );
+
+    // The live turn finishes normally and releases the re-keyed claim.
+    FakeMcodeAcpClient.release();
+    await turn1;
+    assert.equal(res1._status, 200);
+    await waitFor(() => sb.activeRunCount() === 0, "the re-keyed claim to be released");
+    assert.equal(
+      sb.getRunForSession(cid, sid),
+      null,
+      "the re-key must not leak the claim past the turn that held it",
+    );
+  });
+});

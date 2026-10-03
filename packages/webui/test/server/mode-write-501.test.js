@@ -12,6 +12,18 @@
 //     POST /api/protocol/set-config-option (generic)  → 501 structured
 //     POST /api/protocol/set-config-option (bridged)  → 200, unchanged
 //
+//   M3-B14 added a THIRD bridged id, `thinkingEffort`, so one row of the
+//   matrix above moved: `POST /api/protocol/set-config-option` with
+//   `key: "thinkingEffort"` is no longer the generic example, it is a
+//   bridged one, and it answers 200 under BOTH transports. The generic
+//   example is now `contextWindow`. Both the move and the new case are
+//   asserted here, because a test that quietly keeps the old example
+//   would report this batch's behaviour change as a regression — and a
+//   test that quietly drops it would make the change undocumented.
+//   `test/routes/model.check.mjs` covers the other endpoint of the same
+//   config id (#58), whose gate is deliberately narrower.
+//
+//
 //   acp transport — no behaviour change at all
 //     both endpoints, every config id                  → 200, unchanged
 //
@@ -216,14 +228,20 @@ describe(`M3-B9 · the mode-write endpoints on the ${TRANSPORT} transport`, () =
       ? "a generic config id answers 501 with the structured capability body"
       : "a generic config id is untouched on acp",
     async () => {
+      // `contextWindow` since M3-B14. It used to be `thinkingEffort`, and
+      // that is the whole point of this edit: the id this test names as
+      // the GENERIC one is now a BRIDGED one, so keeping the old example
+      // would have made the suite assert the batch's own behaviour change
+      // as a regression. `contextWindow` is the honest generic id — the
+      // engine has no channel for it either, and no bridge claims one.
       const r = await post("/api/protocol/set-config-option", {
         sessionId: SID,
-        key: "thinkingEffort",
-        value: "high",
+        key: "contextWindow",
+        value: "128000",
       });
       if (!RUNTIME) {
         assert.equal(r.status, 200);
-        assert.equal(r.body.key, "thinkingEffort");
+        assert.equal(r.body.key, "contextWindow");
         assert.equal(rpcCalls.length, 1);
         return;
       }
@@ -235,6 +253,27 @@ describe(`M3-B9 · the mode-write endpoints on the ${TRANSPORT} transport`, () =
       assert.deepEqual(rpcCalls, [], "a refused write must never reach the engine");
     },
   );
+
+  // M3-B14's behaviour change on #68, over HTTP. The third bridged id is
+  // `thinkingEffort` -> `setThinkingEffort`, so this exact request used
+  // to answer 501 and now answers 200 and reaches the engine. Nothing in
+  // the shipped webapp calls #68, so there is no client to break; what
+  // the change buys is that the two endpoints agree about a config id
+  // instead of one delivering it and the other refusing it.
+  test("M3-B14 — `thinkingEffort` is a BRIDGED id, so #68 delivers it", async () => {
+    const r = await post("/api/protocol/set-config-option", {
+      sessionId: SID,
+      key: "thinkingEffort",
+      value: "high",
+    });
+    assert.equal(r.status, 200, "both transports: this id is not the generic one any more");
+    assert.equal(r.body.ok, true);
+    assert.equal(r.body.key, "thinkingEffort");
+    assert.equal(r.body.value, "high");
+    assert.equal("fallback" in r.body, false, "and it is not a 501 being described");
+    assert.equal(rpcCalls.length, 1);
+    assert.equal(rpcCalls[0].configId, "thinkingEffort", "the engine was really reached");
+  });
 
   // -------------------------------------------------------------------------
   // The boundary itself: same route, same body, two config ids, two
@@ -249,8 +288,8 @@ describe(`M3-B9 · the mode-write endpoints on the ${TRANSPORT} transport`, () =
     });
     const generic = await post("/api/protocol/set-config-option", {
       sessionId: SID,
-      key: "thinkingEffort",
-      value: "high",
+      key: "contextWindow",
+      value: "128000",
     });
     assert.equal(bridged.body.key, "permissionMode");
     assert.equal(generic.body.key === "permissionMode", false);
@@ -264,6 +303,32 @@ describe(`M3-B9 · the mode-write endpoints on the ${TRANSPORT} transport`, () =
       assert.equal(bridged.status, 200);
       assert.equal(generic.status, 200);
       assert.equal(rpcCalls.length, 2);
+    }
+  });
+
+  test("M3-B14 — all THREE bridged ids are delivered, and only they", async () => {
+    // The table's whole content, over HTTP, on one provider. Before this
+    // batch two of these three were 501 under the runtime transport.
+    for (const key of ["model", "permissionMode", "thinkingEffort"]) {
+      const r = await post("/api/protocol/set-config-option", {
+        sessionId: SID,
+        key,
+        value: key === "model" ? "m:minimax_api:MiniMax-M2.7:u" : "auto",
+      });
+      assert.equal(r.status, 200, key);
+      assert.equal(rpcCalls.at(-1).configId, key);
+    }
+    const refused = await post("/api/protocol/set-config-option", {
+      sessionId: SID,
+      key: "contextWindow",
+      value: "128000",
+    });
+    if (RUNTIME) {
+      assert.equal(refused.status, 501, "a non-bridged id is still refused");
+      assert.equal(rpcCalls.length, 3, "and it never reached the engine");
+    } else {
+      assert.equal(refused.status, 200, "acp has no provider, so acp changes nothing");
+      assert.equal(rpcCalls.length, 4);
     }
   });
 });

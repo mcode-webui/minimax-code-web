@@ -61,19 +61,37 @@ function echoForms(content: string): string[] {
 /**
  * Does this state show the send we asked about as taken?
  *
- * Two independent signals, either sufficient:
+ * The proof is the prompt's echo line: `handleSend` writes `› <content>`
+ * into the transcript synchronously, before the turn does any work, so a
+ * line that is there is a send the server accepted — whether the turn is
+ * still running or already finished.
  *
- *   1. A turn is running for this cid. Since a busy cid answers the send with a
- *      409 immediately (`beginRun` in `handleSend`), a turn observed after a
- *      deadline expiry is this one.
- *   2. The prompt's echo line is in the transcript — proof the server accepted
- *      it, whether or not the turn has already finished.
+ * A running turn is NOT that proof, and treating it as one is the false
+ * positive this function used to produce (P16). The reasoning behind the
+ * old first signal — "a busy cid answers with 409 immediately, so a turn
+ * observed after a deadline expiry is this one" — is wrong for the case
+ * that actually produced the report: the send was made INTO a running
+ * conversation, so the 409 that came back belonged to a turn that was
+ * already running, and the running turn the probe sees is the PREVIOUS
+ * one. Reading it as acceptance answered "the engine is running your
+ * message, do not send it again" for a message the engine never received
+ * and the transcript never recorded — a false negative about a side
+ * effect, which is the one thing the banner must never state.
+ *
+ * The running flag is still consulted, but only where it is the only
+ * evidence there is: a state snapshot with no transcript at all (a
+ * server that answered but carries no `chat`). There the running flag
+ * cannot be contradicted, and a real in-flight turn is the best available
+ * answer — refusing to restore the text in that case is what webui-parity
+ * 81 D-2 (`sleep 35` executed twice) was about.
  */
 export function stateAcceptsSend(state: WebuiState, content: string): boolean {
-  if (state && state.running && state.running.active === true) return true;
-  const chat = state && Array.isArray(state.chat) ? state.chat : [];
-  const forms = echoForms(content);
-  return chat.some((line) => forms.includes(line));
+  const chat = state && Array.isArray(state.chat) ? state.chat : null;
+  if (chat !== null) {
+    const forms = echoForms(content);
+    return chat.some((line) => forms.includes(line));
+  }
+  return Boolean(state && state.running && state.running.active === true);
 }
 
 /**

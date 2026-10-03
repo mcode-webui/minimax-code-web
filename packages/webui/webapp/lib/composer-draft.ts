@@ -73,12 +73,20 @@ export interface ComposerDraft {
  * `rejected` — the server refused the send (4xx, network error before the
  * request left). A real failure; the text goes back in the box.
  *
+ * `busy` — the server refused because THIS CONVERSATION is already running
+ * a turn (409 `cid-busy` / `session-busy`). The send never reached the
+ * engine and never will, so it is a refusal like `rejected` — but the
+ * remedy is "wait for the turn to end", not "the send is broken", and
+ * conflating the two is what made a refused message read as a lost one
+ * (P16: a message sent into a running conversation looked like it had
+ * vanished, and the banner told the user not to resend it).
+ *
  * `unconfirmed` — the acknowledgement never arrived and the follow-up read
  * against the server could not establish whether the turn started. The text
  * may already be executing. Never rendered as a failure, and the draft is
  * only restored when the server positively holds no record of the send.
  */
-export type ComposerErrorKind = "rejected" | "unconfirmed";
+export type ComposerErrorKind = "rejected" | "busy" | "unconfirmed";
 
 const EMPTY_DRAFT: ComposerDraft = {
   value: "",

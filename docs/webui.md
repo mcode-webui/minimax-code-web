@@ -254,7 +254,7 @@ Two consequences of that table are deliberate rather than incidental:
 - **The capability 501 carries no `fallback`.** The hint is the degraded action for a feature that exists and whose call failed. Where the engine has no mode write at all there is nothing to degrade to, and advertising `send_plan_as_prompt` from a "this is not available" response would offer a workaround for a missing feature. The engine's own `unsupported` refusal keeps its hint.
 - **On the default `acp` transport nothing changes at all.** No provider is registered for `acp` until migration step M4, so the gate reports `unregistered-transport` and every response is the pre-M3 one. The refusals above are reachable on the `runtime` transport, where `local-runtime-v2` is the registered provider.
 
-**The bridge.** A provider can refuse the *generic* config-option write and still have the two dedicated writers webui's own controls depend on. #68's gate therefore asks for a sub-item derived from the request: `model` asks for `selectModel` and `permissionMode` asks for `setPermissionMode`, both of which pass a provider that denies `setConfigOption`; every other config id asks for `setConfigOption` and gets the 501. The exemption is exactly two named ids — never a prefix, never a default — and it does not survive a `none`: a provider with no `authCredentials` at all has no dedicated writer either.
+**The bridge.** A provider can refuse the *generic* config-option write and still have the dedicated writers webui's own controls depend on. #68's gate therefore asks for a sub-item derived from the request: `model` asks for `selectModel`, `permissionMode` asks for `setPermissionMode` and `thinkingEffort` asks for `setThinkingEffort`, all of which pass a provider that denies `setConfigOption`; every other config id asks for `setConfigOption` and gets the 501. The exemption is exactly three named ids — never a prefix, never a default — and it does not survive a `none`: a provider with no `authCredentials` at all has no dedicated writer either. (The third id arrived in M3-B14; see below.)
 
 **What the user sees.** The permission-mode selector and the model selector are hidden, not disabled and not accompanied by an error message (`webapp/lib/engine-capabilities.ts`, wired in `webapp/components/composer.tsx`). A toast would report a failure for something the user was never able to do, offer nothing to act on, and reappear on every click. The rule is fail-open: the controls are shown until the declaration positively says the engine cannot do it, so a failed or slow `/api/engine-capabilities` request never removes a working control.
 
@@ -281,9 +281,81 @@ Two forms the picker deals with are deliberately different and stay that way. Wh
 
 **`contextWindow` is still recorded and never pushed.** The engine's ACP surface has no channel for it, so the pick is a webui-side preference the picker reflects immediately.
 
-**These two endpoints are not gated, and that is an open decision rather than an oversight.** #59 writes `permissionMode` only, so gating it on `authCredentials.setPermissionMode` would be behaviourally inert today and safe against the shipped UI (the permission selector is already hidden under exactly that declaration) — it is one `assertEngineCapability` call. #58 also writes `thinkingEffort`, which is a *generic* config id: gating it the same way would make the thinking-effort control answer 501 for the same reason #68 does for an unrecognised id. Both branches are costed in the KNOWN DEBT section of `model-writes.js` — bridge `thinkingEffort` as a third bridged id, or accept the 501 and extend the frontend's degradation to a third control. Until that is decided, #58 keeps its pre-B10 behaviour.
+**These two endpoints were not gated in this batch, and that was an open decision rather than an oversight.** #59 writes `permissionMode` only, so gating it on `authCredentials.setPermissionMode` would be behaviourally inert today and safe against the shipped UI (the permission selector is already hidden under exactly that declaration) — it is one `assertEngineCapability` call. #58 also writes `thinkingEffort`, which was a *generic* config id: gating it the same way would make the thinking-effort control answer 501 for the same reason #68 does for an unrecognised id. Both branches were costed in the KNOWN DEBT section of `model-writes.js` — bridge `thinkingEffort` as a third bridged id, or accept the 501 and extend the frontend's degradation to a third control. **M3-B14 took the first branch**, and the gate landed with it; #58 keeps its pre-B10 behaviour only on the paths that never reach the engine.
 
-**The bridge is no longer an unverified exemption.** `selectModel` and `setPermissionMode` — the two sub-items `MODE_WRITE_BRIDGED_CONFIG_IDS` names — are now in the snapshot audit's `REQUIRED_METHODS`, so a real booted host is checked for both of them on the adapter *and* the CliService surface, and a declaration that stops listing one goes red. Neither surface carries a `setThinkingEffort` / `selectThinkingEffort`, which is the fact the gating decision above turns on.
+**The bridge is no longer an unverified exemption.** `selectModel` and `setPermissionMode` — the first two sub-items `MODE_WRITE_BRIDGED_CONFIG_IDS` named — are in the snapshot audit's `REQUIRED_METHODS`, so a real booted host is checked for both of them on the adapter *and* the CliService surface, and a declaration that stops listing one goes red. Neither surface carries a `setThinkingEffort` / `selectThinkingEffort`, which is the fact the gating decision above turns on. The third id M3-B14 added points at that same absent method, so the audit tracks it as a **proven absence** rather than as a presence — see the M3-B14 section for what that means when the engine ships the writer.
+
+### M3-B11: the provider family moves behind the facade, and the two provider files become one (storage change)
+
+`GET /api/providers` (#62), `PUT /api/providers` (#63), `POST /api/providers/test` (#64), `GET /api/providers/presets` (#65) and `POST /api/providers/preset/:id/enable` (#66) are the last catalogue family in the migration, and the only one that changes where a user's data lives.
+
+**What changed.** webui kept two files describing the same providers: `~/.mcode-webui/providers.json` (the v2 catalogue, ordered, lossless) and the engine's `<engine data dir>/config.yaml` `custom_provider` tree (a projection of the first, written by a double-write that had no transaction across it). The projection was lossy and the loss was invisible precisely because nothing read it back: a disabled provider, a `coding-plan` provider, a `preset` name and the gemini-vs-openai protocol distinction all vanished on the way to the engine, and the catalogue's ordering came from the file that was about to stop being authoritative. There is now one file. Each webui-managed entry carries its webui record beside its engine fields:
+
+```yaml
+custom_provider:
+  acme-gateway:
+    name: Acme Gateway
+    kind: custom
+    api: openai-completions
+    options: { apiKey: …, baseURL: …, authMode: api-key }
+    models: { glm-5.3: { limit: { context: 128000 } } }
+    _webui_owned: true        # ownership: webui wrote this entry
+    _webui_provider: { … }    # the authoritative v2 record, verbatim
+```
+
+Both marker fields are ignored by the engine, which parses `config.yaml` through js-yaml with no schema rejection and reads named fields. A provider the engine cannot express still gets its key, its marker and its record — it simply has no engine fields, which is the whole difference from the double write.
+
+**The migration, and the fallback.** While the store carries no `_webui_provider_migration` marker, the deprecated `providers.json` is still the authority; webui folds it into the store on the next read and stamps the marker on success, after which the file is never read again. A migration that fails — an unparseable `config.yaml`, a write that could not complete — leaves the store byte-identical and the old format readable, and the next read retries. The marker is a field rather than an inference ("the tree has webui entries") for one concrete reason: an operator who deletes every provider leaves a tree with no webui entries, and an inferred marker would hand authority back to the stale file and resurrect what they had just removed.
+
+Field-by-field equivalence and both fallback paths are pinned in `packages/webui/test/lib/engine/provider-migration.test.js`, on a fixture built to break every assumption the migration could be quietly making: several providers, every schema field, and the boundary values (empty label, absent `preset`, disabled, `coding-plan`, the gemini protocol, a zero context limit, empty thinking levels, a model id the engine key grammar rejects, unicode, a 4096-character key).
+
+**PUT atomicity is now structural.** There is one file and one `rename`, so the two-file disagreement the old arrangement allowed — the catalogue committed, the engine projection failed, a 200 with a warning nobody had to read — cannot be constructed. A refused write (an unparseable `config.yaml` is refused, never overwritten, because rewriting it would destroy every engine setting the store does not own) or a failed write leaves the previous document intact, and a concurrent reader always sees a whole catalogue.
+
+**The gates.** The two write endpoints declare `authCredentials` and gate **hard** on `updateUserModelProvider` / `createUserModelProvider`: the catalogue the operator is about to see is read by the engine, so a provider that cannot write providers cannot truthfully answer 200. The three read endpoints declare the same capability and gate **soft** — a provider with no provider surface still serves a well-defined catalogue, so hard-gating them would delete a working UI over an enrichment. As in B9, an unregistered transport (`acp`, until M4) is not a 501.
+
+**What a client observes.** The endpoint shapes, statuses, masking rule, keep-key convention, probe semantics and the `providers.updated` SSE frame are unchanged. Two response *values* moved with the storage: `PUT`'s `path` is now the engine's `config.yaml`, and it also reports `engineSync: {ok, written, keys}` for the store write itself. `GET`'s `sources` and `userPath` are unchanged in both field and value — they still name the deprecated file, because "which files did the server resolve" is a question an operator asks when a provider is missing, and the answer is now carried by the bilingual docs rather than by a renamed field.
+
+**Three decisions are recorded rather than taken.** `POST /api/providers/test` names `testUserModelProvider` in its gate, and that method cannot answer it: the engine's tester is keyed on a *persisted* provider, while the endpoint tests an unsaved candidate from a form. The probe stays webui-local, which is also the only option that keeps its two load-bearing properties (the local key-format check runs before any network call, and the apiKey goes to the configured baseURL and nowhere else). The preset gallery is still webui's own template list, and the engine has a different one; the two are not the same taxonomy, so the plan's "align the two template sets" is made visible rather than closed. And a webui provider whose engine key collides with an operator's hand-written entry still overwrites it, because the key *is* the runtime id and a silent rename would turn a recorded model pick into an unresolvable one. All three are costed in the KNOWN DEBT sections of `provider-reads.js` and `provider-writes.js`.
+
+### M3-B14: `thinkingEffort` becomes a bridged config id, and #58/#59 get capability gates
+
+M3-B10 moved these two endpoints behind the facade and left one decision open. This batch closes it, and the part worth reading is why the obvious gate on #58 would have been wrong.
+
+**The decision that was open.** #59 writes `permissionMode` and nothing else, so gating it on `authCredentials.setPermissionMode` is one call and no behaviour change. #58 also writes `thinkingEffort`, and that config id was *generic* — the one the plan (§3a, row 68) says has nowhere to be delivered under a provider with no generic write. Gating #58 the same way would have made the thinking-effort control answer 501 for exactly the reason #68 does for an unrecognised id. Two branches were costed: bridge `thinkingEffort` as a third bridged id, or accept the 501 and hide the control. **The bridge was chosen**, and the exemption list is now three names:
+
+| config id | #68 asks for | #58 asks for | what the engine receives |
+| --- | --- | --- | --- |
+| `model` | `selectModel` | — the model push rides the model capability | `m:<provider>:<model>:u`, or `:v:<variant>` for a switchable builtin |
+| `permissionMode` | `setPermissionMode` | — #59 is its own endpoint | an engine vocabulary word |
+| `thinkingEffort` | `setThinkingEffort` | `setThinkingEffort`, **on the effort channel only** | a bare level |
+| anything else | `setConfigOption` → 501 | — | — |
+
+The exemption is still three named ids — never a prefix, never a default — and it still does not survive a `none`.
+
+**Why #58's gate is on the effort channel and not on the endpoint.** #58 has two channels, and they use different capabilities. A switchable builtin (ticket 36) has no engine effort vocabulary at all, so **one** `model` push carries the model *and* the on/off level. The level there rides the **model** capability, and gating it on an effort sub-item would 501 a model switch for a capability the switch never uses. A model-only pick on the effort channel has no effort write to gate either. The predicate is therefore read off the plan rather than off the request's fields — `Boolean(plan.thinkingPush)` — and the variant channel is ungated by construction rather than by a second condition somebody has to keep in sync:
+
+```mermaid
+flowchart TD
+  A["POST /api/set-model"] --> B{"a live session?"}
+  B -- no --> B1["200 + local-only warning<br/>nothing reaches the engine, so there is<br/>nothing for a gate to be honest about"]
+  B -- yes --> C{"variant channel?<br/>(switchable builtin)"}
+  C -- yes --> D["one model push carries<br/>model + on/off level"]
+  C -- no --> E{"plan.thinkingPush<br/>non-null?"}
+  E -- no --> F["model-only or cleared effort<br/>NOT gated"]
+  E -- yes --> G{"authCredentials .<br/>setThinkingEffort"}
+  G -- allowed --> H["model push, then<br/>thinkingEffort push"]
+  G -- denied --> I["501 engine_capability_<br/>not_supported"]
+```
+
+A pure model switch answering 200 while an effort write on the same session, the same provider and the same request frame answers 501 is not an inconsistency — it is the point, and both directions are pinned in `packages/webui/test/lib/engine/model-writes.test.js`.
+
+**What a user sees.** One change, and it is a UI change rather than a status change: the thinking-effort selector is now the **third** control the engine-capability rule governs (`webapp/lib/engine-capabilities.ts`, wired in `webapp/components/composer.tsx`). Under a provider that declares the dedicated effort writer absent it is hidden, not disabled and not accompanied by a message, for the same reason the other two are. No registered provider declares it today, so **no control disappears on the current builds**; the rule stays fail-open, and a failed or slow `/api/engine-capabilities` request still shows everything.
+
+**What changed for #68.** `POST /api/protocol/set-config-option` with `key: "thinkingEffort"` no longer answers 501 under such a provider. Nothing in the shipped webapp calls #68, so there is no client to break, and the change makes the two endpoints agree: a config id must not be deliverable through #58 and refused through #68 for the same provider. `contextWindow` is the honest generic example now, and both the suite and this table say so.
+
+**The name is a forward contract, and the audit says so rather than implying otherwise.** `selectModel` and `setPermissionMode` are methods the audited surfaces really carry, which is why B10 could add them to the snapshot's `REQUIRED_METHODS` and have the audit check them on the adapter *and* the CliService. **`setThinkingEffort` is not.** The snapshot test probes the real booted host by reflection and asserts its absence on both surfaces, in a new `unimplemented` list that means precisely one thing — *this surface must not carry this method* — and that turns the audit **red** the moment either surface grows one. That is the whole closure mechanism, and it is deliberately one-directional: the engine shipping a dedicated effort writer is an event nobody here can schedule, and the audit is what makes it impossible to miss. When it happens, the name moves from `unimplemented` to `methods`, the declaration is re-audited, and the control comes back on its own.
+
+What is deliberately **not** done: no provider's `authCredentials` declaration was edited to list `setThinkingEffort` in `missing`. Listing it would make every provider refuse the effort write and remove the control for every user today — the other branch's cost, not this one's. The gate reads the declaration, the declaration describes the surface, the surface really has no such method, and the gate is therefore inert. That is the truthful state of the world rather than a faked one.
 
 ### Migration state and constraints
 
@@ -459,9 +531,64 @@ because they are load-bearing elsewhere:
   falls back to the engine session id, which does not change. This is why a
   duplicate send into a first-turn conversation is answered `session-busy`
   rather than `cid-busy` once the backfill has landed — both refuse.
+- **The claim moves with the id, and remembers where it was.** The promotion
+  is the one instant the conversation's identity changes, so `mcode-acp.js`
+  re-keys the claim there (`moveRunSession`) on both transports. The registry
+  keeps the retired key as an alias on the entry, which is what lets the
+  route's `finally { endRun(cid, runSessionId) }` — still holding the key it
+  claimed under — find and release the re-keyed claim.
+
+  Without the re-key the guard has a hole, and the hole is about
+  acknowledgement rather than about locking. `beginRun` cannot see a turn
+  whose key the view no longer presents, and its remaining guard
+  (`runsBySid`) is populated by a separate mid-turn backfill. In a window
+  where neither matches, the server answers `200` and hands a **second
+  concurrent turn** to an engine session that is already executing — while
+  the new turn's `›` echo lands in a live `cs.chat` that the run-mirror's
+  finalize then writes over from a snapshot taken before it. The result is
+  the one failure this whole area exists to prevent: the engine ran the
+  message and the webui holds no record of it, so the user gets neither the
+  bubble nor the history entry and the text is gone. (Observed in the 16:00
+  UAT round, 2026-10-03, exception #1.) A guard that cannot see a turn must
+  not ack it.
 - **`MAX_CONCURRENT` counts turns, not busy clients.** One tab running two
   conversations spends two of the slots, because that is two engine
   subprocesses; that is the resource the ceiling exists to bound.
+
+### Sending while a turn is running
+
+A message sent into a conversation that is already running a turn is
+**refused, not queued**. `POST /api/send` answers `409` with
+`reason: "cid-busy"` or `"session-busy"`, the turn is never handed to the
+engine, the `›` line is never written, and nothing reaches the persisted
+record. The refused text comes back to the composer.
+
+The 409's `error` field is written for the person reading it — it names the
+decision and the next action — because the composer renders it verbatim.
+`reason` is the stable machine-readable key, and it is what the client
+branches on rather than on the wording.
+
+There is no queue, and the three send outcomes in the composer are kept
+distinct because they ask for opposite behaviour:
+
+| State | What the server did | What the banner says | What the user should do |
+| --- | --- | --- | --- |
+| accepted | `200`; the turn runs | — | nothing |
+| refused, conversation busy | `409 cid-busy` / `session-busy`; the engine has nothing | not delivered, text is back, wait for the turn | send again when the turn ends |
+| unconfirmed | no answer, and the probe against the server could not establish whether the turn started | status unknown, or "the engine is running it, do not resend" | read the history first |
+
+The third state is the one that must never lie about a side effect. It used
+to treat "a turn is running" as proof that *this* send was accepted — the
+reasoning being that a busy conversation answers `409` immediately, so a turn
+seen after a deadline expiry is this one. That is false for the case that
+actually produced the field report: the send was made **into** a running
+conversation, so the running turn the probe sees is the previous one. The
+banner then told the user "the engine is running your message, do not send it
+again" about a message the engine never received. `stateAcceptsSend` now
+requires the prompt's own echo line in the transcript, and consults the
+running flag only when the snapshot carries no transcript at all — the one
+place it cannot be contradicted, and where ignoring it is what made
+`sleep 35` execute twice under webui-parity 81 D-2.
 
 What stays tab-scoped, and why it is safe under two live turns:
 
@@ -2474,8 +2601,8 @@ marker), not by tool name.
 | `POST` | `/api/auth/decision` | `lib/authorize.js#handleAuthDecision` | `{requestId, approve}`; `200` resolved; `404` no such pending request; `400` bad body; idempotency guard via resolved-set delete |
 | `POST` | `/api/upload` | `routes/upload.js` | multipart required; `400` if not; `413 {code:"UPLOAD_REQ_TOO_LARGE"\|"UPLOAD_FILE_TOO_LARGE"\|"UPLOAD_QUOTA_EXCEEDED"}`; `400 {code:"UPLOAD_MALFORMED"\|"UPLOAD_ABORTED"}`; write-ahead audit `upload.create.intent` before disk, `upload.create` after; `200 {ok, path, name, size}` |
 | `GET` | `/api/models` | `routes/model.js#handleGetModels` | engine model + webui label/limit projection; `thinkingLevels` from both engine thinking schemas (effort list verbatim, switchable builtins as `["off","on"]`). Response `{ok, models, groups, current, currentThinking, source, reason?}` — `models` the flat list; `groups` provider-grouped for the picker (`{id, label, auth:{hasKey,type}, protocol?, models}`, `auth`/`protocol` only on config groups — `__engine`/`minimax_api` carry `id/label/models`); `current` the active id or `null` (never a fabricated default); `currentThinking` the active level (`thinkingEffort.currentValue` → `cs.model.thinking` → `null`); `source` = `acp-session-config`\|`config+mcode-cli-bundle`\|`mcode-cli-bundle` (which layer answered); `reason:"no_catalogue"` only when `models` is empty |
-| `POST` | `/api/set-model` | `routes/model.js#handleSetModel` | `{model, thinking?}`; `400` only when `model` is empty **and** `thinking` is absent (missing-parameter, not unknown-model — an unknown model name is recorded and pushed, never validated here); effort models push model+`thinkingEffort`, variant models fold the on/off level into one model selection |
-| `POST` | `/api/permissions` | `routes/model.js#handleSetPermissions` | `{mode}`; mapped to engine mode via `WEBUI_TO_MCODE_PERMISSION` |
+| `POST` | `/api/set-model` | `routes/model.js#handleSetModel` | `{model, thinking?}`; `400` only when `model` is empty **and** `thinking` is absent (missing-parameter, not unknown-model — an unknown model name is recorded and pushed, never validated here); effort models push model+`thinkingEffort`, variant models fold the on/off level into one model selection. Gated on `authCredentials.setThinkingEffort` for a standalone effort write only (M3-B14): a pure model switch and a variant-channel pick are not gated |
+| `POST` | `/api/permissions` | `routes/model.js#handleSetPermissions` | `{mode}`; mapped to engine mode via `WEBUI_TO_MCODE_PERMISSION`; gated on `authCredentials.setPermissionMode`, which is behaviourally inert today (M3-B14) |
 | `GET` | `/api/permissions-modes` | `routes/model.js#handleListPermissionModes` | engine's current `availableModes` |
 | `POST` | `/api/answer` | `routes/model.js#handleAnswer` | **Removed capability — tombstone only.** Always `410 {ok:false, removed:true, error}`. It used to answer `200 {ok:true, deprecated:true}` without reaching the engine, and four buttons called it, so a click looked successful while the prompt stayed pending. `webapp/lib/api.ts` deliberately exports no client for it; do not add one without a channel that reaches the engine. See "Blocking prompts: what each one can actually answer" |
 | `GET` | `/api/providers` | `routes/providers.js#handleGetProviders` | masked catalogue |

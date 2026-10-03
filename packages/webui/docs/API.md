@@ -191,6 +191,19 @@ not a total-turn ceiling.
   `"at-capacity"` (the server is at `MAX_CONCURRENT`, which `/api/health`
   reports as `maxConcurrent`)
 
+**A 409 is terminal for that message, and it is not a failure.** The turn is
+never handed to the engine, the `›` line is never written, and nothing reaches
+the persisted record — a refused send cannot be half-applied, and cannot be
+one the engine ran while the transcript lost. There is no send queue: "refused,
+try again when the turn ends" is the whole contract.
+
+`error` is the user-facing sentence (the composer renders it verbatim) and
+`reason` is the stable machine-readable key; branch on `reason`. For
+`cid-busy` and `session-busy` that sentence states the conversation is already
+running a turn and the message was not delivered, rather than repeating the
+internal detail — which reads "another window" and is wrong for the common
+case of the same tab sending again a moment later.
+
 ### `POST /api/stop`
 
 Cancel the current run. Tries `session/cancel` via acp (the cancel
@@ -1973,9 +1986,14 @@ actually read for each layer, so an operator can confirm which file
 the live config came from.
 
 Layered resolution: `MCODE_WEBUI_MODELS_CONFIG` env → cwd `models.json`
-→ user-level `~/.mcode-webui/providers.json` (the PUT write target).
-Same-id provider deep merge; models dedupe by id with the higher layer
-winning.
+→ the engine's `<engine data dir>/config.yaml` under `custom_provider`
+(the PUT write target). Same-id provider deep merge; models dedupe by id
+with the higher layer winning.
+
+The env and cwd layers are deployment-owned and are never written by
+any handler. The third layer used to be a webui file of its own
+(`~/.mcode-webui/providers.json`); it is now the engine's own provider
+store, and that file is **deprecated** — see "Provider storage" below.
 
 **Response 200**
 ```json
@@ -2014,26 +2032,70 @@ winning.
 }
 ```
 
+- `sources.user` and `userPath` still name the **deprecated**
+  `~/.mcode-webui/providers.json`. The fields did not change and the
+  values did not either: both are documented as "the files this server
+  resolved", and an operator diagnosing a missing provider still needs
+  to be told what to look at. What changed is the answer — the file is
+  read only until the migration completes, and is never written again.
+  The live catalogue is the engine store; `GET /api/models` reads it
+  there too.
 - `auth.apiKeyMasked` is the only apiKey shape returned by any route
   in this surface. A test (and `scripts/check-docs-alignment.mjs`)
   pins the rule: the plaintext key MUST NEVER appear in any
   `/api/providers*` response, regardless of which layer held it.
+**Path forms are reported as the server resolved them, and nothing is
+re-resolved.** `sources.cwd` is `<process.cwd()>/models.json`, and
+`process.cwd()` is the kernel-reported working directory — on macOS
+that is the fully-resolved form, so a server started under `/var`
+reports `/private/var/...`. That is the correct answer to "which file
+did you read", and the write side uses the same resolver, so the file
+the response names is the file the `PUT` will land in. `sources.user`
+and `userPath` come straight from `MCODE_WEBUI_DATA_DIR` and are
+reported exactly as configured.
+
 - `sources.env` is `null` when `MCODE_WEBUI_MODELS_CONFIG` is unset;
   `sources.cwd` is omitted from the layer set in that case (the env
   override is the cwd file).
 
 ### `PUT /api/providers`
 
-Validate-and-persist a v2 provider config to the user-level file
-(`~/.mcode-webui/providers.json`, the file written by this handler).
-The env / cwd layers are deployment-owned and never written here.
+Validate-and-persist a v2 provider config to the **engine's provider
+store** — `<engine data dir>/config.yaml` under `custom_provider`,
+written with mode `0600`. The env / cwd layers are deployment-owned and
+never written here, and neither is the deprecated
+`~/.mcode-webui/providers.json`.
 
-The handler atomically writes via rename (no half-written file on
-disk), reloads the layer set on the next call, and broadcasts an
-SSE `providers.updated` named event with the masked payload so
-every connected client refreshes its catalogue without polling.
-`/api/models` picks up the change on the next request — no restart
-required.
+The handler performs **one** write: a temporary file plus a single
+`rename` of the whole document. There is no second file to fall out of
+step, so a request either lands completely or changes nothing — a
+concurrent reader always sees a whole catalogue, never a mixture, and
+never a partially written YAML document. The layer set is re-read on
+the next call, and the handler broadcasts an SSE `providers.updated`
+named event with the masked payload so every connected client refreshes
+its catalogue without polling. `/api/models` picks up the change on
+the next request — no restart required.
+
+**Capability gate.** The two write endpoints (`PUT /api/providers`
+and `POST /api/providers/preset/:id/enable`) declare
+`authCredentials` and gate **hard** on their sub-item
+(`updateUserModelProvider` / `createUserModelProvider`). A provider
+that declares the sub-item absent answers
+`501 {ok:false, code:"engine_capability_not_supported", …}` rather than
+acknowledging a configuration the engine will never read. On the
+default `acp` transport no provider is registered yet, so the gate
+reports `unregistered-transport` and the write proceeds. The three read
+endpoints declare the same capability and gate **soft** — they report
+degradation and keep serving.
+
+**Legacy migration.** While the engine store carries no migration
+marker, the deprecated `providers.json` is still the authority: webui
+folds it into the store, losslessly, on the next read, and stamps the
+marker on success — after which the file is never read again. A failed
+migration (an unparseable `config.yaml`, a write that could not
+complete) leaves the store untouched and the old format readable, and
+the next read retries. Field-by-field equivalence is pinned by
+`packages/webui/test/lib/engine/provider-migration.test.js`.
 
 **Request**
 ```json
@@ -2059,15 +2121,27 @@ required.
 {
   "ok": true,
   "providers": [ /* masked view, same shape as GET */ ],
-  "path": "/home/you/.mcode-webui/providers.json"
+  "path": "/home/you/.minimax/config.yaml",
+  "engineSync": { "ok": true, "written": true, "keys": ["openai_compat"] }
 }
 ```
 
+- `path` is the file this handler wrote: the engine's `config.yaml`.
+  It used to be `~/.mcode-webui/providers.json`.
+- `engineSync` reports the store write itself. `written: false` means
+  the document would have come out unchanged (a no-op PUT does not
+  re-chmod a file an operator just hand-edited). It is `ok: true`
+  whenever the store accepted the write.
 - `400 BAD_BODY` — invalid provider shape, unknown protocol, or
   validation failure (each error carries a human-readable `error`
   string with the offending field).
-- `500 WRITE_FAILED` — disk I/O failure (the in-memory state did
-  not change; the operator should retry).
+- `500 WRITE_FAILED` — the store refused or could not perform the
+  write. Two causes, and the second is the one that matters: a
+  `config.yaml` that does not parse is **refused, never
+  overwritten**, because rewriting it would destroy every engine
+  setting the store does not own. In both cases the previous
+  document is intact, the next `GET` returns the catalogue the client
+  already had, and the operator can retry.
 
 ### `POST /api/providers/test`
 

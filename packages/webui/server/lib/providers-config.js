@@ -68,9 +68,9 @@
 // repeated reads of the same path on the same tick are coalesced by
 // the routes themselves (handleGetProviders / handleGetModels).
 
-import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, dirname } from "node:path";
+import { join } from "node:path";
 
 // =====================================================================
 // Constants
@@ -194,20 +194,10 @@ function safeReadJson(path) {
   }
 }
 
-/**
- * Atomic write: write `<path>.tmp` then rename to `<path>`. A half-written
- * file on disk would be a config-load hazard the next PUT reads back into.
- */
-function atomicWriteJson(path, value) {
-  mkdirSync(dirname(path), { recursive: true });
-  const tmp = `${path}.tmp`;
-  writeFileSync(tmp, JSON.stringify(value, null, 2), "utf8");
-  renameSync(tmp, path);
-}
-
 // =====================================================================
 // Validation / normalisation
 // =====================================================================
+
 
 function str(v, fallback = "") {
   return typeof v === "string" ? v : fallback;
@@ -484,15 +474,30 @@ function mergeProvider(lower, higher) {
  * The cwd layer is intentionally skipped when `MCODE_WEBUI_MODELS_CONFIG`
  * is set (env layer "is" the cwd path; two layers pointing at the same
  * file would double-count).
+ *
+ * `opts.userLayer` (batch B11) REPLACES the user layer with an
+ * already-resolved provider list, which is how the engine's provider
+ * store takes over as the authority while the env and cwd layers keep
+ * their existing precedence, their existing per-call re-read, and their
+ * existing "deployment-owned, never written" property. The default —
+ * no `opts` — is the deprecated user file, so this module stays
+ * usable (and testable) on its own.
+ *
+ * @param {{userLayer?: object[]}} [opts]
+ * @returns {{version: number, providers: object[], sources: object}}
  */
-export function loadProvidersConfig() {
+export function loadProvidersConfig(opts = {}) {
   const envPath = process.env.MCODE_WEBUI_MODELS_CONFIG;
   const cwdPath = envPath ? null : join(process.cwd(), "models.json");
   const userPath = getUserLevelPath();
 
   const envLayer = envPath ? readLayer(envPath) : null;
   const cwdLayer = cwdPath ? readLayer(cwdPath) : null;
-  const userLayer = existsSync(userPath) ? readLayer(userPath) : null;
+  const userLayer = Array.isArray(opts.userLayer)
+    ? { providers: opts.userLayer }
+    : existsSync(userPath)
+      ? readLayer(userPath)
+      : null;
 
   const layers = [userLayer, cwdLayer, envLayer]; // lowest -> highest priority
   const sources = {
@@ -767,45 +772,23 @@ export async function testProvider({ protocol, auth, timeoutMs }) {
 }
 
 // =====================================================================
-// Persisted PUT (user-level write)
+// Persistence — MOVED (batch B11)
 // =====================================================================
-
-/**
- * Validate-and-persist the incoming PUT body to the user-level file.
- * Returns the persisted (normalised) config on success; on failure a
- * `{ ok: false, error }` shape with a per-field message so the API
- * can answer 400 without leaking internal stack traces.
- *
- * Note: the PUT handler is the ONLY write path for the user-level
- * file. The env / cwd layers are deployment-owned and never written.
- */
-export function writeProvidersConfig(parsed) {
-  if (!parsed || typeof parsed !== "object") {
-    return { ok: false, code: "BAD_BODY", error: "body is not an object" };
-  }
-  const norm = normaliseConfig(parsed);
-  if (!norm) {
-    return { ok: false, code: "BAD_BODY", error: "no providers in body" };
-  }
-  if (norm.warnings && norm.warnings.length > 0) {
-    return {
-      ok: false,
-      code: "BAD_BODY",
-      error: norm.warnings.join("; "),
-    };
-  }
-  const path = getUserLevelPath();
-  try {
-    atomicWriteJson(path, { version: SCHEMA_VERSION, providers: norm.providers });
-  } catch (e) {
-    return {
-      ok: false,
-      code: "WRITE_FAILED",
-      error: e && e.message ? e.message : String(e),
-    };
-  }
-  return { ok: true, path, providers: norm.providers };
-}
+//
+// `writeProvidersConfig` and its `atomicWriteJson` helper used to live
+// here. They are gone with the dual-source arrangement they served:
+// `providers.json` is no longer written by anything, and the store that
+// replaced it is written by `engine/provider-store.js` with a different
+// shape (YAML, mode 0600, one rename), a different ownership rule
+// (foreign engine entries survive) and a different failure surface (an
+// unreadable engine config is refused rather than overwritten).
+//
+// What this module still owns, and why it is the right owner: the
+// SCHEMA. Normalisation, validation, masking, the layered resolution
+// and the connectivity probe are all still about what a provider
+// record MEANS, and a write target that changed does not change any of
+// them. `loadProvidersConfig({userLayer})` is the seam the new store
+// reads through.
 
 /**
  * Used by tests / routes that want to assert "plaintext key was never

@@ -24,6 +24,7 @@
 import { test, describe, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import {rmSync, writeFileSync, existsSync, readFileSync} from "node:fs";
+import yaml from "js-yaml";
 
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -38,17 +39,25 @@ const presets = await import(absPath("lib/provider-presets.js"));
 
 let _tmpDataDir;
 let _tmpCwd;
+let _tmpEngineDir;
 let _origDataDir;
+let _origEngineDir;
 let _origCwdEnv;
 let _origCwd;
 
 before(async () => {
   _tmpDataDir = mkTmpDir("webui-presets-route-");
   _tmpCwd = mkTmpDir("webui-presets-route-cwd-");
+  // M3-B11: enabling a preset now commits to the ENGINE store, so the
+  // suite needs an isolated engine data dir or it would write the
+  // developer's real ~/.minimax/config.yaml.
+  _tmpEngineDir = mkTmpDir("webui-presets-engine-");
   _origDataDir = process.env.MCODE_WEBUI_DATA_DIR;
+  _origEngineDir = process.env.MINIMAX_DATA_DIR;
   _origCwdEnv = process.env.MCODE_WEBUI_MODELS_CONFIG;
   _origCwd = process.cwd();
   process.env.MCODE_WEBUI_DATA_DIR = _tmpDataDir;
+  process.env.MINIMAX_DATA_DIR = _tmpEngineDir;
   process.env.MCODE_WEBUI_MODELS_CONFIG = "";
   process.chdir(_tmpCwd);
 });
@@ -56,19 +65,72 @@ before(async () => {
 after(async () => {
   if (_origDataDir === undefined) delete process.env.MCODE_WEBUI_DATA_DIR;
   else process.env.MCODE_WEBUI_DATA_DIR = _origDataDir;
+  if (_origEngineDir === undefined) delete process.env.MINIMAX_DATA_DIR;
+  else process.env.MINIMAX_DATA_DIR = _origEngineDir;
   if (_origCwdEnv === undefined) delete process.env.MCODE_WEBUI_MODELS_CONFIG;
   else process.env.MCODE_WEBUI_MODELS_CONFIG = _origCwdEnv;
   try { process.chdir(_origCwd); } catch {}
   if (_tmpDataDir) try { rmSync(_tmpDataDir, { recursive: true, force: true }); } catch {}
   if (_tmpCwd) try { rmSync(_tmpCwd, { recursive: true, force: true }); } catch {}
+  if (_tmpEngineDir) try { rmSync(_tmpEngineDir, { recursive: true, force: true }); } catch {}
 });
 
 beforeEach(() => {
-  const cwdFile = join(_tmpCwd, "models.json");
-  if (existsSync(cwdFile)) rmSync(cwdFile);
-  const userFile = join(_tmpDataDir, "providers.json");
-  if (existsSync(userFile)) rmSync(userFile);
+  // BOTH halves of the pre-B11 dual source are cleared: the deprecated
+  // providers.json (the fallback authority) and the engine store (the
+  // authority once the migration marker is stamped).
+  for (const f of [
+    join(_tmpCwd, "models.json"),
+    join(_tmpDataDir, "providers.json"),
+    join(_tmpEngineDir, "config.yaml"),
+  ]) {
+    if (existsSync(f)) rmSync(f);
+  }
 });
+
+/**
+ * The provider records the store holds, read straight off disk.
+ *
+ * The store is a YAML document keyed by engine provider key, so an
+ * assertion about "what the user saved" reads the `_webui_provider`
+ * record each webui-owned entry carries rather than the engine
+ * projection beside it: the record is what the catalogue API
+ * serialises.
+ *
+ * @returns {object[]}
+ */
+function readStoreRecords() {
+  const file = join(_tmpEngineDir, "config.yaml");
+  if (!existsSync(file)) return [];
+  const doc = yaml.load(readFileSync(file, "utf8")) || {};
+  return Object.values(doc.custom_provider || {})
+    .map((entry) => entry && entry._webui_provider)
+    .filter(Boolean);
+}
+
+/**
+ * Rewrite one record's apiKey IN the store, the way a user editing the
+ * dialog would. The pre-B11 suite hand-edited providers.json; the
+ * equivalent gesture now targets the file the store actually lives in.
+ *
+ * @param {string} id
+ * @param {string} apiKey
+ * @returns {void}
+ */
+function writeStoreApiKey(id, apiKey) {
+  const file = join(_tmpEngineDir, "config.yaml");
+  const doc = yaml.load(readFileSync(file, "utf8")) || {};
+  for (const entry of Object.values(doc.custom_provider || {})) {
+    if (entry && entry._webui_provider && entry._webui_provider.id === id) {
+      entry._webui_provider.auth.apiKey = apiKey;
+      // The engine projection is absent for a key-less provider (there
+      // is nothing for the engine to call), so the guard is the normal
+      // case for a freshly materialised preset, not an edge.
+      if (entry.options) entry.options.apiKey = apiKey;
+    }
+  }
+  writeFileSync(file, yaml.dump(doc, { indent: 2, lineWidth: -1, noRefs: true }), "utf8");
+}
 
 function fakeReq(url) {
   return { url };
@@ -91,9 +153,9 @@ function getBody(res) {
 // =====================================================================
 
 describe("handleGetPresets — /api/providers/presets GET", () => {
-  test("returns all 11 presets with enabled=false when nothing is configured (ticket 06)", () => {
+  test("returns all 11 presets with enabled=false when nothing is configured (ticket 06)", async () => {
     const res = fakeRes();
-    providersRoute.handleGetPresets(null, res, {});
+    await providersRoute.handleGetPresets(null, res, {});
     assert.equal(res._status, 200);
     const body = getBody(res);
     assert.equal(body.ok, true);
@@ -105,9 +167,9 @@ describe("handleGetPresets — /api/providers/presets GET", () => {
     assert.deepEqual(body.enabledIds, []);
   });
 
-  test("preset entries carry id, label, protocol, auth (no key), models", () => {
+  test("preset entries carry id, label, protocol, auth (no key), models", async () => {
     const res = fakeRes();
-    providersRoute.handleGetPresets(null, res, {});
+    await providersRoute.handleGetPresets(null, res, {});
     const body = getBody(res);
     const zhipu = body.presets.find((p) => p.id === "zhipu");
     assert.ok(zhipu);
@@ -122,7 +184,7 @@ describe("handleGetPresets — /api/providers/presets GET", () => {
     assert.ok(zhipu.models.length > 0);
   });
 
-  test("enabled=true once the preset id is configured", () => {
+  test("enabled=true once the preset id is configured", async () => {
     // Pre-populate the user-level file with a provider that
     // matches a preset id.
     writeFileSync(
@@ -141,14 +203,14 @@ describe("handleGetPresets — /api/providers/presets GET", () => {
       }),
     );
     const res = fakeRes();
-    providersRoute.handleGetPresets(null, res, {});
+    await providersRoute.handleGetPresets(null, res, {});
     const body = getBody(res);
     const zhipu = body.presets.find((p) => p.id === "zhipu");
     assert.equal(zhipu.enabled, true);
     assert.ok(body.enabledIds.includes("zhipu"));
   });
 
-  test("custom (non-preset) configured providers do NOT show as enabled", () => {
+  test("custom (non-preset) configured providers do NOT show as enabled", async () => {
     writeFileSync(
       join(_tmpDataDir, "providers.json"),
       JSON.stringify({
@@ -165,7 +227,7 @@ describe("handleGetPresets — /api/providers/presets GET", () => {
       }),
     );
     const res = fakeRes();
-    providersRoute.handleGetPresets(null, res, {});
+    await providersRoute.handleGetPresets(null, res, {});
     const body = getBody(res);
     assert.equal(body.enabledIds.length, 0, "custom providers are not preset-flagged");
     for (const p of body.presets) {
@@ -224,9 +286,7 @@ describe("handleEnablePreset — /api/providers/preset/:id/enable POST", () => {
       fakeRes(),
       {},
     );
-    const onDisk = JSON.parse(
-      readFileSync(providersConfig.getUserLevelPath(), "utf8"),
-    );
+    const onDisk = { providers: readStoreRecords() };
     const kimi = onDisk.providers.find((p) => p.id === "kimi");
     assert.ok(kimi, "kimi persisted");
     assert.equal(kimi.enabled, true);
@@ -243,7 +303,7 @@ describe("handleEnablePreset — /api/providers/preset/:id/enable POST", () => {
       {},
     );
     const res = fakeRes();
-    providersRoute.handleGetProviders(null, res, {});
+    await providersRoute.handleGetProviders(null, res, {});
     const body = getBody(res);
     const bailian = body.providers.find((p) => p.id === "bailian");
     assert.ok(bailian, "bailian visible after enable");
@@ -285,11 +345,7 @@ describe("handleEnablePreset — /api/providers/preset/:id/enable POST", () => {
       {},
     );
     // User fills the apiKey via a normal PUT.
-    const onDiskPath = providersConfig.getUserLevelPath();
-    let onDisk = JSON.parse(readFileSync(onDiskPath, "utf8"));
-    const mimoIdx = onDisk.providers.findIndex((p) => p.id === "mimo");
-    onDisk.providers[mimoIdx].auth.apiKey = "sk-realkey-user-filled-key";
-    writeFileSync(onDiskPath, JSON.stringify(onDisk, null, 2), "utf8");
+    writeStoreApiKey("mimo", "sk-realkey-user-filled-key");
 
     // Second enable must NOT clobber the key.
     const res = fakeRes();
@@ -302,8 +358,7 @@ describe("handleEnablePreset — /api/providers/preset/:id/enable POST", () => {
     const body = getBody(res);
     assert.equal(body.alreadyEnabled, true);
 
-    onDisk = JSON.parse(readFileSync(onDiskPath, "utf8"));
-    const mimo = onDisk.providers.find((p) => p.id === "mimo");
+    const mimo = readStoreRecords().find((p) => p.id === "mimo");
     assert.equal(
       mimo.auth.apiKey,
       "sk-realkey-user-filled-key",
@@ -344,7 +399,7 @@ describe("handleEnablePreset — /api/providers/preset/:id/enable POST", () => {
     assert.equal(body.provider.models[0].id, "custom-model");
 
     // The file on disk still has the custom record unchanged.
-    const onDisk = JSON.parse(readFileSync(providersConfig.getUserLevelPath(), "utf8"));
+    const onDisk = { providers: readStoreRecords() };
     const minimax = onDisk.providers.find((p) => p.id === "minimax");
     assert.equal(minimax.label, "My Custom minimax");
     assert.equal(minimax.auth.apiKey, "sk-realkey-custom");
@@ -375,7 +430,7 @@ describe("handleEnablePreset — /api/providers/preset/:id/enable POST", () => {
       {},
     );
 
-    const onDisk = JSON.parse(readFileSync(providersConfig.getUserLevelPath(), "utf8"));
+    const onDisk = { providers: readStoreRecords() };
     const ids = onDisk.providers.map((p) => p.id).sort();
     assert.deepEqual(ids, ["my-other-custom", "openrouter"]);
     // Other-custom record untouched.
@@ -412,7 +467,7 @@ describe("handleEnablePreset — /api/providers/preset/:id/enable POST", () => {
       {},
     );
     const res = fakeRes();
-    providersRoute.handleGetProviders(null, res, {});
+    await providersRoute.handleGetProviders(null, res, {});
     const body = getBody(res);
     const claude = body.providers.find((p) => p.id === "claude-code");
     assert.ok(claude);

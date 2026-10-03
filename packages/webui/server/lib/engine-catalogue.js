@@ -15,12 +15,15 @@
 //   providers (minimax-cn / deepseek-cn / zai-max / zai-pro /
 //   kimi-taozi / opencode-go × 3 / nousresearch) with 30+ models.
 //
-//   Ticket 05 added the *write* half: webui's PUT handler now
-//   projects its providers.json into the engine's `custom_provider`
-//   tree (`server/lib/engine-provider-sync.js`) with the
-//   `_webui_owned: true` ownership marker. Foreign entries (added
-//   via `mcode provider add` or hand-edited by the operator) are
-//   preserved through every sync.
+//   Ticket 05 added the *write* half: webui projected its
+//   providers.json into the engine's `custom_provider` tree with the
+//   `_webui_owned: true` ownership marker. M3-B11 made that tree the
+//   STORE rather than a projection of a second file
+//   (`server/engine/provider-store.js`), so this module's read below
+//   is of the primary source rather than of a mirror. Foreign entries
+//   (added via `mcode provider add` or hand-edited by the operator)
+//   are still preserved through every write — the ownership rule did
+//   not move with the file.
 //
 //   Ticket 06 closes the loop on the *read* half: the same tree is
 //   also a catalogue source for `/api/models`. Webui-only fields
@@ -92,7 +95,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import yaml from "js-yaml";
 
-import { getEngineConfigPath } from "./engine-provider-sync.js";
+import { getEngineConfigPath } from "../engine/provider-store.js";
 
 // =====================================================================
 // Builtin-model thinking projection (ticket 36 — builtin-thinking-levels).

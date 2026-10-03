@@ -651,78 +651,21 @@ describe("publicView — apiKey masked in every response path", () => {
 });
 
 // ---------------------------------------------------------------------
-// writeProvidersConfig — atomic persistence.
+// writeProvidersConfig — MOVED (batch B11)
 // ---------------------------------------------------------------------
-
-describe("writeProvidersConfig — atomic persistence", () => {
-  test("writes the user-level file with v2 schema", () => {
-    const r = providersConfig.writeProvidersConfig({
-      version: 2,
-      providers: [
-        {
-          id: "p",
-          label: "L",
-          protocol: "openai",
-          auth: { type: "byok", apiKey: "sk-realkey-aaa" },
-          models: [{ id: "m1" }],
-        },
-      ],
-    });
-    assert.equal(r.ok, true);
-    const written = JSON.parse(
-      readFileSync(providersConfig.getUserLevelPath(), "utf8"),
-    );
-    assert.equal(written.version, 2);
-    assert.equal(written.providers[0].id, "p");
-    // Pinned: plaintext key persists to disk (it has to, the engine
-    // needs it) — but the masking contract only governs RESPONSES.
-    assert.equal(written.providers[0].auth.apiKey, "sk-realkey-aaa");
-  });
-
-  test("rejects unknown protocol in any provider", () => {
-    const r = providersConfig.writeProvidersConfig({
-      version: 2,
-      providers: [{ id: "p", protocol: "ollama", auth: { type: "byok" } }],
-    });
-    assert.equal(r.ok, false);
-    assert.equal(r.code, "BAD_BODY");
-  });
-
-  test("rejects duplicate provider id", () => {
-    const r = providersConfig.writeProvidersConfig({
-      version: 2,
-      providers: [
-        { id: "p", protocol: "openai", auth: { type: "byok", apiKey: "sk-aaaa" }, models: [] },
-        { id: "p", protocol: "openai", auth: { type: "byok", apiKey: "sk-bbbb" }, models: [] },
-      ],
-    });
-    assert.equal(r.ok, false);
-    assert.equal(r.code, "BAD_BODY");
-  });
-
-  test("rejects empty body", () => {
-    const r1 = providersConfig.writeProvidersConfig(null);
-    assert.equal(r1.ok, false);
-    const r2 = providersConfig.writeProvidersConfig({});
-    assert.equal(r2.ok, false);
-  });
-
-  test("atomic write leaves no .tmp file behind", () => {
-    providersConfig.writeProvidersConfig({
-      version: 2,
-      providers: [
-        {
-          id: "p",
-          protocol: "openai",
-          auth: { type: "byok", apiKey: "sk-realkey-aaa" },
-          models: [],
-        },
-      ],
-    });
-    const tmp = `${providersConfig.getUserLevelPath()}.tmp`;
-    assert.equal(existsSync(tmp), false, "no leftover .tmp file");
-  });
-});
+//
+// The v2 schema gate did not move with the function: it is now
+// `planCatalogueFromBody` in `server/routes/providers.js`, and its
+// persistence is `engine/provider-store.js#buildProviderStoreWrite` +
+// `commitProviderStoreWrite`. Every assertion this block used to make
+// about the SCHEMA (unknown protocol rejected, duplicate id rejected,
+// empty body rejected, no temp file left behind, the plaintext key is
+// on disk because the engine needs it) is now made against the store,
+// in `test/lib/engine/provider-store.test.js` and
+// `test/lib/engine/provider-writes.test.js`.
+//
+// `normaliseConfig` is still here and still pins all four schema
+// refusals — the gate is the same code, the caller moved.
 
 // ---------------------------------------------------------------------
 // testProvider — local validation gate BEFORE network.

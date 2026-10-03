@@ -16,7 +16,11 @@ import { createPortal } from "react-dom";
 import * as api from "@/lib/api";
 import { clientId } from "@/lib/cid";
 import { bridgedControlAvailability, readEngineCapabilities } from "@/lib/engine-capabilities";
-import type { ControlAvailability, EngineCapabilities } from "@/lib/engine-capabilities";
+import type {
+  BridgedConfigId,
+  ControlAvailability,
+  EngineCapabilities,
+} from "@/lib/engine-capabilities";
 import {
   effortControlShape,
   effortOptionsWithDefault,
@@ -53,7 +57,7 @@ import {
   shouldCompleteSlashWord,
 } from "@/lib/slash-routing";
 import { decodeTranscript } from "@/lib/transcript";
-import { isSendUnconfirmed } from "@/lib/api";
+import { isConversationBusy, isSendUnconfirmed } from "@/lib/api";
 import {
   probeSend,
   shouldRestoreDraft,
@@ -262,9 +266,16 @@ export function Composer({
   // write, so a visible control would be advertising an action that
   // cannot happen. See `lib/engine-capabilities.ts` for the fail-open
   // rule and `webapp/test/engine-capabilities-degradation.test.ts` for
-  // the coverage of both halves.
+  // the coverage of all three halves.
+  //
+  // M3-B14 added `thinkingControl`. The thinking-effort selector is the
+  // one whose absence is hardest to spot, because the model chip beside
+  // it also carries a level on models whose thinking rides the model
+  // wire form: a hidden effort selector next to a working model chip is
+  // a correct pair, not a bug.
   const permissionControl = useEngineControlAvailability("permissionMode");
   const modelControl = useEngineControlAvailability("model");
+  const thinkingControl = useEngineControlAvailability("thinkingEffort");
   const hasConversation = decodeTranscript(state?.chat ?? []).length > 0;
   /** Nothing to send yet — the send button is rendered but inert. */
   const empty = value.trim().length === 0 && attachments.length === 0;
@@ -501,6 +512,15 @@ export function Composer({
       // (`lib/send-confirmation.ts`), and let that answer decide both the
       // words and whether the text comes back.
       const unconfirmed = isSendUnconfirmed(cause);
+      // A 409 `cid-busy` / `session-busy` is the server saying this
+      // conversation is already running a turn and the message was NOT
+      // delivered. It is a refusal — restore the text, and say so in
+      // words that name the turn rather than in a raw server string
+      // (P16). It is emphatically NOT the unconfirmed path: nothing is in
+      // flight on the engine, so the probe is not asked and its "do not
+      // resend, the engine is running it" wording would be the exact
+      // opposite of the truth.
+      const busy = !unconfirmed && isConversationBusy(cause);
       const outcome: SendProbeOutcome | null = unconfirmed
         ? await probeSend(content)
         : null;
@@ -565,7 +585,7 @@ export function Composer({
       }
       setComposerDraft(dispatchDraftKey, {
         error: errorMessage,
-        errorKind: unconfirmed ? "unconfirmed" : "rejected",
+        errorKind: unconfirmed ? "unconfirmed" : busy ? "busy" : "rejected",
         unconfirmed: outcome,
       });
     } finally {
@@ -902,8 +922,16 @@ export function Composer({
               {/* Thinking-effort picker (ticket 04). Only rendered when
                   the active model carries a `thinkingLevels` list; the
                   picker is gated so models without reasoning controls
-                  never expose a no-op control. */}
-              {thinkingLevelsForActive.length > 0 ? (
+                  never expose a no-op control. M3-B14 adds the engine
+                  gate on top of that: `thinkingControl` hides the whole
+                  control when the provider declares no dedicated
+                  thinking-effort writer, which is the same rule the
+                  other two bridged controls follow and the reason a
+                  click here never answers 501. Both halves are in one
+                  condition because both are "may this control be
+                  offered", and nesting them would only make the
+                  degraded case harder to read in a diff. */}
+              {thinkingControl.available && thinkingLevelsForActive.length > 0 ? (
                 <ThinkingEffortSelect
                   t={t}
                   levels={thinkingLevelsForActive}
@@ -971,21 +999,29 @@ export function Composer({
           </span>
 
           {error || errorKind ? (
-            // Three different facts need three different sentences. An expired
+            // Four different facts need four different sentences. An expired
             // deadline is not a refusal, so it never wears the "could not
             // send" headline nor the error colour — saying either would be a
             // claim about a side effect that may already have happened, and it
-            // is what pushed the user into resending (webui-parity 81 D-2).
+            // is what pushed the user into resending (webui-parity 81 D-2). A
+            // busy conversation is a refusal too, but the reader is told the
+            // turn is running and the text was NOT delivered, so the message
+            // is not resendable yet — a distinct sentence, not the generic
+            // failure line with a raw server string glued to it (P16).
             <span
               className={
                 errorKind === "unconfirmed"
                   ? "text-caption-small-strong text-text_default_secondary"
-                  : "text-caption-small-strong text-text_status_error"
+                  : errorKind === "busy"
+                    ? "text-caption-small-strong text-text_status_warning"
+                    : "text-caption-small-strong text-text_status_error"
               }
             >
               {errorKind === "unconfirmed"
                 ? t(unconfirmedBannerKey(unconfirmedOutcome))
-                : `${t("error.send")}: ${error}`}
+                : errorKind === "busy"
+                  ? t("error.busy")
+                  : `${t("error.send")}: ${error}`}
             </span>
           ) : null}
         </div>
@@ -1094,9 +1130,7 @@ const SelectPanel = forwardRef<
  * control that appears a moment later is worse than one that was always
  * there, because the user can click it in between.
  */
-function useEngineControlAvailability(
-  configId: "model" | "permissionMode",
-): ControlAvailability {
+function useEngineControlAvailability(configId: BridgedConfigId): ControlAvailability {
   const [declaration, setDeclaration] = useState<EngineCapabilities>(null);
   useEffect(() => {
     let live = true;

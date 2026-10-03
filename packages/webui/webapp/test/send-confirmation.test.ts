@@ -74,8 +74,29 @@ describe("the acknowledgement deadline is typed, not worded", () => {
 describe("stateAcceptsSend — what counts as 'the engine took it'", () => {
   const CASES: { name: string; state: WebuiState; content: string; want: boolean }[] = [
     {
-      name: "a running turn is accepted",
-      state: stateOf({ running: true, chat: [] }),
+      name: "a running turn carrying this send's echo is accepted",
+      state: stateOf({ running: true, chat: ["› sleep 35"] }),
+      content: "sleep 35",
+      want: true,
+    },
+    {
+      // P16 — the false positive. This send was made INTO a running
+      // conversation, so the 409 that came back belonged to a turn that was
+      // already running: the running turn the probe sees is the PREVIOUS
+      // one, and the transcript is the only thing that can tell them apart.
+      // Reading the flag as acceptance answered "the engine is running your
+      // message, do not send it again" for a message the engine never got.
+      name: "a running turn with NO trace of this send is not accepted",
+      state: stateOf({ running: true, chat: ["› ping", "● pong"] }),
+      content: "sleep 35",
+      want: false,
+    },
+    {
+      // The one place the running flag still decides: a snapshot that
+      // carries no transcript at all cannot contradict it, and webui-parity
+      // 81 D-2 (`sleep 35` ran twice) is the price of ignoring it there.
+      name: "a state with no transcript at all falls back to the running flag",
+      state: { running: { active: true } } as unknown as WebuiState,
       content: "sleep 35",
       want: true,
     },
@@ -127,11 +148,19 @@ describe("stateAcceptsSend — what counts as 'the engine took it'", () => {
 });
 
 describe("classifySendProbe — the decision table", () => {
-  const RUNNING = stateOf({ running: true });
+  // A turn that is running AND holds this send's echo — the proof, not the
+  // flag. A read showing only a running turn is the P16 false positive.
+  const RUNNING = stateOf({ running: true, chat: ["› x"] });
+  const RUNNING_OTHER_TURN = stateOf({ running: true, chat: ["› earlier"] });
   const IDLE_EMPTY = stateOf({ chat: [] });
 
   test("one read showing the turn running settles it as accepted", () => {
     assert.equal(classifySendProbe([null, RUNNING], "x"), "accepted");
+  });
+
+  test("a running turn that never took this send is a rejection, not acceptance", () => {
+    assert.equal(classifySendProbe([RUNNING_OTHER_TURN], "x"), "rejected");
+    assert.equal(shouldRestoreDraft(classifySendProbe([RUNNING_OTHER_TURN], "x")), true);
   });
 
   test("a read that came back with no trace is a rejection", () => {
@@ -160,7 +189,7 @@ describe("probeSend — bounded, and it really reads", () => {
     const outcome = await probeSend("x", {
       read: async () => {
         reads += 1;
-        return stateOf({ running: reads === 2 });
+        return stateOf({ running: reads === 2, chat: ["› x"] });
       },
       delay: async (ms) => {
         waits.push(ms);
@@ -183,7 +212,7 @@ describe("probeSend — bounded, and it really reads", () => {
     const outcome = await probeSend("x", {
       read: async () => {
         reads += 1;
-        return stateOf({ running: true });
+        return stateOf({ running: true, chat: ["› x"] });
       },
       delay: async () => {},
     });

@@ -131,20 +131,43 @@ test("run guard — a draft claim follows its new record id", async (t) => {
   await t.test("moveRunSession re-points the claim onto the created record", () => {
     assert.equal(bus.beginRun("tab", null, null).ok, true);
     assert.equal(bus.moveRunSession("tab", null, "web-new"), true);
-    assert.equal(bus.getRunForSession("tab", null), null);
-    assert.ok(bus.getRunForSession("tab", "web-new"));
+    // P16: the retired key still resolves to the same run. A conversation
+    // whose id changed under a live turn is still that conversation — the
+    // next send into it must find the running turn, not a free key. Before
+    // the alias this read null, and a send arriving in that window was acked
+    // and handed to an engine session that was already executing, with its
+    // echo lost from the transcript and the persisted record.
+    assert.ok(
+      bus.getRunForSession("tab", null),
+      "the key the run was claimed under must still resolve to it",
+    );
+    assert.equal(
+      bus.getRunForSession("tab", null),
+      bus.getRunForSession("tab", "web-new"),
+      "both keys must name the one run",
+    );
     // The duplicate send the un-moved claim would have let through.
     const dup = bus.beginRun("tab", null, "web-new");
     assert.equal(dup.ok, false);
     assert.equal(dup.reason, "cid-busy");
+    // …and the same answer when the send presents the RETIRED key.
+    assert.equal(bus.beginRun("tab", null, null).ok, false);
     assert.equal(bus.activeRunCount(), 1);
   });
 
   await t.test("releasing under either key frees the turn exactly once", () => {
+    // The route's `finally` still holds the key it CLAIMED under, which is
+    // the retired one once the record has been promoted. An alias-blind
+    // release would miss here and strand the claim: every later send in
+    // that conversation would be refused until the process ends.
+    bus.endRun("tab", null);
+    assert.equal(bus.activeRunCount(), 0, "releasing under the retired key must free the run");
+    assert.equal(bus.getRunForSession("tab", "web-new"), null);
+    // The current key works too, and a released run leaves no alias behind.
+    assert.equal(bus.beginRun("tab", null, "web-new").ok, true);
     bus.endRun("tab", "web-new");
     assert.equal(bus.activeRunCount(), 0);
-    // The stale key is not a live claim.
-    assert.equal(bus.beginRun("tab", null, null).ok, true);
+    assert.equal(bus.beginRun("tab", null, null).ok, true, "the retired key is free again");
     bus.endRun("tab", null);
     assert.equal(bus.activeRunCount(), 0);
   });

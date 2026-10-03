@@ -22,6 +22,7 @@ import {
   pushAlert,
   getCidsByMcodeSession,
   updateRunSid,
+  moveRunSession,
 } from "./state-bus.js";
 import { applyMavisUsageToCs } from "./mavis-usage.js";
 import { mcodePermissionToWebui } from "./mcode-rpc.js";
@@ -416,6 +417,24 @@ export async function runMcodeAcp(content, opts = {}) {
         }
       } catch (e) {
         console.warn(`[webui] bindDraftToMcodeSid: ${e.message}`);
+      }
+      // P16 — the claim follows the conversation's identity. A first
+      //   turn's draft record is promoted to the engine `mvs_` id right
+      //   here, and `cs.sessionId` follows it, so the key the run was
+      //   claimed under is no longer the key the view presents. Without
+      //   re-keying, a send arriving a moment later presents a key no
+      //   live run holds: `beginRun` cannot see the running turn, acks
+      //   the send, and hands a second turn to an engine session that is
+      //   already executing — while the new turn's echo lands in a
+      //   `cs.chat`/record the run-mirror then writes over, so the user
+      //   sees a message the engine ran and the webui has no record of
+      //   (UAT 2026-10-03 16点轮 异常 #1). Re-keyed HERE, at the only
+      //   instant the identity changes, and not in `handleSend`, which
+      //   cannot observe it. `moveRunSession` records the retired key as
+      //   an alias, so the `endRun(cid, runSessionId)` in the caller's
+      //   `finally` still finds and releases this claim.
+      if (stillViewingAtBind && sid && cs.sessionId !== owningWebuiSessionId) {
+        moveRunSession(cid, owningWebuiSessionId, cs.sessionId);
       }
       // First-turn session-busy guard: `handleSend` claimed the run with
       // `beginRun(cid, cs.mcodeSessionId, cs.sessionId)` BEFORE this turn
@@ -1494,6 +1513,16 @@ export async function runMcodeRuntime(content, opts = {}) {
     }
   } catch (e) {
     console.warn(`[runtime-send] bindDraftToMcodeSid: ${e.message}`);
+  }
+  // P16 — the claim follows the conversation's identity, same instant and
+  //   same reason as the ACP path above (see the full note there): the
+  //   promotion rewrote `cs.sessionId`, and a run still claimed under the
+  //   retired draft key is invisible to `beginRun`, so a send arriving now
+  //   is acked and handed to an already-busy engine session. Both
+  //   transports must do this; a guard that exists on one only is the same
+  //   hole with a different transport name.
+  if (stillViewingAtBind && cs.sessionId !== owningWebuiSessionId) {
+    moveRunSession(cid, owningWebuiSessionId, cs.sessionId);
   }
   // First-turn session-busy guard, backfilled at the same moment as the
   // ACP path: `handleSend` claimed the run before this turn existed, so
