@@ -398,4 +398,28 @@ describe("usage-models segmented tabs (ticket 53)", () => {
       "the old label-style usage strings must not be referenced after the bar rework",
     );
   });
+
+  // SB-7 (the A1 revision): the plan card stopped being sourceless, so the
+  // container now owns an /api/account read. A static tripwire, because
+  // panels.tsx pulls the session store and the api graph and cannot be
+  // rendered in the test process — but the wiring it guards is exactly
+  // what a static read can see: the fetch, the pure resolver, and the prop.
+  test("SB-7: the plan name is fed from /api/account, with no default tier", () => {
+    assert.ok(
+      segmentSource.includes(".getAccount()") && segmentSource.includes("api.AccountPayload"),
+      "the Token Plan container must read the account projection",
+    );
+    assert.ok(
+      segmentSource.includes("planNameOf(account)"),
+      "the name goes through the render-tested pure resolver, not inline logic",
+    );
+    assert.ok(
+      segmentSource.includes("<PlanCard t={t} planName={planName} />"),
+      "the resolved name reaches the card as a prop",
+    );
+    assert.ok(
+      !/planName\s*[:=][^;\n]*(\?\?|\|\|)\s*"/.test(segmentSource),
+      "no fallback tier may be hardcoded next to the account read",
+    );
+  });
 });

@@ -314,6 +314,17 @@ const en = {
   "usage.tab.inUse": "Active",
   "usage.tab.customModels": "Custom models",
   "usage.notLocal": "Not applicable to the local edition",
+  /* SB-7 — the A1 revision. The plan NAME is a real figure now (it reads
+     `tokenPlan.tier` from /api/account), so the honest line for the
+     remaining plan figures is no longer "the local edition has no data" but
+     the narrower, accurate reason: credits, expiry and invoicing live in
+     the cloud account domain, and a self-hosted browser session carries no
+     account credentials for it. `usage.plan.noPlan` is the other honest
+     state — the engine answered and reported no plan, which is not an
+     error. */
+  "usage.plan.noPlan": "No active plan",
+  "usage.cloudAccount":
+    "Cloud account — this web UI has no account credentials",
   "usage.plan.title": "Current plan",
   "usage.plan.upgrade": "Upgrade",
   "usage.plan.manage": "Manage",
@@ -1489,6 +1500,13 @@ const zh: Record<MessageKey, string> = {
   "usage.tab.inUse": "使用中",
   "usage.tab.customModels": "自定义模型",
   "usage.notLocal": "本地版不适用",
+  /* SB-7 —— A1 修订。套餐名接真数据（读 /api/account 的 tokenPlan.tier），
+     所以余下套餐数值的诚实文案不再是「本地版没有数据源」，而是更准确的
+     理由：积分 / 到期 / 发票属云端账户域，自托管的浏览器会话拿不到账户
+     凭据。`usage.plan.noPlan` 是另一种诚实状态——引擎应答了但没有套餐，
+     那不是错误。 */
+  "usage.plan.noPlan": "未订阅套餐",
+  "usage.cloudAccount": "云端账户域，本网页端无账户凭据",
   "usage.plan.title": "当前套餐",
   "usage.plan.upgrade": "升级",
   "usage.plan.manage": "管理",

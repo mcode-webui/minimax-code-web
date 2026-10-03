@@ -1352,10 +1352,12 @@ The Token Plan view is the desktop's five blocks (the tabs plus four cards):
 
 | Block | Data policy |
 | --- | --- |
-| Plan card (ⓘ + two rows + 管理⌄) | No cloud-account source locally: the plan name and the credits figure render 「本地版不适用」, and the expiry line is omitted rather than given a fabricated date; 升级 (black primary) / 管理 ⌄ / 去充值 render in the desktop's form but disabled |
+| Plan card (ⓘ + two rows + 管理⌄) | The plan NAME is real: `tokenPlan.tier` from `GET /api/account`, read when the view mounts, rendered verbatim; when the engine reports no plan, or the account surface is unreachable, the row renders 「未订阅套餐」 — never a default tier. The remaining figures have no credential path here: the credits figure renders 「云端账户域，本网页端无账户凭据」 and the expiry line is omitted rather than given a fabricated date; 升级 (black primary) / 管理 ⌄ / 去充值 render in the desktop's form but disabled, because all three act on the cloud account |
 | Usage card (three stacked progress bars) | The 5-hour and weekly windows are the one live source (engine over ACP, `POST /api/usage`; polled every 2 minutes, manual refresh records a forecast sample): with data they print the desktop forms "X% / 100%" / "X%" plus a relative reset caption ("resets in 43 min"); with no reading a bar shows the unavailable line, never 0%; the video window has no local source and permanently shows 「本地版不适用」 |
-| Credits row (ⓘ + blue switch) | No credits system locally: the switch renders the desktop's blue on-form but greyed (checked + disabled), the hint is the reference's, and the row carries the not-applicable marker |
+| Credits row (ⓘ + blue switch) | Credits are a cloud-account figure: the switch renders the desktop's blue on-form but greyed (checked + disabled), the hint is the reference's, and the row names the cloud account domain as the reason |
 | Invoice row | The one fully live affordance: 申请 ↗ opens the MiniMax open platform in a new tab |
+
+The plan card is where ticket 53's A1 ruling was revised. A1 read 「无源即占位」 — a figure with no local source renders the placeholder — and applied that to the whole card, but the local server does have sources here (`POST /api/usage` for the quota windows, `GET /api/account` for the plan tier), so the ruling overstated the gap. The revision splits the card by source rather than by card: what the server can read is rendered, and what belongs to the cloud account domain renders the honest line that names that domain as the reason. Two alternatives were rejected — keeping the whole card on the placeholder (a plan name the engine has already reported is not a gap), and wiring credits / expiry / invoicing as well (this session holds no account credentials for the cloud account, so a real-looking figure there is exactly the fabrication A1 exists to prevent).
 
 The custom-models view is the existing provider panel (API keys, protocols,
 model lists, connection tests, preset one-click enable); ticket 54 rebuilt

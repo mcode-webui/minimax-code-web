@@ -60,6 +60,7 @@ import {
   InvoiceCard,
   PlanCard,
   UsageBar,
+  planNameOf,
   resetCaption,
 } from "./usage-models-cards";
 
@@ -3383,11 +3384,16 @@ function RowDivider() {
  * *dialog* form of the reference is recorded as follow-up work, not
  * retrofitted here).
  *
- * Data policy (user decision 2026-09-29, ticket 53 A1/B1): every data
- * region the local server has no source for renders the standing 「本地版
- * 不适用」 placeholder instead of fabricated figures, while controls keep
- * the desktop's form but disabled. The one live source — the engine's plan
- * quota — keeps rendering real figures in the usage card.
+ * Data policy (user decision 2026-09-29, ticket 53 A1/B1, revised by SB-7):
+ * a figure the local server has a source for is rendered from it — the
+ * engine's plan quota in the usage card (`POST /api/usage`) and the plan
+ * NAME in the plan card (`tokenPlan.tier` on `GET /api/account`) — while
+ * the cloud-account figures with no credential path here (credits,
+ * expiry, invoicing) render the honest 「云端账户域，本网页端无账户凭据」
+ * line instead of fabricated values, and their controls keep the desktop's
+ * form but disabled. The original A1 line was 「无源即占位」 for the whole
+ * card; the revision splits the card by source rather than declaring the
+ * whole card sourceless.
  */
 export function UsageModelsSection({
   t,
@@ -3411,6 +3417,29 @@ export function UsageModelsSection({
   const [view, setView] = useState<"tokenPlan" | "customModels">(
     autoAddProvider && !headless ? "customModels" : "tokenPlan",
   );
+
+  // SB-7 (the A1 revision): the plan NAME is a real figure — /api/account's
+  // `tokenPlan.tier`. Read once on mount, the same way the user menu's account
+  // card reads it: the route returns the engine's projection and a failed or
+  // plan-less answer resolves to null, which the card renders as its honest
+  // 「未订阅套餐」 line. A rejected request is likewise a missing name, never a
+  // default tier.
+  const [account, setAccount] = useState<api.AccountPayload | null>(null);
+  useEffect(() => {
+    let live = true;
+    void api
+      .getAccount()
+      .then((payload) => {
+        if (live) setAccount(payload);
+      })
+      .catch(() => {
+        // Unreachable account surface — the placeholder stands in for it.
+      });
+    return () => {
+      live = false;
+    };
+  }, []);
+  const planName = planNameOf(account);
 
   // The reference's pill: the selected tab sits in a grey rounded pill,
   // the unselected one renders as bare secondary text.
@@ -3469,7 +3498,7 @@ export function UsageModelsSection({
       {view === "tokenPlan" ? (
         <>
           <SectionCard>
-            <PlanCard t={t} />
+            <PlanCard t={t} planName={planName} />
           </SectionCard>
           <SectionCard>
             <UsageCard t={t} />

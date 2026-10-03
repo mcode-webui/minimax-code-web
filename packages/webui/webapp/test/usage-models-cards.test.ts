@@ -25,6 +25,9 @@
 //   - A1/B1: placeholder text in the figure slots, disabled plan actions,
 //     the checked+disabled credits switch, the live outbound link — now
 //     asserted against rendered markup, not source strings.
+//   - SB-7 (the A1 revision): the plan NAME renders from `tokenPlan.tier`
+//     when the engine reported one, and an absent / failed / blank tier
+//     renders the honest 「未订阅套餐」 line instead of any default tier.
 
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
@@ -36,6 +39,7 @@ import {
   InvoiceCard,
   PlanCard,
   UsageBar,
+  planNameOf,
   resetCaption,
 } from "../components/usage-models-cards";
 import { translate, type MessageKey } from "../lib/i18n";
@@ -46,18 +50,41 @@ const render = (element: ReturnType<typeof createElement>) => renderToStaticMark
 const tZh = (key: MessageKey) => translate("zh", key);
 const tEn = (key: MessageKey) => translate("en", key);
 
-describe("PlanCard renders the A1 placeholder policy", () => {
-  const markup = render(createElement(PlanCard, { t: tZh }));
+describe("PlanCard: the plan name is real, the cloud figures stay honest", () => {
+  const named = render(createElement(PlanCard, { t: tZh, planName: "Max" }));
+  const unnamed = render(createElement(PlanCard, { t: tZh, planName: null }));
+  const propAbsent = render(createElement(PlanCard, { t: tZh }));
 
-  test("both data regions show the not-applicable line, no fabricated expiry", () => {
-    assert.ok(markup.includes('data-testid="settings-plan-card"'));
-    const placeholderHits = markup.match(/本地版不适用/g) ?? [];
-    assert.ok(
-      placeholderHits.length >= 2,
-      "plan name and credits figure both render the placeholder",
-    );
-    // A fabricated date line would be the A1 violation this guards against.
-    assert.ok(!markup.includes("到期"), "no fabricated expiry line may render");
+  test("an engine-reported tier renders verbatim in the name slot", () => {
+    assert.ok(named.includes('data-testid="plan-name"'));
+    assert.ok(named.includes("Max"), "the tier string itself is what renders");
+    assert.ok(!named.includes("未订阅套餐"), "a known plan never shows the no-plan line");
+    assert.ok(!named.includes('data-testid="plan-name-placeholder"'));
+  });
+
+  test("no plan (null prop, absent prop) renders the honest no-plan line", () => {
+    for (const markup of [unnamed, propAbsent]) {
+      assert.ok(markup.includes('data-testid="plan-name-placeholder"'));
+      assert.ok(markup.includes("未订阅套餐"), "the reader is told no plan is active");
+      assert.ok(!markup.includes('data-testid="plan-name"'), "no name element is drawn");
+    }
+  });
+
+  test("the credits figure names the cloud account domain as the reason", () => {
+    // SB-7: the old line said 「本地版不适用」, which was true of the whole
+    // card and false of the plan name sitting right above it. The accurate
+    // reason is narrower — the cloud account domain has no credential path
+    // into this self-hosted session.
+    for (const markup of [named, unnamed]) {
+      assert.ok(markup.includes("云端账户域，本网页端无账户凭据"));
+      assert.ok(!markup.includes("本地版不适用"), "the stale whole-card placeholder is gone");
+    }
+  });
+
+  test("no fabricated expiry, on either state", () => {
+    for (const markup of [named, unnamed]) {
+      assert.ok(!markup.includes("到期"), "no fabricated expiry line may render");
+    }
   });
 
   test("all four actions render disabled; upgrade keeps the black primary form", () => {
@@ -67,21 +94,38 @@ describe("PlanCard renders the A1 placeholder policy", () => {
       "plan-top-up-button",
       "plan-credits-manage-button",
     ]) {
-      const at = markup.indexOf(`data-testid="${testId}"`);
+      const at = named.indexOf(`data-testid="${testId}"`);
       assert.ok(at >= 0, `${testId} must render`);
       // React emits attributes in JSX order, and data-testid precedes
       // className on these buttons — so the opening tag is just before.
       assert.ok(
-        markup.slice(Math.max(0, at - 160), at).includes("<button"),
+        named.slice(Math.max(0, at - 160), at).includes("<button"),
         `${testId} sits on a button element`,
       );
     }
-    const disabledCount = (markup.match(/disabled(?:="")?/g) ?? []).length;
+    const disabledCount = (named.match(/disabled(?:="")?/g) ?? []).length;
     assert.ok(disabledCount >= 4, `four disabled actions expected, found ${disabledCount}`);
     assert.ok(
-      markup.includes("bg-bg_interaction_primary_default"),
+      named.includes("bg-bg_interaction_primary_default"),
       "升级 keeps the reference's black primary-button token",
     );
+  });
+});
+
+describe("planNameOf: the honest answer to 'is there a name to show?'", () => {
+  test("an ok answer with a tier yields that tier", () => {
+    assert.equal(planNameOf({ ok: true, tokenPlan: { tier: "Max" } }), "Max");
+    assert.equal(planNameOf({ ok: true, tokenPlan: { tier: "  Pro  " } }), "Pro", "trimmed");
+  });
+
+  test("a failed answer, a plan-less answer, and a blank tier all collapse to null", () => {
+    assert.equal(planNameOf(null), null);
+    assert.equal(planNameOf(undefined), null);
+    assert.equal(planNameOf({ ok: false, tokenPlan: { tier: "Max" } }), null, "unreachable surface");
+    assert.equal(planNameOf({ ok: true }), null, "no plan at all");
+    assert.equal(planNameOf({ ok: true, tokenPlan: null }), null);
+    assert.equal(planNameOf({ ok: true, tokenPlan: { tier: "" } }), null);
+    assert.equal(planNameOf({ ok: true, tokenPlan: { tier: "   " } }), null, "whitespace is not a name");
   });
 });
 
@@ -175,9 +219,9 @@ describe("CreditsCard renders decision B1: on-form, disabled", () => {
     );
   });
 
-  test("the reference's hint and the not-applicable marker both render", () => {
+  test("the reference's hint and the cloud-account marker both render", () => {
     assert.ok(markup.includes("开启后，可以在对话中消耗你的积分（含赠予积分）。"));
-    assert.ok(markup.includes("本地版不适用"));
+    assert.ok(markup.includes("云端账户域，本网页端无账户凭据"));
   });
 });
 

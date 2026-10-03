@@ -19,10 +19,12 @@ import { Switch } from "antd";
  * loading-states.tsx is tested — panels.tsx itself pulls the session
  * store and the api graph and stays unimportable in a test process.
  *
- * The data policy lives in the panels.tsx section wrapper (decision A1/B1,
- * ticket 53): every figure region the local server has no source for
- * renders the 「本地版不适用」 placeholder, and controls keep the desktop
- * reference's form but disabled.
+ * The data policy lives in the panels.tsx section wrapper (decision A1/B1
+ * from ticket 53, revised by SB-7): a figure the local server has a source
+ * for is rendered from it — the plan name comes in as a prop — and the
+ * figures whose source is the cloud account domain render the honest
+ * placeholder that names that domain as the reason, while controls keep the
+ * desktop reference's form but disabled.
  */
 
 /**
@@ -31,13 +33,25 @@ import { Switch } from "antd";
  * the black 「升级」 primary button plus 「管理 ⌄」 on top, 「去充值」 plus
  * 「管理 ⌄」 below.
  *
- * The local edition has no cloud-account source for any of the figures, so
- * by decision A1 the data regions render the 「本地版不适用」 placeholder,
- * the expiry line is omitted rather than given a fabricated date, and every
- * action renders in the desktop's form but disabled — there is nothing
- * local for 升级 / 管理 / 去充值 to act on.
+ * SB-7 (the A1 revision): the plan NAME is a real figure, read from
+ * `tokenPlan.tier` on /api/account by the container. The remaining
+ * figures stay honest placeholders, and the reason is now the accurate
+ * one — credits, expiry and invoicing live in the cloud account domain,
+ * which a self-hosted browser session has no credentials for. The expiry
+ * line is omitted rather than given a fabricated date, and every action
+ * renders in the desktop's form but disabled: 升级 / 管理 / 去充值 all act
+ * on the cloud account, not on the local server.
  */
-export function PlanCard({ t }: { t: (key: MessageKey) => string }) {
+export function PlanCard({
+  t,
+  planName,
+}: {
+  t: (key: MessageKey) => string;
+  /** `tokenPlan.tier` from /api/account, or null when the engine reported
+   * no plan / no answer. A blank or absent name renders the honest
+   * 「未订阅套餐」 line, never a fallback tier. */
+  planName?: string | null;
+}) {
   const manageButton = (testId: string) => (
     <button
       type="button"
@@ -60,13 +74,25 @@ export function PlanCard({ t }: { t: (key: MessageKey) => string }) {
       </div>
       <div className="flex items-center justify-between gap-3 px-3 py-2.5">
         <div className="flex min-w-0 flex-col gap-0.5">
-          <span className="truncate text-sm font-medium text-text_default_primary">
-            {t("usage.notLocal")}
-          </span>
+          {planName ? (
+            <span
+              data-testid="plan-name"
+              className="truncate text-sm font-medium text-text_default_primary"
+            >
+              {planName}
+            </span>
+          ) : (
+            <span
+              data-testid="plan-name-placeholder"
+              className="text-caption-small-strong text-text_default_secondary"
+            >
+              {t("usage.plan.noPlan")}
+            </span>
+          )}
         </div>
         <div className="flex flex-shrink-0 items-center gap-2">
-          {/* The reference's black primary button, disabled (no local
-           * plan to upgrade). */}
+          {/* The reference's black primary button, disabled (the upgrade
+           * path belongs to the cloud account). */}
           <button
             type="button"
             disabled
@@ -88,7 +114,7 @@ export function PlanCard({ t }: { t: (key: MessageKey) => string }) {
         <div className="flex min-w-0 flex-col gap-0.5">
           <span className="text-sm text-text_default_primary">{t("usage.credits")}</span>
           <span className="text-caption-small-strong text-text_default_secondary">
-            {t("usage.notLocal")}
+            {t("usage.cloudAccount")}
           </span>
         </div>
         <div className="flex flex-shrink-0 items-center gap-2">
@@ -105,6 +131,25 @@ export function PlanCard({ t }: { t: (key: MessageKey) => string }) {
       </div>
     </div>
   );
+}
+
+/**
+ * The plan name to render, from one `/api/account` answer.
+ *
+ * A pure function because the card is render-tested and this module must
+ * stay import-clean: panels.tsx owns the fetch, this owns the honest
+ * answer to "is there a name to show?". `ok: false` (the account surface is
+ * unreachable, not empty) and a blank tier mean the same thing to the
+ * reader — no name is known — so both collapse to null and the card draws
+ * its 「未订阅套餐」 line. There is deliberately no default tier: a
+ * fabricated plan name is the defect this batch exists to remove.
+ */
+export function planNameOf(
+  account: { ok: boolean; tokenPlan?: { tier?: string } | null } | null | undefined,
+): string | null {
+  if (!account?.ok) return null;
+  const tier = account.tokenPlan?.tier?.trim();
+  return tier ? tier : null;
 }
 
 /** One stacked progress bar of the usage card. Pure display: the container
@@ -178,8 +223,10 @@ export function UsageBar({
  * 「开启后…」 hint, and the blue iOS switch at the right edge.
  *
  * Decision B1: the switch renders the desktop's blue on-state form but is
- * disabled — the local edition has no credits system, so it neither
- * toggles nor persists state, and the row says so next to the hint.
+ * disabled — credits are a cloud-account figure, so the switch neither
+ * toggles nor persists state, and the row says so next to the hint (SB-7
+ * narrowed that line to the actual reason: the cloud account domain, which
+ * this self-hosted session has no credentials for).
  */
 export function CreditsCard({ t }: { t: (key: MessageKey) => string }) {
   return (
@@ -194,13 +241,13 @@ export function CreditsCard({ t }: { t: (key: MessageKey) => string }) {
             {t("usage.credits.hint")}
           </span>
           <span className="text-caption-small-strong text-text_default_tertiary">
-            {t("usage.notLocal")}
+            {t("usage.cloudAccount")}
           </span>
         </div>
         <div
           className="flex flex-shrink-0 items-center"
           data-testid="credits-spending-switch"
-          title={t("usage.notLocal")}
+          title={t("usage.cloudAccount")}
         >
           <Switch checked disabled aria-label={t("usage.credits")} />
         </div>
