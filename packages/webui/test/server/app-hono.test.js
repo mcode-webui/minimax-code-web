@@ -78,6 +78,8 @@ describe("app.js — migration ledger", () => {
       "GET /api/acp-sessions",
       "GET /api/acp-session-title",
       "GET /api/sessions/:id/export",
+      // SB-8 (D-3): the About section's log download.
+      "GET /api/logs/export",
       "POST /api/send",
       "POST /api/stop",
       "POST /api/cmd",
