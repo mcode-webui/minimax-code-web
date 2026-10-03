@@ -699,12 +699,13 @@ graph LR
     EXEC["mcode exec<br/>(one-shot subprocess)"]
     ARGS["argv<br/>applyExecCliContract<br/>packages/tui/src/cli/contract.ts"]
     WIRE["stream-json<br/>ExecEvent union<br/>packages/tui/src/headless/events.ts"]
-    PARSE["collectExecResult<br/>mcode-exec.js:221-294"]
+    PARSE["collectExecResult<br/>switch on the ExecEvent types<br/>mcode-exec.js"]
 
     EXEC -->|stdin: the prompt| ARGS
     EXEC -->|stdout| WIRE
-    WIRE -.->|"delta / message /<br/>exec.result — NOT wire names"| PARSE
-    PARSE --> GAP["KNOWN DEBT:<br/>the two name families<br/>do not intersect"]
+    WIRE -->|"item.* / turn.* / exec.completed"| PARSE
+    PARSE --> CHAT["cs.chat stream lines<br/>▲ reasoning · ● answer"]
+    PARSE --> SID["r.sessionId → cs.mcodeSessionId<br/>r.usage → context counters"]
 
     EXEC --> DECL["EXEC_CAPABILITIES<br/>full: streamingSend<br/>partial: 4 keys<br/>none: 8 keys"]
 ```
@@ -718,6 +719,22 @@ the CLI options the process is *told*, and the event types it *says
 back*. `EXEC_INTERFACE` records both, and the declaration is audited
 against them.
 
+| Wire type | Consumed as |
+| --- | --- |
+| `ExecEventBase.sessionId` (on every line) | the engine session this run entered, written back to `cs.mcodeSessionId` so the next turn can `--session` back into it |
+| `item.started` / `item.updated` | `item.contentDelta` appended to `r.answer` / `r.thinking` and streamed as a `●` / `▲` chat line |
+| `item.completed` | `item.content`, adopted only for an item that never streamed a delta |
+| `turn.completed` | `usage` and `durationMs` |
+| `turn.failed` | `status` and `error` |
+| `exec.completed` | the terminal `ExecResult` (status, error, duration, final `output`) and the call to `finalize()` |
+| `exec.started`, `session.started`, `session.resumed`, `turn.started` | nothing beyond the base fields — `EXEC_INTERFACE.baseOnlyEvents` |
+
+A `tool_call` item is consumed but not rendered: it carries a `toolCall`
+payload rather than text, so the tool surface is produced on this
+transport and stays invisible. That is what
+`EXEC_CAPABILITIES.toolSkillInvocation` records, and it is the reason
+the key stays `partial` rather than `full`.
+
 **`streamingSend` is the only `full`.** Sending a prompt is what the
 transport is. Everything else is a reduction, and the reductions are
 structural rather than unfinished work:
@@ -730,18 +747,26 @@ structural rather than unfinished work:
 | `usageStats` | `partial` | `partial` — and **stronger** | `turn.completed.usage` is emitted on the exec wire, so this transport has something under its three missing names and acp does not |
 | `sessionCrud` | `partial` | `partial` — weaker | `--session` / `--continue` re-enter an existing session; nothing lists, creates, loads, closes or deletes one |
 
-**A fact the audit found, recorded rather than hidden.** The names
-`collectExecResult` branches on — `delta`, `message`, `exec.result` —
-are the *supervisor's internal* stream-event names. The `stream-json`
-format writes only what `ExecEventProjector` produces (`packages/tui/src/headless/output.ts:34-36`
-refuses the format outright with no projector, and `packages/tui/src/headless/runner.ts:218-232`
-always supplies one), so the wire carries the ten `ExecEvent` types and
-**the two families do not intersect**. That is a real mismatch in the
-exec data plane, and M4-2 does not fix it: the batch registers a
-declaration and changes no routing. It is pinned in
-`EXEC_INTERFACE.consumedEvents`, asserted by a test that fails if the
-intersection ever becomes non-empty in either direction, and recorded as
-KNOWN DEBT.
+**A mismatch the audit found, and what was done about it.** Until D1,
+`collectExecResult` branched on `delta`, `message` and `exec.result` —
+the *supervisor's internal* stream-event names. The `stream-json`
+format writes only what `ExecEventProjector` produces
+(`packages/tui/src/headless/output.ts:34-36` refuses the format outright
+with no projector, `packages/tui/src/headless/runner.ts:218-232` always
+supplies one, and the encoder's `result()` leg goes through
+`projector.complete()` rather than writing the `ExecResult` itself —
+`packages/tui/src/headless/output.ts:47-53`), so the wire carries the ten `ExecEvent` types and
+**the two families did not intersect**. The consequence was not a
+missing feature but a dead data plane: no streaming delta, no session id,
+no usage and no terminal status, so every turn on this transport ended
+with `status: "unknown"` and an empty answer whatever the agent had
+actually said. D1 rewrote the consumer against the wire.
+`EXEC_INTERFACE.consumedEvents` now names the six payload-bearing types
+the parser dispatches on, and
+`test/lib/engine/capability-snapshot.test.js` asserts that this list and
+the parser's `switch` arms are the same set, that every name in it is a
+name the wire can emit, and that the complement is exactly
+`baseOnlyEvents` — the M4-2 pin, inverted.
 
 **The reverse exception is the two routes' property, not acp's.** `exec`
 declares `turnDiff` and `plugins` `none` with the same

@@ -3652,6 +3652,7 @@
     "packages/webui/test/lib/mcode-acp-note.test.js",
     "packages/webui/test/lib/mcode-acp-ownership.check.mjs",
     "packages/webui/test/lib/mcode-acp-tc-marker.test.js",
+    "packages/webui/test/lib/mcode-exec-stream.test.js",
     "packages/webui/test/lib/mcode-exec.test.js",
     "packages/webui/test/lib/mcode-rpc-live-lookup.test.js",
     "packages/webui/test/lib/mcode-rpc.check.mjs",

@@ -216,6 +216,54 @@ export function runMcodeExec(prompt, opts = {}) {
   return { child, args, label, model, workspace, sessionId, cs, cid };
 }
 
+// ---------------------------------------------------------------------------
+// THE WIRE (D1)
+// ---------------------------------------------------------------------------
+//
+// `mcode exec --output-format stream-json` writes EXACTLY the projected
+// `ExecEvent` union (packages/tui/src/headless/events.ts:27-48), one JSON
+// object per line, and nothing else:
+//
+//   - `output.ts:34-36` refuses `stream-json` outright when no
+//     `ExecEventProjector` was supplied, so there is no unprojected path;
+//   - `runner.ts:218-232` always supplies one for this format;
+//   - the encoder's `result()` leg, for `stream-json`, goes through
+//     `projector.complete()` (output.ts:47-53) rather than writing the
+//     `ExecResult` itself — `exec.result` is the `json` format's line
+//     (contract.ts:42), so it is a PAYLOAD the wire carries inside
+//     `exec.completed`, never a line the wire writes.
+//
+// The three names this parser used to branch on — `delta`, `message`,
+// `exec.result` — are the SUPERVISOR's internal `TuiStreamEvent` names
+// (packages/tui/src/runtime/stream-events.ts, consumed by
+// `ExecEventProjector.project`). They never reach stdout. The two name
+// families have an empty intersection, which is why the exec transport
+// produced no streaming delta, no session id, no usage and no terminal
+// status: every turn on this transport ended with `status: "unknown"` and
+// an empty answer, whatever the agent had actually said.
+//
+// The switch below is therefore keyed on the WIRE's names. Every one of
+// them is listed in `EXEC_INTERFACE.consumedEvents`
+// (server/engine/providers/exec.capabilities.js), and
+// `test/lib/engine/capability-snapshot.test.js` keeps that list and this
+// switch equal by reading both.
+//
+// `exec.started`, `session.started`, `session.resumed` and `turn.started`
+// carry no payload beyond `ExecEventBase` and fall into `default`. The one
+// thing every line does carry is `sessionId` (events.ts:12-17), which is
+// adopted below the switch for exactly that reason.
+// ---------------------------------------------------------------------------
+
+// The `ExecItem.type` → the webui streaming marker. `tool_call` has no
+// marker and is not rendered: the exec transport's tool surface is
+// produced but invisible, which EXEC_CAPABILITIES.toolSkillInvocation
+// records. Naming the mapping in one place keeps the two switch arms
+// (delta and completed) from disagreeing.
+const ITEM_STREAM_MARKER = Object.freeze({
+  reasoning: "▲",
+  agent_message: "●",
+});
+
 // collectExecResult: 解析 stream-json + 累加 result。
 // 完成后会 pushStateFor(cid)，调用方不需要再 push。
 export function collectExecResult(childPromise) {
@@ -234,6 +282,15 @@ export function collectExecResult(childPromise) {
     let buf = "";
     const t0 = Date.now();
     const { child, label, model, cs, cid, sessionId } = childPromise;
+    // Per-item streaming state. `streamItem` is the item whose text the
+    // current `▲`/`●` line is accumulating, so a new item (or a switch
+    // between reasoning and answer) starts a fresh line instead of
+    // gluing two unrelated texts together — the same reset mcode-acp's
+    // `lastChunkKind` performs. `streamedItemIds` records which items
+    // already delivered their text as deltas, so the authoritative
+    // `item.completed` copy of that same text is not appended twice.
+    let streamItem = null;
+    const streamedItemIds = new Set();
     cs.running = {
       active: true,
       prompt: label,
@@ -256,44 +313,108 @@ export function collectExecResult(childPromise) {
         if (!line) continue;
         try {
           const m = JSON.parse(line);
-          if (m.type === "delta") {
-            if (typeof m.thinking === "string") {
-              r.thinking = (r.thinking || "") + m.thinking;
-              const oneLine = r.thinking.replace(/\n+/g, " ").trim();
-              streamUpdateLine(cs.chat, "▲", oneLine);
-            }
-            if (typeof m.content === "string") {
-              r.answer = (r.answer || "") + m.content;
-              const oneLine = r.answer.replace(/\n+/g, " ").trim();
-              streamUpdateLine(cs.chat, "●", oneLine);
-            }
-            const now = Date.now();
-            if (cs.running.lastDeltaAt) {
-              const dt = (now - cs.running.lastDeltaAt) / 1000;
-              if (dt > 0) cs.running.tps = Math.round(1 / dt);
-            }
-            cs.running.lastDeltaAt = now;
-            cs.context.tps = cs.running.tps;
-            pushStateFor(cid);
-          } else if (m.type === "message" && m.message) {
-            if (m.message.usage) r.usage = m.message.usage;
-            if (typeof m.message.content === "string" && !r.answer)
-              r.answer = m.message.content;
-            if (typeof m.message.thinking === "string" && !r.thinking)
-              r.thinking = m.message.thinking;
-          } else if (m.type === "exec.result") {
-            if (m.sessionId) r.sessionId = m.sessionId;
-            if (typeof m.durationMs === "number") r.durationMs = m.durationMs;
-            if (m.answer) r.answer = m.answer;
-            r.status = m.status || "unknown";
-            if (m.error) r.error = m.error;
-            finalize();
+          if (!m || typeof m !== "object") continue;
+          adoptSessionId(m);
+          switch (m.type) {
+            case "item.started":
+            case "item.updated":
+              consumeItemText(m.item, m.item && m.item.contentDelta);
+              break;
+            case "item.completed":
+              // The authoritative full text. Adopted only for an item
+              // that never streamed — a turn whose whole message arrived
+              // in one `message` event emits no delta, and dropping it
+              // would leave `answer` empty for a turn that did produce
+              // output.
+              if (m.item && !streamedItemIds.has(m.item.id)) {
+                consumeItemText(m.item, m.item.content);
+              }
+              break;
+            case "turn.completed":
+              if (m.usage) r.usage = m.usage;
+              if (typeof m.durationMs === "number") r.durationMs = m.durationMs;
+              break;
+            case "turn.failed":
+              r.status = m.status || "failed";
+              if (m.error) r.error = m.error;
+              if (typeof m.durationMs === "number") r.durationMs = m.durationMs;
+              break;
+            case "exec.completed":
+              finishFromResult(m.result);
+              break;
+            default:
+              // exec.started / session.started / session.resumed /
+              // turn.started — `ExecEventBase` only; `sessionId` was
+              // already adopted above.
+              break;
           }
         } catch {}
       }
     });
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", () => {}); // swallow; usage stats can land here
+
+    // `ExecEventBase.sessionId` (events.ts:12-17) is on EVERY line, so the
+    // engine session this run entered is known from the first event —
+    // which is what lets the turn be continued next time, and what the
+    // old parser could never learn (it read `sessionId` off an
+    // `exec.result` line the wire never wrote).
+    function adoptSessionId(m) {
+      if (typeof m.sessionId === "string" && m.sessionId) r.sessionId = m.sessionId;
+    }
+
+    // Fold one chunk of an item's text into the accumulator and the
+    // streaming line. `text` is `item.contentDelta` on the started/
+    // updated arms and `item.content` on the completed arm; both are
+    // "append this much text to this item".
+    function consumeItemText(item, text) {
+      if (!item || typeof text !== "string" || !text) return;
+      const marker = ITEM_STREAM_MARKER[item.type];
+      if (!marker) return; // tool_call — produced, not rendered
+      if (item.id !== undefined) streamedItemIds.add(item.id);
+      if (item.type === "reasoning") r.thinking = (r.thinking || "") + text;
+      else r.answer = (r.answer || "") + text;
+      if (streamItem && streamItem.id === item.id && streamItem.marker === marker) {
+        streamItem.text += text;
+      } else {
+        streamItem = { id: item.id, marker, text };
+      }
+      streamUpdateLine(cs.chat, marker, streamItem.text.replace(/\n+/g, " ").trim());
+      noteStreamActivity();
+    }
+
+    // The idle watchdog's clock and the front-end's tps readout both
+    // move on every text chunk — the exec transport's equivalent of the
+    // acp runner's per-event `lastDeltaAt` refresh.
+    function noteStreamActivity() {
+      const now = Date.now();
+      if (cs.running.lastDeltaAt) {
+        const dt = (now - cs.running.lastDeltaAt) / 1000;
+        if (dt > 0) cs.running.tps = Math.round(1 / dt);
+      }
+      cs.running.lastDeltaAt = now;
+      cs.context.tps = cs.running.tps;
+      pushStateFor(cid);
+    }
+
+    // `exec.completed` is the terminal wire event and carries the whole
+    // `ExecResult` (contract.ts:39-55) under `result` — including the
+    // `exec.result` payload shape the old parser was reaching for, and
+    // the final `output` for a turn that produced text without ever
+    // streaming a delta.
+    function finishFromResult(result) {
+      if (result && typeof result === "object") {
+        if (typeof result.sessionId === "string" && result.sessionId) {
+          r.sessionId = result.sessionId;
+        }
+        if (result.status) r.status = result.status;
+        if (result.error) r.error = result.error;
+        if (typeof result.durationMs === "number") r.durationMs = result.durationMs;
+        if (!r.usage && result.usage) r.usage = result.usage;
+        if (!r.answer && typeof result.output === "string") r.answer = result.output;
+      }
+      finalize();
+    }
 
     // v2.3: idle watchdog (see mcode-acp.js) — stream lines refresh
     //   cs.running.lastDeltaAt; only a silent stream trips this.
@@ -342,6 +463,18 @@ export function collectExecResult(childPromise) {
           ...cs.chat,
           `§§ processed_duration=${Math.round(r.durationMs)}ms`,
         ];
+      }
+      // Strip the streaming cursor ▍ from every line — streamUpdateLine
+      // adds it on every push, and finalize must clear it or the exec
+      // transport's answer line stays marked as streaming forever. Same
+      // rule mcode-acp's finalize applies.
+      if (Array.isArray(cs.chat)) {
+        for (let i = 0; i < cs.chat.length; i += 1) {
+          const line = cs.chat[i];
+          if (typeof line === "string" && line.endsWith(" ▍")) {
+            cs.chat[i] = line.slice(0, -2);
+          }
+        }
       }
       if (r._stopped) r.status = "stopped";
       // Scoped to this turn's engine session — a sibling conversation's

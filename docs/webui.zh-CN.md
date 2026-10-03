@@ -255,7 +255,7 @@ host 对象（子进程没有对象可反射），而是线路表 `MCODE_ACP_CAP
 | sessionCrud | partial——缺 `createSession`、`listSessions`、`getSession`、`updateSession`、`renameSession`、`archiveSession`、`deleteSession`、`forkSession`、`getSessionForkOptions`、`loadSession`、`activateSession`。只有 `--session` / `--continue`，而它们是「重新进入」一个会话而非「挑选」一个 |
 | streamingSend | full（`--input -` 加上 `stream-json` 事件流） |
 | interrupt | none——接口无：没有可调的东西。`packages/tui/src/cli/run-exec-command.ts` 里的 SIGINT/SIGTERM/SIGHUP 是 webui 发给**自己 spawn 的**子进程的信号，即 webui 自己的 kill 级联，不是传输提供的能力 |
-| toolSkillInvocation | partial——缺 `listSkills`、`listRuntimeSkills`、`listPendingPermissions`、`replyPermission`、`setMode`。传输**产出** `tool_call` 项而 webui 不读它们；且 `--permission` 在 spawn 时就定死（CLI 明说 `ask` 需要 TUI/ACP），所以没有权限请求/应答对 |
+| toolSkillInvocation | partial——缺 `listSkills`、`listRuntimeSkills`、`listPendingPermissions`、`replyPermission`、`setMode`。传输**产出** `tool_call` 项而 webui 消费了它们却不渲染；且 `--permission` 在 spawn 时就定死（CLI 明说 `ask` 需要 TUI/ACP），所以没有权限请求/应答对 |
 | turnDiff | none——接口无，**servedBy `local-runtime-v2`** |
 | turnRewindRedo | none——接口无（`mcode exec review` 审阅本地 git 变更、不带回合坐标，所以不是 rewind 面） |
 | plugins | none——接口无，**servedBy `local-runtime-v2`** |
@@ -274,14 +274,34 @@ RPC 方法，exec 没有通道）。反向例外是同样两个键、同样一�
 复制：`/api/turn-diff*` 与 `/api/plugins*` 投影的是进程内 v2 host，且**完全不按
 传输门控**，所以每条传输都继承它。
 
-**这条审计查出的一处错配，选择记录而非隐藏。** `collectExecResult` 匹配的三个
+**这条审计查出的一处错配，以及它的代价。** `collectExecResult` 匹配的三个
 事件名——`delta`、`message`、`exec.result`——是 **supervisor 内部**的流事件名。
 而 `--output-format stream-json` 只写 `ExecEventProjector` 的产出（`packages/tui/src/headless/output.ts`
-在没有 projector 时直接拒绝该格式，`packages/tui/src/headless/runner.ts` 总会提供一个），所以线路上跑的是
-那十个 `ExecEvent` 类型，两个名字族并不相交。这是 exec 数据面上的真实缺口。
-M4-2 不修它——本批只注册声明、不改路由——但它被钉在
-`EXEC_INTERFACE.consumedEvents`，并由一条「相交集一旦在任一方向变为非空就转红」
-的测试守住。
+在没有 projector 时直接拒绝该格式，`packages/tui/src/headless/runner.ts` 总会提供一个，
+且编码器的 `result()` 那条腿走 `projector.complete()` 而非直接写出 `ExecResult` 本身），
+所以线路上跑的是
+那十个 `ExecEvent` 类型，两个名字族并不相交。
+
+这不只是「少一个功能」，而是**一整条死掉的数据面**。值得把用户在
+`MCODE_USE_ACP=0` 下会看到什么写清楚——以及在每一种非 `Full access` 的权限模式下，
+因为那会静默改道到 exec：思考与回答的文本流进来却从不落地，回合结束时连一行回答
+都没有，上下文计数从不走动，而下一轮会另起一个全新的引擎会话，因为会话 id 从未被读回。
+D1 把消费面改回线路本身：
+
+| 线路事件 | 消费为 |
+| --- | --- |
+| 每一行都带的 `sessionId` | 本次运行进入的引擎会话，写回 `cs.mcodeSessionId`，使下一轮能续接 |
+| `item.started` / `item.updated` | `item.contentDelta` 追加进回答／思考累加器，并以 `●` / `▲` 行流式呈现 |
+| `item.completed` | `item.content`，仅对从未流出增量的 item 采纳 |
+| `turn.completed` | 每轮 `usage` 与 `durationMs` |
+| `turn.failed` | `status` 与 `error` |
+| `exec.completed` | 终态 `ExecResult`，以及 `finalize()` 的调用 |
+
+`EXEC_INTERFACE.consumedEvents` 现在正好点名这六个，`EXEC_INTERFACE.baseOnlyEvents`
+点名除 `ExecEventBase` 外无内容的另外四个，并由一条测试断言二者恰好划分整个联合、
+解析器的 `switch` 分支与之是同一集合、且每个被消费的名字都是线路真能发出的名字。
+`tool_call` item 会被消费但不会被渲染——它携带的是 `toolCall` 负载而非文本——
+这正是 `toolSkillInvocation` 停在 `partial` 的原因。
 
 **`servedBy` 是计划里唯一的反向例外，且有承重意义。** `turnDiff` 与 `plugins`
 在协议上如实 `none`，而那三个 `/api/turn-diff` 与十个 `/api/plugins` 端点在缺省

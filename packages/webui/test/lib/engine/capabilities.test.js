@@ -641,23 +641,43 @@ describe("EXEC_CAPABILITIES", () => {
   });
 
   // toolSkillInvocation is the one key where the transport PRODUCES the
-  // events and webui cannot READ them — a fact strong enough that the
-  // reason has to carry it, because a reader who only saw "partial,
-  // tool_call is present" would conclude the tool surface is consumed.
-  test("toolSkillInvocation admits the tool_call events are never consumed", () => {
+  // events and webui consumes them but RENDERS none of them — a fact
+  // strong enough that the reason has to carry it, because a reader who
+  // only saw "partial, tool_call is present" would conclude the tool
+  // surface is shown. D1 moved half of this: the parser reads the item
+  // stream now, so the claim is "not RENDERED", not "not read".
+  test("toolSkillInvocation admits the tool_call events are consumed but not rendered", () => {
     assert.equal(EXEC_CAPABILITIES.toolSkillInvocation.level, "partial");
     assert.match(EXEC_CAPABILITIES.toolSkillInvocation.reason, /tool_call/);
     assert.match(EXEC_CAPABILITIES.toolSkillInvocation.reason, /mcode-exec\.js/);
-    assert.match(EXEC_CAPABILITIES.toolSkillInvocation.reason, /does not read them/);
+    assert.match(EXEC_CAPABILITIES.toolSkillInvocation.reason, /does not RENDER them/);
     // `consumedEvents` is the machine-checkable half of the same fact,
-    // and the suite below proves the two halves agree: the three names
-    // webui branches on are not names the wire can emit.
-    assert.deepEqual(EXEC_INTERFACE.consumedEvents, ["delta", "message", "exec.result"]);
+    // and the suite below proves the two halves agree. Since D1 the
+    // consumed list IS the wire's payload surface — the reverse of the
+    // M4-2 pin, which asserted none of these names could be emitted.
+    // `tool_call` is an ITEM kind, not an event, and is absent here
+    // because no event carries it in a form the parser renders.
+    assert.deepEqual(
+      [...EXEC_INTERFACE.consumedEvents].sort(),
+      [
+        "exec.completed",
+        "item.completed",
+        "item.started",
+        "item.updated",
+        "turn.completed",
+        "turn.failed",
+      ],
+    );
+    assert.equal(
+      [...EXEC_INTERFACE.consumedEvents].some((t) => EXEC_INTERFACE.itemKinds.includes(t)),
+      false,
+      "an item kind was listed as a consumed EVENT — items travel inside the item.* events",
+    );
     for (const type of EXEC_INTERFACE.consumedEvents) {
       assert.equal(
         EXEC_INTERFACE.streamEvents.includes(type),
-        false,
-        `${type} is consumed but is not an ExecEvent type — the KNOWN DEBT is gone, re-audit the reason`,
+        true,
+        `${type} is consumed but is not an ExecEvent type — the parser reads a name the wire cannot emit`,
       );
     }
     // And the permission half: `ask` is a TUI/ACP policy, so there is no

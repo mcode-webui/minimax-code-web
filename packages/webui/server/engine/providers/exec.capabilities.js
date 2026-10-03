@@ -138,7 +138,8 @@ import { ENGINE_CAPABILITY_KEYS, validateEngineCapabilities } from "../capabilit
  *
  * @typedef {{cliOptions: readonly string[], streamEvents: readonly string[],
  *            itemKinds: readonly string[], processSignals: readonly string[],
- *            consumedEvents: readonly string[]}} ExecInterface
+ *            consumedEvents: readonly string[],
+ *            baseOnlyEvents: readonly string[]}} ExecInterface
  */
 export const EXEC_INTERFACE = Object.freeze({
   // `applyExecCliContract` options, contract.ts:104-152. `--file`,
@@ -188,34 +189,50 @@ export const EXEC_INTERFACE = Object.freeze({
   // are signals webui delivers to its own child, not a method the
   // transport answers.
   processSignals: Object.freeze(["SIGINT", "SIGTERM", "SIGHUP"]),
-  // The stream-json types `collectExecResult` actually branches on
-  // (mcode-exec.js:259, 278, 284) — recorded because they are NOT the
-  // types the transport emits, and that fact is load-bearing rather
-  // than a curiosity.
+  // The stream-json types `collectExecResult` dispatches on. As of D1
+  // these ARE the wire's names: `mcode exec --output-format stream-json`
+  // writes exactly what `ExecEventProjector` produces and nothing else
+  // (`output.ts:34-36` refuses the format outright with no projector,
+  // `runner.ts:218-232` always supplies one, and the encoder's
+  // `result()` leg goes through `projector.complete()` rather than
+  // writing the `ExecResult` — output.ts:47-53). So the intersection with
+  // `streamEvents` is now the full payload surface rather than empty.
   //
-  // `--output-format stream-json` writes exactly what
-  // `ExecEventProjector` produces and nothing else: `output.ts:34-36`
-  // refuses the format outright when no projector is supplied, and
-  // `runner.ts:218-232` always supplies one. So the wire carries
-  // `streamEvents` and nothing else — and `consumedEvents` has an EMPTY
-  // intersection with it. `delta`, `message` and `exec.result` are the
-  // supervisor's INTERNAL stream-event names (packages/tui/src/headless/
-  // supervisor.ts:189 and the family around it), not the projected wire
-  // names.
+  // What it was before D1: `["delta", "message", "exec.result"]`, the
+  // SUPERVISOR's internal `TuiStreamEvent` names, none of which the wire
+  // can emit. The two families have an empty intersection, which is what
+  // made the exec transport's streaming data plane dead: no delta, no
+  // session id, no usage, and no terminal status — every turn ended with
+  // `status: "unknown"` and an empty answer. M4-2 recorded the mismatch
+  // as KNOWN DEBT; D1 fixed the consumer to the wire.
   //
-  // This is recorded rather than papered over for three reasons. It caps
-  // what the declaration may claim: every level below is justified by
-  // the WIRE, and the `consumedEvents` note is what stops a reader from
-  // believing webui currently reads any of it. It explains the
-  // `toolSkillInvocation` reason, which is otherwise puzzling: the
-  // transport produces `tool_call` items and webui has no branch for
-  // them. And it is pinned by a test in capability-snapshot.test.js that
-  // fails if the intersection ever becomes non-empty in either
-  // direction, so the two families cannot drift into each other by
-  // accident. M4-2 does NOT fix it: the mismatch is in the exec DATA
-  // PLANE, and this batch registers a declaration and changes no
-  // routing. See KNOWN DEBT in the M4-2 report.
-  consumedEvents: Object.freeze(["delta", "message", "exec.result"]),
+  // These six are the events that carry a payload `collectExecResult`
+  // acts on. The remaining four — `baseOnlyEvents` below — carry nothing
+  // beyond `ExecEventBase` and land in the parser's `default` arm. The
+  // live cross-check in `test/lib/engine/capability-snapshot.test.js`
+  // asserts that this list and the parser's switch arms are the same set,
+  // that every name here is a name the wire can emit, and that the
+  // complement is exactly `baseOnlyEvents` — so dropping a type here
+  // without dropping it there, or vice versa, goes red.
+  consumedEvents: Object.freeze([
+    "item.started",
+    "item.updated",
+    "item.completed",
+    "turn.completed",
+    "turn.failed",
+    "exec.completed",
+  ]),
+  // The `ExecEvent` union minus `consumedEvents`: the four events whose
+  // only field is `ExecEventBase` (events.ts:10-17). The parser adopts
+  // `ExecEventBase.sessionId` from every line, so `session.started` /
+  // `session.resumed` are not inert — they are just the first lines that
+  // hand it over, and they have nothing else to say.
+  baseOnlyEvents: Object.freeze([
+    "exec.started",
+    "session.started",
+    "session.resumed",
+    "turn.started",
+  ]),
 });
 
 /**
@@ -271,7 +288,7 @@ export const EXEC_CAPABILITIES = Object.freeze({
     level: "partial",
     missing: ["listSkills", "listRuntimeSkills", "listPendingPermissions", "replyPermission", "setMode"],
     reason:
-      "the transport PRODUCES `tool_call` items (packages/tui/src/headless/events.ts:21) and webui does not read them: `collectExecResult` branches on delta/message/exec.result (mcode-exec.js:259-291), none of which is a name the stream-json wire can emit — see EXEC_INTERFACE.consumedEvents for the full account. So on this transport the tool surface exists and is invisible, which is a different fact from acp's, where the events are produced AND parsed. There is no permission request/reply pair either: `--permission` is fixed at spawn time and the CLI says so itself — 'permission policy: smart, full, or off (ask requires TUI/ACP)' (contract.ts:130) — and no skill enumeration method exists",
+      "the transport PRODUCES `tool_call` items (packages/tui/src/headless/events.ts:21) and webui does not RENDER them: `collectExecResult` (mcode-exec.js) consumes the wire's item events since D1, but only maps `reasoning` and `agent_message` to a streaming line — a `tool_call` item carries a `toolCall` payload instead of text and is dropped, so on this transport the tool surface exists and stays invisible, which is a different fact from acp's, where the events are produced AND parsed. There is no permission request/reply pair either: `--permission` is fixed at spawn time and the CLI says so itself — 'permission policy: smart, full, or off (ask requires TUI/ACP)' (contract.ts:130) — and no skill enumeration method exists",
   },
   // none, AND served in process: the same reverse exception acp carries,
   // because the property belongs to the route, not to the transport.
@@ -320,7 +337,7 @@ export const EXEC_CAPABILITIES = Object.freeze({
     level: "partial",
     missing: ["getSessionUsage", "getSessionUsageSummary", "watchSessionUsageCommits"],
     reason:
-      "per-turn token usage crosses the wire — `turn.completed.usage` (events.ts:36) is emitted by ExecEventProjector.complete and folded into the conversation counters by webui (mcode-exec.js:362-376) — so this transport is genuinely STRONGER than acp here, whose declaration has nothing underneath its three missing names. What is still absent is every per-session projection: a one-shot process cannot answer a query about a session it is not currently running. Read the level as a claim about the INTERFACE; whether webui's exec parser currently receives that event is a separate fact, recorded in EXEC_INTERFACE.consumedEvents",
+      "per-turn token usage crosses the wire — `turn.completed.usage` (events.ts:36) is emitted by ExecEventProjector.complete and, since D1, is actually folded into the conversation counters by webui's `collectExecResult`, which dispatches on the wire's event names (mcode-exec.js#consumeItemText/#finalize) — so this transport is genuinely STRONGER than acp here, whose declaration has nothing underneath its three missing names. What is still absent is every per-session projection: a one-shot process cannot answer a query about a session it is not currently running",
   },
   // none, unlike acp's partial, and this is the second place where exec
   // is structurally behind rather than merely unimplemented.
