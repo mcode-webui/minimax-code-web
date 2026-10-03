@@ -2186,6 +2186,7 @@ do not come from the same place.
 | Kind | Written by | In the engine runtime DB? | Survives a poll tick? |
 | --- | --- | --- | --- |
 | engine turn (`› ping`, `● pong`, tool blocks) | the engine, streamed into `cs.chat` | yes | yes, refreshed from the DB |
+| the streaming **mirror** of that turn (one folded `● answer…`, a `→ bash` header without its args) | the same stream, into the same array | yes — the same text, folded | **no — it retires**, the engine's own lines take its place |
 | `/api/cmd` echo (`› /help`, `● 可用命令：…`, `● 当前 model=…`, `● 变更概览 …`) | `interaction/commands.js`, into `cs.chat` | **no — the engine never sees it** | yes, and it is the only thing that keeps it there |
 | a turn another client ran (desktop app, TUI) | the engine, for a different cid | yes | yes, pulled in — that is the poll's purpose |
 
@@ -2195,6 +2196,31 @@ catches up in an open tab. It is a **merge**, not a replacement:
 `mergeEngineTranscript` (`lib/transcript.js`) walks the engine read and
 the lines already shown in lockstep, keeps any line the engine does not
 know about in place, and appends the engine's remainder.
+
+The mirror is the third kind, and it is the one the merge has to retire. While
+a turn streams, the same engine output is written into `cs.chat` a second time
+in a folded form — the answer and thinking branches write one line
+(`prefix + text.replace(/\n+/g, " ").trim()`) where the engine's own mapper
+keeps one array entry per source line, and a tool header is written `→ bash`
+when the frame carried no `rawInput` against the engine's
+`→ bash  {"command":…}`. Neither can ever be byte-equal to what the engine
+holds, so the lockstep walk called every mirror a locally-authored line, kept
+it, and appended the engine's whole spine behind it. The answer, the tool block
+and the thinking chain each rendered twice, and `persistCurrentChat` made the
+duplicate permanent. Measured on a UAT session: 81 stored lines against a
+67-line engine read, 14 of them a second copy of engine content.
+
+Retirement is an identity test, not a shape heuristic. A folded prose mirror
+(`●`/`▲`/`›`/`○`) retires when the maximal run of engine lines carrying the
+same glyph, starting at the cursor, folds — their texts joined by a single
+space, every whitespace run collapsed — to exactly the mirror's folded text. A
+tool header retires when the engine line at the cursor names the same tool, and
+the indented block goes with it on both sides. So the engine must already hold
+that text at that position: a `/api/cmd` echo, which the engine has never seen,
+has no fold to match and is kept. And a test that misses — unusual spacing, a
+tool block the engine has not finished writing — leaves the line in place, which
+is the double render the merge already had. No path drops content the engine
+read did not account for.
 
 Server-written annotations — `§§ processed_duration=Nms`, `§§ turn_msg=<id>`,
 `##tc:<id>` — are the one class of engine line the merge may not treat as an
