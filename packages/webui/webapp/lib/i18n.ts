@@ -84,6 +84,15 @@ const en = {
      engine-encoded ids whose provider prefix did not coerce (i.e. a
      model the catalogue could not bucket). */
   "modelSelector.other": "Other",
+  /* Model selector — search box (roadmap module H, 「模型搜索」). The
+     placeholder is the field's own name; `searchClear` is the clear
+     button's accessible name, and `searchNoResults` is the empty state
+     rendered in place of the provider list when a query matches nothing.
+     "otherLabel" style lowercase is deliberate — the placeholder is read
+     as a hint, not as a title. */
+  "modelSelector.searchPlaceholder": "Search models or providers",
+  "modelSelector.searchClear": "Clear search",
+  "modelSelector.searchNoResults": "No models match your search",
   // Model selector — ticket 04. Provider groups without an API key
   // render greyed with a hint that points the user at the settings
   // panel; the modalities chip maps each `modalities[]` value to a
@@ -1240,6 +1249,13 @@ const zh: Record<MessageKey, string> = {
   "composer.noModels": "暂无可用模型",
   /* Model selector — provider-grouped dropdown. */
   "modelSelector.other": "其他",
+  /* 模型选择器 — 搜索框（roadmap H 模块「模型搜索」）。placeholder 用
+     小写「模型 / 供应商」而不是标题，字段名读起来是提示不是标题；
+     `searchClear` 是清除按钮的无障碍名称；`searchNoResults` 是查询无命中
+     时替代表格渲染的空态文案。 */
+  "modelSelector.searchPlaceholder": "搜索模型 / 供应商",
+  "modelSelector.searchClear": "清除搜索",
+  "modelSelector.searchNoResults": "没有匹配的模型",
   /* 模型选择器 — ticket 04。未配置 API Key 的供应商分组置灰并提示去
      设置里填 key；模态徽标按 modalities 数组渲染。 */
   "modelSelector.noKeyHint": "请在设置中配置 API Key",

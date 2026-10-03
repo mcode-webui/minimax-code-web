@@ -654,6 +654,28 @@ elapsed-timer already pays for. While the Git panel is open, two requests for
 the endpoint are in flight; that is accepted rather than hoisting panel state
 into a provider above the shell for a panel the badge does not render.
 
+## Model search
+
+The provider-grouped picker carries a search box between its "Add model / provider" row and the provider list. It narrows the list as the user types; nothing else about the picker changes. The `POST /api/set-model` contract is untouched — searching is a view concern, and no query ever travels to the server.
+
+| Decision | Chosen | Rejected, and why |
+| --- | --- | --- |
+| What a query matches | A model's `id` or `label`; a provider's `label` or `id`, case-insensitively | Labels only — the catalogue id is what a user finds in a log or a config file, and a filter that misses it reads as "no such model" while the list visibly contains the thing they typed |
+| A provider match keeps | Every model in that group | Only the matching models. Naming a provider and getting one of its twenty rows is the surprise that makes a search feel broken; the models are the answer |
+| A group with no match | Dropped from the list | Rendered as an empty header — a dead end that reads as a loading state |
+| Order | Catalogue order, inside and across groups | Re-sorting by relevance. The ordering is the engine's own and is meaningful; a filter that reshuffles it disturbs the list the user is reading |
+| No match at all | A dedicated line, "No models match your search" | An empty list column, which gives the user nothing to tell "no match" from "still loading" |
+| Persistence | None — the query is picker-local state | Storing it. A search term is not a preference; carrying it across sessions or reloads would hide rows with nothing on screen to explain them |
+| The provider-less bucket | Searchable like any other group | Excluded. A model whose provider prefix did not coerce would become unreachable from the picker entirely |
+
+**Invariants the wiring owes the filter.** A provider row and its fly-out must agree: `providerItems` reads the same filtered array the list renders, so a row that advertises one match cannot open a cascade of twenty. The query is cleared when the panel closes and on a session switch, for the same reason the cascade and the draft mirror reset — picker-local state does not follow the user into the next session's view.
+
+**Keyboard.** Opening the panel puts the caret in the search box, so a keyboard user can look for a model by typing immediately; the input does not consume the arrow keys, so `↓` still reaches the provider rows and the existing cascade engine (`→` to open, `↑`/`↓` to cycle, `Home`/`End`, `←` to return) is unchanged. `Escape` clears a live query and stops there; a second `Escape` with an empty field closes the panel. The clear control is a real `<button>` rather than a glyph or an `<input type="search">` affordance, because the panel is arrow-key driven and neither of those is reachable that way.
+
+**What it does not do.** It does not reorder, pin or rank models — a drag-to-prioritise model list is separate work. It does not search the settings provider list, which has its own add/edit flow. Typing never commits a pick: selecting a model stays the explicit two-step act it already was (the cascade, then the row), because a search that committed on the third letter would send to a model the user had only started to type.
+
+**How you would tell it works.** The filtering arithmetic is a pure function — `filterModelGroups` in `packages/webui/webapp/lib/model-groups.ts` — that `components/composer.tsx` imports, so `webapp/test/model-search.test.ts` drives the product code rather than a copy (the mistake red line ⑤ already made once). That file pins the rules above as 16 cases and then pins the wiring as tripwires over `composer.tsx`: the import, the list mapping the filtered array, the cascade reading it, the input bound to the query, the zero-match branch, the two query resets, and both dictionaries carrying the three new keys. A filter with correct arithmetic that nothing calls would pass the first half and fail the second.
+
 ## Context window (what the picker shows, and what a pick does today)
 
 The model picker's settings detail renders at **two levels** (ticket 49 batch 2). The panel-bottom area always describes the ACTIVE model; when a provider cascade is open, the fly-out renders as the reference picker's two-column popover — the provider's model rows on the left, a **follow-focus settings column** on the right. Hovering or keyboard-focusing a model row switches that column to the model without picking it; a cascade that just opened (nothing focused yet) falls back to the active model, mirroring the reference. Both areas read the same draft mirror (below), so a window pick made in either place highlights in both.

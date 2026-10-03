@@ -24,6 +24,7 @@ import {
 } from "@/lib/effort-control";
 import {
   chipLevelSuffix,
+  filterModelGroups,
   groupModelsByProvider,
   isGroupDisabled,
   modalityBadgeKey,
@@ -1308,6 +1309,13 @@ function ModelSelect({
   onAddProvider?: () => void;
 }) {
   const [open, setOpen] = useState(false);
+  /** The search box's query (roadmap module H, 「模型搜索」). Session-scoped
+   *  with the other picker state: a half-typed query must not follow the
+   *  user into the next session's list, for the same reason the cascade
+   *  and the draft mirror reset. Cleared on close too, so reopening always
+   *  starts from the full catalogue — a filter left over from a previous
+   *  open would hide rows with nothing on screen to explain why. */
+  const [query, setQuery] = useState("");
   // Ticket 11: the dropdown is now PROVIDER → MODEL. The cascade
   // submenu is keyed by provider id (the row that opens it), not by
   // model id. `null` when the dropdown is closed or no provider row
@@ -1348,6 +1356,7 @@ function ModelSelect({
     setSubmenuFor(null);
     setFocusedModelId(null);
     setDrafts({});
+    setQuery("");
   }, [sessionKey]);
   /** Ref to the provider row that owns the open submenu. */
   const submenuAnchorRef = useRef<HTMLDivElement | null>(null);
@@ -1356,6 +1365,9 @@ function ModelSelect({
   const selectedRowRef = useRef<HTMLDivElement | null>(null);
   /** Ref to the inner scrollable list. */
   const listScrollRef = useRef<HTMLDivElement | null>(null);
+  /** Ref to the search input, so the clear button can hand the caret back
+   *  to it. */
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
   /** Pending close timer — set when the cursor leaves the row, so a
    *  brief traversal into the submenu keeps it open. Cleared when
    *  the cursor re-enters the row OR the submenu. */
@@ -1395,6 +1407,21 @@ function ModelSelect({
   const grouped = useMemo(
     () => groupModelsByProvider(models, groups, t("modelSelector.other")),
     [models, groups, t],
+  );
+
+  /**
+   * The list the picker actually renders: `grouped` narrowed by the search
+   * query (roadmap module H, 「模型搜索」).
+   *
+   * The cascade reads THIS, not `grouped` — see `providerItems`. Filtering
+   * only the list would leave a provider row that reads as one match while
+   * its fly-out still lists all twenty of its models, which is worse than
+   * no search at all: the row and the submenu would disagree about what
+   * the query selected.
+   */
+  const visibleGroups = useMemo(
+    () => filterModelGroups(grouped, query),
+    [grouped, query],
   );
 
   // The provider id of the active model — `__other` for ungrouped
@@ -1518,7 +1545,11 @@ function ModelSelect({
    */
   const providerItems = useCallback(
     (providerId: string): CascadeItem[] => {
-      const group = grouped.find((g) => g.id === providerId);
+      // `visibleGroups`, not `grouped`: while a query is active the
+      // fly-out must list the same rows the provider row was filtered to.
+      // Reading `grouped` here would let a row advertise one match and
+      // then open a submenu full of everything else.
+      const group = visibleGroups.find((g) => g.id === providerId);
       if (!group) return [];
       return group.models.map((m) => {
         const isActiveModel = m.id === value;
@@ -1548,7 +1579,7 @@ function ModelSelect({
         };
       });
     },
-    [grouped, value, thinking, t],
+    [visibleGroups, value, thinking, t],
   );
 
   /**
@@ -1609,6 +1640,28 @@ function ModelSelect({
     return () => window.cancelAnimationFrame(handleId);
   }, [open, activeProviderId]);
 
+  /**
+   * Put the caret in the search box when the panel opens.
+   *
+   * Deferred by a frame for the same reason the scroll effect is: the
+   * panel renders into a portal, so the input is not mounted until after
+   * this commit.
+   *
+   * This is why the trigger's arrow-key handler cannot simply be left to
+   * focus "the first focusable row": the search box IS the first
+   * focusable thing in the panel now, and a keyboard user who opens the
+   * picker to look for a model should be able to type straight away.
+   * ArrowDown from the input still reaches the provider rows, because the
+   * input does not consume the arrow keys.
+   */
+  useEffect(() => {
+    if (!open) return;
+    const handleId = window.requestAnimationFrame(() => {
+      searchInputRef.current?.focus();
+    });
+    return () => window.cancelAnimationFrame(handleId);
+  }, [open]);
+
   return (
     <Dropdown
       open={open}
@@ -1617,6 +1670,11 @@ function ModelSelect({
         if (!next) {
           setSubmenuFor(null);
           setFocusedModelId(null);
+          // Drop the query with the other picker-local state: reopening
+          // must show the full catalogue, not the tail of whatever the
+          // user was last typing, with nothing on screen to explain the
+          // missing rows.
+          setQuery("");
           cancelSubmenuClose();
         }
       }}
@@ -1659,6 +1717,85 @@ function ModelSelect({
                 </button>
               ) : null}
               {/*
+                Search box (roadmap module H, 「模型搜索」). Sits between
+                the add-provider row and the list, so it filters the rows
+                below without scrolling the affordance that adds one out
+                of reach.
+
+                The clear button is a real `<button type="button">`
+                rather than a glyph: the panel is arrow-key driven, and an
+                `<input type="search">`'s native clear is not reachable
+                that way. Escape clears a live query and stops there —
+                a second Escape, with an empty field, is the user asking
+                to close, so the event is allowed to reach the panel.
+
+                Deliberately NOT autocompleting or selecting a row from
+                the keystroke: picking a model is an explicit act here
+                (the cascade, then the row), and a search that commits
+                on the third letter would send to a model the user only
+                started to type.
+              */}
+              <div className="relative mx-1 mt-1">
+                <span className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-icon_default_tertiary">
+                  <Icon name="search" size={14} />
+                </span>
+                <input
+                  ref={searchInputRef}
+                  type="text"
+                  role="searchbox"
+                  value={query}
+                  data-testid="model-select-search"
+                  aria-label={t("modelSelector.searchPlaceholder")}
+                  placeholder={t("modelSelector.searchPlaceholder")}
+                  onChange={(event) => setQuery(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Escape" && query) {
+                      event.preventDefault();
+                      // Stop the panel's own Escape handling from also
+                      // closing the dropdown on the same press.
+                      event.stopPropagation();
+                      setQuery("");
+                    }
+                  }}
+                  className="h-7 w-full rounded-[8px] border border-border_default bg-bg_interaction_primary_hover pl-7 pr-7 text-caption-small-strong text-text_default_primary outline-none placeholder:text-text_default_tertiary focus:border-border_heavy"
+                />
+                {query ? (
+                  <button
+                    type="button"
+                    data-testid="model-select-search-clear"
+                    aria-label={t("modelSelector.searchClear")}
+                    title={t("modelSelector.searchClear")}
+                    onClick={() => {
+                      setQuery("");
+                      // Return the caret: after clearing, the user is
+                      // most likely typing a corrected query, not
+                      // reaching for the keyboard.
+                      searchInputRef.current?.focus();
+                    }}
+                    className="absolute right-1 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center rounded-[6px] text-icon_default_tertiary transition-colors hover:bg-bg_interaction_tertiary_hover hover:text-text_default_primary"
+                  >
+                    <Icon name="close" size={12} />
+                  </button>
+                ) : null}
+              </div>
+              {/* Zero-match state. Rendered in place of the list rather
+                  than as an empty container: an empty provider column
+                  gives the user nothing to tell "no match" from "still
+                  loading".
+
+                  A plain div, NOT `SelectRow`: that component renders a
+                  `<button>`, and the panel's arrow-key engine focuses
+                  the first focusable row on ArrowDown — a dead button
+                  in the keyboard path is worse than no row at all. */}
+              {query && visibleGroups.length === 0 ? (
+                <div
+                  data-testid="model-select-no-results"
+                  className="mx-1 mt-1 px-2 py-1.5 text-sm text-text_default_tertiary"
+                >
+                  {t("modelSelector.searchNoResults")}
+                </div>
+              ) : null}
+              {/*
                 Scrollable list of provider rows. Each provider has a
                 sticky header (kept from ticket 09) and ONE row that
                 flies out a cascade of that provider's models. The
@@ -1673,7 +1810,7 @@ function ModelSelect({
                 data-webui-model-menu-list="true"
                 className="thin-scrollbar max-h-[60vh] w-60 overflow-y-auto"
               >
-              {grouped.map((group, groupIndex) => {
+              {visibleGroups.map((group, groupIndex) => {
                 const disabled = isGroupDisabled(group);
                 const isActiveProvider = group.id === activeProviderId;
                 const submenuOpen = cascadeOpenFor(group.id, group);
