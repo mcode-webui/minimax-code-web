@@ -229,6 +229,7 @@ const KNOWN_PREFIXES = [
   "mcode-exec-nosibling-",
   "mcode-exec-plain-",
   "mcode-exec-posix-",
+  "mcode-exec-stream-",
   "mcode-exec-test-",
   "mcode-resolver-bad-",
   "mcode-resolver-empty-",
