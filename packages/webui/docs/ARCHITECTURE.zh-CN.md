@@ -1214,6 +1214,227 @@ webui 自己的运行器注册到 webui 自己的状态总线上的，杀它不�
    wire 形状，而更大的问题（是否在 `mcode-rpc.js` 里为所有调用方统一归一化）是
    对 RPC 包装层契约的改动，不是对这个端点的改动。
 
+#### 哪个端点经由门面路由（迁移步 M3 批次 B8a 与 B8b）
+
+`POST /api/send`（#12）是唯一一个全部行为都住在一个路由函数体里的端点：它认领
+这个回合、给出应答，然后跑一个输出永远不经过 HTTP 响应的回合——输出走
+`/api/events` 这条 SSE 通道，以 webui 聊天行的形式出现（`▲` 思考、`●` 回答、
+`→ 工具`、`##tc:<id>` 标记）。B8 就是这个端点的迁移，也是第一个**点亮第二套
+传输**而不只是给既有传输换个住处的批次：B8b 之后，`MCODE_WEBUI_TRANSPORT=runtime`
+会真的跑起一个回合，而默认的 `acp` 路径逐字节保持 32277c3a 时的样子——这条不变性
+就是本批的存活条件，而且 `mcode-acp.js#runMcodeAcp` 与 `mcode-acp.js#streamAcpPrompt`
+并没有为了达成它而被改动过。
+
+| 端点 | 门面函数 | 能力 · 子项 | 强制方式 | 取值来源 |
+| --- | --- | --- | --- | --- |
+| `POST /api/send`（#12） | `engine/streaming-send.js#assertStreamingSendCapability` | `streamingSend` · `sendMessage` | **硬——501** | runtime 传输上来自 `engine/streaming-send.js#openEngineSendStream`；acp 路径的取值来源 `mcode-acp.js#streamAcpPrompt` 刻意**不**写进这份声明 |
+
+声明本身是 `engine/streaming-send.js#STREAMING_SEND_ENDPOINTS`——一张只有一行的表，
+其 `subItem` 取的是 runtime 的方法名 `sendMessage`：这是 provider 作者从源码里就能
+认出来的名字，也正是 `partial` 声明必须列进 `missing` 的那个名字。它那支只报告、
+不抛错的兄弟函数 `engine/streaming-send.js#checkStreamingSendCapability`，从不抛能力
+错误：webui 自己写错端点键只是一个普通 `Error`，因为调用方搞错了不是能力问题，而
+HTTP 层绝不该为本仓库自身的缺陷回 501。
+
+**为什么一个端点要分两批。** B8a 把声明、门控与派生函数作为一个「没有运行器、
+也没有路由分支」的层交付——没有任何用户可见变化，也没有任何东西调用那扇门，
+于是一个全部价值就在于「它不做 I/O」的模块可以被单独审阅。B8b 在底部补上数据面：
+这一族里唯一触碰引擎的那一处，再加上路由的第三个分支。这个拆分之所以有意义，
+是因为那份纯粹性只在它还成立时才是可证的——
+`engine/streaming-send.js#openEngineSendStream` 与
+`engine/streaming-send.js#projectSendAttachments` 是仅有的两个不是「对参数的全函数」
+的导出，也正是它们让这个模块不得不去用 `await import()`。
+
+**逃生舱仍然优先。** `chat.js#handleSend` 里的分支是有序的，而这个顺序是承重的：
+
+| 条件 | 运行器 | 流的来源 |
+| --- | --- | --- |
+| `MCODE_USE_ACP === "0"` | `runMcodeExec`（exec） | 无——一个非流式运行器，也没有 run-mirror |
+| `MCODE_WEBUI_TRANSPORT === "runtime"` | `mcode-acp.js#runMcodeRuntime` → `mcode-acp.js#streamRuntimePrompt` | runtime 帧，且已被投影为 `TuiStreamEvent` |
+| 其余（默认的 `acp`） | `mcode-acp.js#runMcodeAcp` → `mcode-acp.js#streamAcpPrompt` | `mcode acp` 的 session-update 通知 |
+
+先判 `MCODE_USE_ACP=0`，是因为 `lib/config.js` 把优先级写成「无论
+`MCODE_WEBUI_TRANSPORT` 为何，transport=exec」，而对这个变量本身的目的来说这正是
+正确的顺序：逃生舱存在的意义，恰好是某套传输正在出问题的那个时刻，所以一个伸手去
+拉它的人不该还得先取消另一个变量。runtime 分支传的是与 acp 分支**同一个**选项对象，
+其中就包含 `owningWebuiSessionId`——正是它让该行以下的整条尾巴都与传输无关：两个
+运行器返回同一个 `r`，并写进同一份 `state-bus.js#createRunChat` 缓冲。
+
+**为什么这一族是硬门控，以及门控在哪里被调用。** #12 的应答是 `{ok:true}`，
+写在调用引擎**之前**——按契约是 fire-and-forget，因为输出走的是另一条通道。这恰恰是
+它必须硬门控的原因，也正好是 B7 的镜像：一个停止请求的升级动作是 webui 自己的子进程
+管理，因此它仍然停得掉那个回合；一个取消端点本来就有一个成文的「我做不到」200。
+而 #12 **一个都没有**。一个没有 `streamingSend` 面的 provider，无法对用户会注意到的
+三件事给出任何如实答案——回合根本没跑、面板显示「思考中」而背后没有任何流、声明
+没有任何东西去重置。这就是 #110 那个假成功最纯粹的形态，所以
+`engine/streaming-send.js#assertStreamingSendCapability` 抛错，由 `app.js#invokeHandler`
+映射成 501 加 `engine/errors.js#engineCapabilityHttpResponse` 那份共享响应体。路由
+自己什么都不构造：`chat.js#handleSend` 里根本没有新增任何响应码。
+
+**门控位于 `state-bus.js#beginRun` 之前，而这就是论证的另一半。** 否则那一次抛出
+会落在 `try` 之外，而释放声明的 `finally`（也就是 `state-bus.js#endRun`）就在那个
+`try` 里；一个泄漏的声明会让这段对话之后每一次发送都收到 409，而那个 409 描述的是
+一个根本不存在的回合。一扇为了防止
+假成功、却制造出永久假繁忙的门，比没有门更糟，所以调用点就在
+`chat.js#handleSend` 里、只有那一处，紧挨在认领之前。
+
+**这扇门当前不可达，而这一点是被陈述出来的，不是被假定的。**
+`engine/streaming-send.js#providerByTransport` 只把 `runtime` 映射到一个已注册的
+provider id；默认的 `acp` 传输目前一个都没有，因为那份注册表属于 M4。所以在 `acp`
+下门控回的是 `unregistered-transport` 且不抛错——那是迁移前的行为，而不是门上的洞；
+而在 `runtime` 下，local-runtime-v2 provider 声明了 `streamingSend: full`，于是答案是
+`checked`。测试把这半句和那半句都钉住了，这让「provider 不再声明 send 面」成为一次
+刻意编辑而不是一次意外。这张表是每次调用现建的，而不是在模块作用域里冻结，因为
+`engine/index.js` 会再导出这个模块，而模块级表在冷导入时会在
+`engine/index.js#DEFAULT_ENGINE_PROVIDER_ID` 仍处于暂时性死区的那一刻读到它。
+
+**这座桥连接的是两套词表，而它是从协议线之上起步的。** ACP 送来的是一套**事件**词表
+（`thought` / `message` / `tool_call` / `tool_update` / `plan_update`），它碰巧与 webui
+的行语法相当接近。runtime 送来的是一套**帧**词表（SSE 的 `dataJson` 信封），webui 从
+未消费过它——但 `runtime-host.js` 里的逐回合包装器已经把这些帧投影成结构化的
+`TuiStreamEvent`，因此 `engine/streaming-send.js` 从协议线之上一层起步，从头到尾没见
+过帧。`engine/streaming-send.js#SEND_EVENT_KINDS` 是 webui 自己的词表，不是 runtime 的：
+`thought` / `message` / `tool` 是 acp 路径分别累积的三族，`authoritative` 是那条**覆盖**
+而非追加到累加器上的已落定消息（runtime 既发增量、又在收尾时发一条完整消息——与
+`result.answer` 把同一件事说一次而不是上千次是同一个事实），`terminal` 是回合结局，
+其余都是关于这条流、但不产生任何行的事实。
+
+**分类永不抛错，而这种不对称是刻意的。**
+`engine/streaming-send.js#classifySendEvent` 对不认识的形状返回 `{kind: ignore}`，
+而不是掐掉一个本来流得很好的回合。一座遇到未知帧就抛错的桥，会把 runtime 未来每
+一次新增都变成聊天端点的一次故障，那严格地比少渲染一行更糟。
+
+**四条性质承着重量，而且四条都被表述为共享函数，而不是每套传输各自重新推导一遍。**
+
+1. **still-viewing 判定有三种形态。**
+   `engine/streaming-send.js#sendStillViewing` 是两个运行器在绑定时与 finalize 时都会
+   查的那一个谓词。回合进行中用户可以切换对话，那会把 `cs` 重新指向**另一条**记录，
+   而此后任何一次 `cs` 改写都会把本回合的引擎 id 或标题盖到用户刚切过去的那个会话上。
+   三种形态是：根本没有归属记录 id（直接调用方而非路由——按仍在查看处理）；
+   `cs.sessionId` 等于归属记录 id（提升前的形态）；`cs.sessionId` 等于引擎 sid
+   （提升后的形态，因为记录在绑定那一刻已被改名为引擎 id）。其余情况都意味着用户切走了，
+   于是本回合的行改由 `sessions.js#promoteDraftToMcodeSid` 的那条姊妹路径写进归属记录，
+   而不是写进正在查看的 `cs.chat`。
+2. **finalize drain 重写末条 `●` 行，且作用在一个已分离的列表上。**
+   `state-bus.js#drainRunChat` 把本回合行的副本交给路由，
+   `engine/streaming-send.js#rewriteDrainedAnswerLine` 则镜像路由那份就地改写——后者只在
+   用户仍在查看时才会跑；runtime 路径需要在脱离的数组上做同一件事，因为一个在用户
+   去往别处时结束的回合，仍必须把它的最终答案记在**本回合自己的**行上，而不是记在另一个
+   会话的聊天里。有两条行为是承重的：**最后**一条 `●` 行获胜，从尾部往前扫，因为一个
+   在两个回答段之间插了工具调用的回合不止有一条；而当一条都没有时，答案是**追加**，
+   因为丢掉它就等于在一个根本不流 `●` 的 runtime 上丢掉这个回合唯一的输出。这个函数
+   是纯的——输入数组从不被改写——因此调用方可以拿改写前后作对比。
+3. **草稿提升被刻意*不*重新推导。** 这是三条红线里唯一在模块中没有对应谓词的一条，
+   而它的缺席就是那个决定。提升的条件——「正在查看的会话有引擎 id」——对两套传输
+   本来就都是正确的，因为 `sessions.js#promoteDraftToMcodeSid` 自身在
+   `cs.sessionId === cs.mcodeSessionId` 时就是空操作，而那正是每个回合绑定之后的状态。
+   再用第二个谓词去收窄它，等于拿存活条件（acp 路径的行为变更）去换一个既有守卫
+   本来就已经做出的保证。它的证据是一条路由测试而不是一个函数，测试同时钉住了这里
+   不存在这样一个谓词。
+4. **409 声明以 `(cid, sessionId)` 为键，而 runtime 分支没有改动它。**
+   `state-bus.js#beginRun` 是拿会话键调用的，而不是只拿 `cid`，因此一个标签页里某段
+   对话中的长回合不会连带拒掉同一标签页里其他对话的发送；而对**同一段**对话的第二次
+   发送仍然是那个重复执行守卫，仍然被拒绝。runtime 运行器保留了 ACP 运行器原有的三处
+   机制：归属 webui 记录在第一个 await 之前捕获、草稿→引擎的绑定走同样那两个辅助函数、
+   首回合的会话繁忙守卫在同一时刻用 `state-bus.js#updateRunSid` 补写——因为路由在回合
+   存在之前就认领了声明，所以某个会话的首回合上，那次声明是以 `sid: null` 登记的，
+   引擎会话的守卫从未覆盖到它。
+
+**行语法只有一个家，这正是 runtime 路径复用 ACP 归约器、而不是另写一份的原因。**
+工具调用走 `mcode-acp.js#applyToolUpdate`，于是缩进正文语法、`@ path` 行、`! error` 行
+与子代理识别接线全都被「产出同样输入」这一件事继承下来；另写一份实现，就等于多出
+一个让 `→ name` 表头与它下面正文产生分歧的地方。有两处细节属于 runtime 自己的判断，
+并被单独钉住。阶段映射：`engine/streaming-send.js#sendToolUpdate` 读取数字形态的
+`ToolCallStatus`，把仍在推进的阶段映射为 `pending`（此刻产出正文，等于把半流式参数
+当成工具输入打印出来），把 `finished` 映射为 `completed`、把 `failed` 映射为 `error`——
+都是 acp 路径自己的词。表头产出：runtime 会在一次调用的整个生命周期里反复重发整个
+调用，因此一个已经宣告过的调用不会贡献第二条 `→ name`；新 id 的表头由运行器通过
+`engine/streaming-send.js#sendToolHeaderLine` 连同它的参数写出——而归约器自己合成的
+那条表头刻意不带参数——同时把索引预先登记好，好让归约器走「表头已知」那一支、只写
+正文。`→ name  <args>` 里那个双空格是照抄而不是整理的，因为那个间距正是 acp 行的样子，
+也正是解码器据以切分的东西。
+
+**这条流恰好关闭一次，而「它就这么停了」是一次失败。**
+`mcode-acp.js#streamRuntimePrompt` 与 `mcode-acp.js#streamAcpPrompt` 在结构上是同一台
+机器：一个累加器 `r`、通过 `chat-line.js#streamUpdateLine` 逐事件写入 run-chat 缓冲
+（两套传输共用的那个「同前缀则替换该行、否则追加」的原子操作）、一个有界的空闲
+看门狗，以及一个由 `_finalized` 标志守卫的 `finalize()`。runtime 的逐回合包装器把引擎
+抛出的一次异常转成一个 `{type:"error"}` 帧而不是一次被拒绝的迭代器，因此这个循环永远
+不必去区分「引擎崩了」和「引擎报告了一次崩溃」；而一条没有以终止事件收尾的流会被记为
+`failed` 而不是成功，因为把一个被截断的回合当成完整回合，等于把一段没写完的回答渲染
+成一段写完的。同一份 finalize 还会追加 `§§` 标记行、剥掉 `▍` 流式游标、关闭逐回合
+host、重新查询 mavis 用量表并回读标题；标题回读与用量重查与 ACP finalize 调的是
+**同样那两个调用**，因为两者都已经具备传输感知，而在这里复制一份，就是把
+`acp-client.js` 已经做过的决定再做一遍。
+
+**有一处纯函数正是「不可见」回归的所在。**
+`engine/streaming-send.js#sendSegmentAdvance` 是最容易悄悄弄错、而出错时最难被察觉的
+那一块：漏掉一次重置，会让下一条 `●` 行包含此前每一段的文本，而它照样渲染、照样看起来
+像一条像样的回答。这条规则与 acp 路径自己的 `lastChunkKind` 判别器一致——同族的增量
+追加到缓冲，不同族的增量（或任何出现在工具调用之后的增量）另起一段。另外两个小映射也
+以同样的方式被钉住：`engine/streaming-send.js#sendTerminalOutcome` 把
+`aborted`/`interrupted` 报成 `aborted` 而**不是**失败，因为那是用户按了停止，为一次用户
+动作弹出错误提示是错的；而 `engine/streaming-send.js#sendUsageTotals` 返回 `null` 而不是
+一个清零的对象，因为 finalize 里「没有用量」那一支才是回退到按长度估算的地方，一个
+清零对象会把那一支拿走，让上下文面板一直显示零 token。
+
+**启动路径的重量保持不变。** `chat.js` 会导入这个模块，所以它在启动路径上；但它的静态
+导入只有 `engine/capabilities.js`、`engine/index.js` 与 node 内建模块——全都便宜。host
+getter、逐回合 host 包装器与附件辅助函数只通过 `await import()` 在
+`engine/streaming-send.js#openEngineSendStream` 内部被触达，别处一概没有，因此一台
+纯 acp 的服务器永远不会把 runtime 那张图启动起来。这就是 M1 的教训，也正是这个模块
+之所以能够从门面上再导出的原因。
+
+**本批记为已知债而不予决定的八件事：**
+
+1. **硬门控已被声明，但从未被触发。** 它在两套传输上都还不可达——local-runtime-v2
+   provider 声明了 `streamingSend: full`，而 `acp` 根本没有已注册的 provider——因此关于
+   那个 501，诚实的描述是「一条被陈述、被隔离测试、但尚不可达的策略」。测试把这句话的
+   两半都钉住，于是让它变得可达是一次刻意编辑而不是一次意外。
+2. **`resync-required`、`messages-replaced` 与 `messages-rewound` 全都被归为忽略。**
+   runtime 可以告诉 webui 它对本回合的视图已经分叉——那正是 `resync-required` 的含义
+   ——而 webui 保留最后一次渲染出的行缓冲，什么都不对用户说。运行器唯一的出口是一行
+   日志，那是正确的下限，但不构成一个解法。遇到 resync 时 webui 是否应当从引擎自己的
+   骨架重新推导出这个回合，是一个产品问题，而且它与 `transcript.js`（#126）里的镜像退役
+   工作相互纠缠——那里「哪些行才是权威的」这个问题已经在被重新辩论。在两个文件里各
+   决定一次，正是两个答案产生漂移的方式。
+3. **这座桥刻意产出一个有损镜像。** `●` 承载一条被压平的行，`→ name` 承载的是首次
+    sighting 时那个调用的参数——正是 acp 路径一直产出的那种有损形态，而在这里产出任何
+   更丰富的东西，都会让两套传输的转录变得不可比。其后果是：#126 的镜像退役判据必须
+   同时认出有损镜像的 **runtime 形态**与 acp 形态；两者是同一个事实，所以这条判据应当
+   针对行语法只写一次，而不是针对两套传输写两次。
+4. **`/api/stop` 停不掉一个 runtime 回合，而它如实这么说。** runtime 运行器不注册任何
+   活动子进程，因为 runtime 没有子进程可供 B7 的 kill 级联去发信号，而在 B7 那一族
+   之外另造一套中断协议，比没有答案更糟。因此在 runtime 传输下按停止的用户拿到的是 B7
+   那个有文档的降级：温和的 `session/cancel` 被拒绝（没有 ACP 客户端），没有子进程被
+   注册，所以 `hardKilled` 为假——而 `engine/interrupt.js#stopLeftStaleClaim` 为真，于是
+   路由重置思考声明并推送一个静止态。面板恢复了；回合在 runtime 里继续跑。那是一句如实的
+   「我停不掉它」，严格地优于另一种选择，但它不等于「已停止」。修法属于 B7 那一族——当
+   传输是 `runtime` 时把 `abortSession` 也经由门面路由，就像中断门控已经为那一族解析
+   provider 那样。在那之前 runtime 传输没有任何用户可达的中止，而两套传输之间的这个
+   差异，是关于 `runtime` 何时成为默认传输的产品决定，不是重构。
+5. **附件到达 runtime 时没有 MIME 类型。** webui 的上传流水线
+   （`attachments.js#resolveAttachment`）只保留 `{path, name, size}`，其余全部丢弃，因此
+   `engine/streaming-send.js#projectSendAttachments` 送出的是
+   `application/octet-stream`——一个如实的默认值而不是猜测，同时也是一条真实限制：按
+   MIME 类型分派的 runtime 会把图片当成文件。修法在本模块上游（在上传时留存类型），且
+   会改变已存记录的形状，因此那是另一次带自己兼容性问题的改动。
+6. **上下文上限没有从流里桥接过来。** runtime 的 `TokenUsage` 带有 `context_window`，
+   但 TUI 投影没有转发它，因此 `engine/streaming-send.js#sendUsageTotals` 能产出 finalize
+   所累积的那三个总量，却产不出 `cs.context.limit` 需要的任何东西。于是这个上限只能像在
+   acp 上一样，经由 finalize 之后的 mavis 重查询抵达。从一个 webui 批次去改 TUI 包里的
+   投影，会把 M1 那次拆分确立的依赖方向倒过来，所以这里只记录、不动手。
+7. **runtime 收不到用户在界面上选的模型。** ACP 运行器会对一个全新会话预先套用已记录的
+   模型，让引擎跑的就是那个标签所声称的模型；runtime 运行器不这么做，因为那个辅助函数
+   说的是 ACP 的 `session/set_config_option`，而 runtime 的对应物属于更后面的批次。因此
+   在 `runtime` 下，**首个**回合跑的是 runtime 自己的默认值，界面标签可能与实际不符——
+   正是那次「预先套用」本要防的缺陷，范围限定在一个会话的首个回合。这个不符是可见的
+   而不是静默的，而且在它落地之前 `runtime` 保持可选启用。
+8. **传输选择是一次环境变量读取，不是注册表查询。** `chat.js#handleSend` 里的分支把
+   `MCODE_WEBUI_TRANSPORT` 与字面量 `"runtime"` 比较，而计划书写的是选择应当读 provider
+   注册表。注册表归 M4 所有，而在它存在之前就硬写第二处知道 provider id 的地方，正是
+   M4 要消灭的东西。本批刻意不去造一个提前到来的注册表。
+
 ## 6. 前端拓扑
 
 ```
