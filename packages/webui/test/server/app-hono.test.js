@@ -86,6 +86,11 @@ describe("app.js — migration ledger", () => {
       // turn), and unlike /api/send its response carries the engine's
       // answer rather than an acknowledgement.
       "POST /api/follow-up",
+      // PB-3 — the 工作树 settings page. A list read and the page's only
+      // write. There is deliberately no create endpoint: the desktop page
+      // is a cleanup page and the port declares no create method.
+      "GET /api/worktrees",
+      "POST /api/worktrees/remove",
       "POST /api/usage",
       "POST /api/usage-trigger",
       "GET /api/usage-real",

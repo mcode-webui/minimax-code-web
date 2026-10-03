@@ -3113,6 +3113,87 @@ Contract details (the 14-key table, every provider's levels, the
 migration state) live in [`docs/webui.md`](../../../docs/webui.md)
 under "Engine capability declaration".
 
+### `GET /api/worktrees`
+
+The 工作树 settings page's list: every worktree Git has registered for one
+repository. `workspace` is optional; without it the request's own conversation
+workspace is used, and with neither source present the endpoint answers 400
+`no_workspace` rather than guessing the server's cwd.
+
+**Response 200** — the engine's `WorkspaceGitWorktreeList`, field for field:
+```json
+{
+  "ok": true,
+  "workspace": "/home/u/repo",
+  "current": "/home/u/repo",
+  "worktrees": [
+    { "path": "/home/u/repo", "branch": "main", "head": "abc1234",
+      "isMain": true, "isLocked": false, "isActive": true,
+      "isMcodeManaged": false, "lastModifiedMs": 1700000000000 }
+  ]
+}
+```
+
+`lastModifiedMs` is OPTIONAL and `ok: false` is a report, not a transport
+failure. A folder that is not a Git repository answers **200** with
+`ok: false` and the engine's own `code` — `not_git_repository`,
+`workspace_unavailable` or `worktree_list_failed` — because the request
+succeeded and the engine reported a fact about the user's directory. A silent
+empty list would tell the user they have nothing to clean up.
+
+- `400 no_workspace` — neither `?workspace=` nor a conversation workspace.
+- `403 workspace_outside_allowed_roots` — the named path is outside the
+  allowed roots (`assertWorkspacePath`, the same boundary as `/api/fs/*`).
+  Checked **before** the engine is reached.
+- `501 engine_services_unavailable` / `worktree_service_unavailable`
+- `503 engine_host_unavailable`
+
+There is deliberately **no** create endpoint: the desktop page
+(`design-ref/screenshots/ref-23.jpg`) has no create button and the port
+declares no create method.
+
+### `POST /api/worktrees/remove`
+
+The page's 「一键移除」 over a selection. The engine decides each item's fate
+and its verdicts pass through per item.
+
+**Request** — `items` must be a non-empty array of `{workspace, worktreeDir}`;
+`activeWorktreeDir` is optional and means "let the engine decide" (it defaults
+to the item's own workspace inside the service).
+```json
+{ "items": [{ "workspace": "/home/u/repo", "worktreeDir": "/home/u/repo/.worktrees/a" }] }
+```
+
+**Response 200**
+```json
+{
+  "ok": true,
+  "removedPaths": ["/home/u/repo/.worktrees/b"],
+  "failedItems": [
+    { "worktreeDir": "/home/u/repo", "reason": "main_worktree",
+      "error": "The main worktree cannot be removed" }
+  ]
+}
+```
+
+`ok: true` means the REQUEST was carried out, not that something was deleted:
+a selection where every item was refused still answers `ok: true` with a full
+`failedItems` list. `reason` is narrowed to the engine's closed
+`WorktreeRemovalReason` set (`main_worktree` / `active_worktree` /
+`not_found` / `locked_worktree` / `dirty_worktree` / `unknown`); a value
+outside it is reported as `unknown` rather than shipped as raw text.
+
+`worktreeDir` is NOT containment-gated separately from `workspace`, and that is
+deliberate: the engine only removes a path that `git worktree list` reports as
+a linked worktree of that repository, which is strictly stronger than a root
+check. A forged path achieves a `not_found` refusal and nothing else.
+
+- `400 invalid_removal_request` — the body is not a removal request.
+- `403 workspace_outside_allowed_roots` — one item names an out-of-root
+  repository. The WHOLE batch is refused: an out-of-root repository is a
+  forged request, not a worktree that happened to fail.
+- `501` / `503` — the same presence gate as the list.
+
 ---
 
 ## Error responses

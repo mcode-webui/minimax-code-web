@@ -1236,7 +1236,41 @@ const en = {
   "settings.account.quotaState.notSubscribed": "No plan subscribed, no quota to read",
   "settings.account.quotaState.unavailable": "The engine reported the quota as unavailable",
   "settings.archived.empty": "No archived tasks yet",
-  "settings.worktree.empty": "Worktree management is not available in the local edition yet",
+  // PB-3 — the 工作树 tab reads `GET /api/worktrees`. The old value of
+  // `settings.worktree.empty` claimed the local edition could not manage
+  // worktrees at all, which was true about the HTTP route and false about
+  // the capability; the empty state is now the desktop's own sentence and
+  // names what is missing instead of a version.
+  "settings.worktree.empty": "No manageable worktree",
+  "settings.worktree.hint":
+    "A cleanup page: it lists the worktrees Git already knows about and removes the ones you select. It does not create worktrees — the desktop page has no create button either.",
+  "settings.worktree.loading": "Reading the worktree list…",
+  "settings.worktree.readFailed": "The worktree list could not be read (GET /api/worktrees)",
+  "settings.worktree.refresh": "Refresh the worktree list",
+  "settings.worktree.removeOneClick": "Remove selected",
+  "settings.worktree.confirmTitle": "Remove the selected worktrees?",
+  "settings.worktree.confirmBody":
+    "Only clean, unlocked worktrees can be removed. Dirty, locked, main and in-use worktrees are refused by the engine and reported back one by one.",
+  "settings.worktree.confirmOk": "Remove",
+  "settings.worktree.confirmCancel": "Cancel",
+  "settings.worktree.removedCount": "Removed {n} worktree(s).",
+  "settings.worktree.timeUnknown": "last-modified time unknown",
+  "settings.worktree.filter.recent3d": "Last 3 days",
+  "settings.worktree.filter.days3to7": "3–7 days ago",
+  "settings.worktree.filter.older7d": "Over 7 days ago",
+  "settings.worktree.listError.notGit":
+    "This folder is not a Git repository, so it has no worktrees (code: not_git_repository)",
+  "settings.worktree.listError.unavailable":
+    "The folder could not be read (code: workspace_unavailable)",
+  "settings.worktree.listError.listFailed":
+    "Git could not list the worktrees (code: worktree_list_failed)",
+  "settings.worktree.reason.main": "the main worktree cannot be removed",
+  "settings.worktree.reason.active": "an active session is running in it",
+  "settings.worktree.reason.locked": "this worktree is locked",
+  "settings.worktree.reason.dirty":
+    "it has uncommitted changes — commit, stash or discard them first",
+  "settings.worktree.reason.notFound": "Git no longer knows this worktree",
+  "settings.worktree.reason.unknown": "the engine could not say why",
   "settings.mode.section": "Mode",
   "settings.mode.coding": "Built for coding",
   "settings.mode.codingHint": "Keeps technical detail and developer tooling",
@@ -2342,7 +2376,36 @@ const zh: Record<MessageKey, string> = {
   "settings.account.quotaState.notSubscribed": "未订阅套餐，无配额读数",
   "settings.account.quotaState.unavailable": "引擎报告配额不可用",
   "settings.archived.empty": "暂无已归档任务",
-  "settings.worktree.empty": "本地版暂不支持工作树管理",
+  // PB-3 对应中文侧。桌面原文是「没有可管理 Worktree」，此处保留
+  // 「Worktree」这一原文词，因为它是参照物上的实际措辞；「本地版暂不支持
+  // 工作树管理」已删除——那句话描述的是路由，不是能力。
+  "settings.worktree.empty": "没有可管理 Worktree",
+  "settings.worktree.hint":
+    "这是一个清理页：列出 Git 已登记的工作树，并移除你勾选的那些。它不新建工作树——桌面版这一页同样没有「新建」按钮。",
+  "settings.worktree.loading": "正在读取工作树列表…",
+  "settings.worktree.readFailed": "工作树列表读取失败（GET /api/worktrees）",
+  "settings.worktree.refresh": "刷新工作树列表",
+  "settings.worktree.removeOneClick": "一键移除",
+  "settings.worktree.confirmTitle": "确认移除所选工作树？",
+  "settings.worktree.confirmBody":
+    "只有干净、未锁定的工作树能被移除。有未提交改动、被锁定、主工作树以及会话正在使用的工作树会被引擎逐条拒绝并回报原因。",
+  "settings.worktree.confirmOk": "移除",
+  "settings.worktree.confirmCancel": "取消",
+  "settings.worktree.removedCount": "已移除 {n} 个工作树。",
+  "settings.worktree.timeUnknown": "最后修改时间未知",
+  "settings.worktree.filter.recent3d": "近 3 天",
+  "settings.worktree.filter.days3to7": "3-7 天前",
+  "settings.worktree.filter.older7d": "7 天以上",
+  "settings.worktree.listError.notGit":
+    "当前目录不是 Git 仓库，因此没有工作树（code: not_git_repository）",
+  "settings.worktree.listError.unavailable": "当前目录无法读取（code: workspace_unavailable）",
+  "settings.worktree.listError.listFailed": "Git 无法列出工作树（code: worktree_list_failed）",
+  "settings.worktree.reason.main": "主工作树不可移除",
+  "settings.worktree.reason.active": "有会话正在其中运行",
+  "settings.worktree.reason.locked": "该工作树已锁定",
+  "settings.worktree.reason.dirty": "存在未提交改动——请先提交、暂存或丢弃",
+  "settings.worktree.reason.notFound": "Git 已不再登记该工作树",
+  "settings.worktree.reason.unknown": "引擎未说明原因",
   "settings.mode.section": "模式",
   "settings.mode.coding": "适用于编程开发",
   "settings.mode.codingHint": "保留技术细节与开发工具",

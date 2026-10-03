@@ -1196,7 +1196,8 @@ settings (`refs/ui/03-settings-usage-models.jpg`, `04-settings-general.jpg`).
 Ten tabs in four groups. Every tab carries the reference's 18×18 stroke
 glyph; the state column says what a user actually gets, and a control that
 renders but cannot act is called **placeholder** — a designed outcome, not a
-missing feature. Only Worktree is genuinely not implemented.
+missing feature. None of the ten is a bare placeholder any more: the last
+one, Worktree, reads the engine since PB-3.
 
 | Group | Tab | State |
 | --- | --- | --- |
@@ -1208,8 +1209,65 @@ missing feature. Only Worktree is genuinely not implemented.
 | Management | Connection | implemented |
 | Management | Account | implemented as a read — the section reads `GET /api/account` on mount and renders the account name, the current plan name, the quota overview (plan-quota state plus the 5-hour and weekly remaining figures) and the account status; sign-out stays disabled (no engine method acts on it) |
 | Coding | Code review | implemented — 自定义审查准则 persists to `localStorage`; 审查方式 is a disabled single-option dropdown showing 子会话 |
-| Coding | Worktree | **not implemented** — the tab is a one-line panel reading 「本地版暂不支持工作树管理」 |
+| Coding | Worktree | implemented as a CLEANUP page since PB-3 — see **Worktree — what the page can and cannot do** |
 | Archived | Archived tasks | the tab renders its empty state 「暂无已归档任务」; the list and its actions need an archived-session contract that does not exist |
+
+**Worktree — what the page can and cannot do.** The Worktree tab is a
+**cleanup** page, not a workspace manager. It lists the worktrees Git already
+knows about for the current repository and removes the ones you select; the
+desktop reference (`design-ref/screenshots/ref-23.jpg`) has no 「新建工作树」
+button, and `ManagedWorktreeServicePort` declares no create either, so adding
+one would be inventing a capability on both sides at once. Two endpoints:
+
+| Endpoint | Engine call | Notes |
+| --- | --- | --- |
+| `GET /api/worktrees?workspace=<repo>` | `services.managedWorktrees.list` | `workspace` is optional; without it the request's own conversation workspace is used, and with neither source the endpoint is 400 rather than guessing the server's cwd |
+| `POST /api/worktrees/remove` | `services.managedWorktrees.removeBatch` | body `{items: [{workspace, worktreeDir}], activeWorktreeDir?}` |
+
+Both are gated by PB-8's three-state presence gate rather than by a capability
+key, because no key covers `services.managedWorktrees`: no host → **503**
+`engine_host_unavailable`, a host with no owner graph → **501**
+`engine_services_unavailable`, an owner graph without the service → **501**
+`worktree_service_unavailable`. None of them answers 200 with an empty list — a
+page that says "nothing to clean up" for a runtime that failed to boot would
+tell the user their project is clean when it was never read.
+
+A folder that is not a Git repository is a **report**, not a failure: 200 with
+`ok: false` and the engine's own `code` (`not_git_repository`,
+`workspace_unavailable`, `worktree_list_failed`). The page names the code, so
+the three mean three different operator actions instead of one 「读取失败」.
+
+The three toolbar tabs (**近 3 天 / 3-7 天前 / 7 天以上**) filter on
+`lastModifiedMs` and the boundaries are inclusive at the top of each band:
+exactly 3 days old is still 近 3 天, exactly 7 days old is still 3-7 天前. They
+filter rather than sort, because each tab is an age band in the desktop's mental
+model, and sorting would make the older bands unreachable without scrolling.
+A row whose timestamp the engine could not read (`lastModifiedMs` is genuinely
+optional — the engine falls back from the directory mtime to the last reflog
+entry) appears in **every** tab labelled 时间未知. Filing it at 0 would put a
+worktree modified seconds ago under 7 天以上; hiding it would make a real
+worktree invisible.
+
+`removeBatch` verdicts pass through per item and are never collapsed: a batch
+where every item was refused is `ok: true` with a full `failedItems` list, each
+carrying its `WorktreeRemovalReason` (`main_worktree` / `active_worktree` /
+`not_found` / `locked_worktree` / `dirty_worktree` / `unknown`). The page maps
+each through one table and lists them under the toolbar. The main worktree, a
+locked worktree and the worktree an active session runs in render their
+checkbox **disabled with the matching reason beside it**, because a checkbox
+that ticks and then fails on submit teaches the user the button lies. The
+runtime-safety check the engine runs before any removal
+(`listRunningWorktreeDirs`) is inside the service, so the UI cannot bypass it.
+
+The `workspace` a browser names is containment-gated on both endpoints
+(`assertWorkspacePath`, the same boundary as `/api/fs/*`); a batch is refused
+as a whole when one of its repositories is out of root, because an out-of-root
+repository is a forged request rather than a worktree that happened to fail.
+`worktreeDir` is deliberately **not** gated separately: the engine only removes
+a path that `git worktree list` reports as a linked worktree of that repository,
+which is strictly stronger than a root check, and adding the weaker gate in
+front would make legitimate out-of-root worktrees (a sibling checkout next to
+the repo) unremovable.
 
 **There is no Browser tab in Settings.** The browser surface is a workspace
 column tab (`workspaceTabs.tab.browser`) that mounts `BrowserPanel` over the
@@ -2529,7 +2587,8 @@ Invariants worth keeping when touching either branch:
   snapshot, which is the cold-load path.
 - Rendering tests for both components and the reduced-motion tripwire live in
   `webapp/test/loading-skeleton.test.ts` (SSR through
-  `renderToStaticMarkup`; the suite has no DOM harness).
+  `renderToStaticMarkup`; interaction-level coverage of this component can
+  now use the DOM harness — see the tests section).
 - **Streaming-label phrase rotation (webui-parity 61, restoring the desktop
   shape)**: the desktop does not park one static label on screen for the
   length of a turn. The schedule and the draw are transcribed from the
@@ -3213,10 +3272,68 @@ name: `mcode-trajectory-studio`, version `0.1.1`. Protocols supported:
 ```bash
 pnpm --filter @mavis/webui test      # full node:test suite (unit + mocked + integration + matrix + trajectory)
 pnpm test:webui                      # same, from the repository root (CI gate)
+pnpm test:webapp                     # webapp (browser) suite: render + interaction tests
 node packages/webui/scripts/check-docs-alignment.mjs
 ```
 
 The package has three runtime dependencies (`hono` + `@hono/node-server` for the HTTP layer, `@mavis/shared` for the workspace path contract) and requires Node 22.19+ (the trajectory studio additionally needs `node:sqlite`, floor 22.13).
+
+### Two ways to test a webapp component
+
+`pnpm test:webapp` runs `webapp/test/**/*.test.ts` on `node --test`. It has two rendering tools, and they answer different questions.
+
+| Tool | Answers | Cannot answer |
+| --- | --- | --- |
+| `renderToStaticMarkup` (`react-dom/server`) | What does this page print? | Anything requiring an event, an effect or a re-render |
+| the DOM harness (`webapp/test/helpers/dom.ts`) | What happens when the user presses a key? | Nothing about a tree that is not mounted — it is not a snapshot tool |
+
+A defect that only appears once a keydown reaches a handler is invisible to static markup: a string has no listeners. That is not hypothetical. The Shortcuts page's capture → verdict → conflict-report path had no test at all, and the mutation that swallowed the conflict report stayed green. Keep static markup for "what does it print" (`settings-extra-pages.test.ts`) and reach for the harness when the answer is "what happens when".
+
+```ts
+// webapp/test/helpers/dom.ts — mount a component, drive it, unmount it.
+import { withDom, mount, resetStorage } from "./helpers/dom";
+
+test("the conflict is reported on the row that was edited", async () => {
+  await withDom(createElement(ShortcutsSection, { t }), async (view) => {
+    await view.pressKey("settings-shortcuts-binding-global-search", {
+      key: "O", ctrlKey: true, altKey: true,
+    });
+    assert.match(view.text("settings-shortcuts-conflict-global-search") ?? "", /新建无项目任务/);
+  });
+});
+```
+
+The handle `mount` / `withDom` returns:
+
+| Member | Purpose |
+| --- | --- |
+| `find(id)` / `query(id)` / `findAll(id)` / `text(id)` / `has(id)` | Look up by `data-testid`; `find` throws and lists the testids that *were* rendered |
+| `pressKey(target, {key, ctrlKey, altKey, shiftKey, metaKey})` | Dispatch a bubbling, cancelable keydown and flush React |
+| `keyEvent(press)` | Build that keydown without dispatching, to assert on `defaultPrevented` afterwards |
+| `click(target)` / `fire(target, type, init)` / `type(target, value)` | The other events, all flushed |
+| `run(fn)` | Run an arbitrary block inside `act`, for a raw `dispatchEvent` |
+| `rerender(node)` / `flush()` / `html()` | Re-render, drain timers, serialize |
+| `unmount()` | Detach the root; `withDom` does it on the throw path too |
+| `window` | The happy-dom window, for its `localStorage` |
+
+Four rules, each one a way the harness would otherwise lie:
+
+1. **Import `helpers/dom` before any component import.** `react-dom` captures `canUseDOM` when it is first evaluated; with no window at that moment it falls back to a host config with no event system. The harness publishes the window in its own module body and pulls `react-dom/client` in dynamically, so the order is safe as long as the harness import comes first. Getting it wrong is loud rather than silent: the tree renders empty and the first assertion fails.
+2. **Targets are `data-testid` strings**, matching the convention the components already use. A missing one throws with the testids that *are* on screen.
+3. **`resetStorage()` between tests.** One window, one storage origin, exactly like a browser tab — state you did not clear leaks into the next test.
+4. **`webapp/test/helpers/dom-shim.ts` is still the right tool for the markdown walker.** It serves a `DOMParser` over `parse5` and needs no window at all.
+
+### Why `happy-dom`
+
+The webapp suite runs on `node:test`, not Vitest's DOM environment, so `@testing-library` would bring a `beforeEach` / auto-cleanup protocol this runner does not have — and the three APIs it would add are the three the handle above already exposes.
+
+| Candidate | Transitive deps | Cost | Why not |
+| --- | --- | --- | --- |
+| `jsdom` 30 | 22 | `undici` + `css-tree` + `whatwg-url`, ~20 MB | Reference-complete. The suite asserts on attributes, text and event delivery — none of which is where the two implementations diverge in practice. |
+| `happy-dom` 20 | 4 (`entities`, `whatwg-mimetype`, `buffer-image-size`, `ws`) | 8 MB unpacked | **Chosen.** |
+| neither | 0 | — | The `parse5` shim in `dom-shim.ts` shows the middle path works for a parser, but a `DOMParser` cannot dispatch an event. |
+
+`happy-dom` is a `@mavis/webui` devDependency, so it never reaches the product bundle. It does widen `pnpm-lock.yaml`: `vitest` declares it as an optional peer, so the vitest resolution key changes in every workspace importer. Any checkout that consumes the lockfile needs `pnpm install --frozen-lockfile` afterwards. Measured on this machine: 103 ms to import and 3 ms to construct a window, paid once per test file, and only by files that import the harness.
 
 ## Origin
 

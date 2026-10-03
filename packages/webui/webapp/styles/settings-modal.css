@@ -47,6 +47,21 @@
   .webui-settings-action { margin: 0 var(--spacing_20) var(--spacing_16); padding: var(--spacing_8) var(--spacing_12); border: 1px solid var(--border_default); border-radius: var(--radius_8); background: transparent; color: var(--text_default_primary); }
   .webui-settings-error { margin: 0 var(--spacing_20) var(--spacing_16); color: var(--text_label_danger_secondary_default); font-size: var(--size_12); }
   .webui-settings-empty-panel { max-width: 760px; min-height: 220px; margin: 0 auto; }
+
+  /* PB-3 工作树页（参照 design-ref/screenshots/ref-23.jpg）。工具栏一行：
+   * 三档时间筛选在左，↻ 刷新与红色描边的「一键移除」在右。 */
+  .webui-worktree-toolbar { display: flex; align-items: center; justify-content: space-between; gap: var(--spacing_12); padding: var(--spacing_12) var(--spacing_20); }
+  .webui-worktree-actions { display: flex; align-items: center; gap: var(--spacing_8); }
+  .webui-worktree-remove { border: 1px solid var(--border_danger_default, var(--border_default)); background: transparent; color: var(--text_label_danger_secondary_default, var(--text_default_primary)); }
+  .webui-worktree-failure { display: block; margin-top: var(--spacing_4); }
+  .webui-worktree-list { margin: 0; padding: 0; list-style: none; }
+  .webui-worktree-row { display: flex; min-height: 56px; align-items: center; justify-content: space-between; gap: var(--spacing_16); padding: var(--spacing_8) var(--spacing_20); border-top: 1px solid var(--border_default); }
+  .webui-worktree-row-main { display: flex; min-width: 0; flex: 1; align-items: center; gap: var(--spacing_12); }
+  .webui-worktree-row-copy { display: flex; min-width: 0; flex-direction: column; gap: var(--spacing_4); }
+  .webui-worktree-row-copy strong { overflow: hidden; color: var(--text_default_primary); font-size: var(--size_14); font-weight: var(--weight_regular); text-overflow: ellipsis; white-space: nowrap; }
+  .webui-worktree-row-copy span { overflow: hidden; color: var(--text_default_tertiary); font-size: var(--size_12); text-overflow: ellipsis; white-space: nowrap; }
+  .webui-worktree-row-meta { display: flex; flex-shrink: 0; flex-direction: column; align-items: flex-end; gap: var(--spacing_4); color: var(--text_default_tertiary); font-size: var(--size_12); }
+  .webui-worktree-badge { color: var(--text_label_danger_secondary_default, var(--text_default_secondary)); font-style: normal; }
   .webui-settings-data-dir { max-width: 760px; margin: var(--spacing_32) auto 0; color: var(--text_default_tertiary); font-size: var(--size_12); word-break: break-all; }
   .webui-settings-empty { height: var(--spacing_128); }
   .webui-settings-theme-options { display: flex; gap: var(--spacing_12); }

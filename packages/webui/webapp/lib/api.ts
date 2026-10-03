@@ -2381,3 +2381,119 @@ export function reapplyTurnDiff(
     timeoutMs: TURN_DIFF_MUTATION_TIMEOUT_MS,
   });
 }
+
+// --- worktrees (PB-3) -------------------------------------------------------
+
+/**
+ * One row of `GET /api/worktrees`, exactly as the engine's
+ * `WorkspaceGitWorktree` (packages/local-runtime/src/files/worktrees.ts:11-20)
+ * spells it. Nothing is renamed and nothing is defaulted, because the page's
+ * three time tabs and its 「当前」 marker both read these flags directly and a
+ * renamed field would be a second definition of the same fact.
+ */
+export interface WorktreeRow {
+  /** Absolute path of the worktree checkout. */
+  path: string;
+  /** Branch name with the `refs/heads/` prefix already stripped by the engine. */
+  branch: string;
+  /** Commit sha the worktree is parked on; empty for a detached head. */
+  head: string;
+  /** The repository's primary checkout — the engine refuses to remove it. */
+  isMain: boolean;
+  /** `git worktree lock` was applied; the engine refuses to remove it. */
+  isLocked: boolean;
+  /** This is the workspace the current conversation is running in. */
+  isActive: boolean;
+  /** Lives under the repository's own `.worktrees/` directory. */
+  isMcodeManaged: boolean;
+  /**
+   * Last modification, in epoch milliseconds.
+   *
+   * `undefined` is a REAL reading, not a missing field: the engine falls back
+   * from the directory mtime to the last reflog entry and can reach neither.
+   * The page shows such a row in every time tab and labels it 「时间未知」 —
+   * filing it at 0 would hide a fresh worktree from the default tab.
+   */
+  lastModifiedMs?: number;
+}
+
+/**
+ * The engine's closed removal-reason set
+ * (packages/local-runtime/src/files/managed-worktrees.ts:7-13). It is a union
+ * rather than `string` so that adding a reason upstream fails the page's
+ * reason table at compile time instead of shipping a raw token into the UI.
+ */
+export type WorktreeRemovalReason =
+  | "main_worktree"
+  | "active_worktree"
+  | "not_found"
+  | "locked_worktree"
+  | "dirty_worktree"
+  | "unknown";
+
+/** One refused item of a batch removal, with the engine's own reason. */
+export interface WorktreeRemovalFailure {
+  worktreeDir: string;
+  reason: WorktreeRemovalReason;
+  error?: string;
+}
+
+/**
+ * `GET /api/worktrees` — the 工作树 page's list.
+ *
+ * `ok: false` is a REPORT, not a transport failure: the engine answered and
+ * said the directory is not a Git repository (`code: "not_git_repository"`),
+ * could not be reached, or could not be listed. A page that turned that into
+ * an empty list would tell the user they have nothing to clean up.
+ */
+export interface WorktreeListPayload {
+  ok: boolean;
+  workspace: string;
+  /** The repository's primary checkout path, when the engine reported one. */
+  current?: string;
+  worktrees: WorktreeRow[];
+  /** Engine discovery code: `not_git_repository` / `workspace_unavailable` / `worktree_list_failed`. */
+  code?: string;
+  error?: string;
+}
+
+/**
+ * `POST /api/worktrees/remove` — the page's 一键移除.
+ *
+ * `ok: true` means the REQUEST was carried out, not that something was
+ * deleted: a selection where every item was refused comes back as
+ * `ok: true` with a full `failedItems` list. Each failure carries the
+ * engine's own reason, which is what the page turns into a sentence.
+ */
+export interface WorktreeRemovalPayload {
+  ok: boolean;
+  removedPaths: string[];
+  failedItems: WorktreeRemovalFailure[];
+}
+
+/**
+ * List one repository's worktrees.
+ *
+ * `workspace` is optional: without it the server uses the current
+ * conversation's workspace, so the page can open with a bare GET. A browser
+ * outside any conversation sends the path it was given.
+ */
+export const getWorktrees = (workspace?: string) =>
+  request<WorktreeListPayload>(
+    workspace === undefined || workspace === ""
+      ? "/api/worktrees"
+      : `/api/worktrees?workspace=${encodeURIComponent(workspace)}`,
+  );
+
+/** Remove a selection of worktrees. The engine decides each item's fate. */
+export const removeWorktrees = (
+  items: Array<{ workspace: string; worktreeDir: string }>,
+  activeWorktreeDir?: string,
+) =>
+  request<WorktreeRemovalPayload>("/api/worktrees/remove", {
+    method: "POST",
+    json: {
+      items,
+      ...(activeWorktreeDir === undefined ? {} : { activeWorktreeDir }),
+    },
+  });

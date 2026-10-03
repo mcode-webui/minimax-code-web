@@ -35,6 +35,10 @@ import * as React from "react";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
+// The DOM harness publishes the window react-dom captures `canUseDOM`
+// from, so it is imported before the component below.
+import { withDom } from "./helpers/dom";
+
 {
   const reactModule = React;
   Object.defineProperty(globalThis, "React", {
@@ -135,6 +139,65 @@ describe("the chevron is gated on the turn actually having process steps", () =>
 });
 
 describe("the chevron reports and follows the expansion state", () => {
+  // The two markup assertions above pin what the bar PRINTS per state.
+  // The block below pins that the state is actually reachable by a click:
+  // a `<button>` whose `aria-expanded` and rotation are correct in both
+  // states is still a dead control if the handler does not fire. That is
+  // the class of defect `renderToStaticMarkup` cannot see, and the reason
+  // the webapp suite has a DOM harness (webapp/test/helpers/dom.ts). This
+  // is the demonstration migration: two cases added next to the existing
+  // ones, nothing above changed.
+  test("a click on the chevron hands the turn the opposite expansion", async () => {
+    const seen: boolean[] = [];
+    const Bar = () => {
+      // A one-line stand-in for chat.tsx's per-turn state: the bar is
+      // controlled, so the click has to round-trip through the owner.
+      const [expanded, setExpanded] = React.useState(false);
+      return createElement(TurnProcessDisclosure, {
+        stats: processStats,
+        processedDurationMs: 125000,
+        t,
+        expanded,
+        onExpandedChange: (next: boolean) => {
+          seen.push(next);
+          setExpanded(next);
+        },
+      });
+    };
+    await withDom(createElement(Bar), async (view) => {
+      assert.equal(view.find("turn-process-trigger").getAttribute("aria-expanded"), "false");
+      assert.doesNotMatch(view.find("turn-process-chevron").getAttribute("class") ?? "", /rotate-90/);
+
+      await view.click("turn-process-trigger");
+
+      assert.deepEqual(seen, [true], "the owner is asked for the opposite expansion, once");
+      assert.equal(view.find("turn-process-trigger").getAttribute("aria-expanded"), "true");
+      assert.match(view.find("turn-process-chevron").getAttribute("class") ?? "", /rotate-90/);
+
+      await view.click("turn-process-trigger");
+      assert.deepEqual(seen, [true, false], "and back again — the control toggles, it does not latch");
+      assert.equal(view.find("turn-process-trigger").getAttribute("aria-expanded"), "false");
+    });
+  });
+
+  test("an unwired bar is not a control: no button, no chevron to press", async () => {
+    // The live bar passes no `onExpandedChange`, so it must render the
+    // summary as text. A button that calls `onExpandedChange?.()` into the
+    // void would look identical in markup and mislead a keyboard user.
+    await withDom(
+      createElement(TurnProcessDisclosure, {
+        stats: processStats,
+        processedDurationMs: 125000,
+        t,
+      }),
+      async (view) => {
+        assert.equal(view.has("turn-process-trigger"), false);
+        assert.equal(view.has("turn-process-chevron"), false);
+        assert.equal(view.text("turn-process-disclosure")?.includes("token/s"), true);
+      },
+    );
+  });
+
   test("collapsed state: aria-expanded false and no rotation class", () => {
     const html = renderBar({ expanded: false, onExpandedChange: noop });
     assert.match(html, /aria-expanded="false"/);

@@ -150,11 +150,14 @@ describe("settings tab registry parity (webui-parity 58 line A)", () => {
     );
   });
 
-  test("the 55a sub-pages render in their tabs; worktree stays an honest placeholder", () => {
+  test("the 55a sub-pages render in their tabs; worktree renders the real section", () => {
     // 工单 58 线 D：55a 的四子页内容已接进移植壳的对应 Tab（voice /
     // shortcuts / custom-instructions / coding），记忆摘要弹窗由
-    // PersonalizationSection 内部管理；工作树与已归档任务仍无本地内容，
-    // 保持参照的诚实空面板。
+    // PersonalizationSection 内部管理；已归档任务仍无本地内容，保持参照的
+    // 诚实空面板。工作树页签自 PB-3 起不再是占位——它接上引擎
+    // （`GET /api/worktrees` / `POST /api/worktrees/remove`），因此本组断言
+    // 从「诚实占位」翻转为「真实分区」，且必须同时钉住旧占位文案已消失：
+    // 那句「本地版暂不支持工作树管理」描述的是路由而不是能力，留着就是失真。
     for (const [tab, component] of [
       ["voice", "VoiceSection"],
       ["shortcuts", "ShortcutsSection"],
@@ -171,12 +174,18 @@ describe("settings tab registry parity (webui-parity 58 line A)", () => {
       "worktree renders a real panel (59 B2: the blank div is gone)",
     );
     assert.ok(
-      portSource.includes('title={t("settings.tab.worktree")}'),
-      "the worktree panel carries the nav tab's own title",
+      portSource.includes("<WorktreeSection t={t} />"),
+      "PB-3: the worktree tab must render the engine-backed section",
     );
-    assert.ok(
-      portSource.includes('{t("settings.worktree.empty")}'),
-      "worktree states honestly that it is not available locally yet — no blank panel",
+    assert.equal(
+      portSource.includes('title={t("settings.tab.worktree")}'),
+      false,
+      "the old inline panel is gone; the section carries its own title",
+    );
+    assert.equal(
+      portSource.includes('t("settings.worktree.empty")'),
+      false,
+      "the render branch no longer prints the placeholder sentence itself",
     );
   });
 
