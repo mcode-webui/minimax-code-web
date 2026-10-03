@@ -1115,6 +1115,327 @@ verb at all.
    defensible alternative and the choice is not the batch's to make. A
    test pins the semantics that exist so the behaviour is at least stated.
 
+#### Which endpoints route through the facade (step M3, batch B6)
+
+`engine/session-switch.js` covers one endpoint, and it is the busiest
+single endpoint in the migration: #3 answers a question whose failure
+modes are all user-visible at once — a wrong answer loses the
+conversation on screen, re-roots the file tree on the wrong project, or
+resurrects the "extra untitled entry" sidebar confusion. The route kept
+the id resolution, the overlay creation, the title lookup, the
+transcript backfill, the workspace containment, the per-client state
+mutation and the response body; it now keeps only request parsing, the
+status write and the audit append.
+
+| Endpoint | Facade function | Capability · sub-item | Enforcement | Value source |
+| --- | --- | --- | --- | --- |
+| `POST /api/sessions/switch` (#3) | `engine/session-switch.js#applyEngineSessionSwitch` | `sessionCrud` · `getSession` | soft — reports | webui's own `sessions.json` for the record, its title, its chat and its workspace; the engine touches are two enrichments — the walked-session cache title, and `transcript.js#loadTranscriptChatLines` |
+
+**Why #3 gates soft, when #7 and #11 gate hard.** The question is
+"if a provider declares this capability absent, can the endpoint still
+serve a truthful answer?" and for #3 the answer is yes. The payload's
+primary data is webui's own store; both engine touches already have a
+defined degradation — the title falls back to the cache and then to the
+"Mcode session" placeholder, the transcript falls back to the stored
+chat, and neither failure is visible as a failure. Gating hard would
+**remove a working endpoint** in response to a declaration about a
+capability it does not depend on, and would do so under exactly the
+transport that has the most users. So `checkSessionSwitchCapability`
+reports and never throws; the 501 machinery in `engine/errors.js` stays unused
+by this family, and the suite pins that it stays unused. That is the
+`engine/session-export.js` argument reused rather than re-argued — the #110
+fake-success discipline applied in the other direction, since a missing
+enrichment must not be dressed up as a failure.
+
+**The backfill decision is a data decision, not a route decision.**
+`engine/session-switch.js#selectTranscriptBackfill` is the whole rule,
+and it has exactly three branches, each of which the operator log
+distinguishes by name:
+
+| `reason` | Stored buffer | Action |
+| --- | --- | --- |
+| `empty` | no chat yet | read the engine transcript and re-persist — unchanged since the first version of this path, because a session that was never rendered must show its history rather than "No messages yet" |
+| `stored_cumulative` | polluted by the segment-accumulator bug | prefer the engine read and re-persist. The original rule only backfilled an empty buffer, so a polluted buffer saved via `saveSessions` won forever |
+| `stored_shrinks` | clean | keep the stored chat. transcript-sync overwrites the stored buffer from the engine within ~4s, so stored-only lines are lost regardless, and clobbering a clean buffer on **every** switch is the worse failure |
+
+The predicate behind the middle branch is
+`engine/session-switch.js#chatLooksCumulative`: a cumulative buffer has
+at least one later `●` line whose text is a strict superset of an
+earlier one, because the accumulator never reset between segments. It is
+O(n²) in the `●` line count, and that is affordable because a session's
+`chat` is capped at ~400 lines. It is conservative on both sides: a
+single-`●` buffer is never cumulative, non-`●` rows (system, tool, `▲`
+thought) are ignored, and equal-length lines are a tie rather than a
+superset. The third branch deliberately does **not** promise draft
+preservation — the composer keeps its own draft in its own state.
+
+**The read must never break the switch.**
+`engine/session-switch.js#readEngineSwitchTranscript` never throws.
+Every failure path — missing db, unloadable `better-sqlite3`, schema
+drift, a throwing probe — lands as `{ok: false, reason}` and the caller
+keeps the stored chat, so a switch that 501s because an enrichment was
+unavailable never becomes a dead endpoint. The `reason` strings are the
+reader's own, forwarded verbatim, because the operator log that reports
+them and the reader's own vocabulary are one contract.
+
+**The workspace write is a containment-gated side effect, and it runs
+before any `cs` mutation.** The target's stored `workspace` is
+historical input: it may name a directory the user has since removed
+from the allowed roots. `engine/session-switch.js#resolveSwitchWorkspace`
+resolves target-first and passes the candidate through the same
+`workspace.js#assertWorkspacePath` that the workspace picker,
+`handleNewSession` and the fs routes use. Two properties are
+load-bearing. The switch **never** falls back to the workspace the user
+is currently in — that is the reported "file tree still shows the
+previous project" defect, and it is why `currentWs` is not a parameter
+of that function. And a refused switch answers 400
+(`workspace_refused`, a third outcome next to `ok` and `not_found`
+rather than an exception) with the client state left exactly as it was.
+A new first-touch overlay is created with `workspace: ""`, so
+target-first resolution lands on `DEFAULT_WORKSPACE` for it instead of
+stamping it with whatever project the switch happened to start from.
+
+**Resolution order is `mvs_` first, and that is the single-base-session
+rule.** `engine/session-switch.js#resolveSwitchTarget` matches the
+engine session id before the webui uuid — the **opposite** of the write
+family's `resolveSessionTarget`, and the difference is a product rule
+rather than a style choice. A switch addressed by `mvs_` must land on
+the record that *is* that engine session, because the endpoint's whole
+point is one conversation with one identity; the delete and rename paths
+are addressed by a user who already has the record in front of them and
+look the uuid up first. A first-touch `mvs_` therefore creates exactly
+one overlay record whose id **is** the `mvs_` sid, via
+`sessions.js#ensureOverlayForMcodeSid`, and `matchKind` stays `null` so
+the audit payload's `matchKind || "new_from_mcode"` fallback still
+labels what operators read as an invented wrapper. The client-state
+write (`cs.sessionId`, `cs.mcodeSessionId`, title, chat buffer, the
+three cumulative usage counters, and a re-rooted `cs.workspace`) lives
+next to `state-bus.js#runChatViewChat`, which is what puts the mid-run
+mirror into the response payload.
+
+**`lastUsedWorkspace` is deliberately left alone.** Last-used is
+written only by the send path, because switching is browsing. Pinning
+the browsed workspace to the top of the sidebar is the reported "click
+any session in C and C auto-sorts first" behaviour, and this batch keeps
+it true rather than tidying it up.
+
+**Three things this batch records as known debt instead of deciding:**
+
+1. The **3-candidate transcript probe** is still here, and this batch is
+   the batch the plan named for retiring it. It could not be retired
+   here without breaking the batch's own red line, for four reasons:
+   (a) the default `acp` transport has **no engine surface** —
+   `cliService.getMessages` is reachable only through the v2 catalogue
+   host, which only the `runtime` transport boots, so deleting the
+   probe empties the backfill on the default transport and on half of
+   the two-transport test matrix; (b) the two reads **cap different
+   things** — the probe reads a whole session and caps the mapped
+   *lines* at 400 / 200KB, while `getMessages` paginates and caps
+   *messages*, and the two are interchangeable only after proving that a
+   bounded message page's tail yields the same 400 lines; (c) the
+   **ordering is not the same ordering** — the probe orders
+   `created_at_ms ASC, rowid ASC` and `getMessages` orders by
+   `MessageQueryService`'s own key, so ties disagree, and a transcript
+   whose order flips is a transcript the user reads wrong; and (d)
+   **export still owns the legacy candidates** — B2 left
+   `GET /api/sessions/:id/export` on the legacy-only probe set on
+   purpose, because its `mcode_unavailable` shape is byte-pinned by
+   existing tests against exactly those three candidates, and widening
+   export's set would turn its enrichment from "unavailable" into
+   "answering", which is a product change rather than a migration step.
+   What this batch *did* collect is the coupling that made the probe
+   look unremovable: `routes/sessions.js` no longer names
+   `transcript.js` at all, the read has one seam, and the candidate list
+   is now an engine-layer implementation detail instead of something two
+   routes import. The remaining work is a seam swap that belongs to
+   **M4-1** — the batch that registers an ACP provider and therefore
+   makes an engine surface reachable under the default transport — and
+   it should land together with an equivalence test against a live v2
+   host and with export's probe set widened in the same commit.
+2. The **first-touch overlay is still a webui-side write**. A bare
+   `mvs_` switch creates a record in `sessions.json` that the engine
+   knows nothing about, so the engine's session list and webui's wrapper
+   list are two different questions that happen to agree. Pre-existing,
+   unchanged here; closing it means deciding who owns session identity.
+3. The **usage sync is not gated**. `applyMavisUsageToCs` reads webui's
+   own mavis tables, so it declares no capability and its failure is
+   still swallowed with a debug-only warning. That asymmetry — identity
+   and transcript are degraded, usage is dropped silently — predates
+   this batch. Naming `usageStats` would gate a working endpoint on a
+   capability whose absence changes nothing visible; the real question
+   is whether a silent drop is the right product behaviour, and that is
+   not this batch's to decide.
+
+#### Which endpoints route through the facade (step M3, batch B7)
+
+Batch B7 contributes four endpoints across two modules, and the four
+have **two** gate policies between them — which is the first batch whose
+answer to the gate question is not uniform within its own family. The
+split is a fact about the endpoints, not a compromise between opinions.
+
+| Endpoint | Facade function | Capability · sub-item | Enforcement | Value source |
+| --- | --- | --- | --- | --- |
+| `POST /api/stop` (#13) | `engine/interrupt.js#applyEngineStop` | `interrupt` · `abortSession` | soft — reports | `mcode-rpc.js#cancelSession` (a notification) plus `state-bus.js#getActiveChild` and the child-process kill — webui's own process management, which consults no provider |
+| `POST /api/protocol/cancel` (#69) | `engine/interrupt.js#sendEngineSessionCancel` | `interrupt` · `abortSession` | soft — reports | the same notification alone; the refusal shape is the endpoint's own truthful "I could not deliver it" answer |
+| `POST /api/protocol/load-session` (#70) | `engine/session-load.js#loadEngineSession` | `sessionCrud` · `loadSession` | **hard — 501** | `mcode-rpc.js#loadSession`; the sidebar entry is a webui-side write that is only allowed *after* the engine answers |
+| `POST /api/protocol/activate-session` (#71) | `engine/session-load.js#activateEngineSession` | `sessionCrud` · `activateSession` | soft — reports | `mcode-rpc.js#activateSession`, then the client-state rebind |
+
+**`cancelled` does not mean "the prompt stopped".** `session/cancel` is
+a **notification**: the engine registers it with `app.onNotification`
+and aborts the active prompt's `AbortController`, so a request would
+come back "Method not found". A notification carries no reply, which
+means a success here means "sent" — the response field is `cancelled`
+for historical reasons. #13 and #69 answer that differently on purpose
+and both differences are pinned by the suite: #13 pairs `cancelled:true`
+with `hardKilled:false` and never escalates, while #69 pairs a refusal
+with a pointer to the endpoint that can.
+
+**`hardKilled` is a report about the first decision, not about the
+process.** It is true exactly when a child was registered **and** the
+gentle path did not take (`child && !cancelled`) — i.e. webui called
+`child.kill()` on its way out of the handler. It is written into the
+response body before the bounded escalation timer can possibly fire, so
+`hardKilled:true` never certifies that anything is dead. The same
+asymmetry is why the `note` string says "hard kill (session/cancel
+could not be delivered)" even when no kill ran at all: the note names
+*why* the gentle path did not happen, not what followed. Both wordings
+are load-bearing and both are pinned.
+
+**The escalation is bounded, and the bound is part of the contract.**
+`engine/interrupt.js#STOP_FORCE_KILL_MS` is 5000 ms, and it is exported
+because it is a contract value rather than an implementation detail: the
+window is what makes "已停止" mean "已停止". The file this batch
+migrated ran 2000 ms; the batch plan transcribed the bound as "abort
+5s" and the product call (2026-10-03) took the plan's value, accepting
+that a stubborn child gets three extra seconds to finalize at the cost
+of "already stopped" being a lie for three extra seconds. Two guards on
+the timer are load-bearing. It is `unref()`ed, so an unexpired stop
+timer can never hold the process open. And it re-checks the **cached**
+raw `child_process` handle captured *before* the timer was armed —
+`child.child` may be nulled by the runner's own `stop()` in the
+meantime, and a nulled handle read at fire time would silently skip the
+very escalation the cascade exists for.
+
+**Two scoping rules make the cascade act on the right turn.** The child
+lookup is narrowed to `(cid, cs.mcodeSessionId)` — the **viewed**
+session's child, not "any child of this tab", because a tab may run two
+conversations at once and stopping must not signal the other turn's
+subprocess. And the zombie-claim reset is a *decision* in the engine
+layer, not a mutation: `engine/interrupt.js#stopLeftStaleClaim` answers
+`claimStale`, and the route performs `resetThinkingClaim` only when it
+is true, because that helper is shared with `handleSend` and moving it
+would have been a second, unrelated change to the send route.
+
+**Why the interrupt family gates soft.** #13's escalation is webui's own
+child-process management — the child was registered on webui's state bus
+by webui's own runner, and killing it consults no provider. Hard-gating
+#13 would delete the user's only way out of a stuck 思考中 panel in
+order to express a doubt about the *gentle half* of a two-mechanism
+endpoint. #69 already has a truthful "I could not do it" answer, and it
+is its documented contract: 200
+`{ok:true, cancelled:false, warning, code, killEndpoint}`; a provider
+with no interrupt surface produces exactly that shape, so a hard gate
+would replace an accurate 200 with a 501 and teach the frontend a shape
+it does not have today.
+
+**#70 is the only hard gate in this batch, and the invariant behind it
+is an ordering.** The sidebar entry `createWebuiEntry` adds to
+`sessions.json` must be **downstream of the engine's answer, never a peer
+of it**. A provider that cannot load must not be able to leave a sidebar
+entry pointing at a session the engine never opened, and a failed load
+must not leave one either — a 200 carrying an entry and no session is
+precisely the fake-success failure #110 exists to prevent. So
+`engine/session-load.js#assertSessionLoadCapability` throws, the 501
+machinery in `engine/errors.js` is genuinely in use for this endpoint, and the
+router's existing central mapping answers it — no route has to remember
+to catch it. The entry itself is idempotent **on the `mcodeSessionId`
+match, not on the caller**: a second call for a session webui already
+wraps returns the existing record without re-saving, so repeated calls
+cannot grow duplicate sidebar entries for one conversation.
+
+**#71 gates soft because hard-gating it would *be* the decision a human
+has not made yet.** One ACP client tracks a single active session, so
+"activate another" is how the client is re-pointed; the in-process host
+has no single-active-session concept at all; and the plan gives the
+endpoint's fate as an either/or — "语义塌缩（cs 切换 + resume）, 或
+501". Those are two different products, and choosing the 501 branch
+here would be choosing it silently, by a capability table, with no
+changelog and no frontend work. So `checkSessionActivateCapability`
+reports, and the route keeps the pre-M3 shape and status mapping byte
+for byte. The endpoint's *meaning* is the order `cs.mcodeSessionId =
+sessionId` first and `sessions.js#resetContext` second; reversing the
+two leaves the context panel describing the session the user just left.
+
+**The three status mappings are separate tables, and the differences are
+pinned.** `engine/session-load.js#loadFailureStatus` answers 503 for
+`no_client`, 404 for a not-found/invalid code and **500** for
+`unsupported` — deliberately *not* the 501 that `set-mode` answers for
+the same code, because that asymmetry is the pre-existing contract.
+`engine/session-load.js#activateFailureStatus` is the same table plus
+an `unsupported → 501` row, which is again the pre-M3 mapping. And
+`loadFailureWireCode` rewrites a "Resource not found" answer to
+`session_not_found`, because `-32004` and `resource_not_found` do not
+read as a session problem to a frontend; an undefined code stays
+undefined so `JSON.stringify` drops the key exactly as before.
+
+**One module, two gate functions, rather than two modules.** B2 split
+`engine/session-tree-reads.js` from `engine/session-export.js` because those two
+endpoints declare *different* capabilities and their gate mechanics
+differ for unrelated reasons. Here both endpoints share one capability,
+one store, one client state and one route module, and the mechanics are
+the two functions every other family already uses; splitting would
+duplicate the transport table, the resolver and the two status mappers
+to preserve a distinction that is one `enforcement` field wide — the
+same shape B5's mixed `engine/session-writes.js` table already carries.
+
+**Three things this batch records as known debt instead of deciding:**
+
+1. **#71's semantic collapse is undecided, and this batch's only move
+   was to not decide it.** Both branches are costed in the module
+   header. Collapsing #71 into "switch + resume" is very nearly the
+   composition of #3 and #70, but the cost is the *response shape*:
+   today's body is `{ok, activeSessionId, data}` where `data` is the
+   engine's raw reply, and a collapsed endpoint has no such reply to
+   forward, so it would have to grow B6's byte-pinned switch payload or
+   invent a new one — changing the frontend, the docs and both language
+   versions at once. It would also change the endpoint's meaning, since
+   "activate" today mutates nothing beyond the two lines above while
+   "switch" re-roots the workspace, the chat buffer and the context
+   counters; a frontend that keeps calling it as activate would suddenly
+   get a workspace change. The 501 branch is cheap to build — the hard
+   gate already exists in this very file for #70 — but it is a
+   user-visible behaviour change that needs the UI degradation (hide or
+   disable the entry point, not an error toast) and it would fire for
+   every provider without single-active-session semantics, which per
+   the plan is the in-process host the default runtime transport is
+   built on. The tie-breaker is product knowledge this batch does not
+   have: who calls #71, and what they expect to happen to the sidebar,
+   the chat buffer and the workspace when it returns 200.
+2. **#13 kills a running turn without asking whether it may.** The
+   cascade runs on the viewed session's child without checking whether
+   that child belongs to a turn the user still wants. That is the
+   pre-facade behaviour and arguably the right one (the user pressed
+   stop), but "refuse to stop a turn that has not yet produced output"
+   and "escalate only after a second attempt" are both defensible
+   alternatives. The same shape is recorded in B5's known debt for the
+   delete family, where the mirror-image question is "refuse to delete a
+   running session" — between them they are one policy question about
+   running sessions that deserves one decision rather than two.
+3. **#70's 501 is the gate's 501, not the route's.** `loadSession`
+   answers 500 for `code === "unsupported"`, while a provider that
+   declares `sessionCrud.loadSession` absent answers 501 with
+   `engineCapabilityHttpResponse`'s body. Two different 501s can reach
+   this one route and only the second has ever existed; the router's
+   central mapping is what keeps them from being confused for each
+   other. Worth confirming against the frontend before M4 registers a
+   provider that can trip it. A fourth, narrower item: the "Resource not
+   found" rewrite only matches the string form, so a numeric JSON-RPC
+   code would reach the frontend verbatim behind a 500 — both behaviours
+   are pinned as-is, because widening the regex changes a wire shape and
+   the wider question (normalise once in `mcode-rpc.js` for every
+   caller) is a change to the RPC wrapper's contract, not to this
+   endpoint.
+
 ## 6. Frontend topology
 
 ```

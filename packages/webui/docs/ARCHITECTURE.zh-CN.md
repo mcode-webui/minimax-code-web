@@ -904,6 +904,224 @@ webui 将每个事件视为幂等更新；重放同一
 （SSE 在断连时丢弃 → 不重试），客户端通过在
 重连时拉取 `/api/state` 来应对。
 
+#### 哪些端点经由门面路由（迁移步 M3 批次 B6）
+
+`engine/session-switch.js` 覆盖一个端点，而它是整场迁移里最忙的单个端点：
+#3 回答的那个问题，一旦答错，三种故障会同时被用户看见——屏幕上的对话丢掉、
+文件树被重新挂到别的项目上、或者侧栏那种「多出一条无名条目」的困惑重新出现。
+路由原本承担了 id 解析、覆盖记录创建、标题查询、转录回填、工作区包含性校验、
+逐客户端状态改写与响应体组装；现在它只保留请求解析、状态码写入与审计追加。
+
+| 端点 | 门面函数 | 能力 · 子项 | 强制方式 | 取值来源 |
+| --- | --- | --- | --- | --- |
+| `POST /api/sessions/switch`（#3） | `engine/session-switch.js#applyEngineSessionSwitch` | `sessionCrud` · `getSession` | 软——只报告 | 记录本身、标题、chat 与工作区全部来自 webui 自己的 `sessions.json`；两处引擎接触都属于富化——已遍历会话缓存里的标题，以及 `transcript.js#loadTranscriptChatLines` |
+
+**为什么 #3 软门控，而 #7 与 #11 硬门控。** 判据是「若 provider 声明该能力缺失，
+端点还能不能给出诚实的答案」，#3 的答案是能。载荷的主数据是 webui 自己的存储；
+两处引擎接触都已有明确的降级路径——标题回落到缓存、再回落到「Mcode session」
+占位符，转录回落到已存的 chat，而任何一处失败都不会以失败的形式被看见。硬门控
+等于**拿一份它并不依赖的能力声明去删掉一个能用的端点**，而且恰好删在用户最多的
+那个传输上。所以 `checkSessionSwitchCapability` 只报告、从不抛错；`engine/errors.js` 里的
+501 机制在这一族保持未被使用，测试也钉住了它保持未使用这一条。这是
+`engine/session-export.js` 已经论证过、此处复用而非重证的理由——把 #110 的假成功纪律
+用在了相反方向：缺失的富化不得被包装成失败。
+
+**回填决策是数据决策，不是路由决策。**
+`engine/session-switch.js#selectTranscriptBackfill` 就是整条规则，它恰好有三个
+分支，每个分支在运维日志里都有各自的 `reason` 名称：
+
+| `reason` | 已存缓冲 | 动作 |
+| --- | --- | --- |
+| `empty` | 从未有过 chat | 读引擎转录并重新落盘——自这条路径的第一版起未变，因为从未渲染过的会话应当显示自己的历史，而不是「暂无消息」 |
+| `stored_cumulative` | 被分段累加器缺陷污染 | 优先采用引擎读并重新落盘。原始规则只在缓冲为空时回填，因此经 `saveSessions` 落盘的污染缓冲会永远赢下去 |
+| `stored_shrinks` | 干净 | 保留已存 chat。transcript-sync 会在约 4 秒内用引擎数据覆盖已存缓冲，因此仅存于 webui 的行无论如何都会丢，而在**每一次**切换上都覆盖一个干净缓冲是更糟的故障 |
+
+中间那个分支背后的判定式是 `engine/session-switch.js#chatLooksCumulative`：
+被污染的缓冲至少存在一条 `●` 行，其文本是另一条更早 `●` 行的严格超集，
+因为累加器在分段之间从未复位。它在 `●` 行数上是 O(n²)，而这是可负担的，
+因为单个会话的 `chat` 被上限截在约 400 行。它两侧都保守：只有一条 `●` 的缓冲
+不算被污染，非 `●` 行（system、tool、`▲` 思考）被忽略，等长的两行是并列而非超集。
+第三个分支刻意**不**承诺草稿保全——composer 把草稿存在它自己的状态里。
+
+**这次读绝不能让切换失败。** `engine/session-switch.js#readEngineSwitchTranscript`
+从不抛错。每一条失败路径——缺 db、`better-sqlite3` 装载不上、schema 漂移、探针
+抛错——都落成 `{ok: false, reason}`，调用方保留已存 chat，因此一次因为富化不可用
+而 501 的切换永远不会变成死端点。`reason` 字符串是读方自己的、原样透传，
+因为报告它们的运维日志与读方自身的词汇表是一份契约。
+
+**工作区写入是一个被包含性门控的副作用，并且跑在任何 `cs` 改写之前。**
+目标的已存 `workspace` 是历史输入：它可能指向一个用户此后已从允许根目录中移除的
+目录。`engine/session-switch.js#resolveSwitchWorkspace` 先按目标解析，并把候选值
+交给工作区选择器、`handleNewSession` 与各 fs 路由共用的那道
+`workspace.js#assertWorkspacePath`。其中两条性质是承重的。切换**绝不**回落到
+用户当前所在的工作区——那正是「文件树仍显示上一个项目」这条已报缺陷，
+也正因如此 `currentWs` 不是这个函数的参数。而被拒绝的切换回 400
+（`workspace_refused`，是 `ok` 与 `not_found` 之外的第三个取值而不是异常），
+且客户端状态原封不动。新建的首次触达覆盖记录以 `workspace: ""` 创建，
+因此按目标优先的解析会落到 `DEFAULT_WORKSPACE`，而不是把切换发起时所在的项目盖上去。
+
+**解析顺序是 `mvs_` 优先，而这就是「单一基础会话身份」这条规则。**
+`engine/session-switch.js#resolveSwitchTarget` 先匹配引擎会话 id，再匹配 webui 的
+uuid——与写族的 `resolveSessionTarget` **正好相反**，这个差异是产品规则而非风格选择。
+一个以 `mvs_` 发起的切换必须落在**就是**那个引擎会话的记录上，因为这个端点的全部
+意义就是「一段对话、一个身份」；而删除与改名路径由一个已经把记录摆在眼前的用户发起，
+先查 uuid。首次触达的 `mvs_` 因此恰好创建一条覆盖记录，其 id **就是**该 `mvs_` sid，
+经由 `sessions.js#ensureOverlayForMcodeSid`；`matchKind` 仍保持 `null`，
+好让审计载荷里的 `matchKind || "new_from_mcode"` 兜底继续把运维眼中的
+「凭空造出的包装」标成那样。客户端状态改写（`cs.sessionId`、`cs.mcodeSessionId`、
+标题、chat 缓冲、三个按会话累加的用量计数器，以及重新生根的 `cs.workspace`）
+与 `state-bus.js#runChatViewChat` 相邻，后者正是把运行中镜像放进响应载荷的那一步。
+
+**`lastUsedWorkspace` 是刻意不动的。** 最近使用只由发送路径写入，因为切换属于浏览。
+把浏览过的工作区顶到侧栏最前，是「在 C 里点任意一条会话、C 就自动排到最前」这条
+已报行为，本批把它保持为真，而不是顺手「整理」掉。
+
+**本批记为已知债而不予决定的三件事：**
+
+1. **三候选转录探针仍然存在**，而本批正是计划书点名要退役它的那一批。在此退役会
+   破坏本批自己的红线，理由有四条：(a) 默认 `acp` 传输**没有引擎面**——
+   `cliService.getMessages` 只能经 v2 目录 host 触达，而只有 `runtime` 传输会去
+   启动它，所以删掉探针会让默认传输上的回填、以及本批门禁所依赖的两传输测试矩阵的
+   一半变成空转；(b) 两种读**截断的东西不同**——探针读整个会话并把映射后的*行*截在
+   400 行 / 200KB，而 `getMessages` 是分页的、截断的是*消息*，只有先证明一个有界
+   消息页的尾部能产出同样的 400 行，两者才可互换；(c) **排序不是同一种排序**——探针按
+   `created_at_ms ASC, rowid ASC`，`getMessages` 按 `MessageQueryService` 自己的键，
+   并列时二者会分歧，而顺序翻转的转录就是被用户读错的转录；(d) **导出仍独占旧候选集**
+   ——B2 刻意把 `GET /api/sessions/:id/export` 留在仅旧探针集上，因为它的
+   `mcode_unavailable` 形状被既有测试按字节钉在那三个候选上，而扩大导出的候选集会让
+   它的富化从「不可用」变成「有答案」，那是产品变更而不是迁移步骤。本批**真正**收拢的
+   是让探针看起来无法移除的那层耦合：`routes/sessions.js` 已完全不再提及
+   `transcript.js`，读只有一条缝，候选清单成了引擎层的实现细节，而不是两个路由各自
+   导入的东西。剩下的工作是**换缝**，属于 **M4-1**——注册 ACP provider、从而让引擎面在
+   默认传输下可触达的那一批——并且应当与一份针对真实 v2 host 的等价性测试、
+   以及同一提交里扩大的导出探针集一起落地。
+2. **首次触达的覆盖记录仍是 webui 侧写入。** 一次裸 `mvs_` 切换会在 `sessions.json`
+   里创建一条引擎一无所知的记录，于是引擎的会话列表与 webui 的包装列表是两个恰好
+   答案相同的不同问题。这是既有行为、本批未动；关掉它意味着决定会话身份归谁所有。
+3. **用量同步不受门控。** `applyMavisUsageToCs` 读的是 webui 自己的 mavis 表，
+   因此不声明任何能力，其失败仍被吞掉、只留一条 debug 级告警。这种不对称——身份与
+   转录会降级、用量被静默丢弃——早于本批存在。给这里补上 `usageStats` 会用一份
+   「缺失时用户看不见任何变化」的能力声明去门控一个能用的端点；真正的问题是静默丢弃
+   到底是不是正确的产品行为，而那不是本批该定的。
+
+#### 哪些端点经由门面路由（迁移步 M3 批次 B7）
+
+批次 B7 用两个模块收了四个端点，而这四个端点之间只有**两种**门控策略——这是第一批
+族内答案并不统一的批次。这个分裂是端点的事实，不是两种意见之间的妥协。
+
+| 端点 | 门面函数 | 能力 · 子项 | 强制方式 | 取值来源 |
+| --- | --- | --- | --- | --- |
+| `POST /api/stop`（#13） | `engine/interrupt.js#applyEngineStop` | `interrupt` · `abortSession` | 软——只报告 | `mcode-rpc.js#cancelSession`（一条通知）加上 `state-bus.js#getActiveChild` 与子进程 kill——webui 自己的进程管理，不咨询任何 provider |
+| `POST /api/protocol/cancel`（#69） | `engine/interrupt.js#sendEngineSessionCancel` | `interrupt` · `abortSession` | 软——只报告 | 同一条通知本身；拒绝形状就是该端点自己那份诚实的「我没能送达」 |
+| `POST /api/protocol/load-session`（#70） | `engine/session-load.js#loadEngineSession` | `sessionCrud` · `loadSession` | **硬——501** | `mcode-rpc.js#loadSession`；侧栏条目是 webui 侧写入，且只允许发生在引擎应答**之后** |
+| `POST /api/protocol/activate-session`（#71） | `engine/session-load.js#activateEngineSession` | `sessionCrud` · `activateSession` | 软——只报告 | `mcode-rpc.js#activateSession`，随后是客户端状态重绑 |
+
+**`cancelled` 不等于「提示词已停」。** `session/cancel` 是一条**通知**：引擎用
+`app.onNotification` 注册它并中止当前提示词的 `AbortController`，所以若以请求形式
+发过去会得到「Method not found」。通知没有回包，因此这里的一次成功意味着
+「已发出」——响应字段之所以叫 `cancelled` 是历史原因。#13 与 #69 刻意用不同方式
+回答它，且两种差异都被测试钉住：#13 把 `cancelled:true` 与 `hardKilled:false`
+配在一起且从不升级；而 #69 在拒绝时配上一个指向真正能升级的那个端点的指针。
+
+**`hardKilled` 报告的是第一次决策，不是进程状态。** 它恰在「注册过子进程**且**
+温和路径没走通」（即 `child && !cancelled`）时为真——也就是 webui 在离开处理函数
+的路上调用了 `child.kill()`。它被写进响应体的时刻早于有界升级定时器可能触发的
+时刻，因此 `hardKilled:true` 从不证明任何东西已经死掉。同样的不对称也是为什么
+`note` 字符串即使在根本没发生任何 kill 的情况下（没有子进程、没有 session id）
+仍然写着「hard kill（session/cancel 无法送达）」：这条 note 说的是温和路径
+**为何**没有发生，而不是之后发生了什么。两处措辞都是承重的，也都被钉住。
+
+**升级是有界的，而那个界本身就是契约的一部分。**
+`engine/interrupt.js#STOP_FORCE_KILL_MS` 是 5000 毫秒，它被导出是因为它属于契约取值
+而不是实现细节：这个窗口才是让「已停止」真正等于「已停止」的东西。本批迁移过来的
+那个文件跑的是 2000 毫秒；批次计划把该界转写为「abort 5s」，产品拍板
+（2026-10-03）采纳了计划书的取值，等于接受顽固子进程多拿三秒去做收尾、代价是
+「已经停了」多撒谎三秒。定时器上有两条承重的守卫。它被 `unref()`，因此一个未到期的
+停止定时器永远不会把进程吊住。它重新检查的是**在装定时器之前就已捕获**的裸
+`child_process` 句柄——`child.child` 很可能在此期间被运行器自己的 `stop()` 置空，
+而在触发时刻读到被置空的句柄，会静默地跳过这整条级联存在的意义。
+
+**两条作用域规则让级联打在正确的那个回合上。** 子进程查找被收窄到
+`(cid, cs.mcodeSessionId)`——是**正在查看的**那个会话的子进程，不是「这个标签页的
+任意子进程」，因为一个标签页可能同时跑两段对话，停止不能去打断另一个回合的子进程。
+而僵尸声明的重置在引擎层是**决策**而非改写：`engine/interrupt.js#stopLeftStaleClaim`
+给出 `claimStale`，由路由在它为真时才执行 `resetThinkingClaim`，因为那个辅助函数与
+`routes/chat.js#handleSend` 共用，把它搬走会是对发送路由的第二次、不相干的改动。
+
+**为什么中断族软门控。** #13 的升级是 webui 自己的子进程管理——那个子进程是
+webui 自己的运行器注册到 webui 自己的状态总线上的，杀它不咨询任何 provider。
+给 #13 硬门控，等于为了表达对「两机制端点里**温和那一半**」的怀疑，删掉用户
+摆脱卡死「思考中」面板的唯一出路。#69 本来就有一个诚实的「我做不到」的答案，
+而且那就是它的成文契约：200 `{ok:true, cancelled:false, warning, code, killEndpoint}`；
+一个没有中断面的 provider 产出的正是这个形状，所以硬门控只会把一个准确的 200
+换成 501，并教前端一个它今天并不拥有的形状。
+
+**#70 是本批唯一的硬门控，其背后的不变量是一个顺序。** `createWebuiEntry` 往
+`sessions.json` 里加的那条侧栏条目，必须**在引擎应答的下游，绝不是它的对等物**。
+一个不能装载的 provider 不得留下指向引擎从未打开过的会话的侧栏条目，一次失败的
+装载同样不得留下——一份带着条目却没有会话的 200，正是 #110 要防的假成功。所以
+`engine/session-load.js#assertSessionLoadCapability` 抛错，`engine/errors.js` 里的 501 机制
+在这个端点上确实被用上，答案由路由层既有的集中映射给出——没有任何路由需要记得去
+捕获它。条目本身的幂等性**取决于 `mcodeSessionId` 匹配，而不是取决于调用方**：
+对 webui 已包装过的会话再次调用会直接返回既有记录而不重新落盘，因此重复调用无法
+为同一段对话长出重复的侧栏条目。
+
+**#71 软门控，是因为给它硬门控本身**就是那个尚未由人做出的决定**。** 一个 ACP 客户端
+只跟踪一个活动会话，所以「激活另一个」正是客户端被重新指向的方式；进程内 host
+根本没有「单活动会话」这个概念；而计划书把这个端点的归宿写成二选一——
+「语义塌缩（cs 切换 + resume），或 501」。这是两种不同的产品，在这里选 501 那一支
+就是由一张能力表静默地选掉它，既没有变更记录也没有前端工作。所以
+`checkSessionActivateCapability` 只报告，路由逐字节保持迁移前的形状与状态码映射。
+这个端点的**意义**就是顺序：先 `cs.mcodeSessionId = sessionId`，再
+`sessions.js#resetContext`；两者颠倒，会让上下文面板继续描述用户刚离开的那个会话。
+
+**三张状态映射表是分开的，其差异都被钉住。**
+`engine/session-load.js#loadFailureStatus` 对 `no_client` 回 503、对 not-found/invalid
+类错误回 404、对 `unsupported` 回 **500**——刻意**不**用 `set-mode` 对同一 code 回的
+501，因为那种不对称就是既有契约。`engine/session-load.js#activateFailureStatus` 是
+同一张表再加一行 `unsupported → 501`，同样是迁移前的映射。而 `loadFailureWireCode`
+把「Resource not found」改写成 `session_not_found`，因为 `-32004` 与
+`resource_not_found` 在前端看来都不像会话问题；未定义的 code 保持未定义，
+于是 `JSON.stringify` 照旧丢弃这个键。
+
+**一个模块、两个门控函数，而不是两个模块。** B2 拆出
+`engine/session-tree-reads.js` 与 `engine/session-export.js`，是因为那两个端点声明的是**不同**能力、
+且门控机制因无关理由而不同。这里两个端点共用一份能力声明、一份存储、一份客户端状态
+和一个路由模块，机制也就是其他各族已经在用的那两个函数；拆开会把传输表、解析器和
+两张状态映射表各复制一份，只为保住一个宽度仅一个 `enforcement` 字段的区分——
+这正是 B5 那张混合的 `engine/session-writes.js` 表已经承载的形状。
+
+**本批记为已知债而不予决定的三件事：**
+
+1. **#71 的语义塌缩未决，而本批唯一的动作就是不去决定它。** 两个分支的代价都写在
+   模块头里。把 #71 塌缩成「switch + resume」几乎就是 #3 与 #70 的复合，但代价在
+   *响应形状*上：今天的响应体是 `{ok, activeSessionId, data}`，其中 `data` 是引擎
+   `session/activate` 的原始回包，而塌缩后的端点没有这样的回包可转发，它要么长成
+   B6 那份按字节钉住的 switch 载荷、要么另造一份——两者都会同时改动前端、文档与
+   两个语言版本。它还会改变这个端点的**意义**：今天的「activate」除了上面那两行
+   之外不改 webui 的任何状态，而「switch」会重新生根工作区、chat 缓冲与上下文
+   计数器；一个继续按 activate 调用它的前端会突然得到一次工作区变更。501 那一支
+   造价很低——硬门控机制就在这个文件里、已经为 #70 建好——但它是一次用户可见的
+   行为变更，需要配套的 UI 降级（隐藏或禁用入口，而不是弹一个错误提示），而且它会
+   对**每一个**没有单活动会话语义的 provider 触发；按计划书，那恰恰就是默认
+   runtime 传输所建立的那个进程内 host。打破平局需要的是本批并不具备的产品知识：
+   谁在调 #71，以及当它返回 200 时，他们期望侧栏、chat 缓冲和工作区发生什么。
+2. **#13 不问一声就杀掉正在跑的回合。** 级联作用在正在查看的那个会话的子进程上，
+   却不检查那个子进程是否属于用户仍想要的回合。那是门面前的行为，也可以说正是
+   正确的行为（用户按了停止），但「拒绝停止尚未产出任何输出的回合」与「第二次尝试
+   之后才升级」都是站得住的替代方案。同一形状也记在 B5 关于删除族的已知债里，
+   那里镜像的问题是「拒绝删除一个正在跑的会话」——两者其实是同一个关于运行中会话
+   的策略问题，值得一次决定而不是两次。
+3. **#70 的 501 是门控的 501，不是路由的 501。** `loadSession` 对
+   `code === "unsupported"` 回 500，而一个声明 `sessionCrud.loadSession` 缺失的
+   provider 回的是 501 加 `engineCapabilityHttpResponse` 的响应体。两种不同的 501
+   都可能到达这一条路由，而只有后者曾经存在过；正是路由层的集中映射让二者不被
+   彼此混淆。在 M4 注册某个能触发它的 provider 之前，值得与前端确认一次。另有
+   一条更窄的：`Resource not found` 的改写只匹配字符串形式，因此一个数字型 JSON-RPC
+   code 会以 500 状态原样抵达前端——两种行为都按现状钉住，因为放宽正则会改动一份
+   wire 形状，而更大的问题（是否在 `mcode-rpc.js` 里为所有调用方统一归一化）是
+   对 RPC 包装层契约的改动，不是对这个端点的改动。
+
 ## 6. 前端拓扑
 
 ```
