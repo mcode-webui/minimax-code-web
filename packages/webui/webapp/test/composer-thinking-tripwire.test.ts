@@ -83,3 +83,125 @@ describe("two-state thinking toggle — ticket 36 wiring tripwire", () => {
     );
   });
 });
+
+describe("the thinking trigger's brain + on/off colour", () => {
+  const trigger = composerSource.match(
+    /data-testid="thinking-effort-trigger"[\s\S]*?\n      <\/button>/,
+  );
+
+  test("the trigger renders the brain glyph", () => {
+    assert.ok(trigger, "the thinking-effort-trigger button must exist");
+    // `name="brain"` on its own would also match a comment; the Icon call
+    // is what proves it renders.
+    assert.match(trigger[0]!, /<Icon\s+name="brain"/);
+  });
+
+  test("the state is read from the product function, not re-derived inline", () => {
+    // The decision table itself is unit-tested as behaviour
+    // (composer-context-window.test.ts drives isThinkingOn). What only a
+    // source pin can prove is that the TRIGGER calls it — a component
+    // that inlined `value !== "off"` would colour the engine default blue
+    // while every unit test stayed green.
+    assert.match(composerSource, /const thinkingOn = isThinkingOn\(levels, value\);/);
+  });
+
+  test("blue and grey are accent tokens, not hard-coded hex", () => {
+    assert.ok(trigger, "the thinking-effort-trigger button must exist");
+    assert.match(trigger[0]!, /text-icon_default_accent/);
+    assert.match(trigger[0]!, /text-text_default_accent/);
+    assert.doesNotMatch(trigger[0]!, /#[0-9a-fA-F]{3,6}/);
+  });
+
+  test("the state is exposed to the DOM, so a probe can read it", () => {
+    assert.match(
+      composerSource,
+      /data-thinking=\{thinkingOn === null \? "unknown" : thinkingOn \? "on" : "off"\}/,
+    );
+  });
+
+  test("the chevron stays tertiary — colour marks state, not the affordance", () => {
+    assert.ok(trigger, "the thinking-effort-trigger button must exist");
+    const chevron = trigger[0]!.match(
+      /name=\{open \? "chevronUp" : "chevronDown"\}[\s\S]*?\/>/,
+    );
+    assert.ok(chevron, "the chevron must still be there");
+    assert.match(chevron[0]!, /text-icon_default_tertiary/);
+    assert.doesNotMatch(chevron[0]!, /accent/);
+  });
+});
+
+describe("the brain glyph is a real, complete drawing", () => {
+  const iconsSource = readFileSync(
+    resolve(here, "../components/icons.tsx"),
+    "utf8",
+  );
+
+  test("it is registered, and it draws eight paths", () => {
+    const spec = iconsSource.match(/\n  brain: \{[\s\S]*?\n  \},/);
+    assert.ok(spec, "brain must exist in the ICONS registry");
+    // lucide's brain is 8 paths in its 24×24 frame. A truncated import is
+    // a shape nobody recognises, and every path is load-bearing: the
+    // hemispheres, the stem, and the five convolutions.
+    assert.equal(
+      (spec[0]!.match(/<path /g) ?? []).length,
+      8,
+      "the brain glyph must carry all eight of lucide's paths",
+    );
+    assert.match(spec[0]!, /viewBox: "0 0 20 20"/);
+  });
+
+  test("it is stroked, and its arcs kept lucide's boolean flags", () => {
+    // The reason the path data was scaled by script rather than retyped:
+    // an arc's large-arc / sweep flags share the number stream with its
+    // coordinates. A hand "scale" turns a sweep of 1 into 0.833 and the
+    // glyph renders subtly wrong with nothing to catch it.
+    const strokeList = iconsSource.match(
+      /const STROKE_ICONS = new Set<IconName>\(\[([\s\S]*?)\]\);/,
+    );
+    assert.ok(strokeList, "STROKE_ICONS must exist");
+    assert.match(strokeList[1]!, /"brain"/);
+
+    const spec = iconsSource.match(/\n  brain: \{[\s\S]*?\n  \},/);
+    assert.ok(spec);
+
+    const ds = [...spec[0]!.matchAll(/<path d="([^"]+)"/g)].map((m) => m[1]!);
+
+    /**
+     * An arc is `rx ry x-rotation large-arc sweep x y`, so tokens 2..4 of
+     * every group are NOT coordinates — they are a rotation and two
+     * booleans. A sweep flag of 0.833 is invalid SVG: Chromium drops the
+     * arc instead of drawing it wrong, so the glyph quietly loses a
+     * convolution with no error anywhere. Hence a token comparison, not a
+     * numeric one.
+     */
+    const isBool = (token: string | undefined) => token === "0" || token === "1";
+    let arcCount = 0;
+    for (const d of ds) {
+      const arcs = d.match(/[Aa][^A-Za-z]*/g) ?? [];
+      for (const arc of arcs) {
+        const tokens = arc.slice(1).match(/-?\d*\.?\d+/g) ?? [];
+        assert.equal(
+          tokens.length % 7,
+          0,
+          `an arc's number stream is not a whole number of (rx ry rot laf sf x y) groups: ${arc}`,
+        );
+        for (let i = 0; i < tokens.length; i += 7) {
+          arcCount += 1;
+          const flags = [tokens[i + 2], tokens[i + 3], tokens[i + 4]];
+          const names = ["x-rotation", "large-arc", "sweep"];
+          flags.forEach((flag, k) => {
+            assert.ok(
+              isBool(flag),
+              `arc ${names[k]} flag is "${flag}"; it must stay a literal 0 or 1 ` +
+                `(a scaled flag silently drops the arc): ${arc.trim()}`,
+            );
+          });
+        }
+      }
+    }
+    assert.ok(
+      arcCount >= 5,
+      `expected the brain's arcs (two hemispheres plus their convolutions), found ${arcCount}`,
+    );
+  });
+});

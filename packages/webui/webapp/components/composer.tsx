@@ -20,6 +20,7 @@ import type { ControlAvailability, EngineCapabilities } from "@/lib/engine-capab
 import {
   effortControlShape,
   effortOptionsWithDefault,
+  isThinkingOn,
   resolveEffortCurrent,
 } from "@/lib/effort-control";
 import {
@@ -2073,7 +2074,8 @@ function ModelSelect({
 /**
  * Ticket 49 batch 2 (A1) — the settings detail content shared by both
  * placements. The A3 shape decisions (`effortControlShape` /
- * `effortOptionsWithDefault` / `resolveEffortCurrent`) live in
+ * `effortOptionsWithDefault` / `resolveEffortCurrent`) and the trigger's
+ * on/off reading (`isThinkingOn`) live in
  * `@/lib/effort-control` so the test suite exercises the product
  * functions, not a mirror.
  *
@@ -2480,6 +2482,13 @@ function ThinkingEffortSelect({
   const currentLabel = currentKey
     ? t(currentKey)
     : t("thinkingPicker.none");
+  /**
+   * Blue brain = thinking on, grey = off or unstated. `null` (the engine
+   * owns the default and never reports the level it chose) is deliberately
+   * grey: the label is what says "Default", and a blue icon beside it would
+   * claim a state this process cannot see.
+   */
+  const thinkingOn = isThinkingOn(levels, value);
   return (
     <Dropdown
       open={open}
@@ -2521,17 +2530,42 @@ function ThinkingEffortSelect({
       <button
         type="button"
         data-testid="thinking-effort-trigger"
+        data-thinking={thinkingOn === null ? "unknown" : thinkingOn ? "on" : "off"}
         aria-haspopup="menu"
         aria-expanded={open}
         disabled={disabled}
         className={[
-          "flex h-8 min-w-0 items-center gap-1 rounded-[10px] px-2 text-sm transition-colors",
+          "flex h-8 min-w-0 items-center gap-1.5 rounded-[10px] px-2 text-sm transition-colors",
           disabled
             ? "cursor-not-allowed text-text_default_tertiary"
-            : "text-text_default_primary hover:bg-bg_interaction_tertiary_hover",
+            : "hover:bg-bg_interaction_tertiary_hover",
         ].join(" ")}
       >
-        <span className="max-w-[80px] truncate whitespace-nowrap">{currentLabel}</span>
+        {/* The chevron stays tertiary in every state: it is the affordance,
+            not the state. Colour belongs to the brain and the level. */}
+        <Icon
+          name="brain"
+          size={16}
+          className={
+            disabled
+              ? "text-text_default_tertiary"
+              : thinkingOn
+                ? "text-icon_default_accent"
+                : "text-text_default_secondary"
+          }
+        />
+        <span
+          className={[
+            "max-w-[80px] truncate whitespace-nowrap",
+            disabled
+              ? "text-text_default_tertiary"
+              : thinkingOn
+                ? "text-text_default_accent"
+                : "text-text_default_primary",
+          ].join(" ")}
+        >
+          {currentLabel}
+        </span>
         <Icon
           name={open ? "chevronUp" : "chevronDown"}
           size={16}

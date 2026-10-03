@@ -28,6 +28,7 @@ import { resolve, dirname } from "node:path";
 import {
   effortControlShape,
   effortOptionsWithDefault,
+  isThinkingOn,
   resolveEffortCurrent as effortCurrent,
 } from "../lib/effort-control";
 
@@ -279,6 +280,23 @@ describe("ticket 49 batch 2 (A3) — effort control shape decision table (produc
     // option list (empty for the switch) and "on" read as off.
     assert.equal(effortCurrent(["off", "on"], "on", false), "on", "recorded on reads as on (switch form)");
     assert.equal(effortCurrent(["off", "on"], "", false), "default", "engine default reads as off position");
+  });
+
+  test("on/off reading: only an explicit off is off, the engine default is unstated (product isThinkingOn)", () => {
+    assert.equal(isThinkingOn(["off", "on"], "on"), true, "on is on");
+    assert.equal(isThinkingOn(["off", "on"], "off"), false, "off is off");
+    // A depth is a request FOR thinking, so it must not grey the control
+    // while the engine is visibly reasoning.
+    assert.equal(isThinkingOn(["low", "medium", "high"], "high"), true, "a depth is on");
+    assert.equal(isThinkingOn(["low", "medium", "high"], "low"), true, "even the lowest depth is on");
+    // The pin that matters: "" is the ENGINE's default. The engine picks a
+    // level and never reports it back, so the frontend must not colour the
+    // brain blue on a state it cannot observe.
+    assert.equal(isThinkingOn(["off", "on"], ""), null, "engine default is unstated, not off");
+    assert.equal(isThinkingOn(["low", "high"], ""), null, "same for a scale model");
+    // A record the model does not offer describes a different model.
+    assert.equal(isThinkingOn(["low", "high"], "xhigh"), null, "stale record is unstated");
+    assert.equal(isThinkingOn(["low", "high"], "off"), null, "an off this model cannot accept is unstated");
   });
 });
 

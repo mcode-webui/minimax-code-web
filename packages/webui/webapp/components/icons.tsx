@@ -79,6 +79,7 @@ export type IconName =
   | "moon"
   | "sun"
   | "sidebar"
+  | "brain"
   | "settings"
   | "settingsDesktop"
   | "settingsShortcuts"
@@ -644,6 +645,37 @@ const ICONS: Record<string, IconSpec> = {
       </>
     ),
   },
+  // Thinking on/off. Not an upstream glyph — the upstream desktop marks the
+  // composer's thinking control with a text level only. The geometry is
+  // lucide's `brain`, scaled from 24×24 to this pack's 20×20 frame by the
+  // same convention as `sidebar` above, and its stroke-width is lucide's 2
+  // carried through that scale (1.67) so the weight matches the original.
+  //
+  // The pack has nothing that reads as "reasoning": `bulb` is an idea,
+  // `gauge` is a usage meter, `sparkles` is the upgrade row's magic. A brain
+  // is the one glyph that names the thing itself, and it is what the user
+  // asked for.
+  //
+  // The path data below is lucide's, mechanically scaled — NOT re-typed by
+  // hand. An arc's `large-arc` / `sweep` flags live in the same number
+  // stream as its coordinates, so a hand scale turns a sweep of 1 into 0.833
+  // and the glyph renders subtly wrong. The flags are preserved verbatim.
+  brain: {
+    viewBox: "0 0 20 20",
+    size: 18,
+    body: (
+      <>
+        <path d="M10 15V4.1667" strokeWidth="1.67" />
+        <path d="M12.5 10.8333a3.475 3.475 0 0 1 -2.5 -3.3333 3.475 3.475 0 0 1 -2.5 3.3333" strokeWidth="1.67" />
+        <path d="M14.665 5.4167A2.5 2.5 0 1 0 10 4.1667a2.5 2.5 0 1 0 -4.665 1.25" strokeWidth="1.67" />
+        <path d="M14.9975 4.2708a3.3333 3.3333 0 0 1 2.105 4.8083" strokeWidth="1.67" />
+        <path d="M15 15a3.3333 3.3333 0 0 0 1.6667 -6.22" strokeWidth="1.67" />
+        <path d="M16.6392 14.5692A3.3333 3.3333 0 1 1 10 15a3.3333 3.3333 0 1 1 -6.6392 -0.4308" strokeWidth="1.67" />
+        <path d="M5 15a3.3333 3.3333 0 0 1 -1.6667 -6.22" strokeWidth="1.67" />
+        <path d="M5.0025 4.2708a3.3333 3.3333 0 0 0 -2.105 4.8083" strokeWidth="1.67" />
+      </>
+    ),
+  },
   // Message action icons — verbatim from upstream.
   like: {
     viewBox: "0 0 20 20",
@@ -941,6 +973,7 @@ const STROKE_ICONS = new Set<IconName>([
   "terminal",
   "workspace",
   "sidebar",
+  "brain",
   "website",
   "settingsDesktop",
   "settingsShortcuts",

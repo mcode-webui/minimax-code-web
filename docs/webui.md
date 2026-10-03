@@ -366,6 +366,14 @@ Contract details:
 
 The operator-facing view — which models show what control, and why MiniMax-M3 only has on/off — is the thinking section of [`webui.zh-CN.md`](webui.zh-CN.md).
 
+### The composer thinking trigger's brain (on = blue, off = grey)
+
+The control beside the composer marks whether thinking is on with a **brain glyph**: blue icon and blue level text when on (`text-icon_default_accent` / `text-text_default_accent`, the same blue the settings modal's switch uses when checked), grey for both when off or unstated. The chevron stays tertiary grey in every state — colour marks the state, not the affordance. The glyph is lucide's `brain`, scaled from its 24×24 frame into the icon pack's 20×20 frame the way `sidebar` already is, and the scaling is scripted rather than retyped: an arc's `large-arc` / `sweep` flags share the number stream with its coordinates, so a hand scale turns a sweep of `1` into `0.833` and Chromium silently drops the arc.
+
+Blue appears only when thinking is actually on. A recorded depth (`low`/`medium`/`high`/…) counts as on — it is a request FOR thinking, and greying it would contradict an engine that is visibly reasoning; only an explicit `off` is off. "Default" (the empty string) is the **engine's** choice and the engine never reports which level it took, so that state is grey: a blue icon next to the word "Default" would assert a state nothing in this process can see. The decision table is `isThinkingOn` in `webapp/lib/effort-control.ts` (a tri-state `true`/`false`/`null`), and the trigger publishes its reading as `data-thinking="on|off|unknown"` so a probe can read it without inferring colour.
+
+**How you would tell it works.** `isThinkingOn` is driven as a product function in `webapp/test/composer-context-window.test.ts`, including the case that matters — `""` is unstated, not off. `webapp/test/composer-thinking-tripwire.test.ts` pins the wiring (the trigger calls the product function rather than inlining `value !== "off"`, which would colour the engine default blue with every unit test still green), that the colours are accent tokens and not hard-coded hex, that the chevron never goes accent, and that the glyph carries all eight of lucide's paths with every arc flag still a literal `0`/`1`. That last guard was mutation-tested: flipping one sweep flag to `0.9` turns it red.
+
 ## Session switch follows workspace (webui-parity ticket 39)
 
 Switching to another session re-points the active workspace to the
