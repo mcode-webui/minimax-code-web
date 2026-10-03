@@ -4,10 +4,11 @@
 // Exposes a tiered candidate list (env override → MCODE_CMD-derived path
 // → user-pinned ~/.mcode-webui/db-resolver.json → built-in home/dev
 // layouts) plus a sticky cache. It has NO knowledge of which SQL we end
-// up running — that's mcode-session-delete.js's job. The split lets a
-// future round that drops the local_runtime_* delete loop (once the
-// engine exposes `session/delete`) do so without dragging the resolver
-// chain along.
+// up running — that's engine/session-delete.js's job, and only its
+// READ-ONLY half: the destructive step is the engine's own `deleteSession`
+// as of M4-3a, and this resolver is still reached for the `?dryRun=true`
+// per-table count, because the engine exposes no preview form of its
+// delete. Closing that would remove the last SQL webui issues at all.
 
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";

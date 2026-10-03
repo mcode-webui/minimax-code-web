@@ -437,13 +437,19 @@ describe("ACP_CAPABILITIES", () => {
     assert.equal(noneKeys.length, 7, "the list above is the assertion — keep both in step");
   });
 
-  // The destructive half of sessionCrud is missing BY NAME, because
+  // The absent session methods are named BY NAME, because
   // `session-writes.js` gates #7 and #6 on exactly `deleteSession` and
   // a kebab-case name would never match that gate's sub-item. This is
   // the naming contract M4-3 depends on, so it is a value assertion.
-  test("sessionCrud partial names the three absent session methods", () => {
+  //
+  // M4-3a: `deleteSession` left this list, and NOT because the protocol
+  // grew a handler — it still has none, and the snapshot suite asserts
+  // that against the wire table independently. webui stopped deleting by
+  // SQL and now asks the process-local v2 host's own `deleteSession`, so
+  // the transport can serve the sub-item. The two that remain are the two
+  // nothing serves from anywhere.
+  test("sessionCrud partial names the two absent session methods", () => {
     assert.deepEqual(ACP_CAPABILITIES.sessionCrud.missing, [
-      "deleteSession",
       "renameSession",
       "archiveSession",
     ]);

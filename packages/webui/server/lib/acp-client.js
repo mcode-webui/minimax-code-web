@@ -20,7 +20,14 @@ import {
   MCODE_WEBUI_TRANSPORT,
   MAVIS_DATA_DIR,
 } from "./config.js";
-import { deleteMcodeSessionFromDb } from "./mcode-session-delete.js";
+// M4-3a: the probe-session cleanup below used to hand-roll a delete through
+// `lib/mcode-session-delete.js`; that module's write half is retired and the
+// engine owns the rows now. The import is a STATIC one, exactly where the
+// retired one sat: this file is already behind the lazy `engine/host.js`
+// boundary, and the new module pulls in the same two collaborators
+// (`lib/events.js`, `lib/sqlite-resolver.js`) the old one did, so the
+// boot-path cost is unchanged. The call is now async and therefore awaited.
+import { deleteSessionThroughEngine } from "../engine/session-delete.js";
 import {
   listMcodeSessionsViaRuntime,
   getMcodeSessionTitleViaRuntime,
@@ -396,14 +403,20 @@ export async function ensureMcodeCommands({
         } catch {}
         mcodeCommandsClient = null;
       }
-      // v1.0: 清理探测会话 — 探测 client 已 stop (无回写源), 再 SQL 删 + 缓存剔除该 sid。
+      // v1.0: 清理探测会话 — 探测 client 已 stop (无回写源), 再经引擎删 + 缓存剔除该 sid。
       //   不整体作废缓存 (会让侧栏闪跌后复原); TTL 自然过期后新子进程重读即可
+      //   M4-3a: the SQL hand-off became an engine `deleteSession` call, which
+      //   is async — hence the await. It runs inside the same `finally` the
+      //   retired synchronous call did, so the "clean up, then drop the one
+      //   cache entry" ordering is unchanged.
       if (probeSid) {
         try {
           shutdownMcodeAcpSingleton();
         } catch {}
         try {
-          const del = deleteMcodeSessionFromDb(probeSid, { MCODE_RUNTIME_DB });
+          const del = await deleteSessionThroughEngine(probeSid, {
+            MCODE_RUNTIME_DB,
+          });
           console.log(
             `[webui] commands probe session cleaned: ${probeSid.substring(0, 12)}… ok=${del.ok}`,
           );

@@ -867,12 +867,24 @@ describe("M4-1 acp snapshot — declaration vs the protocol's wire table", () =>
   });
 
   // Same shape, opposite direction: the protocol registers
-  // `session/delete` with NO handler, so the wire table says `false`
-  // and the declaration's partial is honest rather than pessimistic.
-  test("sessionCrud is partial because `delete` is registered without a handler", () => {
+  // `session/delete` with NO handler, so the wire table says `false`.
+  //
+  // M4-3a split this cell in two and both halves are now asserted: the
+  // PROTOCOL still cannot delete (this test, unchanged in what it
+  // proves), while the TRANSPORT can, because the delete runs on the
+  // process-local v2 host's own `deleteSession` rather than on the wire.
+  // The declaration therefore stops listing `deleteSession` as missing
+  // — and if it ever starts claiming the protocol has a handler, the
+  // first assertion below is what goes red.
+  test("sessionCrud is partial, and `delete` is registered without a handler", () => {
     assert.equal(MCODE_ACP_CAPABILITIES.delete, false);
     assert.equal(ACP_CAPABILITIES.sessionCrud.level, "partial");
-    assert.equal(ACP_CAPABILITIES.sessionCrud.missing.includes("deleteSession"), true);
+    assert.equal(ACP_CAPABILITIES.sessionCrud.missing.includes("deleteSession"), false);
+    assert.match(
+      ACP_CAPABILITIES.sessionCrud.reason,
+      /MCODE_ACP_CAPABILITIES\.delete === false/,
+      "the reason must keep recording that the WIRE cannot delete — the capability comes from elsewhere, not from the protocol",
+    );
   });
 
   // The acp column is stronger than the v2 column on exactly one key,

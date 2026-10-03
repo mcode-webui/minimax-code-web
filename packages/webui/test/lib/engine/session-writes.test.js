@@ -652,25 +652,38 @@ describe("M3-B5 — session write family", () => {
       },
     });
     const dbCalls = [];
+    // M4-3a: the data plane is `engine/session-delete.js` now, and it has
+    // TWO entry points where the retired module had one — the readonly
+    // preview (a dry run is still a COUNT, because the engine has no
+    // preview form) and the engine call that actually destroys. The mock
+    // journals them under the same `sql:` prefix these assertions already
+    // read, so the ORDERING assertions below are unchanged in meaning: what
+    // they pin is the sequence around the destructive step, not the module
+    // the step lives in.
+    const engineDeleteResult =
+      options.dbResult || {
+        ok: true,
+        outcome: "deleted",
+        log: ["local_runtime_sessions:1"],
+        totalRowsDeleted: 1,
+        tablesAbsent: 0,
+      };
     mockAll(
       t,
-      "lib/mcode-session-delete.js",
+      "engine/session-delete.js",
       {
-        deleteMcodeSessionFromDb: (sid, o) => {
-          journal.push(`sql:${sid}:dryRun=${!!o.dryRun}`);
-          dbCalls.push({ sid, dryRun: !!o.dryRun, db: o.MCODE_RUNTIME_DB });
-          return (
-            options.dbResult || {
-              ok: true,
-              outcome: "deleted",
-              log: ["local_runtime_sessions:1"],
-              totalRowsDeleted: 1,
-              tablesAbsent: 0,
-            }
-          );
+        previewSessionDeleteRows: (sid, o) => {
+          journal.push(`sql:${sid}:dryRun=true`);
+          dbCalls.push({ sid, dryRun: true, db: o.MCODE_RUNTIME_DB });
+          return options.dbPreviewResult || { ok: true, dryRun: true, log: [], totalRows: 0 };
+        },
+        deleteSessionThroughEngine: async (sid, o) => {
+          journal.push(`sql:${sid}:dryRun=false`);
+          dbCalls.push({ sid, dryRun: false, db: o.MCODE_RUNTIME_DB });
+          return engineDeleteResult;
         },
       },
-      ["deleteMcodeSessionFromDb", "MCODE_SESSION_DELETE_TABLES"],
+      ["previewSessionDeleteRows", "deleteSessionThroughEngine", "SESSION_DELETE_PREVIEW_TABLES"],
     );
     mockAll(
       t,
@@ -858,44 +871,58 @@ describe("M3-B5 — session write family", () => {
       }
     });
 
-    test("the 32-table delete list is unchanged — the debt is recorded, not silently collected", async () => {
-      // The plan for this batch annotated `lib/mcode-session-delete.js`
-      // "delete". It is kept, because `lib/acp-client.js` imports from it
-      // and four test files bind to the specifier. This test pins the
-      // consequence: the table list is still exported, still has 32
-      // entries, and the facade reaches it rather than duplicating it.
-      // A future collection that moves the list has to change this
-      // assertion in the same commit — which is the point.
-      const { MCODE_SESSION_DELETE_TABLES } = await import(
-        absPath("lib/mcode-session-delete.js")
+    test("the 32-table DELETE is retired — the engine destroys the rows, webui only counts them", async () => {
+      // M4-3a collected the write half of this batch's KNOWN DEBT 1. The
+      // plan annotated `lib/mcode-session-delete.js` "delete"; the module
+      // is gone, and this test is the proof rather than the promise —
+      // because the consequence of deleting a module that four suites and
+      // one production importer bound to is exactly the kind of thing that
+      // "should be fine" gets wrong.
+      assert.equal(
+        existsSync(fileURLToPath(absPath("lib/mcode-session-delete.js"))),
+        false,
+        "the bare-SQL delete module is retired — it must not come back",
       );
-      assert.equal(MCODE_SESSION_DELETE_TABLES.length, 32, "the 32-table list, still owned by the lib module");
-      assert.equal(MCODE_SESSION_DELETE_TABLES[0], "local_runtime_sessions");
-      assert.ok(MCODE_SESSION_DELETE_TABLES.includes("local_runtime_token_usage"));
+
+      // What replaced it still knows the tables, for READING only. The
+      // name says so, the list is unchanged in membership and order (a
+      // preview report must stay comparable with pre-M4-3a ones), and the
+      // facade reaches it rather than duplicating it: a second list is
+      // precisely how two readers end up reporting different sets of rows.
+      const { SESSION_DELETE_PREVIEW_TABLES } = await import(
+        absPath("engine/session-delete.js")
+      );
+      assert.equal(
+        SESSION_DELETE_PREVIEW_TABLES.length,
+        32,
+        "the 32-table list, still owned by one module",
+      );
+      assert.equal(SESSION_DELETE_PREVIEW_TABLES[0], "local_runtime_sessions");
+      assert.ok(SESSION_DELETE_PREVIEW_TABLES.includes("local_runtime_token_usage"));
+
+      // The red line this batch exists to enforce, stated where the facade
+      // is: the facade issues no SQL of its own. Checked on SQL VERBS
+      // rather than table names, because this file's comments legitimately
+      // name the tables while explaining what it does not do.
       const src = readFileSync(fileURLToPath(absPath("engine/session-writes.js")), "utf8");
-      // The facade must NOT have grown its own copy of the list, or its
-      // own SQL. A second list is precisely how two writers end up
-      // deleting different sets of rows. The check is on SQL VERBS
-      // rather than on a table name, because the module's own comments
-      // legitimately name the tables while explaining what it does not
-      // do; a `DELETE FROM` or `SELECT` in this file would be the real
-      // smell.
       for (const verb of ["DELETE FROM", "SELECT ", "INSERT ", "UPDATE ", "prepare("]) {
         assert.ok(
           !src.includes(verb),
-          `the facade must issue no SQL, found ${JSON.stringify(verb)} — the delete SQL stays in the lib module it forwards to`,
+          `the facade must issue no SQL, found ${JSON.stringify(verb)} — the data plane is engine/session-delete.js`,
         );
       }
-      // And the forwarding itself is real: the facade reaches that module
-      // through a dynamic import, not a second static one.
+      // And the data plane is reached through a dynamic import, not a
+      // static one — a static import would put the database and the audit
+      // chain on the boot path, which is the M1 regression this split
+      // exists to prevent.
       assert.match(
         src,
-        /import\("\.\.\/lib\/mcode-session-delete\.js"\)/,
-        "the facade forwards to lib/mcode-session-delete.js through a lazy import",
+        /import\("\.\/session-delete\.js"\)/,
+        "the facade forwards to engine/session-delete.js through a lazy import",
       );
       assert.ok(
-        !/^import .*mcode-session-delete/m.test(src),
-        "and never through a static one — a static import would put the SQL on the boot path",
+        !/^import .*session-delete/m.test(src),
+        "and never through a static one",
       );
     });
   });
@@ -1084,7 +1111,12 @@ describe("M3-B5 — session write family", () => {
           ok: true,
           dryRun: true,
           matchKind: "webuiId",
-          mcodeDbDel: { ok: true, outcome: "deleted", log: ["local_runtime_sessions:1"], totalRowsDeleted: 1, tablesAbsent: 0 },
+          // M4-3a: a dry run is a COUNT, not a delete, so this is the
+          // preview shape the data plane returns for it. The assertion is
+          // byte-for-byte on the payload for the same reason it always
+          // was — `?dryRun=true` is a wire contract, and the refactor
+          // that moved the delete onto the engine must not have moved it.
+          mcodeDbDel: { ok: true, dryRun: true, log: [], totalRows: 0 },
           webuiEntryWouldBeDeleted: { id: "webui-A", title: "A on tmp", mcodeSessionId: "mvs_sid_A" },
         }),
       );
@@ -1655,14 +1687,18 @@ describe("M3-B5 — session write family", () => {
       );
       mockAll(
         t,
-        "lib/mcode-session-delete.js",
+        "engine/session-delete.js",
         {
-          deleteMcodeSessionFromDb: (sid, o) => {
-            events.push({ kind: `sql(${sid},dryRun=${!!o.dryRun})` });
+          previewSessionDeleteRows: (sid, o) => {
+            events.push({ kind: `sql(${sid},dryRun=true)` });
+            return { ok: true, dryRun: true, log: [], totalRows: 0 };
+          },
+          deleteSessionThroughEngine: async (sid, o) => {
+            events.push({ kind: `sql(${sid},dryRun=false)` });
             return { ok: true, outcome: "deleted", log: ["local_runtime_sessions:1"], totalRowsDeleted: 1, tablesAbsent: 0 };
           },
         },
-        ["deleteMcodeSessionFromDb", "MCODE_SESSION_DELETE_TABLES"],
+        ["previewSessionDeleteRows", "deleteSessionThroughEngine", "SESSION_DELETE_PREVIEW_TABLES"],
       );
       mockAll(
         t,

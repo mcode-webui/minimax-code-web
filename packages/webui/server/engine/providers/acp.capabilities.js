@@ -94,21 +94,35 @@ import { validateEngineCapabilities } from "../capabilities.js";
  */
 export const ACP_CAPABILITIES = Object.freeze({
   // Present: session/new, session/load, session/list, session/close,
-  // plus session/resume, session/fork and session/activate. Absent:
-  // the whole destructive family. `session/delete` is REGISTERED by
-  // the protocol with no handler — `MCODE_ACP_CAPABILITIES.delete` is
-  // literally `false` in lib/mcode-rpc.js for that reason, with the
-  // comment "mcode's protocol registers `session/delete` but
-  // implements no handler, which is why deletes go through SQL on the
-  // local_runtime_* tables". So the sub-items are named after the
-  // methods the v2 surface has and the protocol has not, which is what
-  // a gate passes as `subItem`; the v2 delete path is webui's own
-  // 32-table SQL, not a capability anyone could declare.
+  // plus session/resume, session/fork and session/activate.
+  //
+  // `deleteSession` used to sit in `missing` and moved out in M4-3a, for
+  // a reason worth stating precisely, because the protocol still cannot
+  // do it: `session/delete` remains REGISTERED with NO HANDLER
+  // (`MCODE_ACP_CAPABILITIES.delete === false` in lib/mcode-rpc.js). What
+  // changed is that webui no longer deletes by SQL — the destructive step
+  // is the process-local local-runtime-v2 host's own `deleteSession`,
+  // reached through `getEngineCatalogueHost()`, the same host and the same
+  // seam `turnDiff` and `plugins` below already declare `servedBy` for.
+  // The method is real, not aspirational: it is the surface
+  // `local-runtime-v2.capabilities.js` declares `sessionCrud: full` over,
+  // implemented in
+  // local-runtime-v2/service/session-system/sessions/lifecycle/deletion-service.ts.
+  //
+  // It is stated in this reason rather than in a `servedBy` field because
+  // `validateEngineCapabilities` rejects `servedBy` on a `partial` key, and
+  // downgrading this cell to `none` to earn one would delete two working
+  // sub-items (new/load/list/close) from the capability view. The honest
+  // middle is: the PROTOCOL has no delete, the TRANSPORT can still serve
+  // one, and the gate is on the transport.
+  //
+  // Still absent: rename and archive. The protocol registers no method for
+  // either, and nothing in webui answers them from elsewhere.
   sessionCrud: {
     level: "partial",
-    missing: ["deleteSession", "renameSession", "archiveSession"],
+    missing: ["renameSession", "archiveSession"],
     reason:
-      "the protocol opens new/load/list/close/resume/fork/activate and nothing else: `session/delete` is registered with no handler (MCODE_ACP_CAPABILITIES.delete === false) and there is no rename or archive method (design §1.3 acp)",
+      "the protocol opens new/load/list/close/resume/fork/activate and nothing else: `session/delete` is registered with no handler (MCODE_ACP_CAPABILITIES.delete === false) and there is no rename or archive method (design §1.3 acp). deleteSession is nonetheless servable on this transport since M4-3a — it runs on the process-local local-runtime-v2 host's own deleteSession through getEngineCatalogueHost(), the same in-process seam turnDiff and plugins use — so it is no longer declared missing; rename and archive have no such path and stay missing",
   },
   // session/prompt — a streaming callback per turn, the transport
   // webui's default chat path has always run on.

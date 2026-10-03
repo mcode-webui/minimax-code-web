@@ -46,7 +46,8 @@ const _acpMock = {
   getMcodeSessionsForWorkspace: async () => [],
   getMcodeSessionsCacheSync: () => null,
   getMcodeSessionTitle: async () => null,
-  deleteMcodeSessionFromDb: () => ({ ok: true }),
+  previewSessionDeleteRows: () => ({ ok: true }),
+  deleteSessionThroughEngine: async () => ({ ok: true }),
   // v0.5.bx 系列 patch: 补 mcode-rpc.js 需要的 export
   getMcodeAcpClient: async () => null,
   listAllMcodeSessions: async () => [],
@@ -231,8 +232,8 @@ export async function setupMocks(t, overrides = {}) {
       getMcodeSessionsCacheSync: (...a) =>
         _acpMock.getMcodeSessionsCacheSync(...a),
       getMcodeSessionTitle: (...a) => _acpMock.getMcodeSessionTitle(...a),
-      deleteMcodeSessionFromDb: (...a) =>
-        _acpMock.deleteMcodeSessionFromDb(...a),
+      deleteSessionThroughEngine: (...a) =>
+        _acpMock.deleteSessionThroughEngine(...a),
       // v0.5.bx 系列 patch: mcode-rpc.js 也 import 这俩
       getMcodeAcpClient: (...a) => _acpMock.getMcodeAcpClient(...a),
       listAllMcodeSessions: (...a) => _acpMock.listAllMcodeSessions(...a),

@@ -69,7 +69,7 @@
    │  server/lib/ — pure modules (one concern each)                      │
    │                                                                      │
    │  config · layout · lan · models · sqlite-resolver ·                │
-   │  mcode-session-delete · sessions · state-bus · acp-client         │
+   │  sessions · state-bus · acp-client                               │
    │  mcode-rpc · mcode-acp · mcode-exec · chat-line · context-percent  │
    │  mavis-usage · usage · settings · upload · workspace · slash ·     │
    │  static · gates · auth · alerts · trajectory                       │
@@ -304,9 +304,10 @@ flowchart TD
 生命周期说明：
 
 - **删除**（`DELETE /api/sessions/:id`）会移除 webui 记录，并
-  从运行时 SQLite 中交叉删除关联的 `mvs_…` 行
-  （`deleteMcodeSessionFromDb`，用 `?dryRun=true` 预览）。删除
-  mcode 记录会在一个事务中把它从两个列表里都移除。
+  请求引擎删除关联的 `mvs_…` 会话
+  （`engine/session-delete.js#deleteSessionThroughEngine`，用 `?dryRun=true`
+  预览——预览是逐表只读计数，因为引擎的删除没有预览形态）。删除
+  mcode 记录会把它从两个列表里都移除。
 - **启动清理**会剔除那些为空、且仍是默认标题、
   且超过 24 小时的记录——即点了「+」却从未输入的残留。
 - **搜索**（`GET /api/sessions/search`）跨工作区对标题做
@@ -994,7 +995,7 @@ webui 将每个事件视为幂等更新；重放同一
 
 | 端点 | 门面函数 | 能力 · 子项 | 强制方式 | 取值来源 |
 | --- | --- | --- | --- | --- |
-| `DELETE /api/sessions/:id`（#7） | `engine/session-writes.js#planEngineSessionDelete` → `engine/session-writes.js#commitEngineSessionDelete` / `engine/session-writes.js#commitEngineOrphanSessionDelete` / `engine/session-writes.js#previewEngineSessionDelete` | `sessionCrud` · `deleteSession` | 硬——501 | webui 的会话存储、内存中的 ACP 会话缓存、侧栏树缓存，以及经 `lib/mcode-session-delete.js#deleteMcodeSessionFromDb` 触达的引擎自己的 `local_runtime_*` 行 |
+| `DELETE /api/sessions/:id`（#7） | `engine/session-writes.js#planEngineSessionDelete` → `engine/session-writes.js#commitEngineSessionDelete` / `engine/session-writes.js#commitEngineOrphanSessionDelete` / `engine/session-writes.js#previewEngineSessionDelete` | `sessionCrud` · `deleteSession` | 硬——501 | webui 的会话存储、内存中的 ACP 会话缓存、侧栏树缓存，以及经 `engine/session-delete.js#deleteSessionThroughEngine` 触达的、由引擎自己的 `deleteSession` 移除的 `local_runtime_*` 行 |
 | `POST /api/sessions/rename`（#4） | `engine/session-writes.js#applyEngineSessionRename` | 14 个键里的任何一个都不适用 | 不门控——门控是「被报告的空操作」 | 只有 webui 自己的会话存储。引擎的标题**不**被写入 |
 | `POST /api/sessions/cleanup-orphans`（#6） | `engine/session-writes.js#readOrphanSessionWriteIds`，随后逐个委派给 `engine/session-writes.js#commitEngineOrphanSessionDelete` | `sessionCrud` · `deleteSession` | 硬——501 | 同一份存储，加上每个被选中的 id 都走 #7 的真实删除分支，因此抵达同一批引擎行 |
 
@@ -1048,12 +1049,23 @@ ACP 子进程在行被移除**之前**被停掉，因为它在内存里持有那
 请求里重写自己的注册行——那就是「已删除的会话又冒出来」这个 bug。离开缓存的只有
 **那一个**被删的 sid：把整份缓存作废会清空侧栏、再把它填满，读到用户那里就像删除失败。
 
-**32 张表的 SQL 没有被搬走，这是被记录下来而不是被悄悄丢掉的。** 本批的批次计划给
-`lib/mcode-session-delete.js` 批注了「delete」。它被保留，是因为
-`lib/acp-client.js` 从它那里导入，而有四个测试文件绑定在那个导出名上；收集它意味着
-先搬走那些。门面通过 `await import()` 触达它，自己不发任何 SQL——这正是 B3 为
-`lib/mavis-usage.js`、B4 为 `lib/mcode-rpc.js` 划下的同一条分界。一个测试同时断言
-两半：表清单仍然是从那个 lib 模块导出的 32 条，而门面里一个 SQL 动词都没有。
+**M4-3a 收集了本批记录下来的那笔债：32 张表的删行 SQL 已经退场，行由引擎删除。**
+被退役的模块（裸 SQL 会话删除）曾打开引擎的运行时数据库，在一份手工维护的表清单上
+逐表删除；那个破坏性步骤现在是引擎自己的 `deleteSession`，经由进程内的 catalogue host
+从 `engine/session-delete.js` 触达——也就是插件路由与 turn-diff 路由所用的同一个
+`getEngineCatalogueHost()` 接缝。门面通过 `await import()` 触达那个模块，自己仍然不发
+任何 SQL。
+
+**留下的是只读的那一半，理由是事实而不是谨慎：引擎的删除没有 dry-run 或预览形态。**
+`?dryRun=true` 是 #7 与 #6 契约的一部分，因此逐表 COUNT 仍然存在，仍然对着同一份
+32 表清单，并且就住在现在驱动引擎调用的那个模块里。webui 仍然**读**一份自己手工维护
+的 schema 布局；它不再**写**这一份。真实删除的 `log` 与 `totalRowsDeleted` 取自紧邻
+引擎调用之前的那次只读统计，因此 HTTP 层由它们派生的 `rowsAffected` 与
+`mcodeRowsAffected` 字段携带的仍是它们一直携带的数值。
+
+`test/lib/engine/session-delete-ownership.test.js` 是那道红线：任何 server 模块都不得
+导入被退役的模块、对 `local_runtime_*` 表发 DELETE、或以非 `readonly: true` 的方式
+打开引擎的数据库。它刻意是静态源码检查——行为测试无法区分「引擎删的」与「webui 删的」。
 
 **#6 的响应形状是本批逐字节的红线，因此载荷在门面里组装、绝不在路由里重装。**
 预览是四个键、且就是这个顺序的 `{ok, dryRun, count, ids}`；而真实路径的空操作是
@@ -1063,11 +1075,13 @@ ACP 子进程在行被移除**之前**被停掉，因为它在内存里持有那
 （由编辑器而非 webui 写入）并被原样保留；解析失败回答 `[]`——门面前代码也是这么做的，
 而一份损坏的存储不得把一次清理请求变成 500。`dryRun` 会抑制子进程 kill 与缓存丢弃，
 因为一次预览不改写任何东西，而一次关掉用户 ACP 子进程的预览是 `?dryRun=true` 契约
-并不包含的副作用；那条 COUNT 仍会跑，只读地跑在 `lib/mcode-session-delete.js` 里。
+并不包含的副作用；那条 COUNT 仍会跑，只读地跑在 `engine/session-delete.js` 里。
 
 **本批记为已知债而不予决定的三件事：**
 
-1. 32 张表的 SQL 仍然在 `lib/mcode-session-delete.js` 里，理由见上文那些消费方。
+1. M4-3a 已收集：32 张表的删行 SQL。同一笔债剩下的是**读**的一侧——
+   `engine/session-delete.js` 仍在对着手工维护的表清单做统计，因为引擎的删除没有预览
+   形态。关掉它需要在引擎自身上加一个计数接口，那是 local-runtime-v2 的改动。
 2. 改名只是**一个 webui 侧的标签**。`local_runtime_sessions` 里引擎自己的标题没有被
    触碰，而侧栏树是从引擎读标题的。因此对一个由引擎支撑的会话，一次改名可能在包装
    列表里看得见、在树里看不见。这是既有行为，本批没有改动它；关掉它意味着决定哪一份

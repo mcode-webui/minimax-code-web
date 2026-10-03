@@ -137,7 +137,7 @@ single index that satisfies the check.
 | Switch session on click | ✅ | clicking a session row triggers `/api/sessions/switch` |
 | New chat from button | ✅ | opens the workspace picker first if no workspace is set |
 | Delete session from sidebar | ✅ | two-tap confirm: `session-delete` button → 5-second confirm bar |
-| Delete session in mcode sqlite too | ✅ | `/api/sessions/:id` DELETE handler calls `deleteMcodeSessionFromDb` (`server/lib/mcode-session-delete.js`, the function lifted out of the old `db.js`) |
+| Delete session in mcode sqlite too | ✅ | `/api/sessions/:id` DELETE goes through the engine facade to the engine's own `deleteSession` (`server/engine/session-delete.js#deleteSessionThroughEngine`). M4-3a retired the bare-SQL 32-table sweep that used to do this |
 | Cleanup orphaned mcode sessions | ✅ | `/api/sessions/cleanup-orphans` lists mcode sessions not referenced by any webui session, then deletes them (scope: `orphans` or `all`) |
 | Resume an mcode session opened in the TUI | ❌ | the acp session has a single owner; the webui shows a read-only banner when it detects a foreign owner |
 | Cross-workspace session search | ✅ | the sidebar search input calls `GET /api/sessions/search` which aggregates matches across every workspace with a title (case-insensitive fuzzy match + per-workspace dedup). B03-gated. |
@@ -235,7 +235,7 @@ single index that satisfies the check.
 | systemd / Windows Service manifest | ❌ | out of scope; user is expected to use `pm2`, `nssm`, or run in a terminal |
 | Hot reload of code | ❌ | restart the server |
 | Health check endpoint | ✅ | `GET /api/health` returns `{ok:true, port, defaultModel, defaultWorkspace, mcodeCmd, mcodeVersion, maxConcurrent}` |
-| Append-only event audit log (`events.ndjson`) | ✅ | `server/lib/events.js` — NDJSON append with SHA-256 hash chain, monotonic `seq`, 200ms write-behind. Write-points: settings.js / sessions.js / upload.js / slash.js / mcode-session-delete.js / export.js / alerts.js (dynamic). Tests: `test/lib/events.test.js` + `test/lib/events-hash.test.js`. `$WEBUI_DATA_DIR/events.ndjson`. |
+| Append-only event audit log (`events.ndjson`) | ✅ | `server/lib/events.js` — NDJSON append with SHA-256 hash chain, monotonic `seq`, 200ms write-behind. Write-points: settings.js / sessions.js / upload.js / slash.js / engine/session-delete.js / export.js / alerts.js (dynamic). Tests: `test/lib/events.test.js` + `test/lib/events-hash.test.js`. `$WEBUI_DATA_DIR/events.ndjson`. |
 | Independent anomaly SSE channel | ✅ | `server/lib/alerts.js` + `GET /api/alerts` SSE + frontend bell icon + unread count. 3 levels (info/warn/error), 100-entry ring buffer, 60s dedup window. |
 | Per-request authorize gate | ✅ | `server/lib/authorize.js` — `authorize(action, ctx, opts)` Promise with 5-minute default timeout (fail-closed), 8-action whitelist (`session.delete`, `sessions.cleanup-orphans`, `session.cleanup-all`, `session.export`, `session.search`, `token.reset`, `slash.clear`, `startup.cleanup`). Tests: `test/lib/authorize.check.mjs`. |
 | SBOM + local CVE gates | ✅ | `pnpm --filter @mavis/webui sbom` → CycloneDX 1.5 (`scripts/gen-sbom.mjs`) + `pnpm audit --omit=dev` + the repo-level `docs/verification.md` matrix. The webui itself has no plugin-level CI workflow; the only enforcement is `pnpm --filter @mavis/webui check` (the docs-alignment gate) plus the monorepo `pnpm verify`. |

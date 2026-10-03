@@ -111,7 +111,7 @@ after(async () => {
   }
 });
 
-let deleteMcodeSessionFromDb, SQLITE3_BIN;
+let sessionDelete, SQLITE3_BIN;
 
 // Helper: build a fake IncomingMessage that readJson() can consume
 function fakeReq(body) {
@@ -161,8 +161,8 @@ before(async (t) => {
   handleRenameSession = mod.handleRenameSession;
   // Load mcode-session-delete.js for the dryRun tests (Batch D,
   // mcode-plugin-guide red-lines §1).
-  const dbMod = await import(absPath("lib/mcode-session-delete.js"));
-  deleteMcodeSessionFromDb = dbMod.deleteMcodeSessionFromDb;
+  const dbMod = await import(absPath("engine/session-delete.js"));
+  sessionDelete = dbMod;
   // Load config.js for SQLITE3_BIN
   const cfgMod = await import(absPath("lib/config.js"));
   SQLITE3_BIN = cfgMod.SQLITE3_BIN;
@@ -473,7 +473,7 @@ describe("handleDeleteSession", () => {
 });
 
 describe("handleDeleteSession — dry-run (db-level preview)", { skip: DB_FIXTURE_SKIP }, () => {
-  test("deleteMcodeSessionFromDb with dryRun=true returns rows per table without modifying", async () => {
+  test("previewSessionDeleteRows returns rows per table without modifying", async () => {
     // Use a temp sqlite db, set MCODE_RUNTIME_DB to it, populate rows,
     // call dryRun, then verify rows are still there.
     const { join } = await import("node:path");
@@ -491,7 +491,7 @@ describe("handleDeleteSession — dry-run (db-level preview)", { skip: DB_FIXTUR
     assert.equal(r.status, 0, `sqlite3 create failed: ${r.stderr}`);
 
     const SID = "mvs_aaaa000000000000000000000000bbbb";
-    const dry = deleteMcodeSessionFromDb(SID, { MCODE_RUNTIME_DB: dbPath, dryRun: true });
+    const dry = sessionDelete.previewSessionDeleteRows(SID, { MCODE_RUNTIME_DB: dbPath });
     assert.equal(dry.ok, true);
     assert.equal(dry.dryRun, true);
     assert.ok(Array.isArray(dry.log));
@@ -506,26 +506,75 @@ describe("handleDeleteSession — dry-run (db-level preview)", { skip: DB_FIXTUR
     assert.equal(check.stdout.trim(), "1", "row should NOT be deleted in dry-run");
   });
 
-  test("deleteMcodeSessionFromDb without dryRun actually deletes (sanity)", async () => {
+  // M4-3a rewrote this test, and the rewrite is the point. It used to
+  // assert that webui's own SQL removed the row — a property of code that
+  // no longer exists. What webui owns now is narrower and worth stating
+  // precisely: it COUNTS before it asks, it asks the ENGINE with the right
+  // id, and it reports the counts it took. That "the engine really removes
+  // the rows" is proven by the engine's own suite
+  // (local-runtime-v2, SessionDeletionService), not by a webui fixture
+  // that would only prove a stub did what the stub was told.
+  test("deleteSessionThroughEngine asks the engine for the counted sid and reports the pre-delete count", async () => {
     const { join } = await import("node:path");
     const dir = mkTmpDir("webui-real-del-");
     const dbPath = join(dir, "runtime-state.sqlite");
     const { spawnSync } = await import("node:child_process");
     spawnSync(
       SQLITE3_BIN,
-      [dbPath, `CREATE TABLE local_runtime_sessions (session_id TEXT PRIMARY KEY, data TEXT); INSERT INTO local_runtime_sessions (session_id, data) VALUES ('mvs_real00000000000000000000bbbb', 'x');`],
+      [dbPath, `CREATE TABLE local_runtime_sessions (session_id TEXT PRIMARY KEY, data TEXT); INSERT INTO local_runtime_sessions (session_id, data) VALUES ('mvs_bbbb000000000000000000000000cccc', 'x');`],
       { encoding: "utf8" },
     );
     const SID = "mvs_bbbb000000000000000000000000cccc";
-    const r = deleteMcodeSessionFromDb(SID, { MCODE_RUNTIME_DB: dbPath });
+    const asked = [];
+    const r = await sessionDelete.deleteSessionThroughEngine(SID, {
+      MCODE_RUNTIME_DB: dbPath,
+      appendEvent: () => {},
+      getHost: async () => ({
+        cliService: {
+          deleteSession: (req) => {
+            asked.push(req);
+            return Promise.resolve();
+          },
+        },
+      }),
+    });
     assert.equal(r.ok, true);
-    assert.equal(r.dryRun, undefined, "default path should NOT have dryRun flag");
-    const check = spawnSync(
-      SQLITE3_BIN,
-      [dbPath, `SELECT COUNT(*) FROM local_runtime_sessions WHERE session_id='${SID}'`],
-      { encoding: "utf8" },
+    assert.equal(r.dryRun, undefined, "the real path carries no dryRun flag");
+    assert.deepEqual(asked, [{ id: SID }], "the engine is asked exactly once, with the counted sid");
+    assert.equal(r.outcome, "deleted", "rows were counted before the call, so the outcome is not a guess");
+    assert.deepEqual(r.log, ["local_runtime_sessions:1"], "the reported log is the pre-delete count, unchanged in shape");
+    assert.equal(r.totalRowsDeleted, 1);
+  });
+
+  // The fail-closed half of the same walk: an engine that refuses must not
+  // be reported as a successful delete, and must not get an outcome audit
+  // line. A caller that sees ok:true here would show the user a session
+  // that is still in the database.
+  test("an engine that throws is a failed delete, with no outcome line", async () => {
+    const { join } = await import("node:path");
+    const dir = mkTmpDir("webui-engine-fail-");
+    const dbPath = join(dir, "runtime-state.sqlite");
+    const { spawnSync } = await import("node:child_process");
+    spawnSync(SQLITE3_BIN, [dbPath, "CREATE TABLE local_runtime_sessions (session_id TEXT);"], {
+      encoding: "utf8",
+    });
+    const lines = [];
+    const r = await sessionDelete.deleteSessionThroughEngine(
+      "mvs_cccc000000000000000000000000dddd",
+      {
+        MCODE_RUNTIME_DB: dbPath,
+        appendEvent: (kind) => lines.push(kind),
+        getHost: async () => ({
+          cliService: {
+            deleteSession: () => Promise.reject(new Error("engine said no")),
+          },
+        }),
+      },
     );
-    assert.equal(check.stdout.trim(), "0", "row SHOULD be deleted in normal path");
+    assert.equal(r.ok, false);
+    assert.equal(r.reason, "engine_delete_failed");
+    assert.match(r.error, /engine said no/);
+    assert.deepEqual(lines, ["session.delete.intent"], "intent was written, the outcome was not");
   });
 });
 

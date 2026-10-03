@@ -74,7 +74,7 @@
    │  server/lib/ — pure modules (one concern each)                      │
    │                                                                      │
    │  config · layout · lan · models · sqlite-resolver ·                │
-   │  mcode-session-delete · sessions · state-bus · acp-client         │
+   │  sessions · state-bus · acp-client                               │
    │  mcode-rpc · mcode-acp · mcode-exec · chat-line · context-percent  │
    │  mavis-usage · usage · settings · upload · workspace · slash ·     │
    │  static · gates · auth · alerts · trajectory                       │
@@ -312,9 +312,11 @@ flowchart TD
 Lifecycle notes:
 
 - **Delete** (`DELETE /api/sessions/:id`) removes the webui record AND
-  cross-deletes the linked `mvs_…` rows from the runtime SQLite
-  (`deleteMcodeSessionFromDb`, `?dryRun=true` to preview). Deleting the
-  mcode record drops it from both lists in one transaction.
+  asks the engine to delete the linked `mvs_…` session
+  (`engine/session-delete.js#deleteSessionThroughEngine`, `?dryRun=true`
+  to preview — the preview is a read-only per-table count, because the
+  engine's delete has no preview form). Deleting the mcode record drops
+  it from both lists.
 - **Startup cleanup** prunes records that are empty AND default-titled
   AND older than 24h — the "+"-then-never-typed leftovers.
 - **Search** (`GET /api/sessions/search`) fuzzy-matches titles across
@@ -509,7 +511,7 @@ Fifteen files, one job each:
 | `engine/account-reads.js` | The account family's facade call (`readEngineAccount`) and the endpoint→capability table `ACCOUNT_READ_ENDPOINTS` (step M3, batch B4). Gates **hard** on `authCredentials` · `getAccountStatus` — the same pair and the same provider method as `engine/usage-reads.js`, because #20 and #15/#16 read the same engine projection. Its read is **asynchronous** and it lives under the ordinary `await import()` boot-path rule |
 | `engine/model-reads.js` | The model-catalogue family's facade call (`readEngineModelCatalogue`), the whole projection as named pure functions (`projectModelCatalogue`, `deriveModelSelection`, `buildModelCataloguePayload`, `catalogueSourceLabel`, `webuiFullModelId`, `providerOfModelId`, `attachContextWindowOptions`, `configOption`), and the endpoint→capability table `MODEL_READ_ENDPOINTS` (step M3, batch B4). Gates **soft**: `checkModelReadCapability` reports and never throws, because the catalogue's primary sources are files webui owns. Its read is **synchronous**, and it is the one engine module **not** re-exported from `engine/index.js` — see the boot-path note below |
 | `engine/capability-reads.js` | The capability-declaration family's facade call (`readEngineCapabilityView`) and the endpoint→capability table `CAPABILITY_READ_ENDPOINTS` (step M3, batch B4). Declares **no capability for #73** — it IS the declaration endpoint, and gating the gate would let a `none` hide the declaration that says so. It is the only endpoint in the migration whose response CONTRACT changed (`capabilities` is now the 14-key declaration, replacing the ACP wire table) |
-| `engine/session-writes.js` | The session WRITE family's facade calls (`planEngineSessionDelete`, `commitEngineSessionDelete`, `commitEngineOrphanSessionDelete`, `previewEngineSessionDelete`, `applyEngineSessionRename`, `readOrphanSessionWriteIds`), the pure derivations they are built from (`resolveSessionTarget`, `isMcodeSessionId`, `isOrphanSessionRecord`, `selectOrphanSessionIds`, the two fan-out predicates, the per-client state resets), and the endpoint→capability table `SESSION_WRITE_ENDPOINTS` (step M3, batch B5). Gates **hard** on `sessionCrud` · `deleteSession` for #7 and #6, and declares **no capability at all** for #4. Forwards the 32-table SQL to `lib/mcode-session-delete.js` rather than moving it — see the write-path section below |
+| `engine/session-writes.js` | The session WRITE family's facade calls (`planEngineSessionDelete`, `commitEngineSessionDelete`, `commitEngineOrphanSessionDelete`, `previewEngineSessionDelete`, `applyEngineSessionRename`, `readOrphanSessionWriteIds`), the pure derivations they are built from (`resolveSessionTarget`, `isMcodeSessionId`, `isOrphanSessionRecord`, `selectOrphanSessionIds`, the two fan-out predicates, the per-client state resets), and the endpoint→capability table `SESSION_WRITE_ENDPOINTS` (step M3, batch B5). Gates **hard** on `sessionCrud` · `deleteSession` for #7 and #6, and declares **no capability at all** for #4. Issues no SQL of its own — the engine destroys the rows, through `engine/session-delete.js` — see the write-path section below |
 
 Routes take the host from the facade and never from `lib/acp-client.js`:
 `routes/plugins.js` and `routes/turn-diff.js` call
@@ -701,7 +703,7 @@ same rule: their static imports are `engine/capabilities.js` and
 `await import()` inside the functions. `engine/session-writes.js` adds
 `node:fs` at module scope (a builtin, and `engine/usage-reads.js`
 already does the same) and reaches `lib/sessions.js`,
-`lib/mcode-session-delete.js`, `lib/state-bus.js` and
+`engine/session-delete.js`, `lib/state-bus.js` and
 `lib/config.js` dynamically — all six of its storage dependencies, which
 is what lets it be re-exported from `engine/index.js` at all.
 
@@ -1119,7 +1121,7 @@ answer twice in a row.
 
 | Endpoint | Facade function | Capability · sub-item | Enforcement | Value source |
 | --- | --- | --- | --- | --- |
-| `DELETE /api/sessions/:id` (#7) | `engine/session-writes.js#planEngineSessionDelete` → `engine/session-writes.js#commitEngineSessionDelete` / `engine/session-writes.js#commitEngineOrphanSessionDelete` / `engine/session-writes.js#previewEngineSessionDelete` | `sessionCrud` · `deleteSession` | hard — 501 | the webui session store, the in-memory ACP session cache, the sidebar tree cache, and the engine's own `local_runtime_*` rows via `lib/mcode-session-delete.js#deleteMcodeSessionFromDb` |
+| `DELETE /api/sessions/:id` (#7) | `engine/session-writes.js#planEngineSessionDelete` → `engine/session-writes.js#commitEngineSessionDelete` / `engine/session-writes.js#commitEngineOrphanSessionDelete` / `engine/session-writes.js#previewEngineSessionDelete` | `sessionCrud` · `deleteSession` | hard — 501 | the webui session store, the in-memory ACP session cache, the sidebar tree cache, and the engine's own `local_runtime_*` rows via the engine's `deleteSession`, reached through `engine/session-delete.js#deleteSessionThroughEngine` |
 | `POST /api/sessions/rename` (#4) | `engine/session-writes.js#applyEngineSessionRename` | none of the 14 keys | none — the gate is a reported no-op | webui's own session store, and nothing else. The engine's title is not written |
 | `POST /api/sessions/cleanup-orphans` (#6) | `engine/session-writes.js#readOrphanSessionWriteIds`, then each selected id delegated to `engine/session-writes.js#commitEngineOrphanSessionDelete` | `sessionCrud` · `deleteSession` | hard — 501 | the same store, plus each selected id delegated to #7, so it reaches the same engine rows |
 
@@ -1191,16 +1193,32 @@ memory and rewrites its registry row on its next request — that is the
 cache: invalidating the whole cache empties the sidebar, refills it, and
 reads to the user like the delete failed.
 
-**The 32-table SQL was not moved, and that is recorded rather than
-quietly dropped.** The plan for this batch annotated
-`lib/mcode-session-delete.js` "delete". It is kept because
-`lib/acp-client.js` imports `deleteMcodeSessionFromDb` from it and four
-test files bind to that specifier; collecting it means moving those
-first. The facade reaches it through `await import()` and issues no SQL
-of its own — the same split B3 drew for `lib/mavis-usage.js` and B4 for
-`lib/mcode-rpc.js`. A test asserts both halves: the table list is still
-32 entries exported from the lib module, and the facade contains no SQL
-verb at all.
+**M4-3a collected the debt this batch recorded: the 32-table
+row-destroying SQL is gone, and the engine destroys the rows.** The
+retired module (the bare-SQL session delete, removed here) opened the
+engine's runtime database and deleted by hand across a hand-curated
+table list; the
+destructive step is now the engine's own `deleteSession`, reached from
+`engine/session-delete.js` through the process-local catalogue host — the
+same `getEngineCatalogueHost()` seam the plugin and turn-diff routes use.
+The facade reaches that module through `await import()` and still issues
+no SQL of its own.
+
+**What stayed is the read-only half, and the reason is a fact rather than
+caution: the engine exposes no dry-run or preview form of its delete.**
+`?dryRun=true` is part of #7 and #6's contract, so the per-table COUNT
+remains, against the same 32-table list, in the same module that now
+drives the engine call. webui still READS a schema layout it maintains by
+hand; it no longer WRITES one. The real delete takes its `log` and
+`totalRowsDeleted` from the same readonly pass, taken immediately before
+the engine call, so the `rowsAffected` and `mcodeRowsAffected` fields the
+HTTP layer derives from them carry the values they always carried.
+
+`test/lib/engine/session-delete-ownership.test.js` is the tripwire: no
+server module may import the retired module, issue a DELETE against a
+`local_runtime_*` table, or open the engine's database without
+`readonly: true`. It is a static-source check on purpose — a behavioural
+test cannot distinguish "the engine deleted it" from "webui deleted it".
 
 **#6's response shape is this batch's byte-for-byte red line, so the
 payload is built in the facade and never re-assembled in the route.** The
@@ -1216,12 +1234,15 @@ turn a cleanup request into a 500. `dryRun` suppresses the kill and the
 cache drop, because a preview mutates nothing and a preview that shuts
 down the user's ACP child is a side effect the `?dryRun=true` contract
 does not include; the COUNT still runs, read-only, inside
-`lib/mcode-session-delete.js`.
+`engine/session-delete.js`.
 
 **Three things this batch records as known debt instead of deciding:**
 
-1. The 32-table SQL is still in `lib/mcode-session-delete.js`, for the
-   consumer reasons above.
+1. Collected in M4-3a: the 32-table row-destroying SQL. What remains of
+   the same debt is the READ side — `engine/session-delete.js` still
+   counts against a hand-maintained table list, because the engine has no
+   preview form of its delete. Closing that needs a count surface on the
+   engine itself, which is a local-runtime-v2 change.
 2. A rename is a **webui-side label only**. The engine's own title in
    `local_runtime_sessions` is untouched while the sidebar tree reads its
    titles from the engine, so for an engine-backed session a rename can be
