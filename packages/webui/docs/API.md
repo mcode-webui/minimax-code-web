@@ -470,6 +470,177 @@ of truth for the mcode-side result.
 **Response 404** `{"ok": false, "error": "session not found"}` — id
 matches neither a webui session nor an `mvs_*` pattern.
 
+### The session context actions
+
+Four endpoints behind the session row's right-click menu (归档 / 置顶 /
+复制为新会话). They are grouped here because they share one facade
+(`server/engine/session-context-actions.js`) and one error vocabulary; the
+individual sections follow.
+
+| Endpoint | Body / query | What it does |
+|---|---|---|
+| `POST /api/sessions/:id/archive` | `{ "archived": boolean }` | Archive or unarchive **one** session. |
+| `POST /api/sessions/:id/pin` | `{ "pinned": boolean }` | Pin or unpin one session. |
+| `GET /api/sessions/:id/fork-options` | `?assistantMessageId=` | Describe what a duplicate would be, before making one. |
+| `POST /api/sessions/:id/fork` | `{ "assistantMessageId"? }` | Duplicate the conversation as a new session in the same workspace. |
+
+#### `POST /api/sessions/:id/archive`
+
+Sets the engine's `archived` flag on one session. One method covers both
+directions (`lifecycle-application.ts#archiveSession` reads
+`req.archived !== false`), so `archived` **selects** the direction rather
+than separating two endpoints. The archived-tasks settings page restores a
+row by calling this same endpoint with `archived: false`.
+
+`archived` defaults to `true` and is **not** type-checked, deliberately: the
+engine's own rule is "anything that is not literally `false` archives", and
+a validator that disagreed with it would make the HTTP layer and the engine
+answer differently about the same request.
+
+The sidebar reads `WHERE archived = 0`, so an archived session leaves the
+tree on the next read and an unarchived one returns. The response also
+invalidates the tree cache, so the change is visible immediately rather than
+after the 15 s TTL.
+
+Not gated by the `authorize()` modal, unlike `DELETE /api/sessions/:id`:
+archive is **reversible** — the conversation is intact on the engine and the
+same call restores the row. A confirm dialog on a reversible action is a
+dialog the user learns to dismiss.
+
+**Request** `{ "archived": true }` — `archived` optional, defaults to `true`.
+
+**Response 200** `{ "ok": true, "id": "mvs_…", "archived": true }`
+
+**Errors** — 400 missing id; 501 the provider cannot archive
+(`engine_capability_not_supported`); 502 the engine was asked and failed
+(`engine_archive_failed`); 503 no runtime booted
+(`engine_host_unavailable`).
+
+#### `POST /api/sessions/:id/pin`
+
+Pins or unpins one session through the engine's `PinService`, and returns
+the engine's whole pinned set in its own order so a client can re-render
+without a second tree read.
+
+`pinned` is **required** and is not defaulted. The engine's
+`pinSession(sessionId, pinned, insertIndex?)` takes the flag positionally
+and branches on it, so `{}` is not a defaultable request: defaulting it
+would move the row in a direction the user did not choose. This asymmetry
+with `archive` is the engine's, not the route's.
+
+This endpoint is the family's only member read through the **PB-8
+host-services window** rather than through `host.cliService`, and it is
+therefore the only one whose absence cases are all three distinct:
+
+| State | `code` | Status | Meaning |
+|---|---|---|---|
+| no runtime booted | `engine_host_unavailable` | 503 | The process is not running its runtime. |
+| host with no owner graph | `engine_services_unavailable` | 501 | This transport carries no V2 `services`. |
+| owner graph without `pinService` | `engine_member_unavailable` | 501 | The member this endpoint needs is not composed. |
+
+None of the three produces a success payload. A pin that "succeeded" without
+writing anything is the fake-success shape this repository refuses.
+
+**Request** `{ "pinned": true }`
+
+**Response 200**
+```json
+{ "ok": true, "id": "mvs_…", "pinned": true, "pinnedIds": ["mvs_a", "mvs_b"] }
+```
+
+**Errors** — 400 missing id or non-boolean `pinned`; 501 / 503 as tabled
+above; 502 the engine was asked and failed (`engine_pin_failed`).
+
+#### `GET /api/sessions/:id/fork-options`
+
+Answers "what would duplicating this session be?" before the user commits to
+one. The duplicate dialog is this read, rendered: the engine's own `canFork`
+decides whether the confirm button is live, and its `suggestedTitle` is shown
+so the user sees the title the fork will use.
+
+`?assistantMessageId=` narrows the preview to a fork POINT. Omitted, the
+preview describes forking the whole conversation — which is what the menu
+item means when the user has not picked a message.
+
+Every field is present on every answer, so a partially-shaped engine response
+renders an empty row rather than `undefined`. The `worktree` triple is
+carried through **untouched and unread**: the worktree variant of this menu
+has no desktop reference to build against, so it stays an honest placeholder
+and the fields travel for the batch that unblocks it.
+
+**Response 200**
+```json
+{
+  "ok": true,
+  "id": "mvs_…",
+  "canFork": true,
+  "unavailableReason": null,
+  "suggestedTitle": "Copy of Refactor the parser",
+  "nextForkOrdinal": 2,
+  "sourceTitle": "Refactor the parser",
+  "worktree": { "visible": true, "eligible": false, "unavailableReason": "not a git repository" }
+}
+```
+
+A read that fails is **propagated**, not turned into `canFork: false`. A
+default-shaped options object would put "canFork: false" on screen as if the
+engine had refused a fork it was never asked about; the client has to be able
+to tell "the engine said no" from "we could not ask".
+
+**Errors** — 400 missing id; 501 / 503 as above; 502
+(`engine_fork_options_failed`).
+
+#### `POST /api/sessions/:id/fork`
+
+Duplicates the conversation as a new session in the same workspace.
+
+Two fields are **forced server-side** and cannot be set by the caller:
+
+- `useSuggestedTitle: true` — the fork's title comes from the engine's own
+  suggestion. The dialog SHOWS that suggestion, so the user sees exactly the
+  title that will be used. A caller-supplied `title` is dropped: this
+  endpoint has one title contract.
+- `createIsolatedWorktree: false` — the worktree variant of the menu is a
+  placeholder, so the reachable action must be unable to create a worktree
+  the user was never asked about.
+
+`clientRequestId` is the engine's fork-deduplication key and is minted per
+request by the route, so a duplicate delivery of one POST does not create two
+forks while a user who genuinely duplicates twice gets two sessions.
+
+`assistantMessageId` is the fork POINT and is forwarded only when named; its
+absence is meaningful ("duplicate everything"), so the key is omitted rather
+than sent as `undefined`.
+
+**Request** `{ "assistantMessageId": "msg_…" }` — both body keys optional.
+
+**Response 200**
+```json
+{ "ok": true, "id": "mvs_new…", "sourceId": "mvs_…", "forkOriginMessageId": "msg_…" }
+```
+
+A resolved call that reported **no** session answers **502**
+`engine_fork_no_session` rather than a success with a null id — a success
+with no id would leave the user watching a list grow by one row with no way
+to name it.
+
+**Errors** — 400 missing id; 501 / 503 as above; 502 (`engine_fork_failed`,
+`engine_fork_no_session`).
+
+#### What this group deliberately does not have
+
+- **`复制到新工作树`** stays an honest placeholder with no route. The engine
+  method exists (`createIsolatedWorktree`) and `fork-options` already reports
+  `worktreeVisible` / `worktreeEligible` / `worktreeUnavailableReason`; what
+  is missing is a **reference** — no desktop screenshot of that menu's UI
+  exists. Inventing the dialog's shape, whether a branch is chosen, and what
+  happens to the source session are all unknown.
+- **Project-level `归档对话`** stays an honest placeholder with no route. The
+  engine archives ONE session per call and declares nothing project-wide, so
+  the item would have to fan out N single-session writes. Whether a partial
+  failure counts as success, and whether the user authorizes once or N times,
+  are product decisions no existing contract answers.
+
 ### `GET /api/acp-sessions`
 
 Raw mcode session list (from sqlite). No webui merge.
@@ -486,9 +657,42 @@ Get the title of an mcode session.
 
 Sidebar tree: workspaces with their sessions nested. Cached for
 15 s (`CACHE_TTL_MS` in `server/routes/sessions.js`). Mutations
-(`POST /api/sessions`, `/api/sessions/rename`, `DELETE /api/sessions/:id`)
-bust the cache automatically; clients that race the bust can pass
-`?refresh=1` to force a reread.
+(`POST /api/sessions`, `/api/sessions/rename`, `DELETE /api/sessions/:id`,
+and the context actions `/api/sessions/:id/archive`,
+`/api/sessions/:id/pin`, `/api/sessions/:id/fork`) bust the cache
+automatically; clients that race the bust can pass `?refresh=1` to force a
+reread.
+
+**The pin overlay.** Every session carries a `pinned` boolean and the
+payload carries a `pins` object saying how that boolean was resolved. The
+tree itself is read from the runtime db (`lib/session-tree.js`), and
+`local_runtime_sessions` has no pin column — the pin state lives in the
+preference store the engine's `PinService` owns. So the tree is read first
+and the pins are laid over it: pinned sessions move to the top of their
+directory **in the engine's own pin order**, and unpinned sessions keep the
+tree's `updatedAt` order among themselves. An empty pin set therefore leaves
+the payload's ordering byte-identical, which is what stops an unpinned
+sidebar from shuffling on every read.
+
+`pinned` is written on **every** session, `false` included, so a client
+reads a boolean and never has to know the id set exists. `pins.degraded` is
+what distinguishes "nothing is pinned" from "the engine could not be asked":
+when `degraded` is `true` every `pinned` is `false` because the answer is
+**unknown**, and the sidebar renders the tree it already has. That read
+degrades by design — failing the page's primary data source over a pin
+service that would not answer would be a worse failure than not showing
+pins. The four context-action endpoints do **not** degrade; a mutation that
+cannot confirm its write never claims success.
+
+**The pin read never boots a runtime.** It reaches the host through
+`peekEngineCatalogueHost()`, which returns the host only if one is already
+up. The ordinary `getEngineCatalogueHost()` is a *booting* getter — its
+first call constructs the whole runtime, which costs seconds — and a read
+that used it would turn the first tree request of a fresh process into a
+boot, charging the cost to whoever painted the page first while looking
+like an ordinary slow request. The rule: **a write may boot what it needs; a
+read may only use what is already there.** The four endpoints above are
+writes and do boot; the overlay does not.
 
 **Response 200**
 ```json

@@ -100,6 +100,23 @@ export const OWNED_ROUTES = new Set([
   "GET /api/sessions/search",
   "POST /api/sessions/cleanup-orphans",
   "DELETE /api/sessions/:id",
+  // PB-1: the session right-click action family. Three of the four
+  // greyed rows in `session-tree.tsx` became live here — archive,
+  // pin, duplicate-as-new-session — plus the options read that drives
+  // the duplicate dialog. The worktree variant of the menu and the
+  // project-level "archive conversations" item stay honest placeholders
+  // and have no route; see `engine/session-context-actions.js` KNOWN
+  // DEBT 1 and 2 for why each is a decision rather than a window.
+  //
+  // The route ORDER below matters in one direction: `/api/sessions/:id`
+  // is a DELETE-only Hono pattern, and these are POST/GET on longer
+  // paths, so no pattern is shadowed by another. Each handler slices its
+  // own id out of `ctx.pathname` and 400s when the shape is wrong, which
+  // is the same discipline `handleDeleteSession` uses.
+  "POST /api/sessions/:id/archive",
+  "POST /api/sessions/:id/pin",
+  "GET /api/sessions/:id/fork-options",
+  "POST /api/sessions/:id/fork",
   // Sidebar session tree, served from mcode's runtime db.
   "GET /api/session-tree",
   // ACP session list + title helpers.
@@ -468,6 +485,26 @@ export function createHonoApp() {
   );
   app.delete("/api/sessions/:id", (c) =>
     invokeHandler(c, c.get(CAPTURE_KEY), sessionsRoute.handleDeleteSession),
+  );
+
+  // ----- PB-1: session right-click actions (archive / pin / fork) -----
+  // Registered AFTER `DELETE /api/sessions/:id` and before the session
+  // tree, in the same order as `OWNED_ROUTES`. `:id` is Hono's parameter
+  // marker; each handler resolves the id from `ctx.pathname` by slicing
+  // the prefix and the trailing verb, and answers 400 when the path does
+  // not have that shape — the same rule `handleDeleteSession` follows, and
+  // it is why `/api/sessions//archive` cannot be read as an empty id.
+  app.post("/api/sessions/:id/archive", (c) =>
+    invokeHandler(c, c.get(CAPTURE_KEY), sessionsRoute.handleArchiveSession),
+  );
+  app.post("/api/sessions/:id/pin", (c) =>
+    invokeHandler(c, c.get(CAPTURE_KEY), sessionsRoute.handlePinSession),
+  );
+  app.get("/api/sessions/:id/fork-options", (c) =>
+    invokeHandler(c, c.get(CAPTURE_KEY), sessionsRoute.handleSessionForkOptions),
+  );
+  app.post("/api/sessions/:id/fork", (c) =>
+    invokeHandler(c, c.get(CAPTURE_KEY), sessionsRoute.handleForkSession),
   );
 
   // ----- Sidebar session tree (mcode runtime db) -----

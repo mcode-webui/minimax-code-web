@@ -84,6 +84,33 @@ export async function getCatalogueHost() {
   return _catalogueHostInitPromise;
 }
 
+/**
+ * The catalogue host IF one is already up — `null` otherwise. Never boots.
+ *
+ * The distinction from `getCatalogueHost()` is the whole point: that one is
+ * a BOOTING getter, and a first call costs seconds because it constructs
+ * the runtime. A read that needs the engine must not pay that, because the
+ * cost lands on whoever happened to make the request first — usually the
+ * page's first paint — and it looks like an ordinary slow request rather
+ * than a boot.
+ *
+ * A boot that is ALREADY IN PROGRESS also answers `null` here. Waiting on
+ * it would make a read pay for a write's boot anyway, and would make two
+ * concurrent first reads serialise behind one another's latency. The read
+ * answers without the engine, and the next read — by then the host is up —
+ * gets the full answer. That is the same degrade-on-read contract the pin
+ * overlay uses, one level down.
+ *
+ * Added by PB-1 for `engine/session-context-actions.js#readEnginePinnedSessionOrder`,
+ * which reached the `PinService` through the booting getter and turned the
+ * first `GET /api/session-tree` of a fresh process into a runtime boot.
+ * The WRITE half of that family still uses the booting getter on purpose:
+ * the user asked for an action, and it may bring up what it needs.
+ */
+export function peekCatalogueHost() {
+  return _catalogueHost ?? null;
+}
+
 function transportWantsCatalogue() {
   return MCODE_WEBUI_TRANSPORT === "runtime";
 }

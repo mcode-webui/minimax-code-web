@@ -62,6 +62,18 @@ describe("app.js — migration ledger", () => {
       "GET /api/sessions/search",
       "POST /api/sessions/cleanup-orphans",
       "DELETE /api/sessions/:id",
+      // PB-1: the session right-click action family, in the same order as
+      // the registrations in app.js. Three of these unlock a menu item
+      // that used to render permanently greyed (`session-tree.tsx`), and
+      // the fourth is the options read the duplicate dialog renders. The
+      // worktree variant of that menu and the project-level "archive
+      // conversations" item are deliberately ABSENT from this list: they
+      // are honest placeholders with no backend, and a route for either
+      // would be a capability the UI cannot reach.
+      "POST /api/sessions/:id/archive",
+      "POST /api/sessions/:id/pin",
+      "GET /api/sessions/:id/fork-options",
+      "POST /api/sessions/:id/fork",
       "GET /api/session-tree",
       "GET /api/acp-sessions",
       "GET /api/acp-session-title",

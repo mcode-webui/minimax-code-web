@@ -38,3 +38,38 @@ export async function getEngineCatalogueHost() {
   const { getCatalogueHost } = await import("../lib/acp-client.js");
   return getCatalogueHost();
 }
+
+/**
+ * The catalogue host IF one is already up — never booting one.
+ *
+ * Why this exists, and why it is not an optimisation. `getCatalogueHost()`
+ * is a BOOTING getter: on its first call it `await import`s
+ * `runtime-host.js` and constructs the whole runtime, which takes seconds
+ * (the real-host suites in `test/server/` measure ~5 s for a cold boot).
+ * That is correct for a WRITE — the user asked for an action, and M4-3a's
+ * delete has always booted what it needed — and it is wrong for a READ.
+ * A read that can boot a runtime can turn the page's first paint into a
+ * multi-second stall, and it does so silently: the request looks like an
+ * ordinary one.
+ *
+ * PB-1 hit exactly this. `GET /api/session-tree` had to consult the
+ * engine's `PinService` for the pin overlay, and reaching it through
+ * `getEngineCatalogueHost()` meant the FIRST sidebar read of a fresh
+ * process booted a runtime. The symptom was a 10 s `/api/state` timeout
+ * in the router-boot integration suite under the `runtime` transport, not
+ * an assertion about pins at all.
+ *
+ * So the rule this encodes is: **a write may boot what it needs; a read
+ * may only use what is already there.** A caller that gets `null` here is
+ * being told "no host is up yet", and the honest response is to answer
+ * without the engine — never to trigger the boot as a side effect of
+ * asking.
+ *
+ * @returns {Promise<object|null>} The already-booted host, or `null` when
+ *   none is up (including when a boot is IN PROGRESS — a read does not
+ *   wait for someone else's boot to finish either).
+ */
+export async function peekEngineCatalogueHost() {
+  const { peekCatalogueHost } = await import("../lib/acp-client.js");
+  return peekCatalogueHost();
+}

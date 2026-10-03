@@ -138,6 +138,11 @@ CI 会对上述每一个名称是否出现在本文档中进行断言
 | 清理孤立的 mcode 会话 | ✅ | `/api/sessions/cleanup-orphans` 列出未被任何 webui 会话引用的 mcode 会话，然后删除它们（范围：`orphans` 或 `all`） |
 | 恢复在 TUI 中打开的 mcode 会话 | ❌ | acp 会话只有一个所有者；webui 在检测到外部所有者时显示只读横幅 |
 | 跨工作区会话搜索 | ✅ | 侧边栏搜索输入调用 `GET /api/sessions/search`，它跨所有工作区聚合有标题的匹配项（不区分大小写的模糊匹配 + 按工作区去重）。由 B03 门禁控制。 |
+| 置顶 / 取消置顶会话 | ✅ | `POST /api/sessions/:id/pin` → 引擎的 `PinService#pinSession`。`pinned` 为必填 —— 引擎以位置参数接收它并据其分支，给默认值会把行移到用户并未选择的方向上。侧边栏的置顶状态是对 `GET /api/session-tree` 的**叠加层**：`local_runtime_sessions` 没有置顶列，因此引擎自己的顺序被叠加到树读取之上。与那三个写操作不同，这条读取是降级的 —— 答不上来的引擎会让树保持原样，并在 `pins.degraded` 中说明。 |
+| 归档 / 取消归档会话 | ✅ | `POST /api/sessions/:id/archive` → `archiveSession({id, archived})`，一个方法同时覆盖两个方向。`archived` 默认 `true` 且刻意**不做**类型校验，好让路由与引擎对同一个请求体永远不会给出不同答案（引擎自己的规则是 `req.archived !== false`）。该动作可逆，因此与删除不同，不带 `authorize()` 弹窗。归档后会话离开侧边栏，靠的是树的 `WHERE archived = 0`。 |
+| 复制会话为新会话 | ✅ | `GET /api/sessions/:id/fork-options` 负责预览 —— 弹窗**就是**这次读取的渲染结果，确认按钮是否可用由引擎自己的 `canFork` 决定 —— `POST /api/sessions/:id/fork` 负责执行。`useSuggestedTitle` 与 `createIsolatedWorktree` 由服务端强制；工作树标志被强制**关闭**，因为该菜单的工作树变体仍是占位。 |
+| 复制到新工作树 | ❌ | 引擎侧是现成且未被使用的：`ForkSessionInput.createIsolatedWorktree` 存在，`fork-options` 也已返回 `worktreeVisible` / `worktreeEligible` / `worktreeUnavailableReason` —— 三者原样透传，因此将来解锁它的那一批无需二次往返。缺的是**参照**：该菜单的界面没有任何桌面截图，所以弹窗形态、是否选分支、源会话会如何，全都不知道。它保持诚实占位，而不是自创形态。 |
+| 归档项目下的全部对话 | ❌ | 项目右键菜单的「归档对话」。v2 只为**单个**会话声明了 `archiveSession({id, archived})`，没有任何项目级方法，因此该项需要对 N 个单会话写做扇出。「部分失败算不算成功」与「用户授权一次还是 N 次」是没有任何现成契约能回答的产品决策。 |
 | 将会话导出为 Markdown / JSON | ✅ | `GET /api/sessions/:id/export?format=md|json[&download=true]`（v2.0.0，lease C06）读取 `$WEBUI_DATA_DIR/sessions.json`（主）+ `runtime-state.sqlite`（尽力而为的次选）。由 B03 授权门禁控制。`server/routes/export.js` + `test/routes/export.check.mjs`。 |
 
 ## 8. 令牌用量与配额
