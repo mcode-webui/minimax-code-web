@@ -55,6 +55,10 @@ import { ProviderManagementPanel } from "./provider-management";
 import { SettingsPanel, UsageModelsSection } from "./panels";
 // SB-5：账户 Tab 的真读取分区（`GET /api/account`），见该文件头的分工说明。
 import { AccountSection } from "./settings-account-section";
+// PB-3：工作树 Tab 的真读取分区（`GET /api/worktrees` /
+// `POST /api/worktrees/remove`）。此前的「本地版暂不支持工作树管理」是对
+// 路由的描述，不是对能力的描述——引擎侧的 managedWorktrees 一直是实现好的。
+import { WorktreeSection } from "./settings-worktree-section";
 // 55a 四子页（工单 58 线 D 接线）：与移植壳同目录的纯前端组件，无
 // store/api 依赖；面板自带 localStorage 持久化（lib/settings-local.ts）。
 import {
@@ -505,9 +509,12 @@ export function SettingsModalPort({
           {active === "coding" ? <CodeReviewSection t={t} /> : null}
           {active === "worktree" ? (
             <div className="webui-settings-panels">
-              <SettingPanel title={t("settings.tab.worktree")}>
-                <p className="webui-settings-empty-panel">{t("settings.worktree.empty")}</p>
-              </SettingPanel>
+              {/* PB-3: the tab used to render one honest-looking sentence
+               * reading 「本地版暂不支持工作树管理」, which was true about the
+               * route and false about the capability — `services.managedWorktrees`
+               * had been implemented in v1 all along. It now reads the
+               * engine's own list. See `settings-worktree-section.tsx`. */}
+              <WorktreeSection t={t} />
             </div>
           ) : null}
         </main>

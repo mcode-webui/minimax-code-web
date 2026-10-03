@@ -995,7 +995,7 @@ slice 22 增强：
 
 **导航结构与可用性**
 
-四个分组共 10 个页签，每个都带桌面参照的 18×18 线性图标。「状态」一列写的是用户实际能拿到什么：**渲染出来但无法操作**的控制件叫「诚实占位」——那是设计如此，不是没做。真正没做的只有「工作树」一个。
+四个分组共 10 个页签，每个都带桌面参照的 18×18 线性图标。「状态」一列写的是用户实际能拿到什么：**渲染出来但无法操作**的控制件叫「诚实占位」——那是设计如此，不是没做。最后一个纯占位的「工作树」自 PB-3 起也接上了引擎。
 
 | 分组 | 页签 | 状态 |
 | --- | --- | --- |
@@ -1007,8 +1007,54 @@ slice 22 增强：
 | 管理 | 连接 | 已实装 |
 | 管理 | 账户 | 以读取实现——该分区挂载时读一次 `GET /api/account`，渲染账户名、当前套餐名、配额概况（套餐配额状态 + 5 小时/周窗口剩余读数）与账户状态；「退出登录」维持禁用（引擎没有可调用的登录登出方法） |
 | 编码 | 代码审查 | 已实装——「自定义审查准则」真存 `localStorage`；「审查方式」是禁用单选下拉，显示「子会话」 |
-| 编码 | 工作树 | **未实装**——页签是一行文案「本地版暂不支持工作树管理」 |
+| 编码 | 工作树 | 自 PB-3 起以**清理页**形态实装——见**工作树：这一页能做什么、不能做什么** |
 | 归档 | 已归档任务 | 页签渲染空态「暂无已归档任务」；列表与其操作需要目前不存在的归档会话契约 |
+
+**工作树：这一页能做什么、不能做什么。** 工作树页签是一个**清理**页，不是
+工作区管理器。它列出 Git 已经为当前仓库登记的工作树，并移除你勾选的那些；
+桌面参照（`design-ref/screenshots/ref-23.jpg`）没有「新建工作树」按钮，
+`ManagedWorktreeServicePort` 也没有声明任何创建方法，两边同时自创一个能力并
+不现实。两个端点：
+
+| 端点 | 引擎调用 | 说明 |
+| --- | --- | --- |
+| `GET /api/worktrees?workspace=<repo>` | `services.managedWorktrees.list` | `workspace` 可省；不传时用本次请求所属会话的工作区，两处都没有则 400，而不是去猜服务端 cwd |
+| `POST /api/worktrees/remove` | `services.managedWorktrees.removeBatch` | 请求体 `{items: [{workspace, worktreeDir}], activeWorktreeDir?}` |
+
+两者都用 PB-8 的三态在场门控，而不是能力键——没有任何能力键覆盖
+`services.managedWorktrees`：没有宿主 → **503** `engine_host_unavailable`；
+有宿主但没有 owner graph → **501** `engine_services_unavailable`；
+有 owner graph 但没有该服务 → **501** `worktree_service_unavailable`。三者都
+不会用空列表回 200——一次没读到引擎却显示「没有可清理项」的页面，会让用户
+以为项目是干净的。
+
+目录不是 Git 仓库时是**一条读数**而不是失败：200 + `ok: false` + 引擎自己的
+`code`（`not_git_repository` / `workspace_unavailable` /
+`worktree_list_failed`）。页面把 code 原样点出来，因此三个 code 对应三种不同
+的处理动作，而不是笼统的一句「读取失败」。
+
+工具栏的三档（**近 3 天 / 3-7 天前 / 7 天以上**）按 `lastModifiedMs` 过滤，
+边界取「含」：恰好 3 天算近 3 天，恰好 7 天算 3-7 天前。它们是过滤而不是排序，
+因为每一档在桌面心智模型里就是一个时间带，排序会让更早的档不滚动就看不到。
+时间戳读不出来的行（`lastModifiedMs` 确实是可选的——引擎先读目录 mtime，
+再回退到最近一条 reflog）在**每一档**里都出现，并标注「最后修改时间未知」。
+把它当成 0 会把几秒前改过的工作树塞进「7 天以上」；把它藏起来则会让一个真实
+的工作树不可见。
+
+`removeBatch` 的结论逐条透传、绝不合并：整批全被拒绝时是 `ok: true` 加一份完整
+的 `failedItems`，每项带自己的 `WorktreeRemovalReason`（`main_worktree` /
+`active_worktree` / `not_found` / `locked_worktree` / `dirty_worktree` /
+`unknown`）。页面用一张映射表把每个原因翻成句子，列在工具栏下方。主工作树、
+被锁定的工作树以及会话正在使用的工作树，其复选框**禁用并在旁边写明原因**——
+一个能勾上、提交后才失败的复选框只会让用户觉得按钮在骗人。引擎在真正移除前
+做的运行中检查（`listRunningWorktreeDirs`）在服务内部，界面绕不过去。
+
+浏览器指定的工作区在两个端点上都过隔离门（`assertWorkspacePath`，与
+`/api/fs/*` 同一道边界）；一批里只要有一个仓库在允许根之外，整批拒绝——越界的
+仓库是一次伪造请求，而不是某个恰好失败的工作树。`worktreeDir` 刻意**不再**单独
+过门：引擎只会移除 `git worktree list` 登记为该仓库关联工作树的路径，这道检查
+严格强于根检查；在它前面再加一道更弱的门，只会让合法的越根工作树（仓库旁边的
+同级 checkout）变得无法移除。
 
 **设置页没有「浏览器」页签。** 浏览器能力是工作区的一列标签页（`workspaceTabs.tab.browser`），在工作区标签里挂载 `BrowserPanel`，不是设置分区；`settings.tab.browser` 这个文案键没有任何调用点。本文早期版本曾在「偏好」组下列出「浏览器」页签，那是错的。
 
@@ -2407,10 +2453,68 @@ node packages/webui/server/trajectory/main.mjs --stdio   # MCP over stdio (7 too
 ```bash
 pnpm --filter @mavis/webui test      # full node:test suite (unit + mocked + integration + matrix + trajectory)
 pnpm test:webui                      # same, from the repository root (CI gate)
+pnpm test:webapp                     # webapp（浏览器端）套件：渲染测试 + 交互测试
 node packages/webui/scripts/check-docs-alignment.mjs
 ```
 
 该包有三个运行时依赖（HTTP 层的 `hono` + `@hono/node-server`，以及工作区路径约定的 `@mavis/shared`），需要 Node 22.19+（轨迹工作室另外需要 `node:sqlite`，下限 22.13）。
+
+### 组件测试的两条路
+
+`pnpm test:webapp` 用 `node --test` 跑 `webapp/test/**/*.test.ts`。它有两件渲染工具，回答的是两类不同的问题。
+
+| 工具 | 能回答 | 回答不了 |
+| --- | --- | --- |
+| `renderToStaticMarkup`（`react-dom/server`） | 这个页面印出来是什么样？ | 任何需要事件、副作用或重渲染的问题 |
+| DOM 测试台（`webapp/test/helpers/dom.ts`） | 用户按下某个键之后发生了什么？ | 未挂载的树——它不是快照工具 |
+
+只有「按键真正送达处理函数」才暴露的缺陷，对静态标记是不可见的：字符串没有监听器。这不是假设。快捷键页的「捕获 → 判定 → 冲突上报」整条路径当时一条测试都没有，把冲突上报吞掉的变异照样全绿。「页面印出来是什么样」继续用静态标记（`settings-extra-pages.test.ts`）；答案落在「按下去会怎样」时才换测试台。
+
+```ts
+// webapp/test/helpers/dom.ts —— 挂载组件、驱动它、卸载它。
+import { withDom, mount, resetStorage } from "./helpers/dom";
+
+test("冲突上报在用户编辑的那一行上", async () => {
+  await withDom(createElement(ShortcutsSection, { t }), async (view) => {
+    await view.pressKey("settings-shortcuts-binding-global-search", {
+      key: "O", ctrlKey: true, altKey: true,
+    });
+    assert.match(view.text("settings-shortcuts-conflict-global-search") ?? "", /新建无项目任务/);
+  });
+});
+```
+
+`mount` / `withDom` 返回的句柄成员：
+
+| 成员 | 用途 |
+| --- | --- |
+| `find(id)` / `query(id)` / `findAll(id)` / `text(id)` / `has(id)` | 按 `data-testid` 查找；`find` 找不到就抛错，并列出树上实际渲染出来的 testid |
+| `pressKey(target, {key, ctrlKey, altKey, shiftKey, metaKey})` | 派发冒泡且可取消的 keydown，并让 React 落定 |
+| `keyEvent(press)` | 只构造不派发，用于事后断言 `defaultPrevented` |
+| `click(target)` / `fire(target, type, init)` / `type(target, value)` | 其余事件，同样都会落定 |
+| `run(fn)` | 在 `act` 里跑任意代码块，用于裸 `dispatchEvent` |
+| `rerender(node)` / `flush()` / `html()` | 重渲染、排空定时器、序列化 |
+| `unmount()` | 卸载并摘除根节点；`withDom` 在抛异常的路径上也会做 |
+| `window` | happy-dom 的 window，用于取它的 `localStorage` |
+
+四条规则，每条都对应测试台会「说谎」的一种方式：
+
+1. **`helpers/dom` 必须早于任何组件 import。** `react-dom` 在自己第一次被求值时抓一次 `canUseDOM`；那一刻没有 window，它会退回到没有事件系统的主机配置。测试台在自己的模块体里发布 window，再用动态 import 拉 `react-dom/client`，所以只要测试台 import 写在最前面，顺序就是安全的。写错的后果是响的而不是哑的：树渲染成空，第一条断言就会失败。
+2. **目标一律是 `data-testid` 字符串**，与组件已有的约定一致。找不到会抛错，并附上当前树上真实存在的 testid。
+3. **测试之间调用 `resetStorage()`。** 一个 window、一个存储源，和浏览器标签页一样——没清掉的状态会漏进下一个测试。
+4. **markdown 遍历器仍然该用 `webapp/test/helpers/dom-shim.ts`。** 它基于 `parse5` 提供 `DOMParser`，完全不需要 window。
+
+### 为什么选 `happy-dom`
+
+webapp 套件跑在 `node:test` 上，不是 Vitest 的 DOM 环境，所以 `@testing-library` 会带来本运行器并没有的 `beforeEach` / 自动清理协议——而它能补的那三个 API，上面这个句柄已经都有了。
+
+| 候选 | 传递依赖 | 代价 | 落选原因 |
+| --- | --- | --- | --- |
+| `jsdom` 30 | 22 个 | 含 `undici` + `css-tree` + `whatwg-url`，约 20 MB | 规范最完整。但套件断言的是属性、文本和事件投递，而这些恰好不是两者实现分歧的地方。 |
+| `happy-dom` 20 | 4 个（`entities`、`whatwg-mimetype`、`buffer-image-size`、`ws`） | 解包 8 MB | **选定。** |
+| 都不引入 | 0 | — | `dom-shim.ts` 里的 `parse5` 垫片证明「中间路线」对解析器可行，但 `DOMParser` 派发不了事件。 |
+
+`happy-dom` 是 `@mavis/webui` 的 devDependency，不会进入产品产物。但它会撑大 `pnpm-lock.yaml`：`vitest` 把它声明为可选 peer，于是 vitest 的解析键在每个 workspace importer 上都会变。凡是消费该 lockfile 的检出，之后都需要 `pnpm install --frozen-lockfile`。本机实测：import 103 ms、构造 window 3 ms，每个测试文件付一次，且只由 import 测试台的文件付。
 
 ## 起源
 

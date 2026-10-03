@@ -72,6 +72,7 @@ import * as gitRoute from "./routes/git.js";
 import * as pluginsRoute from "./routes/plugins.js";
 import * as turnDiffRoute from "./routes/turn-diff.js";
 import * as engineCapabilitiesRoute from "./routes/engine-capabilities.js";
+import * as worktreesRoute from "./routes/worktrees.js";
 import * as authorizeRoute from "./lib/authorize.js";
 
 /**
@@ -141,6 +142,19 @@ export const OWNED_ROUTES = new Set([
   // has to come back to the input box. See `engine/follow-up.js` for the
   // ownership gate and the KNOWN DEBT list.
   "POST /api/follow-up",
+  // PB-3 — the 工作树 settings page. Two windows over
+  // `services.managedWorktrees` (`ManagedWorktreeServicePort`,
+  // packages/local-runtime/src/files/managed-worktrees.ts:39-50), which
+  // had been fully implemented in v1 and reachable only through the PB-8
+  // owner-graph window. The tab rendered 「本地版暂不支持工作树管理」 —
+  // true about the route, false about the capability. There is no create
+  // endpoint and no create button: the desktop page is a CLEANUP page
+  // (`design-ref/screenshots/ref-23.jpg`), and adding one would invent a
+  // capability the port does not declare. Removal is batch-only because
+  // the desktop action is 「一键移除」 over a selection. See
+  // `engine/worktrees.js` for the three-state presence gate.
+  "GET /api/worktrees",
+  "POST /api/worktrees/remove",
   // Usage / quota.
   "POST /api/usage",
   "POST /api/usage-trigger",
@@ -571,6 +585,17 @@ export function createHonoApp() {
   // order stay the same list.
   app.post("/api/follow-up", (c) =>
     invokeHandler(c, c.get(CAPTURE_KEY), followUpRoute.handleFollowUp),
+  );
+
+  // ----- PB-3: 工作树 -----
+  // Registered next to the settings families they serve. The list is a
+  // read that degrades to the engine's own `code` (a non-git directory is
+  // a fact, not a failure); the removal is the page's only write.
+  app.get("/api/worktrees", (c) =>
+    invokeHandler(c, c.get(CAPTURE_KEY), worktreesRoute.handleGetWorktrees),
+  );
+  app.post("/api/worktrees/remove", (c) =>
+    invokeHandler(c, c.get(CAPTURE_KEY), worktreesRoute.handleRemoveWorktrees),
   );
 
   // ----- Usage / quota -----
