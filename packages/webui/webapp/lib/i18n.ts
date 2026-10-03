@@ -95,13 +95,6 @@ const en = {
      heading is always present when at least one level is offered. */
   "modelSelector.level": "Thinking effort",
   "modelSelector.levelHint": "Picking a level here also re-anchors the model",
-  /* Model selector — ticket 09. The "Add provider" row at the top of
-     the dropdown deep-links into Settings → Providers with a fresh
-     draft and the id input focused. The label is bilingual-friendly:
-     the dashboard already uses "供应商" for the providers section,
-     so this wording lands as one phrase rather than two stacked
-     words. */
-  "modelSelector.addProvider": "Add model / provider",
   /* Model selector — ticket 10. The cascade submenu's accessible
      name. The fly-out inherits the parent dropdown's role, but
      `aria-label` on the menu gives screen readers a one-word handle
@@ -1246,9 +1239,6 @@ const zh: Record<MessageKey, string> = {
   /* 模型选择器 — ticket 07。下拉顶部新增的思考等级行标题与提示。 */
   "modelSelector.level": "思考等级",
   "modelSelector.levelHint": "点等级会同时绑定当前模型",
-  /* 模型选择器 — ticket 09。下拉顶部的「添加供应商」入口直跳到设置 → 模型供应商，
-     自动新建草稿并把焦点放到 id 输入框。沿用侧栏的「模型供应商」命名。 */
-  "modelSelector.addProvider": "添加模型 / 供应商",
   /* 模型选择器 — ticket 10。右侧级联子菜单的 aria-label。 */
   "modelSelector.thinkingLevels": "思考等级",
   /* 模型选择器 — U6 上下文窗口。详情区标题与单个选项的用量提示。

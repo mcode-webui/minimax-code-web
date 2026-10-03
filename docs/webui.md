@@ -690,6 +690,7 @@ The picker is one list. A model's settings do not live in a column beside it —
 | The fly-out's placement | One engine (`useFlyoutPosition`) | A second copy of the flip/clamp math for the nested tier. Two implementations of "which way does this open" is how two panels of one cascade end up disagreeing |
 | List structure | A provider group header, then one row per MODEL under it | A provider row that opened a fly-out of that provider's models — two clicks to read any model name. Grouping survives because the header is the reference's own shape and the only place left to say "no key" now that no provider row exists |
 | Search box | None | The roadmap's ❌ 「选择器无搜索」 is retired by scope rather than by code. The list is already the whole catalogue at one click deep; a filter would be a second way to reach a row the list shows |
+| Model management | Not in the picker at all | A dashed 「添加模型 / 供应商」 row at the top of the list. It deep-linked into the settings modal on 自定义模型 with the add dialog already open: a second door to the surface settings already owns, opening a half-finished dialog in a panel the user then had to find again. The chain behind it — `autoAddProvider` through the page, the settings port, `panels.tsx` and the provider panel — had that one row as its only producer, so removing the row removed the flag with it, and the page has one settings landing view again |
 | Settings surfaces | One fly-out | The old panel rendered the same controls twice — once editable in a column, once read-only in a panel-bottom area. Two renderings of "which level is this model on" is a contradiction waiting to happen, not a second view |
 | The ✓ marker | On the active MODEL's row | On a provider row. With the models in the list, the marker belongs where the name is |
 | Binary thinking | The app's own `webui-toggle-switch` | A hand-rolled pill built from border/background tokens. The reference draws this switch blue when on, and tokens can only reach the greys in the palette — which read as "off" at a glance. The shared class is also what the settings modal renders, so the two switches in the product cannot drift apart. Which models get it at all is still adaptive: `effortControlShape` returns `switch` for an `off`/`on` pair and `radiogroup` for anything else |
@@ -1153,9 +1154,12 @@ Below the page's h2 sits the desktop's segmented header: 「Token Plan 使用中
 disclosure chevron render in the desktop's form, and the dropdown itself is
 deliberately omitted per ticket 53 — the local edition has no plan source to
 switch between) | a hairline | 「自定义模型」. The page lands on the Token
-Plan view; the one exception is the model selector's add-provider deep-link
-(`autoAddProvider`), which seeds the custom-models view — otherwise the add
-flow would fire behind a view where the panel is not rendered.
+Plan view, always. It used to have one exception — the model selector's
+add-provider deep-link seeded the custom-models view, because the add flow
+fires on mount and would otherwise run behind a view where the panel is
+not rendered. That deep-link is gone with the picker's add row (see the
+model-management row in *The model picker* above), so there is one landing
+view and 「自定义模型」 is one click away on the header above.
 
 The Token Plan view is the desktop's five blocks (the tabs plus four cards):
 
@@ -1198,6 +1202,8 @@ provider grouping and the thinking-display exceptions are unchanged; the
 auto-add deep-link still lands on the custom-models view, now opening the
 dialog. The legacy rail-draft `addProvider` path and the editor's dead
 auto-focus prop were deleted with their behaviour subsumed by the dialog.
+*(That deep-link was later removed along with the model selector's add row;
+see the model-management row in *The model picker* above.)*
 
 **Acceptance round 2 (same ticket).** The dialog components moved to
 `components/add-model-dialog.tsx` and export their controlled surfaces,
@@ -1326,7 +1332,9 @@ untouched; `SETTINGS_NAV`, the `SettingsSection` union and the deep-link
 entry points (`initialSection`, `autoAddProvider`) are unchanged; the eight
 tabs that were placeholders when this round landed kept their placeholder
 form — the settings-modal port (58) and its four sub-pages (55a) later gave
-most of them content, see the navigation table above. The `usage.used` /
+most of them content, see the navigation table above. (`autoAddProvider`
+did not survive: the model picker's add row is gone, so the flag had no
+producer and was deleted with its effect.) The `usage.used` /
 `usage.reset` label strings, which lost their last consumer to the
 desktop-figure forms, were deleted from both dictionaries.
 
@@ -1364,7 +1372,9 @@ the `SETTINGS_NAV` four-group division and the three-value
 `autoAddProvider` — the model selector's add-provider flow and the user
 menu's usage row both still land where they did); and the eight tabs that
 were placeholders in this round, which the settings-modal port (58) has
-since given content. The dead `if (!section)` branch inside `SettingsPanel`
+since given content. (The model selector's half of that is since gone —
+`autoAddProvider` went with it, and `initialSection` is what the user
+menu's usage row still uses.) The dead `if (!section)` branch inside `SettingsPanel`
 was removed and the `section` prop made required — every reachable tab
 resolves a section, so the branch could never render.
 

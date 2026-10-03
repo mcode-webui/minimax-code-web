@@ -152,15 +152,9 @@ const PERMISSION_MODES: { id: string; key: MessageKey; icon?: IconName; selectab
 export function Composer({
   t,
   inline = false,
-  onAddProvider,
 }: {
   t: (key: MessageKey) => string;
   inline?: boolean;
-  /** Open the provider management flow with a fresh draft already
-   *  created. The model selector's top "Add provider" row triggers
-   *  this; it lands the user in the settings modal on the providers
-   *  section, with the id input focused so they can start typing. */
-  onAddProvider?: () => void;
 }) {
   const { state, providersRevision } = useSessionContext();
   // The session this composer is standing in. Derived before the draft
@@ -850,7 +844,6 @@ export function Composer({
                 sessionKey={sessionKey}
                 thinking={state?.model?.thinking ?? ""}
                 contextWindow={currentContextWindow}
-                onAddProvider={onAddProvider}
                 onPick={(id) => {
                   // Ticket 11: cascade click sends the MODEL only.
                   // The recorded thinking effort is preserved when
@@ -1396,7 +1389,6 @@ function ModelSelect({
   onContextPick,
   onThinkingPick,
   thinkingDisabled,
-  onAddProvider,
 }: {
   t: (key: MessageKey) => string;
   /** The active session id. The picker's local UI state (open cascade,
@@ -1453,10 +1445,6 @@ function ModelSelect({
    *  running, mirroring the composer-level control's `disabled`
    *  (a mid-run pick still records for the next turn). */
   thinkingDisabled?: boolean;
-  /** Open the provider management flow with a fresh draft already
-   *  created. Triggered by the top "Add provider" row. The page owns
-   *  the route — the selector just hands the intent up. */
-  onAddProvider?: () => void;
 }) {
   const [open, setOpen] = useState(false);
 
@@ -1829,22 +1817,13 @@ function ModelSelect({
             <SelectRow testId="model-select-empty" label={t("composer.noModels")} />
           ) : (
             <div className="flex flex-col" data-webui-model-menu="true">
-              {/* Top "Add provider" affordance (ticket 09). One-click
-                  jump to the management panel's add flow. */}
-              {onAddProvider ? (
-                <button
-                  type="button"
-                  data-testid="model-select-add-provider"
-                  onClick={() => {
-                    setOpen(false);
-                    onAddProvider();
-                  }}
-                  className="mx-1 mt-0.5 flex h-7 items-center gap-1.5 rounded-[8px] border border-dashed border-border_default px-2 text-caption-small-strong text-text_default_secondary transition-colors hover:border-border_heavy hover:bg-bg_interaction_tertiary_hover hover:text-text_default_primary"
-                >
-                  <Icon name="plusSmall" size={14} className="text-icon_default_secondary" />
-                  <span>{t("modelSelector.addProvider")}</span>
-                </button>
-              ) : null}
+              {/* No "add provider" row here, deliberately. This menu answers
+                  "which model", and the settings page owns "how do I get a
+                  model I don't have" — the provider list, the add dialog and
+                  the connectivity check all live there. A shortcut row here
+                  was a second door to the same room, and the one that opened
+                  a half-finished dialog in a surface the user then had to
+                  find again. */}
               {/*
                 The list, in the reference's own shape: a provider group
                 header, and under it one row per MODEL. Every name in the

@@ -91,27 +91,18 @@ export type { DraftProvider, DraftModel, ProviderTestOutcome };
 
 export function ProviderManagementPanel({
   t,
-  autoAddProvider,
-  onAutoAddConsumed,
 }: {
   t: (key: MessageKey) => string;
-  /** One-shot flag — when true, fire `addProvider()` on the next
-   *  load completion. The page sets this when the model selector's
-   *  "Add provider" row is clicked; the modal lands on the providers
-   *  section, the panel mounts, and once the catalogue is loaded we
-   *  create a fresh draft so the user can start typing immediately.
-   *  Cleared via `onAutoAddConsumed` so re-opening the modal does
-   *  not re-fire. */
-  autoAddProvider?: boolean;
-  onAutoAddConsumed?: () => void;
 }) {
   const { providersRevision } = useSessionContext();
   const [providers, setProviders] = useState<DraftProvider[] | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   /** Ticket 54 — the desktop-parity add-model dialog. The only add
-   *  entry point: the empty-state button, the rail's 「+ 添加模型」
-   *  button, and the model-selector deep-link all open it. */
+   *  entry point: the empty-state button and the rail's 「+ 添加模型」
+   *  button both open it. The model selector used to deep-link straight
+   *  here with a draft open; that shortcut is gone, and settings is the
+   *  one surface where a model gets added. */
   const [addDialogOpen, setAddDialogOpen] = useState(false);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -144,32 +135,6 @@ export function ProviderManagementPanel({
   useEffect(() => {
     void load();
   }, [load, providersRevision]);
-
-  /**
-   * Auto-add fire-once (ticket 09, reworked in 54).
-   *
-   * The model selector's top "Add provider" row sends the user here
-   * with `autoAddProvider = true`. Once the initial `load()` has
-   * populated `providers`, we open the add-model dialog — the
-   * desktop-parity add surface — so the user lands mid-add.
-   *
-   * The flag is one-shot: the effect tracks the consumed state with
-   * a ref so a later mount (re-opening the modal) without the flag
-   * does not re-fire, and a later mount WITH the flag does not
-   * fire on every `providersRevision` bump either.
-   */
-  const autoAddFiredRef = useRef(false);
-  useEffect(() => {
-    if (!autoAddProvider) {
-      autoAddFiredRef.current = false;
-      return;
-    }
-    if (autoAddFiredRef.current) return;
-    if (!providers) return;
-    autoAddFiredRef.current = true;
-    setAddDialogOpen(true);
-    onAutoAddConsumed?.();
-  }, [autoAddProvider, providers, onAutoAddConsumed]);
 
   // Validation summary across the whole draft, recomputed whenever
   // the user touches a field. The editor surface is only enabled

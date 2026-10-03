@@ -112,7 +112,6 @@ function App() {
   // Settings is a dialog rather than a drawer panel, so it has its own state.
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<"general" | "connection" | "providers">("general");
-  const [pendingProviderAdd, setPendingProviderAdd] = useState(false);
   const [browserPath, setBrowserPath] = useState<string | null>(null);
   const [sessionHint, setSessionHint] = useState<{ kind: "not-found"; sessionId: string } | null>(null);
   const alertCount = useAlertCount();
@@ -398,7 +397,6 @@ function App() {
 
   const openSettings = useCallback(() => {
     setSettingsSection("general");
-    setPendingProviderAdd(false);
     setSettingsOpen(true);
   }, []);
 
@@ -407,13 +405,6 @@ function App() {
   // section instead of opening a flyout of its own.
   const openUsage = useCallback(() => {
     setSettingsSection("providers");
-    setPendingProviderAdd(false);
-    setSettingsOpen(true);
-  }, []);
-
-  const openProviderAdd = useCallback(() => {
-    setSettingsSection("providers");
-    setPendingProviderAdd(true);
     setSettingsOpen(true);
   }, []);
 
@@ -640,7 +631,7 @@ function App() {
           onOpenFile={onOpenFile}
         />
       </div>
-      <Composer t={t} onAddProvider={openProviderAdd} />
+      <Composer t={t} />
       <p
         data-testid="app-disclaimer"
         className="flex-none px-4 pt-1 pb-2 text-center text-caption-small-strong text-text_default_secondary"
@@ -650,7 +641,7 @@ function App() {
     </div>
   ) : (
     <HomeState t={t} locale={locale}>
-      <Composer t={t} inline onAddProvider={openProviderAdd} />
+      <Composer t={t} inline />
     </HomeState>
   );
 
@@ -755,8 +746,6 @@ function App() {
         locale={locale}
         setLocale={setLocale}
         initialSection={settingsSection}
-        autoAddProvider={pendingProviderAdd}
-        onAutoAddConsumed={() => setPendingProviderAdd(false)}
       />
       {sessionHint ? (
         <div
