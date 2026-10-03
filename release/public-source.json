@@ -3949,6 +3949,7 @@
     "packages/webui/webapp/test/chat-virtual-list.test.ts",
     "packages/webui/webapp/test/cid.test.ts",
     "packages/webui/webapp/test/code-highlight.test.ts",
+    "packages/webui/webapp/test/codeblock-overflow-containment.test.ts",
     "packages/webui/webapp/test/composer-context-window.test.ts",
     "packages/webui/webapp/test/composer-draft.test.ts",
     "packages/webui/webapp/test/composer-models.test.ts",
