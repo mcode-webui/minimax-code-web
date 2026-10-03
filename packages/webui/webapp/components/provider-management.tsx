@@ -2,12 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Alert as AntAlert,
-  Input as AntInput,
-  Select as AntSelect,
-  Switch as AntSwitch,
   Tag as AntTag,
-  Empty as AntEmpty,
   Popconfirm as AntPopconfirm,
 } from "antd";
 
@@ -15,79 +10,50 @@ import * as api from "@/lib/api";
 import type { MessageKey } from "@/lib/i18n";
 import { useSessionContext } from "@/lib/store";
 import {
-  blankModel,
-  describeTestOutcome,
   draftFromView,
   draftToWire,
-  validateModelRow as validateModelRowLib,
-  validateProviderId,
-  THINKING_LEVELS,
-  MODALITIES,
   type DraftProvider,
-  type DraftModel,
-  type ProviderTestOutcome,
 } from "@/lib/provider-management";
 import { AddModelDialog } from "./add-model-dialog";
+import { Icon } from "./icons";
 
 /**
  * Provider management panel (ticket 03).
  *
- * Lives inside the settings modal as a fourth section ("Model providers"),
- * alongside general / appearance / connection. Renders the v2 catalogue
- * fetched from `/api/providers`, lets the operator edit / add / delete /
- * test-connection per-provider, and PUTs the result through
- * `/api/providers`. PUT triggers a `providers.updated` SSE frame that
- * the store's `providersRevision` counter carries back to the composer
- * — so saving without a page reload causes the model selector to show
- * the new group.
+ * Lives inside the settings modal as a fourth section ("Model
+ * providers"), alongside general / appearance / connection. It renders
+ * the v2 catalogue fetched from `/api/providers` and is now a LIST
+ * ONLY: the flat right-hand editor this panel used to carry is gone,
+ * and every add and edit goes through the desktop-parity dialog in
+ * `components/add-model-dialog.tsx` (ticket 54/85/this slice). One
+ * form, one entry contract — the panel keeps the catalogue, the
+ * preset gallery, and the PUT path; the dialog keeps the fields.
  *
- * Key handling:
- *   - GET returns `apiKeyMasked` (e.g. "sk-a***b"). The form's key input
- *     renders the masked value as its placeholder, NOT its value — so an
- *     "untouched" field carries an empty string when the form PUTs.
- *   - The PUT route applies `applyKeepKeyConvention`: an empty apiKey
- *     on an incoming provider is the sentinel "keep the existing key
- *     for this id". A non-empty value (including the masked placeholder)
- *     replaces. The form therefore:
- *       * never writes the masked placeholder to disk, by virtue of
- *         leaving the field empty when the user did not touch it;
- *       * writes the user's typed value verbatim when they did.
+ * Why the list is all that remains: a provider row opens the dialog
+ * with that provider projected onto the form (`editSeedFromDraft`),
+ * and 保存 PUTs the same `draftToWire` body the editor used to build.
+ * The wire contract is untouched; only the surface moved.
  *
- * Test connection:
- *   - Per-protocol minimal probe via `/api/providers/test`. The form
- *     sends the LIVE form values (so the user can test before saving),
- *     and renders a structured result inline: success latency on
- *     `OK`, otherwise a translated message keyed by `code` (`INVALID_KEY`,
- *     `BAD_PROTOCOL`, `PROBE_FAILED`) with the upstream HTTP status /
- *     network error in the detail line.
+ * Key handling (unchanged by this slice, restated because the dialog
+ * now owns the field):
+ *   - GET returns `apiKeyMasked` (e.g. "sk-a***b"). The dialog renders
+ *     the mask as the key input's PLACEHOLDER, never as its value, so
+ *     an untouched field carries an empty string on PUT — which
+ *     `applyKeepKeyConvention` reads as "keep the existing key for
+ *     this id". A typed value replaces it.
  *
- * Preset one-click enable (degrades gracefully):
- *   - The contract for `GET /api/providers/presets` + `POST
- *     /api/providers/preset/:id/enable` is being built in parallel on
- *     `feat/provider-presets`. This panel fetches the catalogue on
- *     mount and hides the section on 404 — the rest of the panel
- *     stays usable without it.
+ * Test connection: the dialog's per-model 检测 and footer 连通检测 both
+ * call `POST /api/providers/test` with the LIVE form values, so a
+ * provider is probed before it is saved and the panel needs no second
+ * copy of the probe.
  *
- * Add-model dialog (ticket 54, desktop parity) — lives in
- * `components/add-model-dialog.tsx` since acceptance round 2, so the
- * suite can render-test its behaviour (the panel's store/api graph
- * must stay out of a test process). The panel keeps only the wiring:
- * the empty-state / rail button and the deep-link open the dialog,
- * and `saveFromDialog` appends its draft through the same
- * draftToWire + PUT path as the panel's own Save button — the wire
- * body is unchanged. Dialog data policy (see that file for detail):
- * auto-fetch lists the selected preset's built-in catalogue with an
- * explicit not-a-live-query note, a custom provider keeps the link
- * clickable but the dialog states the missing capability and
- * disables 添加, and max-output-tokens renders disabled with the
- * standing 「本地版不适用」 marker.
+ * Preset one-click enable (degrades gracefully): the catalogue fetch
+ * 404s until the presets route is mounted, and the section hides
+ * itself — the rest of the panel stays usable without it.
  */
 
-const PROTOCOLS: api.ProviderProtocol[] = ["openai", "anthropic", "gemini"];
-const AUTH_TYPES: api.ProviderAuthType[] = ["byok", "coding-plan"];
-
 /** Re-exported for tests. */
-export type { DraftProvider, DraftModel, ProviderTestOutcome };
+export type { DraftProvider };
 
 export function ProviderManagementPanel({
   t,
@@ -107,30 +73,22 @@ export function ProviderManagementPanel({
 }) {
   const { providersRevision } = useSessionContext();
   const [providers, setProviders] = useState<DraftProvider[] | null>(null);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  /** Ticket 54 — the desktop-parity add-model dialog. The only add
-   *  entry point: the empty-state button, the rail's 「+ 添加模型」
-   *  button, and the model-selector deep-link all open it. */
-  const [addDialogOpen, setAddDialogOpen] = useState(false);
+  /** The desktop-parity dialog. `null` editTarget = 「+ 新增」; a
+   *  draft = that provider, pre-filled. Both entry points — the
+   *  empty-state button, the rail's 「+ 添加模型」, the model-selector
+   *  deep-link, and a click on an existing row — open THIS dialog. */
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [editTarget, setEditTarget] = useState<DraftProvider | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
-  const [testByProvider, setTestByProvider] = useState<Record<string, ProviderTestOutcome | undefined>>({});
 
   const load = useCallback(async () => {
     try {
       const snap = await api.listProviders();
       setProviders(snap.providers.map(draftFromView));
       setLoadError(null);
-      setSelectedId((current) => {
-        // After a save, fresh drafts have no server counterpart.
-        // selection falls back to the first server-side row so the
-        // editor stays meaningful.
-        if (current && current.startsWith("__new_")) return snap.providers[0]?.id ?? null;
-        if (current && snap.providers.some((p) => p.id === current)) return current;
-        return snap.providers[0]?.id ?? null;
-      });
     } catch (cause) {
       setLoadError(
         t("providers.loadError").replace(
@@ -144,6 +102,25 @@ export function ProviderManagementPanel({
   useEffect(() => {
     void load();
   }, [load, providersRevision]);
+
+  /** Open the dialog in 「+ 新增」 mode. */
+  const openAddDialog = useCallback(() => {
+    setEditTarget(null);
+    setDialogOpen(true);
+  }, []);
+
+  /** Open the dialog on an existing row. The row's own id is excluded
+   *  from the dialog's duplicate check — a provider is not a duplicate
+   *  of itself. */
+  const openEditDialog = useCallback((draft: DraftProvider) => {
+    setEditTarget(draft);
+    setDialogOpen(true);
+  }, []);
+
+  const closeDialog = useCallback(() => {
+    setDialogOpen(false);
+    setEditTarget(null);
+  }, []);
 
   /**
    * Auto-add fire-once (ticket 09, reworked in 54).
@@ -167,96 +144,9 @@ export function ProviderManagementPanel({
     if (autoAddFiredRef.current) return;
     if (!providers) return;
     autoAddFiredRef.current = true;
-    setAddDialogOpen(true);
+    openAddDialog();
     onAutoAddConsumed?.();
-  }, [autoAddProvider, providers, onAutoAddConsumed]);
-
-  // Validation summary across the whole draft, recomputed whenever
-  // the user touches a field. The editor surface is only enabled
-  // when the draft is valid; the Save button follows the same rule.
-  const validation = useMemo(() => {
-    if (!providers) return { ok: false, errors: [] as string[] };
-    const errors: string[] = [];
-    const seen = new Set<string>();
-    for (const p of providers) {
-      if (p.markedForDeletion) continue;
-      const idErr = validateProviderId(p.id);
-      if (idErr) errors.push(`[${p.id || "(new)"}] ${idErr}`);
-      if (seen.has(p.id.trim())) errors.push(`duplicate id: ${p.id}`);
-      seen.add(p.id.trim());
-      for (const m of p.models) {
-        const mErr = validateModelRowLib(m);
-        if (mErr) errors.push(`[${p.id} / ${m.id || "(model)"}] ${mErr}`);
-      }
-    }
-    return { ok: errors.length === 0, errors };
-  }, [providers, t]);
-
-  const updateSelected = useCallback(
-    (mutator: (draft: DraftProvider) => DraftProvider) => {
-      setProviders((current) => {
-        if (!current) return current;
-        return current.map((p) =>
-          p.draftId === selectedId ? mutator(p) : p,
-        );
-      });
-    },
-    [selectedId],
-  );
-
-  const markDeleted = useCallback((draftId: string) => {
-    setProviders((current) => {
-      if (!current) return current;
-      // Existing providers: soft-delete (preserve id so the row stays
-      // visually in place). New drafts (id starts with `__new_`):
-      // hard-remove, since they were never saved.
-      const draft = current.find((p) => p.draftId === draftId);
-      if (!draft) return current;
-      if (draft.isNew) return current.filter((p) => p.draftId !== draftId);
-      return current.map((p) =>
-        p.draftId === draftId ? { ...p, markedForDeletion: true } : p,
-      );
-    });
-  }, []);
-
-  const testSelected = useCallback(async () => {
-    if (!providers || !selectedId) return;
-    const draft = providers.find((p) => p.draftId === selectedId);
-    if (!draft) return;
-    const key = draft.draftId;
-    setTestByProvider((current) => ({ ...current, [key]: undefined }));
-    try {
-      const result = await api.testProviderConnection({
-        protocol: draft.protocol,
-        auth: {
-          type: draft.auth.type,
-          apiKey: draft.auth.apiKey,
-          baseURL: draft.auth.baseURL || undefined,
-        },
-        // 4s — the user is waiting; the wire default is 8s.
-        timeoutMs: 4000,
-      });
-      setTestByProvider((current) => ({
-        ...current,
-        [key]: {
-          ok: result.ok,
-          latencyMs: result.latencyMs,
-          code: result.code,
-          error: result.error,
-          detail: result.detail,
-        },
-      }));
-    } catch (cause) {
-      setTestByProvider((current) => ({
-        ...current,
-        [key]: {
-          ok: false,
-          code: "PROBE_FAILED",
-          error: cause instanceof Error ? cause.message : String(cause),
-        },
-      }));
-    }
-  }, [providers, selectedId]);
+  }, [autoAddProvider, providers, openAddDialog, onAutoAddConsumed]);
 
   /** Shared PUT path: write the given draft list through
    *  `/api/providers` and re-read the catalogue so masked key
@@ -288,39 +178,48 @@ export function ProviderManagementPanel({
     [load, t],
   );
 
-  const save = useCallback(async () => {
-    if (!providers || !validation.ok) return;
-    const putOk = await persist(providers);
-    if (!putOk) return;
-    // Auto-test after save: a user who just configured a new provider
-    // expects feedback immediately, not a separate click on the
-    // "Test connection" button. The test runs against the live draft
-    // values the user typed; the test result lands inline next to
-    // the save button (described by `testByProvider`).
-    //
-    // The auto-test fires on the *first* newly-added draft with a key
-    // — existing providers were already tested when the user touched
-    // their key field, and re-running the probe on every save would
-    // hide a stale result under a fresh success message.
-    const fresh = providers.find(
-      (p) =>
-        !p.markedForDeletion &&
-        p.isNew &&
-        p.auth.type === "byok" &&
-        p.auth.apiKey.trim().length > 0,
-    );
-    if (fresh) await testSelected();
-  }, [providers, validation.ok, persist, testSelected]);
+  const deleteSelected = useCallback(
+    async (draftId: string) => {
+      if (!providers) return;
+      // The row is dropped from the wire list outright — the PUT
+      // contract is a whole-list replace, so removing the entry here
+      // is the delete. The next `load()` re-read drops the row too.
+      await persist(providers.filter((p) => p.draftId !== draftId));
+    },
+    [providers, persist],
+  );
 
-  /** Add-model dialog commit (ticket 54): append the dialog's draft
-   *  and PUT immediately — the desktop dialog saves on its own 保存
-   *  button, not through the panel-level Save. */
+  /** Dialog commit: append a NEW provider, or replace the one the
+   *  dialog was opened on. Both go through the same `draftToWire` +
+   *  PUT the editor used — the wire body is byte-identical to the
+   *  pre-dialog panel, so the change is surface-only.
+   *
+   *  The replace case keys on `draftId`, not on `id`: the dialog lets
+   *  a custom provider's id be retyped, and matching on the wire id
+   *  would then append a second provider instead of renaming the
+   *  first. */
   const saveFromDialog = useCallback(
     async (draft: DraftProvider): Promise<boolean> => {
       if (!providers) return false;
-      return persist([...providers, draft]);
+      const next =
+        editTarget === null
+          ? [...providers, draft]
+          : providers.map((p) =>
+              p.draftId === editTarget.draftId ? draft : p,
+            );
+      return persist(next);
     },
-    [providers, persist],
+    [providers, editTarget, persist],
+  );
+
+  /** ids the dialog must not collide with — every configured provider
+   *  EXCEPT the one being edited. */
+  const dialogExistingIds = useMemo(
+    () =>
+      (providers ?? [])
+        .filter((p) => !p.markedForDeletion && p.draftId !== editTarget?.draftId)
+        .map((p) => p.id),
+    [providers, editTarget],
   );
 
   if (loadError && !providers) {
@@ -332,11 +231,6 @@ export function ProviderManagementPanel({
   if (!providers) {
     return <p className="text-text_default_tertiary">{t("app.connecting")}</p>;
   }
-
-  const selected =
-    providers.find((p) => p.draftId === selectedId) ??
-    providers.find((p) => !p.markedForDeletion) ??
-    null;
 
   return (
     <div className="flex w-full flex-col gap-3" data-testid="providers-panel">
@@ -359,9 +253,8 @@ export function ProviderManagementPanel({
 
       {/* Ticket 54 — desktop-parity empty state: the reference centers
           「暂未添加自定义模型」 with a 「+ 添加模型」 button in the
-          tab's whitespace; the two-column rail only exists once
-          there is something to manage. The testids stay on the same
-          affordances (providers-empty text, provider-add-button). */}
+          tab's whitespace. The testids stay on the same affordances
+          (providers-empty text, provider-add-button). */}
       {providers.length === 0 ? (
         <>
         <div className="flex flex-col items-center gap-4 py-14">
@@ -374,7 +267,7 @@ export function ProviderManagementPanel({
           <button
             type="button"
             data-testid="provider-add-button"
-            onClick={() => setAddDialogOpen(true)}
+            onClick={openAddDialog}
             className="h-8 rounded-lg bg-bg_interaction_tertiary_hover px-4 text-sm text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_selected"
           >
             + {t("providers.add")}
@@ -383,585 +276,177 @@ export function ProviderManagementPanel({
         <ProviderPresetSection t={t} onAfterEnable={() => void load()} />
         </>
       ) : (
-      <div className="grid grid-cols-[200px_1fr] gap-3">
-        {/* Left rail — provider list. */}
-        <div className="flex flex-col gap-2">
-          <div className="flex flex-col gap-1 rounded-[10px] bg-bg_grouped_tertiary p-1">
-            {providers.map((p) => {
-                const isSelected =
-                  (selectedId && p.draftId === selectedId) ||
-                  (!selectedId && p === selected);
-                const test = testByProvider[p.draftId];
-                return (
-                  <button
-                    key={p.draftId}
-                    type="button"
-                    data-testid={`provider-row-${p.draftId}`}
-                    onClick={() => setSelectedId(p.draftId)}
-                    className={[
-                      "flex flex-col gap-0.5 rounded-[8px] px-2 py-1.5 text-left transition-colors",
-                      isSelected
-                        ? "bg-bg_interaction_tertiary_selected"
-                        : "hover:bg-bg_interaction_tertiary_hover",
-                      p.markedForDeletion ? "opacity-50 line-through" : "",
-                    ].join(" ")}
+      <div className="flex flex-col gap-2">
+        {/* The provider list. There is no second editing surface: a row
+            opens the dialog pre-filled on that provider, and the
+            dialog's 保存 PUTs the edited draft back. The row is a
+            `<div>` wrapper, not a `<button>`, because it carries a
+            SECOND control (删除) and a button inside a button is
+            invalid HTML with ambiguous keyboard semantics. */}
+        <div className="flex flex-col gap-1 rounded-[10px] bg-bg_grouped_tertiary p-1">
+          {providers.map((p) => (
+            <div
+              key={p.draftId}
+              data-testid={`provider-row-${p.draftId}`}
+              className={[
+                "flex items-center gap-1 rounded-[8px] pr-1 transition-colors",
+                "hover:bg-bg_interaction_tertiary_hover",
+                p.markedForDeletion ? "opacity-50 line-through" : "",
+              ].join(" ")}
+            >
+              <button
+                type="button"
+                data-testid={`provider-row-edit-${p.draftId}`}
+                onClick={() => openEditDialog(p)}
+                className="flex min-w-0 flex-1 flex-col gap-0.5 rounded-[8px] px-2 py-1.5 text-left"
+              >
+                <div className="flex items-center gap-1">
+                  <span
+                    data-testid={`provider-row-label-${p.id || "new"}`}
+                    className="min-w-0 flex-1 truncate text-sm text-text_default_primary"
                   >
-                    <div className="flex items-center gap-1">
+                    {p.label || p.id || "(new)"}
+                  </span>
+                  {p.preset ? (
+                    <AntTag
+                      data-testid={`provider-preset-badge-${p.id}`}
+                      color="blue"
+                      className="!mr-0"
+                    >
+                      {t("providers.presetBadge")}
+                    </AntTag>
+                  ) : (
+                    <AntTag
+                      data-testid={`provider-custom-badge-${p.id}`}
+                      className="!mr-0"
+                    >
+                      {t("providers.customBadge")}
+                    </AntTag>
+                  )}
+                </div>
+                <div className="flex items-center gap-1 text-caption-small-strong text-text_default_tertiary">
+                  <span className="font-family-code">{p.protocol}</span>
+                  <span>·</span>
+                  <span>{p.auth.type}</span>
+                  <span>·</span>
+                  <span data-testid={`provider-haskey-${p.id || "new"}`}>
+                    {p.isNew
+                      ? "—"
+                      : p.hasKey
+                        ? "key set"
+                        : p.auth.type === "coding-plan"
+                          ? "credential optional"
+                          : "no key"}
+                  </span>
+                </div>
+                {/* Configured-models preview (ticket 05): chips for the
+                    configured models so the operator sees what is wired
+                    up without opening the dialog. The list is read
+                    directly off the server-side `ProviderView.models[]`
+                    — it is the same shape the dialog surfaces, so what
+                    the user sees here matches the model picker. */}
+                {p.models.length > 0 ? (
+                  <div
+                    data-testid={`provider-models-summary-${p.id || "new"}`}
+                    className="flex flex-wrap items-center gap-1 pt-1"
+                  >
+                    {p.models.slice(0, 4).map((m) => (
                       <span
-                        data-testid={`provider-row-label-${p.id || "new"}`}
-                        className="min-w-0 flex-1 truncate text-sm text-text_default_primary"
+                        key={m.id}
+                        data-testid={`provider-model-chip-${p.id || "new"}-${m.id}`}
+                        className="rounded-md border border-border_default bg-bg_default_primary px-1.5 py-0.5 text-caption-small-strong text-text_default_secondary font-family-code"
                       >
-                        {p.label || p.id || "(new)"}
+                        {m.label || m.id}
                       </span>
-                      {p.preset ? (
-                        <AntTag
-                          data-testid={`provider-preset-badge-${p.id}`}
-                          color="blue"
-                          className="!mr-0"
-                        >
-                          {t("providers.presetBadge")}
-                        </AntTag>
-                      ) : (
-                        <AntTag
-                          data-testid={`provider-custom-badge-${p.id}`}
-                          className="!mr-0"
-                        >
-                          {t("providers.customBadge")}
-                        </AntTag>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-1 text-caption-small-strong text-text_default_tertiary">
-                      <span className="font-family-code">{p.protocol}</span>
-                      <span>·</span>
-                      <span>{p.auth.type}</span>
-                      <span>·</span>
-                      <span data-testid={`provider-haskey-${p.id || "new"}`}>
-                        {p.isNew
-                          ? "—"
-                          : p.hasKey
-                            ? "key set"
-                            : p.auth.type === "coding-plan"
-                              ? "credential optional"
-                              : "no key"}
-                      </span>
-                    </div>
-                    {/* Configured-models preview (ticket 05): chips for the
-                        configured models with thinking levels / modalities so
-                        the operator sees what's wired up without expanding
-                        the editor. The list is read directly off the
-                        server-side `ProviderView.models[]` — it is the same
-                        shape the dialog surfaces, so what the user sees
-                        here matches the model picker. */}
-                    {p.models.length > 0 ? (
-                      <div
-                        data-testid={`provider-models-summary-${p.id || "new"}`}
-                        className="flex flex-wrap items-center gap-1 pt-1"
-                      >
-                        {p.models.slice(0, 4).map((m) => (
-                          <span
-                            key={m.id}
-                            data-testid={`provider-model-chip-${p.id || "new"}-${m.id}`}
-                            className="rounded-md border border-border_default bg-bg_default_primary px-1.5 py-0.5 text-caption-small-strong text-text_default_secondary font-family-code"
-                          >
-                            {m.label || m.id}
-                          </span>
-                        ))}
-                        {p.models.length > 4 ? (
-                          <span
-                            data-testid={`provider-model-overflow-${p.id || "new"}`}
-                            className="text-caption-small-strong text-text_default_tertiary"
-                          >
-                            +{p.models.length - 4}
-                          </span>
-                        ) : null}
-                      </div>
-                    ) : null}
-                    {test ? (
+                    ))}
+                    {p.models.length > 4 ? (
                       <span
-                        data-testid={`provider-test-summary-${p.id || "new"}`}
-                        className={
-                          test.ok
-                            ? "text-caption-small-strong text-text_status_success"
-                            : "text-caption-small-strong text-text_status_error"
-                        }
+                        data-testid={`provider-model-overflow-${p.id || "new"}`}
+                        className="text-caption-small-strong text-text_default_tertiary"
                       >
-                        {test.ok
-                          ? `✓ ${test.latencyMs ?? 0}ms`
-                          : `✗ ${test.code}`}
+                        +{p.models.length - 4}
                       </span>
                     ) : null}
+                  </div>
+                ) : null}
+              </button>
+              {/* 删除 — the retired editor's footer button, moved onto
+                  the row. Preset rows keep no delete: the preset
+                  controls own their lifecycle, and the retired editor
+                  hid the control for exactly that reason. */}
+              {p.preset ? null : (
+                <AntPopconfirm
+                  title={t("providers.deleteConfirm").replace(
+                    "{{id}}",
+                    p.id || "(new)",
+                  )}
+                  description={t("providers.deleteHint")}
+                  okText={t("providers.delete")}
+                  cancelText={t("panel.close")}
+                  onConfirm={() => void deleteSelected(p.draftId)}
+                >
+                  <button
+                    type="button"
+                    data-testid={`provider-delete-${p.draftId}`}
+                    disabled={busy}
+                    aria-label={t("providers.deleteConfirm").replace(
+                      "{{id}}",
+                      p.id || "(new)",
+                    )}
+                    className="flex size-7 shrink-0 items-center justify-center rounded-md text-text_default_tertiary transition-colors hover:bg-bg_interaction_tertiary_hover hover:text-text_status_error disabled:opacity-50"
+                  >
+                    <Icon name="trash" size={13} />
                   </button>
-                );
-              })}
-          </div>
-          <button
-            type="button"
-            data-testid="provider-add-button"
-            onClick={() => setAddDialogOpen(true)}
-            className="h-8 self-start rounded-lg border border-border_default px-3 text-sm text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_hover"
-          >
-            + {t("providers.add")}
-          </button>
+                </AntPopconfirm>
+              )}
+            </div>
+          ))}
         </div>
-
-        {/* Right pane — editor. */}
-        <div className="flex min-w-0 flex-col gap-3">
-          {selected ? (
-            <ProviderEditor
-              t={t}
-              draft={selected}
-              onChange={updateSelected}
-              onDelete={() => markDeleted(selected.id)}
-              onTest={() => void testSelected()}
-              testResult={testByProvider[selected.draftId]}
-            />
-          ) : (
-            <AntEmpty description={t("providers.empty")} />
-          )}
-
-          {validation.errors.length > 0 ? (
-            <ul
-              data-testid="provider-validation-errors"
-              className="rounded-[8px] border border-border_default bg-bg_grouped_tertiary px-3 py-2 text-caption-small-strong text-text_status_error"
-            >
-              {validation.errors.map((err, i) => (
-                <li key={i}>{err}</li>
-              ))}
-            </ul>
-          ) : null}
-
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              data-testid="providers-save"
-              disabled={busy || !validation.ok}
-              aria-busy={busy || undefined}
-              onClick={() => void save()}
-              className="flex h-8 items-center gap-1.5 rounded-lg bg-bg_interaction_primary_default px-3 text-sm font-weight_medium text-text_label_primary_default transition-colors hover:bg-bg_interaction_primary_hover disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {busy ? (
-                <span
-                  aria-hidden="true"
-                  data-testid="providers-save-spinner"
-                  className="size-3 animate-spin rounded-full border-2 border-current border-t-transparent"
-                />
-              ) : null}
-              {busy ? t("providers.saving") : t("providers.save")}
-            </button>
-            {savedAt ? (
-              <span
-                data-testid="providers-saved-notice"
-                className="text-caption-small-strong text-text_status_success"
-              >
-                {t("providers.saved")}
-              </span>
-            ) : null}
-            {saveError ? (
-              <span
-                data-testid="providers-save-error"
-                className="text-caption-small-strong text-text_status_error"
-              >
-                {saveError}
-              </span>
-            ) : null}
-          </div>
-        </div>
-      </div>
-      )}
-
-      {/* Ticket 54 — the desktop-parity add-model dialog. Opened by
-       *  the empty-state / rail button and the deep-link; saving PUTs
-       *  through `saveFromDialog` and closes only on success. */}
-      <AddModelDialog
-        t={t}
-        open={addDialogOpen}
-        existingIds={providers
-          .filter((p) => !p.markedForDeletion)
-          .map((p) => p.id)}
-        onCancel={() => setAddDialogOpen(false)}
-        onSave={saveFromDialog}
-      />
-    </div>
-  );
-}
-
-// `auth.hasKey` lives on the server's view shape; the draft's auth
-// shape does NOT carry it (the form carries apiKey="" as the
-// sentinel). Surface "key set" only when the form knows it.
-
-interface ProviderEditorProps {
-  t: (key: MessageKey) => string;
-  draft: DraftProvider;
-  onChange: (mutator: (draft: DraftProvider) => DraftProvider) => void;
-  onDelete: () => void;
-  onTest: () => void;
-  testResult?: ProviderTestOutcome;
-}
-
-function ProviderEditor({
-  t,
-  draft,
-  onChange,
-  onDelete,
-  onTest,
-  testResult,
-}: ProviderEditorProps) {
-  const idError = validateProviderId(draft.id);
-  const testDescription = testResult ? describeTestOutcome(t, testResult) : null;
-
-  return (
-    <div
-      data-testid={`provider-editor-${draft.id || "new"}`}
-      className="flex flex-col gap-3 rounded-[10px] bg-bg_grouped_tertiary p-3"
-    >
-      <div className="flex items-center justify-between">
-        <span className="text-sm font-weight_medium text-text_default_primary">
-          {draft.label || draft.id || "(new provider)"}
-        </span>
-        <div className="flex items-center gap-2">
-          <AntSwitch
-            checked={draft.enabled}
-            onChange={(checked) => onChange((p) => ({ ...p, enabled: checked }))}
-            aria-label={draft.enabled ? t("providers.enabled") : t("providers.disabled")}
-          />
-          <span className="text-caption-small-strong text-text_default_tertiary">
-            {draft.enabled ? t("providers.enabled") : t("providers.disabled")}
-          </span>
-        </div>
-      </div>
-
-      {/* Connection section */}
-      <fieldset className="flex flex-col gap-2">
-        <legend className="text-caption-small-strong uppercase tracking-wide text-text_default_tertiary">
-          {t("providers.section.connection")}
-        </legend>
-        <Field label={t("providers.field.id")}>
-          <AntInput
-            value={draft.id}
-            disabled={!draft.isNew}
-            data-testid="provider-field-id"
-            onChange={(e) => {
-              onChange((p) => ({ ...p, id: e.target.value }));
-            }}
-            className="mavis-input"
-            status={idError ? "error" : undefined}
-          />
-          {idError ? (
-            <span className="text-caption-small-strong text-text_status_error">
-              {t("providers.idInvalid")}
-            </span>
-          ) : null}
-        </Field>
-
-        <Field label={t("providers.field.label")}>
-          <AntInput
-            value={draft.label}
-            data-testid="provider-field-label"
-            onChange={(e) => onChange((p) => ({ ...p, label: e.target.value }))}
-            className="mavis-input"
-          />
-        </Field>
-
-        <Field label={t("providers.field.protocol")}>
-          <AntSelect
-            value={draft.protocol}
-            data-testid="provider-field-protocol"
-            onChange={(value) =>
-              onChange((p) => ({ ...p, protocol: value as api.ProviderProtocol }))
-            }
-            className="mavis-input"
-            options={PROTOCOLS.map((proto) => ({ label: proto, value: proto }))}
-          />
-        </Field>
-
-        <Field label={t("providers.field.authType")}>
-          <AntSelect
-            value={draft.auth.type}
-            data-testid="provider-field-authType"
-            onChange={(value) =>
-              onChange((p) => ({
-                ...p,
-                auth: { ...p.auth, type: value as api.ProviderAuthType },
-              }))
-            }
-            className="mavis-input"
-            options={AUTH_TYPES.map((type) => ({ label: type, value: type }))}
-          />
-        </Field>
-
-        {draft.auth.type === "byok" ? (
-          <Field label={t("providers.field.apiKey")}>
-            <ApiKeyInput
-              draft={draft}
-              t={t}
-              onChange={(value) =>
-                onChange((p) => ({ ...p, auth: { ...p.auth, apiKey: value } }))
-              }
-            />
-          </Field>
-        ) : (
-          <Field label={t("providers.field.apiKey")}>
-            <AntInput
-              value={draft.auth.apiKey}
-              data-testid="provider-field-apiKey"
-              onChange={(e) =>
-                onChange((p) => ({ ...p, auth: { ...p.auth, apiKey: e.target.value } }))
-              }
-              className="mavis-input"
-              placeholder={t("providers.field.apiKeyPlaceholder")}
-            />
-          </Field>
-        )}
-
-        <Field label={t("providers.field.baseURL")}>
-          <AntInput
-            value={draft.auth.baseURL}
-            data-testid="provider-field-baseURL"
-            onChange={(e) =>
-              onChange((p) => ({ ...p, auth: { ...p.auth, baseURL: e.target.value } }))
-            }
-            className="mavis-input"
-            placeholder={t("providers.field.baseURLHint")}
-          />
-        </Field>
-
-        <div className="flex items-center gap-2 pt-1">
-          <button
-            type="button"
-            data-testid="provider-test-button"
-            onClick={onTest}
-            className="h-8 rounded-lg border border-border_default px-3 text-sm text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_hover"
-          >
-            {t("providers.test")}
-          </button>
-          {testDescription ? (
-            <span
-              data-testid="provider-test-result"
-              className={
-                testDescription.tone === "ok"
-                  ? "text-caption-small-strong text-text_status_success"
-                  : testDescription.tone === "warn"
-                    ? "text-caption-small-strong text-text_status_warning"
-                    : "text-caption-small-strong text-text_status_error"
-              }
-            >
-              {testDescription.text}
-            </span>
-          ) : null}
-        </div>
-      </fieldset>
-
-      {/* Models section */}
-      <fieldset className="flex flex-col gap-2">
-        <legend className="text-caption-small-strong uppercase tracking-wide text-text_default_tertiary">
-          {t("providers.section.models")}
-        </legend>
-        <DraftModelList
-          t={t}
-          models={draft.models}
-          onChange={(models) => onChange((p) => ({ ...p, models }))}
-        />
-      </fieldset>
-
-      {/* Footer — delete. Preset rows cannot be deleted (the preset
-          controls live on a different branch); we hide the button in
-          that case. */}
-      {draft.preset ? null : (
-        <div className="flex items-center justify-end pt-1">
-          <AntPopconfirm
-            title={t("providers.deleteConfirm").replace(
-              "{{id}}",
-              draft.id || "(new)",
-            )}
-            description={t("providers.deleteHint")}
-            okText={t("providers.delete")}
-            cancelText={t("panel.close")}
-            onConfirm={onDelete}
-          >
-            <button
-              type="button"
-              data-testid="provider-delete-button"
-              disabled={draft.markedForDeletion}
-              className="h-8 rounded-lg border border-border_default px-3 text-sm text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_hover disabled:opacity-50"
-            >
-              {t("providers.delete")}
-            </button>
-          </AntPopconfirm>
-        </div>
-      )}
-    </div>
-  );
-}
-
-/**
- * The EDITOR's API-key field is the load-bearing piece of the
- * keep-existing-key convention: the masked placeholder goes in
- * `placeholder`, NEVER in `value`. The controlled value is `""`
- * whenever the user did not touch the field — the server interprets
- * that as "keep the existing key". A "reveal" toggle is intentionally
- * absent HERE: the only text this field could reveal is the masked
- * placeholder, and showing the plaintext of the stored key defeats
- * the masking contract; the user clears the field to overwrite (the
- * masked placeholder will reappear).
- *
- * The add-model dialog (ticket 54) is a different contract and DOES
- * ship the eye toggle (desktop parity): there is no stored key and
- * no masked placeholder — the field's value is exactly what the user
- * just typed, so revealing it leaks nothing the user cannot already
- * see on their own screen. That input lives in `AddModelDialog`, not
- * here.
- */
-function ApiKeyInput({
-  draft,
-  t,
-  onChange,
-}: {
-  draft: DraftProvider;
-  t: (key: MessageKey) => string;
-  onChange: (value: string) => void;
-}) {
-  // The placeholder reflects the on-disk state: an existing provider
-  // shows the masked value (so the operator can see what's stored
-  // without trusting it back into the controlled field), a new
-  // provider shows the generic "type a key" hint.
-  const placeholder = draft.isNew
-    ? t("providers.field.apiKeyPlaceholder")
-    : draft.apiKeyMasked || t("providers.field.apiKeyPlaceholder");
-  return (
-    <AntInput.Password
-      value={draft.auth.apiKey}
-      data-testid="provider-field-apiKey"
-      onChange={(e) => onChange(e.target.value)}
-      className="mavis-input"
-      placeholder={placeholder}
-    />
-  );
-}
-
-function DraftModelList({
-  t,
-  models,
-  onChange,
-}: {
-  t: (key: MessageKey) => string;
-  models: DraftModel[];
-  onChange: (next: DraftModel[]) => void;
-}) {
-  return (
-    <div className="flex flex-col gap-2">
-      {models.map((m, idx) => (
-        <DraftModelRow
-          key={idx}
-          t={t}
-          model={m}
-          onChange={(next) => {
-            const copy = models.slice();
-            copy[idx] = next;
-            onChange(copy);
-          }}
-          onRemove={() => onChange(models.filter((_, i) => i !== idx))}
-        />
-      ))}
-      <button
-        type="button"
-        data-testid="provider-model-add"
-        onClick={() => onChange([...models, blankModel()])}
-        className="h-7 self-start rounded-lg border border-border_default px-2 text-caption-small-strong text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_hover"
-      >
-        + {t("providers.models.add")}
-      </button>
-    </div>
-  );
-}
-
-function DraftModelRow({
-  t,
-  model,
-  onChange,
-  onRemove,
-}: {
-  t: (key: MessageKey) => string;
-  model: DraftModel;
-  onChange: (next: DraftModel) => void;
-  onRemove: () => void;
-}) {
-  return (
-    <div
-      data-testid={`provider-model-row-${model.id || "new"}`}
-      className="flex flex-col gap-1 rounded-[8px] bg-bg_grouped_primary p-2"
-    >
-      <div className="grid grid-cols-2 gap-2">
-        <Field label={t("providers.field.modelId")}>
-          <AntInput
-            value={model.id}
-            data-testid="provider-model-id"
-            onChange={(e) => onChange({ ...model, id: e.target.value })}
-            className="mavis-input"
-          />
-        </Field>
-        <Field label={t("providers.field.modelLabel")}>
-          <AntInput
-            value={model.label}
-            data-testid="provider-model-label"
-            onChange={(e) => onChange({ ...model, label: e.target.value })}
-            className="mavis-input"
-          />
-        </Field>
-      </div>
-      <Field label={t("providers.field.contextLimit")}>
-        <AntInput
-          value={model.contextLimit}
-          data-testid="provider-model-contextLimit"
-          onChange={(e) => onChange({ ...model, contextLimit: e.target.value })}
-          className="mavis-input"
-          inputMode="numeric"
-        />
-      </Field>
-      <Field label={t("providers.field.thinkingLevels")}>
-        <AntSelect
-          mode="multiple"
-          value={model.thinkingLevels}
-          data-testid="provider-model-thinkingLevels"
-          onChange={(values) => onChange({ ...model, thinkingLevels: values })}
-          className="mavis-input"
-          options={THINKING_LEVELS.map((lvl) => ({
-            label: t(`providers.models.thinkingLevels.${lvl}` as MessageKey),
-            value: lvl,
-          }))}
-        />
-      </Field>
-      <Field label={t("providers.field.modalities")}>
-        <AntSelect
-          mode="multiple"
-          value={model.modalities}
-          data-testid="provider-model-modalities"
-          onChange={(values) => onChange({ ...model, modalities: values })}
-          className="mavis-input"
-          options={MODALITIES.map((mod) => ({
-            label: t(`providers.models.modalities.${mod}` as MessageKey),
-            value: mod,
-          }))}
-        />
-      </Field>
-      <div className="flex justify-end">
         <button
           type="button"
-          data-testid="provider-model-remove"
-          onClick={onRemove}
-          className="h-7 rounded-lg border border-border_default px-2 text-caption-small-strong text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_hover"
+          data-testid="provider-add-button"
+          onClick={openAddDialog}
+          className="h-8 self-start rounded-lg border border-border_default px-3 text-sm text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_hover"
         >
-          {t("providers.models.remove")}
+          + {t("providers.add")}
         </button>
+        {/* Save feedback lives here: the dialog closes only on a
+            successful PUT, so a failed save is reported on the list
+            the operator lands back on rather than inside a modal that
+            is still open. */}
+        <div className="flex items-center gap-2">
+          {savedAt ? (
+            <span
+              data-testid="providers-saved-notice"
+              className="text-caption-small-strong text-text_status_success"
+            >
+              {t("providers.saved")}
+            </span>
+          ) : null}
+          {saveError ? (
+            <span
+              data-testid="providers-save-error"
+              className="text-caption-small-strong text-text_status_error"
+            >
+              {saveError}
+            </span>
+          ) : null}
+        </div>
       </div>
-    </div>
-  );
-}
+      )}
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="flex flex-col gap-1">
-      <span className="desktop-text-ui-small-strong text-text_default_tertiary">{label}</span>
-      {children}
+      {/* The desktop-parity dialog. Opened by the empty-state / rail
+       *  button, the model-selector deep-link, and any existing row;
+       *  saving PUTs through `saveFromDialog` and closes only on
+       *  success. */}
+      <AddModelDialog
+        t={t}
+        open={dialogOpen}
+        existingIds={dialogExistingIds}
+        editTarget={editTarget}
+        onCancel={closeDialog}
+        onSave={saveFromDialog}
+      />
     </div>
   );
 }

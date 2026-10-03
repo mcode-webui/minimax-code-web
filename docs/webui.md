@@ -194,8 +194,9 @@ Levels and rules (`server/engine/capabilities.js`):
 - `full` — the surface is complete.
 - `partial` — must enumerate `missing` sub-items and carry a `reason`. Never "half works, nobody knows which half".
 - `none` — must carry a `reason` distinguishing `interface-absent` (no such method on the surface at all) from `implementation-absent` (the layer above has it, this surface does not open it).
+- `servedBy` — **optional, and only on a `none` entry.** Names the provider whose in-process host actually answers the request when this provider does not implement the capability itself. Rejected on `full` and `partial` (a provider that partly implements a capability is not "served elsewhere"), and a `servedBy` naming an unregistered provider is a boot-time throw, not a runtime 404.
 
-Current declarations (both transcribed from the audited matrix and re-verified against the live method surfaces at the `26043e9b` baseline — 91 adapter methods, 94 CliService methods plus the `applications.session.diff` facade):
+Current declarations (the two runtime surfaces transcribed from the audited matrix and re-verified against the live method surfaces at the `26043e9b` baseline — 91 adapter methods, 94 CliService methods plus the `applications.session.diff` facade):
 
 | Key | local-runtime-v2 | tui-runtime-adapter |
 | --- | --- | --- |
@@ -214,6 +215,56 @@ Current declarations (both transcribed from the audited matrix and re-verified a
 | fileReadWrite | partial — missing `file-write` | partial — missing `file-write` |
 | gitOperations | partial — missing `git-diff`, `git-commit`, `git-branch` | partial — missing `git-diff`, `git-commit`, `git-branch` |
 
+The third registered provider is the **`acp` transport** (M4-1) — a transport rather than an in-process surface, declared in `server/engine/providers/acp.capabilities.js` and audited against `MCODE_ACP_CAPABILITIES`, the protocol's live wire table, because a subprocess has no object to reflect:
+
+| Key | acp |
+| --- | --- |
+| sessionCrud | partial — missing `deleteSession`, `renameSession`, `archiveSession` (`session/new` · `load` · `list` · `close` · `resume` · `fork` · `activate` are on the wire, and `session/delete` is registered with no handler) |
+| streamingSend | full (`session/prompt`) |
+| interrupt | none — interface-absent: `session/cancel` IS registered, but it is a **notification**, and a delivered cancel certifies that it was sent, never that the turn stopped |
+| toolSkillInvocation | partial — missing `listSkills`, `listRuntimeSkills` (the protocol has no skill enumeration) |
+| turnDiff | none — interface-absent, **servedBy `local-runtime-v2`** |
+| turnRewindRedo | none — interface-absent |
+| plugins | none — interface-absent, **servedBy `local-runtime-v2`** |
+| mcp | partial — missing `mcp-configure`, `mcp-inspect`, `mcp-clear`, `mcp-list` (MCP servers take effect inside a turn; nothing configures or inspects them) |
+| subagents | partial — missing `getDelegationSnapshot`, `stopDelegation`, `listBackgroundTasks` (activity is parsed off the event stream only) |
+| usageStats | partial — missing `getSessionUsage`, `getSessionUsageSummary`, `watchSessionUsageCommits` (plan quota is queryable over `mcode/account/status`; the token detail webui shows beside it is read from the runtime DB, not the engine) |
+| authCredentials | partial — missing the OAuth flow, the API-key surface and the user model-provider CRUD. The config-option write IS present, and dispatches the `model` and `permissionMode` config ids |
+| updateCheck | none — interface-absent (`available_commands_update` refreshes the advertised command catalogue, which is not an update check) |
+| fileReadWrite | none — interface-absent (webui's `/api/fs` family is its own `node:fs` implementation) |
+| gitOperations | none — interface-absent (webui's `/api/git` family wraps the OS git binary) |
+
+Two cells are **stronger** here than on either runtime surface, and flattening them would be the unearned claim the design matrix forbids: the protocol registers `session/set_mode` as a real request, so `toolSkillInvocation` does *not* miss `setMode` over acp; and `session/set_config_option` dispatches the `model` and `permissionMode` config ids, so two of the three bridged writers of `MODE_WRITE_BRIDGED_CONFIG_IDS` are genuinely reachable.
+
+The fourth registered provider is the **`exec` transport** (M4-2) — the one-shot `mcode exec` subprocess, the third legal `MCODE_WEBUI_TRANSPORT` value. It is not a mode of acp and not an alias for the tui package: `mcode-exec.js` writes the prompt to stdin and parses `stream-json` off stdout, so there is **no request channel and therefore no methods to call**. What it has instead is CLI options and event types, and that is what `server/engine/providers/exec.capabilities.js` records in `EXEC_INTERFACE` and audits against:
+
+| Key | exec |
+| --- | --- |
+| sessionCrud | partial — missing `createSession`, `listSessions`, `getSession`, `updateSession`, `renameSession`, `archiveSession`, `deleteSession`, `forkSession`, `getSessionForkOptions`, `loadSession`, `activateSession`. Only `--session` / `--continue` exist, and they re-enter a session rather than choose one |
+| streamingSend | full (`--input -` plus the `stream-json` event stream) |
+| interrupt | none — interface-absent: nothing to call. The SIGINT/SIGTERM/SIGHUP in `packages/tui/src/cli/run-exec-command.ts` are signals webui sends to the child **it** spawned, i.e. webui's own kill cascade, not a capability the transport offers |
+| toolSkillInvocation | partial — missing `listSkills`, `listRuntimeSkills`, `listPendingPermissions`, `replyPermission`, `setMode`. The transport PRODUCES `tool_call` items and webui does not read them; and `--permission` is fixed at spawn time (the CLI says `ask` requires TUI/ACP), so there is no permission request/reply pair |
+| turnDiff | none — interface-absent, **servedBy `local-runtime-v2`** |
+| turnRewindRedo | none — interface-absent (`mcode exec review` reviews local git changes and carries no turn coordinate, so it is not a rewind surface) |
+| plugins | none — interface-absent, **servedBy `local-runtime-v2`** |
+| mcp | partial — missing `mcp-configure`, `mcp-inspect`, `mcp-clear`, `mcp-list` (`--config` can hand the process an MCP configuration; nothing configures or inspects one afterwards) |
+| subagents | none — interface-absent: the event union has no delegation kind, and `packages/tui/src/headless/runner.ts` refuses to open sub-agent Sessions at all |
+| usageStats | partial — missing `getSessionUsage`, `getSessionUsageSummary`, `watchSessionUsageCommits`. **Stronger than acp here**: `turn.completed.usage` is emitted on the wire, so this transport has something under its three missing names and acp does not |
+| authCredentials | none — interface-absent: with no request channel there is no `mcode/account/status` and no `session/set_config_option`. `--model` / `--effort` are per-run spawn flags, not a readable or writable account surface |
+| updateCheck | none — interface-absent (`mcode update` is a sibling CLI command, and there is no channel to notify over) |
+| fileReadWrite | none — interface-absent (`--file` attaches a file to the prompt; webui's `/api/fs` family is its own `node:fs` implementation) |
+| gitOperations | none — interface-absent (webui's `/api/git` family wraps the OS git binary) |
+
+Three cells are **weaker** than acp, and for structural reasons rather than unfinished engine work: `interrupt` (acp has a cancel notification, exec has nothing to declare one on), `subagents` (acp can parse sub-agent activity off its stream, exec's event union has no such kind) and `authCredentials` (acp has two RPC methods, exec has no channel). The reverse exception is the same two keys for the same reason, which is a finding rather than a copy: `/api/turn-diff*` and `/api/plugins*` project the in-process v2 host and gate on **no transport**, so every transport inherits it.
+
+**A known mismatch this audit surfaced, recorded rather than hidden.** The three event names `collectExecResult` branches on — `delta`, `message`, `exec.result` — are the *supervisor's internal* stream-event names. `--output-format stream-json` writes only what `ExecEventProjector` produces (`packages/tui/src/headless/output.ts` refuses the format with no projector, and `packages/tui/src/headless/runner.ts` always supplies one), so the wire carries the ten `ExecEvent` types and the two name families do not intersect. That is a real gap in the exec data plane. M4-2 does not fix it — the batch registers a declaration and changes no routing — but it is pinned in `EXEC_INTERFACE.consumedEvents` and asserted by a test that fails if the intersection ever becomes non-empty in either direction.
+
+**`servedBy` is the plan's one reverse exception, and it is load-bearing.** `turnDiff` and `plugins` are honestly `none` on the protocol, and the three `/api/turn-diff` and ten `/api/plugins` endpoints still work on the default acp transport, because they project the in-process local-runtime-v2 host through `getEngineCatalogueHost()` and are gated on no provider declaration. Reading the level alone would eventually 501 two working features the moment a frontend consulted the transport's provider instead of the default one. `summarizeCapabilityHosting(capabilities)` and `resolveCapabilityHostProvider(providerId, key)` expose the routing fact; the hosted keys deliberately stay in `summarizeUnavailableCapabilities`, because the provider really has none and that `{none, partial}` shape is already on the wire. The `exec` provider carries the same two fields for the same structural reason, which is what makes `servedBy` a per-key declaration field rather than an acp special case.
+
+**Registering a provider is not routing to it.** Every capability gate resolves its provider through a transport→provider table in its own family module, and none of them lists `acp` or `exec`: a miss there means "no provider claims this transport yet", and the gate passes. So neither M4-1 nor M4-2 changed any gate's verdict on any transport. Making a transport provider actually reachable — `chat.js` transport selection reading the registry — is M4-3, and the test that keeps the two apart walks all sixteen `resolve*Provider` functions on both unwired transports.
+
+**Auditing a table that cannot be imported.** The acp declaration is checked against `MCODE_ACP_CAPABILITIES`, a live constant the routes read. The exec contract is TypeScript in another package, and importing it would put `@mavis/*` on the boot path, so `EXEC_INTERFACE` is transcribed — and transcribed tables rot. Two live cross-checks keep it honest: every option in `applyExecCliContract`, every type in the `ExecEvent` union, every `ExecItem` kind and every signal `run-exec-command` registers are read out of the real sources and compared, and `buildExecArgs()` (a pure function) is invoked so the table can never shrink below what webui actually sends. `auditExecCapabilities` itself has two rules rather than three, and the missing third is a decision: "a `partial`'s `missing` must not name a mechanism the interface exposes" is vacuous here, because `missing` names provider methods while the coverage table names interface mechanisms, and the two namespaces cannot intersect. A check that cannot fail reads as coverage in a file whose only job is honesty.
+
 ### `GET /api/engine-capabilities`
 
 Read-only, declaration-backed (boots no host, runs no probe). Returns one provider's declaration plus the degradation summary the future capability-driven UI renders from:
@@ -225,7 +276,7 @@ GET  /api/engine-capabilities[?provider=<id>]
 404  { ok: false, code: "unknown_engine_provider", knownProviders: [...] }   // caller confusion
 ```
 
-Default provider is `local-runtime-v2` (the only registered host provider until migration step M4 wraps ACP/exec as providers). Unknown `?provider=` answers 404 — it cannot collide with the 501 reserved for engine limitations.
+Default provider is `local-runtime-v2` — unchanged since B1, and deliberately so: M4-1 and M4-2 each added a provider, not a default, so every existing caller (including the webapp's own degradation test) keeps seeing the declaration it saw before. The registered ids are `local-runtime-v2`, `tui-runtime-adapter`, `acp` and `exec`. Unknown `?provider=` answers 404 with the id list — it cannot collide with the 501 reserved for engine limitations.
 
 ### Calling an undeclared capability → 501
 
@@ -1212,7 +1263,7 @@ clients:
 | Archived tasks page | the tab renders its empty state; the list, its restore and its delete need the archived-session contract |
 | Usage & models three-source switching | the segmented tabs now match the desktop form (ticket 53), but they are a **view switcher** — they do not switch the model source in use; real Token Plan / MiniMax API / custom-model routing plus source badges still need a model-routing contract |
 | MiniMax API key panel | input + connectivity test + save-and-use |
-| Custom model drag-reorder, per-model toggles, preset picker | provider contract work; adding is dialog-based (ticket 54), editing stays on the rail + editor surfaces |
+| Custom model drag-reorder, per-model toggles, preset picker | provider contract work; add, edit and delete all converge on one dialog (this batch), leaving the list to display and delete |
 | Search keyword highlighting | the reference itself never wired it (component + keyframes defined, no call site) |
 | General-page dataDir footer | see the section table above |
 
@@ -1237,10 +1288,10 @@ The Token Plan view is the desktop's five blocks (the tabs plus four cards):
 | Invoice row | The one fully live affordance: 申请 ↗ opens the MiniMax open platform in a new tab |
 
 The custom-models view is the existing provider panel (API keys, protocols,
-model lists, connection tests, preset one-click enable) with every
-`data-testid` unchanged; ticket 54 rebuilt the **add** flow into the
-desktop's dialog form (next section) while the rail + editor surfaces stay
-as the editing path.
+model lists, connection tests, preset one-click enable); ticket 54 rebuilt
+the **add** flow into the desktop's dialog form (next section) and this batch
+folded **editing** into that same dialog (see "One dialog also edits" below) —
+the panel is now a list plus a delete affordance, with no second editor.
 
 **Add-model dialog (ticket 54, 53b)**
 
@@ -1250,7 +1301,7 @@ deep-link — opens the desktop's modal instead of appending a rail draft:
 
 | Dialog region | Contract |
 | --- | --- |
-| Provider select (「请选择提供商」) | Options are `GET /api/providers/presets` plus a 「+ 其他（自定义）」 sentinel; choosing a preset fills id / label / auth-type / baseURL and seeds 「API 格式」, choosing the sentinel expands the custom fields (id, display name, auth type, baseURL). DeepSeek / Zhipu AI（智谱）/ Moonshot AI (China) carry the reference's spellings; other local presets keep their catalogue labels. A 404 catalogue degrades to the custom-only dropdown |
+| Provider select (「请选择提供商」) | Options are `GET /api/providers/presets` plus a 「+ 其他（自定义）」 sentinel; choosing a preset fills id / label / auth-type / baseURL and seeds 「API 格式」, choosing the sentinel expands the custom fields (id, display name, auth type); 接口地址 is a top-level field for both branches — see "One dialog also edits" below. DeepSeek / Zhipu AI（智谱）/ Moonshot AI (China) carry the reference's spellings; other local presets keep their catalogue labels. A 404 catalogue degrades to the custom-only dropdown |
 | API 格式 | The desktop's **second** field, rendered for every provider rather than only for 「其他（自定义）」. It is the existing wire `protocol` under the desktop's labels — `OpenAI Completions` / `Anthropic Messages` / `Gemini` — so no new format reaches the backend. Choosing a preset seeds it from that preset's own protocol and it stays editable afterwards. The protocol select that used to sit inside the custom branch was removed rather than kept alongside: two controls bound to one value is how the preset and custom branches end up disagreeing about what gets saved |
 | 自定义 Headers | Rows of (name, value) with 「＋ 添加 Header」 and a per-row remove, held as a **list** rather than an object so a half-typed row survives editing. A blank name is dropped, a name is trimmed but a value is not, and a later duplicate wins — all three decided in one place (`headerPairsToRecord`), so the dialog, the PUT body and the server cannot disagree. Zero rows render an explicit placeholder rather than collapsing. The collapse result lands in `auth.headers` on the PUT body and comes back in `auth.headers` on `GET /api/providers` |
 | API key (`AntInput.Password`) | The eye toggle is safe here and only here: the field's value is what the user just typed, not a masked placeholder — the editor's no-reveal rule (keep-existing-key convention) is untouched |
@@ -1262,8 +1313,11 @@ deep-link — opens the desktop's modal instead of appending a rail draft:
 Ticket 54 invariants — no server-contract change (the `/api/providers` PUT
 body, `/api/set-model`, and every endpoint are untouched; the whole delta is
 client-side plus tests and docs); every pre-existing `data-testid` on the
-panel/editor surfaces survives in source (`webapp/test/add-model-dialog.test.ts`
-pins the list); the preset catalogue, thinkingLevels editing semantics,
+panel/editor surfaces survived in source at the time
+(`webapp/test/add-model-dialog.test.ts` pinned 36 + 2) — **that assertion is
+now void**: after the flat editor's retirement its testids are pinned as
+must-not-return instead, while the list chrome's testids are still pinned
+one by one; the preset catalogue, thinkingLevels editing semantics,
 provider grouping and the thinking-display exceptions are unchanged; the
 auto-add deep-link still lands on the custom-models view, now opening the
 dialog. The legacy rail-draft `addProvider` path and the editor's dead
@@ -1312,9 +1366,10 @@ reference `design-ref/screenshots/byok-custom-model-official.png`):
   `POST /api/providers/test` contract verbatim — protocol whitelist,
   local key-format check, then a real fetch against the configured
   baseURL — with no new route. The dialog shell assembles the probe
-  from the current form values (preset branch takes the preset's
-  protocol/baseURL, custom branch takes the custom fields) with a 4s
-  timeout, and renders 「可达 · Nms」 (success token) / 「不可达：
+  from the current form values (the protocol comes from 「API 格式」,
+  the endpoint from the top-level 接口地址 field — which this batch
+  lifted out of the custom branch, so a preset is no longer pinned
+  to its catalogue endpoint) with a 4s timeout, and renders 「可达 · Nms」 (success token) / 「不可达：
   error」 (error token). **Granularity, stated honestly**: the probe
   is endpoint-level (baseURL + key) and does not exercise the
   entry's model id — the tooltip and this paragraph say so rather
@@ -1388,6 +1443,55 @@ single 模型名称 textarea instead, so the desktop is newer than the
 reference and there is no second source to check it against. Rebuilding
 the model-entry structure is a larger change than this batch and is left
 alone.
+
+**This batch — one dialog also edits, the flat editor is retired, and
+「API 格式」 drives the endpoint surface.**
+
+| Change | Contract |
+| --- | --- |
+| Editing runs through the same dialog | A click on a list row opens the **same** modal (`editTarget`), seeded by `editSeedFromDraft`: a preset provider lands on its own catalogue branch, a custom one on 「+ 其他（自定义）」. Id, display name, auth type, 接口地址, the custom headers and the model entries all arrive pre-filled. The title switches from 添加模型 to 编辑模型 (`providers.dialog.editTitle`). Two entry points share one form rather than two forms free to drift |
+| The commit starts from the stored record | The committed draft begins at the record being edited (`const base = editTarget ?? newDraftProvider()`); only the fields the form can reach are taken from form state. `enabled`, `preset` and `draftId` are properties of the **record**, not the form — rebuilding one would re-enable a provider the operator had disabled, or detach it from its preset. The panel locates and replaces the row by `draftId`, not by wire id: matching on the id would write a second record instead of renaming the first whenever a custom id is retyped |
+| The key still never lands on disk in edit mode | The edit seed's API Key is always `""`, the server's keep-the-existing-key sentinel; the masked value reaches the placeholder only and is never written back as a value. An untouched field preserves the stored credential; a typed one replaces it |
+| The flat editor is retired | `ProviderEditor` and its `ApiKeyInput` / `DraftModelList` / `DraftModelRow`, plus the panel-level 「保存供应商」 button, the whole-list validation and the selected-row probe, are deleted. Delete did not disappear with them: it moved onto the list row as 🗑 (`provider-delete-{draftId}`, `Popconfirm` confirmation). Preset rows still carry no delete, the retired editor's own rule — a preset's lifecycle belongs to the preset controls |
+| The row element changed | The row is now a `<div>` wrapper rather than a `<button>`: it holds a second clickable control, and a button inside a button is invalid HTML with ambiguous keyboard semantics. The row's edit control is `provider-row-edit-{draftId}`, its delete is `provider-delete-{draftId}` |
+| 接口地址 lifted to a top-level field | The field used to sit inside the 「+ 其他（自定义）」 branch, which meant **11 of the 12 preset providers could neither see nor change their endpoint**. It now renders for every provider: a preset choice seeds it with the catalogue endpoint, the operator may override it, and an empty field falls back to the same protocol default the server uses |
+
+What the 「API 格式」 selection drives (`API_FORMAT_SPECS`, every value
+transcribed verbatim from `server/lib/providers-config.js` —
+`DEFAULT_BASE_URL` and `probe()`):
+
+| Format | Default endpoint | What 连通检测 actually sends | How the key travels |
+| --- | --- | --- | --- |
+| `OpenAI Completions` | `https://api.openai.com` | `GET {baseURL}/v1/models` | `Authorization: Bearer` header |
+| `Anthropic Messages` | `https://api.anthropic.com` | `POST {baseURL}/v1/messages` | `x-api-key` header |
+| `Gemini` | `https://generativelanguage.googleapis.com` | `GET {baseURL}/v1beta/models?key=…` | **`?key=` query parameter**, not a header |
+
+The hint under the field shows the **resolved** probe target: the typed
+endpoint when there is one, the format's default when the field is blank —
+i.e. the request the test button will send. The credential line switches with
+it, and Gemini's says outright that the key rides in the query string;
+copying the other two formats' "key in a header" habit yields a 401.
+
+**KNOWN DEBT — per-format field show/hide was not built, and here is
+why.** The three protocols carry the same field set in the
+`/api/providers` PUT contract; the backend has no field to hide per format.
+The linkage therefore lands on **dynamic content** (the endpoint default, the
+probe request, the credential's transport) rather than on a field's presence:
+hiding a field this backend cannot store would produce a form that lies about
+what it saves, which is worse than not hiding it. Real per-format show/hide
+requires extending the PUT contract and is its own batch.
+
+**This batch's invariants.** No server-contract change (all five
+`/api/providers` endpoints and `/api/providers/test` are reused as they are;
+the whole delta is client-side plus tests and docs). The PUT body is
+byte-identical — still `draftToWire` + `api.putProviders({version: 2})`, with
+an edit substituting one record in the list. `enabled`, `preset`, the masking
+convention, the preset catalogue and the thinkingLevels semantics are all
+unchanged, and the engine layer, `sessions.js` and markdown were not touched.
+On the test side the list chrome's testids stay pinned positively, the
+retired editor's eleven are pinned negatively (a return turns the suite red),
+two named suites cover the format linkage and the edit reuse, and ten revert
+mutations were run against them — all ten were caught.
 
 **Ticket 53 invariants** — no server-contract change (the delta:
 `panels.tsx` / `usage-models-cards.tsx` / `icons.tsx` / `i18n.ts` plus two
@@ -1558,7 +1662,7 @@ the `code` element). The contracts:
 | Wrapping | The `file_line_wrap` switch (ticket 48's key, no new key) extends to markdown codeblocks: on, code lines wrap at the column edge (`white-space: pre-wrap; overflow-wrap: anywhere`) and the horizontal scrollbar is suppressed; off (scroll mode), lines stay on one row. The language label sits in the toolbar outside the scroll container and never wraps. Read once per host mount — same semantics as ticket 48's file previews: blocks mounted after the toggle reflow, the ones on screen do not | `components/markdown-html.tsx`, `webapp/styles/markdown-overrides.css` |
 | Scrollbar visibility | In scroll mode the idle scrollbar is visible: faint grey thumb (8 % opacity token, theme-flipped) over a transparent track, deepening to `--utility_scrollbar` (15 %) on hover — upstream's sheet painted the idle thumb fully transparent and collapsed the chat-content webkit bar to `height:0`, so users read clipped code without knowing a bar existed | `webapp/styles/markdown-overrides.css` |
 | Scroll container is a blockified `<code>` | The parser emits a bare inline `<code>` (no `.shiki` wrapper, unlike upstream markup), and `overflow` is ignored on inline boxes — upstream's `overflow:auto` on the element therefore never produced a scroll container here, which is the deeper half of the "can't scroll, can't see a bar" report. The override sheet blockifies it (`display: block`) so the upstream scroll declaration takes effect; without that line every scrollbar rule is dead styling. A tripwire test also rejects any bare `code`/`pre` selector in the sheet, because one would restyle `code.inline-code` (inline code in prose) | `webapp/styles/markdown-overrides.css`, `webapp/test/markdown-code-wrap.test.ts` |
-| Known limit — codeblock taller than the 45vh shell | `.codeblock-shell` caps itself at `max-height: 45vh`, but the `<pre>` inside has the default `min-height: auto` and refuses to shrink below its content, so an over-long codeblock overflows the shell and vertical scrolling happens on the outer preview/message container instead. Pre-existing behaviour (present in scroll mode too, before ticket 52); wrapping only makes it easier to hit because wrapped blocks have more visual rows. Fixing it means `min-height: 0` on `.codeblock-pre` — deliberately not done in this ticket, recorded for a follow-up | `styles/official-utilities.css` (`.codeblock-shell`), upstream markup |
+| Overflow containment for a codeblock taller than the 45vh shell | `.codeblock-shell` caps itself at `max-height: 45vh`, and its flex children are the toolbar and the `<pre>`. The `<pre>` is not the scroll box — the `<code>` is — and the `<code>` was not a flex item, so upstream's `flex: 1 1 auto; min-height: 0; overflow: auto` on it never applied. The `<pre>` therefore kept the default `min-height: auto` ("never shorter than my content"), grew through the cap, and — the shell having no `overflow` of its own — painted the tail of the code over the prose below it. UAT 2026-10-03 17:00 measured it: shell 285px, `<pre>` 375px, `<pre>` `overflow-y: visible`, and the last rows of a Python block overlapped the "总结" paragraph. Fix: the override sheet makes the `<pre>` a flex column with `min-height: 0`. The `<code>` becomes a real flex item, upstream's scroll rule takes effect, and the overflow scrolls inside the block; the cap is untouched, and a block that fits lays out exactly as before. Rejected alternatives: moving `overflow` to the `<pre>` (every scrollbar rule, upstream's and this sheet's, keys on `.codeblock-code`, so the bars would be restyled or lost) and raising the cap (hides the defect, keeps long blocks unscrollable) | `webapp/styles/markdown-overrides.css`, `webapp/test/codeblock-overflow-containment.test.ts` |
 
 The overrides live in `webapp/styles/markdown-overrides.css`, a
 webui-owned sheet loaded after `styles/official-utilities.css`

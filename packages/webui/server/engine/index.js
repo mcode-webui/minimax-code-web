@@ -25,10 +25,20 @@
 //     probe result yet, and wiring one means touching the catalogue
 //     host's lifecycle, which M1 explicitly leaves alone. It lands with
 //     the A-batch routes that first need it.
-//   - NOT in this batch: transport selection (registry by
-//     MCODE_WEBUI_TRANSPORT, acp/exec providers). That is M4; today the
-//     only registered host provider is local-runtime-v2, with the
-//     TuiRuntimeAdapter surface declared alongside it.
+//   - M4-1 (done): the `acp` TRANSPORT is now a registered provider
+//     with a declared 14-key surface, so the transport webui has always
+//     defaulted to finally has an auditable answer. It is registered
+//     and nothing more: no `providerByTransport()` table lists it yet,
+//     so no consumer resolves to it and no gate's verdict changed —
+//     see the PROVIDERS block below and the acp declaration's header.
+//     M4-2 (done): the `exec` transport is the second registered
+//     transport provider, and the third legal MCODE_WEBUI_TRANSPORT
+//     value. It carries its own 14-key declaration, structurally weaker
+//     than acp's on six keys because `mcode exec` has no request channel
+//     at all — argv in, stream-json out — and the same two
+//     `servedBy` keys, because that exception belongs to the routes
+//     rather than to a transport. Also registered and nothing more. Only
+//     M4-3 (chat.js transport selection reading the registry) remains.
 //
 // Migration state (design §2.4): M1 done — the host construction moved
 // into providers/local-runtime-v2.js and runtime-host.js re-exports it;
@@ -42,8 +52,17 @@
 // changes what a client sees, gated HARD on purpose; see the
 // mode-writes.js block below) done. The rest of M3, then M4, will route
 // their consumers through this facade one endpoint family at a time.
+// M4-1 done — the acp transport is registered with its own declaration
+// and the plan's reverse exception (turnDiff/plugins are `none` on the
+// protocol yet served by the in-process v2 host) is recorded per key
+// via `servedBy`, validated at import and readable through
+// `resolveCapabilityHostProvider`. No `providerByTransport()` table
+// names it yet; that is M4-3. M4-2 done — the exec transport is
+// registered the same way, with a declaration audited against the CLI
+// contract and stream-json event union rather than against a method
+// table, because it has no methods.
 
-import { ENGINE_CAPABILITY_KEYS } from "./capabilities.js";
+import { ENGINE_CAPABILITY_KEYS, summarizeCapabilityHosting } from "./capabilities.js";
 // Declarations only — importing the provider *host-construction* modules
 // here would pull the @mavis/* TypeScript tree into every server boot
 // (the /api/engine-capabilities route loads this file from app.js).
@@ -55,9 +74,21 @@ import { ENGINE_CAPABILITY_KEYS } from "./capabilities.js";
 // costs a function, not a module load.
 import { LOCAL_RUNTIME_V2_CAPABILITIES } from "./providers/local-runtime-v2.capabilities.js";
 import { TUI_RUNTIME_ADAPTER_CAPABILITIES } from "./providers/tui-runtime-adapter.js";
+import { ACP_CAPABILITIES } from "./providers/acp.capabilities.js";
+// The second transport provider (M4-2). Same declaration-only discipline
+// as its three siblings, and the boot-path rule above is why it stays
+// that way: the exec interface is stated as CLI options and stream-json
+// event types in exec.capabilities.js, not by importing the tui
+// package's TypeScript contract that actually defines them.
+import { EXEC_CAPABILITIES } from "./providers/exec.capabilities.js";
 
 export { ENGINE_CAPABILITY_KEYS };
-export { assertEngineCapability, summarizeUnavailableCapabilities, validateEngineCapabilities } from "./capabilities.js";
+export {
+  assertEngineCapability,
+  summarizeCapabilityHosting,
+  summarizeUnavailableCapabilities,
+  validateEngineCapabilities,
+} from "./capabilities.js";
 export {
   EngineCapabilityNotSupportedError,
   engineCapabilityHttpResponse,
@@ -65,6 +96,16 @@ export {
 } from "./errors.js";
 // The lazy host getter: a function definition, no host, no @mavis/* import.
 export { getEngineCatalogueHost } from "./host.js";
+// The host-services window (placeholder batch PB-8): the read side of the
+// V2 owner graph, for the capability families the product facades do not
+// carry — PB-7 (agents, `services.agent`), PB-3 (worktrees,
+// `services.managedWorktrees`) and anything else that finds no use case on
+// `host.application` / `host.applications`. It is a window and nothing
+// more: no route consumes it yet, and each consumer batch owns its own
+// capability gate. Its only static import is `engine/host.js`, so the
+// boot-path rule the header above states holds here unchanged —
+// re-exporting it costs a function, not a module load.
+export { getHostServices } from "./host-services.js";
 // The directory-read family's gated reads (step M3, batch B1). Re-exported
 // here so the facade is the one import site for engine reads, but the
 // dependency runs the other way too — session-reads.js consults
@@ -301,6 +342,13 @@ export {
 } from "./streaming-send.js";
 export { LOCAL_RUNTIME_V2_CAPABILITIES } from "./providers/local-runtime-v2.capabilities.js";
 export { TUI_RUNTIME_ADAPTER_CAPABILITIES } from "./providers/tui-runtime-adapter.js";
+export { ACP_CAPABILITIES } from "./providers/acp.capabilities.js";
+export {
+  EXEC_CAPABILITIES,
+  EXEC_COVERAGE,
+  EXEC_INTERFACE,
+  auditExecCapabilities,
+} from "./providers/exec.capabilities.js";
 // The INTERRUPT family (step M3, batch B7): #13 POST /api/stop, #69
 // POST /api/protocol/cancel. Same cycle, same TDZ rule, same reasoning
 // as session-reads.js above: interrupt.js reads NOTHING from this module
@@ -396,8 +444,20 @@ export {
 
 /**
  * Registered providers. `transport` records which wire form the provider
- * speaks — both current entries are the in-process runtime ("runtime");
- * M4 adds "acp" and "exec" entries when those become providers.
+ * speaks. M4-1 adds the first non-runtime entry: `acp`, the protocol
+ * webui has ALWAYS defaulted to (`MCODE_WEBUI_TRANSPORT` resolves to
+ * "acp"), which until now had no declaration anywhere and therefore no
+ * auditable answer to "what can this transport do".
+ *
+ * Registering a transport changes NO routing. Every consumer resolves a
+ * provider through its own transport→provider table (`providerByTransport()`
+ * in each of the M3 families), and none of those tables lists `acp` or
+ * `exec` — a table entry naming a transport is M4-3's change, and until
+ * it happens `resolve*Provider("acp")` and `resolve*Provider("exec")`
+ * return `null` and every gate no-ops exactly as it did before either
+ * entry existed. That gap is the reason the declarations are safe to
+ * land first, and test/lib/engine/capabilities.test.js pins it from both
+ * sides: both entries exist, and no consumer reaches either yet.
  */
 const PROVIDERS = Object.freeze({
   "local-runtime-v2": {
@@ -410,7 +470,53 @@ const PROVIDERS = Object.freeze({
     transport: "runtime",
     capabilities: TUI_RUNTIME_ADAPTER_CAPABILITIES,
   },
+  acp: {
+    id: "acp",
+    transport: "acp",
+    capabilities: ACP_CAPABILITIES,
+  },
+  // The second TRANSPORT provider, and the third legal
+  // MCODE_WEBUI_TRANSPORT value (lib/config.js:224). Registered for the
+  // same reason acp is and with the same guarantee: the escape-hatch
+  // transport had no auditable answer to "what can this transport do"
+  // until now. Its declaration is structurally WEAKER than acp's on six
+  // keys — no request channel means no interrupt, no account status and
+  // no sub-agent events — and `exec.capabilities.js` says which, per key,
+  // with the mechanism named.
+  //
+  // Registering it changes NO routing, exactly as acp's registration did:
+  // no `providerByTransport()` table lists `exec`, so `resolve*Provider
+  // ("exec")` returns `null` and every gate no-ops. `turnDiff` and
+  // `plugins` carry the same `servedBy` as on acp, which is correct
+  // rather than copy-paste — that exception is a property of the two
+  // ROUTES (they project the in-process v2 host and gate on no
+  // transport), so every transport inherits it.
+  exec: {
+    id: "exec",
+    transport: "exec",
+    capabilities: EXEC_CAPABILITIES,
+  },
 });
+
+// A `servedBy` naming a provider that is not registered is a
+// DECLARATION bug, not a caller mistake: it would leave a hosted
+// capability with no host, and the first sign of it would be a 501
+// from a route nobody gated. `validateEngineCapabilities` can check the
+// field's shape but not whether the id exists — this module is the
+// only place that knows the registry, and checking here means the
+// server refuses to boot rather than answering a question with a lie.
+// (Same discipline as the per-provider self-check each declaration
+// module runs on itself.)
+for (const provider of Object.values(PROVIDERS)) {
+  for (const { key, servedBy } of summarizeCapabilityHosting(provider.capabilities)) {
+    if (!PROVIDERS[servedBy]) {
+      throw new Error(
+        `${provider.id}.${key} is declared servedBy "${servedBy}", which is not a registered engine provider ` +
+          `(known: ${Object.keys(PROVIDERS).join(", ")})`,
+      );
+    }
+  }
+}
 
 /** The provider new engine work should target first (the v2 host). */
 export const DEFAULT_ENGINE_PROVIDER_ID = "local-runtime-v2";
@@ -442,4 +548,42 @@ export function getEngineProvider(providerId = DEFAULT_ENGINE_PROVIDER_ID) {
 /** All registered provider ids (for the endpoint's consumer listing). */
 export function listEngineProviderIds() {
   return Object.keys(PROVIDERS);
+}
+
+/**
+ * Which provider's host actually answers `capability` for `providerId`,
+ * or `null` when this provider serves it itself.
+ *
+ * This is the query M4-3's transport-aware gates need and the one that
+ * keeps the M3 plan's reverse exception from becoming a regression. The
+ * acp provider declares `turnDiff` and `plugins` `none` and names
+ * `local-runtime-v2` as the host that serves them, so a gate that asks
+ * "can this transport answer a turn-diff request?" must consult this
+ * rather than the level alone — the two `/api/turn-diff` and ten
+ * `/api/plugins` endpoints have worked on the acp transport since
+ * before M3, and answering 501 for them would be a regression dressed
+ * up as an honest declaration.
+ *
+ * M4-2 records that the same two keys carry the same host on the `exec`
+ * transport, and that is a finding rather than a copy: those endpoints
+ * project the in-process v2 host through `getEngineCatalogueHost()` and
+ * gate on no transport, so the exception is a property of the ROUTES.
+ * Every transport inherits it, which is why the field is a per-key
+ * declaration field and not an acp special case.
+ *
+ * Returns a provider ID, not a provider object, so a caller cannot
+ * reach through it to a host it did not gate on. `null` covers both
+ * "this provider serves it itself" and "this key is not declared
+ * hosted" — the two are the same answer to the question asked here.
+ *
+ * @param {string} providerId
+ * @param {string} capability  One of ENGINE_CAPABILITY_KEYS.
+ * @returns {string|null}
+ */
+export function resolveCapabilityHostProvider(providerId, capability) {
+  const provider = getEngineProvider(providerId);
+  const entry = provider.capabilities[capability];
+  if (!entry || entry.level !== "none") return null;
+  const servedBy = entry.servedBy;
+  return typeof servedBy === "string" && PROVIDERS[servedBy] ? servedBy : null;
 }

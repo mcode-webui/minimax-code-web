@@ -48,13 +48,21 @@ import {
   collectDialogErrors,
   defaultChecked,
   API_FORMAT_OPTIONS,
+  API_FORMAT_SPECS,
+  blankDialogSeed,
+  editSeedFromDraft,
   PRESET_CHOICE_CUSTOM,
   type DialogHeaderRow,
   type EntryTestState,
   type PresetCatalogueEntry,
 } from "../components/add-model-dialog";
 import type { ProviderProtocol } from "../lib/api";
-import { blankModel, type DraftModel } from "../lib/provider-management";
+import {
+  blankModel,
+  draftFromView,
+  type DraftModel,
+  type DraftProvider,
+} from "../lib/provider-management";
 import { translate, type MessageKey } from "../lib/i18n";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -161,7 +169,9 @@ const formProps = (overrides: Record<string, unknown> = {}) => ({
   presetChoice: null as string | null,
   apiFormat: "openai" as ProviderProtocol,
   custom: blankDialogCustom(),
+  baseURL: "",
   apiKey: "",
+  apiKeyPlaceholder: translate("zh", "providers.dialog.apiKeyPlaceholder"),
   revealed: false,
   headers: [] as DialogHeaderRow[],
   entries: [] as DraftModel[],
@@ -174,6 +184,7 @@ const formProps = (overrides: Record<string, unknown> = {}) => ({
   onPresetChoice: noop,
   onApiFormat: noop,
   onCustomField: noop,
+  onBaseURL: noop,
   onApiKey: noop,
   onRevealToggle: noop,
   onHeaderChange: noop,
@@ -208,8 +219,11 @@ describe("add-model dialog — API-key reveal round-trip (M1)", () => {
       markup.includes('type="password"'),
       "masked state must render a password input",
     );
+    // Scoped to the key input's own opening tag: a form-wide
+    // `type="text"` sweep passes on any other plain text input
+    // (接口地址, a header value) and proves nothing about the mask.
     assert.ok(
-      !markup.includes('type="text"'),
+      !/type="text"/.test(openTagOf(markup, "provider-dialog-api-key")),
       "masked state must not leak a text input",
     );
     assert.ok(
@@ -387,7 +401,7 @@ describe("add-model dialog — cancel clears the draft (M6)", () => {
     // reopen racing onCancel cannot show stale input.
     assert.match(
       dialogSource,
-      /const close = useCallback\(\(\) => \{\s*resetForm\(\);\s*setFetchedOpen\(false\);\s*onCancel\(\);/,
+      /const close = useCallback\(\(\) => \{\s*resetForm\(\);\s*setSeededFor\(null\);\s*setFetchedOpen\(false\);\s*onCancel\(\);/,
       "close must call resetForm before onCancel — deleting resetForm here shipped green in round 1",
     );
   });
@@ -868,16 +882,16 @@ describe("add-model dialog — panel wiring", () => {
     assert.ok(buttonIdx > emptyIdx, "empty-state button follows the text");
   });
 
-  // P3 correction (acceptance round 2): this list holds 36 fragments
-  // and the empty-state case above holds the other 2 — 38 total,
-  // matching the base tree's 38 deduplicated testids. Ten fragments
-  // are truncated prefixes (e.g. `provider-row-label-${p.id` without
-  // the `|| "new"}` tail): they pin the source literal, not the
-  // rendered value, which is why the case below is named "survives in
-  // source" — "verbatim" overclaimed it.
+  // The panel is a LIST plus one dialog. The catalogue chrome below
+  // must survive verbatim; the editor testids that followed it are
+  // pinned as GONE in the next case, because a retired surface that
+  // silently lingers is a second entry point the operator can still
+  // reach — the exact double-entry this slice removed.
   const PRESERVED_TESTIDS = [
     "providers-panel",
     "provider-row-${p.draftId}",
+    "provider-row-edit-${p.draftId}",
+    "provider-delete-${p.draftId}",
     "provider-row-label-${p.id",
     "provider-preset-badge-${p.id}",
     "provider-custom-badge-${p.id}",
@@ -885,55 +899,88 @@ describe("add-model dialog — panel wiring", () => {
     "provider-models-summary-${p.id",
     "provider-model-chip-${p.id",
     "provider-model-overflow-${p.id",
-    "provider-test-summary-${p.id",
-    "provider-editor-${draft.id",
-    "provider-field-id",
-    "provider-field-label",
-    "provider-field-protocol",
-    "provider-field-authType",
-    "provider-field-apiKey",
-    "provider-field-baseURL",
-    "provider-test-button",
-    "provider-test-result",
-    "provider-delete-button",
-    "provider-model-add",
-    "provider-model-row-${model.id",
-    "provider-model-id",
-    "provider-model-label",
-    "provider-model-contextLimit",
-    "provider-model-thinkingLevels",
-    "provider-model-modalities",
-    "provider-model-remove",
     "provider-presets",
     "provider-preset-row-${preset.id}",
     "provider-preset-enable-${preset.id}",
-    "providers-save",
-    "providers-save-spinner",
     "providers-saved-notice",
     "providers-save-error",
-    "provider-validation-errors",
   ];
 
-  test("36 pre-existing testid literals survive in source (+2 empty-state = 38 total)", () => {
-    assert.equal(PRESERVED_TESTIDS.length, 36);
+  test("every catalogue-chrome testid survives in source", () => {
     for (const id of PRESERVED_TESTIDS) {
       assert.ok(
         panelSource.includes(id),
-        `pre-existing testid fragment missing from source: ${id}`,
+        `catalogue testid fragment missing from source: ${id}`,
       );
     }
   });
 
-  test("the editor's five model fields survive (editing capability)", () => {
-    for (const field of [
-      "provider-model-id",
-      "provider-model-label",
-      "provider-model-contextLimit",
+  test("the flat editor is retired — no second editing entry point", () => {
+    // Each of these was a control on the old right-hand pane. A
+    // surviving one means an operator can still bypass the dialog,
+    // and the two surfaces will disagree about what 保存 writes.
+    for (const retired of [
+      "provider-editor-${",
+      "provider-field-id",
+      "provider-field-protocol",
+      "provider-field-apiKey",
+      "provider-field-baseURL",
+      "provider-model-add",
       "provider-model-thinkingLevels",
       "provider-model-modalities",
+      "provider-test-button",
+      "providers-save\"",
+      "provider-validation-errors",
     ]) {
-      assert.ok(panelSource.includes(`data-testid="${field}"`));
+      assert.ok(
+        !panelSource.includes(retired),
+        `retired editor surface must not come back: ${retired}`,
+      );
     }
+    assert.doesNotMatch(
+      panelSource,
+      /function ProviderEditor/,
+      "the editor component itself must be gone",
+    );
+  });
+
+  test("a row click opens the dialog, not a pane", () => {
+    assert.match(
+      panelSource,
+      /onClick=\{\(\) => openEditDialog\(p\)\}/,
+      "the row's edit control must open the dialog pre-filled",
+    );
+    assert.match(
+      panelSource,
+      /editTarget=\{editTarget\}/,
+      "the dialog must receive the provider being edited",
+    );
+    // The duplicate check must not fire on the provider's OWN id.
+    assert.match(
+      panelSource,
+      /p\.draftId !== editTarget\?\.draftId/,
+      "the edited provider's id must be excluded from the collision list",
+    );
+  });
+
+  test("the commit REPLACES the edited row instead of appending a second one", () => {
+    // Matching on the wire `id` would append a duplicate whenever the
+    // operator retypes a custom provider's id — the dialog's own
+    // duplicate check cannot see it, because the panel excluded the
+    // edited row from the list it is checked against.
+    assert.match(
+      panelSource,
+      /providers\.map\(\(p\) =>\s*p\.draftId === editTarget\.draftId\s*\? draft : p,?\s*\)/,
+      "an edit must substitute the row it was opened on",
+    );
+  });
+
+  test("the provider key is still masked-and-empty, not round-tripped", () => {
+    assert.match(
+      dialogSource,
+      /editTarget\?\.apiKeyMasked \|\| t\("providers\.dialog\.apiKeyPlaceholder"\)/,
+      "the mask rides in the placeholder; the controlled value stays empty",
+    );
   });
 
   test("panel saves go through draftToWire + the unchanged putProviders call", () => {
@@ -1311,5 +1358,295 @@ describe("add-model dialog — footer 连通检测 / 跳过连通检测 (ticket 
       /\.\.\.\(Object\.keys\(headerRecord\)\.length > 0 \? \{ headers: headerRecord \} : \{\}\)/,
       "the probe body carries the collapsed headers",
     );
+  });
+});
+
+// ---------------------------------------------------------------------
+// 8. This slice — the API 格式 dynamic form and the 编辑 reuse of the
+//    same dialog.
+//
+//    The static-source pins below exist because the antd Modal shell is
+//    out of a static render's reach; every one of them names the
+//    mutation it exists to catch, and each was actually run.
+// ---------------------------------------------------------------------
+
+describe("provider dialog — API 格式 drives the endpoint surface", () => {
+  test("接口地址 is top level: it renders for a PRESET, not only for 自定义", () => {
+    // The regression: the field used to live inside the
+    // 「+ 其他（自定义）」 branch, so for every preset provider — 11 of
+    // the 12 catalogue entries — the one field the format selection
+    // changes was simply absent, and its endpoint was uneditable.
+    for (const choice of [null, "zhipu", PRESET_CHOICE_CUSTOM]) {
+      const markup = render(
+        createElement(AddModelDialogForm, formProps({ presetChoice: choice })),
+      );
+      assert.ok(
+        markup.includes('data-testid="provider-dialog-base-url"'),
+        `接口地址 must render with presetChoice=${String(choice)}`,
+      );
+      assert.ok(
+        markup.includes('data-testid="provider-dialog-base-url-hint"'),
+        `the endpoint hint must render with presetChoice=${String(choice)}`,
+      );
+    }
+  });
+
+  test("the retired custom-branch copy is gone (one control, one value)", () => {
+    const markup = render(
+      createElement(
+        AddModelDialogForm,
+        formProps({ presetChoice: PRESET_CHOICE_CUSTOM }),
+      ),
+    );
+    assert.ok(
+      !markup.includes('data-testid="provider-dialog-custom-baseURL"'),
+      "the nested endpoint input must not come back",
+    );
+    assert.ok(
+      !("baseURL" in blankDialogCustom()),
+      "baseURL must not stay a custom-branch field — it is one value, one control",
+    );
+  });
+
+  test("each format names its own default endpoint and probe request", () => {
+    // Transcribed from the server: `DEFAULT_BASE_URL` and `probe()` in
+    // `server/lib/providers-config.js`. A protocol whose spec drifts
+    // from the backend is a dialog that lies about what it will send.
+    assert.equal(API_FORMAT_SPECS.openai.defaultBaseURL, "https://api.openai.com");
+    assert.equal(
+      API_FORMAT_SPECS.anthropic.defaultBaseURL,
+      "https://api.anthropic.com",
+    );
+    assert.equal(
+      API_FORMAT_SPECS.gemini.defaultBaseURL,
+      "https://generativelanguage.googleapis.com",
+    );
+    assert.match(API_FORMAT_SPECS.openai.probeRequest, /\/v1\/models$/);
+    assert.match(API_FORMAT_SPECS.anthropic.probeRequest, /\/v1\/messages$/);
+    assert.match(API_FORMAT_SPECS.gemini.probeRequest, /\/v1beta\/models\?key=/);
+  });
+
+  test("switching the format re-renders endpoint + credential for that protocol", () => {
+    for (const format of ["openai", "anthropic", "gemini"] as const) {
+      const markup = render(
+        createElement(
+          AddModelDialogForm,
+          formProps({ apiFormat: format, baseURL: "" }),
+        ),
+      );
+      const spec = API_FORMAT_SPECS[format];
+      // The blank field falls back to the protocol default — the very
+      // value the server probes against, so the hint matches the
+      // request that will actually be sent.
+      const expected = spec.probeRequest.replace(
+        "{baseURL}",
+        spec.defaultBaseURL,
+      );
+      assert.ok(
+        markup.includes(translate("zh", "providers.dialog.probeHint").replace(
+          "{{request}}",
+          expected,
+        )),
+        `${format}: the probe hint must state the resolved request`,
+      );
+      assert.ok(
+        markup.includes(translate("zh", spec.credentialKey)),
+        `${format}: the credential's transport must be stated`,
+      );
+      assert.match(
+        openTagOf(markup, "provider-dialog-base-url"),
+        new RegExp(`data-protocol="${format}"`),
+        `${format}: the endpoint input must be bound to the format`,
+      );
+    }
+  });
+
+  test("a typed endpoint replaces the default in the hint", () => {
+    const markup = render(
+      createElement(
+        AddModelDialogForm,
+        formProps({ apiFormat: "openai", baseURL: "https://gw.corp/v1" }),
+      ),
+    );
+    assert.ok(
+      markup.includes("GET https://gw.corp/v1/v1/models"),
+      "the hint must follow the typed endpoint, not the protocol default",
+    );
+  });
+
+  test("the three formats state three DIFFERENT credential transports", () => {
+    const rendered = (["openai", "anthropic", "gemini"] as const).map(
+      (format) =>
+        render(
+          createElement(
+            AddModelDialogForm,
+            formProps({ apiFormat: format }),
+          ),
+        ),
+    );
+    const [openai, anthropic, gemini] = rendered;
+    // Gemini's key rides in the query string, not a header — the
+    // operator who copies the other two formats' habit gets a 401.
+    assert.ok(
+      gemini?.includes("?key="),
+      "the gemini hint must name the query-parameter transport",
+    );
+    assert.ok(
+      !openai?.includes("?key=") && !anthropic?.includes("?key="),
+      "only the gemini format uses a query parameter",
+    );
+  });
+
+  test("editing the endpoint drops the connectivity verdict", () => {
+    // The endpoint IS the probe target; a verdict for the old one
+    // answers a question the form no longer asks — and it is that
+    // verdict which unlocks 保存.
+    const body = propHandlerBody("onBaseURL=");
+    assert.ok(
+      body.includes("setFormTest(null)"),
+      "onBaseURL must drop the form-level verdict",
+    );
+    assert.ok(
+      body.includes("setEntryTests({})"),
+      "onBaseURL must drop the per-entry verdicts too",
+    );
+  });
+
+  test("the probe sends the TOP-LEVEL endpoint, not a custom-branch one", () => {
+    assert.ok(
+      !/custom\.baseURL/.test(dialogSource),
+      "a custom-branch baseURL in the probe body would silently ignore 接口地址",
+    );
+    assert.match(
+      dialogSource,
+      /}, \[apiFormat, presetChoice, custom\.authType, apiKey, baseURL, headers, selectedPreset, t\]\);/,
+      "baseURL must be a dependency of the probe",
+    );
+  });
+});
+
+describe("provider dialog — 编辑 reuses the same form", () => {
+  const VIEW = {
+    id: "minimax",
+    label: "minimax",
+    enabled: true,
+    protocol: "openai" as const,
+    auth: {
+      type: "byok" as const,
+      hasKey: true,
+      apiKeyMasked: "sk-a***b",
+      baseURL: "https://api.minimaxi.com/v1",
+      headers: { "X-Tenant": "acme" },
+    },
+    models: [
+      { id: "MiniMax-M3", label: "MiniMax-M3", contextLimit: 1000000, modalities: ["text"] },
+    ],
+  } as unknown as Parameters<typeof draftFromView>[0];
+
+  test("a custom provider opens on the 自定义 branch with its values", () => {
+    const seed = editSeedFromDraft(draftFromView(VIEW));
+    assert.equal(seed.presetChoice, PRESET_CHOICE_CUSTOM);
+    assert.equal(seed.custom.id, "minimax");
+    assert.equal(seed.custom.label, "minimax");
+    assert.equal(seed.custom.authType, "byok");
+    assert.equal(seed.apiFormat, "openai");
+    assert.equal(seed.baseURL, "https://api.minimaxi.com/v1");
+  });
+
+  test("a preset provider opens on ITS catalogue branch", () => {
+    const seed = editSeedFromDraft(
+      draftFromView({ ...VIEW, preset: "minimax" } as never),
+    );
+    assert.equal(seed.presetChoice, "minimax");
+    // Not the custom escape hatch — the row would otherwise land on a
+    // branch the provider was never configured from, and saving would
+    // write a second record.
+    assert.notEqual(seed.presetChoice, PRESET_CHOICE_CUSTOM);
+  });
+
+  test("the key is seeded EMPTY with the mask as a placeholder, never as a value", () => {
+    const seed = editSeedFromDraft(draftFromView(VIEW));
+    assert.equal(
+      seed.apiKey,
+      "",
+      "an untouched edit must PUT the server's keep-the-key sentinel",
+    );
+    const draft = draftFromView(VIEW);
+    assert.equal(
+      draft.apiKeyMasked,
+      "sk-a***b",
+      "the mask reaches the input's placeholder only",
+    );
+  });
+
+  test("headers and models round-trip into the form", () => {
+    const seed = editSeedFromDraft(draftFromView(VIEW));
+    assert.deepEqual(seed.headers, [{ name: "X-Tenant", value: "acme" }]);
+    const [entry] = seed.entries;
+    assert.equal(seed.entries.length, 1);
+    assert.equal(entry?.id, "MiniMax-M3");
+    assert.equal(entry?.contextLimit, "1000000");
+  });
+
+  test("the edit title differs from the add title", () => {
+    assert.notEqual(
+      translate("zh", "providers.dialog.editTitle"),
+      translate("zh", "providers.dialog.title"),
+    );
+    assert.match(
+      dialogSource,
+      /editTarget \? "providers\.dialog\.editTitle" : "providers\.dialog\.title"/,
+      "the shell must pick the title from the entry point",
+    );
+  });
+
+  test("an edit reuses the STORED draft as its base — nothing is re-derived", () => {
+    // `enabled`, `preset` and `draftId` are properties of the record,
+    // not of the form. Rebuilding them would re-enable a provider the
+    // operator disabled, or detach it from its preset.
+    assert.match(
+      dialogSource,
+      /const base: DraftProvider = editTarget \?\? \{ \.\.\.newDraftProvider\(\) \};/,
+      "the commit must start from the edited provider, not a fresh draft",
+    );
+  });
+
+  test("an edit keeps the keep-key sentinel verbatim on the wire", () => {
+    // draftToWire forwards apiKey unchanged; the empty string is what
+    // `applyKeepKeyConvention` reads as "keep the existing key".
+    const seeded = editSeedFromDraft(draftFromView(VIEW));
+    const draft: DraftProvider = {
+      ...draftFromView(VIEW),
+      auth: { ...draftFromView(VIEW).auth, apiKey: seeded.apiKey },
+    };
+    assert.equal(
+      draft.auth.apiKey,
+      "",
+      "the dialog must not invent a value for an untouched key field",
+    );
+  });
+
+  test("the seed is applied once per (target, open) pair, never on re-render", () => {
+    // Keyed to the pair rather than to `open` alone: the presets fetch
+    // landing re-renders, and a naive effect would wipe the operator's
+    // typing at exactly that moment.
+    assert.match(
+      dialogSource,
+      /const seedKey = open \? \(editTarget \? `edit:\$\{editTarget\.draftId\}` : "add"\) : null;/,
+      "the seed must be keyed to the open/target pair",
+    );
+    assert.match(
+      dialogSource,
+      /if \(seedKey === null \|\| seededFor === seedKey\) return;/,
+      "a re-render with the same key must not re-seed",
+    );
+  });
+
+  test("the add path is unchanged: a blank seed, not an edit", () => {
+    const seed = blankDialogSeed();
+    assert.equal(seed.presetChoice, null);
+    assert.equal(seed.baseURL, "");
+    assert.deepEqual(seed.headers, []);
+    assert.deepEqual(seed.entries, []);
   });
 });

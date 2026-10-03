@@ -51,6 +51,36 @@
 }
 
 /* ---------------------------------------------------------------------
+ * P18: contain a codeblock taller than the shell's 45vh cap.
+ *
+ * The upstream sheet caps `.codeblock-shell` with `max-height: 45vh` and
+ * carries its scroll rule — `flex: 1 1 auto; min-height: 0; overflow:
+ * auto` — on `.codeblock-code`. That rule only bites if the `<code>` is a
+ * flex item, and in this client's markup (lib/markdown.ts) it is not: the
+ * shell's flex children are the toolbar and the `<pre>`, with the
+ * `<code>` nested inside the `<pre>`. Block-ifying the `<code>` (above)
+ * gave it `overflow: auto` but still left it an ordinary block in a
+ * block container, so the declared scroll box was still not a flex item.
+ * The `<pre>` therefore kept its default `min-height: auto` — "never
+ * shorter than my content" — grew straight through the cap, and, the
+ * shell having no `overflow` of its own, the tail of the code painted
+ * over the prose that followed it. UAT 2026-10-03 17:00 measured exactly
+ * that: shell 285px, `<pre>` 375px, `<pre>` `overflow-y: visible`.
+ *
+ * Fix: give the `<pre>` the flex context the upstream rule was written
+ * for, and allow it to shrink. The `<code>` then becomes a real flex
+ * item, and the whole existing `overflow: auto` + `min-height: 0` +
+ * scrollbar cascade — upstream's, plus the idle/hover/wrap rules further
+ * down this sheet — applies to the element that actually overflows. A
+ * codeblock that fits is laid out exactly as before.
+ * --------------------------------------------------------------------- */
+.codeblock-shell .codeblock-pre {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* ---------------------------------------------------------------------
  * Idle-state scrollbar visibility (both switch states; the container
  * only scrolls horizontally while wrapping is off).
  *

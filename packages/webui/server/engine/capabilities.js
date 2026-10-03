@@ -12,6 +12,21 @@
 //     "implementation-absent" (the surface exists, nobody implements it) —
 //     the same distinction the design matrix records.
 //
+// M4-1 added one optional field, `servedBy`, and only on a `none` entry.
+// It answers a DIFFERENT question from `level`: `level` is what the
+// provider itself can do, `servedBy` is who answers the request when
+// webui serves the endpoint from another provider's in-process host.
+// The acp provider needs it for `turnDiff` and `plugins` — the one
+// reverse exception the M3 plan records (§6), where the protocol has
+// no such method and the endpoint works anyway. It is rejected on
+// `full` and `partial` because a provider that partly implements a
+// capability is not "served elsewhere", and letting the word mean two
+// things is how a gate ends up trusting the wrong field. Whether the
+// named provider is actually REGISTERED is not decidable here — this
+// module must stay free of the registry to avoid the import cycle
+// `engine/index.js` documents — so engine/index.js cross-checks it at
+// import instead.
+//
 // Declarations are static module constants — the first source of truth,
 // reviewed in code (design doc §2.3). Runtime probing is deliberately NOT
 // part of this batch; see engine/index.js for what ships now.
@@ -46,7 +61,7 @@ export const ENGINE_CAPABILITY_KEYS = Object.freeze([
 /** @typedef {"full" | "partial" | "none"} EngineCapabilityLevel */
 /** @typedef {{level: "full"}} FullCapability */
 /** @typedef {{level: "partial", missing: string[], reason: string}} PartialCapability */
-/** @typedef {{level: "none", reason: string}} NoneCapability */
+/** @typedef {{level: "none", reason: string, servedBy?: string}} NoneCapability */
 /** @typedef {Record<string, FullCapability|PartialCapability|NoneCapability>} EngineCapabilities */
 
 /**
@@ -71,6 +86,9 @@ export function validateEngineCapabilities(capabilities) {
     }
     if (entry.level === "full") {
       if (entry.missing !== undefined) problems.push(`${key}: full must not carry missing`);
+      if (entry.servedBy !== undefined) {
+        problems.push(`${key}: full must not carry servedBy — the provider serves it itself`);
+      }
       continue;
     }
     if (entry.level === "partial") {
@@ -80,11 +98,21 @@ export function validateEngineCapabilities(capabilities) {
       if (typeof entry.reason !== "string" || entry.reason.length === 0) {
         problems.push(`${key}: partial must carry a reason`);
       }
+      if (entry.servedBy !== undefined) {
+        problems.push(
+          `${key}: partial must not carry servedBy — it serves the capability itself; name the absent sub-items in \`missing\``,
+        );
+      }
       continue;
     }
     if (entry.level === "none") {
       if (typeof entry.reason !== "string" || entry.reason.length === 0) {
         problems.push(`${key}: none must carry a reason`);
+      }
+      if (entry.servedBy !== undefined) {
+        if (typeof entry.servedBy !== "string" || entry.servedBy.length === 0) {
+          problems.push(`${key}: servedBy must name a provider id`);
+        }
       }
       continue;
     }
@@ -149,4 +177,37 @@ export function summarizeUnavailableCapabilities(capabilities) {
     else if (entry.level === "partial") partial.push({ key, missing: [...entry.missing] });
   }
   return { none, partial };
+}
+
+/**
+ * List the capabilities this provider does NOT implement but webui
+ * still serves, from another provider's host. M4-1's reverse
+ * exception lives here: under the acp transport `turnDiff` and
+ * `plugins` are honestly `none` (the protocol has neither method) and
+ * still work, because the routes project the in-process
+ * local-runtime-v2 host.
+ *
+ * DELIBERATELY NOT MERGED INTO `summarizeUnavailableCapabilities`.
+ * That function is the input for design §4.2's UI rule (`none` → hide
+ * the entry point), and it is the frontend's existing contract: its
+ * `{none, partial}` shape is what `GET /api/engine-capabilities`
+ * already serves and what the webapp's degradation test asserts. A
+ * hosted capability is genuinely unavailable ON THE PROVIDER, so it
+ * belongs in that list, and the fact that a different host answers is
+ * a routing fact the provider cannot speak for. Adding a third bucket
+ * would have changed the response shape of a shipped endpoint for
+ * every existing caller; a separate function changes nothing.
+ *
+ * @param {EngineCapabilities} capabilities
+ * @returns {Array<{key: string, servedBy: string}>} In matrix order.
+ */
+export function summarizeCapabilityHosting(capabilities) {
+  const hosted = [];
+  for (const key of ENGINE_CAPABILITY_KEYS) {
+    const entry = capabilities ? capabilities[key] : undefined;
+    if (entry && entry.level === "none" && typeof entry.servedBy === "string" && entry.servedBy) {
+      hosted.push({ key, servedBy: entry.servedBy });
+    }
+  }
+  return hosted;
 }

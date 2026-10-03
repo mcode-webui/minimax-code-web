@@ -65,7 +65,7 @@ function pushRing(alert) {
 // import.meta.url)` form would fail after bundling because every
 // module in the bundle shares the entry's URL, so the module-relative
 // resolution no longer points at server/lib/events.js.
-// mcode-session-delete.js also imports events.js statically at
+// engine/session-delete.js also imports events.js statically at
 // top-level, so the static form has no cycle. The try/catch around
 // `_eventsAppend(...)` keeps the audit-trail write best-effort: if
 // events.js is missing or its append throws, alerts still work

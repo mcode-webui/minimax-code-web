@@ -770,6 +770,14 @@ const en = {
   // providers.add) are retargeted in place: the key names stay, the
   // copy follows the desktop's 「暂未添加自定义模型」/「+ 添加模型」.
   "providers.dialog.title": "Add model",
+  "providers.dialog.editTitle": "Edit model",
+  "providers.dialog.probeHint": "The connection test sends: {{request}}",
+  "providers.dialog.credential.openai":
+    "The API key travels as an Authorization: Bearer request header",
+  "providers.dialog.credential.anthropic":
+    "The API key travels as an x-api-key request header",
+  "providers.dialog.credential.gemini":
+    "The API key travels as a ?key= query parameter, not a header",
   "providers.dialog.provider": "Provider",
   "providers.dialog.providerPlaceholder": "Select a provider",
   "providers.dialog.other": "+ Other (custom)",
@@ -1823,6 +1831,12 @@ const zh: Record<MessageKey, string> = {
   // 空态（providers.empty / providers.add）原 key 改文案，对齐桌面
   // 的「暂未添加自定义模型」与「+ 添加模型」。
   "providers.dialog.title": "添加模型",
+  "providers.dialog.editTitle": "编辑模型",
+  "providers.dialog.probeHint": "连通检测将发起：{{request}}",
+  "providers.dialog.credential.openai":
+    "API Key 以 Authorization: Bearer 请求头发送",
+  "providers.dialog.credential.anthropic": "API Key 以 x-api-key 请求头发送",
+  "providers.dialog.credential.gemini": "API Key 以 ?key= 查询参数发送，不走请求头",
   "providers.dialog.provider": "提供商",
   "providers.dialog.providerPlaceholder": "请选择提供商",
   "providers.dialog.other": "+ 其他（自定义）",

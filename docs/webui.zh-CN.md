@@ -194,8 +194,9 @@ webui 服务端新增了一个内部引擎层 `packages/webui/server/engine/`，
 | `full` | 面完整 | 正常渲染 |
 | `partial` | 必须附 `missing` 子项清单与 `reason` | 控件可用，缺失子项对应的次级操作隐藏/禁用并带说明 |
 | `none` | 必须附 `reason`，区分「接口无」（面上根本没有该方法）与「实现无」（上层有、该面未开窗） | 入口整体不渲染，不留永远失败的按钮 |
+| `servedBy` | **可选，且只允许出现在 `none` 条目上**：指明该能力实际由哪个 provider 的进程内 host 应答。在 `full` 与 `partial` 上会被拒（部分实现的 provider 不叫「由别处服务」）；指向未注册的 provider 是**启动时抛错**，不是运行期 404 | 不改变渲染——被托管的键仍留在 `none` 桶里，UI 规则不动 |
 
-两个已接入面的当前声明（取值逐格照取证矩阵誊录，并在 `26043e9b` 基线上对着实际方法面复核——adapter 91 个方法、CliService 94 个方法加 `applications.session.diff` 门面）：
+两个已接入**面**的当前声明（取值逐格照取证矩阵誊录，并在 `26043e9b` 基线上对着实际方法面复核——adapter 91 个方法、CliService 94 个方法加 `applications.session.diff` 门面）：
 
 | 键 | local-runtime-v2 | tui-runtime-adapter |
 | --- | --- | --- |
@@ -214,6 +215,103 @@ webui 服务端新增了一个内部引擎层 `packages/webui/server/engine/`，
 | fileReadWrite | partial——缺 `file-write` | partial——缺 `file-write` |
 | gitOperations | partial——缺 `git-diff`、`git-commit`、`git-branch` | partial——缺 `git-diff`、`git-commit`、`git-branch` |
 
+第三个已注册 provider 是 **`acp` 传输**（M4-1）——它是传输而非进程内的面，
+声明在 `server/engine/providers/acp.capabilities.js`。审计对象不是可反射的
+host 对象（子进程没有对象可反射），而是线路表 `MCODE_ACP_CAPABILITIES`
+——`lib/mcode-rpc.js` 为前端导出的那份在库常量：
+
+| 键 | acp |
+| --- | --- |
+| sessionCrud | partial——缺 `deleteSession`、`renameSession`、`archiveSession`（线路上有 `session/new` · `load` · `list` · `close` · `resume` · `fork` · `activate`；`session/delete` 注册了但无 handler） |
+| streamingSend | full（`session/prompt`） |
+| interrupt | none——接口无。`session/cancel` **确实注册了**，但它是**通知**：送达只证明「已发出」，永远不证明回合停了 |
+| toolSkillInvocation | partial——缺 `listSkills`、`listRuntimeSkills`（协议没有技能枚举面） |
+| turnDiff | none——接口无，**servedBy `local-runtime-v2`** |
+| turnRewindRedo | none——接口无 |
+| plugins | none——接口无，**servedBy `local-runtime-v2`** |
+| mcp | partial——缺 `mcp-configure`、`mcp-inspect`、`mcp-clear`、`mcp-list`（MCP 服务器在回合内生效，无任何配置或探查面） |
+| subagents | partial——缺 `getDelegationSnapshot`、`stopDelegation`、`listBackgroundTasks`（只能从事件流里解析活动） |
+| usageStats | partial——缺 `getSessionUsage`、`getSessionUsageSummary`、`watchSessionUsageCommits`（套餐配额可经 `mcode/account/status` 查；webui 并排显示的 token 明细读的是 runtime DB，不是引擎） |
+| authCredentials | partial——缺 OAuth 流、API key 面、用户模型 provider 的 CRUD。**配置项写入面是有的**，且会派发 `model` 与 `permissionMode` 两个配置 id |
+| updateCheck | none——接口无（`available_commands_update` 刷新的是命令目录，不是更新检查） |
+| fileReadWrite | none——接口无（webui 的 `/api/fs` 族是自带的 `node:fs` 实现） |
+| gitOperations | none——接口无（webui 的 `/api/git` 族包的是系统 git 二进制） |
+
+有两格比两个运行时面**更强**，抹平它们正是设计矩阵所禁止的无功声称：协议把
+`session/set_mode` 注册为真正的 request，所以 acp 的
+`toolSkillInvocation` **不**缺 `setMode`；且 `session/set_config_option` 会派发
+`model` 与 `permissionMode` 两个配置 id，因此 `MODE_WRITE_BRIDGED_CONFIG_IDS`
+的三个桥接写入者里有两个在 acp 上确实可达。
+
+第四个已注册 provider 是 **`exec` 传输**（M4-2）——一次性的 `mcode exec`
+子进程，也是 `MCODE_WEBUI_TRANSPORT` 的第三个合法取值。它既不是 acp 的模式，
+也不是 tui 包的别名：`mcode-exec.js` 把 prompt 写进 stdin、从 stdout 解析
+`stream-json`，所以**没有请求通道，因而没有方法可调**。它拥有的是 CLI 选项与
+事件类型——`server/engine/providers/exec.capabilities.js` 正是把这两样记在
+`EXEC_INTERFACE` 里并据此审计：
+
+| 键 | exec |
+| --- | --- |
+| sessionCrud | partial——缺 `createSession`、`listSessions`、`getSession`、`updateSession`、`renameSession`、`archiveSession`、`deleteSession`、`forkSession`、`getSessionForkOptions`、`loadSession`、`activateSession`。只有 `--session` / `--continue`，而它们是「重新进入」一个会话而非「挑选」一个 |
+| streamingSend | full（`--input -` 加上 `stream-json` 事件流） |
+| interrupt | none——接口无：没有可调的东西。`packages/tui/src/cli/run-exec-command.ts` 里的 SIGINT/SIGTERM/SIGHUP 是 webui 发给**自己 spawn 的**子进程的信号，即 webui 自己的 kill 级联，不是传输提供的能力 |
+| toolSkillInvocation | partial——缺 `listSkills`、`listRuntimeSkills`、`listPendingPermissions`、`replyPermission`、`setMode`。传输**产出** `tool_call` 项而 webui 不读它们；且 `--permission` 在 spawn 时就定死（CLI 明说 `ask` 需要 TUI/ACP），所以没有权限请求/应答对 |
+| turnDiff | none——接口无，**servedBy `local-runtime-v2`** |
+| turnRewindRedo | none——接口无（`mcode exec review` 审阅本地 git 变更、不带回合坐标，所以不是 rewind 面） |
+| plugins | none——接口无，**servedBy `local-runtime-v2`** |
+| mcp | partial——缺 `mcp-configure`、`mcp-inspect`、`mcp-clear`、`mcp-list`（`--config` 能递给进程一份 MCP 配置；之后没有任何配置或探查面） |
+| subagents | none——接口无：事件联合里没有 delegation 类型，且 `packages/tui/src/headless/runner.ts` 干脆拒绝打开子 agent 会话 |
+| usageStats | partial——缺 `getSessionUsage`、`getSessionUsageSummary`、`watchSessionUsageCommits`。**比 acp 更强**：`turn.completed.usage` 会出现在线路上，所以这条传输在三个缺失名之下真有东西，而 acp 没有 |
+| authCredentials | none——接口无：没有请求通道就没有 `mcode/account/status`，也没有 `session/set_config_option`。`--model` / `--effort` 是每次运行的 spawn 标志，不是可读可写的账户面 |
+| updateCheck | none——接口无（`mcode update` 是兄弟 CLI 命令，而这里没有可通知的通道） |
+| fileReadWrite | none——接口无（`--file` 是把文件附到 prompt 上；webui 的 `/api/fs` 族是自带的 `node:fs` 实现） |
+| gitOperations | none——接口无（webui 的 `/api/git` 族包的是系统 git 二进制） |
+
+有三格比 acp **更弱**，且原因是结构性的而非引擎没写完：`interrupt`（acp 有一个
+cancel 通知，exec 连可声明的东西都没有）、`subagents`（acp 至少能从流里解析
+子 agent 活动，exec 的事件联合没有这种类型）与 `authCredentials`（acp 有两个
+RPC 方法，exec 没有通道）。反向例外是同样两个键、同样一个理由，而这是发现而非
+复制：`/api/turn-diff*` 与 `/api/plugins*` 投影的是进程内 v2 host，且**完全不按
+传输门控**，所以每条传输都继承它。
+
+**这条审计查出的一处错配，选择记录而非隐藏。** `collectExecResult` 匹配的三个
+事件名——`delta`、`message`、`exec.result`——是 **supervisor 内部**的流事件名。
+而 `--output-format stream-json` 只写 `ExecEventProjector` 的产出（`packages/tui/src/headless/output.ts`
+在没有 projector 时直接拒绝该格式，`packages/tui/src/headless/runner.ts` 总会提供一个），所以线路上跑的是
+那十个 `ExecEvent` 类型，两个名字族并不相交。这是 exec 数据面上的真实缺口。
+M4-2 不修它——本批只注册声明、不改路由——但它被钉在
+`EXEC_INTERFACE.consumedEvents`，并由一条「相交集一旦在任一方向变为非空就转红」
+的测试守住。
+
+**`servedBy` 是计划里唯一的反向例外，且有承重意义。** `turnDiff` 与 `plugins`
+在协议上如实 `none`，而那三个 `/api/turn-diff` 与十个 `/api/plugins` 端点在缺省
+acp 传输上一直可用——它们投影的是进程内 local-runtime-v2 host（经
+`getEngineCatalogueHost()`），且不按任何 provider 声明门控。只读档位，
+总有一天会在前端改读传输的 provider 而非缺省 provider 的那一刻，把两个能用
+的功能 501 掉。`summarizeCapabilityHosting(capabilities)` 与
+`resolveCapabilityHostProvider(providerId, key)` 暴露这条路由事实；被托管的键
+**刻意**仍留在 `summarizeUnavailableCapabilities` 里，因为该 provider 确实没有
+这个能力，而那个 `{none, partial}` 形状已经在线上。`exec` provider 带同样两个
+字段、同样一个结构性理由，这也让 `servedBy` 成为逐键声明字段，而不是 acp 的特例。
+
+**注册 provider ≠ 路由到它。** 每道能力门控都经自己家族模块里的「传输→provider」
+表解析 provider，而它们都不列 `acp` 与 `exec`：那里 miss 的含义是「尚无 provider
+认领这条传输」，门控原样通过。所以 M4-1 与 M4-2 都没有改变任何传输上任何门控的
+判定。真正让传输 provider 可达（`chat.js` 的传输选择读注册表）是 M4-3，而把
+这两件事分开的测试会在两条未接线的传输上遍历全部十六个 `resolve*Provider` 函数。
+
+**审计一张无法被 import 的表。** acp 的声明是对着 `MCODE_ACP_CAPABILITIES`
+核对的——那是路由读的在库常量。exec 的契约是另一个包里的 TypeScript，import 它
+会把 `@mavis/*` 放上启动路径，所以 `EXEC_INTERFACE` 是转录来的——而转录表会烂。
+两条活的交叉核对守住它：`applyExecCliContract` 的每个选项、`ExecEvent` 联合的
+每个类型、`ExecItem` 的每个 kind、`run-exec-command` 注册的每个信号，都从真实
+源码里读出逐一比对；还有 `buildExecArgs()`（一个纯函数）被直接调用，使这张表
+永远不会缩到比 webui 实际发出的内容更小。`auditExecCapabilities` 本身只有两条
+规则而非三条，省掉的第三条是一个决定：「某个 `partial` 的 `missing` 不得列出
+接口已暴露的机制」在这里是空转的——`missing` 装的是 provider 方法名，而覆盖表
+装的是接口机制名，两个命名空间不可能相交。一条永远不会失败的检查，在一个唯一
+职责就是诚实的文件里，读起来却像是有覆盖。
+
 ### `GET /api/engine-capabilities`
 
 只读、声明直出（不起 host、不探测）。返回一个面的声明，附「哪些能力不可用」的汇总——后续能力驱动的 UI 以此渲染，**代码里不出现按引擎名单隐藏功能的逻辑**：
@@ -225,7 +323,11 @@ GET  /api/engine-capabilities[?provider=<id>]
 404  { ok: false, code: "unknown_engine_provider", knownProviders: [...] }   // 调用方写错了 id
 ```
 
-默认返回 `local-runtime-v2`（M4 把 ACP/exec 包成 provider 之前唯一注册的 host 面）。`?provider=` 写错答 404——它不可能与保留给「引擎缺能力」的 501 混淆。
+默认返回 `local-runtime-v2`——自 B1 起未变，且是刻意的：M4-1 与 M4-2 增加的是
+provider，不是缺省值，所以每个既有调用方（包括 webui 自己的降级测试）看到的
+声明与之前完全一致。已注册 id 为 `local-runtime-v2`、`tui-runtime-adapter`、
+`acp` 与 `exec`。`?provider=` 写错答 404 并附 id 列表——它不可能与保留给
+「引擎缺能力」的 501 混淆。
 
 ### 调了未声明的能力 → 501
 
@@ -936,7 +1038,7 @@ slice 22 增强：
 | 已归档任务页 | 页签渲染空态；列表、恢复与删除需归档会话契约 |
 | 用量与模型的三来源切换 | 分段页签已按桌面形态落地（工单 53），但它是**视图切换器**——不切换实际使用的模型来源；真实的 Token Plan / MiniMax API / 自定义模型来源切换与来源徽标仍需模型路由契约 |
 | MiniMax API Key 面板 | 输入 + 测试连通性 + 保存并使用 |
-| 自定义模型拖拽排序、逐模型启停、预设选择器 | 需 provider 契约扩展；添加已弹窗化（工单 54），编辑仍在列表 + 编辑器面 |
+| 自定义模型拖拽排序、逐模型启停、预设选择器 | 需 provider 契约扩展；增删改已全部收敛到同一弹窗（本批），列表只负责展示与删除 |
 | 搜索关键词高亮 | 参照自己也没接线（定义了组件与动画但无调用点） |
 | 通用页 dataDir 底注 | 见上表 |
 
@@ -953,7 +1055,7 @@ Token Plan 视图是桌面的五区块（页签 + 四卡）：
 | 积分行（ⓘ + 蓝色开关） | 本地无积分体系：开关渲染桌面同款蓝色 iOS 形态但置灰（checked + disabled），文案照桌面，行内标注「本地版不适用」 |
 | 发票行 | 唯一完全真实的外链：「申请 ↗」新标签打开 MiniMax 开放平台 |
 
-自定义模型视图是原有供应商面板（API Key、协议、模型清单、连接测试、预设一键启用），`data-testid` 全部不改名；工单 54 把**添加**流程重做成桌面同款弹窗（见下节），列表 + 编辑器保留为编辑路径。
+自定义模型视图是原有供应商面板（API Key、协议、模型清单、连接测试、预设一键启用）；工单 54 把**添加**流程重做成桌面同款弹窗（见下节），本批把**编辑**也并入同一弹窗（见「弹窗同时承载编辑」一节）——面板现在只剩列表与删除，没有第二个编辑面。
 
 **添加模型弹窗（工单 54，53b）**
 
@@ -970,7 +1072,7 @@ Token Plan 视图是桌面的五区块（页签 + 四卡）：
 | 跳过连通检测 / 连通检测 | 桌面版的**表单级**检测，位于 footer 栏左侧。复用既有 `POST /api/providers/test` 契约，用表单当前值（协议、Key、端点**以及自定义 Headers**——探针必须发出真正会被发出的那个请求）得出一个结论，显示为「可达 · Nms」/「不可达：错误」。它与模型条目卡上的逐条「检测」是**不同粒度**——那条问「这个模型 id 答不答话」，这条问「这个供应商通不通」——所以两者并存。任一被探测的输入变化（提供商、API 格式、Key、端点、认证类型、任一 Header 行）都会清空结论：结论若能熬过编辑，那它就是对上游永远不会收到的那个请求的放行。Header 值在这条路径上会重新走一遍同样的校验，因为 test 端点直接取请求体的 `auth`，不经过 PUT 的归一化 |
 | 取消 / 保存 | 保存前校验（已选提供商、id 唯一、逐条 `validateModelRow`），追加进面板列表后走**原有** `draftToWire` + `api.putProviders({version: 2})` 保存路径（请求体零改动）；失败时弹窗不关、已输入内容保留。按钮对位于独立 footer 区（上分割线 + 16px 留白），h-9 控件高度，主按钮黑底带 token 阴影。保存在**表单级检测通过前保持禁用**，与参照仓 footer 及参照截图里那枚灰掉的「保存」一致；「跳过连通检测」是连不上端点时的出口，旁边一行文字说明当前被哪一个卡住。禁用但写明原因、且有两个控件可以解除的按钮，不是死按钮 |
 
-**工单 54 的不变量**：服务端契约零改动（`/api/providers` PUT 请求体、`/api/set-model` 与全部端点不动，变更只在前端 + 测试 + 文档）；面板/编辑器侧的全部既有 `data-testid` 在源码中保留（面板源码 pin 36 条 + 空态 2 条 = 38 条，与基线一致；`webapp/test/add-model-dialog.test.ts` 钉死清单）；预设目录、thinkingLevels 编辑语义、供应商分组与思考等级显示例外不变；深链仍落自定义模型视图，改为直接打开弹窗。旧的列表草稿式 `addProvider` 路径与编辑器失去调用方的自动聚焦参数一并删除，行为由弹窗收敛。
+**工单 54 的不变量**：服务端契约零改动（`/api/providers` PUT 请求体、`/api/set-model` 与全部端点不动，变更只在前端 + 测试 + 文档）；面板/编辑器侧的既有 `data-testid` 当时全部在源码中保留（面板源码 pin 36 条 + 空态 2 条 = 38 条）——**这条断言已由本批作废**：平铺编辑器退役后，它的 testid 改为「不得复活」的反向钉死（`add-model-dialog.test.ts`），列表 chrome 的 testid 仍然逐条保留；预设目录、thinkingLevels 编辑语义、供应商分组与思考等级显示例外不变；深链仍落自定义模型视图，改为直接打开弹窗。旧的列表草稿式 `addProvider` 路径与编辑器失去调用方的自动聚焦参数一并删除，行为由弹窗收敛。
 
 **验收第二轮（同工单）**：弹窗组件拆到 `components/add-model-dialog.tsx` 并导出受控面，测试升级为渲染级（`renderToStaticMarkup`，53a F-7 同款）——眼睛往返、校验错误块、取消重置落地面、勾选弹窗全选语义与 n/N 计数、零勾选/自定义供应商禁用态均由渲染标记 + 纯函数钉死（11 项回退行为的变异抽查全部转红）；PUT 请求体红线从调用点字面量升级为 `draftToWire` 的封闭键集断言（`provider-management.test.ts`）。一处表述更正：自定义供应商下「自动获取」链接**不是禁用**——可点开，弹窗内如实说明能力缺失，「添加」按钮禁用。
 
@@ -978,7 +1080,7 @@ Token Plan 视图是桌面的五区块（页签 + 四卡）：
 
 - **布局**：弹窗垂直居中（antd `centered`，两个弹窗一致）；卡片圆角 `--radius_12`、浮起阴影由 `--opacity_black_1_8`/`1_15` 透明度梯度组合（无字面量 rgba）；「取消/保存」移入独立 footer（上分割线 `border_default` + 16px 留白），按钮 h-9 控件高度、主按钮黑底带 `--shadow_default`；「模型」标题行的标签与操作按钮改为紧邻排列（原 `justify-between` 中间大空白造成视觉断裂）。表单体钳高 `90vh` 并内部滚动、footer 不随内容滚动——实机验证轮发现自定义分支全展开（5 个供应商字段 + 条目卡）时内容高 884px 超出 633px 视口，antd 遮罩不提供滚动，「取消/保存」落屏外不可达，钳制后 footer 在任意视口恒可见。
 - **模型区空态**：无条目时渲染虚线占位提示（`provider-dialog-models-empty`），说明两条添加路径；「＋添加」「自动获取」各带 tooltip 区分分工。
-- **连通检测（模型条目旁「检测」按钮）**：官方语义为「用当前填写信息检查对应模型能否响应」。本地实现复用服务端既有 `POST /api/providers/test` 契约（协议白名单 → 本地 Key 格式校验 → 按 baseURL 真实探测），无新增路由；探测请求由弹窗 shell 以当前表单值组装（预设分支用预设协议/端点，自定义分支用自定义字段），4 秒超时，结果显示「可达 · Nms」（成功色）/「不可达：错误」（错误色）。**粒度诚实标注**：该探测是接口级（baseURL + Key），不针对条目的模型 ID——按钮 tooltip 与本文档均如实说明，不冒充官方的模型级检测。按钮可用性镜像服务端本地校验：byok 预设需先填写 API Key，coding-plan 预设（claude-code / codex / opencode-go）无需 Key 即可检测。检测结果随输入即时失效：编辑/重置条目清除该条结果，删除条目后其余结果下标对齐，共享探测输入（提供商选择、协议、接口地址、认证类型、API Key）任一变化清除全部结果。本工单一并修复探测目标 bug：`testProvider` 此前读取并校验了 body 的 baseURL 却未下发（探测全部打到协议默认地址），现按路由注释既有承诺作为探测目标（`/api/providers` PUT 契约不动）。
+- **连通检测（模型条目旁「检测」按钮）**：官方语义为「用当前填写信息检查对应模型能否响应」。本地实现复用服务端既有 `POST /api/providers/test` 契约（协议白名单 → 本地 Key 格式校验 → 按 baseURL 真实探测），无新增路由；探测请求由弹窗 shell 以当前表单值组装（协议取「API 格式」，端点取顶层「接口地址」字段——本批已把该字段从自定义分支上提，预设分支不再被锁死在目录端点上），4 秒超时，结果显示「可达 · Nms」（成功色）/「不可达：错误」（错误色）。**粒度诚实标注**：该探测是接口级（baseURL + Key），不针对条目的模型 ID——按钮 tooltip 与本文档均如实说明，不冒充官方的模型级检测。按钮可用性镜像服务端本地校验：byok 预设需先填写 API Key，coding-plan 预设（claude-code / codex / opencode-go）无需 Key 即可检测。检测结果随输入即时失效：编辑/重置条目清除该条结果，删除条目后其余结果下标对齐，共享探测输入（提供商选择、协议、接口地址、认证类型、API Key）任一变化清除全部结果。本工单一并修复探测目标 bug：`testProvider` 此前读取并校验了 body 的 baseURL 却未下发（探测全部打到协议默认地址），现按路由注释既有承诺作为探测目标（`/api/providers` PUT 契约不动）。
 - **自动获取语义核对（对照官方「读取列表供选择添加；不会保存配置」）**：本地行为一致——勾选结果只落入弹窗草稿，保存仅由「保存」按钮触发；与官方的差异是列表来源（本地为预设内置目录而非按 Key 实时拉取），勾选弹窗内已有诚实标注，行为无需改动。
 
 **工单 85 —— 弹窗缺失的三个桌面字段**（`API 格式`、`自定义 Headers`、footer 的 `连通检测` / `跳过连通检测`）
@@ -1002,6 +1104,31 @@ Token Plan 视图是桌面的五区块（页签 + 四卡）：
 **探针的不对称，明说。** 连通检测把运营者的 Headers **先**展开，协议自身必需的 `Content-Type` / `anthropic-version` / `Accept` 后写覆盖之。探针回答的是「能否连上这个供应商」，不是「精确复现我的 Header」；让一个手滑的 `Content-Type` 把探针搞坏，等于让它回答了运营者没问的问题。生产请求路径没有这层限制。
 
 **仍不做**（有意留给下一批）：桌面版「模型 01」嵌套子卡（模型名称 / 上下文窗口 / 最大输出 Token）是**只有截图**的形态——参照仓对应位置是一个「模型名称」textarea，也就是说桌面版比参照仓更新，没有第二处来源可对照核验。重建模型条目结构比本批大，本轮不动。
+
+**本批 —— 弹窗同时承载编辑，平铺编辑器退役，「API 格式」驱动动态内容**
+
+| 变化 | 契约 |
+| --- | --- |
+| 编辑走同一弹窗 | 列表行点击打开**同一个**弹窗（`editTarget`），预填由 `editSeedFromDraft` 产出：预设供应商落在自己的目录分支，自定义供应商落在「+ 其他（自定义）」分支；id / 显示名 / 认证类型 / 接口地址 / 自定义 Headers / 模型条目逐项带出。弹窗标题随之从「添加模型」切到「编辑模型」（`providers.dialog.editTitle`）。两个入口共用一套表单，而不是两份会各自漂移的表单 |
+| 保存以存储记录为基底 | 提交的 draft 从被编辑的那条记录出发（`const base = editTarget ?? newDraftProvider()`），只有表单能触及的字段取自表单状态。`enabled` / `preset` / `draftId` 属于**记录**而非表单：重建一份会把运营者手动禁用的供应商重新启用，或把它从预置关系上摘下来。面板侧按 `draftId` 定位并替换该行（不按线上 id）——否则运营者改写了自定义 id 时会写出一条新记录而不是改名 |
+| 密钥在编辑态仍然不落盘 | 编辑态的 API Key 种子恒为 `""`，即服务端的「保留原 Key」哨兵；脱敏值只进 placeholder，绝不回写为值。运营者不碰该字段就保留磁盘上的凭证，敲了值才替换 |
+| 平铺编辑器退役 | `ProviderEditor` 及其 `ApiKeyInput` / `DraftModelList` / `DraftModelRow` 与面板级「保存供应商」按钮、整表校验、选中态探针一并删除。删除能力没有丢：它移到列表行的 🗑（`provider-delete-{draftId}`，`Popconfirm` 二次确认）；预置行仍不提供删除，沿用旧编辑器的规则（预置的生命周期归预设控件） |
+| 列表行结构调整 | 行元素由 `<button>` 改为 `<div>` 包裹：行内现在有第二个可点控件，按钮套按钮是非法 HTML 且键盘语义有歧义。行上的编辑控件是 `provider-row-edit-{draftId}`，删除是 `provider-delete-{draftId}` |
+| 接口地址上提为顶层字段 | 该字段原在「+ 其他（自定义）」分支内，**12 个预置供应商里有 11 个既看不到也改不了端点**。现在它对所有供应商渲染：选预设时以目录端点预填，之后可覆盖，留空则回落到服务端同一套协议默认地址 |
+
+「API 格式」驱动的三处联动（`API_FORMAT_SPECS`，每个值都逐字转自 `server/lib/providers-config.js` 的 `DEFAULT_BASE_URL` 与 `probe()`）：
+
+| 格式 | 默认端点 | 连通检测实际发起的请求 | 凭据传递方式 |
+| --- | --- | --- | --- |
+| `OpenAI Completions` | `https://api.openai.com` | `GET {baseURL}/v1/models` | `Authorization: Bearer` 请求头 |
+| `Anthropic Messages` | `https://api.anthropic.com` | `POST {baseURL}/v1/messages` | `x-api-key` 请求头 |
+| `Gemini` | `https://generativelanguage.googleapis.com` | `GET {baseURL}/v1beta/models?key=…` | **`?key=` 查询参数**，不走请求头 |
+
+字段下方的提示行显示的是**已解析**的探测目标：填了接口地址就显示填的，留空就显示该格式的默认地址——它显示的正是检测按钮将要发出的那个请求。凭据传递方式的提示同样按格式切换，Gemini 那条明说 Key 走查询参数；照搬另外两种格式的「Key 放请求头」习惯只会得到 401。
+
+**KNOWN DEBT —— 「按格式显隐字段」未做，理由如下。** 三种协议在 `/api/providers` 的 PUT 契约里字段集完全相同，后端没有可按格式隐藏的字段。因此本批把联动落在**动态内容**（端点默认值、探测请求、凭据传递方式）而不是字段的显隐：凭空隐藏一个字段会做出一个后端存不下来的表单，比不隐藏更糟。要真正做到按格式显隐，需要先扩展 PUT 契约，属独立批次。
+
+**本批的不变量**：服务端契约零改动（`/api/providers` 五端点与 `/api/providers/test` 原样复用，变更全部在前端 + 测试 + 文档）；PUT 请求体逐字节不变（仍是 `draftToWire` + `api.putProviders({version: 2})`，编辑只是替换列表中的同一条记录）；`enabled` / `preset` / 脱敏约定 / 预设目录 / thinkingLevels 语义全部不变；未触碰 engine 层、`sessions.js`、markdown。测试侧：面板 chrome 的 testid 逐条正向保留，退役编辑器的 11 个 testid 反向钉死（复活即红），新增「API 格式驱动端点面」与「编辑复用同一表单」两组具名用例，并对 10 个回退变异做了实测——全部被捕获。
 
 **工单 53 的不变量**：服务端契约零改动（变更面：`panels.tsx` / `usage-models-cards.tsx` / `icons.tsx` / `i18n.ts` + 两个测试文件）；h2 页头、切页动画与页宽 760 不变；`SETTINGS_NAV`、`SettingsSection` 联合类型、深度链接入口（`initialSection`、`autoAddProvider`）不变；本轮落地时还是占位的 8 个页签保持占位形态——设置模态移植壳（58）与其四个子页（55a）后来给其中大部分填上了内容，见上文导航表。删除了失去消费者的 `usage.used` / `usage.reset` 文案键（旧标签式「已用 X%」「重置时间」被桌面格式取代）。
 
@@ -1106,7 +1233,7 @@ flowchart LR
 | 换行 | `file_line_wrap` 开关（沿用工单 48 的键，不新增键）扩展到 markdown 代码块：开启时代码行在列边缘折行（`white-space: pre-wrap; overflow-wrap: anywhere`）并隐藏横向滚动条；关闭时保持单行横向滚动。语言标签在滚动容器外的工具栏里，永不折行。每次宿主挂载读一次——与工单 48 的文件预览同语义：切换开关后新挂载的块生效，屏幕上已有的不重排 | `components/markdown-html.tsx`、`webapp/styles/markdown-overrides.css` |
 | 滚动条可见 | 滚动模式下静止态滚动条可见：浅灰 thumb（8 % 透明度 token，随主题翻转）配透明轨道，悬停加深为 `--utility_scrollbar`（15 %）——上游样式把静止态 thumb 画成全透明、还把聊天内容里的 webkit 横向滚动条压成 `height:0`，用户不知道存在滚动条，只能看到被裁切的代码 | `webapp/styles/markdown-overrides.css` |
 | 滚动容器是被块化的 `<code>` | 解析器产出的是裸 inline `<code>`（与上游标记不同，没有 `.shiki` 包装），而 `overflow` 在 inline 盒上被忽略——上游对该元素声明的 `overflow:auto` 在本客户端从未形成滚动容器，这是「既滚不动也看不见滚条」报障的另一半根因。覆盖层将其块化（`display: block`）后上游滚动声明才生效；删掉这一行，所有滚动条规则都是死样式。哨兵测试同时拒绝覆盖表里出现任何裸 `code`/`pre` 选择器——一旦出现会误伤正文里的行内代码（`code.inline-code`） | `webapp/styles/markdown-overrides.css`、`webapp/test/markdown-code-wrap.test.ts` |
-| 已知限制——超长代码块溢出 45vh 外壳 | `.codeblock-shell` 给自己设了 `max-height: 45vh`，但内部的 `<pre>` 保持默认 `min-height: auto`、拒绝收缩到内容高度以下，于是超长代码块会撑破外壳，纵向滚动发生在外层预览/消息容器上。这是既有行为（滚动模式下同样存在，早于工单 52）；换行只是让块更容易撞上（折行后视觉行数更多）。修法是给 `.codeblock-pre` 设 `min-height: 0`——本工单刻意未动，记录为后续工单 | `styles/official-utilities.css`（`.codeblock-shell`）、上游标记 |
+| 超 45vh 上限的代码块如何被容纳 | `.codeblock-shell` 给自己设了 `max-height: 45vh`，它的 flex 子项是工具栏与 `<pre>`。滚动容器是 `<code>` 而不是 `<pre>`，而 `<code>` 并不是 flex 子项——上游写在它上面的 `flex: 1 1 auto; min-height: 0; overflow: auto` 从未生效。于是 `<pre>` 保持默认的 `min-height: auto`（「绝不低于内容高度」），撑过上限；而外壳自身没有 `overflow`，代码尾部就绘制在其后的正文之上。2026-10-03 17:00 的 UAT 实测：外壳 285px、`<pre>` 375px、`<pre>` 的 `overflow-y: visible`，python 代码块末几行与「总结」段落叠印不可读。修法：覆盖层把 `<pre>` 变成 `min-height: 0` 的 flex 列，`<code>` 于是成为真正的 flex 子项，上游滚动规则开始生效，溢出改为在块内滚动；高度上限原样保留，装得下的块排版与此前完全一致。否决的备选：把 `overflow` 挪到 `<pre>` 上（上游与覆盖层的所有滚动条规则都挂在 `.codeblock-code` 上，滚动条会被重新定义或直接丢失）；调大上限（掩盖缺陷，长代码块依然无法滚动） | `webapp/styles/markdown-overrides.css`、`webapp/test/codeblock-overflow-containment.test.ts` |
 
 覆盖层放在 webui 自有的 `webapp/styles/markdown-overrides.css`，在
 `styles/official-utilities.css` 之后加载（`app/layout.tsx`）；上游共享

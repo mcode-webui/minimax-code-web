@@ -2697,8 +2697,17 @@ There is no manual `?v=N` cache-bust any more — every chunk URL under
 Read-only, declaration-backed: which of the 14 engine capability keys a
 provider supports, plus the `unavailable` summary the capability-driven
 UI renders from. Boots no host and runs no probe. `?provider=` defaults
-to `local-runtime-v2`; the other registered surface is
-`tui-runtime-adapter`.
+to `local-runtime-v2` — unchanged since B1, so every existing caller keeps the
+declaration it had. The other three registered providers are
+`tui-runtime-adapter` (the in-process adapter surface), `acp` (the
+`mcode acp` subprocess protocol) and `exec` (the one-shot `mcode exec`
+subprocess).
+
+Registering a provider is not routing it. Both `acp` and `exec` are
+registered and unreachable: no capability gate resolves to either of
+them, so a server running on either transport still evaluates every
+gate against no provider at all. `?provider=exec` is answerable today;
+a gate that consults the exec declaration is M4-3's work.
 
 **Response 200**
 ```json
@@ -2716,9 +2725,36 @@ to `local-runtime-v2`; the other registered surface is
 ```
 (`capabilities` carries all 14 keys; three are shown.)
 
+A `none` entry may carry an extra `servedBy: "<providerId>"` alongside its
+`reason`. It does not change the level or the `unavailable` roll-up — the
+provider really has none of that capability. It records that webui still
+serves the endpoint, from another provider's in-process host. Both
+transport providers use it for exactly two keys (`turnDiff`, `plugins`):
+neither the acp protocol nor the exec CLI has a diff method or a plugin
+method, yet those thirteen endpoints work on either transport because
+they project the in-process local-runtime-v2 host and gate on no
+transport at all. That is why the field is a per-key declaration field
+rather than an acp special case: the exception belongs to the two
+routes, so every transport inherits it. A client that wants to know who
+answers a request should treat `servedBy` as "not a degradation" — and
+must not read it as the capability being present.
+
+The `exec` declaration is the one worth reading before writing a client
+against it, because its shape follows from the transport having **no
+request channel**: `mcode exec` takes a prompt on stdin and writes a
+`stream-json` event stream to stdout, so there are no methods to call
+and nothing to declare `full` except sending. It is `full` on
+`streamingSend`, `partial` on `sessionCrud` (it can re-enter or resume an
+existing session but cannot list, load, close or delete one), `partial`
+on `toolSkillInvocation`, `mcp` and `usageStats`, and `none` on the other
+six — including `interrupt` and `authCredentials`, which the acp provider
+answers `partial`. Each `reason` names the file and line it was taken
+from, and the level is a statement about the transport's interface, not
+about which endpoints currently respond under it.
+
 **Errors** — `404 {"ok":false,"code":"unknown_engine_provider","knownProviders":[…]}` for an unknown `?provider=` (caller confusion — never 501). Any future route gated on an undeclared capability answers `501 {"ok":false,"code":"engine_capability_not_supported","capability","provider","missing"?,"reason"?}` — expected degradation, not a server fault; treat it as "hide the entry point", not as an error toast.
 
-Contract details (the 14-key table, both providers' levels, the
+Contract details (the 14-key table, every provider's levels, the
 migration state) live in [`docs/webui.md`](../../../docs/webui.md)
 under "Engine capability declaration".
 

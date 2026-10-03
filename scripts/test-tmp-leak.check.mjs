@@ -276,13 +276,17 @@ const KNOWN_PREFIXES = [
   "webui-chat-failed-",
   "webui-db-out-absent-",
   "webui-db-out-del-",
-  "webui-db-out-lock-",
+  "webui-db-out-order-",
+  "webui-db-out-preview-",
+  "webui-db-out-readfail-",
+  "webui-db-out-readfail-dry-",
   "webui-db-out-schema-",
   "webui-db-out-zero-",
   "webui-db-outcomes-events-",
   "webui-db-test-",
   "webui-db-test2-",
   "webui-dryrun-",
+  "webui-engine-fail-",
   "webui-events-concurrency-test-",
   "webui-events-hash-test-",
   "webui-events-ro-",
@@ -344,6 +348,11 @@ const KNOWN_PREFIXES = [
   "webui-wsroots-a-",
   "webui-wsscratch-",
   "mcode-webui-runtime-host-",
+  // PB-8 (host services window): the same runtime and the same
+  // better-sqlite3 fd profile as the suite above — its parent reuses
+  // that prefix, its children need their own.
+  "pb8-svc-",
+  "pb8-svc-shape-",
   "webui-t36-engine-",
   // Catch-all prefixes (last — matching stops on the first prefix that
   // matches, so every entry above this point wins over these). Round-3

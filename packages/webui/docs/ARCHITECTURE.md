@@ -74,7 +74,7 @@
    │  server/lib/ — pure modules (one concern each)                      │
    │                                                                      │
    │  config · layout · lan · models · sqlite-resolver ·                │
-   │  mcode-session-delete · sessions · state-bus · acp-client         │
+   │  sessions · state-bus · acp-client                               │
    │  mcode-rpc · mcode-acp · mcode-exec · chat-line · context-percent  │
    │  mavis-usage · usage · settings · upload · workspace · slash ·     │
    │  static · gates · auth · alerts · trajectory                       │
@@ -312,9 +312,11 @@ flowchart TD
 Lifecycle notes:
 
 - **Delete** (`DELETE /api/sessions/:id`) removes the webui record AND
-  cross-deletes the linked `mvs_…` rows from the runtime SQLite
-  (`deleteMcodeSessionFromDb`, `?dryRun=true` to preview). Deleting the
-  mcode record drops it from both lists in one transaction.
+  asks the engine to delete the linked `mvs_…` session
+  (`engine/session-delete.js#deleteSessionThroughEngine`, `?dryRun=true`
+  to preview — the preview is a read-only per-table count, because the
+  engine's delete has no preview form). Deleting the mcode record drops
+  it from both lists.
 - **Startup cleanup** prunes records that are empty AND default-titled
   AND older than 24h — the "+"-then-never-typed leftovers.
 - **Search** (`GET /api/sessions/search`) fuzzy-matches titles across
@@ -494,13 +496,15 @@ Fifteen files, one job each:
 
 | File | Owns |
 | --- | --- |
-| `engine/capabilities.js` | The contract: `ENGINE_CAPABILITY_KEYS` (the 14 matrix keys), `validateEngineCapabilities`, `assertEngineCapability`, `summarizeUnavailableCapabilities` |
+| `engine/capabilities.js` | The contract: `ENGINE_CAPABILITY_KEYS` (the 14 matrix keys), `validateEngineCapabilities`, `assertEngineCapability`, `summarizeUnavailableCapabilities`, `summarizeCapabilityHosting` |
 | `engine/errors.js` | `EngineCapabilityNotSupportedError` + `engineCapabilityHttpResponse` (the 501 payload shape) |
 | `engine/host.js` | `getEngineCatalogueHost` — the lazy bridge to the one catalogue host. No static import of the host module: the getter body is a dynamic `import()` of `lib/acp-client.js`, so the facade costs a function, not a module load |
-| `engine/index.js` | The facade: `getEngineProvider`, `listEngineProviderIds`, `getEngineCatalogueHost` (registry by provider id; transport selection arrives with migration step M4) |
+| `engine/index.js` | The facade and the registry: `getEngineProvider`, `listEngineProviderIds`, `resolveCapabilityHostProvider`, `getEngineCatalogueHost`. **Registering a provider and a consumer reaching it are separate decisions** (step M4) — a registry entry is a declaration, and nothing routes to it until its `providerByTransport()` table says so |
 | `engine/providers/local-runtime-v2.capabilities.js` | `LOCAL_RUNTIME_V2_CAPABILITIES` — **declaration only, and the split is load-bearing**: its sole import is `../capabilities.js`, so `/api/engine-capabilities` can read the capability table without pulling the v2 host's TypeScript dependency tree (~4.7 s of first-compile) into the boot path. That tree stays behind the same lazy boundary `acp-client.js` already documented |
 | `engine/providers/local-runtime-v2.js` | `createCatalogueHost` (moved verbatim from `runtime-host.js`, which re-exports it) + re-exports the declaration above, so consumers keep one import shape. This is the heavy one — `@mavis/local-runtime-v2`, `@mavis/config`, `@minimax/code/runtime-adapter` — and no file `app.js` reaches may import it |
 | `engine/providers/tui-runtime-adapter.js` | `TUI_RUNTIME_ADAPTER_CAPABILITIES` (declaration only — the adapter itself is constructed inside the v2 host) |
+| `engine/providers/acp.capabilities.js` | `ACP_CAPABILITIES` — the `mcode acp` protocol's 14-key declaration, and the first provider that is a **transport** rather than an in-process surface (step M4-1). Declaration only, like its siblings: no protocol client is constructed, so `?provider=acp` is answerable from the boot path |
+| `engine/providers/exec.capabilities.js` | `EXEC_CAPABILITIES` — the `mcode exec` transport's 14-key declaration (step M4-2), plus `EXEC_INTERFACE` (the CLI options and stream-json event types that ARE the transport's interface, since it has no methods), `EXEC_COVERAGE` (the audit's input) and `auditExecCapabilities` (the exec counterpart of the acp wire audit). Declaration only and zero-dependency for the same boot-path reason |
 | `engine/session-reads.js` | The directory-read family's facade calls (`readEngineSessionList`, `readEngineSessionListForWorkspace`, `readEngineSessionTitle`, `readEngineVersion`) and the endpoint→capability table `SESSION_READ_ENDPOINTS` (step M3, batch B1) |
 | `engine/session-tree-reads.js` | The session-tree family's facade call (`readEngineSessionTree`) and the endpoint→capability table `SESSION_TREE_ENDPOINTS` (step M3, batch B2). Gates **hard**: `assertSessionTreeCapability` throws → 501, because the tree is entirely engine data. Forwards to `lib/session-tree.js#getSessionTree`; the assembler is not duplicated |
 | `engine/session-export.js` | The export family's facade call (`readEngineSessionTranscript`) and the endpoint→capability table `SESSION_EXPORT_ENDPOINTS` (step M3, batch B2). Gates **soft**: `checkSessionExportCapability` reports and never throws, because export's primary source is `sessions.json`, not the engine |
@@ -508,7 +512,7 @@ Fifteen files, one job each:
 | `engine/account-reads.js` | The account family's facade call (`readEngineAccount`) and the endpoint→capability table `ACCOUNT_READ_ENDPOINTS` (step M3, batch B4). Gates **hard** on `authCredentials` · `getAccountStatus` — the same pair and the same provider method as `engine/usage-reads.js`, because #20 and #15/#16 read the same engine projection. Its read is **asynchronous** and it lives under the ordinary `await import()` boot-path rule |
 | `engine/model-reads.js` | The model-catalogue family's facade call (`readEngineModelCatalogue`), the whole projection as named pure functions (`projectModelCatalogue`, `deriveModelSelection`, `buildModelCataloguePayload`, `catalogueSourceLabel`, `webuiFullModelId`, `providerOfModelId`, `attachContextWindowOptions`, `configOption`), and the endpoint→capability table `MODEL_READ_ENDPOINTS` (step M3, batch B4). Gates **soft**: `checkModelReadCapability` reports and never throws, because the catalogue's primary sources are files webui owns. Its read is **synchronous**, and it is the one engine module **not** re-exported from `engine/index.js` — see the boot-path note below |
 | `engine/capability-reads.js` | The capability-declaration family's facade call (`readEngineCapabilityView`) and the endpoint→capability table `CAPABILITY_READ_ENDPOINTS` (step M3, batch B4). Declares **no capability for #73** — it IS the declaration endpoint, and gating the gate would let a `none` hide the declaration that says so. It is the only endpoint in the migration whose response CONTRACT changed (`capabilities` is now the 14-key declaration, replacing the ACP wire table) |
-| `engine/session-writes.js` | The session WRITE family's facade calls (`planEngineSessionDelete`, `commitEngineSessionDelete`, `commitEngineOrphanSessionDelete`, `previewEngineSessionDelete`, `applyEngineSessionRename`, `readOrphanSessionWriteIds`), the pure derivations they are built from (`resolveSessionTarget`, `isMcodeSessionId`, `isOrphanSessionRecord`, `selectOrphanSessionIds`, the two fan-out predicates, the per-client state resets), and the endpoint→capability table `SESSION_WRITE_ENDPOINTS` (step M3, batch B5). Gates **hard** on `sessionCrud` · `deleteSession` for #7 and #6, and declares **no capability at all** for #4. Forwards the 32-table SQL to `lib/mcode-session-delete.js` rather than moving it — see the write-path section below |
+| `engine/session-writes.js` | The session WRITE family's facade calls (`planEngineSessionDelete`, `commitEngineSessionDelete`, `commitEngineOrphanSessionDelete`, `previewEngineSessionDelete`, `applyEngineSessionRename`, `readOrphanSessionWriteIds`), the pure derivations they are built from (`resolveSessionTarget`, `isMcodeSessionId`, `isOrphanSessionRecord`, `selectOrphanSessionIds`, the two fan-out predicates, the per-client state resets), and the endpoint→capability table `SESSION_WRITE_ENDPOINTS` (step M3, batch B5). Gates **hard** on `sessionCrud` · `deleteSession` for #7 and #6, and declares **no capability at all** for #4. Issues no SQL of its own — the engine destroys the rows, through `engine/session-delete.js` — see the write-path section below |
 
 Routes take the host from the facade and never from `lib/acp-client.js`:
 `routes/plugins.js` and `routes/turn-diff.js` call
@@ -580,6 +584,196 @@ Runtime probing (downgrading a declared level when the environment
 disagrees) is deliberately absent in this batch — see `engine/index.js`
 for the reasoning.
 
+### Transports become providers (M4-1)
+
+Everything above describes providers as *surfaces*: two of them, both
+in-process, both reached through the same facade. M4-1 adds a third kind
+— a **transport**. The `mcode acp` subprocess protocol is not an object
+webui can call a method on; it is a stdio JSON-line wire, and it is what
+`MCODE_WEBUI_TRANSPORT` has defaulted to since before the engine layer
+existed. It had no declaration anywhere, which meant the one question
+the whole capability layer exists to answer — "what can this transport
+do?" — was unanswerable for the transport almost every deployment runs.
+
+Registering it changes no routing, and that is the whole design:
+
+```mermaid
+graph LR
+    ENV["MCODE_WEBUI_TRANSPORT"] -->|default acp| CHAT["routes/chat.js"]
+    ENV -->|runtime| CHAT
+    CHAT --> ACPRUN["runMcodeAcp<br/>(acp.mjs subprocess)"]
+    CHAT --> RTRUN["runMcodeRuntime<br/>(in-process v2 host)"]
+
+    CHAT --> GATE{"assertStreamingSendCapability"}
+    GATE -->|resolve*Provider(transport)| TBL["providerByTransport()<br/>{ runtime: local-runtime-v2 }"]
+    TBL -.->|no acp entry — M4-3 adds it| ACP["acp provider<br/>(registered M4-1)"]
+
+    ACP --> DECL["ACP_CAPABILITIES<br/>14 keys, honestly none"]
+    ACP --> HOSTED["turnDiff / plugins<br/>level none + servedBy"]
+    HOSTED --> V2["local-runtime-v2 host<br/>via getEngineCatalogueHost()"]
+
+    TD["/api/turn-diff ×3<br/>/api/plugins ×10"] --> V2
+```
+
+Two facts carry the batch.
+
+**Registering is not routing.** Every capability gate resolves its
+provider through a transport→provider table that lives in its own
+family module and maps only `runtime`. A `null` there means "no provider
+claims this transport yet" and the gate passes untouched. So adding the
+`acp` entry to the registry — and nothing else — leaves every gate's
+verdict exactly where it was, on every transport, for every caller. The
+test that says this is not a comment: `test/lib/engine/capabilities.test.js` walks all
+sixteen `resolve*Provider` functions and asserts the acp transport still
+resolves to no provider, then asserts the same functions still resolve
+`runtime` correctly, so a sweep that passed vacuously would be caught.
+
+**A `none` that is still served needs a second field.** `turnDiff` and
+`plugins` are the M3 plan's one reverse exception. The protocol has no
+diff method and no plugin method at all — `routes/plugins.js` says so in
+its own words — yet the three `/api/turn-diff` and ten `/api/plugins`
+endpoints have always worked on the default acp transport, because they
+project the **in-process v2 host** through `getEngineCatalogueHost()` and
+are gated on no provider declaration. Declaring them `none` and stopping
+there would be the honest level and a regression: the first time a
+frontend read the transport's provider instead of the default one, the
+capability-driven UI would delete two working features.
+
+So `none` entries may carry an optional `servedBy`, naming the provider
+whose host actually answers:
+
+| Field | Question it answers | acp `turnDiff` |
+| --- | --- | --- |
+| `level` | what can this provider itself do | `none` |
+| `servedBy` | who answers the request instead | `local-runtime-v2` |
+
+The rules are deliberately narrow. `servedBy` is rejected on `full` and
+`partial` — a provider that partly implements a capability is not
+"served elsewhere", and letting the word mean two things is how a gate
+ends up trusting the wrong field. A `servedBy` naming a provider that is
+not registered is a **boot-time throw**, not a runtime 404, because a
+hosted capability with no host would otherwise show up as a 501 from a
+route nobody gated. And the hosted keys stay in
+`summarizeUnavailableCapabilities`: the provider really has none, and
+the roll-up is the shipped `{none, partial}` response shape, so the
+routing fact is read through a separate function
+(`summarizeCapabilityHosting`, plus `resolveCapabilityHostProvider` for
+the gates M4-3 will write) rather than by changing an endpoint's answer
+for every existing caller.
+
+The acp declaration is audited the way the other two are, against a
+different surface. The runtime providers are checked by reflecting a
+real host object; a subprocess protocol has no object to reflect, so
+`packages/webui/test/lib/engine/capability-snapshot.test.js` checks the declaration against
+`MCODE_ACP_CAPABILITIES` — the flat wire table `lib/mcode-rpc.js`
+exports for the frontend, which is a live, checked-in constant rather
+than a hand-typed list. The check has three buckets, and the third is
+the one that matters: `present` (the wire has it), `absent` (registered
+with no handler — `session/delete` is the live case, which is what makes
+`sessionCrud` a `partial` rather than a pessimistic `full`), and
+`notification`. `cancel` is `true` on the wire and `interrupt` is
+declared `none` anyway, because a notification carries no reply and
+therefore cannot certify that a turn stopped. Promoting `interrupt` to
+`full` on the strength of "the protocol has a cancel" makes the audit
+red, with that reason attached.
+
+Two places where the acp column is *stronger* than the runtime one, and
+where flattening it would be the unearned claim the matrix forbids: the
+protocol registers `session/set_mode` as a real request (so
+`toolSkillInvocation` does **not** miss `setMode` here, unlike both
+runtime surfaces), and `session/set_config_option` dispatches the
+`model` and `permissionMode` config ids, so two of the three bridged
+writers of `MODE_WRITE_BRIDGED_CONFIG_IDS` are genuinely reachable over
+acp.
+
+### The second transport: `exec` (M4-2)
+
+`mcode exec` is the third legal `MCODE_WEBUI_TRANSPORT` value
+(`lib/config.js:224`) and until now had no declaration either. It is not
+a mode of the acp transport and not an alias for the tui package — it is
+a **different wire shape**, and that difference is what the batch's work
+consists of.
+
+```mermaid
+graph LR
+    EXEC["mcode exec<br/>(one-shot subprocess)"]
+    ARGS["argv<br/>applyExecCliContract<br/>packages/tui/src/cli/contract.ts"]
+    WIRE["stream-json<br/>ExecEvent union<br/>packages/tui/src/headless/events.ts"]
+    PARSE["collectExecResult<br/>mcode-exec.js:221-294"]
+
+    EXEC -->|stdin: the prompt| ARGS
+    EXEC -->|stdout| WIRE
+    WIRE -.->|"delta / message /<br/>exec.result — NOT wire names"| PARSE
+    PARSE --> GAP["KNOWN DEBT:<br/>the two name families<br/>do not intersect"]
+
+    EXEC --> DECL["EXEC_CAPABILITIES<br/>full: streamingSend<br/>partial: 4 keys<br/>none: 8 keys"]
+```
+
+**No request channel, so no methods.** `mcode-exec.js` writes the prompt
+to stdin and parses newline-delimited JSON off stdout. There is no
+request to send, and therefore no method to call — the entire
+"is `session/delete` registered with no handler?" question that decides
+the acp column simply does not arise. What exists instead is two axes:
+the CLI options the process is *told*, and the event types it *says
+back*. `EXEC_INTERFACE` records both, and the declaration is audited
+against them.
+
+**`streamingSend` is the only `full`.** Sending a prompt is what the
+transport is. Everything else is a reduction, and the reductions are
+structural rather than unfinished work:
+
+| Key | acp | exec | Why the two differ |
+| --- | --- | --- | --- |
+| `interrupt` | `none` (a notification) | `none` (nothing at all) | acp has `session/cancel`, which carries no reply. exec has no channel to declare one on; `packages/tui/src/cli/run-exec-command.ts:51-53` registers SIGINT/SIGTERM/SIGHUP, but those are signals webui delivers to the child **it** spawned — that is webui's kill cascade, not a capability the transport offers |
+| `subagents` | `partial` | `none` | acp can at least parse sub-agent activity off its stream. The exec event union has no delegation kind at all, and `packages/tui/src/headless/runner.ts:899-902` confirms the boundary from the engine side |
+| `authCredentials` | `partial` | `none` | `mcode/account/status` and `session/set_config_option` are RPC methods. `--model` and `--effort` are per-run spawn flags: they change the next process, cannot be queried, and carry no credential, plan or OAuth state |
+| `usageStats` | `partial` | `partial` — and **stronger** | `turn.completed.usage` is emitted on the exec wire, so this transport has something under its three missing names and acp does not |
+| `sessionCrud` | `partial` | `partial` — weaker | `--session` / `--continue` re-enter an existing session; nothing lists, creates, loads, closes or deletes one |
+
+**A fact the audit found, recorded rather than hidden.** The names
+`collectExecResult` branches on — `delta`, `message`, `exec.result` —
+are the *supervisor's internal* stream-event names. The `stream-json`
+format writes only what `ExecEventProjector` produces (`packages/tui/src/headless/output.ts:34-36`
+refuses the format outright with no projector, and `packages/tui/src/headless/runner.ts:218-232`
+always supplies one), so the wire carries the ten `ExecEvent` types and
+**the two families do not intersect**. That is a real mismatch in the
+exec data plane, and M4-2 does not fix it: the batch registers a
+declaration and changes no routing. It is pinned in
+`EXEC_INTERFACE.consumedEvents`, asserted by a test that fails if the
+intersection ever becomes non-empty in either direction, and recorded as
+KNOWN DEBT.
+
+**The reverse exception is the two routes' property, not acp's.** `exec`
+declares `turnDiff` and `plugins` `none` with the same
+`servedBy: "local-runtime-v2"`, and that is a finding rather than a
+copy: `routes/turn-diff.js` and `routes/plugins.js` project the
+in-process v2 host through `getEngineCatalogueHost()` and gate on no
+transport, so every transport inherits the exception. The test that says
+so is the one that walks both providers and asserts the same two keys
+with the same host, plus the host itself being `full` on each.
+
+**Auditing a table that cannot be imported.** The acp audit works
+because `MCODE_ACP_CAPABILITIES` is live — the same constant the routes
+read. The exec contract is TypeScript in another package, and importing
+it would put `@mavis/*` on the boot path, so `EXEC_INTERFACE` is a
+transcribed table and transcribed tables rot. Two live cross-checks
+keep it honest, both in `packages/webui/test/lib/engine/capability-snapshot.test.js`: every option in
+`applyExecCliContract`, every type in the `ExecEvent` union, every
+`ExecItem` kind and every signal `run-exec-command` registers are read
+out of the real sources and compared; and `buildExecArgs()` — a pure
+function — is invoked so the table can never shrink below what webui
+actually sends.
+
+`auditExecCapabilities` has two rules, not three, and the missing third
+is a decision rather than an oversight. "A `partial`'s `missing` must not
+name a mechanism the interface exposes" is **vacuous** here: `missing`
+names provider methods (`deleteSession`) or kebab-case sub-capabilities
+(`mcp-configure`), while the coverage table names mechanisms
+(`--session`, `tool_call`), and the two namespaces cannot intersect. A
+check that cannot fail reads as coverage in a file whose whole job is
+honesty, so it is absent — and a test asserts the namespaces really are
+disjoint, so the omission stays a checked fact instead of a habit.
+
 Boot-path discipline: `app.js` reaches `engine/index.js`, so that file and
 everything it imports statically must stay free of `@mavis/*`,
 `@minimax/*` and the host modules. M1 learned that by paying for it
@@ -598,7 +792,7 @@ same rule: their static imports are `engine/capabilities.js` and
 `await import()` inside the functions. `engine/session-writes.js` adds
 `node:fs` at module scope (a builtin, and `engine/usage-reads.js`
 already does the same) and reaches `lib/sessions.js`,
-`lib/mcode-session-delete.js`, `lib/state-bus.js` and
+`engine/session-delete.js`, `lib/state-bus.js` and
 `lib/config.js` dynamically — all six of its storage dependencies, which
 is what lets it be re-exported from `engine/index.js` at all.
 
@@ -1016,7 +1210,7 @@ answer twice in a row.
 
 | Endpoint | Facade function | Capability · sub-item | Enforcement | Value source |
 | --- | --- | --- | --- | --- |
-| `DELETE /api/sessions/:id` (#7) | `engine/session-writes.js#planEngineSessionDelete` → `engine/session-writes.js#commitEngineSessionDelete` / `engine/session-writes.js#commitEngineOrphanSessionDelete` / `engine/session-writes.js#previewEngineSessionDelete` | `sessionCrud` · `deleteSession` | hard — 501 | the webui session store, the in-memory ACP session cache, the sidebar tree cache, and the engine's own `local_runtime_*` rows via `lib/mcode-session-delete.js#deleteMcodeSessionFromDb` |
+| `DELETE /api/sessions/:id` (#7) | `engine/session-writes.js#planEngineSessionDelete` → `engine/session-writes.js#commitEngineSessionDelete` / `engine/session-writes.js#commitEngineOrphanSessionDelete` / `engine/session-writes.js#previewEngineSessionDelete` | `sessionCrud` · `deleteSession` | hard — 501 | the webui session store, the in-memory ACP session cache, the sidebar tree cache, and the engine's own `local_runtime_*` rows via the engine's `deleteSession`, reached through `engine/session-delete.js#deleteSessionThroughEngine` |
 | `POST /api/sessions/rename` (#4) | `engine/session-writes.js#applyEngineSessionRename` | none of the 14 keys | none — the gate is a reported no-op | webui's own session store, and nothing else. The engine's title is not written |
 | `POST /api/sessions/cleanup-orphans` (#6) | `engine/session-writes.js#readOrphanSessionWriteIds`, then each selected id delegated to `engine/session-writes.js#commitEngineOrphanSessionDelete` | `sessionCrud` · `deleteSession` | hard — 501 | the same store, plus each selected id delegated to #7, so it reaches the same engine rows |
 
@@ -1088,16 +1282,32 @@ memory and rewrites its registry row on its next request — that is the
 cache: invalidating the whole cache empties the sidebar, refills it, and
 reads to the user like the delete failed.
 
-**The 32-table SQL was not moved, and that is recorded rather than
-quietly dropped.** The plan for this batch annotated
-`lib/mcode-session-delete.js` "delete". It is kept because
-`lib/acp-client.js` imports `deleteMcodeSessionFromDb` from it and four
-test files bind to that specifier; collecting it means moving those
-first. The facade reaches it through `await import()` and issues no SQL
-of its own — the same split B3 drew for `lib/mavis-usage.js` and B4 for
-`lib/mcode-rpc.js`. A test asserts both halves: the table list is still
-32 entries exported from the lib module, and the facade contains no SQL
-verb at all.
+**M4-3a collected the debt this batch recorded: the 32-table
+row-destroying SQL is gone, and the engine destroys the rows.** The
+retired module (the bare-SQL session delete, removed here) opened the
+engine's runtime database and deleted by hand across a hand-curated
+table list; the
+destructive step is now the engine's own `deleteSession`, reached from
+`engine/session-delete.js` through the process-local catalogue host — the
+same `getEngineCatalogueHost()` seam the plugin and turn-diff routes use.
+The facade reaches that module through `await import()` and still issues
+no SQL of its own.
+
+**What stayed is the read-only half, and the reason is a fact rather than
+caution: the engine exposes no dry-run or preview form of its delete.**
+`?dryRun=true` is part of #7 and #6's contract, so the per-table COUNT
+remains, against the same 32-table list, in the same module that now
+drives the engine call. webui still READS a schema layout it maintains by
+hand; it no longer WRITES one. The real delete takes its `log` and
+`totalRowsDeleted` from the same readonly pass, taken immediately before
+the engine call, so the `rowsAffected` and `mcodeRowsAffected` fields the
+HTTP layer derives from them carry the values they always carried.
+
+`test/lib/engine/session-delete-ownership.test.js` is the tripwire: no
+server module may import the retired module, issue a DELETE against a
+`local_runtime_*` table, or open the engine's database without
+`readonly: true`. It is a static-source check on purpose — a behavioural
+test cannot distinguish "the engine deleted it" from "webui deleted it".
 
 **#6's response shape is this batch's byte-for-byte red line, so the
 payload is built in the facade and never re-assembled in the route.** The
@@ -1113,12 +1323,15 @@ turn a cleanup request into a 500. `dryRun` suppresses the kill and the
 cache drop, because a preview mutates nothing and a preview that shuts
 down the user's ACP child is a side effect the `?dryRun=true` contract
 does not include; the COUNT still runs, read-only, inside
-`lib/mcode-session-delete.js`.
+`engine/session-delete.js`.
 
 **Three things this batch records as known debt instead of deciding:**
 
-1. The 32-table SQL is still in `lib/mcode-session-delete.js`, for the
-   consumer reasons above.
+1. Collected in M4-3a: the 32-table row-destroying SQL. What remains of
+   the same debt is the READ side — `engine/session-delete.js` still
+   counts against a hand-maintained table list, because the engine has no
+   preview form of its delete. Closing that needs a count surface on the
+   engine itself, which is a local-runtime-v2 change.
 2. A rename is a **webui-side label only**. The engine's own title in
    `local_runtime_sessions` is untouched while the sidebar tree reads its
    titles from the engine, so for an engine-backed session a rename can be

@@ -35,7 +35,7 @@ const absPath = (rel) => pathToFileURL(join(SERVER_DIR, rel)).href;
 const dbUrl = absPath("lib/sqlite-resolver.js");
 // The D01 describe block exercises pre-flight delete gates and the
 // delete-list regression — those live in mcode-session-delete.js.
-const delUrl = absPath("lib/mcode-session-delete.js");
+const delUrl = absPath("engine/session-delete.js");
 
 let db;
 let del;
@@ -383,7 +383,7 @@ describe("sqlite-resolver.js — C01 built-in fallback ordering", () => {
 // ---------------------------------------------------------------------------
 // deleteMcodeSessionFromDb — pre-flight gates (no sqlite required)
 // ---------------------------------------------------------------------------
-describe("sqlite-resolver.js — D01 deleteMcodeSessionFromDb pre-flight gates", () => {
+describe("sqlite-resolver.js — D01 session-delete pre-flight gates", () => {
   let realDbPath;
   // v2 (2026-09-20 webui-manual-audit): env-isolation fixtures for the
   // two not-loaded tests. They used to pass only on hosts where NO
@@ -472,19 +472,19 @@ describe("sqlite-resolver.js — D01 deleteMcodeSessionFromDb pre-flight gates",
   };
 
   test("invalid sid → {ok:false, reason:'not_mcode_sid'} WITHOUT touching db", () => {
-    const r = del.deleteMcodeSessionFromDb("not-a-mvs-id", {
+    const r = del.previewSessionDeleteRows("not-a-mvs-id", {
       MCODE_RUNTIME_DB: "/tmp/db.sqlite",
     });
     assert.deepEqual(r, { ok: false, reason: "not_mcode_sid" });
   });
 
   test("missing MCODE_RUNTIME_DB → {ok:false, reason:'mcode_db_not_found'} (db path wins over sqlite3)", () => {
-    const r = del.deleteMcodeSessionFromDb("mvs_abcdef0123456789abcdef0123456789", {});
+    const r = del.previewSessionDeleteRows("mvs_abcdef0123456789abcdef0123456789", {});
     assert.deepEqual(r, { ok: false, reason: "mcode_db_not_found" });
   });
 
   test("MCODE_RUNTIME_DB pointing at a non-existent file → mcode_db_not_found", () => {
-    const r = del.deleteMcodeSessionFromDb("mvs_abcdef0123456789abcdef0123456789", {
+    const r = del.previewSessionDeleteRows("mvs_abcdef0123456789abcdef0123456789", {
       MCODE_RUNTIME_DB: "/this/path/does/not/exist/sqlite.db",
     });
     assert.deepEqual(r, { ok: false, reason: "mcode_db_not_found" });
@@ -501,7 +501,7 @@ describe("sqlite-resolver.js — D01 deleteMcodeSessionFromDb pre-flight gates",
     // unloadable) to the exact gate return shape.
     const restore = isolateSqliteEnv();
     try {
-      const r = del.deleteMcodeSessionFromDb("mvs_abcdef0123456789abcdef0123456789", {
+      const r = del.previewSessionDeleteRows("mvs_abcdef0123456789abcdef0123456789", {
         MCODE_RUNTIME_DB: realDbPath,
         getDb: () => null,
       });
@@ -519,7 +519,7 @@ describe("sqlite-resolver.js — D01 deleteMcodeSessionFromDb pre-flight gates",
     // ok:false-only to the exact NOT-ok shape.
     const restore = isolateSqliteEnv();
     try {
-      const r = del.deleteMcodeSessionFromDb("mvs_abcdef0123456789abcdef0123456789", {
+      const r = del.previewSessionDeleteRows("mvs_abcdef0123456789abcdef0123456789", {
         MCODE_RUNTIME_DB: realDbPath,
         dryRun: true,
         getDb: () => null,
@@ -530,8 +530,26 @@ describe("sqlite-resolver.js — D01 deleteMcodeSessionFromDb pre-flight gates",
     }
   });
 
-  test("MCODE_SESSION_DELETE_TABLES has all expected table names (regression guard)", () => {
-    const names = del.MCODE_SESSION_DELETE_TABLES;
+  // M4-3a: the gates above are exercised through the PREVIEW entry point,
+  // which is where a dry run goes, and both entry points share one
+  // pre-flight. That sharing is worth a test of its own, because it is
+  // what keeps the two answers identical: a delete that cannot even open
+  // the database must not reach the engine with an id, because the count
+  // it would report is a count of nothing.
+  test("the engine entry point refuses on the same pre-flight gates", async () => {
+    const bad = await del.deleteSessionThroughEngine("not-a-mvs-id", {
+      MCODE_RUNTIME_DB: "/tmp/db.sqlite",
+    });
+    assert.deepEqual(bad, { ok: false, reason: "not_mcode_sid" });
+    const missing = await del.deleteSessionThroughEngine(
+      "mvs_abcdef0123456789abcdef0123456789",
+      {},
+    );
+    assert.deepEqual(missing, { ok: false, reason: "mcode_db_not_found" });
+  });
+
+  test("SESSION_DELETE_PREVIEW_TABLES has all expected table names (regression guard)", () => {
+    const names = del.SESSION_DELETE_PREVIEW_TABLES;
     assert.ok(Array.isArray(names));
     assert.ok(names.includes("local_runtime_sessions"));
     assert.ok(names.includes("local_runtime_messages"));

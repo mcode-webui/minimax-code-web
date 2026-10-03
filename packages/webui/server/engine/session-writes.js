@@ -42,33 +42,32 @@
 // keeps what is genuinely its own — HTTP parsing, the `authorize()`
 // modal, the write-ahead audit ordering, and every status code.
 //
-// The one thing this file does NOT do is move the SQL.
-// `lib/mcode-session-delete.js` keeps the 32-table `local_runtime_*`
-// delete (its own header, its own per-table error classification, its
-// own `getDb` seam) and this file reaches it through `await import()`.
-// That is the same split B3 and B4 drew for their storage access
-// (`lib/mavis-usage.js` owns the usage SQL, `lib/mcode-rpc.js` owns the
-// account RPC), and it is the only shape that survives a real
-// second reader appearing. The plan for this batch annotated
-// `mcode-session-delete.js` "delete"; it is KEPT, and the reason is
-// recorded as KNOWN DEBT in the module header of
-// `lib/mcode-session-delete.js` itself. `lib/acp-client.js` imports
-// `deleteMcodeSessionFromDb` from it, and four test files
-// (`mcode-session-delete.test.js`,
-// `mcode-session-delete-outcomes.test.js`, `sqlite-resolver-c01.test.js`,
-// `sessions-switch.check.mjs`) bind to that exact specifier — deleting
-// the module would break a live consumer and silently de-mock two
-// existing route suites. KNOWN DEBT means "recorded and still
-// uncollected", not "safe to remove".
+// The SQL moved in M4-3a, and this file stopped issuing it.
+// `lib/mcode-session-delete.js` — the module that opened the runtime
+// database and issued a row-destroying DELETE against a hand-curated list
+// of 32 `local_runtime_*` tables inside one hand-rolled transaction — is
+// GONE. The destructive step is now the engine's own `deleteSession`,
+// reached from the sibling data-plane module `engine/session-delete.js`
+// (whose header records what that call is and why the read-only half
+// stayed). That module is reached through `await import()`, the same
+// boot-path discipline B3 and B4 drew, so this file still statically
+// imports nothing heavier than `capabilities.js` and `index.js`.
+//
+// What M4-3a did NOT do, and the reason is worth stating because it is the
+// one place a reader will suspect hand-waving: webui no longer names an
+// engine table for the purpose of DESTROYING anything, but it still names
+// them to COUNT, because the engine has no preview form of the delete and
+// `?dryRun=true` is part of the endpoint's contract. Read-only knowledge
+// of the schema stayed; write access to it did not. See KNOWN DEBT 1 of
+// `engine/session-delete.js`.
 //
 // Boot-path weight. `app.js` imports the routes, the routes import this
-// file, so this file is on the boot path. It statically imports nothing
-// heavier than `capabilities.js` and `index.js` (both pure declaration
-// modules); `lib/sessions.js`, `lib/acp-client.js`,
-// `lib/mcode-session-delete.js`, `lib/session-tree.js`, `lib/state-bus.js`
-// and `lib/config.js` are all reached through `await import()` inside
-// the functions. That split is the M1 lesson, and it is what lets this
-// module be re-exported from `engine/index.js` at all.
+// file, so this file is on the boot path. `lib/sessions.js`,
+// `lib/acp-client.js`, `lib/config.js`, `lib/session-tree.js`,
+// `lib/state-bus.js` and `lib/session-delete.js` are all reached through
+// `await import()` inside the functions. That split is the M1 lesson, and
+// it is what lets this module be re-exported from `engine/index.js` at
+// all.
 //
 // Provider selection is M4's job, same as B1 through B4:
 // `providerByTransport()` maps a transport to a REGISTERED provider id;
@@ -554,7 +553,7 @@ export async function planEngineSessionDelete(options = {}) {
  * `dryRun` suppresses the kill and the cache drop, because a preview
  * mutates nothing and a preview that shuts down the user's ACP child is
  * a side effect the `?dryRun=true` contract does not include. The COUNT
- * still runs, read-only, inside `lib/mcode-session-delete.js`.
+ * still runs, read-only, inside `engine/session-delete.js`.
  *
  * The requesting client is reset when — and only when — it was
  * currently sitting on that sid. No other tab can be: an orphan has no
@@ -570,7 +569,7 @@ export async function planEngineSessionDelete(options = {}) {
 export async function commitEngineOrphanSessionDelete(options = {}) {
   const { plan, cs, cid, dryRun = false } = options;
   const [deleter, config, acp, tree, bus, sessions] = await Promise.all([
-    import("../lib/mcode-session-delete.js"),
+    import("./session-delete.js"),
     import("../lib/config.js"),
     import("../lib/acp-client.js"),
     import("../lib/session-tree.js"),
@@ -589,10 +588,17 @@ export async function commitEngineOrphanSessionDelete(options = {}) {
     } catch {}
     acp.dropMcodeSessionFromCache(id);
   }
-  const mcodeDbDel = deleter.deleteMcodeSessionFromDb(id, {
-    MCODE_RUNTIME_DB: config.MCODE_RUNTIME_DB,
-    dryRun,
-  });
+  // M4-3a: the engine owns the delete. A dry run stays a COUNT (the engine
+  // has no preview form); a real one asks the engine. The `await` is new
+  // — the retired SQL call was synchronous — and it is confined to this
+  // line: the sequence around it, which is the feature, is untouched.
+  const mcodeDbDel = dryRun
+    ? deleter.previewSessionDeleteRows(id, {
+        MCODE_RUNTIME_DB: config.MCODE_RUNTIME_DB,
+      })
+    : await deleter.deleteSessionThroughEngine(id, {
+        MCODE_RUNTIME_DB: config.MCODE_RUNTIME_DB,
+      });
   if (!dryRun) tree.invalidateSessionTree();
   if (!mcodeDbDel.ok) {
     return {
@@ -640,14 +646,13 @@ export async function commitEngineOrphanSessionDelete(options = {}) {
 export async function previewEngineSessionDelete(options = {}) {
   const { plan } = options;
   const [deleter, config] = await Promise.all([
-    import("../lib/mcode-session-delete.js"),
+    import("./session-delete.js"),
     import("../lib/config.js"),
   ]);
   const mcodeSid = plan.target ? plan.target.mcodeSessionId : undefined;
   const mcodeDbDel = mcodeSid
-    ? deleter.deleteMcodeSessionFromDb(mcodeSid, {
+    ? deleter.previewSessionDeleteRows(mcodeSid, {
         MCODE_RUNTIME_DB: config.MCODE_RUNTIME_DB,
-        dryRun: true,
       })
     : { ok: true, dryRun: true, log: [], totalRows: 0 };
   return {
@@ -694,7 +699,7 @@ export async function previewEngineSessionDelete(options = {}) {
 export async function commitEngineSessionDelete(options = {}) {
   const { plan, cid } = options;
   const [deleter, config, acp, tree, bus, sessions] = await Promise.all([
-    import("../lib/mcode-session-delete.js"),
+    import("./session-delete.js"),
     import("../lib/config.js"),
     import("../lib/acp-client.js"),
     import("../lib/session-tree.js"),
@@ -713,7 +718,11 @@ export async function commitEngineSessionDelete(options = {}) {
       acp.shutdownMcodeAcpSingleton();
     } catch {}
     acp.dropMcodeSessionFromCache(mcodeSid);
-    mcodeDbDel = deleter.deleteMcodeSessionFromDb(mcodeSid, {
+    // M4-3a: async now (the engine call is), and the only async step in
+    // this function. Everything ordered around it — the store splice above,
+    // the cache drop above, the fan-out below — is unchanged, because the
+    // order, not the speed, is what this endpoint guarantees.
+    mcodeDbDel = await deleter.deleteSessionThroughEngine(mcodeSid, {
       MCODE_RUNTIME_DB: config.MCODE_RUNTIME_DB,
     });
     // The pre-facade route logged this from inside the `if (mcodeSid)`
@@ -915,10 +924,14 @@ export async function readOrphanSessionWriteIds(options = {}) {
 // Recorded here rather than fixed, because each item is a decision that
 // belongs to a human and not to a refactor:
 //
-//   1. `lib/mcode-session-delete.js` still owns the 32-table SQL. The
-//      plan for this batch annotated it "delete"; it is kept because
-//      `lib/acp-client.js` imports from it and four test files bind to
-//      the specifier. Collecting it means moving those first.
+//   1. M4-3a collected the write half of KNOWN DEBT 1: the 32-table
+//      32-table row-destroying sweep is gone and the engine's
+//      `deleteSession`
+//      destroys the rows. The READ half stayed, and stays recorded
+//      there — `engine/session-delete.js` still counts rows against a
+//      hand-maintained table list, because the engine exposes no preview
+//      form of the delete and `?dryRun=true` is part of this endpoint's
+//      contract. Closing that needs a count surface on the engine itself.
 //
 //   2. #4 rename writes a WEBUI-side label only. The engine's own title
 //      in `local_runtime_sessions` is untouched, while the sidebar tree

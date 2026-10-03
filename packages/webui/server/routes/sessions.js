@@ -68,9 +68,10 @@ import { readEngineSessionTree } from "../engine/session-tree-reads.js";
 //   - The response BODIES are built in the facade, once. #6's dryRun
 //     shape is a byte-for-byte red line for this batch, so it is pinned
 //     there by test instead of re-assembled in two places here.
-//   - `deleteMcodeSessionFromDb` and the 32-table SQL stay in
-//     `lib/mcode-session-delete.js` and are reached by the facade through
-//     a dynamic import; see KNOWN DEBT in `engine/session-writes.js`.
+//   - M4-3a: the destructive step is the engine's own `deleteSession`,
+//     reached through the facade's `engine/session-delete.js` data plane
+//     by a dynamic import. The route still issues no SQL and names no
+//     engine table; see KNOWN DEBT in `engine/session-writes.js`.
 import {
   applyEngineSessionRename,
   commitEngineOrphanSessionDelete,

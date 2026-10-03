@@ -114,10 +114,11 @@ before(async (t) => {
       _getBetterSqlite3Candidates: () => [],
     },
   });
-  t.mock.module(absPath("lib/mcode-session-delete.js"), {
+  t.mock.module(absPath("engine/session-delete.js"), {
     namedExports: {
-      deleteMcodeSessionFromDb: () => ({ ok: false, reason: "test_mock" }),
-      MCODE_SESSION_DELETE_TABLES: [],
+      previewSessionDeleteRows: () => ({ ok: false, reason: "test_mock" }),
+      deleteSessionThroughEngine: async () => ({ ok: false, reason: "test_mock" }),
+      SESSION_DELETE_PREVIEW_TABLES: [],
     },
   });
   const sb = await import(absPath("lib/state-bus.js"));

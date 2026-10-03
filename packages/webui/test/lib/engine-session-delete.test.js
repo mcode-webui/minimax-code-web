@@ -1,5 +1,5 @@
-// webui/test/lib/mcode-session-delete.test.js
-// Unit tests for server/lib/mcode-session-delete.js — deleteMcodeSessionFromDb.
+// webui/test/lib/engine-session-delete.test.js
+// Unit tests for server/engine/session-delete.js — the session delete data plane.
 //
 // The deleter uses lazy require of mcode's better-sqlite3 and runs SQL
 // against the mcode runtime tables. If a table is missing in a future
@@ -9,7 +9,7 @@
 // require for better-sqlite3 (auto-finds mcode's bundled copy via
 // sqlite-resolver.js). For the "happy path" case, we create a temp
 // sqlite db with all the expected tables, then call
-// deleteMcodeSessionFromDb. We also test invalid-sid early return and
+// deleteSessionThroughEngine. We also test invalid-sid early return and
 // non-existent db file.
 
 import { test, describe, before, after } from "node:test";
@@ -23,9 +23,9 @@ import { mkTmpDir } from "../helpers/tmp.js";
 
 const absPath = (rel) => pathToFileURL(join(import.meta.dirname, "..", "..", "server", rel)).href;
 
-// Audit hygiene: deleteMcodeSessionFromDb appends `session.delete` /
+// Audit hygiene: deleteSessionThroughEngine appends `session.delete` /
 // `session.delete.intent` lines to events.ndjson via the REAL lib/events.js
-// (static import inside mcode-session-delete.js). The fixture deletes below
+// (static import inside engine/session-delete.js). The fixture deletes below
 // (e.g. mvs_deadbeef…) would otherwise append junk to the operator's real
 // ~/.mcode-webui/events.ndjson on every run. Redirect to a per-run tmp file —
 // events.js resolves the path lazily per append, so the env override set
@@ -38,14 +38,14 @@ process.env.MCODE_WEBUI_EVENTS_PATH = join(_tmpAuditDir, "events.ndjson");
 // On CI: system PATH
 const SQLITE3_BIN = process.env.SQLITE3_BIN || "sqlite3";
 
-const db = await import(absPath("lib/mcode-session-delete.js"));
+const db = await import(absPath("engine/session-delete.js"));
 // The environment gate below probes a real Database construction (see
 // BETTER_SQLITE3_OK) — that requires the resolver module.
 const resolver = await import(absPath("lib/sqlite-resolver.js"));
 
 // Environment gating: the fixture suites below need BOTH (a) a working
 // sqlite3 CLI to build the fixture db AND (b) a loadable better-sqlite3
-// through sqlite-resolver.js's resolver chain — deleteMcodeSessionFromDb
+// through sqlite-resolver.js's resolver chain — deleteSessionThroughEngine
 // hard-requires mcode's bundled native module. Gate on the real
 // preconditions instead of failing; wherever both hold, every assertion
 // still runs.
@@ -64,7 +64,7 @@ const SQLITE3_CLI_OK = (() => {
 // Truthiness of getMcodeBetterSqlite3() is NOT enough: the package
 // require()s cleanly even when the native binding is ABI-mismatched
 // (it loads the .node lazily), so a bare module is a false-positive
-// "loadable". Probe the exact operation deleteMcodeSessionFromDb
+// "loadable". Probe the exact operation deleteSessionThroughEngine
 // performs — constructing a Database — before declaring the env ready.
 const BETTER_SQLITE3_OK = (() => {
   const Mod = resolver.getMcodeBetterSqlite3();
@@ -85,31 +85,31 @@ const DB_FIXTURE_SKIP = !SQLITE3_CLI_OK
 
 const VALID_SID = "mvs_deadbeef00000000000000000000aaaa";
 
-describe("deleteMcodeSessionFromDb — input validation", () => {
-  test("returns { ok: false, reason: 'not_mcode_sid' } for empty string", () => {
-    const r = db.deleteMcodeSessionFromDb("", { MCODE_RUNTIME_DB: "/tmp/x.db" });
+describe("deleteSessionThroughEngine — input validation", () => {
+  test("returns { ok: false, reason: 'not_mcode_sid' } for empty string", async () => {
+    const r = await db.deleteSessionThroughEngine("", { MCODE_RUNTIME_DB: "/tmp/x.db" });
     assert.equal(r.ok, false);
     assert.equal(r.reason, "not_mcode_sid");
   });
 
-  test("returns { ok: false, reason: 'not_mcode_sid' } for sid without mvs_ prefix", () => {
-    const r = db.deleteMcodeSessionFromDb("deadbeef00000000000000000000aaaa", {
+  test("returns { ok: false, reason: 'not_mcode_sid' } for sid without mvs_ prefix", async () => {
+    const r = await db.deleteSessionThroughEngine("deadbeef00000000000000000000aaaa", {
       MCODE_RUNTIME_DB: "/tmp/x.db",
     });
     assert.equal(r.ok, false);
     assert.equal(r.reason, "not_mcode_sid");
   });
 
-  test("returns { ok: false, reason: 'not_mcode_sid' } for short sid", () => {
+  test("returns { ok: false, reason: 'not_mcode_sid' } for short sid", async () => {
     // regex requires at least 16 hex chars
-    const r = db.deleteMcodeSessionFromDb("mvs_abc", { MCODE_RUNTIME_DB: "/tmp/x.db" });
+    const r = await db.deleteSessionThroughEngine("mvs_abc", { MCODE_RUNTIME_DB: "/tmp/x.db" });
     assert.equal(r.ok, false);
     assert.equal(r.reason, "not_mcode_sid");
   });
 
-  test("returns { ok: false, reason: 'not_mcode_sid' } for sid with non-hex chars", () => {
+  test("returns { ok: false, reason: 'not_mcode_sid' } for sid with non-hex chars", async () => {
     // 'l' and 'u' are NOT in [a-f0-9] — must be rejected
-    const r = db.deleteMcodeSessionFromDb(
+    const r = await db.deleteSessionThroughEngine(
       "mvs_full11112222333344445555666677778888",
       { MCODE_RUNTIME_DB: "/tmp/x.db" },
     );
@@ -117,8 +117,8 @@ describe("deleteMcodeSessionFromDb — input validation", () => {
     assert.equal(r.reason, "not_mcode_sid");
   });
 
-  test("returns { ok: false, reason: 'mcode_db_not_found' } for non-existent db path", () => {
-    const r = db.deleteMcodeSessionFromDb(VALID_SID, {
+  test("returns { ok: false, reason: 'mcode_db_not_found' } for non-existent db path", async () => {
+    const r = await db.deleteSessionThroughEngine(VALID_SID, {
       MCODE_RUNTIME_DB: "C:\\nonexistent\\path\\that\\does\\not\\exist\\x.db",
     });
     assert.equal(r.ok, false);
@@ -126,17 +126,35 @@ describe("deleteMcodeSessionFromDb — input validation", () => {
   });
 });
 
-describe("MCODE_SESSION_DELETE_TABLES", () => {
+// M4-3a: the destructive step belongs to the engine, so every real-path
+// call below injects a recording host. See engine-session-delete-outcomes
+// .test.js for why "the row is gone" is no longer a webui assertion.
+const recordingHost = () => {
+  const asked = [];
+  return {
+    asked,
+    getHost: async () => ({
+      cliService: {
+        deleteSession: (req) => {
+          asked.push(req);
+          return Promise.resolve();
+        },
+      },
+    }),
+  };
+};
+
+describe("SESSION_DELETE_PREVIEW_TABLES", () => {
   test("is an array of expected mcode session tables", () => {
-    assert.ok(Array.isArray(db.MCODE_SESSION_DELETE_TABLES));
-    assert.ok(db.MCODE_SESSION_DELETE_TABLES.length >= 5);
+    assert.ok(Array.isArray(db.SESSION_DELETE_PREVIEW_TABLES));
+    assert.ok(db.SESSION_DELETE_PREVIEW_TABLES.length >= 5);
     // Spot-check a few key tables
-    assert.ok(db.MCODE_SESSION_DELETE_TABLES.includes("local_runtime_sessions"));
-    assert.ok(db.MCODE_SESSION_DELETE_TABLES.includes("local_runtime_session_fts_keys"));
+    assert.ok(db.SESSION_DELETE_PREVIEW_TABLES.includes("local_runtime_sessions"));
+    assert.ok(db.SESSION_DELETE_PREVIEW_TABLES.includes("local_runtime_session_fts_keys"));
   });
 });
 
-describe("deleteMcodeSessionFromDb — happy path (real sqlite3)", { skip: DB_FIXTURE_SKIP }, () => {
+describe("deleteSessionThroughEngine — happy path (real sqlite3)", { skip: DB_FIXTURE_SKIP }, () => {
   let tmpDir;
   let dbPath;
 
@@ -175,7 +193,7 @@ describe("deleteMcodeSessionFromDb — happy path (real sqlite3)", { skip: DB_FI
     if (tmpDir) rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  test("deletes the row from local_runtime_sessions and returns {ok:true, log}", () => {
+  test("counts the row, hands the sid to the engine and returns {ok:true, log}", async () => {
     // Verify row exists before
     const before = spawnSync(
       SQLITE3_BIN,
@@ -184,8 +202,13 @@ describe("deleteMcodeSessionFromDb — happy path (real sqlite3)", { skip: DB_FI
     );
     assert.equal(before.stdout.trim(), "1", "row should exist before delete");
 
-    // Delete via the function
-    const r = db.deleteMcodeSessionFromDb(VALID_SID, { MCODE_RUNTIME_DB: dbPath });
+    // Ask the engine, through the data plane
+    const engine = recordingHost();
+    const r = await db.deleteSessionThroughEngine(VALID_SID, {
+      MCODE_RUNTIME_DB: dbPath,
+      getHost: engine.getHost,
+    });
+    assert.deepEqual(engine.asked, [{ id: VALID_SID }], "the engine is asked once, with the sid");
     assert.equal(r.ok, true, `expected ok=true, got: ${JSON.stringify(r)}`);
     assert.ok(Array.isArray(r.log), "log should be an array");
     assert.ok(
@@ -193,17 +216,20 @@ describe("deleteMcodeSessionFromDb — happy path (real sqlite3)", { skip: DB_FI
       `log should mention local_runtime_sessions: ${r.log.join(",")}`,
     );
 
-    // Verify row is gone
+    // M4-3a: the row is STILL here. webui did not delete it — the engine
+    // did, and the stub above only recorded the request. This is the
+    // assertion that says so out loud, because a reader arriving at this
+    // file after the retirement should not have to infer it.
     const after = spawnSync(
       SQLITE3_BIN,
       [dbPath, `SELECT COUNT(*) FROM local_runtime_sessions WHERE session_id='${VALID_SID}'`],
       { encoding: "utf8" },
     );
-    assert.equal(after.stdout.trim(), "0", "row should be gone after delete");
+    assert.equal(after.stdout.trim(), "1", "webui itself removes no rows — the engine owns that");
   });
 });
 
-describe("deleteMcodeSessionFromDb — table-missing case (does not throw)", { skip: DB_FIXTURE_SKIP }, () => {
+describe("deleteSessionThroughEngine — table-missing case (does not throw)", { skip: DB_FIXTURE_SKIP }, () => {
   let tmpDir;
   let dbPath;
 
@@ -211,7 +237,25 @@ describe("deleteMcodeSessionFromDb — table-missing case (does not throw)", { s
     tmpDir = mkTmpDir("webui-db-test2-");
     dbPath = join(tmpDir, "test2.db");
     // Create a db with NO tables. The function should iterate through
-    // MCODE_SESSION_DELETE_TABLES and try DELETE FROM each — all should
+    // M4-3a: the destructive step belongs to the engine, so every real-path
+// call below injects a recording host. See engine-session-delete-outcomes
+// .test.js for why "the row is gone" is no longer a webui assertion.
+const recordingHost = () => {
+  const asked = [];
+  return {
+    asked,
+    getHost: async () => ({
+      cliService: {
+        deleteSession: (req) => {
+          asked.push(req);
+          return Promise.resolve();
+        },
+      },
+    }),
+  };
+};
+
+// SESSION_DELETE_PREVIEW_TABLES and try DELETE FROM each — all should
     // fail with "no such table" and be swallowed.
     const r = spawnSync(SQLITE3_BIN, [dbPath, "CREATE TABLE unrelated (x INT)"], {
       encoding: "utf8",
@@ -225,13 +269,18 @@ describe("deleteMcodeSessionFromDb — table-missing case (does not throw)", { s
     if (tmpDir) rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  test("returns {ok:true, log:[]} when no expected tables exist", () => {
-    // Should not throw, should return ok with empty log (no rows changed)
-    const r = db.deleteMcodeSessionFromDb(VALID_SID, { MCODE_RUNTIME_DB: dbPath });
+  test("returns {ok:true, log:[]} when no expected tables exist", async () => {
+    // Should not throw, should return ok with empty log (no rows counted)
+    const engine = recordingHost();
+    const r = await db.deleteSessionThroughEngine(VALID_SID, {
+      MCODE_RUNTIME_DB: dbPath,
+      getHost: engine.getHost,
+    });
     assert.equal(r.ok, true, `expected ok=true, got: ${JSON.stringify(r)}`);
     assert.ok(Array.isArray(r.log));
     // No row counts > 0 since tables don't exist → log is empty
     assert.equal(r.log.length, 0, `log should be empty, got: ${r.log.join(",")}`);
+    assert.deepEqual(engine.asked, [{ id: VALID_SID }], "and the engine is still asked — an empty count is a real answer, not a failure");
   });
 });
 

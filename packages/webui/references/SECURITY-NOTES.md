@@ -520,7 +520,7 @@ log + a disabled feature) — it does not crash.
   `server/lib/sqlite-resolver.js::getMcodeBetterSqlite3()` (the
   function was lifted out of the old `server/lib/db.js`, which has
   since been split into `sqlite-resolver.js` +
-  `mcode-session-delete.js`; the statement below still describes the
+  `engine/session-delete.js`; the statement below still describes the
   same behaviour). The hard-coded path to mcode's bundled
   `better-sqlite3` only works in the canonical dev layout
   (`<mcode-root>/webui/`); the env override lets users on

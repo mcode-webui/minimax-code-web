@@ -93,6 +93,7 @@ function buildAuthContextGetter(dataDir) {
  *   controller: object,
  *   application: object|undefined,
  *   applications: { session: { diff: object }, queue: object }|undefined,
+ *   services: object|undefined,
  *   close: () => Promise<void>,
  * }>}
  */
@@ -178,6 +179,16 @@ export async function createCatalogueHost(options) {
     // here and NOT on `application`: the process-local facade declares
     // no diff member, so reading diff off `application` yields nothing.
     applications: host.applications,
+    // The V2 owner graph, forwarded untouched. `application` /
+    // `applications` are the PRODUCT use cases; several real
+    // capabilities (`agent`, `managedWorktrees`, `pinService`, `mcp`,
+    // `skill`, `modelSystem`) exist only on `services`, so a consumer
+    // with no facade route to them has no window at all without this
+    // member. `undefined` on a host that has no V2 compatibility slice
+    // — never a synthesised empty object, so "no owner graph" and "owner
+    // graph without member X" stay distinguishable. Same single-owner
+    // rule as cliService: never build a second runtime to get one.
+    services: host.services,
     close,
   };
 }

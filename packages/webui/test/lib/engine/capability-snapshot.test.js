@@ -48,6 +48,8 @@
 
 import { test, describe, before, after } from "node:test";
 import { strict as assert } from "node:assert";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 import { mkTmpDir, rmTmpDir } from "../../helpers/tmp.js";
 
@@ -63,14 +65,192 @@ process.env.MCODE_WEBUI_UPLOAD_DIR = `${tmpBase}/uploads`;
 // Declaration modules are import-light (no @mavis/* tree), and the env
 // above is already pinned, so loading them at top level is safe here.
 const {
+  ACP_CAPABILITIES,
   ENGINE_CAPABILITY_KEYS,
+  EXEC_CAPABILITIES,
+  EXEC_COVERAGE,
+  EXEC_INTERFACE,
   LOCAL_RUNTIME_V2_CAPABILITIES,
   MODE_WRITE_BRIDGED_CONFIG_IDS,
   TUI_RUNTIME_ADAPTER_CAPABILITIES,
+  auditExecCapabilities,
   getEngineProvider,
   listEngineProviderIds,
+  resolveCapabilityHostProvider,
+  summarizeCapabilityHosting,
   validateEngineCapabilities,
 } = await import("../../../server/engine/index.js");
+
+// The acp wire surface, checked in as the flat method→boolean table
+// `server/lib/mcode-rpc.js` exports for the frontend's own capability
+// detection. It is the closest thing the acp protocol has to a
+// reflectable surface: the protocol is a subprocess, so there is no
+// object to walk a prototype chain over, and the audit below runs
+// against this table instead. Unlike a hand-typed list it is LIVE — it
+// is the same constant the routes read — so a protocol method that
+// appears here without a re-audit turns the audit red rather than
+// leaving the declaration quietly out of date.
+const { MCODE_ACP_CAPABILITIES } = await import("../../../server/lib/mcode-rpc.js");
+
+// ---------------------------------------------------------------------------
+// ACP_WIRE — the acp protocol's declared surface, in wire-method terms
+// ---------------------------------------------------------------------------
+//
+// M4-1 gave the acp transport a declaration. Two runtime providers are
+// audited by REFLECTING a real host object; the acp protocol cannot be,
+// because it is a subprocess behind a stdio JSON-line wire. So this
+// table states, per capability key, what the wire offers:
+//
+//   present      — wire methods that exist, so the key can be full or
+//                 partial with this much covered;
+//   absent       — wire methods that are registered but unavailable
+//                 (`MCODE_ACP_CAPABILITIES.<name> === false`), which is
+//                 what makes a `partial` honest rather than pessimistic;
+//   notification — wire methods that exist but are NOTIFICATIONS. This
+//                 third bucket is the one that matters: `cancel` is
+//                 `true` on the wire and the declaration is still
+//                 `none`, because a notification carries no reply and
+//                 therefore cannot certify that a turn stopped (see
+//                 server/engine/interrupt.js fact 1). A declaration
+//                 that read the wire table alone would call it `full`.
+//
+// For the `none` keys the check runs the other way: NONE_CAPABILITY_NAME
+// FRAGMENTS lists, per key, the substrings a wire method would have to
+// contain to serve it. A protocol that grew `session/diff` would make
+// the turnDiff entry go red until someone re-audited the declaration —
+// the same tripwire `subCapabilityHasMethods` provides for the runtime
+// surfaces' kebab-case sub-items.
+
+const ACP_WIRE = {
+  sessionCrud: {
+    present: ["new", "load", "list", "close", "fork", "resume", "activate"],
+    absent: ["delete"],
+  },
+  streamingSend: { present: ["prompt"] },
+  interrupt: { notification: ["cancel"] },
+  // `session/set_mode` is a real request here (packages/tui/src/acp/
+  // agent.ts:924), which neither runtime surface has — the acp column
+  // is genuinely STRONGER on this key than the v2 one.
+  toolSkillInvocation: { present: ["set_mode"] },
+  authCredentials: { present: ["set_config_option"] },
+};
+
+/** For each `none` key: substrings any wire method would need to match. */
+const NONE_CAPABILITY_NAME_FRAGMENTS = {
+  turnDiff: ["diff"],
+  turnRewindRedo: ["rewind", "redo", "revert", "reapply"],
+  plugins: ["plugin"],
+  mcp: ["mcp"],
+  subagents: ["delegation", "background_task"],
+  usageStats: ["usage"],
+  updateCheck: ["update", "upgrade"],
+  fileReadWrite: ["file", "workspace"],
+  gitOperations: ["git"],
+};
+
+/**
+ * The config ids `session/set_config_option` actually dispatches
+ * (packages/tui/src/acp/agent.ts:956 branches on exactly these two;
+ * the engine names them ACP_CONFIG_MODEL / ACP_CONFIG_PERMISSION_MODE
+ * in packages/tui/src/acp/control-state.ts:14-15). This is what makes
+ * the declaration's claim that the two bridged writers of
+ * MODE_WRITE_BRIDGED_CONFIG_IDS are reachable over acp checkable, and
+ * what pins the third bridge in the `unimplemented` slot.
+ */
+const ACP_CONFIG_OPTION_IDS = ["model", "permissionMode"];
+
+/**
+ * Audit the acp declaration against the protocol's wire table.
+ *
+ * @param {Record<string, {level: string, missing?: string[]}>} declaration
+ * @param {Record<string, boolean>} wireTable  The flat method→boolean table.
+ * @param {string[]} configIds  Config ids set_config_option dispatches.
+ * @returns {string[]} problems; empty means the declaration matches the wire.
+ */
+export function auditAcpCapabilities(declaration, wireTable, configIds) {
+  const problems = [];
+  for (const [key, wire] of Object.entries(ACP_WIRE)) {
+    const entry = declaration[key];
+    if (!entry) continue; // shape problems are validate's job, not this audit's
+    for (const method of wire.present || []) {
+      if (wireTable[method] !== true) {
+        problems.push(
+          `acp.${key}: declared as covered by wire method "${method}", but MCODE_ACP_CAPABILITIES.${method} is not true`,
+        );
+      }
+    }
+    for (const method of wire.absent || []) {
+      if (wireTable[method] !== false) {
+        problems.push(
+          `acp.${key}: declared as denied by wire method "${method}", but MCODE_ACP_CAPABILITIES.${method} is now ${wireTable[method]} — re-audit the declaration`,
+        );
+      }
+    }
+    // A notification-only method must NOT be what makes the key
+    // servable. `interrupt` is the live case: `cancel` is `true` on
+    // the wire, and the declaration is `none` precisely because a
+    // notification cannot answer. Declaring it `full` would be the
+    // flattering claim this audit exists to refuse.
+    for (const method of wire.notification || []) {
+      if (wireTable[method] !== true) {
+        problems.push(
+          `acp.${key}: the notification-only wire method "${method}" is no longer on the wire — re-audit whether this key is still none`,
+        );
+      }
+      if (entry.level === "full") {
+        problems.push(
+          `acp.${key}: declared full, but "${method}" is a NOTIFICATION — a delivered cancel certifies that it was sent, never that the turn stopped`,
+        );
+      }
+      if (entry.level === "none" && !entry.reason.includes(method)) {
+        problems.push(
+          `acp.${key}: declared none because "${method}" cannot answer, but the reason does not name it — the reader would have to rediscover the notification`,
+        );
+      }
+    }
+  }
+
+  // A `full` key must be covered by at least one real (non-notification)
+  // wire method, or `full` is a claim with nothing under it.
+  for (const key of ENGINE_CAPABILITY_KEYS) {
+    const entry = declaration[key];
+    if (!entry || entry.level !== "full") continue;
+    const wire = ACP_WIRE[key];
+    if (!wire || !(wire.present || []).length) {
+      problems.push(`acp.${key}: declared full with no covering wire method in ACP_WIRE`);
+    }
+  }
+
+  // A `none` key must have NO wire method whose name could serve it.
+  for (const [key, fragments] of Object.entries(NONE_CAPABILITY_NAME_FRAGMENTS)) {
+    const entry = declaration[key];
+    if (!entry || entry.level !== "none") continue;
+    const matched = Object.keys(wireTable).filter((name) =>
+      fragments.some((fragment) => name.toLowerCase().includes(fragment)),
+    );
+    if (matched.length > 0) {
+      problems.push(
+        `acp.${key}: declared none, but the protocol now exposes wire method(s) ${matched.join(", ")} — re-audit`,
+      );
+    }
+  }
+
+  // The bridged config ids must be the ones the protocol dispatches,
+  // and the effort writer must be among the ids it does NOT. Compared
+  // by METHOD name — `MODE_WRITE_BRIDGED_CONFIG_IDS.thinkingEffort` is
+  // the writer, not the config id. Comparing the ids would make the
+  // check vacuously false, and MUT-G would then pass for the wrong
+  // reason, which is worse than having no check.
+  for (const [configId, method] of Object.entries(MODE_WRITE_BRIDGED_CONFIG_IDS)) {
+    const isEffortWriter = method === MODE_WRITE_BRIDGED_CONFIG_IDS.thinkingEffort;
+    if (configIds.includes(configId) && isEffortWriter) {
+      problems.push(
+        `acp: ${method} is a bridged forward contract the declaration has no method for, but session/set_config_option NOW dispatches the "${configId}" config id — re-audit the bridge and let the control come back`,
+      );
+    }
+  }
+  return problems;
+}
 
 // ---------------------------------------------------------------------------
 // REQUIRED_METHODS — what each capability key means ON THE OBJECTS.
@@ -668,3 +848,706 @@ describe("M2 mutation checks — auditProviderCapabilities reports drift", () =>
     assert.deepEqual(ok, [], "the pristine declaration over the real method set is clean");
   });
 });
+
+// ---------------------------------------------------------------------------
+// M4-1 — the acp declaration against the protocol's wire table
+// ---------------------------------------------------------------------------
+
+describe("M4-1 acp snapshot — declaration vs the protocol's wire table", () => {
+  test("the acp declaration passes the wire audit (the CI red light this provider needs)", () => {
+    const problems = auditAcpCapabilities(ACP_CAPABILITIES, MCODE_ACP_CAPABILITIES, ACP_CONFIG_OPTION_IDS);
+    assert.deepEqual(
+      problems,
+      [],
+      `declaration/wire drift must be empty:\n  ${problems.join("\n  ")}`,
+    );
+  });
+
+  // The subtlety this whole provider turns on. `cancel` IS on the wire
+  // and IS true; the declaration is still `none`. If a future edit
+  // promotes interrupt to `full` because "the protocol has a cancel",
+  // the audit above goes red with the reason spelled out — which is
+  // the difference between a re-audit and a silent regression.
+  test("interrupt is none DESPITE `cancel` being a live wire method", () => {
+    assert.equal(MCODE_ACP_CAPABILITIES.cancel, true, "the wire really does carry cancel");
+    assert.equal(ACP_CAPABILITIES.interrupt.level, "none");
+    assert.match(ACP_CAPABILITIES.interrupt.reason, /cancel/, "the reason must name the notification");
+  });
+
+  // Same shape, opposite direction: the protocol registers
+  // `session/delete` with NO handler, so the wire table says `false`.
+  //
+  // M4-3a split this cell in two and both halves are now asserted: the
+  // PROTOCOL still cannot delete (this test, unchanged in what it
+  // proves), while the TRANSPORT can, because the delete runs on the
+  // process-local v2 host's own `deleteSession` rather than on the wire.
+  // The declaration therefore stops listing `deleteSession` as missing
+  // — and if it ever starts claiming the protocol has a handler, the
+  // first assertion below is what goes red.
+  test("sessionCrud is partial, and `delete` is registered without a handler", () => {
+    assert.equal(MCODE_ACP_CAPABILITIES.delete, false);
+    assert.equal(ACP_CAPABILITIES.sessionCrud.level, "partial");
+    assert.equal(ACP_CAPABILITIES.sessionCrud.missing.includes("deleteSession"), false);
+    assert.match(
+      ACP_CAPABILITIES.sessionCrud.reason,
+      /MCODE_ACP_CAPABILITIES\.delete === false/,
+      "the reason must keep recording that the WIRE cannot delete — the capability comes from elsewhere, not from the protocol",
+    );
+  });
+
+  // The acp column is stronger than the v2 column on exactly one key,
+  // and the suite says so out loud so nobody "harmonises" it away.
+  test("acp covers setMode, which neither runtime surface can", () => {
+    assert.equal(MCODE_ACP_CAPABILITIES.set_mode, true);
+    assert.equal(ACP_CAPABILITIES.toolSkillInvocation.missing.includes("setMode"), false);
+  });
+
+  // M3-B14's closure mechanism, extended to the new provider: the
+  // effort writer is named by the bridge and implemented by nobody, so
+  // it belongs in `unimplemented` and NOT in any `missing` list.
+  test("setThinkingEffort is unimplemented over acp, and no declaration claims it missing", () => {
+    assert.equal(ACP_CONFIG_OPTION_IDS.includes(MODE_WRITE_BRIDGED_CONFIG_IDS.thinkingEffort), false);
+    for (const [name, decl] of [
+      ["acp", ACP_CAPABILITIES],
+      ["local-runtime-v2", LOCAL_RUNTIME_V2_CAPABILITIES],
+      ["tui-runtime-adapter", TUI_RUNTIME_ADAPTER_CAPABILITIES],
+    ]) {
+      assert.equal(
+        (decl.authCredentials.missing || []).includes(MODE_WRITE_BRIDGED_CONFIG_IDS.thinkingEffort),
+        false,
+        `${name}: listing the effort writer as missing would remove the control for every user today`,
+      );
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Mutation checks for the acp audit — the checker is itself under test
+// ---------------------------------------------------------------------------
+
+describe("M4-1 acp audit — mutation checks", () => {
+  const wire = () => ({ ...MCODE_ACP_CAPABILITIES });
+  const decl = () => structuredClone({ ...ACP_CAPABILITIES });
+  const clean = (d, w = wire(), ids = ACP_CONFIG_OPTION_IDS) => auditAcpCapabilities(d, w, ids);
+
+  test("MUT-A: a `full` resting only on a notification is refused", () => {
+    const d = decl();
+    d.interrupt = { level: "full" };
+    const problems = clean(d);
+    assert.ok(
+      problems.some((p) => p.includes("NOTIFICATION") && p.startsWith("acp.interrupt")),
+      problems.join("; "),
+    );
+  });
+
+  test("MUT-B: a `full` with no covering wire method is refused", () => {
+    const d = decl();
+    d.mcp = { level: "full" };
+    const problems = clean(d);
+    assert.ok(problems.some((p) => p.includes("acp.mcp") && p.includes("no covering wire method")), problems.join("; "));
+  });
+
+  test("MUT-C: a wire method that appears out of nowhere must not go unnoticed", () => {
+    // The drift this suite exists to catch: the protocol grows
+    // `session/rewind`, the wire table learns about it, and the
+    // declaration still says `none`.
+    const w = wire();
+    w.rewind = true;
+    const problems = clean(decl(), w);
+    assert.ok(problems.some((p) => p.startsWith("acp.turnRewindRedo") && p.includes("rewind")), problems.join("; "));
+  });
+
+  test("MUT-D: a `present` method the wire no longer has is refused", () => {
+    const w = wire();
+    w.fork = false;
+    const problems = clean(decl(), w);
+    assert.ok(problems.some((p) => p.includes("wire method \"fork\"")), problems.join("; "));
+  });
+
+  test("MUT-E: `delete` becoming available must force a sessionCrud re-audit", () => {
+    const w = wire();
+    w.delete = true;
+    const problems = clean(decl(), w);
+    assert.ok(problems.some((p) => p.includes("denied by wire method \"delete\"")), problems.join("; "));
+  });
+
+  test("MUT-F: a none key whose reason stops naming the notification is refused", () => {
+    const d = decl();
+    d.interrupt = { level: "none", reason: "interface-absent: the protocol has no cancel method" };
+    // The reason still says "cancel", so this must be CLEAN — a
+    // mutation that proves the check is name-based, not a blanket one.
+    assert.deepEqual(clean(d), []);
+    d.interrupt = { level: "none", reason: "interface-absent: nothing here" };
+    const problems = clean(d);
+    assert.ok(problems.some((p) => p.includes("does not name it")), problems.join("; "));
+  });
+
+  test("MUT-G: the effort writer appearing on the wire must go red", () => {
+    const problems = clean(decl(), wire(), [...ACP_CONFIG_OPTION_IDS, "thinkingEffort"]);
+    assert.ok(problems.some((p) => p.includes("setThinkingEffort") && p.includes("re-audit the bridge")), problems.join("; "));
+  });
+
+  test("MUT-H: dropping the host exception is a DELETE, not a silent change", () => {
+    // The reverse exception is data, so removing it changes
+    // `summarizeCapabilityHosting` — and this asserts the registry
+    // still reports both keys, so a deletion cannot pass unnoticed.
+    const d = decl();
+    for (const key of ["turnDiff", "plugins"]) delete d[key].servedBy;
+    assert.equal(getEngineProvider("acp").capabilities.turnDiff.servedBy, "local-runtime-v2");
+    assert.deepEqual(clean(d), [], "the wire audit does not police servedBy — that is its own test");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M4-2 — the exec declaration against the interface it claims to describe
+// ---------------------------------------------------------------------------
+//
+// The acp audit works because `MCODE_ACP_CAPABILITIES` is LIVE: it is the
+// same flat table the routes read, so a protocol method that appears
+// turns the audit red without anyone editing a test.
+//
+// `mcode exec` has no such constant reachable from webui. Its contract is
+// TypeScript in another package (packages/tui/src/cli/contract.ts and
+// packages/tui/src/headless/events.ts) and importing it would put the
+// @mavis/* tree on the boot path — the exact thing the exec declaration
+// header and engine/index.js both say must not happen. So `EXEC_INTERFACE`
+// is a transcribed table, and transcribed tables rot.
+//
+// These are the two checks that keep it from rotting. Both read the real
+// sources, and neither would notice a declaration edit — they police the
+// TABLE, which is the part that can drift silently. The declaration
+// itself is policed by the audit below.
+
+describe("M4-2 exec interface — the transcribed table matches the real sources", () => {
+  // Locate the tui sources relative to this file rather than through
+  // `process.cwd()`: a test that passes only when run from the package
+  // root is a test that will fail in CI for the wrong reason.
+  const TUI_SRC = new URL("../../../../tui/src/", import.meta.url);
+  const readTuiSource = (relative) => readFileSync(fileURLToPath(new URL(relative, TUI_SRC)), "utf8");
+
+  test("every CLI option in applyExecCliContract is in the table, and vice versa", () => {
+    // Source of truth: `new Option('--name ...')` inside the exec block.
+    // The block is bounded by the function's own declaration and the
+    // next `export function`, so a sibling command's options cannot
+    // leak in and make the comparison pass vacuously.
+    const contract = readTuiSource("cli/contract.ts");
+    const start = contract.indexOf("export function applyExecCliContract");
+    assert.ok(start > 0, "applyExecCliContract must exist");
+    const block = contract.slice(start, contract.indexOf("\nexport function", start + 10));
+    const declared = [...block.matchAll(/new Option\(\s*'(-{1,2}[a-z-]+)/g)].map((m) => m[1]);
+    // The table normalizes the one short-flag alias to its long name:
+    // `-o, --output-last-message` is a second spelling of one option.
+    const normalized = declared.map((opt) => (opt === "-o" ? "--output-last-message" : opt));
+    assert.deepEqual(
+      [...new Set(normalized)].sort(),
+      [...EXEC_INTERFACE.cliOptions].sort(),
+      "the exec CLI contract and EXEC_INTERFACE.cliOptions have drifted — re-audit the declaration",
+    );
+  });
+
+  test("every stream-json event type and item kind is in the table, and vice versa", () => {
+    const events = readTuiSource("headless/events.ts");
+    // `ExecEvent` union: `readonly type: 'x' | 'y'`. Every quoted name on
+    // a `readonly type:` line is collected, NOT just the first — three of
+    // the ten are written as unions on one line
+    // (`'session.started' | 'session.resumed'`,
+    // `'item.started' | 'item.updated' | 'item.completed'`), and a
+    // single-match regex would silently drop six of the ten and make
+    // this check pass for the wrong reason.
+    const union = events.slice(events.indexOf("export type ExecEvent"));
+    const unionBlock = union.slice(0, union.indexOf("\nexport interface", 1));
+    const quotedOnTypeLines = (text) =>
+      text
+        .split("\n")
+        .filter((line) => line.includes("readonly type:"))
+        .flatMap((line) => [...line.matchAll(/'([a-z._]+)'/g)].map((m) => m[1]));
+    const streamEvents = [...new Set(quotedOnTypeLines(unionBlock))].sort();
+    assert.deepEqual(
+      streamEvents,
+      [...EXEC_INTERFACE.streamEvents].sort(),
+      "the exec event union and EXEC_INTERFACE.streamEvents have drifted",
+    );
+
+    // `ExecItem.type`, events.ts:21. Bounded by the interface's own
+    // closing brace: a fixed character count would eventually reach past
+    // it into the `ExecEvent` union and report those ten types as item
+    // kinds, which is a failure mode that would arrive as noise rather
+    // than as a re-audit.
+    const itemStart = events.indexOf("export interface ExecItem");
+    const itemBlock = events.slice(itemStart, events.indexOf("\n}", itemStart));
+    const itemKinds = [...new Set(quotedOnTypeLines(itemBlock))].sort();
+    assert.deepEqual(
+      itemKinds,
+      [...EXEC_INTERFACE.itemKinds].sort(),
+      "the exec item kinds and EXEC_INTERFACE.itemKinds have drifted",
+    );
+  });
+
+  test("the process signals in the table are the ones run-exec-command registers", () => {
+    const runner = readTuiSource("cli/run-exec-command.ts");
+    const registered = [
+      ...new Set(
+        [...runner.matchAll(/processRef\.once\('(SIG[A-Z]+)'/g)].map((m) => m[1]),
+      ),
+    ].sort();
+    assert.deepEqual(registered, [...EXEC_INTERFACE.processSignals].sort());
+  });
+
+  // The direction that protects the declaration, and the finding it
+  // records. `mcode exec --output-format stream-json` writes exactly
+  // what `ExecEventProjector` produces — `output.ts:34-36` refuses the
+  // format outright with no projector, and `runner.ts:218-232` always
+  // supplies one — so the wire carries `streamEvents` and nothing else.
+  // The names webui's `collectExecResult` branches on are the
+  // SUPERVISOR'S INTERNAL stream-event names, and the intersection with
+  // the wire is empty.
+  //
+  // That is a real mismatch in the exec data plane, not a test artifact.
+  // It is pinned as a KNOWN DEBT rather than hidden, and this assertion
+  // is what makes it visible: if the two families ever start overlapping
+  // — because tui emits both, or because webui is fixed to parse the
+  // projected names — the intersection becomes non-empty and this goes
+  // red with a message that says which side moved.
+  test("the exec parser's branch names and the wire's event names do not overlap", async () => {
+    const { readFileSync: read } = await import("node:fs");
+    const src = read(
+      fileURLToPath(new URL("../../../server/lib/mcode-exec.js", import.meta.url)),
+      "utf8",
+    );
+    const consumed = [
+      ...new Set([...src.matchAll(/m\.type === "([^"]+)"/g)].map((m) => m[1])),
+    ].sort();
+    assert.deepEqual(
+      consumed,
+      [...EXEC_INTERFACE.consumedEvents].sort(),
+      "the branches in collectExecResult and EXEC_INTERFACE.consumedEvents have drifted",
+    );
+    const overlap = consumed.filter((type) => EXEC_INTERFACE.streamEvents.includes(type));
+    assert.deepEqual(
+      overlap,
+      [],
+      "exec parser branch names now overlap the wire event names — one of the two sides moved, " +
+        "so EXEC_INTERFACE.consumedEvents and the toolSkillInvocation / usageStats reasons must be re-audited",
+    );
+  });
+
+  test("every option buildExecArgs sends is one the CLI contract accepts", async () => {
+    const { buildExecArgs } = await import("../../../server/lib/mcode-exec.js");
+    const argv = buildExecArgs({ workspace: "/tmp/ws", sessionId: "mvs_x" });
+    for (const token of argv) {
+      // A bare "-" is the stdin SOURCE (`--input -`), not an option name,
+      // so the option test is `^--`, not `startsWith("-")`.
+      if (!token.startsWith("--")) continue;
+      assert.ok(
+        EXEC_INTERFACE.cliOptions.includes(token),
+        `buildExecArgs sends ${token}, which is not in the exec CLI contract`,
+      );
+    }
+    // The two session options are the whole of exec's sessionCrud
+    // surface, so the `partial` claim rests on exactly these two — a
+    // third one appearing would mean re-auditing that key.
+    assert.ok(argv.includes("--session"));
+    assert.equal(EXEC_COVERAGE.covers.sessionCrud.includes("--session"), true);
+    assert.equal(EXEC_COVERAGE.covers.sessionCrud.includes("--continue"), true);
+  });
+
+  // Every mechanism a coverage entry names must be one the interface
+  // really has, or the coverage is a claim about a flag nobody added.
+  // This is the check that stops the table from drifting away from
+  // `EXEC_INTERFACE` silently; the two tests after it pin what the
+  // table says, which this one cannot.
+  test("every coverage entry names a real interface fact", () => {
+    const known = new Set([
+      ...EXEC_INTERFACE.cliOptions,
+      ...EXEC_INTERFACE.streamEvents,
+      ...EXEC_INTERFACE.itemKinds,
+      ...EXEC_INTERFACE.processSignals,
+    ]);
+    for (const [key, facts] of Object.entries(EXEC_COVERAGE.covers)) {
+      assert.ok(ENGINE_CAPABILITY_KEYS.includes(key), `${key} is not a contract key`);
+      for (const fact of facts) {
+        assert.ok(
+          known.has(fact) || fact.includes("."),
+          `${key} names "${fact}", which is not a mechanism in EXEC_INTERFACE`,
+        );
+      }
+    }
+  });
+
+  // `EXEC_COVERAGE` is the audit's INPUT, and the audit is only as
+  // honest as its input. Two levels of pinning, because they fail for
+  // different mistakes:
+  //
+  //   - the key SET, below: a coverage entry that outlives or invents a
+  //     capability key;
+  //   - the VALUES, in the test after it: a mechanism swapped for a
+  //     different real one, which no structural check can catch because
+  //     both are true statements about the interface. That is why the
+  //     values are asserted rather than derived — a derived expectation
+  //     would be the transcription being checked against itself.
+  test("the coverage table covers exactly the keys exec does not declare none", () => {
+    const covered = Object.keys(EXEC_COVERAGE.covers).sort();
+    const servable = ENGINE_CAPABILITY_KEYS.filter(
+      (key) => EXEC_CAPABILITIES[key].level !== "none",
+    ).sort();
+    assert.deepEqual(
+      covered,
+      servable,
+      "EXEC_COVERAGE and the declaration disagree about which keys exec can serve — one of them " +
+        "is stale, and the audit would be reading a table that no longer matches the claim",
+    );
+  });
+
+  test("the coverage values name the mechanism each level actually rests on", () => {
+    // `usageStats` is the case that matters: it is `partial` because
+    // per-turn usage crosses the wire. Swap that fact for a different
+    // real event and every structural check still passes — only this
+    // one goes red.
+    assert.deepEqual([...EXEC_COVERAGE.covers.usageStats], ["turn.completed.usage", "exec.completed"]);
+    assert.deepEqual([...EXEC_COVERAGE.covers.streamingSend], [
+      "--input",
+      "--output-format",
+      "exec.started",
+      "turn.completed",
+    ]);
+    // `toolSkillInvocation` rests on exactly one fact, and it is a
+    // single-element list on purpose: the fact that webui does not read
+    // the item stream belongs in the reason, not in the coverage.
+    assert.deepEqual([...EXEC_COVERAGE.covers.toolSkillInvocation], ["tool_call"]);
+    // And `mcp` rests on a config flag rather than a method, which is
+    // why its missing list is kebab-case.
+    assert.deepEqual([...EXEC_COVERAGE.covers.mcp], ["--config"]);
+  });
+
+  // The level each of those four rests on, asserted from both sides, so
+  // a future edit that promotes a partial to full has to answer this
+  // question rather than slip through the audit's rule 1.
+  test("the four covered keys keep the levels their coverage justifies", () => {
+    for (const key of ["sessionCrud", "streamingSend", "toolSkillInvocation", "mcp", "usageStats"]) {
+      const expected = key === "streamingSend" ? "full" : "partial";
+      assert.equal(EXEC_CAPABILITIES[key].level, expected, key);
+      assert.ok(EXEC_COVERAGE.covers[key].length > 0, `${key} must keep its coverage`);
+    }
+  });
+});
+
+describe("M4-2 exec snapshot — declaration vs the interface", () => {
+  const decl = () => structuredClone({ ...EXEC_CAPABILITIES });
+  const clean = (d) => auditExecCapabilities(d, EXEC_COVERAGE);
+
+  test("the exec declaration passes the interface audit (this provider's CI red light)", () => {
+    const problems = clean(decl());
+    assert.deepEqual(
+      problems,
+      [],
+      `declaration/interface drift must be empty — a non-empty list is the CI red light this provider needs:\n  ${problems.join("\n  ")}`,
+    );
+  });
+
+  // The same "a rule that reports drift unconditionally is a rule
+  // nobody reads" concern MUT-7 raised for the runtime audit: the
+  // pristine declaration over the real coverage table is clean, so the
+  // mutations below are what prove the rule has teeth.
+  test("the pristine declaration over the real coverage table is clean", () => {
+    assert.deepEqual(clean(decl()), []);
+  });
+
+  // The reverse exception is the SAME two keys on BOTH transports, for
+  // the same structural reason: those routes project the in-process v2
+  // host and gate on no transport. `servedBy` is not policed by the
+  // interface audit — no interface fact can speak to who answers — so it
+  // is pinned here from the registry instead, once per transport.
+  test("both transports declare the same two host-served keys", () => {
+    for (const id of ["acp", "exec"]) {
+      const { capabilities } = getEngineProvider(id);
+      const hosted = summarizeCapabilityHosting(capabilities);
+      assert.deepEqual(
+        hosted,
+        [
+          { key: "turnDiff", servedBy: "local-runtime-v2" },
+          { key: "plugins", servedBy: "local-runtime-v2" },
+        ],
+        id,
+      );
+      // And the host really can serve it, with no cycle back.
+      for (const { key, servedBy } of hosted) {
+        assert.equal(getEngineProvider(servedBy).capabilities[key].level, "full", `${servedBy}.${key}`);
+        assert.equal(resolveCapabilityHostProvider(servedBy, key), null, `${servedBy}.${key} cycle`);
+      }
+    }
+  });
+
+  // M3-B14's closure mechanism, extended to the second transport. The
+  // exec audit has no wire-table equivalent of the acp `configIds`
+  // check, but the rule it encodes is the same and it is asserted for
+  // every registered provider rather than one at a time.
+  test("setThinkingEffort is unimplemented over exec, and no declaration claims it missing", () => {
+    assert.deepEqual(
+      [
+        "local-runtime-v2",
+        "tui-runtime-adapter",
+      ].map((id) => getEngineProvider(id).capabilities.authCredentials.missing.includes("setThinkingEffort")),
+      [false, false],
+    );
+    assert.equal(
+      (EXEC_CAPABILITIES.authCredentials.missing || []).includes(
+        MODE_WRITE_BRIDGED_CONFIG_IDS.thinkingEffort,
+      ),
+      false,
+      "exec: listing the effort writer as missing would remove the control for every user today",
+    );
+  });
+
+  // The check `auditExecCapabilities` cannot make for itself, made here
+  // because this is the only scope that can see REQUIRED_METHODS.
+  //
+  // exec has no reflectable method surface, so the audit cannot verify
+  // that the names in its `missing` lists are real — and a name nobody
+  // wrote would be an invented sub-capability rather than an audited
+  // gap. Every method-named entry must fall into one of exactly two
+  // kinds, and the two have different justifications:
+  //
+  //   (a) a method a runtime surface REALLY carries, so "absent here" is
+  //       a statement about this transport and not about a method that
+  //       exists nowhere;
+  //   (b) a `subItem` a family gate actually passes, so leaving it out
+  //       would let a gate answer for a capability the transport has
+  //       not got. These are not required to be surface method names:
+  //       `loadSession` and `activateSession` are what session-load.js
+  //       gates on (its SESSION_LOAD_ENDPOINTS table), and the v2
+  //       surface spells them `createSession` / `updateSession`.
+  //
+  // Anything that is neither is an invention, and this is what says so.
+  test("every method-named exec missing item is a real surface method or a real gate sub-item", () => {
+    const surfaceMethods = new Set();
+    for (const required of Object.values(REQUIRED_METHODS)) {
+      for (const { methods = [], absent = [] } of Object.values(required)) {
+        for (const name of [...methods, ...absent]) surfaceMethods.add(name);
+      }
+    }
+    // The sub-items every family gate passes, read off the ENDPOINTS
+    // tables this batch did not touch: session-reads.js:89-92,
+    // session-tree-reads.js:107, session-load.js:165/170,
+    // session-writes.js:180/190, mode-writes.js:162, interrupt.js:179,
+    // usage-reads.js:141, streaming-send.js:170.
+    const gateSubItems = new Set([
+      "listSessions",
+      "getSession",
+      "loadSession",
+      "activateSession",
+      "deleteSession",
+      "setMode",
+      "setThinkingEffort",
+      "abortSession",
+      "getSessionUsage",
+      "sendMessage",
+      "replyPermission",
+    ]);
+    for (const key of ENGINE_CAPABILITY_KEYS) {
+      for (const item of EXEC_CAPABILITIES[key].missing || []) {
+        // kebab-case entries name SUB-CAPABILITIES, not methods — the
+        // same convention the v2 declaration uses for "file-write".
+        if (item.includes("-")) continue;
+        assert.ok(
+          surfaceMethods.has(item) || gateSubItems.has(item),
+          `exec.${key} lists "${item}" as missing, but it is neither a method a runtime surface ` +
+            `carries nor a sub-item a family gate passes — it is an exec-shaped invention`,
+        );
+      }
+    }
+  });
+
+  // The subset of kind (b) alone, pinned by key: these are the names M4-3
+  // will pass, and a gate whose sub-item is missing from the declaration
+  // is a gate that answers "full" for a capability exec has not got —
+  // the exact failure the reverse exception was invented to prevent, one
+  // level down.
+  test("exec lists every gated sub-item of the keys it declares partial", () => {
+    const gated = {
+      sessionCrud: ["listSessions", "getSession", "loadSession", "activateSession", "deleteSession"],
+      toolSkillInvocation: ["setMode"],
+      usageStats: ["getSessionUsage"],
+    };
+    for (const [key, subItems] of Object.entries(gated)) {
+      const entry = EXEC_CAPABILITIES[key];
+      assert.notEqual(entry.level, "full", `${key} must not be full while these are missing`);
+      for (const subItem of subItems) {
+        assert.ok(
+          entry.missing.includes(subItem),
+          `exec.${key} must list ${subItem} — a gate passes it and would otherwise answer full`,
+        );
+      }
+    }
+  });
+
+  // The two keys where the LEVEL is what refuses the gate, because there
+  // is no `missing` list to check. `interrupt` is `none`, so
+  // `abortSession` is refused outright; `streamingSend` is `full`, and
+  // that is the one `full` on this provider — sending a prompt IS the
+  // transport, so the streaming-send gate legitimately passes. Asserting
+  // both is what stops the previous version's `continue` from quietly
+  // asserting nothing at all about them.
+  test("exec's level — not a missing list — is what refuses or admits the remaining gates", () => {
+    assert.equal(EXEC_CAPABILITIES.interrupt.level, "none");
+    assert.equal((EXEC_CAPABILITIES.interrupt.missing || []).length, 0);
+    assert.equal(EXEC_CAPABILITIES.streamingSend.level, "full");
+    // And the gate that passes `sendMessage` is the streaming-send one,
+    // which this provider really does serve.
+    assert.equal(
+      summarizeCapabilityHosting(EXEC_CAPABILITIES).some((h) => h.key === "streamingSend"),
+      false,
+      "streamingSend is full on the transport — nothing else answers it",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Mutation checks for the exec audit — the checker is itself under test
+// ---------------------------------------------------------------------------
+
+describe("M4-2 exec audit — mutation checks", () => {
+  const decl = () => structuredClone({ ...EXEC_CAPABILITIES });
+  const clean = (d) => auditExecCapabilities(d, EXEC_COVERAGE);
+  const withCoverage = (d, extra) =>
+    auditExecCapabilities(d, { covers: { ...EXEC_COVERAGE.covers, ...extra } });
+
+  test("MUT-I: a `full` resting on no interface fact is refused", () => {
+    // The exec counterpart of MUT-B. `toolSkillInvocation` is partial on
+    // the strength of one event kind; promoting some other key to full
+    // must not be possible without a mechanism under it.
+    const d = decl();
+    d.mcp = { level: "full" };
+    const problems = auditExecCapabilities(d, { covers: { mcp: [] } });
+    assert.ok(
+      problems.some((p) => p.includes("exec.mcp") && p.includes("no interface fact")),
+      problems.join("; "),
+    );
+  });
+
+  test("MUT-J: a `none` on an interface that exposes the capability is refused", () => {
+    // The dangerous direction: exec declares `subagents` none because
+    // the event union has no delegation kind. If the engine grew one,
+    // the declaration must be forced to re-audit rather than keep
+    // denying a surface that now exists.
+    const problems = withCoverage(decl(), { subagents: ["delegation.snapshot"] });
+    assert.ok(
+      problems.some((p) => p.startsWith("exec.subagents") && p.includes("re-audit")),
+      problems.join("; "),
+    );
+  });
+
+  test("MUT-K: promoting a partial to full WITHOUT a mechanism is refused", () => {
+    // The exec-specific flattering move: a `partial` looks weak, so the
+    // easy edit is to call it `full` and let the level speak. Without a
+    // covering interface fact that is a claim with nothing under it, and
+    // the audit must refuse it. `mcp` is the case that needs the most
+    // convincing lie — `--config` exists, so "exec can do MCP" feels
+    // supported until the table says there is no MCP method.
+    const d = decl();
+    d.mcp = { level: "full" };
+    const problems = auditExecCapabilities(d, { covers: { mcp: [] } });
+    assert.ok(
+      problems.some((p) => p.includes("exec.mcp") && p.includes("no interface fact")),
+      problems.join("; "),
+    );
+  });
+
+  test("MUT-L: interrupt becoming servable is caught the moment a cancel mechanism exists", () => {
+    // The one that matters most in practice. `interrupt` is `none`
+    // because exec has no request channel. If the engine ever grows a
+    // cancel for this transport — the obvious thing to want, since
+    // webui's kill cascade is doing the work by hand — the honest answer
+    // stops being `none`, and rule 2 is what forces the re-audit instead
+    // of letting the reason's prose carry a stale claim.
+    const problems = withCoverage(decl(), { interrupt: ["session.cancel"] });
+    assert.ok(
+      problems.some((p) => p.startsWith("exec.interrupt") && p.includes("session.cancel")),
+      problems.join("; "),
+    );
+    // And the same fact must be refused for every other none key too —
+    // a rule that only watched interrupt would be a rule aimed at one
+    // test rather than at the declaration.
+    for (const key of ["subagents", "authCredentials", "gitOperations"]) {
+      assert.ok(
+        withCoverage(decl(), { [key]: ["anything.at.all"] }).some((p) => p.startsWith(`exec.${key}`)),
+        `${key} must also be re-audited when a mechanism appears`,
+      );
+    }
+  });
+
+  // The audit has deliberately NO rule of the form "a partial's `missing`
+  // must not name a mechanism the interface exposes" — see the header of
+  // `auditExecCapabilities`. This asserts why that omission is honest
+  // rather than lazy: the two namespaces are disjoint, so such a rule
+  // could never fail. A future edit that tried to add it would be adding
+  // a check that reads as coverage while never going red.
+  test("MUT-O: the missing and coverage namespaces are disjoint, so no vacuous rule is possible", () => {
+    const mechanisms = new Set([
+      ...EXEC_INTERFACE.cliOptions,
+      ...EXEC_INTERFACE.streamEvents,
+      ...EXEC_INTERFACE.itemKinds,
+      ...EXEC_INTERFACE.processSignals,
+    ]);
+    const declaredMissing = new Set();
+    for (const key of ENGINE_CAPABILITY_KEYS) {
+      for (const item of EXEC_CAPABILITIES[key].missing || []) declaredMissing.add(item);
+    }
+    const collision = [...declaredMissing].filter((item) => mechanisms.has(item));
+    assert.deepEqual(
+      collision,
+      [],
+      "a missing entry now names a real interface mechanism — the namespaces converged, so the " +
+        "no-third-rule decision in auditExecCapabilities must be revisited rather than left as prose",
+    );
+    // And the reverse naming convention is load-bearing: `missing` names
+    // provider-surface methods, which the gates pass as `subItem`.
+    const gateSubItems = new Set(
+      Object.values(EXEC_CAPABILITIES)
+        .flatMap((entry) => entry.missing || [])
+        .filter((item) => !item.includes("-")),
+    );
+    assert.ok(gateSubItems.has("deleteSession"), "the destructive gate sub-item must stay named");
+    assert.ok(gateSubItems.has("listSessions"), "the read gate sub-item must stay named");
+  });
+
+  test("MUT-P: dropping a coverage entry turns a full into an error", () => {
+    // `streamingSend` is the one `full` on this provider. It is full
+    // because the transport takes a prompt on stdin and streams events
+    // back; take either away and `full` has nothing under it.
+    const d = decl();
+    const problems = auditExecCapabilities(d, { covers: { streamingSend: [] } });
+    assert.ok(
+      problems.some((p) => p.includes("exec.streamingSend")),
+      problems.join("; "),
+    );
+  });
+
+  test("MUT-M: dropping the tool_call coverage leaves toolSkillInvocation unservable", () => {
+    // The one fact holding toolSkillInvocation above `none`. Without it
+    // the key has no mechanism and the audit must say so — which is what
+    // a future "webui cannot read the item stream anyway, so declare it
+    // none" edit would have to reckon with.
+    const d = decl();
+    d.toolSkillInvocation = { level: "full" };
+    const problems = auditExecCapabilities(d, { covers: { toolSkillInvocation: [] } });
+    assert.ok(
+      problems.some((p) => p.includes("exec.toolSkillInvocation")),
+      problems.join("; "),
+    );
+  });
+
+  test("MUT-N: an unknown level is the validator's job, not a silent pass", () => {
+    // The audit skips keys whose entry it does not recognise, exactly as
+    // `auditAcpCapabilities` does — so this asserts the OTHER half runs
+    // first and would catch it. Without this, a typo'd level could sail
+    // through both checks.
+    const d = decl();
+    d.usageStats = { level: "partal", missing: ["getSessionUsage"], reason: "mutant" };
+    assert.ok(
+      validateEngineCapabilities(d).some((p) => p.includes("usageStats")),
+      "the shape validator must reject an unknown level before the audit sees it",
+    );
+  });
+});
+
+

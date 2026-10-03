@@ -25,7 +25,7 @@
 //     by routes/sessions.js transitively via lib/transcript.js and
 //     lib/session-tree.js. We mock it with the FAKE class so the v2
 //     transcript backfill runs against fixture rows.
-//   - lib/mcode-session-delete.js exports deleteMcodeSessionFromDb —
+//   - engine/session-delete.js exports the preview + engine delete —
 //     imported directly by routes/sessions.js. We mock it to return
 //     {ok:false} so the orphan-delete branch in the switch test never
 //     touches a real sqlite db.
@@ -148,13 +148,14 @@ before(async (t) => {
       _getBetterSqlite3Candidates: () => [],
     },
   });
-  // mcode-session-delete.js fake: sessions.js imports
-  //   deleteMcodeSessionFromDb from here, and the sqlite-resolver mock
+  // session-delete fake: the facade reaches
+  //   its data plane from here, and the sqlite-resolver mock
   //   above does not cover this module, so it needs its own registration.
-  t.mock.module(absPath("lib/mcode-session-delete.js"), {
+  t.mock.module(absPath("engine/session-delete.js"), {
     namedExports: {
-      deleteMcodeSessionFromDb: () => ({ ok: false, reason: "test_mock" }),
-      MCODE_SESSION_DELETE_TABLES: [],
+      previewSessionDeleteRows: () => ({ ok: false, reason: "test_mock" }),
+      deleteSessionThroughEngine: async () => ({ ok: false, reason: "test_mock" }),
+      SESSION_DELETE_PREVIEW_TABLES: [],
     },
   });
   const sb = await import(absPath("lib/state-bus.js"));

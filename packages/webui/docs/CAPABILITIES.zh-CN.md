@@ -134,7 +134,7 @@ CI 会对上述每一个名称是否出现在本文档中进行断言
 | 点击切换会话 | ✅ | 点击会话行会触发 `/api/sessions/switch` |
 | 通过按钮新建聊天 | ✅ | 如果尚未设置工作区，会先打开工作区选择器 |
 | 从侧边栏删除会话 | ✅ | 二次确认：`session-delete` 按钮 → 5 秒确认条 |
-| 同时删除 mcode sqlite 中的会话 | ✅ | `/api/sessions/:id` DELETE 处理器调用 `deleteMcodeSessionFromDb`（位于 `server/lib/mcode-session-delete.js`，从原来的 `db.js` 抽出） |
+| 同时删除 mcode sqlite 中的会话 | ✅ | `/api/sessions/:id` DELETE 经引擎门面调用引擎自己的 `deleteSession`（`server/engine/session-delete.js#deleteSessionThroughEngine`）。M4-3a 退役了原先做这件事的 32 表裸 SQL 清扫 |
 | 清理孤立的 mcode 会话 | ✅ | `/api/sessions/cleanup-orphans` 列出未被任何 webui 会话引用的 mcode 会话，然后删除它们（范围：`orphans` 或 `all`） |
 | 恢复在 TUI 中打开的 mcode 会话 | ❌ | acp 会话只有一个所有者；webui 在检测到外部所有者时显示只读横幅 |
 | 跨工作区会话搜索 | ✅ | 侧边栏搜索输入调用 `GET /api/sessions/search`，它跨所有工作区聚合有标题的匹配项（不区分大小写的模糊匹配 + 按工作区去重）。由 B03 门禁控制。 |
@@ -229,7 +229,7 @@ CI 会对上述每一个名称是否出现在本文档中进行断言
 | systemd / Windows 服务清单 | ❌ | 超出范围；用户应使用 `pm2`、`nssm` 或在终端中运行 |
 | 代码热重载 | ❌ | 重启服务器 |
 | 健康检查端点 | ✅ | `GET /api/health` 返回 `{ok:true, port, defaultModel, defaultWorkspace, mcodeCmd, mcodeVersion, maxConcurrent}` |
-| 只追加事件审计日志（`events.ndjson`） | ✅ | `server/lib/events.js` ——NDJSON 追加写入，带 SHA-256 哈希链、单调递增 `seq`、200ms 延迟写入。写入点：settings.js / sessions.js / upload.js / slash.js / mcode-session-delete.js / export.js / alerts.js（动态）。测试：`test/lib/events.test.js` + `test/lib/events-hash.test.js`。路径：`$WEBUI_DATA_DIR/events.ndjson`。 |
+| 只追加事件审计日志（`events.ndjson`） | ✅ | `server/lib/events.js` ——NDJSON 追加写入，带 SHA-256 哈希链、单调递增 `seq`、200ms 延迟写入。写入点：settings.js / sessions.js / upload.js / slash.js / engine/session-delete.js / export.js / alerts.js（动态）。测试：`test/lib/events.test.js` + `test/lib/events-hash.test.js`。路径：`$WEBUI_DATA_DIR/events.ndjson`。 |
 | 独立的异常告警 SSE 通道 | ✅ | `server/lib/alerts.js` + `GET /api/alerts` SSE + 前端铃铛图标 + 未读计数。3 个级别（info/warn/error），100 条环形缓冲，60 秒去重窗口。 |
 | 按请求的授权门禁 | ✅ | `server/lib/authorize.js` ——`authorize(action, ctx, opts)` Promise，默认 5 分钟超时（失败即拒绝），8 个动作的白名单（`session.delete`、`sessions.cleanup-orphans`、`session.cleanup-all`、`session.export`、`session.search`、`token.reset`、`slash.clear`、`startup.cleanup`）。测试：`test/lib/authorize.check.mjs`。 |
 | SBOM + 本地 CVE 门禁 | ✅ | `pnpm --filter @mavis/webui sbom` → CycloneDX 1.5（`scripts/gen-sbom.mjs`）+ `pnpm audit --omit=dev` + 仓库根目录 `docs/verification.md` 矩阵。webui 本身没有插件级 CI 工作流；唯一的强制项是 `pnpm --filter @mavis/webui check`（文档对齐关）以及 monorepo 的 `pnpm verify`。 |
