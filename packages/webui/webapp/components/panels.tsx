@@ -3145,8 +3145,10 @@ export function SettingsPanel({
           </SettingRow>
         </SettingsSection>
         {/* 会话管理 — `webui-context-window-usage` (G5). The switch
-         * persists the preference; no surface reads it yet, which the
-         * documentation states plainly. */}
+         * persists the preference and publishes it on the module's live
+         * channel; `components/context-meter.tsx` follows that channel, so
+         * the composer-side readout appears and disappears as this switch
+         * is flipped, without a reload. */}
         <SettingsSection
           title={t("settings.section.sessionManagement")}
           testId="session-management-section"

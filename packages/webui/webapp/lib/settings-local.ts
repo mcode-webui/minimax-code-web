@@ -90,14 +90,56 @@ export function writeFileLineWrap(value: boolean): void {
   writeFlag(FILE_LINE_WRAP_KEY, value);
 }
 
-/** Whether the UI should surface context-window usage. Currently a
- *  recorded preference only — no surface reads it yet (documented). */
+/** Whether the UI should surface context-window usage. Read by
+ *  `components/context-meter.tsx`, which renders the composer-side
+ *  readout only while this is on. */
 export function readContextWindowUsage(): boolean {
   return readFlag(CONTEXT_WINDOW_USAGE_KEY, false);
 }
 
 export function writeContextWindowUsage(value: boolean): void {
   writeFlag(CONTEXT_WINDOW_USAGE_KEY, value);
+  notifyContextWindowUsage(value);
+}
+
+// --- live update channel ----------------------------------------------------
+//
+// A surface that reads this key once per mount would not react to the
+// switch, and the settings page and the composer are usually both on
+// screen at once, so the toggle has to take effect without a reload.
+// The channel is the same shape as `lib/theme.ts#subscribeSystemTheme`:
+// a `subscribe*` returning an unsubscribe function. The stored format
+// stays the bare string the desktop reference reads, so the channel is
+// the only new thing — moving the key onto the `webui:ui:v1` envelope
+// would break the reference-shared contract documented above.
+
+type ContextWindowUsageListener = (value: boolean) => void;
+
+const contextWindowUsageListeners = new Set<ContextWindowUsageListener>();
+
+/** Subscribe to writes of `webui-context-window-usage`. Returns the
+ *  unsubscribe function; the listener is called with the value that was
+ *  just written, never with a value read back from storage. */
+export function subscribeContextWindowUsage(
+  listener: ContextWindowUsageListener,
+): () => void {
+  contextWindowUsageListeners.add(listener);
+  return () => {
+    contextWindowUsageListeners.delete(listener);
+  };
+}
+
+function notifyContextWindowUsage(value: boolean): void {
+  // Iterate a copy: a listener that subscribes or unsubscribes while it
+  // runs must not disturb this pass.
+  for (const listener of [...contextWindowUsageListeners]) {
+    try {
+      listener(value);
+    } catch {
+      // One broken subscriber must not cost the others their update, and
+      // must not turn a settings toggle into an uncaught error.
+    }
+  }
 }
 
 /** The follow-up message behaviour. Unknown stored values fall back

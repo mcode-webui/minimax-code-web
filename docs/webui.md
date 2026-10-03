@@ -1230,7 +1230,7 @@ between adjacent rows:
 | Application | enabled | appearance picker + language switch. The reference's five desktop switches (menu-bar icon, launch-at-login, desktop notifications, early access, accelerated indexing) render **disabled**, one per row — no capability behind them |
 | Link destinations | disabled furniture | two rows (web links, local links) whose selects are disabled single-option dropdowns |
 | Files | enabled | two switches persisted in `localStorage`, see the table below |
-| Session management | enabled | one switch, persisted; **records the preference only** — no surface reads it yet |
+| Session management | enabled | one switch, persisted; gates the composer's context-window readout (see below) |
 | Agent control | disabled furniture | the 「自动打开浏览器面板」 switch renders off and disabled (no capability behind it) |
 | Preference settings | enabled | follow-up behaviour radio (queue / send now), persisted; **records the preference only** — the composer does not read it yet (ticket 49 owns that surface). Watermark and data opt-in render disabled |
 | About | mixed | upload logs and check-for-update are disabled buttons; the local URL and LAN URL are live read-only rows from `/api/settings` |
@@ -1250,8 +1250,30 @@ clients:
 | --- | --- | --- |
 | `file_open_in_new_tab` | `"true"` here (`"false"` in the reference) | **Yes.** On (default) keeps this client's standing one-tab-per-file behaviour; off replaces the **active file tab** with the newly opened file. The strip has no pinned-tab concept, so "active file tab" is the reuse target — a documented approximation of the reference's "reuse the unpinned tab" |
 | `file_line_wrap` | `"true"` | **Yes.** On wraps over-wide lines; off scrolls horizontally. Covers both code-file previews (ticket 48) and markdown codeblocks — chat messages, activity groups and markdown file previews (ticket 52); the language label never wraps. Applies to previews opened / messages mounted after the switch (an already-open one does not reflow); a wrapped file-preview line's gutter number aligns with its first visual row — a known trade-off |
-| `webui-context-window-usage` | `"false"` | No. Recorded preference only |
+| `webui-context-window-usage` | `"false"` | **Yes.** On draws the context-window readout in the composer's toolbar, immediately left of the model chip; off renders nothing there. The readout's own form is unchanged — the ring, the percentage, the breakdown and the plan rows all come from the session snapshot as before. Flipping the switch takes effect without a reload |
 | `webui-follow-up-behavior` | `"queue"` (or `"steer"`) | No. Recorded preference only |
+
+**The context-window readout**
+
+`components/context-meter.tsx` is the only consumer of
+`webui-context-window-usage`. It reads the key once at mount and then
+follows `subscribeContextWindowUsage` in `webapp/lib/settings-local.ts`,
+so the switch takes effect in the already-open page — the settings modal
+and the composer are on screen at the same time, and a reload would be
+the only other way to hear about it. The channel's shape is
+`subscribe*(listener) → unsubscribe`, the same one
+`webapp/lib/theme.ts#subscribeSystemTheme` uses for the appearance picker;
+a listener that throws is isolated so it cannot cost the other subscribers
+their update.
+
+The default stays `"false"`, the desktop reference's own default, so a
+profile that has never touched the switch renders no readout. That is a
+change from the webui's previous behaviour, where the meter drew
+unconditionally and the switch did nothing: the reference hides it by
+default, and the switch is what decides. The stored format is still the
+bare `"true"` / `"false"` string — the key did not move onto the
+`webui:ui:v1` envelope, which would have broken the reference-shared
+contract.
 
 **Search and layout details (ticket 48)**
 
@@ -2345,7 +2367,7 @@ Invariants worth keeping when touching either branch:
 | `webui:files-tree:<workspaceDir>` | `sessionStorage` | `webapp/components/panels.tsx` (slice 01) | slice 01 (file tree) | `{version:1, workspace, expanded[], filter, showHidden}` |
 | `file_open_in_new_tab` | `localStorage` | `webapp/lib/settings-local.ts` | ticket 48 (settings General page) | bare `"true"\|"false"` string; **deliberately outside the `webui:` namespace** — same key and format as the desktop reference so one browser profile shares the preference across both clients. Default `"true"` here (reference: `"false"`); read by `app/page.tsx#openFileTab` |
 | `file_line_wrap` | `localStorage` | `webapp/lib/settings-local.ts` | tickets 48 + 52 | bare `"true"\|"false"` string, reference-shared namespace; default `"true"`; read per mount by `components/code-view.tsx` (code-file previews) and `components/markdown-html.tsx` (markdown codeblocks: chat, activity groups, file previews) |
-| `webui-context-window-usage` | `localStorage` | `webapp/lib/settings-local.ts` | ticket 48 | bare `"true"\|"false"` string, reference-shared namespace; default `"false"`; recorded preference, no reader yet |
+| `webui-context-window-usage` | `localStorage` | `webapp/lib/settings-local.ts` | ticket 48 | bare `"true"\|"false"` string, reference-shared namespace; default `"false"`; read at mount and followed live by `components/context-meter.tsx` through `subscribeContextWindowUsage` |
 | `webui-follow-up-behavior` | `localStorage` | `webapp/lib/settings-local.ts` | ticket 48 | bare `"queue"\|"steer"` string (anything else reads as `"queue"`), reference-shared namespace; recorded preference, no reader yet |
 | `webui:project-custom:v1` | `localStorage` | `webapp/lib/project-custom.ts` | ticket 55c (project context menu) | `{version:1, titles:{<projectKey>:<customName>}, pinned:[<projectKey>]}`. **Deliberately not cid-namespaced**: a rename or a pin describes the project, not a browser session, so every tab of this browser shares it. Best-effort write, silent failure; a project's entries are cleared when its remove completed with every session deleted |
 

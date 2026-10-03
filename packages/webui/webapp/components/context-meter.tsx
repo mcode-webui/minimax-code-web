@@ -3,16 +3,28 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
-import { useSessionContext } from "@/lib/store";
+// Relative specifiers, like `activity-group.tsx`: the webapp test suite runs
+// components through node --test, where the `@/` alias does not resolve.
+import { useSessionContext } from "../lib/store";
 import { Icon } from "./icons";
-import type { MessageKey } from "@/lib/i18n";
+import type { MessageKey } from "../lib/i18n";
+import {
+  readContextWindowUsage,
+  subscribeContextWindowUsage,
+} from "../lib/settings-local";
 
 /**
  * Context-window meter, sat next to the composer.
  *
  * The desktop client puts a context-window readout beside the input box: a
  * small control that opens a panel titled 上下文窗口 with the used percentage,
- * a progress bar, and a breakdown of what is filling the window.
+ * a progress bar, and a breakdown of what is filling the window. It renders
+ * only while the General page's 上下文窗口用量显示 switch (`webui-context-
+ * window-usage`) is on; with the stored default the readout stays hidden,
+ * which is the reference's own default. Toggling the switch takes effect
+ * without a reload — the flag is read once per mount and then followed
+ * through `subscribeContextWindowUsage`, the same live-channel shape
+ * `lib/theme.ts#subscribeSystemTheme` uses for the appearance picker.
  *
  * What is drawn comes straight from the state snapshot's `context` block —
  * `used`, `limit`, `percent`, `tps`, optionally `breakdown` (a per-category
@@ -98,10 +110,20 @@ function breakdownRows(
 
 export function ContextMeter({ t }: { t: (key: MessageKey) => string }) {
   const { state } = useSessionContext();
+  // The General page's 上下文窗口用量显示 switch, read once per mount and
+  // then followed live, so flipping it hides or shows this readout without
+  // a reload.
+  const [visible, setVisible] = useState(readContextWindowUsage);
   const [open, setOpen] = useState(false);
   const [placement, setPlacement] = useState<{ left: number; bottom: number } | null>(null);
+  // Declared with the other state, not next to the panel markup it drives:
+  // the early returns below would otherwise make this hook conditional, and
+  // React's hook order is fixed per component across renders.
+  const [expanded, setExpanded] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => subscribeContextWindowUsage(setVisible), []);
 
   const place = useCallback(() => {
     const rect = triggerRef.current?.getBoundingClientRect();
@@ -138,6 +160,10 @@ export function ContextMeter({ t }: { t: (key: MessageKey) => string }) {
     };
   }, [open, place]);
 
+  // The switch is off: nothing to draw. Checked before the snapshot gate so
+  // an opted-out meter never even looks at the session state.
+  if (!visible) return null;
+
   const context = state?.context;
   // Nothing to report before the first snapshot, or when the engine has not told
   // us a window size.
@@ -155,13 +181,6 @@ export function ContextMeter({ t }: { t: (key: MessageKey) => string }) {
     Math.min(100, context.percent ?? (used / limit) * 100),
   );
   const dash = 2 * Math.PI * ((RING_SIZE - RING_STROKE) / 2);
-
-  // SPEC §E row 137 — the title row is a clickable disclosure. Collapsed it
-  // shows the percentage and a chevron-right hint; expanded reveals the
-  // per-category breakdown and flips to a chevron-down. Upstream's
-  // `t_rendered` button uses `chevronRight` collapsed / `chevronDown`
-  // expanded; we mirror that with the existing icons.
-  const [expanded, setExpanded] = useState(false);
 
   return (
     <div className="flex items-center">

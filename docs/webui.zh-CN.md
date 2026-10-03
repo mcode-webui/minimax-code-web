@@ -1022,7 +1022,7 @@ slice 22 增强：
 | 应用 | 可用 | 外观三选一卡片、语言切换。桌面版此处另有 5 个开关（菜单栏图标、开机自启、桌面通知、提前灰度、加速索引），本服务端无对应能力，**照常渲染但禁用** |
 | 链接打开位置 | 禁用摆设 | 两行（网页链接、本地链接），下拉均为禁用的单选 |
 | 文件 | 可用 | 两个开关，读写浏览器本地存储，见下表 |
-| 会话管理 | 可用 | 一个开关，读写本地存储，**目前仅记录偏好**，尚无界面读取它 |
+| 会话管理 | 可用 | 一个开关，读写本地存储，控制输入区上下文用量计量的显示（见下） |
 | Agent 控制权限 | 禁用摆设 | 「自动打开浏览器面板」开关渲染为关闭且禁用（无对应能力） |
 | 偏好设置 | 可用 | 「跟进消息行为」单选（排队 / 立即发送），读写本地存储，**目前仅记录偏好**，尚未影响实际发送行为（编写器归工单 49）；水印与数据授权两行渲染为禁用 |
 | 关于 | 混合 | 上传日志与检查更新是禁用按钮；本机地址与局域网地址是从 `/api/settings` 取值的真实只读行 |
@@ -1038,8 +1038,24 @@ slice 22 增强：
 | --- | --- | --- |
 | `file_open_in_new_tab` | `true`（本客户端默认开；桌面参照默认关） | **是**。开启时保持本客户端一贯的「每文件一个预览标签页」；关闭后打开新文件会**替换当前激活的文件标签页**。本客户端的标签条没有「固定」概念，故以「当前激活的文件标签页」为复用目标，与桌面「复用未固定标签页」语义近似但不相同 |
 | `file_line_wrap` | `true` | **是**。开启时超宽行自动折行；关闭时横向滚动。覆盖两类表面：代码文件预览（工单 48）与 markdown 代码块——聊天消息、活动组、markdown 文件预览（工单 52）；语言标签不随代码行折行。对之后打开的预览/之后挂载的消息生效（已打开的不重排）；文件预览折行后行号与第二视觉行不对齐，是已知取舍 |
-| `webui-context-window-usage` | `false` | 否。仅记录偏好，尚无界面读取 |
+| `webui-context-window-usage` | `false` | **是**。开启时在输入区工具栏（紧挨模型选择器左侧）绘制上下文用量计量；关闭时该处不渲染任何内容。计量本身的形态不变——圆环、百分比、分类明细、套餐各行仍照旧来自会话快照。拨动开关无需刷新页面即生效 |
 | `webui-follow-up-behavior` | `queue`（可选 `steer`） | 否。仅记录偏好，尚未影响实际发送行为 |
+
+**上下文用量计量**
+
+`webui-context-window-usage` 的消费方只有
+`components/context-meter.tsx` 一个：它在挂载时读一次该键，此后通过
+`webapp/lib/settings-local.ts` 的 `subscribeContextWindowUsage` 订阅，
+所以开关在已打开的页面上即刻生效——设置弹窗与输入区往往同屏，
+否则只能靠刷新页面感知。订阅通道的形态是
+`subscribe*(listener) → 取消订阅函数`，与外观三选一用的
+`webapp/lib/theme.ts#subscribeSystemTheme` 一致；某个订阅者抛错会被
+隔离，不会连累其他订阅者丢掉这次更新。
+
+默认值仍是 `"false"`（桌面参照的默认值），因此从未碰过该开关的配置
+不绘制计量。这相对 webui 此前「无条件绘制、开关无效果」的行为是变化：
+参照默认隐藏，由开关决定。存储格式仍是裸 `"true"` / `"false"` 字符串
+——该键没有搬进 `webui:ui:v1` 信封，那会破坏与桌面参照共享的契约。
 
 **搜索与排版细节（工单 48）**
 
@@ -1817,7 +1833,7 @@ loading-states 相同：让 SSR 渲染测试可以脱离 `chat.tsx` 的 `@/` 别
 | `webui:files-tree:<workspaceDir>` | `sessionStorage` | `webapp/components/panels.tsx`（slice 01） | slice 01（文件树） | `{version:1, workspace, expanded[], filter, showHidden}` |
 | `file_open_in_new_tab` | `localStorage` | `webapp/lib/settings-local.ts` | 工单 48（设置通用页） | 纯 `"true"\|"false"` 字符串；**有意不带 `webui:` 前缀**——与桌面参照同名同格式，同一浏览器配置在两个客户端共享该偏好。本客户端默认 `"true"`（参照为 `"false"`）；读取方 `app/page.tsx#openFileTab` |
 | `file_line_wrap` | `localStorage` | `webapp/lib/settings-local.ts` | 工单 48 + 52 | 纯 `"true"\|"false"` 字符串，参照共享命名；默认 `"true"`；每次挂载读取方为 `components/code-view.tsx`（代码文件预览）与 `components/markdown-html.tsx`（markdown 代码块：聊天、活动组、文件预览） |
-| `webui-context-window-usage` | `localStorage` | `webapp/lib/settings-local.ts` | 工单 48 | 纯 `"true"\|"false"` 字符串，参照共享命名；默认 `"false"`；仅记录偏好，尚无读取方 |
+| `webui-context-window-usage` | `localStorage` | `webapp/lib/settings-local.ts` | 工单 48 | 纯 `"true"\|"false"` 字符串，参照共享命名；默认 `"false"`；`components/context-meter.tsx` 挂载时读取一次，并通过 `subscribeContextWindowUsage` 实时跟随 |
 | `webui-follow-up-behavior` | `localStorage` | `webapp/lib/settings-local.ts` | 工单 48 | 纯 `"queue"\|"steer"` 字符串（其他值读取为 `"queue"`），参照共享命名；仅记录偏好，尚无读取方 |
 | `webui:project-custom:v1` | `localStorage` | `webapp/lib/project-custom.ts` | 工单 55c（项目右键菜单） | `{version:1, titles:{<项目key>:<自定义名>}, pinned:[<项目key>]}`。**不按 cid 命名空间**（有意）：重命名与置顶描述的是项目本身而非某个浏览器会话，同一浏览器的所有标签页共享。写入尽力而为，失败静默；项目被完整移除（全部会话删除成功）时同步清除其条目 |
 
