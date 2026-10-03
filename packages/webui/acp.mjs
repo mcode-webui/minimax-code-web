@@ -34,6 +34,20 @@ const DEFAULT_CWD = process.cwd()
 const JSON_RPC_METHOD_NOT_FOUND = -32601
 const JSON_RPC_INTERNAL_ERROR = -32603
 
+// Bounded tail of the engine subprocess's stderr.
+//
+// The engine reports its OWN failures on stderr — a failed migration, a
+// lock it could not take, a config it refused to parse — and the crash
+// alert is raised by the webui, not by the engine. Without a tail the
+// whole diagnostic dies with the pipe: the operator sees only
+// `mcode acp exited (code=1)` and cannot tell a lock contention from a
+// missing binary. Both bounds are needed: bytes alone let one long
+// stack trace push the real message out of the window, and lines alone
+// let one pathological line carry megabytes.
+const STDERR_TAIL_MAX_BYTES = 2048
+const STDERR_TAIL_MAX_LINES = 20
+const STDERR_TRUNCATION_MARKER = '[acp stderr truncated, showing the tail]'
+
 /**
  * The capabilities this client advertises in `initialize`.
  *
@@ -96,10 +110,29 @@ export class McodeAcpClient extends EventEmitter {
     // singleton (the previous PR's bug: `_mcodeAcpSingleton.alive` always
     // undefined) is now actually detected and replaced on the next call.
     this._alive = false
+    // Bounded stderr tail (see STDERR_TAIL_MAX_BYTES). Reset per
+    // `start()` because each start is a different subprocess.
+    this._stderrTail = ''
+    this._stderrTruncated = false
   }
 
   get alive() {
     return this._alive && this.child !== null && this.started === true
+  }
+
+  /**
+   * The engine subprocess's stderr, bounded to the last ~2KB / ~20 lines,
+   * prefixed with a truncation marker when anything was dropped.
+   *
+   * `''` when the engine wrote nothing to stderr — a caller reporting a
+   * crash omits the field rather than attaching an empty string, so the
+   * alert it builds keeps the shape it had before this existed.
+   */
+  get stderrTail() {
+    if (!this._stderrTail) return ''
+    const lines = this._stderrTail.split('\n')
+    const kept = lines.slice(-STDERR_TAIL_MAX_LINES).join('\n')
+    return this._stderrTruncated ? STDERR_TRUNCATION_MARKER + '\n' + kept : kept
   }
 
   async start() {
@@ -111,6 +144,10 @@ export class McodeAcpClient extends EventEmitter {
     // On Linux/macOS, plain `spawn('mcode')` walks PATH. .js/.mjs entries run under
     // process.execPath on every platform.
     const resolved = resolveMcodeCmd()
+    // A new subprocess gets a new tail: a stale line from a previous
+    // process would misattribute its failure to this one.
+    this._stderrTail = ''
+    this._stderrTruncated = false
     let cmd, args
     if (/\.(js|mjs)$/i.test(resolved)) {
       cmd = process.execPath
@@ -156,9 +193,7 @@ export class McodeAcpClient extends EventEmitter {
     this.child.stdout.setEncoding('utf8')
     this.child.stdout.on('data', (chunk) => this._onData(chunk))
     this.child.stderr.setEncoding('utf8')
-    this.child.stderr.on('data', (c) => {
-      if (this.debug) process.stderr.write('[acp stderr] ' + c)
-    })
+    this.child.stderr.on('data', (c) => this._onStderr(c))
     this.capabilities = await this.request('initialize', {
       protocolVersion: 1,
       clientInfo: { name: 'mcode-webui', version: '0.1.0' },
@@ -181,6 +216,22 @@ export class McodeAcpClient extends EventEmitter {
       p.reject(err)
     }
     this.pending.clear()
+  }
+
+  // Record the engine's stderr for the crash alert, and mirror it live
+  // in debug mode (the dev-loop behavior this handler had before the
+  // tail existed — unchanged). The tail is kept regardless of `debug`:
+  // in production nobody is reading the server's own stderr, which is
+  // precisely why the engine's message has to travel inside the alert.
+  _onStderr(chunk) {
+    if (this.debug) process.stderr.write('[acp stderr] ' + chunk)
+    const next = this._stderrTail + chunk
+    if (next.length > STDERR_TAIL_MAX_BYTES) {
+      this._stderrTail = next.slice(-STDERR_TAIL_MAX_BYTES)
+      this._stderrTruncated = true
+    } else {
+      this._stderrTail = next
+    }
   }
 
   _onData(chunk) {

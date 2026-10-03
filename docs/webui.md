@@ -324,6 +324,12 @@ An error rather than a synthetic "cancelled" result says plainly that this clien
 
 The seam for a real surface is the `clientRequest` constructor option: `(method, params) => result | Promise<result>`. Its resolved value becomes the JSON-RPC `result`; a throw or rejection becomes an error response carrying the thrown `message` and, when it has one, its `code` (otherwise `-32603`). Nothing in the webui installs a handler yet — routing a decision through to the browser is separate work, and the honest current state is that the webui has no interactive surface to offer.
 
+### Engine stderr in the crash alert
+
+The engine announces its own failures on stderr and then dies; the crash alert is raised by the webui, not by the engine. `McodeAcpClient` therefore keeps a bounded tail of that stream — the last 2KB and the last 20 lines, cleared at every `start()` so one process's crash text can never be blamed on the next — and the `[mcode-acp.start]` and `[mcode-acp.stream]` error alerts carry it as `data.stderrTail`, prefixed with `[acp stderr truncated, showing the tail]` when anything was dropped. An exit code is not a diagnosis: `mcode acp exited (code=1)` cannot separate a lock the engine could not take from a configuration it refused to parse, while the engine's own line (`agent_name_conflict_migration_failed:lock`) says which.
+
+`stderrTail` is additive and optional. A silent engine leaves `data` byte-identical to what it was before the field existed, so no consumer of the alert contract has to learn a new required key. The `debug` constructor option keeps its old job — mirroring the stream live to the server's own stderr as it arrives — but all three construction sites in the shipped server pass `debug: false`, so in a running webui the alert's tail is the only channel that stderr has.
+
 ### What this does and does not buy
 
 `plan: {}` turns on a **notification**, not a question. A plan review carries a single `approve` option and the Runtime pins `allowOther: true` on every step, so the engine settles it fail-closed through the questionnaire path rather than turning it into a permission request — which is why advertising `plan` is safe for a client that cannot answer anything. The permission-request path is a separate switch the webui never turns on.

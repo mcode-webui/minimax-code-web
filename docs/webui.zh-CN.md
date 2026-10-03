@@ -324,6 +324,12 @@ ACP 握手是双向的，两个方向都由同一份 `initialize` 载荷决定�
 
 留给真实交互界面的接缝是构造函数选项 `clientRequest`：`(method, params) => result | Promise<result>`。它的 resolved 值成为 JSON-RPC 的 `result`；抛错或 reject 变成错误响应，携带抛出的 `message` 与（若有）`code`，否则为 `-32603`。webui 目前没有安装任何处理器——把一次决定真正送到浏览器是另一件事，诚实的现状是 webui 没有可提供的交互界面。
 
+### 崩溃告警里的引擎 stderr
+
+引擎把自己的失败写在 stderr 上然后死掉，而崩溃告警是 webui 发的，不是引擎发的。所以 `McodeAcpClient` 会留住这段输出的一个**有界尾部**——最后 2KB 且最后 20 行，并且在每次 `start()` 时清空，免得一个进程的崩溃信息被算到下一个进程头上——`[mcode-acp.start]` 与 `[mcode-acp.stream]` 这两条错误告警把它作为 `data.stderrTail` 带出去；若确实丢掉了内容，前面会加上 `[acp stderr truncated, showing the tail]`。退出码不是诊断：`mcode acp exited (code=1)` 分不清是引擎拿不到锁，还是配置被它拒绝解析；引擎自己那一行（`agent_name_conflict_migration_failed:lock`）才能说明是哪一种。
+
+`stderrTail` 是新增的可选字段。引擎若什么都没写，`data` 与这个字段出现之前逐字节相同，所以告警契约的任何消费方都不必学到一个新的必填键。`debug` 构造选项保留它原来的职责——把这段流实时镜像到服务端自己的 stderr——但要清楚：已发布服务端的三个构造点全部传 `debug: false`，因此在一个真正跑起来的 webui 里，告警里的尾部是 stderr 唯一的出口。
+
 ### 这次拿到了什么、没拿到什么
 
 `plan: {}` 打开的是**通知**，不是提问。计划评审只有一个 `approve` 选项，而运行时把 `allowOther: true` 固定在每一步上，所以引擎会走问卷通道 fail-closed 地了结它，而不会把它变成一次权限请求——这正是「声明 `plan`」对一个什么都答不了的客户端仍然安全的原因。权限请求通道是另一个开关，webui 从不打开它。
