@@ -1206,6 +1206,16 @@ const en = {
   "settings.codeReview.guidelines": "Custom review guidelines",
   "settings.codeReview.guidelinesPlaceholder":
     "Enter code-review rules to apply on every review",
+  // SB-8 (D-2): the honesty note under the three long-text blocks
+  // (自定义指令 / 关于你 / 审查准则). The engine has no channel that would
+  // read them — `setConfigOption` does not exist anywhere in the runtime
+  // source, so there is nowhere to inject them. The texts stay editable
+  // (they persist in this browser and remain readable to the user), but
+  // the field now says plainly that saving one does not change what the
+  // engine sees. Without this line a saved instruction reads as an
+  // instruction, which is the exact lie D-2 closed.
+  "settings.storedOnly":
+    "Saved in this browser only — it is not injected into engine sessions.",
   /* Ticket 59 D3-4: the settings-modal port's hardcoded Chinese
      moved into the dictionary (en side). */
   "settings.nav.aria": "Settings sections",
@@ -1303,10 +1313,14 @@ const en = {
   "settings.preference.dataOptInHint":
     "Allow your conversations to improve MiniMax Code; your data stays private and secure",
   "settings.about.section": "About",
-  "settings.about.uploadLogs": "Upload logs",
-  "settings.about.uploadLogsHint": "Upload app logs to help with troubleshooting",
-  "settings.about.uploadUnavailable": "The local edition cannot upload logs",
-  "settings.about.uploadAction": "Upload",
+  // SB-8 (D-3): 「上传日志」 → 「导出日志」. The old row promised a
+  // destination this edition has none of; the action is now a real
+  // download of the server's own diagnostic trail (`GET /api/logs/export`),
+  // and the hint says what the file actually contains.
+  "settings.about.exportLogs": "Export logs",
+  "settings.about.exportLogsHint":
+    "Download this server's error log and recent activity as one text file; nothing is uploaded anywhere",
+  "settings.about.exportAction": "Export",
   "settings.about.version": "App version",
   "settings.about.updateUnavailable": "The local edition cannot check for updates",
   "settings.about.checkUpdate": "Check for updates",
@@ -2351,6 +2365,11 @@ const zh: Record<MessageKey, string> = {
   "settings.codeReview.methodSubsession": "子会话",
   "settings.codeReview.guidelines": "自定义审查准则",
   "settings.codeReview.guidelinesPlaceholder": "输入需要长期应用的代码审查规则",
+  // SB-8（D-2）：三处长文本（自定义指令 / 关于你 / 审查准则）输入框下的诚实
+  // 说明。引擎没有读取它们的通道——`setConfigOption` 在 local-runtime-v2 全源
+  // 不存在——所以无处注入。文本仍可编辑（存于本浏览器，用户自己随时能看），
+  // 但输入框直说「不会注入」，不再让已保存的指令读起来像一条生效的指令。
+  "settings.storedOnly": "已保存于本浏览器，不会注入引擎会话。",
   /* 工单 59 D3-4：设置壳的硬编码中文收进字典（zh 侧原文照搬）。 */
   "settings.nav.aria": "设置分类",
   "settings.account.signOutUnavailable": "本地版未接入账户服务",
@@ -2435,10 +2454,12 @@ const zh: Record<MessageKey, string> = {
   "settings.preference.dataOptIn": "数据用于优化体验",
   "settings.preference.dataOptInHint": "允许我们将你的对话内容用于优化 MiniMax Code 的使用体验。我们保障你的数据隐私安全。",
   "settings.about.section": "关于",
-  "settings.about.uploadLogs": "上传日志",
-  "settings.about.uploadLogsHint": "上传应用日志以协助排查问题",
-  "settings.about.uploadUnavailable": "本地版未接入日志上传",
-  "settings.about.uploadAction": "上传",
+  // SB-8（D-3）：「上传日志」→「导出日志」。旧文案承诺了本地版根本没有的
+  // 目的地；现在的动作是下载本服务端自己的诊断日志（`GET /api/logs/export`），
+  // 说明文案写清文件里到底是什么。
+  "settings.about.exportLogs": "导出日志",
+  "settings.about.exportLogsHint": "把本服务端错误日志与近期活动记录导出为一个文本文件；不会上传到任何地方",
+  "settings.about.exportAction": "导出",
   "settings.about.version": "应用版本",
   "settings.about.updateUnavailable": "本地版未接入更新检查",
   "settings.about.checkUpdate": "检查更新",

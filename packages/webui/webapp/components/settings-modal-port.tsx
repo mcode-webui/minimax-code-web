@@ -290,6 +290,40 @@ function SettingsButton({
   );
 }
 
+/**
+ * A settings-row action that is really a navigation to a file, not a
+ * callback: the same button chrome as `SettingsButton`, rendered as an
+ * anchor so the browser owns the download (SB-8 / D-3).
+ *
+ * The `download` attribute is set without a value, which tells the browser
+ * to save the response under the server's `Content-Disposition` filename
+ * rather than navigate to it — the response is `text/plain`, so without
+ * it the click would replace the app with a wall of log lines.
+ */
+function SettingsLink({
+  children,
+  href,
+  title,
+  testId,
+}: {
+  readonly children: ReactNode;
+  readonly href: string;
+  readonly title?: string;
+  readonly testId?: string;
+}): ReactElement {
+  return (
+    <a
+      href={href}
+      download
+      title={title}
+      data-testid={testId}
+      className="webui-mavis-button webui-mavis-button-gray"
+    >
+      {children}
+    </a>
+  );
+}
+
 function SettingRow({
   title,
   description,
@@ -697,10 +731,24 @@ function GenericPage({
       </GenericSection>
 
       <GenericSection title={t("settings.about.section")} testId="about-section">
-        <SettingRow title={t("settings.about.uploadLogs")} description={t("settings.about.uploadLogsHint")}>
-          <SettingsButton disabled title={t("settings.about.uploadUnavailable")}>
-            {t("settings.about.uploadAction")}
-          </SettingsButton>
+        {/* SB-8 (D-3): 「上传日志」 → 「导出日志」, and the button is live.
+         * The old row was a permanently disabled button whose label
+         * promised a cloud destination this self-hosted edition does not
+         * have. The action is now what it can honestly be: an anchor at
+         * `GET /api/logs/export`, which answers 200 `text/plain` with a
+         * `Content-Disposition: attachment` and lets the browser save the
+         * server's own diagnostic trail. An anchor (not a fetch + blob)
+         * because the endpoint has no failure status to branch on — a
+         * missing or unreadable log file is reported inside the downloaded
+         * body, so there is nothing for the page to catch. */}
+        <SettingRow
+          title={t("settings.about.exportLogs")}
+          description={t("settings.about.exportLogsHint")}
+          testId="export-logs-row"
+        >
+          <SettingsLink href={api.logsExportUrl()} testId="export-logs-action">
+            {t("settings.about.exportAction")}
+          </SettingsLink>
         </SettingRow>
         <RowDivider />
         <SettingRow title={t("settings.about.version")} description={engine?.mcodeVersion ?? "—"}>

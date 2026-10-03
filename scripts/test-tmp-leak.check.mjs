@@ -215,6 +215,7 @@ const KNOWN_PREFIXES = [
   "git-panel-badge-unborn-",
   "git-panel-plain-",
   "git-panel-repo-",
+  "logs-export-",
   "mcode-d01-empty-",
   "mcode-d01-home-",
   "mcode-d01-isolate-",

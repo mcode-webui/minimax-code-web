@@ -459,6 +459,66 @@ describe("CodeReviewSection: disabled method dropdown, real guideline persistenc
   });
 });
 
+// ---------------------------------------------------------------------------
+// SB-8 (D-2) — the three stored long-text blocks say they are not injected.
+//
+// The texts persist and stay editable; that part was never the problem. The
+// problem was that nothing reads them: a grep over the engine source found
+// no `setConfigOption` (or any other channel) able to carry a custom
+// instruction, a user profile, or a review guideline into a session. A field
+// that saves an instruction and prints nothing about its fate reads as an
+// instruction that takes effect, which is the exact claim D-2 closed.
+//
+// These are RENDER assertions on all three surfaces, because the note is
+// prose a user reads: a key that exists in the dictionary but is not mounted
+// under the field leaves the lie standing.
+// ---------------------------------------------------------------------------
+describe("SB-8 (D-2): every stored text block declares that it is not injected", () => {
+  beforeEach(() => {
+    storage.clear();
+  });
+
+  const STORED_ONLY = "已保存于本浏览器，不会注入引擎会话。";
+  const SURFACES = [
+    { name: "自定义指令", markup: () => render(createElement(PersonalizationSection, { t: tZh })), testId: "settings-personalization-instructions-note" },
+    { name: "关于你", markup: () => render(createElement(PersonalizationSection, { t: tZh })), testId: "settings-personalization-about-note" },
+    { name: "自定义审查准则", markup: () => render(createElement(CodeReviewSection, { t: tZh })), testId: "settings-code-review-guidelines-note" },
+  ];
+
+  for (const surface of SURFACES) {
+    test(`${surface.name} renders the note under its field`, () => {
+      const markup = surface.markup();
+      const note = controlMarkup(markup, surface.testId);
+      assert.ok(markup.includes(STORED_ONLY), `${surface.name} must print the honest note`);
+      // The note sits BELOW the textarea, not above it: it describes what
+      // saving the field does, so it reads after the field it is about.
+      assert.ok(
+        markup.indexOf(surface.testId) > markup.indexOf(`${surface.testId.replace("-note", "")}-textarea`),
+        `${surface.name}: the note must follow the textarea`,
+      );
+      assert.ok(note.includes("text-text_default_tertiary"), "rendered as a caption, not as body text");
+    });
+  }
+
+  test("a SAVED value still renders, and still carries the note", () => {
+    // Storing stays supported — the value is the user's own text and stays
+    // readable. D-2 changed the promise printed under it, nothing else.
+    storage.set(CUSTOM_INSTRUCTIONS_KEY, "永远不要吞异常");
+    const markup = render(createElement(PersonalizationSection, { t: tZh }));
+    assert.ok(markup.includes("永远不要吞异常"), "the text still round-trips through storage");
+    assert.ok(markup.includes(STORED_ONLY));
+  });
+
+  test("neither locale claims the text reaches the engine", () => {
+    // The pre-D-2 surfaces carried no such claim in prose, but the
+    // dictionary is where a future edit would add one back.
+    for (const locale of ["en", "zh"] as const) {
+      const note = translate(locale, "settings.storedOnly" as MessageKey);
+      assert.match(note, /not injected|不会注入/, `${locale} note must deny injection: ${note}`);
+    }
+  });
+});
+
 describe("the three long-text keys (settings-local, ticket 55a)", () => {
   beforeEach(() => {
     storage.clear();

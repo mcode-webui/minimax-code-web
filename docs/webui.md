@@ -1204,12 +1204,15 @@ one, Worktree, reads the engine since PB-3.
 | Preferences | General (通用) | implemented |
 | Preferences | Voice | implemented, placeholder controls — the microphone dropdown is disabled with a single 「本地版不适用」 option, and both dictation rows show 未设置 (no device enumeration, no dictation input in a browser) |
 | Preferences | Shortcuts | implemented — 10 desktop rows, each stating what the browser can do with it: 3 rebindable and live, 1 live on macOS only, 6 blocked with the specific reason (see **Shortcuts — what the browser can intercept**) |
-| Preferences | Personalization | implemented — 自定义指令 and 关于你 persist to `localStorage`; both memory switches render off and disabled with the not-applicable marker, and 管理 opens the 记忆摘要 dialog in its permanent empty state |
+| Preferences | Personalization | implemented, and honest about what it is for — 自定义指令 and 关于你 persist to `localStorage` and each field states 「已保存于本浏览器，不会注入引擎会话」, because the engine has no channel that reads them (SB-8 / D-2; the storage is kept, the injection claim is not); both memory switches render off and disabled with the not-applicable marker, and 管理 opens the 记忆摘要 dialog in its permanent empty state |
 | Management | Usage & models | implemented; since SB-1 the two engine sources are real (Token Plan / MiniMax API switch the engine's credential, the 「使用中」 badge reads the engine back, and the MiniMax API key can be saved and probed) — the third pill, Custom models, stays a VIEW onto the provider catalogue |
 | Management | Connection | implemented |
 | Management | Account | implemented as a read — the section reads `GET /api/account` on mount and renders the account name, the current plan name, the quota overview (plan-quota state plus the 5-hour and weekly remaining figures) and the account status; sign-out stays disabled (no engine method acts on it) |
 | Coding | Code review | implemented — 自定义审查准则 persists to `localStorage`; 审查方式 is a disabled single-option dropdown showing 子会话 |
 | Coding | Worktree | implemented as a CLEANUP page since PB-3 — see **Worktree — what the page can and cannot do** |
+
+| Coding | Code review | implemented — 自定义审查准则 persists to `localStorage` and carries the same 「不会注入引擎会话」 note as the two Personalization texts (SB-8 / D-2); 审查方式 is a disabled single-option dropdown showing 子会话 |
+| Coding | Worktree | **not implemented** — the tab is a one-line panel reading 「本地版暂不支持工作树管理」 |
 | Archived | Archived tasks | the tab renders its empty state 「暂无已归档任务」; the list and its actions need an archived-session contract that does not exist |
 
 **Worktree — what the page can and cannot do.** The Worktree tab is a
@@ -1326,7 +1329,7 @@ between adjacent rows:
 | Session management | enabled | one switch, persisted; gates the composer's context-window readout (see below) |
 | Agent control | disabled furniture | the 「自动打开浏览器面板」 switch renders off and disabled (no capability behind it) |
 | Preference settings | enabled | follow-up behaviour (disabled / queue / send now); since SB-4 the composer reads it, and a send into a running turn reaches the engine's queue or steers the running turn. Watermark and data opt-in render disabled |
-| About | mixed | upload logs and check-for-update are disabled buttons; the local URL and LAN URL are live read-only rows from `/api/settings` |
+| About | mixed | **export logs** is a live download of this server's own diagnostic trail (`GET /api/logs/export`, see below); check-for-update is still a disabled button — self-hosted update is `git pull`, and the desktop updater's semantics do not apply; the local URL and LAN URL are live read-only rows from `/api/settings` |
 | dataDir footer | not implemented | the reference prints the app data directory at the bottom of the General page; `/api/settings` has no such field and the server routes are read-only this round, so no value exists to print |
 
 Appearance and language behave as before: immediate effect on click; the
@@ -1863,6 +1866,96 @@ inspected, reordered or cancelled from the browser. That is PB-13's
 scope, and until it lands a queued follow-up is invisible until the
 running turn ends. A steered message reports admission, not whether the
 running agent read the text before its next step.
+
+### Export logs: a download, because there is nowhere to upload to (SB-8 / D-3)
+
+**What the user sees.** The About section's first row is 导出日志 / **Export
+logs**, and its button works: the browser saves one text file named
+`mcode-webui-logs-<timestamp>.txt`. The row's description says what is in
+it — this server's error log and recent activity — and adds that nothing is
+uploaded anywhere.
+
+**Why the rename.** The row used to be a permanently disabled button
+labelled 上传日志 / **Upload logs**. There is no upload service in this
+edition: no telemetry sink, no ticket intake, nothing that leaves the
+machine. A label that names a destination the product does not have is a
+promise, and a disabled control cannot keep it — the tooltip only
+contradicted the title. The alternative considered and rejected was
+keeping 上传日志 and pointing it at the download, on the argument that the
+desktop reference uses the word; a reference's word does not make its
+destination real, and the button would then say "upload" while writing to
+the user's disk.
+
+**What the file contains.** Two sources, both read from the module that
+writes them, so a relocated data directory cannot make the export silently
+empty:
+
+| Section | Source | Bounded by |
+| --- | --- | --- |
+| Server error log | `WEBUI_DATA_DIR/.server.err` (`config.js#installGlobalErrorHandlers`) | 2000 lines / 2 MiB |
+| Event log | `events.path()` (honours `MCODE_WEBUI_EVENTS_PATH`) | 2000 lines / 2 MiB |
+
+The tail, not the head: the failure being investigated happened most
+recently, and the event log is tens of megabytes on a long-lived install.
+Every bound is printed in the file itself (`[truncated: showing the last N
+of M lines]`), so a reader can tell a bounded file from a complete one
+without trusting the tool that produced it.
+
+**What the file deliberately does not contain.** `sessions.json`
+(conversation transcripts), `settings.json` (provider credentials) and
+`uploads/`. A diagnostics file users attach to a bug report must not be
+the one file on the machine carrying their API keys and their
+conversations. The source list is a closed two for that reason, and a test
+asserts the markers never appear in a bundle built next to decoy files.
+
+**Why there is no failure status.** The endpoint answers `200` in every
+case, including a log file that does not exist. The client is a browser
+anchor with a `download` attribute, so a `404` would be saved into the
+user's downloads folder as `mcode-webui-logs-<timestamp>.txt` containing a
+JSON error body — a file that looks like logs and is not. Absence is
+therefore reported where the reader is: inside the body, per section.
+
+**What it costs.** One read of two local files per click, synchronously on
+the server's event loop. Both are capped, so the worst case is a few MiB
+of already-warm page cache.
+
+**Known debt.** The bundle is plain text with no redaction: an engine error
+line can quote a prompt fragment. Redaction is not attempted because there
+is no reliable rule for what is secret in an arbitrary log line, and a
+partial redaction would be worse than none. Until the engine's own logging
+grows a redaction hook, the operator is the one deciding what to share
+from the downloaded file.
+
+### The three stored texts are storage, not instructions (SB-8 / D-2)
+
+**What the user sees.** 自定义指令, 关于你 and 自定义审查准则 each keep
+their textarea and their 保存 action, and each now prints one line under
+the field: **「已保存于本浏览器，不会注入引擎会话。」** / "Saved in this
+browser only — it is not injected into engine sessions."
+
+**Why.** The texts have always persisted — that part is real and stays
+real. What is not real is any claim that they reach the engine. A grep of
+the runtime source for `setConfigOption` — the option the plan had assumed
+would carry them — found nothing: the method does not exist anywhere in
+`local-runtime-v2`, so there is no config write channel to hang them on,
+and no session-creation parameter that takes them either. With no consumer,
+a saved 「自定义指令」 read as an instruction the agent follows. The field
+was making a capability claim its backend had already disproved.
+
+**The decision tree this took.** The three options were: extend the engine
+contract, drop the fields, or keep the storage and stop claiming the
+effect. Extending the contract is engine work with no local caller to size
+it against; dropping the fields removes a place users keep text they own
+and can read back at any time. What remains is honest and cheap: the
+storage is a user's own local text, the field says plainly that it is not
+an instruction, and the moment the engine grows a channel, deleting one
+sentence and one `note` prop is the whole change.
+
+**What this does not do.** It does not make the texts work, and it does not
+hide that they do not work — that is what the note is for. Nothing reads
+the three `localStorage` keys: a future change that wires one of them must
+remove the note in the same commit, or the field will be describing an
+effect it no longer lacks.
 
 ## Main-surface elements: user menu / project context menu / home capsules (ticket 55c)
 
@@ -3079,6 +3172,7 @@ marker), not by tool name.
 | `PUT` | `/api/model-source/api-key` | `routes/model-source.js#handlePutModelSourceApiKey` | `{apiKey, saveAndUse?}`; an absent/empty/whitespace `apiKey` is the KEEP sentinel → `200 {changed:false}` with no engine write; `400 {code:"BAD_FIELD_TYPE"\|"INVALID_API_KEY"}`; `500 {code:"engine_error"}` never carries the thrown message |
 | `POST` | `/api/model-source/test` | `routes/model-source.js#handleTestModelSource` | `{modelId?}`; always 200 for a COMPLETED probe (`{ok, success, providerId:"minimax_api", tested:"stored_key", status}`) including `success:false`; non-200 only when the probe is refused (`503`/`501`, or the engine's `400 NO_API_KEY`) |
 | `POST` | `/api/follow-up` | `routes/follow-up.js#handleFollowUp` | `{behavior:"queue"\|"steer", content, attachments?, requestId?}` — the engine session id comes from the server's own conversation state, never the body; `400 {code:"invalid_follow_up_behavior"\|"follow_up_empty"\|"no_active_conversation"\|"BAD_FIELD_TYPE"}`; `409 {code:"no_active_turn"\|"turn_not_owned"}` when this process does not own the running turn, and nothing is queued; `501` when the host lacks the method, `503` when no runtime is booted; 200 `{ok, behavior, itemId, position, status}` (queue) or `{ok, behavior, turnId, mode}` (steer) — the engine's own answer |
+| `GET` | `/api/logs/export` | `routes/logs.js#handleExportLogs` | always `200 text/plain` with `Content-Disposition: attachment; filename="mcode-webui-logs-<YYYYMMDDTHHMMSS>.txt"` — the crash trail (`WEBUI_DATA_DIR/.server.err`) plus the last 2000 lines / 2 MiB of the event log, each section stating its own truncation or absence. No status code for a missing or unreadable log file: that is reported inside the body, because the client is a browser anchor and a 4xx would be saved as a `.txt` file containing JSON |
 | `POST` | `/api/debug/inject` | `routes/debug.js#handleDebugInject` | `DEBUG_INJECT=1` gate |
 | `GET` | `/api/debug/state` | `routes/debug.js#handleDebugState` | same gate |
 | `POST` | `/api/protocol/set-mode` | `routes/protocol.js#handleSetMode` | mid-session mode change |

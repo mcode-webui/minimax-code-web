@@ -324,6 +324,13 @@ export const DEFAULT_WORKSPACE = (() => {
 // re-export detectTuiCwd for workspace route
 export { detectTuiCwd };
 
+// SERVER_ERR_LOG — the file the global error handlers below append to.
+// Declared here (rather than spelled `join(WEBUI_DATA_DIR, ".server.err")`
+// at each site) so the writer and the reader that exports it — the About
+// section's 「导出日志」 route, `lib/log-export.js` — cannot disagree about
+// where the trail lives.
+export const SERVER_ERR_LOG = join(WEBUI_DATA_DIR, ".server.err");
+
 // installGlobalErrorHandlers — log + append .server.err so a crashed
 // server leaves a trail rather than going silent.
 export function installGlobalErrorHandlers() {
@@ -331,7 +338,7 @@ export function installGlobalErrorHandlers() {
     console.error("[uncaughtException]", err);
     try {
       import("node:fs").then(({ appendFileSync }) => {
-        const logFile = join(WEBUI_DATA_DIR, ".server.err");
+        const logFile = SERVER_ERR_LOG;
         appendFileSync(
           logFile,
           `\n[uncaughtException ${new Date().toISOString()}] ${err.stack || err.message}\n`,
@@ -343,7 +350,7 @@ export function installGlobalErrorHandlers() {
     console.error("[unhandledRejection]", reason);
     try {
       import("node:fs").then(({ appendFileSync }) => {
-        const logFile = join(WEBUI_DATA_DIR, ".server.err");
+        const logFile = SERVER_ERR_LOG;
         appendFileSync(
           logFile,
           `\n[unhandledRejection ${new Date().toISOString()}] ${reason && reason.stack ? reason.stack : String(reason)}\n`,

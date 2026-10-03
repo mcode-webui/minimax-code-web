@@ -1753,6 +1753,20 @@ export function sessionExportUrl(id: string, format: "md" | "json" = "md"): stri
   );
 }
 
+/**
+ * The About section's 「导出日志」 target (SB-8 / D-3).
+ *
+ * A plain URL, not a fetch: the endpoint answers 200 `text/plain` with
+ * `Content-Disposition: attachment` in every case — a missing or unreadable
+ * log file is reported inside the downloaded body, never as a status code
+ * (see `server/routes/logs.js`). A fetch would add a failure path the
+ * server deliberately does not have, and the browser's own download flow is
+ * the one that already works for every other export in this client.
+ */
+export function logsExportUrl(): string {
+  return withClientQuery("/api/logs/export");
+}
+
 // --- git panel (slice 03) -------------------------------------------------
 
 /**

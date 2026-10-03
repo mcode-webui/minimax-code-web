@@ -73,6 +73,8 @@ import * as pluginsRoute from "./routes/plugins.js";
 import * as turnDiffRoute from "./routes/turn-diff.js";
 import * as engineCapabilitiesRoute from "./routes/engine-capabilities.js";
 import * as worktreesRoute from "./routes/worktrees.js";
+
+import * as logsRoute from "./routes/logs.js";
 import * as authorizeRoute from "./lib/authorize.js";
 
 /**
@@ -128,6 +130,13 @@ export const OWNED_ROUTES = new Set([
   // Session export (Markdown / JSON). The `:` is Hono's parameter marker;
   // matches `/api/sessions/<id>/export`.
   "GET /api/sessions/:id/export",
+  // SB-8 (D-3) — the About section's 「导出日志」 action. A GET that always
+  // answers 200 `text/plain` with a `Content-Disposition: attachment`: the
+  // bundle is the server's own crash trail plus the tail of its event log,
+  // assembled by `lib/log-export.js`. It replaced a permanently disabled
+  // 「上传日志」 button whose label promised a cloud destination this
+  // edition has none of.
+  "GET /api/logs/export",
   // Chat: fire-and-forget (output pushed via /api/events SSE).
   "POST /api/send",
   "POST /api/stop",
@@ -565,6 +574,11 @@ export function createHonoApp() {
   // ctx.pathname via slice + replace (same as the legacy router did).
   app.get("/api/sessions/:id/export", (c) =>
     invokeHandler(c, c.get(CAPTURE_KEY), exportRoute.handleExport),
+  );
+
+  // ----- SB-8: log export (About section) -----
+  app.get("/api/logs/export", (c) =>
+    invokeHandler(c, c.get(CAPTURE_KEY), logsRoute.handleExportLogs),
   );
 
   // ----- Chat -----

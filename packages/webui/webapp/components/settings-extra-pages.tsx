@@ -29,16 +29,21 @@
 //     dropdown shows the standing 「本地版不适用」 placeholder as its only
 //     option; the two dictation rows show 「未设置」 like the desktop's
 //     unset state.
-//   - Personalization: 自定义指令 / 关于你 are REAL — both persist to
-//     `localStorage` and survive refresh. The memory card has no local
-//     memory system behind it: both switches render off and greyed (the
-//     desktop's 记忆 row shows a live blue ON — a capability claim this
-//     client cannot make), and the 管理 button opens the desktop's
-//     记忆摘要 dialog in its permanent empty state.
+//   - Personalization: 自定义指令 / 关于你 persist to `localStorage` and
+//     survive refresh. They are NOT read by anything: SB-8 (D-2) closed
+//     with a grep that found no engine channel able to consume them
+//     (`setConfigOption` does not exist in the runtime source at all), so
+//     each field carries the standing note 「已保存于本浏览器，不会注入引擎会话」
+//     rather than letting a saved instruction read as one that takes
+//     effect. The memory card has no local memory system behind it: both
+//     switches render off and greyed (the desktop's 记忆 row shows a live
+//     blue ON — a capability claim this client cannot make), and the 管理
+//     button opens the desktop's 记忆摘要 dialog in its permanent empty
+//     state.
 //   - Code review: 审查方式 renders 子会话 (the one locally meaningful
 //     value — the engine runs reviews in a sub-session) as a disabled
-//     dropdown; 自定义审查准则 is REAL and persists like the two
-//     Personalization texts.
+//     dropdown; 自定义审查准则 persists like the two Personalization
+//     texts, and carries the same non-injection note for the same reason.
 //
 // This module imports React explicitly: the render test loads it under
 // the tsx loader with `jsx: "preserve"`, which falls back to the classic
@@ -217,6 +222,7 @@ function PersistedTextBlock({
   testId,
   read,
   commit,
+  note: noteText,
   t,
 }: {
   title: string;
@@ -226,6 +232,8 @@ function PersistedTextBlock({
   testId: string;
   read: () => string;
   commit: (setState: (value: string) => void, value: string) => void;
+  /** Optional standing caption under the field (SB-8 / D-2). */
+  note?: string;
   t: (key: MessageKey) => string;
 }) {
   const [draft, setDraft] = useState(read);
@@ -255,11 +263,25 @@ function PersistedTextBlock({
     />
   );
 
+  // SB-8 (D-2): the standing honesty line under a stored-but-unread text.
+  // The engine has no channel that would consume these values, so the field
+  // says so next to the input rather than letting a saved instruction read
+  // as an instruction that takes effect.
+  const note = noteText ? (
+    <p
+      data-testid={`${testId}-note`}
+      className="m-0 text-caption-small-strong text-text_default_tertiary"
+    >
+      {noteText}
+    </p>
+  ) : null;
+
   if (layout === "labelAbove") {
     return (
       <div data-testid={testId} className="flex w-full flex-col gap-2.5">
         <span className="text-sm font-medium leading-5 text-text_default_primary">{title}</span>
         {textarea}
+        {note}
         <div className="flex justify-end">{save}</div>
       </div>
     );
@@ -276,6 +298,7 @@ function PersistedTextBlock({
         {save}
       </div>
       {textarea}
+      {note}
     </section>
   );
 }
@@ -669,6 +692,7 @@ export function PersonalizationSection({ t }: { t: (key: MessageKey) => string }
         testId="settings-personalization-instructions"
         read={readCustomInstructions}
         commit={commitCustomInstructions}
+        note={t("settings.storedOnly")}
         t={t}
       />
       <PersistedTextBlock
@@ -679,6 +703,7 @@ export function PersonalizationSection({ t }: { t: (key: MessageKey) => string }
         testId="settings-personalization-about"
         read={readAboutUser}
         commit={commitAboutUser}
+        note={t("settings.storedOnly")}
         t={t}
       />
       <GroupCard
@@ -900,6 +925,7 @@ export function CodeReviewSection({ t }: { t: (key: MessageKey) => string }) {
             testId="settings-code-review-guidelines"
             read={readCodeReviewGuidelines}
             commit={commitCodeReviewGuidelines}
+            note={t("settings.storedOnly")}
             t={t}
           />
         </div>

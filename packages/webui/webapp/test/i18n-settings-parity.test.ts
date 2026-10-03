@@ -140,6 +140,13 @@ const NEW_KEYS = [
   "settings.codeReview.methodSubsession",
   "settings.codeReview.guidelines",
   "settings.codeReview.guidelinesPlaceholder",
+  // SB-8 (D-2): the non-injection note under the three stored long-text
+  // blocks, and (D-3) the About section's log-export row — the keys that
+  // replaced the 「上传日志」 vocabulary.
+  "settings.storedOnly",
+  "settings.about.exportLogs",
+  "settings.about.exportLogsHint",
+  "settings.about.exportAction",
   // SB-1 — the 「用量与模型」 model-source row: the in-use badge, the
   // key-status badges, the three busy labels, and the two refusals the
   // engine can answer (no key stored yet / save before probing). The old
@@ -177,6 +184,17 @@ const RETIRED_USAGE_KEYS = [
   "usage.reset",
 ] as const;
 
+// SB-8 (D-3): the 「上传日志」 vocabulary is retired in BOTH dictionaries.
+// The row it named is now 「导出日志」 and is a real download, so leaving
+// the old strings behind would be a ghost label for a capability this
+// edition has none of — a cloud destination to upload to.
+const RETIRED_UPLOAD_LOG_KEYS = [
+  "settings.about.uploadLogs",
+  "settings.about.uploadLogsHint",
+  "settings.about.uploadUnavailable",
+  "settings.about.uploadAction",
+] as const;
+
 const RETIRED_POPOVER_KEYS = [
   "usagePopover.title",
   "usagePopover.fiveHour",
@@ -207,6 +225,44 @@ describe("i18n settings parity (ticket 37)", () => {
       );
       assert.notEqual(zh, undefined, `zh value for ${key} is missing entirely`);
     }
+  });
+
+  test("SB-8 (D-3): the 「上传日志」 vocabulary is gone from both dictionaries", () => {
+    for (const key of RETIRED_UPLOAD_LOG_KEYS) {
+      assert.equal(
+        translate("en", key as unknown as MessageKey),
+        undefined,
+        `${key} must be removed from the en dictionary`,
+      );
+      assert.equal(
+        translate("zh", key as unknown as MessageKey),
+        undefined,
+        `${key} must be removed from the zh dictionary`,
+      );
+    }
+  });
+
+  test("SB-8 (D-3): the About row says the logs are downloaded, not uploaded", () => {
+    assert.equal(translate("zh", "settings.about.exportLogs" as MessageKey), "导出日志");
+    assert.equal(translate("en", "settings.about.exportLogs" as MessageKey), "Export logs");
+    for (const locale of ["en", "zh"] as const) {
+      const hint = translate(locale, "settings.about.exportLogsHint" as MessageKey);
+      assert.ok(
+        /nothing is uploaded|不会上传/.test(hint),
+        `${locale} export hint must deny the upload it replaced: ${hint}`,
+      );
+    }
+  });
+
+  test("SB-8 (D-2): the stored-text note tells the user it is not injected", () => {
+    assert.equal(
+      translate("zh", "settings.storedOnly" as MessageKey),
+      "已保存于本浏览器，不会注入引擎会话。",
+    );
+    assert.equal(
+      translate("en", "settings.storedOnly" as MessageKey),
+      "Saved in this browser only — it is not injected into engine sessions.",
+    );
   });
 
   test("SB-1: the in-use badge reads the reference's 「使用中」 in Chinese", () => {
