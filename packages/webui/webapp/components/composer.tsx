@@ -403,7 +403,15 @@ export function Composer({
     // (clearing the level when the new model doesn't support it)
     // lives in the `onPick` callback below.
     const activeModel = models.find((m) => m.id === value);
-    const suffix = chipLevelSuffix(t, thinking, activeModel);
+    /**
+     * A model that offers exactly on/off has no level to name: the word
+     * 「开启」 in the chip said what the brain beside it already says, in
+     * the same toolbar, two controls apart. The brain replaces it there.
+     * A depth scale keeps the word — "High" is a position on a scale, and
+     * an on/off colour cannot express one.
+     */
+    const binaryThinking = effortControlShape(activeModel?.thinkingLevels ?? []) === "switch";
+    const suffix = binaryThinking ? "" : chipLevelSuffix(t, thinking, activeModel);
     return suffix ? `${baseLabel}${suffix}` : baseLabel;
   }, [models, state?.model?.name, state?.model?.thinking, t]);
 
@@ -2447,26 +2455,41 @@ function ModalityBadges({
 }
 
 /**
- * Thinking-effort picker.
+ * Thinking controls — what the brain says, and what the level says.
  *
- * Same shell and panel as the other selectors. The trigger is the brain
- * glyph and nothing else — the level it stands for is spelled out
- * verbatim in the model chip beside it ("MiniMax-M3 · On"), so a second
- * copy of the same word here was the same answer in two places, and it
- * is the copy that has to be read to notice a state the icon already
- * shows. The level survives as the button's accessible name source
- * (`title`) and as the menu's ✓.
+ * Two separate answers, two separate controls, because they are two
+ * separate questions: 「是否启用思考」 is a yes/no the brain answers with
+ * its colour, and 「启用什么等级」 is a position on a scale that only a
+ * word can name. The model the user is looking at decides which of them
+ * this model needs:
+ *
+ * - **A binary model (`["off","on"]`) gets the brain alone, and it is a
+ *   button.** There is nothing to choose between, so the level control
+ *   would be a menu with three rows for two states — and its "Default"
+ *   row is the one state a toggle cannot express, on a model whose engine
+ *   default is already "on". The chip drops its 「· 开启」 suffix for the
+ *   same reason: that word is this icon's answer, printed again two
+ *   controls away.
+ * - **A depth scale gets the brain as a plain indicator plus a level
+ *   control that names the level.** The brain is deliberately NOT a
+ *   button here. Every advertised depth counts as thinking on, so the
+ *   only transition left to offer is "engine default → some depth", and
+ *   which depth the user wants is precisely the question the brain
+ *   cannot ask. A clickable brain would have to guess one, and a guess
+ *   that picks the top of the scale would silently overwrite a lower
+ *   level the user had chosen. The menu asks instead.
+ *
+ * The "off" row is offered only when the model's `thinkingLevels`
+ * actually contains it — a model that only supports low/medium/high
+ * never shows an "Off" option the engine would reject.
  *
  * The levels array comes from the active model's catalogue entry; the
- * selector is only mounted when that list is non-empty, so the picker
- * never advertises a level the model cannot accept. The "off" entry
- * is omitted from the menu when the model's `thinkingLevels` does not
- * include it — a model that only supports low/medium/high never shows
- * an "Off" option that the engine would reject.
+ * selector is only mounted when that list is non-empty, so these
+ * controls never advertise a level the model cannot accept.
  *
- * `disabled` greys the trigger during an active run; mid-session
- * changes are still recorded for the next turn (the documented
- * "running → next turn" semantic).
+ * `disabled` greys everything during an active run; mid-session changes
+ * are still recorded for the next turn (the documented "running → next
+ * turn" semantic).
  */
 function ThinkingEffortSelect({
   t,
@@ -2483,103 +2506,148 @@ function ThinkingEffortSelect({
 }) {
   const [open, setOpen] = useState(false);
   const currentKey = value ? thinkingLevelKey(value) : null;
-  const currentLabel = currentKey
-    ? t(currentKey)
+  /**
+   * The level's word, resolved the way its own menu row resolves it: a
+   * level the i18n table does not know falls through to its raw string
+   * rather than being labelled 「默认」, which is a different state.
+   */
+  const levelLabel = value
+    ? currentKey
+      ? t(currentKey)
+      : value
     : t("thinkingPicker.none");
   /**
    * Blue brain = thinking on, grey = off or unstated. `null` (the engine
    * owns the default and never reports the level it chose) is deliberately
-   * grey: the label is what says "Default", and a blue icon beside it would
-   * claim a state this process cannot see.
+   * grey: the colour would claim a state this process cannot see.
    */
   const thinkingOn = isThinkingOn(levels, value);
+  const binary = effortControlShape(levels) === "switch";
+  const reading = thinkingOn === null ? "unknown" : thinkingOn ? "on" : "off";
+  const brainClass = disabled
+    ? "text-text_default_tertiary"
+    : thinkingOn
+      ? "text-icon_default_accent"
+      : "text-text_default_secondary";
   return (
-    <Dropdown
-      open={open}
-      onOpenChange={setOpen}
-      trigger={["click"]}
-      placement="bottomRight"
-      overlayClassName="mavis-dropdown mavis-dropdown-compact mavis-dropdown-custom-content"
-      popupRender={() => (
-        <SelectPanel testId="thinking-effort-panel">
-          {levels.map((level) => {
-            const key = thinkingLevelKey(level);
-            return (
-              <SelectRow
-                key={level}
-                testId={`thinking-effort-option-${level}`}
-                label={key ? t(key) : level}
-                selected={value === level}
-                onClick={() => {
-                  setOpen(false);
-                  onPick(level);
-                }}
-              />
-            );
-          })}
-          <div className="mt-1 border-t border-border_default pt-1">
-            <SelectRow
-              testId="thinking-effort-option-none"
-              label={t("thinkingPicker.none")}
-              selected={!value}
-              onClick={() => {
-                setOpen(false);
-                onPick("");
-              }}
-            />
-          </div>
-        </SelectPanel>
-      )}
-    >
-      <button
-        type="button"
-        data-testid="thinking-effort-trigger"
-        data-thinking={thinkingOn === null ? "unknown" : thinkingOn ? "on" : "off"}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        /**
-         * The brain is the whole control, so the button needs a name it
-         * does not get from a child. `Icon` is `aria-hidden` (it is
-         * decoration next to real text everywhere else), which means an
-         * icon-only button with no `aria-label` announces as an unnamed
-         * button — the level itself is still readable from the model chip
-         * beside it, and the menu carries the ✓.
-         */
-        aria-label={t("thinkingPicker.label")}
-        title={currentLabel}
-        disabled={disabled}
-        className={[
-          // h-8 + px-1 + gap-1, NOT size-8: the content is two 16px glyphs
-          // plus a 4px gap = 36px, which a square 32px box would overflow.
-          // The overflow is invisible until you hover: the chevron's outer
-          // 3px would render outside the element that lights up and takes
-          // the click. The height still matches the toolbar's neighbours.
-          "flex h-8 shrink-0 items-center justify-center gap-1 rounded-[10px] px-1 transition-colors",
-          disabled
-            ? "cursor-not-allowed"
-            : "hover:bg-bg_interaction_tertiary_hover",
-        ].join(" ")}
-      >
-        {/* The chevron stays tertiary in every state: it is the affordance,
-            not the state. Colour belongs to the brain. */}
-        <Icon
-          name="brain"
-          size={16}
-          className={
+    <div className="flex shrink-0 items-center gap-2">
+      {binary ? (
+        <button
+          type="button"
+          data-testid="thinking-toggle"
+          data-thinking={reading}
+          /**
+           * `Icon` is `aria-hidden` everywhere else — it is decoration next
+           * to real text — so an icon-only button has to name itself, and
+           * `aria-pressed` is the honest encoding for a two-state control.
+           * From the engine default (`null`, unpressed) a click turns
+           * thinking explicitly ON, which is the only move available from
+           * a state this process cannot see.
+           */
+          aria-label={t("thinkingPicker.label")}
+          aria-pressed={thinkingOn === true}
+          title={levelLabel}
+          disabled={disabled}
+          onClick={() => {
+            onPick(thinkingOn ? "off" : "on");
+          }}
+          className={[
+            "flex size-8 shrink-0 items-center justify-center rounded-[10px] transition-colors",
             disabled
-              ? "text-text_default_tertiary"
-              : thinkingOn
-                ? "text-icon_default_accent"
-                : "text-text_default_secondary"
-          }
-        />
-        <Icon
-          name={open ? "chevronUp" : "chevronDown"}
-          size={16}
-          className="text-icon_default_tertiary"
-        />
-      </button>
-    </Dropdown>
+              ? "cursor-not-allowed"
+              : "hover:bg-bg_interaction_tertiary_hover",
+          ].join(" ")}
+        >
+          <Icon name="brain" size={16} className={brainClass} />
+        </button>
+      ) : (
+        /**
+         * Not a control, so not a button: a focusable, clickable glyph
+         * that can only guess which level to pick is worse than a glyph
+         * that only says whether thinking is pinned on. `data-thinking`
+         * still publishes the reading for a probe.
+         */
+        <span
+          data-testid="thinking-state"
+          data-thinking={reading}
+          title={levelLabel}
+          className="flex size-8 shrink-0 items-center justify-center"
+        >
+          <Icon name="brain" size={16} className={brainClass} />
+        </span>
+      )}
+      {binary ? null : (
+        <Dropdown
+          open={open}
+          onOpenChange={setOpen}
+          trigger={["click"]}
+          placement="bottomRight"
+          overlayClassName="mavis-dropdown mavis-dropdown-compact mavis-dropdown-custom-content"
+          popupRender={() => (
+            <SelectPanel testId="thinking-effort-panel">
+              {levels.map((level) => {
+                const key = thinkingLevelKey(level);
+                return (
+                  <SelectRow
+                    key={level}
+                    testId={`thinking-effort-option-${level}`}
+                    label={key ? t(key) : level}
+                    selected={value === level}
+                    onClick={() => {
+                      setOpen(false);
+                      onPick(level);
+                    }}
+                  />
+                );
+              })}
+              <div className="mt-1 border-t border-border_default pt-1">
+                <SelectRow
+                  testId="thinking-effort-option-none"
+                  label={t("thinkingPicker.none")}
+                  selected={!value}
+                  onClick={() => {
+                    setOpen(false);
+                    onPick("");
+                  }}
+                />
+              </div>
+            </SelectPanel>
+          )}
+        >
+          <button
+            type="button"
+            data-testid="thinking-effort-trigger"
+            aria-haspopup="menu"
+            aria-expanded={open}
+            title={levelLabel}
+            disabled={disabled}
+            className={[
+              // px-2, NOT px-1: the content is the level word plus a 16px
+              // chevron and a 4px gap, and a 32px box cannot hold a word at
+              // all. The height matches the toolbar's neighbours.
+              "flex h-8 shrink-0 items-center gap-1 rounded-[10px] px-2 text-sm transition-colors",
+              // One colour binding, never two classes: `text-*` utilities
+              // share a specificity, so which one wins is decided by the
+              // order they land in the stylesheet — not by the order they
+              // appear in this array.
+              disabled ? "text-text_default_tertiary" : "text-text_default_primary",
+              disabled
+                ? "cursor-not-allowed"
+                : "hover:bg-bg_interaction_tertiary_hover",
+            ].join(" ")}
+          >
+            {levelLabel}
+            {/* The chevron stays tertiary in every state: it is the
+                affordance, not the state. Colour belongs to the brain. */}
+            <Icon
+              name={open ? "chevronUp" : "chevronDown"}
+              size={16}
+              className="text-icon_default_tertiary"
+            />
+          </button>
+        </Dropdown>
+      )}
+    </div>
   );
 }
 

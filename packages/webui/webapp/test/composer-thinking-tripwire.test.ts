@@ -1,20 +1,26 @@
 // webapp/test/composer-thinking-tripwire.test.ts
 //
-// Static-source tripwire for the two-state thinking toggle (ticket 36).
+// Static-source tripwire for the thinking controls (ticket 36).
 //
-// Why this exists: switchable builtin MiniMax models (MiniMax-M3)
-// carry thinkingLevels ["off","on"] projected from the engine's
-// variant schema, and the i18n key must exist in BOTH language buckets
-// or the zh UI renders a raw English glyph. The pure-mirror test in
-// composer-models.test.ts used to copy the function and so could not
-// catch a revert at all; that derivation now lives in
-// `webapp/lib/model-groups.ts` and composer.tsx imports it, so the
-// unit tests are real coverage. What a static pin still buys over that
-// import is the WIRING side: that the extracted function is the one
-// the selector actually calls (a dead export would pass a
-// unit test), plus the i18n tables, which no import can prove.
-// Same rationale as composer-submit-tripwire.test.ts (a tripwire that
-// cannot fail on a plausible revert is decoration).
+// What is pinned here is the WIRING, not the decision table. The
+// tri-state `isThinkingOn` and the shape predicate `effortControlShape`
+// are driven as product functions in composer-context-window.test.ts;
+// a unit test cannot see whether the selector CALLS them, so a component
+// that inlined `value !== "off"` would colour the engine default blue
+// with every unit test still green. The i18n tables are the other thing
+// no import can prove — `thinkingPicker.on` has to exist in BOTH
+// language buckets or the zh UI renders a raw English glyph.
+//
+// There are three elements to keep apart — the binary model's brain
+// toggle, the depth model's brain indicator, and the level dropdown —
+// and telling them apart IS the contract, so each is collected by its
+// own data-testid. A single match over `data-testid=` pins whichever
+// comes first in the file, which after the split is the toggle.
+//
+// Same rationale as composer-submit-tripwire.test.ts: a tripwire that
+// cannot fail on a plausible revert is decoration. Two guards in this
+// file needed a second pass for exactly that reason, and the comments
+// at each one say what the first version let through.
 
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
@@ -84,16 +90,45 @@ describe("two-state thinking toggle — ticket 36 wiring tripwire", () => {
   });
 });
 
-describe("the thinking trigger's brain + on/off colour", () => {
-  const trigger = composerSource.match(
-    /data-testid="thinking-effort-trigger"[\s\S]*?\n      <\/button>/,
-  );
+describe("the thinking controls: the brain says whether, the level says which", () => {
+  /**
+   * Three elements now, and telling them apart IS the contract:
+   *
+   * - `thinking-toggle`   — the binary model's brain, a button
+   * - `thinking-state`    — the depth-scale model's brain, a plain span
+   * - `thinking-effort-trigger` — the level dropdown, word + chevron
+   *
+   * Each is collected by its own testid so an assertion about one cannot
+   * silently pass on another. A single `match` over `data-testid=` would
+   * pin whichever comes first in the file, which after this change is the
+   * toggle — and the level control's shape would go unchecked.
+   */
+  const toggle = composerSource.match(
+    /data-testid="thinking-toggle"[\s\S]*?\n        <\/button>/,
+  )?.[0];
+  /**
+   * The opening tag is part of the capture, not just the testid: a guard
+   * that starts at `data-testid=` cannot see that the element became a
+   * `<button>`, because `aria-pressed` and `onClick` are attributes that
+   * sit BEFORE the testid. That is how the first version of this guard
+   * passed a brain that had quietly become a button.
+   */
+  const indicator = composerSource.match(
+    /<span\b[^>]*data-testid="thinking-state"[\s\S]*?\n        <\/span>/,
+  )?.[0];
+  const level = composerSource.match(
+    /data-testid="thinking-effort-trigger"[\s\S]*?\n          <\/button>/,
+  )?.[0];
 
-  test("the trigger renders the brain glyph", () => {
-    assert.ok(trigger, "the thinking-effort-trigger button must exist");
-    // `name="brain"` on its own would also match a comment; the Icon call
-    // is what proves it renders.
-    assert.match(trigger[0]!, /<Icon\s+name="brain"/);
+  test("all three exist and are distinguishable", () => {
+    assert.ok(toggle, "the binary model's brain toggle must exist");
+    assert.ok(indicator, "the depth model's brain indicator must exist");
+    assert.ok(level, "the level dropdown must exist");
+    // The depth model's brain must NOT have become a button: a clickable
+    // glyph there could only guess which level to pick.
+    assert.doesNotMatch(indicator, /aria-pressed|onClick/);
+    // And the level control is its own button, not the brain's.
+    assert.doesNotMatch(level, /<Icon\s+name="brain"/);
   });
 
   test("the state is read from the product function, not re-derived inline", () => {
@@ -103,59 +138,131 @@ describe("the thinking trigger's brain + on/off colour", () => {
     // that inlined `value !== "off"` would colour the engine default blue
     // while every unit test stayed green.
     assert.match(composerSource, /const thinkingOn = isThinkingOn\(levels, value\);/);
+    assert.match(
+      composerSource,
+      /const reading = thinkingOn === null \? "unknown" : thinkingOn \? "on" : "off";/,
+      "the tri-state must be read ONCE and published, not restated per element",
+    );
+  });
+
+  test("both brains read the same published value", () => {
+    // If either element re-derived the colour from `value` directly, the
+    // two brains on a depth model could disagree — the one that is a
+    // button and the one that is not.
+    const readings = composerSource.match(/data-thinking=\{reading\}/g) ?? [];
+    assert.equal(readings.length, 2, "the toggle and the indicator both publish `reading`");
+    for (const [name, shape] of [
+      ["toggle", toggle],
+      ["indicator", indicator],
+    ] as const) {
+      assert.ok(shape, `${name} must exist`);
+      assert.match(shape, /data-thinking=\{reading\}/);
+    }
   });
 
   test("blue and grey are accent tokens, not hard-coded hex", () => {
-    assert.ok(trigger, "the thinking-effort-trigger button must exist");
-    assert.match(trigger[0]!, /text-icon_default_accent/);
-    assert.doesNotMatch(trigger[0]!, /#[0-9a-fA-F]{3,6}/);
-  });
-
-  test("the trigger is the icon alone — the level word is not repeated", () => {
-    // The level is already spelled out in the model chip beside this
-    // control ("MiniMax-M3 · 开启"), so a second copy was the same answer
-    // in two places and the copy a user had to read to see a state the
-    // icon already shows.
-    assert.ok(trigger, "the thinking-effort-trigger button must exist");
-    // Only the button's BODY counts: `aria-label={t(...)}` is an
-    // attribute, and forbidding `t(` across the whole element would ban
-    // the accessible name this very change has to add.
-    const body = trigger[0]!.slice(trigger[0]!.indexOf(">") + 1);
-    assert.equal(
-      (body.match(/<Icon/g) ?? []).length,
-      2,
-      "the button holds exactly the brain and the chevron",
+    // One expression feeds both brains, so one assertion covers the pair.
+    assert.match(
+      composerSource,
+      /thinkingOn\s*\?\s*"text-icon_default_accent"\s*:\s*"text-text_default_secondary"/,
     );
-    assert.doesNotMatch(body, /<span/, "no text element in the trigger");
-    assert.doesNotMatch(body, /\{\s*t\(/, "no translated string rendered in the trigger");
-    assert.doesNotMatch(body, /currentLabel/, "the level word is not rendered here");
+    const brainClass = composerSource.match(/const brainClass = [\s\S]*?;/)?.[0];
+    assert.ok(brainClass, "the colour expression must be a named binding");
+    assert.doesNotMatch(brainClass, /#[0-9a-fA-F]{3,6}/);
   });
 
-  test("an icon-only button still has an accessible name", () => {
+  test("the toggle flips, and it has no menu behind it", () => {
+    assert.ok(toggle, "the toggle must exist");
+    assert.match(toggle, /onClick=\{\(\) => \{\s*onPick\(thinkingOn \? "off" : "on"\);/);
+    assert.doesNotMatch(
+      toggle,
+      /chevron/,
+      "a toggle has nothing to disclose — the menu it replaced is the point",
+    );
+    // Pressed means ON, matching the blue. `null` is not pressed, which is
+    // the same grey the icon shows.
+    assert.match(toggle, /aria-pressed=\{thinkingOn === true\}/);
+  });
+
+  test("the toggle names itself, because an icon-only button must", () => {
     // `Icon` is aria-hidden everywhere else (it sits next to real text),
     // so with the text gone the button announces as an unnamed button
     // unless it names itself. Nothing else in the suite would catch it.
-    assert.ok(trigger, "the thinking-effort-trigger button must exist");
-    assert.match(trigger[0]!, /aria-label=\{t\("thinkingPicker\.label"\)\}/);
-    // The level stays reachable: as the hover title, and as the menu's ✓.
-    assert.match(trigger[0]!, /title=\{currentLabel\}/);
+    assert.ok(toggle);
+    assert.match(toggle, /aria-label=\{t\("thinkingPicker\.label"\)\}/);
+    assert.match(toggle, /title=\{levelLabel\}/);
   });
 
-  test("the state is exposed to the DOM, so a probe can read it", () => {
+  test("the level control names the level and offers the menu", () => {
+    assert.ok(level, "the level dropdown must exist");
+    // The word IS the control's job: 「启用什么等级」 is a position on a
+    // scale, and the brain's on/off colour cannot name one.
+    //
+    // Only the BODY counts. `title={levelLabel}` also contains the token,
+    // so a whole-element match would be satisfied by the hover hint alone
+    // and the visible word could vanish with every guard still green.
+    const body = level.slice(level.indexOf(">") + 1);
+    assert.match(body, /\{levelLabel\}/, "the level word is rendered, not only in the title");
+    assert.doesNotMatch(level, /aria-pressed/, "it is a menu, not a toggle");
+    assert.match(level, /aria-haspopup="menu"/);
+    assert.match(level, /title=\{levelLabel\}/);
+  });
+
+  test("the level word resolves like its own menu row, not like the old title", () => {
+    // The trigger used to label an unrecognised level 「默认」 — which is a
+    // DIFFERENT state, and now that the word is visible rather than a
+    // hover hint it would be a wrong answer on screen. An unknown level
+    // falls through to its raw string, the way its menu row does.
     assert.match(
       composerSource,
-      /data-thinking=\{thinkingOn === null \? "unknown" : thinkingOn \? "on" : "off"\}/,
+      /const levelLabel = value\s*\n\s*\? currentKey\s*\n\s*\? t\(currentKey\)\s*\n\s*: value\s*\n\s*: t\("thinkingPicker\.none"\);/,
     );
   });
 
   test("the chevron stays tertiary — colour marks state, not the affordance", () => {
-    assert.ok(trigger, "the thinking-effort-trigger button must exist");
-    const chevron = trigger[0]!.match(
-      /name=\{open \? "chevronUp" : "chevronDown"\}[\s\S]*?\/>/,
-    );
+    assert.ok(level, "the level dropdown must exist");
+    const chevron = level.match(/name=\{open \? "chevronUp" : "chevronDown"\}[\s\S]*?\/>/);
     assert.ok(chevron, "the chevron must still be there");
     assert.match(chevron[0]!, /text-icon_default_tertiary/);
     assert.doesNotMatch(chevron[0]!, /accent/);
+  });
+
+  test("only the depth-scale branch renders a level control", () => {
+    // The whole point of the split: a two-state model must not grow the
+    // menu back. `binary ? null :` is what keeps it gone.
+    assert.match(composerSource, /\{binary \? null : \(\s*\n\s*<Dropdown/);
+    assert.match(
+      composerSource,
+      /const binary = effortControlShape\(levels\) === "switch";/,
+      "the split must be the one predicate that already exists",
+    );
+  });
+});
+
+describe("the binary model loses the chip's level word", () => {
+  test("the 「· 开启」 suffix is suppressed exactly for on/off models", () => {
+    // The word and the brain were the same answer in the same toolbar,
+    // two controls apart. A depth scale keeps the word: "High" is a
+    // position on a scale, and an on/off colour cannot express one.
+    assert.match(
+      composerSource,
+      /const binaryThinking = effortControlShape\(activeModel\?\.thinkingLevels \?\? \[\]\) === "switch";/,
+    );
+    assert.match(
+      composerSource,
+      /const suffix = binaryThinking \? "" : chipLevelSuffix\(t, thinking, activeModel\);/,
+    );
+  });
+
+  test("the binary test reads the SHAPE, not a re-derived off/on pair", () => {
+    // If the chip re-checked `levels.length === 2 && includes("off")` its
+    // own way, it could disagree with the control's shape and the word
+    // would come back for exactly the models that need it gone.
+    const binary = composerSource.match(
+      /const binaryThinking = [\s\S]*?;\n\s*const suffix = [^;]+;/,
+    );
+    assert.ok(binary, "the chip's binary decision must be a single expression");
+    assert.doesNotMatch(binary[0]!, /includes\("off"\)/);
   });
 });
 
