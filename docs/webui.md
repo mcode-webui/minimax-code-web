@@ -744,7 +744,7 @@ reference's:
 ```
 上下文窗口                    29% ⌄     ← title + percent, and a disclosure
 ▓▓▓▓░░░░░░░░░░░░░░░░░░░░░░░              ← ONE bar, one colour
-■ 消息        71.9%            ← the composition, when the engine reports it
+■ 消息        71.9%            ← all six categories, a dash where unreported
 ■ 工具        13.1%
   …
 ────────────────────────────
@@ -767,6 +767,28 @@ that rounds to zero (so a long session is visibly accumulating), one decimal
 below 10%, integer above. The bar is ONE segment even when a breakdown exists:
 the rows carry the composition, and a second encoding of the same fact in a
 4px strip is not readable at that size.
+
+**The six categories are always listed; the ones the engine did not report
+print a dash.** `context.breakdown` is `null` today — the engine does not emit
+it, and nothing in this stack can reconstruct it: the runtime records
+`input_tokens` / `output_tokens` / `cache_read_tokens`, and those three are
+wire-level counters, not the six semantic buckets (messages, tools, memory,
+skills, other, system prompt are all mixed inside `input_tokens`). So the panel
+lists the reference's six, in the reference's order, and prints an em dash
+where it has no figure. A screen reader gets "Not reported"
+(`context.breakdown.unreported`) for it, because a dash on its own says nothing
+about whether the figure is zero or merely absent.
+
+A dash and `0.0%` are different facts and neither substitutes for the other.
+`0.0%` is the engine having **said** this category is empty; a dash claims only
+that nothing arrived. A category the engine reported as `0` therefore draws
+`0.0%`, a category it left out draws a dash, and an absent `breakdown` block
+leaves all six as dashes. `contextBreakdownRows` returns all six rather than
+filtering, which is what makes the section drawable at all today — the earlier
+version returned an empty list, and an empty list is an invisible section. The
+suite pins each of the three states separately, because collapsing "reported
+zero" into "unreported" is the easy regression and it is invisible in the UI
+until the engine starts sending the block.
 
 **The quota rows are the settings page's rows.** Same two figures, same
 `remaining → used` inversion, same reset caption, drawn through the settings
@@ -810,16 +832,29 @@ locally and asserted its own copy, so editing the component could not fail it;
 the mirror is gone. The panel's SHAPE is a source tripwire in the same file,
 because a unit test cannot see that the component calls the right things — a
 panel that inlined its own percentage math, or went back to reading
-`context.plan`, would leave every pure-function assertion green. Twelve
-plausible reverts were mutation-tested against it (chevron direction,
-segmented bar, the 已用 row, `context.plan` in either the component or the
-wire, the old category order, a zero row, the inverted percentage, a third
-video row, a failed read treated as a figure, an unconditional plan name) and
-every one turns a named assertion red. The guard that reads "the panel does
-not read `context.plan`" strips the file's comments first and excludes
-`context.planTitle`: a plain substring match fired on the file's own prose
-explaining that it used to read the field, and on the legitimate 套餐用量
-label key.
+`context.plan`, would leave every pure-function assertion green. Two of those
+tripwires exist for this round's defect specifically: the breakdown may not be
+re-gated on `breakdown.length > 0` (re-gating it makes the whole block vanish
+again while every pure-function assertion stays green), and an unreported share
+must go through the `percent === null` branch rather than an optional chain
+(optional chaining prints `undefined%` for it, and reading the null as 0
+invents a conclusion the engine never stated).
+
+Twenty-two plausible reverts were mutation-tested against those guards, and
+every one turns a named assertion red: chevron direction, segmented bar, the
+已用 row, `context.plan` in either the component or the wire, the old category
+order, the inverted percentage, a third video row, a failed read treated as a
+figure, an unconditional plan name — plus ten added here: an absent block
+returning no rows again, a skipped category treated as `0`, a genuinely
+reported `0` collapsed to unknown, the `isFinite` guard dropped so `NaN`
+reaches the panel, the zero-total guard dropped so a share of nothing divides
+by zero, the section re-gated on `length > 0`, the `=== null` test deleted,
+the share optional-chained, the dash losing its screen-reader words, and
+`context.breakdown.unreported` missing from the zh dictionary. The guard that
+reads "the panel does not read `context.plan`" strips the file's comments first
+and excludes `context.planTitle`: a plain substring match fired on the file's
+own prose explaining that it used to read the field, and on the legitimate
+套餐用量 label key.
 
 
 Every shipped file tree, panel and column evidence is `grep`-able. The list

@@ -69,6 +69,10 @@ const en = {
   "context.breakdown.skills": "Skills",
   "context.breakdown.messages": "Messages",
   "context.breakdown.other": "Other",
+  // The engine reports no per-category split today, so every row prints a
+  // dash. A screen reader gets these words for it, because "—" alone tells
+  // them nothing about whether the figure is zero or merely unknown.
+  "context.breakdown.unreported": "Not reported",
   // SPEC §E row 141 — plan section title; the active tier title is
   // appended as `· <title>` server-side.
   "context.planTitle": "Plan usage",
@@ -1221,6 +1225,7 @@ const zh: Record<MessageKey, string> = {
   "context.breakdown.skills": "技能",
   "context.breakdown.messages": "消息",
   "context.breakdown.other": "其他",
+  "context.breakdown.unreported": "未上报",
   "context.planTitle": "套餐用量",
   "context.expandAria": "展开上下文分类",
   "context.collapseAria": "收起上下文分类",

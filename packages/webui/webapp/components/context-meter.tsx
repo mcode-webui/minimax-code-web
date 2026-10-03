@@ -32,9 +32,10 @@ import type { MessageKey } from "@/lib/i18n";
  *   render at all;
  * - the plan's own name from `state.usage.plan`, printed after 套餐用量.
  *
- * Nothing is invented. When `breakdown` is absent the rows are simply not
- * drawn (`contextBreakdownRows` returns nothing for a block the engine did
- * not send), and a missing quota figure stays a placeholder rather than
+ * Nothing is invented. All six breakdown rows are always listed — that is the
+ * reference's set, and a category the engine did not report prints a dash
+ * rather than a share, which is the one claim this process is entitled to
+ * about it. A missing quota figure likewise stays a placeholder rather than
  * becoming 0%.
  *
  * The pure parts — the percentage format, the breakdown rows, the quota rows —
@@ -213,11 +214,11 @@ export function ContextMeter({ t }: { t: (key: MessageKey) => string }) {
                 />
               </div>
 
-              {/* The composition, in the reference's order. Drawn only when
-                  the engine reported one — `contextBreakdownRows` returns
-                  nothing for an absent block, so this is a claim about what
-                  the engine said, not about what would look right. */}
-              {breakdown.length > 0 && expanded ? (
+              {/* The composition, in the reference's order, all six rows
+                  whether or not the engine reported any of them. A category
+                  with no share prints a dash — see
+                  `contextBreakdownRows` for why that is not a zero. */}
+              {expanded ? (
                 <dl
                   className="desktop-text-ui-small flex flex-col gap-1.5"
                   data-testid="context-breakdown"
@@ -233,7 +234,14 @@ export function ContextMeter({ t }: { t: (key: MessageKey) => string }) {
                         <span className="truncate">{t(row.labelKey)}</span>
                       </dt>
                       <dd className="tabular-nums text-text_default_secondary">
-                        {row.percent.toFixed(1)}%
+                        {row.percent === null ? (
+                          <>
+                            <span aria-hidden="true">—</span>
+                            <span className="sr-only">{t("context.breakdown.unreported")}</span>
+                          </>
+                        ) : (
+                          `${row.percent.toFixed(1)}%`
+                        )}
                       </dd>
                     </div>
                   ))}

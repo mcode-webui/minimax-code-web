@@ -11,10 +11,10 @@
  *
  *   上下文窗口                    29% ⌄     ← title + percent, a disclosure
  *   ▓▓▓▓░░░░░░░░░░░░░░░░░░░░░░░              ← one bar, one colour
- *   ■ 消息        71.9%            ← the breakdown, only when the engine
- *   ■ 工具        13.1%               actually reports it
- *     …
- *   ────────────────────────────
+ *   ■ 消息        71.9%            ← the six categories, always listed
+ *   ■ 工具        13.1%               in the reference's order; a category
+ *     …                               the engine did not report prints a
+ *   ────────────────────────────         dash rather than a share
  *   套餐用量 · Explore
  *   5 小时限额          0% / 100%   ← the same two rows the settings page
  *   ▓░░░░░░░░░░░░░░░░░░░░░░         draws, through the same `UsageBar`
@@ -28,10 +28,13 @@
  *
  * 1. **The breakdown is never invented.** `context.breakdown` is `null` today
  *    — the engine does not emit it (`server/lib/state-bus.js` says so at the
- *    field itself). A row is drawn only for a category the engine reported a
- *    non-zero token count for, so the panel never shows a percentage this
- *    process invented. When the engine starts sending the block, the rows
- *    appear with no change here.
+ *    field itself), and nothing in this stack can reconstruct it: the runtime
+ *    records `input_tokens` / `output_tokens` / `cache_read_tokens`, and those
+ *    three are wire-level counters, not the six semantic buckets below. So the
+ *    rows list all six and say "not reported" for each. Drawing `0.0%` would
+ *    be a different claim — that the engine told us the category is empty —
+ *    and it is not one this process gets to make. When the engine starts
+ *    sending the block, the same six rows fill in with no change here.
  * 2. **The quota rows are the settings page's rows.** Same two figures, same
  *    "remaining → used" inversion, same reset caption. The panel used to read
  *    `context.plan`, which nothing ever populates, so the 套餐 section could
@@ -87,37 +90,55 @@ export interface ContextBreakdownRow {
   key: ContextBreakdownKey;
   labelKey: MessageKey;
   color: string;
-  tokens: number;
-  percent: number;
+  /**
+   * The engine's token count for this category, or `null` when the engine
+   * said nothing about it. `null` and `0` are different facts and stay
+   * different all the way to the DOM: `0` is "the engine reported this
+   * category and it holds no tokens", `null` is "we were not told".
+   */
+  tokens: number | null;
+  /**
+   * Share of the used window, or `null` when it cannot be computed —
+   * either the engine never reported the category, or it reported one but
+   * `total` is 0, so every share would be a division by zero.
+   */
+  percent: number | null;
 }
 
 /**
- * The breakdown rows to draw, in the reference's order.
+ * The breakdown rows to draw: always all six, in the reference's order.
  *
- * Empty array means "the engine told us nothing", and the caller must then
- * draw no rows at all rather than a set of zeroes. A zero row is not a
- * neutral absence here — it is a claim that the category occupies no tokens,
- * which is exactly the kind of fact this process cannot make up.
+ * The panel lists the same categories the reference does whether or not the
+ * engine has numbers for them, and a category it has not reported prints a
+ * dash instead of a figure. That is the whole reason this returns a full list
+ * rather than filtering: a category drawn as `0.0%` claims the engine said
+ * "this holds no tokens", which is a claim this process cannot make on the
+ * engine's behalf. A dash claims only what is true — nothing arrived.
+ *
+ * So the three states stay distinguishable end to end:
+ *
+ *   breakdown absent      → all six rows, every share `null`
+ *   category absent       → that row `null`, the reported ones keep their shares
+ *   category reported `0` → that row `0`, and `0.0%` is drawn
  */
 export function contextBreakdownRows(
   breakdown: Record<string, number> | null | undefined,
   total: number,
 ): ContextBreakdownRow[] {
-  if (!breakdown || total <= 0) return [];
-  const rows: ContextBreakdownRow[] = [];
-  for (const entry of CONTEXT_BREAKDOWN_CATEGORIES) {
-    const raw = breakdown[entry.key];
-    const tokens = typeof raw === "number" && Number.isFinite(raw) ? Math.max(0, raw) : 0;
-    if (tokens === 0) continue;
-    rows.push({
+  return CONTEXT_BREAKDOWN_CATEGORIES.map((entry) => {
+    const raw = breakdown?.[entry.key];
+    if (typeof raw !== "number" || !Number.isFinite(raw)) {
+      return { key: entry.key, labelKey: entry.labelKey, color: entry.color, tokens: null, percent: null };
+    }
+    const tokens = Math.max(0, raw);
+    return {
       key: entry.key,
       labelKey: entry.labelKey,
       color: entry.color,
       tokens,
-      percent: (tokens / total) * 100,
-    });
-  }
-  return rows;
+      percent: total > 0 ? (tokens / total) * 100 : null,
+    };
+  });
 }
 
 export interface QuotaPlanRow {

@@ -62,6 +62,15 @@ function row<T>(rows: T[], index: number): T {
   return value;
 }
 
+/**
+ * What a row PRINTS — the same two branches the component renders, one decimal
+ * or a dash. A helper rather than a string literal at each call site so the
+ * expectation cannot drift from the rule the component is held to.
+ */
+function printed(r: { percent: number | null }): string {
+  return r.percent === null ? "—" : `${r.percent.toFixed(1)}%`;
+}
+
 describe("formatPercent — the five bands", () => {
   test("zero and negative are 0%", () => {
     assert.equal(formatPercent(0, T), "0%");
@@ -84,13 +93,21 @@ describe("formatPercent — the five bands", () => {
   });
 });
 
-describe("contextBreakdownRows — the reference's order, and no invented rows", () => {
-  test("an absent block produces no rows at all", () => {
-    // The engine does not emit `breakdown` today. A panel that drew six
-    // zero rows here would be claiming a composition it has no source for.
-    assert.deepEqual(contextBreakdownRows(null, 1000), []);
-    assert.deepEqual(contextBreakdownRows(undefined, 1000), []);
-    assert.deepEqual(contextBreakdownRows({ messages: 10 }, 0), []);
+describe("contextBreakdownRows — all six, always, and never a number we made up", () => {
+  test("an absent block still lists all six rows, every share unknown", () => {
+    // The engine emits no `breakdown` today and nothing in this stack can
+    // reconstruct one. That is not a reason to hide the section: the six
+    // categories ARE the reference's, so the panel lists them and says it
+    // has no figure for each. Returning an empty list here is what made the
+    // section undrawable.
+    for (const absent of [null, undefined]) {
+      const rows = contextBreakdownRows(absent, 1000);
+      assert.equal(rows.length, CONTEXT_BREAKDOWN_CATEGORIES.length);
+      for (const r of rows) {
+        assert.equal(r.tokens, null, `${r.key} was not reported`);
+        assert.equal(r.percent, null, `${r.key} must not carry a share`);
+      }
+    }
   });
 
   test("rows come back in the screenshot's order, not the payload's key order", () => {
@@ -105,9 +122,39 @@ describe("contextBreakdownRows — the reference's order, and no invented rows",
     );
   });
 
-  test("a category the engine reported zero for is not drawn", () => {
+  test("a category reported as 0 is 0%, not a dash", () => {
+    // The distinction the dash exists to preserve: the engine SAID this
+    // category is empty, which is a fact worth printing. Silence is not.
     const rows = contextBreakdownRows({ messages: 90, tools: 10, memory: 0 }, 100);
-    assert.deepEqual(rows.map((r) => r.key), ["messages", "tools"]);
+    assert.equal(row(rows, 0).percent, 90);
+    assert.equal(row(rows, 1).percent, 10);
+    assert.equal(row(rows, 2).tokens, 0);
+    assert.equal(row(rows, 2).percent, 0);
+  });
+
+  test("a category missing from a block that did arrive is still a dash", () => {
+    // A partial payload is the realistic shape of a feature being turned on
+    // engine-side, and it must not make the unreported half look empty.
+    const rows = contextBreakdownRows({ messages: 100 }, 100);
+    assert.equal(row(rows, 0).percent, 100);
+    assert.equal(row(rows, 1).tokens, null);
+    assert.equal(row(rows, 1).percent, null);
+  });
+
+  test("a non-finite or negative count is unknown, not a share", () => {
+    // NaN / Infinity arriving over SSE must not become NaN% in the panel, and
+    // a negative count is not a share of anything.
+    const rows = contextBreakdownRows({ messages: NaN, tools: Infinity, memory: -50 }, 100);
+    assert.equal(row(rows, 0).percent, null);
+    assert.equal(row(rows, 1).percent, null);
+    assert.equal(row(rows, 2).tokens, 0, "a negative count clamps to 0, it is not unknown");
+    assert.equal(row(rows, 2).percent, 0);
+  });
+
+  test("a reported count with a zero total is unknown — no division by zero", () => {
+    const rows = contextBreakdownRows({ messages: 500 }, 0);
+    assert.equal(row(rows, 0).tokens, 500, "the engine did report it");
+    assert.equal(row(rows, 0).percent, null, "but its share of nothing is not a number");
   });
 
   test("percentages are the share of the window actually used", () => {
@@ -115,9 +162,14 @@ describe("contextBreakdownRows — the reference's order, and no invented rows",
     // Asserted as the panel PRINTS them (toFixed(1)), not as raw floats:
     // 719/1000*100 is 71.89999999999999 in binary, and a strictEqual on the
     // un-rounded number would be asserting the float, not the product.
-    assert.equal(row(rows, 0).percent.toFixed(1), "71.9");
-    assert.equal(row(rows, 1).percent.toFixed(1), "13.1");
-    assert.equal(row(rows, 2).percent.toFixed(1), "15.0");
+    // Indexed by position in the full six, so a row this block skipped is
+    // still asserted — as a dash, at its own slot.
+    assert.equal(printed(row(rows, 0)), "71.9%");
+    assert.equal(printed(row(rows, 1)), "13.1%");
+    assert.equal(printed(row(rows, 2)), "—");
+    assert.equal(printed(row(rows, 3)), "—");
+    assert.equal(printed(row(rows, 4)), "15.0%");
+    assert.equal(printed(row(rows, 5)), "—");
   });
 
   test("every row carries a label key the dictionaries define in both languages", () => {
@@ -128,6 +180,16 @@ describe("contextBreakdownRows — the reference's order, and no invented rows",
         `${key.labelKey} must exist in the en and zh buckets`,
       );
     }
+  });
+
+  test("the dash has words behind it in both languages", () => {
+    // An em dash alone tells a screen-reader user nothing about whether the
+    // figure is zero or merely absent, which is the whole distinction here.
+    assert.equal(
+      (i18nSource.match(/"context\.breakdown\.unreported"/g) ?? []).length,
+      2,
+      "context.breakdown.unreported must exist in the en and zh buckets",
+    );
   });
 });
 
@@ -268,5 +330,31 @@ describe("the panel is the reference's, not a shape of its own", () => {
       /\{planTitle \? ` · \$\{planTitle\}` : ""\}/,
       "套餐用法 · <tier> when the engine names a plan, bare 套餐用量 when it does not",
     );
+  });
+
+  test("the six rows draw on `expanded` alone, not on the engine having answered", () => {
+    // This is the guard the bug needed. The section was gated on
+    // `breakdown.length > 0`, so with no engine data the whole block never
+    // rendered and the panel looked unfinished — the exact symptom the
+    // section is now always-on to fix. Re-gating it on a non-empty list
+    // silently undoes the change with every test above still green.
+    assert.ok(
+      !/breakdown\.length\s*[><=]/.test(meterCode),
+      "the breakdown must not be gated on the engine having reported rows",
+    );
+    assert.match(meterCode, /\{expanded \? \(/, "expansion alone decides the section");
+  });
+
+  test("an unknown share prints a dash, and only a dash", () => {
+    // `percent.toFixed(1)` unguarded would print "NaN%" for a category the
+    // engine skipped, and `?? "—"` after a division would print it for a
+    // reported 0. The branch has to test the null itself.
+    assert.match(meterCode, /row\.percent === null/);
+    assert.ok(
+      !/row\.percent\?\.toFixed/.test(meterCode),
+      "the share must not be printed by optional-chaining a null to undefined",
+    );
+    assert.match(meterSource, /<span aria-hidden="true">—<\/span>/);
+    assert.match(meterSource, /sr-only">\{t\("context\.breakdown\.unreported"\)\}/);
   });
 });
