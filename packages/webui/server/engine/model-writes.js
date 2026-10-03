@@ -25,6 +25,7 @@
 // | the two `set_config_option` pushes        | `pushEngineModelSelection` (here)           |
 // | permission mode → label / engine value    | `resolvePermissionSelection` (here)         |
 // | the permission-mode engine push           | `pushEnginePermissionMode` (here)           |
+// | the #58 / #59 capability gate             | `assertModelWriteCapability` (here, M3-B14) |
 // | body parsing, the 400s, the 200           | `routes/model.js`                           |
 // | `cs.model` / `cs.permissions` writes      | `routes/model.js` (B9's rule, reused)       |
 // | `pushStateFor` and the response body      | `routes/model.js`                           |
@@ -37,28 +38,249 @@
 // route owns the WRITE (`cs.configOptions` is webui's own view, mutated in
 // place exactly as before, and only on the same conditions as before).
 //
+// M3-B14: the two endpoints this family owns are now GATED, and the
+// gate is not one call.
+//
+// #59 is the simple half: it writes exactly one config id
+// (`permissionMode`), so its gate asks for `authCredentials`
+// · `setPermissionMode` unconditionally, and it changes nothing — no
+// registered provider declares that sub-item missing, and the shipped
+// UI already hides the permission selector under exactly that
+// declaration.
+//
+// #58 is the half that needed a human decision, and the decision
+// (recorded in KNOWN DEBT 1 below) was to bridge `thinkingEffort` as a
+// THIRD config id so the effort write is a named sub-item rather than a
+// generic one. Having made it named, the obvious next step — hang the
+// gate on the endpoint — is exactly wrong, and the reason is the two
+// channels `planModelSelectionPush` already documents:
+//
+//   VARIANT  — a switchable builtin. ONE `model` push carries the
+//              model AND the on/off level, because such a model has no
+//              engine effort vocabulary at all. The level rides the
+//              MODEL capability. Gating it on an effort sub-item would
+//              501 a model switch for a capability the switch does not
+//              use, so it is NOT gated.
+//
+//   EFFORT   — a model push, then a `thinkingEffort` push. The second
+//              one is a STANDALONE effort write on its own config id,
+//              and it is the only thing in #58 that needs
+//              `setThinkingEffort`. Gated.
+//
+//   EFFORT, model-only — the request named a model and no level, so
+//              there is no effort write to gate. A pure model switch
+//              must NOT be collaterally 501'd by an absent effort
+//              channel: that would remove a working half of the
+//              endpoint (and, in the UI, a working model picker) to
+//              protect a control that is hidden separately anyway.
+//
+// So `assertModelWriteCapability` takes the plan's answer, not the
+// request's fields: `Boolean(plan.thinkingPush)` is the single
+// predicate, and it is read AFTER planning so the variant channel is
+// `not-applicable` by construction rather than by a second condition
+// somebody has to keep in sync. The reverse half is pinned by a test
+// in both directions — a provider that denies the effort writer
+// answers 501 for an effort write and 200 for a model-only pick on the
+// SAME provider and the SAME session.
+//
 // What this file deliberately does NOT do:
 //
-//   - It does not gate either endpoint. The decision belongs to a human,
-//     and the KNOWN DEBT section at the bottom costs both branches: the
-//     push is one call site per endpoint, so arming either gate is one
-//     line and nothing else in this file moves.
+//   - It does not gate `contextWindow`. There is no engine write to
+//     gate (KNOWN DEBT 3).
 //   - It does not build a host. There is no host on this path.
-//   - It does not own the transport table or the `501` mapping. B9 owns
-//     those for #67/#68, and this batch does not duplicate them.
+//   - It does not own the transport table's other families or the `501`
+//     mapping. B9 owns those for #67/#68, and `engine/index.js` owns
+//     the error → HTTP mapping for every family; this batch adds no
+//     third copy of either.
 //
 // Boot-path weight. `routes/model.js` imports this module directly rather
 // than through `engine/index.js`, and that is the same call B4 made for
 // `model-reads.js`: this module statically imports `lib/engine-catalogue.js`
 // (which reaches `js-yaml`), so re-exporting it from the facade index would
 // make `engine/index.js` heavier than the rest of the server's one shared
-// import site. The server's own boot cost is unchanged — every module
-// involved was already on it through this route. `lib/mcode-rpc.js` (and
-// with it the ACP client) is reached through `await import()` inside the
-// two data-plane functions, so the same rule every other engine family
-// follows holds here too.
+// import site. M3-B14 adds two static imports for the gate —
+// `engine/capabilities.js` and `engine/index.js` — and both are
+// DECLARATION modules that `app.js` already loads for
+// `GET /api/engine-capabilities`, so the server's own boot cost is
+// unchanged. `lib/mcode-rpc.js` (and with it the ACP client) is reached
+// through `await import()` inside the data-plane functions, so the same
+// rule every other engine family follows holds here too.
 
 import { resolveModelId, variantChannelFor } from "../lib/engine-catalogue.js";
+import { assertEngineCapability } from "./capabilities.js";
+import { DEFAULT_ENGINE_PROVIDER_ID, getEngineProvider } from "./index.js";
+
+// ---------------------------------------------------------------------------
+// The gate
+// ---------------------------------------------------------------------------
+
+/**
+ * Transport → registered engine provider id. Absent means "no provider
+ * claims this transport yet" (M4), NOT "the capability is
+ * unavailable" — and the two answer differently on purpose, the same
+ * split `mode-writes.js#providerByTransport`,
+ * `session-writes.js#providerByTransport` and five read families draw.
+ *
+ * Built per call rather than frozen at module scope, for the same
+ * reason they give: `engine/index.js` re-exports `mode-writes.js`, so a
+ * module-level table would read `DEFAULT_ENGINE_PROVIDER_ID` while that
+ * binding is still in its temporal dead zone on a cold
+ * `import("./engine/index.js")`. Every consumer of the table is a
+ * function anyway.
+ *
+ * @returns {Readonly<Record<string, string>>}
+ */
+function providerByTransport() {
+  return Object.freeze({ runtime: DEFAULT_ENGINE_PROVIDER_ID });
+}
+
+/**
+ * What each endpoint's gate asks for.
+ *
+ * A literal rather than a read of `MODE_WRITE_BRIDGED_CONFIG_IDS` at
+ * module scope, because the same temporal-dead-zone rule applies: this
+ * module's body must not read a binding that `engine/index.js` might
+ * still be evaluating. The two tables are the same fact, so the suite
+ * asserts they are the same fact by VALUE
+ * (`test/lib/engine/model-writes.test.js` compares every pair) — a
+ * stronger pin than the frontend's source tripwire, and one that fails
+ * as a diff rather than as a missing grep.
+ *
+ * `subItem: null` is not "any sub-item" and never reaches
+ * `assertEngineCapability`; it is #58's "this request shape asks for no
+ * gate", and `resolveModelWriteSubItem` is what turns it into one.
+ *
+ * @type {Readonly<Record<string, {capability: string, subItem: string|null, enforcement: "hard"}>>}
+ */
+export const MODEL_WRITE_ENDPOINTS = Object.freeze({
+  "POST /api/set-model": Object.freeze({
+    capability: "authCredentials",
+    subItem: "setThinkingEffort",
+    enforcement: "hard",
+  }),
+  "POST /api/permissions": Object.freeze({
+    capability: "authCredentials",
+    subItem: "setPermissionMode",
+    enforcement: "hard",
+  }),
+});
+
+/**
+ * Which sub-item an endpoint's gate asks for, given the shape of the
+ * write it is about to make.
+ *
+ * #59 writes exactly one config id, so its answer never varies — not
+ * because the table says so but because nothing about a permission-mode
+ * change can be a different kind of write.
+ *
+ * #58's answer is a function of the PLAN, and specifically of
+ * `plan.thinkingPush`: that field is non-null only on the effort
+ * channel with a non-empty level, i.e. exactly the case where a
+ * standalone effort write is about to happen. The variant channel
+ * always has it null — the level rides the model push there, and it
+ * rides the MODEL capability — and a model-only effort-channel pick
+ * has it null because there is no effort write at all.
+ *
+ * The predicate is therefore read after planning, and it is a single
+ * one. A version that also tested `plan.channel === "effort"` would be
+ * a second condition describing the same fact, and the failure mode of
+ * getting it wrong is silent: the gate simply stops firing.
+ *
+ * @param {string} endpoint  A key of MODEL_WRITE_ENDPOINTS.
+ * @param {boolean} [effortWrite]  #58 only: is a standalone
+ *        `thinkingEffort` push part of this request?
+ * @returns {string|null} The sub-item, or null when this shape is
+ *          deliberately ungated.
+ */
+export function resolveModelWriteSubItem(endpoint, effortWrite = false) {
+  const need = MODEL_WRITE_ENDPOINTS[endpoint];
+  if (need === undefined) {
+    const err = new Error(
+      `resolveModelWriteSubItem: "${endpoint}" is not part of the model-write family ` +
+        `(known: ${Object.keys(MODEL_WRITE_ENDPOINTS).join(", ")})`,
+    );
+    err.code = "unknown_model_write_endpoint";
+    throw err;
+  }
+  if (endpoint !== "POST /api/set-model") return need.subItem;
+  return effortWrite ? need.subItem : null;
+}
+
+/**
+ * Resolve the provider that answers the model-write family on
+ * `transport`, or `null` when none is registered yet.
+ *
+ * @param {string} transport  One of the `MCODE_WEBUI_TRANSPORT` values.
+ * @returns {{id: string, transport: string, capabilities: object}|null}
+ */
+export function resolveModelWriteProvider(transport) {
+  const providerId = providerByTransport()[transport];
+  if (!providerId) return null;
+  return getEngineProvider(providerId);
+}
+
+/**
+ * HARD gate for both endpoints. Throws
+ * `EngineCapabilityNotSupportedError` for a declared `none`, and for a
+ * `partial` naming the sub-item this particular write needs, which the
+ * router maps to 501 with `engineCapabilityHttpResponse`'s payload.
+ *
+ * Hard for the same reason #67 and #68 are: there is no webui-side
+ * meaning left to answer with once the engine write is gone. A model
+ * webui recorded and the engine never selected is not a model the user
+ * is on, and a thinking level the engine never accepted is not a
+ * level the user chose. `routes/model.js` still writes `cs.model` and
+ * answers 200 for the shapes this gate deliberately does not cover —
+ * see the module header for why those are not collaterally gated.
+ *
+ * Three answers, and the difference between them is the point:
+ *
+ *   `not-applicable`        — this write shape asks for no gate. The
+ *                             model-only pick and the variant channel.
+ *                             Reported, never thrown, so a reader can
+ *                             tell "not checked" from "checked and
+ *                             passed".
+ *   `unregistered-transport` — no provider claims this transport yet
+ *                             (M4). The pre-gate behaviour, and under
+ *                             the default `acp` transport that is what
+ *                             every request sees.
+ *   `checked`               — the declaration was consulted and allows
+ *                             the write.
+ *
+ * @param {string} endpoint  A key of MODEL_WRITE_ENDPOINTS.
+ * @param {string} transport  The active transport.
+ * @param {boolean} [effortWrite]  #58 only.
+ * @returns {{endpoint: string, gate: string, provider: string|null,
+ *            capability: string, subItem: string|null, enforcement: "hard"}}
+ */
+export function assertModelWriteCapability(endpoint, transport, effortWrite = false) {
+  const need = MODEL_WRITE_ENDPOINTS[endpoint];
+  if (need === undefined) {
+    // Caller confusion, not an engine limitation. A plain Error, so a
+    // typo in webui's own key can never be reported to a user as an
+    // engine limitation.
+    const err = new Error(
+      `assertModelWriteCapability: "${endpoint}" is not part of the model-write family ` +
+        `(known: ${Object.keys(MODEL_WRITE_ENDPOINTS).join(", ")})`,
+    );
+    err.code = "unknown_model_write_endpoint";
+    throw err;
+  }
+  const subItem = resolveModelWriteSubItem(endpoint, effortWrite);
+  const base = {
+    endpoint,
+    provider: null,
+    capability: need.capability,
+    subItem,
+    enforcement: need.enforcement,
+  };
+  if (subItem === null) return { ...base, gate: "not-applicable" };
+  const provider = resolveModelWriteProvider(transport);
+  if (!provider) return { ...base, gate: "unregistered-transport" };
+  assertEngineCapability(provider.capabilities, need.capability, provider.id, subItem);
+  return { ...base, gate: "checked", provider: provider.id };
+}
+
 
 /**
  * #58's "no session yet" warning — the record-only path.
@@ -349,15 +571,25 @@ export async function resolvePermissionSelection(mode) {
  *   1. NO SESSION → answer with the local-only warning and stop. The pick
  *      is recorded by the route and re-applied on the next boot by
  *      `applyRecordedModel`; there is nothing to push and nothing to say
- *      about `mcodeSynced` beyond false.
+ *      about `mcodeSynced` beyond false. This returns BEFORE the gate,
+ *      and that order is deliberate: a request that will not reach the
+ *      engine cannot be a fake success (`mcodeSynced: false` plus a
+ *      warning says exactly what happened), so there is nothing for the
+ *      capability to be honest about.
  *   2. PLAN. `variantChannelFor` reads the engine's materialised builtin
  *      tree; a plan comes back for a switchable builtin and null for
  *      everything else.
- *   3. PUSH, in the plan's order. The first failure sets the warning; a
+ *   3. GATE (M3-B14). Armed only when `plan.thinkingPush` is non-null —
+ *      the standalone effort write. Throws for a provider that declares
+ *      the dedicated effort writer absent; the router answers 501. For
+ *      every other shape this is `not-applicable` and the push proceeds,
+ *      which is what keeps a pure model switch off the effort channel's
+ *      gate. See the module header for why that half is not optional.
+ *   4. PUSH, in the plan's order. The first failure sets the warning; a
  *      second failure on the effort channel only escalates when the
  *      warning is still the untouched default, so a model rejection is
  *      not overwritten by the effort rejection it caused.
- *   4. MIRROR DECISION, returned rather than applied (see the module
+ *   5. MIRROR DECISION, returned rather than applied (see the module
  *      header).
  *
  * `mcodeSynced` reports the MODEL push only, and is false for a
@@ -372,10 +604,12 @@ export async function resolvePermissionSelection(mode) {
  * @param {string} [options.modelId]
  * @param {boolean} [options.thinkingWasProvided]
  * @param {string} [options.thinking]
+ * @param {string} [options.transport]  Overrides `MCODE_WEBUI_TRANSPORT`
+ *        for the gate only; the push itself is transport-agnostic.
  * @returns {Promise<{channel: string, mcodeSynced: boolean,
  *          thinkingSynced: boolean, warning: string|null,
  *          thinkingMirror: {kind: "set", value: string}|{kind: "clear"}|null,
- *          plan: object}>}
+ *          gate: object, plan: object}>}
  */
 export async function pushEngineModelSelection(options = {}) {
   const { cs, cid, modelId = "", thinkingWasProvided = false, thinking = "" } = options;
@@ -387,12 +621,28 @@ export async function pushEngineModelSelection(options = {}) {
       thinkingSynced: false,
       warning: NO_SESSION_MODEL_WARNING,
       thinkingMirror: null,
+      gate: { gate: "not-applicable", endpoint: "POST /api/set-model", subItem: null },
       plan: null,
     };
   }
-  const [rpc] = await Promise.all([import("../lib/mcode-rpc.js")]);
+  const [rpc, config] = await Promise.all([
+    import("../lib/mcode-rpc.js"),
+    import("../lib/config.js"),
+  ]);
+  const transport = options.transport || config.MCODE_WEBUI_TRANSPORT;
   const variantPlan = variantChannelFor(modelSelectionTarget(cs, modelId));
   const plan = planModelSelectionPush({ cs, modelId, thinkingWasProvided, thinking, variantPlan });
+  // The one predicate that decides whether this endpoint is gated at
+  // all, and it is read off the PLAN rather than off the request: a
+  // request that carried a level can still plan no effort push (a
+  // cleared level, or a switchable builtin that folds the level into
+  // the model push), and those are exactly the cases that must not be
+  // collaterally refused.
+  const gate = assertModelWriteCapability(
+    "POST /api/set-model",
+    transport,
+    Boolean(plan.thinkingPush),
+  );
 
   let mcodeSynced = false;
   let thinkingSynced = false;
@@ -403,7 +653,7 @@ export async function pushEngineModelSelection(options = {}) {
     mcodeSynced = plan.reportsModelSynced ? r.ok : false;
     thinkingSynced = Boolean(r.ok) && plan.carriedThinking;
     if (!r.ok) warning = r.error;
-    return { channel: "variant", mcodeSynced, thinkingSynced, warning, thinkingMirror: null, plan };
+    return { channel: "variant", mcodeSynced, thinkingSynced, warning, thinkingMirror: null, gate, plan };
   }
 
   if (plan.modelPush) {
@@ -438,7 +688,7 @@ export async function pushEngineModelSelection(options = {}) {
       : thinkingWasProvided && !thinking && modelId
         ? { kind: "clear" }
         : null;
-  return { channel: "effort", mcodeSynced, thinkingSynced, warning, thinkingMirror, plan };
+  return { channel: "effort", mcodeSynced, thinkingSynced, warning, thinkingMirror, gate, plan };
 }
 
 /**
@@ -457,81 +707,109 @@ export async function pushEngineModelSelection(options = {}) {
  * "Full access" and pushes nothing — and the guard is the difference
  * between "the engine is in this mode" and "we hope it is".
  *
+ * The GATE (M3-B14) runs before the push and only when a push is
+ * actually going to happen, for the same reason #58's returns before
+ * its own: a request that records a local pick and reports
+ * `mcodeSynced: false` is already truthful, so there is no fake
+ * success for a capability gate to prevent. This endpoint's gate is the
+ * unconditional case — one config id, one sub-item, no channel to
+ * reason about — and it is behaviourally inert today: no registered
+ * provider lists `setPermissionMode` as missing, and the snapshot audit
+ * proves both providers really carry the method.
+ *
  * @param {object} options
  * @param {object} options.cs  Client state; only `mcodeSessionId` is read.
  * @param {string} options.mcodeValue  From `resolvePermissionSelection`.
  * @param {string} [options.cid]
- * @returns {Promise<{mcodeSynced: boolean, warning: string|null}>}
+ * @param {string} [options.transport]  Overrides `MCODE_WEBUI_TRANSPORT`
+ *        for the gate only.
+ * @returns {Promise<{mcodeSynced: boolean, warning: string|null, gate: object}>}
  */
 export async function pushEnginePermissionMode(options = {}) {
   const { cs, cid, mcodeValue } = options;
   const sid = cs && cs.mcodeSessionId;
+  // The two shapes that stop here also stop at the gate, and the
+  // reported reason has to say which of the two it was — "not
+  // applicable" and "not checked because there was nothing to check"
+  // are the same outcome for the caller and different facts for a
+  // reader of a log.
+  const ungated = { gate: "not-applicable", endpoint: "POST /api/permissions", subItem: null };
   if (!sid) {
-    return { mcodeSynced: false, warning: NO_SESSION_PERMISSION_WARNING };
+    return { mcodeSynced: false, warning: NO_SESSION_PERMISSION_WARNING, gate: ungated };
   }
   if (!mcodeValue) {
-    return { mcodeSynced: false, warning: null };
+    return { mcodeSynced: false, warning: null, gate: ungated };
   }
-  const [rpc] = await Promise.all([import("../lib/mcode-rpc.js")]);
+  const [rpc, config] = await Promise.all([
+    import("../lib/mcode-rpc.js"),
+    import("../lib/config.js"),
+  ]);
+  const transport = options.transport || config.MCODE_WEBUI_TRANSPORT;
+  const gate = assertModelWriteCapability("POST /api/permissions", transport);
   const r = await rpc.setConfigOption(sid, "permissionMode", mcodeValue, cid);
-  return { mcodeSynced: Boolean(r.ok), warning: r.ok ? null : r.error };
+  return { mcodeSynced: Boolean(r.ok), warning: r.ok ? null : r.error, gate };
 }
 
 // ---------------------------------------------------------------------------
 // KNOWN DEBT
 // ---------------------------------------------------------------------------
 //
-//   1. NEITHER ENDPOINT IS GATED, AND THAT IS A DECISION LEFT OPEN FOR A
-//      HUMAN — not an oversight. B9's gate already exempts exactly the two
-//      config ids these endpoints write (`model` → `selectModel`,
-//      `permissionMode` → `setPermissionMode`, see
-//      `MODE_WRITE_BRIDGED_CONFIG_IDS` in `engine/mode-writes.js`), so
-//      both sub-items are known names and neither needs rediscovering.
-//      What stops the gate from being switched on here is one more config
-//      id, and it is #58's:
+//   1. RESOLVED IN M3-B14 — BRANCH (a), AND THE NAME IS A FORWARD
+//      CONTRACT. Kept as the record of what was decided and why, because
+//      the next reader's first question is "why is there a third id".
 //
-//        - #59 /api/permissions writes `permissionMode` ONLY. Gating it
-//          hard on `authCredentials.setPermissionMode` is behaviourally
-//          inert today (no registered provider lists that sub-item as
-//          missing, and the snapshot audit now proves both providers
-//          really have the method) and is safe against the shipped UI,
-//          which already hides the permission selector under exactly that
-//          declaration (`webapp/lib/engine-capabilities.ts` +
-//          `composer.tsx`). The change is one
-//          `assertEngineCapability(...)` call before the push.
+//      B9's gate already exempted two of the three config ids these
+//      endpoints write (`model` → `selectModel`, `permissionMode` →
+//      `setPermissionMode`, see `MODE_WRITE_BRIDGED_CONFIG_IDS` in
+//      `engine/mode-writes.js`). What stopped the gate being switched on
+//      was the third:
 //
-//        - #58 /api/set-model ALSO writes `thinkingEffort`, and
-//          `thinkingEffort` is a GENERIC config id — the one the plan
-//          (§3a, row 68) says has nowhere to be delivered under a
-//          provider with no generic write. Gating #58 the same way makes
-//          the thinking-effort control answer 501 for the same reason #68
+//        - #59 writes `permissionMode` ONLY, so its gate is
+//          `authCredentials.setPermissionMode` unconditionally.
+//        - #58 ALSO writes `thinkingEffort`, and `thinkingEffort` was a
+//          GENERIC config id — the one the plan (§3a, row 68) says has
+//          nowhere to be delivered under a provider with no generic
+//          write. Gating #58 the same way would have made the
+//          thinking-effort control answer 501 for the same reason #68
 //          does for an unrecognised id.
 //
-//      Two branches, both costed, neither chosen here:
+//      The two branches were costed and a human picked (a): bridge
+//      `thinkingEffort` as a THIRD id, so the effort write has a
+//      sub-item of its own instead of riding the generic one. Both
+//      endpoints are now gated and the behaviour change is small and
+//      deliberate: under a provider that declares the dedicated effort
+//      writer missing, the thinking-effort CONTROL is hidden (the
+//      mirror table drives it) while a pure model switch still answers
+//      200 — see item 4.
 //
-//        (a) BRIDGE `thinkingEffort` as a THIRD id in
-//            `MODE_WRITE_BRIDGED_CONFIG_IDS`, pointed at a sub-item that
-//            means "the dedicated thinking-effort writer". Cost: a third
-//            name in a table the frontend mirrors, and a third declaration
-//            the snapshot audit must then prove exists on both surfaces
-//            (today's probe found no `setThinkingEffort` /
-//            `selectThinkingEffort` on either, so the name would have to
-//            be agreed with the engine team first). Benefit: #58 becomes
-//            gateable on the same table as #59, and the two controls stay
-//            symmetric.
+//      The open half, and it is the honest one: the sub-item is named
+//      `setThinkingEffort`, and NEITHER audited surface has a method by
+//      that name. B10's probe found no `setThinkingEffort` or
+//      `selectThinkingEffort` on the adapter or the CliService, and
+//      M3-B14 re-ran the probe by reflection on a real booted host and
+//      got the same answer. The name was chosen for symmetry with
+//      `setPermissionMode` (both are `set_config_option` writes on a
+//      config id) rather than `selectThinkingEffort` (which would have
+//      mirrored `selectModel`, a picker call, not a setter), and it is
+//      a BET ON THE ENGINE, not a description of today's host.
 //
-//        (b) ACCEPT the 501 and degrade the UI. Cost: the thinking-effort
-//            control disappears for any provider that denies the generic
-//            config write — which, under M4's ACP provider, is most of
-//            them — and `#58` loses a working half to keep an enrichment.
-//            `webapp/lib/engine-capabilities.ts` would need a third
-//            bridged id for the effort control to follow the same
-//            fail-open rule rather than a 501 at click time.
+//      So the bridge is recorded, not verified: the snapshot audit
+//      carries `setThinkingEffort` in a new `unimplemented` list, which
+//      asserts the method is absent on both surfaces and turns the audit
+//      RED the moment a surface grows it. That is the direction that
+//      matters — when the engine team lands the dedicated writer, the
+//      audit goes red, the declaration is re-audited, the name moves
+//      from `unimplemented` to `methods`, and the control comes back on
+//      its own. Nothing has to remember to check.
 //
-//      Until a human picks one, #58 keeps its pre-B10 behaviour, and this
-//      module stays gate-ready: the push is already a single call site per
-//      endpoint, so arming either gate is one line in the executor.
-//
+//      What is NOT done, deliberately: no provider's `authCredentials`
+//      declaration was edited to list `setThinkingEffort` in `missing`.
+//      Listing it would make every provider refuse the effort write and
+//      remove the control for every user today, which is branch (b)'s
+//      cost, not this one's. The gate reads the declaration; the
+//      declaration describes the surface; the surface really has no such
+//      method; therefore the gate is inert, and that is the truthful
+//      state of the world rather than a faked one.
 //   2. B9's KNOWN DEBT 2 (the bridge naming sub-items no audited host was
 //      proven to have) IS CLOSED BY THIS BATCH, and the evidence is in
 //      `test/lib/engine/capability-snapshot.test.js`: `selectModel` and
@@ -541,6 +819,10 @@ export async function pushEnginePermissionMode(options = {}) {
 //      being added. `engine/mode-writes.js` is a read-only reference in
 //      this batch, so its own debt text is left as written; this entry is
 //      the closure record.
+//
+//      M3-B14 opens a smaller version of the same question for the third
+//      id — see item 1 — and handles it with the `unimplemented` list
+//      rather than by moving a name into `methods`.
 //
 //   3. `contextWindow` IS RECORDED AND NEVER PUSHED. The engine's ACP
 //      surface has no channel for it (`session/set_config_option` accepts
@@ -552,3 +834,22 @@ export async function pushEnginePermissionMode(options = {}) {
 //      request reaches the engine. Wiring it is engine-side work; the seam
 //      is `planModelSelectionPush`'s output, which a future engine
 //      channel would extend with a third push.
+//
+//   4. #58'S GATE IS ARMED ON THE EFFORT CHANNEL ONLY, AND THAT IS A
+//      PRODUCT DECISION AS MUCH AS A TECHNICAL ONE. A provider that
+//      declares `setThinkingEffort` missing answers 501 for an effort
+//      write and 200 for a model-only pick on the SAME session. The
+//      alternative — one gate for the whole endpoint — would have
+//      removed the model picker and #58's entire working half to protect
+//      an enrichment. It is recorded here because the asymmetry reads as
+//      an oversight from the route, and because "simplify the gate to one
+//      check" is the refactor that would silently turn it into a
+//      regression. The predicate is `Boolean(plan.thinkingPush)` and
+//      nothing else; the suite pins both directions against one provider.
+//
+//   5. `#68` NO LONGER 501s FOR `key: "thinkingEffort"`. It is a
+//      consequence of bridging the id, recorded in both KNOWN DEBT
+//      sections because the two endpoints write the same config id and a
+//      reader looking at only one of them should not conclude they behave
+//      differently. Nothing in the shipped webapp calls #68, so there is
+//      no client to break; the change makes the two endpoints agree.

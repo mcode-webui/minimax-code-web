@@ -16,7 +16,11 @@ import { createPortal } from "react-dom";
 import * as api from "@/lib/api";
 import { clientId } from "@/lib/cid";
 import { bridgedControlAvailability, readEngineCapabilities } from "@/lib/engine-capabilities";
-import type { ControlAvailability, EngineCapabilities } from "@/lib/engine-capabilities";
+import type {
+  BridgedConfigId,
+  ControlAvailability,
+  EngineCapabilities,
+} from "@/lib/engine-capabilities";
 import {
   effortControlShape,
   effortOptionsWithDefault,
@@ -262,9 +266,16 @@ export function Composer({
   // write, so a visible control would be advertising an action that
   // cannot happen. See `lib/engine-capabilities.ts` for the fail-open
   // rule and `webapp/test/engine-capabilities-degradation.test.ts` for
-  // the coverage of both halves.
+  // the coverage of all three halves.
+  //
+  // M3-B14 added `thinkingControl`. The thinking-effort selector is the
+  // one whose absence is hardest to spot, because the model chip beside
+  // it also carries a level on models whose thinking rides the model
+  // wire form: a hidden effort selector next to a working model chip is
+  // a correct pair, not a bug.
   const permissionControl = useEngineControlAvailability("permissionMode");
   const modelControl = useEngineControlAvailability("model");
+  const thinkingControl = useEngineControlAvailability("thinkingEffort");
   const hasConversation = decodeTranscript(state?.chat ?? []).length > 0;
   /** Nothing to send yet — the send button is rendered but inert. */
   const empty = value.trim().length === 0 && attachments.length === 0;
@@ -911,8 +922,16 @@ export function Composer({
               {/* Thinking-effort picker (ticket 04). Only rendered when
                   the active model carries a `thinkingLevels` list; the
                   picker is gated so models without reasoning controls
-                  never expose a no-op control. */}
-              {thinkingLevelsForActive.length > 0 ? (
+                  never expose a no-op control. M3-B14 adds the engine
+                  gate on top of that: `thinkingControl` hides the whole
+                  control when the provider declares no dedicated
+                  thinking-effort writer, which is the same rule the
+                  other two bridged controls follow and the reason a
+                  click here never answers 501. Both halves are in one
+                  condition because both are "may this control be
+                  offered", and nesting them would only make the
+                  degraded case harder to read in a diff. */}
+              {thinkingControl.available && thinkingLevelsForActive.length > 0 ? (
                 <ThinkingEffortSelect
                   t={t}
                   levels={thinkingLevelsForActive}
@@ -1111,9 +1130,7 @@ const SelectPanel = forwardRef<
  * control that appears a moment later is worse than one that was always
  * there, because the user can click it in between.
  */
-function useEngineControlAvailability(
-  configId: "model" | "permissionMode",
-): ControlAvailability {
+function useEngineControlAvailability(configId: BridgedConfigId): ControlAvailability {
   const [declaration, setDeclaration] = useState<EngineCapabilities>(null);
   useEffect(() => {
     let live = true;

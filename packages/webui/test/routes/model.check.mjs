@@ -15,6 +15,8 @@ import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
 import { tmpdir } from "node:os";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { setupMocks, absPath } from "../helpers/_setup.js";
 import { mkTmpDir } from "../helpers/tmp.js";
 import yaml from "js-yaml";
@@ -1940,5 +1942,135 @@ describe("handleSetModel — contextWindow (U6)", () => {
     assert.equal(body.ok, true);
     assert.equal(body.contextWindow, undefined, "absent field not echoed");
     assert.equal(cs.model.contextWindow, 1000000);
+  });
+});
+
+// ============================================================
+// M3-B14 — THE GATE, AS THE ROUTE SEES IT.
+//
+// The executor-level tests in `test/lib/engine/model-writes.test.js`
+// cover the verdict, the channel precision and the 501 payload against
+// synthetic providers. What is left for this file is the two properties
+// only the route can be wrong about:
+//
+//   1. THE ROUTE DOES NOT CATCH THE GATE. If it did, a provider that
+//      cannot perform an effort write would produce a 200 with a
+//      `warning` string — #110's fake success in the exact shape the
+//      capability gate was built to prevent, and harder to notice than
+//      a 501 because the picker would still move.
+//   2. THE GATE'S REPORT NEVER REACHES THE WIRE. The executors gained a
+//      `gate` field in M3-B14; the response body is byte-identical to
+//      the pre-B14 one, and this is what says so.
+//
+// The refusal path itself is NOT driven from here. Reaching it needs a
+// provider that denies the dedicated writers, and no registered provider
+// does — the file boots the real registry once, without a `?bust=`
+// parameter, so there is no seam to swap one in. Asserting a 501 here
+// would mean inventing a fake registry, and the real-registry
+// "still 200 under both transports" assertion below is the fact that
+// actually matters for a shipped user.
+// ============================================================
+
+const ENV_TRANSPORT = process.env.MCODE_WEBUI_TRANSPORT || "acp";
+
+/** A live session on the effort channel: the shape #58 really gates. */
+function gatedCs() {
+  const cs = fakeCs("minimax_api/MiniMax-M3.1-Flash-Preview", [
+    {
+      type: "select",
+      id: "model",
+      name: "Model",
+      currentValue: "minimax_api/MiniMax-M3.1-Flash-Preview",
+      options: [
+        { value: "minimax_api/MiniMax-M3.1-Flash-Preview", name: "M3.1-Flash-Preview" },
+      ],
+    },
+    { type: "select", id: "thinkingEffort", name: "Thinking effort", currentValue: "low" },
+  ]);
+  cs.mcodeSessionId = "mvs_b14_0000000000000000000000";
+  return cs;
+}
+
+describe("handleSetModel — the M3-B14 gate, from the route", () => {
+  test("an effort write on a live session is 200 under the real registry, on both transports", async () => {
+    // The shipped behaviour change, stated as the half that must NOT
+    // change: no registered provider denies `setThinkingEffort`, so
+    // adding the gate removes nothing for any user today.
+    const cs = gatedCs();
+    const res = fakeRes();
+    await modelRoute.handleSetModel(
+      fakeReq({ model: "minimax_api/MiniMax-M3.1-Flash-Preview", thinking: "high" }),
+      res,
+      { cs, cid: "cid-b14" },
+    );
+    assert.equal(res._status, 200, ENV_TRANSPORT);
+    const body = JSON.parse(res._body);
+    assert.equal(body.ok, true);
+    assert.equal(body.mcodeSynced, true);
+    assert.equal(body.thinkingSynced, true);
+    assert.equal(body.warning, undefined, "no refusal was invented");
+  });
+
+  test("the response body is byte-identical to the pre-M3-B14 one — no `gate` field", async () => {
+    // Asserted as a KEY SET rather than a snapshot string, because the
+    // keys are the contract and the order is not: what must not appear is
+    // a new field, and the one this batch could most plausibly have added
+    // is the gate's own report.
+    const cs = gatedCs();
+    const res = fakeRes();
+    await modelRoute.handleSetModel(
+      fakeReq({ model: "minimax_api/MiniMax-M3.1-Flash-Preview", thinking: "high" }),
+      res,
+      { cs, cid: "cid-b14" },
+    );
+    assert.deepEqual(
+      Object.keys(JSON.parse(res._body)).sort(),
+      ["mcodeSynced", "model", "ok", "thinking", "thinkingSynced"],
+    );
+  });
+
+  test("neither handler catches — a gate refusal must reach app.js, not a 200", () => {
+    // Static-source tripwire, and the only kind available without a
+    // render/registry seam. The thing it forbids is specific: a `catch`
+    // around the push. A `catch` here would turn the engine gate's 501
+    // into `warning: <message>` on a 200 — the one outcome B9's module
+    // header calls the purest form of fake success, and the one a reader
+    // cannot spot because the picker would still move.
+    const src = readFileSync(fileURLToPath(absPath("routes/model.js")), "utf8");
+    for (const handler of ["handleSetModel", "handleSetPermissions"]) {
+      const start = src.indexOf(`export async function ${handler}`);
+      assert.ok(start > 0, `${handler} not found`);
+      // The handler ends at the next top-level `export` (or EOF).
+      const next = src.indexOf("\nexport ", start + 1);
+      const body = src.slice(start, next === -1 ? undefined : next);
+      assert.doesNotMatch(body, /\bcatch\b/, `${handler} must not catch the gate's error`);
+    }
+  });
+});
+
+describe("handleSetPermissions — the M3-B14 gate, from the route", () => {
+  test("a permission write is 200 under the real registry, unchanged", async () => {
+    const cs = gatedCs();
+    const res = fakeRes();
+    await modelRoute.handleSetPermissions(fakeReq({ mode: "ask" }), res, { cs, cid: "cid-b14" });
+    assert.equal(res._status, 200, ENV_TRANSPORT);
+    const body = JSON.parse(res._body);
+    assert.deepEqual(Object.keys(body).sort(), ["mcodeSynced", "ok", "permissions"]);
+    assert.equal(body.mcodeSynced, true);
+    assert.equal(body.warning, undefined);
+  });
+
+  test("no session is still 200 with the local-only warning, gate or no gate", async () => {
+    // The path that returns before the gate. A 501 here would be a
+    // regression the other way: a request that never reaches the engine
+    // cannot be a fake success, so there is nothing for the capability to
+    // be honest about, and the recorded pick is the truthful answer.
+    const cs = fakeCs();
+    const res = fakeRes();
+    await modelRoute.handleSetPermissions(fakeReq({ mode: "ask" }), res, { cs, cid: "cid-b14" });
+    assert.equal(res._status, 200);
+    const body = JSON.parse(res._body);
+    assert.equal(body.mcodeSynced, false);
+    assert.equal(body.warning, "no mcode session yet — applies to the next one");
   });
 });

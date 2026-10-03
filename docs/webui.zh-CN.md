@@ -254,7 +254,7 @@ GET  /api/engine-capabilities[?provider=<id>]
 - **能力 501 不带 `fallback`。** 这个提示是「功能存在、但这次调用失败」的降级动作。引擎压根没有模式写入面时，没有任何东西可以降级过去；从一个「此功能不可用」的应答里推销 `send_plan_as_prompt`，等于给一个缺失的功能兜售替代方案。引擎自身的 `unsupported` 拒绝保留它的提示。
 - **默认 `acp` 传输下什么都不变。** M4 把 ACP 包成 provider 之前，没有 provider 认领 `acp`，门报 `unregistered-transport`，每个应答都是 M3 之前的那个。上面的拒绝只在 `runtime` 传输上可达——那里注册的 provider 是 `local-runtime-v2`。
 
-**桥接。** provider 可以拒绝**通用**配置项写入，同时仍保有 webui 自己的两个控件依赖的专用写入面。因此 #68 的门按请求推导子项：`model` 问 `selectModel`、`permissionMode` 问 `setPermissionMode`，两者都能通过一个拒绝 `setConfigOption` 的 provider；其余任何 config id 问 `setConfigOption`，拿到 501。豁免严格只有两个具名 id——绝不是前缀，绝不是默认分支——而且它撑不过 `none`：完全没有 `authCredentials` 的 provider 同样没有专用写入面。
+**桥接。** provider 可以拒绝**通用**配置项写入，同时仍保有 webui 自己的控件依赖的专用写入面。因此 #68 的门按请求推导子项：`model` 问 `selectModel`、`permissionMode` 问 `setPermissionMode`、`thinkingEffort` 问 `setThinkingEffort`，三者都能通过一个拒绝 `setConfigOption` 的 provider；其余任何 config id 问 `setConfigOption`，拿到 501。豁免严格只有三个具名 id——绝不是前缀，绝不是默认分支——而且它撑不过 `none`：完全没有 `authCredentials` 的 provider 同样没有专用写入面。（第三个 id 由 M3-B14 补上，见下文。）
 
 **用户看到什么。** 权限模式选择器与模型选择器被**隐藏**，不是禁用，也不配任何错误提示（`webapp/lib/engine-capabilities.ts`，接线在 `webapp/components/composer.tsx`）。toast 会为一件用户从来就做不到的事报一次失败、无从处理、而且每点一次就再报一次。这条规则是 fail-open 的：控件会一直显示，直到声明明确说引擎做不到——因此一次失败或超时的 `/api/engine-capabilities` 请求绝不会拿掉一个本来能用的控件。
 
@@ -281,9 +281,9 @@ GET  /api/engine-capabilities[?provider=<id>]
 
 **`contextWindow` 依旧只记录、不推送。** 引擎 ACP 面没有它的通道，因此这项选择是 webui 侧的偏好，选择器立刻就能反映。
 
-**这两个端点没有挂门，而这是一个待人拍板的开口，不是疏漏。** #59 只写 `permissionMode`，所以把它挂到 `authCredentials.setPermissionMode` 上，今天在行为上是空转的，而且对已发布 UI 安全（权限选择器本来就按同一条声明被隐藏）——那只是一次 `assertEngineCapability` 调用。#58 还会写 `thinkingEffort`，而它是**通用** config id：照样挂门会让思考强度控件因为与 #68 遇到无法识别的 id 时完全相同的原因开始答 501。两个分支的成本都写在 `model-writes.js` 的 KNOWN DEBT 段——把 `thinkingEffort` 桥接成第三个 id，还是接受 501 并把前端降级扩到第三个控件。在拍板之前，#58 保持 B10 之前的行为。
+**这两个端点在本批没有挂门，而那是一个待人拍板的开口，不是疏漏。** #59 只写 `permissionMode`，所以把它挂到 `authCredentials.setPermissionMode` 上，今天在行为上是空转的，而且对已发布 UI 安全（权限选择器本来就按同一条声明被隐藏）——那只是一次 `assertEngineCapability` 调用。#58 还会写 `thinkingEffort`，而它当时是**通用** config id：照样挂门会让思考强度控件因为与 #68 遇到无法识别的 id 时完全相同的原因开始答 501。两个分支的成本都写在 `model-writes.js` 的 KNOWN DEBT 段——把 `thinkingEffort` 桥接成第三个 id，还是接受 501 并把前端降级扩到第三个控件。**M3-B14 选了前一个分支**，门随之落地；#58 只在那些根本不会到达引擎的路径上保持 B10 之前的行为。
 
-**桥接不再是未经核实的豁免。** `selectModel` 与 `setPermissionMode`——`MODE_WRITE_BRIDGED_CONFIG_IDS` 点名的两个子项——现已进入快照审计的 `REQUIRED_METHODS`，因此真实启动的 host 会在 adapter **与** CliService 两个面上被检查这两个方法，而停止列出其中之一的声明会变红。两个面都没有 `setThinkingEffort` / `selectThinkingEffort`，这正是上面那个挂门决策所依据的事实。
+**桥接不再是未经核实的豁免。** `selectModel` 与 `setPermissionMode`——`MODE_WRITE_BRIDGED_CONFIG_IDS` 点名的前两个子项——现已进入快照审计的 `REQUIRED_METHODS`，因此真实启动的 host 会在 adapter **与** CliService 两个面上被检查这两个方法，而停止列出其中之一的声明会变红。两个面都没有 `setThinkingEffort` / `selectThinkingEffort`，这正是上面那个挂门决策所依据的事实。M3-B14 补上的第三个 id 指向的正是同一个不存在的方法，因此审计把它记作**已证实的不存在**，而不是记作存在——当引擎真的交付这个写入方法时会发生什么，见 M3-B14 一节。
 
 ### M3-B11：provider 端点族搬进引擎门面，两个 provider 文件合为一个（存储变更）
 
@@ -316,6 +316,46 @@ custom_provider:
 **客户端能观察到什么。** 端点形态、状态码、掩码规则、keep-key 约定、探测语义与 `providers.updated` SSE 帧都不变。有两个**取值**随存储一起搬了家：`PUT` 的 `path` 现在是引擎的 `config.yaml`，并额外回报这次存储写入本身 `engineSync: {ok, written, keys}`。`GET` 的 `sources` 与 `userPath` 字段与取值都不变——它们仍然指向那份已废弃的文件，因为「服务端解析了哪些文件」正是 provider 缺失时运维要问的问题，而新答案由双语文档承载，而不是靠改字段名。
 
 **三处只记录、未拍板的决策。** `POST /api/providers/test` 在门里写了 `testUserModelProvider`，而那个方法答不了它：引擎的探测器以**已持久化**的 provider 为键，而这个端点探测的是一份还没保存的候选配置。因此探测留在 webui 本地——这也是唯一能保住它两条承重性质的选项（本地 key 格式校验发生在任何网络调用之前；apiKey 只发往配置的 baseURL）。preset 画廊仍然是 webui 自己的模板列表，而引擎有另一套；两者不是同一套分类法，所以计划里的「两套模板对齐」在本批只是变得可见，并没有关闭。还有，引擎 key 与运维手写条目冲突的 webui provider 依然会覆盖对方，因为这个 key **就是**运行时 id，静默改名会把用户已选的模型变成无法解析的。三处都在 `provider-reads.js` 与 `provider-writes.js` 的 KNOWN DEBT 里逐条算了账。
+
+### M3-B14：`thinkingEffort` 成为第三个被桥接的 config id，#58/#59 挂上能力门
+
+M3-B10 把这两个端点搬到了门面之后，留下了**一个**待人拍板的开口。本批把它关掉；值得一读的部分，是为什么给 #58 挂一个"显而易见的"门反而是错的。
+
+**当时待拍板的是什么。** #59 只写 `permissionMode`，把它挂到 `authCredentials.setPermissionMode` 上是一次调用、零行为变化。#58 还会写 `thinkingEffort`，而这个 config id 当时是**通用**的——正是方案（§3a，第 68 行）所说"在无通用写入面的 provider 下无处投递"的那一个。照同样方式给 #58 挂门，会让思考强度控件因为与 #68 遇到无法识别的 id 时**完全相同**的原因开始答 501。两个分支都做过成本核算：把 `thinkingEffort` 桥接成第三个 id，或者接受 501 并隐藏该控件。**结果是桥接**，豁免名单现在是三个具名 id：
+
+| config id | #68 问 | #58 问 | 引擎收到什么 |
+| --- | --- | --- | --- |
+| `model` | `selectModel` | —— 模型推送骑的是模型能力 | `m:<provider>:<model>:u`；可切换内置模型则是 `:v:<variant>` |
+| `permissionMode` | `setPermissionMode` | —— #59 是它自己的端点 | 一个引擎词汇 |
+| `thinkingEffort` | `setThinkingEffort` | `setThinkingEffort`，**且只在强度通道上** | 一个裸档位 |
+| 其余任何 id | `setConfigOption` → 501 | —— | —— |
+
+豁免依然严格是三个具名 id——绝不是前缀，绝不是默认分支——而且依然撑不过 `none`。
+
+**为什么 #58 的门挂在强度通道上，而不是挂在端点上。** #58 有两条通道，而它们用的是**不同的能力**。可切换内置模型（ticket 36）根本没有引擎强度词汇，所以**一次** `model` 推送同时携带模型与 on/off 档位。那里的档位骑的是**模型**能力，用强度子项去卡它，等于为一个该切换根本没用到的能力把模型切换 501 掉。强度通道上的纯模型切换同样没有强度写入可卡。因此这个判据是**从 plan 上读出来的，而不是从请求字段读出来的**——`Boolean(plan.thinkingPush)`——variant 通道因此是**结构上**免门的，而不是靠一个日后要有人负责同步的第二条件：
+
+```mermaid
+flowchart TD
+  A["POST /api/set-model"] --> B{"有活跃会话？"}
+  B -- 否 --> B1["200 + 仅本地警告<br/>没有任何东西到达引擎，<br/>因此门无可诚实之处"]
+  B -- 是 --> C{"variant 通道？<br/>（可切换内置模型）"}
+  C -- 是 --> D["一次 model 推送<br/>携带模型 + on/off 档位"]
+  C -- 否 --> E{"plan.thinkingPush<br/>非空？"}
+  E -- 否 --> F["纯模型切换或清空档位<br/>不挂门"]
+  E -- 是 --> G{"authCredentials .<br/>setThinkingEffort"}
+  G -- 允许 --> H["先 model 推送，<br/>后 thinkingEffort 推送"]
+  G -- 拒绝 --> I["501 engine_capability_<br/>not_supported"]
+```
+
+纯模型切换答 200、而同一会话、同一 provider、同一段请求框内的强度写入答 501，这不是不一致——这正是要点。两个方向都钉在 `packages/webui/test/lib/engine/model-writes.test.js` 里。
+
+**用户看到什么。** 一处变化，而且它是 UI 变化而不是状态码变化：思考强度选择器现在是引擎能力规则治理的**第三个**控件（`webapp/lib/engine-capabilities.ts`，接线在 `webapp/components/composer.tsx`）。在声明缺少专用强度写入面的 provider 下，它被隐藏——不是禁用，也不伴随任何提示——理由与另外两个完全相同。当前**没有任何**已注册 provider 这么声明，所以**当前构建下不会有控件消失**；规则依然是 fail-open，`/api/engine-capabilities` 请求失败或缓慢时依然照常显示全部控件。
+
+**#68 变了什么。** 在这类 provider 下，`POST /api/protocol/set-config-option` 带 `key: "thinkingEffort"` 不再答 501。已发布的 webapp 里没有任何代码调用 #68，所以没有客户端会被打破；这个变化让两个端点**保持一致**：同一个 config id 不该在同一个 provider 下能经 #58 投递、却被 #68 拒绝。现在诚实的"通用 id"例子是 `contextWindow`，测试与上表都是这么写的。
+
+**这个名字是一份前瞻契约，审计是这么说的，而不是暗示它已存在。** `selectModel` 与 `setPermissionMode` 是被审计的真实面上确实存在的方法，所以 B10 能把它们加进快照的 `REQUIRED_METHODS`，让审计在 adapter **与** CliService 两个面上检查它们。**`setThinkingEffort` 不是。** 快照测试用反射探测真实启动的 host，在一个新的 `unimplemented` 列表里断言它在两个面上都不存在——这个列表只表达一件事，*这个面不得携带该方法*——并且在任一面长出该方法的瞬间让审计**变红**。这就是整套收口机制，而且它是刻意单向的：引擎交付专用强度写入面是一件这里无法排期的事件，而审计是让它无法被漏掉的机制。当它真的发生，名字从 `unimplemented` 移进 `methods`，声明被重新审计，控件自行恢复。
+
+刻意**不**做的事：没有把 `setThinkingEffort` 写进任何 provider 声明的 `authCredentials.missing`。写进去会让每个 provider 都拒绝强度写入、把控件对所有用户都拿掉——那是另一个分支的代价，不是本分支的。门读声明，声明描述实现面，实现面确实没有这个方法，因此门是惰性的。这是世界的真实状态，而不是伪造出来的状态。
 
 ### 迁移状态与边界
 
@@ -1927,8 +1967,8 @@ createdAtMs, updatedAtMs}`）下发，按 `toolCallId` 幂等、上限 32 条、
 | `POST` | `/api/auth/decision` | `lib/authorize.js#handleAuthDecision` | `{requestId, approve}`；`200` 已决；`404` 无该挂起请求；`400` 非法 body；请求处理后通过删除已决条目实现幂等 |
 | `POST` | `/api/upload` | `routes/upload.js` | 必须是 `multipart/form-data`；否则 `400`；`413 {code:"UPLOAD_REQ_TOO_LARGE"\|"UPLOAD_FILE_TOO_LARGE"\|"UPLOAD_QUOTA_EXCEEDED"}`；`400 {code:"UPLOAD_MALFORMED"\|"UPLOAD_ABORTED"}`；先写 `upload.create.intent` 后写 `upload.create`，全部 fail-closed；`200 {ok, path, name, size}` |
 | `GET` | `/api/models` | `routes/model.js#handleGetModels` | 引擎模型 + webui 标签/限额投影；`thinkingLevels` 取自引擎两种思考 schema（档位原样、可开关内建为 `["off","on"]`）。响应含 `groups`（按供应商分组，供选择器分节）、`current`（当前模型 id，无则 `null`）、`currentThinking`（当前思考等级）、`models`（扁平列表）与 `source`（目录来源）——字段全表见 [`webui.md`](webui.md) |
-| `POST` | `/api/set-model` | `routes/model.js#handleSetModel` | `{model, thinking?}`；仅当 `model` 为空**且**未传 `thinking` 时 → `400`（缺参数，不是"未知模型"——不存在的模型名照样记录下发，接口不校验名字）；effort 模型下发 model+`thinkingEffort`，变体模型把开/关档折进一次模型选择 |
-| `POST` | `/api/permissions` | `routes/model.js#handleSetPermissions` | `{mode}`；映射到引擎 `WEBUI_TO_MCODE_PERMISSION` |
+| `POST` | `/api/set-model` | `routes/model.js#handleSetModel` | `{model, thinking?}`；仅当 `model` 为空**且**未传 `thinking` 时 → `400`（缺参数，不是"未知模型"——不存在的模型名照样记录下发，接口不校验名字）；effort 模型下发 model+`thinkingEffort`，变体模型把开/关档折进一次模型选择。挂门于 `authCredentials.setThinkingEffort`，且**仅**对独立的强度写入挂门（M3-B14）：纯模型切换与 variant 通道选择不挂门 |
+| `POST` | `/api/permissions` | `routes/model.js#handleSetPermissions` | `{mode}`；映射到引擎 `WEBUI_TO_MCODE_PERMISSION`；挂门于 `authCredentials.setPermissionMode`，今天在行为上是空转的（M3-B14） |
 | `GET` | `/api/permissions-modes` | `routes/model.js#handleListPermissionModes` | 引擎当前的 `availableModes` |
 | `POST` | `/api/answer` | `routes/model.js#handleAnswer` | **已移除的能力，仅留墓碑路由。** 恒为 `410 {ok:false, removed:true, error}`。它过去返回 `200 {ok:true, deprecated:true}` 却从未触达引擎，而四个按钮都在调它——点击看着成功，提问其实一直挂着。`webapp/lib/api.ts` 刻意不为它导出任何客户端；在拿到真正能触达引擎的通道前不要补回来。详见「阻断式弹窗：各自到底能应答什么」 |
 | `GET` | `/api/providers` | `routes/providers.js#handleGetProviders` | 掩码后的目录 |

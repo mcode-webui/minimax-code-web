@@ -50,17 +50,28 @@
 //     plan through the questionnaire mechanism; it has no write.
 //
 //   - #68 names `authCredentials` · `setConfigOption` — the GENERIC
-//     config option, per the plan (§3a, row 68). The two config ids
-//     webui's own controls depend on, `model` and `permissionMode`, are
-//     NOT the generic write, and the plan requires them to survive it
-//     ("通用 configId 真 501；两个常用 id 桥接"). So the gate's
-//     sub-item is a function of the request: the two bridged ids ask
-//     for their own sub-item and pass a provider that denies the
+//     config option, per the plan (§3a, row 68). The three config ids
+//     webui's own controls depend on, `model`, `permissionMode` and
+//     `thinkingEffort`, are NOT the generic write, and the plan requires
+//     them to survive it ("通用 configId 真 501；常用 id 桥接"). So the
+//     gate's sub-item is a function of the request: a bridged id asks
+//     for its own sub-item and passes a provider that denies the
 //     generic one, and every other config id asks for `setConfigOption`
 //     and gets the 501. `MODE_WRITE_BRIDGED_CONFIG_IDS` is that table,
 //     exported because the frontend needs the same names to decide
 //     which controls to hide (see `webapp/lib/engine-capabilities.ts`,
 //     and the tripwire test that pins the two tables to each other).
+//
+//   M3-B14 added the third id, `thinkingEffort` → `setThinkingEffort`.
+//   It is the same decision the first two took, for the reason #58
+//   forced: the effort write rides the GENERIC config-option channel
+//   on the wire, so without a bridge a provider that denies the
+//   generic write would make the thinking-effort control the one
+//   endpoint in the family that 501s. The name is a forward contract
+//   — NEITHER audited surface has a `setThinkingEffort` method today,
+//   and the snapshot audit now says so out loud rather than leaving the
+//   bridge unverified (see `test/lib/engine/capability-snapshot.test.js`
+//   and `engine/model-writes.js` KNOWN DEBT 1).
 //
 // What the two 501s on these routes now are, and why they must not be
 // confused. B7 recorded the same collision for #70 and this batch adds
@@ -159,20 +170,29 @@ export const MODE_WRITE_ENDPOINTS = Object.freeze({
 });
 
 /**
- * The two config ids that survive a provider denying the GENERIC
+ * The three config ids that survive a provider denying the GENERIC
  * config-option write, and the sub-item each one asks for instead.
  *
  * The plan (§3a, row 68) is explicit that the generic `configId` has
  * nowhere to be delivered under a provider with no generic write, while
- * these two have dedicated equivalents — "两个常用 id 桥接到
+ * these have dedicated equivalents — "常用 id 桥接到
  * `selectModel`/`setPermissionMode`". Naming the sub-items rather than
  * quietly widening the gate is what keeps the 501 honest: a provider
  * that declares `authCredentials` partial with `missing:
- * ["setConfigOption"]` says "I have the dedicated model and permission
- * writers but not a generic one", and the gate reads exactly that.
+ * ["setConfigOption"]` says "I have the dedicated model, permission
+ * and thinking-effort writers but not a generic one", and the gate
+ * reads exactly that.
+ *
+ * `thinkingEffort` → `setThinkingEffort` arrived in M3-B14, and it is
+ * the one entry whose sub-item NO audited host carries (the other two
+ * were verified present by reflection before B10 named them). The name
+ * is therefore a forward contract with the engine, not a description of
+ * today's host, and the snapshot audit records that gap explicitly
+ * rather than letting the bridge be an exemption nothing checks. The
+ * consequence for a client is stated in the KNOWN DEBT section.
  *
  * Exported because the frontend asks the same question about the same
- * two controls, and two hand-maintained copies of a set of engine
+ * three controls, and two hand-maintained copies of a set of engine
  * sub-item names is a drift waiting to happen. The tripwire test in
  * `webapp/test/engine-capabilities-degradation.test.ts` reads this
  * table out of the server source and fails if the two ever disagree.
@@ -182,6 +202,7 @@ export const MODE_WRITE_ENDPOINTS = Object.freeze({
 export const MODE_WRITE_BRIDGED_CONFIG_IDS = Object.freeze({
   model: "selectModel",
   permissionMode: "setPermissionMode",
+  thinkingEffort: "setThinkingEffort",
 });
 
 /**
@@ -192,7 +213,7 @@ export const MODE_WRITE_BRIDGED_CONFIG_IDS = Object.freeze({
  * everything else asks for the generic one. An `undefined` or
  * non-bridged config id is the generic case, which is the safe
  * direction — a name nobody recognised must not quietly inherit the
- * exemption reserved for the two ids this batch audited.
+ * exemption reserved for the three ids this family audited.
  *
  * @param {string} endpoint  A key of MODE_WRITE_ENDPOINTS.
  * @param {string} [configId]  #68 only.
@@ -476,6 +497,12 @@ export async function setEngineSessionConfigOption(options = {}) {
 //      Until then the safest thing is that the exemption is narrow:
 //      two named ids, never a prefix, never a default.
 //
+//      CLOSED BY M3-B10 for these two names: both were verified present
+//      by reflection on a booted host and added to `REQUIRED_METHODS`,
+//      so the audit now checks them on both surfaces. What reopened the
+//      question is the third id — see item 5, which is the same debt
+//      with a different answer for a different reason.
+//
 //   3. `/api/set-model` AND `/api/permissions` CALL THE SAME RPC
 //      WRAPPER AND ARE NOT GATED. `routes/model.js` reaches
 //      `lib/mcode-rpc.js#setConfigOption` directly for `model`,
@@ -489,6 +516,12 @@ export async function setEngineSessionConfigOption(options = {}) {
 //      bridge it as a third id or to accept the 501 with a frontend
 //      degradation; this batch does not decide it for it.
 //
+//      CLOSED BY M3-B14: a human picked branch (a) — bridge it. #58 and
+//      #59 are now gated, in `engine/model-writes.js`, and the gate is
+//      deliberately not this family's `assertModeWriteCapability`: the
+//      two endpoints are not mode-write endpoints, and #58's gate turns
+//      on which CHANNEL its plan took, which a config id cannot say.
+//
 //   4. `setMode` IS THE ONLY SUB-ITEM #67 ASKS FOR, AND THE MATRIX
 //      HAS NO ROW FOR IT. `toolSkillInvocation` is the plan's home for
 //      session mode control (§3a, row 67) and it is a real
@@ -498,3 +531,30 @@ export async function setEngineSessionConfigOption(options = {}) {
 //      plan mode". If M4's provider work ever grows a mode row, #67
 //      moves to it and nothing else in this file changes except the
 //      one string in `MODE_WRITE_ENDPOINTS`.
+//
+//   5. `THINKING_EFFORT` IS BRIDGED, AND #68's 501 FOR THAT CONFIG ID
+//      IS GONE WITH IT. This is the one behaviour change M3-B14 makes
+//      to this file, and it is a consequence of the bridge rather than a
+//      separate decision: `#68 {"key":"thinkingEffort"}` used to ask for
+//      the generic `setConfigOption` and answer 501 under a provider
+//      that denies it. It now asks for `setThinkingEffort` and is
+//      delivered, exactly like `model` and `permissionMode` have been
+//      since B9.
+//
+//      The cost is the honesty of the name. `selectModel` and
+//      `setPermissionMode` are methods the audited host HAS;
+//      `setThinkingEffort` is one neither audited surface has, and the
+//      snapshot audit records that as an explicit "unimplemented" fact
+//      rather than leaving the third bridge unverified. So under a
+//      provider that denies the generic write, #68 with
+//      `key:"thinkingEffort"` now forwards a call the provider cannot
+//      serve — it will answer with whatever its own dedicated-writer
+//      path says, which today means the engine is asked directly.
+//
+//      Nothing in the shipped webapp calls #68 (item 1), so there is no
+//      client to break, and the change makes the two endpoints agree:
+//      a config id cannot be delivered on #58 and refused on #68 for
+//      the same provider. The alternative — leaving `thinkingEffort`
+//      generic on #68 while bridging it on #58 — would have kept a 501
+//      that the control is now hidden from, i.e. a status no user could
+//      ever reach.

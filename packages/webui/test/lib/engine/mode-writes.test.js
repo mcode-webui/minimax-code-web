@@ -235,17 +235,21 @@ describe("resolveModeWriteSubItem — the bridge", () => {
     }
   });
 
-  test("#68 asks for the dedicated sub-item for the two bridged ids", async () => {
+  test("#68 asks for the dedicated sub-item for the three bridged ids", async () => {
     const facade = await bootFacade(t0());
     assert.equal(facade.resolveModeWriteSubItem(SET_CONFIG_OPTION, "model"), "selectModel");
     assert.equal(facade.resolveModeWriteSubItem(SET_CONFIG_OPTION, "permissionMode"), "setPermissionMode");
+    // M3-B14. Before this, `thinkingEffort` was the FIRST entry in the
+    // list below — it was the worked example of a generic id, because at
+    // that time there was no dedicated effort writer to bridge to.
+    assert.equal(facade.resolveModeWriteSubItem(SET_CONFIG_OPTION, "thinkingEffort"), "setThinkingEffort");
   });
 
   test("#68 asks for the GENERIC sub-item for every other id, including nonsense", async () => {
     // The safe direction: a config id nobody audited must NOT inherit
-    // the exemption reserved for the two that were.
+    // the exemption reserved for the three that were.
     const facade = await bootFacade(t0());
-    for (const key of ["thinkingEffort", "model_", "Model", "", undefined, null, 0, "constructor", "__proto__"]) {
+    for (const key of ["contextWindow", "model_", "Model", "", undefined, null, 0, "constructor", "__proto__"]) {
       assert.equal(
         facade.resolveModeWriteSubItem(SET_CONFIG_OPTION, key),
         "setConfigOption",
@@ -331,9 +335,11 @@ describe("assertModeWriteCapability — HARD", () => {
       const d = facade.assertModeWriteCapability(SET_CONFIG_OPTION, RUNTIME, configId);
       assert.equal(d.gate, "checked", configId);
     }
-    // A generic id is.
+    // A generic id is. `contextWindow` is the honest example now that
+    // `thinkingEffort` is bridged: the engine has no channel for it
+    // either, and no bridge claims one.
     const generic = await caughtBy(() =>
-      facade.assertModeWriteCapability(SET_CONFIG_OPTION, RUNTIME, "thinkingEffort"),
+      facade.assertModeWriteCapability(SET_CONFIG_OPTION, RUNTIME, "contextWindow"),
     );
     assert.ok(isEngineCapabilityNotSupportedError(generic));
     assert.equal(generic.capability, "authCredentials");
@@ -592,12 +598,14 @@ describe("setEngineSessionMode — capability ABSENT", () => {
 
 describe("setEngineSessionConfigOption — capability ABSENT, and the bridge", () => {
   test("a generic config id is refused, structured, with no `fallback`", async (t) => {
+    // `contextWindow` since M3-B14: `thinkingEffort` used to be this
+    // test's worked example of a generic id, and it is now a bridged one.
     const facade = await bootFacadeWithProvider(t, NO_GENERIC_CONFIG_WRITE);
     const caught = await caughtBy(() =>
       facade.setEngineSessionConfigOption({
         sessionId: "mvs_a",
-        key: "thinkingEffort",
-        value: "high",
+        key: "contextWindow",
+        value: "128000",
         transport: RUNTIME,
       }),
     );
@@ -608,7 +616,7 @@ describe("setEngineSessionConfigOption — capability ABSENT, and the bridge", (
     assert.deepEqual(payload.missing, ["setConfigOption"]);
   });
 
-  test("BOTH bridged ids still reach the engine", async (t) => {
+  test("ALL THREE bridged ids still reach the engine", async (t) => {
     const seen = [];
     registerRpcMock({
       setConfigOption: async (sessionId, key, value, cid) => {
@@ -617,10 +625,12 @@ describe("setEngineSessionConfigOption — capability ABSENT, and the bridge", (
       },
     });
     const facade = await bootFacadeWithProvider(t, NO_GENERIC_CONFIG_WRITE);
-    for (const [key, value] of [
-      ["model", "gpt-x"],
-      ["permissionMode", "auto"],
-    ]) {
+    const BRIDGED = [
+      ["model", "gpt-x", "selectModel"],
+      ["permissionMode", "auto", "setPermissionMode"],
+      ["thinkingEffort", "high", "setThinkingEffort"],
+    ];
+    for (const [key, value, subItem] of BRIDGED) {
       const r = await facade.setEngineSessionConfigOption({
         sessionId: "mvs_a",
         key,
@@ -629,12 +639,55 @@ describe("setEngineSessionConfigOption — capability ABSENT, and the bridge", (
         transport: RUNTIME,
       });
       assert.equal(r.statusHint, 200, key);
-      assert.equal(r.gate.subItem, key === "model" ? "selectModel" : "setPermissionMode");
+      assert.equal(r.gate.subItem, subItem, key);
     }
     assert.deepEqual(seen, [
       { sessionId: "mvs_a", key: "model", value: "gpt-x", cid: "cid-1" },
       { sessionId: "mvs_a", key: "permissionMode", value: "auto", cid: "cid-1" },
+      { sessionId: "mvs_a", key: "thinkingEffort", value: "high", cid: "cid-1" },
     ]);
+  });
+
+  test("M3-B14 BEHAVIOUR CHANGE — #68 with `thinkingEffort` is DELIVERED, not 501", async (t) => {
+    // The one thing this batch changes for #68, stated as a test rather
+    // than left to a KNOWN DEBT paragraph. Under B9 the same call
+    // answered 501 with `missing: ["setConfigOption"]`; it now asks for
+    // the dedicated effort writer and goes through. The gate's own report
+    // is asserted too, so the change is visible as a fact about WHICH
+    // sub-item was asked for and not only as a status.
+    const seen = [];
+    registerRpcMock({
+      setConfigOption: async (sessionId, key, value) => {
+        seen.push({ key, value });
+        return { ok: true, data: {} };
+      },
+    });
+    const facade = await bootFacadeWithProvider(t, NO_GENERIC_CONFIG_WRITE);
+    const before = await caughtBy(() =>
+      facade.setEngineSessionConfigOption({
+        sessionId: "mvs_a",
+        key: "contextWindow",
+        value: "128000",
+        cid: "cid-1",
+        transport: RUNTIME,
+      }),
+    );
+    assert.ok(isEngineCapabilityNotSupportedError(before), "a truly generic id is still 501");
+    const after = await facade.setEngineSessionConfigOption({
+      sessionId: "mvs_a",
+      key: "thinkingEffort",
+      value: "high",
+      cid: "cid-1",
+      transport: RUNTIME,
+    });
+    assert.equal(after.statusHint, 200);
+    assert.equal(after.gate.gate, "checked");
+    assert.equal(after.gate.subItem, "setThinkingEffort");
+    assert.deepEqual(
+      seen,
+      [{ key: "thinkingEffort", value: "high" }],
+      "exactly one push, and it is the effort",
+    );
   });
 
   test("the cid still reaches the RPC wrapper for a bridged id", async (t) => {
@@ -674,19 +727,19 @@ describe("setEngineSessionConfigOption — capability ABSENT, and the bridge", (
     }
   });
 
-  test("the real registry refuses a generic id and keeps both bridged ids on the runtime transport", async (t) => {
+  test("the real registry refuses a generic id and keeps all three bridged ids on the runtime transport", async (t) => {
     // The shipped behaviour change, stated as the two halves of it.
     const facade = await bootFacade(t);
     const generic = await caughtBy(() =>
       facade.setEngineSessionConfigOption({
         sessionId: "mvs_a",
-        key: "thinkingEffort",
-        value: "high",
+        key: "contextWindow",
+        value: "128000",
         transport: RUNTIME,
       }),
     );
     assert.ok(isEngineCapabilityNotSupportedError(generic));
-    for (const key of ["model", "permissionMode"]) {
+    for (const key of ["model", "permissionMode", "thinkingEffort"]) {
       const r = await facade.setEngineSessionConfigOption({
         sessionId: "mvs_a",
         key,

@@ -19,10 +19,12 @@
 //      including the ones that must NOT hide anything. The rule is
 //      fail-open, and the cases below are what make that true rather than
 //      accidental.
-//   2. THE BRIDGE MIRROR. The frontend names two engine sub-items the
+//   2. THE BRIDGE MIRROR. The frontend names three engine sub-items the
 //      server also names. Two hand-maintained copies of a set of engine
 //      identifiers drift; the tripwire reads the server module's SOURCE
-//      and fails when the two disagree.
+//      and fails when the two disagree. M3-B14 added the third, and with
+//      it the case this file exists to prevent: a control that is VISIBLE
+//      and answers 501 on click, because the mirror lost an entry.
 //   3. THE WIRING. `components/composer.tsx` is a client component with
 //      no render harness in this suite, so its half is a static-source
 //      tripwire — the form this repository allows when no harness exists
@@ -104,9 +106,10 @@ describe("controlAvailability — the fail-open rule", () => {
     const caps = { authCredentials: V2_MODE_KEYS.authCredentials } as EngineCapabilities;
     // The generic write is gone…
     assert.equal(controlAvailability(caps, "authCredentials", "setConfigOption").available, false);
-    // …and the two dedicated writers are not what it denied.
+    // …and the three dedicated writers are not what it denied.
     assert.equal(controlAvailability(caps, "authCredentials", "selectModel").available, true);
     assert.equal(controlAvailability(caps, "authCredentials", "setPermissionMode").available, true);
+    assert.equal(controlAvailability(caps, "authCredentials", "setThinkingEffort").available, true);
   });
 
   test("a `partial` with no `missing` array shows the control", () => {
@@ -132,39 +135,71 @@ describe("controlAvailability — the fail-open rule", () => {
   });
 });
 
-describe("bridgedControlAvailability — the two controls the composer renders", () => {
-  test("both are available on the v2 declaration this batch ships", () => {
+describe("bridgedControlAvailability — the three controls the composer renders", () => {
+  const ALL_IDS = ["model", "permissionMode", "thinkingEffort"] as const;
+
+  test("all three are available on the v2 declaration this batch ships", () => {
+    // M3-B14's behaviour change, stated as the half that is a no-op
+    // today: the effort control is NOT hidden under the declaration the
+    // shipped providers actually send, because they deny only the
+    // generic write.
     const caps = { authCredentials: V2_MODE_KEYS.authCredentials } as EngineCapabilities;
-    for (const id of ["model", "permissionMode"] as const) {
+    for (const id of ALL_IDS) {
       assert.equal(bridgedControlAvailability(caps, id).available, true, id);
     }
   });
 
-  test("both are hidden when the capability is `none`", () => {
+  test("all three are hidden when the capability is `none`", () => {
     const caps = {
       authCredentials: { level: "none", reason: "test: interface-absent" },
     } as EngineCapabilities;
-    for (const id of ["model", "permissionMode"] as const) {
+    for (const id of ALL_IDS) {
       assert.equal(bridgedControlAvailability(caps, id).available, false, id);
     }
   });
 
-  test("a provider that denies the DEDICATED writer hides that control and keeps the other", () => {
+  test("a provider that denies the DEDICATED writer hides that control and keeps the others", () => {
     // The bridge is per sub-item, so a provider can have one without the
-    // other — and the composer must not hide both because one is gone.
-    const caps = {
-      authCredentials: { level: "partial", missing: ["selectModel"], reason: "test: no model writer" },
-    } as EngineCapabilities;
-    assert.equal(bridgedControlAvailability(caps, "model").available, false);
-    assert.equal(bridgedControlAvailability(caps, "permissionMode").available, true);
+    // others — and the composer must not hide all three because one is
+    // gone. The effort control is the one this batch added, and it is
+    // also the one a "deny one, hide the panel" rewrite would take with
+    // it, so every other id is asserted here explicitly.
+    for (const denied of ALL_IDS) {
+      const caps = {
+        authCredentials: { level: "partial", missing: [BRIDGED_CONFIG_SUB_ITEMS[denied]] },
+      } as EngineCapabilities;
+      for (const id of ALL_IDS) {
+        assert.equal(
+          bridgedControlAvailability(caps, id).available,
+          id !== denied,
+          `${denied} denied, so ${id} should be ${id !== denied}`,
+        );
+      }
+    }
+  });
+
+  test("denying the GENERIC write hides nothing", () => {
+    // The other direction, and the one that makes the bridge worth
+    // having: a provider that has no `setConfigOption` at all still
+    // serves all three dedicated writers, so no control disappears.
+    const caps = { authCredentials: V2_MODE_KEYS.authCredentials } as EngineCapabilities;
+    assert.equal(controlAvailability(caps, "authCredentials", "setConfigOption").available, false);
+    for (const id of ALL_IDS) {
+      assert.equal(bridgedControlAvailability(caps, id).available, true, id);
+    }
   });
 
   test("an unknown config id is not a bridge — it must not inherit the exemption", () => {
     // Mirrors the server's own guard: a name nobody audited falls back
     // to the generic sub-item rather than the exemption.
+    //
+    // M3-B14: this used to be asserted with `thinkingEffort`, which is
+    // exactly the mutation that had to go red — so the example is now
+    // `contextWindow`, an id no bridge claims. Pinning the test with a
+    // name the batch legitimately adds would have made the suite lie.
     const caps = { authCredentials: V2_MODE_KEYS.authCredentials } as EngineCapabilities;
     const subItem = (BRIDGED_CONFIG_SUB_ITEMS as Record<string, string | undefined>)[
-      "thinkingEffort"
+      "contextWindow"
     ];
     assert.equal(subItem, undefined);
     assert.equal(
@@ -175,11 +210,15 @@ describe("bridgedControlAvailability — the two controls the composer renders",
   });
 });
 
-describe("the frontend and the server name the same two engine sub-items", () => {
+describe("the frontend and the server name the same three engine sub-items", () => {
   // The mirror is one small literal, and this is what keeps it honest.
   // A rename on either side without the other is exactly the drift the
   // server module's own header warns about.
   test("BRIDGED_CONFIG_SUB_ITEMS matches MODE_WRITE_BRIDGED_CONFIG_IDS in the server source", () => {
+    // The tripwire M3-B14 most needed: one entry added on each side and
+    // one forgotten, and the composer grows a control that answers 501.
+    assert.equal(Object.keys(BRIDGED_CONFIG_SUB_ITEMS).length, 3);
+
     const block = serverModeWritesSource.match(
       /MODE_WRITE_BRIDGED_CONFIG_IDS\s*=\s*Object\.freeze\(\{([\s\S]*?)\}\)/,
     );
@@ -219,7 +258,7 @@ describe("the composer actually gates on it", () => {
   // suite has no render harness for it. Weak by construction, and stated
   // as such — what it catches is the realistic regression, which is a
   // later edit that drops the gate while leaving the lib alone.
-  test("both controls are wrapped in their availability check", () => {
+  test("all three controls are wrapped in their availability check", () => {
     assert.match(
       composerSource,
       /\{permissionControl\.available \? \(\s*<PermissionSelect/,
@@ -230,11 +269,27 @@ describe("the composer actually gates on it", () => {
       /\{modelControl\.available \? \(\s*<ModelSelect/,
       "ModelSelect is no longer gated on modelControl",
     );
+    // M3-B14. The effort control keeps its own precondition — the active
+    // model must advertise levels — so its gate is a conjunction rather
+    // than a bare availability check. Both halves are asserted, because
+    // dropping EITHER one is a regression of a different kind: the first
+    // shows a no-op control, the second is a 501 on click.
+    assert.match(
+      composerSource,
+      /\{thinkingControl\.available && thinkingLevelsForActive\.length > 0 \? \(\s*<ThinkingEffortSelect/,
+      "ThinkingEffortSelect is no longer gated on thinkingControl",
+    );
+    assert.match(
+      composerSource,
+      /thinkingLevelsForActive\.length > 0/,
+      "the levels precondition must survive the capability gate",
+    );
   });
 
   test("the availability comes from the shared rule, not from a local reading of a 501", () => {
     assert.match(composerSource, /useEngineControlAvailability\("permissionMode"\)/);
     assert.match(composerSource, /useEngineControlAvailability\("model"\)/);
+    assert.match(composerSource, /useEngineControlAvailability\("thinkingEffort"\)/);
     assert.match(
       composerSource,
       /bridgedControlAvailability\(declaration, configId\)/,
@@ -254,9 +309,23 @@ describe("the composer actually gates on it", () => {
     // A 4000-character sweep matches the next unrelated `disabled` prop
     // in the file and fails for a reason that has nothing to do with the
     // gate — which trains a reader to ignore this assertion.
-    for (const [marker, control] of [
-      ["{permissionControl.available ? (", "PermissionSelect"],
-      ["{modelControl.available ? (", "ModelSelect"],
+    //
+    // M3-B14 added the third control and with it a distinction the first
+    // two did not force: `ThinkingEffortSelect` carries a PRE-EXISTING
+    // `disabled={running}` prop, which has nothing to do with the
+    // capability (it is "a turn is in flight"). So the `disabled` sweep
+    // is per control, and the effort control gets a stronger assertion
+    // instead of a weaker one: its only `disabled` must be the running
+    // one. A rewrite that degraded the gate into `disabled={...}` would
+    // still fail here.
+    for (const [marker, control, onlyDisabled] of [
+      ["{permissionControl.available ? (", "PermissionSelect", null],
+      ["{modelControl.available ? (", "ModelSelect", null],
+      [
+        "{thinkingControl.available && thinkingLevelsForActive.length > 0 ? (",
+        "ThinkingEffortSelect",
+        "disabled={running}",
+      ],
     ] as const) {
       const start = composerSource.indexOf(marker);
       assert.ok(start > 0, `${control}: the availability gate is gone`);
@@ -264,14 +333,43 @@ describe("the composer actually gates on it", () => {
       assert.ok(end > start, `${control}: the gate no longer ends in \`: null\``);
       const block = composerSource.slice(start, end);
       assert.ok(block.includes(`<${control}`), `${control}: the gate does not wrap the control`);
-      assert.doesNotMatch(block, /\bdisabled\b/, `${control}: hidden, not disabled`);
+      if (onlyDisabled === null) {
+        assert.doesNotMatch(block, /\bdisabled\b/, `${control}: hidden, not disabled`);
+      } else {
+        const hits = [...block.matchAll(/\bdisabled=[^\s/>]+/g)].map((m) => m[0]);
+        assert.deepEqual(hits, [onlyDisabled], `${control}: only the pre-existing prop, never a capability one`);
+      }
       assert.doesNotMatch(block, /fallback|toast/i, `${control}: hidden, with no degraded rendering`);
     }
   });
 
-  test("there are exactly two gates, and both hide", () => {
-    const gates = [...composerSource.matchAll(/(?:permission|model)Control\.available \? \(/g)];
-    assert.equal(gates.length, 2, "expected exactly two availability gates");
+  test("the effort control's `disabled` is about a running turn, not about the capability", () => {
+    // Stated separately because it is the one place in this file where a
+    // reader could reasonably think a `disabled` IS the degradation. It
+    // is not: `running` is a turn-state flag with a decade of history,
+    // and the capability degradation is the `? … : null` around it. If a
+    // future change makes the disabled prop read the declaration, this
+    // fails.
+    const marker = "{thinkingControl.available && thinkingLevelsForActive.length > 0 ? (";
+    const start = composerSource.indexOf(marker);
+    const end = composerSource.indexOf(") : null}", start);
+    const block = composerSource.slice(start, end);
+    assert.doesNotMatch(
+      block,
+      /disabled=\{[^}]*([Aa]vailability|declaration|thinkingControl)/,
+      "the disabled prop must not be derived from the capability declaration",
+    );
+  });
+
+  test("there are exactly three gates, and all three hide", () => {
+    // A sweep rather than a count per control, so a FOURTH gate added
+    // later fails here instead of quietly becoming a fourth place for
+    // the rule to be interpreted.
+    const gates = [
+      ...composerSource.matchAll(/(?:permission|model)Control\.available \? \(/g),
+      ...composerSource.matchAll(/thinkingControl\.available && /g),
+    ];
+    assert.equal(gates.length, 3, "expected exactly three availability gates");
   });
 });
 
@@ -325,7 +423,7 @@ describe("readEngineCapabilities — never throws, and reads once", () => {
     assert.equal(await readEngineCapabilities(), null);
   });
 
-  test("two controls cost one request — the declaration is shared", async () => {
+  test("three controls cost one request — the declaration is shared", async () => {
     let calls = 0;
     globalThis.fetch = (async () => {
       calls += 1;
@@ -333,7 +431,7 @@ describe("readEngineCapabilities — never throws, and reads once", () => {
     }) as typeof fetch;
     const [a, b] = await Promise.all([readEngineCapabilities(), readEngineCapabilities()]);
     const c = await readEngineCapabilities();
-    assert.equal(calls, 1, "the composer mounts two controls; it must not make two requests");
+    assert.equal(calls, 1, "the composer mounts three controls; it must not make three requests");
     assert.equal(a, b);
     assert.equal(b, c, "the cache must hand back the same declaration, not a fresh fetch");
   });
