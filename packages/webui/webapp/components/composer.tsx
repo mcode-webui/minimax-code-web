@@ -831,9 +831,11 @@ export function Composer({
                 chip, brain, mic, send — so the gap between them is the only
                 thing setting how wide it reads. At 12px it was a third of a
                 control's width and the row came out longer than the things it
-                controls. 6px keeps the hit areas distinguishable without
-                spending that width on air. */}
-            <div className="flex min-w-0 shrink items-center gap-1.5" data-message-input-toolbar-right>
+                controls; 6px was still visibly loose next to controls this
+                small, so it is 4px. That is the floor: the hit areas are
+                neighbouring 32px squares, and 0 or 2px stops reading as
+                five controls and starts reading as one striped block. */}
+            <div className="flex min-w-0 shrink items-center gap-1" data-message-input-toolbar-right>
               {/* Context-window readout, immediately left of the model selector. */}
               <ContextMeter t={t} />
               {/* M3-B9: same rule, same reason, for the model chip. The
