@@ -172,8 +172,8 @@ describe("U6 wiring tripwires — composer.tsx / api.ts / i18n.ts", () => {
     );
     assert.match(
       composerSource,
-      /contextPrefix="model-panel-context"/,
-      "the settings column keeps its own prefix",
+      /contextPrefix="model-settings-context"/,
+      "the fly-out keeps its own prefix",
     );
     assert.match(
       composerSource,
@@ -283,7 +283,7 @@ describe("ticket 49 batch 2 (A3) — effort control shape decision table (produc
 });
 
 describe("ticket 49 batch 1 — follow-focus wiring survives batch 2 (kept tripwires)", () => {
-  test("the detail containers are polite live regions (A6, both placements)", () => {
+  test("the detail containers are polite live regions (A6)", () => {
     assert.match(
       composerSource,
       /<div data-testid=\{containerTestId\} aria-live="polite" className=\{className\}>/,
@@ -291,8 +291,8 @@ describe("ticket 49 batch 1 — follow-focus wiring survives batch 2 (kept tripw
     );
     assert.match(
       composerSource,
-      /containerTestId="model-panel-detail"/,
-      "the settings column carries the container testid",
+      /containerTestId="model-settings-detail"/,
+      "the fly-out carries the container testid",
     );
   });
 
@@ -304,15 +304,14 @@ describe("ticket 49 batch 1 — follow-focus wiring survives batch 2 (kept tripw
     );
   });
 
-  test("hover/keyboard focus on a model row feeds the settings column (A2)", () => {
-    // The report used to come from the cascade's `onItemFocus`. With the
-    // models IN the list, the row itself reports: the list is one level
-    // shallower, and a follow-focus column that only tracked a fly-out
-    // would freeze.
+  test("hover/keyboard focus on a model row opens its fly-out (A2)", () => {
+    // One state, not two: the row the cursor is on and the model the
+    // settings surface describes are the same model, and the fly-out IS
+    // that "follow-focus" surface now that it is not a permanent column.
     assert.match(
       composerSource,
-      /const \[focusedModelId, setFocusedModelId\] = useState<string \| null>\(null\);/,
-      "ModelSelect keeps a focused-row state",
+      /const \[flyoutFor, setFlyoutFor\] = useState<string \| null>\(null\);/,
+      "ModelSelect keeps a fly-out owner state",
     );
     assert.match(
       composerSource,
@@ -326,13 +325,13 @@ describe("ticket 49 batch 1 — follow-focus wiring survives batch 2 (kept tripw
     );
     assert.match(
       composerSource,
-      /onMouseEnter=\{\(\) => \{\s*if \(!disabled\) setFocusedModelId\(model\.id\);/,
-      "row mouseenter reports the hovered model",
+      /if \(hasSettings\) setFlyoutFor\(model\.id\);/,
+      "row mouseenter opens the hovered model's fly-out",
     );
     assert.match(
       composerSource,
-      /onFocus=\{\(\) => \{\s*if \(!disabled\) setFocusedModelId\(model\.id\);/,
-      "row focus reports the keyboard-focused model",
+      /onFocus=\{\(\) => \{[\s\S]*?setFlyoutFor\(model\.id\);/,
+      "row focus opens the keyboard-focused model's fly-out",
     );
     assert.match(
       composerSource,
@@ -342,7 +341,7 @@ describe("ticket 49 batch 1 — follow-focus wiring survives batch 2 (kept tripw
     assert.match(
       composerSource,
       /target=\{detailTarget\}\s*\n\s+preview=\{isDetailPreview\}/,
-      "the settings column describes the follow-focus target",
+      "the fly-out describes the hover/focus target",
     );
   });
 
@@ -465,7 +464,7 @@ describe("ticket 49 batch 1 — follow-focus wiring survives batch 2 (kept tripw
     assert.match(composerSource, /data-testid="thinking-effort-trigger"/);
     // B10 — the U6 testids survive through the prefix family.
     for (const anchor of [
-      'contextPrefix="model-panel-context"',
+      'contextPrefix="model-settings-context"',
       '${testIdPrefix}-select',
       '${testIdPrefix}-option-${windowValue}',
       '${testIdPrefix}-select-value',
@@ -476,31 +475,32 @@ describe("ticket 49 batch 1 — follow-focus wiring survives batch 2 (kept tripw
   });
 });
 
-describe("ticket 49 batch 2 (A1) — two-column fly-out wiring", () => {
-  test("one flat list beside one settings column — no fly-out, no bottom twin", () => {
-    // The picker used to be three surfaces: a provider row that opened a
-    // positioned fly-out of models, a follow-focus column inside that
-    // fly-out, and a panel-bottom area describing the active model. The
-    // reference has one list and one settings column, so the fly-out and
-    // the bottom area are gone — and with them the clamping and scrolling
-    // they needed, because two columns inside ONE popup cannot occlude
-    // each other. The two-column container is the whole layout now.
-    assert.doesNotMatch(composerSource, /CascadeSubmenu/, "no fly-out remains");
-    assert.doesNotMatch(composerSource, /<CascadeSubmenu/);
+describe("ticket 49 batch 2 (A1) — the cascade's two tiers", () => {
+  test("one list, and the settings fly out from the row that owns them", () => {
+    // The picker is a CASCADE: the list is the only thing in the panel,
+    // and a model's settings fly out one tier deeper than its row
+    // (展示右侧一), with the context options one tier deeper again
+    // (展示右侧二). An earlier revision read the reference as a permanent
+    // two-column panel; these guards are what keeps it a cascade.
     assert.doesNotMatch(
       composerSource,
+      /model-select-panel-detail-column/,
+      "no permanent settings column — the reference reserves no width for settings",
+    );
+    assert.match(
+      composerSource,
+      /testId="model-settings-flyout"/,
+      "the first tier is a fly-out anchored to its row",
+    );
+    assert.match(
+      composerSource,
+      /anchorRef=\{flyoutAnchor\}/,
+      "it is anchored to the row, not to the panel",
+    );
+    assert.match(
+      composerSource,
       /maxHeight: "calc\(100vh - 16px\)"/,
-      "the fly-out's viewport clamp left with it",
-    );
-    assert.match(
-      composerSource,
-      /data-testid="model-select-panel-detail-column"/,
-      "the settings column is part of the panel, not a fly-out",
-    );
-    assert.match(
-      composerSource,
-      /className="thin-scrollbar max-h-\[60vh\] w-64 shrink-0 self-stretch overflow-y-auto border-l border-border_default py-1 pl-1"/,
-      "the settings column owns its own vertical scroll",
+      "the fly-out's viewport clamp is back — a fly-out still needs it",
     );
     assert.match(
       composerSource,
@@ -510,7 +510,7 @@ describe("ticket 49 batch 2 (A1) — two-column fly-out wiring", () => {
     assert.match(
       composerSource,
       /onKeyDown=\{handleListKeyDown\}/,
-      "the list carries the arrow-key engine the fly-out used to own",
+      "the list carries the arrow-key engine",
     );
   });
 
@@ -609,31 +609,20 @@ describe("ticket 49 batch 2 (A7) — draft mirror wiring", () => {
 });
 
 describe("ticket 49 batch 2 — QA registry pins", () => {
-  test("QA ① — every focusedModelId cleanup path stays wired (delete any one and this goes red)", () => {
-    // Six cleanup sites existed at batch-2 time, all but one belonging to
-    // the cascade's hover grace, the cascade's back path, and the
-    // cross-provider hover. With the models in the list there is no
-    // fly-out to leave, so the remaining three are the whole set: a
-    // stale preview surviving a pick, a session switch, or the panel
-    // closing would leave the settings column describing a model the
-    // user is no longer looking at.
+  test("QA ① — every fly-out cleanup path stays wired (delete any one and this goes red)", () => {
+    // A fly-out anchored to a row that is no longer live has nothing to
+    // anchor to, so every way the row can go away has to retract it: the
+    // session switching, the dropdown closing, the cursor's grace
+    // lapsing, and the keyboard backing out of the tier.
     const pins: [name: string, re: RegExp][] = [
+      ["session switch", /setFlyoutFor\(null\);\s*\n\s*setDrafts\(\{\}\);/],
+      ["dropdown close", /if \(!next\) \{\s*\n\s*setFlyoutFor\(null\);/],
       [
-        "active model change effect",
-        /useEffect\(\(\) => \{\s*\n\s*setFocusedModelId\(null\);\s*\n\s*\}, \[value\]\);/,
+        "the hover grace lapsing",
+        /flyoutCloseTimerRef\.current = window\.setTimeout\(\(\) => \{\s*\n\s*setFlyoutFor\(null\);/,
       ],
-      [
-        "session switch",
-        /setFocusedModelId\(null\);\s*\n\s*setDrafts\(\{\}\);/,
-      ],
-      [
-        "dropdown close",
-        /if \(!next\) setFocusedModelId\(null\);/,
-      ],
-      [
-        "model pick",
-        /setOpen\(false\);\s*\n\s*setFocusedModelId\(null\);/,
-      ],
+      ["Escape on the list", /event\.key === "Escape"[\s\S]{0,300}?setFlyoutFor\(null\);/],
+      ["the fly-out's own back path", /onBack=\{\(\) => setFlyoutFor\(null\)\}/],
     ];
     for (const [name, re] of pins) {
       assert.match(composerSource, re, `cleanup path must survive: ${name}`);

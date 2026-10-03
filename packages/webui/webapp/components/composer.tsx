@@ -1232,6 +1232,150 @@ function PermissionSelect({
  * The label is the caller's: resolving a model id to a display name is this
  * frontend's own mapping, and antd has nothing to say about it.
  */
+
+/**
+ * Fixed-viewport placement for a fly-out anchored to one row — the surface
+ * one tier deeper than the row that opens it.
+ *
+ * `position: fixed` so the fly-out escapes the model list's
+ * `overflow-y: auto`; a descendant would be clipped by it. Anchors to the
+ * RIGHT of the row, flips to the left when the right edge would spill past
+ * the viewport, and clamps vertically so a fly-out near the bottom edge
+ * stays on screen.
+ *
+ * ONE engine for BOTH tiers of the picker's cascade — the model→settings
+ * fly-out and the context-window→options fly-out nested inside it — so the
+ * two tiers cannot drift apart in flip or clamp behaviour.
+ *
+ * `deps` is the caller's re-measure trigger (what about the content changed
+ * its size). The position is deliberately NOT recomputed on every render:
+ * a hover-driven cascade re-renders constantly, and re-measuring then would
+ * make the fly-out jitter under a stationary cursor.
+ */
+function useFlyoutPosition(
+  anchorRef: React.RefObject<HTMLElement>,
+  menuRef: React.RefObject<HTMLElement>,
+  deps: React.DependencyList,
+): { top: number; left: number } | null {
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+  useLayoutEffect(() => {
+    const anchor = anchorRef.current;
+    const menu = menuRef.current;
+    if (!anchor || !menu) return;
+    const update = () => {
+      const anchorRect = anchor.getBoundingClientRect();
+      const menuRect = menu.getBoundingClientRect();
+      const gap = 6;
+      let left = anchorRect.right + gap;
+      if (left + menuRect.width > window.innerWidth - 8) {
+        left = anchorRect.left - menuRect.width - gap;
+        if (left < 8) left = Math.max(8, window.innerWidth - menuRect.width - 8);
+      }
+      let top = anchorRect.top;
+      if (top + menuRect.height > window.innerHeight - 8) {
+        top = Math.max(8, window.innerHeight - menuRect.height - 8);
+      }
+      if (top < 8) top = 8;
+      setPos({ top, left });
+    };
+    update();
+    window.addEventListener("resize", update);
+    window.addEventListener("scroll", update, true);
+    let ro: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== "undefined") {
+      ro = new ResizeObserver(() => update());
+      ro.observe(menu);
+    }
+    return () => {
+      window.removeEventListener("resize", update);
+      window.removeEventListener("scroll", update, true);
+      if (ro) ro.disconnect();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, deps);
+  return pos;
+}
+
+/**
+ * One tier of the picker's cascading fly-out.
+ *
+ * The reference picker is NOT a two-column panel: hovering a model flies
+ * out a settings surface one tier deeper than that row, and the context
+ * window inside it flies out ANOTHER tier deeper than itself. This is the
+ * shared shell for both tiers — `position: fixed` placement via
+ * `useFlyoutPosition`, a `role="menu"`, Escape / ArrowLeft handing focus
+ * back to the row that opened it, and the hover grace the parent owns
+ * (`onMouseEnter` cancels the close timer so the cursor can cross the gap
+ * between a row and its fly-out; `onMouseLeave` restarts it).
+ */
+function SettingsFlyout({
+  testId,
+  ariaLabel,
+  anchorRef,
+  onMouseEnter,
+  onMouseLeave,
+  onFocusEnter,
+  onBack,
+  children,
+}: {
+  testId: string;
+  ariaLabel: string;
+  anchorRef: React.RefObject<HTMLElement>;
+  onMouseEnter: () => void;
+  onMouseLeave: () => void;
+  /** Cancel the close grace when focus enters, not just when the cursor
+   *  does. The owning row's `onBlur` starts that grace, so without this
+   *  a keyboard user tabbing from the row into the fly-out would watch it
+   *  retract 120ms after they arrived — the surface would be unreachable
+   *  by keyboard while looking perfectly reachable by mouse. */
+  onFocusEnter: () => void;
+  onBack: () => void;
+  children: React.ReactNode;
+}) {
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const pos = useFlyoutPosition(anchorRef, menuRef, [anchorRef, children]);
+  return (
+    <div
+      ref={menuRef}
+      data-testid={testId}
+      role="menu"
+      aria-label={ariaLabel}
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={onMouseLeave}
+      onFocus={onFocusEnter}
+      onKeyDown={(event) => {
+        if (event.key === "Escape" || event.key === "ArrowLeft") {
+          event.preventDefault();
+          onBack();
+        }
+      }}
+      style={
+        pos
+          ? {
+              position: "fixed",
+              top: `${pos.top}px`,
+              left: `${pos.left}px`,
+              zIndex: 1100,
+              maxHeight: "calc(100vh - 16px)",
+            }
+          : {
+              // Measured-but-unplaced: mounted (so the rects exist) but
+              // not visible, so the first paint is never at 0,0.
+              position: "fixed",
+              top: 0,
+              left: 0,
+              opacity: 0,
+              pointerEvents: "none",
+              zIndex: 1100,
+            }
+      }
+      className="thin-scrollbar min-w-[200px] overflow-y-auto rounded-[12px] border border-border_default bg-bg_grouped_secondary_elevated p-1 shadow-[0_0_20px_rgba(10,10,10,0.08)]"
+    >
+      {children}
+    </div>
+  );
+}
+
 function ModelSelect({
   t,
   models,
@@ -1308,13 +1452,62 @@ function ModelSelect({
   onAddProvider?: () => void;
 }) {
   const [open, setOpen] = useState(false);
-  /** Ticket 49 — the model row the settings column follows.  /** Ticket 49 — the model row the detail area follows. Hover or
-   *  keyboard focus inside a cascade submenu sets it; closing the
-   *  submenu (hover-out grace, ArrowLeft/Escape, a model pick) or
-   *  the dropdown itself clears it, at which point the detail area
-   *  falls back to the active model. `null` never means "the active
-   *  model" — the fallback is explicit in `detailTarget`. */
-  const [focusedModelId, setFocusedModelId] = useState<string | null>(null);
+
+  /**
+   * The model whose settings fly-out is open — the cascade's first tier.
+   *
+   * The reference picker does not reserve a column for settings: hovering
+   * (or keyboard-focusing) a model row flies the surface out one tier
+   * deeper than that row, and moving the cursor away retracts it. `null`
+   * is the closed state and is NOT read as "the active model" — no
+   * fly-out and the active model's fly-out are different things to render.
+   *
+   * This one state replaced a separate "focused model" id: the row the
+   * cursor is on and the model the settings surface describes were always
+   * the same model, and keeping them in two states only created a window
+   * where they disagreed.
+   */
+  const [flyoutFor, setFlyoutFor] = useState<string | null>(null);
+  /**
+   * Every mounted model row's node, by model id.
+   *
+   * A map rather than one "current anchor" ref because of render order:
+   * a ref is assigned during commit, AFTER the render that reads it, so a
+   * render gated on `anchorRef.current` sees the PREVIOUS row's anchor (or
+   * null on the first hover) and assigning the ref triggers no re-render —
+   * the fly-out would simply never appear. The map is written by every
+   * row's ref callback on every commit, so by the time a row can be
+   * hovered its node is already in it.
+   */
+  const flyoutAnchorsRef = useRef(new Map<string, HTMLDivElement>());
+  /** Pending close timer for the first tier. Set when the cursor leaves
+   *  the row, so a brief traversal from the row into its fly-out (or into
+   *  the second tier nested inside it) does not retract the surface. */
+  const flyoutCloseTimerRef = useRef<number | null>(null);
+
+  const cancelFlyoutClose = useCallback(() => {
+    if (flyoutCloseTimerRef.current != null) {
+      window.clearTimeout(flyoutCloseTimerRef.current);
+      flyoutCloseTimerRef.current = null;
+    }
+  }, []);
+
+  const scheduleFlyoutClose = useCallback(() => {
+    cancelFlyoutClose();
+    flyoutCloseTimerRef.current = window.setTimeout(() => {
+      setFlyoutFor(null);
+      flyoutCloseTimerRef.current = null;
+    }, 120);
+  }, [cancelFlyoutClose]);
+
+  // A grace timer outliving the surface it protects is a timer that fires
+  // into a closed picker, so retract it on unmount and whenever the
+  // dropdown itself goes away.
+  useEffect(() => {
+    if (!open) cancelFlyoutClose();
+  }, [open, cancelFlyoutClose]);
+  useEffect(() => cancelFlyoutClose, [cancelFlyoutClose]);
+
   /**
    * Ticket 49 batch 2 (A7) — draft mirror, keyed by model id.
    *
@@ -1339,7 +1532,7 @@ function ModelSelect({
   // effect only fires on a real key change.
   useEffect(() => {
     setOpen(false);
-    setFocusedModelId(null);
+    setFlyoutFor(null);
     setDrafts({});
   }, [sessionKey]);
   /** Ref to the inner scrollable list. */
@@ -1370,35 +1563,67 @@ function ModelSelect({
   );
 
   /**
-   * Ticket 49 — the model the CASCADE-SIDE detail column describes.
+   * Ticket 49 — the model the settings FLY-OUT describes.
    *
-   * Batch 1 rendered this into the panel-bottom detail area; batch 2
-   * moves the follow-focus rendering into the fly-out's side column
-   * (A1), so the bottom area went back to describing the active model
-   * (U6/B9 placement) while this derivation feeds the side column:
-   * the hovered/keyboard-focused row wins (A2: preview any model's
-   * adjustable settings without picking it); with nothing focused —
-   * a cascade that just opened, before any row is hovered — the
-   * column falls back to the active model, mirroring the reference
-   * picker. A focused id that fell out of the catalogue (mid-refresh)
-   * degrades to the fallback instead of rendering a detail for a
-   * ghost row.
+   * A2: preview any model's adjustable settings without picking it — the
+   * hovered row wins. There is deliberately NO fallback to the active
+   * model: this is a fly-out anchored to a row, so with no row hovered
+   * there is no surface at all. (The old permanent right column had to
+   * fall back to the active model, because the column was always there;
+   * a fly-out has no such obligation.)
+   *
+   * An id that fell out of the catalogue (mid-refresh) resolves to `null`
+   * rather than rendering settings for a ghost row.
    */
   const detailTarget = useMemo(() => {
-    if (focusedModelId != null) {
-      const hovered = models.find((m) => m.id === focusedModelId);
-      if (hovered) return hovered;
-    }
-    return models.find((m) => m.id === value) ?? null;
-  }, [models, focusedModelId, value]);
+    if (flyoutFor == null) return null;
+    return models.find((m) => m.id === flyoutFor) ?? null;
+  }, [models, flyoutFor]);
 
-  /** Ticket 49 — the side column describes a model the user has NOT
-   *  picked. Its controls render as a read-only preview: no recorded
-   *  pick is highlighted (the record belongs to the active model)
-   *  and the groups are disabled — committing a setting for a
-   *  non-active model has no wire meaning under the current
-   *  `/api/set-model` contract, which this batch must not change. */
+  /**
+   * Whether a model has anything to configure at all — the gate for
+   * whether it gets a fly-out, and the whole of the reference's
+   * "没有二次菜单的，则直接点击后就完成" rule.
+   *
+   * A model with neither a thinking level nor a real context choice has
+   * no second tier, so hovering it shows nothing and clicking it is the
+   * whole selection. Rendering a fly-out for it would be an empty panel
+   * over a row that could have been picked outright.
+   *
+   * `contextWindowOptions` is normalised before counting, and the
+   * >= 2 threshold matches `ModelSettingsDetail`'s mount gate: a
+   * single-option "choice" is a no-op, not a menu.
+   */
+  const modelHasSettings = useCallback(
+    (model: { thinkingLevels?: string[]; contextWindowOptions?: unknown }) => {
+      if ((model.thinkingLevels ?? []).length > 0) return true;
+      return normalizeContextWindowOptions(model.contextWindowOptions).length >= 2;
+    },
+    [],
+  );
+
+  /** Ticket 49 — the fly-out describes a model the user has NOT picked
+   *  yet. Its controls render as a read-only preview: no recorded pick is
+   *  highlighted (the record belongs to the active model) and the groups
+   *  are disabled — committing a setting for a non-active model has no
+   *  wire meaning under the current `/api/set-model` contract, which this
+   *  change must not touch. */
   const isDetailPreview = detailTarget != null && detailTarget.id !== value;
+
+  /**
+   * The node the open fly-out anchors to, resolved from the row map.
+   *
+   * Wrapped in a fresh object so `SettingsFlyout`'s layout effect sees a
+   * new identity when the anchor MOVES (hovering a different row) and
+   * re-measures. `null` before the row is registered — the fly-out then
+   * stays in its measured-but-unplaced state instead of jumping to 0,0.
+   */
+  const flyoutAnchor = useMemo<React.RefObject<HTMLElement>>(
+    () => ({
+      current: detailTarget ? (flyoutAnchorsRef.current.get(detailTarget.id) ?? null) : null,
+    }),
+    [detailTarget],
+  );
 
   /**
    * The active model — the bottom detail area's constant target
@@ -1423,13 +1648,22 @@ function ModelSelect({
     activeDraft?.contextWindow !== undefined ? activeDraft.contextWindow : contextWindow;
 
   /**
-   * Ticket 49 batch 2 — the side column's setting picks. Only the
-   * active model's controls are interactive (a preview is disabled at
-   * the render layer; the guard here is defence in depth), so every
-   * live pick records its draft under the active id and hands the
-   * wire decision to the parent — the SAME `{thinking}` /
-   * `{model, contextWindow}` payloads the composer-level controls
-   * send. Picks never close the menu (A4).
+   * The fly-out's setting picks. Only the active model's controls are
+   * interactive (a preview is disabled at the render layer; the guard
+   * here is defence in depth), so every live pick records its draft under
+   * the active id and hands the wire decision to the parent — the SAME
+   * `{thinking}` / `{model, contextWindow}` payloads the composer-level
+   * controls send. No request body changes.
+   *
+   * The two tiers close differently, and that asymmetry IS the
+   * reference's completion rule ("有二级菜单的，点击二级菜单后才是整个
+   * 选择逻辑完成"):
+   *
+   *   - the thinking switch lives in the FIRST tier, so it records and
+   *     leaves the fly-out open — a level and a context window are meant
+   *     to be adjusted in one visit;
+   *   - a context window can only be chosen in the SECOND tier, so that
+   *     pick is where the whole selection completes and the menu closes.
    */
   const handleDetailThinkingPick = useCallback(
     (level: string) => {
@@ -1447,6 +1681,9 @@ function ModelSelect({
         [value]: { ...prev[value], contextWindow: windowValue },
       }));
       onContextPick?.(windowValue);
+      // The second tier is the completing tier — see the note above.
+      setFlyoutFor(null);
+      setOpen(false);
     },
     [value, onContextPick],
   );
@@ -1457,12 +1694,11 @@ function ModelSelect({
     if (!open) setDrafts({});
   }, [open]);
 
-  // The active model changing (a pick, a session reset) ends the
-  // preview: the settings column falls back to describing whatever is
-  // now active, not whatever the pointer was last over.
-  useEffect(() => {
-    setFocusedModelId(null);
-  }, [value]);
+  // NB: the active model changing does NOT retract the fly-out. Picking a
+  // model row is the step that makes its fly-out LIVE (it leaves preview
+  // and becomes the recorded model), so clearing the fly-out on `value`
+  // would close the surface between the pick and the second-tier pick
+  // that completes the selection — the exact flow the reference has.
 
   /**
    * Move between model rows with the arrow keys.
@@ -1477,32 +1713,47 @@ function ModelSelect({
    * them: a long catalogue makes walking row by row the only way to
    * reach the far end.
    */
-  const handleListKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
-    const list = listScrollRef.current;
-    if (!list) return;
-    const delta =
-      event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : 0;
-    const jump = event.key === "Home" ? "first" : event.key === "End" ? "last" : null;
-    if (delta === 0 && !jump) return;
-    const rows = Array.from(
-      list.querySelectorAll<HTMLElement>(
-        '[data-testid^="model-select-model-option-"]:not([disabled])',
-      ),
-    );
-    if (rows.length === 0) return;
-    event.preventDefault();
-    if (jump === "first") {
-      rows[0]?.focus();
-      return;
-    }
-    if (jump === "last") {
-      rows[rows.length - 1]?.focus();
-      return;
-    }
-    const current = rows.indexOf(document.activeElement as HTMLElement);
-    const base = current >= 0 ? current : 0;
-    rows[((base + delta) % rows.length + rows.length) % rows.length]?.focus();
-  }, []);
+  const handleListKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLDivElement>) => {
+      const list = listScrollRef.current;
+      if (!list) return;
+      // Escape on the list retracts the fly-out one tier before it lets
+      // antd close the whole dropdown — inside a cascade, the first Escape
+      // backs out of the current tier, the second closes.
+      if (event.key === "Escape") {
+        if (flyoutFor != null) {
+          event.preventDefault();
+          event.stopPropagation();
+          cancelFlyoutClose();
+          setFlyoutFor(null);
+        }
+        return;
+      }
+      const delta =
+        event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : 0;
+      const jump = event.key === "Home" ? "first" : event.key === "End" ? "last" : null;
+      if (delta === 0 && !jump) return;
+      const rows = Array.from(
+        list.querySelectorAll<HTMLElement>(
+          '[data-testid^="model-select-model-option-"]:not([disabled])',
+        ),
+      );
+      if (rows.length === 0) return;
+      event.preventDefault();
+      if (jump === "first") {
+        rows[0]?.focus();
+        return;
+      }
+      if (jump === "last") {
+        rows[rows.length - 1]?.focus();
+        return;
+      }
+      const current = rows.indexOf(document.activeElement as HTMLElement);
+      const base = current >= 0 ? current : 0;
+      rows[((base + delta) % rows.length + rows.length) % rows.length]?.focus();
+    },
+    [flyoutFor, cancelFlyoutClose],
+  );
 
   /**
    * Scroll the active model row into view when the dropdown opens.
@@ -1546,7 +1797,12 @@ function ModelSelect({
       open={open}
       onOpenChange={(next) => {
         setOpen(next);
-        if (!next) setFocusedModelId(null);
+        // Closing retracts the cascade with the panel — a fly-out anchored
+        // to a row that is no longer rendered has nothing to anchor to.
+        if (!next) {
+          setFlyoutFor(null);
+          cancelFlyoutClose();
+        }
       }}
       trigger={["click"]}
       placement="bottomRight"
@@ -1564,8 +1820,7 @@ function ModelSelect({
           {models.length === 0 ? (
             <SelectRow testId="model-select-empty" label={t("composer.noModels")} />
           ) : (
-            <div className="flex items-stretch" data-webui-model-menu="true">
-              <div className="flex flex-col">
+            <div className="flex flex-col" data-webui-model-menu="true">
               {/* Top "Add provider" affordance (ticket 09). One-click
                   jump to the management panel's add flow. */}
               {onAddProvider ? (
@@ -1639,14 +1894,18 @@ function ModelSelect({
                     {group.models.map((model) => {
                       const isActiveModel = model.id === value;
                       const supported = model.thinkingLevels ?? [];
+                      const hasSettings = modelHasSettings(model);
                       return (
                         <div
                           key={model.id}
                           ref={(node) => {
                             if (isActiveModel) selectedRowRef.current = node;
+                            if (node) flyoutAnchorsRef.current.set(model.id, node);
+                            else flyoutAnchorsRef.current.delete(model.id);
                           }}
                           data-testid={`model-select-model-wrap-${modelSlug(model.id)}`}
                           data-active-model={isActiveModel ? "true" : "false"}
+                          data-has-settings={hasSettings ? "true" : "false"}
                           className="rounded-[8px]"
                         >
                           <SelectRow
@@ -1672,21 +1931,51 @@ function ModelSelect({
                               </>
                             }
                             onMouseEnter={() => {
-                              if (!disabled) setFocusedModelId(model.id);
+                              if (disabled) return;
+                              cancelFlyoutClose();
+                              // A model with nothing to configure has no
+                              // second tier, so it never grows a fly-out —
+                              // its click IS the whole selection.
+                              if (hasSettings) setFlyoutFor(model.id);
+                            }}
+                            onMouseLeave={() => {
+                              if (disabled) return;
+                              scheduleFlyoutClose();
                             }}
                             onFocus={() => {
-                              if (!disabled) setFocusedModelId(model.id);
+                              // Keyboard reaches the same surface as the
+                              // cursor: the arrow engine focuses a row, and
+                              // a fly-out that only answered the mouse
+                              // would leave a keyboard user unable to
+                              // configure anything.
+                              if (disabled || !hasSettings) return;
+                              cancelFlyoutClose();
+                              setFlyoutFor(model.id);
                             }}
+                            onBlur={scheduleFlyoutClose}
                             onClick={() => {
                               if (disabled) return;
-                              setOpen(false);
-                              setFocusedModelId(null);
                               // The wire path is unchanged: the model id
                               // travels alone, and the parent decides
                               // whether the recorded effort has to be
                               // cleared with it (the new model may not
                               // offer the level that was recorded).
                               onPick(model.id);
+                              if (hasSettings) {
+                                // Not complete yet: the pick makes this
+                                // model's fly-out live instead of a preview,
+                                // and the selection finishes in the second
+                                // tier (a context window) — or simply by
+                                // leaving this row, for a model that only
+                                // has the thinking switch.
+                                cancelFlyoutClose();
+                                setFlyoutFor(model.id);
+                                return;
+                              }
+                              // No second tier → the click is the whole
+                              // selection, so the picker closes on it.
+                              setFlyoutFor(null);
+                              setOpen(false);
                             }}
                           />
                         </div>
@@ -1696,42 +1985,44 @@ function ModelSelect({
                 );
                 })}
               </div>
-            </div>
                 {/*
-                  The reference picker's detail column (its
-                  `webui-model-menu-detail`), in the main panel. It follows
-                  the focused model row (preview; nothing focused → the
-                  active model), renders the adaptive effort control and
-                  the context single-select through the shared
-                  ModelSettingsDetail, and every pick rides the SAME draft
-                  mirror (A7) and wire path — `{thinking}` /
-                  `{model, contextWindow}` — with no request-body change
-                  (A9) and no menu close on a setting pick (A4).
+                  The cascade's FIRST TIER: the hovered (or focused)
+                  model's settings, flying out one tier deeper than the
+                  row that owns it. Not a column — the reference reserves
+                  no width for settings, and a permanent column is what
+                  turned this into "one popup showing two models' worth
+                  of controls" when a row that could have been picked
+                  outright was sitting next to it.
 
-                  This is the picker's ONLY settings surface. It used to
-                  render a second copy of the same controls in a
-                  panel-bottom area: one popup, two copies of the same
-                  switches, and no way for a user to tell which one was
-                  authoritative.
+                  Rendered inside the panel so the portal-less
+                  `position: fixed` still escapes the list's own
+                  `overflow-y: auto`, and so it unmounts with the panel.
                 */}
-                <div
-                  data-testid="model-select-panel-detail-column"
-                  className="thin-scrollbar max-h-[60vh] w-64 shrink-0 self-stretch overflow-y-auto border-l border-border_default py-1 pl-1"
-                >
-                  <ModelSettingsDetail
-                    t={t}
-                    containerTestId="model-panel-detail"
-                    detailPrefix="model-panel-detail"
-                    contextPrefix="model-panel-context"
-                    target={detailTarget}
-                    preview={isDetailPreview}
-                    thinking={activeThinking}
-                    contextWindow={activeContextWindow}
-                    thinkingDisabled={thinkingDisabled}
-                    onThinkingPick={handleDetailThinkingPick}
-                    onContextPick={handleDetailContextPick}
-                  />
-                </div>
+                {detailTarget ? (
+                  <SettingsFlyout
+                    testId="model-settings-flyout"
+                    ariaLabel={t("modelSelector.thinkingLevels")}
+                    anchorRef={flyoutAnchor}
+                    onMouseEnter={cancelFlyoutClose}
+                    onFocusEnter={cancelFlyoutClose}
+                    onMouseLeave={scheduleFlyoutClose}
+                    onBack={() => setFlyoutFor(null)}
+                  >
+                    <ModelSettingsDetail
+                      t={t}
+                      containerTestId="model-settings-detail"
+                      detailPrefix="model-settings"
+                      contextPrefix="model-settings-context"
+                      target={detailTarget}
+                      preview={isDetailPreview}
+                      thinking={activeThinking}
+                      contextWindow={activeContextWindow}
+                      thinkingDisabled={thinkingDisabled}
+                      onThinkingPick={handleDetailThinkingPick}
+                      onContextPick={handleDetailContextPick}
+                    />
+                  </SettingsFlyout>
+                ) : null}
               </div>
           )}
         </SelectPanel>
@@ -1896,35 +2187,29 @@ function ModelSettingsDetail({
         </div>
       ) : (
         <>
-          <div className="flex min-w-0 items-baseline gap-1.5 px-1 pb-1">
-            <span
-              data-testid={`${detailPrefix}-model`}
-              className="truncate text-caption-small-strong uppercase tracking-wide text-text_default_tertiary"
-            >
-              {modelDisplayName(target.label) || target.id}
-            </span>
-            {preview ? (
-              <span
-                data-testid={`${detailPrefix}-preview`}
-                className="shrink-0 text-[10px] text-text_default_tertiary"
-              >
-                {t("modelSelector.detailPreview")}
-              </span>
-            ) : null}
-          </div>
+          {/*
+            The reference's fly-out body: NO model name header. The fly-out
+            is anchored to the row it describes and that row already carries
+            the ✓, so naming the model again is a second answer to a
+            question the list just answered.
+
+            Two rows, in the reference's order: 思考 with its control on the
+            right of the label, then 上下文窗口 with the current value as a
+            row that opens the SECOND tier.
+          */}
           {levels.length > 0 ? (
             <div data-testid={`${detailPrefix}-levels`} className="px-1 pb-1">
-              <div className="pb-0.5 text-caption-small-strong uppercase tracking-wide text-text_default_tertiary">
-                {t("modelSelector.thinkingLevels")}
-              </div>
-              {effortShape === "switch" ? (
-                /* A3 binary form: the off/on pair renders as one
-                 * switch. No `default` entry here — the reference
-                 * treats switchable thinking as pure on/off; the
-                 * engine-default reset stays reachable through the
-                 * composer-level control's "Default" row
-                 * and the radio group's `default` option elsewhere. */
-                <div className="flex items-center gap-2 px-0.5 py-0.5">
+              <div className="flex items-center gap-2 px-0.5 py-0.5">
+                <span className="min-w-0 flex-1 text-caption-small text-text_default_secondary">
+                  {t("modelSelector.thinkingLevels")}
+                </span>
+                {effortShape === "switch" ? (
+                  /* A3 binary form: the off/on pair renders as one
+                   * switch. No `default` entry here — the reference
+                   * treats switchable thinking as pure on/off; the
+                   * engine-default reset stays reachable through the
+                   * composer-level control's "Default" row
+                   * and the radio group's `default` option elsewhere. */
                   <button
                     type="button"
                     role="switch"
@@ -1954,72 +2239,66 @@ function ModelSettingsDetail({
                       ].join(" ")}
                     />
                   </button>
-                  <span className="text-caption-small text-text_default_secondary">
-                    {effortCurrent === "on" ? t("thinkingPicker.on") : t("thinkingPicker.off")}
-                  </span>
-                </div>
-              ) : (
-                /* The reference's level scale: one pickable ROW per
-                 * level, `default` first (submitted as `""`). Rows, not
-                 * pills — a wrapped pill row reads as a set of chips
-                 * rather than as a scale, and the two forms disagree
-                 * about which entry is current at a glance. Still a
-                 * `radiogroup` of `radio`s: a single-select from a set
-                 * of options is exactly that, and changing the semantics
-                 * to look more like the reference would cost the
-                 * screen-reader contract for nothing.
-                 *
-                 * A pick commits immediately and does NOT close the menu,
-                 * so a level and a context window can be adjusted in one
-                 * visit. */
-                <div
-                  role="radiogroup"
-                  aria-label={t("modelSelector.thinkingLevels")}
-                  data-testid={`${detailPrefix}-level-list`}
-                  className="flex flex-col"
-                >
-                  {effortOptions.map((option) => {
-                    const active = effortCurrent === option;
-                    return (
-                      <button
-                        key={option}
-                        type="button"
-                        role="radio"
-                        aria-checked={active}
-                        disabled={preview || thinkingDisabled}
-                        title={preview ? t("modelSelector.detailPreviewHint") : undefined}
-                        data-testid={`${detailPrefix}-level-option-${option}`}
-                        onClick={() => {
-                          onThinkingPick?.(option === "default" ? "" : option);
-                        }}
-                        className={[
-                          "flex items-center gap-1.5 rounded-[8px] px-2 py-1 text-left text-caption-small transition-colors",
-                          active
-                            ? "bg-bg_interaction_tertiary_hover text-text_default_primary"
-                            : "text-text_default_secondary",
-                          preview || thinkingDisabled
-                            ? "cursor-not-allowed"
-                            : "hover:bg-bg_interaction_tertiary_hover",
-                        ].join(" ")}
-                      >
-                        <span className="min-w-0 flex-1 truncate">
-                          {option === "default"
-                            ? t("thinkingPicker.none")
-                            : thinkingLevelLabel(t, option)}
-                        </span>
-                        {active ? (
-                          <Icon
-                            name="checkSmall"
-                            size={14}
-                            aria-hidden="true"
-                            className="text-text_default_primary"
-                          />
-                        ) : null}
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
+                ) : (
+                  /* The reference's level scale: one pickable ROW per
+                   * level, `default` first (submitted as `""`). Still a
+                   * `radiogroup` of `radio`s — a single-select from a set
+                   * of options is exactly that, and changing the semantics
+                   * to look more like the reference would cost the
+                   * screen-reader contract for nothing.
+                   *
+                   * A pick records immediately and does NOT close the
+                   * menu: this is the FIRST tier, so the visit continues
+                   * into the context window's second tier. */
+                  <div
+                    role="radiogroup"
+                    aria-label={t("modelSelector.thinkingLevels")}
+                    data-testid={`${detailPrefix}-level-list`}
+                    className="flex flex-col"
+                  >
+                    {effortOptions.map((option) => {
+                      const active = effortCurrent === option;
+                      return (
+                        <button
+                          key={option}
+                          type="button"
+                          role="radio"
+                          aria-checked={active}
+                          disabled={preview || thinkingDisabled}
+                          title={preview ? t("modelSelector.detailPreviewHint") : undefined}
+                          data-testid={`${detailPrefix}-level-option-${option}`}
+                          onClick={() => {
+                            onThinkingPick?.(option === "default" ? "" : option);
+                          }}
+                          className={[
+                            "flex items-center gap-1.5 rounded-[8px] px-2 py-1 text-left text-caption-small transition-colors",
+                            active
+                              ? "bg-bg_interaction_tertiary_hover text-text_default_primary"
+                              : "text-text_default_secondary",
+                            preview || thinkingDisabled
+                              ? "cursor-not-allowed"
+                              : "hover:bg-bg_interaction_tertiary_hover",
+                          ].join(" ")}
+                        >
+                          <span className="min-w-0 flex-1 truncate">
+                            {option === "default"
+                              ? t("thinkingPicker.none")
+                              : thinkingLevelLabel(t, option)}
+                          </span>
+                          {active ? (
+                            <Icon
+                              name="checkSmall"
+                              size={14}
+                              aria-hidden="true"
+                              className="text-text_default_primary"
+                            />
+                          ) : null}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
             </div>
           ) : null}
           {contextReady ? (
@@ -2029,8 +2308,8 @@ function ModelSettingsDetail({
               </div>
               {/*
                 `key={target.id}` resets the select's open state when the
-                settings column follows the pointer to another model, so
-                a list left open on one model does not greet the next one.
+                fly-out follows the cursor to another model, so a second
+                tier left open on one model does not greet the next one.
               */}
               <ContextWindowSelect
                 key={target.id}
@@ -2090,7 +2369,9 @@ function SelectRow({
   rightAdornment,
   onClick,
   onMouseEnter,
+  onMouseLeave,
   onFocus,
+  onBlur,
 }: {
   testId: string;
   icon?: IconName;
@@ -2099,12 +2380,20 @@ function SelectRow({
   disabled?: boolean;
   rightAdornment?: React.ReactNode;
   onClick?: () => void;
-  /** Report this row as the settings column's preview target. Both a
-   *  mouse and the keyboard count — the arrow-key engine moves focus,
-   *  and a column that only followed the mouse would freeze for a
-   *  keyboard user. */
+  /** Report this row as the settings fly-out's owner. Both a mouse and
+   *  the keyboard count — the arrow-key engine moves focus, and a
+   *  fly-out that only answered the mouse would leave a keyboard user
+   *  unable to configure anything. */
   onMouseEnter?: () => void;
+  /** Start the fly-out's close grace. Paired with `onMouseEnter` (and
+   *  `onFocus`) so crossing the gap between a row and its fly-out does
+   *  not retract the surface. */
+  onMouseLeave?: () => void;
   onFocus?: () => void;
+  /** The keyboard equivalent of leaving the row: focus moving on is the
+   *  same event as the cursor moving away, and without it a fly-out
+   *  would outlive the row it is anchored to. */
+  onBlur?: () => void;
 }) {
   return (
     <button
@@ -2115,7 +2404,9 @@ function SelectRow({
       disabled={disabled}
       onClick={onClick}
       onMouseEnter={onMouseEnter}
+      onMouseLeave={onMouseLeave}
       onFocus={onFocus}
+      onBlur={onBlur}
       className={[
         "flex w-full items-center gap-2 rounded-[8px] px-2 py-1 text-left transition-colors",
         disabled
@@ -2297,18 +2588,21 @@ function normalizeContextWindowOptions(options: unknown): number[] {
 }
 
 /**
- * The context-window single-select.
+ * The context-window row — and the cascade's second tier.
  *
- * Its own component so the disclosure state has a home: this is the only
- * part of the settings column that opens rather than sitting flat, and
- * hoisting that state into the parent would make every level pick
- * re-render an unrelated `useState`.
+ * The collapsed row shows the current value and a chevron; the options
+ * themselves fly out one tier deeper than that row, which is what makes
+ * this the reference's 展示右侧二 rather than an in-place disclosure.
+ *
+ * Its own component so the open state has a home: the open state follows
+ * the FIRST tier (it unmounts with it) and is the one piece of this
+ * fly-out that changes without the model changing, so hoisting it into
+ * the parent would re-render the whole surface on every toggle.
  *
  * What the collapsed row shows is the honest answer to "which window am
  * I on": the effective value when the model confirms one, and otherwise
  * the FIRST option in a muted style — a placeholder, not a selection. A
- * previewed (unpicked) model therefore shows no highlight at all, which
- * is what the preview marker beside it is for.
+ * previewed (unpicked) model therefore shows no highlight at all.
  */
 function ContextWindowSelect({
   t,
@@ -2332,12 +2626,41 @@ function ContextWindowSelect({
   onContextPick?: (value: number) => void;
 }) {
   const [open, setOpen] = useState(false);
+  /** The row the SECOND tier anchors to. Same engine as the first tier
+   *  (`useFlyoutPosition`), one tier deeper in the DOM. */
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  /** The second tier's own close grace, independent of the first tier's:
+   *  the cursor has to be able to cross the gap out of the context row,
+   *  into these options, and back. */
+  const closeTimerRef = useRef<number | null>(null);
+
+  const cancelClose = useCallback(() => {
+    if (closeTimerRef.current != null) {
+      window.clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = null;
+    }
+  }, []);
+
+  const scheduleClose = useCallback(() => {
+    cancelClose();
+    closeTimerRef.current = window.setTimeout(() => {
+      setOpen(false);
+      closeTimerRef.current = null;
+    }, 120);
+  }, [cancelClose]);
+
+  useEffect(() => {
+    if (!open) cancelClose();
+  }, [open, cancelClose]);
+  useEffect(() => cancelClose, [cancelClose]);
+
   const confirmed =
     typeof effective === "number" && options.includes(effective) ? effective : null;
   const shown = confirmed ?? options[0]!;
   return (
     <div data-testid={`${testIdPrefix}-select`}>
       <button
+        ref={triggerRef}
         type="button"
         aria-haspopup="listbox"
         aria-expanded={open}
@@ -2345,7 +2668,13 @@ function ContextWindowSelect({
         disabled={disabled}
         title={disabled ? t("modelSelector.detailPreviewHint") : undefined}
         data-testid={`${testIdPrefix}-select-trigger`}
-        onClick={() => setOpen((prev) => !prev)}
+        onMouseEnter={cancelClose}
+        onMouseLeave={scheduleClose}
+        onFocus={cancelClose}
+        onClick={() => {
+          cancelClose();
+          setOpen((prev) => !prev);
+        }}
         className={[
           "flex w-full items-center gap-1.5 rounded-[8px] border border-border_default px-2 py-1 text-caption-small text-text_default_primary transition-colors",
           disabled
@@ -2367,58 +2696,78 @@ function ContextWindowSelect({
         />
       </button>
       {open ? (
-        <div
-          role="listbox"
-          aria-label={t("modelSelector.contextWindow")}
-          data-testid={`${testIdPrefix}-select-list`}
-          className="mt-0.5 flex flex-col"
+        /*
+          The cascade's SECOND TIER — the reference's 展示右侧二. The
+          options fly out one tier deeper than the row that shows the
+          current value, rather than unfolding in place, because a list
+          that grows in place inside the first tier makes the first tier's
+          own height jump under the cursor.
+
+          It carries the same `role=listbox` / `role=option` /
+          `aria-selected` contract the in-place list had: the cascade got
+          deeper, the semantics did not change.
+        */
+        <SettingsFlyout
+          testId={`${testIdPrefix}-select-list`}
+          ariaLabel={t("modelSelector.contextWindow")}
+          anchorRef={triggerRef}
+          onMouseEnter={cancelClose}
+          onMouseLeave={scheduleClose}
+          onFocusEnter={cancelClose}
+          onBack={() => setOpen(false)}
         >
-          {options.map((windowValue) => {
-            const active = current === windowValue;
-            const higherUsage = hints?.[String(windowValue)] === "higher_usage";
-            return (
-              <button
-                key={windowValue}
-                type="button"
-                role="option"
-                aria-selected={active}
-                disabled={disabled}
-                data-testid={`${testIdPrefix}-option-${windowValue}`}
-                onClick={() => {
-                  setOpen(false);
-                  onContextPick?.(windowValue);
-                }}
-                className={[
-                  "flex items-center gap-1.5 rounded-[8px] px-2 py-1 text-left text-caption-small transition-colors",
-                  active
-                    ? "bg-bg_interaction_tertiary_hover text-text_default_primary"
-                    : "text-text_default_secondary",
-                  disabled ? "cursor-not-allowed" : "hover:bg-bg_interaction_tertiary_hover",
-                ].join(" ")}
-              >
-                <span className="min-w-0 flex-1 truncate">
-                  {formatContextWindow(windowValue)}
-                </span>
-                {higherUsage ? (
-                  <span
-                    data-testid={`${testIdPrefix}-hint-higher-usage`}
-                    className="shrink-0 text-text_default_tertiary"
-                  >
-                    {t("modelSelector.contextWindowHigherUsage")}
+          <div
+            role="listbox"
+            aria-label={t("modelSelector.contextWindow")}
+            className="flex flex-col"
+          >
+            {options.map((windowValue) => {
+              const active = current === windowValue;
+              const higherUsage = hints?.[String(windowValue)] === "higher_usage";
+              return (
+                <button
+                  key={windowValue}
+                  type="button"
+                  role="option"
+                  aria-selected={active}
+                  disabled={disabled}
+                  data-testid={`${testIdPrefix}-option-${windowValue}`}
+                  onClick={() => {
+                    setOpen(false);
+                    onContextPick?.(windowValue);
+                  }}
+                  className={[
+                    "flex items-center gap-1.5 rounded-[8px] px-2 py-1 text-left text-caption-small transition-colors",
+                    active
+                      ? "bg-bg_interaction_tertiary_hover text-text_default_primary"
+                      : "text-text_default_secondary",
+                    disabled ? "cursor-not-allowed" : "hover:bg-bg_interaction_tertiary_hover",
+                  ].join(" ")}
+                >
+                  <span className="min-w-0 flex-1 truncate">
+                    {formatContextWindow(windowValue)}
                   </span>
-                ) : null}
-                {active ? (
-                  <Icon
-                    name="checkSmall"
-                    size={14}
-                    aria-hidden="true"
-                    className="text-text_default_primary"
-                  />
-                ) : null}
-              </button>
-            );
-          })}
-        </div>
+                  {higherUsage ? (
+                    <span
+                      data-testid={`${testIdPrefix}-hint-higher-usage`}
+                      className="shrink-0 text-text_default_tertiary"
+                    >
+                      {t("modelSelector.contextWindowHigherUsage")}
+                    </span>
+                  ) : null}
+                  {active ? (
+                    <Icon
+                      name="checkSmall"
+                      size={14}
+                      aria-hidden="true"
+                      className="text-text_default_primary"
+                    />
+                  ) : null}
+                </button>
+              );
+            })}
+          </div>
+        </SettingsFlyout>
       ) : null}
     </div>
   );
