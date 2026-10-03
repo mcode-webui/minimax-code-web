@@ -1,16 +1,15 @@
 // webui/test/lib/engine/streaming-send.test.js
 //
-// M3-B8a: the STREAMING SEND family's PURE LAYER and its capability
-// gate — #12 POST /api/send.
+// M3-B8 (B8a + B8b): the STREAMING SEND family — #12 POST /api/send,
+// its capability gate, its pure stream bridge, its runtime runner and
+// its route branch.
 //
-// WHAT THIS SUITE DOES NOT COVER, stated first because a reader will
-// otherwise assume the endpoint is tested: #12 is not wired. B8a ships
-// the declaration, the gate and the derivations; B8b ships the runner
-// and the route branch. There is no route re-import in this file, no
-// `?bust=` marker control, and no assertion about a response body,
-// because there is no response to assert. The two red lines whose
-// evidence lives in the ROUTE (the draft promotion and the 409 claim)
-// are named below and deferred, with the reason.
+// B8a shipped the first half of this file against a module that had no
+// runner, so two of the three red lines could only be NAMED there. B8b
+// replaces that placeholder with the real assertions: section 5 drives
+// the actual `runMcodeRuntime` through a fake event stream and section 6
+// drives the actual route, both with the `?bust=` marker controls that
+// prove the mocks took.
 //
 // Sections are ordered by how much user-visible damage a regression in
 // each one does, not by which module the function came from:
@@ -47,7 +46,15 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { setupMocks, absPath } from "../../helpers/_setup.js";
+import { Readable } from "node:stream";
+
+import {
+  setupMocks,
+  absPath,
+  registerMcodeAcpMock,
+  registerSessionsStore,
+  getSessionsStore,
+} from "../../helpers/_setup.js";
 // Type discrimination goes through the exported predicate, never
 // `err.name`. `engine/capabilities.js` is never `mock.module`d by this
 // file, so the `instanceof` inside it resolves against the same class
@@ -69,14 +76,10 @@ const OTHER_SID = "mvs_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
  * Every name `engine/streaming-send.js` exports. The namespace, not a
  * subset.
  *
- * Three absences are deliberate and each is asserted by a named test
- * below, so the boundary between B8a and B8b is executable rather than
- * a promise in a report:
+ * One absence is deliberate and is asserted by a named test below, so
+ * the boundary between B8a and B8b stays executable rather than a
+ * promise in a report:
  *
- *   - `openEngineSendStream` / `projectSendAttachments` — the data
- *     plane. They are B8b's, and shipping them here would put host
- *     access and `await import()` on a module whose whole value is that
- *     it has neither.
  *   - `sendShouldPromoteDraft` — a predicate the ROUTE cannot use
  *     without narrowing its condition, which would be a behaviour
  *     change on the acp path. See the module's red-line-3 note.
@@ -87,6 +90,8 @@ const FACADE_EXPORTS = [
   "assertStreamingSendCapability",
   "checkStreamingSendCapability",
   "classifySendEvent",
+  "openEngineSendStream",
+  "projectSendAttachments",
   "resolveStreamingSendProvider",
   "rewriteDrainedAnswerLine",
   "sendSegmentAdvance",
@@ -97,9 +102,150 @@ const FACADE_EXPORTS = [
   "sendUsageTotals",
 ];
 
-/** A client state carrying only what the still-viewing test reads. */
+/** A minimal `ServerResponse` stand-in that records what was written. */
+function mkRes() {
+  const written = [];
+  return {
+    written,
+    writeHead(status, headers) {
+      written.push({ status, headers });
+      return this;
+    },
+    end(body) {
+      written.push({ body });
+      return this;
+    },
+  };
+}
+
+/** The last `writeHead` + `end` pair, as one observation. */
+function lastResponse(res) {
+  const head = res.written[res.written.length - 2];
+  const tail = res.written[res.written.length - 1];
+  assert.ok(head && head.status !== undefined, "the handler never wrote a head");
+  return {
+    status: head.status,
+    headers: head.headers,
+    body: tail ? tail.body : undefined,
+  };
+}
+
+/** A client state carrying only what the send path reads. */
 function mkCs(overrides = {}) {
-  return { sessionId: "webui-1", ...overrides };
+  return {
+    sessionId: "webui-1",
+    mcodeSessionId: null,
+    chat: [],
+    context: { thinkingStatus: "Idle", tps: 0 },
+    usage: { sessionInput: 0, sessionOutput: 0, sessionTotal: 0 },
+    model: { name: "minimax_api/MiniMax-M3" },
+    workspace: { dir: "/tmp/b8" },
+    plan: { active: false, planId: null, title: null, summary: "", options: [] },
+    running: { active: false, prompt: null, pid: null, sessionId: null, tps: 0 },
+    ...overrides,
+  };
+}
+
+/**
+ * A fake runtime event stream. Yields the given events in order and
+ * then completes — which is the case section 5's "ended without a
+ * terminal event" assertion needs to be able to produce.
+ */
+function mkStream(events, gate = null) {
+  return {
+    async *[Symbol.asyncIterator]() {
+      for (const e of events) {
+        if (e === THROW_MARKER) throw new Error("iterator exploded");
+        // A `GATE` element suspends the turn until the test opens it.
+        // Without one, a "mid-run" switch is a FICTION: the whole
+        // stream drains in one microtask batch, so anything the test
+        // does after a `setImmediate` yield happens AFTER finalize —
+        // and the run-mirror assertions then pass for the wrong reason.
+        // Mutation injection is what surfaced that; this is the fix.
+        if (e === GATE) {
+          if (gate) {
+            gate.markReached();
+            await gate.held;
+          }
+          continue;
+        }
+        yield e;
+      }
+    },
+    close() {},
+  };
+}
+const THROW_MARKER = Symbol("throw");
+/** Suspends `mkStream` until the returned gate's `open()` is called. */
+const GATE = Symbol("gate");
+
+/**
+ * A gate with EXPLICIT handles. The first cut used module-level mutable
+ * state and a `while (!reached) await setImmediate` spin, which leaked
+ * a ref'd handle whenever a case failed before opening the gate and
+ * hung the whole file. A returned object cannot be clobbered by a
+ * later case, and `await gate.reached` is a promise, not a poll.
+ *
+ * @returns {{open: () => void, held: Promise<void>, reached: Promise<void>}}
+ */
+function mkGate() {
+  let release;
+  const held = new Promise((resolve) => {
+    release = resolve;
+  });
+  let markReached;
+  const realReached = new Promise((resolve) => {
+    markReached = resolve;
+  });
+  // `reached` is BOUNDED, and that is the point. An unbounded await on
+  // an ordering that a sibling test file can perturb turns one bad
+  // ordering into a hung file, and node:test then aborts it with
+  // "Promise resolution is still pending but the event loop has already
+  // resolved" — which takes the WHOLE gate with it, not just this file.
+  // Racing a timeout makes the same failure one named red test.
+  const reached = Promise.race([
+    realReached,
+    new Promise((_, reject) =>
+      setTimeout(
+        () => reject(new Error("mkGate: the stream never reached its GATE within 2000ms")),
+        2000,
+      ).unref?.(),
+    ),
+  ]);
+  return {
+    held,
+    reached,
+    markReached,
+    open: () => release(),
+  };
+}
+
+/**
+ * Fresh-cache counter for the route re-imports in section 6.
+ *
+ * `mock.module` re-evaluates only the MOCKED specifier: a consumer
+ * already in the registry keeps its old LIVE BINDING, so a second test
+ * in the same file would silently reuse the first test's mock and pass
+ * for the wrong reason. Every route re-import below carries a fresh
+ * `?bust=N`, and section 6 ends with two marker controls that prove it.
+ */
+let bust = 0;
+
+/** A JSON request body the real `lib/read-json.js` can consume. */
+function jsonReq(body) {
+  return Readable.from([Buffer.from(JSON.stringify(body), "utf8")]);
+}
+
+/** Whole-namespace facade mock. Un-stubbed names THROW. */
+function mockFacade(t, impls) {
+  const namedExports = {};
+  for (const name of FACADE_EXPORTS) {
+    namedExports[name] = () => {
+      throw new Error(`B8 test called engine/streaming-send.js#${name}, which this case did not stub`);
+    };
+  }
+  Object.assign(namedExports, impls);
+  t.mock.module(absPath("engine/streaming-send.js"), { namedExports });
 }
 
 /** The `TuiStreamEvent` shapes the bridge has to understand. */
@@ -171,36 +317,35 @@ describe("the whole-namespace mock lists stay whole", () => {
     assert.deepEqual([...FACADE_EXPORTS].sort(), real);
   });
 
-  test("the data plane is B8b's — this layer has no host access at all", async (t) => {
-    // The reason B8a is a separate batch is this assertion: the module
-    // is pure, so it can be reviewed and trusted on its own. A stray
-    // `openEngineSendStream` would put host access and `await import()`
-    // on a module whose whole value is that it has neither, and it would
-    // do it invisibly — nothing would fail until the boot path got
-    // heavier.
+  test("the data plane is reached ONLY through `await import()`", async (t) => {
+    // B8a's justification for being its own batch was that this module
+    // had no IO at all. B8b gave it a data plane, so the claim has to
+    // change shape rather than be deleted: the host graph must now be
+    // reachable ONLY from inside the two data-plane functions, or an
+    // acp-only server would boot the runtime on every start — which is
+    // the exact regression M1 already paid for once.
     const facade = await bootFacade(t);
-    assert.equal("openEngineSendStream" in facade, false);
-    assert.equal("projectSendAttachments" in facade, false);
-    // And the source really has no dynamic import, which is the same
-    // claim stated about the text rather than the namespace. A static
-    // tripwire is the right shape here: there is no runtime harness in
-    // B8a that could observe a boot-weight regression otherwise.
+    assert.equal(typeof facade.openEngineSendStream, "function");
+    assert.equal(typeof facade.projectSendAttachments, "function");
     const src = readFileSync(fileURLToPath(absPath("engine/streaming-send.js")), "utf8");
-    // Comments are stripped first, and that is not a detail: this
-    // module's own header DISCUSSES `await import()` in prose, so a
-    // naive text search would fail on the documentation of the thing it
-    // is forbidding. What the assertion is about is the executable text.
-    const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
-    assert.equal(
-      /\bawait\s+import\s*\(/.test(code),
-      false,
-      "a pure layer that reaches for a dynamic import is not a pure layer",
+    const code = src
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/^\s*\/\/.*$/gm, "");
+    // The data plane resolves its three dependencies in ONE
+    // `Promise.all([...])`, so the count is three even though there is
+    // a single call site. What matters is that every one of them is
+    // dynamic: a STATIC import of any of the three would put the
+    // runtime host graph on the boot path of an acp-only server.
+    const dynamic = code.match(/(?<![.\w])import\s*\(/g) || [];
+    assert.deepEqual(dynamic, ["import(", "import(", "import("], JSON.stringify(dynamic));
+    const staticFrom = [...code.matchAll(/^import\s[^;]*?from\s+"([^"]+)";/gm)].map((m) => m[1]);
+    assert.deepEqual(
+      staticFrom,
+      ["./index.js", "./capabilities.js"],
+      "a new STATIC import here is a boot-path regression on acp-only servers: " +
+        JSON.stringify(staticFrom),
     );
-    assert.equal(
-      /\brequire\s*\(/.test(code),
-      false,
-      "CJS has no place in an ESM facade module either",
-    );
+    assert.equal(/\brequire\s*\(/.test(code), false, "CJS has no place in an ESM facade module");
   });
 
   test("the removed `sendShouldPromoteDraft` stays removed", async (t) => {
@@ -418,21 +563,22 @@ describe("RED LINE 2 — the finalize drain's `●` rewrite", () => {
   });
 });
 
-describe("RED LINE 3 + 4 — the promotion and the 409 claim are the ROUTE's", () => {
+describe("RED LINES 3 + 4 — the promotion and the 409 claim are the ROUTE's", () => {
   // Both are structural: they live in the route tail after the
   // transport branch, so they cannot differ between transports. What
   // matters is proving that against the real runner, which needs the
-  // route — B8b's job. Asserting it here would be a test of a comment,
-  // so the honest thing is to name the gap rather than fill it with a
-  // placeholder that passes.
-  test("DEFERRED to B8b — this layer owns no predicate for either", async (t) => {
+  // route — section 6 does exactly that, end to end, with the real
+  // `runMcodeRuntime` and a fake host. This block states only the
+  // negative that section 6 depends on: neither red line has a
+  // derivation here, so the runner cannot re-derive one and drift.
+  test("neither red line has a derivation in this layer", async (t) => {
     const facade = await bootFacade(t);
-    // The claim B8a can make today: neither red line has a derivation
-    // here, which is the design (see the module's red-line-3 note for
-    // the promotion; the claim was never a derivation at all). B8b
-    // replaces this with the real route assertions.
     assert.equal("sendShouldPromoteDraft" in facade, false);
-    assert.equal(FACADE_EXPORTS.some((n) => /claim|promote/i.test(n)), false);
+    assert.equal(
+      FACADE_EXPORTS.some((n) => /claim|promote/i.test(n)),
+      false,
+      "a claim or promotion predicate here would be a second answer to a question the route already answers",
+    );
   });
 });
 
@@ -882,3 +1028,760 @@ describe("usage projection", () => {
     );
   });
 });
+
+// ===========================================================================
+// 5. The data plane (B8b)
+// ===========================================================================
+
+describe("the attachment projection", () => {
+  test("webui's `{path, name, size}` becomes the runtime's `{meta, local}` pair", async (t) => {
+    const facade = await bootFacade(t);
+    const out = facade.projectSendAttachments([{ path: "/u/a.png", name: "a.png", size: 12 }], {
+      MAX_ATTACHMENTS_PER_TURN: 16,
+    });
+    assert.deepEqual(out, [
+      {
+        meta: {
+          attachmentType: "file",
+          fileName: "a.png",
+          mimeType: "application/octet-stream",
+          sizeBytes: 12,
+        },
+        local: { filePath: "/u/a.png" },
+      },
+    ]);
+  });
+
+  test("the mime type is the honest default, never a guess (KNOWN DEBT 2)", async (t) => {
+    const facade = await bootFacade(t);
+    const [one] = facade.projectSendAttachments([{ path: "/u/a.png", name: "a.png" }], {});
+    // webui's upload pipeline discards the type, so the runtime is told
+    // octet-stream rather than a value invented here.
+    assert.equal(one.meta.mimeType, "application/octet-stream");
+  });
+
+  test("REVERSE: an empty, missing or oversized list is bounded, never a throw", async (t) => {
+    const facade = await bootFacade(t);
+    assert.deepEqual(facade.projectSendAttachments([], {}), []);
+    assert.deepEqual(facade.projectSendAttachments(null, {}), []);
+    assert.deepEqual(facade.projectSendAttachments(undefined, {}), []);
+    const many = Array.from({ length: 5 }, (_, i) => ({ path: `/u/${i}`, name: `${i}` }));
+    assert.equal(facade.projectSendAttachments(many, { MAX_ATTACHMENTS_PER_TURN: 2 }).length, 2);
+  });
+
+  test("REVERSE: a nameless attachment still gets a filename", async (t) => {
+    const facade = await bootFacade(t);
+    const [one] = facade.projectSendAttachments([{ path: "/u/x" }], {});
+    assert.equal(one.meta.fileName, "attachment");
+  });
+});
+
+describe("opening a runtime turn", () => {
+  test("a first turn CREATES the session and sends the content on it", async (t) => {
+    const facade = await bootFacade(t);
+    const seen = { created: null, sent: null };
+    const catalogue = {
+      adapter: {
+        createSession: async (input) => {
+          seen.created = input;
+          return { sessionId: SID };
+        },
+      },
+    };
+    const stream = mkStream([]);
+    const turn = { sendMessage: (req) => { seen.sent = req; return stream; }, close() {} };
+    const r = await facade.openEngineSendStream({
+      sessionId: null,
+      content: "hello",
+      workspaceDir: "/w",
+      deps: { getHost: async () => catalogue, createTurnHost: () => turn },
+    });
+    assert.equal(r.ok, true);
+    assert.equal(r.sessionId, SID);
+    assert.deepEqual(seen.created, { workspaceDir: "/w" });
+    assert.equal(seen.sent.id, SID);
+    assert.equal(seen.sent.content, "hello");
+  });
+
+  test("an EXISTING session is reused — no createSession call at all", async (t) => {
+    const facade = await bootFacade(t);
+    let created = 0;
+    const catalogue = { adapter: { createSession: async () => { created += 1; return {}; } } };
+    const turn = { sendMessage: () => mkStream([]), close() {} };
+    const r = await facade.openEngineSendStream({
+      sessionId: SID,
+      content: "x",
+      workspaceDir: "/w",
+      deps: { getHost: async () => catalogue, createTurnHost: () => turn },
+    });
+    assert.equal(r.ok, true);
+    assert.equal(r.sessionId, SID);
+    assert.equal(created, 0, "a second turn must not fork a new engine conversation");
+  });
+
+  test("a host that never booted is a failure, NOT a silent empty stream", async (t) => {
+    const facade = await bootFacade(t);
+    const r = await facade.openEngineSendStream({
+      sessionId: SID,
+      content: "x",
+      deps: { getHost: async () => null, createTurnHost: () => ({}) },
+    });
+    assert.equal(r.ok, false);
+    assert.equal(r.sessionId, SID, "the existing session is still reported for the error path");
+    assert.ok(r.message.includes("unavailable"));
+  });
+
+  test("a createSession that returns no id fails loudly rather than sending nowhere", async (t) => {
+    const facade = await bootFacade(t);
+    let sent = 0;
+    const catalogue = { adapter: { createSession: async () => ({}) } };
+    const turn = { sendMessage: () => { sent += 1; return mkStream([]); }, close() {} };
+    const r = await facade.openEngineSendStream({
+      sessionId: null,
+      content: "x",
+      deps: { getHost: async () => catalogue, createTurnHost: () => turn },
+    });
+    assert.equal(r.ok, false);
+    assert.equal(sent, 0, "a turn with no session has nowhere to go");
+  });
+
+  test("a throwing host wrapper is a failure, and the turn host is not leaked", async (t) => {
+    const facade = await bootFacade(t);
+    const r = await facade.openEngineSendStream({
+      sessionId: SID,
+      content: "x",
+      deps: {
+        getHost: async () => ({ adapter: {} }),
+        createTurnHost: () => {
+          throw new Error("adapter missing");
+        },
+      },
+    });
+    assert.equal(r.ok, false);
+    assert.equal(r.message, "adapter missing");
+  });
+});
+
+
+// ===========================================================================
+// 6. The runtime runner writes webui lines
+// ===========================================================================
+
+// ===========================================================================
+// 5. The route and the runner, with the proof that each mock took
+// ===========================================================================
+
+/**
+ * The real `lib/mcode-acp.js` runtime runner, driven by a fake host.
+ *
+ * `openEngineSendStream` is the ONLY seam, so replacing it is enough to
+ * drive the entire imperative half — the line writes, the segment
+ * accumulation, the tool headers, the finalize, the run-mirror writes
+ * — without a runtime, a host, or a clock. This is the coverage the
+ * pure layer cannot give: the bridge being right is not the same as
+ * the runner USING it right.
+ */
+async function bootRuntimeRunner(t, { events, sid = SID, turnHost, gate = null }) {
+  // `mavis` is mocked for a reason that is not hygiene: the runner's
+  // finalize fires a 400 ms post-turn re-query through
+  // `applyMavisUsageToCs`, and the REAL one spawns a `sqlite3`
+  // subprocess against a real data dir. Every runner case would
+  // otherwise leave a live child behind, and one leaked handle hangs
+  // the whole file (it did — 280 s, reported as one failure).
+  await setupMocks(t, { mavis: { applyMavisUsageToCs: async () => ({}) } });
+  let sent = null;
+  const facade = await import(absPath("engine/streaming-send.js"));
+  const opened = {
+    ok: true,
+    sessionId: sid,
+    stream: mkStream(events, gate),
+    turnHost: turnHost || { close() {} },
+  };
+  t.mock.module(absPath("engine/streaming-send.js"), {
+    namedExports: {
+      ...facade,
+      openEngineSendStream: async (req) => {
+        sent = req;
+        return opened;
+      },
+    },
+  });
+  const acp = await import(`${absPath("lib/mcode-acp.js")}?bust=${bust++}`);
+  return { acp, facade, getSent: () => sent, opened };
+}
+
+/** The lines the run-chat buffer holds after a turn, plus the drain. */
+function drainedLines(cid, sid) {
+  const bus = require_bus();
+  return bus.drainRunChat(cid, sid);
+}
+let _bus = null;
+function require_bus() {
+  return _bus;
+}
+
+describe("the runtime runner writes webui lines", () => {
+  test("a text turn renders `▲` then `●`, strips the cursor, and answers", async (t) => {
+    const { acp } = await bootRuntimeRunner(t, {
+      events: [
+        EV.started,
+        EV.deltaThinking("先读文件"),
+        EV.deltaThinking("再改"),
+        EV.deltaText("改好"),
+        EV.deltaText("了"),
+        EV.settled({ content: "改好了", finishReason: "stop", id: "msg-1" }),
+        EV.finished,
+      ],
+    });
+    const bus = (await import(absPath("lib/state-bus.js")));
+    _bus = bus;
+    const cs = mkCs();
+    const r = await acp.runMcodeRuntime("改一下文件", {
+      label: "prompt",
+      sessionId: null,
+      cs,
+      cid: "b8-lines",
+      owningWebuiSessionId: "webui-1",
+    });
+    assert.equal(r.status, "succeeded");
+    // The accumulator is per-segment: two thinking deltas concatenate
+    // into one `▲` line, and the tool-free text segment starts its own
+    // `●` line.
+    assert.equal(r.thinking, "先读文件再改");
+    assert.equal(r.answer, "改好了", "the settled message overwrites the accumulated segment");
+    assert.equal(r.stopReason, "stop");
+    assert.equal(r.assistantMessageId, "msg-1");
+    const lines = bus.drainRunChat("b8-lines", SID);
+    assert.ok(lines.some((l) => l.startsWith("▲ 先读文件再改")), JSON.stringify(lines));
+    assert.ok(lines.some((l) => l.startsWith("● 改好了")), JSON.stringify(lines));
+    // finalize strips every streaming cursor and writes the two
+    // transcript markers the ACP runner writes.
+    assert.equal(
+      lines.some((l) => typeof l === "string" && l.endsWith(" ▍")),
+      false,
+      "an un-stripped cursor leaves the block flickering forever",
+    );
+    assert.ok(lines.some((l) => l.startsWith("§§ processed_duration=")));
+    assert.ok(lines.some((l) => l === "§§ turn_msg=msg-1"));
+    // And the panel is back at rest.
+    assert.equal(cs.running.active, false);
+    assert.equal(cs.context.thinkingStatus, "Idle");
+  });
+
+  test("a tool call emits the `##tc:` marker and a `→ name` header ONCE per call", async (t) => {
+    // The runtime re-sends the whole tool call on every lifecycle chunk.
+    // A header per chunk would be a different tool block per stage.
+    const { acp } = await bootRuntimeRunner(t, {
+      events: [
+        EV.deltaTool([EV.tool({ status: 4 })]),
+        EV.deltaTool([EV.tool({ status: 5 })]),
+        EV.deltaTool([EV.tool({ status: 1 })]),
+        EV.deltaText("reading"),
+        EV.deltaTool([EV.tool({ status: 2, output: "file body" })]),
+        EV.settled({ content: "reading" }),
+        EV.done,
+      ],
+    });
+    const bus = (await import(absPath("lib/state-bus.js")));
+    const cs = mkCs();
+    await acp.runMcodeRuntime("读文件", {
+      sessionId: null,
+      cs,
+      cid: "b8-tool",
+      owningWebuiSessionId: "webui-1",
+    });
+    const lines = bus.drainRunChat("b8-tool", SID);
+    const headers = lines.filter((l) => typeof l === "string" && l.startsWith("→ "));
+    const markers = lines.filter((l) => typeof l === "string" && l.startsWith("##tc:"));
+    assert.equal(headers.length, 1, JSON.stringify(lines));
+    assert.equal(headers[0], "→ read  {\"path\":\"/tmp/a\"}");
+    assert.equal(markers.length, 1, JSON.stringify(lines));
+    assert.equal(markers[0], "##tc:tc-1");
+    // The finished stage's body lands under the header.
+    assert.ok(lines.some((l) => l === "  [completed]"), JSON.stringify(lines));
+    assert.ok(lines.some((l) => l === "  file body"), JSON.stringify(lines));
+  });
+
+  test("a tool call breaks the text segment — the next `●` starts a new line", async (t) => {
+    const { acp } = await bootRuntimeRunner(t, {
+      events: [
+        EV.deltaText("first"),
+        EV.deltaTool([EV.tool({ status: 1 })]),
+        EV.deltaText("second"),
+        EV.settled({ content: "second" }),
+        EV.done,
+      ],
+    });
+    const bus = (await import(absPath("lib/state-bus.js")));
+    await acp.runMcodeRuntime("x", {
+      sessionId: null,
+      cs: mkCs(),
+      cid: "b8-seg",
+      owningWebuiSessionId: "webui-1",
+    });
+    const lines = bus.drainRunChat("b8-seg", SID);
+    const answers = lines.filter((l) => typeof l === "string" && l.startsWith("● "));
+    // Two segments means two lines, and the second does NOT contain
+    // "first" — that is the session-isolation/06 bug this mirrors.
+    assert.equal(answers.length, 2, JSON.stringify(lines));
+    assert.equal(answers[0], "● first");
+    assert.equal(answers[1], "● second");
+  });
+
+  test("an error turn resolves `failed` with the runtime's own message", async (t) => {
+    const { acp } = await bootRuntimeRunner(t, {
+      events: [EV.deltaText("partial"), EV.error("runtime exploded"), EV.done],
+    });
+    const cs = mkCs();
+    const r = await acp.runMcodeRuntime("x", {
+      sessionId: null,
+      cs,
+      cid: "b8-err",
+      owningWebuiSessionId: "webui-1",
+    });
+    assert.equal(r.status, "failed");
+    assert.equal(r.error.message, "runtime exploded");
+    assert.equal(cs.running.active, false, "a failed turn still finalizes; the claim is released");
+  });
+
+  test("an ABORT resolves `aborted`, not `failed` — a stop is a user action", async (t) => {
+    const { acp } = await bootRuntimeRunner(t, {
+      events: [EV.deltaText("partial"), EV.aborted],
+    });
+    const r = await acp.runMcodeRuntime("x", {
+      sessionId: null,
+      cs: mkCs(),
+      cid: "b8-abort",
+      owningWebuiSessionId: "webui-1",
+    });
+    // The route's error branch is gated on `status === "failed"`, so
+    // this is what keeps a stop from firing an error alert.
+    assert.equal(r.status, "aborted");
+    assert.equal(r.error, null);
+  });
+
+  test("a stream that ends with no terminal event is a FAILURE, not a silent success", async (t) => {
+    // Truncation would otherwise render an unfinished turn as a
+    // complete one, which is #110's fake success with a different
+    // vocabulary.
+    const { acp } = await bootRuntimeRunner(t, { events: [EV.deltaText("half")] });
+    const r = await acp.runMcodeRuntime("x", {
+      sessionId: null,
+      cs: mkCs(),
+      cid: "b8-trunc",
+      owningWebuiSessionId: "webui-1",
+    });
+    assert.equal(r.status, "failed");
+    assert.ok(r.error.message.includes("without a terminal event"));
+  });
+
+  test("a throwing iterator is a failure, and the turn host is closed", async (t) => {
+    let closed = 0;
+    const { acp } = await bootRuntimeRunner(t, {
+      events: [EV.deltaText("x"), THROW_MARKER],
+      turnHost: { close: () => { closed += 1; } },
+    });
+    const r = await acp.runMcodeRuntime("x", {
+      sessionId: null,
+      cs: mkCs(),
+      cid: "b8-throw",
+      owningWebuiSessionId: "webui-1",
+    });
+    assert.equal(r.status, "failed");
+    assert.equal(r.error.message, "iterator exploded");
+    assert.equal(closed, 1, "a per-turn AbortController left open accumulates one per turn");
+  });
+
+  test("an open that fails resolves `failed` rather than throwing at the route", async (t) => {
+    // The runtime's `client.start()` + `session/new` equivalent. Its
+    // failures are the same class: a start-phase failure that never
+    // reaches finalize, so the route's error branch is what resets the
+    // thinking claim.
+    await setupMocks(t, {});
+    const facade = await import(absPath("engine/streaming-send.js"));
+    t.mock.module(absPath("engine/streaming-send.js"), {
+      namedExports: {
+        ...facade,
+        openEngineSendStream: async () => ({
+          ok: false,
+          sessionId: null,
+          message: "Runtime host unavailable",
+        }),
+      },
+    });
+    const acp = await import(`${absPath("lib/mcode-acp.js")}?bust=${bust++}`);
+    const r = await acp.runMcodeRuntime("x", { sessionId: null, cs: mkCs(), cid: "b8-open" });
+    assert.equal(r.status, "failed");
+    assert.equal(r.error.message, "Runtime host unavailable");
+  });
+
+  test("a mid-run switch stops the turn from stamping the NEW view", async (t) => {
+    // RED LINE 1, imperative half: the run-chat buffer is keyed by the
+    // engine sid, so a switch cannot move the lines — and the finalize's
+    // still-viewing test is what stops the `cs` mutation. The bind
+    // already ran (legitimately, while the turn's own record was still
+    // viewed), so this sets the id back to null to model "the user
+    // opened a different conversation that has no engine id" and
+    // asserts finalize leaves it alone.
+    const gate = mkGate();
+    const { acp } = await bootRuntimeRunner(t, {
+      gate,
+      events: [
+        EV.deltaText("belongs to the old session"),
+        GATE,
+        EV.settled({ content: "belongs to the old session" }),
+        EV.done,
+      ],
+    });
+    const bus = (await import(absPath("lib/state-bus.js")));
+    const cs = mkCs({ sessionId: "webui-1" });
+    const p = acp.runMcodeRuntime("x", {
+      sessionId: null,
+      cs,
+      cid: "b8-switch",
+      owningWebuiSessionId: "webui-1",
+    });
+    // The switch lands WHILE the turn is streaming. `await gate.reached`
+    // is the load-bearing line: it is what makes the ordering true
+    // rather than merely intended, and it is a promise rather than a
+    // poll so a failure here can never leak a ref'd handle.
+    await gate.reached;
+    cs.sessionId = OTHER_SID;
+    cs.mcodeSessionId = null;
+    gate.open();
+    const r = await p;
+    assert.equal(r.sessionId, SID);
+    assert.equal(
+      cs.mcodeSessionId,
+      null,
+      "the finalize stamped this turn's engine sid onto the conversation the user switched TO",
+    );
+    const lines = bus.drainRunChat("b8-switch", SID);
+    assert.ok(
+      lines.some((l) => typeof l === "string" && l.startsWith("● belongs to the old session")),
+      JSON.stringify(lines),
+    );
+  });
+
+  test("a PRE-BIND switch binds the OWNING record, never the switched-to view", async (t) => {
+    // The other half of the run-mirror, and the one the bind-time test
+    // had to earn: the user switched away BEFORE the engine session was
+    // even known, so the bind must go through the record-by-id helper
+    // and leave `cs` alone. Binding through `cs` here would rename the
+    // session the user switched TO onto this turn's engine id — the
+    // permanent split the qa note records.
+    const { acp } = await bootRuntimeRunner(t, {
+      events: [EV.deltaText("x"), EV.settled({ content: "x" }), EV.done],
+    });
+    // The owning draft has to EXIST for the bind to have something to
+    // target — in production `routes/chat.js#handleSend` creates it
+    // before the runner is called. Seeding it here is what makes the
+    // second assertion mean "the OWNING record was bound" rather than
+    // "nothing was bound".
+    registerSessionsStore({
+      initial: [{ id: "webui-1", title: "New session", chat: [], workspace: null }],
+    });
+    const cs = mkCs({ sessionId: OTHER_SID });
+    await acp.runMcodeRuntime("x", {
+      sessionId: null,
+      cs,
+      cid: "b8-prebind",
+      owningWebuiSessionId: "webui-1",
+    });
+    assert.equal(
+      cs.mcodeSessionId,
+      null,
+      "the bind went through the SWITCHED-TO client state instead of the owning record",
+    );
+    const store = getSessionsStore();
+    assert.equal(
+      store.filter((r) => r && r.mcodeSessionId === SID).length,
+      1,
+      "the owning record is the one that got the engine identity",
+    );
+  });
+
+  test("a turn with reported usage lands it in the context panel", async (t) => {
+    // The finalize's accumulation branch. Without this, dropping the
+    // usage capture entirely would be invisible: the panel would read
+    // zero tokens forever and nothing would fail.
+    const { acp } = await bootRuntimeRunner(t, {
+      events: [
+        EV.deltaText("x"),
+        EV.settled({
+          content: "x",
+          usage: { totalTokens: 120, inputTokens: 100, outputTokens: 20 },
+        }),
+        EV.done,
+      ],
+    });
+    const cs = mkCs();
+    await acp.runMcodeRuntime("x", {
+      sessionId: null,
+      cs,
+      cid: "b8-usage",
+      owningWebuiSessionId: "webui-1",
+    });
+    assert.equal(cs.context.tokens, 120);
+    assert.equal(cs.usage.sessionInput, 100);
+    assert.equal(cs.usage.sessionOutput, 20);
+    assert.equal(cs.usage.sessionTotal, 120);
+    assert.equal(cs.context.estimated, false, "a reported total is not an estimate");
+  });
+
+  test("REVERSE: with no switch, the same turn DOES stamp the viewed session", async (t) => {
+    // The positive half of the line above. Without it the test above
+    // would pass for the wrong reason — a runner that never wrote
+    // anything would satisfy it too.
+    const { acp } = await bootRuntimeRunner(t, {
+      events: [EV.deltaText("x"), EV.settled({ content: "x" }), EV.done],
+    });
+    const cs = mkCs({ sessionId: "webui-1" });
+    await acp.runMcodeRuntime("x", {
+      sessionId: null,
+      cs,
+      cid: "b8-noswitch",
+      owningWebuiSessionId: "webui-1",
+    });
+    assert.equal(cs.mcodeSessionId, SID);
+  });
+});
+
+describe("routes/chat.js#handleSend on the runtime transport", () => {
+  /** Load the route with a chosen transport value baked into config.js. */
+  async function loadRoute(t, transport) {
+    await setupMocks(t, {});
+    const config = await import(absPath("lib/config.js"));
+    t.mock.module(absPath("lib/config.js"), {
+      namedExports: { ...config, MCODE_WEBUI_TRANSPORT: transport },
+    });
+    return import(`${absPath("routes/chat.js")}?bust=${bust++}`);
+  }
+
+  test("the runtime transport calls the runtime runner and the ack is byte-identical", async (t) => {
+    const route = await loadRoute(t, RUNTIME);
+    let seen = null;
+    registerMcodeAcpMock({
+      runMcodeRuntime: async (content, opts) => {
+        seen = { content, opts };
+        return { status: "succeeded", answer: "ok", sessionId: SID };
+      },
+    });
+    const cs = mkCs();
+    const res = mkRes();
+    await route.handleSend(jsonReq({ content: "hello" }), res, { cs, cid: "b8-route" });
+    const seenRes = lastResponse(res);
+    assert.equal(seenRes.status, 200);
+    assert.equal(seenRes.headers["Content-Type"], "application/json; charset=utf-8");
+    assert.equal(seenRes.body, '{"ok":true}', "the ack is the pre-M3 body, byte for byte");
+    assert.equal(seen.content, "hello");
+    // The options object is the one the acp branch passes too, minus the
+    // model (the runtime does not take one yet — KNOWN DEBT 4) — so the
+    // run-mirror id is present, which is what makes the tail identical.
+    assert.equal(seen.opts.owningWebuiSessionId, "webui-1");
+  });
+
+  test("the ACP transport still calls the ACP runner — byte-for-byte unchanged", async (t) => {
+    // The survival condition, asserted at the branch itself: with the
+    // default transport the runtime runner is never reached.
+    const route = await loadRoute(t, ACP);
+    let acpCalls = 0;
+    let runtimeCalls = 0;
+    registerMcodeAcpMock({
+      runMcodeAcp: async () => {
+        acpCalls += 1;
+        return { status: "succeeded", answer: "ok", sessionId: null };
+      },
+      runMcodeRuntime: async () => {
+        runtimeCalls += 1;
+        return { status: "succeeded", answer: "ok", sessionId: null };
+      },
+    });
+    const res = mkRes();
+    await route.handleSend(jsonReq({ content: "hello" }), mkResPlaceholder(res), {
+      cs: mkCs(),
+      cid: "b8-acp",
+    });
+    assert.equal(acpCalls, 1);
+    assert.equal(runtimeCalls, 0);
+  });
+
+  test("MCODE_USE_ACP=0 still wins over the runtime transport", async (t) => {
+    // lib/config.js documents the precedence as "MCODE_USE_ACP=0 ⇒
+    // transport=exec (regardless of MCODE_WEBUI_TRANSPORT)". The escape
+    // hatch exists for exactly the moment a transport misbehaves, so an
+    // operator must not have to unset a second variable first.
+    const prior = process.env.MCODE_USE_ACP;
+    process.env.MCODE_USE_ACP = "0";
+    try {
+      const route = await loadRoute(t, RUNTIME);
+      let runtimeCalls = 0;
+      registerMcodeAcpMock({
+        runMcodeRuntime: async () => {
+          runtimeCalls += 1;
+          return { status: "succeeded", answer: "ok", sessionId: null };
+        },
+      });
+      await route.handleSend(jsonReq({ content: "hello" }), mkRes(), {
+        cs: mkCs(),
+        cid: "b8-exec",
+      });
+      assert.equal(runtimeCalls, 0, "the exec escape hatch outranks the new branch");
+    } finally {
+      if (prior === undefined) delete process.env.MCODE_USE_ACP;
+      else process.env.MCODE_USE_ACP = prior;
+    }
+  });
+
+  test("the 409 claim is taken BEFORE the runner and held for the whole turn", async (t) => {
+    // Sequential sends are useless here: the first one releases the
+    // claim in its `finally` before the second arrives. The claim's
+    // whole job is refusing a send that arrives WHILE a turn is
+    // running, so the runner has to still be in flight.
+    const route = await loadRoute(t, RUNTIME);
+    let release;
+    const held = new Promise((resolve) => { release = resolve; });
+    let siblingSeen = null;
+    registerMcodeAcpMock({
+      runMcodeRuntime: async () => {
+        const bus = (await import(absPath("lib/state-bus.js")));
+        // A SIBLING conversation of the same tab must NOT be blocked —
+        // that is the whole difference between the (cid, sessionId)
+        // claim key and a cid-wide one, and the new branch must not
+        // change it.
+        const sibling = bus.beginRun("b8-409", null, "other-conversation");
+        try {
+          siblingSeen = sibling;
+        } finally {
+          bus.endRun("b8-409", "other-conversation");
+        }
+        await held;
+        return { status: "succeeded", answer: "ok", sessionId: SID };
+      },
+    });
+    const cs = mkCs();
+    const first = route.handleSend(jsonReq({ content: "one" }), mkRes(), { cs, cid: "b8-409" });
+    // Give the first send time to reach the runner and take the claim.
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    // Now the duplicate arrives, mid-turn. Every assertion is inside the
+    // try because a failed one must still release the held turn — an
+    // un-resolved runner promise hangs the whole file, not just the
+    // test.
+    try {
+      const res = mkRes();
+      await route.handleSend(jsonReq({ content: "two" }), res, { cs, cid: "b8-409" });
+      const seen = lastResponse(res);
+      assert.equal(seen.status, 409);
+      assert.equal(
+        seen.body,
+        '{"ok":false,"error":"a turn is already running for this session","reason":"cid-busy"}',
+        "the pre-M3 409 body, byte for byte",
+      );
+      assert.equal(
+        siblingSeen && siblingSeen.ok,
+        true,
+        `a sibling conversation in the same tab was blocked: ${siblingSeen && siblingSeen.reason}`,
+      );
+    } finally {
+      release();
+    }
+    await first;
+  });
+
+  test("the 409 claim is RELEASED after a runtime turn, so the next send is accepted", async (t) => {
+    // The negative half of the claim red line, and the reason the gate
+    // was placed before `beginRun` rather than after it: a claim leaked
+    // by a throwing gate would refuse every later send in this
+    // conversation forever.
+    const route = await loadRoute(t, RUNTIME);
+    let calls = 0;
+    registerMcodeAcpMock({
+      runMcodeRuntime: async () => {
+        calls += 1;
+        return { status: "succeeded", answer: "ok", sessionId: SID };
+      },
+    });
+    const cs = mkCs();
+    await route.handleSend(jsonReq({ content: "one" }), mkRes(), { cs, cid: "b8-release" });
+    const res = mkRes();
+    await route.handleSend(jsonReq({ content: "two" }), res, { cs, cid: "b8-release" });
+    assert.equal(lastResponse(res).status, 200);
+    assert.equal(calls, 2, "the second send reached the runner, so the claim was released");
+  });
+
+  test("PROOF: a marker error from the gate escapes the route as a capability error", async (t) => {
+    // Without a fresh `?bust=` re-import, `mock.module` would leave the
+    // route holding the PREVIOUS test's live binding, the marker would
+    // never be thrown, and this assertion would fail — which is the
+    // point: it is the only assertion here that cannot pass by
+    // accident.
+    await setupMocks(t, {});
+    const { EngineCapabilityNotSupportedError } = await import(absPath("engine/errors.js"));
+    const marker = new EngineCapabilityNotSupportedError({
+      capability: "streamingSend",
+      provider: "local-runtime-v2",
+    });
+    mockFacade(t, {
+      assertStreamingSendCapability: () => {
+        throw marker;
+      },
+    });
+    const route = await import(`${absPath("routes/chat.js")}?bust=${bust++}`);
+    let caught = null;
+    const cs = mkCs();
+    try {
+      await route.handleSend(jsonReq({ content: "hello" }), mkRes(), { cs, cid: "b8-gate" });
+    } catch (err) {
+      caught = err;
+    }
+    assert.ok(caught, "the route swallowed the gate error — either the mock did not take, or the route grew a catch");
+    assert.equal(caught, marker, "the error is the mock's, by identity");
+    assert.equal(isEngineCapabilityNotSupportedError(caught), true);
+    // And no claim was taken, so the NEXT send in this conversation is
+    // not refused by one this batch leaked. Asked of the state bus
+    // directly rather than by issuing a second send: the gate mock
+    // throws unconditionally, so a second send would throw too and say
+    // nothing about the claim.
+    const bus = (await import(absPath("lib/state-bus.js")));
+    const probe = bus.beginRun("b8-gate", null, "webui-1");
+    try {
+      assert.equal(
+        probe.ok,
+        true,
+        `a refused gate left a claim behind: ${probe.reason}`,
+      );
+    } finally {
+      bus.endRun("b8-gate", "webui-1");
+    }
+  });
+
+  test("PROOF: a marker error from the runtime runner reaches the route's own finally", async (t) => {
+    // The other live-binding proof, on the other mock: if
+    // `runMcodeRuntime` re-imports were not honoured, this would
+    // resolve normally and the assertion below would fail.
+    const route = await loadRoute(t, RUNTIME);
+    registerMcodeAcpMock({
+      runMcodeRuntime: async () => {
+        throw new Error("B8-RUNTIME-MOCK-WAS-NOT-HONOURED");
+      },
+    });
+    const reloaded = await import(`${absPath("routes/chat.js")}?bust=${bust++}`);
+    let caught = null;
+    try {
+      await reloaded.handleSend(jsonReq({ content: "hello" }), mkRes(), {
+        cs: mkCs(),
+        cid: "b8-mock",
+      });
+    } catch (err) {
+      caught = err;
+    }
+    assert.ok(caught, "the route swallowed the runner error");
+    assert.equal(caught.message, "B8-RUNTIME-MOCK-WAS-NOT-HONOURED");
+  });
+});
+
+/** `handleSend` needs a fresh response object per call in some cases. */
+function mkResPlaceholder(res) {
+  return res;
+}

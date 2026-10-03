@@ -5,14 +5,18 @@
 //
 //   #12  POST /api/send  — the main chat entry
 //
-// MIDDLE STATE, stated plainly because a reader of this file will
-// otherwise assume a working endpoint: NOTHING IS WIRED YET. The
-// declaration, the gate and the derivations are here and are tested;
-// no route calls them, no runner consumes them, and #12 behaves
-// exactly as it did at 32277c3a on every transport. Batch B8b adds the
-// runner (`lib/mcode-acp.js#runMcodeRuntime`) and the route branch
-// (`routes/chat.js#handleSend`). This file is written to be consumed by
-// both without either half having to be renamed.
+// B8a shipped this file as the PURE layer only — the declaration, the
+// gate and the derivations, with no runner and no route branch, so that
+// a layer whose value is that it has no IO could be reviewed and
+// trusted on its own. B8b adds the DATA PLANE at the bottom: the one
+// place here that touches the engine. The two exports it adds
+// (`openEngineSendStream`, `projectSendAttachments`) are the only ones
+// that are not total functions over their arguments, and they are the
+// only reason this module now reaches for `await import()` — which is
+// why the split mattered: the purity was provable only while it held.
+//
+// #12 IS WIRED as of this commit, on the `runtime` transport. The acp
+// path is byte-for-byte what it was at 32277c3a.
 //
 // What this layer is for. #12 was the single endpoint whose whole
 // behaviour lived in one route body: it claims the turn, answers, and
@@ -79,9 +83,12 @@
 //
 // What this file deliberately does NOT do:
 //
-//   - It does not run a turn. There is no runner, no host access and no
-//     IO here at all: every export below is a total function over its
-//     arguments. The data plane is B8b's.
+//   - It does not own the runner. `openEngineSendStream` OPENS a turn's
+//     event stream and resolves the session; it does not consume one.
+//     The loop, the line writes, the idle watchdog and the finalize are
+//     `lib/mcode-acp.js#streamRuntimePrompt`, because they have to be
+//     the same machine as the ACP runner's for the route's drain and
+//     promotion to keep working unchanged.
 //   - It does not own the run claim, the run-mirror buffer, the drain
 //     or the draft promotion. Those are the route's and the state
 //     bus's, and moving them would be a second, unrelated change to
@@ -92,12 +99,14 @@
 //     `streamAcpPrompt` are not imported, referenced or reached from
 //     here.
 //
-// Boot-path weight. B8b will make `routes/chat.js` import this file, so
-// it will be on the boot path. It statically imports
-// `engine/capabilities.js` and `engine/index.js` (both pure declaration
-// modules) and nothing else; no `await import()`, no state bus, no
-// config, no host. That is the M1 lesson, and it is what lets this
-// module be re-exported from `engine/index.js` at all.
+// Boot-path weight. `routes/chat.js` imports this file, so it is on
+// the boot path. Its STATIC imports are `engine/capabilities.js`,
+// `engine/index.js` and the node builtins — all of them cheap. The
+// host getter, the per-turn host wrapper and the attachments helper are
+// reached through `await import()` inside `openEngineSendStream` and
+// nowhere else, so an acp-only server never boots the runtime graph.
+// That split is the M1 lesson, and it is what lets this module be
+// re-exported from `engine/index.js` at all.
 //
 // Provider selection is M4's job, same as B1 through B7:
 // `providerByTransport()` maps a transport to a REGISTERED provider id;
@@ -797,3 +806,187 @@ export function rewriteDrainedAnswerLine(lines, oneLine) {
 //      written once against the line grammar rather than twice against
 //      the transports.
 //
+//   4. `/api/stop` CANNOT STOP A RUNTIME TURN, AND IT SAYS SO. The
+//      runtime runner registers NO active child, because the runtime has
+//      no subprocess for B7's kill cascade to signal and inventing a
+//      second interrupt protocol outside B7's family would be a worse
+//      answer than none. What a user pressing stop under the runtime
+//      transport therefore gets is B7's documented degradation: the
+//      gentle `session/cancel` refuses (there is no ACP client), no
+//      child is registered, so `hardKilled` is false — and
+//      `stopLeftStaleClaim` is TRUE, so the route resets the thinking
+//      claim and pushes an at-rest state. The panel recovers; the turn
+//      keeps running in the runtime. That is a truthful "I could not
+//      stop it", and it is strictly better than the alternative, but it
+//      is not "stopped". The fix is B7's family, not this one: route
+//      `abortSession` through the facade when the transport is
+//      `runtime`, the same way `checkInterruptCapability` already
+//      resolves the provider for that family. Until then the runtime
+//      transport has no user-reachable abort, and that difference
+//      between transports is a product decision about when `runtime`
+//      becomes the default, not a refactor.
+//
+//   5. ATTACHMENTS REACH THE RUNTIME WITHOUT A MIME TYPE. webui's
+//      upload pipeline (`lib/attachments.js#resolveAttachment`) keeps
+//      `{path, name, size}` and discards everything else, so
+//      `projectSendAttachments` sends `application/octet-stream` — a
+//      truthful default rather than a guess, and a real limitation: a
+//      runtime that dispatches on mime type will treat an image as a
+//      file. The fix is upstream of this module (retain the type at
+//      upload time) and changes the stored record shape, so it is a
+//      separate change with its own compatibility question.
+//
+//   6. THE CONTEXT LIMIT IS NOT BRIDGED FROM THE STREAM. The runtime's
+//      `TokenUsage` carries `context_window`, but the TUI projection
+//      (`TuiTokenUsage`) does not forward it, so `sendUsageTotals` can
+//      produce the three totals the finalize accumulates and nothing for
+//      `cs.context.limit`. The limit therefore arrives, as it does on
+//      ACP, only through the post-finalize mavis DB re-query. Writing a
+//      projection change in `packages/tui` from a webui batch would
+//      invert the dependency direction the M1 split established, so it is
+//      recorded rather than done.
+//
+//   7. THE RUNTIME DOES NOT RECEIVE THE USER'S MODEL PICK. The ACP
+//      runner pre-applies `applyRecordedModel` to a brand-new session so
+//      the engine runs the model the chip claims; the runtime runner does
+//      not, because that helper speaks ACP's `session/set_config_option`
+//      and the runtime's equivalent is B10's `selectSessionModel`. So
+//      under `runtime` a FIRST turn runs the runtime's own default and
+//      the chip may disagree — the exact defect `applyRecordedModel` was
+//      written to prevent, bounded to a session's first turn. B10 closes
+//      it; until then `runtime` is opt-in and the disagreement is
+//      visible rather than silent.
+//
+//   8. TRANSPORT SELECTION IS AN ENV READ, NOT A REGISTRY LOOKUP. The
+//      branch in `routes/chat.js` compares `MCODE_WEBUI_TRANSPORT`
+//      against the literal `"runtime"`, where the plan says selection
+//      should read the provider registry. M4 owns the registry, and
+//      hard-coding a second place that knows provider ids before one
+//      exists is the thing M4 exists to remove. This batch deliberately
+//      does not create a premature registry.
+
+// ---------------------------------------------------------------------------
+// Data plane
+// ---------------------------------------------------------------------------
+
+/**
+ * Open a runtime turn's event stream.
+ *
+ * The ONLY function in this file that touches the engine. Everything
+ * above it is pure, and everything below it is the runner's loop — so
+ * the whole bridge is testable without a runtime, a host, or a clock.
+ *
+ * Three things happen here, in this order, and each is a fact the route
+ * depends on:
+ *
+ *   1. THE SESSION IS RESOLVED OR CREATED. The runtime addresses turns
+ *      by an engine session id, exactly like ACP; a first turn has
+ *      none, so the runner asks the host to create one. The returned
+ *      id is the one the whole rest of the turn (claim, buffer, bind,
+ *      promotion) must use.
+ *   2. THE REQUEST IS ASSEMBLED. `content` is the text webui already
+ *      validated; attachments are projected from webui's
+ *      `{path, name, size}` into the runtime's `{meta, local}` pair.
+ *      The mime type is a known gap, not an oversight — see KNOWN
+ *      DEBT 2.
+ *   3. THE STREAM OPENS. The per-turn wrapper is what turns a throw
+ *      into a `{type:"error"}` frame instead of a rejected iterator;
+ *      the runner's loop therefore never has to distinguish "the
+ *      engine crashed" from "the engine reported a crash", and cannot
+ *      leave a half-drawn turn behind the first rejection.
+ *
+ * @param {object} options
+ * @param {string|null|undefined} options.sessionId Existing engine session id.
+ * @param {string} options.content Prompt text.
+ * @param {object[]} [options.attachments] webui attachments.
+ * @param {string} options.workspaceDir Working directory for the session.
+ * @param {AbortSignal} [options.signal]
+ * @param {object} [options.deps] Injection seam: `{getHost, createTurnHost}`.
+ * @returns {Promise<{ok: true, sessionId: string, stream: AsyncIterable<object>}|{ok: false, sessionId: string|null, message: string}>}
+ */
+export async function openEngineSendStream(options = {}) {
+  const deps = options.deps || {};
+  const [{ getEngineCatalogueHost }, runtimeHost, attachments] = await Promise.all([
+    import("./host.js"),
+    import("../lib/runtime-host.js"),
+    import("../lib/attachments.js"),
+  ]);
+  const getHost = deps.getHost || getEngineCatalogueHost;
+  const catalogue = await getHost();
+  if (!catalogue) {
+    return {
+      ok: false,
+      // The id the turn WAS addressed to, not null: the caller's error
+      // path and the anomaly alert both name the conversation, and a
+      // null here would drop exactly the datum that makes the failure
+      // diagnosable.
+      sessionId: options.sessionId || null,
+      message: "Runtime host unavailable (catalogue host did not boot)",
+    };
+  }
+  // The per-turn wrapper. Created per turn on purpose — it owns the
+  // AbortController its `abortSession` trips, and sharing one across
+  // turns would let a stop on conversation A abort conversation B.
+  const createTurnHost = deps.createTurnHost || runtimeHost.createTurnHost;
+  let turn;
+  try {
+    turn = createTurnHost(catalogue);
+  } catch (e) {
+    return { ok: false, sessionId: options.sessionId || null, message: e.message };
+  }
+  let sid = options.sessionId || null;
+  try {
+    if (!sid) {
+      const created = await catalogue.adapter.createSession({
+        workspaceDir: options.workspaceDir,
+      });
+      sid = created && created.sessionId ? created.sessionId : null;
+      if (!sid) {
+        turn.close();
+        return { ok: false, sessionId: null, message: "Runtime createSession returned no sessionId" };
+      }
+    }
+    const stream = turn.sendMessage(
+      {
+        id: sid,
+        content: options.content,
+        attachments: projectSendAttachments(options.attachments, attachments),
+      },
+      options.signal,
+    );
+    return { ok: true, sessionId: sid, stream, turnHost: turn };
+  } catch (e) {
+    turn.close();
+    return { ok: false, sessionId: sid, message: e.message };
+  }
+}
+
+/**
+ * Project webui's attachment records onto the runtime's request shape.
+ *
+ * Split out of `openEngineSendStream` and exported because it is pure
+ * and because it is where a shape drift would be silent: a wrong key
+ * does not throw, it just means the model never sees the file.
+ *
+ * @param {object[]|undefined} list
+ * @param {object} attachmentsLib The `lib/attachments.js` namespace (injected for the test).
+ * @returns {object[]}
+ */
+export function projectSendAttachments(list, attachmentsLib) {
+  if (!Array.isArray(list) || list.length === 0) return [];
+  const limit =
+    typeof attachmentsLib?.MAX_ATTACHMENTS_PER_TURN === "number"
+      ? attachmentsLib.MAX_ATTACHMENTS_PER_TURN
+      : list.length;
+  return list.slice(0, limit).map((a) => ({
+    meta: {
+      attachmentType: "file",
+      fileName: a && a.name ? a.name : "attachment",
+      // webui's upload pipeline keeps no mime type, so the runtime is
+      // told the honest default rather than a guess. KNOWN DEBT 2.
+      mimeType: "application/octet-stream",
+      ...(typeof a?.size === "number" ? { sizeBytes: a.size } : {}),
+    },
+    local: { ...(a && a.path ? { filePath: a.path } : {}) },
+  }));
+}

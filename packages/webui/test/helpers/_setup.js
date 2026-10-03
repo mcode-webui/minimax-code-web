@@ -93,6 +93,20 @@ const _mcodeAcpMock = {
     sessionId: null,
   }),
   streamAcpPrompt: async () => ({ status: "succeeded", answer: "mocked" }),
+  // M3-B8: the RUNTIME transport branch. `routes/chat.js` imports this
+  // name unconditionally, so omitting it from this mock makes every
+  // suite that imports the chat route fail at module-INSTANTIATION time
+  // with "does not provide an export named 'runMcodeRuntime'" — a
+  // failure that reads like a product bug and is not one (mock trap #1,
+  // see the engine suites' headers). The default mirrors the acp
+  // default byte-for-byte so no existing case changes behaviour; the
+  // runtime branch's own cases register their own through
+  // registerMcodeAcpMock().
+  runMcodeRuntime: async () => ({
+    status: "succeeded",
+    answer: "mocked",
+    sessionId: null,
+  }),
 };
 
 let _lanBroadcast = false;
@@ -536,6 +550,11 @@ export async function setupMocks(t, overrides = {}) {
     namedExports: {
       runMcodeAcp: (...a) => _mcodeAcpMock.runMcodeAcp(...a),
       streamAcpPrompt: (...a) => _mcodeAcpMock.streamAcpPrompt(...a),
+      // M3-B8: the runtime transport branch. Same dispatch-through
+      // wrapper as the two above — a spread would snapshot the function
+      // at setupMocks() time and a later registerMcodeAcpMock() would
+      // not take effect.
+      runMcodeRuntime: (...a) => _mcodeAcpMock.runMcodeRuntime(...a),
       // Ticket 09-02: routes/model.js#handleSetModel translates the
       // webui id to the engine wire form via `resolveModelId`. The
       // pure helper is also re-exported through `mcode-acp.js` for

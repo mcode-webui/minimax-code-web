@@ -34,7 +34,7 @@ import {
   cmdButtonCommandList,
   isSendSlashCommand,
 } from "../lib/interaction/command-registry.js";
-import { runMcodeAcp } from "../lib/mcode-acp.js";
+import { runMcodeAcp, runMcodeRuntime } from "../lib/mcode-acp.js";
 import { collectExecResult, runMcodeExec } from "../lib/mcode-exec.js";
 // M3-B7 (engine facade): #13 `/api/stop` no longer reaches into
 // `lib/mcode-rpc.js#cancelSession` and `lib/state-bus.js#getActiveChild`
@@ -48,7 +48,22 @@ import { collectExecResult, runMcodeExec } from "../lib/mcode-exec.js";
 // about the first decision rather than about the process, and the
 // escalation bound is part of the contract.
 import { applyEngineStop } from "../engine/interrupt.js";
-import { DEFAULT_MODEL } from "../lib/config.js";
+// M3-B8 (engine facade): the #12 send gate. `assertStreamingSendCapability`
+// is the only thing this route borrows from the facade for the send
+// family, and it is called at exactly one place — BEFORE the run claim
+// is taken — so a provider that declares no send surface is refused
+// with the shared 501 instead of being acked a turn that never runs.
+// Before the claim rather than after it, because the throw would then
+// land outside the `try` whose `finally` releases the claim, and a
+// leaked claim refuses every later send in that conversation. See
+// `engine/streaming-send.js`'s header for why this family gates HARD
+// where B7's gates soft, and for the two facts that make it
+// unreachable today (v2 declares `streamingSend: full`, and `acp` has
+// no registered provider at all). The route does not build the 501
+// response: `app.js#invokeHandler` maps the thrown error, so no
+// response code is added here.
+import { assertStreamingSendCapability } from "../engine/streaming-send.js";
+import { DEFAULT_MODEL, MCODE_WEBUI_TRANSPORT } from "../lib/config.js";
 import { resolveAttachments } from "../lib/attachments.js";
 import { readJson } from "../lib/read-json.js";
 
@@ -130,6 +145,14 @@ export async function handleSend(req, res, ctx) {
   // ask_user modal answer — don't add to chat as a user message.
   const isAskAnswer = payload.isAskAnswer === true;
 
+  // M3-B8: the capability gate, before anything is claimed. Throws for
+  // a RESOLVED provider that declares no `streamingSend`, and
+  // `app.js#invokeHandler` turns that into the shared 501. On the
+  // default `acp` transport no provider is registered yet (M4's
+  // registry), so this is a no-op there and the acp path below is
+  // untouched — which is the batch's survival condition, not a side
+  // effect of it.
+  assertStreamingSendCapability("POST /api/send", MCODE_WEBUI_TRANSPORT);
   // Claim the turn BEFORE acknowledging. Every prompt spawns its own engine
   // subprocess, so without this a double-send (retry, two tabs, a scripted
   // client) silently starts a second one: measured on a running server, ten
@@ -241,6 +264,22 @@ export async function handleSend(req, res, ctx) {
 
     // mcode acp is the default transport; MCODE_USE_ACP=0 falls back to
     // mcode exec (escape hatch if the acp protocol regresses).
+    //
+    // M3-B8 adds a third branch, the in-process `runtime` transport. Two
+    // ordering facts are load-bearing and neither is negotiable:
+    //
+    //   - `MCODE_USE_ACP=0` STILL WINS. `lib/config.js` documents the
+    //     precedence as "MCODE_USE_ACP=0 ⇒ transport=exec (regardless of
+    //     MCODE_WEBUI_TRANSPORT)", because the escape hatch exists for
+    //     exactly the moment a transport is misbehaving — an operator
+    //     who reaches for it must not have to unset a second variable
+    //     first.
+    //   - The runtime branch passes the SAME options object the acp one
+    //     does, including `owningWebuiSessionId`. That id is what makes
+    //     the run-mirror, the finalize drain and the draft promotion
+    //     work identically on both transports: the whole tail below this
+    //     line is transport-agnostic because both runners return the
+    //     same `r` and write through the same run-chat buffer.
     const modelToUse = (cs && cs.model && cs.model.name) || DEFAULT_MODEL;
     console.log(
       `[send] cid=${cid} content=${JSON.stringify(content.slice(0, 80))} model=${modelToUse} sessionId=${cs.mcodeSessionId} workspace=${(cs && cs.workspace && cs.workspace.dir) || "null"}`,
@@ -254,9 +293,22 @@ export async function handleSend(req, res, ctx) {
     // directly in cs.chat; the finalize drain below flushes it.
     createRunChat(cid, cs && cs.mcodeSessionId, [], owningWebuiSessionId);
     const t0 = Date.now();
+    const sendOptions = {
+      label: "prompt",
+      sessionId: cs.mcodeSessionId,
+      model: modelToUse,
+      cs,
+      cid,
+      attachments,
+      owningWebuiSessionId,
+    };
     const r =
       process.env.MCODE_USE_ACP === "0"
         ? await collectExecResult(
+            // The exec path never had `owningWebuiSessionId` (it is a
+            // non-streaming runner with no run-mirror), so it is still
+            // not passed. Removing the shared object above is what
+            // guarantees that: exec's own options literal is untouched.
             runMcodeExec(content, {
               label: "prompt",
               sessionId: cs.mcodeSessionId,
@@ -266,15 +318,9 @@ export async function handleSend(req, res, ctx) {
               attachments,
             }),
           )
-        : await runMcodeAcp(content, {
-            label: "prompt",
-            sessionId: cs.mcodeSessionId,
-            model: modelToUse,
-            cs,
-            cid,
-            attachments,
-            owningWebuiSessionId,
-          });
+        : MCODE_WEBUI_TRANSPORT === "runtime"
+          ? await runMcodeRuntime(content, sendOptions)
+          : await runMcodeAcp(content, sendOptions);
     console.log(
       `[send] result ${Date.now() - t0}ms:`,
       JSON.stringify({

@@ -39,6 +39,15 @@
 //      record (captured owning webui id) is promoted and receives the
 //      turn — never the record the user switched to.
 
+// M3-B8: this file is an ACP-TRANSPORT test — it installs a scripted
+// fake of `../acp.mjs` and drives `session/new` + `session/prompt`, so
+// it must not follow the suite's ambient transport now that #12 has a
+// runtime sibling. The pin is a module-scope side effect and MUST stay
+// the first import: `lib/config.js` freezes the transport into an
+// `export const` at evaluation time, so anything later is too late.
+// See test/helpers/pin-transport.mjs for the full argument.
+import "../helpers/pin-transport.mjs";
+
 import { test, describe, before, beforeEach, afterEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
