@@ -39,6 +39,7 @@ import {
 } from "@/lib/url-restore";
 import { openFileInWeb, closeOpenFile } from "@/lib/open-file";
 import { readFileOpenInNewTab } from "@/lib/settings-local";
+import { effectiveBindings, matchShortcut } from "@/lib/shortcuts";
 import {
   closeTab,
   openTab,
@@ -446,29 +447,44 @@ function App() {
     setBrowserPath(null);
   }, [workspaceDir]);
 
-  // Ctrl+N mirrors the sidebar's "新建任务" shortcut. Ctrl+K
-  // used to open a legacy "search" panel kind that slice 17
-  // removed — the search surface now lives in the tree column
-  // and is reached through the sidebar's 搜索 nav entry (which
-  // dispatches `openSurfaceTab("search")` from shell.tsx).
-  // Ctrl+, (55c) opens settings — the same binding the desktop
-  // prints on its user-menu Settings row, so the kbd badge the
-  // webui menu now carries is a real binding, not decoration.
+  // Global shortcut dispatch. The verdict per row — which combinations a
+  // browser hands to a page at all, and which are taken by the browser
+  // itself — lives in `lib/shortcuts.ts`; so does the effective binding
+  // per row, which the settings page writes. This handler reads the same
+  // registry, so the Shortcuts page cannot show a row as dead while this
+  // dispatch fires it.
+  //
+  // Per action:
+  //   - newTask / newTaskNoProject: the sidebar's 新建任务 action
+  //     (Ctrl+N fires only where the browser leaves it free — see the
+  //     `partial` verdict in the registry; Ctrl+Alt+O fires everywhere).
+  //   - globalSearch: the search surface lives in the tree column since
+  //     slice 17 removed the legacy "search" panel kind, reached through
+  //     the sidebar's 搜索 nav entry, which dispatches the same
+  //     `openSurfaceTab("search")` from shell.tsx.
+  //   - openSettings: Ctrl+, — the binding the desktop prints on its
+  //     user-menu Settings row, so the kbd badge the webui menu carries
+  //     is a real binding, not decoration.
   useEffect(() => {
     if (!state) return;
+    const bindings = effectiveBindings();
     const onKey = (event: KeyboardEvent) => {
-      if (!(event.ctrlKey || event.metaKey)) return;
-      if (event.key.toLowerCase() === "n") {
-        event.preventDefault();
-        void runAction(t("topbar.newSession"), api.newSession());
-      } else if (event.key === ",") {
-        event.preventDefault();
+      const action = matchShortcut(event, bindings);
+      if (!action) return;
+      event.preventDefault();
+      if (action === "openSettings") {
         openSettings();
+        return;
       }
+      if (action === "globalSearch") {
+        openSurfaceTab("search");
+        return;
+      }
+      void runAction(t("topbar.newSession"), api.newSession());
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [state, openPanel, openSettings, t]);
+  }, [state, openSettings, openSurfaceTab, t]);
 
   // URL ↔ session reconcile.
   const [urlRestored, setUrlRestored] = useState(false);

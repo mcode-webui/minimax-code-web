@@ -136,9 +136,20 @@ describe("55c user menu (shell.tsx, ref-01)", () => {
   test("Settings carries the Ctrl+, kbd badge and a real binding", () => {
     assert.ok(src.includes('kbd="Ctrl+,"'), "kbd badge on the settings row");
     const page = read("../app/page.tsx");
+    // The keydown handler stopped hard-coding `event.key === ","` when
+    // SB-2 moved the per-row verdicts into lib/shortcuts.ts, so the
+    // tripwire follows the wiring: the page must dispatch through the
+    // registry, and the registry must still pair Ctrl+, with
+    // openSettings. `webapp/test/shortcuts.test.ts` drives that pairing.
     assert.ok(
-      page.includes('event.key === ","') && page.includes("openSettings();"),
-      "page.tsx binds Ctrl+, to openSettings — the badge must be a real binding",
+      page.includes('from "@/lib/shortcuts"') && page.includes("matchShortcut(event, bindings)"),
+      "page.tsx must dispatch through the shortcut registry",
+    );
+    const registry = read("../lib/shortcuts.ts");
+    const spec = registry.slice(registry.indexOf('id: "open-settings"'));
+    assert.ok(
+      spec.includes('defaultBinding: "Ctrl+,"') && spec.includes('action: "openSettings"'),
+      "the registry binds Ctrl+, to openSettings — the badge must be a real binding",
     );
   });
 

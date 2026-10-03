@@ -1001,7 +1001,7 @@ slice 22 增强：
 | --- | --- | --- |
 | 偏好 | 通用 | 已实装 |
 | 偏好 | 语音 | 已实装，控制件为诚实占位——麦克风下拉禁用且只有「本地版不适用」一个选项，两条听写快捷键显示「未设置」（浏览器里既没有设备枚举也没有听写输入） |
-| 偏好 | 快捷键 | 已实装，只读——顶部「浏览器环境不适用」横幅下照抄桌面版 10 条默认键位，✕ / ↺ 操作件渲染但禁用 |
+| 偏好 | 快捷键 | 已实装——10 行逐行说明浏览器到底能做什么：3 行可改键且真实生效，1 行仅 macOS 生效，6 行不可用并写明原因（见**快捷键：浏览器能截获什么**） |
 | 偏好 | 个性化 | 已实装——「自定义指令」与「关于你」真存 `localStorage`；两个记忆开关关闭且禁用、行内标注「本地版不适用」，「管理」按钮打开「记忆摘要」弹窗且恒为空态 |
 | 管理 | 用量与模型 | 已实装；三来源是**视图切换器**——不切换实际使用的模型来源 |
 | 管理 | 连接 | 已实装 |
@@ -1011,6 +1011,34 @@ slice 22 增强：
 | 归档 | 已归档任务 | 页签渲染空态「暂无已归档任务」；列表与其操作需要目前不存在的归档会话契约 |
 
 **设置页没有「浏览器」页签。** 浏览器能力是工作区的一列标签页（`workspaceTabs.tab.browser`），在工作区标签里挂载 `BrowserPanel`，不是设置分区；`settings.tab.browser` 这个文案键没有任何调用点。本文早期版本曾在「偏好」组下列出「浏览器」页签，那是错的。
+
+**快捷键：浏览器能截获什么**
+
+网页注册不了全局快捷键，也截获不了浏览器已经占用的组合。因此快捷键页
+不再把桌面版键位摆成一份死的对照清单：每一行都写明自己的判定，而判定
+与分发读同一份注册表——`webapp/lib/shortcuts.ts` 存判定，`app/page.tsx`
+按它匹配键盘事件，`components/settings-extra-pages.tsx` 渲染它，所以一行
+不可能「显示为已生效却无人分发」，反之亦然。
+
+| 行 | 组合 | 判定 | 原因 |
+| --- | --- | --- | --- |
+| 显示或隐藏 Mini Chat | `Alt+M` | 不可用 | WebUI 没有 Mini Chat 这个功能面 |
+| 全局搜索 | `Ctrl+K` | 已生效 | 本客户端面向的浏览器都未占用；打开工作区树列的搜索面板 |
+| 搜索任务和会话 | `Ctrl+G` | 不可用 | 浏览器用它查找下一个 |
+| 新建任务 | `Ctrl+N` | 仅 macOS | Chromium 与 Firefox 在 Windows / Linux 上用它开新窗口，那里按键根本到不了网页 |
+| 新建无项目任务 | `Ctrl+Alt+O` | 已生效 | 未被占用 |
+| 打开项目文件夹 | `Ctrl+O` | 不可用 | 浏览器用它打开文件对话框 |
+| 打开设置 | `Ctrl+,` | 已生效 | 未被占用 |
+| 按住听写 / 切换听写 | — | 不可用 | 没有语音识别支撑 |
+| 反转跟进行为 | `Ctrl+Enter` | 不可用 | 键位空闲，但操作语义尚未定；绑上等于承诺还不存在的行为 |
+
+三行**已生效**可改键：点击输入框后按下新组合，存入
+`webui-shortcut-bindings`，下一次键盘事件即按新键分发。若新组合已被另一
+个在用行占用，改键被拒绝并点名冲突的是哪一项——两行共用一个组合会让分发
+结果依赖注册表顺序。`Ctrl+N` 有意不可改：换键并不能让它在浏览器占用的平台
+上生效，所以该行直接写明限制，而不是让用户以为改键能解决。六行不可用的行
+保留桌面版印出的组合以供对照，控件禁用，并按上表打印原因。`Ctrl+Shift+T`
+这类组合不做尝试，也做不到：按键不会到达网页。
 
 **通用页有哪些分区**
 
@@ -1836,6 +1864,7 @@ loading-states 相同：让 SSR 渲染测试可以脱离 `chat.tsx` 的 `@/` 别
 | `file_line_wrap` | `localStorage` | `webapp/lib/settings-local.ts` | 工单 48 + 52 | 纯 `"true"\|"false"` 字符串，参照共享命名；默认 `"true"`；每次挂载读取方为 `components/code-view.tsx`（代码文件预览）与 `components/markdown-html.tsx`（markdown 代码块：聊天、活动组、文件预览） |
 | `webui-context-window-usage` | `localStorage` | `webapp/lib/settings-local.ts` | 工单 48 | 纯 `"true"\|"false"` 字符串，参照共享命名；默认 `"false"`；`components/context-meter.tsx` 挂载时读取一次，并通过 `subscribeContextWindowUsage` 实时跟随 |
 | `webui-follow-up-behavior` | `localStorage` | `webapp/lib/settings-local.ts` | 工单 48 | 纯 `"queue"\|"steer"` 字符串（其他值读取为 `"queue"`），参照共享命名；仅记录偏好，尚无读取方 |
+| `webui-shortcut-bindings` | `localStorage` | `webapp/lib/shortcuts.ts` | 工单 55c（设置快捷键页） | `{"global-search":"Ctrl+Shift+P", …}`——**已生效**行的改键记录，用户录入新组合时写入，清掉最后一条时整个键删除。读取时按注册表重新校验：已不再分发的行 id、或已无法解析的组合一律丢弃，手工改过的存储项无法借此扩大页面的分发面。`app/page.tsx` 每次键盘事件经 `effectiveBindings` 读取，设置页每次挂载读取一次 |
 | `webui:project-custom:v1` | `localStorage` | `webapp/lib/project-custom.ts` | 工单 55c（项目右键菜单） | `{version:1, titles:{<项目key>:<自定义名>}, pinned:[<项目key>]}`。**不按 cid 命名空间**（有意）：重命名与置顶描述的是项目本身而非某个浏览器会话，同一浏览器的所有标签页共享。写入尽力而为，失败静默；项目被完整移除（全部会话删除成功）时同步清除其条目 |
 
 除工单 48 的四个参照共享键（`file_open_in_new_tab` / `file_line_wrap` /

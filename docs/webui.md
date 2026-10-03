@@ -1202,7 +1202,7 @@ missing feature. Only Worktree is genuinely not implemented.
 | --- | --- | --- |
 | Preferences | General (通用) | implemented |
 | Preferences | Voice | implemented, placeholder controls — the microphone dropdown is disabled with a single 「本地版不适用」 option, and both dictation rows show 未设置 (no device enumeration, no dictation input in a browser) |
-| Preferences | Shortcuts | implemented, read-only — 10 desktop default bindings under a 「浏览器环境不适用」 notice; the ✕ / ↺ affordances render disabled |
+| Preferences | Shortcuts | implemented — 10 desktop rows, each stating what the browser can do with it: 3 rebindable and live, 1 live on macOS only, 6 blocked with the specific reason (see **Shortcuts — what the browser can intercept**) |
 | Preferences | Personalization | implemented — 自定义指令 and 关于你 persist to `localStorage`; both memory switches render off and disabled with the not-applicable marker, and 管理 opens the 记忆摘要 dialog in its permanent empty state |
 | Management | Usage & models | implemented; the three sources are a **view switcher** — they do not switch the model source in use |
 | Management | Connection | implemented |
@@ -1216,6 +1216,41 @@ column tab (`workspaceTabs.tab.browser`) that mounts `BrowserPanel` over the
 workspace tabs, not a settings section; the `settings.tab.browser` dictionary
 key has no call site. An earlier revision of this document listed a Browser
 tab under Preferences.
+
+**Shortcuts — what the browser can intercept**
+
+A page cannot register a global shortcut, and it cannot intercept a
+combination the browser has already claimed. The Shortcuts tab therefore
+does not present the desktop's bindings as a dead reference list: every
+row states its own verdict, and the same registry decides both the label
+and the dispatch. `webapp/lib/shortcuts.ts` holds that verdict; `app/page.tsx`
+matches keydowns against it and `components/settings-extra-pages.tsx`
+renders it, so a row cannot be shown as live while nothing dispatches it
+(or the reverse).
+
+| Row | Combination | Verdict | Why |
+| --- | --- | --- | --- |
+| 显示或隐藏 Mini Chat | `Alt+M` | blocked | the WebUI has no Mini Chat surface |
+| 全局搜索 | `Ctrl+K` | live | unclaimed in the browsers this client targets; opens the tree-column search surface |
+| 搜索任务和会话 | `Ctrl+G` | blocked | the browser's find-next |
+| 新建任务 | `Ctrl+N` | macOS only | a new window in Chromium and Firefox on Windows and Linux — the keydown never reaches the page there |
+| 新建无项目任务 | `Ctrl+Alt+O` | live | unclaimed |
+| 打开项目文件夹 | `Ctrl+O` | blocked | the browser's Open File dialog |
+| 打开设置 | `Ctrl+,` | live | unclaimed |
+| 按住听写 / 切换听写 | — | blocked | no speech recognition behind the rows |
+| 反转跟进行为 | `Ctrl+Enter` | blocked | the key is free, but the action's semantics are undecided; binding it would promise behaviour that does not exist |
+
+The three **live** rows are rebindable: the box takes the next combination
+the user presses, persists it under `webui-shortcut-bindings`, and the
+handler picks it up on the next keydown. A combination another dispatched
+row already owns is refused and the conflicting action is named — two rows
+sharing one combination would be an order-dependent bug in the handler.
+`Ctrl+N` is deliberately not rebindable: moving it would not make it fire
+on the platforms where the browser owns it, so the row prints the limit
+instead of pretending a rebind fixes it. Blocked rows keep the desktop's
+printed combination for reference, render disabled, and print the reason
+from the table above. `Ctrl+Shift+T`-style interception is not attempted
+and cannot be: those keys never arrive.
 
 **General (通用) — sections**
 
@@ -2384,6 +2419,7 @@ Invariants worth keeping when touching either branch:
 | `file_line_wrap` | `localStorage` | `webapp/lib/settings-local.ts` | tickets 48 + 52 | bare `"true"\|"false"` string, reference-shared namespace; default `"true"`; read per mount by `components/code-view.tsx` (code-file previews) and `components/markdown-html.tsx` (markdown codeblocks: chat, activity groups, file previews) |
 | `webui-context-window-usage` | `localStorage` | `webapp/lib/settings-local.ts` | ticket 48 | bare `"true"\|"false"` string, reference-shared namespace; default `"false"`; read at mount and followed live by `components/context-meter.tsx` through `subscribeContextWindowUsage` |
 | `webui-follow-up-behavior` | `localStorage` | `webapp/lib/settings-local.ts` | ticket 48 | bare `"queue"\|"steer"` string (anything else reads as `"queue"`), reference-shared namespace; recorded preference, no reader yet |
+| `webui-shortcut-bindings` | `localStorage` | `webapp/lib/shortcuts.ts` | ticket 55c (settings Shortcuts page) | `{"global-search":"Ctrl+Shift+P", …}` — rebindings of the **live** shortcut rows only, written when the user records a new combination and removed entirely when the last one is cleared. Re-validated against the registry on read: a stored id that is no longer dispatched, or a chord that no longer parses, is dropped rather than honoured, so a hand-edited entry cannot widen what the page dispatches. Read at every keydown by `app/page.tsx` (through `effectiveBindings`) and once per mount by the settings page |
 | `webui:project-custom:v1` | `localStorage` | `webapp/lib/project-custom.ts` | ticket 55c (project context menu) | `{version:1, titles:{<projectKey>:<customName>}, pinned:[<projectKey>]}`. **Deliberately not cid-namespaced**: a rename or a pin describes the project, not a browser session, so every tab of this browser shares it. Best-effort write, silent failure; a project's entries are cleared when its remove completed with every session deleted |
 
 Except for ticket 48's four reference-shared keys (`file_open_in_new_tab`,
