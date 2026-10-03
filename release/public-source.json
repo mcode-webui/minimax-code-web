@@ -3463,6 +3463,7 @@
     "packages/webui/server/engine/provider-store.js",
     "packages/webui/server/engine/provider-writes.js",
     "packages/webui/server/engine/providers/acp.capabilities.js",
+    "packages/webui/server/engine/providers/exec.capabilities.js",
     "packages/webui/server/engine/providers/local-runtime-v2.capabilities.js",
     "packages/webui/server/engine/providers/local-runtime-v2.js",
     "packages/webui/server/engine/providers/tui-runtime-adapter.js",

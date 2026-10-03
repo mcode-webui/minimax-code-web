@@ -243,6 +243,46 @@ host 对象（子进程没有对象可反射），而是线路表 `MCODE_ACP_CAP
 `model` 与 `permissionMode` 两个配置 id，因此 `MODE_WRITE_BRIDGED_CONFIG_IDS`
 的三个桥接写入者里有两个在 acp 上确实可达。
 
+第四个已注册 provider 是 **`exec` 传输**（M4-2）——一次性的 `mcode exec`
+子进程，也是 `MCODE_WEBUI_TRANSPORT` 的第三个合法取值。它既不是 acp 的模式，
+也不是 tui 包的别名：`mcode-exec.js` 把 prompt 写进 stdin、从 stdout 解析
+`stream-json`，所以**没有请求通道，因而没有方法可调**。它拥有的是 CLI 选项与
+事件类型——`server/engine/providers/exec.capabilities.js` 正是把这两样记在
+`EXEC_INTERFACE` 里并据此审计：
+
+| 键 | exec |
+| --- | --- |
+| sessionCrud | partial——缺 `createSession`、`listSessions`、`getSession`、`updateSession`、`renameSession`、`archiveSession`、`deleteSession`、`forkSession`、`getSessionForkOptions`、`loadSession`、`activateSession`。只有 `--session` / `--continue`，而它们是「重新进入」一个会话而非「挑选」一个 |
+| streamingSend | full（`--input -` 加上 `stream-json` 事件流） |
+| interrupt | none——接口无：没有可调的东西。`packages/tui/src/cli/run-exec-command.ts` 里的 SIGINT/SIGTERM/SIGHUP 是 webui 发给**自己 spawn 的**子进程的信号，即 webui 自己的 kill 级联，不是传输提供的能力 |
+| toolSkillInvocation | partial——缺 `listSkills`、`listRuntimeSkills`、`listPendingPermissions`、`replyPermission`、`setMode`。传输**产出** `tool_call` 项而 webui 不读它们；且 `--permission` 在 spawn 时就定死（CLI 明说 `ask` 需要 TUI/ACP），所以没有权限请求/应答对 |
+| turnDiff | none——接口无，**servedBy `local-runtime-v2`** |
+| turnRewindRedo | none——接口无（`mcode exec review` 审阅本地 git 变更、不带回合坐标，所以不是 rewind 面） |
+| plugins | none——接口无，**servedBy `local-runtime-v2`** |
+| mcp | partial——缺 `mcp-configure`、`mcp-inspect`、`mcp-clear`、`mcp-list`（`--config` 能递给进程一份 MCP 配置；之后没有任何配置或探查面） |
+| subagents | none——接口无：事件联合里没有 delegation 类型，且 `packages/tui/src/headless/runner.ts` 干脆拒绝打开子 agent 会话 |
+| usageStats | partial——缺 `getSessionUsage`、`getSessionUsageSummary`、`watchSessionUsageCommits`。**比 acp 更强**：`turn.completed.usage` 会出现在线路上，所以这条传输在三个缺失名之下真有东西，而 acp 没有 |
+| authCredentials | none——接口无：没有请求通道就没有 `mcode/account/status`，也没有 `session/set_config_option`。`--model` / `--effort` 是每次运行的 spawn 标志，不是可读可写的账户面 |
+| updateCheck | none——接口无（`mcode update` 是兄弟 CLI 命令，而这里没有可通知的通道） |
+| fileReadWrite | none——接口无（`--file` 是把文件附到 prompt 上；webui 的 `/api/fs` 族是自带的 `node:fs` 实现） |
+| gitOperations | none——接口无（webui 的 `/api/git` 族包的是系统 git 二进制） |
+
+有三格比 acp **更弱**，且原因是结构性的而非引擎没写完：`interrupt`（acp 有一个
+cancel 通知，exec 连可声明的东西都没有）、`subagents`（acp 至少能从流里解析
+子 agent 活动，exec 的事件联合没有这种类型）与 `authCredentials`（acp 有两个
+RPC 方法，exec 没有通道）。反向例外是同样两个键、同样一个理由，而这是发现而非
+复制：`/api/turn-diff*` 与 `/api/plugins*` 投影的是进程内 v2 host，且**完全不按
+传输门控**，所以每条传输都继承它。
+
+**这条审计查出的一处错配，选择记录而非隐藏。** `collectExecResult` 匹配的三个
+事件名——`delta`、`message`、`exec.result`——是 **supervisor 内部**的流事件名。
+而 `--output-format stream-json` 只写 `ExecEventProjector` 的产出（`packages/tui/src/headless/output.ts`
+在没有 projector 时直接拒绝该格式，`packages/tui/src/headless/runner.ts` 总会提供一个），所以线路上跑的是
+那十个 `ExecEvent` 类型，两个名字族并不相交。这是 exec 数据面上的真实缺口。
+M4-2 不修它——本批只注册声明、不改路由——但它被钉在
+`EXEC_INTERFACE.consumedEvents`，并由一条「相交集一旦在任一方向变为非空就转红」
+的测试守住。
+
 **`servedBy` 是计划里唯一的反向例外，且有承重意义。** `turnDiff` 与 `plugins`
 在协议上如实 `none`，而那三个 `/api/turn-diff` 与十个 `/api/plugins` 端点在缺省
 acp 传输上一直可用——它们投影的是进程内 local-runtime-v2 host（经
@@ -251,13 +291,26 @@ acp 传输上一直可用——它们投影的是进程内 local-runtime-v2 host
 的功能 501 掉。`summarizeCapabilityHosting(capabilities)` 与
 `resolveCapabilityHostProvider(providerId, key)` 暴露这条路由事实；被托管的键
 **刻意**仍留在 `summarizeUnavailableCapabilities` 里，因为该 provider 确实没有
-这个能力，而那个 `{none, partial}` 形状已经在线上。
+这个能力，而那个 `{none, partial}` 形状已经在线上。`exec` provider 带同样两个
+字段、同样一个结构性理由，这也让 `servedBy` 成为逐键声明字段，而不是 acp 的特例。
 
 **注册 provider ≠ 路由到它。** 每道能力门控都经自己家族模块里的「传输→provider」
-表解析 provider，而它们都不列 `acp`：那里 miss 的含义是「尚无 provider 认领这条
-传输」，门控原样通过。所以 M4-1 没有改变任何传输上任何门控的判定。真正让 acp
-provider 可达（`chat.js` 的传输选择读注册表）是 M4-3，而把这两件事分开的测试会
-遍历全部十六个 `resolve*Provider` 函数。
+表解析 provider，而它们都不列 `acp` 与 `exec`：那里 miss 的含义是「尚无 provider
+认领这条传输」，门控原样通过。所以 M4-1 与 M4-2 都没有改变任何传输上任何门控的
+判定。真正让传输 provider 可达（`chat.js` 的传输选择读注册表）是 M4-3，而把
+这两件事分开的测试会在两条未接线的传输上遍历全部十六个 `resolve*Provider` 函数。
+
+**审计一张无法被 import 的表。** acp 的声明是对着 `MCODE_ACP_CAPABILITIES`
+核对的——那是路由读的在库常量。exec 的契约是另一个包里的 TypeScript，import 它
+会把 `@mavis/*` 放上启动路径，所以 `EXEC_INTERFACE` 是转录来的——而转录表会烂。
+两条活的交叉核对守住它：`applyExecCliContract` 的每个选项、`ExecEvent` 联合的
+每个类型、`ExecItem` 的每个 kind、`run-exec-command` 注册的每个信号，都从真实
+源码里读出逐一比对；还有 `buildExecArgs()`（一个纯函数）被直接调用，使这张表
+永远不会缩到比 webui 实际发出的内容更小。`auditExecCapabilities` 本身只有两条
+规则而非三条，省掉的第三条是一个决定：「某个 `partial` 的 `missing` 不得列出
+接口已暴露的机制」在这里是空转的——`missing` 装的是 provider 方法名，而覆盖表
+装的是接口机制名，两个命名空间不可能相交。一条永远不会失败的检查，在一个唯一
+职责就是诚实的文件里，读起来却像是有覆盖。
 
 ### `GET /api/engine-capabilities`
 
@@ -270,7 +323,11 @@ GET  /api/engine-capabilities[?provider=<id>]
 404  { ok: false, code: "unknown_engine_provider", knownProviders: [...] }   // 调用方写错了 id
 ```
 
-默认返回 `local-runtime-v2`——自 B1 起未变，且是刻意的：M4-1 增加的是一个 provider，不是一个缺省值，所以每个既有调用方（包括 webui 自己的降级测试）看到的声明与之前完全一致。已注册 id 为 `local-runtime-v2`、`tui-runtime-adapter` 与 `acp`。`?provider=` 写错答 404 并附 id 列表——它不可能与保留给「引擎缺能力」的 501 混淆。
+默认返回 `local-runtime-v2`——自 B1 起未变，且是刻意的：M4-1 与 M4-2 增加的是
+provider，不是缺省值，所以每个既有调用方（包括 webui 自己的降级测试）看到的
+声明与之前完全一致。已注册 id 为 `local-runtime-v2`、`tui-runtime-adapter`、
+`acp` 与 `exec`。`?provider=` 写错答 404 并附 id 列表——它不可能与保留给
+「引擎缺能力」的 501 混淆。
 
 ### 调了未声明的能力 → 501
 

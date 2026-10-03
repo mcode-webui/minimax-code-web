@@ -2487,9 +2487,15 @@ chunk URL 都做内容寻址，rebuild 时自动失效。
 
 只读、声明直出：返回某个 provider 在 14 个引擎能力键上的支持档位，
 附前端能力驱动渲染所用的 `unavailable` 汇总。不起 host、不探测。
-`?provider=` 缺省为 `local-runtime-v2`（自 B1 起未变）；另外两个已注册的
-provider 是 `tui-runtime-adapter`（进程内 adapter 面）与 `acp`
-（`mcode acp` 子进程协议，传输面）。
+`?provider=` 缺省为 `local-runtime-v2`（自 B1 起未变）；另外三个已注册的
+provider 是 `tui-runtime-adapter`（进程内 adapter 面）、`acp`
+（`mcode acp` 子进程协议，传输面）与 `exec`（一次性 `mcode exec`
+子进程，传输面）。
+
+注册 provider 不等于把它接进路由。`acp` 与 `exec` 都已注册但不可达：
+没有任何能力门控会解析到它们，因此跑在这两条传输上的 server 对每道门控
+仍然按「没有 provider」来评估。`?provider=exec` 今天就能作答；会去查
+exec 声明的门控属于 M4-3 的活。
 
 **Response 200**
 ```json
@@ -2509,15 +2515,26 @@ provider 是 `tui-runtime-adapter`（进程内 adapter 面）与 `acp`
 
 `none` 条目除 `reason` 外还可带一个 `servedBy: "<providerId>"`。它**不改变**
 档位，也不改变 `unavailable` 汇总——该 provider 确实没有这个能力。它记录的是
-webui 仍从另一个 provider 的进程内 host 服务该端点。`acp` provider 只对两个
-键用它（`turnDiff`、`plugins`）：协议既无 diff 方法也无插件方法，但那十三个
-端点在缺省 acp 传输上可用，因为它们投影的是进程内 local-runtime-v2 host。
-客户端若想知道「由谁应答」，应把 `servedBy` 读作「这不是降级」——但绝不可
-读作该能力可用。
+webui 仍从另一个 provider 的进程内 host 服务该端点。两个传输 provider 都只对
+两个键用它（`turnDiff`、`plugins`）：acp 协议与 exec CLI 既无 diff 方法也无
+插件方法，但那十三个端点在任一条传输上都可用，因为它们投影的是进程内
+local-runtime-v2 host 且完全不按传输门控。这正是该字段是「逐键声明字段」而
+不是 acp 特例的原因：这个例外属于那两个路由，所以每条传输都继承它。客户端若
+想知道「由谁应答」，应把 `servedBy` 读作「这不是降级」——但绝不可读作该能力
+可用。
+
+写客户端之前值得先读 `exec` 那份声明，因为它的形状源自这条传输
+**没有请求通道**：`mcode exec` 从 stdin 取 prompt、向 stdout 写
+`stream-json` 事件流，因此没有方法可调，除了「发送」之外没有哪一项能声明成
+`full`。它是 `streamingSend` 为 `full`，`sessionCrud`（能重新进入或续接已有
+会话，但列举不了、加载不了、关不掉、删不掉）、`toolSkillInvocation`、`mcp`、
+`usageStats` 为 `partial`，其余六键为 `none`——其中包含 acp provider 答成
+`partial` 的 `interrupt` 与 `authCredentials`。每条 `reason` 都写明取证的文件
+与行号，且档位是关于这条传输的**接口面**的陈述，而不是关于当前哪些端点会应答。
 
 **错误** —— `?provider=` 写错答 `404 {"ok":false,"code":"unknown_engine_provider","knownProviders":[…]}`（调用方的错，绝不会是 501）。未来任何按能力门控的路由，调到未声明能力答 `501 {"ok":false,"code":"engine_capability_not_supported","capability","provider","missing"?,"reason"?}`——这是预期降级、不是服务端故障；按「隐藏入口」处理，不弹错误提示。
 
-契约细节（14 键总表、两个 provider 的档位、迁移状态）见
+契约细节（14 键总表、各 provider 的档位、迁移状态）见
 [`docs/webui.zh-CN.md`](../../../docs/webui.zh-CN.md) 的
 「引擎能力声明」一节。
 

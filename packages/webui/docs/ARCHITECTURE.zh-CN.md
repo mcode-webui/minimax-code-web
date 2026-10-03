@@ -474,6 +474,7 @@ queued \| done \| stopped`）是投影层产物、不是存储值；webui 不导
 | `engine/providers/local-runtime-v2.js` | `createCatalogueHost`（自 `runtime-host.js` 原样移入，后者转发导出）+ 转发导出上面的声明，消费方的 import 形状因此不变。它是重的那一个——`@mavis/local-runtime-v2`、`@mavis/config`、`@minimax/code/runtime-adapter`——`app.js` 能触达的文件里绝不许 import 它 |
 | `engine/providers/tui-runtime-adapter.js` | `TUI_RUNTIME_ADAPTER_CAPABILITIES`（仅声明——adapter 本体在 v2 host 内构造） |
 | `engine/providers/acp.capabilities.js` | `ACP_CAPABILITIES`——`mcode acp` 协议的 14 键声明，也是第一个**传输**而非进程内**面**的 provider（迁移步 M4-1）。同样只有声明：不构造任何协议客户端，所以 `?provider=acp` 可从 boot 路径作答 |
+| `engine/providers/exec.capabilities.js` | `EXEC_CAPABILITIES`——`mcode exec` 传输的 14 键声明（迁移步 M4-2），外加 `EXEC_INTERFACE`（CLI 选项与 stream-json 事件类型，它们**就是**这条传输的接口面，因为它没有方法）、`EXEC_COVERAGE`（审计的输入）与 `auditExecCapabilities`（acp 线路审计的 exec 对应物）。同样只有声明且零依赖，理由与启动路径纪律相同 |
 | `engine/session-reads.js` | 目录读族的面板调用（`readEngineSessionList`、`readEngineSessionListForWorkspace`、`readEngineSessionTitle`、`readEngineVersion`）与端点→能力对照表 `SESSION_READ_ENDPOINTS`（迁移步 M3 批次 B1） |
 | `engine/session-tree-reads.js` | 会话树族的面板调用 `readEngineSessionTree` 与端点→能力对照表 `SESSION_TREE_ENDPOINTS`（迁移步 M3 批次 B2）。**硬门控**：`assertSessionTreeCapability` 抛出 → 501，因为树完全由引擎数据构成。转发到 `lib/session-tree.js#getSessionTree`，树的装配逻辑不复制第二份 |
 | `engine/session-export.js` | 导出族的面板调用 `readEngineSessionTranscript` 与端点→能力对照表 `SESSION_EXPORT_ENDPOINTS`（迁移步 M3 批次 B2）。**软门控**：`checkSessionExportCapability` 只报告、从不抛出，因为导出的主数据源是 `sessions.json` 而非引擎 |
@@ -603,7 +604,7 @@ provider 不叫「由别处服务」，让这个词有两种含义，门控迟�
 
 acp 声明的审计方式与另两个一致，只是审计对象不同。两个运行时 provider 靠
 反射真实 host 对象核对；子进程协议没有对象可反射，于是
-`test/lib/engine/capability-snapshot.test.js` 改为核对 `MCODE_ACP_CAPABILITIES`——
+`packages/webui/test/lib/engine/capability-snapshot.test.js` 改为核对 `MCODE_ACP_CAPABILITIES`——
 `lib/mcode-rpc.js` 为前端导出的那份扁平线路表，它是在库常量而非手打清单。
 检查分三桶，第三桶最要紧：`present`（线路上有）、`absent`（注册了但无
 handler——线上活例是 `session/delete`，正是它让 `sessionCrud` 成为诚实的
@@ -618,6 +619,77 @@ handler——线上活例是 `session/delete`，正是它让 `sessionCrud` 成�
 `session/set_config_option` 会派发 `model` 与 `permissionMode` 两个配置
 id，因此 `MODE_WRITE_BRIDGED_CONFIG_IDS` 的三个桥接写入者里有两个在 acp
 上确实可达。
+
+### 第二条传输：`exec`（M4-2）
+
+`mcode exec` 是 `MCODE_WEBUI_TRANSPORT` 的第三个合法取值
+（`lib/config.js:224`），此前同样没有声明。它既不是 acp 传输的一种模式，
+也不是 tui 包的别名——它是**另一种线路形态**，而这个差别正是本批的工作内容。
+
+```mermaid
+graph LR
+    EXEC["mcode exec<br/>（一次性子进程）"]
+    ARGS["argv<br/>applyExecCliContract<br/>packages/tui/src/cli/contract.ts"]
+    WIRE["stream-json<br/>ExecEvent 联合<br/>packages/tui/src/headless/events.ts"]
+    PARSE["collectExecResult<br/>mcode-exec.js:221-294"]
+
+    EXEC -->|stdin：prompt| ARGS
+    EXEC -->|stdout| WIRE
+    WIRE -.->|"delta / message /<br/>exec.result——非线路名"| PARSE
+    PARSE --> GAP["KNOWN DEBT：<br/>两个名字族<br/>不相交"]
+
+    EXEC --> DECL["EXEC_CAPABILITIES<br/>full：streamingSend<br/>partial：4 键<br/>none：8 键"]
+```
+
+**没有请求通道，因此没有方法。** `mcode-exec.js` 把 prompt 写进 stdin，
+从 stdout 解析换行分隔的 JSON。没有请求可发，因而没有方法可调——决定 acp
+列的那整个问题（「`session/delete` 是不是注册了却没有 handler？」）在这里根本
+不成立。实际存在的是两个轴：进程被**告知**什么（CLI 选项），以及进程
+**回报**什么（事件类型）。`EXEC_INTERFACE` 记录两者，声明就对着它们审计。
+
+**`streamingSend` 是唯一的 `full`。** 发送 prompt 就是这条传输本身。其余全是
+削减，且这些削减是结构性的，不是没写完的活：
+
+| 键 | acp | exec | 两者为何不同 |
+| --- | --- | --- | --- |
+| `interrupt` | `none`（有通知但无应答） | `none`（什么都没有） | acp 有 `session/cancel`，但它不带应答。exec 根本没有可声明的通道；`packages/tui/src/cli/run-exec-command.ts:51-53` 注册了 SIGINT/SIGTERM/SIGHUP，但那是 webui 发给自己 spawn 的子进程的**信号**——那是 webui 的 kill 级联，不是传输提供的能力 |
+| `subagents` | `partial` | `none` | acp 至少能从流里解析出子 agent 活动。exec 的事件联合里根本没有 delegation 类型，`packages/tui/src/headless/runner.ts:899-902` 从引擎侧印证了这条边界 |
+| `authCredentials` | `partial` | `none` | `mcode/account/status` 与 `session/set_config_option` 都是 RPC 方法。`--model` 与 `--effort` 是每次运行的 spawn 标志：它们改变下一个进程，无法被查询，也不承载任何凭据、套餐或 OAuth 状态 |
+| `usageStats` | `partial` | `partial`——且**更强** | `turn.completed.usage` 会出现在 exec 线路上，所以这条传输在三个缺失名之下真有东西，acp 没有 |
+| `sessionCrud` | `partial` | `partial`——更弱 | `--session` / `--continue` 能重新进入已有会话；但没有列举、创建、加载、关闭或删除 |
+
+**审计查出的一条事实，选择记录而非隐藏。** `collectExecResult` 匹配的三个名字
+——`delta`、`message`、`exec.result`——是**supervisor 内部**的流事件名。
+`stream-json` 格式只写 `ExecEventProjector` 产出的东西（`packages/tui/src/headless/output.ts:34-36`
+在没有 projector 时直接拒绝该格式，而 `packages/tui/src/headless/runner.ts:218-232` 总会提供一个），
+因此线路上跑的是那十个 `ExecEvent` 类型，而**两个名字族并不相交**。这是
+exec 数据面上的真实错配，而 M4-2 不修它：本批只注册声明、不改路由。它被钉在
+`EXEC_INTERFACE.consumedEvents`，由一条「相交集一旦在任一方向变为非空就转红」
+的测试守住，并记为 KNOWN DEBT。
+
+**反向例外属于那两个路由，不属于 acp。** `exec` 同样把 `turnDiff` 与
+`plugins` 声明为 `none` 并带上同样的 `servedBy: "local-runtime-v2"`，而这是
+一条发现而非复制：`routes/turn-diff.js` 与 `routes/plugins.js` 投影的是经
+`getEngineCatalogueHost()` 触达的进程内 v2 host，且不按任何传输门控，所以每条
+传输都继承这个例外。说出这一点的测试，是那条遍历两个 provider、断言同样两个
+键配同样的 host、再断言 host 自身在这两个键上都是 `full` 的测试。
+
+**审计一张无法被 import 的表。** acp 的审计能成立是因为
+`MCODE_ACP_CAPABILITIES` 是活的——路由读的就是那份常量。exec 的契约是另一个
+包里的 TypeScript，import 它会把 `@mavis/*` 放上启动路径，所以
+`EXEC_INTERFACE` 是一张转录表，而转录表会烂。两条活的交叉核对守住它，都在
+`packages/webui/test/lib/engine/capability-snapshot.test.js` 里：`applyExecCliContract` 的每个选项、
+`ExecEvent` 联合的每个类型、`ExecItem` 的每个 kind、`run-exec-command`
+注册的每个信号，都从真实源码里读出来逐一比对；还有 `buildExecArgs()`（一个
+纯函数）被直接调用，使这张表永远不会缩到比 webui 实际发出的内容更小。
+
+`auditExecCapabilities` 只有两条规则而非三条，被省掉的那条第三规则是一个
+**决定**而非疏漏。「某个 `partial` 的 `missing` 不得列出接口已暴露的机制」
+在这里是**空转**的：`missing` 装的是 provider 方法名（`deleteSession`）或
+短横线子能力名（`mcp-configure`），而覆盖表装的是机制名（`--session`、
+`tool_call`），两个命名空间不可能相交。一条永远不会失败的检查，在一个以诚实
+为唯一职责的文件里读起来却像是有覆盖，所以它不在——并且有一条测试断言这两个
+命名空间确实不相交，让这份省略始终是一个被核对的事实而不是习惯。
 
 启动路径纪律：`app.js` 会触达 `engine/index.js`，因此该文件及其全部
 静态依赖必须不含 `@mavis/*`、`@minimax/*` 与任何 host 模块。M1 是交过

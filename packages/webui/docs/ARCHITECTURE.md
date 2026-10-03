@@ -504,6 +504,7 @@ Fifteen files, one job each:
 | `engine/providers/local-runtime-v2.js` | `createCatalogueHost` (moved verbatim from `runtime-host.js`, which re-exports it) + re-exports the declaration above, so consumers keep one import shape. This is the heavy one — `@mavis/local-runtime-v2`, `@mavis/config`, `@minimax/code/runtime-adapter` — and no file `app.js` reaches may import it |
 | `engine/providers/tui-runtime-adapter.js` | `TUI_RUNTIME_ADAPTER_CAPABILITIES` (declaration only — the adapter itself is constructed inside the v2 host) |
 | `engine/providers/acp.capabilities.js` | `ACP_CAPABILITIES` — the `mcode acp` protocol's 14-key declaration, and the first provider that is a **transport** rather than an in-process surface (step M4-1). Declaration only, like its siblings: no protocol client is constructed, so `?provider=acp` is answerable from the boot path |
+| `engine/providers/exec.capabilities.js` | `EXEC_CAPABILITIES` — the `mcode exec` transport's 14-key declaration (step M4-2), plus `EXEC_INTERFACE` (the CLI options and stream-json event types that ARE the transport's interface, since it has no methods), `EXEC_COVERAGE` (the audit's input) and `auditExecCapabilities` (the exec counterpart of the acp wire audit). Declaration only and zero-dependency for the same boot-path reason |
 | `engine/session-reads.js` | The directory-read family's facade calls (`readEngineSessionList`, `readEngineSessionListForWorkspace`, `readEngineSessionTitle`, `readEngineVersion`) and the endpoint→capability table `SESSION_READ_ENDPOINTS` (step M3, batch B1) |
 | `engine/session-tree-reads.js` | The session-tree family's facade call (`readEngineSessionTree`) and the endpoint→capability table `SESSION_TREE_ENDPOINTS` (step M3, batch B2). Gates **hard**: `assertSessionTreeCapability` throws → 501, because the tree is entirely engine data. Forwards to `lib/session-tree.js#getSessionTree`; the assembler is not duplicated |
 | `engine/session-export.js` | The export family's facade call (`readEngineSessionTranscript`) and the endpoint→capability table `SESSION_EXPORT_ENDPOINTS` (step M3, batch B2). Gates **soft**: `checkSessionExportCapability` reports and never throws, because export's primary source is `sessions.json`, not the engine |
@@ -663,7 +664,7 @@ for every existing caller.
 The acp declaration is audited the way the other two are, against a
 different surface. The runtime providers are checked by reflecting a
 real host object; a subprocess protocol has no object to reflect, so
-`test/lib/engine/capability-snapshot.test.js` checks the declaration against
+`packages/webui/test/lib/engine/capability-snapshot.test.js` checks the declaration against
 `MCODE_ACP_CAPABILITIES` — the flat wire table `lib/mcode-rpc.js`
 exports for the frontend, which is a live, checked-in constant rather
 than a hand-typed list. The check has three buckets, and the third is
@@ -684,6 +685,94 @@ runtime surfaces), and `session/set_config_option` dispatches the
 `model` and `permissionMode` config ids, so two of the three bridged
 writers of `MODE_WRITE_BRIDGED_CONFIG_IDS` are genuinely reachable over
 acp.
+
+### The second transport: `exec` (M4-2)
+
+`mcode exec` is the third legal `MCODE_WEBUI_TRANSPORT` value
+(`lib/config.js:224`) and until now had no declaration either. It is not
+a mode of the acp transport and not an alias for the tui package — it is
+a **different wire shape**, and that difference is what the batch's work
+consists of.
+
+```mermaid
+graph LR
+    EXEC["mcode exec<br/>(one-shot subprocess)"]
+    ARGS["argv<br/>applyExecCliContract<br/>packages/tui/src/cli/contract.ts"]
+    WIRE["stream-json<br/>ExecEvent union<br/>packages/tui/src/headless/events.ts"]
+    PARSE["collectExecResult<br/>mcode-exec.js:221-294"]
+
+    EXEC -->|stdin: the prompt| ARGS
+    EXEC -->|stdout| WIRE
+    WIRE -.->|"delta / message /<br/>exec.result — NOT wire names"| PARSE
+    PARSE --> GAP["KNOWN DEBT:<br/>the two name families<br/>do not intersect"]
+
+    EXEC --> DECL["EXEC_CAPABILITIES<br/>full: streamingSend<br/>partial: 4 keys<br/>none: 8 keys"]
+```
+
+**No request channel, so no methods.** `mcode-exec.js` writes the prompt
+to stdin and parses newline-delimited JSON off stdout. There is no
+request to send, and therefore no method to call — the entire
+"is `session/delete` registered with no handler?" question that decides
+the acp column simply does not arise. What exists instead is two axes:
+the CLI options the process is *told*, and the event types it *says
+back*. `EXEC_INTERFACE` records both, and the declaration is audited
+against them.
+
+**`streamingSend` is the only `full`.** Sending a prompt is what the
+transport is. Everything else is a reduction, and the reductions are
+structural rather than unfinished work:
+
+| Key | acp | exec | Why the two differ |
+| --- | --- | --- | --- |
+| `interrupt` | `none` (a notification) | `none` (nothing at all) | acp has `session/cancel`, which carries no reply. exec has no channel to declare one on; `packages/tui/src/cli/run-exec-command.ts:51-53` registers SIGINT/SIGTERM/SIGHUP, but those are signals webui delivers to the child **it** spawned — that is webui's kill cascade, not a capability the transport offers |
+| `subagents` | `partial` | `none` | acp can at least parse sub-agent activity off its stream. The exec event union has no delegation kind at all, and `packages/tui/src/headless/runner.ts:899-902` confirms the boundary from the engine side |
+| `authCredentials` | `partial` | `none` | `mcode/account/status` and `session/set_config_option` are RPC methods. `--model` and `--effort` are per-run spawn flags: they change the next process, cannot be queried, and carry no credential, plan or OAuth state |
+| `usageStats` | `partial` | `partial` — and **stronger** | `turn.completed.usage` is emitted on the exec wire, so this transport has something under its three missing names and acp does not |
+| `sessionCrud` | `partial` | `partial` — weaker | `--session` / `--continue` re-enter an existing session; nothing lists, creates, loads, closes or deletes one |
+
+**A fact the audit found, recorded rather than hidden.** The names
+`collectExecResult` branches on — `delta`, `message`, `exec.result` —
+are the *supervisor's internal* stream-event names. The `stream-json`
+format writes only what `ExecEventProjector` produces (`packages/tui/src/headless/output.ts:34-36`
+refuses the format outright with no projector, and `packages/tui/src/headless/runner.ts:218-232`
+always supplies one), so the wire carries the ten `ExecEvent` types and
+**the two families do not intersect**. That is a real mismatch in the
+exec data plane, and M4-2 does not fix it: the batch registers a
+declaration and changes no routing. It is pinned in
+`EXEC_INTERFACE.consumedEvents`, asserted by a test that fails if the
+intersection ever becomes non-empty in either direction, and recorded as
+KNOWN DEBT.
+
+**The reverse exception is the two routes' property, not acp's.** `exec`
+declares `turnDiff` and `plugins` `none` with the same
+`servedBy: "local-runtime-v2"`, and that is a finding rather than a
+copy: `routes/turn-diff.js` and `routes/plugins.js` project the
+in-process v2 host through `getEngineCatalogueHost()` and gate on no
+transport, so every transport inherits the exception. The test that says
+so is the one that walks both providers and asserts the same two keys
+with the same host, plus the host itself being `full` on each.
+
+**Auditing a table that cannot be imported.** The acp audit works
+because `MCODE_ACP_CAPABILITIES` is live — the same constant the routes
+read. The exec contract is TypeScript in another package, and importing
+it would put `@mavis/*` on the boot path, so `EXEC_INTERFACE` is a
+transcribed table and transcribed tables rot. Two live cross-checks
+keep it honest, both in `packages/webui/test/lib/engine/capability-snapshot.test.js`: every option in
+`applyExecCliContract`, every type in the `ExecEvent` union, every
+`ExecItem` kind and every signal `run-exec-command` registers are read
+out of the real sources and compared; and `buildExecArgs()` — a pure
+function — is invoked so the table can never shrink below what webui
+actually sends.
+
+`auditExecCapabilities` has two rules, not three, and the missing third
+is a decision rather than an oversight. "A `partial`'s `missing` must not
+name a mechanism the interface exposes" is **vacuous** here: `missing`
+names provider methods (`deleteSession`) or kebab-case sub-capabilities
+(`mcp-configure`), while the coverage table names mechanisms
+(`--session`, `tool_call`), and the two namespaces cannot intersect. A
+check that cannot fail reads as coverage in a file whose whole job is
+honesty, so it is absent — and a test asserts the namespaces really are
+disjoint, so the omission stays a checked fact instead of a habit.
 
 Boot-path discipline: `app.js` reaches `engine/index.js`, so that file and
 everything it imports statically must stay free of `@mavis/*`,

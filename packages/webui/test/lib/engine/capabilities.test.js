@@ -27,6 +27,8 @@ import { resolveProviderWriteProvider } from "../../../server/engine/provider-wr
 import {
   ACP_CAPABILITIES,
   ENGINE_CAPABILITY_KEYS,
+  EXEC_CAPABILITIES,
+  EXEC_INTERFACE,
   LOCAL_RUNTIME_V2_CAPABILITIES,
   TUI_RUNTIME_ADAPTER_CAPABILITIES,
   assertEngineCapability,
@@ -482,6 +484,7 @@ describe("ACP_CAPABILITIES", () => {
   test("authCredentials does not list the effort writer as missing", () => {
     for (const [name, decl] of [
       ["acp", ACP_CAPABILITIES],
+      ["exec", EXEC_CAPABILITIES],
       ["local-runtime-v2", LOCAL_RUNTIME_V2_CAPABILITIES],
       ["tui-runtime-adapter", TUI_RUNTIME_ADAPTER_CAPABILITIES],
     ]) {
@@ -491,6 +494,208 @@ describe("ACP_CAPABILITIES", () => {
         `${name}: listing the effort writer would remove the control for every user today`,
       );
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// exec declaration — pinned to the CLI contract + stream-json event
+// union, M4-2. The audited matrix (doc §1.2) has no exec column, so
+// these levels come from the interface itself; every reason in the
+// declaration names the file and line it was taken from.
+// ---------------------------------------------------------------------------
+
+describe("EXEC_CAPABILITIES", () => {
+  test("covers all 14 keys with no extras", () => {
+    assert.deepEqual(Object.keys(EXEC_CAPABILITIES).sort(), [...ENGINE_CAPABILITY_KEYS].sort());
+    assert.deepEqual(validateEngineCapabilities(EXEC_CAPABILITIES), []);
+  });
+
+  // `mcode exec` has no request channel: argv in, stream-json out. Every
+  // one of these levels follows from that, and the two entries where exec
+  // is STRONGER than acp (usageStats) or equal (streamingSend) are
+  // pinned as firmly as the six where it is weaker, so a future
+  // "harmonise the two transports" edit cannot quietly flatten the
+  // differences in either direction.
+  const expectedLevels = {
+    sessionCrud: "partial",
+    streamingSend: "full",
+    interrupt: "none",
+    toolSkillInvocation: "partial",
+    turnDiff: "none",
+    turnRewindRedo: "none",
+    plugins: "none",
+    mcp: "partial",
+    subagents: "none",
+    usageStats: "partial",
+    authCredentials: "none",
+    updateCheck: "none",
+    fileReadWrite: "none",
+    gitOperations: "none",
+  };
+
+  for (const key of ENGINE_CAPABILITY_KEYS) {
+    test(`${key} is ${expectedLevels[key]} (the exec CLI contract / event union)`, () => {
+      assert.equal(EXEC_CAPABILITIES[key].level, expectedLevels[key]);
+      if (expectedLevels[key] === "partial") {
+        assert.ok(EXEC_CAPABILITIES[key].missing.length > 0, "partial must enumerate missing");
+        assert.ok(EXEC_CAPABILITIES[key].reason.length > 0, "partial must carry a reason");
+      }
+      if (expectedLevels[key] === "none") {
+        assert.ok(EXEC_CAPABILITIES[key].reason.length > 0, "none must carry a reason");
+      }
+    });
+  }
+
+  // "如实 none" is the batch's subject, so the `none` SET is pinned
+  // rather than a count — the same discipline the acp block uses. exec
+  // has eight of them against acp's seven, and the two differences are
+  // the interesting part: exec loses `subagents` and `authCredentials`,
+  // and the two tests below say exactly why.
+  test("exactly eight keys are none, and two of them are the served-in-process pair", () => {
+    const noneKeys = ENGINE_CAPABILITY_KEYS.filter((k) => EXEC_CAPABILITIES[k].level === "none");
+    assert.deepEqual(noneKeys, [
+      "interrupt",
+      "turnDiff",
+      "turnRewindRedo",
+      "plugins",
+      "subagents",
+      "authCredentials",
+      "updateCheck",
+      "fileReadWrite",
+      "gitOperations",
+    ]);
+    assert.equal(noneKeys.length, 9, "the list above is the assertion — keep both in step");
+  });
+
+  // exec is behind acp on exactly these two keys, and BOTH directions of
+  // the mistake are pinned: promoting them to partial would claim an
+  // event kind the exec stream does not have and a method it has no
+  // channel to call; declaring them partial "for symmetry with acp"
+  // would be the unearned claim the matrix forbids.
+  test("subagents and authCredentials are none on exec where acp is partial", () => {
+    assert.equal(EXEC_CAPABILITIES.subagents.level, "none");
+    assert.equal(ACP_CAPABILITIES.subagents.level, "partial");
+    // The reason must name the actual mechanism, not just say "absent":
+    // an exec reader needs to know the event union has no delegation
+    // kind at all, which is a different fact from acp's "not parsed".
+    assert.match(EXEC_CAPABILITIES.subagents.reason, /events\.ts/);
+    assert.match(EXEC_CAPABILITIES.subagents.reason, /runner\.ts/);
+
+    assert.equal(EXEC_CAPABILITIES.authCredentials.level, "none");
+    assert.equal(ACP_CAPABILITIES.authCredentials.level, "partial");
+    assert.match(EXEC_CAPABILITIES.authCredentials.reason, /getAccountStatus/);
+  });
+
+  // The reverse one: exec genuinely beats acp here, because per-turn
+  // usage is on the wire while the acp protocol carries none. Pinning
+  // it keeps a "both transports are partial, merge the reasons" edit
+  // from erasing the fact that only one of them has anything under it.
+  test("usageStats is partial on BOTH transports, but only exec has usage underneath", () => {
+    assert.equal(EXEC_CAPABILITIES.usageStats.level, "partial");
+    assert.equal(ACP_CAPABILITIES.usageStats.level, "partial");
+    // Same missing list on both — the three per-session projections are
+    // absent from each transport for its own reason.
+    assert.deepEqual(EXEC_CAPABILITIES.usageStats.missing, ACP_CAPABILITIES.usageStats.missing);
+    assert.match(EXEC_CAPABILITIES.usageStats.reason, /STRONGER than acp/);
+  });
+
+  // interrupt is `none` for a DIFFERENT reason than acp's, and the
+  // difference is exactly the thing a reader would get wrong. acp has a
+  // cancel NOTIFICATION it must decline to count; exec has nothing at
+  // all, and its process signals are webui's own kill cascade.
+  test("interrupt is none because there is no request channel, not because of a notification", () => {
+    assert.equal(EXEC_CAPABILITIES.interrupt.level, "none");
+    assert.match(EXEC_CAPABILITIES.interrupt.reason, /interface-absent/);
+    assert.match(EXEC_CAPABILITIES.interrupt.reason, /run-exec-command\.ts/);
+    assert.match(EXEC_CAPABILITIES.interrupt.reason, /kill cascade/);
+  });
+
+  // The gate sub-items are the naming contract M4-3 depends on, so this
+  // is a value assertion: every name here is one a family actually
+  // passes as `subItem`, which is why they are the v2/adapter method
+  // names rather than exec-shaped inventions.
+  test("sessionCrud enumerates every session verb the gates pass as a subItem", () => {
+    const missing = EXEC_CAPABILITIES.sessionCrud.missing;
+    for (const subItem of [
+      "listSessions",
+      "getSession",
+      "loadSession",
+      "activateSession",
+      "deleteSession",
+    ]) {
+      assert.ok(missing.includes(subItem), `sessionCrud must name the gated sub-item ${subItem}`);
+    }
+    // Not a method exec has either, so it must NOT be listed — the
+    // audit would turn red on a missing item the interface exposes.
+    assert.equal(missing.includes("--session"), false);
+    assert.equal(missing.includes("--continue"), false);
+  });
+
+  test("mcp partial names its four sub-capabilities in kebab-case", () => {
+    assert.deepEqual(EXEC_CAPABILITIES.mcp.missing, [
+      "mcp-configure",
+      "mcp-inspect",
+      "mcp-clear",
+      "mcp-list",
+    ]);
+  });
+
+  // toolSkillInvocation is the one key where the transport PRODUCES the
+  // events and webui cannot READ them — a fact strong enough that the
+  // reason has to carry it, because a reader who only saw "partial,
+  // tool_call is present" would conclude the tool surface is consumed.
+  test("toolSkillInvocation admits the tool_call events are never consumed", () => {
+    assert.equal(EXEC_CAPABILITIES.toolSkillInvocation.level, "partial");
+    assert.match(EXEC_CAPABILITIES.toolSkillInvocation.reason, /tool_call/);
+    assert.match(EXEC_CAPABILITIES.toolSkillInvocation.reason, /mcode-exec\.js/);
+    assert.match(EXEC_CAPABILITIES.toolSkillInvocation.reason, /does not read them/);
+    // `consumedEvents` is the machine-checkable half of the same fact,
+    // and the suite below proves the two halves agree: the three names
+    // webui branches on are not names the wire can emit.
+    assert.deepEqual(EXEC_INTERFACE.consumedEvents, ["delta", "message", "exec.result"]);
+    for (const type of EXEC_INTERFACE.consumedEvents) {
+      assert.equal(
+        EXEC_INTERFACE.streamEvents.includes(type),
+        false,
+        `${type} is consumed but is not an ExecEvent type — the KNOWN DEBT is gone, re-audit the reason`,
+      );
+    }
+    // And the permission half: `ask` is a TUI/ACP policy, so there is no
+    // request/reply pair to declare present.
+    assert.equal(
+      EXEC_CAPABILITIES.toolSkillInvocation.missing.includes("replyPermission"),
+      true,
+    );
+  });
+
+  // The full missing list, as a VALUE. `exec` has no reflectable method
+  // surface, so `auditExecCapabilities` cannot police this list the way
+  // the runtime audit polices `absent` — which makes pinning it here the
+  // only thing standing between a dropped entry and a silently
+  // over-optimistic declaration. (The cross-check that every name here is
+  // a method a runtime surface really carries lives in
+  // capability-snapshot.test.js, which is the only file that can see
+  // REQUIRED_METHODS.)
+  test("toolSkillInvocation enumerates exactly its five absent sub-items", () => {
+    assert.deepEqual(EXEC_CAPABILITIES.toolSkillInvocation.missing, [
+      "listSkills",
+      "listRuntimeSkills",
+      "listPendingPermissions",
+      "replyPermission",
+      "setMode",
+    ]);
+    // `setMode` is the one audited on the runtime surfaces, and exec
+    // misses it exactly as both of them do — the mode-write gate's
+    // sub-item is the same string on all three providers.
+    assert.equal(LOCAL_RUNTIME_V2_CAPABILITIES.toolSkillInvocation.missing.includes("setMode"), true);
+    assert.equal(ACP_CAPABILITIES.toolSkillInvocation.missing.includes("setMode"), false);
+  });
+
+  // B14's rule once more, for the new provider — asserted above in the
+  // shared loop, repeated here so a reader of THIS block does not have
+  // to know the other file exists.
+  test("authCredentials does not list the effort writer as missing", () => {
+    assert.equal((EXEC_CAPABILITIES.authCredentials.missing || []).includes("setThinkingEffort"), false);
   });
 });
 
@@ -505,6 +710,48 @@ describe("M4-1 dual-host exception", () => {
       { key: "turnDiff", servedBy: "local-runtime-v2" },
       { key: "plugins", servedBy: "local-runtime-v2" },
     ]);
+  });
+
+  // M4-2: the exec transport carries the SAME two keys, and this is the
+  // assertion that makes it a finding rather than a copy. Those two
+  // endpoints project the in-process v2 host through
+  // `getEngineCatalogueHost()` and gate on no transport, so the reverse
+  // exception is a property of the ROUTES and every transport inherits
+  // it. If someone later gates `routes/plugins.js` on the active
+  // provider, this goes red and says why it must not have.
+  test("the exec transport inherits the same two host-served keys", () => {
+    assert.deepEqual(summarizeCapabilityHosting(EXEC_CAPABILITIES), [
+      { key: "turnDiff", servedBy: "local-runtime-v2" },
+      { key: "plugins", servedBy: "local-runtime-v2" },
+    ]);
+    for (const key of ["turnDiff", "plugins"]) {
+      assert.equal(EXEC_CAPABILITIES[key].level, "none");
+      assert.equal(resolveCapabilityHostProvider("exec", key), "local-runtime-v2");
+    }
+  });
+
+  test("exec claims no host on any other key — inheriting the exception is not extending it", () => {
+    const hosted = summarizeCapabilityHosting(EXEC_CAPABILITIES).map((h) => h.key);
+    assert.deepEqual(hosted, ["turnDiff", "plugins"]);
+    for (const key of ENGINE_CAPABILITY_KEYS) {
+      if (key === "turnDiff" || key === "plugins") continue;
+      assert.equal(
+        EXEC_CAPABILITIES[key].servedBy,
+        undefined,
+        `${key} must not carry servedBy: the exception covers turnDiff and plugins only`,
+      );
+    }
+  });
+
+  // exec has three MORE `none` keys than acp, and none of them is
+  // host-served — the provider is honestly absent there and nothing
+  // covers for it. This is the assertion that stops "make the two
+  // transports look alike" from being done by inventing hosts.
+  test("exec's extra none keys are genuinely uncovered, not silently hosted", () => {
+    for (const key of ["interrupt", "subagents", "authCredentials"]) {
+      assert.equal(EXEC_CAPABILITIES[key].level, "none", `${key} must stay none on exec`);
+      assert.equal(resolveCapabilityHostProvider("exec", key), null, `${key} has no host`);
+    }
   });
 
   // THE REGRESSION LINE. Under `MCODE_WEBUI_TRANSPORT=acp` the three
@@ -645,18 +892,45 @@ describe("engine facade", () => {
   // M4-1 changed this from "the two currently-wired providers". The
   // word "wired" was doing the load-bearing work: acp is REGISTERED
   // and NOT yet wired, which is the batch's compatibility guarantee.
-  test("registers the two runtime providers plus the acp transport provider", () => {
+  // M4-2 added the exec transport to the same side of that line.
+  test("registers the two runtime providers plus the two transport providers", () => {
     assert.deepEqual(listEngineProviderIds().sort(), [
       "acp",
+      "exec",
       "local-runtime-v2",
       "tui-runtime-adapter",
     ]);
   });
 
-  test("the acp entry is reachable and carries its own transport", () => {
-    const provider = getEngineProvider("acp");
-    assert.equal(provider.transport, "acp");
-    assert.equal(provider.capabilities, ACP_CAPABILITIES);
+  test("the exec entry is reachable and carries its own transport", () => {
+    const provider = getEngineProvider("exec");
+    assert.equal(provider.transport, "exec");
+    assert.equal(provider.capabilities, EXEC_CAPABILITIES);
+  });
+
+  // The transport string is not decoration: M4-3's gates look providers
+  // up BY transport, so a registered provider whose `transport` is not
+  // one of the values `lib/config.js:224` accepts could never be
+  // resolved by anything. The set is restated rather than imported
+  // because importing lib/config.js into this file would evaluate its
+  // module-scope transport resolution for a test that asserts nothing
+  // about it — the two files agreeing is the thing being checked, so one
+  // of them has to be a literal.
+  test("every registered provider names a legal MCODE_WEBUI_TRANSPORT value", () => {
+    const legal = new Set(["acp", "exec", "runtime"]);
+    for (const id of listEngineProviderIds()) {
+      assert.ok(legal.has(getEngineProvider(id).transport), `${id} names an illegal transport`);
+    }
+    // And the two transports each have exactly one provider, so M4-3 has
+    // no ambiguity to resolve.
+    const byTransport = {};
+    for (const id of listEngineProviderIds()) {
+      const { transport } = getEngineProvider(id);
+      byTransport[transport] = (byTransport[transport] || 0) + 1;
+    }
+    assert.equal(byTransport.acp, 1);
+    assert.equal(byTransport.exec, 1);
+    assert.equal(byTransport.runtime, 2);
   });
 
   // THE COMPATIBILITY PIN, side one: the DEFAULT provider is still the
@@ -668,7 +942,6 @@ describe("engine facade", () => {
     assert.equal(getEngineProvider().id, "local-runtime-v2");
     assert.equal(getEngineProvider(undefined).transport, "runtime");
   });
-
   // THE COMPATIBILITY PIN, side two: registering acp must not have
   // made any existing gate fire. Every M3 family resolves its provider
   // through a transport→provider table that lists only `runtime`, so
@@ -706,27 +979,34 @@ describe("engine facade", () => {
   // registry rather than resolving to nothing: on a transport with no
   // registered provider it falls back to the DEFAULT one and reports
   // `providerFor: "default"` (capability-reads.js:112-116). So the
-  // acp-transport claim for this family is not "null" but "the default
-  // v2 provider, and never the acp provider" — which is the shape
-  // M4-1 must leave exactly as it found it.
+  // claim for an UNWIRED transport is not "null" but "the default v2
+  // provider, and never the transport's own" — which is the shape both
+  // M4-1 and M4-2 must leave exactly as they found it.
   const isCapabilityReads = (family) => family === "capability-reads";
 
-  for (const [family, fn] of Object.entries(RESOLVERS)) {
-    test(`${family}: the acp transport does NOT resolve to the acp provider`, () => {
-      assert.equal(typeof fn, "function", `${family}'s resolver must exist`);
-      const answer = fn("acp");
-      if (isCapabilityReads(family)) {
-        assert.equal(unwrap(answer).id, "local-runtime-v2");
-        assert.equal(answer.providerFor, "default");
-        return;
-      }
-      assert.equal(
-        unwrap(answer),
-        null,
-        `${family} resolving the acp provider changes every gate's verdict — that is M4-3's change, ` +
-          `and it must not arrive as a side effect of M4-1`,
-      );
-    });
+  // One sweep, two transports. acp and exec are registered and NOT
+  // wired, and they are pinned by the SAME test on purpose: the claim
+  // "registering a provider changes no routing" is a property of the
+  // registry, not a favour extended to one transport. A second copy of
+  // this loop could drift; a parameter cannot.
+  for (const transport of ["acp", "exec"]) {
+    for (const [family, fn] of Object.entries(RESOLVERS)) {
+      test(`${family}: the ${transport} transport does NOT resolve to the ${transport} provider`, () => {
+        assert.equal(typeof fn, "function", `${family}'s resolver must exist`);
+        const answer = fn(transport);
+        if (isCapabilityReads(family)) {
+          assert.equal(unwrap(answer).id, "local-runtime-v2");
+          assert.equal(answer.providerFor, "default");
+          return;
+        }
+        assert.equal(
+          unwrap(answer),
+          null,
+          `${family} resolving the ${transport} provider changes every gate's verdict — that is M4-3's change, ` +
+            `and it must not arrive as a side effect of a registration`,
+        );
+      });
+    }
   }
 
   // The same sweep on the transport that IS wired, so the test proves
