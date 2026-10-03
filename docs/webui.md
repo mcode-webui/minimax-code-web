@@ -1238,7 +1238,7 @@ clients:
 | Archived tasks page | the tab renders its empty state; the list, its restore and its delete need the archived-session contract |
 | Usage & models three-source switching | the segmented tabs now match the desktop form (ticket 53), but they are a **view switcher** — they do not switch the model source in use; real Token Plan / MiniMax API / custom-model routing plus source badges still need a model-routing contract |
 | MiniMax API key panel | input + connectivity test + save-and-use |
-| Custom model drag-reorder, per-model toggles, preset picker | provider contract work; adding is dialog-based (ticket 54), editing stays on the rail + editor surfaces |
+| Custom model drag-reorder, per-model toggles, preset picker | provider contract work; add, edit and delete all converge on one dialog (this batch), leaving the list to display and delete |
 | Search keyword highlighting | the reference itself never wired it (component + keyframes defined, no call site) |
 | General-page dataDir footer | see the section table above |
 
@@ -1263,10 +1263,10 @@ The Token Plan view is the desktop's five blocks (the tabs plus four cards):
 | Invoice row | The one fully live affordance: 申请 ↗ opens the MiniMax open platform in a new tab |
 
 The custom-models view is the existing provider panel (API keys, protocols,
-model lists, connection tests, preset one-click enable) with every
-`data-testid` unchanged; ticket 54 rebuilt the **add** flow into the
-desktop's dialog form (next section) while the rail + editor surfaces stay
-as the editing path.
+model lists, connection tests, preset one-click enable); ticket 54 rebuilt
+the **add** flow into the desktop's dialog form (next section) and this batch
+folded **editing** into that same dialog (see "One dialog also edits" below) —
+the panel is now a list plus a delete affordance, with no second editor.
 
 **Add-model dialog (ticket 54, 53b)**
 
@@ -1276,7 +1276,7 @@ deep-link — opens the desktop's modal instead of appending a rail draft:
 
 | Dialog region | Contract |
 | --- | --- |
-| Provider select (「请选择提供商」) | Options are `GET /api/providers/presets` plus a 「+ 其他（自定义）」 sentinel; choosing a preset fills id / label / auth-type / baseURL and seeds 「API 格式」, choosing the sentinel expands the custom fields (id, display name, auth type, baseURL). DeepSeek / Zhipu AI（智谱）/ Moonshot AI (China) carry the reference's spellings; other local presets keep their catalogue labels. A 404 catalogue degrades to the custom-only dropdown |
+| Provider select (「请选择提供商」) | Options are `GET /api/providers/presets` plus a 「+ 其他（自定义）」 sentinel; choosing a preset fills id / label / auth-type / baseURL and seeds 「API 格式」, choosing the sentinel expands the custom fields (id, display name, auth type); 接口地址 is a top-level field for both branches — see "One dialog also edits" below. DeepSeek / Zhipu AI（智谱）/ Moonshot AI (China) carry the reference's spellings; other local presets keep their catalogue labels. A 404 catalogue degrades to the custom-only dropdown |
 | API 格式 | The desktop's **second** field, rendered for every provider rather than only for 「其他（自定义）」. It is the existing wire `protocol` under the desktop's labels — `OpenAI Completions` / `Anthropic Messages` / `Gemini` — so no new format reaches the backend. Choosing a preset seeds it from that preset's own protocol and it stays editable afterwards. The protocol select that used to sit inside the custom branch was removed rather than kept alongside: two controls bound to one value is how the preset and custom branches end up disagreeing about what gets saved |
 | 自定义 Headers | Rows of (name, value) with 「＋ 添加 Header」 and a per-row remove, held as a **list** rather than an object so a half-typed row survives editing. A blank name is dropped, a name is trimmed but a value is not, and a later duplicate wins — all three decided in one place (`headerPairsToRecord`), so the dialog, the PUT body and the server cannot disagree. Zero rows render an explicit placeholder rather than collapsing. The collapse result lands in `auth.headers` on the PUT body and comes back in `auth.headers` on `GET /api/providers` |
 | API key (`AntInput.Password`) | The eye toggle is safe here and only here: the field's value is what the user just typed, not a masked placeholder — the editor's no-reveal rule (keep-existing-key convention) is untouched |
@@ -1288,8 +1288,11 @@ deep-link — opens the desktop's modal instead of appending a rail draft:
 Ticket 54 invariants — no server-contract change (the `/api/providers` PUT
 body, `/api/set-model`, and every endpoint are untouched; the whole delta is
 client-side plus tests and docs); every pre-existing `data-testid` on the
-panel/editor surfaces survives in source (`webapp/test/add-model-dialog.test.ts`
-pins the list); the preset catalogue, thinkingLevels editing semantics,
+panel/editor surfaces survived in source at the time
+(`webapp/test/add-model-dialog.test.ts` pinned 36 + 2) — **that assertion is
+now void**: after the flat editor's retirement its testids are pinned as
+must-not-return instead, while the list chrome's testids are still pinned
+one by one; the preset catalogue, thinkingLevels editing semantics,
 provider grouping and the thinking-display exceptions are unchanged; the
 auto-add deep-link still lands on the custom-models view, now opening the
 dialog. The legacy rail-draft `addProvider` path and the editor's dead
@@ -1338,9 +1341,10 @@ reference `design-ref/screenshots/byok-custom-model-official.png`):
   `POST /api/providers/test` contract verbatim — protocol whitelist,
   local key-format check, then a real fetch against the configured
   baseURL — with no new route. The dialog shell assembles the probe
-  from the current form values (preset branch takes the preset's
-  protocol/baseURL, custom branch takes the custom fields) with a 4s
-  timeout, and renders 「可达 · Nms」 (success token) / 「不可达：
+  from the current form values (the protocol comes from 「API 格式」,
+  the endpoint from the top-level 接口地址 field — which this batch
+  lifted out of the custom branch, so a preset is no longer pinned
+  to its catalogue endpoint) with a 4s timeout, and renders 「可达 · Nms」 (success token) / 「不可达：
   error」 (error token). **Granularity, stated honestly**: the probe
   is endpoint-level (baseURL + key) and does not exercise the
   entry's model id — the tooltip and this paragraph say so rather
@@ -1414,6 +1418,55 @@ single 模型名称 textarea instead, so the desktop is newer than the
 reference and there is no second source to check it against. Rebuilding
 the model-entry structure is a larger change than this batch and is left
 alone.
+
+**This batch — one dialog also edits, the flat editor is retired, and
+「API 格式」 drives the endpoint surface.**
+
+| Change | Contract |
+| --- | --- |
+| Editing runs through the same dialog | A click on a list row opens the **same** modal (`editTarget`), seeded by `editSeedFromDraft`: a preset provider lands on its own catalogue branch, a custom one on 「+ 其他（自定义）」. Id, display name, auth type, 接口地址, the custom headers and the model entries all arrive pre-filled. The title switches from 添加模型 to 编辑模型 (`providers.dialog.editTitle`). Two entry points share one form rather than two forms free to drift |
+| The commit starts from the stored record | The committed draft begins at the record being edited (`const base = editTarget ?? newDraftProvider()`); only the fields the form can reach are taken from form state. `enabled`, `preset` and `draftId` are properties of the **record**, not the form — rebuilding one would re-enable a provider the operator had disabled, or detach it from its preset. The panel locates and replaces the row by `draftId`, not by wire id: matching on the id would write a second record instead of renaming the first whenever a custom id is retyped |
+| The key still never lands on disk in edit mode | The edit seed's API Key is always `""`, the server's keep-the-existing-key sentinel; the masked value reaches the placeholder only and is never written back as a value. An untouched field preserves the stored credential; a typed one replaces it |
+| The flat editor is retired | `ProviderEditor` and its `ApiKeyInput` / `DraftModelList` / `DraftModelRow`, plus the panel-level 「保存供应商」 button, the whole-list validation and the selected-row probe, are deleted. Delete did not disappear with them: it moved onto the list row as 🗑 (`provider-delete-{draftId}`, `Popconfirm` confirmation). Preset rows still carry no delete, the retired editor's own rule — a preset's lifecycle belongs to the preset controls |
+| The row element changed | The row is now a `<div>` wrapper rather than a `<button>`: it holds a second clickable control, and a button inside a button is invalid HTML with ambiguous keyboard semantics. The row's edit control is `provider-row-edit-{draftId}`, its delete is `provider-delete-{draftId}` |
+| 接口地址 lifted to a top-level field | The field used to sit inside the 「+ 其他（自定义）」 branch, which meant **11 of the 12 preset providers could neither see nor change their endpoint**. It now renders for every provider: a preset choice seeds it with the catalogue endpoint, the operator may override it, and an empty field falls back to the same protocol default the server uses |
+
+What the 「API 格式」 selection drives (`API_FORMAT_SPECS`, every value
+transcribed verbatim from `server/lib/providers-config.js` —
+`DEFAULT_BASE_URL` and `probe()`):
+
+| Format | Default endpoint | What 连通检测 actually sends | How the key travels |
+| --- | --- | --- | --- |
+| `OpenAI Completions` | `https://api.openai.com` | `GET {baseURL}/v1/models` | `Authorization: Bearer` header |
+| `Anthropic Messages` | `https://api.anthropic.com` | `POST {baseURL}/v1/messages` | `x-api-key` header |
+| `Gemini` | `https://generativelanguage.googleapis.com` | `GET {baseURL}/v1beta/models?key=…` | **`?key=` query parameter**, not a header |
+
+The hint under the field shows the **resolved** probe target: the typed
+endpoint when there is one, the format's default when the field is blank —
+i.e. the request the test button will send. The credential line switches with
+it, and Gemini's says outright that the key rides in the query string;
+copying the other two formats' "key in a header" habit yields a 401.
+
+**KNOWN DEBT — per-format field show/hide was not built, and here is
+why.** The three protocols carry the same field set in the
+`/api/providers` PUT contract; the backend has no field to hide per format.
+The linkage therefore lands on **dynamic content** (the endpoint default, the
+probe request, the credential's transport) rather than on a field's presence:
+hiding a field this backend cannot store would produce a form that lies about
+what it saves, which is worse than not hiding it. Real per-format show/hide
+requires extending the PUT contract and is its own batch.
+
+**This batch's invariants.** No server-contract change (all five
+`/api/providers` endpoints and `/api/providers/test` are reused as they are;
+the whole delta is client-side plus tests and docs). The PUT body is
+byte-identical — still `draftToWire` + `api.putProviders({version: 2})`, with
+an edit substituting one record in the list. `enabled`, `preset`, the masking
+convention, the preset catalogue and the thinkingLevels semantics are all
+unchanged, and the engine layer, `sessions.js` and markdown were not touched.
+On the test side the list chrome's testids stay pinned positively, the
+retired editor's eleven are pinned negatively (a return turns the suite red),
+two named suites cover the format linkage and the edit reuse, and ten revert
+mutations were run against them — all ten were caught.
 
 **Ticket 53 invariants** — no server-contract change (the delta:
 `panels.tsx` / `usage-models-cards.tsx` / `icons.tsx` / `i18n.ts` plus two
