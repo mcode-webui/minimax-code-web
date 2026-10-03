@@ -343,14 +343,19 @@ describe("ticket 49 batch 1 — follow-focus wiring survives batch 2 (kept tripw
     );
     assert.match(
       composerSource,
-      /if \(hasSettings\) setFlyoutFor\(model\.id\);/,
-      "row mouseenter opens the hovered model's fly-out",
+      /onMouseEnter=\{\(\) => \{[\s\S]*?if \(!hasSettings\) return;[\s\S]*?setFlyoutFor\(model\.id\);/,
+      "row mouseenter opens the hovered model's fly-out, and skips a model with nothing to configure",
     );
     assert.match(
       composerSource,
       /onFocus=\{\(\) => \{[\s\S]*?setFlyoutFor\(model\.id\);/,
       "row focus opens the keyboard-focused model's fly-out",
     );
+    // The gate's POSITION relative to `cancelFlyoutClose()` — the ordering
+    // that decides whether a settings-less row strands the previous model's
+    // fly-out — is pinned in model-picker-layout.test.ts (C2), which reads
+    // the handler body rather than matching across it. Asserting the call
+    // merely appears is what let that defect reach a release branch.
     assert.match(
       composerSource,
       /const isDetailPreview = detailTarget != null && detailTarget\.id !== value;/,

@@ -1923,11 +1923,25 @@ function ModelSelect({
                             }
                             onMouseEnter={() => {
                               if (disabled) return;
-                              cancelFlyoutClose();
                               // A model with nothing to configure never
                               // grows a fly-out — its click IS the whole
                               // selection.
-                              if (hasSettings) setFlyoutFor(model.id);
+                              //
+                              // And it must not HOLD the previous model's
+                              // one open. The cursor arriving here has
+                              // already fired the previous row's
+                              // `onMouseLeave`, which armed the close; this
+                              // row cancelled that timer and then had
+                              // nothing of its own to re-arm, so the previous
+                              // model's fly-out stayed put for as long as the
+                              // cursor rested here — and, with no other row
+                              // entered, indefinitely. The grace belongs to
+                              // the row that OWNS a fly-out; a row that has
+                              // none is not crossing a gap, it is leaving
+                              // the surface behind.
+                              if (!hasSettings) return;
+                              cancelFlyoutClose();
+                              setFlyoutFor(model.id);
                             }}
                             onMouseLeave={() => {
                               if (disabled) return;

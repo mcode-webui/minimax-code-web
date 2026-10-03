@@ -30,9 +30,13 @@
 //     for settings; a fixed right column is the flattened shape, and it
 //     is what put a second model's controls on screen next to a row the
 //     user could have simply picked.
-//   - C2: hover (and keyboard focus) on a model row opens its fly-out.
-//     Hover-driven is the whole interaction — a fly-out that only answered
-//     clicks would need a click before anything appeared.
+//   - C2: hover (and keyboard focus) on a model row opens its fly-out, and
+//     the close grace belongs to the row that OWNS one. Hover-driven is the
+//     whole interaction — a fly-out that only answered clicks would need a
+//     click before anything appeared. The grace exists to bridge the gap
+//     between a row and its fly-out; a row with nothing to configure is not
+//     crossing that gap, it is leaving the surface behind, and a grace it
+//     cancels but never re-arms strands the previous fly-out open.
 //   - C3: the first tier is anchored to the row that owns it. A fly-out
 //     without an anchor is a panel in a corner.
 //   - C4: the context window is in place inside the fly-out, not behind a
@@ -79,6 +83,61 @@ import { resolve, dirname } from "node:path";
 const here = dirname(fileURLToPath(import.meta.url));
 const composer = readFileSync(resolve(here, "../components/composer.tsx"), "utf8");
 
+/** The model row's own event handlers, sliced out of the JSX so a
+ *  guard can assert on one row's wiring without matching the whole
+ *  3000-line file (and without its indentation deciding the regex). */
+const rowHandlers = composer.match(
+  /onMouseEnter=\{\(\) => \{[\s\S]*?onBlur=\{scheduleFlyoutClose\}\n\s+onClick=\{\(\) => \{[\s\S]*?\n\s+\}\}/,
+);
+
+/** One handler body, sliced out of the row's JSX by its own opening tag. */
+const handlerBody = (prop: "onMouseEnter" | "onMouseLeave" | "onFocus" | "onClick"): string => {
+  assert.ok(rowHandlers, "the model row's handlers must exist");
+  const found = rowHandlers[0]!.match(
+    new RegExp(`${prop}=\\{\\(\\) => \\{([\\s\\S]*?)\\n\\s+\\}\\}`),
+  );
+  assert.ok(found, `the model row's ${prop} must exist`);
+  return found[1]!;
+};
+
+/** The invariant every row entry path owes: a row with nothing to configure
+ *  must return BEFORE it can claim the fly-out as its own, and before it can
+ *  cancel a close grace it will never re-arm. Asserting only that the calls
+ *  APPEAR is what let this defect through — `cancelFlyoutClose()` sat at the
+ *  top of `onMouseEnter`, unguarded, while the `setFlyoutFor` beneath it was
+ *  gated. Sliding onto a model with no controls then fired the previous
+ *  row's `onMouseLeave` (arming the close), cancelled that timer, and had
+ *  nothing to re-arm, so the previous model's panel stayed exactly where it
+ *  was for as long as the cursor rested there — and indefinitely if no other
+ *  row was entered.
+ *
+ *  The guard's spelling varies (`if (!hasSettings) return;` versus
+ *  `if (disabled || !hasSettings) return;`), so this reads the statement
+ *  BETWEEN the gate and the calls rather than one literal. A handler with no
+ *  cancel is exempt on that count: a path that never touches the timer cannot
+ *  pin anything. */
+const assertGraceBelongsToTheOwningRow = (handler: string, label: string) => {
+  const gateAt = handler.indexOf("!hasSettings");
+  assert.notEqual(gateAt, -1, `${label} must gate on hasSettings`);
+  const cancelAt = handler.indexOf("cancelFlyoutClose()");
+  if (cancelAt !== -1) {
+    assert.ok(
+      handler.slice(gateAt, cancelAt).includes("return"),
+      `${label}: the hasSettings gate must RETURN before cancelFlyoutClose(). A row ` +
+        `with no fly-out of its own cancels the previous model's close and never ` +
+        `re-arms it, leaving that fly-out pinned open until some other row is entered.`,
+    );
+  }
+  const claimAt = handler.indexOf("setFlyoutFor(model.id)");
+  if (claimAt !== -1) {
+    assert.ok(
+      handler.slice(gateAt, claimAt).includes("return"),
+      `${label}: the hasSettings gate must RETURN before setFlyoutFor(model.id), or a ` +
+        `model with nothing to configure claims the fly-out it has no controls to fill.`,
+    );
+  }
+};
+
 describe("C1 — the settings surface is a fly-out, not a column", () => {
   test("the permanent right column is gone", () => {
     assert.doesNotMatch(composer, /model-select-panel-detail-column/);
@@ -103,23 +162,16 @@ describe("C1 — the settings surface is a fly-out, not a column", () => {
 });
 
 describe("C2 — a model row's hover opens its fly-out", () => {
-  /** The model row's own event handlers, sliced out of the JSX so a
-   *  guard can assert on one row's wiring without matching the whole
-   *  3000-line file (and without its indentation deciding the regex). */
-  const rowHandlers = composer.match(
-    /onMouseEnter=\{\(\) => \{[\s\S]*?onBlur=\{scheduleFlyoutClose\}\n\s+onClick=\{\(\) => \{[\s\S]*?\n\s+\}\}/,
-  );
-
   test("hovering a row sets the fly-out's owner", () => {
-    assert.ok(rowHandlers, "the model row's handlers must exist");
-    assert.match(rowHandlers[0]!, /if \(hasSettings\) setFlyoutFor\(model\.id\)/);
+    // The claim is unconditional in the handler; what makes it safe is the
+    // early return ahead of it, which the next two tests pin separately.
+    assert.match(handlerBody("onMouseEnter"), /setFlyoutFor\(model\.id\)/);
   });
 
   test("keyboard focus opens it too, not just the mouse", () => {
     // The arrow-key engine moves focus, so a fly-out that only answered
     // hover would leave a keyboard user unable to configure anything.
-    assert.ok(rowHandlers);
-    assert.match(rowHandlers[0]!, /onFocus=\{\(\) => \{[\s\S]*?setFlyoutFor\(model\.id\)/);
+    assert.match(handlerBody("onFocus"), /setFlyoutFor\(model\.id\)/);
   });
 
   test("leaving the row starts the close grace, and entering cancels it", () => {
@@ -129,6 +181,17 @@ describe("C2 — a model row's hover opens its fly-out", () => {
     assert.match(rowHandlers[0]!, /onMouseLeave=\{\(\) => \{[\s\S]*?scheduleFlyoutClose\(\)/);
     assert.match(rowHandlers[0]!, /cancelFlyoutClose\(\)/);
     assert.match(rowHandlers[0]!, /onBlur=\{scheduleFlyoutClose\}/);
+  });
+
+  test("hovering a row with no settings does not hold the previous fly-out", () => {
+    assertGraceBelongsToTheOwningRow(handlerBody("onMouseEnter"), "onMouseEnter");
+  });
+
+  test("the same holds for keyboard focus, or tabbing pins it just the same", () => {
+    // `onBlur` on the owning row arms the close, so the focus path carries
+    // the identical trap: a bare `cancelFlyoutClose()` there strands the
+    // fly-out for a keyboard user exactly as the mouse did.
+    assertGraceBelongsToTheOwningRow(handlerBody("onFocus"), "onFocus");
   });
 
   test("focus entering the fly-out cancels the grace too, not just the mouse", () => {
@@ -280,7 +343,39 @@ describe("C5 — one positioning engine", () => {
 describe("C6 — a model with no settings completes on its own click", () => {
   test("the settings gate decides who gets a fly-out", () => {
     assert.match(composer, /const modelHasSettings = useCallback/);
-    assert.match(composer, /if \(hasSettings\) setFlyoutFor\(model\.id\)/);
+    // Two spellings of one gate: the hover and focus paths return early,
+    // the click path branches. Both mean the same thing — no settings, no
+    // fly-out — and the early return has to come first, or a row with
+    // nothing to configure still cancels the previous model's close.
+    assert.match(handlerBody("onMouseEnter"), /if \(!hasSettings\) return;/);
+    assert.match(handlerBody("onFocus"), /!hasSettings/);
+    assert.match(handlerBody("onClick"), /if \(hasSettings\) \{/);
+  });
+
+  test("the click path gates BOTH of its calls, not just the fly-out claim", () => {
+    // `onClick` cancels the grace as well as claiming the fly-out. A gate
+    // that wrapped only the claim would let a no-settings model's pick hold
+    // the previous model's panel open for the same reason hover did.
+    const click = handlerBody("onClick");
+    const gateAt = click.indexOf("if (hasSettings) {");
+    assert.notEqual(gateAt, -1, "onClick must branch on hasSettings");
+    const before = click.slice(0, gateAt);
+    assert.doesNotMatch(
+      before,
+      /cancelFlyoutClose\(\)/,
+      "the grace is cancelled before the hasSettings gate",
+    );
+    assert.doesNotMatch(
+      before,
+      /setFlyoutFor\(/,
+      "the fly-out is claimed before the hasSettings gate",
+    );
+    const after = click.slice(gateAt);
+    assert.match(after, /cancelFlyoutClose\(\)/);
+    assert.match(after, /setFlyoutFor\(model\.id\)/);
+    // And the branch returns, so a no-settings model falls through to
+    // 「直接点击后就完成」 instead of continuing into a fly-out it has none of.
+    assert.match(after, /return;/);
   });
 
   test("the gate is the same >= 2 threshold the control's own mount gate uses", () => {
