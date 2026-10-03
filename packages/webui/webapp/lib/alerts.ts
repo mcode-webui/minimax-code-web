@@ -105,13 +105,28 @@ export function applyAlertFrame(current: AlertItem[], frame: AlertFrame): AlertI
 interface AlertSnapshot {
   alerts: AlertItem[];
   connected: boolean;
+  /**
+   * SB-9 — `true` once the stream's opening `snapshot` frame has been
+   * applied, i.e. the ring buffer holds no more pre-load history.
+   *
+   * The distinction the frame model already makes (`snapshot` is what
+   * happened before this page connected; `append` / `update` are what happens
+   * while it is watching) and the alert list alone cannot express: an empty
+   * buffer is not evidence that history has been delivered, and a first
+   * `append` into an empty buffer is indistinguishable from a `snapshot` that
+   * happened to be empty. A consumer that must tell history from news — the
+   * desktop notifier does — needs this flag rather than guessing.
+   */
+  historySealed: boolean;
 }
 
-let snapshot: AlertSnapshot = { alerts: [], connected: false };
+const EMPTY_SNAPSHOT: AlertSnapshot = { alerts: [], connected: false, historySealed: false };
+
+let snapshot: AlertSnapshot = EMPTY_SNAPSHOT;
 const listeners = new Set<() => void>();
 
-function setAlerts(alerts: AlertItem[]): void {
-  snapshot = { ...snapshot, alerts };
+function setAlerts(alerts: AlertItem[], historySealed = snapshot.historySealed): void {
+  snapshot = { ...snapshot, alerts, historySealed };
   for (const listener of listeners) listener();
 }
 
@@ -129,7 +144,6 @@ function subscribe(listener: () => void): () => void {
 const getSnapshot = (): AlertSnapshot => snapshot;
 /** Static-export prerender: no live stream, so the constant empty snapshot. */
 const getServerSnapshot = (): AlertSnapshot => EMPTY_SNAPSHOT;
-const EMPTY_SNAPSHOT: AlertSnapshot = { alerts: [], connected: false };
 
 let source: EventSource | null = null;
 
@@ -156,7 +170,11 @@ export function connectAlerts(): () => void {
       // diagnostic by nature, and a single bad frame must not blank the badge
       // or throw into render.
       if (frame.kind === "malformed") return;
-      setAlerts(applyAlertFrame(snapshot.alerts, frame));
+      // A `snapshot` frame is the pre-load history; every later frame is news.
+      setAlerts(
+        applyAlertFrame(snapshot.alerts, frame),
+        snapshot.historySealed || frame.kind === "snapshot",
+      );
     };
 
     eventSource.onmessage = (event: MessageEvent<string>) => handle("", event.data);

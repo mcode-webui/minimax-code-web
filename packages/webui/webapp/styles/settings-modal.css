@@ -43,6 +43,10 @@
   .webui-settings-row strong, .webui-settings-row span { display: block; }
   .webui-settings-row strong { font-size: var(--size_14); font-weight: var(--weight_regular); }
   .webui-settings-row span { margin-top: var(--spacing_4); color: var(--text_default_tertiary); font-size: var(--size_12); }
+  /* SB-9：桌面通知的权限说明行。它必须读起来是「一条状态」，而不是又一段
+     描述文案，所以用状态色（--text_status_error）而不是 secondary；颜色本身
+     不足以承载语义，data-testid 同时给出机器可读的锚点。 */
+  .webui-generic-row-copy .webui-generic-row-note { display: block; color: var(--text_status_error); }
   .webui-settings-row select { min-width: 150px; padding: var(--spacing_8); border: 1px solid var(--border_default); border-radius: var(--radius_8); background: var(--bg_default_primary); color: var(--text_default_primary); }
   .webui-settings-action { margin: 0 var(--spacing_20) var(--spacing_16); padding: var(--spacing_8) var(--spacing_12); border: 1px solid var(--border_default); border-radius: var(--radius_8); background: transparent; color: var(--text_default_primary); }
   .webui-settings-error { margin: 0 var(--spacing_20) var(--spacing_16); color: var(--text_label_danger_secondary_default); font-size: var(--size_12); }
