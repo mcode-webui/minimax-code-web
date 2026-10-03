@@ -1014,11 +1014,11 @@ or webui's". For a write it is decided by **who owns the rows the write
 destroys** — and in this family that question does not have the same
 answer twice in a row.
 
-| Endpoint | Capability · sub-item | Enforcement | Value source |
-| --- | --- | --- | --- |
-| `DELETE /api/sessions/:id` (#7) | `sessionCrud` · `deleteSession` | hard — 501 | the webui session store, the in-memory ACP session cache, the sidebar tree cache, and the engine's own `local_runtime_*` rows via `lib/mcode-session-delete.js` |
-| `POST /api/sessions/rename` (#4) | none of the 14 keys | none — the gate is a reported no-op | webui's own session store, and nothing else. The engine's title is not written |
-| `POST /api/sessions/cleanup-orphans` (#6) | `sessionCrud` · `deleteSession` | hard — 501 | the same store, plus each selected id delegated to #7, so it reaches the same engine rows |
+| Endpoint | Facade function | Capability · sub-item | Enforcement | Value source |
+| --- | --- | --- | --- | --- |
+| `DELETE /api/sessions/:id` (#7) | `engine/session-writes.js#planEngineSessionDelete` → `engine/session-writes.js#commitEngineSessionDelete` / `engine/session-writes.js#commitEngineOrphanSessionDelete` / `engine/session-writes.js#previewEngineSessionDelete` | `sessionCrud` · `deleteSession` | hard — 501 | the webui session store, the in-memory ACP session cache, the sidebar tree cache, and the engine's own `local_runtime_*` rows via `lib/mcode-session-delete.js#deleteMcodeSessionFromDb` |
+| `POST /api/sessions/rename` (#4) | `engine/session-writes.js#applyEngineSessionRename` | none of the 14 keys | none — the gate is a reported no-op | webui's own session store, and nothing else. The engine's title is not written |
+| `POST /api/sessions/cleanup-orphans` (#6) | `engine/session-writes.js#readOrphanSessionWriteIds`, then each selected id delegated to `engine/session-writes.js#commitEngineOrphanSessionDelete` | `sessionCrud` · `deleteSession` | hard — 501 | the same store, plus each selected id delegated to #7, so it reaches the same engine rows |
 
 **Why #7 and #6 gate hard.** Both destroy rows in the engine's own
 `local_runtime_*` tables, and there is no webui-side copy of a transcript
@@ -1054,15 +1054,17 @@ returns, plus `enforcement`.
 **The plan/commit split, and why the route did not shrink to nothing.**
 #7 is exported as a pair rather than one `deleteSession(options)`:
 
-1. `planEngineSessionDelete` resolves the id and runs the gate. It
-   mutates nothing, so it is safe to run *before* the user is asked
-   anything.
+1. `engine/session-writes.js#planEngineSessionDelete` resolves the id and
+   runs the gate. It mutates nothing, so it is safe to run *before* the
+   user is asked anything.
 2. `authorize()` and the write-ahead `session.delete.intent` audit happen
    **between** the plan and the commit. The intent line has to be durably
    recorded before any row is removed, and it records the match kind and
    chat length the plan produced.
-3. `commitEngineSessionDelete` / `commitEngineOrphanSessionDelete` /
-   `previewEngineSessionDelete` perform the write and fan-out.
+3. `engine/session-writes.js#commitEngineSessionDelete` /
+   `engine/session-writes.js#commitEngineOrphanSessionDelete` /
+   `engine/session-writes.js#previewEngineSessionDelete` perform the write
+   and fan-out.
 
 A facade that owned the whole operation would have had to swallow that
 ordering into a callback. The route keeps request parsing, the authorize
@@ -1096,6 +1098,22 @@ of its own — the same split B3 drew for `lib/mavis-usage.js` and B4 for
 `lib/mcode-rpc.js`. A test asserts both halves: the table list is still
 32 entries exported from the lib module, and the facade contains no SQL
 verb at all.
+
+**#6's response shape is this batch's byte-for-byte red line, so the
+payload is built in the facade and never re-assembled in the route.** The
+preview is four keys, in that order: `{ok, dryRun, count, ids}`; the
+real path's no-op is `{ok, dryRun:false, deleted, ids}`. The file read
+stays in the facade rather than the route because the rule and the bytes
+it reads are one decision: a sweep that read a different file than the
+one whose rule it applies would be a bug waiting for a config change.
+The BOM strip is the store's own on-disk convention (written by an
+editor, not by webui) and is preserved exactly; a parse failure answers
+`[]`, which the pre-facade code did too, and a corrupt store must not
+turn a cleanup request into a 500. `dryRun` suppresses the kill and the
+cache drop, because a preview mutates nothing and a preview that shuts
+down the user's ACP child is a side effect the `?dryRun=true` contract
+does not include; the COUNT still runs, read-only, inside
+`lib/mcode-session-delete.js`.
 
 **Three things this batch records as known debt instead of deciding:**
 

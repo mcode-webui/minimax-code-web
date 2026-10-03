@@ -904,6 +904,98 @@ webui 将每个事件视为幂等更新；重放同一
 （SSE 在断连时丢弃 → 不重试），客户端通过在
 重连时拉取 `/api/state` 来应对。
 
+#### 哪些端点走门面写（迁移步 M3 批次 B5）
+
+批次 B5 是整场迁移里第一个端点会**销毁**数据而非读取数据的族，而这改变了门控问题
+所问的东西。对读来说，硬门控还是软门控取决于「这份数据是引擎的还是 webui 的」；
+对写来说，取决于**这次写所销毁的那些行归谁所有**——而在这个族里，这个问题的答案
+没有连续两次是一样的。
+
+| 端点 | 门面函数 | 能力 · 子项 | 强制方式 | 取值来源 |
+| --- | --- | --- | --- | --- |
+| `DELETE /api/sessions/:id`（#7） | `engine/session-writes.js#planEngineSessionDelete` → `engine/session-writes.js#commitEngineSessionDelete` / `engine/session-writes.js#commitEngineOrphanSessionDelete` / `engine/session-writes.js#previewEngineSessionDelete` | `sessionCrud` · `deleteSession` | 硬——501 | webui 的会话存储、内存中的 ACP 会话缓存、侧栏树缓存，以及经 `lib/mcode-session-delete.js#deleteMcodeSessionFromDb` 触达的引擎自己的 `local_runtime_*` 行 |
+| `POST /api/sessions/rename`（#4） | `engine/session-writes.js#applyEngineSessionRename` | 14 个键里的任何一个都不适用 | 不门控——门控是「被报告的空操作」 | 只有 webui 自己的会话存储。引擎的标题**不**被写入 |
+| `POST /api/sessions/cleanup-orphans`（#6） | `engine/session-writes.js#readOrphanSessionWriteIds`，随后逐个委派给 `engine/session-writes.js#commitEngineOrphanSessionDelete` | `sessionCrud` · `deleteSession` | 硬——501 | 同一份存储，加上每个被选中的 id 都走 #7 的真实删除分支，因此抵达同一批引擎行 |
+
+**为什么 #7 与 #6 硬门控。** 两者都销毁引擎自己 `local_runtime_*` 表里的行，
+而不存在一份能存活下来的 webui 侧转录副本：那些行一旦没了，对话就没了。一个
+声明自己没有会话删除能力的 provider，确实无法让这两个端点给出诚实的答案，
+所以 501 才是诚实的那个。#6 刻意声明与 #7 **相同**的一对能力·子项——这次清扫选出的是
+webui 侧的孤儿记录，但每个被选中的 id 都走 #7 的真实删除分支，而一条带着
+`mcodeSessionId` 的记录会连同它的引擎行一起被带走。给这次清扫软门控，等于让一个
+删不掉引擎会话的 provider 走后门抵达那些表，而且还会产生一种比 501 更糟的故障：
+一次已授权的破坏性清扫写下了它的意图审计事件，然后让每一条委派删除全部失败。
+
+**为什么 #4 什么都不声明。** 改名把 `title` / `titleCustom` / `updatedAt` 写进
+webui 自己的存储，完全不触碰任何引擎面。它唯一一次接触引擎是
+`lib/session-tree.js#invalidateSessionTree()`——一次缓存丢弃，那是侧栏从引擎投影
+标题这件事的读侧后果，而那个投影是 B2 的 `GET /api/session-tree`，它有自己的门控。
+在这里给出一个能力名，正是 B3 为 `GET /api/usage/forecast` 拒绝过的那类谎言：
+拿一份它并不依赖的东西的声明，去门控一个能用的端点。
+
+这一族在一处刻意偏离了它的同族：`SESSION_WRITE_ENDPOINTS` 的每一行都带同样的
+三个键——`capability`、`subItem`、`enforcement`——**包括那个没有能力的那一行**。
+B3 把「无引擎面」表达成表里的一个 `null` 条目；这里三个端点里有**两个**确实跨越了
+这条缝，于是夹在表中间的一个 `null` 空洞读起来像「还没填」而不像一个决定。
+门控**描述符**保留每一族都返回的六个字段，再加上 `enforcement`。
+
+**plan/commit 的拆分，以及路由为什么没有缩成空壳。** #7 被导出为一对，而不是
+一个 `deleteSession(options)`：
+
+1. `engine/session-writes.js#planEngineSessionDelete` 解析 id 并跑门控。它不改写
+   任何东西，因此可以在**向用户问任何问题之前**安全地运行。
+2. `authorize()` 与写前（write-ahead）审计 `session.delete.intent` 发生在 plan 与
+   commit **之间**。这条意图行必须在移除任何行之前被持久记录下来，而它记录的正是
+   plan 产出的匹配种类与 chat 长度。
+3. `engine/session-writes.js#commitEngineSessionDelete` /
+   `engine/session-writes.js#commitEngineOrphanSessionDelete` /
+   `engine/session-writes.js#previewEngineSessionDelete` 执行写入与扇出。
+
+一个把这整个操作都据为己有的门面，会不得不把那个顺序吞进一个回调里。路由保留
+请求解析、authorize 弹窗、审计顺序与每一个状态码；门面保留编排、门控与响应体。
+
+**commit 内部的顺序就是那个特性，而且它是作为序列被断言的。**
+`test/lib/engine/session-writes.test.js` 记录每一次改写并断言它们的顺序，因为
+一个只断言终态的测试看不见一具复活的会话：
+
+```
+invalidate-tree → kill-acp-child → drop-cache:<sid> → sql:<sid> → push:<cid>
+```
+
+树缓存在引擎写入**之前**被丢弃，好让一次并发读无法从删除前的数据库里把它重新填满。
+ACP 子进程在行被移除**之前**被停掉，因为它在内存里持有那个会话，并会在它的下一次
+请求里重写自己的注册行——那就是「已删除的会话又冒出来」这个 bug。离开缓存的只有
+**那一个**被删的 sid：把整份缓存作废会清空侧栏、再把它填满，读到用户那里就像删除失败。
+
+**32 张表的 SQL 没有被搬走，这是被记录下来而不是被悄悄丢掉的。** 本批的批次计划给
+`lib/mcode-session-delete.js` 批注了「delete」。它被保留，是因为
+`lib/acp-client.js` 从它那里导入，而有四个测试文件绑定在那个导出名上；收集它意味着
+先搬走那些。门面通过 `await import()` 触达它，自己不发任何 SQL——这正是 B3 为
+`lib/mavis-usage.js`、B4 为 `lib/mcode-rpc.js` 划下的同一条分界。一个测试同时断言
+两半：表清单仍然是从那个 lib 模块导出的 32 条，而门面里一个 SQL 动词都没有。
+
+**#6 的响应形状是本批逐字节的红线，因此载荷在门面里组装、绝不在路由里重装。**
+预览是四个键、且就是这个顺序的 `{ok, dryRun, count, ids}`；而真实路径的空操作是
+`{ok, dryRun:false, deleted, ids}`。对应的文件读取也留在门面里而不是路由里，因为
+规则与它所读的字节是同一个决策：一次读取了与「它所应用的规则」不是同一个文件的
+清扫，是一次等在某次配置改动上引爆的 bug。BOM 剥离是存储自己在盘上的约定
+（由编辑器而非 webui 写入）并被原样保留；解析失败回答 `[]`——门面前代码也是这么做的，
+而一份损坏的存储不得把一次清理请求变成 500。`dryRun` 会抑制子进程 kill 与缓存丢弃，
+因为一次预览不改写任何东西，而一次关掉用户 ACP 子进程的预览是 `?dryRun=true` 契约
+并不包含的副作用；那条 COUNT 仍会跑，只读地跑在 `lib/mcode-session-delete.js` 里。
+
+**本批记为已知债而不予决定的三件事：**
+
+1. 32 张表的 SQL 仍然在 `lib/mcode-session-delete.js` 里，理由见上文那些消费方。
+2. 改名只是**一个 webui 侧的标签**。`local_runtime_sessions` 里引擎自己的标题没有被
+   触碰，而侧栏树是从引擎读标题的。因此对一个由引擎支撑的会话，一次改名可能在包装
+   列表里看得见、在树里看不见。这是既有行为，本批没有改动它；关掉它意味着决定哪一份
+   存储对「展示用标题」是权威的，那是产品拍板。
+3. #7 不检测「这个会话此刻正在跑」。删除一个进行中的会话会从那个回合底下把 ACP
+   子进程停掉，然后照常继续。那是门面前的行为，也可以说正是正确的行为（用户要求了），
+   但「拒绝删除一个正在跑的会话」是站得住的替代方案，而这个选择不是本批该做的。
+   一个测试钉住了既有的语义，好让这个行为至少是被写下来的。
+
 #### 哪些端点经由门面路由（迁移步 M3 批次 B6）
 
 `engine/session-switch.js` 覆盖一个端点，而它是整场迁移里最忙的单个端点：
