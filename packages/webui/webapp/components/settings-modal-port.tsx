@@ -834,7 +834,25 @@ function UsageModelSettingsPort({
   const [keyStatus, setKeyStatus] = useState<api.ModelSourceApiKeyStatus | null>(null);
   const [loadState, setLoadState] = useState<"loading" | "ready" | "error">("loading");
   const [busy, setBusy] = useState<"source" | "key" | "test" | null>(null);
-  const [notice, setNotice] = useState<{ tone: "ok" | "error"; text: string } | null>(null);
+  const [notice, setNotice] = useState<{
+    tone: "ok" | "error";
+    text: string;
+    /** What the engine refused. `keyRequired` is the one verdict a later
+     * keystroke invalidates (UAT4-2): once a key is typed, 「请先填写
+     * API Key」 is stale and contradicted the input box next to it. */
+    kind?: "keyRequired";
+  } | null>(null);
+
+  // P20 (UAT4-1): a source write changes which account the engine
+  // reports, so the Token Plan card's `GET /api/account` read has to
+  // follow it. Bumped on SUCCESS only — a refused switch changed
+  // nothing, and re-reading on failure would just spend a request to
+  // re-render the same answer.
+  const [accountRevision, setAccountRevision] = useState(0);
+  const revalidateAccount = useCallback(
+    () => setAccountRevision((revision) => revision + 1),
+    [],
+  );
 
   // Read the engine's source when the tab mounts. This is deliberately
   // NOT a page-level fetch: the server boots the engine runtime to
@@ -890,25 +908,33 @@ function UsageModelSettingsPort({
         // requested, so a re-read of the badge can never disagree with
         // the config.
         setActiveSource(written.source);
+        // P20: the engine has now rebound to the new source, so the Token
+        // Plan card's account read is stale by construction.
+        revalidateAccount();
       } catch (cause) {
+        // Only the NO_API_KEY refusal is invalidated by typing; a generic
+        // switch failure is still true after the next keystroke, so it
+        // carries no `kind` and survives the edit.
+        const keyRefused =
+          cause instanceof api.ApiHttpError && api.hasApiErrorCode(cause, "NO_API_KEY");
         setNotice({
           tone: "error",
-          text:
-            cause instanceof api.ApiHttpError && api.hasApiErrorCode(cause, "NO_API_KEY")
-              ? t("usageModels.minimax.keyRequired")
-              : t("usageModels.source.switchFailed"),
+          kind: keyRefused ? "keyRequired" : undefined,
+          text: keyRefused
+            ? t("usageModels.minimax.keyRequired")
+            : t("usageModels.source.switchFailed"),
         });
       } finally {
         setBusy(null);
       }
     },
-    [activeSource, t],
+    [activeSource, revalidateAccount, t],
   );
 
   const saveKeyAndUse = useCallback(async () => {
     const raw = apiKey.trim();
     if (!raw) {
-      setNotice({ tone: "error", text: t("usageModels.minimax.keyRequired") });
+      setNotice({ tone: "error", kind: "keyRequired", text: t("usageModels.minimax.keyRequired") });
       return;
     }
     setBusy("key");
@@ -923,6 +949,9 @@ function UsageModelSettingsPort({
       setApiKey("");
       setSourceTab("minimax-api");
       setNotice({ tone: "ok", text: t("usageModels.minimax.saved") });
+      // P20: `saveAndUse` switched the engine's source too, so the Token
+      // Plan card's account read is stale by the same construction.
+      revalidateAccount();
     } catch (cause) {
       setNotice({
         tone: "error",
@@ -931,7 +960,7 @@ function UsageModelSettingsPort({
     } finally {
       setBusy(null);
     }
-  }, [apiKey, t]);
+  }, [apiKey, revalidateAccount, t]);
 
   const testKey = useCallback(async () => {
     setBusy("test");
@@ -1056,8 +1085,10 @@ function UsageModelSettingsPort({
 
       {sourceTab === "token-plan" ? (
         <section className="flex w-full flex-col gap-4" data-testid="settings-usage-token-plan">
-          {/* 53 号四张卡（headless：内部切换头由本组件的三来源头取代）。 */}
-          <UsageModelsSection t={t} headless />
+          {/* 53 号四张卡（headless：内部切换头由本组件的三来源头取代）。
+              P20：accountRevision 随切源成功递增，卡片的 /api/account
+              读随之重跑（UAT4-1）。 */}
+          <UsageModelsSection t={t} headless accountRevision={accountRevision} />
         </section>
       ) : null}
 
@@ -1075,9 +1106,15 @@ function UsageModelSettingsPort({
                 ? t("usageModels.minimax.loading")
                 : !keyAvailable
                   ? t("usageModels.minimax.unavailable")
-                  : hasStoredKey
-                    ? t("usageModels.minimax.configured")
-                    : t("usageModels.minimax.notEnabled")}
+                  : // UAT4-2: a typed-but-unsaved key outranks both stored
+                    // and absent — 「已保存密钥」 beside a field the user
+                    // is actively replacing is stale, and 「未启用」 is
+                    // false once something is typed.
+                    hasUnsavedKey
+                    ? t("usageModels.minimax.pendingSave")
+                    : hasStoredKey
+                      ? t("usageModels.minimax.configured")
+                      : t("usageModels.minimax.notEnabled")}
             </span>
           </div>
           <div className="flex items-center gap-3">
@@ -1085,7 +1122,16 @@ function UsageModelSettingsPort({
               aria-label="API Key"
               type="password"
               value={apiKey}
-              onChange={(event) => setApiKey(event.target.value)}
+              onChange={(event) => {
+                setApiKey(event.target.value);
+                // UAT4-2: 「请先填写 API Key」 is the engine's verdict on
+                // an EMPTY field. Typing falsifies it, and leaving it up
+                // beside a filled field is the contradiction the UAT
+                // caught. Every other verdict stands.
+                setNotice((previous) =>
+                  previous && previous.kind === "keyRequired" ? null : previous,
+                );
+              }}
               placeholder={
                 hasStoredKey
                   ? t("usageModels.minimax.storedPlaceholder")
@@ -1095,7 +1141,8 @@ function UsageModelSettingsPort({
             />
             {/* 检测读的是「已保存的密钥」——引擎的 testUserModel 不接受
              * 临时 key（v2 无 override 通道），所以输入框里有未保存的值时
-             * 按钮禁用并说明原因，而不是去检测一个它测不到的东西。 */}
+             * 按钮禁用。UAT4-2：这个理由原本只在 title 里，键盘与触屏用户
+             * 看不到，等于没有解释；门控开启期间下方常驻一行说明。 */}
             <button
               type="button"
               aria-label={t("usageModels.minimax.testAria")}
@@ -1114,6 +1161,14 @@ function UsageModelSettingsPort({
               <RefreshIcon />
             </button>
           </div>
+          {!hasStoredKey || hasUnsavedKey ? (
+            <p
+              data-testid="settings-minimax-test-gate"
+              className="text-[12px] leading-4 text-text_default_secondary"
+            >
+              {t("usageModels.minimax.probeGate")}
+            </p>
+          ) : null}
           <button
             type="button"
             data-testid="settings-minimax-save"

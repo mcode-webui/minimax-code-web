@@ -45,12 +45,18 @@ import { Switch } from "antd";
 export function PlanCard({
   t,
   planName,
+  planPending = false,
 }: {
   t: (key: MessageKey) => string;
   /** `tokenPlan.tier` from /api/account, or null when the engine reported
    * no plan / no answer. A blank or absent name renders the honest
    * 「未订阅套餐」 line, never a fallback tier. */
   planName?: string | null;
+  /** A read is in flight and no name is known yet. Distinct from "no
+   * plan": an account surface that has not answered has not said the
+   * user has no plan, and printing 「未订阅套餐」 during that window is
+   * the same lie UAT4-1 reported after a source switch. */
+  planPending?: boolean;
 }) {
   const manageButton = (testId: string) => (
     <button
@@ -80,6 +86,13 @@ export function PlanCard({
               className="truncate text-sm font-medium text-text_default_primary"
             >
               {planName}
+            </span>
+          ) : planPending ? (
+            <span
+              data-testid="plan-name-pending"
+              className="text-caption-small-strong text-text_default_secondary"
+            >
+              {t("usage.plan.loading")}
             </span>
           ) : (
             <span
@@ -150,6 +163,29 @@ export function planNameOf(
   if (!account?.ok) return null;
   const tier = account.tokenPlan?.tier?.trim();
   return tier ? tier : null;
+}
+
+/**
+ * Which `/api/account` payload the container keeps, for a revalidation read.
+ *
+ * P20 (UAT4-1). The account surface is re-read after every successful
+ * model-source switch, and that read lands while the engine is still
+ * settling the new source: `GET /api/account` answers HTTP 200 with
+ * `{ok:false, reason:"no_client"}` — the same soft-fail shape the route
+ * has always returned. A card that let that answer through replaced a
+ * known 「Ultra」 with the 「未订阅套餐」 placeholder and had no way back
+ * until F5. The rule is therefore one-directional: only an `ok: true`
+ * answer is new information, and anything else leaves the last known
+ * answer standing. An unreachable account surface has not unsubscribed
+ * anyone.
+ *
+ * Pure, so the rule is unit-tested rather than pinned by a static read.
+ */
+export function reconciledAccount<T extends { ok: boolean } | null | undefined>(
+  previous: T,
+  incoming: T,
+): T {
+  return incoming && incoming.ok ? incoming : previous;
 }
 
 /** One stacked progress bar of the usage card. Pure display: the container

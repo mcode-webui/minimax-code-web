@@ -1375,7 +1375,7 @@ snapshot is broadcast to every SSE subscriber.
 | Row | Field | Missing-value sentence |
 | --- | --- | --- |
 | 账户名 | `identity.name`, trimmed | the engine answered and reported no name |
-| 当前套餐 | `tokenPlan.tier`, through the Token Plan card's own `planNameOf` | 「未订阅套餐」 when the engine reported no plan; the unread sentence when the surface itself failed |
+| 当前套餐 | `tokenPlan.tier`, through the Token Plan card's own `planNameOf` | 「未订阅套餐」 when the engine reported no plan; 「正在读取当前套餐…」 while a read is in flight; the unread sentence when the surface itself failed |
 | 配额概况 | `tokenPlanQuotaState`, plus `quota.fiveHour` / `quota.weekly` `remainingPercent` | 「引擎未返回读数」 per window; 「不限量」 when the engine reports the window unmetered |
 | 账户状态 | `status` | the unread sentence; a status token with no dictionary entry resolves to no sentence rather than leaking a raw enum |
 
@@ -1683,11 +1683,23 @@ return a mask while the engine rejects a mask submitted as a key.
 the `minimax_api` provider and the response says so (`tested:
 "stored_key"`). Two limits are the engine's contract, not this UI's:
 `testUserModel` takes no key override, so an unsaved value cannot be
-probed — the button is disabled with a title saying so while the field
-holds one — and the managed Token Plan credential is not a model-service
-key, so the Token Plan source has nothing to probe here. A probe that
-ran and failed is a completed probe, not an error: it renders the
-engine's status.
+probed — the button is disabled while the field holds one, and a visible
+line under the field says why, because the reason used to live only in a
+`title` attribute that keyboard and touch users never see — and the
+managed Token Plan credential is not a model-service key, so the Token
+Plan source has nothing to probe here. A probe that ran and failed is a
+completed probe, not an error: it renders the engine's status.
+
+**The key row is four states, not two.** The badge reads the engine's
+masked projection, but it is describing a field the user can be editing
+right now, so a typed-but-unsaved key is its own state (「已输入，未保存」)
+that outranks both 「已保存密钥」 and 「未启用」 — the user is replacing the
+stored key, or has plainly typed one, and neither badge is true. Symmetric
+to that, the engine's `NO_API_KEY` refusal is a verdict on an EMPTY field:
+typing one falsifies it, so the pinned 「请先填写 API Key」 is dropped on
+the next keystroke. A refusal that is not about the missing key — a
+transport failure, a rejected write — is still true afterwards and stays
+on screen.
 
 **Cost.** One extra read per settings-tab open. The read boots the
 engine runtime if none is up, which is the write-side contract and is
@@ -1701,6 +1713,50 @@ catalogue query for an arbitrary key, so a live per-key fetch has no
 engine method behind it. The Token Plan cards stay on decision A1
 (本地版不适用) — wiring them to `/api/usage` and `/api/account` is a
 separate, undecided item, not a side effect of this one.
+
+### Usage & models: a source switch re-reads the account (P20)
+
+**The defect this fixes.** A UAT round trip on 2026-10-03 (板块 4) switched
+Token Plan → MiniMax API → Token Plan with a key stored in between. The
+Token Plan card came back reading 「未订阅套餐」 while `GET /api/account`
+answered `tier: "Ultra"` throughout, and only F5 recovered it. The
+endpoint was never wrong.
+
+**Root cause.** The plan name is read in `UsageModelsSection`
+(`webapp/components/panels.tsx`), mounted only while the port's view is on
+the token-plan tab, so a switch away and back remounts it. The read was
+`useEffect(..., [])` — once per mount — and that mount raced the engine:
+the section rendered in the same tick as `PUT /api/model-source`, and
+`GET /api/account` answers an engine that is still rebinding with HTTP
+**200** and `{ok: false, reason: "no_client"}`. The card read that as "no
+plan", nothing re-read it, and the section's state outlived the failure.
+
+**The re-read.** The port owns an `accountRevision` counter and increments
+it after every *successful* source write — the dropdown's `PUT
+/api/model-source` and 保存并使用's `PUT /api/model-source/api-key`, which
+switches the source inside the same engine transaction. The section's
+`/api/account` effect lists that counter as a dependency, so a confirmed
+write re-runs the read against an engine that has finished rebinding. A
+refused write bumps nothing: nothing changed, and a re-read would only
+spend a request to re-render the same answer.
+
+**A failed read may not un-know a name.** Revalidation alone is not enough,
+because the re-read can also lose the race. `reconciledAccount`
+(`webapp/components/usage-models-cards.tsx`, pure and unit-tested) keeps
+the last `ok: true` answer standing: only an `ok: true` payload is new
+information, so an unreachable account surface cannot knock a known plan
+off the card. An `ok: true` answer that reports no plan *does* replace it —
+the engine saying "no plan" is an answer, saying "unreachable" is not.
+
+**A read in flight is its own sentence.** With the name held, the only
+remaining nameless state is "not read yet", and it renders 「正在读取当前
+套餐…」 rather than 「未订阅套餐」. An account surface that has not
+answered has not said the user has no plan — that conflation was the
+visible half of UAT4-1.
+
+**Cost.** One `GET /api/account` per confirmed source write, on a surface
+the user has just acted on. The read is not debounced: a source switch is
+a deliberate act, not a stream of them.
 
 ### Follow-up messages: the switch is a behaviour (SB-4)
 

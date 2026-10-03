@@ -61,6 +61,7 @@ import {
   PlanCard,
   UsageBar,
   planNameOf,
+  reconciledAccount,
   resetCaption,
 } from "./usage-models-cards";
 
@@ -3416,6 +3417,7 @@ export function UsageModelsSection({
   autoAddProvider,
   onAutoAddConsumed,
   headless = false,
+  accountRevision = 0,
 }: {
   t: (key: MessageKey) => string;
   autoAddProvider?: boolean;
@@ -3425,6 +3427,10 @@ export function UsageModelsSection({
    * three-source switch instead and mounts this headless as its
    * token-plan landing; the header stays for any standalone use. */
   headless?: boolean;
+  /** P20 (UAT4-1): bumped by the port after every SUCCESSFUL model-source
+   * write, which re-runs the `/api/account` read. A remount alone is not
+   * a re-read worth trusting — the remount races the engine's rebind. */
+  accountRevision?: number;
 }) {
   // The reference opens on the Token Plan view. The one deliberate
   // exception is the add-provider deep-link: `autoAddProvider` fires the
@@ -3435,26 +3441,41 @@ export function UsageModelsSection({
   );
 
   // SB-7 (the A1 revision): the plan NAME is a real figure — /api/account's
-  // `tokenPlan.tier`. Read once on mount, the same way the user menu's account
-  // card reads it: the route returns the engine's projection and a failed or
-  // plan-less answer resolves to null, which the card renders as its honest
-  // 「未订阅套餐」 line. A rejected request is likewise a missing name, never a
+  // `tokenPlan.tier`. Read on mount, the same way the user menu's account
+  // card reads it. A rejected request is likewise a missing name, never a
   // default tier.
+  //
+  // P20 (UAT4-1): read-once was not enough. Switching the model source
+  // remounts this section — the port renders it only for the token-plan
+  // tab — so the read fired in the same tick as `PUT /api/model-source`
+  // and raced the engine re-binding to the new source. The losing read
+  // resolved to `{ok:false}` (HTTP 200, account unreachable), the card
+  // printed 「未订阅套餐」, and nothing re-read it until F5. The container
+  // therefore bumps `accountRevision` on every successful source write
+  // and this read re-runs. `reconciledAccount` keeps the last known-good
+  // answer when a revalidation read cannot beat the previous one, so a
+  // transient failure can no longer knock the name off the card.
   const [account, setAccount] = useState<api.AccountPayload | null>(null);
+  const [accountPending, setAccountPending] = useState(true);
   useEffect(() => {
     let live = true;
+    setAccountPending(true);
     void api
       .getAccount()
       .then((payload) => {
-        if (live) setAccount(payload);
+        if (!live) return;
+        setAccount((previous) => reconciledAccount(previous, payload));
       })
       .catch(() => {
-        // Unreachable account surface — the placeholder stands in for it.
+        // Unreachable account surface — the last known answer stands.
+      })
+      .finally(() => {
+        if (live) setAccountPending(false);
       });
     return () => {
       live = false;
     };
-  }, []);
+  }, [accountRevision]);
   const planName = planNameOf(account);
 
   // The reference's pill: the selected tab sits in a grey rounded pill,
@@ -3514,7 +3535,7 @@ export function UsageModelsSection({
       {view === "tokenPlan" ? (
         <>
           <SectionCard>
-            <PlanCard t={t} planName={planName} />
+            <PlanCard t={t} planName={planName} planPending={accountPending} />
           </SectionCard>
           <SectionCard>
             <UsageCard t={t} />

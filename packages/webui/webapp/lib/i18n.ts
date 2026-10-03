@@ -334,8 +334,13 @@ const en = {
      the cloud account domain, and a self-hosted browser session carries no
      account credentials for it. `usage.plan.noPlan` is the other honest
      state — the engine answered and reported no plan, which is not an
-     error. */
+     error. P20 adds a THIRD honest state, `usage.plan.loading`: the read
+     is in flight and no name is known yet. An account surface that has not
+     answered has not said the user has no plan, and the UAT4-1 defect was
+     exactly that conflation — a transient unanswered read rendered as
+     「No active plan」. */
   "usage.plan.noPlan": "No active plan",
+  "usage.plan.loading": "Reading the current plan…",
   "usage.cloudAccount":
     "Cloud account — this web UI has no account credentials",
   "usage.plan.title": "Current plan",
@@ -1278,6 +1283,17 @@ const en = {
   "usageModels.source.switchFailed": "Could not switch the model source",
   "usageModels.minimax.notEnabled": "Not enabled",
   "usageModels.minimax.configured": "Key stored",
+  // P20 (UAT4-2): the badge's own honest state for a key the user has typed
+  // but not saved. Without it the row said 「Key stored」 beside a field being
+  // actively replaced, or 「Not enabled」 while a key was plainly typed.
+  "usageModels.minimax.pendingSave": "Typed — not saved yet",
+  // P20 (UAT4-2): the connectivity probe reads the STORED key only — the
+  // engine's testUserModel has no unsaved-key channel — so the button is
+  // disabled until a save lands. The reason used to live in a `title`, which
+  // keyboard and touch users never see; this is the visible equivalent, shown
+  // exactly while the gate is closed.
+  "usageModels.minimax.probeGate":
+    "The connectivity probe uses the stored key only — the engine has no channel for an unsaved key. Save first.",
   "usageModels.minimax.apiKeyPlaceholder": "Enter API key",
   "usageModels.minimax.storedPlaceholder": "A key is stored — type to replace it",
   "usageModels.minimax.testAria": "Test connectivity",
@@ -1564,8 +1580,11 @@ const zh: Record<MessageKey, string> = {
      所以余下套餐数值的诚实文案不再是「本地版没有数据源」，而是更准确的
      理由：积分 / 到期 / 发票属云端账户域，自托管的浏览器会话拿不到账户
      凭据。`usage.plan.noPlan` 是另一种诚实状态——引擎应答了但没有套餐，
-     那不是错误。 */
+     那不是错误。P20 补第三种诚实状态 `usage.plan.loading`：读取在途、
+     尚不知名。账户面没应答不等于用户没订阅，UAT4-1 的缺陷正是把这两种
+     状态混成一句「未订阅套餐」。 */
   "usage.plan.noPlan": "未订阅套餐",
+  "usage.plan.loading": "正在读取当前套餐…",
   "usage.cloudAccount": "云端账户域，本网页端无账户凭据",
   "usage.plan.title": "当前套餐",
   "usage.plan.upgrade": "升级",
@@ -2367,6 +2386,14 @@ const zh: Record<MessageKey, string> = {
   "usageModels.source.switchFailed": "切换模型来源失败",
   "usageModels.minimax.notEnabled": "未启用",
   "usageModels.minimax.configured": "已保存密钥",
+  // P20（UAT4-2）：用户已填入但未保存时徽标自己的诚实状态。缺了它，这一行
+  // 会在用户正改写的输入框旁说「已保存密钥」，或在明摆着填了 Key 时说「未启用」。
+  "usageModels.minimax.pendingSave": "已输入，未保存",
+  // P20（UAT4-2）：连通检测只使用已保存的密钥——引擎 testUserModel 没有临时
+  // 密钥通道——所以保存前按钮禁用。理由原本只写在 title 里，键盘与触屏用户
+  // 看不到；这是可见的等价文案，且只在门控开启期间出现。
+  "usageModels.minimax.probeGate":
+    "连通检测只使用已保存的 API Key（引擎无临时密钥检测通道），请先保存。",
   "usageModels.minimax.apiKeyPlaceholder": "请输入API Key",
   "usageModels.minimax.storedPlaceholder": "已保存密钥——输入新值即可替换",
   "usageModels.minimax.testAria": "测试连通性",

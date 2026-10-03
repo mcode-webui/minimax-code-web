@@ -143,7 +143,9 @@ describe("settings tab registry parity (webui-parity 58 line A)", () => {
       "custom landing (54's ProviderManagementPanel)",
     );
     assert.ok(
-      portSource.includes("<UsageModelsSection t={t} headless />"),
+      /<UsageModelsSection t=\{t\} headless(?: accountRevision=\{accountRevision\})? \/>/.test(
+        portSource,
+      ),
       "the token-plan landing renders the ticket-53 cards without the internal header",
     );
   });
@@ -414,12 +416,135 @@ describe("usage-models segmented tabs (ticket 53)", () => {
       "the name goes through the render-tested pure resolver, not inline logic",
     );
     assert.ok(
-      segmentSource.includes("<PlanCard t={t} planName={planName} />"),
-      "the resolved name reaches the card as a prop",
+      segmentSource.includes("<PlanCard t={t} planName={planName} planPending={accountPending} />"),
+      "the resolved name reaches the card as a prop, and the in-flight state travels with it",
     );
     assert.ok(
       !/planName\s*[:=][^;\n]*(\?\?|\|\|)\s*"/.test(segmentSource),
       "no fallback tier may be hardcoded next to the account read",
     );
+  });
+
+  // P20 / UAT4-1. The UAT ran the three-source round trip and watched the
+  // Token Plan card fall to 「未订阅套餐」 while `GET /api/account` kept
+  // answering `tier: "Ultra"`; F5 was the only recovery. Root cause: the
+  // card's account read ran ONCE per mount, and the mount that followed a
+  // source switch raced the engine's rebind — `GET /api/account` soft-fails
+  // with HTTP 200 `{ok:false}`, the card took it as "no plan", and nothing
+  // re-read it. The fix is the trigger, not the card: a successful source
+  // write bumps a revision that the read depends on.
+  //
+  // Static tripwires because panels.tsx and settings-modal-port.tsx both
+  // pull the session store and the api graph — the suite's standing shape
+  // for this surface (see the file header). The rule under test is purely
+  // about WHICH writes re-read and WHEN, which is exactly what a source
+  // read can see honestly.
+  describe("P20 UAT4-1: a successful source switch re-reads GET /api/account", () => {
+    test("the read depends on the revision, not on the mount alone", () => {
+      assert.ok(
+        /useEffect\(\(\) => \{[\s\S]{0,900}?\}, \[accountRevision\]\);/.test(segmentSource),
+        "the /api/account effect must list accountRevision as a dependency",
+      );
+      assert.ok(
+        !/\.getAccount\(\)[\s\S]{0,400}?\}, \[\]\);/.test(segmentSource),
+        "a read-once /api/account effect is the UAT4-1 defect itself",
+      );
+    });
+
+    test("the container forwards the revision it was given", () => {
+      assert.ok(
+        segmentSource.includes("accountRevision?: number"),
+        "UsageModelsSection must accept the revision prop",
+      );
+      assert.ok(
+        portSource.includes("accountRevision={accountRevision}"),
+        "the port passes its revision down to the Token Plan landing",
+      );
+    });
+
+    test("the port bumps the revision on BOTH successful source writes", () => {
+      // chooseSource (the dropdown) and saveKeyAndUse (save-and-use, which
+      // switches the source in the same engine transaction). Missing either
+      // leaves one round trip stale.
+      const chooseStart = portSource.indexOf("const chooseSource");
+      const saveStart = portSource.indexOf("const saveKeyAndUse");
+      const testStart = portSource.indexOf("const testKey");
+      assert.ok(chooseStart >= 0 && saveStart > chooseStart && testStart > saveStart);
+      const choose = portSource.slice(chooseStart, saveStart);
+      const save = portSource.slice(saveStart, testStart);
+      for (const [name, body] of [
+        ["chooseSource", choose],
+        ["saveKeyAndUse", save],
+      ] as const) {
+        const write = body.indexOf("await api.");
+        const bump = body.indexOf("revalidateAccount()");
+        assert.ok(write >= 0, `${name} performs an engine write`);
+        assert.ok(
+          bump > write,
+          `${name} must revalidate the account read AFTER its write succeeded — never on the failure path`,
+        );
+      }
+      // The bump is a real state transition, not a no-op stand-in.
+      assert.ok(
+        portSource.includes("setAccountRevision((revision) => revision + 1)"),
+        "revalidateAccount must advance the revision the read depends on",
+      );
+    });
+
+    test("the re-read goes through the render-tested reconciler", () => {
+      assert.ok(
+        segmentSource.includes("reconciledAccount(previous, payload)"),
+        "a failed re-read must not replace a known-good answer (mutation 2 of UAT4-1)",
+      );
+    });
+  });
+
+  // P20 / UAT4-2. The UAT filled a key without saving and read two
+  // contradictory sentences on one screen: a pinned 「请先填写 API Key」 the
+  // engine's NO_API_KEY refusal had left behind, next to a probe button
+  // disabled for a reason that existed only in a `title` attribute.
+  describe("P20 UAT4-2: the MiniMax API card stops contradicting itself", () => {
+    test("typing a key retires the 'fill one in first' verdict", () => {
+      assert.ok(
+        /onChange=\{\(event\) => \{[\s\S]{0,400}?previous\.kind === "keyRequired" \? null : previous/.test(
+          portSource,
+        ),
+        "the key field must drop a keyRequired notice — it is falsified by typing",
+      );
+      assert.ok(
+        portSource.includes("kind: keyRefused ?"),
+        "only the NO_API_KEY refusal carries that kind; a generic failure is still true after typing",
+      );
+    });
+
+    test("a typed-but-unsaved key gets its own badge state", () => {
+      const badge = portSource.slice(
+        portSource.indexOf('data-testid="settings-minimax-key-status"'),
+        portSource.indexOf('data-testid="settings-minimax-save"'),
+      );
+      const typed = badge.indexOf("usageModels.minimax.pendingSave");
+      const stored = badge.indexOf("usageModels.minimax.configured");
+      assert.ok(typed >= 0, "the badge must have a typed-but-unsaved state");
+      assert.ok(stored > typed, "it outranks 已保存密钥 — the user is replacing the stored key");
+    });
+
+    test("the probe gate is explained in visible text, not only in a title", () => {
+      assert.ok(
+        portSource.includes('data-testid="settings-minimax-test-gate"'),
+        "the disabled probe needs a visible reason, not a hover-only title",
+      );
+      const gate = portSource.slice(
+        portSource.indexOf('data-testid="settings-minimax-test-gate"'),
+        portSource.indexOf('data-testid="settings-minimax-save"'),
+      );
+      assert.ok(
+        gate.includes('t("usageModels.minimax.probeGate")'),
+        "the visible line renders the gate string, not a hardcoded duplicate",
+      );
+      assert.ok(
+        portSource.includes("{!hasStoredKey || hasUnsavedKey ? ("),
+        "the line shows exactly while the gate is closed",
+      );
+    });
   });
 });

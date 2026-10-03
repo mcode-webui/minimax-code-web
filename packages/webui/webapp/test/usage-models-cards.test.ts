@@ -28,6 +28,10 @@
 //   - SB-7 (the A1 revision): the plan NAME renders from `tokenPlan.tier`
 //     when the engine reported one, and an absent / failed / blank tier
 //     renders the honest 「未订阅套餐」 line instead of any default tier.
+//   - P20 (UAT4-1): a read still IN FLIGHT renders its own line, not
+//     「未订阅套餐」 — the conflation the UAT reported as a dropped plan —
+//     and `reconciledAccount` refuses to let a failed re-read replace a
+//     known-good answer.
 
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
@@ -40,6 +44,7 @@ import {
   PlanCard,
   UsageBar,
   planNameOf,
+  reconciledAccount,
   resetCaption,
 } from "../components/usage-models-cards";
 import { translate, type MessageKey } from "../lib/i18n";
@@ -109,6 +114,92 @@ describe("PlanCard: the plan name is real, the cloud figures stay honest", () =>
       named.includes("bg-bg_interaction_primary_default"),
       "升级 keeps the reference's black primary-button token",
     );
+  });
+});
+
+// P20 (UAT4-1), mutation 1: deleting the `planPending` branch sends the
+// in-flight read back to 「未订阅套餐」 and this block goes red. The line
+// exists because an account surface that has not answered has not said
+// the user has no plan.
+describe("P20 UAT4-1: an unanswered read is not a missing plan", () => {
+  const pending = render(createElement(PlanCard, { t: tZh, planName: null, planPending: true }));
+
+  test("a pending read renders the reading line, never 「未订阅套餐」", () => {
+    assert.ok(pending.includes('data-testid="plan-name-pending"'));
+    assert.ok(
+      !pending.includes('data-testid="plan-name-placeholder"'),
+      "the no-plan placeholder must not stand in for a read in flight",
+    );
+    assert.ok(!pending.includes("未订阅套餐"), "no-plan may not be claimed before the engine answers");
+  });
+
+  test("the reading line says it is reading, in both languages", () => {
+    assert.ok(pending.includes(tZh("usage.plan.loading")));
+    assert.ok(pending.includes("正在读取"));
+    const en = render(
+      createElement(PlanCard, { t: tEn, planName: null, planPending: true }),
+    );
+    assert.ok(en.includes(tEn("usage.plan.loading")));
+    assert.ok(en.includes("Reading the current plan"));
+  });
+
+  test("pending never overdraws a KNOWN name", () => {
+    const known = render(
+      createElement(PlanCard, { t: tZh, planName: "Ultra", planPending: true }),
+    );
+    assert.ok(
+      known.includes('data-testid="plan-name"') && known.includes("Ultra"),
+      "a revalidation read must not blank a name the reader already has",
+    );
+  });
+
+  test("the three name states are mutually exclusive", () => {
+    for (const markup of [render(createElement(PlanCard, { t: tZh, planName: "Max" })), pending, render(createElement(PlanCard, { t: tZh, planName: null }))]) {
+      const drawn = ["plan-name", "plan-name-pending", "plan-name-placeholder"].filter((id) =>
+        markup.includes(`data-testid="${id}"`),
+      );
+      assert.equal(drawn.length, 1, `exactly one name state renders, drew ${drawn.join(",")}`);
+    }
+  });
+});
+
+// P20 (UAT4-1), mutation 2: making this `return incoming` unconditionally
+// re-opens UAT4-1 — the transient `{ok:false}` that arrives while the
+// engine rebinds to a new model source would again replace 「Ultra」 with
+// the no-plan line, and only F5 would recover it.
+describe("reconciledAccount: only an ok answer is new information", () => {
+  interface Account {
+    ok: boolean;
+    tokenPlan?: { tier?: string };
+    reason?: string;
+  }
+  const ultra: Account = { ok: true, tokenPlan: { tier: "Ultra" } };
+  const unreachable: Account = { ok: false, reason: "no_client" };
+
+  test("an ok answer replaces the previous one", () => {
+    const next: Account = { ok: true, tokenPlan: { tier: "Pro" } };
+    assert.equal(reconciledAccount(ultra, next), next, "a fresh good answer wins");
+    assert.equal(reconciledAccount<Account | null>(null, ultra), ultra, "the first good answer is taken");
+  });
+
+  test("a failed or empty answer leaves the last known-good one standing", () => {
+    assert.equal(reconciledAccount(ultra, unreachable), ultra, "unreachable surface");
+    assert.equal(reconciledAccount<Account | null>(ultra, null), ultra, "no answer at all");
+    assert.equal(reconciledAccount<Account | null | undefined>(ultra, undefined), ultra);
+  });
+
+  test("an ok answer that reports no plan DOES replace — a real answer wins", () => {
+    const unsubscribed: Account = { ok: true, tokenPlan: { tier: "" } };
+    assert.equal(
+      reconciledAccount(ultra, unsubscribed),
+      unsubscribed,
+      "the engine saying 'no plan' is information; saying 'unreachable' is not",
+    );
+    assert.equal(planNameOf(reconciledAccount(ultra, unsubscribed)), null);
+  });
+
+  test("with nothing known yet, a failed read leaves the card nameless", () => {
+    assert.equal(reconciledAccount<Account | null>(null, unreachable), null);
   });
 });
 

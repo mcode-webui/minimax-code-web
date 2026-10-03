@@ -150,6 +150,13 @@ const NEW_KEYS = [
   "usageModels.source.switchFailed",
   "usageModels.minimax.configured",
   "usageModels.minimax.storedPlaceholder",
+  // P20 (UAT4-2): the typed-but-unsaved badge state, and the VISIBLE
+  // explanation of the probe gate (the reason used to live only in a
+  // `title`, invisible to keyboard and touch users). P20 (UAT4-1) adds the
+  // third plan-name state — a read in flight is not a missing plan.
+  "usageModels.minimax.pendingSave",
+  "usageModels.minimax.probeGate",
+  "usage.plan.loading",
   "usageModels.minimax.noKeyToTest",
   "usageModels.minimax.saveFirst",
   "usageModels.minimax.keyRequired",
