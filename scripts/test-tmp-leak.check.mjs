@@ -290,6 +290,7 @@ const KNOWN_PREFIXES = [
   "webui-model-engine-cat-",
   "webui-model-reads-",
   "webui-model-user-level-",
+  "webui-model-writes-",
   "webui-models-merge-",
   "webui-origingate-events-",
   "webui-origingate-settings-",

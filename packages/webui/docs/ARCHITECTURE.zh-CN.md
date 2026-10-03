@@ -1434,6 +1434,161 @@ getter、逐回合 host 包装器与附件辅助函数只通过 `await import()`
    `MCODE_WEBUI_TRANSPORT` 与字面量 `"runtime"` 比较，而计划书写的是选择应当读 provider
    注册表。注册表归 M4 所有，而在它存在之前就硬写第二处知道 provider id 的地方，正是
    M4 要消灭的东西。本批刻意不去造一个提前到来的注册表。
+#### 哪些端点经由门面路由（迁移步 M3 批次 B10）
+
+批次 B10 把模型 / 权限族的写侧收进 `engine/model-writes.js`——正是 B4 把读侧搬进
+`engine/model-reads.js` 时留下的另一半。它是本次迁移里第一个**可观察行为零变化**的
+写族：#58 与 #59 产出的每一个状态码、每一个字段及其顺序、每一条 warning 字符串、
+每一次推送顺序都与本批之前完全相同，测试套件把它们逐个作为取值钉住。变的是
+**推理放在哪里**：webui id → 引擎 wire 值的翻译、variant 与 effort 两条通道的判定、
+两次 `set_config_option` 推送、权限标签映射，如今都是有名、有导出、可单独针对入参
+测试的函数，而不再是路由里的行内分支；`routes/model.js` 因此净减 100 行。
+
+| 端点 | 门面函数 | 能力 · 子项 | 强制方式 | 取值来源 |
+| --- | --- | --- | --- | --- |
+| `POST /api/set-model`（#58） | `engine/model-writes.js#pushEngineModelSelection` | 未声明 | **未挂门** | 至多两次 `mcode-rpc.js#setConfigOption`；被记录的一切都落在 webui 自己的 `cs.model` 里 |
+| `POST /api/permissions`（#59） | `engine/model-writes.js#pushEnginePermissionMode` | 未声明 | **未挂门** | 一次 `mcode-rpc.js#setConfigOption`；被记录的标签是 webui 自己的 `cs.permissions` |
+
+这两行内部的关切切分沿用 B9 为模式写族定下的形状：面向引擎的那一半搬走了，客户端
+状态的那一半留了下来。
+
+| 关切 | B10 之后的归属 |
+| --- | --- |
+| webui 模型 id → 引擎 wire 值 | `engine/model-writes.js#resolveEngineModelConfigValue` |
+| 一次请求瞄准的是哪个模型 | `engine/model-writes.js#modelSelectionTarget` |
+| variant 通道与 effort 通道，以及各自推送什么 | `engine/model-writes.js#planModelSelectionPush` |
+| 按计划顺序发出的 `set_config_option` 推送 | `engine/model-writes.js#pushEngineModelSelection` |
+| 权限模式 → 标签**与**引擎值 | `engine/model-writes.js#resolvePermissionSelection` |
+| 权限模式推送 | `engine/model-writes.js#pushEnginePermissionMode` |
+| `configOptions` 快照镜像规则 | `engine/model-writes.js#applyThinkingEffortMirror`（规则在门面，写入在路由） |
+| `*PickedAt` 竞态戳 | `engine/model-writes.js#planModelPickStamps` |
+| 请求体解析、各个 400、200、`cs.model` / `cs.permissions`、`state-bus.js#pushStateFor` | `routes/model.js#handleSetModel` 与 `routes/model.js#handleSetPermissions` |
+
+**id 翻译之所以存在，是因为两侧拼写模型的方式不同。** webui 记录的
+`cs.model.name` 是 `<providerKey>/<engineModelKey>` 形式，而引擎的 `model` 配置 id
+只接受它自己的 wire 编码，其余一律拒绝。没有这层翻译，会话中途选中一个多段 id
+（`nousresearch/deepseek/x`）会被引擎 400 掉。
+`engine/model-writes.js#resolveEngineModelConfigValue` 是那道缝，而且它在引擎快照里
+还没有 `model` 选项时返回 `null` 而不是猜一个——那正是首个会话事件落地之前的状态；
+调用方随后退回已记录的 id，由 `mcode-acp.js#applyRecordedModel` 在下次启动时重新
+套用，于是会话中途的推送与启动时的回放共用同一个解析器，而不是各有一份。
+
+**两条通道互斥，而顺序是引擎的契约。** `engine/model-writes.js#planModelSelectionPush`
+返回一个计划——是数据，不是副作用——而计划只有两种形状：
+
+| 通道 | 何时 | 推送 | 原因 |
+| --- | --- | --- | --- |
+| `variant` | 目标是可切换内置模型（引擎声明 `thinking_config.mode: switchable` 并给出 variant 树） | **一次** `model` 推送，同时携带模型与开关档位；`thinkingPush` 为 null | 这类模型根本没有档位词汇表——引擎对它拒绝任何 `thinkingEffort` 取值，只把档位作为模型 wire 值的一部分对外声明，因此第二次推送无话可说 |
+| `effort` | 其余全部情况 | 请求点名模型时推一次 `model`，请求点名非空档位时再推一次 `thinkingEffort` | 引擎在未选中模型时拒绝设置 `thinkingEffort`，所以先模型、后档位——这是契约而非风格 |
+
+`engine/model-writes.js#modelSelectionTarget` 正是 effort 通道上「只带档位」的请求得以
+成立的原因：退回当前已记录的模型，正是可切换内置模型上的纯档位更新能够落地的原因；
+它被导出而不是内联，是为了让执行器与计划器不会各推一份、彼此漂移。
+
+**「本次推送是否携带了档位」按通道分别判定，且是刻意的。** 计划里的
+`carriedThinking` 字段回答的是「**这次**推送有没有带档位」。在 variant 通道上，
+即便档位与已记录值相同，它仍由那次模型推送携带，所以缺失的 `thinking` 字段会退回
+已记录值；在 effort 通道上，只有请求本身携带了档位才算携带——字段缺失的含义是
+「别动已记录的 effort」，而这里没有任何 wire 形式能在不同时重选模型的前提下把它带
+过去。被**清空**的字段在两条通道上都不算携带。把这三种情形塌缩成一个判定看起来像
+简化，却会在真实成功的推送上改变 `thinkingSynced`，因此测试分别把它们钉住。
+
+**`mcodeSynced` 报告的是模型，且只报告模型。** 对一次纯档位更新，即使该更新成功，
+它也是 false，因为这个字段的含义是「模型已在引擎里」，而请求里根本没有模型；
+`thinkingSynced` 报告档位。在 effort 通道上，第二次失败只有在模型推送没有动过
+warning 时才升级它，因此模型被拒不会被它自己引发的档位被拒覆盖——这也正是旧路由里
+那个三项析取在这里塌缩为两项判断的原因。
+
+**权限端点需要同一个模式的两种形态，而同时产出两者的那道缝才是重点。**
+`engine/model-writes.js#resolvePermissionSelection` 从一个入参同时给出标签**与**引擎值，
+因为端点两者都需要，而「只给一个映射器加上第五种形态、忘了另一个」正是这道缝要防
+的失败。
+
+| webui 模式 | 记录并推给每个标签页的标签（`server/lib/interaction/permission-presets.js#webuiModeToLabel`） | 引擎值（`mcode-rpc.js#webuiPermissionToMcode`） |
+| --- | --- | --- |
+| `ask` | Ask | `default` |
+| `auto` | Auto | `auto` |
+| `read` | Read | `read` |
+| `off` | Off | `off` |
+| `full` | Full access | `bypassPermissions` |
+| 任何其他值 | Full access | **null** |
+
+最后一行是承重的，不是疏漏。两个映射器对无法识别的模式**刻意不一致**：标签映射器
+退回 `full`，好让界面总有东西可渲染；引擎映射器返回 null，因为对于用户自己编出来的
+模式，引擎根本没有对应的词。于是 `POST /api/permissions {"mode":"nonsense"}` 记录下
+"Full access"、什么都不推、回 `mcodeSynced:false` 且不带 warning——而这道守卫正是
+「引擎确实处于这个模式」与「我们希望它是」之间的分界。
+
+**4 秒窗口是一份双向契约，本批拥有它的写侧。** 引擎的 `config_option_update` 会重新
+声明它自己的 wire 形态 `currentValue`；没有标记的话，它会在乐观写入后几毫秒把这个
+wire 形态盖到用户的选择上，composer 里的芯片于是会在友好的记录形态与引擎形态之间
+闪烁。`mcode-acp.js` 读取 `modelPickedAt` / `thinkingPickedAt`，并在戳还新鲜时推迟
+镜像（`mcode-acp.js#PICK_DEFER_WINDOW_MS`，4000）。读侧不归本批改动；
+`engine/model-writes.js#planModelPickStamps` 是写侧的一半，它带着两条被测试分别钉住
+的性质：
+
+| 性质 | 形态 | 它堵住竞态的哪一半 |
+| --- | --- | --- |
+| 一次请求的所有字段共用**一个**时间戳 | 调用方把 `pickAt` 传进来，在调用引擎之前取一次，因此所有被戳字段按构造就共享它 | 正向那一半——一次耗时 30 毫秒的选择，绝不能让模型字段比 effort 字段早 30 毫秒过期 |
+| 只戳请求体真正携带的字段 | 点名了模型才写 `modelPickedAt`，请求体里有 `thinking` 才写 `thinkingPickedAt`，有 `contextWindow` 才写 `contextWindowPickedAt` | 反向那一半——一次纯档位更新不得刷新 `modelPickedAt`，否则之后来自其他客户端的模型变更会被一次用户从未做出的选择压制掉；「全部都戳」的简化正是悄无声息地破坏这一半 |
+
+`contextWindowPickedAt` 是为了与镜像读取的两个字段对称而顺带记录的。今天没有任何东西
+消费它，因为引擎没有上下文窗口通道；本批之前它就已被戳上，本批继续戳。
+
+**镜像规则一半在门面、一半在路由，切分沿用 B9。**
+`engine/model-writes.js#applyThinkingEffortMirror` 拥有*规则*——档位推送被接受之后，
+本地快照应当认领引擎的新值；一次清空选择之后，本地快照应当什么都不认领——并返回它
+改动了多少个选项，这正是「快照里还没有 `thinkingEffort` 选项」成为可观察事件、而
+不是一次静默空操作的原因。*写入*留在路由里，因为 `cs.configOptions` 是 webui 自己
+的视图，且是原地改写、条件与此前逐字相同。三个分支：
+
+| 镜像 | 何时 | 本地 `configOptions` |
+| --- | --- | --- |
+| `{kind: "set", value}` | 非空档位已推送且引擎接受了 | 认领引擎新的 `currentValue` |
+| `{kind: "clear"}` | 档位被清空**且**模型也发生了变化 | **丢弃**本地取值——引擎会为新模型挑自己的默认值，留着一个显示清空值的镜像，等于宣称一个引擎从未上报过的状态 |
+| `null` | 其余全部情况，包括单独的清空 | 不动 |
+
+单独一次清空被刻意**不**镜像：下一次 `config_option_update` 会应用它，而本地丢弃会
+凭空造出一个引擎状态。该清空同样不依赖模型推送是否成功，这是既有行为，此处原样保留
+而不去「收拾干净」。
+
+**本批记为已知债而不予决定的三件事：**
+
+1. **两个端点都没有挂门，而这是一个留给人决定的问题。** B9 的门控已经豁免了这两个
+   端点写入的**恰好那两个** config id——`model` → `selectModel`、`permissionMode` →
+   `setPermissionMode`，即 `engine/mode-writes.js#MODE_WRITE_BRIDGED_CONFIG_IDS` 里的那张表
+   ——因此两个子项都是已知名字，谁也不需要重新发现。挡住在这里挂门的还有**一个**
+   config id，而它是 #58 的：
+
+   | 分支 | 代价 | 收益 |
+   | --- | --- | --- |
+   | **(a) 桥接**：把 `thinkingEffort` 作为第三个 id 写进 `MODE_WRITE_BRIDGED_CONFIG_IDS`，指向一个含义为「专用的思考档位写入方」的子项 | 在一张前端也要镜像的表里多加一个名字，外加一份快照审计从此必须证明存在的第三项声明——今天的探测在两侧都没找到 `setThinkingEffort` / `selectThinkingEffort`，所以这个名字得先与引擎团队商定 | #58 可以与 #59 共用同一张表挂门，两个控件保持对称 |
+   | **(b) 接受** 501 并降级界面 | 思考档位控件会对每一个拒绝通用配置写入的 provider 消失——在 M4 的 ACP provider 下是大多数——#58 为保住一项能力增强而失去可用的一半；`engine-capabilities.ts` 还需要第三个被桥接的 id，控件才能遵循同样的 fail-open 规则 | 能力声明不再对一个仍然可用的控件撒谎 |
+
+   `thinkingEffort` 是**通用** config id——正是计划书（§3a 第 68 行）说在「没有通用
+   写入的 provider」下无处投递的那一个——因此用 #59 那样的方式给 #58 挂门，会让
+   思考档位控件因为与 #68 对无法识别的 id 完全相同的理由而回 501。在人选定分支
+   之前，#58 保持本批之前的行为。**#59 单独看是零风险的那一半**：按
+   `engine/capabilities.js#assertEngineCapability` 硬门控它，在今天是无行为影响的（没有任何
+   已注册 provider 把该子项列为缺失，而快照审计证明两个 provider 确实都有这个方法），
+   且对已发布的界面是安全的——界面本来就在同一份声明下隐藏权限选择器
+   （`webapp/lib/engine-capabilities.ts` + `webapp/components/composer.tsx`）。这里
+   仍然没有动手，因为动手就等于用一张能力表、既无变更记录也无前端工作地做出一个
+   产品决定——这正是 B7 为 #71 记下的同一条理由。无论如何这个模块已是挂门就绪的：
+   每个端点的推送都只有一个调用点，所以打开任何一个门都是一行的事。
+2. **`contextWindow` 只记录、从不推送。** 引擎的 ACP 面上没有它的通道——
+   `session/set_config_option` 只接受三个 config id，而模型 wire 编码里没有上下文
+   段——所以这个选择是一个 webui 侧偏好，选择器会立即反映它。这是既有行为，本批
+   未改；之所以列出来，是因为本批是拥有整个 #58 写侧的那一批：读门面的人不应假定
+   整个请求都抵达了引擎。接线是引擎侧的工作，而那道缝就是
+   `engine/model-writes.js#planModelSelectionPush` 的输出——将来的引擎通道会以第三次
+   推送扩展它。
+3. **B9 那条「桥接靠编造子项」的债由本批关闭，记录在快照审计里。**
+   `selectModel` 与 `setPermissionMode` 现在都在 `REQUIRED_METHODS` 里，于是
+   `test/lib/engine/capability-snapshot.test.js#auditProviderCapabilities` 会断言它们
+   在真实启动的 host 上、adapter 与 cliService 两个面上都是函数；加入之前先核实过它们
+   确实存在。本批只是只读引用 `engine/mode-writes.js`，因此它自己的债文本原样保留；
+   这一条就是那张关闭凭据。
 
 ## 6. 前端拓扑
 

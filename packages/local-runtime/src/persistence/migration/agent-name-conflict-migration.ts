@@ -36,10 +36,37 @@ import {
 
 const MANIFEST_FILE = 'agent-name-conflicts.json';
 const EMPTY_REFERENCE_COUNTS = EMPTY_AGENT_NAME_CONFLICT_REFERENCE_COUNTS;
-// Synchronous backup/rewrite needs a long-lived dataDir lease.
-export const AGENT_NAME_CONFLICT_MIGRATION_LOCK_STALE_MS = 30 * 60_000;
-const AGENT_NAME_CONFLICT_MIGRATION_LOCK_RETRIES = {
-  retries: 120,
+// Synchronous backup/rewrite needs a dataDir lease, so the lease outlives the
+// critical section rather than the other way round.
+//
+// The window is 2 minutes, and it was 30. The reason is not "2 minutes is
+// enough to rewrite a database" — a live holder refreshes the lease every
+// `stale / 2` (proper-lockfile derives the heartbeat from the stale window), so
+// the ratio that actually matters — "two missed heartbeats before the lease is
+// called abandoned" — is unchanged. What changed is the cost of a lease that
+// is abandoned for real.
+//
+// This lease gates PROCESS STARTUP: `mcode acp` takes it during the V2 cutover
+// and cannot serve a prompt without it. The lease is a bare directory, so a
+// process killed between `mkdir` and `release` leaves it behind, and the only
+// evidence of a live holder is the directory's mtime. A 30-minute window
+// therefore made one killed process unstartable for half an hour — and the
+// retry budget (55s) was far too short to outlast it, so every launch during
+// that window burned 55s of backoff and then died with
+// `agent_name_conflict_migration_failed:lock`. That is the outage: repeated
+// sends producing no reply, no engine process, and no session.
+//
+// The migration itself is idempotent and re-inspects under the lease
+// (`ensureAgentNameConflictMigrationLocked`), so the worst a wrongly-considered
+// stale lease can cost is one extra inspection — not a double rewrite.
+export const AGENT_NAME_CONFLICT_MIGRATION_LOCK_STALE_MS = 2 * 60_000;
+// The wait must be able to OUTLAST the stale window, or a waiter gives up at
+// the moment the abandoned lease becomes reapable. At this backoff shape the
+// 120 retries summed to ~55s against a 30-minute window — a waiter could never
+// win, only die. 400 retries sum to ~195s, which rides out one full stale
+// expiry and then acquires.
+export const AGENT_NAME_CONFLICT_MIGRATION_LOCK_RETRIES = {
+  retries: 400,
   factor: 1.2,
   minTimeout: 25,
   maxTimeout: 500,

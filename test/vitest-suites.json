@@ -81,6 +81,7 @@
       "packages/local-runtime-v2/test/unit/agent/storage/agent.repository.test.ts",
       "packages/local-runtime-v2/test/unit/agent/storage/canonical-agent-config.test.ts",
       "packages/local-runtime-v2/test/unit/compat/v1/runtime.test.ts",
+      "packages/local-runtime/test/unit/agent-name-conflict-migration-lock.test.ts",
       "packages/local-runtime/test/unit/child-bash-lifecycle.test.ts",
       "packages/local-runtime/test/unit/content-safety-api-fail-policy.test.ts",
       "packages/local-runtime/test/unit/content-safety-api-v2.test.ts",

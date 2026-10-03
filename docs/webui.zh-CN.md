@@ -258,6 +258,33 @@ GET  /api/engine-capabilities[?provider=<id>]
 
 **用户看到什么。** 权限模式选择器与模型选择器被**隐藏**，不是禁用，也不配任何错误提示（`webapp/lib/engine-capabilities.ts`，接线在 `webapp/components/composer.tsx`）。toast 会为一件用户从来就做不到的事报一次失败、无从处理、而且每点一次就再报一次。这条规则是 fail-open 的：控件会一直显示，直到声明明确说引擎做不到——因此一次失败或超时的 `/api/engine-capabilities` 请求绝不会拿掉一个本来能用的控件。
 
+### M3-B10：模型与权限写搬进引擎门面（行为零变更）
+
+`POST /api/set-model`（#58）与 `POST /api/permissions`（#59）是模型端点族的另一半：B4 搬了读，本批搬写。推理逻辑离开路由，落进 `packages/webui/server/engine/model-writes.js`，在那里被命名、导出，并按入参测试。
+
+**客户端能观察到的一切都没变。** 每个状态码、每个应答字段、字段顺序、警告文案与引擎推送——包括哪一次推送先发生、失败时它被允许说什么——都与本批之前逐字节一致。边界如下：
+
+| 关注点 | B10 之后的归属 |
+| --- | --- |
+| webui id → 引擎 wire 值 | `resolveEngineModelConfigValue` |
+| variant 通道 vs 强度通道，以及各自蕴含的推送顺序 | `planModelSelectionPush` |
+| `set_config_option` 调用 | `pushEngineModelSelection` / `pushEnginePermissionMode` |
+| 权限模式 → 标签 / 引擎值 | `resolvePermissionSelection` |
+| 本地 `configOptions` 快照何时可以宣称引擎的新强度 | `applyThinkingEffortMirror`（写仍留在路由——`cs` 是 webui 自己的状态） |
+| 请求体解析、400、`cs.model` / `cs.permissions` 写入、`pushStateFor`、应答体 | `packages/webui/server/routes/model.js` |
+
+选择器面对的两种形态本就不同，并且刻意保持不同。**引擎**收到的是 wire 形态——`m:<provider>:<model>:u`，可切换内置模型则是 `m:<provider>:<model>:v:<variant>`，另加 `thinkingEffort` 的裸档位与 `permissionMode` 的引擎词汇。**webui** 记录的是面向用户的形态——`<providerKey>/<engineModelKey>` 的 `cs.model.name`、`cs.model.thinking`、作为标签的 `cs.permissions`。两者之间的映射由测试逐字段钉住：`packages/webui/test/lib/engine/model-writes.test.js` 按（引擎选项形态 × 请求形态）每种组合一行。
+
+**variant 通道（ticket 36）语义不变，并且现在被具名覆盖。** 可切换内置模型（`thinking_config.mode: switchable`，如 MiniMax-M3）没有引擎强度词汇——引擎会拒绝它的一切 `thinkingEffort` 取值——只以 `v:thinking` / `v:none-thinking` 这一对 wire 形态公布。因此这样的选择是**一次** `model` 推送，同时带上模型与开/关档位，压根没有第二次推送。其余模型保持双推送契约：先 `model` 后 `thinkingEffort`，因为引擎在未选模型时会拒绝设置强度。在 variant 通道上「清空档位」意味着引擎的**默认** variant，而不是「off」——归一化器只认 `on` 与 `off`。
+
+**4 秒 SSE 竞态窗口不变**，且两个半边都被钉住。一次选择会为请求**实际携带**的字段打戳，全部共用同一个时间戳，于是 `applyConfigOptionUpdate` 的归属感知镜像（`server/lib/mcode-acp.js`，ticket 08）会把引擎的 wire 形态回声推迟 4 秒，而不是让它在乐观写入后几毫秒就覆盖芯片。请求**未**携带的字段不会被打戳，因此该字段后续的跨端变化仍会立即镜像。
+
+**`contextWindow` 依旧只记录、不推送。** 引擎 ACP 面没有它的通道，因此这项选择是 webui 侧的偏好，选择器立刻就能反映。
+
+**这两个端点没有挂门，而这是一个待人拍板的开口，不是疏漏。** #59 只写 `permissionMode`，所以把它挂到 `authCredentials.setPermissionMode` 上，今天在行为上是空转的，而且对已发布 UI 安全（权限选择器本来就按同一条声明被隐藏）——那只是一次 `assertEngineCapability` 调用。#58 还会写 `thinkingEffort`，而它是**通用** config id：照样挂门会让思考强度控件因为与 #68 遇到无法识别的 id 时完全相同的原因开始答 501。两个分支的成本都写在 `model-writes.js` 的 KNOWN DEBT 段——把 `thinkingEffort` 桥接成第三个 id，还是接受 501 并把前端降级扩到第三个控件。在拍板之前，#58 保持 B10 之前的行为。
+
+**桥接不再是未经核实的豁免。** `selectModel` 与 `setPermissionMode`——`MODE_WRITE_BRIDGED_CONFIG_IDS` 点名的两个子项——现已进入快照审计的 `REQUIRED_METHODS`，因此真实启动的 host 会在 adapter **与** CliService 两个面上被检查这两个方法，而停止列出其中之一的声明会变红。两个面都没有 `setThinkingEffort` / `selectThinkingEffort`，这正是上面那个挂门决策所依据的事实。
+
 ### 迁移状态与边界
 
 - **本批只做迁移第一步 M1**：host 构造（`createCatalogueHost`）原样移入 `engine/providers/local-runtime-v2.js`，`runtime-host.js` 转发导出，既有引用方零改动；没有任何现有路由行为变化，`GET /api/engine-capabilities` 是纯新增端点。

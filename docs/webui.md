@@ -258,6 +258,33 @@ Two consequences of that table are deliberate rather than incidental:
 
 **What the user sees.** The permission-mode selector and the model selector are hidden, not disabled and not accompanied by an error message (`webapp/lib/engine-capabilities.ts`, wired in `webapp/components/composer.tsx`). A toast would report a failure for something the user was never able to do, offer nothing to act on, and reappear on every click. The rule is fail-open: the controls are shown until the declaration positively says the engine cannot do it, so a failed or slow `/api/engine-capabilities` request never removes a working control.
 
+### M3-B10: the model and permission writes move behind the facade (no behaviour change)
+
+`POST /api/set-model` (#58) and `POST /api/permissions` (#59) are the second half of the model endpoint family; B4 moved its read, this batch moves the write. The reasoning leaves the route and lands in `packages/webui/server/engine/model-writes.js`, where it is named, exported and tested on its inputs.
+
+**Nothing a client can observe changed.** Every status, response field, field order, warning string and engine push — including which push happens first and what it is allowed to say when it fails — is the one these two endpoints produced before. The boundary is:
+
+| Concern | Home after B10 |
+| --- | --- |
+| webui id → engine wire value | `resolveEngineModelConfigValue` |
+| variant channel vs effort channel, and the push order each implies | `planModelSelectionPush` |
+| the `set_config_option` calls | `pushEngineModelSelection` / `pushEnginePermissionMode` |
+| permission mode → label / engine value | `resolvePermissionSelection` |
+| the rule for when the local `configOptions` snapshot may claim the engine's new effort | `applyThinkingEffortMirror` (the write stays in the route — `cs` is webui's own state) |
+| body parsing, the 400s, the `cs.model` / `cs.permissions` writes, `pushStateFor`, the response bodies | `packages/webui/server/routes/model.js` |
+
+Two forms the picker deals with are deliberately different and stay that way. What the **engine** receives is the wire form — `m:<provider>:<model>:u`, or `m:<provider>:<model>:v:<variant>` for a switchable builtin, plus a bare level for `thinkingEffort` and an engine vocabulary word for `permissionMode`. What **webui** records is the user-facing form — `cs.model.name` in `<providerKey>/<engineModelKey>`, `cs.model.thinking`, `cs.permissions` as a label. The map between them is what the suite pins, field by field, over one row per (engine option shape × request shape) in `packages/webui/test/lib/engine/model-writes.test.js`.
+
+**The variant channel (ticket 36) is unchanged and now covered by name.** A switchable builtin (`thinking_config.mode: switchable`, e.g. MiniMax-M3) has no engine effort vocabulary — the engine rejects every `thinkingEffort` value for it — and advertises it only as the wire pair `v:thinking` / `v:none-thinking`. Such a pick is therefore **one** `model` push carrying both the model and the on/off level, with no second push at all. Every other model keeps the two-push contract: `model` first, then `thinkingEffort`, because the engine rejects an effort set when no model is selected. A cleared level on the variant channel means the engine's **default** variant, not "off" — the normaliser only knows `on` and `off`.
+
+**The 4-second SSE race window is unchanged**, and now has both halves pinned. A pick stamps the fields the request actually carried, all with one timestamp, so `applyConfigOptionUpdate`'s ownership-aware mirror (`server/lib/mcode-acp.js`, ticket 08) defers the engine's wire-form echo for 4 seconds instead of letting it overwrite the chip a few milliseconds after the optimistic write. A field the request did *not* carry is not stamped, so a later cross-client change to that field still mirrors immediately.
+
+**`contextWindow` is still recorded and never pushed.** The engine's ACP surface has no channel for it, so the pick is a webui-side preference the picker reflects immediately.
+
+**These two endpoints are not gated, and that is an open decision rather than an oversight.** #59 writes `permissionMode` only, so gating it on `authCredentials.setPermissionMode` would be behaviourally inert today and safe against the shipped UI (the permission selector is already hidden under exactly that declaration) — it is one `assertEngineCapability` call. #58 also writes `thinkingEffort`, which is a *generic* config id: gating it the same way would make the thinking-effort control answer 501 for the same reason #68 does for an unrecognised id. Both branches are costed in the KNOWN DEBT section of `model-writes.js` — bridge `thinkingEffort` as a third bridged id, or accept the 501 and extend the frontend's degradation to a third control. Until that is decided, #58 keeps its pre-B10 behaviour.
+
+**The bridge is no longer an unverified exemption.** `selectModel` and `setPermissionMode` — the two sub-items `MODE_WRITE_BRIDGED_CONFIG_IDS` names — are now in the snapshot audit's `REQUIRED_METHODS`, so a real booted host is checked for both of them on the adapter *and* the CliService surface, and a declaration that stops listing one goes red. Neither surface carries a `setThinkingEffort` / `selectThinkingEffort`, which is the fact the gating decision above turns on.
+
 ### Migration state and constraints
 
 - **M1 done in this batch**: host construction (`createCatalogueHost`) moved verbatim into `server/engine/providers/local-runtime-v2.js`; `runtime-host.js` re-exports it, so every existing importer is untouched. No existing route's behaviour changed; `GET /api/engine-capabilities` is a new, additive endpoint.
