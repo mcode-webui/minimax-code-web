@@ -15,9 +15,6 @@
 import {
   setMode,
   setConfigOption,
-  cancelSession,
-  loadSession,
-  activateSession,
   mcodePermissionToWebui,
 } from "../lib/mcode-rpc.js";
 // M3-B1 (engine facade): only #72 (`list-sessions`) is gated in that
@@ -26,6 +23,21 @@ import {
 // set-config-option), each of which lands its own facade call with its
 // own regression evidence.
 import { readEngineSessionList } from "../engine/session-reads.js";
+// M3-B7 (engine facade): #69 (`cancel`), #70 (`load-session`) and #71
+// (`activate-session`) now ask the facade. Two modules, because the
+// families' gate policies are opposite and one module would force one
+// to inherit the other's — the same split B2 drew between the tree
+// read and the export enrichment. `interrupt.js` holds the SOFT
+// declaration for the cancel pair (a provider without an interrupt
+// surface still gets a truthful "I could not deliver it" answer);
+// `session-load.js` holds #70's HARD `sessionCrud` · `loadSession`
+// gate — the only hard gate in B7, and the one that keeps a sidebar
+// entry from being written for a session the engine never loaded —
+// beside #71's SOFT one, which is soft precisely because hard-gating it
+// would be deciding the semantic-collapse question KNOWN DEBT 1 in that
+// module's header says is still open.
+import { sendEngineSessionCancel } from "../engine/interrupt.js";
+import { loadEngineSession, activateEngineSession } from "../engine/session-load.js";
 // M3-B4 (engine facade): #73 (`capabilities`) now reads the engine's
 // declared capability surface through the facade instead of reaching
 // into `lib/mcode-rpc.js` and `lib/acp-client.js` from inside the
@@ -33,7 +45,6 @@ import { readEngineSessionList } from "../engine/session-reads.js";
 // the `engine` view rather than replacing the ACP wire table, and why
 // this endpoint declares no capability of its own.
 import { readEngineCapabilityView } from "../engine/capability-reads.js";
-import { loadSessions, saveSessions, resetContext } from "../lib/sessions.js";
 import { pushStateFor } from "../lib/state-bus.js";
 import { readJson } from "../lib/read-json.js";
 
@@ -126,28 +137,29 @@ export async function handleSetConfigOption(req, res, ctx) {
 // ============================================================
 // POST /api/protocol/cancel  { sessionId }
 // 取消正在跑的 prompt。比 child.kill() 温和: 让 mcode 走完 finalize,而不是直接 SIGKILL
+//
+// M3-B7 (engine facade): the notification and the two response shapes
+// live in `engine/interrupt.js#sendEngineSessionCancel`. What stays
+// here is the route's: the 400 for a missing sessionId, the state
+// push, and the rule that the push fires ONLY when the notification
+// was actually delivered — a push on a refusal would re-assert the
+// very claim the caller just failed to clear, and that conditional is
+// the part the engine layer has no business knowing about.
+//
+// The endpoint still does NOT escalate: `session/cancel` is a
+// notification, so the route cannot say whether the prompt stopped. A
+// refusal therefore answers 200 with `cancelled:false` and a pointer
+// to `/api/stop`, which is where the gentle-then-SIGKILL cascade lives.
+// Claiming a hard kill here would be claiming a kill this handler
+// never performs.
 // ============================================================
 export async function handleCancel(req, res, ctx) {
   const { sessionId } = await readJson(req);
   if (!sessionId)
     return respond(res, 400, { ok: false, error: "sessionId required" });
-  const r = await cancelSession(sessionId, ctx && ctx.cid);
-  // A refusal means the `session/cancel` notification could not be delivered —
-  // it is a notification (no reply), so we cannot say whether the prompt
-  // actually stopped. This route only sends the notification; the
-  // gentle-then-SIGKILL cascade lives behind POST /api/stop, which the
-  // caller can request explicitly if the kill cascade is what they wanted.
-  if (!r.ok) {
-    return respond(res, 200, {
-      ok: true,
-      cancelled: false,
-      warning: r.error,
-      code: r.code,
-      killEndpoint: "/api/stop",
-    });
-  }
-  if (ctx && ctx.cid) pushStateFor(ctx.cid);
-  return respond(res, 200, { ok: true, cancelled: true, data: r.data });
+  const r = await sendEngineSessionCancel({ sessionId, cid: ctx && ctx.cid });
+  if (r.delivered && ctx && ctx.cid) pushStateFor(ctx.cid);
+  return respond(res, 200, r.payload);
 }
 
 // ============================================================
@@ -155,85 +167,63 @@ export async function handleCancel(req, res, ctx) {
 // 加载任意 mcode session (含 TUI 跑的)。
 //  - 默认: 仅在 mcode 端 load, 不动 webui session
 //  - createWebuiEntry=true: 同时在 webui session db 创建 entry (用于 sidebar 显示)
+//
+// M3-B7 (engine facade): the hard `sessionCrud` · `loadSession` gate,
+// the engine load, the `code` → status and → wire-code mappings, and
+// the idempotent sidebar entry all live in
+// `engine/session-load.js#loadEngineSession`. The gate throws for a
+// provider that declares the capability absent, and the router's
+// existing central mapping answers it 501 — this route does not catch
+// it, and must not: that 501 is the "the engine cannot do this" answer
+// and folding it into a status table here would turn it into a 500.
+//
+// What stays is the route's: the 400, the status write, and the state
+// push (which is unconditional on success, as it always was).
 // ============================================================
 export async function handleLoadSession(req, res, ctx) {
   const { sessionId, cwd, createWebuiEntry } = await readJson(req);
   if (!sessionId)
     return respond(res, 400, { ok: false, error: "sessionId required" });
-  const r = await loadSession(sessionId, cwd || ctx?.cs?.workspace?.dir || "");
-  if (!r.ok) {
-    const httpCode =
-      r.code === "no_client"
-        ? 503
-        : r.code && /not.found|invalid/i.test(r.code)
-          ? 404
-          : 500;
-    // mcode acp "Resource not found" 返 404 的子情况, code 是 -32004 / 'resource_not_found'
-    //   给前端更可读的 code
-    const outCode =
-      r.code && /not.found|resource/i.test(r.code)
-        ? "session_not_found"
-        : r.code;
-    return respond(res, httpCode, { ok: false, error: r.error, code: outCode });
-  }
-  let webuiEntry = null;
-  if (createWebuiEntry && ctx && ctx.cs) {
-    // 在 webui session db 创建 entry, 让 sidebar 1:1 看到这个 mcode session
-    const all = loadSessions();
-    const existing = all.find((s) => s.mcodeSessionId === sessionId);
-    if (existing) {
-      webuiEntry = existing;
-    } else {
-      const { randomUUID } = await import("node:crypto");
-      webuiEntry = {
-        id: randomUUID(),
-        mcodeSessionId: sessionId,
-        title: "Mcode session",
-        workspace: cwd || ctx.cs.workspace?.dir || "",
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-        chat: [],
-      };
-      all.unshift(webuiEntry);
-      saveSessions(all);
-    }
-    // 不自动切到 webui 当前 session (调用方决定)
-  }
+  const r = await loadEngineSession({
+    sessionId,
+    cwd,
+    createWebuiEntry,
+    cs: ctx && ctx.cs,
+  });
+  if (r.statusHint !== 200) return respond(res, r.statusHint, r.payload);
   if (ctx && ctx.cid) pushStateFor(ctx.cid);
-  return respond(res, 200, { ok: true, sessionId, webuiEntry });
+  return respond(res, 200, r.payload);
 }
 
 // ============================================================
 // POST /api/protocol/activate-session  { sessionId }
 // 切到指定 mcode session
+//
+// M3-B7 (engine facade): the soft gate, the engine activate, the
+// status mapping, the `mcodeSessionId` rebinding and the `resetContext`
+// that follows it all live in
+// `engine/session-load.js#activateEngineSession`.
+//
+// The gate is SOFT and the response shape is unchanged on purpose. The
+// endpoint's fate is an open product question — the plan (§3a) gives it
+// as "语义塌缩（cs 切换 + resume）, 或 501", and hard-gating it would
+// be silently choosing the second. KNOWN DEBT 1 in that module's
+// header costs both branches. The 501 this route can still answer is
+// the PRE-EXISTING one, from `code === "unsupported"` — a different
+// status with a different body, and the two must not be confused for
+// each other.
+//
+// What stays is the route's: the 400, the status write, and the state
+// push (success only, as always).
 // ============================================================
 export async function handleActivateSession(req, res, ctx) {
   const { sessionId } = await readJson(req);
   if (!sessionId)
     return respond(res, 400, { ok: false, error: "sessionId required" });
-  const r = await activateSession(sessionId);
-  if (!r.ok) {
-    // Same status mapping as set-mode / set-config-option.
-    const httpCode =
-      r.code === "unsupported"
-        ? 501
-        : r.code === "no_client"
-          ? 503
-          : r.code && /not.found|invalid/i.test(r.code)
-            ? 404
-            : 500;
-    return respond(res, httpCode, { ok: false, error: r.error, code: r.code });
-  }
-  if (ctx && ctx.cs) {
-    ctx.cs.mcodeSessionId = sessionId;
-    resetContext(ctx.cs);
-  }
+  const r = await activateEngineSession({ sessionId, cs: ctx && ctx.cs });
+  if (r.statusHint !== 200) return respond(res, r.statusHint, r.payload);
   if (ctx && ctx.cid) pushStateFor(ctx.cid);
-  return respond(res, 200, {
-    ok: true,
-    activeSessionId: sessionId,
-    data: r.data,
-  });
+  return respond(res, 200, r.payload);
 }
 
 // ============================================================

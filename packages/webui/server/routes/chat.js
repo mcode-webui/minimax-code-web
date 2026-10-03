@@ -14,7 +14,6 @@ import {
 import {
   pushStateFor,
   pushAlert,
-  getActiveChild,
   beginRun,
   endRun,
   moveRunSession,
@@ -37,7 +36,18 @@ import {
 } from "../lib/interaction/command-registry.js";
 import { runMcodeAcp } from "../lib/mcode-acp.js";
 import { collectExecResult, runMcodeExec } from "../lib/mcode-exec.js";
-import { cancelSession } from "../lib/mcode-rpc.js";
+// M3-B7 (engine facade): #13 `/api/stop` no longer reaches into
+// `lib/mcode-rpc.js#cancelSession` and `lib/state-bus.js#getActiveChild`
+// from inside the handler. The gentle cancel, the kill cascade, the
+// bounded escalation timer and the `hardKilled` / `note` wording all
+// live in `engine/interrupt.js#applyEngineStop`, which declares the
+// family's `interrupt` capability and gates it SOFT — the escalation is
+// webui's own child management, so the endpoint can always answer
+// truthfully. See that module's header for the three facts the route no
+// longer knows: `cancelled` means "sent", `hardKilled` is a report
+// about the first decision rather than about the process, and the
+// escalation bound is part of the contract.
+import { applyEngineStop } from "../engine/interrupt.js";
 import { DEFAULT_MODEL } from "../lib/config.js";
 import { resolveAttachments } from "../lib/attachments.js";
 import { readJson } from "../lib/read-json.js";
@@ -422,55 +432,27 @@ export async function handleSend(req, res, ctx) {
 // and finalize runs. SIGKILL is the fallback for a child that cannot be told to
 // stop at all — killing the process takes its background tasks down with it,
 // which is why the graceful path is tried first.
+//
+// M3-B7 (engine facade): all of that — the child lookup narrowed to the
+// VIEWED session, the notification, the kill decision, the bounded
+// escalation timer and the response body — happens in
+// `engine/interrupt.js#applyEngineStop`. What stays HERE is what is
+// genuinely the route's:
+//
+//   - The zombie-claim reset, because `resetThinkingClaim` is SHARED
+//     with `handleSend` (the start-phase failure path above) and
+//     moving it would have been a second, unrelated change to the send
+//     route. The DECISION to run it is the engine's (`claimStale`);
+//     only the mutation is here.
+//   - The state push, which must not fire when the reset did not run —
+//     that is what the 2026-09-20 audit's escape hatch is for.
+//   - The response itself, written from the body the engine built. The
+//     `note` / `hardKilled` wording is NOT reconstructed here, because
+//     it has to agree with the cascade that actually ran.
 export async function handleStop(_req, res, ctx) {
   const cid = ctx.cid;
   const cs = ctx.cs;
-  // The VIEWED session's child, not "any child of this tab": a tab may run
-  // two conversations at once, and stopping must not signal the other
-  // turn's subprocess.
-  const child = getActiveChild(cid, cs && cs.mcodeSessionId);
-  const wasRunning = !!child;
-  let cancelled = false;
-  let hardKilled = false;
-  // 1. Gentle path: send the `session/cancel` notification. The engine aborts the
-  //    active prompt's AbortController; there is no reply, so `ok` means "sent".
-  if (cs && cs.mcodeSessionId) {
-    try {
-      const r = await cancelSession(cs.mcodeSessionId, ctx.cid);
-      if (r.ok) cancelled = true;
-      else {
-        // No client to notify — worth a line in the log before the SIGKILL.
-        console.warn(
-          `[stop] session/cancel failed cid=${cid}: ${r.error} (code=${r.code})`,
-        );
-      }
-    } catch (e) {
-      console.warn(`[stop] session/cancel threw cid=${cid}: ${e.message}`);
-    }
-  }
-  // 2. 兜底路径: hard kill child (RPC 不支持或失败)
-  if (child && !cancelled) {
-    try {
-      child.kill();
-    } catch {}
-    hardKilled = true;
-  }
-  // 3. 兜底路径 2: 设个 2s timeout, 如果 mcode acp 没通过 cancel 退出, 也强 kill
-  //    (避免 mcode 还在 prompt 不响应时 webui 显示 "已停止" 但实际还在跑)
-  //    缓存 child.child 引用, 因为 2s 后 child.stop() 可能已经把它置 null
-  if (child) {
-    const rawChild = child.child; // 缓存 node child_process 实例
-    setTimeout(() => {
-      try {
-        if (rawChild && !rawChild.killed && rawChild.exitCode === null) {
-          console.log(
-            `[stop] cid=${cid} child still alive 2s after stop, force-killing`,
-          );
-          child.kill();
-        }
-      } catch {}
-    }, 2000).unref();
-  }
+  const r = await applyEngineStop({ cs, cid });
   // v2 (2026-09-20 webui-manual-audit): zombie-run claim reset. If no
   //   active child backs this cid but cs still claims an active run
   //   (runner died before its finalize ran — e.g. the acp start-phase
@@ -484,22 +466,12 @@ export async function handleStop(_req, res, ctx) {
   //   cs — the kill cascade above rejects the in-flight prompt and
   //   the runner's own finalize() owns the terminal state (including
   //   its chat-cursor cleanup), so resetting early would only race it.
-  if (!wasRunning && cs && cs.running && cs.running.active) {
+  if (r.claimStale) {
     resetThinkingClaim(cs);
     pushStateFor(cid);
   }
   res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-  return res.end(
-    JSON.stringify({
-      ok: true,
-      wasRunning,
-      cancelled,
-      hardKilled,
-      note: cancelled
-        ? "gentle cancel"
-        : "hard kill (session/cancel could not be delivered)",
-    }),
-  );
+  return res.end(JSON.stringify(r.payload));
 }
 
 // POST /api/cmd — webui button-driven commands

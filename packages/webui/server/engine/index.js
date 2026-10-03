@@ -36,9 +36,9 @@
 // catalogue host itself is now reached through this facade too
 // (engine/host.js), so the plugins and turn-diff routes no longer name
 // lib/acp-client.js. M3 batches B1 (#9 #10 #72 #74 #75), B2 (#8 #11),
-// B3 (#15 #16 #17 #19), B4 (#20 #57 #73), B5 (#7 #4 #6) and B6 (#3)
-// done. The rest of M3, then M4, will route their consumers through
-// this facade one endpoint family at a time.
+// B3 (#15 #16 #17 #19), B4 (#20 #57 #73), B5 (#7 #4 #6), B6 (#3) and
+// B7 (#13 #69 #70 #71) done. The rest of M3, then M4, will route their
+// consumers through this facade one endpoint family at a time.
 
 import { ENGINE_CAPABILITY_KEYS } from "./capabilities.js";
 // Declarations only — importing the provider *host-construction* modules
@@ -262,6 +262,67 @@ export {
 } from "./session-switch.js";
 export { LOCAL_RUNTIME_V2_CAPABILITIES } from "./providers/local-runtime-v2.capabilities.js";
 export { TUI_RUNTIME_ADAPTER_CAPABILITIES } from "./providers/tui-runtime-adapter.js";
+// The INTERRUPT family (step M3, batch B7): #13 POST /api/stop, #69
+// POST /api/protocol/cancel. Same cycle, same TDZ rule, same reasoning
+// as session-reads.js above: interrupt.js reads NOTHING from this module
+// at module scope — its `INTERRUPT_ENDPOINTS` table is a literal and
+// every binding it needs (`getEngineProvider`,
+// `DEFAULT_ENGINE_PROVIDER_ID`) is read inside a function body. A new
+// top-level `const X = SOMETHING_FROM_INDEX` in interrupt.js breaks the
+// re-export exactly as it would in session-reads.js. Its ONLY static
+// imports are `engine/index.js` and the node builtins; the state bus,
+// the RPC wrapper and the config are reached through `await import()`
+// inside the data-plane functions, which is what keeps the escalation
+// timer and the kill cascade off the boot path.
+//
+// It gates SOFT for both endpoints, and the reason is endpoint-specific
+// rather than family-wide: #13's escalation is webui's own
+// child-process management and its zombie-claim reset is the user's
+// only escape hatch from a stuck run, so hard-gating it would delete a
+// working endpoint over a doubt about its GENTLE half; #69 already has
+// a truthful "I could not deliver it" shape as its documented contract.
+// The 501 machinery stays unused by this family, and the suite pins that.
+export {
+  INTERRUPT_ENDPOINTS,
+  STOP_FORCE_KILL_MS,
+  applyEngineStop,
+  checkInterruptCapability,
+  resolveInterruptProvider,
+  sendEngineSessionCancel,
+  stopLeftStaleClaim,
+} from "./interrupt.js";
+// The LOAD / ACTIVATE family (step M3, batch B7): #70
+// POST /api/protocol/load-session, #71
+// POST /api/protocol/activate-session. Same cycle, same TDZ rule, same
+// reasoning: session-load.js's `SESSION_LOAD_ENDPOINTS` table is a
+// literal and every binding it needs is read inside a function body; a
+// new top-level `const X = SOMETHING_FROM_INDEX` there breaks this
+// re-export exactly as it would anywhere else. Its only static imports
+// are `engine/capabilities.js` and `engine/index.js`.
+//
+// This is the one M3 family that carries BOTH gate forms, and the split
+// is a decision rather than an inconsistency: #70 gates HARD on
+// `sessionCrud` · `loadSession`, because a "success" that skipped the
+// engine would write a sidebar entry for a session the engine never
+// loaded — the fake success the gate exists to prevent — while #71 gates
+// SOFT, because hard-gating it would be silently answering the
+// activate-semantic-collapse question the plan leaves open (semantic
+// collapse vs 501). Both branches are costed in that module's KNOWN
+// DEBT 1. Two functions, one family, one store, one route module:
+// splitting it would duplicate the transport table, the resolver and
+// the status mappers to preserve a distinction one `enforcement` field
+// wide.
+export {
+  SESSION_LOAD_ENDPOINTS,
+  activateEngineSession,
+  activateFailureStatus,
+  assertSessionLoadCapability,
+  checkSessionActivateCapability,
+  loadEngineSession,
+  loadFailureStatus,
+  loadFailureWireCode,
+  resolveSessionLoadProvider,
+} from "./session-load.js";
 
 /**
  * Registered providers. `transport` records which wire form the provider
