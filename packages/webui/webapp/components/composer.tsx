@@ -2209,7 +2209,15 @@ function ModelSettingsDetail({
                    * treats switchable thinking as pure on/off; the
                    * engine-default reset stays reachable through the
                    * composer-level control's "Default" row
-                   * and the radio group's `default` option elsewhere. */
+                   * and the radio group's `default` option elsewhere.
+                   *
+                   * The app's own `webui-toggle-switch`, not a
+                   * hand-rolled pill: the reference draws this switch
+                   * BLUE when on, and a hand-rolled one composed of
+                   * border/background tokens can only ever reach the
+                   * greys in the palette. The real class is also what
+                   * the settings modal renders, so the two switches in
+                   * the product cannot drift apart. */
                   <button
                     type="button"
                     role="switch"
@@ -2221,23 +2229,9 @@ function ModelSettingsDetail({
                     onClick={() => {
                       onThinkingPick?.(effortCurrent === "on" ? "off" : "on");
                     }}
-                    className={[
-                      "relative h-4.5 w-8 rounded-full border transition-colors",
-                      effortCurrent === "on"
-                        ? "border-border_heavy bg-bg_interaction_tertiary_hover"
-                        : "border-border_default bg-bg_grouped_secondary_elevated",
-                      preview || thinkingDisabled
-                        ? "cursor-not-allowed opacity-50"
-                        : "hover:border-border_heavy",
-                    ].join(" ")}
+                    className={`webui-toggle-switch${effortCurrent === "on" ? " is-checked" : ""}`}
                   >
-                    <span
-                      aria-hidden="true"
-                      className={[
-                        "absolute top-1/2 size-3 -translate-y-1/2 rounded-full border border-border_default bg-bg_grouped_secondary_elevated transition-all",
-                        effortCurrent === "on" ? "left-[calc(100%-14px)]" : "left-0.5",
-                      ].join(" ")}
-                    />
+                    <span aria-hidden="true" />
                   </button>
                 ) : (
                   /* The reference's level scale: one pickable ROW per
@@ -2625,7 +2619,21 @@ function ContextWindowSelect({
   disabled?: boolean;
   onContextPick?: (value: number) => void;
 }) {
-  const [open, setOpen] = useState(false);
+  /**
+   * The second tier starts OPEN.
+   *
+   * The reference shows both tiers at once: hovering a model brings up
+   * the settings surface AND the context options beside it. Requiring a
+   * click on the context row first made the options a second interaction
+   * to discover, and the row's own chevron had nothing left to announce
+   * — a disclosure arrow over a list that is already showing.
+   *
+   * It stays collapsible: the chevron still collapses and re-opens it,
+   * which is what a user who wants a compact fly-out uses. `key={target.id}`
+   * on the caller re-mounts this per model, so a tier the user collapsed
+   * on one model does not stay collapsed on the next one.
+   */
+  const [open, setOpen] = useState(true);
   /** The row the SECOND tier anchors to. Same engine as the first tier
    *  (`useFlyoutPosition`), one tier deeper in the DOM. */
   const triggerRef = useRef<HTMLButtonElement | null>(null);

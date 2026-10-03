@@ -63,6 +63,10 @@
 //     step that makes the fly-out live instead of a preview, so clearing
 //     it on the model change would close the surface between the pick and
 //     the second-tier pick that completes the selection.
+//   - C13: the thinking switch is the app's own `webui-toggle-switch`.
+//     The reference draws it blue when on, and a pill assembled from
+//     border/background tokens can only ever reach the greys in the
+//     palette — which read as "off" at a glance.
 
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
@@ -183,6 +187,22 @@ describe("C3/C4 — the cascade is two tiers deep", () => {
     assert.match(selectBody[0]!, /anchorRef=\{triggerRef\}/);
   });
 
+  test("the second tier is shown directly, not behind a click", () => {
+    // The reference brings up BOTH tiers at once. Requiring a click on
+    // the context row first made the options a second interaction to
+    // discover, and left the row's chevron as a disclosure arrow over a
+    // list that was already showing.
+    const selectBody = composer.match(
+      /function ContextWindowSelect\([\s\S]*?\n}\n/,
+    );
+    assert.ok(selectBody, "ContextWindowSelect must exist");
+    assert.match(
+      selectBody[0]!,
+      /const \[open, setOpen\] = useState\(true\)/,
+      "the second tier mounts open",
+    );
+  });
+
   test("the second tier keeps the listbox semantics the in-place list had", () => {
     const selectBody = composer.match(
       /function ContextWindowSelect\([\s\S]*?\n}\n/,
@@ -193,6 +213,30 @@ describe("C3/C4 — the cascade is two tiers deep", () => {
     assert.match(selectBody[0]!, /role="listbox"/);
     assert.match(selectBody[0]!, /role="option"/);
     assert.match(selectBody[0]!, /aria-selected=\{active\}/);
+  });
+});
+
+describe("C13 — the thinking switch is the app's own toggle", () => {
+  test("the switch uses the shared webui-toggle-switch class", () => {
+    // The reference draws this switch BLUE when on. A hand-rolled pill
+    // built from border/background tokens can only reach the greys in the
+    // palette, which is exactly how it read as "off" at a glance. The
+    // shared class is also what the settings modal renders, so the two
+    // switches in the product cannot drift apart.
+    assert.match(
+      composer,
+      /className=\{`webui-toggle-switch\$\{effortCurrent === "on" \? " is-checked" : ""\}`\}/,
+    );
+    assert.doesNotMatch(
+      composer,
+      /border-border_heavy bg-bg_interaction_tertiary_hover/,
+      "the hand-rolled grey pill is gone",
+    );
+  });
+
+  test("the switch keeps its role and testid", () => {
+    assert.match(composer, /role="switch"/);
+    assert.match(composer, /\$\{detailPrefix\}-level-switch/);
   });
 });
 
