@@ -36,9 +36,11 @@
 // catalogue host itself is now reached through this facade too
 // (engine/host.js), so the plugins and turn-diff routes no longer name
 // lib/acp-client.js. M3 batches B1 (#9 #10 #72 #74 #75), B2 (#8 #11),
-// B3 (#15 #16 #17 #19), B4 (#20 #57 #73), B5 (#7 #4 #6), B6 (#3) and
-// B7 (#13 #69 #70 #71) done. The rest of M3, then M4, will route their
-// consumers through this facade one endpoint family at a time.
+// B3 (#15 #16 #17 #19), B4 (#20 #57 #73), B5 (#7 #4 #6), B6 (#3),
+// B7 (#13 #69 #70 #71) and B8a (#12's pure layer + gate) done. The
+// rest of M3 — starting with B8b, which adds #12's runner and route
+// branch — then M4, will route their consumers through this facade one
+// endpoint family at a time.
 
 import { ENGINE_CAPABILITY_KEYS } from "./capabilities.js";
 // Declarations only — importing the provider *host-construction* modules
@@ -260,6 +262,39 @@ export {
   resolveSwitchWorkspace,
   selectTranscriptBackfill,
 } from "./session-switch.js";
+// The STREAMING SEND family (step M3, batch B8a): #12 POST /api/send.
+// Same cycle, same TDZ rule, same reasoning: streaming-send.js's
+// `STREAMING_SEND_ENDPOINTS` table is a literal and every binding it
+// needs (`getEngineProvider`, `DEFAULT_ENGINE_PROVIDER_ID`) is read
+// inside a function body, so a cold `import("./engine/index.js")` can
+// never hit a temporal dead zone. Its ONLY static imports are
+// `engine/capabilities.js`, `engine/index.js` and the node builtins —
+// there is no `await import()` anywhere in it, because B8a ships the
+// PURE layer only: the data plane arrives with B8b's runner.
+//
+// It gates HARD, the first M3 family to do so, and the reason is
+// structural rather than a policy preference: #12's response is
+// `{ok:true}` written BEFORE the engine is called, so a provider with
+// no send surface could only be answered with an ack for a turn that
+// never runs. See that module's header for the full argument, for the
+// two of the three red lines it owns, and for the three recorded
+// debts. The gate is declared and tested here but CALLED by nothing
+// until B8b wires the route; the suite pins that fact.
+export {
+  SEND_EVENT_KINDS,
+  STREAMING_SEND_ENDPOINTS,
+  assertStreamingSendCapability,
+  checkStreamingSendCapability,
+  classifySendEvent,
+  resolveStreamingSendProvider,
+  rewriteDrainedAnswerLine,
+  sendSegmentAdvance,
+  sendStillViewing,
+  sendTerminalOutcome,
+  sendToolHeaderLine,
+  sendToolUpdate,
+  sendUsageTotals,
+} from "./streaming-send.js";
 export { LOCAL_RUNTIME_V2_CAPABILITIES } from "./providers/local-runtime-v2.capabilities.js";
 export { TUI_RUNTIME_ADAPTER_CAPABILITIES } from "./providers/tui-runtime-adapter.js";
 // The INTERRUPT family (step M3, batch B7): #13 POST /api/stop, #69
