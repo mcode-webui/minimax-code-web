@@ -47,7 +47,7 @@ export async function listWorkspaceGitWorktrees(
       success: false,
       worktrees: [],
       error,
-      code: /not a git repository/i.test(error) ? 'not_git_repository' : 'workspace_unavailable',
+      code: await classifyUnresolvedWorkspace(workspace),
     };
   }
   const root = rootResult.stdout.trim();
@@ -109,6 +109,27 @@ export async function listWorkspaceGitWorktrees(
     current: String(mainWorktreePath ?? root),
     worktrees: worktrees.filter((entry): entry is WorkspaceGitWorktree => entry !== null),
   };
+}
+
+/**
+ * Tell "this folder was never a repository" apart from "the repository here
+ * cannot be listed" without reading Git's diagnostics.
+ *
+ * Git translates `fatal: not a git repository ...` into the user's locale, so
+ * matching that sentence only classified an English-speaking host: under
+ * `LANG=zh_CN` every plain folder fell into the generic bucket and
+ * `not_git_repository` was unreachable. `git rev-parse --git-dir` states the
+ * same fact in its exit status — 0 inside a repository (bare included), 128
+ * outside one — and those bytes never change with the locale. A bare
+ * repository therefore lands in `workspace_unavailable`: it is a repository,
+ * just one without the work tree this listing walks.
+ */
+async function classifyUnresolvedWorkspace(workspace: string): Promise<WorktreeDiscoveryCode> {
+  const probe = await git(['rev-parse', '--git-dir'], workspace);
+  if (probe.spawnError !== undefined) return 'workspace_unavailable';
+  return probe.code === 0 && probe.stdout.trim() !== ''
+    ? 'workspace_unavailable'
+    : 'not_git_repository';
 }
 
 /** null means confirmed missing; undefined means metadata could not be read. */
