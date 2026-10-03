@@ -95,22 +95,25 @@ function resolveMember(host, dottedPath) {
  *   - `absent`: method-NAMED sub-items the partial declarations list in
  *     `missing` — methods of this capability's domain that genuinely do
  *     not exist on this surface (reapplyTurnDiff on the adapter,
- *     getDelegationSnapshot on the bare CliService). They are part of
- *     the snapshot so "missing must really be absent" is checked, and a
- *     partial that stops listing one goes red (under-declaration).
+ *     getDelegationSnapshot on the bare CliService, and — since M3-B9 —
+ *     setMode and setConfigOption on BOTH surfaces, which is what makes
+ *     the mode-write family's hard gate an audited fact rather than a
+ *     claim). They are part of the snapshot so "missing must really be
+ *     absent" is checked, and a partial that stops listing one goes red
+ *     (under-declaration).
  */
 const REQUIRED_METHODS = {
   "tui-runtime-adapter": {
     sessionCrud: { on: "adapter", methods: ["createSession", "listSessions", "getSession", "renameSession", "archiveSession", "deleteSession", "forkSession"] },
     streamingSend: { on: "adapter", methods: ["sendMessage", "watchSessionTurn", "watchEvents"] },
     interrupt: { on: "adapter", methods: ["abortSession", "steer"] },
-    toolSkillInvocation: { on: "adapter", methods: ["listSkills", "listPendingPermissions", "replyPermission"] },
+    toolSkillInvocation: { on: "adapter", methods: ["listSkills", "listPendingPermissions", "replyPermission"], absent: ["setMode"] },
     turnRewindRedo: { on: "adapter", methods: ["rewindSession", "getSessionRewindPreview"], absent: ["reapplyTurnDiff"] },
     plugins: { on: "adapter", methods: ["listInstalledPlugins", "listMarketplacePlugins", "mutatePlugin", "refreshPlugins"], absent: ["previewGithubPlugin", "importGithubPlugin", "listEnabledPlugins"] },
     mcp: { on: "adapter", methods: ["configureSessionMcpServers", "clearSessionMcpServers", "inspectProjectMcp", "listMcpServers"] },
     subagents: { on: "adapter", methods: ["getDelegationSnapshot", "stopDelegation", "listBackgroundTasks"] },
     usageStats: { on: "adapter", methods: ["getSessionUsage", "getSessionUsageSummary", "watchSessionUsageCommits"] },
-    authCredentials: { on: "adapter", methods: ["getAccountStatus", "getCodexOAuthStatus", "startCodexOAuthLogin", "cancelCodexOAuthLogin", "getMiniMaxApiKeyStatus", "upsertMiniMaxApiKey", "listUserModelProviders", "createUserModelProvider", "updateUserModelProvider", "deleteUserModelProvider", "testUserModelProvider", "discoverUserModelsCandidate"] },
+    authCredentials: { on: "adapter", methods: ["getAccountStatus", "getCodexOAuthStatus", "startCodexOAuthLogin", "cancelCodexOAuthLogin", "getMiniMaxApiKeyStatus", "upsertMiniMaxApiKey", "listUserModelProviders", "createUserModelProvider", "updateUserModelProvider", "deleteUserModelProvider", "testUserModelProvider", "discoverUserModelsCandidate"], absent: ["setConfigOption"] },
     fileReadWrite: { on: "adapter", methods: ["listWorkspaceFileTree", "searchWorkspaceFiles"] },
     gitOperations: { on: "adapter", methods: ["getWorkspaceGitMetadata"] },
   },
@@ -118,14 +121,14 @@ const REQUIRED_METHODS = {
     sessionCrud: { on: "cliService", methods: ["createSession", "updateSession", "archiveSession", "deleteSession", "forkSession", "getSessionForkOptions"] },
     streamingSend: { on: "cliService", methods: ["sendMessage", "resumeSession", "steerSession", "watchEvents"] },
     interrupt: { on: "cliService", methods: ["abortSession"] },
-    toolSkillInvocation: { on: "cliService", methods: ["listSkills", "listRuntimeSkills", "listPendingPermissions", "replyPermission"] },
+    toolSkillInvocation: { on: "cliService", methods: ["listSkills", "listRuntimeSkills", "listPendingPermissions", "replyPermission"], absent: ["setMode"] },
     turnDiff: { on: "applications.session.diff", methods: ["getSessionDiff", "getTurnDiff", "revertTurnDiff", "reapplyTurnDiff"] },
     turnRewindRedo: { on: "cliService", methods: ["getSessionRewindPreview", "rewindSession", "editSessionMessage"] },
     plugins: { on: "cliService", methods: ["refreshPlugins", "listMarketplacePlugins", "listInstalledPlugins", "listEnabledPlugins", "installPlugin", "enablePlugin", "disablePlugin", "uninstallPlugin", "previewGithubPlugin", "importGithubPlugin"] },
     mcp: { on: "cliService", methods: ["configureSessionMcpServers", "inspectProjectMcp", "clearSessionMcpServers", "listMcpServers"] },
     subagents: { on: "cliService", methods: ["listBackgroundTasks"], absent: ["getDelegationSnapshot", "stopDelegation"] },
     usageStats: { on: "cliService", methods: ["getSessionUsage", "getSessionUsageSummary", "watchSessionUsageCommits"] },
-    authCredentials: { on: "cliService", methods: ["getAccountStatus", "getCodexOAuthStatus", "startCodexOAuthLogin", "cancelCodexOAuthLogin", "getMiniMaxApiKeyStatus", "upsertMiniMaxApiKey", "listUserModelProviders", "createUserModelProvider", "updateUserModelProvider", "deleteUserModelProvider", "testUserModel", "discoverUserModelsCandidate"] },
+    authCredentials: { on: "cliService", methods: ["getAccountStatus", "getCodexOAuthStatus", "startCodexOAuthLogin", "cancelCodexOAuthLogin", "getMiniMaxApiKeyStatus", "upsertMiniMaxApiKey", "listUserModelProviders", "createUserModelProvider", "updateUserModelProvider", "deleteUserModelProvider", "testUserModel", "discoverUserModelsCandidate"], absent: ["setConfigOption"] },
     fileReadWrite: { on: "cliService", methods: ["listWorkspaceFileTree", "searchWorkspaceFiles"] },
     gitOperations: { on: "cliService", methods: ["getWorkspaceGitMetadata", "getWorkspaceReviewLink"] },
   },

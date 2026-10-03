@@ -37,8 +37,10 @@
 // (engine/host.js), so the plugins and turn-diff routes no longer name
 // lib/acp-client.js. M3 batches B1 (#9 #10 #72 #74 #75), B2 (#8 #11),
 // B3 (#15 #16 #17 #19), B4 (#20 #57 #73), B5 (#7 #4 #6), B6 (#3),
-// B7 (#13 #69 #70 #71), B8a (#12's pure layer + gate) and B8b (#12's
-// runner + route branch) done. The rest of M3, then M4, will route
+// B7 (#13 #69 #70 #71), B8a (#12's pure layer + gate), B8b (#12's
+// runner + route branch) and B9 (#67 #68 — the first family whose gate
+// changes what a client sees, gated HARD on purpose; see the
+// mode-writes.js block below) done. The rest of M3, then M4, will route
 // their consumers through this facade one endpoint family at a time.
 
 import { ENGINE_CAPABILITY_KEYS } from "./capabilities.js";
@@ -360,6 +362,37 @@ export {
   loadFailureWireCode,
   resolveSessionLoadProvider,
 } from "./session-load.js";
+// The SESSION MODE WRITE family (step M3, batch B9): #67 set-mode, #68
+// set-config-option. Same cycle, same TDZ rule, same reasoning:
+// mode-writes.js's `MODE_WRITE_ENDPOINTS` and
+// `MODE_WRITE_BRIDGED_CONFIG_IDS` are both literals and every binding it
+// needs is read inside a function body; a new top-level `const X =
+// SOMETHING_FROM_INDEX` there breaks this re-export exactly as it would
+// anywhere else. Its only static imports are `engine/capabilities.js`
+// and `engine/index.js`; the RPC wrapper and the config are reached
+// through `await import()` inside the data-plane functions.
+//
+// Both endpoints gate HARD, and this is the one M3 family where the hard
+// gate is the batch's REASON rather than a consequence of having no
+// fallback: it is the first family that deliberately changes what a
+// client sees, and the entire change is "a provider that declares the
+// capability absent answers the gate's 501 instead of having the write
+// forwarded". `MODE_WRITE_BRIDGED_CONFIG_IDS` is the other half of
+// that sentence — the two config ids webui's own controls depend on
+// (`model`, `permissionMode`) are exempt from the generic-write
+// refusal, and the frontend reads the same two names to decide which
+// controls to hide.
+export {
+  MODE_WRITE_BRIDGED_CONFIG_IDS,
+  MODE_WRITE_ENDPOINTS,
+  assertModeWriteCapability,
+  resolveModeWriteProvider,
+  resolveModeWriteSubItem,
+  setConfigOptionFailureStatus,
+  setEngineSessionConfigOption,
+  setEngineSessionMode,
+  setModeFailureStatus,
+} from "./mode-writes.js";
 
 /**
  * Registered providers. `transport` records which wire form the provider

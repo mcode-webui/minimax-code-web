@@ -37,7 +37,20 @@ export const LOCAL_RUNTIME_V2_CAPABILITIES = Object.freeze({
   // abortSession.
   interrupt: { level: "full" },
   // listSkills / listRuntimeSkills + pending-permission interaction.
-  toolSkillInvocation: { level: "full" },
+  // M3-B9: the session-mode WRITE is missing, and is listed as such.
+  // v2 has no `setMode` anywhere on the cliService surface — it can
+  // read plan state (getPlanModeCapabilities / getLatestPlanReview) and
+  // enters plan through the questionnaire mechanism, but nothing sets
+  // it (plan §3a row 67). The snapshot audit
+  // (test/lib/engine/capability-snapshot.test.js) proves the absence
+  // mechanically: it fails the moment a method named `setMode`
+  // appears, so this entry cannot rot into an unearned claim.
+  toolSkillInvocation: {
+    level: "partial",
+    missing: ["setMode"],
+    reason:
+      "no session-mode write on the v2 surface: plan state is read-only here and plan entry goes through the questionnaire mechanism (design §1.3 v2; plan §3a row 67)",
+  },
   // service/session-system/diffs + application/session/diff-application
   // (getTurnDiff / revertTurnDiff / reapplyTurnDiff) — already consumed
   // by webui's /api/turn-diff routes.
@@ -68,7 +81,21 @@ export const LOCAL_RUNTIME_V2_CAPABILITIES = Object.freeze({
   usageStats: { level: "full" },
   // getAccountStatus + Codex OAuth flow + MiniMax key + full user model
   // provider CRUD/test/discover, same source as service/model-system.
-  authCredentials: { level: "full" },
+  // M3-B9: the GENERIC config-option write is missing, and is listed as
+  // such. v2 has no general `setConfigOption`; the plan (§3a, row 68)
+  // records dedicated equivalents only ("只有 selectModel/
+  // setPermissionMode 专用"), which is why the `model` and
+  // `permissionMode` config ids bridge AROUND this entry in
+  // `engine/mode-writes.js` and every other config id is refused. The
+  // snapshot audit proves the absence mechanically. KNOWN DEBT 2 in
+  // that module records that the two bridged names are themselves not
+  // yet on an audited host.
+  authCredentials: {
+    level: "partial",
+    missing: ["setConfigOption"],
+    reason:
+      "no generic config-option write on the v2 surface; only the dedicated model and permission-mode writers exist (design §1.3 v2; plan §3a row 68)",
+  },
   // grep of the whole package finds no update-check surface; update
   // checking exists only in the TUI app layer and the CLI command.
   updateCheck: {

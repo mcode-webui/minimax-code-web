@@ -31,7 +31,16 @@ export const TUI_RUNTIME_ADAPTER_CAPABILITIES = Object.freeze({
   interrupt: { level: "full" },
   // listSkills + permission interaction (listPendingPermissions /
   // replyPermission); tool execution events flow over sendMessage.
-  toolSkillInvocation: { level: "full" },
+  // M3-B9: the session-mode write is missing here for the same reason
+  // it is missing on the cliService (plan §3a row 67) — the adapter
+  // opens no `setMode`, and the snapshot audit proves it. See
+  // `engine/mode-writes.js` for the gate that reads this.
+  toolSkillInvocation: {
+    level: "partial",
+    missing: ["setMode"],
+    reason:
+      "no session-mode write on the adapter surface: plan state is read-only and plan entry goes through the questionnaire mechanism (design §1.3 tui; plan §3a row 67)",
+  },
   // No getTurnDiff anywhere on the adapter's 91-method surface — the
   // capability itself lives in local-runtime v1/v2 and webui's turn-diff
   // routes bypass the adapter for exactly this reason (§1.3 tui).
@@ -66,7 +75,16 @@ export const TUI_RUNTIME_ADAPTER_CAPABILITIES = Object.freeze({
   // getSessionUsage / getSessionUsageSummary / watchSessionUsageCommits.
   usageStats: { level: "full" },
   // getAccountStatus + OAuth + API key + user model provider CRUD.
-  authCredentials: { level: "full" },
+  // M3-B9: the generic config-option write is missing here for the same
+  // reason it is missing on the cliService (plan §3a row 68); the
+  // snapshot audit proves the absence, and `engine/mode-writes.js`
+  // bridges the two dedicated config ids around it.
+  authCredentials: {
+    level: "partial",
+    missing: ["setConfigOption"],
+    reason:
+      "no generic config-option write on the adapter surface; only the dedicated model and permission-mode writers exist (design §1.3 tui; plan §3a row 68)",
+  },
   // No update method on the adapter surface at all; update checking lives
   // in the TUI application layer (packages/tui/src/update/) and the CLI
   // `mcode update` command.

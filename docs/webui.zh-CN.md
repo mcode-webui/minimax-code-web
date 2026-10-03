@@ -202,14 +202,14 @@ webui 服务端新增了一个内部引擎层 `packages/webui/server/engine/`，
 | sessionCrud | full | full |
 | streamingSend | full | full |
 | interrupt | full | full |
-| toolSkillInvocation | full | full |
+| toolSkillInvocation | partial——缺 `setMode`（无会话模式写入面，M3-B9） | partial——缺 `setMode` |
 | turnDiff | full | none（adapter 实现无） |
 | turnRewindRedo | full | partial——缺 `reapplyTurnDiff` |
 | plugins | full | partial——缺 `previewGithubPlugin`、`importGithubPlugin`、`listEnabledPlugins` |
 | mcp | full | full |
 | subagents | partial——缺 `getDelegationSnapshot`、`stopDelegation`（在 adapter 上下文，不在 CliService 面） | full |
 | usageStats | full | full |
-| authCredentials | full | full |
+| authCredentials | partial——缺 `setConfigOption`（**通用**配置项写入面，M3-B9） | partial——缺 `setConfigOption` |
 | updateCheck | none（接口无） | none（实现无） |
 | fileReadWrite | partial——缺 `file-write` | partial——缺 `file-write` |
 | gitOperations | partial——缺 `git-diff`、`git-commit`、`git-branch` | partial——缺 `git-diff`、`git-commit`、`git-branch` |
@@ -236,6 +236,27 @@ GET  /api/engine-capabilities[?provider=<id>]
 ```
 
 用 501 而非 400/404/500：请求本身没写错，是**引擎面缺这个功能**——与 `routes/protocol.js` 既有的 `unsupported` → 501 同款。前端把 `engine_capability_not_supported` 当作**预期降级**（按上表三档隐藏入口），不弹错误提示。
+
+### 行为变更：两个 mode 写端点（M3-B9）
+
+`POST /api/protocol/set-mode`（#67）与 `POST /api/protocol/set-config-option`（#68）挂在**硬**能力门后，是迁移过程中第一批**会在部分部署上改变应答**的端点。变更只有一个触发条件——*当前引擎 provider 声明该能力不存在*。这条线必须画清楚，因为线外的一切逐字节不变。
+
+| 请求 | 变更前 | 变更后 |
+| --- | --- | --- |
+| #67，provider 声明 `toolSkillInvocation.setMode` 缺失 | 请求照发给引擎，引擎答什么就是什么 | `501 {ok:false, code:"engine_capability_not_supported", capability:"toolSkillInvocation", provider, missing:["setMode"], reason, error}` |
+| #68 用 `model` / `permissionMode` 以外的任何 config id，且 provider 声明 `authCredentials.setConfigOption` 缺失 | 请求照发给引擎 | `501 {… capability:"authCredentials", missing:["setConfigOption"] …}` |
+| #68 用 `model` 或 `permissionMode` | 请求照发给引擎 | **不变**——见下面的桥接 |
+| 以上任一，而**引擎自己**答 `unsupported` | `501 {ok:false, code:"unsupported", fallback:"send_plan_as_prompt"}` | **逐字节不变，`fallback` 字段也保留** |
+| 以上任一，而 provider 并未声明该能力缺失（**包括默认 `acp` 传输下的全部请求**） | 不变 | **不变** |
+
+表里两处是刻意为之，不是顺带：
+
+- **能力 501 不带 `fallback`。** 这个提示是「功能存在、但这次调用失败」的降级动作。引擎压根没有模式写入面时，没有任何东西可以降级过去；从一个「此功能不可用」的应答里推销 `send_plan_as_prompt`，等于给一个缺失的功能兜售替代方案。引擎自身的 `unsupported` 拒绝保留它的提示。
+- **默认 `acp` 传输下什么都不变。** M4 把 ACP 包成 provider 之前，没有 provider 认领 `acp`，门报 `unregistered-transport`，每个应答都是 M3 之前的那个。上面的拒绝只在 `runtime` 传输上可达——那里注册的 provider 是 `local-runtime-v2`。
+
+**桥接。** provider 可以拒绝**通用**配置项写入，同时仍保有 webui 自己的两个控件依赖的专用写入面。因此 #68 的门按请求推导子项：`model` 问 `selectModel`、`permissionMode` 问 `setPermissionMode`，两者都能通过一个拒绝 `setConfigOption` 的 provider；其余任何 config id 问 `setConfigOption`，拿到 501。豁免严格只有两个具名 id——绝不是前缀，绝不是默认分支——而且它撑不过 `none`：完全没有 `authCredentials` 的 provider 同样没有专用写入面。
+
+**用户看到什么。** 权限模式选择器与模型选择器被**隐藏**，不是禁用，也不配任何错误提示（`webapp/lib/engine-capabilities.ts`，接线在 `webapp/components/composer.tsx`）。toast 会为一件用户从来就做不到的事报一次失败、无从处理、而且每点一次就再报一次。这条规则是 fail-open 的：控件会一直显示，直到声明明确说引擎做不到——因此一次失败或超时的 `/api/engine-capabilities` 请求绝不会拿掉一个本来能用的控件。
 
 ### 迁移状态与边界
 

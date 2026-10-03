@@ -21,6 +21,12 @@ import { test, describe, before, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
 import { setupMocks, absPath } from "../helpers/_setup.js";
+// M3-B9: type discrimination goes through the exported predicate, never
+// `err.name` — `name` is writable, so one stray assignment would turn the
+// gate's structured 501 into an unrelated failure mode.
+const { isEngineCapabilityNotSupportedError } = await import(
+  "../helpers/_setup.js"
+).then(() => import(absPath("engine/errors.js")));
 
 let protoRoute;
 before(async (t) => {
@@ -75,13 +81,33 @@ describe("handleSetMode — /api/protocol/set-mode", () => {
     assert.equal(res._status, 400);
   });
 
+  // M3-B9: the two cases below are now TRANSPORT-DEPENDENT, and the
+  // difference is the batch's shipped behaviour rather than a flake.
+  // `acp` has no registered engine provider, so the hard gate reports
+  // `unregistered-transport` and the route answers exactly as it always
+  // has. `runtime` registers `local-runtime-v2`, whose declaration is
+  // audited to carry no `setMode`, so the gate throws and the ROUTER
+  // answers 501 — the handler under test never writes a status at all,
+  // which is why the runtime case below asserts the throw.
+  const ENV_TRANSPORT = process.env.MCODE_WEBUI_TRANSPORT || "acp";
+  const GATED = ENV_TRANSPORT === "runtime";
+
   test("200 once the engine accepts the mode", async () => {
     const res = fakeRes();
-    await protoRoute.handleSetMode(
+    const call = protoRoute.handleSetMode(
       fakeReq({ sessionId: "mvs_aaa", mode: "plan" }),
       res,
       { cs: fakeCs(), cid: "cid-1" },
     );
+    if (GATED) {
+      // The route must NOT catch the capability error — folding it into
+      // a status table here would turn "the engine cannot do this" into
+      // a 502. It propagates to app.js, which owns the 501 mapping.
+      await assert.rejects(call, (e) => isEngineCapabilityNotSupportedError(e));
+      assert.equal(res._status, null, "the handler must not write a status for the gate's 501");
+      return;
+    }
+    await call;
     assert.equal(res._status, 200);
     const body = JSON.parse(res._body);
     assert.equal(body.ok, true);
@@ -91,10 +117,25 @@ describe("handleSetMode — /api/protocol/set-mode", () => {
 
   test("501 with the slash-command fallback hint when the engine refuses", async () => {
     // The wrapper no longer produces 'unsupported' itself, but the route still
-    // maps that code to 501 + the degraded-path hint.
+    // maps that code to 501 + the degraded-path hint. The hint survives the
+    // engine's own refusal and is deliberately NOT on the gate's 501 — a
+    // capability that does not exist has no degraded action to fall back to.
     const { registerRpcMock } = await import("../helpers/_setup.js");
     registerRpcMock({ setMode: async () => ({ ok: false, code: "unsupported", error: "no" }) });
     try {
+      if (GATED) {
+        // Under a provider that declares no mode write the gate refuses
+        // first and the engine is never asked, so the hint is unreachable
+        // here. Asserting the refusal is the honest version of this case.
+        await assert.rejects(
+          protoRoute.handleSetMode(fakeReq({ sessionId: "mvs_aaa", mode: "plan" }), fakeRes(), {
+            cs: fakeCs(),
+            cid: "cid-1",
+          }),
+          (e) => isEngineCapabilityNotSupportedError(e),
+        );
+        return;
+      }
       const res = fakeRes();
       await protoRoute.handleSetMode(
         fakeReq({ sessionId: "mvs_aaa", mode: "plan" }),

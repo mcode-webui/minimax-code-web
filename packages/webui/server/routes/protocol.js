@@ -12,16 +12,12 @@
 //
 // 设计原则: 永远不 throw, 永远返 {ok, data?, error?, code?}; 状态变化后 pushStateFor(cid).
 
-import {
-  setMode,
-  setConfigOption,
-  mcodePermissionToWebui,
-} from "../lib/mcode-rpc.js";
-// M3-B1 (engine facade): only #72 (`list-sessions`) is gated in that
-// batch. The other five handlers here still call mcode-rpc directly —
-// they belong to B7/B9 (cancel, load, activate, set-mode,
-// set-config-option), each of which lands its own facade call with its
-// own regression evidence.
+import { mcodePermissionToWebui } from "../lib/mcode-rpc.js";
+// M3-B1 (engine facade): #72 (`list-sessions`) reads through
+// `engine/session-reads.js`. Every handler in this file is now behind
+// the facade — B1 here, B7 for the interrupt/load pair below, B9 for
+// the mode-write pair — so this module's own imports of the RPC wrapper
+// are down to the one pure conversion the client-state sync needs.
 import { readEngineSessionList } from "../engine/session-reads.js";
 // M3-B7 (engine facade): #69 (`cancel`), #70 (`load-session`) and #71
 // (`activate-session`) now ask the facade. Two modules, because the
@@ -38,6 +34,17 @@ import { readEngineSessionList } from "../engine/session-reads.js";
 // module's header says is still open.
 import { sendEngineSessionCancel } from "../engine/interrupt.js";
 import { loadEngineSession, activateEngineSession } from "../engine/session-load.js";
+// M3-B9 (engine facade): #67 (`set-mode`) and #68 (`set-config-option`)
+// now ask `engine/mode-writes.js`, which holds both HARD gates, both
+// status tables, both response bodies and the `model` /
+// `permissionMode` bridge. This is the first batch where the gate
+// changes what a client sees, and the two handlers below are where the
+// boundary is kept: the engine-gate 501 is written by the router and
+// must never be caught here, and every OTHER outcome — including the
+// pre-existing `code === "unsupported"` 501 and the 502/500 asymmetry
+// between the two endpoints' unmapped codes — is byte for byte what it
+// was.
+import { setEngineSessionMode, setEngineSessionConfigOption } from "../engine/mode-writes.js";
 // M3-B4 (engine facade): #73 (`capabilities`) now reads the engine's
 // declared capability surface through the facade instead of reaching
 // into `lib/mcode-rpc.js` and `lib/acp-client.js` from inside the
@@ -56,40 +63,34 @@ function respond(res, code, payload) {
 
 // ============================================================
 // POST /api/protocol/set-mode  { sessionId, mode }
+//
+// M3-B9: the hard `toolSkillInvocation` · `setMode` gate, the engine
+// write, the `code` → status table and the success body live in
+// `engine/mode-writes.js#setEngineSessionMode`.
+//
+// The gate throws for a provider that declares the mode write absent,
+// and the router's existing central mapping answers it 501 — this
+// route does not catch it, and must not: that 501 is "the engine cannot
+// do this" and folding it into a status table here would turn it into a
+// 502. What this handler keeps is the route's: the two 400s, the
+// `cs.planMode` sync and the state push.
+//
+// The response this route can still write on a failure is the
+// PRE-EXISTING one, from `code === "unsupported"` — the engine
+// accepting the call and refusing it. Its body keeps
+// `fallback: "send_plan_as_prompt"`, because there the feature exists
+// and only this call did not work; the gate's 501 carries no `fallback`
+// at all, because there is no degraded action to fall back TO. The two
+// must not be confused for each other — KNOWN DEBT 1 in the engine
+// module.
 // ============================================================
 export async function handleSetMode(req, res, ctx) {
   const { sessionId, mode } = await readJson(req);
   if (!sessionId)
     return respond(res, 400, { ok: false, error: "sessionId required" });
   if (!mode) return respond(res, 400, { ok: false, error: "mode required" });
-  let r;
-  try {
-    r = await setMode(sessionId, mode);
-  } catch (e) {
-    // mcode acp 客户端炸了 (例如 session 未知导致底层 jsonrpc 抛)
-    // 避免 500 — 包成 fail 让前端能看
-    console.warn(`[protocol.set-mode] caught throw: ${e.message || e}`);
-    r = { ok: false, error: e.message || String(e), code: "client_throw" };
-  }
-  if (!r.ok) {
-    // `unsupported` maps to 501 so the frontend can fall back to the slash form.
-    const httpCode =
-      r.code === "unsupported"
-        ? 501
-        : r.code === "no_client"
-          ? 503
-          : r.code && /not.found|invalid/i.test(r.code)
-            ? 404
-            : r.code && /conflict|policy/i.test(r.code)
-              ? 409
-              : 502;
-    return respond(res, httpCode, {
-      ok: false,
-      error: r.error,
-      code: r.code,
-      fallback: "send_plan_as_prompt",
-    });
-  }
+  const r = await setEngineSessionMode({ sessionId, mode });
+  if (r.statusHint !== 200) return respond(res, r.statusHint, r.payload);
   // 同步本地 state.planMode 标志 (前端某些 UI 还读这个)
   // set-mode 端点只接 plan_mode 类的 mode 名, 不接 permission 类的 'off'/'default'
   //   (off 是 permission mode, 不是 plan mode 退出值 — 误用会让 mcode 看着像"退出 plan"
@@ -100,38 +101,46 @@ export async function handleSetMode(req, res, ctx) {
     // 其他 mode (goal_mode / 自定义) 不动 planMode
   }
   if (ctx && ctx.cid) pushStateFor(ctx.cid);
-  return respond(res, 200, { ok: true, mode, data: r.data });
+  return respond(res, 200, r.payload);
 }
 
 // ============================================================
 // POST /api/protocol/set-config-option  { sessionId, key, value }
 // 通用配置选项。permissionMode / model / 等都走这里
+//
+// M3-B9: the hard `authCredentials` gate, the engine write, the status
+// table and the success body live in
+// `engine/mode-writes.js#setEngineSessionConfigOption`. The gate's
+// sub-item is the request's own `key`, because that is what the bridge
+// turns on: `model` and `permissionMode` ask for their dedicated
+// sub-items and pass a provider that denies the generic config-option
+// write, and every other config id asks for `setConfigOption` and gets
+// the gate's 501. This handler is not involved in that decision and
+// must not grow its own copy of it.
+//
+// As with #67: the gate's 501 is the router's and is not caught here,
+// and the pre-existing `code === "unsupported"` 501 is preserved byte
+// for byte. The two endpoints' unmapped-code rows stay 502 and 500
+// respectively — pre-existing, asymmetric, and pinned as values.
 // ============================================================
 export async function handleSetConfigOption(req, res, ctx) {
   const { sessionId, key, value } = await readJson(req);
   if (!sessionId)
     return respond(res, 400, { ok: false, error: "sessionId required" });
   if (!key) return respond(res, 400, { ok: false, error: "key required" });
-  const r = await setConfigOption(sessionId, key, value, ctx && ctx.cid);
-  if (!r.ok) {
-    const httpCode =
-      r.code === "unsupported"
-        ? 501
-        : r.code === "no_client"
-          ? 503
-          : r.code && /not.found|invalid/i.test(r.code)
-            ? 404
-            : r.code && /conflict|policy/i.test(r.code)
-              ? 409
-              : 500;
-    return respond(res, httpCode, { ok: false, error: r.error, code: r.code });
-  }
+  const r = await setEngineSessionConfigOption({
+    sessionId,
+    key,
+    value,
+    cid: ctx && ctx.cid,
+  });
+  if (r.statusHint !== 200) return respond(res, r.statusHint, r.payload);
   // 权限 mode 同步到 webui cs.permissions (供前端 icon/label 显示)
   if (key === "permissionMode" && ctx && ctx.cs) {
     ctx.cs.permissions = mcodePermissionToWebui(value);
   }
   if (ctx && ctx.cid) pushStateFor(ctx.cid);
-  return respond(res, 200, { ok: true, key, value, data: r.data });
+  return respond(res, 200, r.payload);
 }
 
 // ============================================================

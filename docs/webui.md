@@ -202,14 +202,14 @@ Current declarations (both transcribed from the audited matrix and re-verified a
 | sessionCrud | full | full |
 | streamingSend | full | full |
 | interrupt | full | full |
-| toolSkillInvocation | full | full |
+| toolSkillInvocation | partial — missing `setMode` (no session-mode write; M3-B9) | partial — missing `setMode` |
 | turnDiff | full | none (implementation-absent on the adapter) |
 | turnRewindRedo | full | partial — missing `reapplyTurnDiff` |
 | plugins | full | partial — missing `previewGithubPlugin`, `importGithubPlugin`, `listEnabledPlugins` |
 | mcp | full | full |
 | subagents | partial — missing `getDelegationSnapshot`, `stopDelegation` (they live on the adapter's access-context, not the CliService surface) | full |
 | usageStats | full | full |
-| authCredentials | full | full |
+| authCredentials | partial — missing `setConfigOption` (the GENERIC config write; M3-B9) | partial — missing `setConfigOption` |
 | updateCheck | none (interface-absent) | none (implementation-absent) |
 | fileReadWrite | partial — missing `file-write` | partial — missing `file-write` |
 | gitOperations | partial — missing `git-diff`, `git-commit`, `git-branch` | partial — missing `git-diff`, `git-commit`, `git-branch` |
@@ -236,6 +236,27 @@ Default provider is `local-runtime-v2` (the only registered host provider until 
 ```
 
 501, not 400/404/500: the request was well-formed; the *engine provider* lacks the feature. This mirrors the existing `unsupported` → 501 mapping in `routes/protocol.js`. The frontend treats `engine_capability_not_supported` as expected degradation (hide the entry point per the level table), never as an error toast.
+
+### Behaviour change: the two mode-write endpoints (M3-B9)
+
+`POST /api/protocol/set-mode` (#67) and `POST /api/protocol/set-config-option` (#68) sit behind a **hard** capability gate, and they are the first endpoints in the migration whose answers change for some deployments. The change has exactly one trigger — *the connected engine provider declares the capability absent* — and it is worth being precise about, because everything outside it is unchanged byte for byte.
+
+| Request | Before | After |
+| --- | --- | --- |
+| #67, provider declares `toolSkillInvocation.setMode` | forwarded to the engine; whatever it answered | `501 {ok:false, code:"engine_capability_not_supported", capability:"toolSkillInvocation", provider, missing:["setMode"], reason, error}` |
+| #68 with any config id other than `model` / `permissionMode`, provider declares `authCredentials.setConfigOption` absent | forwarded to the engine; whatever it answered | `501 {… capability:"authCredentials", missing:["setConfigOption"] …}` |
+| #68 with `model` or `permissionMode` | forwarded to the engine | **unchanged** — the bridge below |
+| any of the above, the engine itself answers `unsupported` | `501 {ok:false, code:"unsupported", fallback:"send_plan_as_prompt"}` | **unchanged, including the `fallback` field** |
+| any of the above, the provider does **not** declare the capability absent (including every request on the default `acp` transport) | unchanged | **unchanged** |
+
+Two consequences of that table are deliberate rather than incidental:
+
+- **The capability 501 carries no `fallback`.** The hint is the degraded action for a feature that exists and whose call failed. Where the engine has no mode write at all there is nothing to degrade to, and advertising `send_plan_as_prompt` from a "this is not available" response would offer a workaround for a missing feature. The engine's own `unsupported` refusal keeps its hint.
+- **On the default `acp` transport nothing changes at all.** No provider is registered for `acp` until migration step M4, so the gate reports `unregistered-transport` and every response is the pre-M3 one. The refusals above are reachable on the `runtime` transport, where `local-runtime-v2` is the registered provider.
+
+**The bridge.** A provider can refuse the *generic* config-option write and still have the two dedicated writers webui's own controls depend on. #68's gate therefore asks for a sub-item derived from the request: `model` asks for `selectModel` and `permissionMode` asks for `setPermissionMode`, both of which pass a provider that denies `setConfigOption`; every other config id asks for `setConfigOption` and gets the 501. The exemption is exactly two named ids — never a prefix, never a default — and it does not survive a `none`: a provider with no `authCredentials` at all has no dedicated writer either.
+
+**What the user sees.** The permission-mode selector and the model selector are hidden, not disabled and not accompanied by an error message (`webapp/lib/engine-capabilities.ts`, wired in `webapp/components/composer.tsx`). A toast would report a failure for something the user was never able to do, offer nothing to act on, and reappear on every click. The rule is fail-open: the controls are shown until the declaration positively says the engine cannot do it, so a failed or slow `/api/engine-capabilities` request never removes a working control.
 
 ### Migration state and constraints
 
