@@ -229,6 +229,7 @@ const KNOWN_PREFIXES = [
   "mcode-exec-nosibling-",
   "mcode-exec-plain-",
   "mcode-exec-posix-",
+  "mcode-exec-stream-",
   "mcode-exec-test-",
   "mcode-resolver-bad-",
   "mcode-resolver-empty-",
@@ -353,6 +354,13 @@ const KNOWN_PREFIXES = [
   // that prefix, its children need their own.
   "pb8-svc-",
   "pb8-svc-shape-",
+  // PB-1's real-host suite (`test/server/session-context-actions-host.test.js`).
+  // Same runtime, same better-sqlite3 fd profile as the two above, so it
+  // reuses their parent and needs its own child prefix — which is exactly
+  // what this registry is for: a new suite that boots a host without
+  // registering its prefix fails `test:release-tools` rather than leaking
+  // silently, and the reverse scan below is what keeps the two in step.
+  "pb1-host-",
   "webui-t36-engine-",
   // Catch-all prefixes (last — matching stops on the first prefix that
   // matches, so every entry above this point wins over these). Round-3

@@ -210,13 +210,20 @@ const en = {
 
   /* Project context menu (ticket 55c, ref-26). Rename / pin are backed by the
      browser-local project customizations (webapp/lib/project-custom.ts);
-     reveal-in-folder and archive render disabled with `common.notLocal`;
-     remove batch-deletes the project's sessions behind a confirm. */
+     reveal-in-folder renders disabled with `common.notLocal`; remove
+     batch-deletes the project's sessions behind a confirm.
+     PB-1 corrected the archive item's reason: it used `common.notLocal`,
+     which claimed the local build lacks a capability it has (the
+     SESSION-level 归档 is live and calls `archiveSession`). What is
+     missing is a project-SCOPED bulk archive, so this item gets its own
+     tooltip — see `server/engine/session-context-actions.js` KNOWN DEBT 2. */
   "projectMenu.rename": "Rename project",
   "projectMenu.pin": "Pin project",
   "projectMenu.unpin": "Unpin project",
   "projectMenu.revealInFolder": "Reveal in folder",
   "projectMenu.archive": "Archive chats",
+  "projectMenu.archiveUnavailable":
+    "No project-wide archive yet: the engine archives one session at a time, and archiving a whole project is a bulk operation this build has not defined.",
   "projectMenu.remove": "Remove",
   "projectMenu.removeConfirmTitle": "Remove project",
   /* Both {count} keys are replaced by the component with the TRUE deletion
@@ -237,14 +244,30 @@ const en = {
 
   /* Session-row context menu (webui-parity 58 line B — the reference
      SessionRail's `openSessionMenu` item set, zh labels verbatim from the
-     reference). Pin / archive / fork / reveal / feedback have no contract
-     here (the reference ships reveal and feedback disabled too) and render
-     disabled; rename / copy / delete are real. */
+     reference). Reveal / feedback have no contract here (the reference
+     ships both disabled too) and render disabled; rename / copy / delete
+     are real. PB-1 unlocked pin / archive / fork-current — see
+     `server/engine/session-context-actions.js`. `forkWorktree` stays
+     disabled and is NOT a missing backend: the engine method and the
+     eligibility fields exist, the desktop reference for its UI does not. */
   "sessionMenu.pin": "Pin",
+  "sessionMenu.unpin": "Unpin",
   "sessionMenu.rename": "Rename",
   "sessionMenu.archive": "Archive",
   "sessionMenu.forkCurrent": "Duplicate as new session",
   "sessionMenu.forkWorktree": "Duplicate to new worktree",
+  /* The 复制为新会话 preview dialog (PB-1). Every string here is driven by
+     the engine's own `getSessionForkOptions` answer — the dialog renders
+     what it was told, not what it assumed. */
+  "sessionMenu.forkLoading": "Checking what this duplicate will look like…",
+  "sessionMenu.forkUnavailable": "The engine could not describe this duplicate. Try again.",
+  "sessionMenu.forkFrom": "Source: {title}",
+  "sessionMenu.forkSuggested": "The duplicate will be named “{title}”.",
+  "sessionMenu.forkNoTitle": "The engine named no title for the duplicate.",
+  "sessionMenu.forkBlocked": "The engine declined this duplicate: {reason}",
+  "sessionMenu.forkBlockedUnknown": "no reason given",
+  "sessionMenu.forkCancel": "Cancel",
+  "sessionMenu.forkConfirm": "Duplicate",
   "sessionMenu.revealInFolder": "Reveal in folder",
   "sessionMenu.copy": "Copy",
   "sessionMenu.copyWorkspaceDir": "Copy workspace directory",
@@ -1354,13 +1377,19 @@ const zh: Record<MessageKey, string> = {
   "userMenu.localUser": "本地用户",
 
   /* 项目右键菜单（工单 55c，ref-26）。重命名 / 置顶由浏览器本地项目自定义
-     （webapp/lib/project-custom.ts）支撑；在文件夹中显示与归档对话渲染为
-     禁用并标注 `common.notLocal`；移除在确认弹窗后批量删除项目下的会话。 */
+     （webapp/lib/project-custom.ts）支撑；在文件夹中显示渲染为禁用并标注
+     `common.notLocal`；移除在确认弹窗后批量删除项目下的会话。
+     PB-1 纠正了归档对话一项的禁用理由：原先用 `common.notLocal`，声称本地版
+     缺少一项它本就具备的能力（会话级「归档」已接通 `archiveSession`）。
+     真正缺的是**项目级批量归档**，故此项改用自己的提示文案 —— 见
+     server/engine/session-context-actions.js KNOWN DEBT 2。 */
   "projectMenu.rename": "重命名项目",
   "projectMenu.pin": "置顶项目",
   "projectMenu.unpin": "取消置顶",
   "projectMenu.revealInFolder": "在文件夹中显示",
   "projectMenu.archive": "归档对话",
+  "projectMenu.archiveUnavailable":
+    "暂无项目级批量归档：引擎一次只归档一个会话，而归档整个项目是本版尚未定义的批量操作。",
   "projectMenu.remove": "移除",
   "projectMenu.removeConfirmTitle": "移除项目",
   /* 两个 {count} 占位均由组件填充为真实删除集——主会话与子代理会话
@@ -1378,14 +1407,28 @@ const zh: Record<MessageKey, string> = {
   "projectMenu.cancel": "取消",
 
   /* 会话行右键菜单（webui-parity 58 线 B —— 参照 SessionRail 的
-     `openSessionMenu` 菜单项，中文文案照抄参照）。置顶/归档/复制为新会话/
-     复制到新工作树暂无服务端契约；在文件夹中显示与问题反馈参照本身即为
-     禁用项，照搬；重命名/复制/删除为真实能力。 */
+     `openSessionMenu` 菜单项，中文文案照抄参照）。在文件夹中显示与问题反馈
+     参照本身即为禁用项，照搬；重命名/复制/删除为真实能力。PB-1 解锁了
+     置顶/归档/复制为新会话，见 server/engine/session-context-actions.js。
+     复制到新工作树仍为禁用项，且**不是**缺后端：引擎方法与可用性字段都在，
+     缺的是该形态的桌面参照。 */
   "sessionMenu.pin": "置顶",
+  "sessionMenu.unpin": "取消置顶",
   "sessionMenu.rename": "重命名",
   "sessionMenu.archive": "归档",
   "sessionMenu.forkCurrent": "复制为新会话",
   "sessionMenu.forkWorktree": "复制到新工作树",
+  /* 复制为新会话的预览弹窗（PB-1）。每条文案都由引擎自己的
+     getSessionForkOptions 回答驱动 —— 弹窗渲染它被告知的，而非它以为的。 */
+  "sessionMenu.forkLoading": "正在确认这次复制会得到什么…",
+  "sessionMenu.forkUnavailable": "引擎无法描述这次复制，请重试。",
+  "sessionMenu.forkFrom": "来源会话：{title}",
+  "sessionMenu.forkSuggested": "复制出的会话将命名为“{title}”。",
+  "sessionMenu.forkNoTitle": "引擎未为这次复制给出名称。",
+  "sessionMenu.forkBlocked": "引擎拒绝了这次复制：{reason}",
+  "sessionMenu.forkBlockedUnknown": "未给出原因",
+  "sessionMenu.forkCancel": "取消",
+  "sessionMenu.forkConfirm": "复制",
   "sessionMenu.revealInFolder": "在文件夹中显示",
   "sessionMenu.copy": "复制",
   "sessionMenu.copyWorkspaceDir": "复制工作目录",

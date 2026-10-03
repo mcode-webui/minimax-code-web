@@ -99,6 +99,26 @@ import { applyEngineSessionSwitch } from "../engine/session-switch.js";
 // protocol cannot drift onto two different notions of "is this the gate's
 // error".
 import { isEngineCapabilityNotSupportedError } from "../engine/index.js";
+// PB-1 (session context actions): the four right-click endpoints —
+// archive / pin / fork-options / fork. Same split as every other engine
+// family above: the gate, the member resolution, the three-state host
+// handling and the response bodies live in the facade; what stays here
+// is the request parse, the status code and the audit. The pin endpoint
+// is the family's only one that reads the PB-8 `getHostServices()`
+// window rather than `host.cliService`, and its three absence codes
+// (503 / 501 / 501) each get their own branch below — see the facade's
+// KNOWN DEBT for why a presence gate is honest here where a capability
+// key would be a 15th audited matrix entry for one method.
+import {
+  applyEngineSessionArchive,
+  applyEngineSessionFork,
+  applyEngineSessionPin,
+  applyPinnedSessionOverlay,
+  parseArchiveRequestBody,
+  parsePinRequestBody,
+  readEnginePinnedSessionOrder,
+  readEngineSessionForkOptions,
+} from "../engine/session-context-actions.js";
 import { authorize } from "../lib/authorize.js";
 import { pushAlert } from "../lib/alerts.js";
 import { append as _eventsAppend } from "../lib/events.js";
@@ -616,6 +636,26 @@ export async function handleSessionTree(req, res, _ctx) {
       detail: String(cause && cause.message ? cause.message : cause),
     };
   }
+  // PB-1: the pin overlay. `lib/session-tree.js` reads
+  // `local_runtime_sessions`, which has no pin column — the pin state
+  // lives in the preference store the engine's `PinService` owns — so
+  // the tree is read first and the pins are laid over it. The overlay is
+  // applied ONLY to a successful tree: a soft-failed payload has no
+  // `projects` to mark, and `applyPinnedSessionOverlay` returns such a
+  // payload unchanged, which is one fewer branch to get wrong.
+  //
+  // The pin read DEGRADES by design (see
+  // `readEnginePinnedSessionOrder`'s own header): a host that cannot
+  // answer yields `pinnedIds: []`, and the sidebar renders the tree it
+  // already has. The reason travels in `pins` so the response says
+  // whether the absence is a fact ("nothing is pinned") or a failure
+  // ("the engine could not tell us") — a client that cannot tell those
+  // apart would show an empty pin section during an outage and read it
+  // as "the user has no pins".
+  if (payload && payload.ok === true) {
+    const pins = await readEnginePinnedSessionOrder();
+    payload = { ...applyPinnedSessionOverlay(payload, pins.pinnedIds), pins };
+  }
   // Always 200: a soft failure (`ok:false` + `reason`, e.g. the runtime db is
   // missing) is a normal state the sidebar handles, not a transport error. The
   // client's `request()` helper turns any non-2xx into a thrown `HTTP <status>`,
@@ -967,4 +1007,235 @@ export async function handleCleanupOrphans(req, res, ctx) {
     decidedBy: authResult.decidedBy,
     decidedAt: authResult.decidedAt,
   }));
+}
+
+// ---------------------------------------------------------------------------
+// PB-1 — the session right-click action family
+// ---------------------------------------------------------------------------
+//
+// Four endpoints, one per menu item, and the file's own rule applies to
+// all of them: parse here, decide the status here, cross the engine seam
+// through `engine/session-context-actions.js`. What the facade does NOT
+// know is what an HTTP status is, so every failure it returns carries
+// `code` + `status` and the mapping happens in the one helper below.
+//
+// The helper exists because the family's failure space is wider than the
+// rest of this file's and getting it right four times is how one of them
+// would drift:
+//
+//   400  the request itself is wrong (missing id, `pinned` not boolean)
+//   501  the engine cannot do it — the capability gate's throw, a host
+//        with no owner graph, or a host whose owner graph has no
+//        `pinService`
+//   502  the engine was asked and failed
+//   503  no runtime is booted at all
+//
+// The distinction between 501 and 503 is the one an operator needs and
+// the one a route that collapsed them would lose: 501 means "this
+// transport cannot", 503 means "the process is not running its
+// runtime", and they have different fixes.
+
+/** Map a facade failure onto the wire. The `ok:true` case never arrives. */
+function _contextActionFail(res, result) {
+  const status = Number.isInteger(result.status) ? result.status : 500;
+  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
+  return res.end(
+    JSON.stringify({
+      ok: false,
+      code: result.code || "engine_call_failed",
+      error: result.error || "the engine call failed",
+    }),
+  );
+}
+
+/**
+ * The `:id` of a `POST|GET /api/sessions/:id/<verb>` path, sliced from
+ * `ctx.pathname` the way `handleDeleteSession` does.
+ *
+ * Named because four handlers would otherwise each re-derive the same
+ * two `indexOf` pair, and the copy that drifts is the one that starts
+ * accepting `/api/sessions//archive` as a session id.
+ *
+ * @param {string} pathname
+ * @param {string} verb The trailing path segment, e.g. `"archive"`.
+ * @returns {string} The id, or `""` when the path does not end in `verb`.
+ */
+function _contextActionSessionId(pathname, verb) {
+  const prefix = "/api/sessions/";
+  const suffix = `/${verb}`;
+  if (typeof pathname !== "string") return "";
+  if (!pathname.startsWith(prefix) || !pathname.endsWith(suffix)) return "";
+  return pathname.slice(prefix.length, pathname.length - suffix.length);
+}
+
+// POST /api/sessions/:id/archive — archive (or unarchive) one session.
+//
+// `body.archived` selects the direction and defaults to `true`. The
+// method covers both directions in the engine
+// (`lifecycle-application.ts#archiveSession` reads `req.archived !==
+// false`), so one endpoint serves both and PB-2's archived-tasks page
+// restores a row by calling it with `archived: false`.
+//
+// No `authorize()` modal, and the reason is worth stating because
+// `DELETE /api/sessions/:id` has one: archive is not destruction. The
+// conversation is intact on the engine, the row leaves the sidebar and
+// can be restored by the same call. A confirm dialog on a reversible
+// action is a dialog the user learns to dismiss.
+export async function handleArchiveSession(req, res, ctx) {
+  const cid = ctx.cid;
+  const id = _contextActionSessionId(ctx.pathname, "archive");
+  if (!id) {
+    res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
+    return res.end(JSON.stringify({ ok: false, error: "id required" }));
+  }
+  const payload = await readJson(req);
+  const parsed = parseArchiveRequestBody(payload);
+  if (!parsed.ok) {
+    res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
+    return res.end(JSON.stringify({ ok: false, error: parsed.error }));
+  }
+  const result = await applyEngineSessionArchive({ id, archived: parsed.archived });
+  if (!result.ok) return _contextActionFail(res, result);
+  // Write-ahead audit: a state change the user cannot see in the engine's
+  // own UI is exactly the kind that needs a durable record, and it lands
+  // after the engine confirmed the write rather than before — unlike
+  // #7's delete, where the ordering protects an irreversible step.
+  try {
+    _eventsAppend(result.archived ? "session.archive" : "session.unarchive", {
+      target: id,
+      cid,
+      actor: "user",
+      payload: { archived: result.archived, mcodeSessionId: "" },
+    });
+  } catch (e) {
+    return _auditFail(res, e, result.archived ? "session.archive" : "session.unarchive");
+  }
+  console.log(
+    `[archive] cid=${cid} OK id=${id.substring(0, 8)}… archived=${result.archived}`,
+  );
+  res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+  return res.end(JSON.stringify(result.payload));
+}
+
+// POST /api/sessions/:id/pin — pin or unpin a session.
+//
+// The `pinned` flag is REQUIRED here, unlike `archived`. The engine's
+// `pinSession(sessionId, pinned, insertIndex?)` takes it as a
+// positional and branches on it, so `{}` is not a defaultable request:
+// defaulting it would move the row in a direction the user did not
+// choose. `parsePinRequestBody` owns that rule and is unit-tested on
+// both directions.
+export async function handlePinSession(req, res, ctx) {
+  const cid = ctx.cid;
+  const id = _contextActionSessionId(ctx.pathname, "pin");
+  if (!id) {
+    res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
+    return res.end(JSON.stringify({ ok: false, error: "id required" }));
+  }
+  const payload = await readJson(req);
+  const parsed = parsePinRequestBody(payload);
+  if (!parsed.ok) {
+    res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
+    return res.end(JSON.stringify({ ok: false, error: parsed.error }));
+  }
+  const result = await applyEngineSessionPin({ id, pinned: parsed.pinned });
+  if (!result.ok) return _contextActionFail(res, result);
+  try {
+    _eventsAppend(result.pinned ? "session.pin" : "session.unpin", {
+      target: id,
+      cid,
+      actor: "user",
+      payload: { pinned: result.pinned, mcodeSessionId: "" },
+    });
+  } catch (e) {
+    return _auditFail(res, e, result.pinned ? "session.pin" : "session.unpin");
+  }
+  console.log(`[pin] cid=${cid} OK id=${id.substring(0, 8)}… pinned=${result.pinned}`);
+  res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+  return res.end(JSON.stringify(result.payload));
+}
+
+// GET /api/sessions/:id/fork-options — what a fork of this session would
+// be, before the user commits to one.
+//
+// The optional `?assistantMessageId=` narrows the preview to a fork
+// POINT. Absent, the preview describes forking the whole conversation,
+// which is what the menu item means when the user has not picked a
+// message. The response is the facade's `projectForkOptions` narrowing
+// — every field present on every answer, so the dialog never renders
+// `undefined` — and the worktree triple travels through untouched for
+// the batch that will consume it (see the facade's KNOWN DEBT 1).
+export async function handleSessionForkOptions(req, res, ctx) {
+  const id = _contextActionSessionId(ctx.pathname, "fork-options");
+  if (!id) {
+    res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
+    return res.end(JSON.stringify({ ok: false, error: "id required" }));
+  }
+  // Read the query off `req.url` rather than `ctx.pathname`, matching
+  // `handleDeleteSession`'s `?dryRun` parse: the Hono context carries
+  // the path, the query is still on the Node request.
+  let assistantMessageId;
+  try {
+    const qIdx = (req.url || "").indexOf("?");
+    if (qIdx >= 0) {
+      assistantMessageId = new URLSearchParams(req.url.slice(qIdx + 1)).get("assistantMessageId") || undefined;
+    }
+  } catch {}
+  const result = await readEngineSessionForkOptions({ id, assistantMessageId });
+  if (!result.ok) return _contextActionFail(res, result);
+  res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+  return res.end(JSON.stringify({ ok: true, id, ...result.options }));
+}
+
+// POST /api/sessions/:id/fork — duplicate this conversation as a new
+// session in the same workspace.
+//
+// `clientRequestId` is minted HERE rather than in the facade, so the
+// per-request key is visible at the call site that owns the request. It
+// is the engine's fork-deduplication key, which means a duplicate
+// delivery of one POST does not create two forks while a user who
+// genuinely duplicates twice gets two sessions — the distinction the
+// menu item's meaning depends on.
+//
+// `createIsolatedWorktree` is forced `false` in the facade. The
+// worktree variant of this menu has no desktop reference, so it stays
+// an honest placeholder rather than becoming reachable by a flag.
+export async function handleForkSession(req, res, ctx) {
+  const cid = ctx.cid;
+  const id = _contextActionSessionId(ctx.pathname, "fork");
+  if (!id) {
+    res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
+    return res.end(JSON.stringify({ ok: false, error: "id required" }));
+  }
+  const payload = await readJson(req);
+  const assistantMessageId =
+    typeof payload.assistantMessageId === "string" && payload.assistantMessageId
+      ? payload.assistantMessageId
+      : undefined;
+  const result = await applyEngineSessionFork({
+    id,
+    assistantMessageId,
+    clientRequestId: randomUUID(),
+  });
+  if (!result.ok) return _contextActionFail(res, result);
+  try {
+    _eventsAppend("session.fork", {
+      target: id,
+      cid,
+      actor: "user",
+      payload: {
+        sourceId: id,
+        newSessionId: result.sessionId,
+        forkOriginMessageId: result.payload.forkOriginMessageId || "",
+        createIsolatedWorktree: false,
+      },
+    });
+  } catch (e) {
+    return _auditFail(res, e, "session.fork");
+  }
+  console.log(
+    `[fork] cid=${cid} OK source=${id.substring(0, 8)}… new=${result.sessionId.substring(0, 8)}…`,
+  );
+  res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+  return res.end(JSON.stringify(result.payload));
 }

@@ -12,7 +12,10 @@ import { marked } from "marked";
  * the way the desktop does.
  *
  * Assistant text can contain anything the model or a file it read produced, so
- * the parser output is sanitised (see `sanitize`) before it reaches the DOM.
+ * two walls stand between it and the DOM: the `html` renderer override below
+ * escapes raw HTML in the source outright (model-authored `<svg>`/`<path>` and
+ * friends are shown as text, never mounted), and the parser output is then
+ * sanitised (see `sanitize`) for everything the renderers themselves emit.
  * Syntax highlighting is deliberately absent for now — upstream colours code
  * through `--code-theme-*` tokens when a highlighter is attached, and those
  * tokens are already in the token layer, so adding a highlighter later needs no
@@ -199,6 +202,35 @@ marked.use({
     codespan({ text }: { text: string }) {
       return `<code class="inline-code">${escapeHtml(text)}</code>`;
     },
+    /**
+     * Escape raw HTML found in the markdown source — never mount it.
+     *
+     * `marked` has no "no raw HTML" option: whatever inline (`Tokens.Tag`) and
+     * block (`Tokens.HTML`) HTML appears in the source is forwarded into the
+     * output verbatim, which left the sanitiser below as the only wall. That
+     * wall is per-tag, and it allowlists `svg`/`path` for KaTeX geometry, so a
+     * model that pastes an inline SVG snippet had `<path>` survive to
+     * `components/markdown-html.tsx`, which calls `createElement("path")` — an
+     * unknown host element, and one `The tag <path> is unrecognized in this
+     * browser` console error per occurrence (UAT 2026-10-03 16:00 round, ×9).
+     *
+     * Escaping here rather than tightening the allowlist is what keeps the two
+     * consumers apart:
+     *
+     *   - **author HTML** — model output, a file the model read, a user's own
+     *     markdown preview — arrives as `html` tokens and becomes text;
+     *   - **generated HTML** — KaTeX via the `webuiMath` inline extension, and
+     *     every fenced language via `registerLanguageRenderer` — is returned
+     *     straight from its own renderer and never passes through this hook, so
+     *     the real `<svg>`/`<path>` geometry formulas need survives.
+     *
+     * A block token's `text` is the raw source including its trailing newline,
+     * so escaping preserves the original line structure; no newline is added
+     * here (adding one would double every blank line between blocks).
+     */
+    html(token: { text: string }) {
+      return escapeHtml(token.text);
+    },
   },
 });
 
@@ -321,7 +353,15 @@ function sanitize(html: string): string {
   if (typeof window === "undefined" || typeof DOMParser === "undefined") {
     // Static export prerender: the transcript is empty, so there is nothing to
     // render. Returning escaped text keeps this path inert rather than unsafe.
-    return html.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c] ?? c);
+    //
+    // Only the two angle brackets are escaped, never `&`. The input is already
+    // the parser's output, in which every author `&` and `<` has become an
+    // entity (the `html` override above owns that escaping); escaping `&` again
+    // here would flatten those entities into literal `&amp;lt;` text, so a
+    // reader on the prerender path would see `&lt;script&gt;` where they should
+    // see `<script>`. Escaping `<` and `>` is already sufficient to stay inert —
+    // without a literal `<`, no tag can be formed.
+    return html.replace(/[<>]/g, (c) => (c === "<" ? "&lt;" : "&gt;"));
   }
 
   const doc = new DOMParser().parseFromString(`<body>${html}</body>`, "text/html");

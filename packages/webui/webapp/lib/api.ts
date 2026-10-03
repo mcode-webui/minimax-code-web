@@ -297,6 +297,14 @@ export interface TreeSession {
   kind: string;
   status: string;
   updatedAt: number;
+  /**
+   * Whether the engine's `PinService` currently pins this session.
+   *
+   * Always present, `false` included: the server lays the pin overlay
+   * over the whole tree rather than only over the pinned rows, so the
+   * client reads a boolean and never has to know the id set exists.
+   */
+  pinned: boolean;
   /** Subagents this session spawned. Only present on level-3 entries. */
   children: TreeSession[];
 }
@@ -325,6 +333,17 @@ export interface SessionTreePayload {
   truncated?: boolean;
   counts?: { projects: number; directories: number; sessions: number };
   projects?: TreeProject[];
+  /**
+   * How the pin overlay was resolved — present only on a successful tree.
+   *
+   * `degraded: true` means the engine could not be asked which sessions
+   * are pinned, so every `pinned` on this payload is `false` because the
+   * answer is unknown, not because nothing is pinned. The sidebar does
+   * not branch on it today (an unavailable pin section is a cosmetic
+   * loss, not a failure — see `readEnginePinnedSessionOrder`), and the
+   * field exists so that decision is visible rather than implied.
+   */
+  pins?: { pinnedIds: string[]; degraded: boolean; reason: string | null };
 }
 
 // --- filesystem -------------------------------------------------------------
@@ -482,6 +501,85 @@ export const searchFs = (root: string, q: string, opts: FsSearchOpts = {}) => {
 
 export const getSessionTree = (refresh = false) =>
   request<SessionTreePayload>(`/api/session-tree${refresh ? "?refresh=1" : ""}`);
+
+// --- session right-click actions (PB-1) --------------------------------------
+//
+// The four endpoints behind 归档 / 置顶 / 复制为新会话. Each returns the
+// server's own payload and, on failure, THROWS — `request()` turns a
+// non-2xx into an `HTTP <status>` error, so a 501 from a provider that
+// cannot archive reaches `runAction`'s error path instead of being
+// rendered as a successful click. That is the property #110 established
+// and the reason none of these four returns a bare `{ok:false}`.
+
+/**
+ * Archive or unarchive one session.
+ *
+ * `archived` defaults to `true`; the engine's `archiveSession` covers
+ * both directions in one method, so the flag selects rather than
+ * separates. An archived session leaves the sidebar on the next tree
+ * read and is restorable by calling this again with `archived: false`.
+ */
+export const archiveSession = (id: string, archived = true) =>
+  request<{ ok: boolean; id: string; archived: boolean }>(
+    `/api/sessions/${encodeURIComponent(id)}/archive`,
+    { method: "POST", json: { archived } },
+  );
+
+/**
+ * Pin or unpin one session. The flag is required and is not defaulted:
+ * the menu item is a toggle, and a defaulted flag would move the row in
+ * a direction the user did not pick.
+ *
+ * The response carries the engine's whole pinned set, in the engine's
+ * order, so a caller can re-render without a second tree read.
+ */
+export const pinSession = (id: string, pinned: boolean) =>
+  request<{ ok: boolean; id: string; pinned: boolean; pinnedIds: string[] }>(
+    `/api/sessions/${encodeURIComponent(id)}/pin`,
+    { method: "POST", json: { pinned } },
+  );
+
+/** What a fork of this session would be, before the user commits to one. */
+export interface SessionForkOptions {
+  ok: boolean;
+  id: string;
+  canFork: boolean;
+  unavailableReason: string | null;
+  suggestedTitle: string | null;
+  nextForkOrdinal: number | null;
+  sourceTitle: string | null;
+  /**
+   * The engine's worktree eligibility, carried through untouched.
+   *
+   * Read by nobody in this batch: the worktree variant of the menu has
+   * no desktop reference to build against, so it stays an honest
+   * placeholder. The fields travel so the batch that unblocks it does
+   * not need a second round trip.
+   */
+  worktree: { visible: boolean; eligible: boolean; unavailableReason: string | null };
+}
+
+export const getSessionForkOptions = (id: string, assistantMessageId?: string) =>
+  request<SessionForkOptions>(
+    `/api/sessions/${encodeURIComponent(id)}/fork-options` +
+      (assistantMessageId
+        ? `?assistantMessageId=${encodeURIComponent(assistantMessageId)}`
+        : ""),
+  );
+
+/**
+ * Duplicate this conversation as a new session in the same workspace.
+ *
+ * `assistantMessageId` is the fork POINT; omitted, the whole
+ * conversation is duplicated, which is what the menu item means when
+ * the user has not picked a message. The created session's id comes
+ * back so the caller can switch to it.
+ */
+export const forkSession = (id: string, assistantMessageId?: string) =>
+  request<{ ok: boolean; id: string; sourceId: string; forkOriginMessageId: string | null }>(
+    `/api/sessions/${encodeURIComponent(id)}/fork`,
+    { method: "POST", json: assistantMessageId ? { assistantMessageId } : {} },
+  );
 
 // --- model and permissions --------------------------------------------------
 

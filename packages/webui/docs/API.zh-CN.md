@@ -440,6 +440,158 @@ mcode 会话 id，或尚无 webui 壳记录的裸 `mvs_…`（会自动建壳承
 **响应 404** `{"ok": false, "error": "session not found"}` —— id
 既不匹配任何 webui 会话，也不匹配 `mvs_*` 模式。
 
+### 会话右键操作族
+
+会话行右键菜单（归档 / 置顶 / 复制为新会话）背后的四个端点。之所以归为
+一节，是因为它们共用一个门面
+（`server/engine/session-context-actions.js`）与一套错误词汇表。
+
+| 端点 | 请求体 / 查询 | 作用 |
+|---|---|---|
+| `POST /api/sessions/:id/archive` | `{ "archived": boolean }` | 归档或取消归档**单个**会话。 |
+| `POST /api/sessions/:id/pin` | `{ "pinned": boolean }` | 置顶或取消置顶单个会话。 |
+| `GET /api/sessions/:id/fork-options` | `?assistantMessageId=` | 在真正复制之前，先描述这次复制会得到什么。 |
+| `POST /api/sessions/:id/fork` | `{ "assistantMessageId"? }` | 在同一工作区把对话复制为新会话。 |
+
+#### `POST /api/sessions/:id/archive`
+
+为单个会话设置引擎的 `archived` 标志。一个方法覆盖两个方向
+（`lifecycle-application.ts#archiveSession` 读的是
+`req.archived !== false`），因此 `archived` 是**选择**方向，而不是把动作
+拆成两个端点。设置页的「已归档任务」恢复一行时，调用的是同一个端点，
+只是传 `archived: false`。
+
+`archived` 默认 `true` 且**不做类型校验**，这是刻意的：引擎自己的规则是
+「凡不是字面量 `false` 一律归档」，一个与它不一致的校验器会让 HTTP 层与
+引擎对同一个请求给出不同答案。
+
+侧边栏读取 `WHERE archived = 0`，所以归档后会话在下次读取时离开列表，
+取消归档则回到列表。响应还会失效树缓存，因此该变化立即可见，而不必等
+15 秒的 TTL。
+
+与 `DELETE /api/sessions/:id` 不同，它**不经过** `authorize()` 弹窗：归档
+是**可逆的** —— 对话在引擎侧完整保留，同一个调用即可恢复。一个可逆动作
+上的确认弹窗，是一个用户会学会直接关掉的弹窗。
+
+**请求** `{ "archived": true }` —— `archived` 可选，默认 `true`。
+
+**响应 200** `{ "ok": true, "id": "mvs_…", "archived": true }`
+
+**错误** —— 400 缺 id；501 该 provider 无法归档
+（`engine_capability_not_supported`）；502 已请求引擎但失败
+（`engine_archive_failed`）；503 未启动运行时
+（`engine_host_unavailable`）。
+
+#### `POST /api/sessions/:id/pin`
+
+通过引擎的 `PinService` 置顶或取消置顶单个会话，并返回引擎自己的完整
+置顶集合（按引擎的顺序），使客户端无需二次读树即可重渲染。
+
+`pinned` 是**必填**且不给默认值。引擎的
+`pinSession(sessionId, pinned, insertIndex?)` 以位置参数接收该标志并据其
+分支，所以 `{}` 不是一个可以给默认值的请求：给默认值会把行移到用户并未
+选择的方向上。这与 `archive` 的不对称来自引擎，而非本路由。
+
+本端点是本族中**唯一**经 PB-8 host-services 窗口读取（而非
+`host.cliService`）的成员，因此也只有它的缺失情形是三种互不相同的：
+
+| 状态 | `code` | 状态码 | 含义 |
+|---|---|---|---|
+| 未启动运行时 | `engine_host_unavailable` | 503 | 进程没有跑它的运行时。 |
+| host 无 owner graph | `engine_services_unavailable` | 501 | 该传输不携带 V2 `services`。 |
+| owner graph 中无 `pinService` | `engine_member_unavailable` | 501 | 本端点所需的成员未装配。 |
+
+三者都不产生成功负载。一次什么也没写却「成功」的置顶，正是本仓拒绝的
+假成功形态。
+
+**请求** `{ "pinned": true }`
+
+**响应 200**
+```json
+{ "ok": true, "id": "mvs_…", "pinned": true, "pinnedIds": ["mvs_a", "mvs_b"] }
+```
+
+**错误** —— 400 缺 id 或 `pinned` 非布尔；501 / 503 见上表；502 已请求
+引擎但失败（`engine_pin_failed`）。
+
+#### `GET /api/sessions/:id/fork-options`
+
+在用户真正动手之前回答「复制这个会话会得到什么」。复制弹窗就是这次读取
+的渲染结果：由引擎自己的 `canFork` 决定确认按钮是否可用，并展示它的
+`suggestedTitle`，让用户看到复制后会用的标题。
+
+`?assistantMessageId=` 把预览收窄到某个分叉点。省略时，预览描述的是复制
+整个对话 —— 用户未指定消息时，这正是菜单项的含义。
+
+每个字段在任何回答下都存在，因此形状不完整的引擎响应会渲染出一空行，
+而不是 `undefined`。`worktree` 三元组**原样透传且无人读取**：该菜单的
+工作树变体没有可对照的桌面参照，故保持诚实占位，这三个字段为将来解锁它
+的那一批预留着。
+
+**响应 200**
+```json
+{
+  "ok": true,
+  "id": "mvs_…",
+  "canFork": true,
+  "unavailableReason": null,
+  "suggestedTitle": "「重构解析器」的副本",
+  "nextForkOrdinal": 2,
+  "sourceTitle": "重构解析器",
+  "worktree": { "visible": true, "eligible": false, "unavailableReason": "not a git repository" }
+}
+```
+
+读取失败是**向上传播**的，而不是变成 `canFork: false`。一个默认形状的
+options 对象会把「canFork: false」摆到屏幕上，仿佛引擎拒绝了一次它根本
+没被问到的复制；客户端必须能区分「引擎说不」与「我们没问成」。
+
+**错误** —— 400 缺 id；501 / 503 见上；502（`engine_fork_options_failed`）。
+
+#### `POST /api/sessions/:id/fork`
+
+在同一工作区把对话复制为新会话。
+
+有两个字段由**服务端强制**，调用方无法设置：
+
+- `useSuggestedTitle: true` —— 复制出的会话标题取自引擎自己的建议值。
+  弹窗**展示**该建议值，所以用户看到的正是将会被使用的标题。调用方传入的
+  `title` 会被丢弃：本端点只有一套标题契约。
+- `createIsolatedWorktree: false` —— 该菜单的工作树变体是占位，因此这个
+  可达动作必须无法创建一个用户从未被问过的工作树。
+
+`clientRequestId` 是引擎的分叉去重键，由路由按请求生成，因此同一次 POST
+的重复投递不会产生两个副本，而用户真的复制两次会得到两个会话。
+
+`assistantMessageId` 是分叉点，仅在被指定时透传；它的缺失本身有意义
+（「整体复制」），所以该键是被省略而非以 `undefined` 发送。
+
+**请求** `{ "assistantMessageId": "msg_…" }` —— 两个 body 键均可选。
+
+**响应 200**
+```json
+{ "ok": true, "id": "mvs_new…", "sourceId": "mvs_…", "forkOriginMessageId": "msg_…" }
+```
+
+已兑现但**没有**返回会话的调用回答 **502** `engine_fork_no_session`，
+而不是一个 id 为 null 的成功 —— 那种成功只会让用户看着列表多出一行，
+却无从知道是哪一行。
+
+**错误** —— 400 缺 id；501 / 503 见上；502（`engine_fork_failed`、
+`engine_fork_no_session`）。
+
+#### 本组刻意不提供的两项
+
+- **「复制到新工作树」** 保持诚实占位，**没有**对应端点。引擎侧方法是存在
+  的（`createIsolatedWorktree`），`fork-options` 也已返回
+  `worktreeVisible` / `worktreeEligible` / `worktreeUnavailableReason`；
+  缺的是**参照** —— 该菜单的界面没有任何桌面截图。弹窗形态、是否选分支、
+  源会话会如何，全都不知道。
+- **项目级「归档对话」** 保持诚实占位，**没有**对应端点。引擎一次只归档
+  一个会话，未声明任何项目级方法，因此该项需要对 N 个单会话写做扇出。
+  「部分失败算不算成功」与「用户授权一次还是 N 次」是没有任何现成契约
+  能回答的产品决策。
+
 ### `GET /api/acp-sessions`
 
 原始 mcode 会话列表（来自 sqlite）。不与 webui 合并。
@@ -457,8 +609,35 @@ mcode 会话 id，或尚无 webui 壳记录的裸 `mvs_…`（会自动建壳承
 侧边栏树：工作区及其下嵌套的会话。缓存 15 秒
 （`server/routes/sessions.js` 中的 `CACHE_TTL_MS`）。写操作
 （`POST /api/sessions`、`/api/sessions/rename`、
-`DELETE /api/sessions/:id`）会自动失效缓存；与失效抢跑的
+`DELETE /api/sessions/:id`，以及右键操作族的
+`/api/sessions/:id/archive`、`/api/sessions/:id/pin`、
+`/api/sessions/:id/fork`）会自动失效缓存；与失效抢跑的
 客户端可传 `?refresh=1` 强制重读。
+
+**置顶叠加层。** 每个会话都带一个 `pinned` 布尔值，负载里还有一个
+`pins` 对象说明这个布尔值是怎么得出的。树本身读自 runtime db
+（`lib/session-tree.js`），而 `local_runtime_sessions` 没有置顶列 ——
+置顶状态存放在引擎 `PinService` 所拥有的偏好存储里。因此先读树，再把
+置顶信息叠加上去：被置顶的会话按**引擎自己的置顶顺序**移到所在目录的
+顶部，未置顶的会话之间保持树的 `updatedAt` 顺序。所以置顶集合为空时，
+负载的顺序与之前逐字节相同 —— 这正是不置顶的侧边栏不会在每次读取时
+重新洗牌的原因。
+
+`pinned` 写在**每一个**会话上，`false` 也写，因此客户端读的是一个布尔
+值，永远不需要知道 id 集合的存在。`pins.degraded` 用来区分「没有会话被
+置顶」与「没能问到引擎」：当 `degraded` 为 `true` 时，每个 `pinned` 都是
+`false`，因为答案是**未知**的，而侧边栏就渲染它已有的那棵树。这条读取
+是刻意降级的 —— 为了一个不肯回答的置顶服务而让页面主数据源整体失败，
+比不显示置顶更糟。而上面那四个右键端点**不**降级：一次无法确认写入的
+变更绝不会声称成功。
+
+**置顶读取从不启动运行时。** 它经由 `peekEngineCatalogueHost()` 取 host，
+而该函数只在已有 host 时才返回。常规的 `getEngineCatalogueHost()` 是
+**会启动**的取值器 —— 首次调用会构造整个运行时，代价以秒计 —— 若读取
+走它，进程内第一次树请求就会变成一次运行时启动，把这笔开销记在恰好
+先渲染页面的那个人头上，而且看起来只是一次普通的慢请求。规则是：
+**写可以启动它需要的东西；读只能用已经存在的东西。** 上面四个端点是写，
+会启动；叠加层不会。
 
 **响应 200**
 ```json

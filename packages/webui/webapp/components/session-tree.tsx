@@ -578,7 +578,19 @@ function ProjectNode({
           icon="archive"
           label={t("projectMenu.archive")}
           disabled
-          title={t("common.notLocal")}
+          // PB-1 updated this reason, and the tooltip is the only place it
+          // is stated. The old `common.notLocal` was WRONG twice over: it
+          // claimed the local build lacks a capability it has had all
+          // along (the SESSION-level 归档 above this menu is now live and
+          // calls `archiveSession`), and it said nothing about what is
+          // actually missing. What is missing is a PROJECT-SCOPED bulk
+          // archive: v2 declares `archiveSession({id, archived})` for one
+          // session and nothing project-wide, so this item would have to
+          // fan out N single-session writes. Whether a partial failure
+          // counts as success, and whether the user authorizes once or N
+          // times, are product decisions no existing contract answers —
+          // see `server/engine/session-context-actions.js` KNOWN DEBT 2.
+          title={t("projectMenu.archiveUnavailable")}
           testid="project-menu-archive"
         />
       ),
@@ -1023,8 +1035,22 @@ function DirectoryNode({
  *
  *   - 重命名 / 复制（工作目录、会话 ID）/ 删除 are real — they route through
  *     the same endpoints the hover actions use.
- *   - 置顶 / 归档 / 复制为新会话 / 复制到新工作树 have no server contract
- *     yet, so they render disabled rather than fake an action.
+ *   - 置顶 / 归档 / 复制为新会话 became real in PB-1. Each has a handler
+ *     passed in by the row that owns it (`onPin` / `onArchive` / `onFork`);
+ *     they are `disabled` when the row did not supply one, which is the
+ *     same rule 重命名 has always used. The state is not re-derived here —
+ *     a row is pinned because `session.pinned` says so, and that field is
+ *     the engine's `PinService` answer laid over the tree by
+ *     `server/routes/sessions.js`.
+ *   - 复制到新工作树 stays disabled, and the reason is NOT "no contract":
+ *     the engine has the method. `ForkSessionInput.createIsolatedWorktree`
+ *     exists and `GET /api/sessions/:id/fork-options` already returns
+ *     `worktreeVisible` / `worktreeEligible` / `worktreeUnavailableReason`,
+ *     and this client type carries all three. What is missing is a
+ *     REFERENCE — design-ref/ has no screenshot of this menu, so the
+ *     dialog's shape, whether a branch is chosen, and what happens to the
+ *     source session are unknown. Per doc/placeholder-batch-plan.md §3.4
+ *     ("不要在没有参照的情况下自创形态") this item is not self-authored.
  *   - 在文件夹中显示 / 问题反馈 are disabled in the reference itself; they
  *     are carried across as-is so the menu's shape matches.
  */
@@ -1032,6 +1058,9 @@ function buildSessionContextMenu({
   session,
   workspaceDir,
   onRename,
+  onPin,
+  onArchive,
+  onFork,
   onDelete,
   t,
 }: {
@@ -1039,6 +1068,12 @@ function buildSessionContextMenu({
   /** The directory the session ran in — the reference's `session.workspaceDir`. */
   workspaceDir?: string;
   onRename?: () => void;
+  /** PB-1: pin / unpin this session. Absent → the item renders disabled. */
+  onPin?: () => void;
+  /** PB-1: archive this session. Absent → the item renders disabled. */
+  onArchive?: () => void;
+  /** PB-1: open the duplicate dialog. Absent → the item renders disabled. */
+  onFork?: () => void;
   onDelete: () => void;
   t: (key: MessageKey) => string;
 }): readonly WebuiContextMenuItem[] {
@@ -1047,9 +1082,13 @@ function buildSessionContextMenu({
     {
       kind: "item",
       key: "pin",
-      label: t("sessionMenu.pin"),
+      // A pinned session's action is to UNpin, and the label says so. The
+      // state comes from the engine's own pin answer, not from a local
+      // guess — see this component's header.
+      label: t(session.pinned ? "sessionMenu.unpin" : "sessionMenu.pin"),
       icon: menuIcon("pin"),
-      disabled: true, // no session-pin contract yet
+      disabled: !onPin,
+      onSelect: onPin,
     },
     {
       kind: "item",
@@ -1064,7 +1103,8 @@ function buildSessionContextMenu({
       key: "archive",
       label: t("sessionMenu.archive"),
       icon: menuIcon("archive"),
-      disabled: true, // no archive contract yet
+      disabled: !onArchive,
+      onSelect: onArchive,
     },
     { kind: "divider", key: "fork-divider" },
     {
@@ -1072,14 +1112,20 @@ function buildSessionContextMenu({
       key: "fork-current",
       label: t("sessionMenu.forkCurrent"),
       icon: menuIcon("fork"),
-      disabled: true, // no fork contract yet
+      disabled: !onFork,
+      onSelect: onFork,
     },
     {
       kind: "item",
       key: "fork-worktree",
       label: t("sessionMenu.forkWorktree"),
       icon: menuIcon("fork"),
-      disabled: true, // no worktree-fork contract yet
+      // Honest placeholder, not a missing backend. The engine method and
+      // the eligibility fields both exist (see this component's header);
+      // the desktop reference for this variant's UI does not. Enabling
+      // it would mean inventing the form. See
+      // server/engine/session-context-actions.js KNOWN DEBT 1.
+      disabled: true,
     },
     { kind: "divider", key: "copy-divider" },
     {
@@ -1141,6 +1187,203 @@ async function copyToClipboard(value: string | undefined, t: (key: MessageKey) =
   }
 }
 
+/**
+ * The 复制为新会话 preview dialog (PB-1).
+ *
+ * It exists because `GET /api/sessions/:id/fork-options` exists. The
+ * engine answers a real question before the write — can this session be
+ * forked, what will it be called, which copy of the title is it — and a
+ * dialog that did not ask would be throwing that answer away. So the
+ * dialog is the read, rendered: it opens, it fetches, and only the
+ * engine's own `canFork` decides whether the confirm button is live.
+ *
+ * What it deliberately does NOT render is the worktree row. The engine
+ * returns `worktreeVisible` / `worktreeEligible` and the client type
+ * carries them; showing a disabled "duplicate to new worktree" row here
+ * would be a second reference-free form, and this batch's discipline is
+ * that an item with no reference stays a single greyed menu row rather
+ * than becoming a greyed row in two places. See
+ * `server/engine/session-context-actions.js` KNOWN DEBT 1.
+ *
+ * The three states are all rendered and none is a blank:
+ *
+ *   loading   — the fetch is in flight. The confirm button is disabled
+ *               rather than absent, so the dialog does not change shape
+ *               when the answer lands.
+ *   canFork   — the confirm button is live and carries the suggested
+ *               title in its own label-adjacent line, so the user sees
+ *               exactly the title the fork will use (the server forces
+ *               `useSuggestedTitle: true`).
+ *   !canFork  — the engine's own `unavailableReason` is shown and the
+ *               confirm button is disabled. The reason is rendered as
+ *               the engine's text rather than translated: it is a
+ *               machine reason code the engine owns, and inventing a
+ *               translation for a code this build has never seen would
+ *               be a guess presented as a translation.
+ */
+function SessionForkDialog({
+  sessionId,
+  open,
+  onCancel,
+  onForked,
+  t,
+}: {
+  sessionId: string;
+  open: boolean;
+  onCancel: () => void;
+  /** Called with the new session's id once the fork succeeded. */
+  onForked: (newSessionId: string) => void;
+  t: (key: MessageKey) => string;
+}) {
+  const [options, setOptions] = useState<api.SessionForkOptions | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [forking, setForking] = useState(false);
+  // The id whose options are on screen. Without it, a dialog reopened on
+  // a DIFFERENT row would show the previous row's answer for the frames
+  // between mount and the fetch resolving — the same class of bug as
+  // reusing a stale closure over a changed prop.
+  const [loadedFor, setLoadedFor] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    setLoading(true);
+    setOptions(null);
+    setLoadedFor(null);
+    void (async () => {
+      try {
+        const next = await api.getSessionForkOptions(sessionId);
+        if (cancelled) return;
+        setOptions(next);
+        setLoadedFor(sessionId);
+      } catch (cause) {
+        if (cancelled) return;
+        // A failed READ is not an empty answer: the dialog says so and
+        // keeps the confirm button disabled, rather than rendering
+        // `canFork:false` and implying the engine refused a fork it was
+        // never asked about.
+        reportActionError(t("sessionMenu.forkCurrent"), cause);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, sessionId, t]);
+
+  if (!open) return null;
+
+  const canFork = options?.ok === true && options.canFork === true;
+  // `loadedFor` guards the render against the one frame where `options`
+  // still holds the previous row's answer.
+  const answer = loadedFor === sessionId ? options : null;
+
+  const runFork = async () => {
+    setForking(true);
+    try {
+      const forked = await api.forkSession(sessionId);
+      onCancel();
+      onForked(forked.id);
+    } catch (cause) {
+      reportActionError(t("sessionMenu.forkCurrent"), cause);
+    } finally {
+      setForking(false);
+    }
+  };
+
+  return (
+    <AntModal
+      open
+      centered
+      closable
+      keyboard
+      maskClosable={!forking}
+      footer={null}
+      destroyOnHidden
+      width={440}
+      rootClassName="mavis-confirm-modal-compact"
+      classNames={{
+        mask: "mavis-confirm-modal-compact-mask",
+        content: "mavis-confirm-modal-compact-surface",
+      }}
+      styles={{ header: { background: "transparent" } }}
+      title={
+        <span className="mavis-confirm-modal-compact-title text-heading3 text-text_default_primary">
+          {t("sessionMenu.forkCurrent")}
+        </span>
+      }
+      onCancel={() => {
+        if (!forking) onCancel();
+      }}
+    >
+      <div data-testid="session-fork-dialog" className="flex flex-col gap-4 py-2">
+        {loading ? (
+          <p
+            data-testid="session-fork-loading"
+            className="text-sm leading-6 text-text_default_secondary"
+          >
+            {t("sessionMenu.forkLoading")}
+          </p>
+        ) : !answer ? (
+          <p
+            data-testid="session-fork-unavailable"
+            className="text-sm leading-6 text-text_default_secondary"
+          >
+            {t("sessionMenu.forkUnavailable")}
+          </p>
+        ) : (
+          <>
+            {answer.sourceTitle ? (
+              <p className="text-sm leading-6 text-text_default_secondary">
+                {t("sessionMenu.forkFrom").replace("{title}", answer.sourceTitle)}
+              </p>
+            ) : null}
+            <p className="text-caption-small-strong leading-5 text-text_default_tertiary">
+              {answer.suggestedTitle
+                ? t("sessionMenu.forkSuggested").replace("{title}", answer.suggestedTitle)
+                : t("sessionMenu.forkNoTitle")}
+            </p>
+            {answer.canFork ? null : (
+              <p
+                data-testid="session-fork-blocked"
+                className="text-caption-small-strong leading-5 text-text_label_danger_primary_default"
+              >
+                {t("sessionMenu.forkBlocked").replace(
+                  "{reason}",
+                  answer.unavailableReason ?? t("sessionMenu.forkBlockedUnknown"),
+                )}
+              </p>
+            )}
+          </>
+        )}
+        <div className="flex items-center justify-end gap-2">
+          <button
+            type="button"
+            disabled={forking}
+            onClick={onCancel}
+            className="h-8 rounded-lg border border-border_default px-3 text-sm text-text_default_primary transition-colors hover:bg-bg_interaction_tertiary_hover disabled:opacity-50"
+          >
+            {t("sessionMenu.forkCancel")}
+          </button>
+          <button
+            type="button"
+            // Live only on the engine's own `canFork`, and never while the
+            // read is in flight — a button that becomes clickable before
+            // the answer arrives would fork on a guess.
+            disabled={forking || loading || !canFork}
+            data-testid="session-fork-confirm"
+            onClick={() => void runFork()}
+            className="h-8 rounded-lg bg-bg_interaction_primary_default px-3 text-sm text-text_label_inverse_primary transition-colors hover:opacity-90 disabled:opacity-50"
+          >
+            {t("sessionMenu.forkConfirm")}
+          </button>
+        </div>
+      </div>
+    </AntModal>
+  );
+}
+
 const SESSION_STATE_MARK: Record<string, { dot: string; label: MessageKey }> = {
   error: { dot: "bg-bg_status_error", label: "session.status.error" },
   aborted: { dot: "bg-bg_status_warning", label: "session.status.aborted" },
@@ -1175,6 +1418,11 @@ function SessionNode({
     | { readonly x: number; readonly y: number; readonly items: readonly WebuiContextMenuItem[] }
     | undefined
   >();
+  // PB-1: the 复制为新会话 dialog. Held here rather than in the menu builder
+  // because the menu is a pure function of its arguments and rebuilt on
+  // every right-click, while the dialog is a piece of state with a fetch
+  // and a pending write behind it.
+  const [forkOpen, setForkOpen] = useState(false);
   const openSessionMenu = (event: React.MouseEvent<HTMLElement>) => {
     event.preventDefault();
     event.stopPropagation();
@@ -1185,6 +1433,14 @@ function SessionNode({
         session,
         workspaceDir,
         onRename: () => startRename(),
+        onPin: () =>
+          void runAction(
+            t(session.pinned ? "sessionMenu.unpin" : "sessionMenu.pin"),
+            api.pinSession(session.id, !session.pinned),
+          ).then(onChanged),
+        onArchive: () =>
+          void runAction(t("sessionMenu.archive"), api.archiveSession(session.id)).then(onChanged),
+        onFork: () => setForkOpen(true),
         onDelete: () =>
           void runAction(t("sidebar.delete"), api.deleteSession(session.id)).then(onChanged),
         t,
@@ -1470,6 +1726,20 @@ function SessionNode({
           onClose={() => setContextMenu(undefined)}
         />
       ) : null}
+      {/* PB-1. `onForked` re-reads the tree so the new row appears, then
+          switches to it: a duplicate the user cannot navigate to is a
+          duplicate they have to go find, and the switch is the same path
+          every other row-open takes. */}
+      <SessionForkDialog
+        sessionId={session.id}
+        open={forkOpen}
+        onCancel={() => setForkOpen(false)}
+        onForked={(newSessionId) => {
+          onChanged();
+          void openSessionAndReportLanding(newSessionId, onChanged, t);
+        }}
+        t={t}
+      />
     </>
   );
 }
@@ -1566,11 +1836,15 @@ function SubagentRow({
   // right-click menu as its parent — the reference's `openSessionMenu` is
   // bound to child rows too. Rename stays disabled here: the child row has
   // no inline editor to swap into (its rename contract would need the same
-  // edit affordance the main row has).
+  // edit affordance the main row has). PB-1's 置顶 / 归档 / 复制为新会话 are
+  // NOT in that category and are wired below — see `openChildMenu`.
   const [contextMenu, setContextMenu] = useState<
     | { readonly x: number; readonly y: number; readonly items: readonly WebuiContextMenuItem[] }
     | undefined
   >();
+  // PB-1: the child's own copy of the fork dialog, for the same reason
+  // `SessionNode` holds one.
+  const [forkOpen, setForkOpen] = useState(false);
   const openChildMenu = (event: React.MouseEvent<HTMLElement>) => {
     event.preventDefault();
     event.stopPropagation();
@@ -1580,6 +1854,22 @@ function SubagentRow({
       items: buildSessionContextMenu({
         session,
         workspaceDir,
+        // PB-1: the child row gets the same three actions as its parent,
+        // and the reason it can is that all three are keyed on the
+        // session id alone — the child row carries a real `mvs_` id, the
+        // engine's archive/pin/fork methods take no parent/child notion,
+        // and none of them needs an inline editor the way 重命名 does.
+        // Leaving them off would produce two menus with the same items
+        // that behave differently depending on which row was clicked,
+        // which is the kind of difference a user discovers by accident.
+        onPin: () =>
+          void runAction(
+            t(session.pinned ? "sessionMenu.unpin" : "sessionMenu.pin"),
+            api.pinSession(session.id, !session.pinned),
+          ).then(onChanged),
+        onArchive: () =>
+          void runAction(t("sessionMenu.archive"), api.archiveSession(session.id)).then(onChanged),
+        onFork: () => setForkOpen(true),
         onDelete: () =>
           void runAction(t("sidebar.delete"), api.deleteSession(session.id)).then(onChanged),
         t,
@@ -1639,6 +1929,16 @@ function SubagentRow({
           onClose={() => setContextMenu(undefined)}
         />
       ) : null}
+      <SessionForkDialog
+        sessionId={session.id}
+        open={forkOpen}
+        onCancel={() => setForkOpen(false)}
+        onForked={(newSessionId) => {
+          onChanged();
+          void openSessionAndReportLanding(newSessionId, onChanged, t);
+        }}
+        t={t}
+      />
     </>
   );
 }

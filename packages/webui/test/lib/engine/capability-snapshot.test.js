@@ -1093,41 +1093,70 @@ describe("M4-2 exec interface — the transcribed table matches the real sources
     assert.deepEqual(registered, [...EXEC_INTERFACE.processSignals].sort());
   });
 
-  // The direction that protects the declaration, and the finding it
-  // records. `mcode exec --output-format stream-json` writes exactly
-  // what `ExecEventProjector` produces — `output.ts:34-36` refuses the
-  // format outright with no projector, and `runner.ts:218-232` always
-  // supplies one — so the wire carries `streamEvents` and nothing else.
-  // The names webui's `collectExecResult` branches on are the
-  // SUPERVISOR'S INTERNAL stream-event names, and the intersection with
-  // the wire is empty.
+  // The direction that protects the declaration, INVERTED by D1.
   //
-  // That is a real mismatch in the exec data plane, not a test artifact.
-  // It is pinned as a KNOWN DEBT rather than hidden, and this assertion
-  // is what makes it visible: if the two families ever start overlapping
-  // — because tui emits both, or because webui is fixed to parse the
-  // projected names — the intersection becomes non-empty and this goes
-  // red with a message that says which side moved.
-  test("the exec parser's branch names and the wire's event names do not overlap", async () => {
+  // M4-2 pinned the opposite: `collectExecResult`'s branch names
+  // (`delta`, `message`, `exec.result` — the supervisor's internal
+  // `TuiStreamEvent` names) and the wire's event names had an EMPTY
+  // intersection, which is why the exec transport's streaming data plane
+  // was dead. D1 fixed the consumer to the wire, and this test now pins
+  // the fixed state: the parser's dispatch arms must be a SUBSET of what
+  // the stream-json line can carry, and together with `baseOnlyEvents`
+  // they must account for the whole `ExecEvent` union.
+  //
+  // Three assertions, each aimed at a specific way this can rot again:
+  //   1. the parser's arms and `consumedEvents` are the same set (the
+  //      declaration cannot claim a consumption the parser does not make,
+  //      or the reverse);
+  //   2. every consumed name is one the wire can emit — the M4-2 pin,
+  //      flipped from "must not overlap" to "must overlap", so a
+  //      supervisor-internal name coming back is red;
+  //   3. the un-consumed complement is exactly `baseOnlyEvents`, so
+  //      dropping `turn.failed` (or any payload-bearing type) from the
+  //      parser without recording it is red.
+  test("the exec parser dispatches on the wire's event names, and the table says so", async () => {
     const { readFileSync: read } = await import("node:fs");
     const src = read(
       fileURLToPath(new URL("../../../server/lib/mcode-exec.js", import.meta.url)),
       "utf8",
     );
+    // The parser is a `switch (m.type)` over the projected `ExecEvent`
+    // union, so the arms are `case "<name>":`. Matching the arm label —
+    // not any quoted string in the file — is what keeps prose and
+    // comment text from being counted as consumption.
     const consumed = [
-      ...new Set([...src.matchAll(/m\.type === "([^"]+)"/g)].map((m) => m[1])),
+      ...new Set([...src.matchAll(/^\s*case "([^"]+)":$/gm)].map((m) => m[1])),
     ].sort();
     assert.deepEqual(
       consumed,
       [...EXEC_INTERFACE.consumedEvents].sort(),
-      "the branches in collectExecResult and EXEC_INTERFACE.consumedEvents have drifted",
+      "the dispatch arms in collectExecResult and EXEC_INTERFACE.consumedEvents have drifted",
     );
-    const overlap = consumed.filter((type) => EXEC_INTERFACE.streamEvents.includes(type));
+    const notOnTheWire = consumed.filter((type) => !EXEC_INTERFACE.streamEvents.includes(type));
     assert.deepEqual(
-      overlap,
+      notOnTheWire,
       [],
-      "exec parser branch names now overlap the wire event names — one of the two sides moved, " +
-        "so EXEC_INTERFACE.consumedEvents and the toolSkillInvocation / usageStats reasons must be re-audited",
+      "collectExecResult dispatches on " +
+        notOnTheWire.join(", ") +
+        ", which the stream-json wire can never emit — a supervisor-internal name has come back",
+    );
+    // The complement is pinned rather than derived: `streamEvents` and
+    // `consumedEvents` are both frozen, so a NEW event type on the tui
+    // side is caught by the union test above; this one catches a payload
+    // type quietly ceasing to be consumed.
+    const unconsumed = EXEC_INTERFACE.streamEvents
+      .filter((type) => !EXEC_INTERFACE.consumedEvents.includes(type))
+      .sort();
+    assert.deepEqual(
+      unconsumed,
+      [...EXEC_INTERFACE.baseOnlyEvents].sort(),
+      "the events collectExecResult does not dispatch on are no longer exactly the base-only ones — " +
+        "a payload-bearing type stopped being consumed, or a base-only type started being listed as consumed",
+    );
+    assert.deepEqual(
+      [...new Set([...EXEC_INTERFACE.consumedEvents, ...EXEC_INTERFACE.baseOnlyEvents])].sort(),
+      [...EXEC_INTERFACE.streamEvents].sort(),
+      "consumedEvents and baseOnlyEvents must partition the ExecEvent union",
     );
   });
 

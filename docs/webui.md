@@ -243,7 +243,7 @@ The fourth registered provider is the **`exec` transport** (M4-2) — the one-sh
 | sessionCrud | partial — missing `createSession`, `listSessions`, `getSession`, `updateSession`, `renameSession`, `archiveSession`, `deleteSession`, `forkSession`, `getSessionForkOptions`, `loadSession`, `activateSession`. Only `--session` / `--continue` exist, and they re-enter a session rather than choose one |
 | streamingSend | full (`--input -` plus the `stream-json` event stream) |
 | interrupt | none — interface-absent: nothing to call. The SIGINT/SIGTERM/SIGHUP in `packages/tui/src/cli/run-exec-command.ts` are signals webui sends to the child **it** spawned, i.e. webui's own kill cascade, not a capability the transport offers |
-| toolSkillInvocation | partial — missing `listSkills`, `listRuntimeSkills`, `listPendingPermissions`, `replyPermission`, `setMode`. The transport PRODUCES `tool_call` items and webui does not read them; and `--permission` is fixed at spawn time (the CLI says `ask` requires TUI/ACP), so there is no permission request/reply pair |
+| toolSkillInvocation | partial — missing `listSkills`, `listRuntimeSkills`, `listPendingPermissions`, `replyPermission`, `setMode`. The transport PRODUCES `tool_call` items and webui consumes but does not render them; and `--permission` is fixed at spawn time (the CLI says `ask` requires TUI/ACP), so there is no permission request/reply pair |
 | turnDiff | none — interface-absent, **servedBy `local-runtime-v2`** |
 | turnRewindRedo | none — interface-absent (`mcode exec review` reviews local git changes and carries no turn coordinate, so it is not a rewind surface) |
 | plugins | none — interface-absent, **servedBy `local-runtime-v2`** |
@@ -257,7 +257,20 @@ The fourth registered provider is the **`exec` transport** (M4-2) — the one-sh
 
 Three cells are **weaker** than acp, and for structural reasons rather than unfinished engine work: `interrupt` (acp has a cancel notification, exec has nothing to declare one on), `subagents` (acp can parse sub-agent activity off its stream, exec's event union has no such kind) and `authCredentials` (acp has two RPC methods, exec has no channel). The reverse exception is the same two keys for the same reason, which is a finding rather than a copy: `/api/turn-diff*` and `/api/plugins*` project the in-process v2 host and gate on **no transport**, so every transport inherits it.
 
-**A known mismatch this audit surfaced, recorded rather than hidden.** The three event names `collectExecResult` branches on — `delta`, `message`, `exec.result` — are the *supervisor's internal* stream-event names. `--output-format stream-json` writes only what `ExecEventProjector` produces (`packages/tui/src/headless/output.ts` refuses the format with no projector, and `packages/tui/src/headless/runner.ts` always supplies one), so the wire carries the ten `ExecEvent` types and the two name families do not intersect. That is a real gap in the exec data plane. M4-2 does not fix it — the batch registers a declaration and changes no routing — but it is pinned in `EXEC_INTERFACE.consumedEvents` and asserted by a test that fails if the intersection ever becomes non-empty in either direction.
+**The mismatch this audit surfaced, and what it cost.** The three event names `collectExecResult` branched on — `delta`, `message`, `exec.result` — are the *supervisor's internal* stream-event names. `--output-format stream-json` writes only what `ExecEventProjector` produces (`packages/tui/src/headless/output.ts` refuses the format with no projector, `packages/tui/src/headless/runner.ts` always supplies one, and the encoder's `result()` leg goes through `projector.complete()` rather than writing the `ExecResult` itself), so the wire carries the ten `ExecEvent` types and the two name families did not intersect.
+
+That was not a missing feature but a **dead data plane**, and it is worth spelling out what a user saw on `MCODE_USE_ACP=0` — and on every non-`Full access` permission mode, which silently re-routes to exec: reasoning and answer text streamed in and never landed, the turn ended with no answer line at all, the context counters never moved, and the follow-up turn started a brand-new engine session because the session id was never read back. D1 rewrote the consumer against the wire:
+
+| Wire event | Consumed as |
+| --- | --- |
+| `sessionId` on every line | the engine session this run entered, written back to `cs.mcodeSessionId` so the next turn continues it |
+| `item.started` / `item.updated` | `item.contentDelta` appended to the answer / reasoning accumulator and streamed as a `●` / `▲` line |
+| `item.completed` | `item.content`, adopted only for an item that never streamed a delta |
+| `turn.completed` | per-turn `usage` and `durationMs` |
+| `turn.failed` | `status` and `error` |
+| `exec.completed` | the terminal `ExecResult`, and the call to `finalize()` |
+
+`EXEC_INTERFACE.consumedEvents` now names exactly those six, `EXEC_INTERFACE.baseOnlyEvents` names the four that carry nothing beyond `ExecEventBase`, and a test asserts the two partition the union, that the parser's `switch` arms are the same set, and that every consumed name is one the wire can emit. A `tool_call` item is consumed but not rendered — it carries a `toolCall` payload rather than text — which is why `toolSkillInvocation` stays `partial`.
 
 **`servedBy` is the plan's one reverse exception, and it is load-bearing.** `turnDiff` and `plugins` are honestly `none` on the protocol, and the three `/api/turn-diff` and ten `/api/plugins` endpoints still work on the default acp transport, because they project the in-process local-runtime-v2 host through `getEngineCatalogueHost()` and are gated on no provider declaration. Reading the level alone would eventually 501 two working features the moment a frontend consulted the transport's provider instead of the default one. `summarizeCapabilityHosting(capabilities)` and `resolveCapabilityHostProvider(providerId, key)` expose the routing fact; the hosted keys deliberately stay in `summarizeUnavailableCapabilities`, because the provider really has none and that `{none, partial}` shape is already on the wire. The `exec` provider carries the same two fields for the same structural reason, which is what makes `servedBy` a per-key declaration field rather than an acp special case.
 
@@ -1647,6 +1660,27 @@ implementation accident:
 
 The `mermaid` dependency (11.12.1, MIT) is recorded in
 `release/dependency-licenses.json`.
+
+### Raw HTML in Markdown is text, never markup (P17)
+
+HTML written into a Markdown source — an assistant message, an activity
+group, a `.md` file preview — is **shown as the source text**. It is never
+parsed into DOM elements. That is the whole contract; the rest is how it is
+kept, and how you would notice a regression.
+
+| Aspect | Contract | Backed by |
+| --- | --- | --- |
+| Author HTML | Inline and block HTML are escaped, so a pasted `<svg><path …/></svg>`, a `<div onclick=…>`, or a `<script>` block appears verbatim as text. The prose around it is unaffected — one snippet does not blank the message | `webapp/lib/markdown.ts` (the `renderer.html` override) |
+| Why the parser and not the sanitiser | `marked` has no "no raw HTML" option: without the override the snippet reached the tag allowlist, which admits `svg`/`path` for KaTeX geometry, and `components/markdown-html.tsx` then called `createElement("path")` — an unknown host element, and one `The tag <path> is unrecognized in this browser` console error per occurrence (nine in a single UAT round; `doc/uat/2026-10-03-16-master-sub-agent-comm-redline1.md`, anomaly #2) | `webapp/lib/markdown.ts`, `components/markdown-html.tsx` (`htmlToReact`) |
+| Generated HTML is exempt | Markup this app *generates* never passes through that override: KaTeX arrives from the `webuiMath` inline extension and every fenced language from `registerLanguageRenderer`, both of which return their HTML directly. Formula geometry — real `<svg>`/`<path>` — therefore still renders | `webapp/lib/math-renderer.ts`, `webapp/lib/markdown.ts` (`safeLanguageRenderer`) |
+| Line structure | A block snippet keeps its original line breaks; escaping never collapses a multi-line paste onto one line | `webapp/lib/markdown.ts`, `webapp/test/markdown-raw-html.test.ts` |
+| How to tell it works | The regression suite asserts the React tree, not just the string: no `svg`/`g`/`path` element is ever created for author HTML, and a formula still creates `svg` + `path`. A change that lets a tag through turns the suite red, and so does one that over-tightens and kills formula geometry | `webapp/test/markdown-raw-html.test.ts` |
+
+Rejected alternatives: **rendering model-authored SVG** (an XSS surface — an
+`<svg>` can carry `<foreignObject>`, animation and event handlers, and the
+product intent is a transcript, not a renderer); **adding DOMPurify** (a
+multi-megabyte dependency to defend markup the app never needs, when the
+parser can refuse it outright).
 
 ### Code block wrapping and scrollbars (ticket 52)
 

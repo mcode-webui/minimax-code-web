@@ -185,13 +185,38 @@ describe("55c project context menu (session-tree.tsx, ref-26)", () => {
     }
   });
 
-  test("reveal / archive are disabled with the notLocal marker", () => {
-    for (const key of ["reveal", "archive"]) {
-      const at = src.indexOf(`key: "${key}"`);
-      const slice = src.slice(at, at + 700);
-      assert.ok(slice.includes("disabled: true"), `${key} disabled`);
-      assert.ok(slice.includes('t("common.notLocal")'), `${key} notLocal marker`);
-    }
+  test("reveal keeps the notLocal marker; archive gets its own accurate reason", () => {
+    // `reveal` is unchanged: 在文件夹中显示 is not a webui capability at
+    // all, and `common.notLocal` still describes it correctly.
+    const atReveal = src.indexOf('key: "reveal"');
+    const reveal = src.slice(atReveal, atReveal + 700);
+    assert.ok(reveal.includes("disabled: true"), "reveal disabled");
+    assert.ok(reveal.includes('t("common.notLocal")'), "reveal notLocal marker");
+
+    // `archive` is CHANGED by PB-1, and deliberately. The old expectation
+    // asserted `common.notLocal`, which was wrong twice over: it claimed
+    // the local build lacks a capability it has always had (the
+    // SESSION-level 归档 in the same file is now live and calls
+    // `archiveSession`), and it said nothing about what is actually
+    // missing. What is missing is a project-SCOPED bulk archive — v2
+    // declares `archiveSession({id, archived})` for one session and
+    // nothing project-wide — so the item keeps its `disabled: true` and
+    // gains a tooltip that says so. Both halves are asserted: an item
+    // that silently stopped being disabled, and an item that stayed
+    // disabled for a reason that is no longer true, are the two ways this
+    // drifts.
+    const atArchive = src.indexOf('key: "archive"');
+    const archive = src.slice(atArchive, atArchive + 1600);
+    const marker = 't("projectMenu.archiveUnavailable")';
+    assert.ok(archive.includes("disabled: true"), "archive stays disabled");
+    assert.ok(
+      archive.includes(marker),
+      "archive's disabled reason must name the missing project-scoped bulk archive",
+    );
+    assert.ok(
+      !archive.slice(0, archive.indexOf(marker)).includes('t("common.notLocal")'),
+      "archive must no longer claim the local build lacks archiving",
+    );
   });
 
   test("remove is the danger row and batch-deletes behind a confirm", () => {

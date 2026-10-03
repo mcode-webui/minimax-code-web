@@ -678,11 +678,26 @@ describe("handleSessionTree — the route passes the facade payload through", ()
   // is load-bearing rather than decorative.
   let bust = 0;
 
-  test("a facade payload is written to the response byte-for-byte", async (t) => {
+  test("a facade payload is written to the response byte-for-byte, plus the pin overlay", async (t) => {
     // The payload is injected rather than produced, so this is about the
     // ROUTE's contract: it must not re-shape, re-count or re-derive
     // anything. The payload carries the exact key set the real tree
     // produces, `cached` included.
+    //
+    // PB-1 changed that contract in exactly one way, and the delta is
+    // asserted rather than waved at. `lib/session-tree.js` reads
+    // `local_runtime_sessions`, which has no pin column, so the route
+    // reads the engine's `PinService` order and lays it over the payload.
+    // Everything else — `cached`, `counts`, `generatedAt`, `truncated` —
+    // still passes through untouched, which is what this test is for.
+    //
+    // The pin read is MOCKED here, and mocked as DEGRADED, because that is
+    // the interesting case: the overlay must still be applied (every
+    // session gains `pinned: false`) and the response must still say the
+    // answer is unknown rather than empty. A route that skipped the
+    // overlay on a degraded read would leave the client reading a missing
+    // `pinned` field as `undefined`, which is the bug the always-write-
+    // the-boolean rule exists to prevent.
     const payload = {
       ok: true,
       generatedAt: 1750000000000,
@@ -738,6 +753,53 @@ describe("handleSessionTree — the route passes the facade payload through", ()
         }),
       },
     });
+    // PB-1: the pin overlay's engine read, answering DEGRADED. See the
+    // test's header for why the degraded case is the one worth pinning.
+    //
+    // `namedExports` REPLACES the module rather than merging into it, so
+    // every name `routes/sessions.js` imports from it has to appear here
+    // — the four action entry points and the two parsers are stubs that
+    // throw, because this test drives only `handleSessionTree` and their
+    // bodies are covered by the family suite. Omitting one is not a
+    // silent skip: the import throws at module instantiation, which is
+    // how a stale mock is caught instead of quietly passing.
+    t.mock.module(absPath("engine/session-context-actions.js"), {
+      namedExports: {
+        readEnginePinnedSessionOrder: async () => ({
+          pinnedIds: [],
+          degraded: true,
+          reason: "engine_host_unavailable",
+        }),
+        applyPinnedSessionOverlay: (tree, pinnedIds) => ({
+          ...tree,
+          projects: tree.projects.map((p) => ({
+            ...p,
+            directories: p.directories.map((d) => ({
+              ...d,
+              sessions: d.sessions.map((s) => ({ ...s, pinned: pinnedIds.includes(s.id) })),
+            })),
+          })),
+        }),
+        applyEngineSessionArchive: () => {
+          throw new Error("not exercised by this suite");
+        },
+        applyEngineSessionFork: () => {
+          throw new Error("not exercised by this suite");
+        },
+        applyEngineSessionPin: () => {
+          throw new Error("not exercised by this suite");
+        },
+        parseArchiveRequestBody: () => {
+          throw new Error("not exercised by this suite");
+        },
+        parsePinRequestBody: () => {
+          throw new Error("not exercised by this suite");
+        },
+        readEngineSessionForkOptions: () => {
+          throw new Error("not exercised by this suite");
+        },
+      },
+    });
     const sessionsRoute = await import(`${absPath("routes/sessions.js")}?bust=${bust++}`);
     const written = [];
     const res = {
@@ -748,7 +810,21 @@ describe("handleSessionTree — the route passes the facade payload through", ()
     await sessionsRoute.handleSessionTree({ url: "/api/session-tree" }, res, { cid: "t" });
     assert.equal(written[0].status, 200);
     assert.equal(written[0].headers["Cache-Control"], "no-store");
-    assert.deepEqual(JSON.parse(written[1].body), payload);
+    // Every session in the payload gains `pinned` — including the child,
+    // which the mock overlay walks only one level deep, so the assertion
+    // is on the top-level row. The point is that the field APPEARS, not
+    // that this particular stub marked it correctly.
+    assert.deepEqual(JSON.parse(written[1].body), {
+      ...payload,
+      projects: payload.projects.map((p) => ({
+        ...p,
+        directories: p.directories.map((d) => ({
+          ...d,
+          sessions: d.sessions.map((s) => ({ ...s, pinned: false })),
+        })),
+      })),
+      pins: { pinnedIds: [], degraded: true, reason: "engine_host_unavailable" },
+    });
   });
 
   test("?refresh=1 reaches the facade as force:true, and nothing else does", async (t) => {

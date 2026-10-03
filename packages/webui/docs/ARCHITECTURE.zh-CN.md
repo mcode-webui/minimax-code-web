@@ -631,12 +631,13 @@ graph LR
     EXEC["mcode exec<br/>（一次性子进程）"]
     ARGS["argv<br/>applyExecCliContract<br/>packages/tui/src/cli/contract.ts"]
     WIRE["stream-json<br/>ExecEvent 联合<br/>packages/tui/src/headless/events.ts"]
-    PARSE["collectExecResult<br/>mcode-exec.js:221-294"]
+    PARSE["collectExecResult<br/>对 ExecEvent 类型做 switch<br/>mcode-exec.js"]
 
     EXEC -->|stdin：prompt| ARGS
     EXEC -->|stdout| WIRE
-    WIRE -.->|"delta / message /<br/>exec.result——非线路名"| PARSE
-    PARSE --> GAP["KNOWN DEBT：<br/>两个名字族<br/>不相交"]
+    WIRE -->|"item.* / turn.* / exec.completed"| PARSE
+    PARSE --> CHAT["cs.chat 流式行<br/>▲ 思考 · ● 回答"]
+    PARSE --> SID["r.sessionId → cs.mcodeSessionId<br/>r.usage → 上下文计数"]
 
     EXEC --> DECL["EXEC_CAPABILITIES<br/>full：streamingSend<br/>partial：4 键<br/>none：8 键"]
 ```
@@ -646,6 +647,21 @@ graph LR
 列的那整个问题（「`session/delete` 是不是注册了却没有 handler？」）在这里根本
 不成立。实际存在的是两个轴：进程被**告知**什么（CLI 选项），以及进程
 **回报**什么（事件类型）。`EXEC_INTERFACE` 记录两者，声明就对着它们审计。
+
+| 线路类型 | 消费为 |
+| --- | --- |
+| `ExecEventBase.sessionId`（每一行都带） | 本次运行进入的引擎会话，写回 `cs.mcodeSessionId`，使下一轮能用 `--session` 续接 |
+| `item.started` / `item.updated` | `item.contentDelta` 追加进 `r.answer` / `r.thinking`，并以 `●` / `▲` 流式行呈现 |
+| `item.completed` | `item.content`，仅对从未流出增量的 item 采纳 |
+| `turn.completed` | `usage` 与 `durationMs` |
+| `turn.failed` | `status` 与 `error` |
+| `exec.completed` | 终态 `ExecResult`（status、error、duration、最终 `output`）以及 `finalize()` 的调用 |
+| `exec.started`、`session.started`、`session.resumed`、`turn.started` | 除基类字段外无内容——即 `EXEC_INTERFACE.baseOnlyEvents` |
+
+`tool_call` item 会被消费但不会被渲染：它携带的是 `toolCall` 负载而非文本，
+所以工具面在这条传输上被生产出来、却始终不可见。这正是
+`EXEC_CAPABILITIES.toolSkillInvocation` 记录的事实，也是该键停在 `partial`
+而非 `full` 的原因。
 
 **`streamingSend` 是唯一的 `full`。** 发送 prompt 就是这条传输本身。其余全是
 削减，且这些削减是结构性的，不是没写完的活：
@@ -658,14 +674,19 @@ graph LR
 | `usageStats` | `partial` | `partial`——且**更强** | `turn.completed.usage` 会出现在 exec 线路上，所以这条传输在三个缺失名之下真有东西，acp 没有 |
 | `sessionCrud` | `partial` | `partial`——更弱 | `--session` / `--continue` 能重新进入已有会话；但没有列举、创建、加载、关闭或删除 |
 
-**审计查出的一条事实，选择记录而非隐藏。** `collectExecResult` 匹配的三个名字
-——`delta`、`message`、`exec.result`——是**supervisor 内部**的流事件名。
+**审计查出的一处错配，以及最终的处理。** 在 D1 之前，`collectExecResult` 匹配的
+三个名字——`delta`、`message`、`exec.result`——是**supervisor 内部**的流事件名。
 `stream-json` 格式只写 `ExecEventProjector` 产出的东西（`packages/tui/src/headless/output.ts:34-36`
-在没有 projector 时直接拒绝该格式，而 `packages/tui/src/headless/runner.ts:218-232` 总会提供一个），
-因此线路上跑的是那十个 `ExecEvent` 类型，而**两个名字族并不相交**。这是
-exec 数据面上的真实错配，而 M4-2 不修它：本批只注册声明、不改路由。它被钉在
-`EXEC_INTERFACE.consumedEvents`，由一条「相交集一旦在任一方向变为非空就转红」
-的测试守住，并记为 KNOWN DEBT。
+在没有 projector 时直接拒绝该格式，`packages/tui/src/headless/runner.ts:218-232` 总会提供一个，
+而编码器的 `result()` 那条腿走的是 `projector.complete()` 而非直接写出 `ExecResult`
+本身——`packages/tui/src/headless/output.ts:47-53`），因此线路上跑的是那十个 `ExecEvent` 类型，而
+**两个名字族并不相交**。后果不是缺一个功能，而是一整条死掉的数据面：没有流式
+增量、没有会话 id、没有用量、没有终态，于是这条传输上的每一轮都以
+`status: "unknown"` 和空回答收场，无论 agent 实际说了什么。D1 把消费面改回
+线路本身。`EXEC_INTERFACE.consumedEvents` 现在列出解析器 dispatch 的六个带负载
+的类型，`test/lib/engine/capability-snapshot.test.js` 断言该清单与解析器的
+`switch` 分支是同一集合、其中每个名字都是线路真能发出的名字、且补集恰好是
+`baseOnlyEvents`——也就是把 M4-2 那颗钉子反过来钉。
 
 **反向例外属于那两个路由，不属于 acp。** `exec` 同样把 `turnDiff` 与
 `plugins` 声明为 `none` 并带上同样的 `servedBy: "local-runtime-v2"`，而这是
