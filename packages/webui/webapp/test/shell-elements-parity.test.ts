@@ -185,13 +185,40 @@ describe("55c project context menu (session-tree.tsx, ref-26)", () => {
     }
   });
 
-  test("reveal keeps the notLocal marker; archive gets its own accurate reason", () => {
-    // `reveal` is unchanged: 在文件夹中显示 is not a webui capability at
-    // all, and `common.notLocal` still describes it correctly.
+  test("reveal is live (SB-6); archive keeps its own accurate reason", () => {
+    // `reveal` is CHANGED by SB-6, and the change removes a claim that
+    // was never true: 在文件夹中显示 was disabled with `common.notLocal`
+    // — "not applicable to the local edition" — while `POST /api/fs/reveal`
+    // was implemented and registered. It is live now, disabled only when
+    // the project is bound to no local directory, and the tooltip says
+    // THAT. The row is sliced up to the next row with its own comment
+    // stripped, so the prose quoting the retired string cannot satisfy
+    // the assertion that the string is gone. This file owns the menu
+    // WIRING; behaviour and bilingual coverage live in
+    // `webapp/test/project-reveal.test.ts`.
     const atReveal = src.indexOf('key: "reveal"');
-    const reveal = src.slice(atReveal, atReveal + 700);
-    assert.ok(reveal.includes("disabled: true"), "reveal disabled");
-    assert.ok(reveal.includes('t("common.notLocal")'), "reveal notLocal marker");
+    const atNext = src.indexOf('key: "archive"', atReveal);
+    const reveal = src
+      .slice(atReveal, atNext)
+      .replace(/^\s*\/\/.*$/gm, "")
+      .trim();
+    assert.ok(
+      reveal.includes("disabled: !switchRepoPath"),
+      "reveal is gated on the project having a local path, not disabled outright",
+    );
+    assert.ok(!reveal.includes("disabled: true"), "reveal is not a hard placeholder");
+    assert.ok(
+      reveal.includes('runProjectReveal(switchRepoPath, t("projectMenu.revealInFolder")'),
+      "reveal posts the project's own path",
+    );
+    assert.ok(
+      reveal.includes('t("projectMenu.revealUnavailableNoPath")'),
+      "reveal's disabled reason names the real condition",
+    );
+    assert.ok(
+      !reveal.includes('t("common.notLocal")'),
+      "the retired notLocal claim must be gone from the row",
+    );
 
     // `archive` is CHANGED by PB-1, and deliberately. The old expectation
     // asserted `common.notLocal`, which was wrong twice over: it claimed
@@ -205,7 +232,7 @@ describe("55c project context menu (session-tree.tsx, ref-26)", () => {
     // that silently stopped being disabled, and an item that stayed
     // disabled for a reason that is no longer true, are the two ways this
     // drifts.
-    const atArchive = src.indexOf('key: "archive"');
+    const atArchive = atNext;
     const archive = src.slice(atArchive, atArchive + 1600);
     const marker = 't("projectMenu.archiveUnavailable")';
     assert.ok(archive.includes("disabled: true"), "archive stays disabled");

@@ -210,17 +210,22 @@ const en = {
 
   /* Project context menu (ticket 55c, ref-26). Rename / pin are backed by the
      browser-local project customizations (webapp/lib/project-custom.ts);
-     reveal-in-folder renders disabled with `common.notLocal`; remove
-     batch-deletes the project's sessions behind a confirm.
+     remove batch-deletes the project's sessions behind a confirm.
      PB-1 corrected the archive item's reason: it used `common.notLocal`,
      which claimed the local build lacks a capability it has (the
      SESSION-level 归档 is live and calls `archiveSession`). What is
      missing is a project-SCOPED bulk archive, so this item gets its own
-     tooltip — see `server/engine/session-context-actions.js` KNOWN DEBT 2. */
+     tooltip — see `server/engine/session-context-actions.js` KNOWN DEBT 2.
+     SB-6 corrected reveal-in-folder the same way: it was disabled with
+     `common.notLocal` while `POST /api/fs/reveal` sat implemented and
+     registered. It is live now, and the one honest reason to grey it out
+     is a project bound to no local directory — which is what this key says. */
   "projectMenu.rename": "Rename project",
   "projectMenu.pin": "Pin project",
   "projectMenu.unpin": "Unpin project",
   "projectMenu.revealInFolder": "Reveal in folder",
+  "projectMenu.revealUnavailableNoPath":
+    "This project is not linked to a local folder, so there is nothing to open in the file manager.",
   "projectMenu.archive": "Archive chats",
   "projectMenu.archiveUnavailable":
     "No project-wide archive yet: the engine archives one session at a time, and archiving a whole project is a bulk operation this build has not defined.",
@@ -1377,16 +1382,20 @@ const zh: Record<MessageKey, string> = {
   "userMenu.localUser": "本地用户",
 
   /* 项目右键菜单（工单 55c，ref-26）。重命名 / 置顶由浏览器本地项目自定义
-     （webapp/lib/project-custom.ts）支撑；在文件夹中显示渲染为禁用并标注
-     `common.notLocal`；移除在确认弹窗后批量删除项目下的会话。
+     （webapp/lib/project-custom.ts）支撑；移除在确认弹窗后批量删除项目下的会话。
      PB-1 纠正了归档对话一项的禁用理由：原先用 `common.notLocal`，声称本地版
      缺少一项它本就具备的能力（会话级「归档」已接通 `archiveSession`）。
      真正缺的是**项目级批量归档**，故此项改用自己的提示文案 —— 见
-     server/engine/session-context-actions.js KNOWN DEBT 2。 */
+     server/engine/session-context-actions.js KNOWN DEBT 2。
+     SB-6 以同样的方式纠正在文件夹中显示：该项在 `POST /api/fs/reveal`
+     已实现并注册的前提下仍禁用并标注 `common.notLocal`。现已接通；唯一
+     诚实的禁用理由是「项目未关联本地目录」，此键说的正是这件事。 */
   "projectMenu.rename": "重命名项目",
   "projectMenu.pin": "置顶项目",
   "projectMenu.unpin": "取消置顶",
   "projectMenu.revealInFolder": "在文件夹中显示",
+  "projectMenu.revealUnavailableNoPath":
+    "该项目未关联本地文件夹，文件管理器里没有可打开的位置。",
   "projectMenu.archive": "归档对话",
   "projectMenu.archiveUnavailable":
     "暂无项目级批量归档：引擎一次只归档一个会话，而归档整个项目是本版尚未定义的批量操作。",

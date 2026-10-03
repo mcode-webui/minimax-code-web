@@ -1618,8 +1618,23 @@ it, with the A1 marker keeping the limits stated rather than implied.
   `titleCustom` overlays session titles. Pinned projects sort to the top
   and carry a persistent pin mark beside the title; the menu row toggles
   between 置顶项目 / 取消置顶.
-- 在文件夹中显示 is a disabled placeholder: a browser cannot open the
-  OS file manager.
+- 在文件夹中显示 is live (SB-6). It posts the project's path to
+  `POST /api/fs/reveal` — the endpoint has been implemented and
+  registered all along (`server/routes/fs.js#handleFsReveal`,
+  `server/app.js`); the menu row was a placeholder that claimed a
+  browser cannot reach the OS file manager, which is false for a
+  webui install (the server holds the workspace). The row is disabled
+  for exactly one reason: the project is bound to no local directory,
+  and the tooltip says so in those words rather than shrugging with
+  「本地版不适用」. A reveal that succeeds is silent — the file-manager
+  window is the feedback, and a toast would race it. A failure reports
+  through the same banner as the menu's other writes, labelled with the
+  menu's own localized name, whether the server refused with a
+  structured `code` or the request threw.
+- The SESSION-level 在文件夹中显示 stays a disabled placeholder. The
+  desktop reference disables it too, so there is no parity to chase
+  and no local limitation to blame — unlocking it would be a product
+  decision this build has not made.
 - 归档对话 is a disabled placeholder: the runtime db has an `archived`
   flag, but writing another process's database is out of scope, and
   until ticket 55b's archived-tasks page lands there is no un-archive
@@ -2750,7 +2765,7 @@ marker), not by tool name.
 | `POST` | `/api/fs/mkdir` | `routes/fs.js#handleFsMkdir` | `{path}`; parent in allowed roots; `403` on containment fail |
 | `POST` | `/api/fs/write` | `routes/fs.js#handleFsWrite` | `{path, content, expectedMtime?, expectedSize?, confirm?}` — the preview editor's save (slice 27). `200 {ok, path, size, mtime}` (fresh baseline); `400 {code:"missing-path"\|"missing-content"\|"invalid-content"\|"not-a-regular-file"}`; `403` containment / `403 {code:"credential", credentialReason}` (slice-16 shapes without `confirm:true`); `404 {code:"not-found"}` (vanished file — TOCTOU guard; a missing path normally fails the gate first, same as reads); `409 {code:"conflict", diskMtime, diskSize}` (stale baseline, nothing written); `413 {code:"too-large"}` (write cap = the read's 512 KiB). Bare `writeFileSync` on the gated path — no shell anywhere. `confirm:true` on a credential shape emits the `credential.override` audit line with `endpoint:"write"`. |
 | `POST` | `/api/fs/open-default` | `routes/fs.js#handleFsOpenDefault` | `{path}`; `400 {code:"missing-path"}` / `403 {code:"out-of-bounds"}` / `400 {code:"not-a-regular-file"}` / `503 {code:"no-opener"}` / `502 {code:"spawn-failed"}` |
-| `POST` | `/api/fs/reveal` | `routes/fs.js#handleFsReveal` | `{path}`; same code → status map as `open-default` |
+| `POST` | `/api/fs/reveal` | `routes/fs.js#handleFsReveal` | `{path}`; same code → status map as `open-default`. Consumers: the file-preview toolbar and the sidebar project menu's 在文件夹中显示 (SB-6) |
 | `GET` | `/api/fs/search` | `routes/fs.js#handleFsSearch` | `?root=&q=&depth=&maxNodes=&wallMs=&limit=&includeHidden=1`; `400 {code:"missing-root"\|"missing-q"\|"not-a-directory"\|"stat-failed"}`; success envelope: `{ok, root, q, matches:[{path,name,type,ancestors,credential?,credentialReason?}], scanned:{dirs,files,total}, skipped:{node_modules,n,.git,n,credential,n,huge,n,optional:{dist,build,…}}, truncated, truncatedReason: null\|"depth"\|"nodes"\|"wallClock"\|"matches", elapsedMs, budgets}`. Walker defaults: `maxDepth=8`, `maxNodes=5000`, `wallMs=1500`, `maxMatches=200`; absolute limits: `16/50_000/5_000/1_000` (`packages/webui/server/lib/fs-search.js`). `node_modules` and `.git` are non-overridable skips. |
 | `GET` | `/api/git/status` | `routes/git.js#handleGitStatus` | `?dir=`; `400 {error:"missing dir"}` |
 | `GET` | `/api/git/branches` | `routes/git.js#handleGitBranches` | `?dir=`, leading `* ` → `current` flag |

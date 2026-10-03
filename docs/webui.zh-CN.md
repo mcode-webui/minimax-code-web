@@ -1195,7 +1195,8 @@ Token Plan 视图是桌面的五区块（页签 + 四卡）：
 **项目右键菜单**（侧栏项目行右键，参照 ref-26）五项对齐桌面：重命名项目 / 置顶项目 / 在文件夹中显示 / 归档对话 / 移除（红）。
 
 - 重命名与置顶是真做的。项目名与置顶状态存在浏览器本地（`webui:project-custom:v1`，见持久化键一节）——mcode 的运行时数据库里项目不是实体、没有可写入口，所以覆盖层放在唯一消费者所在处，与会话标题 `titleCustom` 的思路一致。置顶的项目排到列表最上，项目名旁常驻图钉标记。
-- 在文件夹中显示是占位禁用：浏览器打不开操作系统的文件管理器。
+- 在文件夹中显示是真做的（SB-6）。点击把项目路径发给 `POST /api/fs/reveal`——该端点一直都已实现并注册（`server/routes/fs.js#handleFsReveal`、`server/app.js`），而菜单这一行是占位，声称浏览器打不开操作系统的文件管理器；对持有工作区的 webui 部署而言这句话不成立。这一行只有一个诚实的禁用理由：项目未关联任何本地目录，此时提示语直说这件事，而不是拿「本地版不适用」敷衍。成功时静默——文件管理器窗口本身就是反馈，toast 只会跟它抢时序；失败时与菜单其余写操作走同一块错误横幅，标签用菜单自身已本地化的名称，无论服务端以结构化 `code` 拒绝还是请求抛出。
+- 会话级的在文件夹中显示仍是禁用占位：桌面参照同位也禁用，既没有对齐目标可追，也没有本地限制可归咎；解禁是一项本版尚未作出的产品决定。
 - 归档对话是占位禁用：mcode 数据库虽有 `archived` 字段，但写别的进程的数据库不在本片范围，且已归档任务页（工单 55b）未落地前没有取消归档的入口——归档会变成不可逆的数据消失。
 - 移除是真做的红色危险项：确认弹窗写明真实删除总数（主会话与子代理会话全量，不是侧栏角标的主会话数——不可逆确认不得少报）与不可恢复，并预告删除将逐个进行、期间会出现 N 次授权确认（服务端对每个单会话删除分别走 `authorize("session.delete")`，没有批量授权契约）；确认后弹窗内实时显示「正在删除 i/N」，逐个走既有的单会话删除端点，失败即停并报告。仅当全部删除成功时才清掉该项目的重命名/置顶记录（部分失败时存活项目保留其自定义），清理经组件状态与 localStorage 同步进行。
 
@@ -2152,7 +2153,7 @@ createdAtMs, updatedAtMs}`）下发，按 `toolCallId` 幂等、上限 32 条、
 | `POST` | `/api/fs/mkdir` | `routes/fs.js#handleFsMkdir` | `{path}`；父目录必须在允许根内；containment 失败 → `403` |
 | `POST` | `/api/fs/write` | `routes/fs.js#handleFsWrite` | `{path, content, expectedMtime?, expectedSize?, confirm?}`——预览编辑器的保存端点（slice 27）。`200 {ok, path, size, mtime}`（返回新基线）；`400 {code:"missing-path"\|"missing-content"\|"invalid-content"\|"not-a-regular-file"}`；containment → `403`；凭据形路径未确认 → `403 {code:"credential", credentialReason}`；文件消失 → `404 {code:"not-found"}`（TOCTOU 兜底——缺失路径通常先被共享闸门拦下，与读取行为一致）；基线过期 → `409 {code:"conflict", diskMtime, diskSize}`（不写盘）；超上限 → `413 {code:"too-large"}`（写入上限与读取同为 512 KiB）。实现是对围栏内路径的裸 `writeFileSync`——全程无 shell。凭据形路径带 `confirm:true` 时输出 `endpoint:"write"` 的 `credential.override` 审计行。 |
 | `POST` | `/api/fs/open-default` | `routes/fs.js#handleFsOpenDefault` | `{path}`；`400 {code:"missing-path"}` / `403 {code:"out-of-bounds"}` / `400 {code:"not-a-regular-file"}` / `503 {code:"no-opener"}` / `502 {code:"spawn-failed"}` |
-| `POST` | `/api/fs/reveal` | `routes/fs.js#handleFsReveal` | `{path}`；`code` → status 映射与 `open-default` 相同 |
+| `POST` | `/api/fs/reveal` | `routes/fs.js#handleFsReveal` | `{path}`；`code` → status 映射与 `open-default` 相同。消费方：文件预览工具条，以及侧栏项目右键的「在文件夹中显示」（SB-6） |
 | `GET` | `/api/fs/search` | `routes/fs.js#handleFsSearch` | `?root=&q=&depth=&maxNodes=&wallMs=&limit=&includeHidden=1`；`400 {code:"missing-root"\|"missing-q"\|"not-a-directory"\|"stat-failed"}`；成功时返回 `{ok, root, q, matches:[{path,name,type,ancestors,credential?,credentialReason?}], scanned:{dirs,files,total}, skipped:{node_modules,n,.git,n,credential,n,huge,n,optional:{dist,build,…}}, truncated, truncatedReason: null\|"depth"\|"nodes"\|"wallClock"\|"matches", elapsedMs, budgets}`。默认预算 `maxDepth=8 / maxNodes=5000 / wallMs=1500 / maxMatches=200`；绝对上限 `16 / 50_000 / 5_000 / 1_000`（`packages/webui/server/lib/fs-search.js`）；`node_modules` 与 `.git` 不可被覆盖。 |
 | `GET` | `/api/git/status` | `routes/git.js#handleGitStatus` | `?dir=`；`400 {error:"missing dir"}` |
 | `GET` | `/api/git/branches` | `routes/git.js#handleGitBranches` | `?dir=`；前导 `* ` → `current` 标志 |
