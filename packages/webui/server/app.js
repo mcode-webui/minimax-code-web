@@ -67,6 +67,7 @@ import * as debugRoute from "./routes/debug.js";
 import * as protocolRoute from "./routes/protocol.js";
 import * as providersRoute from "./routes/providers.js";
 import * as modelSourceRoute from "./routes/model-source.js";
+import * as followUpRoute from "./routes/follow-up.js";
 import * as gitRoute from "./routes/git.js";
 import * as pluginsRoute from "./routes/plugins.js";
 import * as turnDiffRoute from "./routes/turn-diff.js";
@@ -130,6 +131,16 @@ export const OWNED_ROUTES = new Set([
   "POST /api/send",
   "POST /api/stop",
   "POST /api/cmd",
+  // SB-4 — the follow-up message family. One window over the two engine
+  // methods that already existed with nothing in front of them
+  // (`cli-service.ts`: enqueueMessage / steer), which the composer's
+  // 跟进消息行为 switch was writing to localStorage and never reading.
+  // Unlike `/api/send` this is NOT fire-and-forget: the response carries
+  // the engine's own answer (a queue item id and position, or the turn a
+  // message was steered into), because a message that was not delivered
+  // has to come back to the input box. See `engine/follow-up.js` for the
+  // ownership gate and the KNOWN DEBT list.
+  "POST /api/follow-up",
   // Usage / quota.
   "POST /api/usage",
   "POST /api/usage-trigger",
@@ -553,6 +564,13 @@ export function createHonoApp() {
   );
   app.post("/api/cmd", (c) =>
     invokeHandler(c, c.get(CAPTURE_KEY), chatRoute.handleCmd),
+  );
+  // ----- SB-4: follow-up messages -----
+  // Adjacent to the chat routes because it is a chat action, and
+  // registered after them so the OWNED_ROUTES order and the registration
+  // order stay the same list.
+  app.post("/api/follow-up", (c) =>
+    invokeHandler(c, c.get(CAPTURE_KEY), followUpRoute.handleFollowUp),
   );
 
   // ----- Usage / quota -----

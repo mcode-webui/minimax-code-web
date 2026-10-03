@@ -81,6 +81,11 @@ describe("app.js — migration ledger", () => {
       "POST /api/send",
       "POST /api/stop",
       "POST /api/cmd",
+      // SB-4: the follow-up family, registered next to the chat routes it
+      // belongs to. It is a chat action (a message sent INTO a running
+      // turn), and unlike /api/send its response carries the engine's
+      // answer rather than an acknowledgement.
+      "POST /api/follow-up",
       "POST /api/usage",
       "POST /api/usage-trigger",
       "GET /api/usage-real",

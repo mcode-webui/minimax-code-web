@@ -1206,7 +1206,7 @@ missing feature. Only Worktree is genuinely not implemented.
 | Preferences | Personalization | implemented — 自定义指令 and 关于你 persist to `localStorage`; both memory switches render off and disabled with the not-applicable marker, and 管理 opens the 记忆摘要 dialog in its permanent empty state |
 | Management | Usage & models | implemented; since SB-1 the two engine sources are real (Token Plan / MiniMax API switch the engine's credential, the 「使用中」 badge reads the engine back, and the MiniMax API key can be saved and probed) — the third pill, Custom models, stays a VIEW onto the provider catalogue |
 | Management | Connection | implemented |
-| Management | Account | implemented as a placeholder — 账户信息 reads 「本地模式，未登录」, 退出登录 is disabled (no account service locally) |
+| Management | Account | implemented as a read — the section reads `GET /api/account` on mount and renders the account name, the current plan name, the quota overview (plan-quota state plus the 5-hour and weekly remaining figures) and the account status; sign-out stays disabled (no engine method acts on it) |
 | Coding | Code review | implemented — 自定义审查准则 persists to `localStorage`; 审查方式 is a disabled single-option dropdown showing 子会话 |
 | Coding | Worktree | **not implemented** — the tab is a one-line panel reading 「本地版暂不支持工作树管理」 |
 | Archived | Archived tasks | the tab renders its empty state 「暂无已归档任务」; the list and its actions need an archived-session contract that does not exist |
@@ -1267,7 +1267,7 @@ between adjacent rows:
 | Files | enabled | two switches persisted in `localStorage`, see the table below |
 | Session management | enabled | one switch, persisted; gates the composer's context-window readout (see below) |
 | Agent control | disabled furniture | the 「自动打开浏览器面板」 switch renders off and disabled (no capability behind it) |
-| Preference settings | enabled | follow-up behaviour radio (queue / send now), persisted; **records the preference only** — the composer does not read it yet (ticket 49 owns that surface). Watermark and data opt-in render disabled |
+| Preference settings | enabled | follow-up behaviour (disabled / queue / send now); since SB-4 the composer reads it, and a send into a running turn reaches the engine's queue or steers the running turn. Watermark and data opt-in render disabled |
 | About | mixed | upload logs and check-for-update are disabled buttons; the local URL and LAN URL are live read-only rows from `/api/settings` |
 | dataDir footer | not implemented | the reference prints the app data directory at the bottom of the General page; `/api/settings` has no such field and the server routes are read-only this round, so no value exists to print |
 
@@ -1286,7 +1286,7 @@ clients:
 | `file_open_in_new_tab` | `"true"` here (`"false"` in the reference) | **Yes.** On (default) keeps this client's standing one-tab-per-file behaviour; off replaces the **active file tab** with the newly opened file. The strip has no pinned-tab concept, so "active file tab" is the reuse target — a documented approximation of the reference's "reuse the unpinned tab" |
 | `file_line_wrap` | `"true"` | **Yes.** On wraps over-wide lines; off scrolls horizontally. Covers both code-file previews (ticket 48) and markdown codeblocks — chat messages, activity groups and markdown file previews (ticket 52); the language label never wraps. Applies to previews opened / messages mounted after the switch (an already-open one does not reflow); a wrapped file-preview line's gutter number aligns with its first visual row — a known trade-off |
 | `webui-context-window-usage` | `"false"` | **Yes.** On draws the context-window readout in the composer's toolbar, immediately left of the model chip; off renders nothing there. The readout's own form is unchanged — the ring, the percentage, the breakdown and the plan rows all come from the session snapshot as before. Flipping the switch takes effect without a reload |
-| `webui-follow-up-behavior` | `"queue"` (or `"steer"`) | No. Recorded preference only |
+| `webui-follow-up-behavior` | `"queue"` (or `"off"`, `"steer"`) | No. Decides what a send does while a turn runs; `"off"` is webui's own third position (the reference has two) |
 
 **The context-window readout**
 
@@ -1329,7 +1329,7 @@ contract.
 
 | Capability | Why |
 | --- | --- |
-| Account page | the tab renders in the reference's form, but there is no `getAccountStatus` / `signOut`-class server contract, so the account row reads 「本地模式，未登录」 and sign-out is disabled |
+| Account page | sign-out only — the readings are real (see **Account section (账户)** below); the engine exposes no sign-in/sign-out method, so the button renders in the reference's form, disabled, with that reason in its tooltip |
 | Archived tasks page | the tab renders its empty state; the list, its restore and its delete need the archived-session contract |
 | Usage & models three-source switching | the segmented tabs now match the desktop form (ticket 53), but they are a **view switcher** — they do not switch the model source in use; real Token Plan / MiniMax API / custom-model routing plus source badges still need a model-routing contract |
 | MiniMax API key panel | input + connectivity test + save-and-use |
@@ -1364,6 +1364,41 @@ model lists, connection tests, preset one-click enable); ticket 54 rebuilt
 the **add** flow into the desktop's dialog form (next section) and this batch
 folded **editing** into that same dialog (see "One dialog also edits" below) —
 the panel is now a list plus a delete affordance, with no second editor.
+
+**Account section (账户)**
+
+One read of `GET /api/account` on mount answers the whole section. The
+endpoint is not new and not duplicated: it is the same projection the user
+menu's account card already reads, fetched on demand because the state
+snapshot is broadcast to every SSE subscriber.
+
+| Row | Field | Missing-value sentence |
+| --- | --- | --- |
+| 账户名 | `identity.name`, trimmed | the engine answered and reported no name |
+| 当前套餐 | `tokenPlan.tier`, through the Token Plan card's own `planNameOf` | 「未订阅套餐」 when the engine reported no plan; the unread sentence when the surface itself failed |
+| 配额概况 | `tokenPlanQuotaState`, plus `quota.fiveHour` / `quota.weekly` `remainingPercent` | 「引擎未返回读数」 per window; 「不限量」 when the engine reports the window unmetered |
+| 账户状态 | `status` | the unread sentence; a status token with no dictionary entry resolves to no sentence rather than leaking a raw enum |
+
+The unread sentence is one per failure kind and each names the endpoint:
+`ok: false` renders the engine's own `reason` when it sent one, a transport
+failure renders the read-failed line, and none of them asserts a fact about
+the user. The two failures that are NOT the same thing — an unreachable
+account surface and an answer with no account name — therefore get different
+sentences, which is what the previous hardcoded 「本地模式，未登录」 row
+could not express.
+
+Division of labour with the Token Plan card is by shape, not by topic: that
+card owns the limit BARS, the plan actions, credits, expiry and invoicing;
+this section owns identity and the plain-text readings. The only shared
+value is the plan name, and it goes through one resolver (`planNameOf`) so
+the two surfaces cannot drift. A window reported as unmetered prints
+「不限量」 rather than 「剩余 0%」 — a plan with no cap must not read as an
+exhausted one.
+
+Rejected alternatives: a second account endpoint (the projection already
+exists and a second route would be a second contract to keep in sync), and
+showing the quota as bars here as well (the same gauge twice, from two
+different sources, on two pages).
 
 **Add-model dialog (ticket 54, 53b)**
 
@@ -1666,6 +1701,54 @@ catalogue query for an arbitrary key, so a live per-key fetch has no
 engine method behind it. The Token Plan cards stay on decision A1
 (本地版不适用) — wiring them to `/api/usage` and `/api/account` is a
 separate, undecided item, not a side effect of this one.
+
+### Follow-up messages: the switch is a behaviour (SB-4)
+
+**What the user sees.** 跟进消息行为 has three positions. While a task is
+running, the composer keeps Stop where it was and — with 排队 or 立即发送
+— also offers the send arrow: 排队 hands the message to the engine's queue
+so it runs after the current turn, 立即发送 steers the running turn. With
+关闭 the composer is exactly what it was before: the send control is
+replaced by Stop until the turn ends and the text waits in the box.
+Flipping the switch takes effect in the open page; no reload, no new
+send.
+
+**Why there is a third position.** The desktop reference's control has
+two, because the desktop owns the running turn and neither of its options
+can fail. webui's follow-up can be refused — the engine that owns the
+running turn may be another process — so a two-valued switch would be a
+behaviour change wearing a switch's clothes. 关闭 is webui's own option and
+is documented as such.
+
+**The ownership gate, and why it is not a transport check.** Before
+either action runs, the server asks the engine whether *this* process owns
+the active turn (`cliService.getActiveTurn`). Under the `runtime`
+transport the turn runs in the webui process, so the answer is yes and the
+queue or the steering message is admitted. Under the default `acp`
+transport the turn runs in an `mcode acp` subprocess, and queueing into
+this host would wake its own dispatcher and start a SECOND turn for a
+session that already has one — the failure `/api/send` spends four claims
+and a 409 preventing. That case is refused with `turn_not_owned`, the
+text comes back to the box, and the banner says why. The gate reads the
+engine's own answer rather than `MCODE_WEBUI_TRANSPORT`, so it stays
+correct when the chat path finishes its move to the in-process transport
+and needs no edit to start working.
+
+**What the response reports.** The engine's own answer, never the request:
+a queue answers with the item id and position the engine committed, a
+steer with the turn id and delivery mode. The two refususes stay two
+different sentences, because "no turn any more" and "the turn is in
+another process" call for different next steps.
+
+**Cost.** One engine read per follow-up send, and a write that boots the
+runtime if none is up — acceptable, because the user pressed send.
+
+**What this did not do.** The queue has no UI: a queued message is
+committed with an id and a position that nothing displays, and cannot be
+inspected, reordered or cancelled from the browser. That is PB-13's
+scope, and until it lands a queued follow-up is invisible until the
+running turn ends. A steered message reports admission, not whether the
+running agent read the text before its next step.
 
 ## Main-surface elements: user menu / project context menu / home capsules (ticket 55c)
 
@@ -2473,7 +2556,7 @@ Invariants worth keeping when touching either branch:
 | `file_open_in_new_tab` | `localStorage` | `webapp/lib/settings-local.ts` | ticket 48 (settings General page) | bare `"true"\|"false"` string; **deliberately outside the `webui:` namespace** — same key and format as the desktop reference so one browser profile shares the preference across both clients. Default `"true"` here (reference: `"false"`); read by `app/page.tsx#openFileTab` |
 | `file_line_wrap` | `localStorage` | `webapp/lib/settings-local.ts` | tickets 48 + 52 | bare `"true"\|"false"` string, reference-shared namespace; default `"true"`; read per mount by `components/code-view.tsx` (code-file previews) and `components/markdown-html.tsx` (markdown codeblocks: chat, activity groups, file previews) |
 | `webui-context-window-usage` | `localStorage` | `webapp/lib/settings-local.ts` | ticket 48 | bare `"true"\|"false"` string, reference-shared namespace; default `"false"`; read at mount and followed live by `components/context-meter.tsx` through `subscribeContextWindowUsage` |
-| `webui-follow-up-behavior` | `localStorage` | `webapp/lib/settings-local.ts` | ticket 48 | bare `"queue"\|"steer"` string (anything else reads as `"queue"`), reference-shared namespace; recorded preference, no reader yet |
+| `webui-follow-up-behavior` | `localStorage` | `webapp/lib/settings-local.ts` | ticket 48 / SB-4 | bare `"off"\|"queue"\|"steer"` string (anything else reads as `"queue"`), reference-shared namespace; read by `components/composer.tsx` and republished on every write |
 | `webui-shortcut-bindings` | `localStorage` | `webapp/lib/shortcuts.ts` | ticket 55c (settings Shortcuts page) | `{"global-search":"Ctrl+Shift+P", …}` — rebindings of the **live** shortcut rows only, written when the user records a new combination and removed entirely when the last one is cleared. Re-validated against the registry on read: a stored id that is no longer dispatched, or a chord that no longer parses, is dropped rather than honoured, so a hand-edited entry cannot widen what the page dispatches. Read at every keydown by `app/page.tsx` (through `effectiveBindings`) and once per mount by the settings page |
 | `webui:project-custom:v1` | `localStorage` | `webapp/lib/project-custom.ts` | ticket 55c (project context menu) | `{version:1, titles:{<projectKey>:<customName>}, pinned:[<projectKey>]}`. **Deliberately not cid-namespaced**: a rename or a pin describes the project, not a browser session, so every tab of this browser shares it. Best-effort write, silent failure; a project's entries are cleared when its remove completed with every session deleted |
 
@@ -2880,6 +2963,7 @@ marker), not by tool name.
 | `PUT` | `/api/model-source` | `routes/model-source.js#handleSetModelSource` | `{source}`; `400 {code:"INVALID_MODEL_SOURCE"\|"BAD_FIELD_TYPE"}`, `400 {code:"NO_API_KEY"}` when the engine refuses the BYOK direction; the response carries what the engine PERSISTED |
 | `PUT` | `/api/model-source/api-key` | `routes/model-source.js#handlePutModelSourceApiKey` | `{apiKey, saveAndUse?}`; an absent/empty/whitespace `apiKey` is the KEEP sentinel → `200 {changed:false}` with no engine write; `400 {code:"BAD_FIELD_TYPE"\|"INVALID_API_KEY"}`; `500 {code:"engine_error"}` never carries the thrown message |
 | `POST` | `/api/model-source/test` | `routes/model-source.js#handleTestModelSource` | `{modelId?}`; always 200 for a COMPLETED probe (`{ok, success, providerId:"minimax_api", tested:"stored_key", status}`) including `success:false`; non-200 only when the probe is refused (`503`/`501`, or the engine's `400 NO_API_KEY`) |
+| `POST` | `/api/follow-up` | `routes/follow-up.js#handleFollowUp` | `{behavior:"queue"\|"steer", content, attachments?, requestId?}` — the engine session id comes from the server's own conversation state, never the body; `400 {code:"invalid_follow_up_behavior"\|"follow_up_empty"\|"no_active_conversation"\|"BAD_FIELD_TYPE"}`; `409 {code:"no_active_turn"\|"turn_not_owned"}` when this process does not own the running turn, and nothing is queued; `501` when the host lacks the method, `503` when no runtime is booted; 200 `{ok, behavior, itemId, position, status}` (queue) or `{ok, behavior, turnId, mode}` (steer) — the engine's own answer |
 | `POST` | `/api/debug/inject` | `routes/debug.js#handleDebugInject` | `DEBUG_INJECT=1` gate |
 | `GET` | `/api/debug/state` | `routes/debug.js#handleDebugState` | same gate |
 | `POST` | `/api/protocol/set-mode` | `routes/protocol.js#handleSetMode` | mid-session mode change |
@@ -2943,6 +3027,38 @@ A bus that cannot answer the question (a test double that does not model
 the connection registry) is treated as "might have a listener" and keeps
 the old wait. The short-circuit can only ever deny — no path approves
 anything without a recorded decision.
+
+**"Is anybody listening?" and "does this request have an owner?" are two
+different questions, and the rule above answers only the first.** A
+request without `?cid=` — a curl, a script, a caller that forgot
+`withClientQuery` — is told "yes, somebody is listening" as soon as one
+browser tab is open, because an empty cid is the *broadcast* target and a
+connected tab really can see and answer the modal. Nobody asked for it,
+so nobody answers it, and the destructive request sits there for the full
+300000 ms. A gate that fires only while the connection registry is empty
+therefore misses the common case, and the caller sees a hang rather than
+a denial.
+
+The routes that serve an identified HTTP caller pass
+`{requireRequester: true}` for that reason: `session.delete`,
+`sessions.cleanup-orphans`, `session.export`, `session.search`. With no
+owner the answer is the same fail-closed one, at once, audited as
+`auth.unreachable` with `reason:"no_requester"` so an operator can tell it
+apart from a closed tab. The rule is opt-in because the difference is
+load-bearing in the other direction too — `startup.cleanup` asks with an
+empty cid on purpose, and any tab may answer it.
+
+`DELETE /api/sessions/:id` applies it before anything else, ahead of the
+plan, so an unattributable delete costs no store read and reaches no
+engine at all. The same handler also stops asking a question it can
+already answer: an id that is absent from the session store *and* is not
+an `mvs_` sid has no wrapper to splice and no engine rows to remove, so
+it returns the `404 {ok:false, error:"session not found"}` this branch has
+always returned — the facade's own `not_mcode_sid` / `already_absent`
+pair, stated at the HTTP layer instead of waited out — with no governance
+round-trip. Every id that can delete something, a resolved record or an
+orphan `mvs_` sid whose engine rows are about to go, still passes the
+gate.
 
 ## Blocking prompts: what each one can actually answer
 

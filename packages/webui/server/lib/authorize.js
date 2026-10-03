@@ -18,6 +18,24 @@
 // destructive HTTP request open for the full budget. See
 // `state-bus.js#hasDecisionListener`.
 //
+// P19 extends the same reasoning one step further, to the OTHER way a
+// decision can be unreachable: a request the router could not attribute
+// to any client at all. `?cid=` is absent — a curl, a script, a caller
+// that forgot `withClientQuery` — and `hasDecisionListener("")` then
+// answers "somebody is listening", because an empty cid is the
+// BROADCAST target and a connected browser really can see (and answer)
+// the modal. The request then waits the full five minutes for a human
+// who has no idea a modal is open, and a destructive endpoint looks
+// exactly like a hang: open socket, no status, no body.
+//
+// So "listening" and "answerable by the requester" are two different
+// questions, and only the first one is what the broadcast rule was
+// ever about. `hasDecidableRequester` asks the second. It is opt-in
+// (`opts.requireRequester`) because the difference is load-bearing in
+// the other direction too: `startup.cleanup` asks with an empty cid ON
+// PURPOSE — no HTTP requester exists at boot, any tab may decide — and
+// must keep broadcasting.
+//
 // Audit: every approve / reject / timeout writes one NDJSON event via
 // the static import of `server/lib/events.js`. The DECISION-OUTCOME
 // audit write (auth.approve/reject/timeout/cancelled) is
@@ -127,15 +145,43 @@ function _tryWriteEvent(evt) {
 
 // ---------- core API ----------
 
+/**
+ * Whether a request carries a client id its human decision can be
+ * attributed to.
+ *
+ * The server keys per-client session and state on `?cid=` (see
+ * `state-bus.js#getCidFromReq`), and the browser client puts it on
+ * EVERY api call (`webapp/lib/cid.ts#withClientQuery`). An empty cid
+ * is therefore not "the anonymous user" — it is a request no tab
+ * claimed: a curl, a script, a caller that forgot the query. No modal
+ * can be shown to anybody who asked for it, so nobody can say they
+ * meant it.
+ *
+ * Exported because the DELETE contract names it: P13's "unreachable
+ * channel ends at once" promise was written against `hasDecisionListener`
+ * and covers the offline-tab case only. This is the other half.
+ *
+ * @param {unknown} cid
+ * @returns {boolean}
+ */
+export function hasDecidableRequester(cid) {
+  return typeof cid === "string" && cid.trim() !== "";
+}
+
 // authorize(action, ctx, opts) → Promise<{approved, decidedBy, decidedAt}>
 //   action: one of AUTHORIZE_ACTIONS (throws on invalid)
 //   ctx:    { cid: string, [any extra context] } — cid is optional;
 //           empty cid = broadcast to all SSE clients
-//   opts:   { timeoutMs?: number, metadata?: object, bypass?: boolean }
+//   opts:   { timeoutMs?: number, metadata?: object, bypass?: boolean,
+//             requireRequester?: boolean }
 //           bypass=true skips the user gate (only for trusted internal
 //           callers — e.g. LAN token rotation triggered by the
 //           settings card modal that already presented its own
 //           confirmation UI).
+//           requireRequester=true additionally declares this request
+//           MUST be attributable to a client id, and turns "no cid" into
+//           the same at-once fail-closed answer an empty decision channel
+//           gets. See `hasDecidableRequester` above.
 //
 // There is deliberately NO test-mode auto-approve. A prior branch
 // inspected Node's runtime flag vector for --test /
@@ -179,6 +225,46 @@ export function authorize(action, ctx = {}, opts = {}) {
   const timeoutMs = Number(opts.timeoutMs) > 0 ? Number(opts.timeoutMs) : DEFAULT_TIMEOUT_MS;
   const expiresAt = requestedAt + timeoutMs;
   const safeCtx = ctx && typeof ctx === "object" ? ctx : {};
+
+  // P19: the caller declares this request must belong to a client, and
+  // it does not. Same answer, same shape, same audit frame as the
+  // empty-channel case below — the decision is unavailable, so the
+  // fail-closed answer is already determined and waiting for it only
+  // turns a 403 into a five-minute hang. Checked BEFORE the channel
+  // question, because a broadcast channel says nothing about whether
+  // this request has an owner.
+  if (
+    opts.requireRequester === true &&
+    !hasDecidableRequester(cid) &&
+    !_inProcessDeciderAttached
+  ) {
+    const decidedAt = Date.now();
+    _tryWriteEvent({
+      kind: "auth.unreachable",
+      target: action,
+      cid: null,
+      data: {
+        requestId,
+        requestedAt,
+        expiresAt,
+        timeoutMs,
+        reason: "no_requester",
+        metadata: opts.metadata || null,
+      },
+    });
+    // Same frame the timeout path emits. A request with no owner has no
+    // modal to close anywhere, so this is belt-and-braces for a tab that
+    // replayed a pending request onto a reconnect.
+    try {
+      pushAuthDecision({ requestId, approved: false, decidedBy: "timeout" });
+    } catch {}
+    return Promise.resolve({
+      approved: false,
+      decidedBy: "timeout",
+      decidedAt,
+      reason: "no_requester",
+    });
+  }
 
   return new Promise((resolve) => {
     // Can this request be decided at all? The gate is a push to a live

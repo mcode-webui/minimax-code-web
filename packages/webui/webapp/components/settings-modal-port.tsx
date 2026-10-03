@@ -53,6 +53,8 @@ import { applyAppearance, currentAppearance } from "@/lib/theme";
 import type { Locale, MessageKey } from "@/lib/i18n";
 import { ProviderManagementPanel } from "./provider-management";
 import { SettingsPanel, UsageModelsSection } from "./panels";
+// SB-5：账户 Tab 的真读取分区（`GET /api/account`），见该文件头的分工说明。
+import { AccountSection } from "./settings-account-section";
 // 55a 四子页（工单 58 线 D 接线）：与移植壳同目录的纯前端组件，无
 // store/api 依赖；面板自带 localStorage 持久化（lib/settings-local.ts）。
 import {
@@ -481,19 +483,10 @@ export function SettingsModalPort({
           ) : null}
           {active === "account" ? (
             <div className="webui-settings-panels">
-              <SettingPanel title={t("settings.tab.account")}>
-                {/* 本地版无账户会话：按参照形态渲染账户信息行（空值）与
-                 * 退出登录（无 capability，禁用）。 */}
-                <div className="webui-settings-row">
-                  <div>
-                    <strong>{t("settings.account.info")}</strong>
-                    <span>{t("settings.account.localLoggedOut")}</span>
-                  </div>
-                </div>
-                <SettingsButton disabled title={t("settings.account.signOutUnavailable")}>
-                  {t("settings.account.signOut")}
-                </SettingsButton>
-              </SettingPanel>
+              {/* SB-5：账户分区接 `GET /api/account`（账户名 / 当前套餐 / 配额读数 /
+               * 账户状态）。SB-5 之前这里是恒空态的硬编码行。退出登录维持禁用——引擎
+               * 没有登录登出方法（`doc/settings-batch-plan.md` §1.2 拍板）。 */}
+              <AccountSection t={t} />
             </div>
           ) : null}
           {active === "archived" ? (

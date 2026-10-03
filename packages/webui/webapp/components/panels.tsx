@@ -3165,10 +3165,21 @@ export function SettingsPanel({
             />
           </SettingRow>
         </SettingsSection>
-        {/* 偏好设置 — the reference's follow-up behaviour radio (G7,
-         * front half): `webui-follow-up-behavior`, values `queue` /
-         * `steer`. A recorded preference only — the composer does not
-         * read it yet (ticket 49 owns that surface), documented as such.
+        {/* 偏好设置 — the follow-up behaviour row: `webui-follow-up-behavior`
+         * (G7, front half). SB-4 made the composer read it, so this is a
+         * BEHAVIOUR control and not a recorded preference: with 排队 the send
+         * button stays next to Stop while a turn runs and hands the message to
+         * the engine's queue, with 立即发送 it steers the running turn, and with
+         * 关闭 the composer is exactly what it was before this batch (the send
+         * control is replaced by Stop until the turn ends).
+         *
+         * `关闭` is webui's own third option and not the reference's: the
+         * desktop owns the running turn, so both of its options can always
+         * work, while webui's follow-up is refused when the running turn
+         * belongs to another engine process (see `server/engine/follow-up.js`).
+         * A two-valued switch with no way back to the old behaviour would be a
+         * behaviour change wearing a switch's clothes.
+         *
          * The reference's two disabled switches after this row stay
          * unrendered (capability honesty). */}
         <SettingsSection
@@ -3182,11 +3193,16 @@ export function SettingsPanel({
             <Segmented
               value={followUp}
               options={[
+                { id: "off", label: t("settings.followUp.off") },
                 { id: "queue", label: t("settings.followUp.queue") },
                 { id: "steer", label: t("settings.followUp.steer") },
               ]}
               onChange={(id) =>
-                commitFollowUpBehavior(setFollowUp, id === "steer" ? "steer" : "queue")
+                // One line on purpose: settings-general-sections.test.ts
+                // pins `commitFollowUpBehavior(setFollowUp` as the proof
+                // that this row commits into THIS preference's state, and
+                // a wrapped call would read as a missing one.
+                commitFollowUpBehavior(setFollowUp, id === "steer" ? "steer" : id === "off" ? "off" : "queue")
               }
             />
           </SettingRow>

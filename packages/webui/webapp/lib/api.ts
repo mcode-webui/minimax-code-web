@@ -251,6 +251,48 @@ export const sendMessage = (payload: SendPayload) =>
 
 export const stopRun = () => request<{ ok: boolean }>("/api/stop", { method: "POST", json: {} });
 
+/**
+ * The follow-up message a send-while-running is handed to
+ * (`POST /api/follow-up`, settings batch SB-4).
+ *
+ * `behavior` is the value of `webui-follow-up-behavior` the composer is
+ * following, and the server validates it against the same two engine
+ * actions — a browser is not trusted to have read the right key, and the
+ * OFF position never reaches here at all. `requestId` is the per-send
+ * identity: it is forwarded to the engine as the queue item's
+ * `clientRequestId` and as the steering message's `idempotencyKey`, so a
+ * retried click cannot produce two messages.
+ */
+export interface FollowUpPayload {
+  behavior: "queue" | "steer";
+  content: string;
+  attachments?: string[];
+  requestId?: string;
+}
+
+/** What the ENGINE reported back — never an echo of the request: the
+ *  queue position, or the turn the message was steered into. */
+export interface FollowUpResult {
+  ok: boolean;
+  behavior: "queue" | "steer";
+  itemId?: string;
+  /** Queue answers: 0-based position behind the items ahead. */
+  position?: number;
+  /** Steer answers: the turn the message was delivered into. */
+  turnId?: string;
+}
+
+// The same acknowledgement deadline as the two send endpoints, and for
+// the same reason: a deadline that expires says nothing about whether the
+// engine took the message, so the composer restores the text instead of
+// claiming a failure it cannot prove. See `SendUnconfirmedError`.
+export const submitFollowUp = (payload: FollowUpPayload) =>
+  request<FollowUpResult>("/api/follow-up", {
+    method: "POST",
+    json: payload,
+    timeoutMs: SEND_ACK_TIMEOUT_MS,
+  });
+
 /** Raw slash command (e.g. `/compact`), forwarded to mcode. */
 export const sendCommand = (cmd: string) =>
   request<{ ok: boolean }>("/api/cmd", {
@@ -1004,6 +1046,20 @@ export const testModelSourceModel = (payload: { modelId?: string } = {}) =>
  * than carried in the state snapshot, which is broadcast to every SSE
  * subscriber.
  */
+/**
+ * One metered window of the plan quota, as the engine projects it.
+ *
+ * `unlimited` is a READING, not an absent figure: an unmetered window says
+ * so and carries no percentage. The two are therefore different fields —
+ * collapsing them would render 「剩余 0%」 for a plan that has no cap.
+ */
+export interface AccountQuotaWindow {
+  /** Remaining percentage; absent means "the engine sent no figure", not 0. */
+  remainingPercent?: number;
+  resetAtMs?: number;
+  unlimited?: boolean;
+}
+
 export interface AccountPayload {
   ok: boolean;
   /** Set when `ok` is false — the account surface is unreachable, not empty. */
@@ -1016,6 +1072,17 @@ export interface AccountPayload {
   identity?: { name?: string };
   tokenPlanQuotaState?: "available" | "not-subscribed" | "unavailable";
   tokenPlan?: { tier?: string; expiresAtMs?: number; creditBalance?: string };
+  /**
+   * Per-window quota figures, carried by the engine's account projection
+   * (`packages/tui/src/acp/extensions.ts#projectAccountStatus`) and spread
+   * through `GET /api/account` verbatim. Typed here because the settings
+   * account section reads them as TEXT readings; the limit BARS stay on the
+   * Token Plan card, which reads its own `POST /api/usage` snapshot.
+   */
+  quota?: {
+    fiveHour?: AccountQuotaWindow;
+    weekly?: AccountQuotaWindow;
+  };
   warnings?: string[];
 }
 

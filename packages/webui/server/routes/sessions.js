@@ -119,7 +119,7 @@ import {
   readEnginePinnedSessionOrder,
   readEngineSessionForkOptions,
 } from "../engine/session-context-actions.js";
-import { authorize } from "../lib/authorize.js";
+import { authorize, hasDecidableRequester } from "../lib/authorize.js";
 import { pushAlert } from "../lib/alerts.js";
 import { append as _eventsAppend } from "../lib/events.js";
 // Session-create workspace gate: body.workspace is user input and used to be
@@ -401,13 +401,21 @@ export async function handleRenameSession(req, res, ctx) {
 //
 //   planEngineSessionDelete      resolves the id and runs the gate. No
 //                                mutation, so it is safe to run BEFORE
-//                                the user is asked anything.
+//                                the user is asked anything — and its
+//                                verdict is what lets the handler skip
+//                                the question entirely when the request
+//                                provably deletes nothing.
 //   authorize() + intent audit   unchanged, and still strictly between
 //                                the plan and the commit. The write-ahead
 //                                intent line has to be durably recorded
 //                                before any row is removed, and it
 //                                records the match kind and chat length
-//                                the plan produced.
+//                                the plan produced. P19: the gate is
+//                                also the FIRST thing that touches the
+//                                request's ownership — an unattributable
+//                                request (no `?cid=`) and an id that
+//                                resolves to nothing both end here,
+//                                fast, and neither reaches the engine.
 //   commit*EngineSessionDelete   splices the store, drops the tree cache,
 //                                mirrors the delete into the engine's
 //                                `local_runtime_*` tables and fans the
@@ -440,19 +448,102 @@ export async function handleDeleteSession(req, res, ctx) {
   console.log(
     `[delete] cid=${cid} incoming id=${id.substring(0, 12)}… isMcodeSid=${isMcodeSessionId(id)} dryRun=${dryRun}`,
   );
+  // P19, first half — the OWNERSHIP gate, and the first thing this
+  // handler decides.
+  //
+  // A request the router could not attribute to a client (`?cid=`
+  // absent: a curl, a script, a caller that forgot `withClientQuery`)
+  // has no owner to show a modal to. Left to `authorize` alone it falls
+  // into the BROADCAST branch — an empty cid is the broadcast target,
+  // so "somebody is connected" answers a question nobody asked and the
+  // destructive request then waits out the full 300000ms budget against
+  // a modal no human knows exists. That is the P19 hang: an open socket,
+  // no status, no body.
+  //
+  // So the question is asked BEFORE the plan, deliberately: this gate
+  // needs nothing the plan produces, and putting it first means the
+  // answer costs no store read, no capability declaration and — the
+  // point of the whole exercise — no engine delivery. The decline body
+  // is built by `authorize` itself, so this path and the timeout path
+  // downstream are byte-identical to what the client has always seen.
+  //
+  // `requireRequester` is what makes that call a short-circuit instead
+  // of a modal. It is asked here ONLY when the requester is
+  // unattributable, so the reduced `ctx` can never reach a human: the
+  // attributable path below asks the full question, with the match kind
+  // and chat length the plan produced, exactly as before.
+  if (!dryRun && !hasDecidableRequester(cid)) {
+    const owned = await authorize(
+      "session.delete",
+      { cid, targetSessionId: id, isMcodeSid: isMcodeSessionId(id) },
+      { requireRequester: true },
+    );
+    console.log(
+      `[delete] cid=${cid} DECLINED id=${id.substring(0, 12)}… reason=no_requester`,
+    );
+    res.writeHead(403, { "Content-Type": "application/json; charset=utf-8" });
+    return res.end(JSON.stringify({
+      ok: false,
+      error: "authorize declined",
+      decidedBy: owned.decidedBy,
+      decidedAt: owned.decidedAt,
+    }));
+  }
   const plan = await planEngineSessionDelete({ id });
+  // P19, second half: an id that resolves to NOTHING is not a
+  // destructive request, and asking the user to authorize one is how a
+  // 404 became a five-minute hold — the modal is live, the answer is
+  // already "there is nothing here", and the only way out is the
+  // fail-closed timeout.
+  //
+  // `isOrphan && !isMcodeSessionId(id)` is exactly that provable no-op:
+  // the id is absent from the webui store, so there is no wrapper to
+  // splice, and it is not an `mvs_` sid, so there are no engine rows to
+  // delete either. The response is the 404 this branch has always
+  // returned — same status, same body, see docs/API.md — reached WITHOUT
+  // a governance round-trip and WITHOUT touching the engine. The
+  // semantic is the engine facade's own `not_mcode_sid` /
+  // `already_absent` pair (engine/session-delete.js), stated at the HTTP
+  // layer instead of waited out.
+  //
+  // The gate below still runs for every request that CAN delete
+  // something: a resolved record, or an orphan `mvs_` sid whose engine
+  // rows are about to go. This branch narrows the gate, never bypasses
+  // it, and runs before the write-ahead intent line — a no-op delete
+  // must leave no audit trail of a destructive act.
+  //
+  // `?dryRun=true` stays on the old path (preview answers for any id,
+  // gated by nothing, mutating nothing) so the preview contract is
+  // unchanged.
+  if (!dryRun && plan.isOrphan && !isMcodeSessionId(id)) {
+    console.log(
+      `[delete] cid=${cid} 404 id=${id.substring(0, 12)}… not found reason=not_mcode_sid`,
+    );
+    res.writeHead(404, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify({ ok: false, error: "session not found" }));
+  }
   // B03: real-delete path must pass per-request authorize() before
   //   mutating db / saveSessions / the caches.
   //   dryRun=true bypasses (preview only — no side effects to gate).
+  //
+  // `requireRequester` stays on this call as the second line of the
+  // same defence: the ownership gate above already returned for an
+  // unattributable request, and this keeps the property attached to the
+  // GATE rather than to one call site, so a future refactor that drops
+  // the early check does not silently reopen the hang.
   if (!dryRun) {
-    const authResult = await authorize("session.delete", {
-      cid,
-      targetSessionId: id,
-      matchKind: plan.matchKind || (plan.isOrphan ? "unknown" : "webuiId"),
-      isMcodeSid: isMcodeSessionId(id),
-      isOrphan: plan.isOrphan,
-      chatLen: plan.chatLen,
-    });
+    const authResult = await authorize(
+      "session.delete",
+      {
+        cid,
+        targetSessionId: id,
+        matchKind: plan.matchKind || (plan.isOrphan ? "unknown" : "webuiId"),
+        isMcodeSid: isMcodeSessionId(id),
+        isOrphan: plan.isOrphan,
+        chatLen: plan.chatLen,
+      },
+      { requireRequester: true },
+    );
     if (!authResult.approved) {
       console.log(
         `[delete] cid=${cid} DECLINED id=${id.substring(0, 12)}… reason=${authResult.decidedBy}`,
@@ -766,12 +857,20 @@ export async function handleSearchSessions(req, res, ctx) {
   //   the user is not currently in. Gate the same way session.delete
   //   / session.export are gated. Tests drive the real decision path
   //   via test/_setup.js#withDecisions.
-  const authResult = await authorize("session.search", {
-    cid,
-    q,
-    workspace: workspaceParam,
-    limit,
-  });
+  // P19: `requireRequester` — same rule as DELETE. A search with no
+  // `?cid=` has no owner to show the modal to; broadcasting it to
+  // whichever tab is connected and then holding the request for the
+  // full 300000ms budget is the hang P19 was filed about.
+  const authResult = await authorize(
+    "session.search",
+    {
+      cid,
+      q,
+      workspace: workspaceParam,
+      limit,
+    },
+    { requireRequester: true },
+  );
   if (!authResult.approved) {
     res.writeHead(403, { "Content-Type": "application/json; charset=utf-8" });
     return res.end(JSON.stringify({
@@ -912,11 +1011,18 @@ export async function handleCleanupOrphans(req, res, ctx) {
     res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
     return res.end(JSON.stringify({ ok: true, dryRun: false, deleted: 0, ids: [] }));
   }
-  const authResult = await authorize("sessions.cleanup-orphans", {
-    cid,
-    orphanCount: targetIds.length,
-    orphanIds: targetIds.slice(0, 32), // truncated for log hygiene
-  });
+  // P19: `requireRequester` — a sweep is the most destructive gate in
+  // this file, so an unattributable caller (no `?cid=`) must not be able
+  // to park it on somebody else's browser tab for five minutes.
+  const authResult = await authorize(
+    "sessions.cleanup-orphans",
+    {
+      cid,
+      orphanCount: targetIds.length,
+      orphanIds: targetIds.slice(0, 32), // truncated for log hygiene
+    },
+    { requireRequester: true },
+  );
   if (!authResult.approved) {
     console.log(
       `[cleanup-orphans] cid=${cid} DECLINED count=${targetIds.length} reason=${authResult.decidedBy}`,

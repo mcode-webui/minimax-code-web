@@ -1005,7 +1005,7 @@ slice 22 增强：
 | 偏好 | 个性化 | 已实装——「自定义指令」与「关于你」真存 `localStorage`；两个记忆开关关闭且禁用、行内标注「本地版不适用」，「管理」按钮打开「记忆摘要」弹窗且恒为空态 |
 | 管理 | 用量与模型 | 已实装；自 SB-1 起两个引擎来源是真切换（Token Plan / MiniMax API 真切引擎凭据，「使用中」徽标回读引擎真值，MiniMax API Key 可保存可检测）——第三个胶囊「自定义模型」仍是**视图**，落点是供应商目录 |
 | 管理 | 连接 | 已实装 |
-| 管理 | 账户 | 诚实占位——「账户信息」显示「本地模式，未登录」，「退出登录」禁用（本地版未接入账户服务） |
+| 管理 | 账户 | 以读取实现——该分区挂载时读一次 `GET /api/account`，渲染账户名、当前套餐名、配额概况（套餐配额状态 + 5 小时/周窗口剩余读数）与账户状态；「退出登录」维持禁用（引擎没有可调用的登录登出方法） |
 | 编码 | 代码审查 | 已实装——「自定义审查准则」真存 `localStorage`；「审查方式」是禁用单选下拉，显示「子会话」 |
 | 编码 | 工作树 | **未实装**——页签是一行文案「本地版暂不支持工作树管理」 |
 | 归档 | 已归档任务 | 页签渲染空态「暂无已归档任务」；列表与其操作需要目前不存在的归档会话契约 |
@@ -1052,7 +1052,7 @@ slice 22 增强：
 | 文件 | 可用 | 两个开关，读写浏览器本地存储，见下表 |
 | 会话管理 | 可用 | 一个开关，读写本地存储，控制输入区上下文用量计量的显示（见下） |
 | Agent 控制权限 | 禁用摆设 | 「自动打开浏览器面板」开关渲染为关闭且禁用（无对应能力） |
-| 偏好设置 | 可用 | 「跟进消息行为」单选（排队 / 立即发送），读写本地存储，**目前仅记录偏好**，尚未影响实际发送行为（编写器归工单 49）；水印与数据授权两行渲染为禁用 |
+| 偏好设置 | 可用 | 「跟进消息行为」三段（关闭 / 排队 / 立即发送），读写本地存储；自 SB-4 起编写器真的读它——回合运行中发送的消息会进引擎队列或转向当前回合。水印与数据授权两行渲染为禁用 |
 | 关于 | 混合 | 上传日志与检查更新是禁用按钮；本机地址与局域网地址是从 `/api/settings` 取值的真实只读行 |
 | 页底数据目录（dataDir） | 未实现 | 桌面版在通用页底部显示应用数据目录；`/api/settings` 契约没有该字段且本轮服务端只读，无法取到真值，如实留空不做 |
 
@@ -1067,7 +1067,7 @@ slice 22 增强：
 | `file_open_in_new_tab` | `true`（本客户端默认开；桌面参照默认关） | **是**。开启时保持本客户端一贯的「每文件一个预览标签页」；关闭后打开新文件会**替换当前激活的文件标签页**。本客户端的标签条没有「固定」概念，故以「当前激活的文件标签页」为复用目标，与桌面「复用未固定标签页」语义近似但不相同 |
 | `file_line_wrap` | `true` | **是**。开启时超宽行自动折行；关闭时横向滚动。覆盖两类表面：代码文件预览（工单 48）与 markdown 代码块——聊天消息、活动组、markdown 文件预览（工单 52）；语言标签不随代码行折行。对之后打开的预览/之后挂载的消息生效（已打开的不重排）；文件预览折行后行号与第二视觉行不对齐，是已知取舍 |
 | `webui-context-window-usage` | `false` | **是**。开启时在输入区工具栏（紧挨模型选择器左侧）绘制上下文用量计量；关闭时该处不渲染任何内容。计量本身的形态不变——圆环、百分比、分类明细、套餐各行仍照旧来自会话快照。拨动开关无需刷新页面即生效 |
-| `webui-follow-up-behavior` | `queue`（可选 `steer`） | 否。仅记录偏好，尚未影响实际发送行为 |
+| `webui-follow-up-behavior` | `queue`（可选 `off`、`steer`） | 否。决定回合运行中发送的去向；`off` 是 webui 自有的第三态（参照只有两态） |
 
 **上下文用量计量**
 
@@ -1098,7 +1098,7 @@ slice 22 增强：
 
 | 能力 | 说明 |
 | --- | --- |
-| 账户页 | 页签按桌面形态渲染，但本地没有 `getAccountStatus` / `signOut` 类后端契约，账户行显示「本地模式，未登录」、退出登录禁用 |
+| 账户页的退出登录 | 读取是真数据（见下节**账户分区**）；引擎没有登录登出方法，因此按钮按参照形态渲染但禁用，tooltip 写明该原因 |
 | 已归档任务页 | 页签渲染空态；列表、恢复与删除需归档会话契约 |
 | 添加模型弹窗的「自动获取」live per-key 模型目录 | v2 无按任意密钥查询供应商目录的方法（`cli-service.ts#listModels` 回答的是"本应用已配置了哪些模型"，是另一个问题）；维持内置 preset 目录方案 |
 | 自定义模型拖拽排序、逐模型启停、预设选择器 | 需 provider 契约扩展；增删改已全部收敛到同一弹窗（本批），列表只负责展示与删除 |
@@ -1135,6 +1135,37 @@ Token Plan 视图是桌面的五区块（页签 + 四卡）：
 **代价。** 每次打开该设置页多一次读；这次读在没有运行时时会启动引擎，属于写侧契约，在这里可以接受（是用户打开了页签）。若将来把这次读取挪到页面级，必须改用不启动运行时的宿主 getter（见 `server/engine/model-source.js` KNOWN DEBT 2）。
 
 **本批没有做的事。** 添加模型弹窗的「自动获取」仍走内置 preset 目录（v2 没有按任意密钥查询供应商目录的方法）；Token Plan 四张卡维持 A1 决策的「本地版不适用」——把它们接到 `/api/usage` 与 `/api/account` 是另一个尚未拍板的独立项，不是本批的副作用。
+
+**账户分区（SB-5）**
+
+整个分区在挂载时读一次 `GET /api/account`。端点既不新建也不重复：它就是用户菜单账户卡已在读的同一份投影，按需读取的原因也相同——状态快照会广播给每一个 SSE 订阅者，账户数据不进去。
+
+| 行 | 字段 | 缺失时的文案 |
+| --- | --- | --- |
+| 账户名 | `identity.name`（去空白） | 引擎应答了但没给名字 |
+| 当前套餐 | `tokenPlan.tier`，走 Token Plan 卡自己的 `planNameOf` | 引擎没报套餐时是「未订阅套餐」；账户面本身不可达时是未读到的那句 |
+| 配额概况 | `tokenPlanQuotaState`，以及 `quota.fiveHour` / `quota.weekly` 的 `remainingPercent` | 每个窗口各自显示「引擎未返回读数」；窗口被判为不限量时显示「不限量」 |
+| 账户状态 | `status` | 未读到的那句；字典里没有句子的状态枚举归为空，而不是把原始枚举漏给用户 |
+
+未读到的那句按失败形态分句，且每句都点名来源：`ok: false` 优先显示引擎自己的 `reason`，传输失败显示读取失败句，两者都不替用户下判断。由此「账户面不可达」与「应答了但没有账户名」得到两句不同的话——这正是此前那句硬编码「本地模式，未登录」表达不了的区分。
+
+与 Token Plan 卡按**形态**分工，不按主题分工：限额条、套餐操作、积分、到期与发票归那张卡；身份与纯文本读数归本分区。两者共享的只有套餐名，且走同一个解析器（`planNameOf`），两个面不会各自漂移。窗口被判为不限量时显示「不限量」而不是「剩余 0%」——没有上限的套餐不能读成已用尽。
+
+被否的备选：再建一个账户端点（投影已经存在，第二个路由只是多一份要同步的契约）；以及在本分区也把配额画成进度条（同一把量尺在两个页面、用两个数据源各画一次）。
+
+**跟进消息：开关真的改变行为（SB-4）**
+
+**用户能看到什么。** 「跟进消息行为」有三个位置。任务运行中，输入区仍然保留停止按钮，同时——在「排队」或「立即发送」下——也提供发送按钮：「排队」把消息交给引擎队列，等本回合结束后执行；「立即发送」把它作为转向消息投进正在跑的回合。选「关闭」时输入区与本批之前完全一致：发送按钮被停止按钮顶替，文本留在框里等回合结束。切换即时生效，不需要刷新，也不需要重发一次。
+
+**为什么有第三个位置。** 桌面参照只有两个选项，因为桌面自己持有正在跑的回合，两个选项都不可能失败。webui 的跟进消息可能被拒绝——持有该回合的引擎可能是另一个进程——因此一个两值开关其实是"换了行为却顶着开关的外衣"。「关闭」是 webui 自己的选项，文档如实标注。
+
+**归属闸门，以及为什么它不判传输方式。** 两个动作执行前，服务端先问引擎"这个回合是不是本进程持有"（`cliService.getActiveTurn`）。`runtime` 传输下回合就跑在 webui 进程内，答案是肯定的，队列或转向消息被受理；默认的 `acp` 传输下回合跑在 `mcode acp` 子进程里，此时把消息排进本宿主会唤醒它自己的调度器，为一个已经在跑回合的会话**再开一个**回合——正是 `/api/send` 用四道 claim 和一个 409 防住的事。这种情况以 `turn_not_owned` 拒绝，原文回到输入框，横幅说明原因。闸门读的是引擎自己的回答而不是 `MCODE_WEBUI_TRANSPORT`，因此等聊天链路彻底迁到进程内传输时，它无需任何改动就会开始工作。
+
+**响应报的是什么。** 引擎自己的回答，绝不回显请求：排队返回引擎提交的条目 id 与位置，转向返回回合 id 与投递模式。两种拒绝保持两句不同的话——"已经没有回合了"与"回合在另一个进程里"——因为用户该做的下一步不同。
+
+**代价。** 每次跟进发送多一次引擎读；这是写路径，没有运行时时会启动引擎，可以接受（是用户按了发送）。
+
+**本批没有做的事。** 队列没有界面：排进去的消息带着 id 和位置，却没有任何地方展示，也无法在浏览器里查看、重排或撤销。那是 PB-13 的范围；在它落地之前，排队的跟进消息在本回合结束前不可见。转向消息返回的是受理结果，不是"运行中的 agent 是否在下一步之前读到了这段文字"。
 
 **添加模型弹窗（工单 54，53b）**
 
@@ -1878,7 +1909,7 @@ loading-states 相同：让 SSR 渲染测试可以脱离 `chat.tsx` 的 `@/` 别
 | `file_open_in_new_tab` | `localStorage` | `webapp/lib/settings-local.ts` | 工单 48（设置通用页） | 纯 `"true"\|"false"` 字符串；**有意不带 `webui:` 前缀**——与桌面参照同名同格式，同一浏览器配置在两个客户端共享该偏好。本客户端默认 `"true"`（参照为 `"false"`）；读取方 `app/page.tsx#openFileTab` |
 | `file_line_wrap` | `localStorage` | `webapp/lib/settings-local.ts` | 工单 48 + 52 | 纯 `"true"\|"false"` 字符串，参照共享命名；默认 `"true"`；每次挂载读取方为 `components/code-view.tsx`（代码文件预览）与 `components/markdown-html.tsx`（markdown 代码块：聊天、活动组、文件预览） |
 | `webui-context-window-usage` | `localStorage` | `webapp/lib/settings-local.ts` | 工单 48 | 纯 `"true"\|"false"` 字符串，参照共享命名；默认 `"false"`；`components/context-meter.tsx` 挂载时读取一次，并通过 `subscribeContextWindowUsage` 实时跟随 |
-| `webui-follow-up-behavior` | `localStorage` | `webapp/lib/settings-local.ts` | 工单 48 | 纯 `"queue"\|"steer"` 字符串（其他值读取为 `"queue"`），参照共享命名；仅记录偏好，尚无读取方 |
+| `webui-follow-up-behavior` | `localStorage` | `webapp/lib/settings-local.ts` | 工单 48 / SB-4 | 纯 `"off"\|"queue"\|"steer"` 字符串（其他值读取为 `"queue"`），参照共享命名；由 `components/composer.tsx` 读取，每次写入都会重新发布 |
 | `webui-shortcut-bindings` | `localStorage` | `webapp/lib/shortcuts.ts` | 工单 55c（设置快捷键页） | `{"global-search":"Ctrl+Shift+P", …}`——**已生效**行的改键记录，用户录入新组合时写入，清掉最后一条时整个键删除。读取时按注册表重新校验：已不再分发的行 id、或已无法解析的组合一律丢弃，手工改过的存储项无法借此扩大页面的分发面。`app/page.tsx` 每次键盘事件经 `effectiveBindings` 读取，设置页每次挂载读取一次 |
 | `webui:project-custom:v1` | `localStorage` | `webapp/lib/project-custom.ts` | 工单 55c（项目右键菜单） | `{version:1, titles:{<项目key>:<自定义名>}, pinned:[<项目key>]}`。**不按 cid 命名空间**（有意）：重命名与置顶描述的是项目本身而非某个浏览器会话，同一浏览器的所有标签页共享。写入尽力而为，失败静默；项目被完整移除（全部会话删除成功）时同步清除其条目 |
 
@@ -2221,6 +2252,7 @@ createdAtMs, updatedAtMs}`）下发，按 `toolCallId` 幂等、上限 32 条、
 | `PUT` | `/api/model-source` | `routes/model-source.js#handleSetModelSource` | `{source}`；`400 {code:"INVALID_MODEL_SOURCE"\|"BAD_FIELD_TYPE"}`；引擎因无密钥拒绝 BYOK 方向 → `400 {code:"NO_API_KEY"}`；响应带的是引擎**已持久化**的值 |
 | `PUT` | `/api/model-source/api-key` | `routes/model-source.js#handlePutModelSourceApiKey` | `{apiKey, saveAndUse?}`；`apiKey` 缺失/空/仅空白即**保留**哨兵 → `200 {changed:false}` 且不写引擎；`400 {code:"BAD_FIELD_TYPE"\|"INVALID_API_KEY"}`；`500 {code:"engine_error"}` 绝不携带抛出的异常消息 |
 | `POST` | `/api/model-source/test` | `routes/model-source.js#handleTestModelSource` | `{modelId?}`；**跑完**的检测恒 200（`{ok, success, providerId:"minimax_api", tested:"stored_key", status}`），含 `success:false`；非 200 只出现在拒绝去试时（`503`/`501`，或引擎的 `400 NO_API_KEY`） |
+| `POST` | `/api/follow-up` | `routes/follow-up.js#handleFollowUp` | `{behavior:"queue"\|"steer", content, attachments?, requestId?}`——引擎会话 id 取自服务端自己的会话状态，**不从请求体取**；`400 {code:"invalid_follow_up_behavior"\|"follow_up_empty"\|"no_active_conversation"\|"BAD_FIELD_TYPE"}`；本进程不持有正在跑的回合时 `409 {code:"no_active_turn"\|"turn_not_owned"}`，且**不排任何队**；宿主缺该方法 `501`、没有运行时 `503`；200 `{ok, behavior, itemId, position, status}`（排队）或 `{ok, behavior, turnId, mode}`（转向）——都是引擎自己的回答 |
 | `POST` | `/api/debug/inject` | `routes/debug.js#handleDebugInject` | `DEBUG_INJECT=1` 守门 |
 | `GET` | `/api/debug/state` | `routes/debug.js#handleDebugState` | 同上 |
 | `POST` | `/api/protocol/set-mode` | `routes/protocol.js#handleSetMode` | 会话中途切换 mode |
@@ -2274,6 +2306,28 @@ decidedBy:"timeout", decidedAt}` —— 并记 `auth.unreachable` 审计（带
 
 若总线无法回答这个问题（不建模连接注册表的测试替身），按"可能有人"处理，保持原
 有的等待语义。这条短路只可能拒绝，不存在任何"未经记录裁决即放行"的路径。
+
+**"有没有人在听"和"这个请求有没有主人"是两个问题，上面这条规则只回答了第一个。**
+不带 `?cid=` 的请求 —— curl、脚本、忘了 `withClientQuery` 的调用方 —— 只要有一个
+标签页开着，就会被判成"有人在听"：空 cid 是**广播**目标，连上的标签页确实能看到
+并回答那个弹窗。可没有人问过，于是也没有人回答，这个破坏性请求就那么挂满 300000
+毫秒。只在连接注册表为空时才触发的短路因此漏掉了最常见的情形，调用方看到的是挂起，
+不是拒绝。
+
+所以服务"有主 HTTP 调用方"的路由都传了 `{requireRequester: true}`：
+`session.delete`、`sessions.cleanup-orphans`、`session.export`、`session.search`。
+没有主人时，给出的仍是同一个失败即关闭的答案，且立刻给出，记 `auth.unreachable`
+审计（带 `reason:"no_requester"`），让运维能把它与"标签页已关闭"区分开。这条规则是
+选择性的，因为差异在另一个方向上同样是承重的 —— `startup.cleanup` 就是**故意**用空
+cid 发起询问的，启动时没有请求人，任意标签页都可以裁决。
+
+`DELETE /api/sessions/:id` 把这条规则放在最前面、早于 plan：无归属的删除不读一次
+会话存储，也完全不触达引擎。同一个 handler 还不再问一个它已经能回答的问题 —— 既不在
+会话存储里、又不是 `mvs_` 形态的 id，没有包装条目可摘，也没有引擎行可删，于是直接返回
+这条分支一直以来的 `404 {ok:false, error:"session not found"}`（门面自己的
+`not_mcode_sid` / `already_absent` 语义在 HTTP 层的直说，而不是等出来），不发起任何
+裁决往返。凡是**能**删掉东西的 id —— 解析出的记录，或引擎行即将消失的 `mvs_` 孤儿会话 ——
+仍然照常过门。
 
 ## 阻断式弹窗：各自到底能应答什么
 

@@ -50,6 +50,11 @@ const en = {
 
   "composer.send": "Send",
   "composer.hint": "Enter to send, Shift+Enter for a new line",
+  /* SB-4 — the send control's own title while a turn is running. The
+     suffix names the mechanism (a follow-up) rather than the destination,
+     because 排队 and 立即发送 are two different engine calls behind one
+     control and the setting row is where the user chooses between them. */
+  "composer.followUp": "send as a follow-up",
   "composer.sending": "Sending…",
   /* Context-window meter beside the composer. The panel only shows what the
      engine actually reports; the desktop also breaks the window down by category,
@@ -170,6 +175,14 @@ const en = {
     "Not delivered: the server holds no record of this message. The text is back in the input box.",
   "error.unconfirmed.unreachable":
     "Status unknown: the server neither confirmed the message nor could be reached to check, so it may already be running. Check the conversation history before sending it again. The text is back in the input box.",
+  /* SB-4 — the two refusals `POST /api/follow-up` can answer with when a
+     follow-up is sent into a running turn. Both are "not delivered", like
+     `error.busy`, and both name a DIFFERENT reason, because the action the
+     user can take differs: wait for the turn, versus change 跟进消息行为. */
+  "error.followUp.noActiveTurn":
+    "Not queued: the engine reports no running turn for this conversation any more. The text is back in the input box — send it again.",
+  "error.followUp.notOwned":
+    "Not delivered: the running turn belongs to another engine process, which has no queue for this message. The text is back in the input box — send it again once the turn finishes.",
   "error.session": "Could not load sessions",
   "toolbar.workspace": "Workspace",
   "toolbar.browser": "Browser",
@@ -635,7 +648,8 @@ const en = {
   "settings.session.contextWindowUsage": "Show context window usage",
   "settings.followUp.title": "Follow-up message behaviour",
   "settings.followUp.hint":
-    "Pressing Enter while a task is running either queues the follow-up or sends it to the running task immediately.",
+    "What happens when you press Enter while a task is running: queue the follow-up, send it to the running task immediately, or keep the input disabled until the task finishes.",
+  "settings.followUp.off": "Disabled",
   "settings.followUp.queue": "Queue",
   "settings.followUp.steer": "Send now",
   "home.suggestions": "Suggested",
@@ -1190,10 +1204,32 @@ const en = {
   /* Ticket 59 D3-4: the settings-modal port's hardcoded Chinese
      moved into the dictionary (en side). */
   "settings.nav.aria": "Settings sections",
-  "settings.account.info": "Account",
-  "settings.account.localLoggedOut": "Local mode, not signed in",
   "settings.account.signOutUnavailable": "The local edition has no account service",
   "settings.account.signOut": "Sign out",
+  /* SB-5: the account section reads `GET /api/account`. Every placeholder
+     below names the endpoint instead of asserting a fact about the user —
+     "no reading" and "no account" are different sentences. */
+  "settings.account.name": "Account name",
+  "settings.account.quota": "Quota overview",
+  "settings.account.status": "Account status",
+  "settings.account.status.ready": "Ready",
+  "settings.account.status.needs-login": "Sign-in required",
+  "settings.account.status.warning": "Needs attention",
+  "settings.account.status.unknown": "Unknown",
+  "settings.account.loading": "Reading the engine account service…",
+  "settings.account.readFailed": "Reading GET /api/account failed",
+  "settings.account.unavailable":
+    "The engine account service did not answer (GET /api/account)",
+  "settings.account.unavailableReason":
+    "The engine account service did not answer: {reason} (GET /api/account)",
+  "settings.account.nameMissing":
+    "The engine reported no account name (GET /api/account)",
+  "settings.account.quotaMissing": "the engine sent no figure",
+  "settings.account.remaining": "{pct}% remaining",
+  "settings.account.unlimited": "unmetered",
+  "settings.account.quotaState.available": "Quota available",
+  "settings.account.quotaState.notSubscribed": "No plan subscribed, no quota to read",
+  "settings.account.quotaState.unavailable": "The engine reported the quota as unavailable",
   "settings.archived.empty": "No archived tasks yet",
   "settings.worktree.empty": "Worktree management is not available in the local edition yet",
   "settings.mode.section": "Mode",
@@ -1295,6 +1331,9 @@ const zh: Record<MessageKey, string> = {
 
   "composer.send": "发送",
   "composer.hint": "Enter 发送，Shift+Enter 换行",
+  /* SB-4 —— 回合运行中发送按钮的后缀：说明这次发送是「跟进消息」，
+     不写明排队还是立即发送 —— 那是设置项的两个选项，标题只说机制。 */
+  "composer.followUp": "作为跟进消息发送",
   "composer.sending": "正在发送…",
   /* 输入框旁的上下文窗口指示器。面板只显示引擎真实上报的数据；桌面端还有按类别
      的占用明细, 本服务端没有该数据 (见 components/context-meter.tsx)。 */
@@ -1385,6 +1424,13 @@ const zh: Record<MessageKey, string> = {
     "未送达：服务器没有记录这条消息。原文已放回输入框。",
   "error.unconfirmed.unreachable":
     "状态未知：服务器既没有确认，也无法查询，它可能已经在执行。发送前请先查看会话历史确认。原文已放回输入框。",
+  /* SB-4 —— 回合进行中发送跟进消息时 `POST /api/follow-up` 的两种拒绝。两者
+     都是「未送达」，与 error.busy 同族，但原因不同，用户该做的下一步也不同：
+     前者等回合结束，后者去改「跟进消息行为」设置。 */
+  "error.followUp.noActiveTurn":
+    "未排队：引擎侧已经查不到本会话正在运行的回合。原文已放回输入框 —— 可以直接重新发送。",
+  "error.followUp.notOwned":
+    "未送达：正在运行的回合属于另一个引擎进程，它没有接收这条消息的队列。原文已放回输入框 —— 等回合结束后再发送。",
   "error.session": "会话列表加载失败",
   "toolbar.workspace": "工作区",
   "toolbar.browser": "网页",
@@ -1787,7 +1833,8 @@ const zh: Record<MessageKey, string> = {
   "settings.session.contextWindowUsage": "显示上下文窗口使用情况",
   "settings.followUp.title": "跟进消息行为",
   "settings.followUp.hint":
-    "任务运行中按 Enter 发送跟进消息时：排队等待，或立即发送到当前任务。",
+    "任务运行中按 Enter 发送跟进消息时：排队等待、立即发送到当前任务，或保持现状（等本回合结束后再发送）。",
+  "settings.followUp.off": "关闭",
   "settings.followUp.queue": "排队",
   "settings.followUp.steer": "立即发送",
   "home.suggestions": "推荐",
@@ -2253,10 +2300,28 @@ const zh: Record<MessageKey, string> = {
   "settings.codeReview.guidelinesPlaceholder": "输入需要长期应用的代码审查规则",
   /* 工单 59 D3-4：设置壳的硬编码中文收进字典（zh 侧原文照搬）。 */
   "settings.nav.aria": "设置分类",
-  "settings.account.info": "账户信息",
-  "settings.account.localLoggedOut": "本地模式，未登录",
   "settings.account.signOutUnavailable": "本地版未接入账户服务",
   "settings.account.signOut": "退出登录",
+  /* SB-5：账户分区读 `GET /api/account`。以下占位文案一律点名端点，不替用户
+     下判断——「没读到」与「没有账户」是两句话。 */
+  "settings.account.name": "账户名",
+  "settings.account.quota": "配额概况",
+  "settings.account.status": "账户状态",
+  "settings.account.status.ready": "就绪",
+  "settings.account.status.needs-login": "需要登录",
+  "settings.account.status.warning": "需要处理",
+  "settings.account.status.unknown": "未知",
+  "settings.account.loading": "正在读取引擎账户服务…",
+  "settings.account.readFailed": "读取 GET /api/account 失败",
+  "settings.account.unavailable": "引擎账户服务未应答（GET /api/account）",
+  "settings.account.unavailableReason": "引擎账户服务未应答：{reason}（GET /api/account）",
+  "settings.account.nameMissing": "引擎未返回账户名（GET /api/account）",
+  "settings.account.quotaMissing": "引擎未返回读数",
+  "settings.account.remaining": "剩余 {pct}%",
+  "settings.account.unlimited": "不限量",
+  "settings.account.quotaState.available": "配额可用",
+  "settings.account.quotaState.notSubscribed": "未订阅套餐，无配额读数",
+  "settings.account.quotaState.unavailable": "引擎报告配额不可用",
   "settings.archived.empty": "暂无已归档任务",
   "settings.worktree.empty": "本地版暂不支持工作树管理",
   "settings.mode.section": "模式",

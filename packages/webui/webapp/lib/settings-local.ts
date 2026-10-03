@@ -29,8 +29,23 @@
 // (SSR pass) all fall back to the default rather than throwing, matching
 // `lib/persist.ts`'s best-effort contract.
 
-/** The follow-up message behaviour stored under `webui-follow-up-behavior`. */
-export type FollowUpBehavior = "queue" | "steer";
+/**
+ * The follow-up message behaviour stored under `webui-follow-up-behavior`.
+ *
+ * SB-4 adds a third member the desktop reference does not have. The
+ * reference's radio is two-valued (`queue` / `steer`) because the desktop
+ * can always do both — its composer owns the running turn, so neither
+ * option can fail. webui can: the running turn may belong to an engine
+ * process that has no queue (see `server/engine/follow-up.js`), and until
+ * this batch the composer refused every send while a turn ran. A switch
+ * with no OFF is not a switch, it is a behaviour change, so `"off"` is
+ * the value that keeps webui's standing behaviour: the send control stays
+ * replaced by Stop until the turn ends.
+ *
+ * The stored format is unchanged — still the bare string the reference
+ * reads, still written by the same `commitFollowUpBehavior`.
+ */
+export type FollowUpBehavior = "off" | "queue" | "steer";
 
 export const FILE_OPEN_IN_NEW_TAB_KEY = "file_open_in_new_tab";
 export const FILE_LINE_WRAP_KEY = "file_line_wrap";
@@ -148,9 +163,37 @@ export function readFollowUpBehavior(): FollowUpBehavior {
   if (typeof window === "undefined") return "queue";
   try {
     const raw = window.localStorage.getItem(FOLLOW_UP_BEHAVIOR_KEY);
-    return raw === "steer" ? "steer" : "queue";
+    return raw === "steer" || raw === "off" ? raw : "queue";
   } catch {
     return "queue";
+  }
+}
+
+type FollowUpBehaviorListener = (value: FollowUpBehavior) => void;
+
+const followUpBehaviorListeners = new Set<FollowUpBehaviorListener>();
+
+/** Subscribe to writes of `webui-follow-up-behavior`. Same shape and
+ *  same reason as `subscribeContextWindowUsage`: the settings page and
+ *  the composer are on screen at once, so the composer follows the
+ *  channel instead of reading the key once per mount. */
+export function subscribeFollowUpBehavior(
+  listener: FollowUpBehaviorListener,
+): () => void {
+  followUpBehaviorListeners.add(listener);
+  return () => {
+    followUpBehaviorListeners.delete(listener);
+  };
+}
+
+function notifyFollowUpBehavior(value: FollowUpBehavior): void {
+  for (const listener of [...followUpBehaviorListeners]) {
+    try {
+      listener(value);
+    } catch {
+      // One broken subscriber must not cost the others their update, and
+      // must not turn a settings toggle into an uncaught error.
+    }
   }
 }
 
@@ -161,6 +204,11 @@ export function writeFollowUpBehavior(value: FollowUpBehavior): void {
   } catch {
     // best-effort, see writeFlag
   }
+  // Published AFTER the write, and unconditionally: the composer must
+  // follow the value the user just picked even on a storage that
+  // refused it, or the control and the setting would disagree until the
+  // next reload.
+  notifyFollowUpBehavior(value);
 }
 
 // --- commit helpers (the settings rows' onChange bodies) -------------------
