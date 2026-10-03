@@ -272,6 +272,26 @@ function matchesModelId(recorded, engineCurrent, modelOption) {
  * `resolveModelId` covers this case before the name-match runs.
  */
 
+/**
+ * The engine's stderr tail, shaped for an alert's `data`.
+ *
+ * The engine announces its own failures on stderr and dies; the webui is
+ * the one that raises the crash alert. Without carrying the tail across,
+ * every engine failure collapses to `mcode acp exited (code=1)` — an
+ * operator cannot act on an exit code, only on the engine's line
+ * (`agent_name_conflict_migration_failed:lock`, a config parse error, a
+ * missing binary). The client already bounds and truncates it; see
+ * `McodeAcpClient#stderrTail` in packages/webui/acp.mjs.
+ *
+ * Returns `{}` — not `{ stderrTail: "" }` — when the engine said nothing,
+ * so a silent failure produces byte-identical alert data to what it
+ * produced before this helper existed.
+ */
+function acpStderrData(client) {
+  const tail = client && typeof client.stderrTail === "string" ? client.stderrTail : "";
+  return tail ? { stderrTail: tail } : {};
+}
+
 // Exported for unit tests (test/lib/mcode-acp-note.test.js extends to
 // cover applyRecordedModel's resolution logic). The pre-session model
 // apply needs to handle three input forms without regressing, so the
@@ -431,7 +451,7 @@ export async function runMcodeAcp(content, opts = {}) {
       src: "mcode-acp",
       cid: cid || null,
       sessionId: sid || null,
-      data: { phase: "start-or-load" },
+      data: { phase: "start-or-load", ...acpStderrData(client) },
     });
     return {
       status: "failed",
@@ -1330,7 +1350,7 @@ function streamAcpPrompt(
           src: "mcode-acp",
           cid: cid || null,
           sessionId: sid || null,
-          data: { phase: "promise-catch" },
+          data: { phase: "promise-catch", ...acpStderrData(client) },
         });
         finalize();
       });

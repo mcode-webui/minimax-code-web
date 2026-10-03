@@ -3588,6 +3588,7 @@
     "packages/webui/test/integration/upload-limits.test.js",
     "packages/webui/test/lib/acp-cache.check.mjs",
     "packages/webui/test/lib/acp-client-requests.test.js",
+    "packages/webui/test/lib/acp-stderr-tail.test.js",
     "packages/webui/test/lib/acp-transport-answer.test.js",
     "packages/webui/test/lib/acp-turn-message-id.test.js",
     "packages/webui/test/lib/agent-team-detect.test.js",

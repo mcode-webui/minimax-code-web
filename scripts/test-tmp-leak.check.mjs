@@ -261,6 +261,7 @@ const KNOWN_PREFIXES = [
   "state-bus-restore-",
   "webui-acp-answer-",
   "webui-acp-fake-engine-",
+  "webui-acp-stderr-",
   "webui-alerts-audit-",
   "webui-alerts-check-",
   "webui-authgate-events-",
