@@ -2449,9 +2449,13 @@ function ModalityBadges({
 /**
  * Thinking-effort picker.
  *
- * Same shell and panel as the other selectors. The trigger is the
- * active level ("High" / "Medium" / …) or "Default" when
- * the user has not picked one (the recorded value is empty).
+ * Same shell and panel as the other selectors. The trigger is the brain
+ * glyph and nothing else — the level it stands for is spelled out
+ * verbatim in the model chip beside it ("MiniMax-M3 · On"), so a second
+ * copy of the same word here was the same answer in two places, and it
+ * is the copy that has to be read to notice a state the icon already
+ * shows. The level survives as the button's accessible name source
+ * (`title`) and as the menu's ✓.
  *
  * The levels array comes from the active model's catalogue entry; the
  * selector is only mounted when that list is non-empty, so the picker
@@ -2533,16 +2537,31 @@ function ThinkingEffortSelect({
         data-thinking={thinkingOn === null ? "unknown" : thinkingOn ? "on" : "off"}
         aria-haspopup="menu"
         aria-expanded={open}
+        /**
+         * The brain is the whole control, so the button needs a name it
+         * does not get from a child. `Icon` is `aria-hidden` (it is
+         * decoration next to real text everywhere else), which means an
+         * icon-only button with no `aria-label` announces as an unnamed
+         * button — the level itself is still readable from the model chip
+         * beside it, and the menu carries the ✓.
+         */
+        aria-label={t("thinkingPicker.label")}
+        title={currentLabel}
         disabled={disabled}
         className={[
-          "flex h-8 min-w-0 items-center gap-1.5 rounded-[10px] px-2 text-sm transition-colors",
+          // h-8 + px-1 + gap-1, NOT size-8: the content is two 16px glyphs
+          // plus a 4px gap = 36px, which a square 32px box would overflow.
+          // The overflow is invisible until you hover: the chevron's outer
+          // 3px would render outside the element that lights up and takes
+          // the click. The height still matches the toolbar's neighbours.
+          "flex h-8 shrink-0 items-center justify-center gap-1 rounded-[10px] px-1 transition-colors",
           disabled
-            ? "cursor-not-allowed text-text_default_tertiary"
+            ? "cursor-not-allowed"
             : "hover:bg-bg_interaction_tertiary_hover",
         ].join(" ")}
       >
         {/* The chevron stays tertiary in every state: it is the affordance,
-            not the state. Colour belongs to the brain and the level. */}
+            not the state. Colour belongs to the brain. */}
         <Icon
           name="brain"
           size={16}
@@ -2554,18 +2573,6 @@ function ThinkingEffortSelect({
                 : "text-text_default_secondary"
           }
         />
-        <span
-          className={[
-            "max-w-[80px] truncate whitespace-nowrap",
-            disabled
-              ? "text-text_default_tertiary"
-              : thinkingOn
-                ? "text-text_default_accent"
-                : "text-text_default_primary",
-          ].join(" ")}
-        >
-          {currentLabel}
-        </span>
         <Icon
           name={open ? "chevronUp" : "chevronDown"}
           size={16}

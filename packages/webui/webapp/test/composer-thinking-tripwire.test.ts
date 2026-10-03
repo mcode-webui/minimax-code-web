@@ -108,8 +108,37 @@ describe("the thinking trigger's brain + on/off colour", () => {
   test("blue and grey are accent tokens, not hard-coded hex", () => {
     assert.ok(trigger, "the thinking-effort-trigger button must exist");
     assert.match(trigger[0]!, /text-icon_default_accent/);
-    assert.match(trigger[0]!, /text-text_default_accent/);
     assert.doesNotMatch(trigger[0]!, /#[0-9a-fA-F]{3,6}/);
+  });
+
+  test("the trigger is the icon alone — the level word is not repeated", () => {
+    // The level is already spelled out in the model chip beside this
+    // control ("MiniMax-M3 · 开启"), so a second copy was the same answer
+    // in two places and the copy a user had to read to see a state the
+    // icon already shows.
+    assert.ok(trigger, "the thinking-effort-trigger button must exist");
+    // Only the button's BODY counts: `aria-label={t(...)}` is an
+    // attribute, and forbidding `t(` across the whole element would ban
+    // the accessible name this very change has to add.
+    const body = trigger[0]!.slice(trigger[0]!.indexOf(">") + 1);
+    assert.equal(
+      (body.match(/<Icon/g) ?? []).length,
+      2,
+      "the button holds exactly the brain and the chevron",
+    );
+    assert.doesNotMatch(body, /<span/, "no text element in the trigger");
+    assert.doesNotMatch(body, /\{\s*t\(/, "no translated string rendered in the trigger");
+    assert.doesNotMatch(body, /currentLabel/, "the level word is not rendered here");
+  });
+
+  test("an icon-only button still has an accessible name", () => {
+    // `Icon` is aria-hidden everywhere else (it sits next to real text),
+    // so with the text gone the button announces as an unnamed button
+    // unless it names itself. Nothing else in the suite would catch it.
+    assert.ok(trigger, "the thinking-effort-trigger button must exist");
+    assert.match(trigger[0]!, /aria-label=\{t\("thinkingPicker\.label"\)\}/);
+    // The level stays reachable: as the hover title, and as the menu's ✓.
+    assert.match(trigger[0]!, /title=\{currentLabel\}/);
   });
 
   test("the state is exposed to the DOM, so a probe can read it", () => {
