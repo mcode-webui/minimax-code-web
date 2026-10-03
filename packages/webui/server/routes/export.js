@@ -314,14 +314,23 @@ export async function handleExport(req, res, ctx) {
   // B03: per-request authorize. Export is non-destructive but exposes
   // conversation history — same gate class as session.delete per the
   // C06 spec. Tests drive the decision via test/_setup.js#withDecisions.
+  //
+  // P19: `requireRequester` for the same reason DELETE carries it — a
+  // curl with no `?cid=` has no owner to show the modal to, and without
+  // this the gate broadcasts to whoever happens to be connected and then
+  // waits out the full 300000ms budget.
   let authResult = null;
   try {
-    authResult = await authorize("session.export", {
-      cid,
-      targetSessionId: id,
-      format,
-      download,
-    });
+    authResult = await authorize(
+      "session.export",
+      {
+        cid,
+        targetSessionId: id,
+        format,
+        download,
+      },
+      { requireRequester: true },
+    );
   } catch (e) {
     return _jsonError(res, 500, "authorize error", { detail: e.message });
   }

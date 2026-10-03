@@ -355,7 +355,11 @@ test("router-boot: GET /api/sessions/<id>/export?format=json returns 404 for unk
     await new Promise((r) => setTimeout(r, 150));
     const resPromise = httpRequest({
         port: server.port,
-        path: "/api/sessions/nonexistent-session-id-xyz/export?format=json",
+        // P19: carry the decider's own `?cid=`, as the browser client
+        // does. A gated request with no owner is denied at once now
+        // instead of being broadcast to whoever is connected, so the
+        // bare form can no longer reach a decision.
+        path: "/api/sessions/nonexistent-session-id-xyz/export?format=json&cid=cid-router-boot",
     });
     const { decision } = await decisionPromise;
     assert.ok(decision, "auth decision must have been posted");

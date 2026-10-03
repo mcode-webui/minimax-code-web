@@ -64,6 +64,19 @@ import {
   readCodeReviewGuidelines,
   readCustomInstructions,
 } from "../lib/settings-local";
+import {
+  applyBinding,
+  chordFromStroke,
+  clearBinding,
+  formatChord,
+  readCustomBindings,
+  resolveBindings,
+  shortcutSpec,
+  writeCustomBindings,
+  type BlockedReason,
+  type ShortcutId,
+  type ShortcutStatus,
+} from "../lib/shortcuts";
 import { Icon } from "./icons";
 
 // --- structural copies of the panels.tsx primitives -------------------------
@@ -268,128 +281,175 @@ function PersistedTextBlock({
 }
 
 // --- 快捷键 (Shortcuts) -------------------------------------------------------
+//
+// The Shortcuts page is the one settings page whose honesty problem was
+// not "no capability" but "a capability hidden behind a false notice":
+// `app/page.tsx` dispatched Ctrl+N and Ctrl+, while this page printed all
+// ten desktop rows disabled behind 「浏览器环境不适用」. Both halves now
+// read `lib/shortcuts.ts` — the registry that says which combinations a
+// browser hands to a page at all, and what each dispatched row is bound
+// to — so a row cannot be shown dead while the handler fires it.
+//
+// Three states render differently:
+//
+//   - `live`    the handler dispatches it on every platform, and the box
+//               records a new combination. ✕ drops the customisation and
+//               restores the desktop default.
+//   - `partial` the handler dispatches it where the browser leaves the
+//               combination free (Ctrl+N is a new window in Chromium and
+//               Firefox on Windows and Linux, so only macOS delivers it).
+//               Live, therefore shown as such, but not editable: a
+//               rebinding would not make it work everywhere.
+//   - `blocked` no honest binding exists, and the row says WHICH of the
+//               three reasons applies — a combination the browser owns
+//               (Ctrl+T-style interception is impossible from a page), a
+//               surface the WebUI does not have, dictation with no speech
+//               recognition behind it, or an action whose semantics are
+//               still undecided. The row keeps the desktop's printed
+//               combination for reference; the box stays disabled.
+//
+// Overrides persist under `webui-shortcut-bindings` (see the lib) and a
+// combination already dispatched by another row is refused with the
+// conflicting action named, rather than stored into an order-dependent
+// tie.
 
-/** One shortcut row's static description. `binding` is the desktop default
- * verbatim (key combos are locale-independent, hence not in i18n); `null`
- * is the desktop's unset state (未设置), which renders no ✕ — matching
- * `ref-09`. `reset` marks the one row the reference gives an external ↺
- * affordance (Mini Chat). */
-interface ShortcutRowDef {
-  id: string;
+/** The Shortcuts page's group layout. Group membership is the desktop's
+ *  (ref-09): Mini Chat on its own, everything else under 常用. Which rows
+ *  exist, what they are bound to and whether they are live comes from
+ *  `SHORTCUT_SPECS` — this table only says which card a row sits in. */
+const SHORTCUT_GROUPS: {
   titleKey: MessageKey;
-  hintKey: MessageKey;
-  binding: string | null;
-  reset?: boolean;
-}
-
-const SHORTCUT_GROUPS: { titleKey: MessageKey; testId: string; rows: ShortcutRowDef[] }[] = [
+  testId: string;
+  ids: readonly ShortcutId[];
+}[] = [
   {
     titleKey: "settings.shortcuts.group.miniChat",
     testId: "settings-shortcuts-group-minichat",
-    rows: [
-      {
-        id: "mini-chat",
-        titleKey: "settings.shortcuts.item.miniChat",
-        hintKey: "settings.shortcuts.item.miniChatHint",
-        binding: "Alt+M",
-        reset: true,
-      },
-    ],
+    ids: ["mini-chat"],
   },
   {
     titleKey: "settings.shortcuts.group.common",
     testId: "settings-shortcuts-group-common",
-    rows: [
-      {
-        id: "global-search",
-        titleKey: "settings.shortcuts.item.globalSearch",
-        hintKey: "settings.shortcuts.item.globalSearchHint",
-        binding: "Ctrl+K",
-      },
-      {
-        id: "search-tasks",
-        titleKey: "settings.shortcuts.item.searchTasks",
-        hintKey: "settings.shortcuts.item.searchTasksHint",
-        binding: "Ctrl+G",
-      },
-      {
-        id: "new-task",
-        titleKey: "settings.shortcuts.item.newTask",
-        hintKey: "settings.shortcuts.item.newTaskHint",
-        binding: "Ctrl+N",
-      },
-      {
-        id: "new-task-no-project",
-        titleKey: "settings.shortcuts.item.newTaskNoProject",
-        hintKey: "settings.shortcuts.item.newTaskNoProjectHint",
-        binding: "Ctrl+Alt+O",
-      },
-      {
-        id: "open-folder",
-        titleKey: "settings.shortcuts.item.openFolder",
-        hintKey: "settings.shortcuts.item.openFolderHint",
-        binding: "Ctrl+O",
-      },
-      {
-        id: "open-settings",
-        titleKey: "settings.shortcuts.item.openSettings",
-        hintKey: "settings.shortcuts.item.openSettingsHint",
-        binding: "Ctrl+,",
-      },
-      {
-        id: "hold-dictation",
-        titleKey: "settings.shortcuts.item.holdDictation",
-        hintKey: "settings.shortcuts.item.holdDictationHint",
-        binding: null,
-      },
-      {
-        id: "toggle-dictation",
-        titleKey: "settings.shortcuts.item.toggleDictation",
-        hintKey: "settings.shortcuts.item.toggleDictationHint",
-        binding: null,
-      },
-      {
-        id: "invert-follow-up",
-        titleKey: "settings.shortcuts.item.invertFollowUp",
-        hintKey: "settings.shortcuts.item.invertFollowUpHint",
-        binding: "Ctrl+Enter",
-      },
+    ids: [
+      "global-search",
+      "search-tasks",
+      "new-task",
+      "new-task-no-project",
+      "open-folder",
+      "open-settings",
+      "hold-dictation",
+      "toggle-dictation",
+      "invert-follow-up",
     ],
   },
 ];
 
-/** The shortcut binding cell — the desktop's keycapture input in its
- * disabled form: a 150px bordered box holding the binding text (or the
- * unset placeholder), with the ✕ clear affordance inside-right for set
- * rows. Nothing is editable: a browser page cannot rebind global
- * shortcuts, so the input is readOnly + disabled and the ✕ is disabled. */
+/** The row id → i18n key suffix mapping, derived rather than hand-listed:
+ *  the Shortcuts page's item keys are `settings.shortcuts.item.` plus the
+ *  id in camelCase (`new-task-no-project` → `newTaskNoProject`). A hand
+ *  table would drift from the registry the moment a row is added. */
+function itemKey(id: ShortcutId): MessageKey {
+  const camel = id.replace(/-([a-z])/g, (_, letter: string) => letter.toUpperCase());
+  return `settings.shortcuts.item.${camel}` as MessageKey;
+}
+
+/** The i18n key for a blocked row's reason. */
+const REASON_KEYS: Readonly<Record<BlockedReason, MessageKey>> = {
+  browserReserved: "settings.shortcuts.reason.browserReserved",
+  noSurface: "settings.shortcuts.reason.noSurface",
+  noDictation: "settings.shortcuts.reason.noDictation",
+  pending: "settings.shortcuts.reason.pending",
+};
+
+/** The i18n key for a dispatched row's status badge. */
+const STATUS_KEYS: Readonly<Record<"live" | "partial", MessageKey>> = {
+  live: "settings.shortcuts.status.live",
+  partial: "settings.shortcuts.status.partial",
+};
+
+/** The binding cell. Two forms, one component: the desktop's keycapture
+ *  input.
+ *
+ *  - `status` set (the Shortcuts page): a `live` box records the next
+ *    combination the user presses and reports it upward; a `partial` box
+ *    shows the same text but takes no input, because rebinding it would
+ *    not make it fire on the platforms where the browser owns the
+ *    combination; a `blocked` box is the disabled reference form the
+ *    desktop shows, and the reason is rendered by the caller as the
+ *    row's caption.
+ *  - `status` omitted (the Voice page's dictation rows): the old
+ *    readOnly+disabled unset placeholder, unchanged.
+ */
 function BindingBox({
   binding,
   unsetLabel,
   testId,
   t,
+  status,
+  customized,
+  disabled = false,
+  onCapture,
+  onClear,
+  onCancel,
 }: {
   binding: string | null;
   unsetLabel: string;
   testId: string;
   t: (key: MessageKey) => string;
+  status?: ShortcutStatus;
+  /** The effective combination differs from the desktop default. */
+  customized?: boolean;
+  disabled?: boolean;
+  onCapture?: (chord: string) => void;
+  onClear?: () => void;
+  onCancel?: () => void;
 }) {
   const unset = binding === null;
+  // Only a `live` row is editable. A row with no `status` (the Voice
+  // page's dictation rows) is the desktop's dead reference form.
+  const editable = status === "live" && onCapture !== undefined;
+  const isDisabled = disabled || status !== "live";
+  const onKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (!editable) return;
+    // Escape abandons a capture in progress without touching storage.
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.currentTarget.blur();
+      onCancel?.();
+      return;
+    }
+    const chord = chordFromStroke(event);
+    if (!chord) return;
+    // preventDefault first: a captured combination must not also run its
+    // own action (recording Ctrl+, must not open the settings page).
+    event.preventDefault();
+    onCapture(formatChord(chord));
+  };
   return (
     <div className="relative flex-shrink-0">
       <input
-        disabled
+        disabled={isDisabled}
         readOnly
+        onKeyDown={onKeyDown}
         value={unset ? "" : binding}
         placeholder={unset ? unsetLabel : undefined}
         data-testid={testId}
-        aria-label={unset ? unsetLabel : (binding as string)}
-        className="h-8 w-[150px] rounded-[8px] border border-border_default bg-bg_default_primary pl-2.5 pr-7 text-sm text-text_default_primary placeholder:text-text_default_tertiary disabled:cursor-not-allowed"
+        data-status={status ?? "reference"}
+        data-customized={customized ? "true" : undefined}
+        aria-label={
+          unset ? unsetLabel : editable ? `${binding as string} — ${t("settings.shortcuts.record")}` : (binding as string)
+        }
+        className={`h-8 w-[150px] rounded-[8px] border bg-bg_default_primary pl-2.5 pr-7 text-sm text-text_default_primary placeholder:text-text_default_tertiary ${
+          editable
+            ? "cursor-pointer border-border_strong focus:border-brand_default"
+            : "border-border_default disabled:cursor-not-allowed"
+        }`}
       />
       {unset ? null : (
         <button
           type="button"
-          disabled
+          disabled={!editable}
+          onClick={onClear}
           aria-label={t("settings.shortcuts.clear")}
           data-testid={`${testId}-clear`}
           className="absolute right-1 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center rounded text-text_default_tertiary disabled:cursor-not-allowed"
@@ -402,11 +462,43 @@ function BindingBox({
 }
 
 export function ShortcutsSection({ t }: { t: (key: MessageKey) => string }) {
+  // Hydrated synchronously so the first paint — including a server render
+  // in a test — shows the stored combination, same pattern as the
+  // long-text blocks' `useState(() => read…)`.
+  const [custom, setCustom] = useState<Record<string, string>>(() => readCustomBindings());
+  // The row awaiting a verdict on its last capture, and the row it
+  // collided with. Null whenever the last capture was accepted.
+  const [conflict, setConflict] = useState<{ id: ShortcutId; with: ShortcutId } | null>(null);
+  const bindings = resolveBindings(custom);
+
+  // Accept/refuse lives in lib/shortcuts.ts (applyBinding); the component
+  // only persists and forwards, so the decision is drivable without a DOM.
+  const commit = (id: ShortcutId, chord: string) => {
+    const attempt = applyBinding(custom, id, chord);
+    if (!attempt.ok) {
+      setConflict({ id, with: attempt.with });
+      return;
+    }
+    setConflict(null);
+    // Persist BEFORE the state forward, the same ordering
+    // lib/settings-local.ts's commit helpers use: a storage failure must
+    // not leave the page showing a binding nothing recorded.
+    writeCustomBindings(attempt.custom);
+    setCustom(attempt.custom);
+  };
+
+  const restore = (id: ShortcutId) => {
+    setConflict(null);
+    writeCustomBindings(clearBinding(custom, id));
+    setCustom(clearBinding(custom, id));
+  };
+
   return (
     <div data-testid="settings-shortcuts-page" className="flex w-full flex-col gap-8">
-      {/* The honesty notice (A1): the bindings below are the desktop's
-       * defaults rendered for reference — a browser page cannot register
-       * global shortcuts, so nothing here is live. */}
+      {/* The notice states what each badge means, including the honest
+       * limit: a page cannot intercept a combination the browser owns
+       * (Ctrl+T, Ctrl+W, Ctrl+O, the find keys), so those rows keep their
+       * printed value as reference and stay disabled. */}
       <div
         data-testid="settings-shortcuts-notice"
         className="flex items-start gap-2 rounded-[10px] border border-border_default bg-bg_grouped_secondary_elevated px-3 py-2 text-caption-small-strong leading-4 text-text_default_secondary"
@@ -416,32 +508,80 @@ export function ShortcutsSection({ t }: { t: (key: MessageKey) => string }) {
       </div>
       {SHORTCUT_GROUPS.map((group) => (
         <GroupCard key={group.testId} title={t(group.titleKey)} testId={group.testId}>
-          {group.rows.map((row, index) => (
-            <React.Fragment key={row.id}>
-              {index > 0 ? <HairDivider /> : null}
-              <Row title={t(row.titleKey)} hint={t(row.hintKey)} testId={`settings-shortcuts-row-${row.id}`}>
-                {row.reset ? (
-                  /* The reference's external ↺ reset affordance — present
-                   * on the Mini Chat row only, disabled like the ✕. */
-                  <button
-                    type="button"
-                    disabled
-                    aria-label={t("settings.shortcuts.reset")}
-                    data-testid={`settings-shortcuts-reset-${row.id}`}
-                    className="mr-1.5 flex size-6 items-center justify-center rounded text-text_default_tertiary disabled:cursor-not-allowed"
-                  >
-                    <Icon name="refresh" size={14} />
-                  </button>
-                ) : null}
-                <BindingBox
-                  binding={row.binding}
-                  unsetLabel={t("settings.shortcuts.unset")}
-                  testId={`settings-shortcuts-binding-${row.id}`}
-                  t={t}
-                />
-              </Row>
-            </React.Fragment>
-          ))}
+          {group.ids.map((id, index) => {
+            const spec = shortcutSpec(id);
+            const binding = bindings[id];
+            const customized = custom[id] !== undefined;
+            const blocked = spec.status === "blocked";
+            const conflictLine =
+              conflict && conflict.id === id
+                ? `${t("settings.shortcuts.conflict")} ${t(itemKey(conflict.with))}`
+                : null;
+            return (
+              <React.Fragment key={id}>
+                {index > 0 ? <HairDivider /> : null}
+                <Row
+                  title={t(itemKey(id))}
+                  hint={t(`${itemKey(id)}Hint` as MessageKey)}
+                  caption={
+                    blocked && spec.reason
+                      ? t(REASON_KEYS[spec.reason])
+                      : spec.status === "partial"
+                        ? t("settings.shortcuts.partialNote")
+                        : undefined
+                  }
+                  testId={`settings-shortcuts-row-${id}`}
+                >
+                  <div className="flex flex-col items-end gap-1">
+                    <div className="flex items-center gap-1.5">
+                      {spec.reset ? (
+                        /* The reference's external ↺ affordance on the Mini
+                         * Chat row. That row is blocked, so the control
+                         * stays dead — the shape is kept for parity. */
+                        <button
+                          type="button"
+                          disabled
+                          aria-label={t("settings.shortcuts.reset")}
+                          data-testid={`settings-shortcuts-reset-${id}`}
+                          className="flex size-6 items-center justify-center rounded text-text_default_tertiary disabled:cursor-not-allowed"
+                        >
+                          <Icon name="refresh" size={14} />
+                        </button>
+                      ) : null}
+                      <BindingBox
+                        binding={binding}
+                        unsetLabel={t("settings.shortcuts.unset")}
+                        testId={`settings-shortcuts-binding-${id}`}
+                        t={t}
+                        status={spec.status}
+                        customized={customized}
+                        disabled={blocked}
+                        onCapture={(chord) => commit(id, chord)}
+                        onClear={() => restore(id)}
+                        onCancel={() => setConflict(null)}
+                      />
+                      {blocked ? null : (
+                        <span
+                          data-testid={`settings-shortcuts-status-${id}`}
+                          className="text-caption-small-strong text-text_default_tertiary"
+                        >
+                          {customized ? t("settings.shortcuts.status.customized") : t(STATUS_KEYS[spec.status as "live" | "partial"])}
+                        </span>
+                      )}
+                    </div>
+                    {conflictLine ? (
+                      <span
+                        data-testid={`settings-shortcuts-conflict-${id}`}
+                        className="text-caption-small-strong text-text_error_primary"
+                      >
+                        {conflictLine}
+                      </span>
+                    ) : null}
+                  </div>
+                </Row>
+              </React.Fragment>
+            );
+          })}
         </GroupCard>
       ))}
     </div>

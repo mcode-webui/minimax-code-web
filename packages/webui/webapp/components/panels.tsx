@@ -60,6 +60,8 @@ import {
   InvoiceCard,
   PlanCard,
   UsageBar,
+  planNameOf,
+  reconciledAccount,
   resetCaption,
 } from "./usage-models-cards";
 
@@ -3145,8 +3147,10 @@ export function SettingsPanel({
           </SettingRow>
         </SettingsSection>
         {/* 会话管理 — `webui-context-window-usage` (G5). The switch
-         * persists the preference; no surface reads it yet, which the
-         * documentation states plainly. */}
+         * persists the preference and publishes it on the module's live
+         * channel; `components/context-meter.tsx` follows that channel, so
+         * the composer-side readout appears and disappears as this switch
+         * is flipped, without a reload. */}
         <SettingsSection
           title={t("settings.section.sessionManagement")}
           testId="session-management-section"
@@ -3162,10 +3166,21 @@ export function SettingsPanel({
             />
           </SettingRow>
         </SettingsSection>
-        {/* 偏好设置 — the reference's follow-up behaviour radio (G7,
-         * front half): `webui-follow-up-behavior`, values `queue` /
-         * `steer`. A recorded preference only — the composer does not
-         * read it yet (ticket 49 owns that surface), documented as such.
+        {/* 偏好设置 — the follow-up behaviour row: `webui-follow-up-behavior`
+         * (G7, front half). SB-4 made the composer read it, so this is a
+         * BEHAVIOUR control and not a recorded preference: with 排队 the send
+         * button stays next to Stop while a turn runs and hands the message to
+         * the engine's queue, with 立即发送 it steers the running turn, and with
+         * 关闭 the composer is exactly what it was before this batch (the send
+         * control is replaced by Stop until the turn ends).
+         *
+         * `关闭` is webui's own third option and not the reference's: the
+         * desktop owns the running turn, so both of its options can always
+         * work, while webui's follow-up is refused when the running turn
+         * belongs to another engine process (see `server/engine/follow-up.js`).
+         * A two-valued switch with no way back to the old behaviour would be a
+         * behaviour change wearing a switch's clothes.
+         *
          * The reference's two disabled switches after this row stay
          * unrendered (capability honesty). */}
         <SettingsSection
@@ -3179,11 +3194,16 @@ export function SettingsPanel({
             <Segmented
               value={followUp}
               options={[
+                { id: "off", label: t("settings.followUp.off") },
                 { id: "queue", label: t("settings.followUp.queue") },
                 { id: "steer", label: t("settings.followUp.steer") },
               ]}
               onChange={(id) =>
-                commitFollowUpBehavior(setFollowUp, id === "steer" ? "steer" : "queue")
+                // One line on purpose: settings-general-sections.test.ts
+                // pins `commitFollowUpBehavior(setFollowUp` as the proof
+                // that this row commits into THIS preference's state, and
+                // a wrapped call would read as a missing one.
+                commitFollowUpBehavior(setFollowUp, id === "steer" ? "steer" : id === "off" ? "off" : "queue")
               }
             />
           </SettingRow>
@@ -3381,17 +3401,23 @@ function RowDivider() {
  * *dialog* form of the reference is recorded as follow-up work, not
  * retrofitted here).
  *
- * Data policy (user decision 2026-09-29, ticket 53 A1/B1): every data
- * region the local server has no source for renders the standing 「本地版
- * 不适用」 placeholder instead of fabricated figures, while controls keep
- * the desktop's form but disabled. The one live source — the engine's plan
- * quota — keeps rendering real figures in the usage card.
+ * Data policy (user decision 2026-09-29, ticket 53 A1/B1, revised by SB-7):
+ * a figure the local server has a source for is rendered from it — the
+ * engine's plan quota in the usage card (`POST /api/usage`) and the plan
+ * NAME in the plan card (`tokenPlan.tier` on `GET /api/account`) — while
+ * the cloud-account figures with no credential path here (credits,
+ * expiry, invoicing) render the honest 「云端账户域，本网页端无账户凭据」
+ * line instead of fabricated values, and their controls keep the desktop's
+ * form but disabled. The original A1 line was 「无源即占位」 for the whole
+ * card; the revision splits the card by source rather than declaring the
+ * whole card sourceless.
  */
 export function UsageModelsSection({
   t,
   autoAddProvider,
   onAutoAddConsumed,
   headless = false,
+  accountRevision = 0,
 }: {
   t: (key: MessageKey) => string;
   autoAddProvider?: boolean;
@@ -3401,6 +3427,10 @@ export function UsageModelsSection({
    * three-source switch instead and mounts this headless as its
    * token-plan landing; the header stays for any standalone use. */
   headless?: boolean;
+  /** P20 (UAT4-1): bumped by the port after every SUCCESSFUL model-source
+   * write, which re-runs the `/api/account` read. A remount alone is not
+   * a re-read worth trusting — the remount races the engine's rebind. */
+  accountRevision?: number;
 }) {
   // The reference opens on the Token Plan view. The one deliberate
   // exception is the add-provider deep-link: `autoAddProvider` fires the
@@ -3409,6 +3439,44 @@ export function UsageModelsSection({
   const [view, setView] = useState<"tokenPlan" | "customModels">(
     autoAddProvider && !headless ? "customModels" : "tokenPlan",
   );
+
+  // SB-7 (the A1 revision): the plan NAME is a real figure — /api/account's
+  // `tokenPlan.tier`. Read on mount, the same way the user menu's account
+  // card reads it. A rejected request is likewise a missing name, never a
+  // default tier.
+  //
+  // P20 (UAT4-1): read-once was not enough. Switching the model source
+  // remounts this section — the port renders it only for the token-plan
+  // tab — so the read fired in the same tick as `PUT /api/model-source`
+  // and raced the engine re-binding to the new source. The losing read
+  // resolved to `{ok:false}` (HTTP 200, account unreachable), the card
+  // printed 「未订阅套餐」, and nothing re-read it until F5. The container
+  // therefore bumps `accountRevision` on every successful source write
+  // and this read re-runs. `reconciledAccount` keeps the last known-good
+  // answer when a revalidation read cannot beat the previous one, so a
+  // transient failure can no longer knock the name off the card.
+  const [account, setAccount] = useState<api.AccountPayload | null>(null);
+  const [accountPending, setAccountPending] = useState(true);
+  useEffect(() => {
+    let live = true;
+    setAccountPending(true);
+    void api
+      .getAccount()
+      .then((payload) => {
+        if (!live) return;
+        setAccount((previous) => reconciledAccount(previous, payload));
+      })
+      .catch(() => {
+        // Unreachable account surface — the last known answer stands.
+      })
+      .finally(() => {
+        if (live) setAccountPending(false);
+      });
+    return () => {
+      live = false;
+    };
+  }, [accountRevision]);
+  const planName = planNameOf(account);
 
   // The reference's pill: the selected tab sits in a grey rounded pill,
   // the unselected one renders as bare secondary text.
@@ -3467,7 +3535,7 @@ export function UsageModelsSection({
       {view === "tokenPlan" ? (
         <>
           <SectionCard>
-            <PlanCard t={t} />
+            <PlanCard t={t} planName={planName} planPending={accountPending} />
           </SectionCard>
           <SectionCard>
             <UsageCard t={t} />

@@ -11,6 +11,7 @@ import { useSessionContext } from "@/lib/store";
 import type { MessageKey } from "@/lib/i18n";
 import { sessionHref } from "@/lib/url-restore";
 import { classifySwitchLanding } from "@/lib/session-switch";
+import { projectRevealTarget, runProjectReveal } from "@/lib/project-reveal";
 import {
   readProjectCustomizations,
   setProjectTitle,
@@ -467,7 +468,9 @@ function ProjectNode({
     : displayName;
   // The first repo path is the broad-stroke target; multi-directory
   // projects expose the per-directory choice below through DirectoryNode.
-  const switchRepoPath = project.repoPaths[0] ?? project.directories[0]?.path;
+  // SB-6: the same path is the project menu's 在文件夹中显示 target, so both
+  // read one helper rather than two copies of the rule.
+  const switchRepoPath = projectRevealTarget(project);
 
   // Inline rename (same interaction contract as SessionNode's editor).
   const [draft, setDraft] = useState<string | null>(null);
@@ -559,16 +562,28 @@ function ProjectNode({
     },
     {
       key: "reveal",
-      disabled: true,
+      // SB-6. The item used to be `disabled: true` with `common.notLocal`,
+      // claiming the local build cannot reach the OS file manager — it can,
+      // and always could: `POST /api/fs/reveal` is implemented and registered
+      // (`server/routes/fs.js#handleFsReveal`, `server/app.js`). The only
+      // honest reason to grey this row out is a project bound to no local
+      // directory, and that reason is now stated instead of guessed.
+      disabled: !switchRepoPath,
       label: (
         <MenuRow
           icon="folder"
           label={t("projectMenu.revealInFolder")}
-          disabled
-          title={t("common.notLocal")}
+          disabled={!switchRepoPath}
+          title={switchRepoPath ? undefined : t("projectMenu.revealUnavailableNoPath")}
           testid="project-menu-reveal"
         />
       ),
+      onClick: () => {
+        void runProjectReveal(switchRepoPath, t("projectMenu.revealInFolder"), {
+          reveal: api.revealInFileManager,
+          report: reportActionError,
+        });
+      },
     },
     {
       key: "archive",

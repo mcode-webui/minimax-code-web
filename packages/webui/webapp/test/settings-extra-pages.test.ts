@@ -18,12 +18,16 @@
 //
 // What is pinned, and the decision each guard exists for:
 //
-//   - A1 structure parity: the Shortcuts page renders BOTH desktop groups
-//     with the reference's default bindings verbatim (Alt+M, Ctrl+K …),
-//     the 未设置 rows render the unset placeholder WITHOUT the ✕, and
-//     every binding control plus its ✕ / ↺ affordance renders disabled —
-//     a browser page cannot register global shortcuts, so nothing may be
-//     live. The notice banner carries the 浏览器环境不适用 wording.
+//   - SB-2 shortcut truth: the Shortcuts page renders BOTH desktop groups
+//     and, per row, the state lib/shortcuts.ts actually permits — the
+//     dispatched rows (Ctrl+K, Ctrl+N, Ctrl+Alt+O, Ctrl+,) render
+//     enabled with a status badge and a live ✕, the six blocked rows
+//     render disabled and print the specific reason (browser-reserved
+//     combination / no surface / no dictation / undecided semantics),
+//     and a stored customisation renders into its box. Every printed
+//     combination is cross-checked against `resolveBindings`, the same
+//     function app/page.tsx dispatches through, so the page and the
+//     keydown handler cannot drift apart.
 //   - A1 voice placeholders: the mic dropdown's only option is the
 //     standing 本地版不适用 marker (disabled); the two dictation rows
 //     render 未设置.
@@ -73,6 +77,11 @@ import {
   readCodeReviewGuidelines,
   readCustomInstructions,
 } from "../lib/settings-local";
+import {
+  SHORTCUT_BINDINGS_KEY,
+  SHORTCUT_SPECS,
+  resolveBindings,
+} from "../lib/shortcuts";
 
 // createElement, not JSX: this suite is a `.test.ts` file and the tsx
 // loader only transpiles JSX in `.tsx`.
@@ -83,6 +92,30 @@ const tZh = (key: MessageKey) => translate("zh", key);
  * starts it to the `>` that closes it. Precise enough to assert that
  * control's own markup (disabled, class) regardless of attribute order,
  * and without bleeding into the neighbouring element. */
+/** The value of one attribute inside the opening tag returned by
+ *  `controlMarkup`. The rendered `value` is HTML-escaped (React escapes
+ *  `Ctrl+,` unchanged, but a captured `Ctrl+&` would not be), so it is
+ *  compared after unescaping. */
+function attributeValue(tag: string, attribute: string): string | null {
+  const at = tag.indexOf(`${attribute}="`);
+  if (at < 0) return null;
+  const end = tag.indexOf('"', at + attribute.length + 2);
+  const raw = tag.slice(at + attribute.length + 2, end < 0 ? tag.length : end);
+  return raw
+    .replace(/&quot;/g, '"')
+    .replace(/&#x27;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
+}
+
+/** Is the element's opening tag DISABLED? A substring check is wrong: the
+ *  control classes always carry `disabled:cursor-not-allowed`, so only the
+ *  attribute itself counts. */
+function isDisabled(tag: string): boolean {
+  return /\sdisabled(?:=|\s|>)/.test(tag);
+}
+
 function controlMarkup(markup: string, testId: string): string {
   const at = markup.indexOf(`data-testid="${testId}"`);
   assert.ok(at >= 0, `${testId} must render`);
@@ -91,12 +124,16 @@ function controlMarkup(markup: string, testId: string): string {
   return markup.slice(tagStart, tagEnd < 0 ? markup.length : tagEnd + 1);
 }
 
-describe("ShortcutsSection renders the desktop structure, all controls dead (A1)", () => {
+describe("ShortcutsSection states, per row, what the browser can actually do (SB-2)", () => {
   const markup = render(createElement(ShortcutsSection, { t: tZh }));
 
-  test("the page opens with the browser-environment notice", () => {
+  test("the notice explains the three states and no longer claims none of it is live", () => {
     assert.ok(markup.includes('data-testid="settings-shortcuts-notice"'));
-    assert.ok(markup.includes("浏览器环境不适用"), "the notice carries the standing A1 wording");
+    assert.ok(!markup.includes("浏览器环境不适用"), "the A1 blanket denial is the claim being retired");
+    // The honest limit is named: combinations the browser owns cannot be
+    // intercepted by a page, so those rows are reference-only.
+    assert.ok(markup.includes("浏览器保留"), "the notice must name the browser-reserved limit");
+    assert.ok(markup.includes("已生效"), "the notice must define the live badge");
   });
 
   test("both reference groups render: Mini Chat (1 row) and 常用 (9 rows)", () => {
@@ -104,27 +141,77 @@ describe("ShortcutsSection renders the desktop structure, all controls dead (A1)
     assert.ok(markup.includes('data-testid="settings-shortcuts-group-common"'));
     assert.ok(markup.includes("Mini Chat"));
     assert.ok(markup.includes("常用"));
-    // 10 shortcut rows total: 1 mini-chat + 9 common.
     const rows = markup.match(/data-testid="settings-shortcuts-row-([a-z-]+)"/g) ?? [];
     assert.equal(rows.length, 10, "ref-09 shows exactly ten rows across the two groups");
   });
 
-  test("the bindings are the desktop defaults, verbatim", () => {
-    // Set rows render the key combination as the input's value.
-    for (const binding of [
-      "Alt+M",
-      "Ctrl+K",
-      "Ctrl+G",
-      "Ctrl+N",
-      "Ctrl+Alt+O",
-      "Ctrl+O",
-      "Ctrl+,",
-      "Ctrl+Enter",
-    ]) {
+  test("every row renders the combination the registry resolves, not a literal", () => {
+    // Cross-checked against the resolver rather than a hand-copied table:
+    // if the page and the keydown handler ever disagree, this fails.
+    const resolved = resolveBindings({});
+    for (const spec of SHORTCUT_SPECS) {
+      const binding = resolved[spec.id];
+      if (binding === null) continue;
+      const value = attributeValue(controlMarkup(markup, `settings-shortcuts-binding-${spec.id}`), "value");
+      assert.equal(value, binding, `${spec.id} must render its resolved combination`);
+    }
+  });
+
+  test("the four dispatched rows are live, and only those carry a status badge", () => {
+    const live = ["global-search", "new-task-no-project", "open-settings"];
+    for (const id of live) {
       assert.ok(
-        markup.includes(`value="${binding}"`),
-        `the ${binding} row must show the desktop default binding`,
+        !isDisabled(controlMarkup(markup, `settings-shortcuts-binding-${id}`)),
+        `${id} is dispatched by app/page.tsx — a disabled box would be a lie`,
       );
+      assert.ok(
+        markup.includes(`data-testid="settings-shortcuts-status-${id}"`),
+        `${id} must carry a status badge`,
+      );
+    }
+    // new-task is dispatched too, but the browser owns Ctrl+N on Windows
+    // and Linux, so its box is read-only and the row prints why: a bare
+    // disabled box next to a live badge would read as "not applicable".
+    assert.ok(
+      isDisabled(controlMarkup(markup, "settings-shortcuts-binding-new-task")),
+      "new-task is not rebindable, so its box must not accept input",
+    );
+    assert.ok(
+      markup.includes("仅 macOS 上生效"),
+      "the partial row must print why the combination is platform-limited",
+    );
+    assert.ok(
+      markup.includes('data-testid="settings-shortcuts-status-new-task"'),
+      "new-task must carry a status badge",
+    );
+    // new-task is the one dispatched row the browser owns on Windows and
+    // Linux (a new window), so it is labelled partial, not live.
+    assert.ok(markup.includes("部分系统生效"), "the partial verdict must be spelled out");
+    const badges = markup.match(/data-testid="settings-shortcuts-status-[a-z-]+"/g) ?? [];
+    assert.equal(badges.length, 4, "only the four dispatched rows carry a badge");
+  });
+
+  test("every blocked row is disabled and names its own reason", () => {
+    const reasons: [string, string][] = [
+      ["mini-chat", "WebUI 没有对应功能面"],
+      ["search-tasks", "浏览器保留该组合，网页无法拦截"],
+      ["open-folder", "浏览器保留该组合，网页无法拦截"],
+      ["hold-dictation", "WebUI 没有语音识别，不提供听写"],
+      ["toggle-dictation", "WebUI 没有语音识别，不提供听写"],
+      ["invert-follow-up", "操作语义尚未确定，暂不启用"],
+    ];
+    for (const [id] of reasons) {
+      assert.ok(
+        isDisabled(controlMarkup(markup, `settings-shortcuts-binding-${id}`)),
+        `${id} has no honest binding and must be disabled`,
+      );
+      assert.ok(
+        !markup.includes(`data-testid="settings-shortcuts-status-${id}"`),
+        `${id} must not claim to be live`,
+      );
+    }
+    for (const [, reason] of reasons) {
+      assert.ok(markup.includes(reason), `the page must print the reason: ${reason}`);
     }
   });
 
@@ -132,35 +219,63 @@ describe("ShortcutsSection renders the desktop structure, all controls dead (A1)
     const unsetBindings = markup.match(/placeholder="未设置"/g) ?? [];
     assert.equal(unsetBindings.length, 2, "hold-dictation and toggle-dictation are unset");
     for (const id of ["hold-dictation", "toggle-dictation"]) {
-      assert.ok(!markup.includes(`data-testid="settings-shortcuts-binding-${id}-clear"`),
-        `an unset row must not render the clear button (${id})`);
+      assert.ok(
+        !markup.includes(`data-testid="settings-shortcuts-binding-${id}-clear"`),
+        `an unset row must not render the clear button (${id})`,
+      );
     }
   });
 
-  test("every binding input and every ✕ / ↺ affordance renders disabled", () => {
-    // The binding ids and their clear-button ids share a prefix, so split
-    // them by suffix before counting (10 boxes, 8 clear buttons).
-    const ids = (markup.match(/data-testid="(settings-shortcuts-binding-[a-z-]+)"/g) ?? []).map(
-      (match) => match.slice('data-testid="'.length, -1),
-    );
-    const boxes = ids.filter((id) => !id.endsWith("-clear"));
-    const clears = ids.filter((id) => id.endsWith("-clear"));
-    assert.equal(boxes.length, 10, "one binding box per shortcut row");
-    for (const id of boxes) {
+  test("✕ is live only where a binding can be changed", () => {
+    const clears = markup.match(/data-testid="(settings-shortcuts-binding-[a-z-]+-clear)"/g) ?? [];
+    assert.equal(clears.length, 8, "one clear per set row");
+    for (const id of ["global-search", "new-task-no-project", "open-settings"]) {
       assert.ok(
-        controlMarkup(markup, id).includes("disabled"),
-        `${id} must be a disabled control`,
+        !isDisabled(controlMarkup(markup, `settings-shortcuts-binding-${id}-clear`)),
+        `${id} is rebindable, so its ✕ must be live`,
       );
     }
-    // 8 set rows carry the ✕ clear (the two unset rows do not).
-    assert.equal(clears.length, 8, "one clear per set row");
-    for (const id of clears) {
-      assert.ok(controlMarkup(markup, id).includes("disabled"));
+    for (const id of ["search-tasks", "open-folder", "mini-chat", "invert-follow-up"]) {
+      assert.ok(
+        isDisabled(controlMarkup(markup, `settings-shortcuts-binding-${id}-clear`)),
+        `${id} is blocked, so its ✕ must stay dead`,
+      );
     }
-    // The ↺ reset renders only on the Mini Chat row, disabled.
+    assert.ok(
+      isDisabled(controlMarkup(markup, "settings-shortcuts-binding-new-task-clear")),
+      "new-task is dispatched but not rebindable, so its ✕ must stay dead",
+    );
+    // The ↺ reset renders only on the Mini Chat row, which is blocked.
     assert.ok(!markup.includes('data-testid="settings-shortcuts-reset-global-search"'));
-    const reset = controlMarkup(markup, "settings-shortcuts-reset-mini-chat");
-    assert.ok(reset.includes("disabled"), "the reset affordance must be dead");
+    assert.ok(
+      isDisabled(controlMarkup(markup, "settings-shortcuts-reset-mini-chat")),
+      "the reset affordance must be dead on a blocked row",
+    );
+  });
+});
+
+describe("ShortcutsSection shows the stored customisation", () => {
+  test("a stored override renders into the box and is marked custom", () => {
+    storage.clear();
+    storage.set(SHORTCUT_BINDINGS_KEY, JSON.stringify({ "global-search": "Ctrl+Shift+P" }));
+    const markup = render(createElement(ShortcutsSection, { t: tZh }));
+    const box = controlMarkup(markup, "settings-shortcuts-binding-global-search");
+    assert.equal(attributeValue(box, "value"), "Ctrl+Shift+P", "the stored chord must render");
+    assert.ok(box.includes('data-customized="true"'), "a customised row must be marked as such");
+    assert.ok(markup.includes("已生效 · 自定义"), "the badge must say the binding is custom");
+  });
+
+  test("an override stored for a blocked row does not reach the page", () => {
+    storage.clear();
+    storage.set(SHORTCUT_BINDINGS_KEY, JSON.stringify({ "invert-follow-up": "Ctrl+Shift+Enter" }));
+    const markup = render(createElement(ShortcutsSection, { t: tZh }));
+    const box = controlMarkup(markup, "settings-shortcuts-binding-invert-follow-up");
+    assert.equal(
+      attributeValue(box, "value"),
+      "Ctrl+Enter",
+      "a blocked row keeps the desktop's printed combination",
+    );
+    assert.ok(!markup.includes("已生效 · 自定义"), "a dropped override must not read as applied");
   });
 });
 

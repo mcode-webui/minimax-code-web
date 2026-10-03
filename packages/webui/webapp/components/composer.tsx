@@ -51,6 +51,16 @@ import {
 } from "@/lib/composer-sent";
 import { getActiveSessionId, useSessionContext } from "@/lib/store";
 import {
+  readFollowUpBehavior,
+  subscribeFollowUpBehavior,
+  type FollowUpBehavior,
+} from "@/lib/settings-local";
+import {
+  followUpFailureKey,
+  resolveFollowUpAction,
+  type FollowUpAction,
+} from "@/lib/follow-up";
+import {
   completeSlashWord,
   flattenAvailableCommands,
   routeSlashInput,
@@ -223,6 +233,10 @@ export function Composer({
   >([]);
   const [slashIndex, setSlashIndex] = useState(0);
   const editorRef = useRef<HTMLTextAreaElement>(null);
+  // Per-send counter for the follow-up request identity. A ref, not state:
+  // nothing renders it, and a send must not be able to re-render the
+  // composer before its request is built.
+  const followUpSeqRef = useRef(0);
   const fileRef = useRef<HTMLInputElement>(null);
   // The live session id used to live on a per-instance ref here.
   // That was correct for chat→chat switching (the instance survives)
@@ -254,6 +268,18 @@ export function Composer({
 
   const readOnly = state?.readOnly ?? false;
   const running = state?.running.active ?? false;
+  // SB-4 — what a send does while a turn is running. The behaviour comes
+  // from the settings page's 跟进消息行为 row
+  // (`webui-follow-up-behavior`), read once per mount and then followed
+  // through the module's live channel, the same shape
+  // `components/context-meter.tsx` uses for the context-window switch: the
+  // settings page and the composer are on screen together, so the switch
+  // has to take effect without a reload.
+  const [followUp, setFollowUp] = useState<FollowUpBehavior>(() => readFollowUpBehavior());
+  useEffect(() => subscribeFollowUpBehavior(setFollowUp), []);
+  // `wait` is the OFF position and means "render no send control", which
+  // is the pre-SB-4 composer exactly. See lib/follow-up.ts.
+  const followUpAction: FollowUpAction = resolveFollowUpAction(followUp, running);
   // The server stores the permission mode as its *label* (`webuiModeToLabel(id)`
   // in routes/model.js) while this selector is keyed by id, so comparing the two
   // directly never matched and the chip always fell back to 完全访问 — you could
@@ -452,6 +478,17 @@ export function Composer({
   const submit = useCallback(async () => {
     const content = value.trim();
     if ((!content && attachments.length === 0) || readOnly || sending) return;
+    // SB-4 — freeze the action at dispatch. The switch can be flipped
+    // while the request is in flight, and a message that was QUEUED must
+    // not be reported (or retried) as one that was steered: the two reach
+    // different engine methods and mean different things to the user.
+    const action = followUpAction;
+    // `wait` is unreachable through the UI (the send control is not
+    // rendered while a turn runs), and this guard is what keeps it
+    // unreachable through the KEYBOARD as well: the textarea's Enter
+    // handler calls `submit` directly, so the button's absence is not
+    // enough.
+    if (action === "wait") return;
     // Capture the dispatch context — what session this send was FOR.
     // The outbox record stores these, so a later failure can identify
     // its owner. They are NOT the values the catch branch compares
@@ -488,6 +525,28 @@ export function Composer({
     });
     setComposerDraft(dispatchDraftKey, { value: "", attachments: [] });
     try {
+      // SB-4 — a send into a RUNNING turn is not a slash command and not
+      // a new turn: it goes to the one endpoint the follow-up family
+      // owns, carrying the action the switch selected. `requestId` is
+      // the per-send identity the engine dedupes on (the queue item's
+      // `clientRequestId` / the steering message's `idempotencyKey`), so
+      // a retried click cannot produce two messages.
+      if (action === "queue" || action === "steer") {
+        // A per-send identity, unique for this TAB and this send: the
+        // engine dedupes a queue item on `clientRequestId` and a steering
+        // message on `idempotencyKey`, so two sends that happened to carry
+        // the same text must not collapse into one. Bounded and charset-
+        // safe by construction (the server drops anything else).
+        followUpSeqRef.current += 1;
+        await api.submitFollowUp({
+          behavior: action,
+          content,
+          attachments,
+          requestId: `${dispatchCid}.${Date.now().toString(36)}.${followUpSeqRef.current}`,
+        });
+        completeComposerSent();
+        return;
+      }
       // A slash input is a message OR a command, and only the eight
       // webui button commands belong to /api/cmd — routing on the
       // leading slash alone sent `/goal <text>` and `/compact` to an
@@ -521,14 +580,26 @@ export function Composer({
       // resend, the engine is running it" wording would be the exact
       // opposite of the truth.
       const busy = !unconfirmed && isConversationBusy(cause);
+      // SB-4 — the follow-up family's two refusals. Both are "not
+      // delivered" for a reason the user can act on, so they get their
+      // own banner (a finished sentence, not a server string) and they
+      // are NOT routed through the unconfirmed probe: the probe asks
+      // whether a MESSAGE became a turn, and a follow-up is by
+      // definition not a turn.
+      const followUpRefusal =
+        !unconfirmed && (action === "queue" || action === "steer")
+          ? followUpFailureKey(cause)
+          : null;
       const outcome: SendProbeOutcome | null = unconfirmed
         ? await probeSend(content)
         : null;
       const errorMessage = unconfirmed
         ? ""
-        : cause instanceof Error
-          ? cause.message
-          : String(cause);
+        : followUpRefusal
+          ? t(followUpRefusal)
+          : cause instanceof Error
+            ? cause.message
+            : String(cause);
       // Read the LIVE context at catch time. The dispatch-side
       // closure has the session id from when the user pressed
       // Enter; if the user has since switched sessions (e.g. via the
@@ -585,13 +656,19 @@ export function Composer({
       }
       setComposerDraft(dispatchDraftKey, {
         error: errorMessage,
-        errorKind: unconfirmed ? "unconfirmed" : busy ? "busy" : "rejected",
+        errorKind: unconfirmed
+          ? "unconfirmed"
+          : followUpRefusal
+            ? "followUp"
+            : busy
+              ? "busy"
+              : "rejected",
         unconfirmed: outcome,
       });
     } finally {
       setSending(false);
     }
-  }, [value, attachments, readOnly, sending, state?.sessionId]);
+  }, [value, attachments, readOnly, sending, state?.sessionId, followUpAction, t]);
 
   const onPickFiles = useCallback(async (files: FileList | null) => {
     if (!files?.length) return;
@@ -949,7 +1026,12 @@ export function Composer({
               {running ? (
                 /* Upstream's stop control is a 30px circle in the quaternary icon
                    colour with a 12px square inside, not a rounded square in the
-                   danger colour. Classes are the upstream ones verbatim. */
+                   danger colour. Classes are the upstream ones verbatim.
+                   SB-4: it is no longer the ONLY control while a turn runs —
+                   the send button below comes back when the follow-up
+                   behaviour is queue or steer, because stopping the turn and
+                   answering it are two different things a user may want in the
+                   same second. */
                 <button
                   type="button"
                   aria-label={t("topbar.stop")}
@@ -959,12 +1041,17 @@ export function Composer({
                 >
                   <span aria-hidden="true" className="size-3 rounded-[3px] bg-icon_default_primary" />
                 </button>
-              ) : (
-                /* Voice input is not implemented in this frontend (the server
-                   has no ASR contract), so the mic is present but permanently
-                   disabled rather than hidden. The send button is the up arrow
-                   and is always rendered, disabled until there is something to
-                   send. */
+              ) : null}
+              {/* Voice input is not implemented in this frontend (the server
+                 has no ASR contract), so the mic is present but permanently
+                 disabled rather than hidden. The send button is the up arrow
+                 and is always rendered, disabled until there is something to
+                 send.
+                 SB-4: the group is rendered whenever the send is possible —
+                 which, while a turn runs, depends on the follow-up
+                 behaviour. `wait` (the OFF position) renders neither, and that
+                 is the pre-SB-4 composer exactly. */}
+              {running && followUpAction === "wait" ? null : (
                 <>
                   <button
                     type="button"
@@ -979,8 +1066,13 @@ export function Composer({
                   <button
                     type="button"
                     aria-label={t("composer.send")}
-                    title={t("composer.send")}
+                    title={
+                      running && followUpAction !== "direct"
+                        ? `${t("composer.send")} — ${t("composer.followUp")}`
+                        : t("composer.send")
+                    }
                     data-testid="composer-send-button"
+                    data-follow-up={running ? followUpAction : undefined}
                     disabled={readOnly || sending || empty}
                     onClick={() => void submit()}
                     className="flex size-8 shrink-0 select-none items-center justify-center rounded-[10px] bg-bg_interaction_primary_default text-icon_interaction_primary_default transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:bg-bg_interaction_primary_inactive"
@@ -1008,11 +1100,19 @@ export function Composer({
             // turn is running and the text was NOT delivered, so the message
             // is not resendable yet — a distinct sentence, not the generic
             // failure line with a raw server string glued to it (P16).
+            //
+            // SB-4 adds a fifth fact: a follow-up the engine refused. It
+            // wears the `busy` colour — "not delivered, wait or change the
+            // setting" is the same class of claim as a busy conversation —
+            // and its `error` is already a finished sentence, so it is
+            // rendered as-is rather than behind the "could not send"
+            // headline, which would be false for it (the send itself was
+            // fine; the engine declined the follow-up).
             <span
               className={
                 errorKind === "unconfirmed"
                   ? "text-caption-small-strong text-text_default_secondary"
-                  : errorKind === "busy"
+                  : errorKind === "busy" || errorKind === "followUp"
                     ? "text-caption-small-strong text-text_status_warning"
                     : "text-caption-small-strong text-text_status_error"
               }
@@ -1021,7 +1121,9 @@ export function Composer({
                 ? t(unconfirmedBannerKey(unconfirmedOutcome))
                 : errorKind === "busy"
                   ? t("error.busy")
-                  : `${t("error.send")}: ${error}`}
+                  : errorKind === "followUp"
+                    ? error
+                    : `${t("error.send")}: ${error}`}
             </span>
           ) : null}
         </div>

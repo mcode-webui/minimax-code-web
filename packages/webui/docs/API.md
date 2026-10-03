@@ -2477,6 +2477,157 @@ it through the same form the custom-providers UI uses.
 
 ---
 
+## Model source (SB-1)
+
+Four endpoints behind the 「用量与模型」 tab's source switcher, the
+「使用中」 badge and the MiniMax API key row. Each one is a thin window
+over an engine method that already existed
+(`packages/local-runtime-v2/src/local/cli-service.ts`:
+`getMiniMaxModelSource`, `setMiniMaxModelSource`,
+`upsertMiniMaxApiKey`, `testUserModel`) and previously had no route.
+
+**These are NOT the provider catalogue.** `/api/providers*` is webui's
+own store of custom BYOK endpoints. This family is the ENGINE's MiniMax
+credential state — `minimaxModelSource` and `minimax_api.apiKey` in the
+engine's own `config.yaml`. The two sit on adjacent tabs, share a masking
+convention, and share no storage and no validation.
+
+**Gate.** The four methods hang off the v2 cli-service's own
+`modelProviders` requirement, which is not one of the 14 declared
+capability keys, so this family is gated on the LIVE member rather than
+on a declaration: `503 engine_host_unavailable` when no runtime is
+booted, `501 engine_member_unavailable` when the booted host does not
+carry the method. See `server/engine/model-source.js`.
+
+**Masking.** `apiKey` is masked in every response. The mask is the
+engine's own (`service/model-system/secret.js`), forwarded unchanged, and
+no path in the route can unmask it.
+
+### `GET /api/model-source`
+
+The read the settings tab opens on: the active source, plus the stored
+key's masked projection.
+
+**Response 200**
+```json
+{
+  "ok": true,
+  "source": "token_plan",
+  "apiKey": {
+    "available": true,
+    "hasKey": false,
+    "masked": null,
+    "testState": null,
+    "lastTestedAtMs": null
+  }
+}
+```
+
+`source` is `token_plan` (the managed Token Plan credential) or
+`minimax_api_key` (the user's own BYOK key). `apiKey.available: false`
+is NOT `hasKey: false`: the first means the host could not report the
+key half at all, the second means it reported that nothing is stored. A
+UI that collapsed the two would tell a user with a saved key that they
+have none.
+
+- `501 engine_member_unavailable` — the host has no
+  `getMiniMaxModelSource`.
+- `503 engine_host_unavailable` — no runtime booted.
+- `502 UNKNOWN_MODEL_SOURCE` — the engine reported a value outside the
+  two its own type allows. Refused rather than rendered, because the UI
+  has no way back out of a source it cannot name.
+
+### `PUT /api/model-source`
+
+Switch the active source. The response reports what the engine
+PERSISTED, not what was requested, so the badge can never disagree with
+the config.
+
+**Request** `{ "source": "token_plan" | "minimax_api_key" }`
+
+**Response 200** `{ "ok": true, "source": "minimax_api_key" }`
+
+- `400 INVALID_MODEL_SOURCE` — missing or unknown `source`. Checked
+  before the engine is reached, so a typo costs no runtime round trip.
+- `400 BAD_FIELD_TYPE` — `source` was not a string.
+- `400 NO_API_KEY` — the engine refused the BYOK direction because no
+  key is stored. This code is the UI's cue to point the user at the key
+  field rather than to show a failure.
+
+### `PUT /api/model-source/api-key`
+
+Upsert the BYOK key, optionally switching to it in the same call.
+
+**Request** `{ "apiKey": "<raw key>", "saveAndUse": true }`
+
+**The keep-key sentinel.** An absent, empty or whitespace-only `apiKey`
+keeps the stored key, calls no engine write, and answers `200` with
+`changed: false` plus the current masked status. It exists because the
+GET can only return a MASK and the engine rejects a mask submitted as a
+key (`INVALID_API_KEY`); a UI that round-tripped its own masked state
+would turn every save into a failure. Same convention and same
+empty-string spelling as `PUT /api/providers`.
+
+`saveAndUse` is the engine's own flag: it writes the key AND switches
+the source to `minimax_api_key` in one transaction, so the tab never
+shows a saved key beside a source that was not switched.
+
+**Response 200**
+```json
+{
+  "ok": true,
+  "source": "minimax_api_key",
+  "apiKey": { "available": true, "hasKey": true, "masked": "sk-a*******6789" },
+  "changed": true,
+  "saveAndUse": true
+}
+```
+
+- `400 BAD_FIELD_TYPE` — `apiKey` was not a string, or `saveAndUse` was
+  not a boolean. A non-string key is refused rather than treated as the
+  keep sentinel, which would turn a client's bug into a successful no-op.
+- `400 INVALID_API_KEY` — the engine's own refusal (empty or masked).
+- `500 engine_error` — a throw with no engine status. Its message is
+  REPLACED, not forwarded: an exception string from an unrecognised
+  thrower is the one place a credential could still be echoed.
+
+### `POST /api/model-source/test`
+
+Connectivity probe. **Request** `{ "modelId"?: "MiniMax-M3" }`; the
+engine falls back to the first configured MiniMax model when it is
+absent, and an unknown id is the engine's own 404.
+
+The probe always runs against the STORED key on the `minimax_api`
+provider, and says so in `tested: "stored_key"`. Two limits are the
+engine's contract, not this route's: v2's `testUserModel` takes no key
+override, so an unsaved key cannot be probed; and the managed Token Plan
+credential is not a model-service key, so the Token Plan source has
+nothing here to probe with.
+
+**Response 200** — for a completed probe, successful or not:
+```json
+{
+  "ok": true,
+  "success": true,
+  "providerId": "minimax_api",
+  "modelId": null,
+  "tested": "stored_key",
+  "status": {
+    "state": "available",
+    "lastTestedAt": 1700000000000,
+    "lastErrorCode": null,
+    "lastErrorMessage": null
+  }
+}
+```
+
+`success: false` is a COMPLETED probe of a model that did not answer, so
+it stays 200 — the same split `POST /api/providers/test` makes. Only a
+refusal to try is a non-200: `503` / `501` from the gate, or the
+engine's `400 NO_API_KEY` when nothing is stored to test.
+
+---
+
 ## Usage
 
 ### `POST /api/usage` and `POST /api/usage-trigger`

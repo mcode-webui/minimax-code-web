@@ -504,6 +504,97 @@ describe("authorize — 不可达的裁决通道（不等满预算就失败即�
 });
 
 // ============================================================
+// Who asked? (P19)
+//
+// The block above answers "is anybody there?". The case P19 was filed
+// about is the other question: the request has no OWNER to be shown
+// anything. `?cid=` is absent — a curl, a script — and an empty cid is
+// this module's BROADCAST target, so with one browser tab open the
+// probe above answers TRUE and the destructive request then waits out
+// the full 300000ms budget against a modal no human knows about.
+//
+// So `requireRequester` is opt-in and checked before the channel
+// question: the two are different questions, and only the routes that
+// serve an identified HTTP caller may claim one. `startup.cleanup`
+// asks with an empty cid on purpose and must keep broadcasting.
+// ============================================================
+describe("authorize — requireRequester（没有主人就没有可裁决的请求）", () => {
+  test("空 cid + 有在线客户端 ⇒ 毫秒级失败即关闭，不等满预算", async () => {
+    // The P19 condition exactly: the channel answer is "yes, somebody
+    // is listening", and it must not matter.
+    _listenerProbe = () => true;
+    const startedAt = Date.now();
+    const r = await authorize("session.delete", { cid: "" }, { requireRequester: true });
+    assert.equal(r.approved, false, "无归属的破坏性请求绝不批准");
+    assert.equal(r.decidedBy, "timeout", "与超时同解，形状不变");
+    assert.equal(r.reason, "no_requester");
+    assert.ok(Date.now() - startedAt < 1000, "毫秒级返回，而不是 300000ms");
+    assert.equal(getPendingCount(), 0, "不进挂起表：没有可被裁决的东西");
+    assert.equal(
+      _sseFrames.filter((f) => f.event === "needs_authorization").length,
+      0,
+      "不向不相干的标签页广播破坏性请求",
+    );
+  });
+
+  test("cid 缺失 / 空白与 cid:\"\" 同解", async () => {
+    _listenerProbe = () => true;
+    for (const cid of [undefined, null, "   "]) {
+      const r = await authorize("session.delete", { cid }, { requireRequester: true });
+      assert.equal(r.approved, false, `cid=${JSON.stringify(cid)}`);
+      assert.equal(r.reason, "no_requester");
+    }
+  });
+
+  test("反向半边：有 cid 时恢复完整人工往返，绝不自动批准", async () => {
+    _listenerProbe = () => true;
+    const p = authorize("session.delete", { cid: "tab-live" }, { requireRequester: true });
+    assert.equal(getPendingCount(), 1, "有主人 ⇒ 照常挂起等人");
+    const [rid] = getPendingRequestIds();
+    assert.equal(
+      _sseFrames.filter((f) => f.event === "needs_authorization").length,
+      1,
+    );
+    const res = fakeRes();
+    await handleAuthDecision(fakeReq({ requestId: rid, approve: true }), res);
+    assert.equal(res._status, 200);
+    const result = await p;
+    assert.equal(result.approved, true);
+    assert.equal(result.decidedBy, "user");
+  });
+
+  test("不声明 requireRequester 时空 cid 仍广播 —— startup.cleanup 不受影响", async () => {
+    // The blast radius of the rule is exactly the routes that opted in.
+    // `cleanup.js` calls authorize("startup.cleanup", {cid: ""}) with no
+    // options, on purpose: at boot there is no requester and any tab may
+    // decide. If this case ever starts short-circuiting, the boot-time
+    // orphan sweep silently stops running.
+    _listenerProbe = () => true;
+    const p = authorize("startup.cleanup", { cid: "" }, {});
+    assert.equal(getPendingCount(), 1, "启动清扫仍走广播挂起");
+    const [rid] = getPendingRequestIds();
+    _decideForTests(rid, false);
+    const r = await p;
+    assert.equal(r.decidedBy, "user");
+    assert.equal(r.approved, false);
+  });
+
+  test("无归属时写 auth.unreachable 审计，reason=no_requester", async () => {
+    _listenerProbe = () => true;
+    await authorize("session.delete", { cid: "" }, { requireRequester: true });
+    const events = readFileSync(join(_tmpAuditDir, "events.ndjson"), "utf8")
+      .trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
+    const last = events[events.length - 1];
+    assert.equal(last.kind, "auth.unreachable");
+    assert.equal(last.data.reason, "no_requester");
+    assert.ok(!last.cid, `没有主人 ⇒ 审计行也不挂到任何客户端名下（cid=${last.cid}）`);
+    const eventsMod = await import(absPath("lib/events.js"));
+    const v = eventsMod.verify({ path: join(_tmpAuditDir, "events.ndjson") });
+    assert.equal(v.ok, true, `chain must verify: ${JSON.stringify(v)}`);
+  });
+});
+
+// ============================================================
 // SSE emission contract
 // ============================================================
 describe("pushAuthRequest / pushAuthDecision — SSE contracts", () => {

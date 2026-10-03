@@ -17,9 +17,13 @@
  *    localStorage key）；usage → 三来源切换头，token-plan 落点复用 53 号
  *    的 `UsageModelsSection`（headless，只出四张卡）、custom 落点复用 54
  *    号 `ProviderManagementPanel`；connection → 本仓既有连接面板。
- *  - minimax-api 来源：本仓 base 无 MiniMax API Key 后端 capability，
- *    面板按参照形态渲染、操作件禁用（capability honesty，参照对缺
- *    capability 的语义同样是不绑不定）。
+ *  - minimax-api 来源：SB-1 起接真后端（`GET/PUT /api/model-source`、
+ *    `PUT /api/model-source/api-key`、`POST /api/model-source/test`，
+ *    服务端 `server/engine/model-source.js` 消费引擎的
+ *    `getMiniMaxModelSource` / `setMiniMaxModelSource` /
+ *    `upsertMiniMaxApiKey` / `testUserModel`）。三来源切换是真动作，
+ *    「使用中」徽标渲染引擎回读的真值；检测读的是已保存的密钥，引擎
+ *    的 `testUserModel` 不接受临时 key，输入未保存时按钮禁用。
  *  - voice/shortcuts/custom-instructions/coding/worktree 五个 Tab 照抄
  *    参照的空面板形态；其真实内容由 deploy-55 分支的 55a 四子页提供，
  *    合并后在对应分支接线。
@@ -49,6 +53,8 @@ import { applyAppearance, currentAppearance } from "@/lib/theme";
 import type { Locale, MessageKey } from "@/lib/i18n";
 import { ProviderManagementPanel } from "./provider-management";
 import { SettingsPanel, UsageModelsSection } from "./panels";
+// SB-5：账户 Tab 的真读取分区（`GET /api/account`），见该文件头的分工说明。
+import { AccountSection } from "./settings-account-section";
 // 55a 四子页（工单 58 线 D 接线）：与移植壳同目录的纯前端组件，无
 // store/api 依赖；面板自带 localStorage 持久化（lib/settings-local.ts）。
 import {
@@ -477,19 +483,10 @@ export function SettingsModalPort({
           ) : null}
           {active === "account" ? (
             <div className="webui-settings-panels">
-              <SettingPanel title={t("settings.tab.account")}>
-                {/* 本地版无账户会话：按参照形态渲染账户信息行（空值）与
-                 * 退出登录（无 capability，禁用）。 */}
-                <div className="webui-settings-row">
-                  <div>
-                    <strong>{t("settings.account.info")}</strong>
-                    <span>{t("settings.account.localLoggedOut")}</span>
-                  </div>
-                </div>
-                <SettingsButton disabled title={t("settings.account.signOutUnavailable")}>
-                  {t("settings.account.signOut")}
-                </SettingsButton>
-              </SettingPanel>
+              {/* SB-5：账户分区接 `GET /api/account`（账户名 / 当前套餐 / 配额读数 /
+               * 账户状态）。SB-5 之前这里是恒空态的硬编码行。退出登录维持禁用——引擎
+               * 没有登录登出方法（`doc/settings-batch-plan.md` §1.2 拍板）。 */}
+              <AccountSection t={t} />
             </div>
           ) : null}
           {active === "archived" ? (
@@ -799,7 +796,21 @@ function ModeCard({
 
 // --- 用量与模型（参照 UsageModelSettings 的三来源切换头）-------------------
 
+/**
+ * The view tab — which panel the user is LOOKING at. Distinct from
+ * `activeSource`, which is what the ENGINE is using. The reference draws
+ * the same two things: the pill is the view, the 「使用中」 badge is the
+ * truth. Collapsing them is what let the old build pick a source in the
+ * dropdown and show it as selected while the engine kept using the other
+ * one.
+ */
 type UsageSourceTab = "token-plan" | "minimax-api" | "custom";
+
+/** The switcher tab ↔ the engine source it selects. */
+const TAB_TO_ENGINE_SOURCE = {
+  "token-plan": "token_plan",
+  "minimax-api": "minimax_api_key",
+} as const;
 
 function UsageModelSettingsPort({
   t,
@@ -814,14 +825,175 @@ function UsageModelSettingsPort({
   const [sourceMenuOpen, setSourceMenuOpen] = useState(false);
   const [apiKey, setApiKey] = useState("");
 
+  // SB-1: the engine's truth for this tab. `null` while the read is in
+  // flight and after a failed one — the badge renders nothing in both
+  // cases rather than guessing, because a badge that claims 「使用中」 for
+  // a source the engine never accepted is the fake-success shape this
+  // repository keeps refusing.
+  const [activeSource, setActiveSource] = useState<api.ModelSource | null>(null);
+  const [keyStatus, setKeyStatus] = useState<api.ModelSourceApiKeyStatus | null>(null);
+  const [loadState, setLoadState] = useState<"loading" | "ready" | "error">("loading");
+  const [busy, setBusy] = useState<"source" | "key" | "test" | null>(null);
+  const [notice, setNotice] = useState<{
+    tone: "ok" | "error";
+    text: string;
+    /** What the engine refused. `keyRequired` is the one verdict a later
+     * keystroke invalidates (UAT4-2): once a key is typed, 「请先填写
+     * API Key」 is stale and contradicted the input box next to it. */
+    kind?: "keyRequired";
+  } | null>(null);
+
+  // P20 (UAT4-1): a source write changes which account the engine
+  // reports, so the Token Plan card's `GET /api/account` read has to
+  // follow it. Bumped on SUCCESS only — a refused switch changed
+  // nothing, and re-reading on failure would just spend a request to
+  // re-render the same answer.
+  const [accountRevision, setAccountRevision] = useState(0);
+  const revalidateAccount = useCallback(
+    () => setAccountRevision((revision) => revision + 1),
+    [],
+  );
+
+  // Read the engine's source when the tab mounts. This is deliberately
+  // NOT a page-level fetch: the server boots the engine runtime to
+  // answer it, and a boot belongs to a user action (opening the tab) —
+  // see `server/engine/model-source.js` KNOWN DEBT 2.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const snapshot = await api.getModelSource();
+        if (cancelled) return;
+        setActiveSource(snapshot.source);
+        setKeyStatus(snapshot.apiKey);
+        setLoadState("ready");
+      } catch {
+        if (cancelled) return;
+        setActiveSource(null);
+        setKeyStatus(null);
+        setLoadState("error");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const sourceLabel = sourceTab === "token-plan" ? "Token Plan" : "MiniMax API";
+  const keyAvailable = keyStatus !== null && keyStatus.available;
+  const hasStoredKey = keyStatus?.hasKey === true;
+  const hasUnsavedKey = apiKey.trim().length > 0;
+
+  /**
+   * Select a source: move the view AND switch the engine in one action.
+   *
+   * The order matters. The view moves first (it is instant and reversible
+   * by clicking again), then the engine call; a refusal leaves the
+   * VIEW where the user put it — so a failed switch to MiniMax API shows
+   * the key field the user has to fill, rather than snapping back to a
+   * panel that does not explain the failure — while the badge keeps
+   * showing the source that is actually in use.
+   */
+  const chooseSource = useCallback(
+    async (tab: Exclude<UsageSourceTab, "custom">) => {
+      setSourceMenuOpen(false);
+      setSourceTab(tab);
+      const wanted = TAB_TO_ENGINE_SOURCE[tab];
+      if (wanted === activeSource) return;
+      setBusy("source");
+      setNotice(null);
+      try {
+        const written = await api.setModelSource(wanted);
+        // The response carries what the engine PERSISTED, not what was
+        // requested, so a re-read of the badge can never disagree with
+        // the config.
+        setActiveSource(written.source);
+        // P20: the engine has now rebound to the new source, so the Token
+        // Plan card's account read is stale by construction.
+        revalidateAccount();
+      } catch (cause) {
+        // Only the NO_API_KEY refusal is invalidated by typing; a generic
+        // switch failure is still true after the next keystroke, so it
+        // carries no `kind` and survives the edit.
+        const keyRefused =
+          cause instanceof api.ApiHttpError && api.hasApiErrorCode(cause, "NO_API_KEY");
+        setNotice({
+          tone: "error",
+          kind: keyRefused ? "keyRequired" : undefined,
+          text: keyRefused
+            ? t("usageModels.minimax.keyRequired")
+            : t("usageModels.source.switchFailed"),
+        });
+      } finally {
+        setBusy(null);
+      }
+    },
+    [activeSource, revalidateAccount, t],
+  );
+
+  const saveKeyAndUse = useCallback(async () => {
+    const raw = apiKey.trim();
+    if (!raw) {
+      setNotice({ tone: "error", kind: "keyRequired", text: t("usageModels.minimax.keyRequired") });
+      return;
+    }
+    setBusy("key");
+    setNotice(null);
+    try {
+      // `saveAndUse` writes the key and switches the source in ONE
+      // engine transaction, so the tab never shows a saved key beside a
+      // source that was not switched.
+      const result = await api.putModelSourceApiKey({ apiKey: raw, saveAndUse: true });
+      setKeyStatus(result.apiKey);
+      setActiveSource(result.source);
+      setApiKey("");
+      setSourceTab("minimax-api");
+      setNotice({ tone: "ok", text: t("usageModels.minimax.saved") });
+      // P20: `saveAndUse` switched the engine's source too, so the Token
+      // Plan card's account read is stale by the same construction.
+      revalidateAccount();
+    } catch (cause) {
+      setNotice({
+        tone: "error",
+        text: cause instanceof Error ? cause.message : t("usageModels.minimax.keyRequired"),
+      });
+    } finally {
+      setBusy(null);
+    }
+  }, [apiKey, revalidateAccount, t]);
+
+  const testKey = useCallback(async () => {
+    setBusy("test");
+    setNotice(null);
+    try {
+      const result = await api.testModelSourceModel();
+      setKeyStatus((previous) =>
+        previous === null
+          ? previous
+          : { ...previous, testState: result.status.state ?? previous.testState },
+      );
+      setNotice({
+        tone: result.success ? "ok" : "error",
+        text: result.success
+          ? t("usageModels.minimax.testOk")
+          : result.status.lastErrorMessage || t("usageModels.minimax.testFailed"),
+      });
+    } catch (cause) {
+      setNotice({
+        tone: "error",
+        text: cause instanceof Error ? cause.message : t("usageModels.minimax.testFailed"),
+      });
+    } finally {
+      setBusy(null);
+    }
+  }, [t]);
 
   return (
     <div className="mx-auto flex min-h-0 w-full max-w-[704px] flex-1 flex-col gap-4" data-testid="settings-usage-model">
       {/* 参照的三来源切换头：来源 pill（下拉切 Token Plan / MiniMax API）
-       * + 细分隔线 + 自定义模型按钮。来源切换只改视图——本仓 base 无
-       * setMiniMaxModelSource 后端，参照的“使用中”徽标与持久化切换属
-       * 后续轮次。 */}
+       * + 细分隔线 + 自定义模型按钮。SB-1 起切换是真动作：下拉点选同时
+       * 改视图并写引擎（PUT /api/model-source），「使用中」徽标渲染的是
+       * 引擎回读的真值而非本地 state。 */}
       <div className="flex h-8 items-center gap-3">
         <div className="relative">
           <div
@@ -852,27 +1024,40 @@ function UsageModelSettingsPort({
             <div className="absolute left-0 top-full z-10 mt-1 flex min-w-[180px] flex-col rounded-[12px] bg-bg_default_primary p-1.5 shadow-lg">
               <button
                 type="button"
-                className="flex h-[30px] items-center rounded-[8px] px-3 text-left text-sm hover:bg-bg_interaction_tertiary_hover"
-                onClick={() => {
-                  setSourceMenuOpen(false);
-                  setSourceTab("token-plan");
-                }}
+                data-testid="settings-usage-source-option-token-plan"
+                className="flex h-[30px] items-center justify-between rounded-[8px] px-3 text-left text-sm hover:bg-bg_interaction_tertiary_hover"
+                onClick={() => void chooseSource("token-plan")}
               >
                 Token Plan
+                {activeSource === "token_plan" ? (
+                  <span className="text-text_default_tertiary">{t("usageModels.source.inUse")}</span>
+                ) : null}
               </button>
               <button
                 type="button"
-                className="flex h-[30px] items-center rounded-[8px] px-3 text-left text-sm hover:bg-bg_interaction_tertiary_hover"
-                onClick={() => {
-                  setSourceMenuOpen(false);
-                  setSourceTab("minimax-api");
-                }}
+                data-testid="settings-usage-source-option-minimax-api"
+                className="flex h-[30px] items-center justify-between rounded-[8px] px-3 text-left text-sm hover:bg-bg_interaction_tertiary_hover"
+                onClick={() => void chooseSource("minimax-api")}
               >
                 MiniMax API
+                {activeSource === "minimax_api_key" ? (
+                  <span className="text-text_default_tertiary">{t("usageModels.source.inUse")}</span>
+                ) : null}
               </button>
             </div>
           ) : null}
         </div>
+        {/* 徽标只在读到了真值、且当前视图就是那一来源时出现：视图是
+         * token-plan 时一个「MiniMax API 使用中」的徽标会挂在错的行上。 */}
+        {activeSource !== null &&
+        TAB_TO_ENGINE_SOURCE[sourceTab as "token-plan" | "minimax-api"] === activeSource ? (
+          <span
+            data-testid="settings-usage-source-in-use"
+            className="rounded-[6px] bg-bg_interaction_tertiary_selected px-1.5 py-0.5 text-[12px] leading-4 text-text_default_secondary"
+          >
+            {t("usageModels.source.inUse")}
+          </span>
+        ) : null}
         <div className="h-3 w-[0.5px] bg-border_default" />
         <button
           type="button"
@@ -887,10 +1072,23 @@ function UsageModelSettingsPort({
         </button>
       </div>
 
+      {notice ? (
+        <p
+          data-testid="settings-usage-notice"
+          className={`text-[12px] leading-4 ${
+            notice.tone === "ok" ? "text-text_default_secondary" : "text-text_default_primary"
+          }`}
+        >
+          {notice.text}
+        </p>
+      ) : null}
+
       {sourceTab === "token-plan" ? (
         <section className="flex w-full flex-col gap-4" data-testid="settings-usage-token-plan">
-          {/* 53 号四张卡（headless：内部切换头由本组件的三来源头取代）。 */}
-          <UsageModelsSection t={t} headless />
+          {/* 53 号四张卡（headless：内部切换头由本组件的三来源头取代）。
+              P20：accountRevision 随切源成功递增，卡片的 /api/account
+              读随之重跑（UAT4-1）。 */}
+          <UsageModelsSection t={t} headless accountRevision={accountRevision} />
         </section>
       ) : null}
 
@@ -898,9 +1096,25 @@ function UsageModelSettingsPort({
         <section className="flex w-full flex-col gap-2 pt-1" data-testid="settings-minimax-api-panel">
           <div className="flex items-center gap-2">
             <label className="text-[14px] font-medium leading-5 text-text_default_primary">API Key</label>
-            {/* 无后端 capability：恒“未启用”，参照的 valid 徽标分支不触发。 */}
-            <span className="rounded-[6px] bg-bg_interaction_tertiary_selected px-1 py-0.5 text-[12px] leading-4 text-text_default_secondary">
-              {t("usageModels.minimax.notEnabled")}
+            {/* 徽标读的是引擎回传的掩码投影：available=false（服务读不到
+             * 密钥半边）与 hasKey=false（确实没存）是两件事，分开渲染。 */}
+            <span
+              data-testid="settings-minimax-key-status"
+              className="rounded-[6px] bg-bg_interaction_tertiary_selected px-1 py-0.5 text-[12px] leading-4 text-text_default_secondary"
+            >
+              {loadState === "loading"
+                ? t("usageModels.minimax.loading")
+                : !keyAvailable
+                  ? t("usageModels.minimax.unavailable")
+                  : // UAT4-2: a typed-but-unsaved key outranks both stored
+                    // and absent — 「已保存密钥」 beside a field the user
+                    // is actively replacing is stale, and 「未启用」 is
+                    // false once something is typed.
+                    hasUnsavedKey
+                    ? t("usageModels.minimax.pendingSave")
+                    : hasStoredKey
+                      ? t("usageModels.minimax.configured")
+                      : t("usageModels.minimax.notEnabled")}
             </span>
           </div>
           <div className="flex items-center gap-3">
@@ -908,27 +1122,67 @@ function UsageModelSettingsPort({
               aria-label="API Key"
               type="password"
               value={apiKey}
-              onChange={(event) => setApiKey(event.target.value)}
-              placeholder={t("usageModels.minimax.apiKeyPlaceholder")}
+              onChange={(event) => {
+                setApiKey(event.target.value);
+                // UAT4-2: 「请先填写 API Key」 is the engine's verdict on
+                // an EMPTY field. Typing falsifies it, and leaving it up
+                // beside a filled field is the contradiction the UAT
+                // caught. Every other verdict stands.
+                setNotice((previous) =>
+                  previous && previous.kind === "keyRequired" ? null : previous,
+                );
+              }}
+              placeholder={
+                hasStoredKey
+                  ? t("usageModels.minimax.storedPlaceholder")
+                  : t("usageModels.minimax.apiKeyPlaceholder")
+              }
               className="min-w-0 flex-[1_0_0] rounded-[8px] border border-border_default bg-bg_default_primary px-3 py-2 text-[14px]"
             />
+            {/* 检测读的是「已保存的密钥」——引擎的 testUserModel 不接受
+             * 临时 key（v2 无 override 通道），所以输入框里有未保存的值时
+             * 按钮禁用。UAT4-2：这个理由原本只在 title 里，键盘与触屏用户
+             * 看不到，等于没有解释；门控开启期间下方常驻一行说明。 */}
             <button
               type="button"
               aria-label={t("usageModels.minimax.testAria")}
-              disabled
-              title={t("usageModels.minimax.unavailable")}
+              data-testid="settings-minimax-test"
+              disabled={!hasStoredKey || hasUnsavedKey || busy !== null}
+              title={
+                !hasStoredKey
+                  ? t("usageModels.minimax.noKeyToTest")
+                  : hasUnsavedKey
+                    ? t("usageModels.minimax.saveFirst")
+                    : ""
+              }
+              onClick={() => void testKey()}
               className="flex size-7 items-center justify-center text-icon_default_tertiary disabled:cursor-default disabled:opacity-60"
             >
               <RefreshIcon />
             </button>
           </div>
+          {!hasStoredKey || hasUnsavedKey ? (
+            <p
+              data-testid="settings-minimax-test-gate"
+              className="text-[12px] leading-4 text-text_default_secondary"
+            >
+              {t("usageModels.minimax.probeGate")}
+            </p>
+          ) : null}
           <button
             type="button"
-            disabled
-            title={t("usageModels.minimax.unavailable")}
+            data-testid="settings-minimax-save"
+            disabled={!hasUnsavedKey || busy !== null}
+            onClick={() => void saveKeyAndUse()}
             className="mt-1 h-9 w-[116px] rounded-[8px] bg-bg_interaction_tertiary_hover px-3 text-[14px] disabled:opacity-60"
           >
-            {t("usageModels.minimax.saveAndUse")}
+            {busy === "key"
+              ? t("usageModels.minimax.saving")
+              : busy === "test"
+                ? t("usageModels.minimax.testing")
+                : busy === "source"
+                  ? t("usageModels.minimax.switching")
+                  : t("usageModels.minimax.saveAndUse")}
           </button>
         </section>
       ) : null}

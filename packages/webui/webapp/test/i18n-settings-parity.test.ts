@@ -140,6 +140,33 @@ const NEW_KEYS = [
   "settings.codeReview.methodSubsession",
   "settings.codeReview.guidelines",
   "settings.codeReview.guidelinesPlaceholder",
+  // SB-1 — the 「用量与模型」 model-source row: the in-use badge, the
+  // key-status badges, the three busy labels, and the two refusals the
+  // engine can answer (no key stored yet / save before probing). The old
+  // `usageModels.minimax.unavailable` claimed the local edition had no
+  // MiniMax API key service at all; SB-1 gives it the only meaning that
+  // is still true — the server did not report the key status.
+  "usageModels.source.inUse",
+  "usageModels.source.switchFailed",
+  "usageModels.minimax.configured",
+  "usageModels.minimax.storedPlaceholder",
+  // P20 (UAT4-2): the typed-but-unsaved badge state, and the VISIBLE
+  // explanation of the probe gate (the reason used to live only in a
+  // `title`, invisible to keyboard and touch users). P20 (UAT4-1) adds the
+  // third plan-name state — a read in flight is not a missing plan.
+  "usageModels.minimax.pendingSave",
+  "usageModels.minimax.probeGate",
+  "usage.plan.loading",
+  "usageModels.minimax.noKeyToTest",
+  "usageModels.minimax.saveFirst",
+  "usageModels.minimax.keyRequired",
+  "usageModels.minimax.saved",
+  "usageModels.minimax.testOk",
+  "usageModels.minimax.testFailed",
+  "usageModels.minimax.saving",
+  "usageModels.minimax.testing",
+  "usageModels.minimax.switching",
+  "usageModels.minimax.loading",
 ] as const;
 
 const RETIRED_USAGE_KEYS = [
@@ -179,6 +206,24 @@ describe("i18n settings parity (ticket 37)", () => {
         `zh value for ${key} is the raw key — fallback fired`,
       );
       assert.notEqual(zh, undefined, `zh value for ${key} is missing entirely`);
+    }
+  });
+
+  test("SB-1: the in-use badge reads the reference's 「使用中」 in Chinese", () => {
+    assert.equal(translate("zh", "usageModels.source.inUse" as MessageKey), "使用中");
+    assert.equal(translate("en", "usageModels.source.inUse" as MessageKey), "In use");
+  });
+
+  test("SB-1: no locale still claims the local edition lacks a MiniMax key service", () => {
+    // The pre-SB-1 string was a false capability claim on a tab whose
+    // backend now exists. It survives as the ONE degradation it can still
+    // honestly describe, and this pins that nobody restores the claim.
+    for (const locale of ["en", "zh"] as const) {
+      const value = translate(locale, "usageModels.minimax.unavailable" as MessageKey);
+      assert.ok(
+        !/no MiniMax API key service|未接入 MiniMax API Key/.test(value),
+        `${locale} still claims the key service does not exist: ${value}`,
+      );
     }
   });
 

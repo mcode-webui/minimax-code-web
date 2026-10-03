@@ -1001,16 +1001,44 @@ slice 22 增强：
 | --- | --- | --- |
 | 偏好 | 通用 | 已实装 |
 | 偏好 | 语音 | 已实装，控制件为诚实占位——麦克风下拉禁用且只有「本地版不适用」一个选项，两条听写快捷键显示「未设置」（浏览器里既没有设备枚举也没有听写输入） |
-| 偏好 | 快捷键 | 已实装，只读——顶部「浏览器环境不适用」横幅下照抄桌面版 10 条默认键位，✕ / ↺ 操作件渲染但禁用 |
+| 偏好 | 快捷键 | 已实装——10 行逐行说明浏览器到底能做什么：3 行可改键且真实生效，1 行仅 macOS 生效，6 行不可用并写明原因（见**快捷键：浏览器能截获什么**） |
 | 偏好 | 个性化 | 已实装——「自定义指令」与「关于你」真存 `localStorage`；两个记忆开关关闭且禁用、行内标注「本地版不适用」，「管理」按钮打开「记忆摘要」弹窗且恒为空态 |
-| 管理 | 用量与模型 | 已实装；三来源是**视图切换器**——不切换实际使用的模型来源 |
+| 管理 | 用量与模型 | 已实装；自 SB-1 起两个引擎来源是真切换（Token Plan / MiniMax API 真切引擎凭据，「使用中」徽标回读引擎真值，MiniMax API Key 可保存可检测）——第三个胶囊「自定义模型」仍是**视图**，落点是供应商目录 |
 | 管理 | 连接 | 已实装 |
-| 管理 | 账户 | 诚实占位——「账户信息」显示「本地模式，未登录」，「退出登录」禁用（本地版未接入账户服务） |
+| 管理 | 账户 | 以读取实现——该分区挂载时读一次 `GET /api/account`，渲染账户名、当前套餐名、配额概况（套餐配额状态 + 5 小时/周窗口剩余读数）与账户状态；「退出登录」维持禁用（引擎没有可调用的登录登出方法） |
 | 编码 | 代码审查 | 已实装——「自定义审查准则」真存 `localStorage`；「审查方式」是禁用单选下拉，显示「子会话」 |
 | 编码 | 工作树 | **未实装**——页签是一行文案「本地版暂不支持工作树管理」 |
 | 归档 | 已归档任务 | 页签渲染空态「暂无已归档任务」；列表与其操作需要目前不存在的归档会话契约 |
 
 **设置页没有「浏览器」页签。** 浏览器能力是工作区的一列标签页（`workspaceTabs.tab.browser`），在工作区标签里挂载 `BrowserPanel`，不是设置分区；`settings.tab.browser` 这个文案键没有任何调用点。本文早期版本曾在「偏好」组下列出「浏览器」页签，那是错的。
+
+**快捷键：浏览器能截获什么**
+
+网页注册不了全局快捷键，也截获不了浏览器已经占用的组合。因此快捷键页
+不再把桌面版键位摆成一份死的对照清单：每一行都写明自己的判定，而判定
+与分发读同一份注册表——`webapp/lib/shortcuts.ts` 存判定，`app/page.tsx`
+按它匹配键盘事件，`components/settings-extra-pages.tsx` 渲染它，所以一行
+不可能「显示为已生效却无人分发」，反之亦然。
+
+| 行 | 组合 | 判定 | 原因 |
+| --- | --- | --- | --- |
+| 显示或隐藏 Mini Chat | `Alt+M` | 不可用 | WebUI 没有 Mini Chat 这个功能面 |
+| 全局搜索 | `Ctrl+K` | 已生效 | 本客户端面向的浏览器都未占用；打开工作区树列的搜索面板 |
+| 搜索任务和会话 | `Ctrl+G` | 不可用 | 浏览器用它查找下一个 |
+| 新建任务 | `Ctrl+N` | 仅 macOS | Chromium 与 Firefox 在 Windows / Linux 上用它开新窗口，那里按键根本到不了网页 |
+| 新建无项目任务 | `Ctrl+Alt+O` | 已生效 | 未被占用 |
+| 打开项目文件夹 | `Ctrl+O` | 不可用 | 浏览器用它打开文件对话框 |
+| 打开设置 | `Ctrl+,` | 已生效 | 未被占用 |
+| 按住听写 / 切换听写 | — | 不可用 | 没有语音识别支撑 |
+| 反转跟进行为 | `Ctrl+Enter` | 不可用 | 键位空闲，但操作语义尚未定；绑上等于承诺还不存在的行为 |
+
+三行**已生效**可改键：点击输入框后按下新组合，存入
+`webui-shortcut-bindings`，下一次键盘事件即按新键分发。若新组合已被另一
+个在用行占用，改键被拒绝并点名冲突的是哪一项——两行共用一个组合会让分发
+结果依赖注册表顺序。`Ctrl+N` 有意不可改：换键并不能让它在浏览器占用的平台
+上生效，所以该行直接写明限制，而不是让用户以为改键能解决。六行不可用的行
+保留桌面版印出的组合以供对照，控件禁用，并按上表打印原因。`Ctrl+Shift+T`
+这类组合不做尝试，也做不到：按键不会到达网页。
 
 **通用页有哪些分区**
 
@@ -1022,9 +1050,9 @@ slice 22 增强：
 | 应用 | 可用 | 外观三选一卡片、语言切换。桌面版此处另有 5 个开关（菜单栏图标、开机自启、桌面通知、提前灰度、加速索引），本服务端无对应能力，**照常渲染但禁用** |
 | 链接打开位置 | 禁用摆设 | 两行（网页链接、本地链接），下拉均为禁用的单选 |
 | 文件 | 可用 | 两个开关，读写浏览器本地存储，见下表 |
-| 会话管理 | 可用 | 一个开关，读写本地存储，**目前仅记录偏好**，尚无界面读取它 |
+| 会话管理 | 可用 | 一个开关，读写本地存储，控制输入区上下文用量计量的显示（见下） |
 | Agent 控制权限 | 禁用摆设 | 「自动打开浏览器面板」开关渲染为关闭且禁用（无对应能力） |
-| 偏好设置 | 可用 | 「跟进消息行为」单选（排队 / 立即发送），读写本地存储，**目前仅记录偏好**，尚未影响实际发送行为（编写器归工单 49）；水印与数据授权两行渲染为禁用 |
+| 偏好设置 | 可用 | 「跟进消息行为」三段（关闭 / 排队 / 立即发送），读写本地存储；自 SB-4 起编写器真的读它——回合运行中发送的消息会进引擎队列或转向当前回合。水印与数据授权两行渲染为禁用 |
 | 关于 | 混合 | 上传日志与检查更新是禁用按钮；本机地址与局域网地址是从 `/api/settings` 取值的真实只读行 |
 | 页底数据目录（dataDir） | 未实现 | 桌面版在通用页底部显示应用数据目录；`/api/settings` 契约没有该字段且本轮服务端只读，无法取到真值，如实留空不做 |
 
@@ -1038,8 +1066,24 @@ slice 22 增强：
 | --- | --- | --- |
 | `file_open_in_new_tab` | `true`（本客户端默认开；桌面参照默认关） | **是**。开启时保持本客户端一贯的「每文件一个预览标签页」；关闭后打开新文件会**替换当前激活的文件标签页**。本客户端的标签条没有「固定」概念，故以「当前激活的文件标签页」为复用目标，与桌面「复用未固定标签页」语义近似但不相同 |
 | `file_line_wrap` | `true` | **是**。开启时超宽行自动折行；关闭时横向滚动。覆盖两类表面：代码文件预览（工单 48）与 markdown 代码块——聊天消息、活动组、markdown 文件预览（工单 52）；语言标签不随代码行折行。对之后打开的预览/之后挂载的消息生效（已打开的不重排）；文件预览折行后行号与第二视觉行不对齐，是已知取舍 |
-| `webui-context-window-usage` | `false` | 否。仅记录偏好，尚无界面读取 |
-| `webui-follow-up-behavior` | `queue`（可选 `steer`） | 否。仅记录偏好，尚未影响实际发送行为 |
+| `webui-context-window-usage` | `false` | **是**。开启时在输入区工具栏（紧挨模型选择器左侧）绘制上下文用量计量；关闭时该处不渲染任何内容。计量本身的形态不变——圆环、百分比、分类明细、套餐各行仍照旧来自会话快照。拨动开关无需刷新页面即生效 |
+| `webui-follow-up-behavior` | `queue`（可选 `off`、`steer`） | 否。决定回合运行中发送的去向；`off` 是 webui 自有的第三态（参照只有两态） |
+
+**上下文用量计量**
+
+`webui-context-window-usage` 的消费方只有
+`components/context-meter.tsx` 一个：它在挂载时读一次该键，此后通过
+`webapp/lib/settings-local.ts` 的 `subscribeContextWindowUsage` 订阅，
+所以开关在已打开的页面上即刻生效——设置弹窗与输入区往往同屏，
+否则只能靠刷新页面感知。订阅通道的形态是
+`subscribe*(listener) → 取消订阅函数`，与外观三选一用的
+`webapp/lib/theme.ts#subscribeSystemTheme` 一致；某个订阅者抛错会被
+隔离，不会连累其他订阅者丢掉这次更新。
+
+默认值仍是 `"false"`（桌面参照的默认值），因此从未碰过该开关的配置
+不绘制计量。这相对 webui 此前「无条件绘制、开关无效果」的行为是变化：
+参照默认隐藏，由开关决定。存储格式仍是裸 `"true"` / `"false"` 字符串
+——该键没有搬进 `webui:ui:v1` 信封，那会破坏与桌面参照共享的契约。
 
 **搜索与排版细节（工单 48）**
 
@@ -1054,10 +1098,9 @@ slice 22 增强：
 
 | 能力 | 说明 |
 | --- | --- |
-| 账户页 | 页签按桌面形态渲染，但本地没有 `getAccountStatus` / `signOut` 类后端契约，账户行显示「本地模式，未登录」、退出登录禁用 |
+| 账户页的退出登录 | 读取是真数据（见下节**账户分区**）；引擎没有登录登出方法，因此按钮按参照形态渲染但禁用，tooltip 写明该原因 |
 | 已归档任务页 | 页签渲染空态；列表、恢复与删除需归档会话契约 |
-| 用量与模型的三来源切换 | 分段页签已按桌面形态落地（工单 53），但它是**视图切换器**——不切换实际使用的模型来源；真实的 Token Plan / MiniMax API / 自定义模型来源切换与来源徽标仍需模型路由契约 |
-| MiniMax API Key 面板 | 输入 + 测试连通性 + 保存并使用 |
+| 添加模型弹窗的「自动获取」live per-key 模型目录 | v2 无按任意密钥查询供应商目录的方法（`cli-service.ts#listModels` 回答的是"本应用已配置了哪些模型"，是另一个问题）；维持内置 preset 目录方案 |
 | 自定义模型拖拽排序、逐模型启停、预设选择器 | 需 provider 契约扩展；增删改已全部收敛到同一弹窗（本批），列表只负责展示与删除 |
 | 搜索关键词高亮 | 参照自己也没接线（定义了组件与动画但无调用点） |
 | 通用页 dataDir 底注 | 见上表 |
@@ -1070,12 +1113,75 @@ Token Plan 视图是桌面的五区块（页签 + 四卡）：
 
 | 区块 | 数据策略 |
 | --- | --- |
-| 当前套餐卡（ⓘ + 两行 + 管理⌄） | 本地无云端账户数据源：套餐名与积分数值显示「本地版不适用」，到期行不渲染（不造假日期）；「升级」（黑底主按钮）/「管理 ⌄」/「去充值」渲染桌面同款形态但禁用 |
+| 当前套餐卡（ⓘ + 两行 + 管理⌄） | 套餐名是真数据：取 `GET /api/account` 的 `tokenPlan.tier`，进视图时读一次并原样渲染；引擎没报套餐、或账户接口不可达时，该行显示「未订阅套餐」——绝不回退到某个默认档位。余下数值本地无凭据通道：积分数值显示「云端账户域，本网页端无账户凭据」，到期行不渲染（不造假日期）；「升级」（黑底主按钮）/「管理 ⌄」/「去充值」渲染桌面同款形态但禁用——三者动作都落在云端账户上 |
 | 用量卡（三条进度条纵排） | 5 小时限额与周限额是唯一真实数据源（引擎经 ACP 上报，`POST /api/usage`；页面每 2 分钟自动读一次，手动刷新计入预测采样），有数据时印桌面格式「X% / 100%」/「X%」+ 相对时间重置文案（如「43分后重置」）；引擎未上报时该条显示「暂无用量数据」而非 0%；视频限额本地无数据源，固定显示「本地版不适用」 |
-| 积分行（ⓘ + 蓝色开关） | 本地无积分体系：开关渲染桌面同款蓝色 iOS 形态但置灰（checked + disabled），文案照桌面，行内标注「本地版不适用」 |
+| 积分行（ⓘ + 蓝色开关） | 积分属云端账户域：开关渲染桌面同款蓝色 iOS 形态但置灰（checked + disabled），文案照桌面，行内标注的理由改为「云端账户域，本网页端无账户凭据」 |
 | 发票行 | 唯一完全真实的外链：「申请 ↗」新标签打开 MiniMax 开放平台 |
 
+当前套餐卡正是工单 53 的 A1 拍板被修订之处。A1 写的是「无源即占位」，并把这条整卡套用；但本地服务端其实有数据源（配额窗口走 `POST /api/usage`，套餐档位走 `GET /api/account`），这条拍板夸大了缺口。修订的做法是按数据源拆卡，而不是按卡拆：服务端读得到的就渲染，属于云端账户域的数值则填上点名该域的诚实文案。被否的备选有两个——一是整卡维持占位（引擎已经报出档位时那不是缺口）；二是把积分 / 到期 / 发票也一并接真（自托管的浏览器会话拿不到该账户的凭据，在那里放一个看起来真实的数值，正是 A1 要防的造假）。
+
 自定义模型视图是原有供应商面板（API Key、协议、模型清单、连接测试、预设一键启用）；工单 54 把**添加**流程重做成桌面同款弹窗（见下节），本批把**编辑**也并入同一弹窗（见「弹窗同时承载编辑」一节）——面板现在只剩列表与删除，没有第二个编辑面。
+
+**三来源切换与 MiniMax API Key（SB-1）**
+
+**用户能看到什么。** 打开「用量与模型」页会读一次引擎，落定三件原本靠本地 state 猜的事：引擎当前用的是哪个凭据、有没有存 MiniMax API Key、上一次连通检测的结果。胶囊仍然是**视图**；旁边的「使用中」徽标是引擎的回答，且只在写入被确认之后才移动。在下拉里点 Token Plan 或 MiniMax API，会同时切视图并写引擎（`PUT /api/model-source`）；被拒绝时——引擎在没有存 BYOK 密钥时返回 `NO_API_KEY`——视图停在用户放的位置，于是"需要填的密钥框"正好留在屏幕上，而徽标继续显示真正在用的那一个。
+
+**为什么徽标与视图是两个值。** 此前它们是同一个 `useState`，这正是旧实现那句声明为假的原因：切换器可以把一个来源渲染成"已选"，而引擎仍在用另一个。为引擎从未接受的来源打上「使用中」，正是本仓库一贯拒绝的假成功形态，因此徽标只由回读喂数据。
+
+**密钥行。** 已存的密钥显示为引擎的掩码，绝不显示明文；输入新值即在保存时替换。「保存并使用」是一次请求而不是两次：引擎在一个事务里既写密钥又切来源，因此界面不会出现"密钥已存、来源没切"的中间态。提交空值即**保留**哨兵（`changed: false`，不调用任何引擎写）——与 `PUT /api/providers` 同一约定；它存在的原因是读接口只能返回掩码，而引擎拒绝把掩码当密钥提交。
+
+**检测测的是什么、不测什么。** 检测针对 `minimax_api` 供应商上的**已存密钥**，并在响应里说明这一点（`tested: "stored_key"`）。两条限制来自引擎契约而非本界面：`testUserModel` 不接受密钥覆写，因此未保存的值无法被检测——输入框里有未保存内容时按钮禁用，且输入框下方常驻一行**可见**说明（该理由原本只写在 `title` 属性里，键盘与触屏用户根本看不到），而托管的 Token Plan 凭据不是模型服务的密钥，Token Plan 来源在这里没有可检测对象。跑完但失败的检测是一次"跑完的检测"而不是错误，它渲染引擎给出的状态。
+
+**密钥行是四态，不是两态。** 徽标读的是引擎的掩码投影，可它描述的是一个用户此刻可能正在编辑的输入框，因此"已填未存"是它自己的一态（「已输入，未保存」），优先级高于「已保存密钥」与「未启用」——用户要么正在替换已存密钥，要么明摆着填了内容，两个徽标此时都不成立。与之对称，引擎的 `NO_API_KEY` 拒绝是针对**空**输入框的判决：打一个字就把它证伪，因此那句钉住的「请先填写 API Key」在下一个字符处消失。与缺密钥无关的拒绝（传输失败、写入被驳回）此后依然成立，继续留在屏幕上。
+
+**代价。** 每次打开该设置页多一次读；这次读在没有运行时时会启动引擎，属于写侧契约，在这里可以接受（是用户打开了页签）。若将来把这次读取挪到页面级，必须改用不启动运行时的宿主 getter（见 `server/engine/model-source.js` KNOWN DEBT 2）。
+
+**本批没有做的事。** 添加模型弹窗的「自动获取」仍走内置 preset 目录（v2 没有按任意密钥查询供应商目录的方法）；Token Plan 四张卡维持 A1 决策的「本地版不适用」——把它们接到 `/api/usage` 与 `/api/account` 是另一个尚未拍板的独立项，不是本批的副作用。
+
+**切源后重拉账户（UAT4-1）**
+
+**缺陷。** 2026-10-03 的 UAT 第四板块（板块 4）做了一次三来源往返：Token Plan → MiniMax API（存了 Key）→ Token Plan。回来后 Token Plan 卡显示「未订阅套餐」，而 `GET /api/account` 全程答 `tier: "Ultra"`，只有 F5 能恢复。接口自始至终没有说谎。
+
+**根因。** 套餐名在 `UsageModelsSection`（`webapp/components/panels.tsx`）里读，而该组件只在端口视图停在 token-plan 页签时挂载，所以切走再切回会重新挂载。那次读是 `useEffect(..., [])`——每个挂载只读一次——而这次挂载与引擎赛跑：组件与 `PUT /api/model-source` 在同一 tick 渲染，此刻仍在重绑定的引擎会让 `GET /api/account` 以 HTTP **200** 加 `{ok: false, reason: "no_client"}` 应答。卡片把它读成"没有套餐"，此后无人重读，组件状态比失败活得更久。
+
+**重拉机制。** 端口持有一个 `accountRevision` 计数器，在**每一次成功的来源写入之后**递增——下拉的 `PUT /api/model-source`，以及「保存并使用」的 `PUT /api/model-source/api-key`（它在同一个引擎事务里切来源）。`UsageModelsSection` 的 `/api/account` effect 把该计数器列入依赖，于是被确认的写入会对已完成重绑定的引擎重跑这次读。被拒绝的写入不递增：什么都没变，重读只会白花一次请求去渲染同一个答案。
+
+**失败的读不能"忘掉"已知的名字。** 只做重拉还不够，因为重拉自己也会输掉赛跑。`reconciledAccount`（`webapp/components/usage-models-cards.tsx`，纯函数、有单测）会让上一个 `ok: true` 的答案继续站住：只有 `ok: true` 的载荷才算新信息，因此账户面不可达无法把已知套餐名从卡上打掉。而 `ok: true` 且明确报"没有套餐"的答案**会**替换它——引擎说"没有套餐"是回答，说"读不到"不是。
+
+**读取在途是它自己的一句话。** 名字被保住之后，唯一剩下的无名状态就是"还没读到"，它渲染「正在读取当前套餐…」而不是「未订阅套餐」。账户面没应答不等于用户没订阅——把两者混成一句正是 UAT4-1 的可见那一半。
+
+**代价。** 每一次被确认的来源写入多一次 `GET /api/account`，发生在用户刚刚操作过的界面上。不做防抖：切源是一次明确动作，不是一串动作。
+
+**账户分区（SB-5）**
+
+整个分区在挂载时读一次 `GET /api/account`。端点既不新建也不重复：它就是用户菜单账户卡已在读的同一份投影，按需读取的原因也相同——状态快照会广播给每一个 SSE 订阅者，账户数据不进去。
+
+| 行 | 字段 | 缺失时的文案 |
+| --- | --- | --- |
+| 账户名 | `identity.name`（去空白） | 引擎应答了但没给名字 |
+| 当前套餐 | `tokenPlan.tier`，走 Token Plan 卡自己的 `planNameOf` | 引擎没报套餐时是「未订阅套餐」；读取在途时是「正在读取当前套餐…」；账户面本身不可达时是未读到的那句 |
+| 配额概况 | `tokenPlanQuotaState`，以及 `quota.fiveHour` / `quota.weekly` 的 `remainingPercent` | 每个窗口各自显示「引擎未返回读数」；窗口被判为不限量时显示「不限量」 |
+| 账户状态 | `status` | 未读到的那句；字典里没有句子的状态枚举归为空，而不是把原始枚举漏给用户 |
+
+未读到的那句按失败形态分句，且每句都点名来源：`ok: false` 优先显示引擎自己的 `reason`，传输失败显示读取失败句，两者都不替用户下判断。由此「账户面不可达」与「应答了但没有账户名」得到两句不同的话——这正是此前那句硬编码「本地模式，未登录」表达不了的区分。
+
+与 Token Plan 卡按**形态**分工，不按主题分工：限额条、套餐操作、积分、到期与发票归那张卡；身份与纯文本读数归本分区。两者共享的只有套餐名，且走同一个解析器（`planNameOf`），两个面不会各自漂移。窗口被判为不限量时显示「不限量」而不是「剩余 0%」——没有上限的套餐不能读成已用尽。
+
+被否的备选：再建一个账户端点（投影已经存在，第二个路由只是多一份要同步的契约）；以及在本分区也把配额画成进度条（同一把量尺在两个页面、用两个数据源各画一次）。
+
+**跟进消息：开关真的改变行为（SB-4）**
+
+**用户能看到什么。** 「跟进消息行为」有三个位置。任务运行中，输入区仍然保留停止按钮，同时——在「排队」或「立即发送」下——也提供发送按钮：「排队」把消息交给引擎队列，等本回合结束后执行；「立即发送」把它作为转向消息投进正在跑的回合。选「关闭」时输入区与本批之前完全一致：发送按钮被停止按钮顶替，文本留在框里等回合结束。切换即时生效，不需要刷新，也不需要重发一次。
+
+**为什么有第三个位置。** 桌面参照只有两个选项，因为桌面自己持有正在跑的回合，两个选项都不可能失败。webui 的跟进消息可能被拒绝——持有该回合的引擎可能是另一个进程——因此一个两值开关其实是"换了行为却顶着开关的外衣"。「关闭」是 webui 自己的选项，文档如实标注。
+
+**归属闸门，以及为什么它不判传输方式。** 两个动作执行前，服务端先问引擎"这个回合是不是本进程持有"（`cliService.getActiveTurn`）。`runtime` 传输下回合就跑在 webui 进程内，答案是肯定的，队列或转向消息被受理；默认的 `acp` 传输下回合跑在 `mcode acp` 子进程里，此时把消息排进本宿主会唤醒它自己的调度器，为一个已经在跑回合的会话**再开一个**回合——正是 `/api/send` 用四道 claim 和一个 409 防住的事。这种情况以 `turn_not_owned` 拒绝，原文回到输入框，横幅说明原因。闸门读的是引擎自己的回答而不是 `MCODE_WEBUI_TRANSPORT`，因此等聊天链路彻底迁到进程内传输时，它无需任何改动就会开始工作。
+
+**响应报的是什么。** 引擎自己的回答，绝不回显请求：排队返回引擎提交的条目 id 与位置，转向返回回合 id 与投递模式。两种拒绝保持两句不同的话——"已经没有回合了"与"回合在另一个进程里"——因为用户该做的下一步不同。
+
+**代价。** 每次跟进发送多一次引擎读；这是写路径，没有运行时时会启动引擎，可以接受（是用户按了发送）。
+
+**本批没有做的事。** 队列没有界面：排进去的消息带着 id 和位置，却没有任何地方展示，也无法在浏览器里查看、重排或撤销。那是 PB-13 的范围；在它落地之前，排队的跟进消息在本回合结束前不可见。转向消息返回的是受理结果，不是"运行中的 agent 是否在下一步之前读到了这段文字"。
 
 **添加模型弹窗（工单 54，53b）**
 
@@ -1179,7 +1285,8 @@ Token Plan 视图是桌面的五区块（页签 + 四卡）：
 **项目右键菜单**（侧栏项目行右键，参照 ref-26）五项对齐桌面：重命名项目 / 置顶项目 / 在文件夹中显示 / 归档对话 / 移除（红）。
 
 - 重命名与置顶是真做的。项目名与置顶状态存在浏览器本地（`webui:project-custom:v1`，见持久化键一节）——mcode 的运行时数据库里项目不是实体、没有可写入口，所以覆盖层放在唯一消费者所在处，与会话标题 `titleCustom` 的思路一致。置顶的项目排到列表最上，项目名旁常驻图钉标记。
-- 在文件夹中显示是占位禁用：浏览器打不开操作系统的文件管理器。
+- 在文件夹中显示是真做的（SB-6）。点击把项目路径发给 `POST /api/fs/reveal`——该端点一直都已实现并注册（`server/routes/fs.js#handleFsReveal`、`server/app.js`），而菜单这一行是占位，声称浏览器打不开操作系统的文件管理器；对持有工作区的 webui 部署而言这句话不成立。这一行只有一个诚实的禁用理由：项目未关联任何本地目录，此时提示语直说这件事，而不是拿「本地版不适用」敷衍。成功时静默——文件管理器窗口本身就是反馈，toast 只会跟它抢时序；失败时与菜单其余写操作走同一块错误横幅，标签用菜单自身已本地化的名称，无论服务端以结构化 `code` 拒绝还是请求抛出。
+- 会话级的在文件夹中显示仍是禁用占位：桌面参照同位也禁用，既没有对齐目标可追，也没有本地限制可归咎；解禁是一项本版尚未作出的产品决定。
 - 归档对话是占位禁用：mcode 数据库虽有 `archived` 字段，但写别的进程的数据库不在本片范围，且已归档任务页（工单 55b）未落地前没有取消归档的入口——归档会变成不可逆的数据消失。
 - 移除是真做的红色危险项：确认弹窗写明真实删除总数（主会话与子代理会话全量，不是侧栏角标的主会话数——不可逆确认不得少报）与不可恢复，并预告删除将逐个进行、期间会出现 N 次授权确认（服务端对每个单会话删除分别走 `authorize("session.delete")`，没有批量授权契约）；确认后弹窗内实时显示「正在删除 i/N」，逐个走既有的单会话删除端点，失败即停并报告。仅当全部删除成功时才清掉该项目的重命名/置顶记录（部分失败时存活项目保留其自定义），清理经组件状态与 localStorage 同步进行。
 
@@ -1817,8 +1924,9 @@ loading-states 相同：让 SSR 渲染测试可以脱离 `chat.tsx` 的 `@/` 别
 | `webui:files-tree:<workspaceDir>` | `sessionStorage` | `webapp/components/panels.tsx`（slice 01） | slice 01（文件树） | `{version:1, workspace, expanded[], filter, showHidden}` |
 | `file_open_in_new_tab` | `localStorage` | `webapp/lib/settings-local.ts` | 工单 48（设置通用页） | 纯 `"true"\|"false"` 字符串；**有意不带 `webui:` 前缀**——与桌面参照同名同格式，同一浏览器配置在两个客户端共享该偏好。本客户端默认 `"true"`（参照为 `"false"`）；读取方 `app/page.tsx#openFileTab` |
 | `file_line_wrap` | `localStorage` | `webapp/lib/settings-local.ts` | 工单 48 + 52 | 纯 `"true"\|"false"` 字符串，参照共享命名；默认 `"true"`；每次挂载读取方为 `components/code-view.tsx`（代码文件预览）与 `components/markdown-html.tsx`（markdown 代码块：聊天、活动组、文件预览） |
-| `webui-context-window-usage` | `localStorage` | `webapp/lib/settings-local.ts` | 工单 48 | 纯 `"true"\|"false"` 字符串，参照共享命名；默认 `"false"`；仅记录偏好，尚无读取方 |
-| `webui-follow-up-behavior` | `localStorage` | `webapp/lib/settings-local.ts` | 工单 48 | 纯 `"queue"\|"steer"` 字符串（其他值读取为 `"queue"`），参照共享命名；仅记录偏好，尚无读取方 |
+| `webui-context-window-usage` | `localStorage` | `webapp/lib/settings-local.ts` | 工单 48 | 纯 `"true"\|"false"` 字符串，参照共享命名；默认 `"false"`；`components/context-meter.tsx` 挂载时读取一次，并通过 `subscribeContextWindowUsage` 实时跟随 |
+| `webui-follow-up-behavior` | `localStorage` | `webapp/lib/settings-local.ts` | 工单 48 / SB-4 | 纯 `"off"\|"queue"\|"steer"` 字符串（其他值读取为 `"queue"`），参照共享命名；由 `components/composer.tsx` 读取，每次写入都会重新发布 |
+| `webui-shortcut-bindings` | `localStorage` | `webapp/lib/shortcuts.ts` | 工单 55c（设置快捷键页） | `{"global-search":"Ctrl+Shift+P", …}`——**已生效**行的改键记录，用户录入新组合时写入，清掉最后一条时整个键删除。读取时按注册表重新校验：已不再分发的行 id、或已无法解析的组合一律丢弃，手工改过的存储项无法借此扩大页面的分发面。`app/page.tsx` 每次键盘事件经 `effectiveBindings` 读取，设置页每次挂载读取一次 |
 | `webui:project-custom:v1` | `localStorage` | `webapp/lib/project-custom.ts` | 工单 55c（项目右键菜单） | `{version:1, titles:{<项目key>:<自定义名>}, pinned:[<项目key>]}`。**不按 cid 命名空间**（有意）：重命名与置顶描述的是项目本身而非某个浏览器会话，同一浏览器的所有标签页共享。写入尽力而为，失败静默；项目被完整移除（全部会话删除成功）时同步清除其条目 |
 
 除工单 48 的四个参照共享键（`file_open_in_new_tab` / `file_line_wrap` /
@@ -2136,7 +2244,7 @@ createdAtMs, updatedAtMs}`）下发，按 `toolCallId` 幂等、上限 32 条、
 | `POST` | `/api/fs/mkdir` | `routes/fs.js#handleFsMkdir` | `{path}`；父目录必须在允许根内；containment 失败 → `403` |
 | `POST` | `/api/fs/write` | `routes/fs.js#handleFsWrite` | `{path, content, expectedMtime?, expectedSize?, confirm?}`——预览编辑器的保存端点（slice 27）。`200 {ok, path, size, mtime}`（返回新基线）；`400 {code:"missing-path"\|"missing-content"\|"invalid-content"\|"not-a-regular-file"}`；containment → `403`；凭据形路径未确认 → `403 {code:"credential", credentialReason}`；文件消失 → `404 {code:"not-found"}`（TOCTOU 兜底——缺失路径通常先被共享闸门拦下，与读取行为一致）；基线过期 → `409 {code:"conflict", diskMtime, diskSize}`（不写盘）；超上限 → `413 {code:"too-large"}`（写入上限与读取同为 512 KiB）。实现是对围栏内路径的裸 `writeFileSync`——全程无 shell。凭据形路径带 `confirm:true` 时输出 `endpoint:"write"` 的 `credential.override` 审计行。 |
 | `POST` | `/api/fs/open-default` | `routes/fs.js#handleFsOpenDefault` | `{path}`；`400 {code:"missing-path"}` / `403 {code:"out-of-bounds"}` / `400 {code:"not-a-regular-file"}` / `503 {code:"no-opener"}` / `502 {code:"spawn-failed"}` |
-| `POST` | `/api/fs/reveal` | `routes/fs.js#handleFsReveal` | `{path}`；`code` → status 映射与 `open-default` 相同 |
+| `POST` | `/api/fs/reveal` | `routes/fs.js#handleFsReveal` | `{path}`；`code` → status 映射与 `open-default` 相同。消费方：文件预览工具条，以及侧栏项目右键的「在文件夹中显示」（SB-6） |
 | `GET` | `/api/fs/search` | `routes/fs.js#handleFsSearch` | `?root=&q=&depth=&maxNodes=&wallMs=&limit=&includeHidden=1`；`400 {code:"missing-root"\|"missing-q"\|"not-a-directory"\|"stat-failed"}`；成功时返回 `{ok, root, q, matches:[{path,name,type,ancestors,credential?,credentialReason?}], scanned:{dirs,files,total}, skipped:{node_modules,n,.git,n,credential,n,huge,n,optional:{dist,build,…}}, truncated, truncatedReason: null\|"depth"\|"nodes"\|"wallClock"\|"matches", elapsedMs, budgets}`。默认预算 `maxDepth=8 / maxNodes=5000 / wallMs=1500 / maxMatches=200`；绝对上限 `16 / 50_000 / 5_000 / 1_000`（`packages/webui/server/lib/fs-search.js`）；`node_modules` 与 `.git` 不可被覆盖。 |
 | `GET` | `/api/git/status` | `routes/git.js#handleGitStatus` | `?dir=`；`400 {error:"missing dir"}` |
 | `GET` | `/api/git/branches` | `routes/git.js#handleGitBranches` | `?dir=`；前导 `* ` → `current` 标志 |
@@ -2156,6 +2264,11 @@ createdAtMs, updatedAtMs}`）下发，按 `toolCallId` 幂等、上限 32 条、
 | `POST` | `/api/providers/test` | `routes/providers.js#handleTestProvider` | `{provider}`；结构化 code → status |
 | `GET` | `/api/providers/presets` | `routes/providers.js#handleGetPresets` | 画廊 |
 | `POST` | `/api/providers/preset/:id/enable` | `routes/providers.js#handleEnablePreset` | 一键启用 |
+| `GET` | `/api/model-source` | `routes/model-source.js#handleGetModelSource` | `{ok, source, apiKey:{available,hasKey,masked,testState,lastTestedAtMs}}`；宿主没有 `getMiniMaxModelSource` → `501`；没有运行时 → `503`；引擎报出其两值之外的值 → `502 {code:"UNKNOWN_MODEL_SOURCE"}`。`available:false` 不等于 `hasKey:false` |
+| `PUT` | `/api/model-source` | `routes/model-source.js#handleSetModelSource` | `{source}`；`400 {code:"INVALID_MODEL_SOURCE"\|"BAD_FIELD_TYPE"}`；引擎因无密钥拒绝 BYOK 方向 → `400 {code:"NO_API_KEY"}`；响应带的是引擎**已持久化**的值 |
+| `PUT` | `/api/model-source/api-key` | `routes/model-source.js#handlePutModelSourceApiKey` | `{apiKey, saveAndUse?}`；`apiKey` 缺失/空/仅空白即**保留**哨兵 → `200 {changed:false}` 且不写引擎；`400 {code:"BAD_FIELD_TYPE"\|"INVALID_API_KEY"}`；`500 {code:"engine_error"}` 绝不携带抛出的异常消息 |
+| `POST` | `/api/model-source/test` | `routes/model-source.js#handleTestModelSource` | `{modelId?}`；**跑完**的检测恒 200（`{ok, success, providerId:"minimax_api", tested:"stored_key", status}`），含 `success:false`；非 200 只出现在拒绝去试时（`503`/`501`，或引擎的 `400 NO_API_KEY`） |
+| `POST` | `/api/follow-up` | `routes/follow-up.js#handleFollowUp` | `{behavior:"queue"\|"steer", content, attachments?, requestId?}`——引擎会话 id 取自服务端自己的会话状态，**不从请求体取**；`400 {code:"invalid_follow_up_behavior"\|"follow_up_empty"\|"no_active_conversation"\|"BAD_FIELD_TYPE"}`；本进程不持有正在跑的回合时 `409 {code:"no_active_turn"\|"turn_not_owned"}`，且**不排任何队**；宿主缺该方法 `501`、没有运行时 `503`；200 `{ok, behavior, itemId, position, status}`（排队）或 `{ok, behavior, turnId, mode}`（转向）——都是引擎自己的回答 |
 | `POST` | `/api/debug/inject` | `routes/debug.js#handleDebugInject` | `DEBUG_INJECT=1` 守门 |
 | `GET` | `/api/debug/state` | `routes/debug.js#handleDebugState` | 同上 |
 | `POST` | `/api/protocol/set-mode` | `routes/protocol.js#handleSetMode` | 会话中途切换 mode |
@@ -2209,6 +2322,28 @@ decidedBy:"timeout", decidedAt}` —— 并记 `auth.unreachable` 审计（带
 
 若总线无法回答这个问题（不建模连接注册表的测试替身），按"可能有人"处理，保持原
 有的等待语义。这条短路只可能拒绝，不存在任何"未经记录裁决即放行"的路径。
+
+**"有没有人在听"和"这个请求有没有主人"是两个问题，上面这条规则只回答了第一个。**
+不带 `?cid=` 的请求 —— curl、脚本、忘了 `withClientQuery` 的调用方 —— 只要有一个
+标签页开着，就会被判成"有人在听"：空 cid 是**广播**目标，连上的标签页确实能看到
+并回答那个弹窗。可没有人问过，于是也没有人回答，这个破坏性请求就那么挂满 300000
+毫秒。只在连接注册表为空时才触发的短路因此漏掉了最常见的情形，调用方看到的是挂起，
+不是拒绝。
+
+所以服务"有主 HTTP 调用方"的路由都传了 `{requireRequester: true}`：
+`session.delete`、`sessions.cleanup-orphans`、`session.export`、`session.search`。
+没有主人时，给出的仍是同一个失败即关闭的答案，且立刻给出，记 `auth.unreachable`
+审计（带 `reason:"no_requester"`），让运维能把它与"标签页已关闭"区分开。这条规则是
+选择性的，因为差异在另一个方向上同样是承重的 —— `startup.cleanup` 就是**故意**用空
+cid 发起询问的，启动时没有请求人，任意标签页都可以裁决。
+
+`DELETE /api/sessions/:id` 把这条规则放在最前面、早于 plan：无归属的删除不读一次
+会话存储，也完全不触达引擎。同一个 handler 还不再问一个它已经能回答的问题 —— 既不在
+会话存储里、又不是 `mvs_` 形态的 id，没有包装条目可摘，也没有引擎行可删，于是直接返回
+这条分支一直以来的 `404 {ok:false, error:"session not found"}`（门面自己的
+`not_mcode_sid` / `already_absent` 语义在 HTTP 层的直说，而不是等出来），不发起任何
+裁决往返。凡是**能**删掉东西的 id —— 解析出的记录，或引擎行即将消失的 `mvs_` 孤儿会话 ——
+仍然照常过门。
 
 ## 阻断式弹窗：各自到底能应答什么
 

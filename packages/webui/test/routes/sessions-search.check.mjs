@@ -454,6 +454,11 @@ describe("handleSearchSessions — B03 authorize gate", () => {
         //   touch it don't crash. The handler doesn't read it, but
         //   import side-effects might.
         AUTHORIZE_ACTIONS: Object.freeze(["session.search"]),
+        // P19: the DELETE handler's ownership gate calls this
+        //   predicate directly, so a stub module that omits it turns
+        //   `!hasDecidableRequester(cid)` into a TypeError at the top
+        //   of the handler. Keep the shape the real module has.
+        hasDecidableRequester: (cid) => typeof cid === "string" && cid.trim() !== "",
         DEFAULT_TIMEOUT_MS: 5 * 60 * 1000,
         handleAuthDecision: async () => {},
         getPendingCount: () => 0,

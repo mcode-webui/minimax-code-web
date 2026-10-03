@@ -587,14 +587,48 @@ describe("event-chain: gate-blocking (decline / timeout / approve)", () => {
         return res.json.session.id;
     }
 
+    // A bare SSE subscriber that records what it was pushed. Used by the
+    // P19 case below to prove that a request with no owner is NOT
+    // broadcast: absence of a frame is the assertion, so this must not
+    // decide anything, only listen.
+    function openEventStream(port, cid) {
+        let body = "";
+        const req = http.request(
+            {
+                method: "GET",
+                host: "127.0.0.1",
+                port,
+                path: "/api/events?cid=" + encodeURIComponent(cid),
+            },
+            (res) => {
+                res.setEncoding("utf8");
+                res.on("data", (chunk) => { body += chunk; });
+                res.on("error", () => {});
+            },
+        );
+        req.on("error", () => {});
+        req.end();
+        return { text: () => body, close: () => { try { req.destroy(); } catch {} } };
+    }
+
     // Fire a gated DELETE and drive the decision through the real wire
     // path. Subscribes the decider SSE first, then fires the request.
+    // P19: the request carries the decider's own `?cid=`, exactly as the
+    // browser client does (`webapp/lib/cid.ts#withClientQuery`). It used
+    // to be sent bare and resolved through the gate's BROADCAST branch;
+    // a gated request with no owner is no longer broadcast at all (it is
+    // denied at once instead — see case (d)), so the bare form cannot
+    // reach a decision any more. A real client is always attributed.
     async function deleteWithDecision(port, id, approve) {
         const decisionPromise = decideNextAuthorization({ port, approve, cid: "cid-decider" });
         // Give the decider's SSE connection a moment to register before
-        // the gate broadcast fires (broadcasts are not replayed).
+        // the gate pushes the modal (pushes are not replayed).
         await new Promise((r) => setTimeout(r, 150));
-        const reqPromise = requestJson({ method: "DELETE", port, path: `/api/sessions/${id}` });
+        const reqPromise = requestJson({
+            method: "DELETE",
+            port,
+            path: `/api/sessions/${id}?cid=cid-decider`,
+        });
         const { decision } = await decisionPromise;
         const res = await reqPromise;
         return { res, decision };
@@ -702,5 +736,53 @@ describe("event-chain: gate-blocking (decline / timeout / approve)", () => {
         const v = eventsMod.verify({ path: server.eventsPath });
         assert.equal(v.ok, true, `verify() failed: ${JSON.stringify(v)}`);
         assert.ok(v.count >= 4, `expected >=4 events (pending/approve/intent/outcome), got ${v.count}`);
+    });
+
+    // P19 at the wire, which is the only layer where the hang was ever
+    // visible: `curl -X DELETE /api/sessions/<id>` with no `?cid=` while
+    // the owner's browser tab is connected. The gate used to answer
+    // "somebody is listening" (an empty cid is the broadcast target),
+    // push a modal no tab had asked for, and hold the socket for the
+    // full 300000ms budget — a request with no status and no body.
+    test("(d) DELETE with no ?cid= is denied at once and broadcasts nothing", async () => {
+        const id = await createSession(server.port);
+        // A real tab is connected, so the broadcast branch WOULD have
+        // looked answerable. This is the exact P19 condition.
+        const deciderSse = await openEventStream(server.port, "cid-decider-2");
+        try {
+            const startedAt = Date.now();
+            const res = await requestJson({
+                method: "DELETE",
+                port: server.port,
+                path: `/api/sessions/${id}`,
+            });
+            const elapsed = Date.now() - startedAt;
+            assert.ok(elapsed < 3000, `unattributed delete must not wait: ${elapsed}ms`);
+            assert.equal(res.status, 403, `expected 403, got ${res.status}: ${res.body}`);
+            assert.equal(res.json && res.json.error, "authorize declined");
+            assert.equal(res.json.decidedBy, "timeout", "fail-closed, same shape as a timeout");
+            // No modal was pushed to the bystander tab.
+            assert.ok(
+                !deciderSse.text().includes("needs_authorization"),
+                "an unowned destructive request must not be broadcast to a bystander tab",
+            );
+            // Nothing was deleted, and no destructive intent was audited.
+            const ids = await listSessionIds(server.port);
+            assert.ok(ids.includes(id), "denied delete must leave the session on disk");
+            const events = readEvents(server.eventsPath);
+            assert.equal(
+                events.filter((e) => e.kind === "session.delete.intent").length,
+                0,
+                "a denied delete writes no destructive-intent line",
+            );
+            assert.ok(
+                events.some(
+                    (e) => e.kind === "auth.unreachable" && e.data && e.data.reason === "no_requester",
+                ),
+                "audited as auth.unreachable/no_requester so an operator can tell it from a closed tab",
+            );
+        } finally {
+            deciderSse.close();
+        }
     });
 });

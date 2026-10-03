@@ -906,6 +906,172 @@ describe("handleDeleteSession — v1.0 anti-resurrection", () => {
       "webui 包装条目同样被摘掉",
     );
   });
+
+  // -------------------------------------------------------------------
+  // P19: the wait that was still there, behind the P13 fix.
+  //
+  // P13 closed one hole — "no connected client ends the gate at once".
+  // It did not close the other one. A request the router cannot
+  // attribute to a client carries an EMPTY cid, and an empty cid is
+  // `authorize`'s BROADCAST target: with one browser tab open,
+  // `hasDecisionListener("")` answers TRUE, the gate pushes a modal to
+  // a tab that never asked for it, and the request then waits the full
+  // 300000ms budget. A `curl -X DELETE /api/sessions/no-such-cid` on
+  // an instance whose owner happens to have the UI open therefore hung
+  // with no status and no body — which is what P19 was filed about.
+  //
+  // Two invariants, one per half of the fix:
+  //
+  //   1. No owner ⇒ 403 at once. Asserted with a LIVE SSE connection
+  //      registered under a different cid, because that is the exact
+  //      condition that made the P13 fix insufficient.
+  //   2. Nothing to delete ⇒ no question. An id that is absent from the
+  //      store AND is not an `mvs_` sid provably mutates nothing, so it
+  //      answers 404 without a governance round-trip — and without
+  //      reaching the engine.
+  //
+  // The reverse halves are pinned too, because each of these cases is
+  // only half a fix: a gate that refuses every request is as broken as
+  // one that waits for every request.
+  // -------------------------------------------------------------------
+  test("P19: 无 cid 的 DELETE 在有标签页在线时立即 403，不等裁决预算，也不触引擎", async () => {
+    const calls = trackAntiResurrection();
+    const sb = await import(absPath("lib/state-bus.js"));
+    // A real SSE response under ANOTHER cid. This is what makes the
+    // broadcast answer "somebody is listening" — the P19 condition.
+    const live = { writableEnded: false, destroyed: false, write() { return true; } };
+    sb.setSseClient("cid-other-tab", live);
+    try {
+      const cs = makeClientState();
+      cs.workspace = { dir: WS_A, branch: null, tree: null };
+      const res = fakeRes();
+      // cid === "" — exactly what `getCidFromReq` returns for a curl
+      // with no `?cid=`.
+      const ctx = { cs, cid: "", pathname: "/api/sessions/webui-A" };
+      const startedAt = Date.now();
+      await handleDeleteSession(fakeReq({}), res, ctx);
+      const elapsed = Date.now() - startedAt;
+
+      assert.ok(
+        elapsed < 2000,
+        `挂起复现：不可归属的请求等了 ${elapsed}ms（预算上限 300000ms）`,
+      );
+      assert.equal(res._status, 403);
+      const body = JSON.parse(res._body);
+      assert.deepEqual(
+        Object.keys(body),
+        ["ok", "error", "decidedBy", "decidedAt"],
+        "拒绝体逐键不变",
+      );
+      assert.equal(body.error, "authorize declined");
+      assert.equal(body.decidedBy, "timeout", "失败即关闭：无人可裁决就绝不放行");
+      assert.equal(
+        getSessionsStore().some((s) => s.id === "webui-A"),
+        true,
+        "无归属的请求不得删除任何一行",
+      );
+      assert.equal(calls.shutdown, 0, "不得牵动 ACP 子进程");
+      assert.deepEqual(calls.drop, [], "不得动引擎会话缓存");
+    } finally {
+      sb.endSseClient("cid-other-tab", live);
+    }
+  });
+
+  test("P19: id 解析不出任何东西时直接 404，不发起裁决也不触引擎", async () => {
+    const calls = trackAntiResurrection();
+    const cs = makeClientState();
+    cs.workspace = { dir: WS_A, branch: null, tree: null };
+    const cid = "cid-live";
+    clients.set(cid, cs);
+    const res = fakeRes();
+    const ctx = { cs, cid, pathname: "/api/sessions/no-such-cid" };
+    // NOT wrapped in withDecisions: if a governance round-trip is
+    // started at all, this test hangs on the real 300000ms budget
+    // instead of passing — which is the point.
+    const startedAt = Date.now();
+    await handleDeleteSession(fakeReq({}), res, ctx);
+    const elapsed = Date.now() - startedAt;
+
+    assert.ok(elapsed < 2000, `无谓的裁决往返：等了 ${elapsed}ms`);
+    assert.equal(res._status, 404, "状态码与既有 404 契约一致");
+    assert.deepEqual(JSON.parse(res._body), {
+      ok: false,
+      error: "session not found",
+    });
+    assert.equal(calls.shutdown, 0, "不会删除的东西不得牵动 ACP 子进程");
+    assert.deepEqual(calls.drop, [], "不会删除的东西不得动引擎会话缓存");
+  });
+
+  test("P19: 引擎侧 id 形态（cid 有、mvs_ 但无 webui 记录）仍过门 —— 引擎行真的要删", async () => {
+    const calls = trackAntiResurrection();
+    const cs = makeClientState();
+    cs.workspace = { dir: WS_A, branch: null, tree: null };
+    const cid = "cid-live";
+    clients.set(cid, cs);
+
+    // (a) 用户拒绝 ⇒ 403，且引擎一行都没碰。快路径绝不能顺手把
+    //     "没有 webui 包装记录"等同于"没有东西可删"：mvs_ 形态的
+    //     孤儿会话在引擎侧是有行的。
+    const declined = fakeRes();
+    await withDecisions(
+      () => handleDeleteSession(fakeReq({}), declined, {
+        cs,
+        cid,
+        pathname: "/api/sessions/" + MVS_SID,
+      }),
+      { approve: false },
+    );
+    assert.equal(declined._status, 403, "未获裁决的引擎行删除必须被拒");
+    assert.equal(calls.shutdown, 0, "被拒的请求不得先杀子进程");
+    assert.deepEqual(calls.drop, [], "被拒的请求不得动引擎缓存");
+
+    // (b) 用户批准 ⇒ 进入引擎交付（子进程与缓存都被触达）。这里不
+    //     钉状态码：本机没有运行时 db 时引擎侧本来就答 500，那与
+    //     "门有没有被越过"无关。
+    const approved = fakeRes();
+    await withDecisions(
+      () => handleDeleteSession(fakeReq({}), approved, {
+        cs,
+        cid,
+        pathname: "/api/sessions/" + MVS_SID,
+      }),
+    );
+    assert.equal(calls.shutdown, 1, "孤儿 mcode 会话必须先杀掉会写回注册表的子进程");
+    assert.deepEqual(calls.drop, [MVS_SID]);
+  });
+
+  test("P19: 真实可删的会话在无 cid 时仍然拒绝（门在 plan 之前，不因 id 存在而放行）", async () => {
+    const calls = trackAntiResurrection();
+    registerSessionsStore({
+      initial: [
+        ...initialSessions,
+        {
+          id: "webui-owned",
+          mcodeSessionId: MVS_SID,
+          title: "deletable but unowned",
+          workspace: WS_A,
+          createdAt: 9,
+          updatedAt: 9,
+          chat: [],
+        },
+      ],
+    });
+    const cs = makeClientState();
+    cs.workspace = { dir: WS_A, branch: null, tree: null };
+    const res = fakeRes();
+    const ctx = { cs, cid: "", pathname: "/api/sessions/webui-owned" };
+    const startedAt = Date.now();
+    await handleDeleteSession(fakeReq({}), res, ctx);
+
+    assert.ok(Date.now() - startedAt < 2000, "仍然必须快速失败");
+    assert.equal(res._status, 403, "id 真实存在不构成放行理由：没有主人就没有授权");
+    assert.equal(
+      getSessionsStore().some((s) => s.id === "webui-owned"),
+      true,
+    );
+    assert.equal(calls.shutdown, 0);
+    assert.deepEqual(calls.drop, []);
+  });
 });
 
 // ============================================================

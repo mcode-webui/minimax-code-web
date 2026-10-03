@@ -85,8 +85,15 @@ export interface ComposerDraft {
  * against the server could not establish whether the turn started. The text
  * may already be executing. Never rendered as a failure, and the draft is
  * only restored when the server positively holds no record of the send.
+ *
+ * `followUp` — a follow-up sent into a running turn (SB-4) was REFUSED, and
+ * `error` is then the finished sentence rather than a server string: both
+ * refusals this family can answer with mean "not delivered, the text is back
+ * in the box" for different reasons, and quoting the engine's own wording
+ * would put an internal code in the banner. It wears the `busy` colour
+ * because it is the same class of fact.
  */
-export type ComposerErrorKind = "rejected" | "busy" | "unconfirmed";
+export type ComposerErrorKind = "rejected" | "busy" | "unconfirmed" | "followUp";
 
 const EMPTY_DRAFT: ComposerDraft = {
   value: "",

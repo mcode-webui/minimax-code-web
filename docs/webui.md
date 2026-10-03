@@ -1202,11 +1202,11 @@ missing feature. Only Worktree is genuinely not implemented.
 | --- | --- | --- |
 | Preferences | General (通用) | implemented |
 | Preferences | Voice | implemented, placeholder controls — the microphone dropdown is disabled with a single 「本地版不适用」 option, and both dictation rows show 未设置 (no device enumeration, no dictation input in a browser) |
-| Preferences | Shortcuts | implemented, read-only — 10 desktop default bindings under a 「浏览器环境不适用」 notice; the ✕ / ↺ affordances render disabled |
+| Preferences | Shortcuts | implemented — 10 desktop rows, each stating what the browser can do with it: 3 rebindable and live, 1 live on macOS only, 6 blocked with the specific reason (see **Shortcuts — what the browser can intercept**) |
 | Preferences | Personalization | implemented — 自定义指令 and 关于你 persist to `localStorage`; both memory switches render off and disabled with the not-applicable marker, and 管理 opens the 记忆摘要 dialog in its permanent empty state |
-| Management | Usage & models | implemented; the three sources are a **view switcher** — they do not switch the model source in use |
+| Management | Usage & models | implemented; since SB-1 the two engine sources are real (Token Plan / MiniMax API switch the engine's credential, the 「使用中」 badge reads the engine back, and the MiniMax API key can be saved and probed) — the third pill, Custom models, stays a VIEW onto the provider catalogue |
 | Management | Connection | implemented |
-| Management | Account | implemented as a placeholder — 账户信息 reads 「本地模式，未登录」, 退出登录 is disabled (no account service locally) |
+| Management | Account | implemented as a read — the section reads `GET /api/account` on mount and renders the account name, the current plan name, the quota overview (plan-quota state plus the 5-hour and weekly remaining figures) and the account status; sign-out stays disabled (no engine method acts on it) |
 | Coding | Code review | implemented — 自定义审查准则 persists to `localStorage`; 审查方式 is a disabled single-option dropdown showing 子会话 |
 | Coding | Worktree | **not implemented** — the tab is a one-line panel reading 「本地版暂不支持工作树管理」 |
 | Archived | Archived tasks | the tab renders its empty state 「暂无已归档任务」; the list and its actions need an archived-session contract that does not exist |
@@ -1216,6 +1216,41 @@ column tab (`workspaceTabs.tab.browser`) that mounts `BrowserPanel` over the
 workspace tabs, not a settings section; the `settings.tab.browser` dictionary
 key has no call site. An earlier revision of this document listed a Browser
 tab under Preferences.
+
+**Shortcuts — what the browser can intercept**
+
+A page cannot register a global shortcut, and it cannot intercept a
+combination the browser has already claimed. The Shortcuts tab therefore
+does not present the desktop's bindings as a dead reference list: every
+row states its own verdict, and the same registry decides both the label
+and the dispatch. `webapp/lib/shortcuts.ts` holds that verdict; `app/page.tsx`
+matches keydowns against it and `components/settings-extra-pages.tsx`
+renders it, so a row cannot be shown as live while nothing dispatches it
+(or the reverse).
+
+| Row | Combination | Verdict | Why |
+| --- | --- | --- | --- |
+| 显示或隐藏 Mini Chat | `Alt+M` | blocked | the WebUI has no Mini Chat surface |
+| 全局搜索 | `Ctrl+K` | live | unclaimed in the browsers this client targets; opens the tree-column search surface |
+| 搜索任务和会话 | `Ctrl+G` | blocked | the browser's find-next |
+| 新建任务 | `Ctrl+N` | macOS only | a new window in Chromium and Firefox on Windows and Linux — the keydown never reaches the page there |
+| 新建无项目任务 | `Ctrl+Alt+O` | live | unclaimed |
+| 打开项目文件夹 | `Ctrl+O` | blocked | the browser's Open File dialog |
+| 打开设置 | `Ctrl+,` | live | unclaimed |
+| 按住听写 / 切换听写 | — | blocked | no speech recognition behind the rows |
+| 反转跟进行为 | `Ctrl+Enter` | blocked | the key is free, but the action's semantics are undecided; binding it would promise behaviour that does not exist |
+
+The three **live** rows are rebindable: the box takes the next combination
+the user presses, persists it under `webui-shortcut-bindings`, and the
+handler picks it up on the next keydown. A combination another dispatched
+row already owns is refused and the conflicting action is named — two rows
+sharing one combination would be an order-dependent bug in the handler.
+`Ctrl+N` is deliberately not rebindable: moving it would not make it fire
+on the platforms where the browser owns it, so the row prints the limit
+instead of pretending a rebind fixes it. Blocked rows keep the desktop's
+printed combination for reference, render disabled, and print the reason
+from the table above. `Ctrl+Shift+T`-style interception is not attempted
+and cannot be: those keys never arrive.
 
 **General (通用) — sections**
 
@@ -1230,9 +1265,9 @@ between adjacent rows:
 | Application | enabled | appearance picker + language switch. The reference's five desktop switches (menu-bar icon, launch-at-login, desktop notifications, early access, accelerated indexing) render **disabled**, one per row — no capability behind them |
 | Link destinations | disabled furniture | two rows (web links, local links) whose selects are disabled single-option dropdowns |
 | Files | enabled | two switches persisted in `localStorage`, see the table below |
-| Session management | enabled | one switch, persisted; **records the preference only** — no surface reads it yet |
+| Session management | enabled | one switch, persisted; gates the composer's context-window readout (see below) |
 | Agent control | disabled furniture | the 「自动打开浏览器面板」 switch renders off and disabled (no capability behind it) |
-| Preference settings | enabled | follow-up behaviour radio (queue / send now), persisted; **records the preference only** — the composer does not read it yet (ticket 49 owns that surface). Watermark and data opt-in render disabled |
+| Preference settings | enabled | follow-up behaviour (disabled / queue / send now); since SB-4 the composer reads it, and a send into a running turn reaches the engine's queue or steers the running turn. Watermark and data opt-in render disabled |
 | About | mixed | upload logs and check-for-update are disabled buttons; the local URL and LAN URL are live read-only rows from `/api/settings` |
 | dataDir footer | not implemented | the reference prints the app data directory at the bottom of the General page; `/api/settings` has no such field and the server routes are read-only this round, so no value exists to print |
 
@@ -1250,8 +1285,30 @@ clients:
 | --- | --- | --- |
 | `file_open_in_new_tab` | `"true"` here (`"false"` in the reference) | **Yes.** On (default) keeps this client's standing one-tab-per-file behaviour; off replaces the **active file tab** with the newly opened file. The strip has no pinned-tab concept, so "active file tab" is the reuse target — a documented approximation of the reference's "reuse the unpinned tab" |
 | `file_line_wrap` | `"true"` | **Yes.** On wraps over-wide lines; off scrolls horizontally. Covers both code-file previews (ticket 48) and markdown codeblocks — chat messages, activity groups and markdown file previews (ticket 52); the language label never wraps. Applies to previews opened / messages mounted after the switch (an already-open one does not reflow); a wrapped file-preview line's gutter number aligns with its first visual row — a known trade-off |
-| `webui-context-window-usage` | `"false"` | No. Recorded preference only |
-| `webui-follow-up-behavior` | `"queue"` (or `"steer"`) | No. Recorded preference only |
+| `webui-context-window-usage` | `"false"` | **Yes.** On draws the context-window readout in the composer's toolbar, immediately left of the model chip; off renders nothing there. The readout's own form is unchanged — the ring, the percentage, the breakdown and the plan rows all come from the session snapshot as before. Flipping the switch takes effect without a reload |
+| `webui-follow-up-behavior` | `"queue"` (or `"off"`, `"steer"`) | No. Decides what a send does while a turn runs; `"off"` is webui's own third position (the reference has two) |
+
+**The context-window readout**
+
+`components/context-meter.tsx` is the only consumer of
+`webui-context-window-usage`. It reads the key once at mount and then
+follows `subscribeContextWindowUsage` in `webapp/lib/settings-local.ts`,
+so the switch takes effect in the already-open page — the settings modal
+and the composer are on screen at the same time, and a reload would be
+the only other way to hear about it. The channel's shape is
+`subscribe*(listener) → unsubscribe`, the same one
+`webapp/lib/theme.ts#subscribeSystemTheme` uses for the appearance picker;
+a listener that throws is isolated so it cannot cost the other subscribers
+their update.
+
+The default stays `"false"`, the desktop reference's own default, so a
+profile that has never touched the switch renders no readout. That is a
+change from the webui's previous behaviour, where the meter drew
+unconditionally and the switch did nothing: the reference hides it by
+default, and the switch is what decides. The stored format is still the
+bare `"true"` / `"false"` string — the key did not move onto the
+`webui:ui:v1` envelope, which would have broken the reference-shared
+contract.
 
 **Search and layout details (ticket 48)**
 
@@ -1272,7 +1329,7 @@ clients:
 
 | Capability | Why |
 | --- | --- |
-| Account page | the tab renders in the reference's form, but there is no `getAccountStatus` / `signOut`-class server contract, so the account row reads 「本地模式，未登录」 and sign-out is disabled |
+| Account page | sign-out only — the readings are real (see **Account section (账户)** below); the engine exposes no sign-in/sign-out method, so the button renders in the reference's form, disabled, with that reason in its tooltip |
 | Archived tasks page | the tab renders its empty state; the list, its restore and its delete need the archived-session contract |
 | Usage & models three-source switching | the segmented tabs now match the desktop form (ticket 53), but they are a **view switcher** — they do not switch the model source in use; real Token Plan / MiniMax API / custom-model routing plus source badges still need a model-routing contract |
 | MiniMax API key panel | input + connectivity test + save-and-use |
@@ -1295,16 +1352,53 @@ The Token Plan view is the desktop's five blocks (the tabs plus four cards):
 
 | Block | Data policy |
 | --- | --- |
-| Plan card (ⓘ + two rows + 管理⌄) | No cloud-account source locally: the plan name and the credits figure render 「本地版不适用」, and the expiry line is omitted rather than given a fabricated date; 升级 (black primary) / 管理 ⌄ / 去充值 render in the desktop's form but disabled |
+| Plan card (ⓘ + two rows + 管理⌄) | The plan NAME is real: `tokenPlan.tier` from `GET /api/account`, read when the view mounts, rendered verbatim; when the engine reports no plan, or the account surface is unreachable, the row renders 「未订阅套餐」 — never a default tier. The remaining figures have no credential path here: the credits figure renders 「云端账户域，本网页端无账户凭据」 and the expiry line is omitted rather than given a fabricated date; 升级 (black primary) / 管理 ⌄ / 去充值 render in the desktop's form but disabled, because all three act on the cloud account |
 | Usage card (three stacked progress bars) | The 5-hour and weekly windows are the one live source (engine over ACP, `POST /api/usage`; polled every 2 minutes, manual refresh records a forecast sample): with data they print the desktop forms "X% / 100%" / "X%" plus a relative reset caption ("resets in 43 min"); with no reading a bar shows the unavailable line, never 0%; the video window has no local source and permanently shows 「本地版不适用」 |
-| Credits row (ⓘ + blue switch) | No credits system locally: the switch renders the desktop's blue on-form but greyed (checked + disabled), the hint is the reference's, and the row carries the not-applicable marker |
+| Credits row (ⓘ + blue switch) | Credits are a cloud-account figure: the switch renders the desktop's blue on-form but greyed (checked + disabled), the hint is the reference's, and the row names the cloud account domain as the reason |
 | Invoice row | The one fully live affordance: 申请 ↗ opens the MiniMax open platform in a new tab |
+
+The plan card is where ticket 53's A1 ruling was revised. A1 read 「无源即占位」 — a figure with no local source renders the placeholder — and applied that to the whole card, but the local server does have sources here (`POST /api/usage` for the quota windows, `GET /api/account` for the plan tier), so the ruling overstated the gap. The revision splits the card by source rather than by card: what the server can read is rendered, and what belongs to the cloud account domain renders the honest line that names that domain as the reason. Two alternatives were rejected — keeping the whole card on the placeholder (a plan name the engine has already reported is not a gap), and wiring credits / expiry / invoicing as well (this session holds no account credentials for the cloud account, so a real-looking figure there is exactly the fabrication A1 exists to prevent).
 
 The custom-models view is the existing provider panel (API keys, protocols,
 model lists, connection tests, preset one-click enable); ticket 54 rebuilt
 the **add** flow into the desktop's dialog form (next section) and this batch
 folded **editing** into that same dialog (see "One dialog also edits" below) —
 the panel is now a list plus a delete affordance, with no second editor.
+
+**Account section (账户)**
+
+One read of `GET /api/account` on mount answers the whole section. The
+endpoint is not new and not duplicated: it is the same projection the user
+menu's account card already reads, fetched on demand because the state
+snapshot is broadcast to every SSE subscriber.
+
+| Row | Field | Missing-value sentence |
+| --- | --- | --- |
+| 账户名 | `identity.name`, trimmed | the engine answered and reported no name |
+| 当前套餐 | `tokenPlan.tier`, through the Token Plan card's own `planNameOf` | 「未订阅套餐」 when the engine reported no plan; 「正在读取当前套餐…」 while a read is in flight; the unread sentence when the surface itself failed |
+| 配额概况 | `tokenPlanQuotaState`, plus `quota.fiveHour` / `quota.weekly` `remainingPercent` | 「引擎未返回读数」 per window; 「不限量」 when the engine reports the window unmetered |
+| 账户状态 | `status` | the unread sentence; a status token with no dictionary entry resolves to no sentence rather than leaking a raw enum |
+
+The unread sentence is one per failure kind and each names the endpoint:
+`ok: false` renders the engine's own `reason` when it sent one, a transport
+failure renders the read-failed line, and none of them asserts a fact about
+the user. The two failures that are NOT the same thing — an unreachable
+account surface and an answer with no account name — therefore get different
+sentences, which is what the previous hardcoded 「本地模式，未登录」 row
+could not express.
+
+Division of labour with the Token Plan card is by shape, not by topic: that
+card owns the limit BARS, the plan actions, credits, expiry and invoicing;
+this section owns identity and the plain-text readings. The only shared
+value is the plan name, and it goes through one resolver (`planNameOf`) so
+the two surfaces cannot drift. A window reported as unmetered prints
+「不限量」 rather than 「剩余 0%」 — a plan with no cap must not read as an
+exhausted one.
+
+Rejected alternatives: a second account endpoint (the projection already
+exists and a second route would be a second contract to keep in sync), and
+showing the quota as bars here as well (the same gauge twice, from two
+different sources, on two pages).
 
 **Add-model dialog (ticket 54, 53b)**
 
@@ -1555,6 +1649,163 @@ since given content. The dead `if (!section)` branch inside `SettingsPanel`
 was removed and the `section` prop made required — every reachable tab
 resolves a section, so the branch could never render.
 
+### Usage & models: the source switcher is real (SB-1)
+
+**What the user sees.** Opening the 用量与模型 tab reads the engine
+once and settles three things that used to be local guesses: which
+credential the engine is actually using, whether a MiniMax API key is
+stored, and what the last connectivity probe found. The pill is still
+the *view*; the 「使用中」 badge beside it is the engine's answer, and it
+moves only when a write has been confirmed. Picking Token Plan or MiniMax
+API in the dropdown switches the view AND writes the engine
+(`PUT /api/model-source`); a refusal — the engine's `NO_API_KEY` when no
+BYOK key is stored — leaves the view where the user put it, so the key
+field they need is the panel that stays on screen, while the badge keeps
+showing what is really in use.
+
+**Why the badge and the view are separate values.** They were one value
+before, which is what made the old build's claim false: a `useState`
+switcher could render a source as selected while the engine kept using
+the other one. A badge that claims 使用中 for a source the engine never
+accepted is the fake-success shape this codebase keeps refusing, so the
+badge is fed exclusively by a read-back.
+
+**The key row.** A stored key shows as the engine's mask, never as
+plaintext, and typing a new value replaces it on save. 保存并使用 is one
+request, not two: the engine writes the key and switches the source in a
+single transaction, so the tab never shows a saved key beside a source
+that was not switched. An empty submission is the **keep** sentinel
+(`changed: false`, no engine write) — the same convention
+`PUT /api/providers` uses, and it exists because the read can only
+return a mask while the engine rejects a mask submitted as a key.
+
+**What the probe does and does not test.** 检测 probes the STORED key on
+the `minimax_api` provider and the response says so (`tested:
+"stored_key"`). Two limits are the engine's contract, not this UI's:
+`testUserModel` takes no key override, so an unsaved value cannot be
+probed — the button is disabled while the field holds one, and a visible
+line under the field says why, because the reason used to live only in a
+`title` attribute that keyboard and touch users never see — and the
+managed Token Plan credential is not a model-service key, so the Token
+Plan source has nothing to probe here. A probe that ran and failed is a
+completed probe, not an error: it renders the engine's status.
+
+**The key row is four states, not two.** The badge reads the engine's
+masked projection, but it is describing a field the user can be editing
+right now, so a typed-but-unsaved key is its own state (「已输入，未保存」)
+that outranks both 「已保存密钥」 and 「未启用」 — the user is replacing the
+stored key, or has plainly typed one, and neither badge is true. Symmetric
+to that, the engine's `NO_API_KEY` refusal is a verdict on an EMPTY field:
+typing one falsifies it, so the pinned 「请先填写 API Key」 is dropped on
+the next keystroke. A refusal that is not about the missing key — a
+transport failure, a rejected write — is still true afterwards and stays
+on screen.
+
+**Cost.** One extra read per settings-tab open. The read boots the
+engine runtime if none is up, which is the write-side contract and is
+acceptable here because the user opened the tab; a future change that
+moves this fetch to page level must use the non-booting host getter
+instead (`server/engine/model-source.js` KNOWN DEBT 2).
+
+**What this did not do.** The add-model dialog's 「自动获取」 still
+resolves against the built-in preset directory: v2 has no per-provider
+catalogue query for an arbitrary key, so a live per-key fetch has no
+engine method behind it. The Token Plan cards stay on decision A1
+(本地版不适用) — wiring them to `/api/usage` and `/api/account` is a
+separate, undecided item, not a side effect of this one.
+
+### Usage & models: a source switch re-reads the account (P20)
+
+**The defect this fixes.** A UAT round trip on 2026-10-03 (板块 4) switched
+Token Plan → MiniMax API → Token Plan with a key stored in between. The
+Token Plan card came back reading 「未订阅套餐」 while `GET /api/account`
+answered `tier: "Ultra"` throughout, and only F5 recovered it. The
+endpoint was never wrong.
+
+**Root cause.** The plan name is read in `UsageModelsSection`
+(`webapp/components/panels.tsx`), mounted only while the port's view is on
+the token-plan tab, so a switch away and back remounts it. The read was
+`useEffect(..., [])` — once per mount — and that mount raced the engine:
+the section rendered in the same tick as `PUT /api/model-source`, and
+`GET /api/account` answers an engine that is still rebinding with HTTP
+**200** and `{ok: false, reason: "no_client"}`. The card read that as "no
+plan", nothing re-read it, and the section's state outlived the failure.
+
+**The re-read.** The port owns an `accountRevision` counter and increments
+it after every *successful* source write — the dropdown's `PUT
+/api/model-source` and 保存并使用's `PUT /api/model-source/api-key`, which
+switches the source inside the same engine transaction. The section's
+`/api/account` effect lists that counter as a dependency, so a confirmed
+write re-runs the read against an engine that has finished rebinding. A
+refused write bumps nothing: nothing changed, and a re-read would only
+spend a request to re-render the same answer.
+
+**A failed read may not un-know a name.** Revalidation alone is not enough,
+because the re-read can also lose the race. `reconciledAccount`
+(`webapp/components/usage-models-cards.tsx`, pure and unit-tested) keeps
+the last `ok: true` answer standing: only an `ok: true` payload is new
+information, so an unreachable account surface cannot knock a known plan
+off the card. An `ok: true` answer that reports no plan *does* replace it —
+the engine saying "no plan" is an answer, saying "unreachable" is not.
+
+**A read in flight is its own sentence.** With the name held, the only
+remaining nameless state is "not read yet", and it renders 「正在读取当前
+套餐…」 rather than 「未订阅套餐」. An account surface that has not
+answered has not said the user has no plan — that conflation was the
+visible half of UAT4-1.
+
+**Cost.** One `GET /api/account` per confirmed source write, on a surface
+the user has just acted on. The read is not debounced: a source switch is
+a deliberate act, not a stream of them.
+
+### Follow-up messages: the switch is a behaviour (SB-4)
+
+**What the user sees.** 跟进消息行为 has three positions. While a task is
+running, the composer keeps Stop where it was and — with 排队 or 立即发送
+— also offers the send arrow: 排队 hands the message to the engine's queue
+so it runs after the current turn, 立即发送 steers the running turn. With
+关闭 the composer is exactly what it was before: the send control is
+replaced by Stop until the turn ends and the text waits in the box.
+Flipping the switch takes effect in the open page; no reload, no new
+send.
+
+**Why there is a third position.** The desktop reference's control has
+two, because the desktop owns the running turn and neither of its options
+can fail. webui's follow-up can be refused — the engine that owns the
+running turn may be another process — so a two-valued switch would be a
+behaviour change wearing a switch's clothes. 关闭 is webui's own option and
+is documented as such.
+
+**The ownership gate, and why it is not a transport check.** Before
+either action runs, the server asks the engine whether *this* process owns
+the active turn (`cliService.getActiveTurn`). Under the `runtime`
+transport the turn runs in the webui process, so the answer is yes and the
+queue or the steering message is admitted. Under the default `acp`
+transport the turn runs in an `mcode acp` subprocess, and queueing into
+this host would wake its own dispatcher and start a SECOND turn for a
+session that already has one — the failure `/api/send` spends four claims
+and a 409 preventing. That case is refused with `turn_not_owned`, the
+text comes back to the box, and the banner says why. The gate reads the
+engine's own answer rather than `MCODE_WEBUI_TRANSPORT`, so it stays
+correct when the chat path finishes its move to the in-process transport
+and needs no edit to start working.
+
+**What the response reports.** The engine's own answer, never the request:
+a queue answers with the item id and position the engine committed, a
+steer with the turn id and delivery mode. The two refususes stay two
+different sentences, because "no turn any more" and "the turn is in
+another process" call for different next steps.
+
+**Cost.** One engine read per follow-up send, and a write that boots the
+runtime if none is up — acceptable, because the user pressed send.
+
+**What this did not do.** The queue has no UI: a queued message is
+committed with an id and a position that nothing displays, and cannot be
+inspected, reordered or cancelled from the browser. That is PB-13's
+scope, and until it lands a queued follow-up is invisible until the
+running turn ends. A steered message reports admission, not whether the
+running agent read the text before its next step.
+
 ## Main-surface elements: user menu / project context menu / home capsules (ticket 55c)
 
 The user asked for every desktop main-surface screenshot to be copied
@@ -1596,8 +1847,23 @@ it, with the A1 marker keeping the limits stated rather than implied.
   `titleCustom` overlays session titles. Pinned projects sort to the top
   and carry a persistent pin mark beside the title; the menu row toggles
   between 置顶项目 / 取消置顶.
-- 在文件夹中显示 is a disabled placeholder: a browser cannot open the
-  OS file manager.
+- 在文件夹中显示 is live (SB-6). It posts the project's path to
+  `POST /api/fs/reveal` — the endpoint has been implemented and
+  registered all along (`server/routes/fs.js#handleFsReveal`,
+  `server/app.js`); the menu row was a placeholder that claimed a
+  browser cannot reach the OS file manager, which is false for a
+  webui install (the server holds the workspace). The row is disabled
+  for exactly one reason: the project is bound to no local directory,
+  and the tooltip says so in those words rather than shrugging with
+  「本地版不适用」. A reveal that succeeds is silent — the file-manager
+  window is the feedback, and a toast would race it. A failure reports
+  through the same banner as the menu's other writes, labelled with the
+  menu's own localized name, whether the server refused with a
+  structured `code` or the request threw.
+- The SESSION-level 在文件夹中显示 stays a disabled placeholder. The
+  desktop reference disables it too, so there is no parity to chase
+  and no local limitation to blame — unlocking it would be a product
+  decision this build has not made.
 - 归档对话 is a disabled placeholder: the runtime db has an `archived`
   flag, but writing another process's database is out of scope, and
   until ticket 55b's archived-tasks page lands there is no un-archive
@@ -2345,8 +2611,9 @@ Invariants worth keeping when touching either branch:
 | `webui:files-tree:<workspaceDir>` | `sessionStorage` | `webapp/components/panels.tsx` (slice 01) | slice 01 (file tree) | `{version:1, workspace, expanded[], filter, showHidden}` |
 | `file_open_in_new_tab` | `localStorage` | `webapp/lib/settings-local.ts` | ticket 48 (settings General page) | bare `"true"\|"false"` string; **deliberately outside the `webui:` namespace** — same key and format as the desktop reference so one browser profile shares the preference across both clients. Default `"true"` here (reference: `"false"`); read by `app/page.tsx#openFileTab` |
 | `file_line_wrap` | `localStorage` | `webapp/lib/settings-local.ts` | tickets 48 + 52 | bare `"true"\|"false"` string, reference-shared namespace; default `"true"`; read per mount by `components/code-view.tsx` (code-file previews) and `components/markdown-html.tsx` (markdown codeblocks: chat, activity groups, file previews) |
-| `webui-context-window-usage` | `localStorage` | `webapp/lib/settings-local.ts` | ticket 48 | bare `"true"\|"false"` string, reference-shared namespace; default `"false"`; recorded preference, no reader yet |
-| `webui-follow-up-behavior` | `localStorage` | `webapp/lib/settings-local.ts` | ticket 48 | bare `"queue"\|"steer"` string (anything else reads as `"queue"`), reference-shared namespace; recorded preference, no reader yet |
+| `webui-context-window-usage` | `localStorage` | `webapp/lib/settings-local.ts` | ticket 48 | bare `"true"\|"false"` string, reference-shared namespace; default `"false"`; read at mount and followed live by `components/context-meter.tsx` through `subscribeContextWindowUsage` |
+| `webui-follow-up-behavior` | `localStorage` | `webapp/lib/settings-local.ts` | ticket 48 / SB-4 | bare `"off"\|"queue"\|"steer"` string (anything else reads as `"queue"`), reference-shared namespace; read by `components/composer.tsx` and republished on every write |
+| `webui-shortcut-bindings` | `localStorage` | `webapp/lib/shortcuts.ts` | ticket 55c (settings Shortcuts page) | `{"global-search":"Ctrl+Shift+P", …}` — rebindings of the **live** shortcut rows only, written when the user records a new combination and removed entirely when the last one is cleared. Re-validated against the registry on read: a stored id that is no longer dispatched, or a chord that no longer parses, is dropped rather than honoured, so a hand-edited entry cannot widen what the page dispatches. Read at every keydown by `app/page.tsx` (through `effectiveBindings`) and once per mount by the settings page |
 | `webui:project-custom:v1` | `localStorage` | `webapp/lib/project-custom.ts` | ticket 55c (project context menu) | `{version:1, titles:{<projectKey>:<customName>}, pinned:[<projectKey>]}`. **Deliberately not cid-namespaced**: a rename or a pin describes the project, not a browser session, so every tab of this browser shares it. Best-effort write, silent failure; a project's entries are cleared when its remove completed with every session deleted |
 
 Except for ticket 48's four reference-shared keys (`file_open_in_new_tab`,
@@ -2728,7 +2995,7 @@ marker), not by tool name.
 | `POST` | `/api/fs/mkdir` | `routes/fs.js#handleFsMkdir` | `{path}`; parent in allowed roots; `403` on containment fail |
 | `POST` | `/api/fs/write` | `routes/fs.js#handleFsWrite` | `{path, content, expectedMtime?, expectedSize?, confirm?}` — the preview editor's save (slice 27). `200 {ok, path, size, mtime}` (fresh baseline); `400 {code:"missing-path"\|"missing-content"\|"invalid-content"\|"not-a-regular-file"}`; `403` containment / `403 {code:"credential", credentialReason}` (slice-16 shapes without `confirm:true`); `404 {code:"not-found"}` (vanished file — TOCTOU guard; a missing path normally fails the gate first, same as reads); `409 {code:"conflict", diskMtime, diskSize}` (stale baseline, nothing written); `413 {code:"too-large"}` (write cap = the read's 512 KiB). Bare `writeFileSync` on the gated path — no shell anywhere. `confirm:true` on a credential shape emits the `credential.override` audit line with `endpoint:"write"`. |
 | `POST` | `/api/fs/open-default` | `routes/fs.js#handleFsOpenDefault` | `{path}`; `400 {code:"missing-path"}` / `403 {code:"out-of-bounds"}` / `400 {code:"not-a-regular-file"}` / `503 {code:"no-opener"}` / `502 {code:"spawn-failed"}` |
-| `POST` | `/api/fs/reveal` | `routes/fs.js#handleFsReveal` | `{path}`; same code → status map as `open-default` |
+| `POST` | `/api/fs/reveal` | `routes/fs.js#handleFsReveal` | `{path}`; same code → status map as `open-default`. Consumers: the file-preview toolbar and the sidebar project menu's 在文件夹中显示 (SB-6) |
 | `GET` | `/api/fs/search` | `routes/fs.js#handleFsSearch` | `?root=&q=&depth=&maxNodes=&wallMs=&limit=&includeHidden=1`; `400 {code:"missing-root"\|"missing-q"\|"not-a-directory"\|"stat-failed"}`; success envelope: `{ok, root, q, matches:[{path,name,type,ancestors,credential?,credentialReason?}], scanned:{dirs,files,total}, skipped:{node_modules,n,.git,n,credential,n,huge,n,optional:{dist,build,…}}, truncated, truncatedReason: null\|"depth"\|"nodes"\|"wallClock"\|"matches", elapsedMs, budgets}`. Walker defaults: `maxDepth=8`, `maxNodes=5000`, `wallMs=1500`, `maxMatches=200`; absolute limits: `16/50_000/5_000/1_000` (`packages/webui/server/lib/fs-search.js`). `node_modules` and `.git` are non-overridable skips. |
 | `GET` | `/api/git/status` | `routes/git.js#handleGitStatus` | `?dir=`; `400 {error:"missing dir"}` |
 | `GET` | `/api/git/branches` | `routes/git.js#handleGitBranches` | `?dir=`, leading `* ` → `current` flag |
@@ -2748,6 +3015,11 @@ marker), not by tool name.
 | `POST` | `/api/providers/test` | `routes/providers.js#handleTestProvider` | `{provider}`; structured codes → status |
 | `GET` | `/api/providers/presets` | `routes/providers.js#handleGetPresets` | gallery |
 | `POST` | `/api/providers/preset/:id/enable` | `routes/providers.js#handleEnablePreset` | one-click enable |
+| `GET` | `/api/model-source` | `routes/model-source.js#handleGetModelSource` | `{ok, source, apiKey:{available,hasKey,masked,testState,lastTestedAtMs}}`; `501` when the host has no `getMiniMaxModelSource`, `503` when no runtime is booted, `502 {code:"UNKNOWN_MODEL_SOURCE"}` for a value outside the engine's own two. `available:false` is not `hasKey:false` |
+| `PUT` | `/api/model-source` | `routes/model-source.js#handleSetModelSource` | `{source}`; `400 {code:"INVALID_MODEL_SOURCE"\|"BAD_FIELD_TYPE"}`, `400 {code:"NO_API_KEY"}` when the engine refuses the BYOK direction; the response carries what the engine PERSISTED |
+| `PUT` | `/api/model-source/api-key` | `routes/model-source.js#handlePutModelSourceApiKey` | `{apiKey, saveAndUse?}`; an absent/empty/whitespace `apiKey` is the KEEP sentinel → `200 {changed:false}` with no engine write; `400 {code:"BAD_FIELD_TYPE"\|"INVALID_API_KEY"}`; `500 {code:"engine_error"}` never carries the thrown message |
+| `POST` | `/api/model-source/test` | `routes/model-source.js#handleTestModelSource` | `{modelId?}`; always 200 for a COMPLETED probe (`{ok, success, providerId:"minimax_api", tested:"stored_key", status}`) including `success:false`; non-200 only when the probe is refused (`503`/`501`, or the engine's `400 NO_API_KEY`) |
+| `POST` | `/api/follow-up` | `routes/follow-up.js#handleFollowUp` | `{behavior:"queue"\|"steer", content, attachments?, requestId?}` — the engine session id comes from the server's own conversation state, never the body; `400 {code:"invalid_follow_up_behavior"\|"follow_up_empty"\|"no_active_conversation"\|"BAD_FIELD_TYPE"}`; `409 {code:"no_active_turn"\|"turn_not_owned"}` when this process does not own the running turn, and nothing is queued; `501` when the host lacks the method, `503` when no runtime is booted; 200 `{ok, behavior, itemId, position, status}` (queue) or `{ok, behavior, turnId, mode}` (steer) — the engine's own answer |
 | `POST` | `/api/debug/inject` | `routes/debug.js#handleDebugInject` | `DEBUG_INJECT=1` gate |
 | `GET` | `/api/debug/state` | `routes/debug.js#handleDebugState` | same gate |
 | `POST` | `/api/protocol/set-mode` | `routes/protocol.js#handleSetMode` | mid-session mode change |
@@ -2811,6 +3083,38 @@ A bus that cannot answer the question (a test double that does not model
 the connection registry) is treated as "might have a listener" and keeps
 the old wait. The short-circuit can only ever deny — no path approves
 anything without a recorded decision.
+
+**"Is anybody listening?" and "does this request have an owner?" are two
+different questions, and the rule above answers only the first.** A
+request without `?cid=` — a curl, a script, a caller that forgot
+`withClientQuery` — is told "yes, somebody is listening" as soon as one
+browser tab is open, because an empty cid is the *broadcast* target and a
+connected tab really can see and answer the modal. Nobody asked for it,
+so nobody answers it, and the destructive request sits there for the full
+300000 ms. A gate that fires only while the connection registry is empty
+therefore misses the common case, and the caller sees a hang rather than
+a denial.
+
+The routes that serve an identified HTTP caller pass
+`{requireRequester: true}` for that reason: `session.delete`,
+`sessions.cleanup-orphans`, `session.export`, `session.search`. With no
+owner the answer is the same fail-closed one, at once, audited as
+`auth.unreachable` with `reason:"no_requester"` so an operator can tell it
+apart from a closed tab. The rule is opt-in because the difference is
+load-bearing in the other direction too — `startup.cleanup` asks with an
+empty cid on purpose, and any tab may answer it.
+
+`DELETE /api/sessions/:id` applies it before anything else, ahead of the
+plan, so an unattributable delete costs no store read and reaches no
+engine at all. The same handler also stops asking a question it can
+already answer: an id that is absent from the session store *and* is not
+an `mvs_` sid has no wrapper to splice and no engine rows to remove, so
+it returns the `404 {ok:false, error:"session not found"}` this branch has
+always returned — the facade's own `not_mcode_sid` / `already_absent`
+pair, stated at the HTTP layer instead of waited out — with no governance
+round-trip. Every id that can delete something, a resolved record or an
+orphan `mvs_` sid whose engine rows are about to go, still passes the
+gate.
 
 ## Blocking prompts: what each one can actually answer
 

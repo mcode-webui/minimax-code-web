@@ -50,6 +50,11 @@ const en = {
 
   "composer.send": "Send",
   "composer.hint": "Enter to send, Shift+Enter for a new line",
+  /* SB-4 — the send control's own title while a turn is running. The
+     suffix names the mechanism (a follow-up) rather than the destination,
+     because 排队 and 立即发送 are two different engine calls behind one
+     control and the setting row is where the user chooses between them. */
+  "composer.followUp": "send as a follow-up",
   "composer.sending": "Sending…",
   /* Context-window meter beside the composer. The panel only shows what the
      engine actually reports; the desktop also breaks the window down by category,
@@ -170,6 +175,14 @@ const en = {
     "Not delivered: the server holds no record of this message. The text is back in the input box.",
   "error.unconfirmed.unreachable":
     "Status unknown: the server neither confirmed the message nor could be reached to check, so it may already be running. Check the conversation history before sending it again. The text is back in the input box.",
+  /* SB-4 — the two refusals `POST /api/follow-up` can answer with when a
+     follow-up is sent into a running turn. Both are "not delivered", like
+     `error.busy`, and both name a DIFFERENT reason, because the action the
+     user can take differs: wait for the turn, versus change 跟进消息行为. */
+  "error.followUp.noActiveTurn":
+    "Not queued: the engine reports no running turn for this conversation any more. The text is back in the input box — send it again.",
+  "error.followUp.notOwned":
+    "Not delivered: the running turn belongs to another engine process, which has no queue for this message. The text is back in the input box — send it again once the turn finishes.",
   "error.session": "Could not load sessions",
   "toolbar.workspace": "Workspace",
   "toolbar.browser": "Browser",
@@ -210,17 +223,22 @@ const en = {
 
   /* Project context menu (ticket 55c, ref-26). Rename / pin are backed by the
      browser-local project customizations (webapp/lib/project-custom.ts);
-     reveal-in-folder renders disabled with `common.notLocal`; remove
-     batch-deletes the project's sessions behind a confirm.
+     remove batch-deletes the project's sessions behind a confirm.
      PB-1 corrected the archive item's reason: it used `common.notLocal`,
      which claimed the local build lacks a capability it has (the
      SESSION-level 归档 is live and calls `archiveSession`). What is
      missing is a project-SCOPED bulk archive, so this item gets its own
-     tooltip — see `server/engine/session-context-actions.js` KNOWN DEBT 2. */
+     tooltip — see `server/engine/session-context-actions.js` KNOWN DEBT 2.
+     SB-6 corrected reveal-in-folder the same way: it was disabled with
+     `common.notLocal` while `POST /api/fs/reveal` sat implemented and
+     registered. It is live now, and the one honest reason to grey it out
+     is a project bound to no local directory — which is what this key says. */
   "projectMenu.rename": "Rename project",
   "projectMenu.pin": "Pin project",
   "projectMenu.unpin": "Unpin project",
   "projectMenu.revealInFolder": "Reveal in folder",
+  "projectMenu.revealUnavailableNoPath":
+    "This project is not linked to a local folder, so there is nothing to open in the file manager.",
   "projectMenu.archive": "Archive chats",
   "projectMenu.archiveUnavailable":
     "No project-wide archive yet: the engine archives one session at a time, and archiving a whole project is a bulk operation this build has not defined.",
@@ -309,6 +327,22 @@ const en = {
   "usage.tab.inUse": "Active",
   "usage.tab.customModels": "Custom models",
   "usage.notLocal": "Not applicable to the local edition",
+  /* SB-7 — the A1 revision. The plan NAME is a real figure now (it reads
+     `tokenPlan.tier` from /api/account), so the honest line for the
+     remaining plan figures is no longer "the local edition has no data" but
+     the narrower, accurate reason: credits, expiry and invoicing live in
+     the cloud account domain, and a self-hosted browser session carries no
+     account credentials for it. `usage.plan.noPlan` is the other honest
+     state — the engine answered and reported no plan, which is not an
+     error. P20 adds a THIRD honest state, `usage.plan.loading`: the read
+     is in flight and no name is known yet. An account surface that has not
+     answered has not said the user has no plan, and the UAT4-1 defect was
+     exactly that conflation — a transient unanswered read rendered as
+     「No active plan」. */
+  "usage.plan.noPlan": "No active plan",
+  "usage.plan.loading": "Reading the current plan…",
+  "usage.cloudAccount":
+    "Cloud account — this web UI has no account credentials",
   "usage.plan.title": "Current plan",
   "usage.plan.upgrade": "Upgrade",
   "usage.plan.manage": "Manage",
@@ -619,7 +653,8 @@ const en = {
   "settings.session.contextWindowUsage": "Show context window usage",
   "settings.followUp.title": "Follow-up message behaviour",
   "settings.followUp.hint":
-    "Pressing Enter while a task is running either queues the follow-up or sends it to the running task immediately.",
+    "What happens when you press Enter while a task is running: queue the follow-up, send it to the running task immediately, or keep the input disabled until the task finishes.",
+  "settings.followUp.off": "Disabled",
   "settings.followUp.queue": "Queue",
   "settings.followUp.steer": "Send now",
   "home.suggestions": "Suggested",
@@ -1086,7 +1121,18 @@ const en = {
   "common.cancel": "Cancel",
   "common.close": "Close",
   "settings.shortcuts.notice":
-    "Not applicable in the browser: the WebUI cannot register global shortcuts. The keys below are the desktop defaults, listed for reference only.",
+    "Rows marked Active are live in this page — click the box to rebind them. Rows marked Active on some systems only are taken by the browser elsewhere. Every unavailable row names its reason: a combination the browser owns (Ctrl+T, Ctrl+W, Ctrl+O, the find keys) cannot be intercepted by a page and is shown for reference only.",
+  "settings.shortcuts.status.live": "Active",
+  "settings.shortcuts.status.partial": "Active on some systems",
+  "settings.shortcuts.status.customized": "Active · custom",
+  "settings.shortcuts.partialNote":
+    "The browser takes this combination to open a new window on Windows and Linux, so it fires on macOS only; rebind one of the other rows for all platforms",
+  "settings.shortcuts.reason.browserReserved": "The browser owns this combination; a page cannot intercept it",
+  "settings.shortcuts.reason.noSurface": "The WebUI has no surface for this action",
+  "settings.shortcuts.reason.noDictation": "The WebUI has no speech recognition, so there is nothing to dictate into",
+  "settings.shortcuts.reason.pending": "The action's semantics are undecided, so it stays off",
+  "settings.shortcuts.record": "Click, then press the new combination",
+  "settings.shortcuts.conflict": "Already bound to:",
   "settings.shortcuts.group.miniChat": "Mini Chat",
   "settings.shortcuts.group.common": "General",
   "settings.shortcuts.item.miniChat": "Show or hide Mini Chat",
@@ -1118,7 +1164,7 @@ const en = {
   "settings.shortcuts.item.invertFollowUpHint":
     "Send the drafted message the opposite of the follow-up setting (queue or send immediately), for this message only",
   "settings.shortcuts.unset": "Not set",
-  "settings.shortcuts.clear": "Clear shortcut",
+  "settings.shortcuts.clear": "Clear the custom binding and restore the default",
   "settings.shortcuts.reset": "Reset shortcut",
   "settings.voice.group.regular": "General",
   "settings.voice.group.dictation": "Dictation",
@@ -1163,10 +1209,32 @@ const en = {
   /* Ticket 59 D3-4: the settings-modal port's hardcoded Chinese
      moved into the dictionary (en side). */
   "settings.nav.aria": "Settings sections",
-  "settings.account.info": "Account",
-  "settings.account.localLoggedOut": "Local mode, not signed in",
   "settings.account.signOutUnavailable": "The local edition has no account service",
   "settings.account.signOut": "Sign out",
+  /* SB-5: the account section reads `GET /api/account`. Every placeholder
+     below names the endpoint instead of asserting a fact about the user —
+     "no reading" and "no account" are different sentences. */
+  "settings.account.name": "Account name",
+  "settings.account.quota": "Quota overview",
+  "settings.account.status": "Account status",
+  "settings.account.status.ready": "Ready",
+  "settings.account.status.needs-login": "Sign-in required",
+  "settings.account.status.warning": "Needs attention",
+  "settings.account.status.unknown": "Unknown",
+  "settings.account.loading": "Reading the engine account service…",
+  "settings.account.readFailed": "Reading GET /api/account failed",
+  "settings.account.unavailable":
+    "The engine account service did not answer (GET /api/account)",
+  "settings.account.unavailableReason":
+    "The engine account service did not answer: {reason} (GET /api/account)",
+  "settings.account.nameMissing":
+    "The engine reported no account name (GET /api/account)",
+  "settings.account.quotaMissing": "the engine sent no figure",
+  "settings.account.remaining": "{pct}% remaining",
+  "settings.account.unlimited": "unmetered",
+  "settings.account.quotaState.available": "Quota available",
+  "settings.account.quotaState.notSubscribed": "No plan subscribed, no quota to read",
+  "settings.account.quotaState.unavailable": "The engine reported the quota as unavailable",
   "settings.archived.empty": "No archived tasks yet",
   "settings.worktree.empty": "Worktree management is not available in the local edition yet",
   "settings.mode.section": "Mode",
@@ -1211,10 +1279,35 @@ const en = {
   "settings.about.localUrl": "Local service URL",
   "settings.about.lanUrl": "LAN service URL",
   "usageModels.source.aria": "Choose the model source",
+  "usageModels.source.inUse": "In use",
+  "usageModels.source.switchFailed": "Could not switch the model source",
   "usageModels.minimax.notEnabled": "Not enabled",
+  "usageModels.minimax.configured": "Key stored",
+  // P20 (UAT4-2): the badge's own honest state for a key the user has typed
+  // but not saved. Without it the row said 「Key stored」 beside a field being
+  // actively replaced, or 「Not enabled」 while a key was plainly typed.
+  "usageModels.minimax.pendingSave": "Typed — not saved yet",
+  // P20 (UAT4-2): the connectivity probe reads the STORED key only — the
+  // engine's testUserModel has no unsaved-key channel — so the button is
+  // disabled until a save lands. The reason used to live in a `title`, which
+  // keyboard and touch users never see; this is the visible equivalent, shown
+  // exactly while the gate is closed.
+  "usageModels.minimax.probeGate":
+    "The connectivity probe uses the stored key only — the engine has no channel for an unsaved key. Save first.",
   "usageModels.minimax.apiKeyPlaceholder": "Enter API key",
+  "usageModels.minimax.storedPlaceholder": "A key is stored — type to replace it",
   "usageModels.minimax.testAria": "Test connectivity",
-  "usageModels.minimax.unavailable": "The local edition has no MiniMax API key service",
+  "usageModels.minimax.unavailable": "The server did not report the API key status",
+  "usageModels.minimax.noKeyToTest": "No API key stored yet",
+  "usageModels.minimax.saveFirst": "Save the key before testing — the probe reads the stored key",
+  "usageModels.minimax.keyRequired": "Enter an API key first",
+  "usageModels.minimax.saved": "Saved and in use",
+  "usageModels.minimax.testOk": "Connection OK",
+  "usageModels.minimax.testFailed": "Connection test failed",
+  "usageModels.minimax.saving": "Saving…",
+  "usageModels.minimax.testing": "Testing…",
+  "usageModels.minimax.switching": "Switching…",
+  "usageModels.minimax.loading": "Reading the model source…",
   "usageModels.minimax.saveAndUse": "Save and use",
   "usage.banner.fiveHourLow": "5-hour quota is running low",
   "usage.banner.weeklyLow": "Weekly quota is running low",
@@ -1254,6 +1347,9 @@ const zh: Record<MessageKey, string> = {
 
   "composer.send": "发送",
   "composer.hint": "Enter 发送，Shift+Enter 换行",
+  /* SB-4 —— 回合运行中发送按钮的后缀：说明这次发送是「跟进消息」，
+     不写明排队还是立即发送 —— 那是设置项的两个选项，标题只说机制。 */
+  "composer.followUp": "作为跟进消息发送",
   "composer.sending": "正在发送…",
   /* 输入框旁的上下文窗口指示器。面板只显示引擎真实上报的数据；桌面端还有按类别
      的占用明细, 本服务端没有该数据 (见 components/context-meter.tsx)。 */
@@ -1344,6 +1440,13 @@ const zh: Record<MessageKey, string> = {
     "未送达：服务器没有记录这条消息。原文已放回输入框。",
   "error.unconfirmed.unreachable":
     "状态未知：服务器既没有确认，也无法查询，它可能已经在执行。发送前请先查看会话历史确认。原文已放回输入框。",
+  /* SB-4 —— 回合进行中发送跟进消息时 `POST /api/follow-up` 的两种拒绝。两者
+     都是「未送达」，与 error.busy 同族，但原因不同，用户该做的下一步也不同：
+     前者等回合结束，后者去改「跟进消息行为」设置。 */
+  "error.followUp.noActiveTurn":
+    "未排队：引擎侧已经查不到本会话正在运行的回合。原文已放回输入框 —— 可以直接重新发送。",
+  "error.followUp.notOwned":
+    "未送达：正在运行的回合属于另一个引擎进程，它没有接收这条消息的队列。原文已放回输入框 —— 等回合结束后再发送。",
   "error.session": "会话列表加载失败",
   "toolbar.workspace": "工作区",
   "toolbar.browser": "网页",
@@ -1377,16 +1480,20 @@ const zh: Record<MessageKey, string> = {
   "userMenu.localUser": "本地用户",
 
   /* 项目右键菜单（工单 55c，ref-26）。重命名 / 置顶由浏览器本地项目自定义
-     （webapp/lib/project-custom.ts）支撑；在文件夹中显示渲染为禁用并标注
-     `common.notLocal`；移除在确认弹窗后批量删除项目下的会话。
+     （webapp/lib/project-custom.ts）支撑；移除在确认弹窗后批量删除项目下的会话。
      PB-1 纠正了归档对话一项的禁用理由：原先用 `common.notLocal`，声称本地版
      缺少一项它本就具备的能力（会话级「归档」已接通 `archiveSession`）。
      真正缺的是**项目级批量归档**，故此项改用自己的提示文案 —— 见
-     server/engine/session-context-actions.js KNOWN DEBT 2。 */
+     server/engine/session-context-actions.js KNOWN DEBT 2。
+     SB-6 以同样的方式纠正在文件夹中显示：该项在 `POST /api/fs/reveal`
+     已实现并注册的前提下仍禁用并标注 `common.notLocal`。现已接通；唯一
+     诚实的禁用理由是「项目未关联本地目录」，此键说的正是这件事。 */
   "projectMenu.rename": "重命名项目",
   "projectMenu.pin": "置顶项目",
   "projectMenu.unpin": "取消置顶",
   "projectMenu.revealInFolder": "在文件夹中显示",
+  "projectMenu.revealUnavailableNoPath":
+    "该项目未关联本地文件夹，文件管理器里没有可打开的位置。",
   "projectMenu.archive": "归档对话",
   "projectMenu.archiveUnavailable":
     "暂无项目级批量归档：引擎一次只归档一个会话，而归档整个项目是本版尚未定义的批量操作。",
@@ -1469,6 +1576,16 @@ const zh: Record<MessageKey, string> = {
   "usage.tab.inUse": "使用中",
   "usage.tab.customModels": "自定义模型",
   "usage.notLocal": "本地版不适用",
+  /* SB-7 —— A1 修订。套餐名接真数据（读 /api/account 的 tokenPlan.tier），
+     所以余下套餐数值的诚实文案不再是「本地版没有数据源」，而是更准确的
+     理由：积分 / 到期 / 发票属云端账户域，自托管的浏览器会话拿不到账户
+     凭据。`usage.plan.noPlan` 是另一种诚实状态——引擎应答了但没有套餐，
+     那不是错误。P20 补第三种诚实状态 `usage.plan.loading`：读取在途、
+     尚不知名。账户面没应答不等于用户没订阅，UAT4-1 的缺陷正是把这两种
+     状态混成一句「未订阅套餐」。 */
+  "usage.plan.noPlan": "未订阅套餐",
+  "usage.plan.loading": "正在读取当前套餐…",
+  "usage.cloudAccount": "云端账户域，本网页端无账户凭据",
   "usage.plan.title": "当前套餐",
   "usage.plan.upgrade": "升级",
   "usage.plan.manage": "管理",
@@ -1735,7 +1852,8 @@ const zh: Record<MessageKey, string> = {
   "settings.session.contextWindowUsage": "显示上下文窗口使用情况",
   "settings.followUp.title": "跟进消息行为",
   "settings.followUp.hint":
-    "任务运行中按 Enter 发送跟进消息时：排队等待，或立即发送到当前任务。",
+    "任务运行中按 Enter 发送跟进消息时：排队等待、立即发送到当前任务，或保持现状（等本回合结束后再发送）。",
+  "settings.followUp.off": "关闭",
   "settings.followUp.queue": "排队",
   "settings.followUp.steer": "立即发送",
   "home.suggestions": "推荐",
@@ -2125,7 +2243,18 @@ const zh: Record<MessageKey, string> = {
   "common.cancel": "取消",
   "common.close": "关闭",
   "settings.shortcuts.notice":
-    "浏览器环境不适用：WebUI 无法注册全局快捷键。以下键位为桌面版默认值，仅供参考。",
+    "标「已生效」的快捷键在当前页面真实可用，点击输入框即可改键；标「部分系统生效」的键位在部分系统被浏览器占用。「不可用」行给出具体原因：浏览器保留的组合（如 Ctrl+T、Ctrl+W、Ctrl+O、查找键）网页无法拦截，只作对照显示。",
+  "settings.shortcuts.status.live": "已生效",
+  "settings.shortcuts.status.partial": "部分系统生效",
+  "settings.shortcuts.status.customized": "已生效 · 自定义",
+  "settings.shortcuts.partialNote":
+    "浏览器在 Windows / Linux 上用该组合打开新窗口，网页无法拦截，因此仅 macOS 上生效；如需全平台可用请改绑其它行",
+  "settings.shortcuts.reason.browserReserved": "浏览器保留该组合，网页无法拦截",
+  "settings.shortcuts.reason.noSurface": "WebUI 没有对应功能面",
+  "settings.shortcuts.reason.noDictation": "WebUI 没有语音识别，不提供听写",
+  "settings.shortcuts.reason.pending": "操作语义尚未确定，暂不启用",
+  "settings.shortcuts.record": "点击后按下新的组合键",
+  "settings.shortcuts.conflict": "与以下操作重复：",
   "settings.shortcuts.group.miniChat": "Mini Chat",
   "settings.shortcuts.group.common": "常用",
   "settings.shortcuts.item.miniChat": "显示或隐藏 Mini Chat",
@@ -2153,7 +2282,7 @@ const zh: Record<MessageKey, string> = {
   "settings.shortcuts.item.invertFollowUpHint":
     "以与「跟进消息行为」相反的方式发送当前输入的消息（排队或立即发送），仅本次生效",
   "settings.shortcuts.unset": "未设置",
-  "settings.shortcuts.clear": "清除快捷键",
+  "settings.shortcuts.clear": "清除自定义绑定，恢复默认快捷键",
   "settings.shortcuts.reset": "重置快捷键",
   "settings.voice.group.regular": "常规",
   "settings.voice.group.dictation": "听写",
@@ -2190,10 +2319,28 @@ const zh: Record<MessageKey, string> = {
   "settings.codeReview.guidelinesPlaceholder": "输入需要长期应用的代码审查规则",
   /* 工单 59 D3-4：设置壳的硬编码中文收进字典（zh 侧原文照搬）。 */
   "settings.nav.aria": "设置分类",
-  "settings.account.info": "账户信息",
-  "settings.account.localLoggedOut": "本地模式，未登录",
   "settings.account.signOutUnavailable": "本地版未接入账户服务",
   "settings.account.signOut": "退出登录",
+  /* SB-5：账户分区读 `GET /api/account`。以下占位文案一律点名端点，不替用户
+     下判断——「没读到」与「没有账户」是两句话。 */
+  "settings.account.name": "账户名",
+  "settings.account.quota": "配额概况",
+  "settings.account.status": "账户状态",
+  "settings.account.status.ready": "就绪",
+  "settings.account.status.needs-login": "需要登录",
+  "settings.account.status.warning": "需要处理",
+  "settings.account.status.unknown": "未知",
+  "settings.account.loading": "正在读取引擎账户服务…",
+  "settings.account.readFailed": "读取 GET /api/account 失败",
+  "settings.account.unavailable": "引擎账户服务未应答（GET /api/account）",
+  "settings.account.unavailableReason": "引擎账户服务未应答：{reason}（GET /api/account）",
+  "settings.account.nameMissing": "引擎未返回账户名（GET /api/account）",
+  "settings.account.quotaMissing": "引擎未返回读数",
+  "settings.account.remaining": "剩余 {pct}%",
+  "settings.account.unlimited": "不限量",
+  "settings.account.quotaState.available": "配额可用",
+  "settings.account.quotaState.notSubscribed": "未订阅套餐，无配额读数",
+  "settings.account.quotaState.unavailable": "引擎报告配额不可用",
   "settings.archived.empty": "暂无已归档任务",
   "settings.worktree.empty": "本地版暂不支持工作树管理",
   "settings.mode.section": "模式",
@@ -2235,10 +2382,32 @@ const zh: Record<MessageKey, string> = {
   "settings.about.localUrl": "本地服务地址",
   "settings.about.lanUrl": "局域网服务地址",
   "usageModels.source.aria": "选择模型来源",
+  "usageModels.source.inUse": "使用中",
+  "usageModels.source.switchFailed": "切换模型来源失败",
   "usageModels.minimax.notEnabled": "未启用",
+  "usageModels.minimax.configured": "已保存密钥",
+  // P20（UAT4-2）：用户已填入但未保存时徽标自己的诚实状态。缺了它，这一行
+  // 会在用户正改写的输入框旁说「已保存密钥」，或在明摆着填了 Key 时说「未启用」。
+  "usageModels.minimax.pendingSave": "已输入，未保存",
+  // P20（UAT4-2）：连通检测只使用已保存的密钥——引擎 testUserModel 没有临时
+  // 密钥通道——所以保存前按钮禁用。理由原本只写在 title 里，键盘与触屏用户
+  // 看不到；这是可见的等价文案，且只在门控开启期间出现。
+  "usageModels.minimax.probeGate":
+    "连通检测只使用已保存的 API Key（引擎无临时密钥检测通道），请先保存。",
   "usageModels.minimax.apiKeyPlaceholder": "请输入API Key",
+  "usageModels.minimax.storedPlaceholder": "已保存密钥——输入新值即可替换",
   "usageModels.minimax.testAria": "测试连通性",
-  "usageModels.minimax.unavailable": "本地版未接入 MiniMax API Key 服务",
+  "usageModels.minimax.unavailable": "服务未提供 API Key 状态",
+  "usageModels.minimax.noKeyToTest": "尚未保存 API Key",
+  "usageModels.minimax.saveFirst": "检测读取的是已保存的密钥，请先保存",
+  "usageModels.minimax.keyRequired": "请先填写 API Key",
+  "usageModels.minimax.saved": "已保存并使用",
+  "usageModels.minimax.testOk": "连通正常",
+  "usageModels.minimax.testFailed": "连通检测失败",
+  "usageModels.minimax.saving": "保存中…",
+  "usageModels.minimax.testing": "检测中…",
+  "usageModels.minimax.switching": "切换中…",
+  "usageModels.minimax.loading": "正在读取模型来源…",
   "usageModels.minimax.saveAndUse": "保存并使用",
   "usage.banner.fiveHourLow": "5 小时限额即将用尽",
   "usage.banner.weeklyLow": "周限额即将用尽",
