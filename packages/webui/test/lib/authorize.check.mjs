@@ -20,7 +20,7 @@
 import { test, describe, before, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
-import {rmSync} from "node:fs";
+import { rmSync, readFileSync } from "node:fs";
 
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -44,6 +44,11 @@ process.env.MCODE_WEBUI_EVENTS_PATH = join(_tmpAuditDir, "events.ndjson");
 // ----- state-bus mock state (read by the registered module mock) -----
 let _sseFrames = [];
 let _subscribers = new Map(); // cid -> Set<fakeRes>
+// The connection-registry probe `authorize()` consults before arming its
+// timeout. It defaults to "cannot tell" (true), which is how every bus
+// that does not model the registry reads — the gate then waits, exactly
+// as it always did. Tests that exercise the unreachable path replace it.
+let _listenerProbe = () => true;
 
 function _installStateBusMock(t) {
   t.mock.module(absPath("lib/state-bus.js"), {
@@ -68,6 +73,7 @@ function _installStateBusMock(t) {
       clearActiveChild: () => {},
       getCidsByMcodeSession: () => [],
       getSseClient: (cid) => _subscribers.get(cid) || null,
+      hasDecisionListener: (cid) => _listenerProbe(cid),
       setSseClient: (cid, res) => {
         if (!_subscribers.has(cid)) _subscribers.set(cid, new Set());
         _subscribers.get(cid).add(res);
@@ -142,6 +148,7 @@ before(async (t) => {
 beforeEach(() => {
   _sseFrames = [];
   _subscribers = new Map();
+  _listenerProbe = () => true;
   _resetForTests();
 });
 
@@ -397,6 +404,102 @@ describe("authorize — no test-mode auto-approve (static guard)", () => {
       "authorize.js must not accept an opts.testMode escape hatch");
     assert.ok(!src.includes("auto-test"),
       "the decidedBy:'auto-test' resolution is gone");
+  });
+});
+
+// ============================================================
+// The decision channel, not the timer
+//
+// The 5-minute budget is the answer to "a human saw the modal and did
+// not answer". It is not the answer to "no human was ever shown one":
+// with an empty connection registry the fail-closed result is already
+// determined, and the caller's HTTP request — for session.delete a
+// destructive one — used to sit on that promise for the full budget
+// with no status and no body. These cases pin the short-circuit and,
+// just as importantly, that it cannot approve anything.
+// ============================================================
+describe("authorize — 不可达的裁决通道（不等满预算就失败即关闭）", () => {
+  test("无在线客户端时立即失败即关闭，不进入 5 分钟预算", async () => {
+    _listenerProbe = () => false;
+    const startedAt = Date.now();
+    const r = await authorize("session.delete", { cid: "gone" }, {});
+    assert.equal(r.approved, false, "无人可裁决 ⇒ 绝不批准");
+    assert.equal(r.decidedBy, "timeout", "与超时同解，形状不变");
+    assert.ok(Date.now() - startedAt < 1000, "必须在毫秒级返回，而不是预算到期");
+    assert.equal(getPendingCount(), 0, "请求不进挂起表 —— 没有可被裁决的东西");
+    assert.equal(
+      _sseFrames.filter((f) => f.event === "needs_authorization").length,
+      0,
+      "不向虚空推送请求帧",
+    );
+  });
+
+  test("不可达时同样广播 authorization_decided，让标签页收敛模态框", async () => {
+    _listenerProbe = () => false;
+    await authorize("session.delete", { cid: "gone" }, {});
+    const decided = _sseFrames.find((f) => f.event === "authorization_decided");
+    assert.ok(decided, "与超时路径同一条收敛帧");
+    assert.equal(decided.approved, false);
+    assert.equal(decided.decidedBy, "timeout");
+  });
+
+  test("不可达时写 auth.unreachable 审计，而不是 auth.pending", async () => {
+    // The operator log has to distinguish "nobody was there" from
+    // "somebody looked at it and said no" — they are different
+    // operational problems and the same decidedBy value.
+    _listenerProbe = () => false;
+    await authorize("session.delete", { cid: "gone" }, {});
+    const events = readFileSync(
+      join(_tmpAuditDir, "events.ndjson"),
+      "utf8",
+    ).trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
+    const last = events[events.length - 1];
+    assert.equal(last.kind, "auth.unreachable");
+    assert.equal(last.target, "session.delete");
+    assert.equal(last.data.reason, "no_connected_client");
+    assert.equal(last.data.requestId.length > 0, true);
+    // The audit chain is fail-closed by design: a new kind has to hash
+    // and verify exactly like every other line, or the operator log
+    // stops being trustworthy at the moment it matters most.
+    const eventsMod = await import(absPath("lib/events.js"));
+    const v = eventsMod.verify({ path: join(_tmpAuditDir, "events.ndjson") });
+    assert.equal(v.ok, true, `chain must verify: ${JSON.stringify(v)}`);
+  });
+
+  test("有在线客户端时仍然挂起等人，绝不自动批准", async () => {
+    // The reverse half: a live listener must restore the full
+    // round-trip. A short-circuit that fired here would turn every
+    // destructive action into a silent no-op.
+    const p = authorize("session.delete", { cid: "tab-live" }, {});
+    assert.equal(getPendingCount(), 1, "挂起等人");
+    const [rid] = getPendingRequestIds();
+    assert.equal(
+      _sseFrames.filter((f) => f.event === "needs_authorization").length,
+      1,
+      "模态框照常推送",
+    );
+    const res = fakeRes();
+    await handleAuthDecision(fakeReq({ requestId: rid, approve: true }), res);
+    assert.equal(res._status, 200);
+    const result = await p;
+    assert.equal(result.approved, true);
+    assert.equal(result.decidedBy, "user");
+  });
+
+  test("裁决通道探针抛错时按“可能有人”处理 —— 保守等待而非误判", async () => {
+    // A bus that cannot answer the question is not evidence that
+    // nobody is listening. Defaulting to the short-circuit here would
+    // make a bus bug silently deny every destructive action.
+    _listenerProbe = () => {
+      throw new Error("registry unavailable");
+    };
+    const p = authorize("session.delete", { cid: "tab-x" }, { timeoutMs: 20 });
+    assert.equal(getPendingCount(), 1, "探针失效时保持原有等待语义");
+    const watchdog = setTimeout(() => {}, 5000);
+    const r = await p;
+    clearTimeout(watchdog);
+    assert.equal(r.approved, false);
+    assert.equal(r.decidedBy, "timeout");
   });
 });
 

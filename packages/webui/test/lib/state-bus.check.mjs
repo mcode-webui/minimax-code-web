@@ -19,6 +19,7 @@ import {
 let pushStateFor, mcodeSessionsSnapshotFields;
 let clients, sseByCid, makeClientState;
 let acpFetchCalls, cachedByWs;
+let hasDecisionListener;
 
 before(async (t) => {
   await setupMocks(t);
@@ -28,6 +29,7 @@ before(async (t) => {
   clients = mod.clients;
   sseByCid = mod.sseByCid;
   makeClientState = mod.makeClientState;
+  hasDecisionListener = mod.hasDecisionListener;
 });
 
 // Mock acp-client to track fetch calls and serve cache from in-memory map
@@ -380,5 +382,49 @@ describe("v1.0 push fields — mcodeSessions 永不缺失、永不空占位", ()
     assert.ok(Array.isArray(payload.mcodeSessions));
     assert.equal(payload.mcodeSessions.length, 1);
     assert.equal(payload.mcodeSessionsPending, true);
+  });
+});
+
+// ===========================================================================
+// hasDecisionListener — "could this authorization request be decided?"
+//
+// The gate pushes a `needs_authorization` frame into the target's SSE
+// response. Whether a request is DECIDABLE is a property of that
+// connection registry, not of the timer: authorize() asks this before it
+// arms the 5-minute budget, so a request nobody can answer fails closed
+// at once instead of holding a destructive HTTP request open until the
+// budget expires.
+// ===========================================================================
+describe("hasDecisionListener — 可否被裁决（决定请求是否挂起的那个事实）", () => {
+  test("无连接时返回 false — 空通道没有可交付的裁决人", () => {
+    assert.equal(hasDecisionListener("cid-x"), false);
+  });
+
+  test("目标 cid 有活连接时返回 true", () => {
+    sseByCid.set("cid-x", fakeSse());
+    assert.equal(hasDecisionListener("cid-x"), true);
+  });
+
+  test("别的 cid 连着不算 — 单播请求不会被送进不相干的标签页", () => {
+    sseByCid.set("cid-other", fakeSse());
+    assert.equal(hasDecisionListener("cid-x"), false);
+  });
+
+  test("响应已结束（writableEnded）不算活 — 帧会静默丢弃", () => {
+    const dead = { ...fakeSse(), writableEnded: true };
+    sseByCid.set("cid-x", dead);
+    assert.equal(hasDecisionListener("cid-x"), false);
+  });
+
+  test("socket 已销毁不算活 — 标签页崩了/断网了", () => {
+    const dead = { ...fakeSse(), destroyed: true };
+    sseByCid.set("cid-x", dead);
+    assert.equal(hasDecisionListener("cid-x"), false);
+  });
+
+  test("空 cid 是广播（startup.cleanup 形态）— 任一标签页在线即可裁决", () => {
+    assert.equal(hasDecisionListener(""), false);
+    sseByCid.set("cid-anyone", fakeSse());
+    assert.equal(hasDecisionListener(""), true);
   });
 });

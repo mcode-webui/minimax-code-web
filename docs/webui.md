@@ -2445,6 +2445,28 @@ authorize round-trip (5-minute default timeout, fail-closed):
 The whitelist is the only source of truth — anything not on this list
 cannot be gated via the modal flow.
 
+**The 5-minute budget answers "a human saw the modal and did not answer".
+It does not answer "no human was ever shown one".** The gate is a push:
+`pushAuthRequest` writes a `needs_authorization` frame into the requesting
+tab's SSE response, and the decision comes back on `POST
+/api/auth/decision`. When the request's client has no live connection
+(`state-bus.js#hasDecisionListener` — no response registered for that cid,
+or the registered one can no longer be written to), nobody can decide, so
+the fail-closed result is already determined. The request is answered at
+once with the ordinary decline body — `403 {ok:false, error:"authorize
+declined", decidedBy:"timeout", decidedAt}` — and audited as
+`auth.unreachable` with `reason:"no_connected_client"`, so an operator can
+tell "nobody was there" from "somebody said no". Before this the same call
+held the socket open for the full five minutes with no status and no body,
+which is indistinguishable from a hang; in practice that is what
+`curl -X DELETE /api/sessions/<id>` from a script saw, because a request
+without `?cid=` has no client to ask.
+
+A bus that cannot answer the question (a test double that does not model
+the connection registry) is treated as "might have a listener" and keeps
+the old wait. The short-circuit can only ever deny — no path approves
+anything without a recorded decision.
+
 ## Blocking prompts: what each one can actually answer
 
 `components/modals.tsx` renders three blocking prompts. Two of them carry a

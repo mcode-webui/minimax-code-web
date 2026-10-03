@@ -1235,6 +1235,45 @@ export function getSseClient(cid) {
   return sseByCid.get(cid) || null;
 }
 
+/**
+ * Is there a live connection that could be asked to decide a pending
+ * authorization request raised on behalf of `cid`?
+ *
+ * The gate is a PUSH: `pushAuthRequest` writes one `needs_authorization`
+ * frame into the target's SSE response, and the answer arrives on a
+ * different connection through `POST /api/auth/decision`. When nothing is
+ * listening, there is nobody who can ever answer, so the only outcome the
+ * request can reach is the fail-closed timeout — up to five minutes away,
+ * with the caller's HTTP request (a destructive one) held open and
+ * nothing written. `lib/authorize.js` calls this to reach that same
+ * fail-closed answer immediately instead of after the whole budget. The
+ * ANSWER is unchanged; only the wait is removed, which is the difference
+ * between a request that ends and one that appears to hang.
+ *
+ * A registered response only counts when its socket can still be written.
+ * A tab that reloaded, navigated or lost its connection leaves its
+ * `ServerResponse` in the map until the close handler runs, and a write to
+ * it is a silent no-op — the frame is dropped on the floor, so the request
+ * is unanswerable even though the map is non-empty. That is the case a
+ * size check alone would miss, and the case a user experiences as "the
+ * delete button stopped responding".
+ *
+ * An empty `cid` is the broadcast case — `startup.cleanup` deliberately
+ * asks every connected tab — and is answerable whenever ANY tab is
+ * connected.
+ *
+ * @param {string} cid Requesting client id; empty means broadcast.
+ * @returns {boolean} True when at least one live response can be written to.
+ */
+export function hasDecisionListener(cid) {
+  for (const [key, res] of sseByCid) {
+    if (cid && key !== cid) continue;
+    if (!res || res.writableEnded === true || res.destroyed === true) continue;
+    return true;
+  }
+  return false;
+}
+
 export function setSseClient(cid, res) {
   sseByCid.set(cid, res);
   // When an SSE client (re)connects, the previous diff cache +
