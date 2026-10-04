@@ -395,7 +395,7 @@ ACP 握手是双向的，两个方向都由同一份 `initialize` 载荷决定�
 
 还有一条给运维的规则：如果操作者在供应商配置里手工写了与内置模型同名的条目，以操作者的条目为准，档位也只显示操作者写明的那些——内置的自动识别不再叠加。
 
-这两处「例外」（供应商分组 + 思考等级的多处显示）背后是 `packages/webui/webapp/lib/model-groups.ts` 里导出的纯函数——`groupModelsByProvider`（按供应商归并，无 provider 的条目落到同一个「其他」桶）、`providerIdOfModel`、`isGroupDisabled`、`thinkingLevelsForModel`（判定某模型有没有可调档位）、`thinkingLevelKey`、`chipLevelSuffix`（等级后缀的陈旧残留守卫）、`modalityBadgeKey`、`providerLabel`——`components/composer.tsx` 直接 import 这个模块，不再在组件内联重推一遍规则，`webapp/test/composer-models.test.ts` 测的就是这些产品函数本身。此前该测试文件把分组逻辑抄了一份在自己的文件里，导致分组改坏测试照样全绿，红线⑤形同虚设；此次只是把同一段代码连同具名入参搬到 lib，**用户可见行为零变化**。调用点仍由 `webapp/test/composer-thinking-tripwire.test.ts` 钉住，「导出了但组件不再调用」这种半吊子提取也会失败。
+这两处「例外」（供应商分组 + 思考等级的多处显示）背后是 `packages/webui/webapp/lib/model-groups.ts` 里导出的纯函数——`groupModelsByProvider`（按供应商归并，无 provider 的条目落到同一个「其他」桶）、`providerIdOfModel`、`isGroupDisabled`、`isBuiltinMiniMaxModel`、`orderModelGroups`（收藏分组置顶）、`filterModelGroups` + `fuzzyMatches`（搜索模糊匹配）、`thinkingLevelsForModel`（判定某模型有没有可调档位）、`thinkingLevelKey`、`chipLevelSuffix`（等级后缀的陈旧残留守卫）、`modalityBadgeKey`、`providerLabel`——`components/composer.tsx` 直接 import 这个模块，不再在组件内联重推一遍规则，`webapp/test/composer-models.test.ts` 测的就是这些产品函数本身。此前该测试文件把分组逻辑抄了一份在自己的文件里，导致分组改坏测试照样全绿，红线⑤形同虚设；此次只是把同一段代码连同具名入参搬到 lib，**用户可见行为零变化**。调用点仍由 `webapp/test/composer-thinking-tripwire.test.ts` 钉住，「导出了但组件不再调用」这种半吊子提取也会失败。后来新增的三个导出（`orderModelGroups`、`filterModelGroups`、`fuzzyMatches`）随收藏与搜索一起来，不属于那两处例外，由 `webapp/test/model-favorites-search.test.ts` 按同一条原则驱动；星号的存储在旁边的 `model-favorites.ts`，其中 `toggleFavoriteId` 刻意做成纯函数，就是为了星号返回的数组**顺序**可测。
 
 接口契约（字段、两条下发通道、下发顺序——**先模型后档位**，顺序反了档位会被引擎拒掉、表现为"改了没生效"——与会话启动时的重放规则）见 [`webui.md`](webui.md) 的 Thinking levels 一节。
 
@@ -568,6 +568,42 @@ ACP 握手是双向的，两个方向都由同一份 `initialize` 载荷决定�
 飞出面板描述的不是当前模型时，进入**预览态**：窗口与等级选项照常展示（先看清这个模型能调什么），但控件禁用——替一个还没选中的模型提交档位没有契约意义；要调整，先把模型选中。设置面板还有两条空态文案：没有可描述对象时（没有打开的飞出面板）显示「选择一个模型查看设置」；目标模型既无窗口档位也无思考等级时，**先显示模型名、再显示「这个模型没有可调设置。」**——详情区是 `aria-live="polite"` 播报区，光播报一句文案会让屏幕阅读器用户不知道说的是哪个模型。哪里能点什么：**上下文窗口档位在飞出面板里点**，等级在同一块面板和输入框旁都能点。
 
 菜单打开期间，前端还维护一份**草稿镜像**：每次提交先写进本地镜像再等服务器确认，所以点完的瞬间高亮就移动，服务端往返或目录刷新（`/api/models` 重拉）期间也不会闪回旧值；关闭菜单即清空镜像，重新打开时从服务端持久化的状态读起。会话键变化时这份镜像和飞出面板一并重置（见下）。
+
+### 收藏与搜索（roadmap H「模型偏好排序」「模型搜索」）
+
+列表现在回答两件事，各自一条独立规则，**顺序固定**：先按供应商归并成组，再用查询框过滤，最后把带星标的模型提到最前。
+
+| 关注点 | 现在的做法 | 被否掉的替代方案 |
+| --- | --- | --- |
+| 星标模型放哪 | 独立的「收藏」分组置顶，模型从原供应商分组里**移走**（只出现一次），被清空的分组不渲染 | 留在各自供应商分组里只在本组内提前。改动小，但两个星标模型之间会夹着同分组的非星标模型，「优先 MiniMax」就只在组与组之间成立 |
+| 收藏段内部顺序 | 内置 MiniMax 在前（`minimax_api` 前缀），其余按显示名排序，id 兜底破平 | 纯字母序。MiniMax 是订阅本身计量的那一家，星标列表最可能要够到的就是它 |
+| 搜索框位置 | 弹层内、列表**上方** | 触发按钮旁。查询收窄的是这个列表，它就该属于列表；放在被过滤对象之外，等于要一直开着才用得上 |
+| 匹配方式 | 子序列模糊匹配，忽略大小写与非字母数字字符；单字符查询即包含匹配 | 子串匹配。`mm3`、`glm53` 都不是任何真实 id 的子串，而用户就是这么打的 |
+| 星标的可存性 | 版本化 localStorage 键 `webui:model-favorites:v1` | 服务端字段。星号是「这台浏览器怎么读这个列表」的偏好，不是关于账号的事实，不该上线 |
+
+**星号是行的兄弟节点，不是它的子节点。** 塞进行按钮内部会让「收藏它」和「选中它」变成同一次点击——一个想先把模型存下来以后用的用户，反而被切了过去。所以星号是固定槽位里的独立按钮，点击 `stopPropagation`，不触发行的选择。
+
+**星号不进 Tab 序列。** 列表每个模型只占一个 Tab 位，一行一个星号会把列表用键盘走废。所以星号是 `tabIndex={-1}`，键盘由列表的 `f` 键接管：焦点在哪一行就收藏哪一行，跟着方向键走，不需要第二个光标。
+
+**星号两种状态，同一条路径。** `STROKE_ICONS` 按**名字**决定填充还是描边，这对「一份从上游抄来的图标包」是对的（一个图形一种画法），但表达不了一件事：同一个图形因为两种状态有意义而必须能画成两种样子。`Icon` 因此多了一个 `outlined` 逃生口，而不是再画一份 `starOutline` 路径让它们各自漂移。
+
+**收藏段跨供应商，所以没有 key 的判定只能逐行给。** 供应商分组用 `auth.hasKey === false` 整组置灰，分组头写着原因；收藏段从不同 `auth` 的分组里各取一些模型，一个 `auth` 描述不了它，于是那些行走 `disabledModelIds` 单独置灰。
+
+**「哪个 id 是内置 MiniMax」只有一处定义。** `isBuiltinMiniMaxModel`（`webapp/lib/model-groups.ts`）按 wire id 的 provider 前缀判定，无法识别的形态一律 false——没有分隔符、只有尾部分隔符、空 id、引擎自己的 `__engine/m:minimax_api:…` 编码形，都不算。上下文面板的套餐门控（`showPlanSection`）现在委托给它。两个界面必须对「这是不是内置 MiniMax 目录」达成一致，各写一份就会各自漂移。
+
+**一个字符的查询没有特例，因为没有特例可写。** 对单个字符来说「按顺序出现」和「出现过」是同一个谓词。曾经的实现里有一句「单字符必须连续匹配」的分支，它是彻底的 no-op，而为它写的测试之所以通过，是因为那个 fixture 里压根没有那个字符。现在这条性质如实写进测试：单字符即包含匹配，和产品别处一样。
+
+**过滤在前、排序在后，不许换。** 星标是长期偏好，查询是当下的意图：星标不该把一个没匹配上的模型夹进搜索结果中间，查询也不该打乱用户收藏进去的那个分组。`filterModelGroups` 保持目录原有顺序，所以交给 `orderModelGroups` 的东西仍在引擎自己的次序里，两条规则不会互相打架。
+
+**查无结果时说话，不渲染一个空面板。** 搜索没匹配上任何模型时面板显示「没有匹配的模型」；一个静默空掉的菜单读起来像坏了，而不是像「没这个模型」。
+
+**查询随面板一起消失。** 面板关闭时清空——带着半句查询重开，读起来像菜单坏了，而不是像「你刚才在搜」。
+
+**键盘与既有链路一致。** 搜索框里按 `↓` 把焦点交给列表第一行，之后方向键引擎接手；`Escape` / `Enter` 在输入框里照常工作，只有方向键被吞掉。`Home`/`End`、`Escape` 先退飞出面板后关菜单那套语义不变。
+
+**服务端契约零改动。** 星号不产生任何请求，查询也只活在组件内。`POST /api/set-model` 的请求体一个字段没动。
+
+**怎么验证它真的生效。** 算术部分按行为测：`webapp/test/model-favorites-search.test.ts` 直接驱动 `webapp/lib/model-groups.ts` 的 `orderModelGroups` / `filterModelGroups` / `fuzzyMatches` / `isBuiltinMiniMaxModel` 和 `webapp/lib/model-favorites.ts` 的 `toggleFavoriteId` / `readFavoriteModels` / `writeFavoriteModels`——产品函数，不是拷贝。接线部分以源码 tripwire 钉住（W1–W9），理由与限制和 `model-picker-layout.test.ts` 相同：`ModelSelect` 挡在 store/api 图后面进不了测试进程。二十三个变异体逐条改坏产品代码，全部在**各自那条断言**上转红；其中三个变异体第一次跑没转红，查下来是变异体自己造错了（一个打在不存在的分支上、一个 fixture 里恰好没有那个字符、一个只插了一段隐藏代码并没有真的挪位置），守卫本身没问题。
 
 ### 模型选择器的关闭语义（实测）
 

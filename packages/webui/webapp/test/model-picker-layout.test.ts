@@ -468,9 +468,29 @@ describe("C9/C10 — the list itself", () => {
     assert.match(composer, /model-select-group-nokey-/);
   });
 
-  test("there is no search box", () => {
-    assert.doesNotMatch(composer, /model-select-search/);
-    assert.doesNotMatch(composer, /const \[query, setQuery\]/);
+  test("the search box, which C9 used to forbid", () => {
+    // WITHDRAWN 2026-10-04, and the reason matters more than the guard.
+    //
+    // This used to read `assert.doesNotMatch(composer, /model-select-search/)`.
+    // It was written after `e301933` shipped a search box and `026b845`
+    // took it out again: the argument was that a filter is "a second
+    // navigation model for the same list", so the reference's one-level
+    // list and a box over it were two ways to reach one list.
+    //
+    // That argument is a preference about SHAPE, and it was answered by a
+    // screenshot rather than by a requirement. The requirement has now been
+    // stated: roadmap module H ships 「模型搜索」, the box is wanted back, and
+    // the fuzzy matcher it needs is a superset of the substring one that
+    // came before. The withdrawal is recorded here so the next reader
+    // learns that the box was a judgement call that got reversed, not a
+    // shape rule nobody has thought about since.
+    //
+    // What the guard becomes is the half that was always right regardless of
+    // whether the box exists: the list must not read the raw grouping, or
+    // the filter and the ordering are wired to nothing.
+    assert.match(composer, /data-testid="model-select-search"/);
+    assert.match(composer, /const \[query, setQuery\]/);
+    assert.match(composer, /orderModelGroups\(\s*filterModelGroups\(grouped, query\)/);
   });
 });
 

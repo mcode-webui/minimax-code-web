@@ -56,6 +56,7 @@ export type IconName =
   | "remote"
   | "reply"
   | "search"
+  | "star"
   | "send"
   | "share"
   | "like"
@@ -263,6 +264,20 @@ const ICONS: Record<string, IconSpec> = {
     body: (
       <>
         <path d="M9.18225 2.5289C12.8272 2.5291 15.7819 5.48355 15.7819 9.12851C15.7819 10.799 15.1586 12.3224 14.1354 13.485L17.277 16.6266C17.5112 16.8609 17.5113 17.2399 17.277 17.4742C17.0427 17.7081 16.6635 17.7083 16.4293 17.4742L13.2653 14.3102C12.1417 15.1967 10.7247 15.728 9.18225 15.7281C5.53717 15.7281 2.58264 12.7736 2.58264 9.12851C2.58264 5.48343 5.53717 2.5289 9.18225 2.5289ZM9.18225 3.72812C6.19991 3.72812 3.78186 6.14617 3.78186 9.12851C3.78186 12.1108 6.19991 14.5289 9.18225 14.5289C12.1644 14.5287 14.5826 12.1107 14.5826 9.12851C14.5826 6.14629 12.1644 3.72832 9.18225 3.72812Z" />
+      </>
+    ),
+  },
+  star: {
+    viewBox: "0 0 20 20",
+    size: 16,
+    body: (
+      <>
+        {/* Five-point star, outer radius 8 and inner 3.4 about (10,10),
+            one point up. An in-house drawing on the same footing as
+            `sparkles` above: the star is the picker's own vocabulary
+            (roadmap H 「模型偏好排序」) and the upstream pack carries no
+            favourite glyph to copy. */}
+        <path d="M10 2 L11.998 7.249 L17.608 7.528 L13.233 11.051 L14.702 16.472 L10 13.4 L5.298 16.472 L6.767 11.051 L2.392 7.528 L8.002 7.249 Z" />
       </>
     ),
   },
@@ -996,10 +1011,31 @@ const STROKE_ICONS = new Set<IconName>([
   "coffee",
 ]);
 
-export function Icon({ name, size, className }: { name: IconName; size?: number; className?: string }) {
+export function Icon({
+  name,
+  size,
+  className,
+  outlined,
+}: {
+  name: IconName;
+  size?: number;
+  className?: string;
+  /**
+   * Force the outline treatment on a glyph that is normally filled.
+   *
+   * `STROKE_ICONS` decides fill vs stroke per NAME, which is right for a
+   * pack copied from upstream — one glyph, one rendering. It cannot
+   * express the one case a name cannot: a glyph that has to render BOTH
+   * ways from the same path, because its two states mean something. The
+   * star is that case (roadmap H 「模型偏好排序」: outline = not starred,
+   * filled = starred), and it is why this escape hatch exists rather than
+   * a second near-duplicate `starOutline` path that would drift.
+   */
+  outlined?: boolean;
+}) {
   const spec = ICONS[name];
   if (!spec) return null;
-  const stroke = STROKE_ICONS.has(name);
+  const stroke = outlined ?? STROKE_ICONS.has(name);
   return (
     <svg
       width={size ?? spec.size}

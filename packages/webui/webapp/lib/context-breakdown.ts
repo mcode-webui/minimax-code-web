@@ -146,8 +146,13 @@ export function contextBreakdownRows(
  * `BUILTIN_PROVIDER` the server's catalogue uses (`server/engine/
  * model-reads.js`). It is the prefix of a wire model id
  * (`minimax_api/MiniMax-M3`).
+ *
+ * Re-exported from `lib/model-groups.ts`, which owns the predicate as well:
+ * "is this the built-in MiniMax catalogue" is one fact, and the selector's
+ * favourites ordering and this gate both have to agree on it.
  */
-export const MINIMAX_PROVIDER_ID = "minimax_api";
+export { MINIMAX_PROVIDER_ID } from "./model-groups";
+import { isBuiltinMiniMaxModel } from "./model-groups";
 
 /**
  * Whether the panel's 套餐 section belongs to the model in play.
@@ -165,17 +170,12 @@ export const MINIMAX_PROVIDER_ID = "minimax_api";
  * The failure directions are not symmetric, so the default is chosen: an
  * unrecognised shape (no `/`, an empty prefix, no model at all) HIDES the
  * section. Hiding it costs a missing block; showing MiniMax's plan next to
- * someone else's model is a factually wrong one.
+ * someone else's model is a factually wrong one. The rule itself, and why
+ * each unreadable shape is false, lives with the predicate in
+ * `lib/model-groups.ts#isBuiltinMiniMaxModel`.
  */
 export function showPlanSection(modelName: string | null | undefined): boolean {
-  const value = (modelName ?? "").trim();
-  if (!value) return false;
-  const slash = value.indexOf("/");
-  // Both halves have to be there. A missing separator means the id is not in
-  // `<provider>/<model>` form, and a trailing separator means it names no
-  // model at all — neither identifies anything the section could belong to.
-  if (slash <= 0 || slash === value.length - 1) return false;
-  return value.slice(0, slash) === MINIMAX_PROVIDER_ID;
+  return isBuiltinMiniMaxModel(modelName);
 }
 
 export interface QuotaPlanRow {  key: "fiveHour" | "weekly";

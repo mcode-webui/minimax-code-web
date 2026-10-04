@@ -25,15 +25,22 @@ import {
 } from "@/lib/effort-control";
 import {
   chipLevelSuffix,
+  filterModelGroups,
   groupModelsByProvider,
   isGroupDisabled,
   modalityBadgeKey,
+  orderModelGroups,
   providerIdOfModel,
   providerLabel,
   thinkingLevelKey,
   thinkingLevelLabel,
   thinkingLevelsForModel,
 } from "@/lib/model-groups";
+import {
+  readFavoriteModels,
+  toggleFavoriteId,
+  writeFavoriteModels,
+} from "@/lib/model-favorites";
 import {
   getComposerDraft,
   mergeRestoredDraft,
@@ -1460,6 +1467,33 @@ function ModelSelect({
 }) {
   const [open, setOpen] = useState(false);
 
+  /** Roadmap H 「模型搜索」— the search box's live text. Picker-local and
+   *  cleared on close, because a half-typed query that survives a reopen
+   *  makes the list look broken on a menu the user just wanted to look at. */
+  const [query, setQuery] = useState("");
+
+  /**
+   * Roadmap H 「模型偏好排序」— the starred model ids, most recent last.
+   *
+   * Read once on mount from the versioned local store rather than kept in
+   * a server snapshot: a star is a reading preference about this browser's
+   * list, not a fact about the account, so it has no business on the wire
+   * or in a per-session state snapshot.
+   */
+  const [favorites, setFavorites] = useState<string[]>([]);
+  useEffect(() => {
+    setFavorites(readFavoriteModels());
+  }, []);
+  const favoriteSet = useMemo(() => new Set(favorites), [favorites]);
+
+  const toggleFavorite = useCallback((modelId: string) => {
+    setFavorites((current) => {
+      const next = toggleFavoriteId(current, modelId);
+      writeFavoriteModels(next);
+      return next;
+    });
+  }, []);
+
   /**
    * The model whose settings fly-out is open.
    *
@@ -1559,6 +1593,31 @@ function ModelSelect({
   const grouped = useMemo(
     () => groupModelsByProvider(models, groups, t("modelSelector.other")),
     [models, groups, t],
+  );
+
+  /*
+   * Roadmap H 「模型搜索」+「模型偏好排序」— the two orderings the list
+   * answers to, in this order and only this order:
+   *
+   *   grouped          the catalogue, bucketed by provider
+   *   filter  (query)  narrow to what the user typed
+   *   order   (stars)  hoist the starred models into their own section
+   *
+   * Filtering FIRST is deliberate. Starring is a standing preference and the
+   * query is a momentary one; a star must not smuggle an unmatched model
+   * into the middle of a search result, and a search must not reshuffle the
+   * section the user starred things into. `filterModelGroups` preserves
+   * catalogue order, so what reaches `orderModelGroups` is still in the
+   * engine's own order and the two rules cannot fight.
+   */
+  const visibleGroups = useMemo(
+    () =>
+      orderModelGroups(
+        filterModelGroups(grouped, query),
+        favoriteSet,
+        t("modelSelector.favorites"),
+      ),
+    [grouped, query, favoriteSet, t],
   );
 
   // The provider id of the active model — `__other` for ungrouped
@@ -1735,6 +1794,27 @@ function ModelSelect({
         }
         return;
       }
+      /*
+       * `f` stars the focused row.
+       *
+       * The star is `tabIndex={-1}` so the list stays one tab stop per
+       * model, which means without this key the star would be a mouse-only
+       * control — and a preference the user cannot set without a mouse is
+       * not a preference, it is a display. `f` for favourite; the row is
+       * whatever `document.activeElement` already is, so the star follows
+       * the arrow engine with no second cursor to track.
+       */
+      if (event.key === "f" || event.key === "F") {
+        const row = document.activeElement as HTMLElement | null;
+        // `closest`, not the element itself: focus lands on the row BUTTON,
+        // and the id is on its wrapper — the same wrapper the fly-out
+        // anchors to and the star is nested in.
+        const id = row?.closest<HTMLElement>("[data-model-id]")?.getAttribute("data-model-id");
+        if (!row || !id) return;
+        event.preventDefault();
+        toggleFavorite(id);
+        return;
+      }
       const delta =
         event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : 0;
       const jump = event.key === "Home" ? "first" : event.key === "End" ? "last" : null;
@@ -1758,7 +1838,7 @@ function ModelSelect({
       const base = current >= 0 ? current : 0;
       rows[((base + delta) % rows.length + rows.length) % rows.length]?.focus();
     },
-    [flyoutFor, cancelFlyoutClose],
+    [flyoutFor, cancelFlyoutClose, toggleFavorite],
   );
 
   /**
@@ -1808,6 +1888,10 @@ function ModelSelect({
         if (!next) {
           setFlyoutFor(null);
           cancelFlyoutClose();
+          // The query is scoped to the list this panel shows, so it goes
+          // with the panel. Reopening onto a half-typed filter reads as a
+          // broken menu rather than as "you were searching".
+          setQuery("");
         }
       }}
       trigger={["click"]}
@@ -1837,6 +1921,47 @@ function ModelSelect({
                   a half-finished dialog in a surface the user then had to
                   find again. */}
               {/*
+                Roadmap H 「模型搜索」— the box that filters the list.
+
+                It sits INSIDE the popup, above the list, not beside the
+                trigger: the query narrows what the list shows, so it belongs
+                to the list, and a control that lives outside the thing it
+                filters is a control that still has to be open to be useful.
+
+                `onKeyDown` stops the arrow keys here. The list's own engine
+                lives on the scroll container below, so arrows would never
+                reach it from the input — but `Escape` and `Enter` have to
+                keep working, which is why only the arrows are swallowed.
+              */}
+              <div className="border-b border-border_default px-2 pb-1.5 pt-1.5">
+                <div className="flex items-center gap-1.5 rounded-[8px] bg-bg_interaction_tertiary px-2">
+                  <Icon name="search" size={14} className="text-icon_default_tertiary" />
+                  <input
+                    type="text"
+                    value={query}
+                    onChange={(event) => setQuery(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                        // Hand the keyboard to the list: focus its first row
+                        // so ↓ from the box does what ↓ in a list does.
+                        const first = listScrollRef.current?.querySelector<HTMLElement>(
+                          '[data-testid^="model-select-model-option-"]:not([disabled])',
+                        );
+                        if (first) {
+                          event.preventDefault();
+                          first.focus();
+                        }
+                      }
+                    }}
+                    data-testid="model-select-search"
+                    aria-label={t("modelSelector.searchPlaceholder")}
+                    placeholder={t("modelSelector.searchPlaceholder")}
+                    autoComplete="off"
+                    className="min-w-0 flex-1 bg-transparent py-1.5 text-sm text-text_default_primary outline-none placeholder:text-text_default_tertiary"
+                  />
+                </div>
+              </div>
+              {/*
                 The list, in the reference's own shape: a provider group
                 header, and under it one row per MODEL. Every name in the
                 catalogue is readable without a second click, and there is
@@ -1850,7 +1975,17 @@ function ModelSelect({
                 row under it: a provider without an API key cannot reach
                 any of its models, and greying them one by one is the
                 honest rendering of that. The header carries the reason.
+                The favourites section is the one section with no single
+                verdict, so it overrides per row instead.
               */}
+              {visibleGroups.length === 0 ? (
+                <div
+                  data-testid="model-select-search-empty"
+                  className="px-2 py-3 text-center text-sm text-text_default_tertiary"
+                >
+                  {t("modelSelector.searchEmpty")}
+                </div>
+              ) : (
               <div
                 ref={listScrollRef}
                 data-testid="model-select-list"
@@ -1858,13 +1993,13 @@ function ModelSelect({
                 onKeyDown={handleListKeyDown}
                 className="thin-scrollbar max-h-[60vh] w-60 overflow-y-auto"
               >
-                {grouped.map((group, groupIndex) => {
-                const disabled = isGroupDisabled(group);
+                {visibleGroups.map((group, groupIndex) => {
+                const groupDisabled = isGroupDisabled(group);
                 return (
                   <div
                     key={group.id}
                     data-testid={`model-select-group-${group.id}`}
-                    data-disabled={disabled ? "true" : "false"}
+                    data-disabled={groupDisabled ? "true" : "false"}
                     className={groupIndex === 0 ? "" : "mt-1 border-t border-border_default pt-1"}
                   >
                     {/*
@@ -1878,7 +2013,7 @@ function ModelSelect({
                       className="sticky top-0 z-10 flex items-center justify-between bg-bg_grouped_secondary_elevated px-2 pb-0.5 pt-1 text-caption-small-strong uppercase tracking-wide text-text_default_tertiary"
                     >
                       <span>{group.label}</span>
-                      {disabled ? (
+                      {groupDisabled ? (
                         <span
                           data-testid={`model-select-group-nokey-${group.id}`}
                           className="normal-case tracking-normal text-text_default_tertiary"
@@ -1892,6 +2027,13 @@ function ModelSelect({
                       const isActiveModel = model.id === value;
                       const supported = model.thinkingLevels ?? [];
                       const hasSettings = modelHasSettings(model);
+                      const starred = favoriteSet.has(model.id);
+                      // The favourites section spans providers, so its
+                      // no-key verdict arrives per row rather than on the
+                      // header. Everywhere else the group answers for all of
+                      // them and this is the same boolean.
+                      const disabled =
+                        groupDisabled || group.disabledModelIds?.has(model.id) === true;
                       return (
                         <div
                           key={model.id}
@@ -1901,10 +2043,54 @@ function ModelSelect({
                             else flyoutAnchorsRef.current.delete(model.id);
                           }}
                           data-testid={`model-select-model-wrap-${modelSlug(model.id)}`}
+                          data-model-id={model.id}
                           data-active-model={isActiveModel ? "true" : "false"}
                           data-has-settings={hasSettings ? "true" : "false"}
-                          className="rounded-[8px]"
+                          className="flex items-center"
                         >
+                          {/*
+                            Roadmap H 「模型偏好排序」— the star, in a fixed
+                            leading slot so every model name starts on the
+                            same x whether or not it is starred.
+
+                            It is a SIBLING of the row, not a child: nesting
+                            a control inside the row's own button would make
+                            "star it" and "pick it" the same click, and a
+                            user who stars a model to save it for later would
+                            instead switch to it. `tabIndex={-1}` keeps it off
+                            the tab sequence so the list stays one stop per
+                            model — the arrow engine below moves row to row —
+                            and the star is reachable from the keyboard by the
+                            `f` key the list handles.
+                          */}
+                          <button
+                            type="button"
+                            tabIndex={-1}
+                            data-testid={`model-select-star-${modelSlug(model.id)}`}
+                            data-favorite={starred ? "true" : "false"}
+                            aria-pressed={starred}
+                            aria-label={
+                              starred ? t("modelSelector.unfavorite") : t("modelSelector.favorite")
+                            }
+                            title={
+                              starred ? t("modelSelector.unfavorite") : t("modelSelector.favorite")
+                            }
+                            onClick={(event) => {
+                              // Star, do not select: the row's own click
+                              // handler is on the parent button, and this
+                              // must not read as "pick this model".
+                              event.stopPropagation();
+                              toggleFavorite(model.id);
+                            }}
+                            className="flex h-6 w-5 shrink-0 items-center justify-center rounded-[6px] text-icon_default_tertiary transition-colors hover:bg-bg_interaction_tertiary_hover"
+                          >
+                            <Icon
+                              name="star"
+                              size={13}
+                              outlined={!starred}
+                              className={starred ? "text-icon_default_accent" : undefined}
+                            />
+                          </button>
                           <SelectRow
                             testId={`model-select-model-option-${modelSlug(model.id)}`}
                             label={modelDisplayName(model.label)}
@@ -1995,6 +2181,7 @@ function ModelSelect({
                 );
                 })}
               </div>
+                )}
                 {/*
                   The cascade's FLY-OUT: the hovered (or focused)
                   model's settings, flying out one tier deeper than the

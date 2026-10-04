@@ -87,6 +87,16 @@ const en = {
      engine-encoded ids whose provider prefix did not coerce (i.e. a
      model the catalogue could not bucket). */
   "modelSelector.other": "Other",
+  /* Model selector — roadmap H 「模型偏好排序」. The favourites section's
+     header, the per-row star's two states, and the search box that filters
+     the list. `searchEmpty` is the answer to a query that matched nothing:
+     a search that silently renders an empty panel reads as a broken menu
+     rather than as "no such model". */
+  "modelSelector.favorites": "Favorites",
+  "modelSelector.favorite": "Star this model",
+  "modelSelector.unfavorite": "Unstar this model",
+  "modelSelector.searchPlaceholder": "Search models",
+  "modelSelector.searchEmpty": "No matching models",
   // Model selector — ticket 04. Provider groups without an API key
   // render greyed with a hint that points the user at the settings
   // panel; the modalities chip maps each `modalities[]` value to a
@@ -1247,6 +1257,14 @@ const zh: Record<MessageKey, string> = {
   "composer.noModels": "暂无可用模型",
   /* Model selector — provider-grouped dropdown. */
   "modelSelector.other": "其他",
+  /* 模型选择器 — roadmap H「模型偏好排序」。收藏分组表头、每行星号的两个
+     状态、以及过滤列表的搜索框。`searchEmpty` 是查无结果时的回答:搜索
+     却渲染一个空面板,读起来像菜单坏了,而不是「没有这个模型」。 */
+  "modelSelector.favorites": "收藏",
+  "modelSelector.favorite": "收藏这个模型",
+  "modelSelector.unfavorite": "取消收藏这个模型",
+  "modelSelector.searchPlaceholder": "搜索模型",
+  "modelSelector.searchEmpty": "没有匹配的模型",
   /* 模型选择器 — ticket 04。未配置 API Key 的供应商分组置灰并提示去
      设置里填 key；模态徽标按 modalities 数组渲染。 */
   "modelSelector.noKeyHint": "请在设置中配置 API Key",
