@@ -6,7 +6,14 @@ import { createPortal } from "react-dom";
 // Relative specifiers, like `activity-group.tsx`: the webapp test suite runs
 // components through node --test, where the `@/` alias does not resolve.
 import { useSessionContext } from "../lib/store";
+import {
+  contextBreakdownRows,
+  formatPercent,
+  quotaPlanRows,
+  showPlanSection,
+} from "../lib/context-breakdown";
 import { Icon } from "./icons";
+import { UsageBar, resetCaption } from "./usage-models-cards";
 import type { MessageKey } from "../lib/i18n";
 import {
   readContextWindowUsage,
@@ -17,24 +24,30 @@ import {
  * Context-window meter, sat next to the composer.
  *
  * The desktop client puts a context-window readout beside the input box: a
- * small control that opens a panel titled 上下文窗口 with the used percentage,
- * a progress bar, and a breakdown of what is filling the window. It renders
- * only while the General page's 上下文窗口用量显示 switch (`webui-context-
- * window-usage`) is on; with the stored default the readout stays hidden,
- * which is the reference's own default. Toggling the switch takes effect
- * without a reload — the flag is read once per mount and then followed
- * through `subscribeContextWindowUsage`, the same live-channel shape
- * `lib/theme.ts#subscribeSystemTheme` uses for the appearance picker.
+ * small ring that opens a panel titled 上下文窗口 carrying the used
+ * percentage, one bar, the per-category breakdown, and the plan's quota
+ * windows. That panel is the reference this file replicates, row for row.
  *
- * What is drawn comes straight from the state snapshot's `context` block —
- * `used`, `limit`, `percent`, `tps`, optionally `breakdown` (a per-category
- * composition like { systemPrompt: 12, memory: 4, tools: 30, skills: 2,
- * messages: 50, other: 2 } in absolute tokens, summing to `used`) and `plan`
- * (a { title, rows[] } describing the active subscription tier). Nothing is
- * invented: when breakdown / plan are absent, the segmented progress bar
- * collapses to the single-segment fallback and the per-category rows are not
- * rendered, exactly as SPEC §E row 138 ('else 单段') and row 139
- * ('依赖后端数据') specify.
+ * The three things it draws come from three different places, and the split
+ * is the reason none of them can drift from their own source:
+ *
+ * - the window itself (`used` / `limit` / `percent` / `breakdown`) from the
+ *   state snapshot's `context` block;
+ * - the quota rows from the SAME `quota` store the settings page reads, drawn
+ *   through the SAME `UsageBar` component — this panel used to read
+ *   `context.plan`, which nothing populates, so the 套餐 section could not
+ *   render at all;
+ * - the plan's own name from `state.usage.plan`, printed after 套餐用量.
+ *
+ * Nothing is invented. All six breakdown rows are always listed — that is the
+ * reference's set, and a category the engine did not report prints a dash
+ * rather than a share, which is the one claim this process is entitled to
+ * about it. A missing quota figure likewise stays a placeholder rather than
+ * becoming 0%.
+ *
+ * The pure parts — the percentage format, the breakdown rows, the quota rows —
+ * live in `lib/context-breakdown.ts` so the tests drive the same functions
+ * this component calls instead of a copy of them.
  *
  * The panel is portalled and `fixed`, for the same reason the composer's other
  * popups are: the composer card and the content column are `overflow-hidden`,
@@ -50,74 +63,22 @@ const RING_STROKE = 2;
 const RING_RADIUS = 6;
 const TRACK_COLOR = "var(--bg_interaction_secondary_hover)";
 
-/**
- * Format a context-window percentage for the panel header.
- *
- *   0            → "0%"          (no usage reported yet)
- *   0 < p < 1    → "<1%"         (used > 0 but rounds to 0; never collapse to "0%")
- *   1 ≤ p < 10   → "3.5%"        (1-decimal place, matches server-side rounding)
- *   p ≥ 10       → "47%"         (integer; sub-percent digits are noise)
- *
- * The server sends it rounded to 1 decimal (`computeContextPercent` in
- * server/lib/sessions.js), so the intermediate band (1–9.9%) shows real
- * precision instead of two-decimal noise like "3.4567%".
- */
-function formatPercent(p: number, t: (key: MessageKey) => string): string {
-  if (p <= 0) return "0%";
-  if (p < 1) return t("context.lessThanOne");
-  if (p < 10) return `${p.toFixed(1)}%`;
-  return `${Math.round(p)}%`;
-}
-
-// SPEC §E row 140 — canonical category order, drawn top-to-bottom in the panel.
-// Each entry maps the snake_case `data-kind` key (which the engine will send)
-// to its label key and to a colour swatch drawn from the upstream palette.
-//
-// The colour index follows upstream's `n7` family (context-window segment
-// palette); we render with a CSS variable indirection so the test harness
-// does not need to know hex values.
-const BREAKDOWN_CATEGORIES = [
-  { key: "systemPrompt", labelKey: "context.breakdown.systemPrompt", color: "var(--swatch-c1, #3b82f6)" },
-  { key: "memory",       labelKey: "context.breakdown.memory",       color: "var(--swatch-c2, #a855f7)" },
-  { key: "tools",        labelKey: "context.breakdown.tools",        color: "var(--swatch-c3, #ec4899)" },
-  { key: "skills",       labelKey: "context.breakdown.skills",       color: "var(--swatch-c4, #f97316)" },
-  { key: "messages",     labelKey: "context.breakdown.messages",     color: "var(--swatch-c5, #14b8a6)" },
-  { key: "other",        labelKey: "context.breakdown.other",        color: "var(--swatch-c6, #6b7280)" },
-] as const;
-
-type BreakdownCategoryKey = typeof BREAKDOWN_CATEGORIES[number]["key"];
-
-function breakdownRows(
-  breakdown: Record<string, number> | null | undefined,
-  total: number,
-): { key: BreakdownCategoryKey; tokens: number; percent: number; color: string; labelKey: string }[] {
-  if (!breakdown || total <= 0) return [];
-  return BREAKDOWN_CATEGORIES
-    .map((entry) => {
-      const tokens = Math.max(0, breakdown[entry.key] ?? 0);
-      return tokens === 0
-        ? null
-        : {
-            key: entry.key as BreakdownCategoryKey,
-            tokens,
-            percent: (tokens / total) * 100,
-            color: entry.color,
-            labelKey: entry.labelKey,
-          };
-    })
-    .filter((row): row is NonNullable<typeof row> => row !== null);
-}
-
 export function ContextMeter({ t }: { t: (key: MessageKey) => string }) {
-  const { state } = useSessionContext();
-  // The General page's 上下文窗口用量显示 switch, read once per mount and
-  // then followed live, so flipping it hides or shows this readout without
-  // a reload.
+  const { state, quota } = useSessionContext();
+  // The General page's 上下文窗口用量显示 switch. Read once per mount and
+  // then followed live, so flipping it hides or shows this readout without a
+  // reload — the same channel shape `lib/theme.ts#subscribeSystemTheme` uses
+  // for the appearance picker.
   const [visible, setVisible] = useState(readContextWindowUsage);
   const [open, setOpen] = useState(false);
   const [placement, setPlacement] = useState<{ left: number; bottom: number } | null>(null);
-  // Declared with the other state, not next to the panel markup it drives:
-  // the early returns below would otherwise make this hook conditional, and
+  // The disclosure chevron: collapsed it is DOWN, expanded it is UP — the
+  // panel grows upward (it opens above the composer), so the arrow points the
+  // way the content went. It used to be chevronRight/chevronDown, which reads
+  // as a sideways affordance for a vertical one.
+  //
+  // Declared with the other state, not next to the markup it drives: the
+  // early returns below would otherwise make this hook conditional, and
   // React's hook order is fixed per component across renders.
   const [expanded, setExpanded] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -182,13 +143,31 @@ export function ContextMeter({ t }: { t: (key: MessageKey) => string }) {
   );
   const dash = 2 * Math.PI * ((RING_SIZE - RING_STROKE) / 2);
 
+  // The title row is a disclosure. The reference's collapsed state carries a
+  // chevron DOWN and its expanded state a chevron UP — the panel grows upward
+  // (it opens above the composer), so the arrow points the way the content
+  // went. It used to be chevronRight/chevronDown, which reads as a sideways
+  // affordance for a vertical one.
+  const breakdown = contextBreakdownRows(context.breakdown, used);
+  // Token Plan meters MiniMax usage, so the section belongs to the model in
+  // play and not to the account — see `showPlanSection`. The rows are still
+  // built unconditionally (they cost nothing) so the decision stays in one
+  // testable place rather than being spread across the JSX.
+  const planRows = quotaPlanRows(quota);
+  const showPlan = showPlanSection(state?.model?.name);
+  const planTitle = state?.usage?.plan;
+
   return (
     <div className="flex items-center">
       <button
         ref={triggerRef}
         type="button"
         aria-label={t("context.show")}
-        title={t("context.show")}
+        // The hover text NAMES the control ("上下文窗口"); the aria-label
+        // states the ACTION ("显示上下文窗口用量"). The panel's own title
+        // already says 上下文窗口, so a tooltip repeating the action told the
+        // user nothing they could not read off the button they were pointing at.
+        title={t("context.title")}
         aria-expanded={open}
         data-testid="context-meter"
         onClick={() => setOpen((value) => !value)}
@@ -227,13 +206,8 @@ export function ContextMeter({ t }: { t: (key: MessageKey) => string }) {
               style={{ left: placement.left, bottom: placement.bottom, width: PANEL_WIDTH }}
               className="fixed z-[200] flex max-w-[calc(100vw-32px)] flex-col gap-3 rounded-[16px] border-[0.5px] border-border_default bg-bg_grouped_secondary_elevated p-4 shadow-[0_0_24px_0_var(--shadow_default)]"
             >
-              {/* Upstream's header is `desktop-text-ui-body` (14/21/430) with the
-                  percentage right-aligned in tabular figures, followed by a
-                  chevron that expands/collapses the per-category breakdown.
-                  Per SPEC §E row 137 the title is a `<button>` that toggles
-                  `expanded`; the chevron mirrors `chevronRight`/`chevronDown`.
-                  `data-testid="context-usage-expand-icon"` + `data-state`
-                  mirror upstream's test harness. */}
+              {/* The reference's header: the title on the left, the percentage
+                  and the disclosure chevron on the right, both in one row. */}
               <button
                 type="button"
                 aria-expanded={expanded}
@@ -249,129 +223,110 @@ export function ContextMeter({ t }: { t: (key: MessageKey) => string }) {
                 >
                   <span className="tabular-nums">{formatPercent(percent, t)}</span>
                   <Icon
-                    name={expanded ? "chevronDown" : "chevronRight"}
+                    name={expanded ? "chevronUp" : "chevronDown"}
                     size={16}
                     className="text-icon_default_tertiary"
                   />
                 </span>
               </button>
 
-              {/* SPEC §E row 138 — segmented progress bar when breakdown is
-                  available, single bar otherwise. We key off breakdown as the
-                  single source of truth: if it has any non-zero entry, the
-                  engine is committed to per-category reporting and the
-                  segmented bar is shown. */}
+              {/* One bar, one colour. The reference does not segment it even
+                  when it has a breakdown to draw underneath — the rows carry
+                  the composition, and a second encoding of the same fact in a
+                  4px strip is not readable at that size anyway. */}
               <div
-                className="h-1 w-full overflow-hidden rounded-full bg-bg_grouped_tertiary_elevated"
+                className="h-1 w-full overflow-hidden rounded-full bg-border_default"
                 role="progressbar"
+                aria-label={t("context.title")}
                 aria-valuenow={Math.round(percent)}
                 aria-valuemin={0}
                 aria-valuemax={100}
               >
-                {(() => {
-                  const rows = breakdownRows(context.breakdown, used);
-                  if (rows.length === 0) {
-                    return (
-                      <div
-                        className="h-full rounded-full bg-icon_default_accent"
-                        style={{ width: `${percent}%` }}
-                        data-testid="context-progress-single"
-                      />
-                    );
-                  }
-                  return (
-                    <div className="flex h-full w-full" data-testid="context-progress-segmented">
-                      {rows.map((row) => (
-                        <div
-                          key={row.key}
-                          className="h-full"
-                          style={{
-                            width: `${row.percent}%`,
-                            backgroundColor: row.color,
-                          }}
-                          data-kind={row.key}
-                          data-context-window-progress-segment="true"
-                          title={`${row.key}: ${row.tokens.toLocaleString()}`}
-                        />
-                      ))}
-                    </div>
-                  );
-                })()}
+                <div
+                  className="h-full rounded-full bg-icon_default_accent"
+                  style={{ width: `${percent}%` }}
+                  data-testid="context-progress-bar"
+                />
               </div>
 
-              {/* SPEC §E row 139 — per-category breakdown rows. Hidden until
-                  the user opens the disclosure AND breakdown is non-empty, so we
-                  never show a fabricated row. */}
-              {(() => {
-                const rows = breakdownRows(context.breakdown, used);
-                if (rows.length === 0 || !expanded) return null;
-                return (
-                  <dl className="desktop-text-ui-small flex flex-col gap-1.5" data-testid="context-breakdown">
-                    {rows.map((row) => (
-                      <div key={row.key} className="flex items-center justify-between gap-4">
-                        <dt className="flex min-w-0 items-center gap-2 text-text_default_tertiary">
-                          <span
-                            className="size-2 rounded-[2px]"
-                            style={{ backgroundColor: row.color }}
-                            aria-hidden="true"
-                          />
-                          <span className="truncate">{t(row.labelKey as MessageKey)}</span>
-                        </dt>
-                        <dd className="tabular-nums text-text_default_secondary">
-                          {row.percent.toFixed(1)}%
-                        </dd>
-                      </div>
-                    ))}
-                  </dl>
-                );
-              })()}
+              {/* The composition, in the reference's order, all six rows
+                  whether or not the engine reported any of them. A category
+                  with no share prints a dash — see
+                  `contextBreakdownRows` for why that is not a zero. */}
+              {expanded ? (
+                <dl
+                  className="desktop-text-ui-small flex flex-col gap-1.5"
+                  data-testid="context-breakdown"
+                >
+                  {breakdown.map((row) => (
+                    <div key={row.key} className="flex items-center justify-between gap-4">
+                      <dt className="flex min-w-0 items-center gap-2 text-text_default_tertiary">
+                        <span
+                          className="size-2 rounded-[2px]"
+                          style={{ backgroundColor: row.color }}
+                          aria-hidden="true"
+                        />
+                        <span className="truncate">{t(row.labelKey)}</span>
+                      </dt>
+                      <dd className="tabular-nums text-text_default_secondary">
+                        {row.percent === null ? (
+                          <>
+                            <span aria-hidden="true">—</span>
+                            <span className="sr-only">{t("context.breakdown.unreported")}</span>
+                          </>
+                        ) : (
+                          `${row.percent.toFixed(1)}%`
+                        )}
+                      </dd>
+                    </div>
+                  ))}
+                </dl>
+              ) : null}
 
-              <dl className="desktop-text-ui-small flex flex-col gap-1.5">
-                <div className="flex items-center justify-between gap-3">
-                  <dt className="text-text_default_tertiary">{t("context.used")}</dt>
-                  <dd className="tabular-nums text-text_default_secondary">
-                    {used.toLocaleString()} / {limit.toLocaleString()}
-                  </dd>
-                </div>
-                {context.tps ? (
+              {context.tps ? (
+                <dl className="desktop-text-ui-small flex flex-col gap-1.5">
                   <div className="flex items-center justify-between gap-3">
                     <dt className="text-text_default_tertiary">{t("context.speed")}</dt>
                     <dd className="tabular-nums text-text_default_secondary">
                       {Math.round(context.tps)} token/s
                     </dd>
                   </div>
-                ) : null}
-              </dl>
+                </dl>
+              ) : null}
 
-              {/* SPEC §E row 141 — plan usage section. Hidden until the engine
-                  reports a non-empty plan. */}
-              {context.plan && Array.isArray(context.plan.rows) && context.plan.rows.length > 0 ? (
+              {/* The plan's quota windows — the settings page's two rows,
+                  through the settings page's own `UsageBar`, so a figure can
+                  never read differently in the two places it appears. The
+                  section renders even with no figure: `UsageBar` then prints
+                  its placeholder, which is what the settings card does too.
+                  It is a MINIMAX section though: a Token Plan meters MiniMax
+                  usage, so showing it beside a BYOK model from another
+                  provider would be reading one plan's allowance against a
+                  model that does not spend it. */}
+              {showPlan ? (
                 <section
-                  className="mt-3 border-t-[0.5px] border-border_default pt-3"
+                  className="border-t-[0.5px] border-border_default pt-3"
                   data-testid="context-plan-section"
                 >
                   <div className="desktop-text-ui-body mb-2 flex w-full items-center justify-between gap-4 text-sm leading-5">
                     <span className="text-text_default_secondary">
                       {t("context.planTitle")}
-                      {context.plan.title ? ` · ${context.plan.title}` : ""}
+                      {planTitle ? ` · ${planTitle}` : ""}
                     </span>
                   </div>
-                  <dl className="desktop-text-ui-small flex flex-col gap-1.5">
-                    {context.plan.rows.map((row, index) => (
-                      <div
-                        key={index}
-                        className="flex items-center justify-between gap-4"
-                        data-context-usage-plan-row="true"
-                      >
-                        <dt className="text-text_default_tertiary">
-                          {row.label ?? ""}
-                        </dt>
-                        <dd className="tabular-nums text-text_default_secondary">
-                          {row.value ?? ""}
-                        </dd>
-                      </div>
+                  <div className="flex flex-col gap-3">
+                    {planRows.map((row) => (
+                      <UsageBar
+                        key={row.key}
+                        testId={`context-quota-${row.key}`}
+                        label={t(row.labelKey)}
+                        used={row.used}
+                        withTotal={row.withTotal}
+                        placeholder={t(row.placeholderKey)}
+                        caption={row.used !== null && row.resetAt ? resetCaption(row.resetAt, t) : null}
+                      />
                     ))}
-                  </dl>
+                  </div>
                 </section>
               ) : null}
             </div>,

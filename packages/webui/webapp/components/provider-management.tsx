@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Tag as AntTag,
   Popconfirm as AntPopconfirm,
@@ -57,19 +57,8 @@ export type { DraftProvider };
 
 export function ProviderManagementPanel({
   t,
-  autoAddProvider,
-  onAutoAddConsumed,
 }: {
   t: (key: MessageKey) => string;
-  /** One-shot flag — when true, fire `addProvider()` on the next
-   *  load completion. The page sets this when the model selector's
-   *  "Add provider" row is clicked; the modal lands on the providers
-   *  section, the panel mounts, and once the catalogue is loaded we
-   *  create a fresh draft so the user can start typing immediately.
-   *  Cleared via `onAutoAddConsumed` so re-opening the modal does
-   *  not re-fire. */
-  autoAddProvider?: boolean;
-  onAutoAddConsumed?: () => void;
 }) {
   const { providersRevision } = useSessionContext();
   const [providers, setProviders] = useState<DraftProvider[] | null>(null);
@@ -121,32 +110,6 @@ export function ProviderManagementPanel({
     setDialogOpen(false);
     setEditTarget(null);
   }, []);
-
-  /**
-   * Auto-add fire-once (ticket 09, reworked in 54).
-   *
-   * The model selector's top "Add provider" row sends the user here
-   * with `autoAddProvider = true`. Once the initial `load()` has
-   * populated `providers`, we open the add-model dialog — the
-   * desktop-parity add surface — so the user lands mid-add.
-   *
-   * The flag is one-shot: the effect tracks the consumed state with
-   * a ref so a later mount (re-opening the modal) without the flag
-   * does not re-fire, and a later mount WITH the flag does not
-   * fire on every `providersRevision` bump either.
-   */
-  const autoAddFiredRef = useRef(false);
-  useEffect(() => {
-    if (!autoAddProvider) {
-      autoAddFiredRef.current = false;
-      return;
-    }
-    if (autoAddFiredRef.current) return;
-    if (!providers) return;
-    autoAddFiredRef.current = true;
-    openAddDialog();
-    onAutoAddConsumed?.();
-  }, [autoAddProvider, providers, openAddDialog, onAutoAddConsumed]);
 
   /** Shared PUT path: write the given draft list through
    *  `/api/providers` and re-read the catalogue so masked key
