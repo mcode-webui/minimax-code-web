@@ -16,6 +16,9 @@ const skipped = new Set([
   ".pnpm-store",
   ".turbo",
   ".DS_Store",
+  // JetBrains IDE state, same reason .gitignore drops it: per-checkout
+  // window layout and run configurations, never publishable source.
+  ".idea",
 ]);
 // Private acceptance-review reports (dot-prefixed `.*-accept.md`, any depth).
 // The same name shape .gitignore guards against committing; the inventory
@@ -23,6 +26,11 @@ const skipped = new Set([
 // sat in a worktree during a `--write` run and was recorded as reviewed
 // source — this predicate stops that class of leak at the scanner itself.
 const isPrivateReport = (name) => name.startsWith(".") && name.endsWith("-accept.md");
+// JetBrains module/project files, which sit next to `.idea/` rather than inside
+// it. The `skipped` set matches names exactly, so these need the same
+// suffix-predicate treatment `isPrivateReport` gets.
+const IDE_PROJECT_SUFFIXES = [".iml", ".iws", ".ipr"];
+const isIdeProjectFile = (name) => IDE_PROJECT_SUFFIXES.some((suffix) => name.endsWith(suffix));
 // Build outputs that are not named after an entry above. These are listed by
 // repository-relative path rather than by directory name on purpose: `.next` and
 // `out` are generic names, and a name-wide exclusion would silently stop
@@ -44,7 +52,7 @@ const skippedTrees = new Set([
 ]);
 function filesIn(directory, prefix = "") {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
-    if (skipped.has(entry.name) || entry.name.endsWith(".tsbuildinfo") || isPrivateReport(entry.name))
+    if (skipped.has(entry.name) || entry.name.endsWith(".tsbuildinfo") || isPrivateReport(entry.name) || isIdeProjectFile(entry.name))
       return [];
     const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
     if (entry.isSymbolicLink())
