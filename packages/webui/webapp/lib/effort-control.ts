@@ -43,6 +43,31 @@ export function effortOptionsWithDefault(levels: string[]): string[] {
 }
 
 /**
+ * Is thinking ON — `true` / `false` / `null` for "the frontend cannot say".
+ *
+ * The composer's thinking trigger colours itself from this, and a colour is
+ * a claim. The `""` case is the engine's: the wire contract says `""` means
+ * "no override, the engine picks", and the engine never reports back which
+ * level it chose. So `""` returns null instead of guessing — a blue brain
+ * next to the word "Default" would assert a state nothing in this process
+ * can verify. The trigger renders null in the neutral colour and lets the
+ * LABEL carry the truth ("Default" / "Off" / "On"); colour reinforces, text
+ * decides.
+ *
+ * A recorded depth (low / medium / high / …) counts as ON: it is a request
+ * FOR thinking, and treating it as "off" would grey out the control while
+ * the engine is visibly reasoning. Only an explicit `"off"` is off.
+ *
+ * A recorded level the model does not offer (a cross-model leftover) is null
+ * for the same reason `""` is — the record does not describe this model.
+ */
+export function isThinkingOn(levels: string[], thinking: string): boolean | null {
+  if (thinking === "") return null;
+  if (!levels.includes(thinking)) return null;
+  return thinking !== "off";
+}
+
+/**
  * The option the control highlights as current, or null.
  *
  *   - a preview (focused row ≠ active model) never highlights — the

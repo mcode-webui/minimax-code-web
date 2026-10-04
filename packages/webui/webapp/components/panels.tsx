@@ -2997,8 +2997,6 @@ export function SettingsPanel({
   locale,
   setLocale,
   section,
-  autoAddProvider,
-  onAutoAddConsumed,
 }: {
   t: (key: MessageKey) => string;
   locale: Locale;
@@ -3008,9 +3006,6 @@ export function SettingsPanel({
    *  with one of the three section ids (the section-less nav items are
    *  disabled buttons that never set `active`). */
   section: "general" | "connection" | "providers";
-  /** Forwarded to `ProviderManagementPanel` when `section === "providers"`. */
-  autoAddProvider?: boolean;
-  onAutoAddConsumed?: () => void;
 }) {
   const [snapshot, setSnapshot] = useState<api.SettingsSnapshot | null>(null);
   const [busy, setBusy] = useState(false);
@@ -3276,11 +3271,7 @@ export function SettingsPanel({
       // custom-models view carries the provider panel unchanged. The
       // wrapper owns the view state so the add-provider deep-link can
       // land directly on the custom-models view (see UsageModelsSection).
-      <UsageModelsSection
-        t={t}
-        autoAddProvider={autoAddProvider}
-        onAutoAddConsumed={onAutoAddConsumed}
-      />
+      <UsageModelsSection t={t} />
     ),
   }[section];
 
@@ -3414,14 +3405,10 @@ function RowDivider() {
  */
 export function UsageModelsSection({
   t,
-  autoAddProvider,
-  onAutoAddConsumed,
   headless = false,
   accountRevision = 0,
 }: {
   t: (key: MessageKey) => string;
-  autoAddProvider?: boolean;
-  onAutoAddConsumed?: () => void;
   /** Render only the Token Plan cards, without the internal two-tab
    * header. The settings port (58 line A) supplies the reference's
    * three-source switch instead and mounts this headless as its
@@ -3432,13 +3419,11 @@ export function UsageModelsSection({
    * a re-read worth trusting — the remount races the engine's rebind. */
   accountRevision?: number;
 }) {
-  // The reference opens on the Token Plan view. The one deliberate
-  // exception is the add-provider deep-link: `autoAddProvider` fires the
-  // panel's add flow on mount, which is only useful with the panel
-  // visible, so that entry seeds the custom-models view instead.
-  const [view, setView] = useState<"tokenPlan" | "customModels">(
-    autoAddProvider && !headless ? "customModels" : "tokenPlan",
-  );
+  // The reference opens on the Token Plan view, so this does too. It
+  // used to seed the custom-models view when the model picker deep-linked
+  // here with a draft already open; that entry is gone, and the two-tab
+  // header below is how a user reaches 自定义模型 now.
+  const [view, setView] = useState<"tokenPlan" | "customModels">("tokenPlan");
 
   // SB-7 (the A1 revision): the plan NAME is a real figure — /api/account's
   // `tokenPlan.tier`. Read on mount, the same way the user menu's account
@@ -3549,11 +3534,7 @@ export function UsageModelsSection({
         </>
       ) : (
         <SectionCard>
-          <ProviderManagementPanel
-            t={t}
-            autoAddProvider={autoAddProvider}
-            onAutoAddConsumed={onAutoAddConsumed}
-          />
+          <ProviderManagementPanel t={t} />
         </SectionCard>
       )}
     </div>

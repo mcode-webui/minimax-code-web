@@ -400,9 +400,6 @@ export interface SettingsModalPortProps {
   readonly setLocale: (locale: Locale) => void;
   /** 已映射为参照 Tab 键：desktop / usage / connection。 */
   readonly initialTab?: SettingsTabKey;
-  /** 转发给 custom 来源的 ProviderManagementPanel（添加模型 deep-link）。 */
-  readonly autoAddProvider?: boolean;
-  readonly onAutoAddConsumed?: () => void;
 }
 
 export function SettingsModalPort({
@@ -412,8 +409,6 @@ export function SettingsModalPort({
   locale,
   setLocale,
   initialTab,
-  autoAddProvider,
-  onAutoAddConsumed,
 }: SettingsModalPortProps): ReactElement | null {
   const [active, setActive] = useState<SettingsTabKey>(initialTab ?? "desktop");
   const [query, setQuery] = useState("");
@@ -517,11 +512,7 @@ export function SettingsModalPort({
             <GenericPage t={t} locale={locale} setLocale={setLocale} />
           ) : null}
           {active === "usage" ? (
-            <UsageModelSettingsPort
-              t={t}
-              autoAddProvider={autoAddProvider}
-              onAutoAddConsumed={onAutoAddConsumed}
-            />
+            <UsageModelSettingsPort t={t} />
           ) : null}
           {active === "connection" ? (
             <div className="webui-settings-panels">
@@ -964,14 +955,14 @@ const TAB_TO_ENGINE_SOURCE = {
 
 function UsageModelSettingsPort({
   t,
-  autoAddProvider,
-  onAutoAddConsumed,
 }: {
   readonly t: (key: MessageKey) => string;
-  readonly autoAddProvider?: boolean;
-  readonly onAutoAddConsumed?: () => void;
 }): ReactElement {
-  const [sourceTab, setSourceTab] = useState<UsageSourceTab>(autoAddProvider ? "custom" : "token-plan");
+  // The reference opens on Token Plan. It used to open on 自定义模型 when
+  // the model picker deep-linked here; with that entry gone the page has
+  // exactly one landing view, and 自定义模型 is one click away on the
+  // switch head above.
+  const [sourceTab, setSourceTab] = useState<UsageSourceTab>("token-plan");
   const [sourceMenuOpen, setSourceMenuOpen] = useState(false);
   const [apiKey, setApiKey] = useState("");
 
@@ -1342,8 +1333,6 @@ function UsageModelSettingsPort({
           {/* 54 号添加模型/供应商管理面板（含连通检测）整体作为 custom 落点。 */}
           <ProviderManagementPanel
             t={t}
-            autoAddProvider={autoAddProvider}
-            onAutoAddConsumed={onAutoAddConsumed}
           />
         </section>
       ) : null}
@@ -1383,8 +1372,6 @@ export function SettingsModal({
   locale,
   setLocale,
   initialSection,
-  autoAddProvider,
-  onAutoAddConsumed,
 }: {
   open: boolean;
   onClose: () => void;
@@ -1392,8 +1379,6 @@ export function SettingsModal({
   locale: Locale;
   setLocale: (locale: Locale) => void;
   initialSection?: "general" | "connection" | "providers";
-  autoAddProvider?: boolean;
-  onAutoAddConsumed?: () => void;
 }): ReactElement | null {
   return (
     <SettingsModalPort
@@ -1403,8 +1388,6 @@ export function SettingsModal({
       locale={locale}
       setLocale={setLocale}
       initialTab={initialSection ? INITIAL_SECTION_TO_TAB[initialSection] : undefined}
-      autoAddProvider={autoAddProvider}
-      onAutoAddConsumed={onAutoAddConsumed}
     />
   );
 }

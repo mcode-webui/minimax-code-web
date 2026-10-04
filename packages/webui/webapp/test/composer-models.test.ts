@@ -15,6 +15,7 @@
 
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import {
   OTHER_PROVIDER_ID,
@@ -629,48 +630,78 @@ describe("scroll behaviour — ticket 09 (prefers-reduced-motion)", () => {
 });
 
 /**
- * Build the deep-link callback for the top "Add provider" row.
+ * The model picker does not offer model management.
  *
- * The model selector hands the callback the close intent — it
- * closes itself first, then asks the page to open the provider
- * management flow. This helper captures the rule in a pure
- * function so the wiring has a pin.
+ * It used to: a dashed 「添加模型 / 供应商」 row at the top of the
+ * dropdown, wired through the page to a one-shot `autoAddProvider`
+ * deep-link that opened the settings modal on 自定义模型 with the add
+ * dialog already up. Settings owns that surface, so the row was a
+ * second door to the same room — and the room it opened was a
+ * half-finished dialog in a panel the user then had to find.
+ *
+ * This is the negative pin. A guard that only says "the button is not
+ * here" would pass again the moment someone re-added the deep-link
+ * without the button, so all three ends of the old chain are checked:
+ * the row, the prop it was the only caller of, and the i18n key.
  */
-function makeAddProviderBridge(opts: {
-  closeDropdown: () => void;
-  openProviderAdd: () => void;
-}): () => void {
-  return () => {
-    opts.closeDropdown();
-    opts.openProviderAdd();
-  };
-}
+describe("the model picker has no model-management entry", () => {
+  const composerSource = readFileSync(
+    new URL("../components/composer.tsx", import.meta.url),
+    "utf8",
+  );
+  const pageSource = readFileSync(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const i18nSource = readFileSync(new URL("../lib/i18n.ts", import.meta.url), "utf8");
+  const portSource = readFileSync(
+    new URL("../components/settings-modal-port.tsx", import.meta.url),
+    "utf8",
+  );
+  const panelSource = readFileSync(
+    new URL("../components/panels.tsx", import.meta.url),
+    "utf8",
+  );
 
-describe("add-provider bridge — ticket 09", () => {
-  test("fires close-then-open in that order", () => {
-    const calls: string[] = [];
-    const bridge = makeAddProviderBridge({
-      closeDropdown: () => calls.push("close"),
-      openProviderAdd: () => calls.push("open"),
-    });
-    bridge();
-    assert.deepEqual(calls, ["close", "open"]);
+  test("neither the row nor its data-testid comes back", () => {
+    assert.ok(
+      !composerSource.includes("model-select-add-provider"),
+      "the add-provider row must not return to the dropdown",
+    );
+    assert.ok(
+      !composerSource.includes("onAddProvider"),
+      "Composer/ModelSelect must not carry an add-provider prop again",
+    );
   });
 
-  test("returns the same identity when wrapped in useCallback", () => {
-    // A regression that re-creates the bridge every render would
-    // memo-bust the parent's `openProviderAdd` ref. Pin the rule
-    // by checking the identity is stable when the deps don't change.
-    const close = () => {};
-    const open = () => {};
-    const a = makeAddProviderBridge({ closeDropdown: close, openProviderAdd: open });
-    const b = makeAddProviderBridge({ closeDropdown: close, openProviderAdd: open });
-    assert.notEqual(a, b, "factory returns a fresh closure each call (consumer's job to memo)");
-    // Consumer's job: a useCallback wrapping the factory output
-    // with stable deps yields a stable identity across renders.
-    const memoize = (fn: () => void) => fn;
-    const stable = memoize(a);
-    assert.equal(stable, memoize(a));
+  test("the page no longer holds the one-shot add intent", () => {
+    assert.ok(!pageSource.includes("openProviderAdd"), "openProviderAdd had one caller: that row");
+    assert.ok(
+      !pageSource.includes("pendingProviderAdd"),
+      "the pending-add state existed only to serve it",
+    );
+  });
+
+  test("settings does not keep a deep-link it can no longer receive", () => {
+    // The props would still compile and still thread three components
+    // deep if only the row went. This is the assertion that makes the
+    // removal complete rather than cosmetic.
+    for (const [name, src] of [
+      ["settings-modal-port.tsx", portSource],
+      ["panels.tsx", panelSource],
+    ] as const) {
+      assert.ok(
+        !src.includes("autoAddProvider") && !src.includes("onAutoAddConsumed"),
+        `${name} must not keep an unreachable add-provider deep-link`,
+      );
+    }
+  });
+
+  test("the bilingual label goes with it", () => {
+    // Half a key is worse than none: the other bucket would keep a
+    // string nothing renders, and the i18n tables stay symmetric.
+    assert.equal(
+      (i18nSource.match(/"modelSelector\.addProvider":/g) ?? []).length,
+      0,
+      "the add-provider label existed only for that row",
+    );
   });
 });
 
@@ -1451,7 +1482,9 @@ describe("cascadePlacement — ticket 11 right-side placement", () => {
 //                                 inline; the copy cannot see a revert.
 //   - scrollBehavior            — the composer's prefersReducedMotion
 //                                 branches inline.
-//   - makeAddProviderBridge     — the call site's callback shape.
+//   - the picker's no-management guard — the negative pin that keeps
+//                                 the add-provider row and its whole
+//                                 deep-link chain out.
 //   - webuiFullModelId          — a mirror of routes/model.js, not of
 //                                 the composer; the server route is not
 //                                 importable from the node test runner.

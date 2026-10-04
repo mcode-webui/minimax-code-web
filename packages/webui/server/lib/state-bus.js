@@ -59,14 +59,11 @@ export function makeClientState() {
       thinkingStatus: "Idle",
       thinkingDuration: null,
       lastUsageAt: null,
-      // Per-section breakdown (SYSTEM_PROMPT / MEMORY / TOOLS / SKILLS
-      // / MESSAGES / OTHER). The upstream engine does not currently
-      // emit this, so default null; the UI only renders the segmented
-      // progress + breakdown rows when it is non-empty.
+      // Per-section breakdown (MESSAGES / TOOLS / MEMORY / SKILLS / OTHER
+      // / SYSTEM_PROMPT). The upstream engine does not currently emit
+      // this, so default null; the panel draws the per-category rows
+      // only when it is non-empty.
       breakdown: null,
-      // Plan-usage row. Populated when engine/server emits it; null
-      // until then.
-      plan: null,
     },
     usage: {
       plan: null,

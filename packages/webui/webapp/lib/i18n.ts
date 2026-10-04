@@ -61,7 +61,6 @@ const en = {
      which this server does not publish (see components/context-meter.tsx). */
   "context.show": "Show context window usage",
   "context.title": "Context window",
-  "context.used": "Used",
   "context.speed": "Output speed",
   // Used when the round-to-integer percent is zero but the underlying ratio
   // is positive (e.g. 1521/512000 = 0.3%). Showing "0%" hid that any usage
@@ -75,6 +74,10 @@ const en = {
   "context.breakdown.skills": "Skills",
   "context.breakdown.messages": "Messages",
   "context.breakdown.other": "Other",
+  // The engine reports no per-category split today, so every row prints a
+  // dash. A screen reader gets these words for it, because "—" alone tells
+  // them nothing about whether the figure is zero or merely unknown.
+  "context.breakdown.unreported": "Not reported",
   // SPEC §E row 141 — plan section title; the active tier title is
   // appended as `· <title>` server-side.
   "context.planTitle": "Plan usage",
@@ -89,6 +92,16 @@ const en = {
      engine-encoded ids whose provider prefix did not coerce (i.e. a
      model the catalogue could not bucket). */
   "modelSelector.other": "Other",
+  /* Model selector — roadmap H 「模型偏好排序」. The favourites section's
+     header, the per-row star's two states, and the search box that filters
+     the list. `searchEmpty` is the answer to a query that matched nothing:
+     a search that silently renders an empty panel reads as a broken menu
+     rather than as "no such model". */
+  "modelSelector.favorites": "Favorites",
+  "modelSelector.favorite": "Star this model",
+  "modelSelector.unfavorite": "Unstar this model",
+  "modelSelector.searchPlaceholder": "Search models",
+  "modelSelector.searchEmpty": "No matching models",
   // Model selector — ticket 04. Provider groups without an API key
   // render greyed with a hint that points the user at the settings
   // panel; the modalities chip maps each `modalities[]` value to a
@@ -100,13 +113,6 @@ const en = {
      heading is always present when at least one level is offered. */
   "modelSelector.level": "Thinking effort",
   "modelSelector.levelHint": "Picking a level here also re-anchors the model",
-  /* Model selector — ticket 09. The "Add provider" row at the top of
-     the dropdown deep-links into Settings → Providers with a fresh
-     draft and the id input focused. The label is bilingual-friendly:
-     the dashboard already uses "供应商" for the providers section,
-     so this wording lands as one phrase rather than two stacked
-     words. */
-  "modelSelector.addProvider": "Add model / provider",
   /* Model selector — ticket 10. The cascade submenu's accessible
      name. The fly-out inherits the parent dropdown's role, but
      `aria-label` on the menu gives screen readers a one-word handle
@@ -149,6 +155,17 @@ const en = {
   "thinkingPicker.high": "High",
   "thinkingPicker.xhigh": "Extra high",
   "thinkingPicker.max": "Max",
+
+  // The BRAIN's hover text. The brain answers "is thinking on", which is a
+  // different question from the level control's "which level" — so it gets
+  // its own words rather than borrowing `thinkingPicker.on`/`.off`, which
+  // are the level ROWS' labels and read as bare level names in a tooltip.
+  // `.default` is the third state, not a synonym for `.off`: an unset
+  // thinking value means the engine owns the default and never reported
+  // which it chose, so the honest answer is that we cannot see it.
+  "thinkingToggle.on": "Thinking is on",
+  "thinkingToggle.off": "Thinking is off",
+  "thinkingToggle.unknown": "Thinking follows the engine default",
 
   "permission.label": "Permission mode",
   "permission.ask": "Ask",
@@ -1413,7 +1430,6 @@ const zh: Record<MessageKey, string> = {
      的占用明细, 本服务端没有该数据 (见 components/context-meter.tsx)。 */
   "context.show": "显示上下文窗口用量",
   "context.title": "上下文窗口",
-  "context.used": "已用",
   "context.speed": "输出速度",
   // 后端 percent 用 1 位小数；整数四舍五入为 0 但实际用量 > 0 时，用 "<1%" 让小占用可见。
   "context.lessThanOne": "<1%",
@@ -1423,6 +1439,7 @@ const zh: Record<MessageKey, string> = {
   "context.breakdown.skills": "技能",
   "context.breakdown.messages": "消息",
   "context.breakdown.other": "其他",
+  "context.breakdown.unreported": "未上报",
   "context.planTitle": "套餐用量",
   "context.expandAria": "展开上下文分类",
   "context.collapseAria": "收起上下文分类",
@@ -1433,15 +1450,20 @@ const zh: Record<MessageKey, string> = {
   "composer.noModels": "暂无可用模型",
   /* Model selector — provider-grouped dropdown. */
   "modelSelector.other": "其他",
+  /* 模型选择器 — roadmap H「模型偏好排序」。收藏分组表头、每行星号的两个
+     状态、以及过滤列表的搜索框。`searchEmpty` 是查无结果时的回答:搜索
+     却渲染一个空面板,读起来像菜单坏了,而不是「没有这个模型」。 */
+  "modelSelector.favorites": "收藏",
+  "modelSelector.favorite": "收藏这个模型",
+  "modelSelector.unfavorite": "取消收藏这个模型",
+  "modelSelector.searchPlaceholder": "搜索模型",
+  "modelSelector.searchEmpty": "没有匹配的模型",
   /* 模型选择器 — ticket 04。未配置 API Key 的供应商分组置灰并提示去
      设置里填 key；模态徽标按 modalities 数组渲染。 */
   "modelSelector.noKeyHint": "请在设置中配置 API Key",
   /* 模型选择器 — ticket 07。下拉顶部新增的思考等级行标题与提示。 */
   "modelSelector.level": "思考等级",
   "modelSelector.levelHint": "点等级会同时绑定当前模型",
-  /* 模型选择器 — ticket 09。下拉顶部的「添加供应商」入口直跳到设置 → 模型供应商，
-     自动新建草稿并把焦点放到 id 输入框。沿用侧栏的「模型供应商」命名。 */
-  "modelSelector.addProvider": "添加模型 / 供应商",
   /* 模型选择器 — ticket 10。右侧级联子菜单的 aria-label。 */
   "modelSelector.thinkingLevels": "思考等级",
   /* 模型选择器 — U6 上下文窗口。详情区标题与单个选项的用量提示。
@@ -1474,6 +1496,15 @@ const zh: Record<MessageKey, string> = {
   "thinkingPicker.high": "高",
   "thinkingPicker.xhigh": "极高",
   "thinkingPicker.max": "最大",
+
+  // 大脑的 hover 文案。回答的是「思考开没开」，和等级控件的「第几档」是两个
+  // 问题，所以另起一组词，而不是借用 `thinkingPicker.on` / `.off`——那两个是
+  // 等级行的标签，放进提示里读起来像个孤零零的档位名。`.unknown` 是第三种
+  // 状态，不是 `.off` 的同义词：思考值没设 = 引擎拿走默认值且从不上报它选了
+  // 哪一档，唯一诚实的回答是「看不到」。
+  "thinkingToggle.on": "思考已开启",
+  "thinkingToggle.off": "思考已关闭",
+  "thinkingToggle.unknown": "思考由引擎默认决定",
 
   "permission.label": "权限模式",
   "permission.ask": "主动询问",

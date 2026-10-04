@@ -395,10 +395,14 @@ describe("the model picker's local state resets on a session switch (webui-parit
   });
 
   test("the picker resets its local states in an effect keyed on sessionKey", () => {
+    // Three local states, and the fly-out's owner is one of them: an open
+    // menu, a fly-out anchored to a row, and the per-model draft mirror
+    // are all component-local, and without a reset session A's state
+    // visually persists into session B.
     const resetIdx = indexOfOrThrow(
       composerSource,
-      "setOpen(false);\n    setSubmenuFor(null);\n    setFocusedModelId(null);\n    setDrafts({});",
-      "ModelSelect's four local-state resets",
+      "setOpen(false);\n    setFlyoutFor(null);\n    setDrafts({});",
+      "ModelSelect's local-state resets",
     );
     const deps = composerSource.slice(resetIdx, resetIdx + 200);
     assert.match(deps, /\}, \[sessionKey\]\);/, "the reset must be keyed on sessionKey");

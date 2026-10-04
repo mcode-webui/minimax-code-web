@@ -354,7 +354,7 @@ describe("usage-models segmented tabs (ticket 53)", () => {
     );
   });
 
-  test("the custom-models view forwards the provider panel with its deep-link props", () => {
+  test("the custom-models view mounts the provider panel on its own", () => {
     const elseAt = segmentSource.indexOf(") : (");
     assert.ok(elseAt > 0, "the custom-models branch not found");
     const elseBranch = segmentSource.slice(elseAt);
@@ -363,15 +363,19 @@ describe("usage-models segmented tabs (ticket 53)", () => {
       "the provider panel lives in the custom-models view",
     );
     assert.ok(
-      elseBranch.includes("autoAddProvider={autoAddProvider}"),
-      "the add-provider flag is forwarded to the panel",
+      !elseBranch.includes("autoAddProvider"),
+      "the panel takes no deep-link: settings is where a model gets added, " +
+        "and the model picker's shortcut into a pre-opened dialog is gone",
     );
   });
 
-  test("the add-provider deep-link seeds the custom-models view when standalone", () => {
+  test("the section opens on Token Plan, the reference's landing view", () => {
+    // It used to seed 自定义模型 when the model picker deep-linked in.
+    // With that gone there is one landing view, and the two-tab header
+    // above it is how a user reaches the custom models.
     assert.ok(
-      segmentSource.includes('autoAddProvider && !headless ? "customModels" : "tokenPlan"'),
-      "autoAddProvider lands on the custom-models view when the header renders; headless mounts pin token-plan (the port routes its own custom landing)",
+      segmentSource.includes('useState<"tokenPlan" | "customModels">("tokenPlan")'),
+      "UsageModelsSection opens on tokenPlan unconditionally",
     );
   });
 

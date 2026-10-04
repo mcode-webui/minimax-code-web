@@ -498,9 +498,34 @@ Contract details:
 - A pick while a turn is running takes effect on the next turn (same semantics as a model switch mid-run).
 - A local pick owns its field for `PICK_DEFER_WINDOW_MS` (4 s): `applyConfigOptionUpdate` does not overwrite that field with the engine's wire-form `currentValue` inside the window, so an optimistic pick is not clobbered a few ms later. Model and thinking are stamped independently (`modelPickedAt` / `thinkingPickedAt`), so a thinking-only pick does not block a later cross-client model mirror. The window is defence-in-depth — the per-cid snapshot `revision` is the primary guard against wire reordering.
 - An operator's providers-config entry with the same id as a builtin wins wholesale (existing merge rule); such an entry shows levels only if the operator wrote them.
-- Ticket 49 batches 1–2 added a fourth display and a second editing entry inside the picker. The panel-bottom detail area renders the ACTIVE model's `thinkingLevels` as read-only badges. When a provider cascade is open, the fly-out renders as the reference picker's two-column popover — model rows on the left, a follow-focus settings column on the right — and that column's level control is **editable and shape-adaptive**: exactly `["off","on"]` renders one toggle switch; any other level list renders a radio group whose FIRST entry is always "Default" (submitted as the empty string). Form only — the wire semantics stay the local `thinkingLevels` + `""` contract, never the reference's effortOptions/variant derivation (A9 was scoped out). A pick commits immediately without closing the menu, through the same `{thinking}` payload the composer-level control sends; a focused-but-not-active model renders the control disabled with a "preview" marker. A recorded level the target model does not support highlights nothing — the row-badge anti-stale rule (B11) applied to the control.
+- Ticket 49 batches 1–2 added a second editing entry inside the picker, and the desktop alignment kept it while dropping the read-only twin. The picker's settings **fly-out** opens for the hovered model row, and its level control is **editable and shape-adaptive**: exactly `["off","on"]` renders one toggle switch; any other level list renders a vertical list of pickable rows whose FIRST entry is always "Default" (submitted as the empty string). Form only — the wire semantics stay the local `thinkingLevels` + `""` contract, never the reference's effortOptions/variant derivation (A9 was scoped out). A pick commits immediately through the same `{thinking}` payload the composer-level control sends and does not close the fly-out: a level is a mid-visit edit, so the visit continues into the window list below it. A model that is hovered but not picked renders the control disabled. A recorded level the target model does not support highlights nothing — the row-badge anti-stale rule (B11) applied to the control.
 
 The operator-facing view — which models show what control, and why MiniMax-M3 only has on/off — is the thinking section of [`webui.zh-CN.md`](webui.zh-CN.md).
+
+### The composer splits thinking into two controls: whether, and which
+
+Beside the model chip sit up to two separate controls, because they answer two separate questions. 「是否启用思考」 is a yes/no, and a bare **brain glyph** answers it with its colour: blue when thinking is on (`text-icon_default_accent`, the same blue the settings modal's switch uses when checked), grey when it is not. 「启用什么等级」 is a position on a scale, and only a word can name one. Which of the two a model gets is the model's own `thinkingLevels` list, not a preference:
+
+| Model's `thinkingLevels` | Brain | Level control | Chip suffix |
+| --- | --- | --- | --- |
+| exactly `["off","on"]` — a switchable builtin, today `MiniMax-M3` | a **button**: click flips `on` ⇄ `off` | none | suppressed |
+| a depth scale (`low`/`medium`/`high`/…) | a plain **indicator**, not clickable | `[高 ⌄]` — the level word, opening the menu | kept |
+
+The brain is the same element in both rows — same glyph, same colours, same `data-thinking` — and only the level control is conditional. Its **hover** follows the same split: the brain says *whether* thinking is on (思考已开启 / 思考已关闭), the level control says *which* level, and keeps the level word for that. The brain used to carry the level word too, which left a settings-less `MiniMax-M3` saying 「默认」 on hover — the absence of an answer, on a control whose blue/grey colour is already claiming a state. Hover gets its own strings (`thinkingToggle.on` / `.off` / `.unknown`) rather than borrowing `thinkingPicker.on` / `.off`, because those are the level ROWS' labels and read as bare level names in a tooltip. All three branches are needed: `isThinkingOn` is three-valued and the third value is not a flavour of the second — an unset or stale thinking value means the engine owns the default and never reported which, so 「已关闭」 there would be a claim this process cannot make, the same rule the icon's grey colour already follows.
+
+**A two-state model gets the brain alone, and it is a button.** There is nothing to choose between, so a level control would be a three-row menu for two states, and its "Default" row is the one state a toggle cannot express, on a model whose engine default is already "on". It offers a choice the user does not have. These models also stop saying `· 开启` in the chip: that word is this icon's answer, printed again two controls away, and it was the copy a user had to read before noticing the icon had said it all along. The chip's suppression asks `effortControlShape(...) === "switch"` — the same call the control asks — rather than re-checking `includes("off")` its own way, so the two cannot drift into disagreeing about which models are binary.
+
+**A depth model's brain is deliberately not clickable.** Every advertised depth counts as thinking on, so the only transition a brain-toggle could offer is "engine default → some depth" — and *which* depth is precisely the question the brain cannot ask. A clickable brain would have to guess one, and a guess that picks the top of the scale would silently overwrite a lower level the user had chosen. It renders as a span, so it is not focusable, not announced as a control, and cannot be pressed into a level the engine would reject. The level control asks instead; its word is the same string its own menu row shows, an unrecognised level falling through to its raw value rather than being labelled 「默认」, which is a different state.
+
+From a state this process cannot see — the empty string, the engine's own default — the brain is grey and a toggle is unpressed; a click turns thinking explicitly ON, which is the only move available from there. The engine never reports which level it took, so webui cannot flip "default" to "off" without first naming a state it invented.
+
+Blue appears only when thinking is actually on. A recorded depth counts as on — it is a request FOR thinking, and greying it would contradict an engine that is visibly reasoning; only an explicit `off` is off. "Default" is the **engine's** choice, so that state is grey: a blue icon beside the engine's default would assert a state nothing in this process can see. The decision table is `isThinkingOn` in `webapp/lib/effort-control.ts` (a tri-state `true`/`false`/`null`), read once into a `reading` binding and published by both brains as `data-thinking="on|off|unknown"`, so a probe can read it without inferring colour and the two can never disagree.
+
+An icon-only button has to name itself, and — now that a binary model's chip is silent — it also has to say its state in text. `Icon` is `aria-hidden` everywhere else: it is decoration next to real text, so with the text gone the button announces as an unnamed button unless it carries an `aria-label`. It does, `thinkingPicker.label`, plus `aria-pressed`, which is the honest encoding for a two-state control and what a screen reader announces as on/off. The level control is not icon-only, so it needs no `aria-label`; its own text is its name, and the menu's ✓ names the current row. The glyph is lucide's `brain`, scaled from its 24×24 frame into the icon pack's 20×20 frame the way `sidebar` already is, and the scaling is scripted rather than retyped: an arc's `large-arc` / `sweep` flags share the number stream with its coordinates, so a hand scale turns a sweep of `1` into `0.833` and Chromium silently drops the arc.
+
+**How you would tell it works.** `isThinkingOn` is driven as a product function in `webapp/test/composer-context-window.test.ts`, including the case that matters — `""` is unstated, not off. `webapp/test/composer-thinking-tripwire.test.ts` pins the wiring, and each guard is collected by its own `data-testid` (`thinking-toggle`, `thinking-state`, `thinking-effort-trigger`) rather than by "some button exists", because a single match pins whichever comes first in the file. It asserts that the depth brain is a span and not a button, that the level control renders no brain and the brain renders no chevron, that the state is read from the product function rather than inlined `value !== "off"` (which would colour the engine default blue with every unit test still green), that the colour is an accent token and not hard-coded hex, that the level word is in the button's **body** and not merely in its `title`, and that the chip's binary decision is a single `effortControlShape` expression.
+
+Five plausible reverts were run against those guards, and **two of them passed** — which is the reason two guards are written the way they are. The "the depth brain must not be a button" guard originally captured from `data-testid="thinking-state"`, so a brain that had become a `<button aria-pressed onClick>` still matched: `aria-pressed` and `onClick` are attributes that sit *before* the testid. The capture now includes the opening tag. The "the level control names the level" guard matched `{levelLabel}` across the whole element, and `title={levelLabel}` satisfies that on its own — deleting the visible word left every guard green. It now reads the body's text only. The other three did go red: a chevron on the toggle, a level control rendering for every model, and a level word falling back to 「默认」 for an unrecognised level. Earlier revisions of this same file have their own mutation notes, including the arc-flag guard that accepted a `0.9` flag.
 
 ## Session switch follows workspace (webui-parity ticket 39)
 
@@ -845,27 +870,236 @@ elapsed-timer already pays for. While the Git panel is open, two requests for
 the endpoint are in flight; that is accepted rather than hoisting panel state
 into a provider above the shell for a panel the badge does not render.
 
+### Favourites and search (roadmap H 「模型偏好排序」/「模型搜索」)
+
+The list answers two things now, each with its own rule, and the composition order is fixed: bucket by provider, then filter by the query box, then hoist the starred models to the top.
+
+| Concern | What it does now | The alternative that was rejected |
+| --- | --- | --- |
+| Where starred models go | A **「收藏」/Favorites section of their own at the top**, with the models *removed* from their provider groups (so each appears exactly once) and an emptied group dropped rather than rendered | Leaving them inside their own provider group and only promoting them within it. Smaller change, but two starred models end up separated by that group's unstarred rows, and "MiniMax first" then only holds *between* groups |
+| Order inside the favourites section | Built-in MiniMax first (the `minimax_api` prefix), then the rest by display name, with the id breaking a tie | Plain alphabetical. MiniMax is the provider the subscription itself meters, so it is the one a starred list is most likely being read to reach |
+| Where the search box lives | Inside the popup, **above** the list | Beside the trigger. The query narrows what this list shows, so it belongs to the list; a control that lives outside the thing it filters is one that has to stay open to be useful |
+| What counts as a match | Fuzzy **subsequence** matching, ignoring case and every non-alphanumeric character; a one-character query is plain containment | Substring matching. `mm3` and `glm53` are substrings of nothing real, and they are what a user actually types |
+| Where a star is kept | A versioned localStorage key, `webui:model-favorites:v1` | A server field. A star is a reading preference about *this browser's* list, not a fact about the account, and it has no business on the wire |
+
+**The star is a sibling of the row, not a child of it.** Nested inside the row's own button, "star it" and "pick it" would be the same click — and a user saving a model for later would be switched to it instead. The star is therefore its own button in a fixed leading slot, and its click calls `stopPropagation` so the row's pick never fires.
+
+**The star is off the tab sequence.** The list is one tab stop per model, and a star per row as a stop makes the list unusable by keyboard. The star is `tabIndex={-1}` and the list owns the keyboard instead: `f` stars whichever row currently has focus, so the star follows the arrow engine with no second cursor to track.
+
+**One path, two renderings.** `STROKE_ICONS` decides fill vs stroke per NAME, which is right for a pack copied from upstream — one glyph, one rendering. It cannot express the case a name cannot: a glyph that has to render *both* ways from the same path because its two states mean something. `Icon` grew an `outlined` escape hatch for that, rather than a second near-duplicate `starOutline` path that would drift from it.
+
+**The favourites section spans providers, so its no-key verdict has to be per row.** A provider group is greyed wholesale by `auth.hasKey === false` and the header carries the reason. The favourites section pulls models out of groups with *different* verdicts, so one `auth` cannot describe it; those rows come back in `disabledModelIds` and are greyed individually.
+
+**"Which id is the built-in MiniMax catalogue" is defined once.** `isBuiltinMiniMaxModel` (`webapp/lib/model-groups.ts`) reads the wire id's provider prefix, and every unreadable shape is false: no separator, a trailing separator, an empty id, and the engine's own `__engine/m:minimax_api:…` encoding. The context panel's plan gate (`showPlanSection`) now delegates to it. Two surfaces that must agree on one fact and each keep a copy are two copies that will drift.
+
+**A one-character query has no special case, because there is none to write.** For a single character, "appears in order" and "appears at all" are the same predicate. An earlier draft carried a "one character must match contiguously" branch: it was a strict no-op, and the test written to pin it passed only because its fixture happened to contain no such character at all. The property is now stated honestly in the test — a one-character query is containment, the same as everywhere else in the product.
+
+**Filter before order, never the reverse.** Starring is a standing preference; the query is a momentary one. A star must not smuggle an unmatched model into the middle of a search result, and a query must not reshuffle the section the user starred things into. `filterModelGroups` preserves catalogue order, so what reaches `orderModelGroups` is still in the engine's own order and the two rules cannot fight.
+
+**A search that matches nothing says so.** The panel shows 「没有匹配的模型」/ "No matching models" rather than rendering an empty box — a silently empty menu reads as broken, not as "there is no such model".
+
+**The query dies with the panel.** Closing clears it: reopening onto a half-typed filter reads as a broken menu, not as "you were searching".
+
+**Keyboard is unchanged where it already worked.** `↓` in the search box hands focus to the list's first row and the arrow engine takes over; `Escape` and `Enter` keep working in the input, which is why only the arrows are swallowed. `Home`/`End` and the "Escape retracts the fly-out before it closes the menu" semantics are untouched.
+
+**No server contract changed.** A star issues no request, and the query lives entirely inside the component. `POST /api/set-model` has not gained or lost a field.
+
+**How you would tell it works.** The arithmetic is tested as behaviour: `webapp/test/model-favorites-search.test.ts` drives `orderModelGroups` / `filterModelGroups` / `fuzzyMatches` / `isBuiltinMiniMaxModel` in `webapp/lib/model-groups.ts` and `toggleFavoriteId` / `readFavoriteModels` / `writeFavoriteModels` in `webapp/lib/model-favorites.ts` — the product functions, not copies. The wiring is pinned as source tripwires (W1–W9) under the same stated constraint as `model-picker-layout.test.ts`: `ModelSelect` sits behind the store/api graph and cannot enter the test process. Twenty-three mutations each break one named behaviour in the product code and all go red on the assertion named for them; three of those mutants did not go red on the first run, and the reason in each case was the mutant, not the guard — one targeted a branch that did not exist, one had a fixture that happened to contain no matching character, and one only inserted a hidden element rather than actually moving the box.
+
+## The model picker (a cascade, and why it is a cascade)
+
+The picker is one list. A model's settings do not live in a column beside it — hovering (or keyboard-focusing) the row flies a settings surface out one tier deeper than that row, with the context window's sizes listed inside it. One fly-out, `position: fixed`, anchored to the row that owns it, clamped to the viewport.
+
+| Decision | Chosen | Rejected, and why |
+| --- | --- | --- |
+| Where settings live | A fly-out anchored to the hovered row (展示右侧一) | A permanent right column. The reference reserves no width for settings, and a column puts one model's controls on screen permanently — next to a row the user could have simply clicked. This was tried and reverted: it is the shape the two reference screenshots do *not* show |
+| The context window's options | An in-place list inside that fly-out, marked with a ✓ on the current size (展示右侧二) | A second fly-out for them, and a collapsed row to click open. Every step of that nesting was one affordance too many: the fly-out already says which model it describes, so a row restating the current value, a chevron over it, and then a separate panel carrying the same values were three ways to answer one question — and the third of them was a floating panel landing back over the model list it was describing. This was tried and reverted |
+| The fly-out's placement | One engine (`useFlyoutPosition`) | A second copy of the flip/clamp math for the nested tier. Two implementations of "which way does this open" is how two panels of one cascade end up disagreeing |
+| List structure | A provider group header, then one row per MODEL under it | A provider row that opened a fly-out of that provider's models — two clicks to read any model name. Grouping survives because the header is the reference's own shape and the only place left to say "no key" now that no provider row exists |
+| Search box | A box inside the popup, above the list | None. This row used to read the other way round and said the roadmap's ❌「选择器无搜索」 was "retired by scope rather than by code" — the list is one click deep, so a filter would be a second way to reach a row the list already shows. That was a shape preference settled by a screenshot, not a requirement, and roadmap module H now asks for the box by name. Fuzzy subsequence matching is what makes it more than a substring test: `mm3` and `glm53` are what a user types, and neither is a substring of anything. See Favourites and search above |
+| Model management | Not in the picker at all | A dashed 「添加模型 / 供应商」 row at the top of the list. It deep-linked into the settings modal on 自定义模型 with the add dialog already open: a second door to the surface settings already owns, opening a half-finished dialog in a panel the user then had to find again. The chain behind it — `autoAddProvider` through the page, the settings port, `panels.tsx` and the provider panel — had that one row as its only producer, so removing the row removed the flag with it, and the page has one settings landing view again |
+| Settings surfaces | One fly-out | The old panel rendered the same controls twice — once editable in a column, once read-only in a panel-bottom area. Two renderings of "which level is this model on" is a contradiction waiting to happen, not a second view |
+| The ✓ marker | On the active MODEL's row | On a provider row. With the models in the list, the marker belongs where the name is |
+| Binary thinking | The app's own `webui-toggle-switch` | A hand-rolled pill built from border/background tokens. The reference draws this switch blue when on, and tokens can only reach the greys in the palette — which read as "off" at a glance. The shared class is also what the settings modal renders, so the two switches in the product cannot drift apart. Which models get it at all is still adaptive: `effortControlShape` returns `switch` for an `off`/`on` pair and `radiogroup` for anything else |
+| The level control's semantics | Unchanged: a `radiogroup` of `radio`s | Changing them to look more like the reference. A single-select from a set of options is exactly that, and the semantics cost nothing to keep |
+
+**When the selection is complete.** This is the rule that makes the cascade a cascade rather than a menu with decorations, and it is asymmetric on purpose:
+
+- A model that advertises **neither** thinking levels nor at least two context-window options has nothing to configure. Hovering it shows nothing, and clicking it records the model and closes the picker — the click is the whole selection.
+- A model that **does** have settings is not finished when its row is clicked. The click records the model (which is also what turns its fly-out from a read-only preview into live controls) and leaves the surface open. The selection completes on a context-window pick: clicking a size records the window and closes the picker.
+- The thinking switch records and leaves the fly-out open. Closing there would make a level and a window impossible to set in one visit.
+
+The window sizes are up as soon as the fly-out is — there is nothing to unfold. A model with nothing to configure shows only the fly-out's empty state.
+
+**Preview is still previewed.** A fly-out describing a model the user has not picked renders its controls disabled, because the recorded settings belong to the active model and committing them for an unpicked model has no contract meaning under the unchanged `/api/set-model` payload. A previewed model highlights nothing: the ✓ belongs to the recorded window, and a preview has none. Picking the row is what makes the surface live.
+
+A no-key provider's group header carries the reason, and every model row under it renders disabled — a provider without an API key cannot reach any of its models, and greying them one at a time is the honest rendering of that.
+
+**Keyboard.** The cascade answers the keyboard, not only the mouse: focusing a row opens its fly-out exactly as hovering it does, because the arrow-key engine moves focus. `↓`/`↑` move between model rows, `Home`/`End` reach the ends of a long catalogue, and the closed trigger's arrows open the panel onto the first row. `Escape` backs out before it closes — the first press retracts the open fly-out, the second closes the picker — and `Escape`/`ArrowLeft` inside a fly-out hands focus back to the row that opened it. A 120ms hover grace lets the cursor cross the gap between a row and its fly-out without the surface vanishing in the gap, and entering the fly-out by focus cancels that grace, so it is reachable by pointer and by keyboard alike.
+
+**How you would tell it works.** The behaviour behind the list is already tested as behaviour: `webapp/test/composer-models.test.ts` drives `groupModelsByProvider`, `providerIdOfModel` and `isGroupDisabled` in `webapp/lib/model-groups.ts`, and `webapp/test/composer-context-window.test.ts` drives `effortControlShape` / `resolveEffortCurrent` in `webapp/lib/effort-control.ts` — the product functions, not copies. What is left is the WIRING, and `ModelSelect` sits behind the store/api graph, which cannot enter the test process, so the wiring is pinned as source tripwires. `webapp/test/model-picker-layout.test.ts` asserts the fly-out exists and is the cascade's only tier, that no permanent settings column crept back, that hover and focus both open it, that the no-settings model completes on its own click while the settings model's completes on a window pick, and that the list container is not duplicated. `composer-context-window.test.ts` keeps the live region, the preview predicate, the `flyoutFor` cleanup paths and the arrow-key engine pinned. Render behaviour — that a row's fly-out appears beside it, that the window sizes are in it rather than behind another panel, that the picker closes on a completed pick — is only observable in a browser, and the change was probed there before shipping.
+
 ## Context window (what the picker shows, and what a pick does today)
 
-The model picker's settings detail renders at **two levels** (ticket 49 batch 2). The panel-bottom area always describes the ACTIVE model; when a provider cascade is open, the fly-out renders as the reference picker's two-column popover — the provider's model rows on the left, a **follow-focus settings column** on the right. Hovering or keyboard-focusing a model row switches that column to the model without picking it; a cascade that just opened (nothing focused yet) falls back to the active model, mirroring the reference. Both areas read the same draft mirror (below), so a window pick made in either place highlights in both.
+The model picker's settings live in a fly-out, not a column. Hovering or keyboard-focusing a model row opens that model's fly-out; moving the cursor away retracts it, and it is not anchored to the active model by default. The panel-bottom area that used to render a second, read-only copy of the active model's levels is gone — one settings surface, one answer to "which level is this model on". The fly-out's level control is **editable and shape-adaptive**: exactly `["off","on"]` renders one toggle switch; any other level list renders a vertical list of pickable rows whose FIRST entry is always "Default" (submitted as the empty string). Form only — the wire semantics stay the local `thinkingLevels` + `""` contract, never the reference's effortOptions/variant derivation (A9 was scoped out). A pick commits immediately through the same `{thinking}` payload the composer-level control sends, and does not close the fly-out: a level is a mid-visit edit, so the visit continues into the window list below it. A model that is hovered but not picked renders the control disabled, because the recorded settings belong to the active model. A recorded level the target model does not support highlights nothing — the row-badge anti-stale rule (B11) applied to the control.
 
-A context-window radio group mounts only when the target model's `/api/models` entry carries at least two `contextWindowOptions`; a model without the field — or with a single option, which would be a no-op choice — renders no control. Today that is exactly `MiniMax-M3` and `MiniMax-M3.1-Flash-Preview` (`[512000, 1000000]`); every other catalogue entry stays field-free. Each option label is a compact token count (`512K`, `1M`), and an option the engine hints as `higher_usage` (`contextWindowOptionHints`) carries a "higher usage" tag. The two-column fly-out clamps itself to the viewport (`max-height: 100vh − 16px`) and each column scrolls its own overflow, so on short viewports the settings column's level control is never covered by the rows column.
+A context-window control mounts only when the target model's `/api/models` entry carries at least two `contextWindowOptions`; a model without the field — or with a single option, which would be a no-op choice — renders no control. Today that is exactly `MiniMax-M3` and `MiniMax-M3.1-Flash-Preview` (`[512000, 1000000]`); every other catalogue entry stays field-free. The control is a list of the compact sizes (`512K`, `1M`), in place inside the fly-out and marked with a ✓ on the recorded one. An option the engine hints as `higher_usage` (`contextWindowOptionHints`) carries a "higher usage" tag, which rides the option it belongs to. The fly-out clamps to the viewport (`max-height: 100vh − 16px`).
 
-When the focused row is not the active model, the settings column renders a **preview**: the options show (so the user can see what the model offers before picking it), but the controls are disabled and carry a "preview" marker — the recorded settings belong to the active model, and committing them for an unselected model has no contract meaning under the unchanged `/api/set-model` payload. Two empty states cover the rest: nothing describable (no focused row, no active model) shows "Select a model to see its settings"; a target model advertising neither context-window options nor thinking levels shows its MODEL NAME first, then "This model has no adjustable settings." — the container is an `aria-live="polite"` region, and announcing the bare sentence would leave a screen-reader user asking which model it is about. Where each control edits: a context-window radio commits from BOTH the settings column and the panel-bottom area — immediately, **without closing the menu**, so consecutive adjustments are possible; a LEVEL is pickable only in the settings column (or the composer-level control) — the panel-bottom area renders levels as read-only badges.
+When the fly-out describes a model that is not the active one, its controls render as a **preview**: the options show (so the user can see what the model offers before picking it), but they are disabled — committing them for an unselected model has no contract meaning under the unchanged `/api/set-model` payload. Two empty states cover the rest: nothing describable (no fly-out) shows "Select a model to see its settings"; a target model advertising neither context-window options nor thinking levels shows its MODEL NAME first, then "This model has no adjustable settings." — the container is an `aria-live="polite"` region, and announcing the bare sentence would leave a screen-reader user asking which model it is about. Where each control edits: a context window is pickable from the fly-out, a thinking level from the same fly-out and from the composer-level control.
 
 While the picker is open, the frontend also keeps a **draft mirror** (`useState` map keyed by model id): every pick lands in the mirror before the wire round-trip, so the highlight moves the instant the user clicks and does not blink back to the stale prop while the server confirms or `/api/models` re-fetches (a catalogue refresh mid-interaction never interrupts the flow). Closing the picker drops the mirror; reopening starts from the persisted state the server reported.
 
-Close semantics (as measured): a `pointerdown` outside closes the menu; clicking a model row picks it and closes the menu; picking a setting commits and keeps the menu open (levels pick from the settings column; window radios pick from the settings column and the panel-bottom area alike); on the closed trigger, `↓`/`→` opens the menu and focuses the first row (`↑` the last), and the panel's own engine takes over from there — `→` on a provider row opens the cascade and focuses its first model, `↑`/`↓` cycle inside the cascade, `Home`/`End` jump to its ends, so the whole chain is keyboard-only reachable; `←` inside an open cascade closes only the cascade and restores focus to the provider row, leaving the menu open; `Escape` closes the whole menu (the cascade goes with it, and focus returns to the trigger).
+Close semantics (as measured): a `pointerdown` outside closes the menu; clicking a model row that has nothing to configure records it and closes the menu, while clicking a row that has settings records the model and keeps the fly-out open; picking a context window records it and closes the menu; picking the thinking switch keeps the menu open. On the closed trigger, `↓`/`→` opens the menu and focuses the first model row (`↑` the last), and the list's own engine takes over from there — `↓`/`↑` move between model rows, `Home`/`End` jump to its ends, so the whole chain is keyboard-only reachable; `Escape` retracts an open fly-out before it closes the menu, and focus returns to the trigger.
+
+The retraction grace belongs to the row that **owns** a fly-out. Leaving a row arms a 120ms timer so the cursor can cross the gap to that row's own panel without the surface vanishing mid-crossing; entering a row cancels the timer. A row with nothing to configure must therefore not cancel it — it is not crossing a gap, it is walking away from a surface it never claimed, and with no fly-out of its own to re-arm, cancelling left the previous model's panel pinned in place for as long as the cursor rested there. Measured: hovering `MiniMax-M3` and then `MiniMax-M2.7` retracts M3's panel; hovering M3 and then the composer retracts it too; hovering M3, crossing into its panel, and leaving it there holds it open, and hovering another model that *does* have settings re-anchors it to that row. The focus path carries the identical gate, because a row's `onBlur` arms the same timer its `onMouseLeave` does, so keyboard reached the same trap. The click path puts the cancel and the claim inside one `hasSettings` branch for the same reason — a gate wrapping only the claim would strand the panel identically. `webapp/test/model-picker-layout.test.ts` (C2, C6) pins the gate's position relative to both calls rather than the calls' mere presence, which is what let this ship once.
 
 Where the metadata comes from: the same engine-materialised builtin tree as the thinking projection (`provider.minimax.models` in `<engine data dir>/config.yaml`, keys `contextWindowOptions` / `contextWindowOptionHints` / `limit.context`). `GET /api/models` reads it on every request (`readEngineBuiltinContextWindows`, `server/lib/engine-catalogue.js`) and annotates both the builtin shell entries and the engine-session wire-form minimax_api entries; the highlighted value resolves to the recorded pick first and the model's `contextLimit` (the engine's current effective window) second, and is reported as `currentContextWindow`.
 
 Contract note (ticket 49, both batches): neither batch changed **any field** of the `/api/set-model` request body — picks still travel as `{model, contextWindow}` / `{contextWindow}` / `{thinking}` exactly as U6 and the composer-level effort control shipped them (batch 2's in-picker level picks reuse the composer control's `{thinking}` payload verbatim), and the local thinking contract (`thinkingLevels` catalogue + `""` = engine default) is untouched; the reference's effortOptions/variant derivation (A9) was scoped out and would be its own ticket with the server side. The provider grouping (models bucketed per provider with sticky headers) and the three thinking displays (row badge, chip suffix, composer control) are the two explicit user exceptions from `PROMPT-ui-fidelity.md` — they take precedence over anything the reference layout does and must survive any future picker rework.
 
-Testability of those two exceptions: the derivations behind them are exported pure functions in `packages/webui/webapp/lib/model-groups.ts` — `groupModelsByProvider`, `providerIdOfModel`, `isGroupDisabled`, `thinkingLevelsForModel`, `thinkingLevelKey`, `chipLevelSuffix`, `modalityBadgeKey`, `providerLabel` — and `components/composer.tsx` imports that module rather than re-deriving the rules inline. `webapp/test/composer-models.test.ts` therefore drives the product functions; it previously re-implemented the grouping loop in the test file, which made red line ⑤ unfalsifiable (a broken grouping stayed green). The extraction is behaviour-neutral: the code moved with its inputs named, and nothing about what a user sees changed. `webapp/test/composer-thinking-tripwire.test.ts` keeps pinning the call site, so a half-done extraction — an exported function the selector no longer calls — fails.
+Testability of those two exceptions: the derivations behind them are exported pure functions in `packages/webui/webapp/lib/model-groups.ts` — `groupModelsByProvider`, `providerIdOfModel`, `isGroupDisabled`, `isBuiltinMiniMaxModel`, `orderModelGroups`, `filterModelGroups`, `fuzzyMatches`, `thinkingLevelsForModel`, `thinkingLevelKey`, `chipLevelSuffix`, `modalityBadgeKey`, `providerLabel` — and `components/composer.tsx` imports that module rather than re-deriving the rules inline. `webapp/test/composer-models.test.ts` therefore drives the product functions; it previously re-implemented the grouping loop in the test file, which made red line ⑤ unfalsifiable (a broken grouping stayed green). The extraction is behaviour-neutral: the code moved with its inputs named, and nothing about what a user sees changed. `webapp/test/composer-thinking-tripwire.test.ts` keeps pinning the call site, so a half-done extraction — an exported function the selector no longer calls — fails. The three newest exports (`orderModelGroups`, `filterModelGroups`, `fuzzyMatches`) arrived with the favourites and search work rather than with the exceptions, and are driven by `webapp/test/model-favorites-search.test.ts` on the same principle; `model-favorites.ts` holds the store beside them, and its `toggleFavoriteId` is a pure function precisely so the array ORDER the star returns is testable.
 
 Honest boundary — a pick is recorded, not yet engine-applied. `POST /api/set-model` accepts `contextWindow` (tokens; `null` clears), validates it, records it in `cs.model.contextWindow`, and echoes it in the response. The engine's ACP surface has no channel for it: `session/set_config_option` accepts exactly three config ids, and the `model` value's wire encoding (`m:<provider>:<model>:u|v:<variant>`, packages/tui `control-state.ts#modelConfigValue`) has no context segment — verified against the shipped engine bundle (0.5.5) as well as this repo's source, whose runtime `models.select` does accept a `contextLimit` but is reachable only from the TUI/runtime clients. The recorded pick is therefore a webui-side preference the picker reflects immediately; the model switch that always accompanies it does reach the engine through the existing `set_config_option{configId:"model"}` push. Wiring the value into an engine-side apply is the engine ticket's work, and the route's shape (validate → record → echo) is the seam it plugs into. The same follow-the-model rule as thinking applies: switching to a model that does not list the recorded window clears it (`contextWindow: null`) in the same request.
 
-## File tree (delivered UI)
+## The context-window panel (what the ring beside the composer opens)
+
+The ring next to the composer is a 14px progress ring on a bare 30px square —
+no percentage next to it, because the percentage lives in the panel. Its hover
+names the control (上下文窗口) while its `aria-label` states the action
+(显示上下文窗口用量): the panel's own title already reads 上下文窗口, so a
+tooltip repeating the action told the user nothing they could not read off the
+button they were pointing at. Opening it gives a 400px portalled panel that is
+a row-for-row replica of the reference's:
+
+```
+上下文窗口                    29% ⌄     ← title + percent, and a disclosure
+▓▓▓▓░░░░░░░░░░░░░░░░░░░░░░░              ← ONE bar, one colour
+■ 消息        71.9%            ← all six categories, a dash where unreported
+■ 工具        13.1%
+  …
+────────────────────────────
+套餐用量 · Explore
+5 小时限额          0% / 100%
+▓░░░░░░░░░░░░░░░░░░░░░░
+4小时57分后重置
+周限额              16% / 100%
+▓▓▓░░░░░░░░░░░░░░░░░░░
+4天2小时后重置
+```
+
+The three things it draws come from three different places, and keeping them
+separate is what stops them drifting from their own source.
+
+**The window itself** comes from the state snapshot's `context` block —
+`used` / `limit` / `percent`, and `breakdown` when the engine sends it. The
+header percentage has five bands: `0%` for nothing, `<1%` for a real reading
+that rounds to zero (so a long session is visibly accumulating), one decimal
+below 10%, integer above. The bar is ONE segment even when a breakdown exists:
+the rows carry the composition, and a second encoding of the same fact in a
+4px strip is not readable at that size.
+
+**The six categories are always listed; the ones the engine did not report
+print a dash.** `context.breakdown` is `null` today — the engine does not emit
+it, and nothing in this stack can reconstruct it: the runtime records
+`input_tokens` / `output_tokens` / `cache_read_tokens`, and those three are
+wire-level counters, not the six semantic buckets (messages, tools, memory,
+skills, other, system prompt are all mixed inside `input_tokens`). So the panel
+lists the reference's six, in the reference's order, and prints an em dash
+where it has no figure. A screen reader gets "Not reported"
+(`context.breakdown.unreported`) for it, because a dash on its own says nothing
+about whether the figure is zero or merely absent.
+
+A dash and `0.0%` are different facts and neither substitutes for the other.
+`0.0%` is the engine having **said** this category is empty; a dash claims only
+that nothing arrived. A category the engine reported as `0` therefore draws
+`0.0%`, a category it left out draws a dash, and an absent `breakdown` block
+leaves all six as dashes. `contextBreakdownRows` returns all six rather than
+filtering, which is what makes the section drawable at all today — the earlier
+version returned an empty list, and an empty list is an invisible section. The
+suite pins each of the three states separately, because collapsing "reported
+zero" into "unreported" is the easy regression and it is invisible in the UI
+until the engine starts sending the block.
+
+**The quota rows are the settings page's rows, and they follow the MODEL, not
+the account.** Same two figures, same `remaining → used` inversion, same reset
+caption, drawn through the settings page's own `UsageBar` component — so a
+figure cannot read differently in the two places it appears. The section
+renders even with no figure; `UsageBar` then prints its placeholder, which is
+what the settings card does. A missing figure stays `null` and never becomes
+0%: "we know nothing" and "you have used nothing" are different facts. The
+视频限额 row the settings card carries is deliberately not here — the
+reference's flyout shows two rows, and the third is a video figure this
+edition has no source for in a context panel. The header reads
+`套餐用量 · <tier>` when the engine names a plan and bare `套餐用量` when it
+does not.
+
+The gate is the active model, because Token Plan is MiniMax's subscription
+and its two windows meter **MiniMax** usage. Showing the section beside a
+BYOK model from another provider reads one plan's allowance against a model
+that does not spend it — not a stale figure, a wrong one. `showPlanSection`
+reads the model id's provider prefix (`minimax_api/MiniMax-M3` →
+`minimax_api`), and the two failure directions are not symmetric, so an
+unrecognised shape (no `/`, an empty model segment, no model at all) HIDES
+the section: hiding costs a missing block, showing MiniMax's plan next to
+someone else's model is a factually wrong block. An account may be
+subscribed and driving a foreign model, or driving MiniMax without a
+subscription; only the second is what this section has anything to say about,
+which is why the account's own `tokenPlanQuotaState` is not consulted here —
+that field describes whether the engine could read the plan, not whose usage
+the plan meters, and it does not reach this panel's state block anyway.
+
+Two things this round removed. The 已用 `used / limit` row went, because the
+header's percentage already says it and printing it twice is two answers to
+one question; its `context.used` label lost its last consumer and left both
+dictionaries. And the `context.plan` field went with it — the panel used to
+read a block that nothing ever populates, which is why the 套餐 section could
+not render at all; a field with no producer and no reader is the same dead
+chain the model picker's add-provider deep-link was, so `ContextPlanSection`,
+`ContextPlanRow` and the server's `context.plan: null` are deleted rather than
+left as a promise.
+
+What you would tell it works. The pure parts — `formatPercent`,
+`contextBreakdownRows`, `quotaPlanRows` — live in
+`packages/webui/webapp/lib/context-breakdown.ts` and are driven as product
+functions in `webapp/test/context-meter-format.test.ts`, alongside the same
+five percent bands, the category order, the `remaining → used` inversion, and
+the null-not-zero rule. That file previously re-declared `formatPercent`
+locally and asserted its own copy, so editing the component could not fail it;
+the mirror is gone. The panel's SHAPE is a source tripwire in the same file,
+because a unit test cannot see that the component calls the right things — a
+panel that inlined its own percentage math, or went back to reading
+`context.plan`, would leave every pure-function assertion green. Two of those
+tripwires exist for this round's defect specifically: the breakdown may not be
+re-gated on `breakdown.length > 0` (re-gating it makes the whole block vanish
+again while every pure-function assertion stays green), and an unreported share
+must go through the `percent === null` branch rather than an optional chain
+(optional chaining prints `undefined%` for it, and reading the null as 0
+invents a conclusion the engine never stated).
+
+Twenty-two plausible reverts were mutation-tested against those guards, and
+every one turns a named assertion red: chevron direction, segmented bar, the
+已用 row, `context.plan` in either the component or the wire, the old category
+order, the inverted percentage, a third video row, a failed read treated as a
+figure, an unconditional plan name — plus ten added here: an absent block
+returning no rows again, a skipped category treated as `0`, a genuinely
+reported `0` collapsed to unknown, the `isFinite` guard dropped so `NaN`
+reaches the panel, the zero-total guard dropped so a share of nothing divides
+by zero, the section re-gated on `length > 0`, the `=== null` test deleted,
+the share optional-chained, the dash losing its screen-reader words, and
+`context.breakdown.unreported` missing from the zh dictionary, plus twelve more
+from the round that followed — the plan section showing for any model, the
+provider prefix becoming a whole-string substring match, a separator-less id
+counting as MiniMax, an id naming no model still counting, the verdict being
+computed and never wired to the JSX, the gate becoming constantly true, the
+ring's hover reverting to repeating the action, the brain's hover reverting to
+the level word, the unknown branch folded into off, the on/off branches
+swapped, the read-only depth-tier brain losing the new hover, and the new
+hover string missing from the zh dictionary. The guard that
+reads "the panel does not read `context.plan`" strips the file's comments first
+and excludes `context.planTitle`: a plain substring match fired on the file's
+own prose explaining that it used to read the field, and on the legitimate
+套餐用量 label key.
+
 
 Every shipped file tree, panel and column evidence is `grep`-able. The list
 below cites the component file and one `data-testid` per surface.
@@ -902,7 +1136,7 @@ below cites the component file and one `data-testid` per surface.
 | Workspace picker (modal) | `components/workspace-picker.tsx` | `workspace-picker` |
 | Provider management | `components/provider-management.tsx` | `providers-panel` |
 | Add-model dialog + fetched-models dialog (ticket 54; lifted to its own file in acceptance round 2 so the suite can render-test it; ticket 56 visual parity) | `components/add-model-dialog.tsx#AddModelDialog` / `#FetchedModelsDialog` (controlled surfaces `#AddModelDialogForm` / `#FetchedModelsDialogBody`, pure helpers `#collectDialogErrors` / `#defaultChecked`) | `provider-dialog` (fields `provider-dialog-provider-select` / `-api-key` / `-api-key-reveal` / `-model-add` / `-autofetch` / `-models-empty` / `-cancel` / `-save` / `-footer` / `-errors`; per-entry `provider-dialog-entry-{n}` with `-name` / `-context` / `-max-output` / `-thinking` / `-attachment-{mod}` / `-test` / `-test-result` / `-reset` / `-remove`) / `fetched-models-dialog` (`fetched-models-title` / `-item-{id}` / `-select-all` / `-cancel` / `-add`) |
-| Context meter / panel | `components/context-meter.tsx` | `context-meter` |
+| Context meter / panel | `components/context-meter.tsx` (pure logic in `lib/context-breakdown.ts`; the plan rows draw the settings page's `UsageBar`) | `context-meter` / `context-panel` (`-usage-expand-icon` / `-progress-bar` / `-breakdown` / `-plan-section`, quota bars `context-quota-fiveHour` / `-weekly`) |
 | Settings modal | `components/panels.tsx#SettingsModal` | `settings-modal` |
 | Segmented tabs of the Usage & models section (ticket 53) | `components/panels.tsx#UsageModelsSection` | `usage-models-segment` (tabs `usage-models-tab-token-plan` / `usage-models-tab-custom-models`) |
 | Plan / usage / credits / invoice cards of the Usage & models section (ticket 37, reworked 53) | `components/panels.tsx#PlanCard` / `#UsageCard` / `#CreditsCard` / `#InvoiceCard` | `settings-plan-card` / `settings-usage-card` (bars `usage-bar-fiveHour` / `-weekly` / `-video`) / `settings-credits-card` / `settings-invoice-card` (`invoice-apply-link`) |
@@ -1445,9 +1679,12 @@ Below the page's h2 sits the desktop's segmented header: 「Token Plan 使用中
 disclosure chevron render in the desktop's form, and the dropdown itself is
 deliberately omitted per ticket 53 — the local edition has no plan source to
 switch between) | a hairline | 「自定义模型」. The page lands on the Token
-Plan view; the one exception is the model selector's add-provider deep-link
-(`autoAddProvider`), which seeds the custom-models view — otherwise the add
-flow would fire behind a view where the panel is not rendered.
+Plan view, always. It used to have one exception — the model selector's
+add-provider deep-link seeded the custom-models view, because the add flow
+fires on mount and would otherwise run behind a view where the panel is
+not rendered. That deep-link is gone with the picker's add row (see the
+model-management row in *The model picker* above), so there is one landing
+view and 「自定义模型」 is one click away on the header above.
 
 The Token Plan view is the desktop's five blocks (the tabs plus four cards):
 
@@ -1530,6 +1767,8 @@ provider grouping and the thinking-display exceptions are unchanged; the
 auto-add deep-link still lands on the custom-models view, now opening the
 dialog. The legacy rail-draft `addProvider` path and the editor's dead
 auto-focus prop were deleted with their behaviour subsumed by the dialog.
+*(That deep-link was later removed along with the model selector's add row;
+see the model-management row in *The model picker* above.)*
 
 **Acceptance round 2 (same ticket).** The dialog components moved to
 `components/add-model-dialog.tsx` and export their controlled surfaces,
@@ -1708,7 +1947,9 @@ untouched; `SETTINGS_NAV`, the `SettingsSection` union and the deep-link
 entry points (`initialSection`, `autoAddProvider`) are unchanged; the eight
 tabs that were placeholders when this round landed kept their placeholder
 form — the settings-modal port (58) and its four sub-pages (55a) later gave
-most of them content, see the navigation table above. The `usage.used` /
+most of them content, see the navigation table above. (`autoAddProvider`
+did not survive: the model picker's add row is gone, so the flag had no
+producer and was deleted with its effect.) The `usage.used` /
 `usage.reset` label strings, which lost their last consumer to the
 desktop-figure forms, were deleted from both dictionaries.
 
@@ -1746,7 +1987,9 @@ the `SETTINGS_NAV` four-group division and the three-value
 `autoAddProvider` — the model selector's add-provider flow and the user
 menu's usage row both still land where they did); and the eight tabs that
 were placeholders in this round, which the settings-modal port (58) has
-since given content. The dead `if (!section)` branch inside `SettingsPanel`
+since given content. (The model selector's half of that is since gone —
+`autoAddProvider` went with it, and `initialSection` is what the user
+menu's usage row still uses.) The dead `if (!section)` branch inside `SettingsPanel`
 was removed and the `section` prop made required — every reachable tab
 resolves a section, so the branch could never render.
 
@@ -3118,7 +3361,7 @@ not persisted to `localStorage` — they are working state for the current
 page visit; the persisted surface stays `lib/persist.ts`'s contract.
 
 The model picker's chip VALUE always read the server snapshot and needs no
-isolation; its local UI state (open cascade, previewed row, per-model draft
+isolation; its local UI state (open menu, previewed row, per-model draft
 mirror) resets when the session key changes, so no menu state from session A
 visually persists into session B's view. Whether a model pick made in one
 session's view can land in another session's engine config is a

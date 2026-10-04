@@ -48,6 +48,13 @@ export interface ModelProviderGroup<M extends SelectableModel = SelectableModel>
   label: string;
   models: M[];
   auth?: { hasKey: boolean; type: "byok" | "coding-plan" };
+  /**
+   * Per-row no-key verdict, for a section that mixes providers — today only
+   * the favourites section, which pulls starred models out of groups with
+   * different `auth` verdicts and therefore cannot carry one of its own.
+   * Absent on every real provider group, where `auth` is the whole answer.
+   */
+  disabledModelIds?: ReadonlySet<string>;
 }
 
 /**
@@ -114,6 +121,218 @@ export function providerIdOfModel<M extends Pick<SelectableModel, "id" | "provid
 export function isGroupDisabled(group: Pick<ModelProviderGroup, "auth">): boolean {
   if (!group.auth) return false;
   return group.auth.hasKey === false;
+}
+
+/** The provider id of the built-in MiniMax catalogue. */
+export const MINIMAX_PROVIDER_ID = "minimax_api";
+
+/**
+ * True when a model id names a built-in MiniMax model.
+ *
+ * The wire id's provider PREFIX decides it, not the account and not the
+ * model name. An account may be subscribed and still be driving a foreign
+ * model; only the id says whose usage a MiniMax-metered figure is about.
+ *
+ * An unreadable shape HIDES rather than guesses, and the failure directions
+ * are not symmetric: treating an unknown id as MiniMax would meter the
+ * wrong account's plan. So a missing separator (`glm-5.3`, no provider), a
+ * trailing separator (`minimax_api/`, which names no model) and an empty id
+ * are all false. `__engine/m:minimax_api:…` is false as well: the engine's
+ * own encoded id is not the built-in catalogue, and the plan figures do not
+ * describe it.
+ *
+ * One definition of the fact, shared by the two surfaces that need it: the
+ * favourites ordering in this file and the plan section's gate
+ * (`context-breakdown.ts#showPlanSection`).
+ */
+export function isBuiltinMiniMaxModel(modelId: string | null | undefined): boolean {
+  const value = (modelId ?? "").trim();
+  if (!value) return false;
+  const slash = value.indexOf("/");
+  if (slash <= 0 || slash === value.length - 1) return false;
+  return value.slice(0, slash) === MINIMAX_PROVIDER_ID;
+}
+
+/** The section id the favourites list renders under. */
+export const FAVORITES_SECTION_ID = "__favorites";
+
+/**
+ * The order the favourites section lists its models in: built-in MiniMax
+ * first, then everything else by display name.
+ *
+ * MiniMax leads because it is the provider whose models the account's own
+ * plan meters — the one a starred list is most likely being read to reach.
+ * The rest sort by the name the user sees (`label`), not by the id they
+ * never see, and the id breaks a tie so two models with the same label
+ * cannot swap places between renders.
+ *
+ * `localeCompare` rather than `<`: the comparison has to survive a label
+ * that is not ASCII, and it has to be stable, or the list reshuffles on
+ * every open.
+ */
+function compareFavoriteModels<M extends SelectableModel>(a: M, b: M): number {
+  const aBuiltin = isBuiltinMiniMaxModel(a.id);
+  const bBuiltin = isBuiltinMiniMaxModel(b.id);
+  if (aBuiltin !== bBuiltin) return aBuiltin ? -1 : 1;
+  const byName = (a.label || a.id).localeCompare(b.label || b.id);
+  if (byName !== 0) return byName;
+  return a.id.localeCompare(b.id);
+}
+
+/**
+ * Hoist starred models into a section of their own, above the providers.
+ *
+ * The starred models are REMOVED from the provider groups they came from, so
+ * a starred model is listed once and once only — a model appearing both at
+ * the top and in its provider would make "starred" mean nothing. A group
+ * left with no models is dropped rather than rendered as an empty header.
+ *
+ * The favourites section spans providers, so it cannot carry a single
+ * `auth` verdict: a starred model whose provider has no key still 401s on
+ * pick. Those ids come back in `disabledModelIds` so the caller can grey
+ * that row without greying its neighbours.
+ *
+ * With nothing starred the input comes back unchanged (same group objects,
+ * same order) — the common case must not allocate a section nobody sees.
+ *
+ * Re-applying this to its own output is safe: the favourites section is
+ * rebuilt from its own members rather than dropped or duplicated. The
+ * composer never does that (it filters the raw grouping and orders that),
+ * but a function that quietly eats its own section on a second pass is a
+ * trap for the next caller.
+ */
+export function orderModelGroups<M extends SelectableModel>(
+  groups: readonly ModelProviderGroup<M>[],
+  favoriteIds: ReadonlySet<string>,
+  favoritesLabel: string,
+): Array<ModelProviderGroup<M>> {
+  if (favoriteIds.size === 0) return groups as Array<ModelProviderGroup<M>>;
+
+  const starred: M[] = [];
+  const disabledModelIds = new Set<string>();
+  const rest: Array<ModelProviderGroup<M>> = [];
+  for (const group of groups) {
+    // An input that is ALREADY hoisted (a re-order) must not lose its
+    // favourites section: skipping the group would drop every starred model
+    // on the floor, and dropping the section instead would render a starred
+    // model under a provider header — both worse than recomputing. Its
+    // models are starred by construction, so they go back into `starred`
+    // whether or not the caller's set still says so.
+    const alreadyHoisted = group.id === FAVORITES_SECTION_ID;
+    const disabled = isGroupDisabled(group);
+    const keep: M[] = [];
+    for (const model of group.models) {
+      if (!alreadyHoisted && !favoriteIds.has(model.id)) {
+        keep.push(model);
+        continue;
+      }
+      starred.push(model);
+      if (disabled) disabledModelIds.add(model.id);
+    }
+    if (keep.length > 0) rest.push({ ...group, models: keep });
+  }
+  if (starred.length === 0) return rest;
+
+  return [
+    {
+      id: FAVORITES_SECTION_ID,
+      label: favoritesLabel,
+      models: starred.sort(compareFavoriteModels),
+      disabledModelIds,
+    },
+    ...rest,
+  ];
+}
+
+/**
+ * Lowercase and drop everything that is not a letter or a digit.
+ *
+ * Both sides of a comparison go through this, which is what makes `glm5.3`,
+ * `glm-5.3` and `GLM 5.3` the same query. Separators are the difference
+ * between a model id and the way a user remembers it, so they cannot be
+ * allowed to decide whether a model is found.
+ */
+function normalizeForMatch(value: string): string {
+  return value.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+}
+
+/**
+ * True when every character of `needle` appears in `haystack` in order,
+ * not necessarily adjacent.
+ *
+ * This is the "fuzzy" in 「模型搜索」. A substring test is not enough: the
+ * catalogue is full of ids like `minimax_api/MiniMax-M3` and `glm-5.3`, and
+ * nobody types the provider prefix or remembers the exact casing. `mm3`
+ * and `glm53` are what a user actually writes, and neither is a substring
+ * of anything.
+ *
+ * There is deliberately NO special case for a one-character query, and the
+ * reason is worth recording because it looks like a gap. For a single
+ * character, "appears in order" and "appears at all" are the SAME
+ * predicate — there is nothing to be stricter about. An earlier draft of
+ * this file added a "one character must match contiguously" branch; it was
+ * a no-op, and the test written to pin it passed for an unrelated reason
+ * (the fixture happened to contain no such character at all). So `a`
+ * matches every model whose name contains an `a`, which is what typing one
+ * character has always meant everywhere else in the product.
+ */
+export function fuzzyMatches(haystack: string, needle: string): boolean {
+  const q = normalizeForMatch(needle);
+  if (!q) return true;
+  const h = normalizeForMatch(haystack);
+  let at = 0;
+  for (const ch of h) {
+    if (ch === q[at]) at += 1;
+    if (at === q.length) return true;
+  }
+  return false;
+}
+
+/**
+ * Narrow provider groups to the models a search query matches.
+ *
+ * The arithmetic behind the picker's search box (roadmap module H). It is a
+ * pure function so the suite drives the PRODUCT code, for the same reason
+ * `groupModelsByProvider` lives here rather than inline in `composer.tsx`.
+ *
+ * The rules, each of which a test pins:
+ *
+ *   - An empty (or whitespace-only) query returns the INPUT array by
+ *     reference. A fresh array re-renders the whole list on every open;
+ *     the identity is what lets the caller skip the work.
+ *   - A model matches on `id` OR `label`, fuzzily. Users copy ids off logs
+ *     and read labels off the screen; both have to land.
+ *   - A group whose PROVIDER label or id matches keeps ALL of its models.
+ *     Typing a provider name and getting one of its twenty models is the
+ *     surprise this avoids — the user named the provider, so the
+ *     provider's models are the answer.
+ *   - A group with no matching model is dropped rather than rendered as an
+ *     empty header; an empty provider header is a dead end.
+ *   - Group order and within-group model order survive. That order is the
+ *     engine's own catalogue ordering and is meaningful; a filter that
+ *     re-sorted it would silently reshuffle the list being read. Starring
+ *     is the one thing that DOES reorder, and it does so afterwards, in
+ *     `orderModelGroups`.
+ *   - `auth` rides along, because a rebuild that dropped it would paint a
+ *     keyed provider as if it had no key.
+ */
+export function filterModelGroups<M extends SelectableModel>(
+  groups: readonly ModelProviderGroup<M>[],
+  query: string,
+): Array<ModelProviderGroup<M>> {
+  if (!query.trim()) return groups as Array<ModelProviderGroup<M>>;
+  const kept: Array<ModelProviderGroup<M>> = [];
+  for (const group of groups) {
+    if (fuzzyMatches(group.label, query) || fuzzyMatches(group.id, query)) {
+      kept.push(group);
+      continue;
+    }
+    const models = group.models.filter(
+      (model) => fuzzyMatches(model.id, query) || fuzzyMatches(model.label, query),
+    );
+    if (models.length > 0) kept.push({ ...group, models });
+  }
+  return kept;
 }
 
 /**
