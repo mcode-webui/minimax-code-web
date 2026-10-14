@@ -364,6 +364,61 @@ export const sendCommand = (cmd: string) =>
     timeoutMs: SEND_ACK_TIMEOUT_MS,
   });
 
+// --- message-level edit / rewind (PB-15) -------------------------------------
+//
+// Two windows over the engine's conversation-mutation surface
+// (`cli-service.ts:254 editSessionMessage` / `:244 rewindSession`). Neither
+// carries a session id: the server resolves it from the conversation state
+// it already holds, so a body-supplied id could not aim a history deletion
+// at a conversation this tab is not showing.
+//
+// `rewound` is passed through as the engine reported it and is NOT
+// defaulted. An `ok:true` response with `rewound:false` is a real answer
+// (the engine refused to rewind without failing), and the caller must be
+// able to see the difference instead of assuming the click worked.
+
+/** `POST /api/messages/edit` — the engine's atomic rewind-and-resubmit. */
+export interface MessageEditWire {
+  ok: boolean;
+  rewound: boolean;
+  turnId?: string;
+  userMessageId?: string;
+  /** How many messages the edit discarded — a count, never the ids. */
+  deletedCount?: number;
+}
+
+/** `POST /api/messages/rewind` — truncate after a message, do NOT resubmit. */
+export interface MessageRewindWire {
+  ok: boolean;
+  rewound: boolean;
+  deletedCount?: number;
+  /**
+   * The engine's per-turn file outcome. `null` means the engine reported
+   * none — NOT "nothing to revert", and never a fabricated success.
+   */
+  turnDiffRewind?: {
+    status: string;
+    revertedTurnIds?: string[];
+    errorCode?: string;
+  } | null;
+}
+
+// Both are engine calls behind a user-pressed button, so they get the same
+// acknowledgement deadline `/api/send` uses rather than the short default.
+export const editSessionMessage = (userMessageId: string, content: string) =>
+  request<MessageEditWire>("/api/messages/edit", {
+    method: "POST",
+    json: { userMessageId, content },
+    timeoutMs: SEND_ACK_TIMEOUT_MS,
+  });
+
+export const rewindSession = (userMessageId: string) =>
+  request<MessageRewindWire>("/api/messages/rewind", {
+    method: "POST",
+    json: { userMessageId },
+    timeoutMs: SEND_ACK_TIMEOUT_MS,
+  });
+
 // `/api/cmd` is the one send endpoint that does NOT acknowledge before it
 // works: it answers after the dispatcher has run, so its deadline covers the
 // command itself (`/help` waits on the engine's command list). It shares the

@@ -24,6 +24,7 @@ import {
   turnCoordinatesByTurn,
 } from "@/lib/edited-files";
 import { EditedFilesCard } from "./edited-files-card";
+import { UserMessage } from "./message-editor";
 import { useTurnDiffs } from "@/lib/turn-diff";
 import { useReviewLink, type ReviewLink } from "@/lib/review-link";
 import {
@@ -511,6 +512,7 @@ export function Chat({
                       turnProcessExpanded={turnExpanded}
                       turnProcessDefaultExpanded={defaultExpandedByTurn.get(turnIndex) ?? true}
                       onTurnProcessExpandedChange={setTurnExpanded}
+                      sessionRunning={sessionRunning}
                     />
                   )}
                   {card}
@@ -581,6 +583,7 @@ function Block({
   turnProcessExpanded,
   turnProcessDefaultExpanded,
   onTurnProcessExpandedChange,
+  sessionRunning = false,
 }: {
   block: TranscriptBlock;
   t: (key: MessageKey) => string;
@@ -595,23 +598,23 @@ function Block({
   turnProcessExpanded?: boolean;
   turnProcessDefaultExpanded?: boolean;
   onTurnProcessExpandedChange?: (turnIndex: number, next: boolean) => void;
+  /** PB-15: a rewind rewrites history, so the 编辑 control is offered only
+   *  while the engine is not mid-turn. Defaults to false for call sites that
+   *  predate PB-15. */
+  sessionRunning?: boolean;
 }) {
-  // User turns are the only ones that get a bubble.
+  // User turns are the only ones that get a bubble, and the bubble is the
+  // only place PB-15's 编辑 control lives: `UserMessage` renders the bubble
+  // unchanged and adds the control only when the block carries an engine
+  // coordinate (`userMessageId`) and the session is idle.
   if (block.role === "user") {
     return (
-      <div className="mb-4">
-        <div className="message-animate-in group flex w-full justify-end">
-          <div className="flex w-full flex-col items-end gap-2">
-            <div className="w-fit max-w-[80%] rounded-[16px] bg-bg_grouped_tertiary px-3 py-2 text-left">
-              <div className="text-text_default_primary">
-                <p className="desktop-text-chat-body message-container-user-text break-words whitespace-pre-wrap">
-                  {block.text}
-                </p>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
+      <UserMessage
+        text={block.text}
+        messageId={block.userMessageId}
+        sessionRunning={sessionRunning}
+        t={t}
+      />
     );
   }
 

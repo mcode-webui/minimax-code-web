@@ -70,6 +70,8 @@ import * as modelSourceRoute from "./routes/model-source.js";
 import * as followUpRoute from "./routes/follow-up.js";
 import * as queueRoute from "./routes/queue.js";
 import * as goalRoute from "./routes/goal.js";
+
+import * as messageEditRoute from "./routes/message-edit.js";
 import * as gitRoute from "./routes/git.js";
 import * as pluginsRoute from "./routes/plugins.js";
 import * as turnDiffRoute from "./routes/turn-diff.js";
@@ -198,6 +200,18 @@ export const OWNED_ROUTES = new Set([
   "POST /api/goal",
   "PATCH /api/goal",
   "DELETE /api/goal",
+
+
+  // PB-15 — the two destructive writes a user makes when the message they
+  // already sent was the wrong message. They reach
+  // `cliService.editSessionMessage` and `cliService.rewindSession`, both of
+  // which the engine has carried all along. Both are WRITES and both may
+  // boot a runtime, because the user pressed a button on a message; see
+  // `engine/message-edit.js`. The session id comes from the server's
+  // conversation state on both, never the body, for the same reason
+  // `/api/send` and `/api/queue` do.
+  "POST /api/messages/edit",
+  "POST /api/messages/rewind",
   // Usage / quota.
   "POST /api/usage",
   "POST /api/usage-trigger",
@@ -655,6 +669,16 @@ export function createHonoApp() {
   );
   app.post("/api/queue/cancel", (c) =>
     invokeHandler(c, c.get(CAPTURE_KEY), queueRoute.handleQueueCancel),
+  );
+  // ----- PB-15: message-level edit / rewind -----
+  // Registered next to the queue because both act on a message the user
+  // already sent, and both take the session id from the server's
+  // conversation state rather than the body.
+  app.post("/api/messages/edit", (c) =>
+    invokeHandler(c, c.get(CAPTURE_KEY), messageEditRoute.handleMessageEdit),
+  );
+  app.post("/api/messages/rewind", (c) =>
+    invokeHandler(c, c.get(CAPTURE_KEY), messageEditRoute.handleMessageRewind),
   );
 
   // ----- PB-14 batch A: the thread goal -----

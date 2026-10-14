@@ -376,6 +376,9 @@ describe("handleSwitchSession — v2 transcript backfill", () => {
     assert.equal(res._status, 200);
     const expected = [
       "› 调研市面上 AI 小说工具",
+      // PB-15: the user row's `msg_id` rides along as the edit / rewind
+      // coordinate the inline editor selects on.
+      "§§ user_msg=msg-user-1",
       "▲ 先搜索",
       "● 我先看看",
       "→ bash  {\"command\":\"ls\"}",

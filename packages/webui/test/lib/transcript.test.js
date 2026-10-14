@@ -578,14 +578,19 @@ describe("messagesToChatLines — the §§ turn_msg marker", () => {
     const lines = messagesToChatLines(r.messages).lines;
     assert.deepEqual(
       lines.filter((l) => l.startsWith("§§")),
-      ["§§ turn_msg=m-a3", "§§ turn_msg=m-b1"],
+      [
+        "§§ user_msg=m-u1",
+        "§§ turn_msg=m-a3",
+        "§§ user_msg=m-u2",
+        "§§ turn_msg=m-b1",
+      ],
     );
   });
 
   test("the marker lands AFTER the turn's last line, not before it", () => {
     const r = read([userRow(TURN_A, "m-u1", "q"), assistantRow(TURN_A, "m-a1", "a")]);
     const lines = messagesToChatLines(r.messages).lines;
-    assert.deepEqual(lines, ["› q", "● a", "§§ turn_msg=m-a1"]);
+    assert.deepEqual(lines, ["› q", "§§ user_msg=m-u1", "● a", "§§ turn_msg=m-a1"]);
   });
 
   test("a turn with no assistant message contributes no marker", () => {
@@ -593,7 +598,7 @@ describe("messagesToChatLines — the §§ turn_msg marker", () => {
     // to select — and inventing one is exactly the fallback this forbids.
     const r = read([userRow(TURN_A, "m-u1", "q")]);
     const lines = messagesToChatLines(r.messages).lines;
-    assert.deepEqual(lines, ["› q"]);
+    assert.deepEqual(lines, ["› q", "§§ user_msg=m-u1"]);
   });
 
   test("a turn coordinate split across two turns never leaks across", () => {
@@ -605,7 +610,14 @@ describe("messagesToChatLines — the §§ turn_msg marker", () => {
       assistantRow(TURN_B, "b-last", "第二回合"),
     ]);
     const lines = messagesToChatLines(r.messages).lines;
-    assert.deepEqual(lines, ["● 第一回合", "§§ turn_msg=a-only", "› 第二问", "● 第二回合", "§§ turn_msg=b-last"]);
+    assert.deepEqual(lines, [
+      "● 第一回合",
+      "§§ turn_msg=a-only",
+      "› 第二问",
+      "§§ user_msg=m-u2",
+      "● 第二回合",
+      "§§ turn_msg=b-last",
+    ]);
   });
 
   test("rows without the coordinate columns produce no marker at all", () => {
@@ -637,8 +649,36 @@ describe("messagesToChatLines — the §§ turn_msg marker", () => {
   });
 
   test("a user row's msg_id is never mistaken for the turn's coordinate", () => {
+    // PB-15: the user row's msg_id IS now emitted, but only under the
+    // `§§ user_msg=` marker — it is the edit / rewind selector. It must
+    // never reach a `§§ turn_msg=`, which is the turn-diff selector.
     const r = read([userRow(TURN_A, "m-u1", "q"), assistantRow(TURN_A, "m-a1", "a")]);
     const lines = messagesToChatLines(r.messages).lines;
-    assert.ok(!lines.some((l) => l.includes("m-u1")));
+    assert.ok(lines.includes("§§ user_msg=m-u1"));
+    assert.ok(!lines.some((l) => l.startsWith("§§ turn_msg=") && l.includes("m-u1")));
+    assert.ok(lines.includes("§§ turn_msg=m-a1"));
+  });
+
+  test("the user marker is written only for a user row, never for an assistant one", () => {
+    const r = read([userRow(TURN_A, "m-u1", "q"), assistantRow(TURN_A, "m-a1", "a")]);
+    const lines = messagesToChatLines(r.messages).lines;
+    assert.equal(lines.filter((l) => l.startsWith("§§ user_msg=")).length, 1);
+    assert.ok(!lines.some((l) => l.startsWith("§§ user_msg=") && l.includes("m-a1")));
+  });
+
+  test("a user row without a msg_id column contributes no user marker", () => {
+    // The legacy probe shape, and the degraded case the editor relies on:
+    // no coordinate means no 编辑 control, not a fabricated one.
+    const legacy = [{ role: "user", content: "旧问题" }, { role: "assistant", content: "旧答案" }];
+    assert.deepEqual(messagesToChatLines(legacy).lines, ["› 旧问题", "● 旧答案"]);
+  });
+
+  test("a user marker lands after the message's LAST prose line", () => {
+    // A multi-line user message is emitted one prefixed line per source
+    // line; a marker placed after the FIRST of them would attach to a block
+    // the decoder had not finished.
+    const r = read([userRow(TURN_A, "m-u1", "第一行\n第二行")]);
+    const lines = messagesToChatLines(r.messages).lines;
+    assert.deepEqual(lines, ["› 第一行", "› 第二行", "§§ user_msg=m-u1"]);
   });
 });

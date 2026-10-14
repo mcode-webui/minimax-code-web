@@ -2150,6 +2150,88 @@ endpoints. No banner and no `/goal` command, which is batch C; the
 `cs.goal` memory slot the fake goal lived in is still there and is
 retired with batch D.
 
+### Message-level edit and rewind: the message you sent was the wrong message (PB-15)
+
+**What the user sees.** Hovering their own message bubble reveals 编辑.
+Clicking it replaces the bubble in place with a textarea and two
+controls — 从此处重发 and 取消. Confirming rewrites the conversation from
+that message; cancelling puts the bubble back exactly as it was. There is
+no modal: a modal hides the very message being rewritten, and the desktop
+edits in place.
+
+**The control exists only where there is a target.** Both engine methods
+select on the engine's own `msg_id` for the user's message row, and
+neither can guess it. `server/lib/transcript.js#messagesToChatLines`
+writes that id as a `§§ user_msg=<id>` marker right after the message's
+text — the same device `§§ turn_msg=<id>` already uses for the turn-diff
+card — and `webapp/lib/transcript.ts#decodeTranscript` consumes it onto
+the user block. A user block with no marker renders **no** 编辑 control: a
+message the engine recorded before the marker existed has no honest edit
+target, and a button that would send an empty selector is the dead control
+this repository has already had to delete once. The control is also absent
+while a turn is running, because a rewind rewrites history underneath one.
+
+**Which engine call a confirm makes, and why it is not always the same
+one.** Changed text is the engine's `editSessionMessage`, which is
+atomic: it rewinds to the message, rewrites it and resubmits in one
+operation. Unchanged text is `rewindSession` followed by an ordinary
+`/api/send`, because the engine's rewind only truncates and stops — and
+re-running an identical message through the atomic path would mint a
+second engine operation for no change to the text. The comparison is
+exact: a draft differing only in trailing whitespace is a different
+message and is sent as one. `lib/message-edit.ts` owns that decision as a
+pure function, because a branch written inside a render is a branch nobody
+tests.
+
+**`rewound:false` is not a success.** Both endpoints can answer `200`
+without rewinding. The server projects the engine's boolean rather than
+defaulting it, the client keeps a separate `not_rewound` outcome, and the
+row words it as "the engine did not rewind this message". There is no path
+in the editor that renders 已重发 without the engine having said
+`rewound: true`.
+
+**The file outcome is reported, not swallowed.** A rewind can truncate a
+history and leave the discarded turn's files exactly as they were. The
+engine's per-turn report (`status`, `revertedTurnIds`, `errorCode`) is
+passed through verbatim, and `null` — the engine reported no outcome at
+all — is read as `partial` rather than `reverted`. That is why the
+success sentence has two forms: one when the engine reported every turn
+reverted, and one that says the files were not all restored.
+
+**The session id never comes from the body.** Both routes read it from
+`ctx.cs.mcodeSessionId`, the same reason `/api/send`, `/api/follow-up` and
+the whole queue family do. These are the two most destructive writes in
+the server, and "which conversation" is the one question the caller must
+not get to answer. `clientRequestId` is likewise minted server-side and
+fresh per call: the engine requires one as its operation key, and a
+browser-minted engine identifier arriving from an untrusted boundary buys
+nothing when the route is not retried and the editor disables its own
+confirm while a call is in flight.
+
+**Refusals are shown as they came.** A `4xx` carries the engine's own
+`error` string and `code` into the row verbatim. A paraphrase written by
+webui would hide which of the engine's gates closed — "Rewind and Edit are
+unavailable while Plan Mode or Plan lifecycle is active" is a sentence the
+user can act on; "something went wrong" is not.
+
+**Refresh.** After a successful mutation the client re-reads through
+`POST /api/sessions/switch`, the same path a session click takes: the
+route reloads the transcript from the engine and pushes a state frame. No
+new refresh mechanism was introduced.
+
+**Cost.** One or two engine calls per confirm (a rewind plus a send when
+the text was unchanged), plus one session re-read. Both calls may boot a
+runtime, because the user pressed a button; the `engine/host.js` rule that
+a read may not boot does not apply to either.
+
+**What this did not do.** `getSessionRewindPreview` is not exposed: the
+engine can list which turns a rewind would revert and which files each
+touched, and the desktop asks before it destroys — the inline editor's
+explicit 确认 stands in for that dialog here. Editing a message that had
+an attachment resends the text without it; the editor carries no
+attachment list. A questionnaire response cannot be rewound or edited and
+the engine refuses it with its own error, which the row shows.
+
 ### Export logs: a download, because there is nowhere to upload to (SB-8 / D-3)
 
 **What the user sees.** The About section's first row is 导出日志 / **Export
@@ -3485,6 +3567,9 @@ marker), not by tool name.
 | `POST` | `/api/goal` | `routes/goal.js#handleGoalCreate` | `{objective, tokenBudget?}` → `adapter.createGoal`. The engine session id comes from `ctx.cs.mcodeSessionId`, **never the body** — the desktop client sends one on this operation and it is ignored. `400 {code:"invalid_body"}` for a whitespace-only objective or a budget that is not a positive integer / `null`; `tokenBudget` absent is OMITTED from the call rather than sent as `null`, while an explicit `null` ("no budget") is forwarded as `null` |
 | `PATCH` | `/api/goal` | `routes/goal.js#handleGoalPatch` | `{status?, objective?, tokenBudget?, statusReason?}` → `adapter.patchGoal`, at least one of the first three required; `400 {code:"invalid_body"}` for a status outside the six (`active·paused·blocked·complete·budget_limited·usage_limited`) or an empty patch. `statusReason` is ACCEPTED AND DROPPED — it is not part of the engine's patch contract, so `{status:"complete", statusReason:"user_requested"}` forwards `{status:"complete"}` and the engine derives the reason. A BARE `{status:"paused"}` is forwarded unchanged, because the engine treats that exact shape as the atomic user-pause transition (`compat/v1/runtime.ts#isBareUserPause`); normalising it into a different patch would change its meaning |
 | `DELETE` | `/api/goal` | `routes/goal.js#handleGoalClear` | → `adapter.clearGoal`. 200 `{ok, success:true}` only when the engine really deleted one; a `false` answer is `404 {code:"GOAL_NOT_FOUND"}`, so "there was nothing to delete" and "the goal is gone" are not both a 200 |
+
+| `POST` | `/api/messages/edit` | `routes/message-edit.js#handleMessageEdit` | `{userMessageId, content}` → `cliService.editSessionMessage`, the engine's ATOMIC rewind-rewrite-resubmit. The engine session id comes from the server's own conversation state, never the body. `400 {code:"message_id_required"\|"message_text_required"\|"bad_field_type"\|"no_active_conversation"}` — all four BEFORE the host is resolved, so a refused request never boots a runtime; `501` when the host lacks the method, `503` when none is up. 200 `{ok, rewound, turnId?, userMessageId?, deletedCount}` — `rewound` is the ENGINE's boolean, never defaulted, so a 200 with `rewound:false` is readable as the refusal it is. `clientRequestId` is minted server-side and fresh per call; a body-supplied one is ignored |
+| `POST` | `/api/messages/rewind` | `routes/message-edit.js#handleMessageRewind` | `{userMessageId}` → `cliService.rewindSession`. Truncates after the message and STOPS — it does not resubmit; the resend is a separate `/api/send`. `400 {code:"message_id_required"\|"bad_field_type"\|"no_active_conversation"}` before the host is resolved. 200 `{ok, rewound, deletedCount, turnDiffRewind}` where `turnDiffRewind` is `null` when the engine reported no file outcome — never a fabricated "reverted" — and otherwise `{status, revertedTurnIds?, errorCode?}` verbatim |
 | `POST` | `/api/debug/inject` | `routes/debug.js#handleDebugInject` | `DEBUG_INJECT=1` gate |
 | `GET` | `/api/debug/state` | `routes/debug.js#handleDebugState` | same gate |
 | `POST` | `/api/protocol/set-mode` | `routes/protocol.js#handleSetMode` | mid-session mode change |

@@ -41,6 +41,9 @@ const globalsCss = readWebapp("app/globals.css");
 const layoutSource = readWebapp("app/layout.tsx");
 const chatSource = readWebapp("components/chat.tsx");
 const activityGroupSource = readWebapp("components/activity-group.tsx");
+// PB-15: the user-message container moved out of chat.tsx into the message
+// editor component, so this file is now one of the five the invariant scans.
+const messageEditorSource = readWebapp("components/message-editor.tsx");
 
 /**
  * The reference package's declaration, transcribed. Held as a constant so the
@@ -388,6 +391,7 @@ describe("G1 — call sites cannot re-arm the animation mid-stream", () => {
   const SOURCES = [
     { name: "components/chat.tsx", source: chatSource },
     { name: "components/activity-group.tsx", source: activityGroupSource },
+    { name: "components/message-editor.tsx", source: messageEditorSource },
   ];
 
   test("every message-animate-in className is a static string literal", () => {

@@ -90,6 +90,21 @@ export interface TranscriptBlock {
    * turn's numbers.
    */
   assistantMessageId?: string;
+  /**
+   * User blocks only (PB-15): the engine-side message coordinate — the
+   * `msg_id` the engine persisted this user message under, which is the
+   * exact selector `editSessionMessage` and `rewindSession` take. Attached
+   * by `decodeTranscript` from the `§§ user_msg=<id>` marker
+   * `server/lib/transcript.js#messagesToChatLines` writes after the
+   * message's text.
+   *
+   * Absent for a message the engine recorded before this marker shipped,
+   * and for a transcript whose front-truncation dropped the marker. The
+   * 编辑 affordance is rendered from this field alone: a user block
+   * without an id has no honest edit target, so it gets no button rather
+   * than one that would send an empty selector.
+   */
+  userMessageId?: string;
 }
 
 /** Leading glyphs that begin a new block. */
@@ -146,6 +161,18 @@ const TURN_PROCESS_LINE = /^§§\s+processed_duration=(\d+)(ms)?$/;
  * guessing a turn ordinal.
  */
 const TURN_MESSAGE_ID_LINE = /^§§\s+turn_msg=(\S+)$/;
+/**
+ * PB-15: the message-level edit / rewind coordinate, `§§ user_msg=<msgId>`.
+ *
+ * `editSessionMessage` and `rewindSession` select on the engine's own
+ * `msg_id` for the user's message row. `server/lib/transcript.js` writes
+ * this line right after a user message's text, from the same `msg_id`
+ * column the turn marker is written from. Consumed here and attached to
+ * the owning USER block; a user block without it renders no 编辑
+ * affordance, because a row with no engine coordinate has no honest edit
+ * target.
+ */
+const USER_MESSAGE_ID_LINE = /^§§\s+user_msg=(\S+)$/;
 /**
  * Slice 06 (Agent Team): server-written toolCallId marker.
  *
@@ -267,6 +294,30 @@ export function decodeTranscript(
     current = { role, text };
   };
 
+  /**
+   * PB-15: attach the edit / rewind coordinate to the block that owns the
+   * user message — the currently open user block, or, when it already
+   * closed (a tool line, a system note), the most recently flushed one.
+   *
+   * The resolution mirrors `attachToTurnAssistant` because the marker has
+   * the same placement problem: `messagesToChatLines` appends it after the
+   * message's LAST prose line, which may or may not still be open.
+   */
+  const attachToUser = (apply: (block: TranscriptBlock) => void) => {
+    const target =
+      current && current.role === "user"
+        ? current
+        : [...blocks].reverse().find((block) => block.role === "user");
+    // Consecutive same-speaker lines merge into ONE block, so a transcript
+    // carrying two adjacent user messages yields one block holding both
+    // texts — and two markers landing on it. Only the FIRST marker is taken:
+    // it addresses the message that starts the block, which is the one whose
+    // text an edit would rewrite. Rewriting either half is a boundary the
+    // engine does not offer, and silently taking the second would point the
+    // editor at text the user is not looking at.
+    if (target && target.userMessageId === undefined) apply(target);
+  };
+
   let i = 0;
   while (i < lines.length) {
     const raw = lines[i];
@@ -318,8 +369,26 @@ export function decodeTranscript(
       continue;
     }
 
-    // --- slice 06 toolCallId marker (`##tc:<id>`).
+    // --- PB-15 edit / rewind coordinate (`§§ user_msg=<msgId>`).
     //
+    // Same owner resolution as the turn marker, on the USER side: the
+    // server appends the line after the user message's last prose line,
+    // so the owning block is either still open or the most recently
+    // flushed one. A transcript without the line leaves `userMessageId`
+    // undefined and the row renders no edit affordance.
+    const userMessageId = USER_MESSAGE_ID_LINE.exec(line);
+    if (userMessageId) {
+      const id = userMessageId[1] ?? "";
+      if (id) {
+        attachToUser((block) => {
+          block.userMessageId = id;
+        });
+      }
+      i += 1;
+      continue;
+    }
+
+    // --- slice 06 toolCallId marker (`##tc:<id>`).
     // Consumed (it never appears in the rendered chat body) and the id
     // is parked into `pendingToolCallId` until the next tool block
     // opens — that block picks it up and exposes it as `toolCallId`.

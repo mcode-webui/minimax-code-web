@@ -111,6 +111,12 @@ describe("app.js — migration ledger", () => {
       "POST /api/goal",
       "PATCH /api/goal",
       "DELETE /api/goal",
+
+      // PB-15: message-level edit and rewind. Both are WRITES — the user
+      // pressed a control on a message they already sent — so both may
+      // boot a runtime, and neither takes a session id from the body.
+      "POST /api/messages/edit",
+      "POST /api/messages/rewind",
       "POST /api/usage",
       "POST /api/usage-trigger",
       "GET /api/usage-real",

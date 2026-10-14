@@ -335,6 +335,16 @@ function _messageToLines(m) {
 
   if (role === "user") {
     for (const line of _proseLines("›", content)) out.push(line);
+    // PB-15: the edit / rewind coordinate. `editSessionMessage` and
+    // `rewindSession` both select on the engine's own `msg_id` for this
+    // row, and neither can guess it, so the id travels with the text. The
+    // marker is the same device `§§ turn_msg=` already is — consumed by
+    // the frontend decoder, never rendered. A row without a `msg_id`
+    // (legacy probe) contributes no marker, and its user block then
+    // renders no edit affordance rather than one that cannot work.
+    if (typeof m.msgId === "string" && m.msgId) {
+      out.push(`§§ user_msg=${m.msgId}`);
+    }
     return out;
   }
   if (role === "system") {

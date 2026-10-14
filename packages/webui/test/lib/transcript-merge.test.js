@@ -711,6 +711,11 @@ describe("syncTranscriptsOnce — the /api/cmd echo survives a poll tick", () =>
       stateBus.clients.get("cid-d1").chat,
       [
         "› ping",
+        // PB-15: the seeded user row's msg_id rides along as the edit /
+        // rewind coordinate. It sits directly after its own text, before the
+        // turn's `§§ turn_msg=`, so neither decoder can mistake one for the
+        // other.
+        "§§ user_msg=m1",
         "● pong",
         "§§ turn_msg=m2",
         "› /status",

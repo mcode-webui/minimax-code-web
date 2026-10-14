@@ -694,6 +694,23 @@ const en = {
   "queue.status.cancelled": "Cancelled",
   "queue.status.failed": "Failed",
   "queue.status.unknown": "Unknown status",
+  // PB-15 — the inline editor on a user message. `edited` and `resent`
+  // differ on purpose: they are two different engine calls, and the user
+  // confirmed two different things (a rewritten message vs. the same message
+  // re-run). `resentFilesKept` exists because the engine can rewind a
+  // history and leave the discarded turn's files in place — saying only
+  // 「resent」 there would describe a workspace it never restored.
+  "chat.messageEdit.action": "Edit",
+  "chat.messageEdit.field": "Message text",
+  "chat.messageEdit.confirm": "Resend from here",
+  "chat.messageEdit.cancel": "Cancel",
+  "chat.messageEdit.busy": "Working…",
+  "chat.messageEdit.empty": "A message cannot be empty.",
+  "chat.messageEdit.edited": "Resent from this message with the new text.",
+  "chat.messageEdit.resent": "Resent from this message.",
+  "chat.messageEdit.resentFilesKept":
+    "Resent from this message. Not every file the discarded turn wrote was restored.",
+  "chat.messageEdit.notRewound": "The engine did not rewind this message.",
   "home.suggestions": "Suggested",
   "home.chooseFolder": "Pick a folder",
   "home.local": "Local",
@@ -1982,6 +1999,20 @@ const zh: Record<MessageKey, string> = {
   "queue.status.paused": "已暂停",
   "queue.status.cancelled": "已取消",
   "queue.status.failed": "失败",
+  // PB-15 — 消息行内编辑。`edited` 与 `resent` 分开措辞：两者是不同的引擎
+  // 调用，用户确认的也不是同一件事（改写后的文字 / 原样重跑）。
+  // `resentFilesKept` 存在的理由是引擎可以回退历史却没把被丢弃回合写的文件
+  // 恢复回来——那种情况下只说「已重发」等于替引擎描述了一个它没还原过的工作区。
+  "chat.messageEdit.action": "编辑",
+  "chat.messageEdit.field": "消息内容",
+  "chat.messageEdit.confirm": "从此处重发",
+  "chat.messageEdit.cancel": "取消",
+  "chat.messageEdit.busy": "处理中…",
+  "chat.messageEdit.empty": "消息不能为空。",
+  "chat.messageEdit.edited": "已按新内容从这条消息重发。",
+  "chat.messageEdit.resent": "已从这条消息重发。",
+  "chat.messageEdit.resentFilesKept": "已从这条消息重发。被丢弃回合写入的文件未全部恢复。",
+  "chat.messageEdit.notRewound": "引擎没有回退这条消息。",
   "queue.status.unknown": "未知状态",
   "home.suggestions": "推荐",
   "home.chooseFolder": "选择文件夹",

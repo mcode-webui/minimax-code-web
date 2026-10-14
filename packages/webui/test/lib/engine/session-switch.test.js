@@ -269,6 +269,8 @@ function transcriptRows(sid) {
 
 const EXPECTED_LINES = [
   "› 调研工具",
+  // PB-15: the user row's `msg_id` travels as the edit / rewind coordinate.
+  "§§ user_msg=msg-user-1",
   "▲ 先搜索",
   "● 我先看看",
   '→ bash  {"command":"ls"}',
