@@ -110,6 +110,15 @@ export const TUI_RUNTIME_ADAPTER_CAPABILITIES = Object.freeze({
     reason:
       "read-only metadata (getWorkspaceGitMetadata); no diff/commit/branch change methods (design §1.3 tui)",
   },
+  // PB-14 batch A. The five goal methods, and on THIS provider they are
+  // the primary surface rather than a mirror: `TuiRuntimeAdapter` is the
+  // object `providers/local-runtime-v2.js:144` constructs and hands to
+  // webui, and its goal access (`tui/runtime/adapters/goal-access.ts`) is
+  // what `/goal` in the TUI drives. Declaring `full` on the adapter and
+  // `full` on the CliService underneath is the honest pair — both really
+  // carry all five methods, and they reach the same `applications.goals`
+  // facade.
+  goal: { level: "full" },
 });
 
 // Fail fast at import time if the declaration drifts from the contract

@@ -74,7 +74,11 @@ describe("GET /api/engine-capabilities — happy path", () => {
     assert.equal(body.ok, true);
     assert.equal(body.provider, "local-runtime-v2");
     assert.equal(body.transport, "runtime");
-    assert.equal(Object.keys(body.capabilities).length, 14);
+    // 15 since PB-14 batch A added `goal`. The COUNT is pinned on
+    // purpose: a key added and a key silently swapped out are the same
+    // here, and `test/lib/engine/capabilities.test.js` is what pins
+    // the whole set BY NAME.
+    assert.equal(Object.keys(body.capabilities).length, 15);
     assert.equal(body.capabilities.turnDiff.level, "full");
     assert.equal(body.capabilities.updateCheck.level, "none");
     assert.deepEqual(body.unavailable.none, ["updateCheck"]);
@@ -159,7 +163,11 @@ describe("handleEngineCapabilities — direct handler", () => {
     assert.equal(res._status, 200);
     const body = JSON.parse(res._body);
     assert.equal(body.provider, "local-runtime-v2");
-    assert.equal(Object.keys(body.capabilities).length, 14);
+    // 15 since PB-14 batch A added `goal`. The COUNT is pinned on
+    // purpose: a key added and a key silently swapped out are the same
+    // here, and `test/lib/engine/capabilities.test.js` is what pins
+    // the whole set BY NAME.
+    assert.equal(Object.keys(body.capabilities).length, 15);
   });
 
   test("answers 404 for an unknown provider", async () => {

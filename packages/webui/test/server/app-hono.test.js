@@ -100,6 +100,17 @@ describe("app.js — migration ledger", () => {
       "GET /api/queue",
       "POST /api/queue/reorder",
       "POST /api/queue/cancel",
+
+      // PB-14 batch A: the thread goal. Five routes over engine methods
+      // that existed with no window at all. `/enabled` is listed BEFORE
+      // `/api/goal` because the registration order in app.js is the
+      // reverse (the literal first, so it wins) — this ledger is the
+      // greppable shape, not the router's resolution order.
+      "GET /api/goal/enabled",
+      "GET /api/goal",
+      "POST /api/goal",
+      "PATCH /api/goal",
+      "DELETE /api/goal",
       "POST /api/usage",
       "POST /api/usage-trigger",
       "GET /api/usage-real",

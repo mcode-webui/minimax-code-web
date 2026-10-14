@@ -1501,6 +1501,79 @@ exists and a second route would be a second contract to keep in sync), and
 showing the quota as bars here as well (the same gauge twice, from two
 different sources, on two pages).
 
+### The goal event bridge: the engine's goal, live on the SSE channel it already has (PB-14 batch B)
+
+**What the user sees.** Nothing yet. After a goal is created, patched or
+cleared in the engine, this batch delivers that fact to every tab looking
+at that conversation over the SSE channel webui already has; drawing it
+is batch C's banner.
+
+**The subscription was zero, and that was structural rather than
+unfinished.** The engine defines three global events for a thread goal
+(`thread_goal.updated` / `.cleared` /
+`.objective_updated_steering`, `packages/shared/src/global-events.ts:344-350`)
+and hands them to any caller through `cliService.watchEvents(signal)` as an
+AsyncGenerator; `server/engine/goal-events.js` is the first code in the
+webui server that subscribes to it. Before this batch no call site
+existed, so a goal created in the engine had no path to a browser at all.
+
+**The frame is the engine's snapshot, field for field.** A new `threadGoal`
+field rides in the existing full-state frame and carries the
+`GlobalThreadGoal` exactly as the engine published it, with `null` meaning
+"this conversation has no goal". A narrowing projection is deliberately
+absent: a projection would be a second copy of `GlobalThreadGoal` that
+goes stale silently. The desktop client consumes the same three events and
+hands the whole snapshot to its banner
+(`other-minimax-code/.../effect-reducer.ts:255-284` → `set-goal`), so the
+data arriving at this repo's client is the same data. `threadGoal` is also
+not merged into the existing `goal` slot: that slot is what the webui-local
+`/goal <text>` command left behind (the goal text was forwarded to the
+engine as an ordinary message), and the two are different facts about
+different owners — batch D retiring the local slot must not silently change
+the field the banner is about to start reading.
+
+**A write lands only on tabs looking at that conversation.** The match is
+`cs.mcodeSessionId` — not a webui session id, and not any label the event
+carries. Two tabs on one conversation both receive it; a tab looking
+elsewhere does not, which is the same rule `snapshotViewFields` applies to a
+foreign turn's chat lines.
+
+**An event that cannot be attributed is dropped, not guessed.** Four ways to
+arrive here: a name outside the three-event whitelist, a payload of the
+wrong shape, a snapshot without an identity, and a steering event whose
+re-read finds no goal. None of them writes. A frame that is wrong has no
+"less wrong" partial form.
+
+**Why steering re-reads.** The engine's
+`thread_goal.objective_updated_steering` payload is two identifiers,
+`{sessionId, goalId}`, with no snapshot — unlike the desktop
+`objective_steering` variant. Writing those identifiers into the frame
+would show the user a goal with no objective and no usage, so the bridge
+reads the authoritative snapshot back through `cliService.getGoal`. A
+re-read that fails (no goal capability on this host, or the goal is gone)
+writes nothing.
+
+**No host is a silent no-op, not an error.** The bridge only calls
+`peekEngineCatalogueHost()` and never boots a runtime, because a read that
+boots one turns a page's first paint into a multi-second stall (PB-1 paid
+for the other half of that decision with a 10 s `/api/state` timeout).
+Under the default `acp` transport the turn runs in an `mcode acp`
+subprocess and this process has no bus to subscribe to; the subscribe call
+returns false and the tab keeps `threadGoal: null`. The re-arm points are
+the two entry points the SSE already has — a tab that connected before any
+host existed picks the subscription up on its next connect or page load,
+which matters because a goal is usually created long after the tab opened.
+One subscription per process, aborted on the process's termination signal.
+
+**Cost.** One resident engine event subscription; one `getGoal` read per
+steering event.
+
+**What this batch did not do.** It does not create, patch or clear a goal —
+those are batch A's five endpoints; `ensureGoalEventBridge()` is called from
+the SSE entry points and needs no coordination with batch A beyond that. The
+webapp side gains no consumer here: the banner and the `/goal` command are
+batch C, and the local `goal` slot's retirement is batch D.
+
 **Add-model dialog (ticket 54, 53b)**
 
 The 「+ 添加模型」 button — centered under the empty state, at the bottom of
@@ -1978,6 +2051,104 @@ A steered message still reports admission, not whether the running agent
 read the text. The 子 agent snapshot / stop half of the PB-13 plan line
 (`doc/placeholder-batch-plan.md` §5 row 5, G-6) is a separate capability
 opening and did not land here.
+
+### The thread goal: five windows over an engine surface that already existed (PB-14 batch A)
+
+**What this is.** The engine has had a complete thread-goal surface for a
+long time — `isGoalEnabled`, `getGoal`, `createGoal`, `patchGoal`,
+`clearGoal` on the TUI runtime adapter (`tui/runtime/adapter.ts:283-295`),
+persisted in the `local_runtime_thread_goals` SQLite table and driven from
+the TUI by a `/goal` command. webui had none of it in front. What it had
+instead was a goal-shaped illusion: `/goal <text>` recorded `{active,
+text, status, duration}` in a per-cid memory slot, rewrote the chat line,
+and passed the text to the engine **as an ordinary message**. The engine
+never knew a goal existed. This batch opens the five endpoints and adds
+the `goal` key to the capability matrix; the banner and the real `/goal`
+command are batches B and C.
+
+**Why the adapter and not `cliService`.** Both carry all five methods and
+both reach the same `applications.goals` facade. The adapter is bound
+because it is the object the TUI's own `/goal` drives, so the behaviour
+this server gets is the behaviour the CLI already has, and because
+`streaming-send.js` already reaches `catalogue.adapter` — one host path,
+not two.
+
+**Why `/goal`'s parser is not here.** The command parser
+(`tui/application/thread-goal-command.ts`, eight intents with `50K` budget
+suffixes and CJK boundary leniency) is a CLIENT concern about what a user
+typed. It belongs to the composer, which is batch C's file. The server
+exposes the five methods the engine recognises and nothing else.
+
+**Where the session id comes from.** `ctx.cs.mcodeSessionId`, always —
+the same rule as the queue and follow-up families, and the goal surface is
+the most tempting place to break it, because a goal belongs to a
+conversation and the id looks like the obvious key. The desktop client
+sends `sessionId` on all five operations; that field is ignored here, and
+`test/routes/goal.test.js` puts a decoy id in the body of every
+session-scoped route and asserts the engine was called with the tab's.
+
+**A disabled goal is its own answer.** The engine throws a bare
+`Error("Thread Goal is disabled.")` with no status when the feature is off,
+which a generic error map can only turn into a 500 — a server fault for a
+configuration fact. So `isGoalEnabled` is asked once per request, before
+any session-scoped call, and a disabled goal answers
+`503 {code:"goal_disabled"}` with **nothing called**. That is also the
+answer the frontend's switch wants, and it is why the flag is not asked
+for on the other four: a client that does not care still gets the truth on
+every write.
+
+**No goal is a 404, not an empty goal.** `getGoal` answers `undefined`
+for a conversation without one, and `clearGoal` answers `false` when there
+was nothing to delete. Both become `404 GOAL_NOT_FOUND`, which is the
+code the engine's own `ThreadGoalContractError` carries — a status-bearing
+error passes through with its code intact rather than being re-described.
+A client polling on session switch has to be able to say "this
+conversation has no goal" as a fact, the same reason the queue answers
+`reachable:false` instead of an empty list. For the same reason `GET
+/api/goal/enabled` reports only the flag and never looks for a goal: "the
+feature is off" and "there is no goal yet" are answers to different
+questions, and collapsing them leaves the composer unable to say why a
+user's `/goal` did nothing.
+
+**`statusReason` is accepted and dropped.** It is not part of the engine's
+patch contract (`TuiGoalAccess.patch` takes status / objective /
+tokenBudget), and the engine derives the reason itself. Forwarding it would
+hand the engine an object its own contract does not declare. So
+`{status:"complete", statusReason:"user_requested"}` — the request the
+baseline flags as the case to verify — forwards `{status:"complete"}` and
+comes back as a completed goal. A BARE `{status:"paused"}` is forwarded
+unchanged, because the engine treats that exact shape as the atomic
+user-pause transition (`compat/v1/runtime.ts#isBareUserPause`); rewriting
+it into a "normal" patch would silently change what it means.
+
+**Reads peek, writes boot.** `GET /api/goal` is on the session-switch path
+and `/api/goal/enabled` is the switch check, so both go through
+`peekEngineCatalogueHost()`. PB-1 paid for the other half of that rule
+with a 10 s `/api/state` timeout. The three writes boot freely: the user
+pressed a button.
+
+**The matrix now has a place for it.** `goal` is the fifteenth key —
+appended, never inserted, so the thirteen audited rows of design §1.2 keep
+their order. `local-runtime-v2` and `tui-runtime-adapter` declare it
+`full` (both really carry all five methods, and
+`test/lib/engine/capability-snapshot.test.js` now REFLECTS them off a real
+host rather than taking the word for it). `acp` and `exec` declare it
+`none` with an `interface-absent` reason, and — unlike `turnDiff` and
+`plugins` — deliberately **not** `servedBy`: these routes do not reach into
+another host's state. Under `acp` a goal request therefore answers `501`,
+and the frontend hides the control on that code rather than offering a
+switch it cannot trust.
+
+**Cost.** One flag read per request plus the one goal read or write. No
+polling, and no runtime boot on the two reads.
+
+**What this did not do.** No `kickoffAttachments` (the composer has no
+attachment picker to produce them). No event bridge — `thread_goal.updated`,
+`thread_goal.cleared` and `thread_goal.objective_updated_steering` are
+still not in webui's SSE, which is batch B, so a client polls these
+endpoints. No banner and no `/goal` command, which is batch C; the
+`cs.goal` memory slot the fake goal lived in is still there and is
+retired with batch D.
 
 ### Export logs: a download, because there is nowhere to upload to (SB-8 / D-3)
 
@@ -3308,6 +3479,12 @@ marker), not by tool name.
 | `POST` | `/api/queue/reorder` | `routes/queue.js#handleQueueReorder` | `{itemIds}` — the COMPLETE ordered id list, never a delta; the engine's `reorderQueue` compares it against the ids it considers user-manageable. `400 {code:"invalid_queue_order"\|"BAD_FIELD_TYPE"}` for a list that could not be a queue, before the engine is asked; `409 {code:"turn_not_here"}` when the queue is in another process, and nothing is moved; 200 `{ok, items}` — the ENGINE's new order |
 | `POST` | `/api/queue/cancel` | `routes/queue.js#handleQueueCancel` | `{itemId}` → `cliService.deleteQueueItem`, which is the engine's `queue.cancel`; `400 {code:"queue_item_required"\|"BAD_FIELD_TYPE"}`; `409 {code:"turn_not_here"}` when the cancel did NOT happen; 200 `{ok, item}` — the engine's own cancelled record (`status:"cancelled"`) |
 | `GET` | `/api/review-link` | `routes/review-link.js#handleReviewLink` | the review the runtime RECORDED for this tab's workspace and current branch (`cliService.getWorkspaceReviewLink`); 200 `{ok, reviewLink, reason, branch}` where `reviewLink` is the store's own `{vendor,url,number,branch,origin,recordedAt}` or `null`. No engine session id is read from the request — it comes from `ctx.cs.mcodeSessionId`, and the workspace comes from that session's own record. `reviewLink:null` + `reason` (`unknown_workspace` \| `no_branch` \| `no_review_link`) is the ORDINARY answer, not an error; `400 {code:"no_active_conversation"}` when the tab has no engine session; `501 {code:"engine_member_unavailable"\|"engine_git_metadata_unavailable"\|"engine_session_reader_unavailable"}` for a missing host member and `501 {code:"engine_capability_not_supported"}` for a declared-away capability; `503` when no runtime is booted. A READ — `peekEngineCatalogueHost()`, never a boot |
+
+| `GET` | `/api/goal/enabled` | `routes/goal.js#handleGoalEnabled` | 200 `{ok, enabled}` — the ENGINE's own flag (`adapter.isGoalEnabled`), and the one goal route that needs no session, so a tab that has not opened a conversation can still be told whether to offer the control. It does not look for a goal: "the feature is off" and "this conversation has no goal" are different answers. `501 {code:"engine_member_unavailable"}` when the host has no goal surface, `503 {code:"engine_host_unavailable"}` when no runtime is up |
+| `GET` | `/api/goal` | `routes/goal.js#handleGoalRead` | 200 `{ok, goal}` where `goal` is the engine's `GlobalThreadGoal` passed through WHOLE — `statusReason`, `lastVerification`, `executionWait` and the three usage counters included, because the client renders them and webui does not get to decide which fields are real. 404 `{code:"GOAL_NOT_FOUND"}` when the engine answers no goal (or throws its own `ThreadGoalContractError` 404, whose code reaches the wire unchanged); `502 {code:"engine_contract_violation"}` if the engine ever answers something that is not an object; `400 {code:"no_active_conversation"}` when the tab has no engine session; `503 {code:"goal_disabled"}` when the engine has the feature turned off — and `getGoal` is NOT called. A READ: `peekEngineCatalogueHost()`, no runtime boot |
+| `POST` | `/api/goal` | `routes/goal.js#handleGoalCreate` | `{objective, tokenBudget?}` → `adapter.createGoal`. The engine session id comes from `ctx.cs.mcodeSessionId`, **never the body** — the desktop client sends one on this operation and it is ignored. `400 {code:"invalid_body"}` for a whitespace-only objective or a budget that is not a positive integer / `null`; `tokenBudget` absent is OMITTED from the call rather than sent as `null`, while an explicit `null` ("no budget") is forwarded as `null` |
+| `PATCH` | `/api/goal` | `routes/goal.js#handleGoalPatch` | `{status?, objective?, tokenBudget?, statusReason?}` → `adapter.patchGoal`, at least one of the first three required; `400 {code:"invalid_body"}` for a status outside the six (`active·paused·blocked·complete·budget_limited·usage_limited`) or an empty patch. `statusReason` is ACCEPTED AND DROPPED — it is not part of the engine's patch contract, so `{status:"complete", statusReason:"user_requested"}` forwards `{status:"complete"}` and the engine derives the reason. A BARE `{status:"paused"}` is forwarded unchanged, because the engine treats that exact shape as the atomic user-pause transition (`compat/v1/runtime.ts#isBareUserPause`); normalising it into a different patch would change its meaning |
+| `DELETE` | `/api/goal` | `routes/goal.js#handleGoalClear` | → `adapter.clearGoal`. 200 `{ok, success:true}` only when the engine really deleted one; a `false` answer is `404 {code:"GOAL_NOT_FOUND"}`, so "there was nothing to delete" and "the goal is gone" are not both a 200 |
 | `POST` | `/api/debug/inject` | `routes/debug.js#handleDebugInject` | `DEBUG_INJECT=1` gate |
 | `GET` | `/api/debug/state` | `routes/debug.js#handleDebugState` | same gate |
 | `POST` | `/api/protocol/set-mode` | `routes/protocol.js#handleSetMode` | mid-session mode change |

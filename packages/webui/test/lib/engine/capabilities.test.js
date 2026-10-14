@@ -50,7 +50,7 @@ import {
 // ---------------------------------------------------------------------------
 
 describe("ENGINE_CAPABILITY_KEYS", () => {
-  test("declares exactly the 14 matrix keys, in matrix order", () => {
+  test("declares exactly the 15 matrix keys, in matrix order", () => {
     assert.deepEqual(ENGINE_CAPABILITY_KEYS, [
       "sessionCrud",
       "streamingSend",
@@ -66,6 +66,11 @@ describe("ENGINE_CAPABILITY_KEYS", () => {
       "updateCheck",
       "fileReadWrite",
       "gitOperations",
+      // PB-14 batch A — appended, never inserted: the thirteen above are
+      // design §1.2's audited rows in that document's order, and a key
+      // moved into the middle of them would silently renumber every
+      // consumer that indexes the array.
+      "goal",
     ]);
   });
 });
@@ -121,7 +126,7 @@ describe("validateEngineCapabilities", () => {
 // ---------------------------------------------------------------------------
 
 describe("LOCAL_RUNTIME_V2_CAPABILITIES", () => {
-  test("covers all 14 keys with no extras", () => {
+  test("covers all 15 keys with no extras", () => {
     assert.deepEqual(Object.keys(LOCAL_RUNTIME_V2_CAPABILITIES).sort(), [...ENGINE_CAPABILITY_KEYS].sort());
     assert.deepEqual(validateEngineCapabilities(LOCAL_RUNTIME_V2_CAPABILITIES), []);
   });
@@ -142,6 +147,10 @@ describe("LOCAL_RUNTIME_V2_CAPABILITIES", () => {
     updateCheck: "none",
     fileReadWrite: "partial",
     gitOperations: "partial",
+    // PB-14 batch A: all five goal methods are on the CliService surface
+    // (`cli-service.ts:488-515`), delegating to the optional `goals`
+    // application.
+    goal: "full",
   };
 
   for (const key of ENGINE_CAPABILITY_KEYS) {
@@ -180,7 +189,7 @@ describe("LOCAL_RUNTIME_V2_CAPABILITIES", () => {
 // ---------------------------------------------------------------------------
 
 describe("TUI_RUNTIME_ADAPTER_CAPABILITIES", () => {
-  test("covers all 14 keys with no extras", () => {
+  test("covers all 15 keys with no extras", () => {
     assert.deepEqual(Object.keys(TUI_RUNTIME_ADAPTER_CAPABILITIES).sort(), [...ENGINE_CAPABILITY_KEYS].sort());
     assert.deepEqual(validateEngineCapabilities(TUI_RUNTIME_ADAPTER_CAPABILITIES), []);
   });
@@ -200,6 +209,9 @@ describe("TUI_RUNTIME_ADAPTER_CAPABILITIES", () => {
     updateCheck: "none",
     fileReadWrite: "partial",
     gitOperations: "partial",
+    // PB-14 batch A: the adapter is where `/goal` lives in the TUI
+    // (`runtime/adapter.ts:283-295` over `adapters/goal-access.ts`).
+    goal: "full",
   };
 
   for (const key of ENGINE_CAPABILITY_KEYS) {
@@ -376,7 +388,7 @@ describe("summarizeUnavailableCapabilities", () => {
 // ---------------------------------------------------------------------------
 
 describe("ACP_CAPABILITIES", () => {
-  test("covers all 14 keys with no extras", () => {
+  test("covers all 15 keys with no extras", () => {
     assert.deepEqual(Object.keys(ACP_CAPABILITIES).sort(), [...ENGINE_CAPABILITY_KEYS].sort());
     assert.deepEqual(validateEngineCapabilities(ACP_CAPABILITIES), []);
   });
@@ -405,6 +417,10 @@ describe("ACP_CAPABILITIES", () => {
     updateCheck: "none",
     fileReadWrite: "none",
     gitOperations: "none",
+    // PB-14 batch A: no goal request and no goal notification on the
+    // protocol. Not `servedBy` — the goal routes deliberately do not
+    // reach into another host the way turnDiff and plugins do.
+    goal: "none",
   };
 
   for (const key of ENGINE_CAPABILITY_KEYS) {
@@ -425,7 +441,7 @@ describe("ACP_CAPABILITIES", () => {
   // re-audited is the failure mode this test exists to catch; a
   // `none` quietly promoted to `partial` is the flattering one, and
   // this catches that too.
-  test("exactly six keys are none, and two of them are the served-in-process pair", () => {
+  test("exactly seven keys are none, and two of them are the served-in-process pair", () => {
     const noneKeys = ENGINE_CAPABILITY_KEYS.filter((k) => ACP_CAPABILITIES[k].level === "none");
     assert.deepEqual(noneKeys, [
       "interrupt",
@@ -435,8 +451,11 @@ describe("ACP_CAPABILITIES", () => {
       "updateCheck",
       "fileReadWrite",
       "gitOperations",
+      // PB-14 batch A. `goal` joins the set as a THIRD unserved key that
+      // is not `servedBy` — see the declaration's own comment.
+      "goal",
     ]);
-    assert.equal(noneKeys.length, 7, "the list above is the assertion — keep both in step");
+    assert.equal(noneKeys.length, 8, "the list above is the assertion — keep both in step");
   });
 
   // The absent session methods are named BY NAME, because
@@ -505,7 +524,7 @@ describe("ACP_CAPABILITIES", () => {
 // ---------------------------------------------------------------------------
 
 describe("EXEC_CAPABILITIES", () => {
-  test("covers all 14 keys with no extras", () => {
+  test("covers all 15 keys with no extras", () => {
     assert.deepEqual(Object.keys(EXEC_CAPABILITIES).sort(), [...ENGINE_CAPABILITY_KEYS].sort());
     assert.deepEqual(validateEngineCapabilities(EXEC_CAPABILITIES), []);
   });
@@ -531,6 +550,9 @@ describe("EXEC_CAPABILITIES", () => {
     updateCheck: "none",
     fileReadWrite: "none",
     gitOperations: "none",
+    // PB-14 batch A: exec has no persistent session for a goal to belong
+    // to, and neither the CLI contract nor the event union names one.
+    goal: "none",
   };
 
   for (const key of ENGINE_CAPABILITY_KEYS) {
@@ -551,7 +573,7 @@ describe("EXEC_CAPABILITIES", () => {
   // has eight of them against acp's seven, and the two differences are
   // the interesting part: exec loses `subagents` and `authCredentials`,
   // and the two tests below say exactly why.
-  test("exactly eight keys are none, and two of them are the served-in-process pair", () => {
+  test("exactly nine keys are none, and two of them are the served-in-process pair", () => {
     const noneKeys = ENGINE_CAPABILITY_KEYS.filter((k) => EXEC_CAPABILITIES[k].level === "none");
     assert.deepEqual(noneKeys, [
       "interrupt",
@@ -563,8 +585,12 @@ describe("EXEC_CAPABILITIES", () => {
       "updateCheck",
       "fileReadWrite",
       "gitOperations",
+      // PB-14 batch A: exec is behind acp on `goal` for the same reason it
+      // is behind on `subagents` and `authCredentials` — and for a
+      // stronger one: a goal is per-session state and exec has no session.
+      "goal",
     ]);
-    assert.equal(noneKeys.length, 9, "the list above is the assertion — keep both in step");
+    assert.equal(noneKeys.length, 10, "the list above is the assertion — keep both in step");
   });
 
   // exec is behind acp on exactly these two keys, and BOTH directions of

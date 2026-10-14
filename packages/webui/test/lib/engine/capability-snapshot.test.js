@@ -146,6 +146,11 @@ const NONE_CAPABILITY_NAME_FRAGMENTS = {
   updateCheck: ["update", "upgrade"],
   fileReadWrite: ["file", "workspace"],
   gitOperations: ["git"],
+  // PB-14 batch A. `goal` is a `none` key on acp, so it gets the same
+  // tripwire every other `none` key has: if the protocol ever registers a
+  // goal request or notification, this entry goes red and someone re-audits
+  // the declaration instead of the claim quietly becoming stale.
+  goal: ["goal"],
 };
 
 /**
@@ -340,6 +345,13 @@ const REQUIRED_METHODS = {
     authCredentials: { on: "adapter", methods: ["getAccountStatus", "getCodexOAuthStatus", "startCodexOAuthLogin", "cancelCodexOAuthLogin", "getMiniMaxApiKeyStatus", "upsertMiniMaxApiKey", "selectModel", "setPermissionMode", "listUserModelProviders", "createUserModelProvider", "updateUserModelProvider", "deleteUserModelProvider", "testUserModelProvider", "discoverUserModelsCandidate"], absent: ["setConfigOption"], unimplemented: ["setThinkingEffort"] },
     fileReadWrite: { on: "adapter", methods: ["listWorkspaceFileTree", "searchWorkspaceFiles"] },
     gitOperations: { on: "adapter", methods: ["getWorkspaceGitMetadata"] },
+    // PB-14 batch A. The five methods the audit REFLECTS off a real
+    // TuiRuntimeAdapter, which is the point: the declaration says `full`
+    // and this asserts all five really are functions on the adapter object
+    // webui is handed, so a future adapter refactor that drops one turns
+    // the declaration red rather than leaving the 501 to be discovered by
+    // a user pressing `/goal`.
+    goal: { on: "adapter", methods: ["isGoalEnabled", "getGoal", "createGoal", "patchGoal", "clearGoal"] },
   },
   "local-runtime-v2": {
     sessionCrud: { on: "cliService", methods: ["createSession", "updateSession", "archiveSession", "deleteSession", "forkSession", "getSessionForkOptions"] },
@@ -355,6 +367,10 @@ const REQUIRED_METHODS = {
     authCredentials: { on: "cliService", methods: ["getAccountStatus", "getCodexOAuthStatus", "startCodexOAuthLogin", "cancelCodexOAuthLogin", "getMiniMaxApiKeyStatus", "upsertMiniMaxApiKey", "selectModel", "setPermissionMode", "listUserModelProviders", "createUserModelProvider", "updateUserModelProvider", "deleteUserModelProvider", "testUserModel", "discoverUserModelsCandidate"], absent: ["setConfigOption"], unimplemented: ["setThinkingEffort"] },
     fileReadWrite: { on: "cliService", methods: ["listWorkspaceFileTree", "searchWorkspaceFiles"] },
     gitOperations: { on: "cliService", methods: ["getWorkspaceGitMetadata", "getWorkspaceReviewLink"] },
+    // PB-14 batch A: the same five, reflected off the CliService the v2
+    // host exposes (`cli-service.ts:488-515`). Both surfaces are audited
+    // because both really carry them, and webui may bind either.
+    goal: { on: "cliService", methods: ["isGoalEnabled", "getGoal", "createGoal", "patchGoal", "clearGoal"] },
   },
 };
 

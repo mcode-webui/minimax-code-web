@@ -1,10 +1,10 @@
 // webui/server/engine/capabilities.js
 //
-// The capability-declaration contract: 14 keys, one per row of the
+// The capability-declaration contract: 15 keys — one per row of the
 // capability matrix in doc/engine-abstraction-design.md §1.2, plus the
 // validation rules that keep declarations honest (design doc §2.2/§4.1):
 //
-//   - every provider declares ALL 14 keys — no "absent means none";
+//   - every provider declares ALL 15 keys — no "absent means none";
 //   - `partial` MUST enumerate `missing` sub-items (never "half works,
 //     nobody knows which half") and MUST carry a `reason`;
 //   - `none` MUST carry a `reason` distinguishing "interface-absent"
@@ -36,11 +36,12 @@
 //   toolSkillInvocation↔工具/技能调用, turnDiff↔回合级 diff 查询,
 //   turnRewindRedo↔回合撤销/重做, plugins↔插件管理, mcp↔MCP,
 //   subagents↔子 agent, usageStats↔用量统计, authCredentials↔认证/凭据,
-//   updateCheck↔更新检查, fileReadWrite↔文件读写, gitOperations↔Git 操作.
+//   updateCheck↔更新检查, fileReadWrite↔文件读写, gitOperations↔Git 操作,
+//   goal↔线程目标 (PB-14 batch A; appended, see the note at the key).
 
 import { EngineCapabilityNotSupportedError } from "./errors.js";
 
-/** The 14 capability keys, in matrix order. Source: design doc §1.2. */
+/** The 15 capability keys, in matrix order. Source: design doc §1.2 + PB-14 batch A. */
 export const ENGINE_CAPABILITY_KEYS = Object.freeze([
   "sessionCrud",
   "streamingSend",
@@ -56,6 +57,18 @@ export const ENGINE_CAPABILITY_KEYS = Object.freeze([
   "updateCheck",
   "fileReadWrite",
   "gitOperations",
+  // PB-14 batch A. The LAST key, not the first, on purpose: the thirteen
+  // above are the audited matrix rows of design §1.2 and their order is
+  // that document's order, so appending keeps every existing consumer's
+  // index meaningful and makes this one visibly an addition.
+  //
+  // `goal` is the thread-goal surface — five engine methods
+  // (isGoalEnabled / getGoal / createGoal / patchGoal / clearGoal). It was
+  // absent from the matrix while the engine had all five, which is the same
+  // "the matrix never left a place for it" shape PB already recorded for
+  // skills / agents / apps: the gate had nothing to gate on, so a route
+  // that reached for goals had nowhere to declare itself.
+  "goal",
 ]);
 
 /** @typedef {"full" | "partial" | "none"} EngineCapabilityLevel */

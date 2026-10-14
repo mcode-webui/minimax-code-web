@@ -252,6 +252,25 @@ export const ACP_CAPABILITIES = Object.freeze({
     reason:
       "interface-absent: no git method in the protocol; webui's /api/git family wraps the OS git binary (design §1.3 acp; server/lib/git.js:1)",
   },
+  // PB-14 batch A. `none` and NOT `servedBy`, which is a distinction worth
+  // the words: turnDiff and plugins are `none` + `servedBy` because the
+  // routes reach into the in-process local-runtime-v2 host to answer them,
+  // and this one deliberately does not.
+  //
+  // The acp protocol registers no goal request (`MCODE_ACP_CAPABILITIES`
+  // has no goal method, and the snapshot audit's `NONE_CAPABILITY_NAME_FRAGMENTS`
+  // now watches for one appearing). A goal set under acp would have to be
+  // written into the subprocess's SQLite by a webui route reaching past the
+  // protocol, and the webui half would then be reading a second host's
+  // state through a window that does not own it. So `/api/goal/*` answers
+  // 501 here: the honest "this engine does not serve goals", and the
+  // frontend hides the control on that code (design §4.2) rather than
+  // offering a switch that cannot be trusted.
+  goal: {
+    level: "none",
+    reason:
+      "interface-absent: the acp protocol registers no goal request or notification (MCODE_ACP_CAPABILITIES has no goal method; packages/tui/src/acp/agent.ts)",
+  },
 });
 
 if (validateEngineCapabilities(ACP_CAPABILITIES).length > 0) {

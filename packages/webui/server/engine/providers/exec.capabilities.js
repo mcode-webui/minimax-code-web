@@ -368,6 +368,16 @@ export const EXEC_CAPABILITIES = Object.freeze({
     reason:
       "interface-absent: no git option and no git event in the exec contract or its event union. `mcode exec review` runs the agent over local changes rather than exposing a git surface, and webui's /api/git family wraps the OS git binary independently (server/lib/git.js:1)",
   },
+  // PB-14 batch A. `none` for the same reason as acp, plus the reason exec
+  // is behind acp on most keys at all: `mcode exec` has no persistent
+  // engine session (EXEC_INTERFACE above), and a goal is per-session
+  // state that outlives a turn. There is no option to set one, no event
+  // that reports one, and nothing for a goal to survive in.
+  goal: {
+    level: "none",
+    reason:
+      "interface-absent: no goal option and no goal event in the exec CLI contract or its event union, and exec has no persistent session for a goal to belong to (EXEC_INTERFACE above; packages/tui/src/cli/contract.ts)",
+  },
 });
 
 // The contract self-check, same discipline as every sibling

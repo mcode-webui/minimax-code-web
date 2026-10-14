@@ -69,6 +69,7 @@ import * as providersRoute from "./routes/providers.js";
 import * as modelSourceRoute from "./routes/model-source.js";
 import * as followUpRoute from "./routes/follow-up.js";
 import * as queueRoute from "./routes/queue.js";
+import * as goalRoute from "./routes/goal.js";
 import * as gitRoute from "./routes/git.js";
 import * as pluginsRoute from "./routes/plugins.js";
 import * as turnDiffRoute from "./routes/turn-diff.js";
@@ -180,6 +181,23 @@ export const OWNED_ROUTES = new Set([
   "GET /api/queue",
   "POST /api/queue/reorder",
   "POST /api/queue/cancel",
+  // PB-14 batch A \u2014 the thread-goal surface. Five windows over
+  // engine methods that had existed with nothing in front of them since
+  // the TUI adapter first carried them (`tui/runtime/adapter.ts:283-295`:
+  // isGoalEnabled / getGoal / createGoal / patchGoal / clearGoal), behind
+  // a goal the server kept only as a per-cid memory slot
+  // (`lib/interaction/commands.js` bodyGoal) that the engine never saw.
+  // All five take the session id from `ctx.cs.mcodeSessionId` \u2014 the
+  // same rule as the queue family. The reads go through
+  // `peekEngineCatalogueHost()` and may not boot a runtime; the three
+  // writes may, because the user pressed a button. A provider whose host
+  // has no goal surface answers 501 rather than an empty success (#110
+  // fake-success discipline); see `engine/goal.js`.
+  "GET /api/goal/enabled",
+  "GET /api/goal",
+  "POST /api/goal",
+  "PATCH /api/goal",
+  "DELETE /api/goal",
   // Usage / quota.
   "POST /api/usage",
   "POST /api/usage-trigger",
@@ -637,6 +655,26 @@ export function createHonoApp() {
   );
   app.post("/api/queue/cancel", (c) =>
     invokeHandler(c, c.get(CAPTURE_KEY), queueRoute.handleQueueCancel),
+  );
+
+  // ----- PB-14 batch A: the thread goal -----
+  // Registered next to the queue because both are per-session engine state
+  // the tab owns. `/enabled` is registered BEFORE `/api/goal` so the more
+  // specific literal wins over any future `/api/goal/:something` shape.
+  app.get("/api/goal/enabled", (c) =>
+    invokeHandler(c, c.get(CAPTURE_KEY), goalRoute.handleGoalEnabled),
+  );
+  app.get("/api/goal", (c) =>
+    invokeHandler(c, c.get(CAPTURE_KEY), goalRoute.handleGoalRead),
+  );
+  app.post("/api/goal", (c) =>
+    invokeHandler(c, c.get(CAPTURE_KEY), goalRoute.handleGoalCreate),
+  );
+  app.patch("/api/goal", (c) =>
+    invokeHandler(c, c.get(CAPTURE_KEY), goalRoute.handleGoalPatch),
+  );
+  app.delete("/api/goal", (c) =>
+    invokeHandler(c, c.get(CAPTURE_KEY), goalRoute.handleGoalClear),
   );
 
   // ----- PB-3: 工作树 -----

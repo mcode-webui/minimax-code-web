@@ -341,6 +341,11 @@ describe("#74 GET /api/state — snapshot first frame", () => {
     "chat",
     "sessions",
     "goal",
+    // PB-14 (batch B): the ENGINE's goal, projected from the
+    // `thread_goal.*` global events. It sits next to the webui-local `goal`
+    // slot rather than replacing it — see docs/webui.md "The goal event
+    // bridge" (PB-14 batch B).
+    "threadGoal",
     "todo",
     "ask",
     "plan",

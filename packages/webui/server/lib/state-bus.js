@@ -86,7 +86,22 @@ export function makeClientState() {
     permissions: "Full access",
     chat: [],
     sessions: [],
+    // The webui-LOCAL goal slot: what `/goal <text>` recorded when it
+    // rewrote the chat line and forwarded the text to the engine as an
+    // ordinary message. No webapp component reads it; PB-14 batch D
+    // retires it with the local command handlers.
     goal: { active: false, text: null, status: null, duration: null },
+    // PB-14 (batch B): the ENGINE's goal, projected from the
+    // `thread_goal.*` global events by `server/engine/goal-events.js`.
+    //
+    // Deliberately a second slot rather than a replacement. These are two
+    // different facts about two different owners — this one is
+    // `GlobalThreadGoal` exactly as the engine published it, with `null`
+    // meaning "this conversation has no goal" — and merging them would
+    // make batch D's retirement of the local slot a silent behaviour
+    // change to a field the goal banner is about to start reading. The
+    // name records whose event it came from.
+    threadGoal: null,
     todo: [],
     ask: {
       active: false,
@@ -437,6 +452,44 @@ export function pushStateFor(cid, opts = {}) {
   // Diff mode: if the payload is byte-identical to the last write,
   // the client receives nothing (no full-state replace, no DOM thrash).
   _schedulePush(cid, payload, res);
+}
+
+/**
+ * Route one engine goal write to every tab currently SHOWING that engine
+ * session (PB-14 batch B).
+ *
+ * Why this lives in state-bus and not in the engine bridge: the chokepoint
+ * discipline in this file is that only state-bus writes per-cid state, and
+ * a goal frame is per-cid state.
+ *
+ * The match is `cs.mcodeSessionId === sessionId`, never a webui session id
+ * and never a payload-supplied cid. A tab's goal belongs to the
+ * conversation it is looking at; two tabs may look at the same
+ * conversation (both get the write), and a tab looking at a different one
+ * must not have this conversation's goal painted into its view — the same
+ * rule `snapshotViewFields` applies to a foreign turn's chat.
+ *
+ * `goal` is `null` for `thread_goal.cleared`: the frame then says "no
+ * goal", which is an answer, not the absence of one.
+ *
+ * @param {string} sessionId engine session id from the goal snapshot
+ * @param {object|null} goal `GlobalThreadGoal`, or null for a clear
+ * @returns {string[]} the cids that were written and pushed
+ */
+export function applyThreadGoalToClients(sessionId, goal) {
+  if (!sessionId || typeof sessionId !== "string") return [];
+  const written = [];
+  for (const [cid, cs] of clients) {
+    if (!cs || cs.mcodeSessionId !== sessionId) continue;
+    // Byte-identical frames are suppressed by the push diff gate anyway;
+    // this keeps a repeated identical event from waking every snapshot
+    // builder in the tab.
+    if (cs.threadGoal === goal) continue;
+    cs.threadGoal = goal;
+    written.push(cid);
+  }
+  for (const cid of written) pushStateFor(cid);
+  return written;
 }
 
 // Unified mcodeSessions snapshot field construction — every SSE push

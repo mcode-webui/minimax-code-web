@@ -41,6 +41,7 @@ import { installGracefulShutdown } from './lib/graceful-shutdown.js'
 import { init as initSettings, getPersistPath, getTokenEnabled } from './lib/settings.js'
 import { setTokenAuthEnabled as setAuthTokenEnabled } from './lib/auth.js'
 import { pushTokenFirstRun, startSubagentStatusPolling } from './lib/state-bus.js'
+import { stopGoalEventBridge } from './engine/goal-events.js'
 
 installGlobalErrorHandlers()
 
@@ -169,6 +170,10 @@ installGracefulShutdown(server, {
   shutdownMcodeAcpSingleton,
   onSignal: (signal) => {
     console.log(`[webui] ${signal}, shutting down...`)
+    // PB-14 (batch B): the goal bridge holds a live engine subscription
+    // for the life of the process. Aborting it here is what keeps a
+    // restart from leaving a second pump reading the same event bus.
+    stopGoalEventBridge()
     console.log(`[webui] Waiting for graceful termination...`)
   },
 })

@@ -1286,6 +1286,50 @@ Token Plan 视图是桌面的五区块（页签 + 四卡）：
 
 **本批没有做的事。** 引擎的 `getQueueItem` 与 `updateQueueItem` 存在但未开放：编辑排队消息的正文是另一个决策，而今天"取消再重排"是完整替代——面板悬停即显示全文。引擎报告的 `paused` 标志被显示但不可操作：本面板不设置它，提供一个"恢复"按钮等于声称拥有一个自己并不掌握的控制。转向消息仍只报告受理，不报告运行中的 agent 是否读到了那段文字。PB-13 计划行（`doc/placeholder-batch-plan.md` §5 第 5 行、G-6）里的子 agent 快照 / 停止是另一项能力开窗，未在本批落地。
 
+**目标事件桥：引擎的目标，实时到达同一条 SSE（PB-14 批次 B）**
+
+**用户能看到什么。** 还没有。在引擎里创建、修改或清除目标之后，本批把这一事实经既有 SSE 通道送到每个正在看该会话的页签；把它画成横幅是批次 C 的事。
+
+**订阅此前为零，这是结构性缺口而非待办。** 引擎为线程目标定义了三个全局事件（`thread_goal.updated` / `.cleared` / `.objective_updated_steering`，`packages/shared/src/global-events.ts:344-350`），并经 `cliService.watchEvents(signal)` 以 AsyncGenerator 吐出；`server/engine/goal-events.js` 是 webui 全仓第一处订阅它的代码。三个事件在此之前从未被本服务端调用过，因此在浏览器里创建的目标没有任何路径到达界面。
+
+**帧形状就是引擎的快照，逐字段。** 新字段 `threadGoal` 出现在既有的全量状态帧里，值是引擎发布的那份 `GlobalThreadGoal` 原样，`null` 表示"这个会话没有目标"。这里刻意不做窄投影：窄投影等于把 `GlobalThreadGoal` 再抄一份并让它悄悄过期。桌面版消费同三个事件后把整个快照交给横幅（`other-minimax-code/.../effect-reducer.ts:255-284` → `set-goal`），同一份数据到本仓前端时也必须是同一份。`threadGoal` 也没有并进既有的 `goal` 槽——后者是 `/goal <text>` 这条 webui 本地命令留下的东西（目标文本被当普通消息透传给引擎），两个槽属于两个不同的事实，批次 D 退役本地槽时不该顺手改变横幅即将开始读的那个字段。
+
+**写入只落在正在看那个会话的页签。** 匹配键是 `cs.mcodeSessionId`，不是 webui 会话 id，也不是事件自带的任何标签。两个页签看同一会话时都会收到；看别处的页签不会——这与 `snapshotViewFields` 对外来回合聊天的处理是同一条规矩。
+
+**无法归属的事件被丢弃，而不是被猜出来。** 三种事件名白名单之外的名字、形状不对的载荷、缺身份的快照、以及 steering 事件重读后查不到目标——四种情形都不写入。帧写错没有"少一点"的正确形态。
+
+**steering 为什么重读一次。** 引擎的 `thread_goal.objective_updated_steering` 载荷只有 `{sessionId, goalId}` 两个标识，不含快照（与桌面版那条 `objective_steering` 变体不同）。把这两个标识写进帧会给用户一个没有目标文本、没有用量的目标，因此桥用 `cliService.getGoal` 回读一次权威快照；重读失败（目标能力未装配，或目标已消失）就不写。
+
+**没有宿主时是静默空转，不是错误。** 桥只 `peekEngineCatalogueHost()`，绝不启动运行时——会启动运行时的读会把页面首屏变成一次无声的多秒停顿（PB-1 的 10 秒 `/api/state` 超时）。默认 `acp` 传输下回合跑在 `mcode acp` 子进程里，本宿主根本没有可订阅的总线，此时订阅返回 false，页签保持 `threadGoal: null`。重试点是 SSE 连接与 `/api/state` 两个入口：一个在任何宿主起来之前就打开的页签，会在宿主存在后的下一次连接/刷新时补上订阅。每进程至多一条订阅，进程收到终止信号时中止。
+
+**代价。** 一条常驻的引擎事件订阅；每次 steering 事件一次 `getGoal` 读。
+
+**本批没有做的事。** 不创建、不修改、不清除目标——那是批次 A 的五个端点；`ensureGoalEventBridge()` 由 SSE 接入点调用，与批 A 并行落地时无需改动。webapp 侧本批不加消费代码，横幅与 `/goal` 命令是批次 C，本地 `goal` 槽的退役是批次 D。
+
+**线程目标：五个窗口对着一个早就存在的引擎面（PB-14 批 A）**
+
+**这是什么。** 引擎早就拥有完整的线程目标面：`isGoalEnabled`、`getGoal`、`createGoal`、`patchGoal`、`clearGoal` 五个方法在 TUI 运行时适配器上（`tui/runtime/adapter.ts:283-295`），落在 `local_runtime_thread_goals` 表里，并由 TUI 的 `/goal` 命令驱动。webui 这一侧一个端点都没有。它拥有的是一个"目标形式的假象"：`/goal <text>` 只在按 cid 的内存槽里记一笔 `{active, text, status, duration}`，重写聊天行，然后把那段文字**当普通消息**送给引擎——引擎根本不知道有目标这件事。本批开这五个端点，并给能力矩阵补上 `goal` 键；横幅与真的 `/goal` 命令属于批 B 与批 C。
+
+**为什么走适配器而不走 `cliService`。** 两边都有全部五个方法，也都指向同一个 `applications.goals` 门面。选适配器，是因为它正是 TUI 自己的 `/goal` 驱动的那个对象，服务端拿到的行为就是 CLI 已经有的行为；而且 `streaming-send.js` 早就在走 `catalogue.adapter`——一条宿主路径，不是两条。
+
+**为什么 `/goal` 的解析器不放在这里。** 命令解析器（`tui/application/thread-goal-command.ts`，八种 intent，带 `50K` 预算后缀与 CJK 边界宽忍）是一个关于"用户打了什么"的**客户端**事实，属于编写器，而编写器是批 C 的文件。服务端只开引擎认的五个方法，不多一个。
+
+**会话 id 从哪来。** 始终是 `ctx.cs.mcodeSessionId`——与队列、跟进消息两个家族同一条规矩，而 goal 面真正是最容易破它的地方：目标属于一个会话，而 id 看上去就是明摆着的索引。桌面版客户端在这五个操作上都会带 `sessionId`；这里忽略它，并且 `test/routes/goal.test.js` 给每个会话级路由的请求体装一个诱饵 id，断言引擎拿到的是本页签的那个。
+
+**"目标关闭了"是它自己的回答。** 功能关闭时引擎抛的是一个带两个方法名、没有状态的 `Error("Thread Goal is disabled.")`，通用错误映射只能把它变成 500——用一个服务端故障去表达一个配置事实。所以每个请求在任何会话级调用之前先问一次 `isGoalEnabled`，关闭时回答 `503 {code:"goal_disabled"}` 且**什么都不调**。这也正是前端开关所需的答案，也是本批不在其余四个上额外汇问开关的原因——不关心的客户端仍在每次写上拿到真话。
+
+**"没有目标"是 404，不是空目标。** `getGoal` 对没有目标的会话答 `undefined`，`clearGoal` 在无可删时答 `false`，两者都变成 `404 GOAL_NOT_FOUND`——这个码正是引擎自己的 `ThreadGoalContractError` 携带的：带状态的错误原样透传并保留它的 code，而不被服务端重新描述一遍。在切换会话时轮询的客户端需要能够把"这个会话没有目标"作为事实说出来，这与队列回答 `reachable:false` 而不是空列表是同一个理由。几乎同理，`GET /api/goal/enabled` 只报开关、绝不去找目标："功能没开"与"还没有目标"是两个问题的两个答案，压成一个就让人无法解释用户的 `/goal` 为何没动作。
+
+**`statusReason` 接受后丢弃。** 它不在引擎的补丁契约里（`TuiGoalAccess.patch` 只收 status / objective / tokenBudget），理由由引擎自己推导。转发它等于把一个引擎自己都没声明过的对象交过去。所以基线列为验收点的 `{status:"complete", statusReason:"user_requested"}`——转发的是 `{status:"complete"}`，回来的是一个已 completed 的目标。**裸**的 `{status:"paused"}` 原样转发：引擎恰好吃这个形状，当它是原子的用户暂停转换（`compat/v1/runtime.ts#isBareUserPause`）；把它改写成"普通"补丁会静默改掉它的含义。
+
+**读只用现有的、写可以启动。** `GET /api/goal` 在切换会话的路径上，`/api/goal/enabled` 是开关判定，两者都走 `peekEngineCatalogueHost()`；PB-1 已经为这条规矩的另一半付过一次 10 秒 `/api/state` 超时的代价。三个写随意启动：是用户按了按钮。
+
+**矩阵里终于有了它的位置。** `goal` 是第十五个键——只往后追加、绝不插入，设计文档 §1.2 里十三个已审计行的顺序不变。`local-runtime-v2` 与 `tui-runtime-adapter` 声明为 `full`（两边确实都有全部五个方法，且 `test/lib/engine/capability-snapshot.test.js` 现在会**反射**一个真实宿主来验证它们，而不是相信声明）；`acp` 与 `exec` 声明为 `none` 并带 `interface-absent` 理由，且——与 `turnDiff`、`plugins` 不同——故意**不带** `servedBy`：这些路由不会主动伸手去读另一个宿主的状态。因此 `acp` 下的目标请求回答 `501`，前端在这个码上隐藏控件，而不是给一个自己不能信的开关。
+
+**代价。** 每个请求一次开关读，加一次目标读或写。不轮询，两个读都不启动运行时。
+
+**本批没有做的事。** 没有 `kickoffAttachments`（编写器还没有附件选择器可以产出它们）。没有事件桥——`thread_goal.updated`、`thread_goal.cleared`、`thread_goal.objective_updated_steering` 仍未进入 webui 的 SSE，那是批 B，因此客户端只能轮询这些端点。没有横幅、没有 `/goal` 命令，那是批 C；假目标所在的那个 `cs.goal` 内存槽仍然在，与 `state-bus.js`、`debug.js` 一起在批 D 退役。
+
 **添加模型弹窗（工单 54，53b）**
 
 未配置任何供应商时，页签中央显示「暂未添加自定义模型」与「+ 添加模型」按钮；有供应商后按钮移到列表下方。模型选择器的「新增供应商」深链也落在同一弹窗。弹窗内：
@@ -2459,6 +2503,12 @@ createdAtMs, updatedAtMs}`）下发，按 `toolCallId` 幂等、上限 32 条、
 | `POST` | `/api/queue/reorder` | `routes/queue.js#handleQueueReorder` | `{itemIds}`——**完整**的有序 id 列表，绝不是增量；引擎的 `reorderQueue` 会拿它与"自己认为用户可管理的"那组 id 比对。无法构成队列的列表在问引擎之前就以 `400 {code:"invalid_queue_order"\|"BAD_FIELD_TYPE"}` 拒绝；队列在别的进程里时 `409 {code:"turn_not_here"}`，且**什么都没动**；200 `{ok, items}`——**引擎**的新顺序 |
 | `POST` | `/api/queue/cancel` | `routes/queue.js#handleQueueCancel` | `{itemId}` → `cliService.deleteQueueItem`，也就是引擎的 `queue.cancel`；`400 {code:"queue_item_required"\|"BAD_FIELD_TYPE"}`；取消**没有**发生时 `409 {code:"turn_not_here"}`；200 `{ok, item}`——引擎自己的已取消记录（`status:"cancelled"`） |
 | `GET` | `/api/review-link` | `routes/review-link.js#handleReviewLink` | 运行时为**本页签**的工作区与当前分支**记录**下来的评审（`cliService.getWorkspaceReviewLink`）；200 `{ok, reviewLink, reason, branch}`，其中 `reviewLink` 是存储自己的 `{vendor,url,number,branch,origin,recordedAt}` 或 `null`。引擎会话 id **不从请求取**——一律取 `ctx.cs.mcodeSessionId`，工作区再从那个会话自己的记录取。`reviewLink:null` + `reason`（`unknown_workspace` \| `no_branch` \| `no_review_link`）是**常态**回答，不是错误；本页签没有引擎会话时 `400 {code:"no_active_conversation"}`；宿主缺成员时 `501 {code:"engine_member_unavailable"\|"engine_git_metadata_unavailable"\|"engine_session_reader_unavailable"}`，能力被声明为不支持时 `501 {code:"engine_capability_not_supported"}`；没有运行时 `503`。这是**读**——走 `peekEngineCatalogueHost()`，绝不启动运行时 |
+
+| `GET` | `/api/goal/enabled` | `routes/goal.js#handleGoalEnabled` | 200 `{ok, enabled}`——**引擎自己的**开关（`adapter.isGoalEnabled`）。这是五个端点里唯一不需要会话的，因此还没打开会话的页签也能拿到"要不要给用户这个控件"的答案。它**不去找目标**："功能没开"与"这个会话没有目标"是两个不同的答案。宿主没有 goal 面时 `501 {code:"engine_member_unavailable"}`；没有运行时 `503 {code:"engine_host_unavailable"}` |
+| `GET` | `/api/goal` | `routes/goal.js#handleGoalRead` | 200 `{ok, goal}`，`goal` 是引擎的 `GlobalThreadGoal` **整体**透传——含 `statusReason`、`lastVerification`、`executionWait` 与三个用量计数器，因为这些是前端要渲染的，webui 无权裁定哪些字段才算数。引擎答"没有目标"时 `404 {code:"GOAL_NOT_FOUND"}`（引擎自己抛的 `ThreadGoalContractError` 404 也原样带码上行）；引擎答出非对象时 `502 {code:"engine_contract_violation"}`；本页签没有引擎会话 `400 {code:"no_active_conversation"}`；引擎关掉了该功能 `503 {code:"goal_disabled"}`，且**根本不调用** `getGoal`。这是**读**：走 `peekEngineCatalogueHost()`，不启动运行时 |
+| `POST` | `/api/goal` | `routes/goal.js#handleGoalCreate` | `{objective, tokenBudget?}` → `adapter.createGoal`。引擎会话 id 取自 `ctx.cs.mcodeSessionId`，**绝不从请求体取**——桌面客户端在这个操作上会带一个，这里忽略它。仅空白 objective、或预算不是正整数/`null` 时 `400 {code:"invalid_body"}`；**缺省**的 `tokenBudget` 会从调用里**省略**，而不是送 `null`，而显式的 `null`（"不要预算"）会原样送 `null` |
+| `PATCH` | `/api/goal` | `routes/goal.js#handleGoalPatch` | `{status?, objective?, tokenBudget?, statusReason?}` → `adapter.patchGoal`，前三项至少要有一项；status 落在六态（`active·paused·blocked·complete·budget_limited·usage_limited`）之外、或空补丁时 `400 {code:"invalid_body"}`。`statusReason` **接受后丢弃**——它不在引擎的补丁契约里，所以 `{status:"complete", statusReason:"user_requested"}` 转发的是 `{status:"complete"}`，理由由引擎自己推导。**裸**的 `{status:"paused"}` 原样转发：引擎恰好把这个形状当作原子的用户暂停转换（`compat/v1/runtime.ts#isBareUserPause`），"归一化"成别的补丁就会改掉它的含义 |
+| `DELETE` | `/api/goal` | `routes/goal.js#handleGoalClear` | → `adapter.clearGoal`。只有引擎**真的删掉了**才 200 `{ok, success:true}`；引擎答 `false` 时是 `404 {code:"GOAL_NOT_FOUND"}`，因此"本来就没有"与"已经删掉了"不会都是 200 |
 | `POST` | `/api/debug/inject` | `routes/debug.js#handleDebugInject` | `DEBUG_INJECT=1` 守门 |
 | `GET` | `/api/debug/state` | `routes/debug.js#handleDebugState` | 同上 |
 | `POST` | `/api/protocol/set-mode` | `routes/protocol.js#handleSetMode` | 会话中途切换 mode |

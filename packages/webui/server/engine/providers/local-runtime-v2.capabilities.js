@@ -23,7 +23,7 @@
 import { validateEngineCapabilities } from "../capabilities.js";
 
 /**
- * The 14-key declaration for the local-runtime-v2 provider. The declared
+ * The 15-key declaration for the local-runtime-v2 provider. The declared
  * surface is the catalogue host as a whole: `cliService` +
  * `applications` (the process-local feature facades) — matching how
  * webui actually consumes the host today.
@@ -121,6 +121,21 @@ export const LOCAL_RUNTIME_V2_CAPABILITIES = Object.freeze({
     reason:
       "read-only metadata + review link; change mutation is outside this package (design §1.3 v2)",
   },
+  // PB-14 batch A. Five methods on the CliService surface, all delegating
+  // to the optional `goals` application through
+  // `requireCapability("goals")` (`local-runtime-v2/src/local/cli-service.ts:488-515`):
+  // isGoalEnabled / getGoal / createGoal / patchGoal / clearGoal.
+  //
+  // `full`, not `partial`, with one thing said plainly: the methods are
+  // present and total, but they throw when the optional `goals` application
+  // was not wired into this process — `requireCapability` raises the
+  // capability error, and the application itself answers "Thread Goal is
+  // disabled." That is a runtime CONFIGURATION fact the webui facade
+  // reports honestly as 503 `goal_disabled` (it asks `isGoalEnabled`
+  // before every session-scoped call), not a missing sub-capability: there
+  // is no method here that is declared and absent, and a `partial` that
+  // enumerated a `missing` item would be claiming one.
+  goal: { level: "full" },
 });
 
 if (validateEngineCapabilities(LOCAL_RUNTIME_V2_CAPABILITIES).length > 0) {

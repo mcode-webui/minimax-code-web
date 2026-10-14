@@ -21,6 +21,15 @@ import { getCachedMcodeCommands } from "../lib/acp-client.js";
 // migration, out of scope for this batch, and it must keep its exact
 // pending/stale semantics.
 import { readEngineSessionListForWorkspace } from "../engine/session-reads.js";
+// PB-14 (batch B): the engine → SSE goal bridge. Subscribing is a no-op
+// until a catalogue host is already up (the bridge peeks, it never boots
+// one), so it is safe on the connect path: under the default `acp`
+// transport it returns false and the tab keeps `threadGoal: null`. It is
+// called on BOTH entry points because a tab that connected before any
+// host existed must still get the subscription once one does — the
+// connect path is the only re-arm point this bridge has, and a goal is
+// often created long after the tab opened.
+import { ensureGoalEventBridge } from "../engine/goal-events.js";
 import { getLanBroadcast } from "../lib/settings.js";
 import { applyMavisUsageToCs } from "../lib/mavis-usage.js";
 import { getMcodeModelLimit } from "../lib/models.js";
@@ -35,6 +44,10 @@ import {
 export async function handleEvents(req, res, ctx) {
   const cid = getCidFromReq(req);
   const cs = getClient(cid);
+  // PB-14 (batch B): arm the engine goal subscription before the first
+  // frame, so a goal created between the connect and the next push is not
+  // missed. Fire-and-forget: the first frame must not wait on a runtime.
+  ensureGoalEventBridge();
   // 关掉旧 SSE（避免同一个 cid 有多个挂起连接）
   const old = getSseClient(cid);
   if (old) {
@@ -113,6 +126,10 @@ const SSE_HEADERS = {
 
 export async function handleState(req, res, ctx) {
   const cs = getClient(ctx.cid);
+  // PB-14 (batch B): a page reload re-enters here, and this is the other
+  // chance to arm the bridge for a tab whose SSE connected before a host
+  // was up. Same no-boot rule as handleEvents.
+  ensureGoalEventBridge();
   // M3-B1: the mcodeSessions mirror now comes from the engine facade,
   // which gates it on the declared `sessionCrud.listSessions` and reports
   // (in the return value, not on the wire) whether the in-process host or
