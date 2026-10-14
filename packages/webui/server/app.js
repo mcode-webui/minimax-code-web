@@ -68,6 +68,7 @@ import * as protocolRoute from "./routes/protocol.js";
 import * as providersRoute from "./routes/providers.js";
 import * as modelSourceRoute from "./routes/model-source.js";
 import * as followUpRoute from "./routes/follow-up.js";
+import * as queueRoute from "./routes/queue.js";
 import * as gitRoute from "./routes/git.js";
 import * as pluginsRoute from "./routes/plugins.js";
 import * as turnDiffRoute from "./routes/turn-diff.js";
@@ -164,6 +165,20 @@ export const OWNED_ROUTES = new Set([
   // `engine/worktrees.js` for the three-state presence gate.
   "GET /api/worktrees",
   "POST /api/worktrees/remove",
+
+  // PB-13 — the queue half of the same family. SB-4 opened a window over
+  // `enqueueMessage` and left the queue it writes into unreadable: a
+  // queued message got an item id and a position that nothing displayed.
+  // These three reach `cliService.listQueueMessages` / `reorderQueue` /
+  // `deleteQueueItem` (the engine's cancel). The LIST is a read and may
+  // not boot a runtime — see `engine/queue.js`; the two writes may,
+  // because the user pressed a button. `GET /api/queue` answers 200
+  // with `reachable:false` when the running turn lives in another
+  // process, because a polled endpoint that raises an error teaches the
+  // user to ignore it.
+  "GET /api/queue",
+  "POST /api/queue/reorder",
+  "POST /api/queue/cancel",
   // Usage / quota.
   "POST /api/usage",
   "POST /api/usage-trigger",
@@ -599,6 +614,19 @@ export function createHonoApp() {
   // order stay the same list.
   app.post("/api/follow-up", (c) =>
     invokeHandler(c, c.get(CAPTURE_KEY), followUpRoute.handleFollowUp),
+  );
+  // ----- PB-13: the message queue -----
+  // Registered next to the follow-up route because the three are one
+  // family: a message enters the queue through `/api/follow-up` and is
+  // seen, moved and cancelled here.
+  app.get("/api/queue", (c) =>
+    invokeHandler(c, c.get(CAPTURE_KEY), queueRoute.handleQueueList),
+  );
+  app.post("/api/queue/reorder", (c) =>
+    invokeHandler(c, c.get(CAPTURE_KEY), queueRoute.handleQueueReorder),
+  );
+  app.post("/api/queue/cancel", (c) =>
+    invokeHandler(c, c.get(CAPTURE_KEY), queueRoute.handleQueueCancel),
   );
 
   // ----- PB-3: 工作树 -----

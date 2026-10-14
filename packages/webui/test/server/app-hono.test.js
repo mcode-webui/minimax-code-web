@@ -93,6 +93,13 @@ describe("app.js — migration ledger", () => {
       // is a cleanup page and the port declares no create method.
       "GET /api/worktrees",
       "POST /api/worktrees/remove",
+
+      // PB-13: the queue the follow-up family writes into, which SB-4
+      // left unreadable. The list is a READ and is the one endpoint in
+      // this family that must not boot a runtime; the two writes may.
+      "GET /api/queue",
+      "POST /api/queue/reorder",
+      "POST /api/queue/cancel",
       "POST /api/usage",
       "POST /api/usage-trigger",
       "GET /api/usage-real",

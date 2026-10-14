@@ -60,6 +60,8 @@ import {
   resolveFollowUpAction,
   type FollowUpAction,
 } from "@/lib/follow-up";
+import { recordQueuedFollowUp } from "@/lib/follow-up-queue";
+import { FollowUpQueuePanel } from "@/components/follow-up-queue-panel";
 import {
   completeSlashWord,
   flattenAvailableCommands,
@@ -280,6 +282,13 @@ export function Composer({
   // `wait` is the OFF position and means "render no send control", which
   // is the pre-SB-4 composer exactly. See lib/follow-up.ts.
   const followUpAction: FollowUpAction = resolveFollowUpAction(followUp, running);
+  // PB-13 — the queue panel's refresh trigger. The panel owns the
+  // request; the composer owns the moment a request became necessary,
+  // which is the successful queue answer. Bumping a counter (rather
+  // than passing a callback) keeps one owner of the fetch and one
+  // owner of the trigger, instead of a parent that re-reads the list
+  // on the panel's behalf.
+  const [queueRefreshToken, setQueueRefreshToken] = useState(0);
   // The server stores the permission mode as its *label* (`webuiModeToLabel(id)`
   // in routes/model.js) while this selector is keyed by id, so comparing the two
   // directly never matched and the chip always fell back to 完全访问 — you could
@@ -538,12 +547,31 @@ export function Composer({
         // the same text must not collapse into one. Bounded and charset-
         // safe by construction (the server drops anything else).
         followUpSeqRef.current += 1;
-        await api.submitFollowUp({
+        const queued = await api.submitFollowUp({
           behavior: action,
           content,
           attachments,
           requestId: `${dispatchCid}.${Date.now().toString(36)}.${followUpSeqRef.current}`,
         });
+        // PB-13 — a steer has no queue item and nothing to show; a queue
+        // answer carries the ENGINE's own item id and position, and that
+        // answer is the first moment the message exists anywhere the user
+        // can see it. Record it so the queue panel can show it before
+        // its next poll lands, and bump the token so the panel refetches
+        // rather than making the user wait out its interval to see a
+        // message they just sent. Both are keyed by the WEBUI session id
+        // the dispatch was for (`dispatchSessionId`), never by the engine
+        // one — a queue belongs to a conversation, and a record that
+        // followed the user into another conversation would be a claim
+        // about work they are not looking at.
+        if (action === "queue" && dispatchSessionId) {
+          recordQueuedFollowUp(dispatchSessionId, {
+            itemId: queued.itemId ?? null,
+            position: queued.position ?? null,
+            content,
+          });
+          setQueueRefreshToken((token) => token + 1);
+        }
         completeComposerSent();
         return;
       }
@@ -773,6 +801,17 @@ export function Composer({
           the reporter's "comfortable measure, centred slack"
           choice. */}
       <div className="mx-auto w-full max-w-[960px]">
+        {/* PB-13 — the queue panel, above the card and inside the same
+            measure cap so its rows line up with the transcript's.
+            It renders nothing at all unless a turn is running: the
+            queue is the queue OF a turn, and a permanently visible
+            empty panel in every conversation would be noise. */}
+        <FollowUpQueuePanel
+          sessionId={state?.sessionId ?? null}
+          running={running}
+          refreshToken={queueRefreshToken}
+          t={t}
+        />
         {/* Upstream's message-input card. Its class string is
             `mavis-message-input-card w-full border border-border_default
              bg-bg_grouped_secondary_elevated px-2.5 pt-2.5 pb-2 rounded-[20px]

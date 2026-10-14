@@ -1266,7 +1266,25 @@ Token Plan 视图是桌面的五区块（页签 + 四卡）：
 
 **代价。** 每次跟进发送多一次引擎读；这是写路径，没有运行时时会启动引擎，可以接受（是用户按了发送）。
 
-**本批没有做的事。** 队列没有界面：排进去的消息带着 id 和位置，却没有任何地方展示，也无法在浏览器里查看、重排或撤销。那是 PB-13 的范围；在它落地之前，排队的跟进消息在本回合结束前不可见。转向消息返回的是受理结果，不是"运行中的 agent 是否在下一步之前读到了这段文字"。
+**本批没有做的事。** 转向消息返回的是受理结果，不是"运行中的 agent 是否在下一步之前读到了这段文字"。队列自身的可见面见下一节。
+
+**消息队列：列表、重排、取消都是引擎做的（PB-13）**
+
+**用户能看到什么。** 回合运行中，编写器上方、同一 960px 行宽内，出现一条折叠的「排队消息」条并显示条数。展开后逐条列出排队消息：位置、单行摘要、状态、附件数，以及三个操作——上移 / 下移 / 取消。没有回合在跑时整条不渲染：队列是**某个回合**的队列，而在每个会话里常驻一个空面板只是噪音。
+
+**列表、顺序、状态都是引擎的。** `GET /api/queue` 每次轮询都走到 `cliService.listQueueMessages`，按返回的顺序渲染返回的内容。面板显示的位置就是条目在该数组中的下标——这也是两端都没有自造 `position` 字段的原因。重排与取消分别是 `cliService.reorderQueue` 与 `cliService.deleteQueueItem`（引擎对 `queue.cancel` 的命名）；面板只发送意图并渲染回答，引擎拒绝时也照实渲染。
+
+**为什么读不许启动运行时、写可以。** `GET /api/queue` 走 `peekEngineCatalogueHost()` 而不是 `getEngineCatalogueHost()`。`engine/host.js` 记下的规矩是：写可以启动它需要的东西，读只能用已经起来的东西；PB-1 为这条规矩的另一半付过一次 10 秒 `/api/state` 超时的代价——会启动运行时的读会把页面首屏变成一次无声的多秒停顿。面板找不到宿主时回答"不可达"，客户端画出一句话。两个写可以随意启动，因为是用户按了按钮。
+
+**"不可达"不是"空"，两种回答形态不同是有意的。** 当本进程不持有正在跑的回合时——默认 `acp` 传输下的常态，回合跑在 `mcode acp` 子进程里——队列在本宿主读不到的地方。列表回答 `200 {reachable:false, reason:"turn_not_here", items:[]}`，因为一个每四秒报一次错横幅的轮询端点只会教会用户忽略红色；两个写回答 `409 turn_not_here`，因为按了「取消」的用户必须知道取消**没有**发生。面板把前者渲染成一句话（本回合正在另一个引擎进程中运行，队列由该进程持有；此刻排队的消息由本页签跟踪，回合结束前可见，刷新即失），绝不渲染成空列表——"你的队列是空的"是对引擎队列的断言，而服务端从未这样说过。
+
+**客户端保留的那一样东西，以及它不是什么。** 从引擎对排队发送的回答（`itemId`、`position`）到面板下一次轮询之间，这条消息存在于引擎里、却还不在屏幕上。编写器把它记进一个模块作用域、按会话分开的存储，键是 webui 会话 id；面板把它显示为一行标注「已排队」的消息，带取消、没有位置。服务端快照一旦落到该会话，这些记录立即丢弃：从那一刻起服务端就是列表，而快照没提到的记录要么已经跑掉、要么从未存在。这个存储是补空档的，不是队列——它不持有顺序、活不过刷新，每次渲染都以快照为准。
+
+**为什么轮询而不是订阅。** 引擎在自己的事件总线上发布 `session.queue.updated`，但 webui 的 SSE 通道承载的是 webui 回合流，不是引擎的全局总线。订阅意味着再开一条流，而它唯一的载荷只是"有变化，再看一眼"。因此面板每四秒轮询一次，且**只在展开时**轮询——折叠状态下开销为零。
+
+**代价。** 展开期间每次轮询一次引擎读；两个写可能启动运行时。
+
+**本批没有做的事。** 引擎的 `getQueueItem` 与 `updateQueueItem` 存在但未开放：编辑排队消息的正文是另一个决策，而今天"取消再重排"是完整替代——面板悬停即显示全文。引擎报告的 `paused` 标志被显示但不可操作：本面板不设置它，提供一个"恢复"按钮等于声称拥有一个自己并不掌握的控制。转向消息仍只报告受理，不报告运行中的 agent 是否读到了那段文字。PB-13 计划行（`doc/placeholder-batch-plan.md` §5 第 5 行、G-6）里的子 agent 快照 / 停止是另一项能力开窗，未在本批落地。
 
 **添加模型弹窗（工单 54，53b）**
 
@@ -2423,6 +2441,10 @@ createdAtMs, updatedAtMs}`）下发，按 `toolCallId` 幂等、上限 32 条、
 | `POST` | `/api/model-source/test` | `routes/model-source.js#handleTestModelSource` | `{modelId?}`；**跑完**的检测恒 200（`{ok, success, providerId:"minimax_api", tested:"stored_key", status}`），含 `success:false`；非 200 只出现在拒绝去试时（`503`/`501`，或引擎的 `400 NO_API_KEY`） |
 | `POST` | `/api/follow-up` | `routes/follow-up.js#handleFollowUp` | `{behavior:"queue"\|"steer", content, attachments?, requestId?}`——引擎会话 id 取自服务端自己的会话状态，**不从请求体取**；`400 {code:"invalid_follow_up_behavior"\|"follow_up_empty"\|"no_active_conversation"\|"BAD_FIELD_TYPE"}`；本进程不持有正在跑的回合时 `409 {code:"no_active_turn"\|"turn_not_owned"}`，且**不排任何队**；宿主缺该方法 `501`、没有运行时 `503`；200 `{ok, behavior, itemId, position, status}`（排队）或 `{ok, behavior, turnId, mode}`（转向）——都是引擎自己的回答 |
 | `GET` | `/api/logs/export` | `routes/logs.js#handleExportLogs` | 恒为 `200 text/plain`，带 `Content-Disposition: attachment; filename="mcode-webui-logs-<YYYYMMDDTHHMMSS>.txt"`——崩溃日志（`WEBUI_DATA_DIR/.server.err`）加事件日志最后 2000 行 / 2 MiB，每段自带截断或缺失说明。日志文件缺失或读不了**不产生状态码**：这些情况写进响应体，因为前端是浏览器 anchor，4xx 会被当成 `.txt` 存成一个装着 JSON 的文件 |
+
+| `GET` | `/api/queue` | `routes/queue.js#handleQueueList` | 引擎自己的列表（`cliService.listQueueMessages`），按引擎自己的顺序；200 `{ok, reachable, items, paused, pendingCount}`。这是**读**——走 `peekEngineCatalogueHost()`，**不得**启动运行时。本进程不持有正在跑的回合（`acp` 传输下的常态）时回答 `reachable:false` + `reason:"turn_not_here"` + `items:[]`，**这不等于队列为空**；本页签没有引擎会话时 `400 {code:"no_active_conversation"}`；宿主缺该方法 `501`、没有运行时 `503` |
+| `POST` | `/api/queue/reorder` | `routes/queue.js#handleQueueReorder` | `{itemIds}`——**完整**的有序 id 列表，绝不是增量；引擎的 `reorderQueue` 会拿它与"自己认为用户可管理的"那组 id 比对。无法构成队列的列表在问引擎之前就以 `400 {code:"invalid_queue_order"\|"BAD_FIELD_TYPE"}` 拒绝；队列在别的进程里时 `409 {code:"turn_not_here"}`，且**什么都没动**；200 `{ok, items}`——**引擎**的新顺序 |
+| `POST` | `/api/queue/cancel` | `routes/queue.js#handleQueueCancel` | `{itemId}` → `cliService.deleteQueueItem`，也就是引擎的 `queue.cancel`；`400 {code:"queue_item_required"\|"BAD_FIELD_TYPE"}`；取消**没有**发生时 `409 {code:"turn_not_here"}`；200 `{ok, item}`——引擎自己的已取消记录（`status:"cancelled"`） |
 | `POST` | `/api/debug/inject` | `routes/debug.js#handleDebugInject` | `DEBUG_INJECT=1` 守门 |
 | `GET` | `/api/debug/state` | `routes/debug.js#handleDebugState` | 同上 |
 | `POST` | `/api/protocol/set-mode` | `routes/protocol.js#handleSetMode` | 会话中途切换 mode |

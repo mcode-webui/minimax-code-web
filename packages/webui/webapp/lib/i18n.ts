@@ -657,6 +657,30 @@ const en = {
   "settings.followUp.off": "Disabled",
   "settings.followUp.queue": "Queue",
   "settings.followUp.steer": "Send now",
+  // PB-13 — the queue panel. `queue.unreachable` is the honest-boundary
+  // sentence: the engine is not running this session's turn in this
+  // process, so its queue cannot be read from here. It is deliberately
+  // NOT worded as "your queue is empty" — the server never said that,
+  // and a list rendered from a guess is a claim about another process's
+  // work.
+  "queue.title": "Queued messages",
+  "queue.empty": "Nothing is queued for this turn.",
+  "queue.loading": "Reading the queue…",
+  "queue.paused": "paused",
+  "queue.failed": "Queue action failed",
+  "queue.unreachable":
+    "This turn is running in another engine process, which holds its queue. Messages you queue now are tracked by this tab until the turn ends, and are lost on reload.",
+  "queue.awaiting": "Queued",
+  "queue.position": "#{n}",
+  "queue.attachments": "{n} attachment(s)",
+  "queue.moveUp": "Move up",
+  "queue.moveDown": "Move down",
+  "queue.cancel": "Cancel",
+  "queue.status.queued": "Queued",
+  "queue.status.paused": "Paused",
+  "queue.status.cancelled": "Cancelled",
+  "queue.status.failed": "Failed",
+  "queue.status.unknown": "Unknown status",
   "home.suggestions": "Suggested",
   "home.chooseFolder": "Pick a folder",
   "home.local": "Local",
@@ -1914,6 +1938,27 @@ const zh: Record<MessageKey, string> = {
   "settings.followUp.off": "关闭",
   "settings.followUp.queue": "排队",
   "settings.followUp.steer": "立即发送",
+  // PB-13 — 队列面板。`queue.unreachable` 是诚实边界那句话：引擎不在本进程
+  // 运行本会话的回合，因此它的队列在这里读不到。这里刻意不写成「队列为空」
+  // ——服务端没有这样说，凭猜测渲染出来的列表是对另一个进程的工作的无据断言。
+  "queue.title": "排队消息",
+  "queue.empty": "本回合没有排队消息。",
+  "queue.loading": "正在读取队列…",
+  "queue.paused": "已暂停",
+  "queue.failed": "队列操作失败",
+  "queue.unreachable":
+    "本回合正在另一个引擎进程中运行，队列由该进程持有。此刻排队的消息由本页签跟踪，回合结束前可见，刷新即失。",
+  "queue.awaiting": "已排队",
+  "queue.position": "第 {n} 条",
+  "queue.attachments": "{n} 个附件",
+  "queue.moveUp": "上移",
+  "queue.moveDown": "下移",
+  "queue.cancel": "取消",
+  "queue.status.queued": "排队中",
+  "queue.status.paused": "已暂停",
+  "queue.status.cancelled": "已取消",
+  "queue.status.failed": "失败",
+  "queue.status.unknown": "未知状态",
   "home.suggestions": "推荐",
   "home.chooseFolder": "选择文件夹",
   "home.local": "本地",

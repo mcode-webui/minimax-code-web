@@ -293,6 +293,69 @@ export const submitFollowUp = (payload: FollowUpPayload) =>
     timeoutMs: SEND_ACK_TIMEOUT_MS,
   });
 
+// --- the message queue (PB-13) ---------------------------------------------
+//
+// The three windows over the engine's queue surface
+// (`cli-service.ts`: `listQueueMessages` / `reorderQueue` /
+// `deleteQueueItem`). The wire types are declared here rather than
+// imported from `lib/follow-up-queue.ts` so the wire shape and the
+// client-side reader stay visibly separate: `normalizeQueueSnapshot` is
+// what decides this answer is usable, and it should be reading something
+// that is not already the type it produces.
+
+/** One queued message, exactly as the engine reported it. */
+export interface QueueItemWire {
+  itemId?: string;
+  status?: string;
+  content?: string;
+  source?: string;
+  createdAt?: number;
+  attachmentCount?: number;
+}
+
+/** `GET /api/queue` — the engine's own list, in the engine's order. */
+export interface QueueListWire {
+  ok: boolean;
+  /**
+   * False when the engine does not hold this session's turn in this
+   * process — the normal state under the default `acp` transport. It is
+   * NOT an empty queue and must never be rendered as one.
+   */
+  reachable: boolean;
+  reason?: string;
+  items?: QueueItemWire[];
+  paused?: boolean;
+  pendingCount?: number;
+}
+
+export const listQueue = () => request<QueueListWire>("/api/queue");
+
+/**
+ * Reorder the queue.
+ *
+ * `itemIds` is the COMPLETE ordered list, never a delta: the engine
+ * compares it against the ids it considers user-manageable and rejects
+ * anything else with `QUEUE_REORDER_INVALID`.
+ */
+export const reorderQueue = (itemIds: string[]) =>
+  request<{ ok: boolean; items?: QueueItemWire[] }>("/api/queue/reorder", {
+    method: "POST",
+    json: { itemIds },
+    timeoutMs: SEND_ACK_TIMEOUT_MS,
+  });
+
+/**
+ * Cancel one queued message. The engine's method is
+ * `deleteQueueItem` and what it does is `queue.cancel`; the endpoint
+ * says `cancel` because that is what the answer reports back.
+ */
+export const cancelQueueItem = (itemId: string) =>
+  request<{ ok: boolean; item?: QueueItemWire }>("/api/queue/cancel", {
+    method: "POST",
+    json: { itemId },
+    timeoutMs: SEND_ACK_TIMEOUT_MS,
+  });
+
 /** Raw slash command (e.g. `/compact`), forwarded to mcode. */
 export const sendCommand = (cmd: string) =>
   request<{ ok: boolean }>("/api/cmd", {

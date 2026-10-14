@@ -1900,12 +1900,84 @@ another process" call for different next steps.
 **Cost.** One engine read per follow-up send, and a write that boots the
 runtime if none is up — acceptable, because the user pressed send.
 
-**What this did not do.** The queue has no UI: a queued message is
-committed with an id and a position that nothing displays, and cannot be
-inspected, reordered or cancelled from the browser. That is PB-13's
-scope, and until it lands a queued follow-up is invisible until the
-running turn ends. A steered message reports admission, not whether the
-running agent read the text before its next step.
+**What this did not do.** A steered message reports admission, not whether
+the running agent read the text before its next step. The queue's own
+surface is the next section.
+
+### The message queue: an engine list, an engine reorder, an engine cancel (PB-13)
+
+**What the user sees.** While a turn runs, a collapsed 排队消息 strip
+sits above the composer inside the same 960px measure cap, showing a
+count. Expanded, it lists each queued message with its position, a
+one-line summary, its status, its attachment count, and three controls:
+上移 / 下移 / 取消. With no turn running the strip is not rendered at
+all — a queue is the queue *of* a turn, and a permanently visible empty
+panel in every conversation would be noise.
+
+**The list, the order and the status are the engine's.** `GET /api/queue`
+reaches `cliService.listQueueMessages` on every poll and renders what
+comes back, in the order it comes back. The position shown is the item's
+index in that array, which is why no `position` field is invented on
+either side. Reorder and Cancel are `cliService.reorderQueue` and
+`cliService.deleteQueueItem` (the engine's name for `queue.cancel`); the
+panel sends the intent and renders the answer, including the engine's
+rejection when it has one.
+
+**Why the read may not boot a runtime and the writes may.** `GET
+/api/queue` goes through `peekEngineCatalogueHost()`, not
+`getEngineCatalogueHost()`. The rule `engine/host.js` records is that a
+write may boot what it needs and a read may only use what is already
+there; PB-1 paid for the other half of that decision with a 10 s
+`/api/state` timeout, because a read that boots a runtime turns a page's
+first paint into a multi-second stall, silently. A panel that finds no
+host answers "not reachable" and the client draws a sentence. The two
+writes boot freely, because the user pressed a button.
+
+**Unreachable is not empty, and the two answers differ on purpose.** When
+this process does not own the running turn — the normal state under the
+default `acp` transport, where the turn lives in an `mcode acp`
+subprocess — the engine holds the queue somewhere this host cannot read.
+The LIST answers `200 {reachable:false, reason:"turn_not_here", items:[]}`,
+because a polled endpoint that raises an error banner every four seconds
+teaches the user to ignore red. The two WRITES answer `409 turn_not_here`,
+because a user who pressed 取消 has to be told the cancel did not happen.
+The panel renders the first as a sentence ("This turn is running in
+another engine process, which holds its queue. Messages you queue now are
+tracked by this tab until the turn ends, and are lost on reload.") and
+never as an empty list, because "your queue is empty" is a claim about
+the engine's queue that the server never made.
+
+**The one thing the client keeps, and what it is not.** Between the
+engine's answer to a queue send (`itemId`, `position`) and the panel's
+next poll, a message exists in the engine and not yet on screen. The
+composer records it in a module-scope, per-session store keyed by the
+webui session id, and the panel shows it as a row marked "just queued"
+with a cancel control and no position. A record is dropped the moment a
+server snapshot lands for that session: from then the server is the
+list, and a record it does not mention is either already run or never
+existed. This store is a gap filler, not a queue — it holds no order, it
+survives no reload, and every render prefers the snapshot.
+
+**Polling, and why not a stream.** The engine publishes
+`session.queue.updated` on its own event bus, but webui's SSE channel
+carries the webui turn stream rather than the engine's global bus.
+Subscribing would mean a second stream whose only payload is "something
+changed, look again". The panel therefore polls every four seconds, and
+only while it is expanded — a collapsed strip costs nothing.
+
+**Cost.** One engine read per poll while expanded; two writes that may
+boot a runtime.
+
+**What this did not do.** `getQueueItem` and `updateQueueItem` exist in
+the engine and are not exposed: editing a queued message's text is its
+own decision, and cancel-and-requeue is a complete substitute today
+because the panel shows the full text on hover. The `paused` flag the
+engine reports is displayed but not actionable — nothing at this panel
+sets it, and offering a resume control would imply one it does not own.
+A steered message still reports admission, not whether the running agent
+read the text. The 子 agent snapshot / stop half of the PB-13 plan line
+(`doc/placeholder-batch-plan.md` §5 row 5, G-6) is a separate capability
+opening and did not land here.
 
 ### Export logs: a download, because there is nowhere to upload to (SB-8 / D-3)
 
@@ -3214,6 +3286,10 @@ marker), not by tool name.
 | `POST` | `/api/model-source/test` | `routes/model-source.js#handleTestModelSource` | `{modelId?}`; always 200 for a COMPLETED probe (`{ok, success, providerId:"minimax_api", tested:"stored_key", status}`) including `success:false`; non-200 only when the probe is refused (`503`/`501`, or the engine's `400 NO_API_KEY`) |
 | `POST` | `/api/follow-up` | `routes/follow-up.js#handleFollowUp` | `{behavior:"queue"\|"steer", content, attachments?, requestId?}` — the engine session id comes from the server's own conversation state, never the body; `400 {code:"invalid_follow_up_behavior"\|"follow_up_empty"\|"no_active_conversation"\|"BAD_FIELD_TYPE"}`; `409 {code:"no_active_turn"\|"turn_not_owned"}` when this process does not own the running turn, and nothing is queued; `501` when the host lacks the method, `503` when no runtime is booted; 200 `{ok, behavior, itemId, position, status}` (queue) or `{ok, behavior, turnId, mode}` (steer) — the engine's own answer |
 | `GET` | `/api/logs/export` | `routes/logs.js#handleExportLogs` | always `200 text/plain` with `Content-Disposition: attachment; filename="mcode-webui-logs-<YYYYMMDDTHHMMSS>.txt"` — the crash trail (`WEBUI_DATA_DIR/.server.err`) plus the last 2000 lines / 2 MiB of the event log, each section stating its own truncation or absence. No status code for a missing or unreadable log file: that is reported inside the body, because the client is a browser anchor and a 4xx would be saved as a `.txt` file containing JSON |
+
+| `GET` | `/api/queue` | `routes/queue.js#handleQueueList` | the engine's own list (`cliService.listQueueMessages`), in the engine's own order; 200 `{ok, reachable, items, paused, pendingCount}`. A READ — it goes through `peekEngineCatalogueHost()` and may not boot a runtime. `reachable:false` + `reason:"turn_not_here"` + `items:[]` is the answer when this process does not own the running turn (the normal `acp` state) and is NOT an empty queue; `400 {code:"no_active_conversation"}` when the tab has no engine session; `501` when the host lacks the method, `503` when no runtime is up |
+| `POST` | `/api/queue/reorder` | `routes/queue.js#handleQueueReorder` | `{itemIds}` — the COMPLETE ordered id list, never a delta; the engine's `reorderQueue` compares it against the ids it considers user-manageable. `400 {code:"invalid_queue_order"\|"BAD_FIELD_TYPE"}` for a list that could not be a queue, before the engine is asked; `409 {code:"turn_not_here"}` when the queue is in another process, and nothing is moved; 200 `{ok, items}` — the ENGINE's new order |
+| `POST` | `/api/queue/cancel` | `routes/queue.js#handleQueueCancel` | `{itemId}` → `cliService.deleteQueueItem`, which is the engine's `queue.cancel`; `400 {code:"queue_item_required"\|"BAD_FIELD_TYPE"}`; `409 {code:"turn_not_here"}` when the cancel did NOT happen; 200 `{ok, item}` — the engine's own cancelled record (`status:"cancelled"`) |
 | `POST` | `/api/debug/inject` | `routes/debug.js#handleDebugInject` | `DEBUG_INJECT=1` gate |
 | `GET` | `/api/debug/state` | `routes/debug.js#handleDebugState` | same gate |
 | `POST` | `/api/protocol/set-mode` | `routes/protocol.js#handleSetMode` | mid-session mode change |
