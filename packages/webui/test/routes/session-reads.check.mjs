@@ -340,7 +340,14 @@ describe("#74 GET /api/state — snapshot first frame", () => {
     "permissions",
     "chat",
     "sessions",
-    "goal",
+    // PB-14 (batch D): the webui-local `goal` slot is GONE from the first
+    // frame. It used to sit here, holding `{active, text, status, duration}`
+    // from a `/goal <text>` that the engine never saw — a field in the render
+    // contract that could only ever disagree with the engine's `threadGoal`
+    // below. Removing it from this list is the change; the neighbouring test
+    // below ("every baseline field is present") is what stops the removal from
+    // being an accident of a refactor.
+    //
     // PB-14 (batch B): the ENGINE's goal, projected from the
     // `thread_goal.*` global events. It sits next to the webui-local `goal`
     // slot rather than replacing it — see docs/webui.md "The goal event
@@ -377,6 +384,19 @@ describe("#74 GET /api/state — snapshot first frame", () => {
     for (const field of BASELINE_FIELDS) {
       assert.ok(field in body, `snapshot must still carry "${field}"`);
     }
+  });
+
+  test("the retired local `goal` field is absent, and `threadGoal` is not", async () => {
+    // The positive half of the removal above, stated separately because the
+    // list test only proves the exact key set — it does not say WHY `goal` is
+    // missing, and "accidentally dropped" and "deliberately retired" produce
+    // identical snapshots. This is the assertion that records the intent.
+    const res = fakeRes();
+    await handleState({ url: "/api/state" }, res, { cid: "cid-1" });
+    const body = await readJson(res);
+    assert.ok(!("goal" in body), Object.keys(body).join(","));
+    assert.ok("threadGoal" in body, "the engine's goal must still ride the first frame");
+    assert.equal(body.threadGoal, null);
   });
 
   test("mcodeSessions is the engine's workspace-filtered list, entry for entry", async () => {

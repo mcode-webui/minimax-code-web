@@ -1,7 +1,7 @@
 "use client";
 
 import { Input as AntInput, Modal as AntModal } from "antd";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import * as api from "@/lib/api";
 import { useSessionContext } from "@/lib/store";
@@ -257,8 +257,19 @@ function AskModal({ t }: { t: (key: MessageKey) => string }) {
 }
 
 function AuthModal({ t }: { t: (key: MessageKey) => string }) {
-  const { authorize } = useSessionContext();
+  const { authorize, authorizeFocusRevision } = useSessionContext();
   const [busy, setBusy] = useState(false);
+  // PB-14 batch D — the goal banner's wait row can call for this modal
+  // (`store.focusAuthorize`). The signal is a revision counter rather than a
+  // boolean for the obvious reason: the modal is often already open when the
+  // banner asks, and "focus it again" has to be expressible. APPROVE is
+  // focused rather than DENY because Enter is the fast path a keyboard user
+  // is already holding down when they ask for this — and the request is
+  // theirs to have triggered, so Enter meaning "yes" is what they expect.
+  const approveRef = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => {
+    if (authorizeFocusRevision > 0) approveRef.current?.focus();
+  }, [authorizeFocusRevision]);
   if (!authorize) return null;
 
   const decide = async (approve: boolean) => {
@@ -277,7 +288,12 @@ function AuthModal({ t }: { t: (key: MessageKey) => string }) {
         {authorize.action}
       </p>
       <div className="mt-4 flex items-center gap-2">
-        <PrimaryButton disabled={busy} onClick={() => void decide(true)}>
+        <PrimaryButton
+          ref={approveRef}
+          disabled={busy}
+          onClick={() => void decide(true)}
+          data-testid="authorize-approve"
+        >
           {t("auth.approve")}
         </PrimaryButton>
         <GhostButton disabled={busy} onClick={() => void decide(false)}>
@@ -410,17 +426,28 @@ function PrimaryButton({
   disabled,
   onClick,
   children,
+  // PB-14 batch D: `ref` and the passthrough test id exist for one caller —
+  // `AuthModal` focuses its approve button when the goal banner's wait row
+  // asks for it. They are props on the shared button rather than a bespoke
+  // button written out inside the modal, because a second button wearing the
+  // same skin is a second thing to keep in step with the design tokens.
+  ref,
+  ...rest
 }: {
   disabled?: boolean;
   onClick: () => void;
   children: React.ReactNode;
+  ref?: React.Ref<HTMLButtonElement>;
+  "data-testid"?: string;
 }) {
   return (
     <button
       type="button"
+      ref={ref}
       disabled={disabled}
       onClick={onClick}
       className="h-8 rounded-lg bg-bg_interaction_primary_default px-3 text-sm font-weight_medium text-text_label_primary_default transition-colors hover:bg-bg_interaction_primary_hover disabled:opacity-50"
+      {...rest}
     >
       {children}
     </button>

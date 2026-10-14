@@ -125,20 +125,17 @@ export interface UsageState {
 }
 
 /**
- * The retired webui-local goal slot — what `/goal <text>` recorded in memory
- * before PB-14 batch C made the command reach the engine. Nothing writes it
- * any more (`server/lib/interaction/commands.js` has no `cs.goal` writer)
- * and nothing reads it; the field is kept for one release so a snapshot
- * written by an older server does not fail to typecheck. The ENGINE's goal
- * is `threadGoal` below.
+ * PB-14 batch D: the webui-local goal slot (`GoalState`, and `goal` on
+ * `WebuiState`) is DELETED, not deprecated.
+ *
+ * It held what `/goal <text>` recorded in memory before batch C made the
+ * command reach the engine. The server stopped shipping the field in batch D
+ * too (`server/lib/state-bus.js`, `routes/debug.js`, `lib/mcode-acp.js`), so
+ * keeping the declaration would buy nothing: a snapshot from an older server
+ * already typechecks through `WebuiState`'s index signature, and a declaration
+ * for a field no server sends is a second, wrong answer to "what is a goal
+ * here?". The ENGINE's goal is `threadGoal` below.
  */
-export interface GoalState {
-  active: boolean;
-  text: string | null;
-  status: string | null;
-  duration: number | null;
-}
-
 export interface AskState {
   active: boolean;
   total: number;
@@ -214,7 +211,6 @@ export interface WebuiState {
   /** Raw server transcript lines — decode with `lib/transcript.ts`. */
   chat: TranscriptLine[];
   sessions: SessionSummary[];
-  goal: GoalState;
   /**
    * The ENGINE's thread goal (batch B wrote the frame, batch C reads it).
    *
@@ -223,9 +219,9 @@ export interface WebuiState {
    * whether a frame is a goal at all. Narrowing it here would restate that
    * decision in a file with no reason to own it.
    *
-   * Distinct from `goal` above, which is the retired webui-local slot — two
-   * owners, two sets of facts, and one of them is about to be deleted (batch
-   * D). `server/lib/state-bus.js` records why they were never merged.
+   * PB-14 batch D: this is the ONLY goal field on the snapshot. The
+   * webui-local `goal` slot beside it is deleted — see the note above
+   * `AskState`.
    */
   threadGoal?: unknown;
   todo: unknown[];

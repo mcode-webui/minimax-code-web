@@ -443,7 +443,7 @@ The ACP handshake is bidirectional, and both directions are decided by one `init
 | `auth.terminal` | `authMethods` in the initialize response (`agent.ts:455`) | no — no terminal to run `mcode login` in |
 | `_meta['minimax-code/extensions']` | goal / queue / delegation / current-session notifications (`acp/extensions.ts:277`) | no — nothing subscribes to those method names |
 
-A capability is a promise to answer, so the list carries only what the webui really consumes. The three omitted entries are not free. `elicitation.form` makes the engine send an `elicitation/create` request that this client can only decline, and the engine then dismisses the Runtime questionnaire outright (`acp/interactions.ts:647`) — a questionnaire the user could have answered in the TUI simply disappears. The extension `_meta` is pure cost with no consumer: those notifications arrive as top-level ACP methods, and the only `goal_update` the webui handles is a `session/update` sub-kind (`acp.mjs:305`), a different channel.
+A capability is a promise to answer, so the list carries only what the webui really consumes. The three omitted entries are not free. `elicitation.form` makes the engine send an `elicitation/create` request that this client can only decline, and the engine then dismisses the Runtime questionnaire outright (`acp/interactions.ts:647`) — a questionnaire the user could have answered in the TUI simply disappears. The extension `_meta` is pure cost with no consumer: those notifications arrive as top-level ACP methods, and the webui's only `goal_update` was a `session/update` sub-kind (`acp.mjs:305`) — a different channel, retired with the local goal slot in PB-14 batch D; the engine's goal now arrives as `thread_goal.*` global events.
 
 Reading a capability off the wrong field is silent, not loud. The engine's `params.clientCapabilities ?? {}` means a payload sent under any other key negotiates nothing, and every capability-gated projection stays switched off with no error anywhere. That was the state of this tree: the webui sent `capabilities: { mcpCapabilities: … }` — a key that is not a field of the ACP v1 `ClientCapabilities` type, holding a member the type does not declare — and the plan projection never ran.
 
@@ -1679,10 +1679,74 @@ written through the API is the one moment webui knows a goal changed and
 cannot prove anything is listening. The two reads do not arm anything, since
 a read changes nothing in the engine.
 
-**What this batch did not do.** The `cs.goal` slot itself remains in
-`state-bus.js` and `routes/debug.js` can still inject it; batch D removes
-both. Session-switch refresh, the blocked-retry hand-off, and the completion
-receipt in the transcript are batch D as well.
+**What this batch did not do.** The `cs.goal` slot itself remained in
+`state-bus.js` and `routes/debug.js` could still inject it; the next section
+removes both, and adds the session-switch refresh and the blocked hand-off.
+
+### Closing the goal domain: one goal, bound to one conversation (PB-14 batch D)
+
+**What the user sees.** A goal card that belongs to the conversation under
+it. Switching conversations empties the card immediately and refills it from
+the server; a goal that reaches 「受阻」 with a pending request turns its
+waiting line into a link that takes the keyboard to the approval dialog; and
+the token / turn / elapsed counters catch up the moment a turn finishes,
+rather than staying at the figures from before it.
+
+**The local `goal` slot is deleted, and the deletion is the point.** From the
+first frame until this batch, every snapshot carried `goal: {active, text,
+status, duration}` — what `/goal <text>` recorded before batch C made the
+command reach the engine. Nothing had read it since batch C, but it was still
+in the render contract, still injectable from `POST /api/debug/inject`, and
+still written by the ACP `goal_update` branch in `server/lib/mcode-acp.js`.
+Each of those is a way for a browser to show a goal the engine does not have.
+
+| Removed | Where it went |
+| --- | --- |
+| `goal: {...}` default slot | `server/lib/state-bus.js` — the SSE snapshot is `makeClientState()` verbatim, so the slot's absence is the field's absence on every frame and on `GET /api/state` |
+| `goal` injection key | `server/routes/debug.js#handleDebugInject` — an unknown key is dropped silently, and `applied` no longer echoes it |
+| `goal` readback field | `server/routes/debug.js#handleDebugState` — the route reports what a payload wrote; the engine's goal is not writable from a request body |
+| `goal_update` writer | `server/lib/mcode-acp.js` — kept as an explicit branch that LOGS and ignores, so an engine still emitting the sub-kind is visible rather than silently unhandled |
+| `GoalState` + `goal` on `WebuiState` | `webapp/lib/types.ts` — not deprecated, deleted; the snapshot has an index signature, so a field no server sends needs no declaration |
+
+`threadGoal` is untouched and is now the only goal field. The two were never
+merged on purpose — they were facts about two different owners — and the
+reason for keeping them apart is recorded at `state-bus.js` where the slot
+lives.
+
+**The banner's goal comes from `useThreadGoal`, not from the snapshot.**
+`webapp/lib/use-thread-goal.ts` answers "what may this tab draw right now",
+which the snapshot cannot, in three specific ways:
+
+| Question the snapshot cannot answer | What the hook does |
+| --- | --- |
+| Is this frame for the conversation on screen? | A frame is adopted only when `threadGoal.sessionId === state.mcodeSessionId`. `GlobalThreadGoal.sessionId` is the ENGINE's id; `state.sessionId` is a local `randomUUID` (`state-bus.js`), so the two id spaces must not be confused. A frame that cannot be attributed is IGNORED, not treated as a clearing |
+| What if no frame has arrived for this conversation? | Every conversation change clears and then re-reads `GET /api/goal`. The bridge is armed at SSE connect and re-armed by the three write handlers, so the first `/goal` of a tab can land before any frame describes it |
+| When do the engine's counters advance? | On the falling edge of `running`. `timeUsedSeconds`, `tokensUsed` and `turnsUsed` move when a turn CLOSES, so the turn boundary is the moment the timing line is stale by definition — and over the `acp` transport no `thread_goal.updated` arrives to correct it |
+
+The clear-then-read order is the visible one: clearing first is what removes
+the previous conversation's card for the one round trip the request takes. A
+request issued for the previous conversation and still in flight when the
+user switches is discarded by a monotonic token, because clearing on switch
+cannot help — the answer arrives after the clear.
+
+**A blocked goal can be taken to the thing unblocking it.** The banner's
+`executionWait` line becomes a button when, and only when, all three hold: the
+status is `blocked` (an `active` goal that is waiting is mid-turn, not stuck),
+there is an `executionWait` reason, and the chat column passed a handler.
+The click bumps `authorizeFocusRevision` in the store, and `AuthModal`
+focuses its approve button. It reuses the existing `authorize` request rather
+than opening a second copy of it, and the counter — not a boolean — is what
+makes "focus it again" expressible while the modal is already open. When no
+request is open the click says so, naming where to look, because a control
+that silently does nothing is the failure mode this component keeps warning
+about. Without a handler the line stays plain text: a control that cannot act
+is worse than no control.
+
+**What this batch did not do.** It adds no endpoint and changes no engine
+call. The completion receipt as a transcript line — a finished goal
+announcing itself once in the chat flow, as the TUI's
+`formatGoalCompletionReceipt` does — is still absent; the finished goal is
+visible as the card's `complete` state and its close button.
 
 **Add-model dialog (ticket 54, 53b)**
 
@@ -3303,19 +3367,21 @@ composer decides between them before anything is sent.
 | Input | Endpoint | Why |
 | --- | --- | --- |
 | `/new` `/clear` `/status` `/sessions` `/review` `/help` `/usage` `/stop` — bare, no argument | `POST /api/cmd` | the button-command set; `/api/cmd` claims exactly these eight |
-| `/goal <text>`, `/goal-done`, `/goal-blocked` | `POST /api/send` | typed webui commands, implemented by `handleLocalSlash`; `/goal` needs its argument and has no `/api/cmd` equivalent |
+| `/goal <text>`, `/goal-done`, `/goal-blocked` | **never reaches `/api/send`** | claimed in the composer by `dispatchGoalCommand` and sent to `POST /api/goal` (PB-14 batch C). A line the composer does not claim — an engine with goals off, or a line carrying an `@file` attachment — falls through `/api/send` untouched |
 | `/compact` and every other engine command | `POST /api/send` | `handleLocalSlash`'s `default` branch forwards the line to mcode unchanged, which is how engine commands work at all |
 | anything unclaimed | `POST /api/send` | same forward; the engine answers in the transcript |
 | `/clear now` (a claimed command with an argument) | `POST /api/send` | `handleCmdCommand` matches the whole text after the slash, so the argument makes it a different string; `handleLocalSlash` parses the name and runs the same gated handler |
 
 The `/api/send` side is not a disjoint list.
 `server/lib/interaction/command-registry.js` declares
-`SEND_SLASH_COMMANDS` (`goal`, `goal-done`, `goal-blocked`, `clear`,
-`new`, `status`, `review`, `help`, `usage`) — nine names, six of which
-(`clear`, `new`, `status`, `review`, `help`, `usage`) are also button
-commands. `handleLocalSlash` consumes them, which is why the
+`SEND_SLASH_COMMANDS` (`clear`, `new`, `status`, `review`, `help`,
+`usage`) — six names, and all six are also button commands. The
+three goal names were here until PB-14 batch C, which removed them in the
+same commit that removed the `case` labels they named; leaving them would
+have kept the `/api/cmd` 400 branch advertising commands nothing
+implements. `handleLocalSlash` consumes the six, which is why the
 `/api/cmd` 400 branch asks `isSendSlashCommand(name)` first and
-phrases its `suggestion` as "send it as a normal message" for those.
+phrases its `suggestion` as "send it as a normal message" for them.
 Routing still prefers `/api/cmd` for the bare form;
 `SEND_SLASH_COMMANDS` never influences routing.
 

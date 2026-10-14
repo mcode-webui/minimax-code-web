@@ -20,10 +20,12 @@ export async function handleDebugInject(req, res, ctx) {
   const cid = ctx.cid;
   const payload = await readJson(req);
   const applied = {};
-  if (payload.goal && typeof payload.goal === "object") {
-    cs.goal = { ...cs.goal, ...payload.goal };
-    applied.goal = true;
-  }
+  // PB-14 batch D: the `goal` injection key is GONE. It filled the retired
+  // webui-local `cs.goal` slot, whose only writer was `/goal <text>` before
+  // batch C — a field no component ever read. Keeping the key would let a
+  // debug payload invent a goal the engine never saw, which is the one thing
+  // this route must not do: `threadGoal` arrives from the engine's
+  // `thread_goal.*` events and deliberately has no injection path.
   if (Array.isArray(payload.todo)) {
     cs.todo = payload.todo;
     applied.todoCount = cs.todo.length;
@@ -62,7 +64,10 @@ export function handleDebugState(_req, res, ctx) {
   return res.end(
     JSON.stringify({
       ok: true,
-      goal: cs.goal,
+      // PB-14 batch D: `goal` is gone from the readback for the same reason
+      // it is gone from the injection — the slot no longer exists. `threadGoal`
+      // is deliberately NOT echoed here either: this route reports what a
+      // debug payload wrote, and the engine's goal is not writable here.
       todoCount: (cs.todo || []).length,
       ask: cs.ask,
       plan: cs.plan,

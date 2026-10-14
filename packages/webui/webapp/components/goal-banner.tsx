@@ -134,9 +134,37 @@ export interface GoalBannerProps {
   readonly frame?: ThreadGoal | null;
   /** Set while a turn is running — the pause control honours it. */
   readonly busy?: boolean;
+  /**
+   * PB-14 batch D — ask the page to focus the pending authorize modal.
+   *
+   * Optional, and the banner degrades honestly without it: the wait row stays
+   * a line of text instead of becoming a button. That is deliberate, because
+   * the alternative would be a control that looks actionable and does
+   * nothing — the exact failure mode this component's comments keep warning
+   * about.
+   */
+  readonly onFocusAuthorize?: () => void;
+  /**
+   * Whether a tool-approval request is actually open in this tab right now.
+   *
+   * This is what separates "click here to be taken to the thing" from "there
+   * is no thing here to go to", and the difference is the whole point of the
+   * linkage: a blocked goal says "Waiting for your permission", and clicking
+   * that and getting nothing back is indistinguishable from a broken banner.
+   * With no request open the click still answers — it prints where to look —
+   * rather than silently doing nothing.
+   */
+  readonly authorizePending?: boolean;
 }
 
-export function GoalBanner({ goal, locale, frame, busy = false }: GoalBannerProps): React.JSX.Element {
+export function GoalBanner({
+  goal,
+  locale,
+  frame,
+  busy = false,
+  onFocusAuthorize,
+  authorizePending = false,
+}: GoalBannerProps): React.JSX.Element {
   const t = useCallback((key: MessageKey) => translate(locale, key), [locale]);
   const [editing, setEditing] = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
@@ -249,6 +277,34 @@ export function GoalBanner({ goal, locale, frame, busy = false }: GoalBannerProp
   const statusKey = justUpdated ? "goal.status.updated" : goalStatusKey(shown.status);
   const disabled = busyAction !== null || busy;
 
+  // PB-14 batch D — the blocked → authorize linkage.
+  //
+  // A `blocked` goal with an `executionWait` is blocked on a DECISION, and the
+  // decision is a modal rendered at the page level. So the wait line becomes
+  // the way there. Two guards, and both matter:
+  //
+  //   - ONLY WHILE BLOCKED. An `active` goal that happens to be waiting is
+  //     mid-turn, not stuck; turning its wait line into a button would offer
+  //     an action for a state in which the user has nothing to decide.
+  //   - ONLY WITH A HANDLER. Without `onFocusAuthorize` the line stays text.
+  //     A control that cannot act is worse than no control.
+  //
+  // `noAuthorizeShown` is set when the click found nothing to focus, and it
+  // REPLACES itself rather than sticking around: the request arrives later on
+  // its own SSE frame, and a banner still insisting "nothing is waiting here"
+  // after the modal has appeared would be the banner lying.
+  const canFocusAuthorize =
+    shown.status === "blocked" && Boolean(wait) && typeof onFocusAuthorize === "function";
+  const [noAuthorizeShown, setNoAuthorizeShown] = useState(false);
+  useEffect(() => {
+    if (authorizePending) setNoAuthorizeShown(false);
+  }, [authorizePending]);
+  const focusAuthorize = useCallback(() => {
+    if (!onFocusAuthorize) return;
+    onFocusAuthorize();
+    setNoAuthorizeShown(!authorizePending);
+  }, [onFocusAuthorize, authorizePending]);
+
   return (
     <section
       className="mb-3 flex flex-col gap-2 rounded-xl border-[0.5px] border-border_default bg-bg_grouped_secondary_elevated px-4 py-2"
@@ -319,8 +375,30 @@ export function GoalBanner({ goal, locale, frame, busy = false }: GoalBannerProp
       </div>
 
       {wait ? (
-        <p className="text-caption-small text-text_default_secondary" data-testid="thread-goal-wait">
-          {t(goalWaitKey(wait.reason))}
+        canFocusAuthorize ? (
+          <button
+            type="button"
+            className="self-start text-left text-caption-small text-text_default_secondary underline decoration-dotted underline-offset-2 hover:text-text_default_primary"
+            data-testid="thread-goal-wait-action"
+            aria-label={t("goal.blocked.action")}
+            title={t("goal.blocked.action")}
+            onClick={focusAuthorize}
+          >
+            <span data-testid="thread-goal-wait">{t(goalWaitKey(wait.reason))}</span>
+          </button>
+        ) : (
+          <p className="text-caption-small text-text_default_secondary" data-testid="thread-goal-wait">
+            {t(goalWaitKey(wait.reason))}
+          </p>
+        )
+      ) : null}
+      {canFocusAuthorize && noAuthorizeShown ? (
+        <p
+          role="status"
+          className="text-caption-small text-text_default_secondary"
+          data-testid="thread-goal-no-authorize"
+        >
+          {t("goal.blocked.noAuthorize")}
         </p>
       ) : null}
       {guidance ? (

@@ -35,6 +35,21 @@ export interface StoreSnapshot {
   error: string | null;
   /** A tool-approval / plan-review request awaiting an answer. */
   authorize: AuthorizeRequest | null;
+  /**
+   * PB-14 batch D — bumps when something asks the authorize modal to take
+   * focus. A COUNTER rather than a boolean for the same reason as
+   * `providersRevision`: a boolean cannot express "again", so a second
+   * request while the modal is already open would be invisible to the effect
+   * that watches it.
+   *
+   * The goal banner's wait row is the caller. A goal that reaches `blocked`
+   * with an `executionWait` is blocked on a decision, and that decision lives
+   * in a modal rendered at the page level — far from the banner that is
+   * explaining why nothing is happening. The banner cannot move that modal
+   * without a channel; this is the channel, and it reuses the existing
+   * `authorize` request rather than opening a second copy of it.
+   */
+  authorizeFocusRevision: number;
   /** Present once, on the very first server start, until acknowledged. */
   firstRun: TokenFirstRun | null;
   /**
@@ -97,6 +112,7 @@ const INITIAL: StoreSnapshot = {
   connected: false,
   error: null,
   authorize: null,
+  authorizeFocusRevision: 0,
   firstRun: null,
   quota: null,
   quotaBusy: false,
@@ -145,6 +161,24 @@ export function __testSnapshot(): StoreSnapshot {
  */
 export function getActiveSessionId(): string | null {
   return snapshot.state ? snapshot.state.sessionId : null;
+}
+
+/**
+ * Ask the pending authorize modal to take focus.
+ *
+ * PB-14 batch D. The goal banner shows why a goal is blocked — "Waiting for
+ * your permission" — and the thing that unblocks it is a modal rendered at the
+ * page level. Without this call the two are only related by the user
+ * happening to notice one while looking at the other.
+ *
+ * It is deliberately NOT conditional on a request being open, and the caller
+ * is the one that checks: bumping with no request pending is harmless (the
+ * modal is unmounted, so nothing reacts), and making the function refuse would
+ * move the "is there anything to focus" question — which depends on render
+ * state the store does not own — into every future caller.
+ */
+export function focusAuthorize(): void {
+  setSnapshot({ authorizeFocusRevision: snapshot.authorizeFocusRevision + 1 });
 }
 
 /**

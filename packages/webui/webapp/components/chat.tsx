@@ -3,7 +3,7 @@
 import { ConversationUsageBanner, type ConversationUsageNotice } from "./conversation-usage-banner";
 import { GoalBanner } from "./goal-banner";
 import { useGoalEnabled } from "@/lib/goal-enabled";
-import { readThreadGoal } from "@/lib/goal-state";
+import { useThreadGoal } from "@/lib/use-thread-goal";
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState, Fragment } from "react";
 
 import { renderMarkdown } from "@/lib/markdown";
@@ -36,7 +36,7 @@ import {
   summarizeTurn,
   type TurnStats,
 } from "@/lib/turn-stats";
-import { useSessionContext } from "@/lib/store";
+import { focusAuthorize, useSessionContext } from "@/lib/store";
 import { capToastReducer } from "@/lib/cap-toast";
 import { readScrollPosition as readPersistedScroll } from "@/lib/persist";
 import type { Locale, MessageKey } from "@/lib/i18n";
@@ -118,25 +118,40 @@ export function Chat({
   sessionKey,
   onOpenFile = () => {},
 }: ChatProps) {
-  const { state, quota } = useSessionContext();
+  const { state, quota, authorize } = useSessionContext();
 
-  // PB-14 batch C — the goal banner's two gates, resolved once per snapshot.
+  // PB-14 batch C — the goal banner's enabled gate, resolved once per page.
   //
   // `goalEnabled` is `null` until `GET /api/goal/enabled` answers, and the
   // banner is gated on `=== true` rather than on "not false": the composer
   // offers `/goal` under the same rule, so the two cannot disagree about
   // whether this engine has goals. A tab whose answer is still pending
   // therefore shows no banner for a frame — a moment, not a wrong state.
-  //
-  // `threadGoal` is the ENGINE's snapshot as batch B's SSE bridge wrote it,
-  // narrowed by the one reader that decides whether a frame is a goal. A
-  // frame it cannot read is treated as no goal: a banner that hid an
-  // unreadable frame is safer than one that painted `undefined` into a chip.
   const goalEnabled = useGoalEnabled();
-  const threadGoal = useMemo(
-    () => (goalEnabled === true ? readThreadGoal(state?.threadGoal) : null),
-    [goalEnabled, state?.threadGoal],
-  );
+
+  // PB-14 batch D — `threadGoal` is no longer `readThreadGoal(state.threadGoal)`
+  // read straight off the snapshot. The hook owns three things the snapshot
+  // cannot answer, and its header says why each one matters: a frame is only
+  // drawn when it can be attributed to the conversation on screen, a
+  // conversation change clears and re-reads instead of showing the previous
+  // session's ghost, and a turn's closing edge re-reads the engine's usage
+  // counters, which is what makes the timing line correct after a turn the
+  // user just watched finish.
+  const threadGoal = useThreadGoal({
+    enabled: goalEnabled === true,
+    sessionId: state?.sessionId ?? null,
+    mcodeSessionId: state?.mcodeSessionId ?? null,
+    frame: state?.threadGoal,
+    running: Boolean(state?.running?.active),
+  });
+
+  // The blocked → authorize linkage. `focusAuthorize` is a STORE action
+  // (a revision bump), not a second copy of the modal: the request already
+  // exists on `authorize`, rendered by `Modals` at the page level, and this
+  // only asks it to take focus.
+  const focusPendingAuthorize = useCallback(() => {
+    focusAuthorize();
+  }, []);
 
   // 工单 60：会话用量横幅（照 other-minimax-code 的 ConversationUsageBanner
   // 形态）。数据源是 store 轮询的真实配额快照（/api/usage）：任一窗口剩余
@@ -464,6 +479,8 @@ export function Chat({
                 frame={threadGoal}
                 locale={locale}
                 busy={state?.running?.active}
+                onFocusAuthorize={focusPendingAuthorize}
+                authorizePending={Boolean(authorize)}
               />
             ) : null}
             {visibleUsageNotice ? (

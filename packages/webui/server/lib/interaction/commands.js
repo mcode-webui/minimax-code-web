@@ -242,9 +242,13 @@ async function bodyReview(cs, cid) {
 // What a `/goal` line does now: the composer claims it when the engine has
 // the feature enabled, and otherwise lets it fall through to the `default`
 // branch, which forwards it to mcode untouched. Both answers are honest,
-// and neither is "webui recorded something the engine never saw". The
-// `cs.goal` slot itself stays in `state-bus.js` for one release — batch D
-// removes it along with the debug injection that can still fill it.
+// and neither is "webui recorded something the engine never saw".
+//
+// PB-14 batch D — the `cs.goal` slot itself is now gone, along with the
+// `goal_update` writer in `server/lib/mcode-acp.js`, the `goal` injection key
+// in `server/routes/debug.js`, and the `GoalState` field on the webapp's
+// `WebuiState`. The only goal a browser can see is the engine's, in
+// `threadGoal`.
 export async function handleLocalSlash(content, cs, cid) {
   const m = matchSlash(content);
   if (!m) return false;

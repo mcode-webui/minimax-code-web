@@ -86,21 +86,20 @@ export function makeClientState() {
     permissions: "Full access",
     chat: [],
     sessions: [],
-    // The webui-LOCAL goal slot: what `/goal <text>` recorded when it
-    // rewrote the chat line and forwarded the text to the engine as an
-    // ordinary message. No webapp component reads it; PB-14 batch D
-    // retires it with the local command handlers.
-    goal: { active: false, text: null, status: null, duration: null },
     // PB-14 (batch B): the ENGINE's goal, projected from the
-    // `thread_goal.*` global events by `server/engine/goal-events.js`.
-    //
-    // Deliberately a second slot rather than a replacement. These are two
-    // different facts about two different owners — this one is
+    // `thread_goal.*` global events by `server/engine/goal-events.js` —
     // `GlobalThreadGoal` exactly as the engine published it, with `null`
-    // meaning "this conversation has no goal" — and merging them would
-    // make batch D's retirement of the local slot a silent behaviour
-    // change to a field the goal banner is about to start reading. The
-    // name records whose event it came from.
+    // meaning "this conversation has no goal".
+    //
+    // PB-14 batch D: this is now the ONLY goal slot. The webui-local `goal`
+    // slot that sat beside it — what `/goal <text>` recorded when it rewrote
+    // the chat line and forwarded the text to the engine as an ordinary
+    // message — is retired. Nothing read it (batch C deleted its only writer)
+    // and the two were never merged on purpose: they were facts about two
+    // different owners, and the local one was always the one the engine never
+    // saw. Keeping it would keep an `active: false` goal in every snapshot
+    // forever, which is a field in the SSE contract that can only ever be a
+    // lie.
     threadGoal: null,
     todo: [],
     ask: {

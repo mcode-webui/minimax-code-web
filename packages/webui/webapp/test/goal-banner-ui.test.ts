@@ -184,9 +184,20 @@ describe("the two wirings SSR cannot reach", () => {
     // Either gate alone would be a defect: `threadGoal` alone paints a card
     // on an engine that has goals switched off, and the flag alone paints a
     // permanently empty card on one that has none.
+    //
+    // PB-14 batch D rewrote the first half of this assertion. Batch C read the
+    // snapshot inline (`goalEnabled === true ? readThreadGoal(state.threadGoal)
+    // : null`), and batch D moved that decision into `useThreadGoal`, which
+    // additionally refuses a frame it cannot attribute to the session on
+    // screen. The gate is still two gates — it is simply expressed as the
+    // `enabled:` argument to the hook rather than as a ternary in the column.
     assert.ok(
-      /goalEnabled === true\s*\?\s*readThreadGoal\(/.test(chat),
+      /enabled:\s*goalEnabled === true/.test(chat),
       "the banner must require the enabled flag AND a frame readThreadGoal accepted",
+    );
+    assert.ok(
+      /useThreadGoal\(\{/.test(chat),
+      "the banner's goal must come from the session-bound hook, not a raw snapshot read",
     );
     assert.ok(
       /\{threadGoal \? \(\s*<GoalBanner/.test(chat),
@@ -221,11 +232,32 @@ describe("the two wirings SSR cannot reach", () => {
   test("the retired webui-local goal handlers are GONE, not merely unused", () => {
     // Retiring a command means the code that produced the illusion is
     // deleted. Leaving it behind would keep `cs.goal` writable through a
-    // path that still claims to the user that a goal was set.
+    // path that still claims to the user that a goal had been set.
     assert.ok(!/function bodyGoal\b/.test(commands), "bodyGoal must not exist");
     assert.ok(!/function bodyGoalClose\b/.test(commands), "bodyGoalClose must not exist");
     assert.ok(!/case "goal-done":/.test(commands), "no local /goal-done case");
     assert.ok(!/cs\.goal =/.test(commands), "nothing may still write the cs.goal slot");
+  });
+
+  test("PB-14 batch D: no writer of the retired `goal` slot survives anywhere", () => {
+    // Batch C removed the `/goal` handler; batch D removes the SLOT. The
+    // handler was not the only writer: `server/lib/mcode-acp.js` still had a
+    // `goal_update` branch and `server/routes/debug.js` could inject the field
+    // from a request body. Both are how a browser ends up showing a goal the
+    // engine does not have, so the sweep covers all three files rather than
+    // trusting the one batch C touched.
+    const acp = read("../../server/lib/mcode-acp.js");
+    const debugRoute = read("../../server/routes/debug.js");
+    const bus = read("../../server/lib/state-bus.js");
+    assert.ok(!/cs\.goal\s*=/.test(acp), "the ACP goal_update branch must not write cs.goal");
+    assert.ok(!/cs\.goal\s*=/.test(debugRoute), "the debug route must not write cs.goal");
+    assert.ok(
+      !/^\s*goal:\s*\{/m.test(bus),
+      "the default per-cid state must no longer declare a `goal` slot",
+    );
+    // `threadGoal` is the engine's and must survive — this assertion is what
+    // makes the two above a retirement rather than a blanket deletion.
+    assert.ok(/threadGoal:\s*null/.test(bus), "the engine's goal slot must remain");
   });
 
   test("the send-path command declaration no longer advertises the goal words", () => {

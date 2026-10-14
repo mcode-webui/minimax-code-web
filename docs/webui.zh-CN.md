@@ -501,7 +501,7 @@ ACP 握手是双向的，两个方向都由同一份 `initialize` 载荷决定�
 | `auth.terminal` | initialize 响应里的 `authMethods`（`agent.ts:455`） | 不消费——没有终端可以跑 `mcode login` |
 | `_meta['minimax-code/extensions']` | goal / queue / delegation / 当前会话通知（`acp/extensions.ts:277`） | 不消费——没有代码订阅这些方法名 |
 
-能力是对「我会应答」的承诺，所以清单只放 webui 真的消费的那一项。没声明的三项并非零成本：`elicitation.form` 会让引擎发来 `elicitation/create` 请求，而本客户端只能拒绝，随后引擎会直接关掉那份运行时问卷（`acp/interactions.ts:647`）——一份用户在 TUI 里本来能答的问卷就这样消失了。扩展 `_meta` 则是纯粹的成本而无消费方：这些通知以顶层 ACP 方法的形式到达，而 webui 唯一处理的 `goal_update` 是 `session/update` 的子类型（`acp.mjs:305`），是另一条通道。
+能力是对「我会应答」的承诺，所以清单只放 webui 真的消费的那一项。没声明的三项并非零成本：`elicitation.form` 会让引擎发来 `elicitation/create` 请求，而本客户端只能拒绝，随后引擎会直接关掉那份运行时问卷（`acp/interactions.ts:647`）——一份用户在 TUI 里本来能答的问卷就这样消失了。扩展 `_meta` 则是纯粹的成本而无消费方：这些通知以顶层 ACP 方法的形式到达，而 webui 曾唯一处理的 `goal_update` 是 `session/update` 的子类型（`acp.mjs:305`）——另一条通道，已随本地目标槽在 PB-14 批 D 退役；引擎的目标现在走 `thread_goal.*` 全局事件到达。
 
 字段名写错是静默失败，不是报错。引擎侧是 `params.clientCapabilities ?? {}`，意味着载荷放在任何别的键名下都等于什么都没协商，所有以能力为开关的投影全部保持关闭，且不会有任何错误提示。这就是本树的原状：webui 发的是 `capabilities: { mcpCapabilities: … }`——这个键根本不是 ACP v1 `ClientCapabilities` 类型的字段，里面的成员类型里也没有声明——于是计划投影从未运行过。
 
@@ -1336,7 +1336,37 @@ Token Plan 视图是桌面的五区块（页签 + 四卡）：
 
 **写路径会重挂事件桥。** `handleGoalCreate`、`handleGoalPatch`、`handleGoalClear` 在成功写之后 fire-and-forget 地调 `ensureGoalEventBridge()`。连接时的挂载与它并不重复：桥只 peek 宿主，没有宿主时什么都不启动，而它的泵在任何非 abort 的引擎错误后都会结束——所以经 API 写入的目标，正是 webui 知道"目标变了"却无法证明"有人在听"的那一刻。两个读不挂任何东西，读不会改变引擎里的任何事实。
 
-**本批没有做的事。** `cs.goal` 槽本身仍留在 `state-bus.js` 里，`routes/debug.js` 也仍能注入它；两者一起在批次 D 移除。切换会话时的重拉、blocked 重试的联动、以及转录流里的完成回执同样属于批次 D。
+**本批没有做的事。** `cs.goal` 槽本身仍留在 `state-bus.js` 里，`routes/debug.js` 也仍能注入它；两者一起在下一节移除，会话切换重拉与 blocked 联动也在那里。
+
+**目标域收官：一个目标，绑定一个会话（PB-14 批 D）**
+
+**用户能看到什么。** 一张属于当前会话的目标卡。切换会话时卡片立刻清空并从服务端重取；目标进入「受阻」且带有待办请求时，等待行变成一个入口，把键盘焦点送到审批对话框；token / 轮数 / 时长三个计数在回合结束的瞬间跟上，而不是停留在回合开始前的旧数字。
+
+**本地 `goal` 槽被删除，而删除本身就是这一批的重点。** 从第一帧到本批之前，每个快照都带着 `goal: {active, text, status, duration}`——那是批 C 之前 `/goal <文本>` 记下的东西。批 C 之后已经没有组件读它，但它仍在首帧渲染契约里，仍能由 `POST /api/debug/inject` 注入，也仍被 `server/lib/mcode-acp.js` 里 ACP 的 `goal_update` 分支写入。这三条中的任何一条，都是让浏览器显示一个引擎并不拥有的目标的路径。
+
+| 移除项 | 位置与理由 |
+| --- | --- |
+| `goal: {...}` 默认槽 | `server/lib/state-bus.js`——SSE 快照就是 `makeClientState()` 本身，所以槽的消失就是每一帧以及 `GET /api/state` 上该字段的消失 |
+| `goal` 注入键 | `server/routes/debug.js#handleDebugInject`——未知键被静默丢弃，`applied` 里也不再回显它 |
+| `goal` 回读字段 | `server/routes/debug.js#handleDebugState`——这条路由报告的是"调试载荷写了什么"；引擎的目标不从请求体写入 |
+| `goal_update` 写入分支 | `server/lib/mcode-acp.js`——刻意保留成一个显式分支：记录日志并忽略，这样仍在发这个子类型的引擎是**看得见的**，而不是变成无声的未处理分支 |
+| `WebuiState` 上的 `GoalState` 与 `goal` | `webapp/lib/types.ts`——不是弃用，是删除；快照本身带索引签名，服务端不再发送的字段不需要声明 |
+
+`threadGoal` 未动，现在是唯一的目标字段。两者当初刻意没有合并——它们是关于两个不同所有者的事实——理由记在 `state-bus.js` 那个槽的旁边。
+
+**横幅的目标来自 `useThreadGoal`，不是快照本身。** `webapp/lib/use-thread-goal.ts` 回答的是"本页签此刻可以画什么"，而快照在三个方面答不了这个问题：
+
+| 快照答不了的问题 | 这个 hook 的做法 |
+| --- | --- |
+| 这一帧属于当前会话吗？ | 只有 `threadGoal.sessionId === state.mcodeSessionId` 时才采纳。`GlobalThreadGoal.sessionId` 是**引擎**的 id；`state.sessionId` 是本地的 `randomUUID`（`state-bus.js`），两个 id 空间不能混。无法归属的帧被**忽略**，而不是当成"已清空" |
+| 这个会话还没到过任何帧怎么办？ | 每次会话变化都先清空、再重读 `GET /api/goal`。事件桥在 SSE 接入时武装、由三个写处理器重新武装，所以本页签的第一个 `/goal` 完全可能先落地、后才有帧描述它 |
+| 引擎的计数器什么时候前进？ | 在 `running` 的下降沿。`timeUsedSeconds`、`tokensUsed`、`turnsUsed` 是**回合关闭时**才动的，所以回合边界正是计时行按定义已经过时的时刻——而在 `acp` 传输下没有 `thread_goal.updated` 来纠正它 |
+
+先清后读的顺序是可见的那部分：先清空，才能在请求往返的那一个 RTT 里把上一个会话的卡片拿走。为上一个会话发出、而用户切换时仍在途中的请求由一个单调令牌丢弃——切换时清空救不了它，因为答案是在清空之后才到的。
+
+**受阻的目标可以被带到解除它的那件事面前。** 横幅的 `executionWait` 行变成按钮，当且仅当三条同时成立：状态是 `blocked`（`active` 的目标在等待是回合进行中，不是卡住）、存在 `executionWait` 原因、会话列传了处理函数。点击会推进 store 里的 `authorizeFocusRevision`，由 `AuthModal` 把焦点移到"批准"按钮上。它复用既有的 `authorize` 请求，而不是另开一份；用计数器而不是布尔值，正是为了让"模态已经开着，再聚焦一次"这件事可表达。没有待办请求时，点击会说明情况并指出该去哪里看——一个什么都不响应的控件，正是这个组件反复警告的失败模式。没有处理函数时该行保持纯文本：动不了的控件比没有控件更糟。
+
+**本批没有做的事。** 没有新增端点，也没有改动任何引擎调用。转录流里的完成回执——已完成的目标像 TUI 的 `formatGoalCompletionReceipt` 那样在聊天流里宣告一次——仍然缺席；已完成这件事体现在卡片上的 `complete` 状态与关闭按钮。
 
 **线程目标：五个窗口对着一个早就存在的引擎面（PB-14 批 A）**
 
@@ -2235,19 +2265,19 @@ payload。用户看到的东西不变：恢复落地时骨架屏仍亮着，第�
 | 输入 | 端点 | 原因 |
 | --- | --- | --- |
 | `/new` `/clear` `/status` `/sessions` `/review` `/help` `/usage` `/stop` —— 裸命令，不带参数 | `POST /api/cmd` | 按钮命令集；`/api/cmd` 只认这八个 |
-| `/goal <内容>`、`/goal-done`、`/goal-blocked` | `POST /api/send` | 手输的 webui 命令，由 `handleLocalSlash` 实现；`/goal` 需要参数，`/api/cmd` 没有对应实现 |
+| `/goal <内容>`、`/goal-done`、`/goal-blocked` | **不会到达 `/api/send`** | 由编写器的 `dispatchGoalCommand` 认领，送往 `POST /api/goal`（PB-14 批 C）。编写器不认领的行——引擎关闭了目标功能，或该行带 `@file` 附件——原样落到 `/api/send` |
 | `/compact` 及其它引擎命令 | `POST /api/send` | `handleLocalSlash` 的 `default` 分支把原文转交 mcode —— 引擎命令本来就是这么走的 |
 | 任何未被认领的命令 | `POST /api/send` | 同样转交引擎，由引擎在对话流里回答 |
 | `/clear now`（认领的命令带了参数） | `POST /api/send` | `handleCmdCommand` 匹配斜杠后的整段文本，带参数就是另一个字符串；`handleLocalSlash` 会解析命令名并走同一道授权门 |
 
 `/api/send` 这一侧的命令集并不是与按钮集不相交的一份清单。
 `server/lib/interaction/command-registry.js` 声明了
-`SEND_SLASH_COMMANDS`（`goal` / `goal-done` / `goal-blocked` / `clear` /
-`new` / `status` / `review` / `help` / `usage`，共 9 个），其中 6 个
-（`clear` / `new` / `status` / `review` / `help` / `usage`）同时也是按钮
-命令。`handleLocalSlash` 消费它们，`/api/cmd` 的 400 分支因此先问
-`isSendSlashCommand(name)`，对这 6 个把 `suggestion` 写成「请作为普通
-消息发送」。路由本身仍然优先把裸命令送到 `/api/cmd`，
+`SEND_SLASH_COMMANDS`（`clear` / `new` / `status` / `review` / `help` /
+`usage`，共 6 个），且这 6 个同时也都是按钮命令。三个 goal 名字原本在此，
+PB-14 批 C 在删掉它们所命名的 `case` 标签的同一次提交里一并移除——留下
+它们会让 `/api/cmd` 的 400 分支继续宣传没人实现的命令。`handleLocalSlash`
+消费这 6 个，`/api/cmd` 的 400 分支因此先问 `isSendSlashCommand(name)`，
+对这 6 个把 `suggestion` 写成「请作为普通消息发送」。路由本身仍然优先把裸命令送到 `/api/cmd`，
 `SEND_SLASH_COMMANDS` 不参与路由判断。
 
 判断函数是 `routeSlashInput`（`webapp/lib/slash-routing.ts`），由

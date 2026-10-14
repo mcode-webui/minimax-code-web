@@ -145,7 +145,11 @@ function fakeCs(modelName = "minimax_api/MiniMax-M3") {
     model: { name: modelName, thinking: "On", ctx: "512k" },
     permissions: "Full access",
     workspace: { dir: "/tmp", branch: null, tree: null },
-    goal: { active: false, text: null, status: null, duration: null },
+    // PB-14 batch D: the fixture no longer carries a `goal` key, because the
+    // real default state in `server/lib/state-bus.js` no longer has one. A
+    // fixture that invented the retired slot would make the "the slot does
+    // not exist" assertion below pass for the wrong reason.
+    threadGoal: null,
     chat: [],
     sessionTitle: "Untitled",
     sessionId: null,
@@ -229,15 +233,24 @@ describe("commands.handleLocalSlash — text-typed slash", () => {
     });
   }
 
-  test("nothing on this path writes the cs.goal slot any more", async () => {
-    // The slot itself stays in `state-bus.js` for one release (batch D
-    // removes it, along with the debug route that can still fill it). What
-    // is gone is every WRITER, and a reader that finds the slot frozen at its
-    // default is the proof that no path is quietly filling it.
-    const before = JSON.stringify(cs.goal);
+  test("the cs.goal slot does not exist any more (PB-14 batch D)", async () => {
+    // Batch D deleted the slot itself — along with the `goal_update` writer in
+    // `server/lib/mcode-acp.js` and the `goal` injection key in
+    // `server/routes/debug.js`. The assertion therefore changed shape: it is
+    // no longer "the slot is frozen at its default" (which a frozen absent
+    // field and a frozen present one both satisfy by accident on a fake `cs`)
+    // but "no key was created", which is the only thing that distinguishes a
+    // removed field from a default value nobody ever overwrote.
     for (const input of goalWords) await commands.handleLocalSlash(input, cs, "cid-1");
-    assert.equal(JSON.stringify(cs.goal), before, "cs.goal must be untouched");
-    assert.equal(cs.goal.active, false);
+    assert.ok(
+      !("goal" in cs),
+      `no /goal path may recreate the retired slot; cs.goal = ${JSON.stringify(cs.goal)}`,
+    );
+    assert.equal(
+      cs.threadGoal,
+      null,
+      "the engine's goal lives in threadGoal, and only the event bridge writes it",
+    );
   });
 
   test("/clear empties chat + resets usage", async () => {

@@ -1290,17 +1290,19 @@ function streamAcpPrompt(
             cs.enterPlanMode = { active: false, prompt: null };
           }
           console.log(`[mode.update] cid=${cid} mode=${mode}`);
-        } else if (c.kind === "goal_update" && c.update) {
-          // The engine does not always emit goal_update; the handler stays for when it does.
-          const u = c.update;
-          cs.goal = {
-            active: !!u.active,
-            text: u.text || u.description || null,
-            status: u.status || null,
-            duration: u.duration || null,
-          };
+        } else if (c.kind === "goal_update") {
+          // PB-14 batch D: RETIRED, and kept as an explicit branch on purpose.
+          // This ACP `session/update` sub-kind was the second writer of the
+          // webui-local `cs.goal` slot. Its shape — `{active, text, status,
+          // duration}` — is not `GlobalThreadGoal`: it has no `goalId`, no
+          // `sessionId`, no token counters, so it could never have driven the
+          // banner even while the slot existed. Dropping the branch (falling
+          // through to the generic tail) would make its disappearance silent,
+          // and an engine that still emits it should be visible in the log.
+          // The ENGINE's goal travels as `thread_goal.*` global events →
+          // `server/engine/goal-events.js` → the `threadGoal` slot.
           console.log(
-            `[goal.update] cid=${cid} active=${cs.goal.active} status=${cs.goal.status}`,
+            `[goal.update] cid=${cid} ignored — retired local goal slot (PB-14 batch D)`,
           );
         } else if (c.kind === "config_option_update" && c.update) {
           // Another client changing the model or the permission mode is how

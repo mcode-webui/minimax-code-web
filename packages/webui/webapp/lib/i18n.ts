@@ -225,6 +225,9 @@ const en = {
   "goal.guidance.usageLimited": "This resumes once the provider's quota is back",
   "goal.guidance.complete": "This goal is complete",
   "goal.banner.error": "The goal could not be changed",
+  "goal.blocked.action": "Answer the pending request",
+  "goal.blocked.noAuthorize":
+    "Nothing is waiting for your answer here. Open the conversation that raised the request, or check which tool is asking for permission.",
   "goal.command.disabled":
     "This engine has goals turned off, so /goal did nothing. The text is back in the input box.",
   "goal.command.error.budgetNeedsValue":
@@ -1653,6 +1656,9 @@ const zh: Record<MessageKey, string> = {
   "goal.guidance.usageLimited": "服务商额度恢复后即可继续",
   "goal.guidance.complete": "目标已完成",
   "goal.banner.error": "目标操作失败",
+  "goal.blocked.action": "处理当前待办请求",
+  "goal.blocked.noAuthorize":
+    "当前标签页没有待你确认的请求。请打开提出该请求的会话，或查看是哪个工具在请求权限。",
   "goal.command.disabled":
     "当前引擎未启用目标功能，`/goal` 没有执行任何操作。原文已放回输入框。",
   "goal.command.error.budgetNeedsValue":

@@ -527,7 +527,7 @@ describe("POST /api/cmd — a command the dispatcher does not claim", () => {
     );
   });
 
-  test("a rejected command changes nothing (no goal, no chat line, no session)", async () => {
+  test("a rejected command changes nothing (no goal slot, no chat line, no session)", async () => {
     const before = await readState();
     const beforeChat = JSON.stringify((before && before.chatLast5) || []);
     const res = await postCmd("/goal 不该生效");
@@ -538,9 +538,19 @@ describe("POST /api/cmd — a command the dispatcher does not claim", () => {
       beforeChat,
       "a rejected command must not append a chat line",
     );
+    // PB-14 batch D: the assertion is now "the field is not in the debug
+    // readback at all". While the webui-local slot still existed, this checked
+    // `!after.goal.active`, which is also what an engine goal that was never
+    // created would satisfy — the check could not tell a removed field from a
+    // quiet one. The debug route stopped echoing `goal` in the same commit, so
+    // its absence is the observable.
     assert.ok(
-      !(after && after.goal && after.goal.active),
-      `a rejected command must not set a goal; goal: ${JSON.stringify(after && after.goal)}`,
+      !("goal" in (after || {})),
+      `the retired local goal slot must not reappear; state = ${JSON.stringify(after)}`,
+    );
+    assert.ok(
+      !("threadGoal" in (after || {})) || after.threadGoal === null,
+      "a rejected command must not set the engine's goal either",
     );
   });
 });
