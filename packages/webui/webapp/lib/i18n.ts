@@ -546,6 +546,19 @@ const en = {
   "turnDiff.redo": "Redo",
   "turnDiff.working": "Applying…",
   "turnDiff.error": "Change not applied:",
+  /* PB-16 — the 「Review」 control the desktop card carries next to 「撤销」
+     (design-ref/screenshots/06-browser-tree-tasks-review.jpg). The runtime
+     RECORDS a review link only when a turn ran `gh pr create|view` or
+     `glab mr create|view`, so the label is drawn unconditionally and the four
+     absences are what its tooltip spells out. Each sentence names a
+     different next step, which is the whole reason there are four. */
+  "turnDiff.review": "Review",
+  "turnDiff.review.open": "Open the pull request recorded for this branch",
+  "turnDiff.review.absent.loading": "looking for a review recorded for this branch…",
+  "turnDiff.review.absent.workspace": "this conversation has no workspace yet",
+  "turnDiff.review.absent.branch": "this workspace has no current branch, so no review can belong to it",
+  "turnDiff.review.absent.none": "no review recorded for this branch — run `gh pr view` or `glab mr view` in this workspace to record one",
+  "turnDiff.review.absent.engine": "the engine did not answer, so nothing is known about a review here",
   /* Tool-card status copy (ticket 46 D4). Five states on the reference
      desktop vocabulary; a completed call renders no chip on its summary
      row. The wire only ever writes completed/failed/in_progress —
@@ -1843,6 +1856,17 @@ const zh: Record<MessageKey, string> = {
   "turnDiff.redo": "重做",
   "turnDiff.working": "正在应用…",
   "turnDiff.error": "改动未生效：",
+  /* PB-16 —— 桌面卡片在「撤销」右侧的「Review」（06-browser-tree-tasks-review.jpg）。
+     运行时只在某一回合跑过 `gh pr create|view` 或 `glab mr create|view` 时
+     才**记录**评审链接，所以按钮无条件画出，缺席的四种情形由 tooltip 说清。
+     四句话各指向不同的下一步，这正是它们不合并成一句的原因。 */
+  "turnDiff.review": "Review",
+  "turnDiff.review.open": "打开本分支已记录的拉取请求",
+  "turnDiff.review.absent.loading": "正在查找本分支已记录的评审…",
+  "turnDiff.review.absent.workspace": "这个会话还没有工作区",
+  "turnDiff.review.absent.branch": "这个工作区没有当前分支，无从谈起属于它的评审",
+  "turnDiff.review.absent.none": "本分支没有记录过评审——在该工作区跑一次 `gh pr view` 或 `glab mr view` 即可记录",
+  "turnDiff.review.absent.engine": "引擎没有回答，关于评审什么都不知道",
   /* 工具卡片状态文案（工单 46 D4）。五档状态取参照桌面的词表，中文与
      参照完全一致；已完成的调用在摘要行不显示状态。wire 只会写
      completed/failed/in_progress，补齐 pending 与 cancelled 是为了让

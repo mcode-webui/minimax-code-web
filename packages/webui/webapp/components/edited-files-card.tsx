@@ -31,10 +31,39 @@ import { useState } from "react";
 import { Icon } from "./icons";
 import { totalLineChanges, type EditedFile } from "../lib/edited-files";
 import type { TurnDiffFailure } from "../lib/turn-diff";
+import type { ReviewLink, ReviewLinkDisabled, ReviewLinkState } from "../lib/review-link";
 import type { MessageKey } from "../lib/i18n";
 
 /** Rows shown before the card needs the expand toggle. */
 export const COLLAPSED_FILE_ROWS = 3;
+
+/**
+ * Why the 「Review」 control is inert, as one key per reason.
+ *
+ * The four absences are four different sentences on purpose. 「没有记录」 (nobody
+ * ran `gh pr view` / `glab mr view` on this branch), 「没有分支」 (a detached
+ * HEAD, or a folder that is not a Git repository), 「工作区未知」 (this tab has
+ * no conversation) and 「引擎不可用」 (501 / 503 / a network failure) each tell
+ * the user a different thing to do next, and one vague tooltip would tell them
+ * nothing. The mapping lives beside the card rather than inside it so a test
+ * can pin the whole table without a renderer.
+ */
+export const REVIEW_DISABLED_KEYS: Readonly<Record<ReviewLinkDisabled, MessageKey>> = Object.freeze({
+  unknown_workspace: "turnDiff.review.absent.workspace",
+  no_branch: "turnDiff.review.absent.branch",
+  no_review_link: "turnDiff.review.absent.none",
+  engine_unavailable: "turnDiff.review.absent.engine",
+});
+
+/** The states in which the control cannot open anything. */
+export type ReviewLinkInertState = Exclude<ReviewLinkState, { readonly status: "available" }>;
+
+/** The sentence for a state that cannot offer a clickable control. */
+export function reviewDisabledReasonKey(state: ReviewLinkInertState): MessageKey {
+  return state.status === "loading"
+    ? "turnDiff.review.absent.loading"
+    : REVIEW_DISABLED_KEYS[state.reason];
+}
 
 export interface EditedFilesCardState {
   /** Whether the file list is showing all rows rather than the first few. */
@@ -105,6 +134,8 @@ export function EditedFilesCard({
   onRedo,
   busy,
   error,
+  review,
+  onOpenReview,
 }: {
   readonly files: readonly EditedFile[];
   readonly t: (key: MessageKey) => string;
@@ -119,6 +150,17 @@ export function EditedFilesCard({
   readonly busy?: boolean;
   /** The last revert/reapply failure, shown verbatim. */
   readonly error?: TurnDiffFailure | null;
+  /**
+   * PB-16: what the engine knows about this workspace's review.
+   *
+   * `undefined` means the caller never asked (no conversation yet), and the
+   * control is then NOT rendered — an unasked question has no answer to
+   * disable. Every other state renders the button, enabled only for a link it
+   * can really open.
+   */
+  readonly review?: ReviewLinkState;
+  /** Opens the review. Required for an enabled control: no click path, no button. */
+  readonly onOpenReview?: (link: ReviewLink) => void;
 }) {
   const [state, setState] = useState<EditedFilesCardState>(initialEditedFilesCardState);
   // A1: with no files there is nothing truthful to say, so the card is not in
@@ -135,6 +177,19 @@ export function EditedFilesCard({
   // the dead control #114 had to delete.
   const showUndo = canUndo === true && Boolean(onUndo);
   const showRedo = canReapply === true && Boolean(onRedo);
+  // Same gate-and-handler rule as the two mutation buttons: an enabled control
+  // needs a click path. A link with nowhere to go is drawn disabled, with the
+  // engine's own sentence in its tooltip.
+  const reviewLink = review && review.status === "available" ? review.link : null;
+  const showReview = review !== undefined;
+  const canReview = reviewLink !== null && Boolean(onOpenReview);
+  // A link with no click path is the one state the reason table does not
+  // cover, and it falls to `engine_unavailable` on purpose: nothing about this
+  // control can be opened, so the tooltip must not promise a link.
+  const inertReview: ReviewLinkInertState =
+    review !== undefined && review.status !== "available"
+      ? review
+      : { status: "unavailable", reason: "engine_unavailable" };
 
   return (
     <section
@@ -236,7 +291,7 @@ export function EditedFilesCard({
           {state.expanded ? t("activity.collapse") : t("activity.expand")}
         </button>
       ) : null}
-      {showUndo || showRedo ? (
+      {showUndo || showRedo || showReview ? (
         <div className="mt-1.5 flex items-center gap-3" data-testid="edited-files-card-actions">
           {showUndo ? (
             <button
@@ -260,6 +315,29 @@ export function EditedFilesCard({
               className="text-caption-small text-text_default_tertiary transition-colors hover:text-text_default_primary disabled:opacity-60"
             >
               {busy === true ? t("turnDiff.working") : t("turnDiff.redo")}
+            </button>
+          ) : null}
+          {/* Rightmost, as on the desktop card (06-browser-tree-tasks-review.jpg):
+              撤销 then Review. Outlined there and here — the one control in this
+              row that leaves the transcript, so it is the one that looks like it. */}
+          {showReview ? (
+            <button
+              type="button"
+              data-testid="edited-files-card-review"
+              data-review-state={review?.status ?? "unavailable"}
+              disabled={!canReview}
+              aria-disabled={!canReview}
+              title={
+                canReview
+                  ? t("turnDiff.review.open")
+                  : `${t("turnDiff.review")} — ${t(reviewDisabledReasonKey(inertReview))}`
+              }
+              onClick={() => {
+                if (canReview && reviewLink) onOpenReview?.(reviewLink);
+              }}
+              className="ml-auto rounded-[6px] border border-border_default px-2 py-0.5 text-caption-small text-text_default_primary transition-colors hover:bg-bg_default_secondary disabled:cursor-not-allowed disabled:border-border_weak disabled:text-text_default_tertiary"
+            >
+              {t("turnDiff.review")}
             </button>
           ) : null}
         </div>

@@ -72,6 +72,7 @@ import * as queueRoute from "./routes/queue.js";
 import * as gitRoute from "./routes/git.js";
 import * as pluginsRoute from "./routes/plugins.js";
 import * as turnDiffRoute from "./routes/turn-diff.js";
+import * as reviewLinkRoute from "./routes/review-link.js";
 import * as engineCapabilitiesRoute from "./routes/engine-capabilities.js";
 import * as worktreesRoute from "./routes/worktrees.js";
 
@@ -243,6 +244,15 @@ export const OWNED_ROUTES = new Set([
   "GET /api/turn-diff",
   "POST /api/turn-diff/revert",
   "POST /api/turn-diff/reapply",
+  // PB-16 — the 「Review」 button on the edited-files card. One read over
+  // `cliService.getWorkspaceReviewLink`, reached through
+  // `peekEngineCatalogueHost()` (a read may not boot a runtime). The engine
+  // session id is read from `ctx.cs.mcodeSessionId`; a request cannot aim
+  // this at another conversation. 200 with `reviewLink:null` + `reason` is
+  // the common case and is NOT an error; 501/503 say the engine could not
+  // answer at all, and the frontend disables the button rather than
+  // claiming there is no review.
+  "GET /api/review-link",
   // Settings.
   "GET /api/settings",
   "POST /api/settings",
@@ -791,6 +801,18 @@ export function createHonoApp() {
   );
   app.post("/api/turn-diff/reapply", (c) =>
     invokeHandler(c, c.get(CAPTURE_KEY), turnDiffRoute.handleTurnDiffReapply),
+  );
+
+  // ----- PB-16: the 「Review」 button on the edited-files card -----
+  // One READ, over the review link the runtime RECORDED for this session's
+  // workspace and current branch (`cliService.getWorkspaceReviewLink`). The
+  // engine session id comes from `ctx.cs.mcodeSessionId`, never from the
+  // request, exactly as `/api/queue` does. "No recorded review" answers 200
+  // with `reviewLink:null` and a reason; a missing host or member answers
+  // 503/501 and must never be flattened into that. See
+  // `engine/review-link.js` for the three-state gate.
+  app.get("/api/review-link", (c) =>
+    invokeHandler(c, c.get(CAPTURE_KEY), reviewLinkRoute.handleReviewLink),
   );
 
   // ----- Settings -----

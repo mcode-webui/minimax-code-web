@@ -1973,7 +1973,7 @@ loading-states 相同：让 SSR 渲染测试可以脱离 `chat.tsx` 的 `@/` 别
 | 绿色 `+N` / 红色 `-N` | **有记录时有** | 引擎自己的逐回合计数，表头求和。**没有记录时不画**——画 `+0 -0` 等于宣称「这个文件没变」，那是另一句且为假的话。某一边为 0 时也不画 `+0` / `-0`。 |
 | 「撤销」按钮 | **有，由 `canUndo` 门控** | 调 `POST /api/turn-diff/revert`，真的会改写工作区文件。 |
 | 「重做」按钮 | **有，由 `canReapply` 门控** | 调 `POST /api/turn-diff/reapply`。与撤销独立出现：已撤销的回合给重做、不给撤销。 |
-| 「Review」按钮 | **没有（以文件行替代）** | 点文件行走既有的 `onOpenFile` 链路开文件预览（红线 4）。 |
+| 「Review」按钮 | **有，但只在本分支已有记录时可用** | 每个会话读一次 `GET /api/review-link`，用 `noopener,noreferrer` 在新标签打开 `reviewLink.url`。没有记录时按钮禁用，tooltip 说的是引擎自己的那句话——运行时只在某一回合跑过 `gh pr create\|view` 或 `glab mr create\|view` 时才记录评审，所以「没有评审」是常态而不是故障。 |
 | 文件行：类型图标 + 文件名 | **有** | `file` 图标 + 路径末段；完整路径挂在 `title` 与 `data-file-path` 上。 |
 | 文件行右侧增删数 | **有记录时有** | 是该文件自己的计数，不是把表头总数重复一遍。 |
 | 折叠（先 3 行 + 展开） | **有** | 纯客户端状态机 `reduceEditedFilesCardState`，超过 3 行才出现切换。 |
@@ -1983,6 +1983,19 @@ loading-states 相同：让 SSR 渲染测试可以脱离 `chat.tsx` 的 `@/` 别
 `TURN_DIFF_CONFLICT`——所以一个禁用的按钮等于承诺一件引擎已经拒绝
 的事。卡片从不从转录反推「这是不是最后一回合」；整套坐标方案存在的
 理由就是这个推断做不安全。
+
+### 为什么「Review」不能动时也照样画出来
+
+「Review」走的是与撤销 / 重做**相反**的规则，而这个差别是刻意的。
+撤销不画，是因为只有引擎知道哪个回合还能回退，画一个灰按钮等于承诺
+一件它已经拒绝的动作。Review 没有这种隐藏事实：运行时只在某一回合跑过
+`gh pr create|view` 或 `glab mr create|view` 时，才为该工作区与分支记录
+一条评审链接（`packages/local-runtime/src/review-link/store.ts`），而且
+从不向 git 主机去抓。所以「没有评审」是关于用户仓库的一件平常事实、是
+常态，按钮就把这句话写进 tooltip，而不是消失——一个凭空少掉的按钮会被
+读成「功能没做」。四句话对应四个真实原因：没有工作区、没有分支、没有
+记录、引擎根本没回答。最后一条与前三条分开，是因为它是唯一「什么都没
+弄清」的情形，把它渲染成「没有评审」正是本文档在别处拒绝的假空回答。
 
 ### 一次成功撤销要刷新什么
 
@@ -2445,6 +2458,7 @@ createdAtMs, updatedAtMs}`）下发，按 `toolCallId` 幂等、上限 32 条、
 | `GET` | `/api/queue` | `routes/queue.js#handleQueueList` | 引擎自己的列表（`cliService.listQueueMessages`），按引擎自己的顺序；200 `{ok, reachable, items, paused, pendingCount}`。这是**读**——走 `peekEngineCatalogueHost()`，**不得**启动运行时。本进程不持有正在跑的回合（`acp` 传输下的常态）时回答 `reachable:false` + `reason:"turn_not_here"` + `items:[]`，**这不等于队列为空**；本页签没有引擎会话时 `400 {code:"no_active_conversation"}`；宿主缺该方法 `501`、没有运行时 `503` |
 | `POST` | `/api/queue/reorder` | `routes/queue.js#handleQueueReorder` | `{itemIds}`——**完整**的有序 id 列表，绝不是增量；引擎的 `reorderQueue` 会拿它与"自己认为用户可管理的"那组 id 比对。无法构成队列的列表在问引擎之前就以 `400 {code:"invalid_queue_order"\|"BAD_FIELD_TYPE"}` 拒绝；队列在别的进程里时 `409 {code:"turn_not_here"}`，且**什么都没动**；200 `{ok, items}`——**引擎**的新顺序 |
 | `POST` | `/api/queue/cancel` | `routes/queue.js#handleQueueCancel` | `{itemId}` → `cliService.deleteQueueItem`，也就是引擎的 `queue.cancel`；`400 {code:"queue_item_required"\|"BAD_FIELD_TYPE"}`；取消**没有**发生时 `409 {code:"turn_not_here"}`；200 `{ok, item}`——引擎自己的已取消记录（`status:"cancelled"`） |
+| `GET` | `/api/review-link` | `routes/review-link.js#handleReviewLink` | 运行时为**本页签**的工作区与当前分支**记录**下来的评审（`cliService.getWorkspaceReviewLink`）；200 `{ok, reviewLink, reason, branch}`，其中 `reviewLink` 是存储自己的 `{vendor,url,number,branch,origin,recordedAt}` 或 `null`。引擎会话 id **不从请求取**——一律取 `ctx.cs.mcodeSessionId`，工作区再从那个会话自己的记录取。`reviewLink:null` + `reason`（`unknown_workspace` \| `no_branch` \| `no_review_link`）是**常态**回答，不是错误；本页签没有引擎会话时 `400 {code:"no_active_conversation"}`；宿主缺成员时 `501 {code:"engine_member_unavailable"\|"engine_git_metadata_unavailable"\|"engine_session_reader_unavailable"}`，能力被声明为不支持时 `501 {code:"engine_capability_not_supported"}`；没有运行时 `503`。这是**读**——走 `peekEngineCatalogueHost()`，绝不启动运行时 |
 | `POST` | `/api/debug/inject` | `routes/debug.js#handleDebugInject` | `DEBUG_INJECT=1` 守门 |
 | `GET` | `/api/debug/state` | `routes/debug.js#handleDebugState` | 同上 |
 | `POST` | `/api/protocol/set-mode` | `routes/protocol.js#handleSetMode` | 会话中途切换 mode |

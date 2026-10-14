@@ -2459,6 +2459,45 @@ export function reapplyTurnDiff(
   });
 }
 
+// --- review link (PB-16) ----------------------------------------------------
+
+/**
+ * One recorded review, exactly as `LocalReviewLinkStore` spells it
+ * (packages/local-runtime/src/review-link/store.ts:16-24). Every field is
+ * optional on the wire because the browser reads an untrusted answer; the
+ * projection that decides whether a button may open it lives in
+ * `lib/review-link.ts`.
+ */
+export interface ReviewLinkWire {
+  vendor?: string;
+  url?: string;
+  number?: number;
+  branch?: string;
+  origin?: string;
+  recordedAt?: number;
+}
+
+/** `GET /api/review-link`. */
+export interface ReviewLinkWireResult {
+  ok: boolean;
+  /** `null` is the common case: no review was recorded for this branch. */
+  reviewLink?: ReviewLinkWire | null;
+  /** Why there is none. `null` only when there IS one. */
+  reason?: string | null;
+  branch?: string | null;
+}
+
+/**
+ * The review the runtime recorded for this session's workspace and branch.
+ *
+ * No session id is passed: the server resolves the conversation from the `cid`
+ * this request already carries (`withClientQuery`), which is the same rule
+ * `/api/queue` follows. A 400/501/503 arrives as an `ApiHttpError` and is
+ * turned into an "unavailable" state by `lib/review-link.ts` — never into a
+ * button that pretends to work.
+ */
+export const getReviewLink = () => request<ReviewLinkWireResult>("/api/review-link");
+
 // --- worktrees (PB-3) -------------------------------------------------------
 
 /**

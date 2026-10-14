@@ -25,6 +25,7 @@ import {
 } from "@/lib/edited-files";
 import { EditedFilesCard } from "./edited-files-card";
 import { useTurnDiffs } from "@/lib/turn-diff";
+import { useReviewLink, type ReviewLink } from "@/lib/review-link";
 import {
   computeTurnLayout,
   computeTurnStatsByUnit,
@@ -249,6 +250,17 @@ export function Chat({
     state?.mcodeSessionId ?? null,
     turnCoordinates,
   );
+  // PB-16 — one read per session, not one per rendered card: the review link
+  // belongs to the workspace, and a transcript can hold a dozen cards. The
+  // server resolves the workspace from this tab's own conversation, so the
+  // hook only has to know whether there IS one.
+  const review = useReviewLink(state?.mcodeSessionId != null);
+  // `noopener,noreferrer` is not optional: the target is a page this
+  // application did not author, and it must not reach back through
+  // `window.opener` or read the referrer of the workspace it was opened from.
+  const openReview = useCallback((link: ReviewLink) => {
+    window.open(link.url, "_blank", "noopener,noreferrer");
+  }, []);
   const scannedFilesByTurn = useMemo(
     () => collectEditedFilesByTurn(units, turnIndexByUnit),
     [units, turnIndexByUnit],
@@ -468,6 +480,8 @@ export function Chat({
                   onRedo={turnCoordinates.has(turnIndex) ? () => void reapply(turnIndex) : undefined}
                   busy={busy.has(turnIndex)}
                   error={errors.get(turnIndex) ?? null}
+                  review={review}
+                  onOpenReview={openReview}
                 />
               ) : null;
               return (

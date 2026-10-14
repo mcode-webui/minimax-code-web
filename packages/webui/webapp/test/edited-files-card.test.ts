@@ -745,3 +745,122 @@ describe("the card reuses the existing copy and adds matching pairs", () => {
     assert.equal(occurrences, 2, "one en entry, one zh entry — no new key");
   });
 });
+
+// --- 7. PB-16: the 「Review」 control -------------------------------------
+//
+// The desktop card carries 「Review」 beside 「撤销」
+// (design-ref/screenshots/06-browser-tree-tasks-review.jpg). Its honesty
+// rule is the opposite of undo's, and deliberately so: an absent `canUndo`
+// draws NO button (only the engine knows which turn is revertible), while
+// 「Review」 is always drawn and says why it is inert. A control that vanishes
+// reads as a missing feature; a control that is present and disabled reads as
+// the fact it is. What must never happen is an enabled 「Review」 with no link.
+
+describe("the 「Review」 control", () => {
+  const files = scanOf(editBlock("edit_file", "/ws/a.ts"));
+  const LINK = {
+    vendor: "github" as const,
+    url: "https://github.com/acme/demo/pull/42",
+    number: 42,
+    branch: "feat/review",
+    origin: "created" as const,
+  };
+
+  test("is not drawn at all when nothing was asked", () => {
+    // No conversation means no question was put, and an unasked question has
+    // no answer to disable.
+    assert.ok(!renderCard(files).includes("edited-files-card-review"));
+  });
+
+  test("is enabled and clickable when the engine recorded a review", () => {
+    const markup = renderCard(files, {
+      review: { status: "available", link: LINK },
+      onOpenReview: noop,
+    });
+    assert.ok(markup.includes('data-testid="edited-files-card-review"'));
+    assert.ok(markup.includes('data-review-state="available"'));
+    // `disabled=""` is the rendered boolean attribute; `aria-disabled` must not
+    // be mistaken for it.
+    assert.ok(!/data-testid="edited-files-card-review"[^>]*\sdisabled=""/.test(markup));
+    assert.ok(markup.includes("https://github.com/acme/demo/pull/42") === false, "the url is not inlined into the page");
+  });
+
+  test("is disabled, with the engine's own sentence, when there is no review", () => {
+    for (const [reason, sentence] of [
+      ["no_review_link", "没有记录过评审"],
+      ["no_branch", "没有当前分支"],
+      ["engine_unavailable", "引擎没有回答"],
+    ] as const) {
+      const markup = renderCard(files, {
+        review: { status: "unavailable", reason },
+        onOpenReview: noop,
+      });
+      assert.ok(
+        /data-testid="edited-files-card-review"[^>]*\sdisabled=""/.test(markup),
+        `${reason} renders a disabled control`,
+      );
+      assert.ok(markup.includes(sentence), `${reason} explains itself: ${markup}`);
+    }
+  });
+
+  test("a link with no handler is drawn disabled — no click path, no live control", () => {
+    const markup = renderCard(files, { review: { status: "available", link: LINK } });
+    assert.ok(/data-testid="edited-files-card-review"[^>]*\sdisabled=""/.test(markup));
+  });
+
+  test("the loading state is inert rather than absent", () => {
+    const markup = renderCard(files, { review: { status: "loading" }, onOpenReview: noop });
+    assert.ok(/data-testid="edited-files-card-review"[^>]*\sdisabled=""/.test(markup));
+    assert.ok(markup.includes('data-review-state="loading"'));
+  });
+
+  test("sits after undo/redo, where the desktop card puts it", () => {
+    const markup = renderCard(files, {
+      canUndo: true,
+      canReapply: true,
+      onUndo: noop,
+      onRedo: noop,
+      review: { status: "available", link: LINK },
+      onOpenReview: noop,
+    });
+    const actions = markup.indexOf('data-testid="edited-files-card-actions"');
+    assert.ok(actions !== -1, "the actions row exists");
+    const undo = markup.indexOf('data-testid="edited-files-card-undo"');
+    const redo = markup.indexOf('data-testid="edited-files-card-redo"');
+    const review = markup.indexOf('data-testid="edited-files-card-review"');
+    assert.ok(undo > actions && redo > undo && review > redo, "undo, redo, then review");
+  });
+
+  test("chat.tsx reads it once per session and hands the same state to every card", () => {
+    // One read per conversation, not one per card: the link belongs to the
+    // workspace, and a transcript can hold a dozen cards.
+    const reads = chatSource.match(/useReviewLink\(/g) ?? [];
+    assert.equal(reads.length, 1, "one hook call in chat.tsx");
+    assert.ok(/review=\{review\}/.test(chatSource), "the state reaches the card");
+    assert.ok(/onOpenReview=\{openReview\}/.test(chatSource), "the click path reaches the card");
+    assert.ok(
+      /window\.open\(link\.url, "_blank", "noopener,noreferrer"\)/.test(chatSource),
+      "the new tab is opened without an opener handle",
+    );
+  });
+
+  test("every new key exists in both dictionaries", () => {
+    const keys = [
+      "turnDiff.review",
+      "turnDiff.review.open",
+      "turnDiff.review.absent.loading",
+      "turnDiff.review.absent.workspace",
+      "turnDiff.review.absent.branch",
+      "turnDiff.review.absent.none",
+      "turnDiff.review.absent.engine",
+    ] as const;
+    for (const key of keys) {
+      const occurrences = (i18nSource.match(new RegExp(`"${key.replace(/\./g, "\\.")}"`, "g")) ?? []).length;
+      assert.equal(occurrences, 2, `${key} needs one en entry and one zh entry`);
+      assert.notEqual(translate("en", key), "", `${key} has an en value`);
+      if (key !== "turnDiff.review" && key !== "turnDiff.review.open") {
+        assert.ok(!/[一-鿿]/.test(translate("en", key)), `en value for ${key} carries Chinese`);
+      }
+    }
+  });
+});

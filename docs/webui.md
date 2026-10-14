@@ -2705,7 +2705,7 @@ them.
 | Green `+N` / red `-N` | **Present, with a record** | The engine's own per-turn counts, summed in the header. **Absent without one** — a card showing `+0 -0` would say "this file did not change", which is a different and false claim. A zero side is not drawn as `+0` / `-0` either. |
 | 「撤销」 (undo) | **Present, gated on `canUndo`** | Calls `POST /api/turn-diff/revert`, which rewrites real workspace files. |
 | 「重做」 (redo) | **Present, gated on `canReapply`** | Calls `POST /api/turn-diff/reapply`. Appears independently of undo: a reverted turn offers redo and no undo. |
-| 「Review」 | **Absent — the file rows replace it** | A file row opens the real preview through the existing `onOpenFile` chain (red line 4). |
+| 「Review」 | **Present, enabled only on a recorded link** | Calls `GET /api/review-link` once per session and opens `reviewLink.url` in a new tab (`noopener,noreferrer`). Disabled with the engine's own sentence when there is none — the runtime records a review only when a turn ran `gh pr create\|view` or `glab mr create\|view`, so "no review" is the ordinary state, not a fault. |
 | File row: type icon + name | **Present** | A `file` icon plus the path's trailing segment; the full path rides on `title` and `data-file-path`. |
 | Per-row added/deleted | **Present, with a record** | The engine's per-file counts, not the header total repeated. |
 | Collapse (3 rows, then expand) | **Present** | A pure client-side state machine, `reduceEditedFilesCardState`; the toggle appears only past three rows. |
@@ -2717,6 +2717,23 @@ if they click anyway — so a disabled button would promise an action the
 engine has already refused. The card never re-derives "is this the last
 turn?" from the transcript; the whole coordinate system exists because
 that inference cannot be made safely.
+
+### Why 「Review」 is drawn even when it cannot work
+
+「Review」 follows the opposite rule from 撤销 / 重做, and the difference is
+deliberate. Undo is absent because only the engine knows which turn is still
+revertible, and a greyed button would promise an action it has already
+refused. Review has no such hidden fact: the runtime records a review link
+for a workspace and branch when a turn runs `gh pr create|view` or
+`glab mr create|view` (`packages/local-runtime/src/review-link/store.ts`),
+and it never fetches one from a git host. So "no review" is a plain fact
+about the user's repository, it is the ordinary state, and the control says
+so in its tooltip instead of disappearing — a missing button would read as a
+missing feature. Four sentences, one per real cause: no workspace, no branch,
+no recorded review, and the engine did not answer at all. The last one is
+kept separate from the first three because it is the only case where nothing
+was learned, and rendering it as "no review" would be the fake-empty answer
+this document refuses elsewhere.
 
 ### What a successful undo refreshes
 
@@ -3290,6 +3307,7 @@ marker), not by tool name.
 | `GET` | `/api/queue` | `routes/queue.js#handleQueueList` | the engine's own list (`cliService.listQueueMessages`), in the engine's own order; 200 `{ok, reachable, items, paused, pendingCount}`. A READ — it goes through `peekEngineCatalogueHost()` and may not boot a runtime. `reachable:false` + `reason:"turn_not_here"` + `items:[]` is the answer when this process does not own the running turn (the normal `acp` state) and is NOT an empty queue; `400 {code:"no_active_conversation"}` when the tab has no engine session; `501` when the host lacks the method, `503` when no runtime is up |
 | `POST` | `/api/queue/reorder` | `routes/queue.js#handleQueueReorder` | `{itemIds}` — the COMPLETE ordered id list, never a delta; the engine's `reorderQueue` compares it against the ids it considers user-manageable. `400 {code:"invalid_queue_order"\|"BAD_FIELD_TYPE"}` for a list that could not be a queue, before the engine is asked; `409 {code:"turn_not_here"}` when the queue is in another process, and nothing is moved; 200 `{ok, items}` — the ENGINE's new order |
 | `POST` | `/api/queue/cancel` | `routes/queue.js#handleQueueCancel` | `{itemId}` → `cliService.deleteQueueItem`, which is the engine's `queue.cancel`; `400 {code:"queue_item_required"\|"BAD_FIELD_TYPE"}`; `409 {code:"turn_not_here"}` when the cancel did NOT happen; 200 `{ok, item}` — the engine's own cancelled record (`status:"cancelled"`) |
+| `GET` | `/api/review-link` | `routes/review-link.js#handleReviewLink` | the review the runtime RECORDED for this tab's workspace and current branch (`cliService.getWorkspaceReviewLink`); 200 `{ok, reviewLink, reason, branch}` where `reviewLink` is the store's own `{vendor,url,number,branch,origin,recordedAt}` or `null`. No engine session id is read from the request — it comes from `ctx.cs.mcodeSessionId`, and the workspace comes from that session's own record. `reviewLink:null` + `reason` (`unknown_workspace` \| `no_branch` \| `no_review_link`) is the ORDINARY answer, not an error; `400 {code:"no_active_conversation"}` when the tab has no engine session; `501 {code:"engine_member_unavailable"\|"engine_git_metadata_unavailable"\|"engine_session_reader_unavailable"}` for a missing host member and `501 {code:"engine_capability_not_supported"}` for a declared-away capability; `503` when no runtime is booted. A READ — `peekEngineCatalogueHost()`, never a boot |
 | `POST` | `/api/debug/inject` | `routes/debug.js#handleDebugInject` | `DEBUG_INJECT=1` gate |
 | `GET` | `/api/debug/state` | `routes/debug.js#handleDebugState` | same gate |
 | `POST` | `/api/protocol/set-mode` | `routes/protocol.js#handleSetMode` | mid-session mode change |

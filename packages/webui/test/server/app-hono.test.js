@@ -143,6 +143,10 @@ describe("app.js — migration ledger", () => {
       "GET /api/turn-diff",
       "POST /api/turn-diff/revert",
       "POST /api/turn-diff/reapply",
+      // PB-16: the 「Review」 button on the edited-files card. One READ over
+      // the review the runtime recorded for this tab's workspace; the engine
+      // session id comes from the per-cid state, never from the request.
+      "GET /api/review-link",
       "GET /api/settings",
       "POST /api/settings",
       "POST /api/auth/decision",
