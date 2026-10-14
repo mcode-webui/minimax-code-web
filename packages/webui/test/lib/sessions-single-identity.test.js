@@ -146,3 +146,53 @@ describe("v2.4 single base session — overlay helpers", () => {
     assert.equal(sessions.bindDraftToMcodeSid({ sessionId: "x" }, null), false);
   });
 });
+
+// session-ownership: the bind moment is when the conversation's real
+// workspace becomes known — the engine session was created with that cwd.
+// A record that keeps its creation-time snapshot instead (often
+// DEFAULT_WORKSPACE, because "+ New session" precedes the workspace pick)
+// re-homes the conversation: the next switch lands the view there and the
+// next loadSession misses, minting a second engine session — the
+// same-conversation ghost row (run_261001 → demo002 incident).
+describe("session-ownership — bind stamps the engine workspace", () => {
+  test("bindDraftToMcodeSid rewrites the draft's workspace to the engine cwd", () => {
+    // Draft was created under the default workspace; the user then picked
+    // /home/u/tmp/run_x and sent the first prompt there.
+    writeStore([{ id: "draft-uuid", title: "New session", workspace: "/home/u/docs/demo002", chat: [], createdAt: 1, updatedAt: 2 }]);
+    const cs = { sessionId: "draft-uuid", mcodeSessionId: null };
+    assert.equal(sessions.bindDraftToMcodeSid(cs, SID, { workspace: "/home/u/tmp/run_x" }), true);
+    const rec = readStore()[0];
+    assert.equal(rec.mcodeSessionId, SID);
+    assert.equal(
+      rec.workspace,
+      "/home/u/tmp/run_x",
+      "record workspace = the engine session's creation cwd, not the stale snapshot",
+    );
+  });
+
+  test("bindDraftToMcodeSid without a workspace option keeps the stored value", () => {
+    writeStore([{ id: "draft-uuid", title: "New session", workspace: "/w", chat: [], createdAt: 1, updatedAt: 2 }]);
+    const cs = { sessionId: "draft-uuid", mcodeSessionId: null };
+    sessions.bindDraftToMcodeSid(cs, SID);
+    assert.equal(readStore()[0].workspace, "/w");
+  });
+
+  test("bindRecordToMcodeSid rewrites the draft's workspace to the engine cwd (mid-run switch path)", () => {
+    writeStore([{ id: "draft-uuid", title: "New session", workspace: "/stale", chat: ["› hi"], createdAt: 1, updatedAt: 2 }]);
+    // Returns the owning record's id AFTER promotion — the engine sid,
+    // because the draft's id is rewritten to the engine identity.
+    assert.equal(sessions.bindRecordToMcodeSid("draft-uuid", SID, { workspace: "/home/u/tmp/run_x" }), SID);
+    const rec = readStore()[0];
+    assert.equal(rec.mcodeSessionId, SID);
+    assert.equal(rec.workspace, "/home/u/tmp/run_x");
+  });
+
+  test("a record already bound to another engine identity never moves for someone else's turn", () => {
+    writeStore([{ id: SID2, mcodeSessionId: SID2, title: "Bound", workspace: "/original", chat: [], createdAt: 1, updatedAt: 2 }]);
+    const cs = { sessionId: SID2, mcodeSessionId: null };
+    // cs.sessionId points at a BOUND record → no draft to promote; the
+    // workspace must stay whatever the bind stamped.
+    assert.equal(sessions.bindDraftToMcodeSid(cs, SID, { workspace: "/elsewhere" }), false);
+    assert.equal(readStore()[0].workspace, "/original");
+  });
+});

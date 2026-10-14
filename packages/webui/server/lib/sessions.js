@@ -110,7 +110,7 @@ export function ensureOverlayForMcodeSid(all, sid, { title, workspace } = {}) {
  * （例如用户此前切换过它），则把草稿的 chat 合并进既有记录并删除草稿，
  * 保证一个 mcode 会话最多一条记录。cs.sessionId 同步为最终记录 id。
  */
-export function promoteDraftToMcodeSid(cs) {
+export function promoteDraftToMcodeSid(cs, { workspace } = {}) {
   if (!cs || !cs.mcodeSessionId || !cs.sessionId) return false;
   if (cs.sessionId === cs.mcodeSessionId) return false;
   const all = loadSessions();
@@ -133,6 +133,16 @@ export function promoteDraftToMcodeSid(cs) {
   if (!draft) return false;
   draft.id = cs.mcodeSessionId;
   draft.mcodeSessionId = cs.mcodeSessionId;
+  // session-ownership: the workspace the engine session was created in IS
+  // the workspace this conversation belongs to. A draft's stored value is
+  // only the snapshot from record-creation time (often DEFAULT_WORKSPACE,
+  // because "+ New session" can precede the workspace pick) — leaving it
+  // in place re-homes the conversation to a directory it never ran in,
+  // and the next switch then lands the view there (the run_261001 →
+  // demo002 ghost-row incident). The `existing` branch above does NOT
+  // get this write: a record that already carries an engine identity
+  // never moves because of someone else's turn.
+  if (workspace) draft.workspace = workspace;
   draft.updatedAt = Date.now();
   saveSessions(all);
   cs.sessionId = draft.id;
@@ -153,11 +163,15 @@ export function promoteDraftToMcodeSid(cs) {
  * rename/merge whichever record the user switched TO. Use
  * `bindRecordToMcodeSid` for that case; this one stays the cs-driven
  * path for the still-viewing case.
+ *
+ * `opts.workspace` (session-ownership): the engine session's creation
+ * cwd, passed through to the draft promotion so the record remembers
+ * the workspace the conversation actually ran in.
  */
-export function bindDraftToMcodeSid(cs, sid) {
+export function bindDraftToMcodeSid(cs, sid, opts = {}) {
   if (!cs || !sid) return false;
   cs.mcodeSessionId = sid;
-  return promoteDraftToMcodeSid(cs);
+  return promoteDraftToMcodeSid(cs, opts);
 }
 
 /**
@@ -179,7 +193,7 @@ export function bindDraftToMcodeSid(cs, sid) {
  *   (null when there was nothing to bind — record gone, or already
  *   bound to another engine session).
  */
-export function bindRecordToMcodeSid(webuiId, sid) {
+export function bindRecordToMcodeSid(webuiId, sid, { workspace } = {}) {
   if (!webuiId || !sid) return null;
   const all = loadSessions();
   // Already promoted for this turn? (webuiId may BE the mvs id after a
@@ -202,6 +216,11 @@ export function bindRecordToMcodeSid(webuiId, sid) {
   }
   draft.id = sid;
   draft.mcodeSessionId = sid;
+  // Same ownership rule as promoteDraftToMcodeSid: the engine session's
+  // creation workspace is authoritative for the conversation; the draft's
+  // stale snapshot must not survive the promotion. (The `existing` branch
+  // stays write-free — bound records never move for another turn.)
+  if (workspace) draft.workspace = workspace;
   draft.updatedAt = Date.now();
   saveSessions(all);
   return draft.id;

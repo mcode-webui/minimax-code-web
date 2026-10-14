@@ -24,7 +24,7 @@ import { homedir, tmpdir, platform as osPlatform } from "node:os";
 import { DEFAULT_WORKSPACE } from "./config.js";
 import { detectTuiCwd } from "./config.js";
 import { pushStateFor } from "./state-bus.js";
-import { loadSessions } from "./sessions.js";
+import { loadSessions, saveSessions } from "./sessions.js";
 import { basename } from "node:path";
 
 /**
@@ -300,6 +300,27 @@ export function handleWorkspaceChange(cs, cid, payload) {
   // the credential gate (slice 16) is the reason the canonical form
   // is now pinned everywhere.
   cs.workspace = { dir: contained.real ?? absDir, branch: null, tree: null };
+  // session-ownership (draft-follows-user): until its first engine turn
+  // binds the engine identity, the active record is just "the new session
+  // the user is preparing" — its stored workspace follows the workspace
+  // the user actually picked, because "+ New session" can legitimately
+  // precede the workspace pick and the picker writes cs.workspace only.
+  // Once the record carries an mcodeSessionId the bind stamped the engine
+  // session's real cwd into it; a later switch must NEVER re-home that
+  // record (the filter below is the load-bearing `!s.mcodeSessionId`).
+  try {
+    const all = loadSessions();
+    const draft = all.find(
+      (s) => s && s.id === cs.sessionId && !s.mcodeSessionId,
+    );
+    if (draft) {
+      draft.workspace = cs.workspace.dir;
+      draft.updatedAt = Date.now();
+      saveSessions(all);
+    }
+  } catch (e) {
+    console.warn(`[webui] draft workspace follow failed: ${e.message}`);
+  }
   if (payload.syncTui) {
     try {
       const cwdFile = join(homedir(), ".minimax", "runtime", "cwd.json");
