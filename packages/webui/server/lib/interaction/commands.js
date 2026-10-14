@@ -44,70 +44,6 @@ const LOCAL_HELP_FALLBACK = CMD_BUTTON_COMMANDS;
 
 // ----- private body functions: each takes (cs, cid, rest) -----
 
-function bodyGoal(cs, cid, content, rest) {
-  const goalText = rest.trim();
-  if (!goalText) {
-    const t = `● 用法: /goal <目标内容> — 在右栏 "目标" 区设一个目标, 后续用 /goal-done 或 /goal-blocked 标记完成状态`;
-    cs.chat = [...(cs.chat || []), t];
-    pushStateFor(cid);
-    persistCurrentChat(cs);
-    return { handled: true, continueMcode: false };
-  }
-  cs.goal = {
-    active: true,
-    text: goalText,
-    status: "in_progress",
-    duration: null,
-    startTs: Date.now(),
-  };
-  // pre-slash 之前加了 '› /goal ${goalText}' 行,这里替换成 '› ${goalText}' (跟 mcode 实际收到的对齐)
-  if (Array.isArray(cs.chat) && cs.chat.length > 0) {
-    const last = cs.chat[cs.chat.length - 1];
-    if (
-      last === `› /goal ${goalText}` ||
-      last === `› /goal ${rest}` ||
-      last === `› ${content}`
-    ) {
-      cs.chat = [...cs.chat.slice(0, -1), `› ${goalText}`];
-    }
-  }
-  cs.chat = [
-    ...(cs.chat || []),
-    `● 已设目标: ${goalText} — 转发给 mcode 触发执行, 完成后用 /goal-done 标记 ✅`,
-  ];
-  pushStateFor(cid);
-  persistCurrentChat(cs);
-  if (process.env.MCODE_USAGE_DEBUG)
-    console.log(`[goal.set] cid=${cid} text="${goalText}"`);
-  return { handled: true, continueMcode: true, rewriteContent: goalText };
-}
-
-function bodyGoalClose(cs, cid, kind /* "done" | "blocked" */) {
-  if (!cs.goal || !cs.goal.active) {
-    const t = `● 当前没有 active 目标, 用 /goal <内容> 先设一个`;
-    cs.chat = [...(cs.chat || []), t];
-    pushStateFor(cid);
-    persistCurrentChat(cs);
-    return { handled: true, continueMcode: false };
-  }
-  const newStatus = kind === "done" ? "complete" : "blocked";
-  cs.goal = {
-    ...cs.goal,
-    active: false,
-    status: newStatus,
-    duration: cs.goal.startTs ? Date.now() - cs.goal.startTs : null,
-  };
-  cs.chat = [
-    ...(cs.chat || []),
-    `● 目标已标 ${newStatus === "complete" ? "完成 ✅" : "阻塞 ⛔"}: ${cs.goal.text || ""}`,
-  ];
-  pushStateFor(cid);
-  persistCurrentChat(cs);
-  if (process.env.MCODE_USAGE_DEBUG)
-    console.log(`[goal.${newStatus}] cid=${cid}`);
-  return { handled: true, continueMcode: false };
-}
-
 function bodyClear(cs, cid) {
   cs.chat = [];
   cs.usage = {
@@ -290,19 +226,30 @@ async function bodyReview(cs, cid) {
 // Returns { handled, continueMcode, rewriteContent? }. If handled and
 // continueMcode=false, caller returns immediately. If handled and
 // continueMcode=true with rewriteContent, caller forwards the rewritten
-// content to mcode (used by /goal). If not handled, caller falls
-// through to mcode.
+// content to mcode. If not handled, caller falls through to mcode.
+//
+// PB-14 batch C — `/goal`, `/goal-done` and `/goal-blocked` ARE NOT HERE,
+// and their absence is the point. They used to be: `bodyGoal` recorded
+// `{active, text, status, duration}` in the per-cid `cs.goal` slot, rewrote
+// the chat line so `/goal xxx` displayed as `xxx`, and returned
+// `continueMcode: true` — which handed the objective to the engine as an
+// ordinary message. The engine therefore never learned a goal existed; the
+// slot was read by no webapp component; and the user got a chat line that
+// said a goal had been set. Batch C replaced it with the real command
+// (composer → `POST /api/goal` → the engine's `createGoal`) and this
+// handler's copies are gone with it.
+//
+// What a `/goal` line does now: the composer claims it when the engine has
+// the feature enabled, and otherwise lets it fall through to the `default`
+// branch, which forwards it to mcode untouched. Both answers are honest,
+// and neither is "webui recorded something the engine never saw". The
+// `cs.goal` slot itself stays in `state-bus.js` for one release — batch D
+// removes it along with the debug injection that can still fill it.
 export async function handleLocalSlash(content, cs, cid) {
   const m = matchSlash(content);
   if (!m) return false;
   const { cmd, rest } = m;
   switch (cmd) {
-    case "goal":
-      return bodyGoal(cs, cid, content, rest);
-    case "goal-done":
-      return bodyGoalClose(cs, cid, "done");
-    case "goal-blocked":
-      return bodyGoalClose(cs, cid, "blocked");
     case "clear":
       return bodyClear(cs, cid);
     case "new":

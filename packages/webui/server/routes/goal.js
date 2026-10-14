@@ -37,6 +37,7 @@
 // seam costs production nothing and keeps the suite hermetic.
 
 import { readJson } from "../lib/read-json.js";
+import { ensureGoalEventBridge } from "../engine/goal-events.js";
 import {
   clearEngineGoal,
   createEngineGoal,
@@ -44,6 +45,51 @@ import {
   readEngineGoal,
   readEngineGoalEnabled,
 } from "../engine/goal.js";
+
+/**
+ * Re-arm the engine→SSE goal subscription after a write, WITHOUT awaiting it.
+ *
+ * WHY A WRITE PATH HAS TO DO THIS (PB-14 batch C). The bridge is armed from
+ * two places: the SSE connect (`routes/state.js`) and, from this batch, the
+ * three write handlers. The second arming point is not redundancy, it is the
+ * one that makes the FIRST correct:
+ *
+ *   - `ensureGoalEventBridge` peeks the catalogue host and starts a pump
+ *     only if a runtime is already up. On the default `acp` transport no
+ *     host exists, so the connect-time arm is a no-op and the tab keeps
+ *     `threadGoal: null` — fine, because on that transport the goal lives in
+ *     an `mcode acp` subprocess webui does not host and has no event stream
+ *     to read.
+ *   - The local-runtime transport is the opposite case: the host is up but
+ *     the bridge may have stopped (the pump ends on any non-abort engine
+ *     error, by `pumpGoalEvents`' own contract). A goal written through
+ *     `POST /api/goal` is therefore the one moment webui KNOWS a goal
+ *     changed and cannot prove a subscription is listening.
+ *
+ * So each successful write re-arms it. That is cheap and idempotent — the
+ * function returns `true` in a microtask when a pump is already running and
+ * touches nothing — and it is fire-and-forget on purpose: the write's answer
+ * is the engine's snapshot and must not wait on a subscription that may
+ * never start on this transport. A rejection is swallowed for the same
+ * reason `pumpGoalEvents` swallows a stream error: `ensureGoalEventBridge`
+ * returns a boolean and never rejects, so there is nothing to catch, and the
+ * `.catch` here only defends the module boundary.
+ *
+ * WHY IT IS NOT ON THE TWO READS. A read changes nothing in the engine, so
+ * there is no new event to miss; arming there would fire on every session
+ * switch for a subscription the connect path already owns.
+ *
+ * @param {() => (Promise<unknown>|unknown)} [ensure] Test seam: production
+ *   leaves it unset and the real `ensureGoalEventBridge` is used. It takes
+ *   no arguments in either case, which is itself pinned — an arming call
+ *   that started passing a session id would be a second code path the tests
+ *   could not see.
+ * @returns {Promise<void>} Resolves when the arming attempt settles.
+ */
+function rearmGoalEventBridge(ensure) {
+  const run = ensure || ensureGoalEventBridge;
+  void Promise.resolve(run()).catch(() => {});
+}
 
 /**
  * Write one answer, whether it succeeded or not.
@@ -154,17 +200,16 @@ export async function handleGoalCreate(req, res, ctx, deps = {}) {
   const parsed = await readJson(req);
   const sessionId = requireEngineSessionId(res, ctx);
   if (!sessionId) return 400;
-  return writeResult(
-    res,
-    await createEngineGoal({
-      ...deps,
-      sessionId,
-      objective: parsed.objective,
-      ...(parsed.tokenBudget !== undefined
-        ? { tokenBudget: parsed.tokenBudget }
-        : {}),
-    }),
-  );
+  const result = await createEngineGoal({
+    ...deps,
+    sessionId,
+    objective: parsed.objective,
+    ...(parsed.tokenBudget !== undefined
+      ? { tokenBudget: parsed.tokenBudget }
+      : {}),
+  });
+  if (result.ok) rearmGoalEventBridge(deps.ensureBridge);
+  return writeResult(res, result);
 }
 
 /**
@@ -185,18 +230,17 @@ export async function handleGoalPatch(req, res, ctx, deps = {}) {
   const parsed = await readJson(req);
   const sessionId = requireEngineSessionId(res, ctx);
   if (!sessionId) return 400;
-  return writeResult(
-    res,
-    await patchEngineGoal({
-      ...deps,
-      sessionId,
-      ...(parsed.status !== undefined ? { status: parsed.status } : {}),
-      ...(parsed.objective !== undefined ? { objective: parsed.objective } : {}),
-      ...(parsed.tokenBudget !== undefined
-        ? { tokenBudget: parsed.tokenBudget }
-        : {}),
-    }),
-  );
+  const result = await patchEngineGoal({
+    ...deps,
+    sessionId,
+    ...(parsed.status !== undefined ? { status: parsed.status } : {}),
+    ...(parsed.objective !== undefined ? { objective: parsed.objective } : {}),
+    ...(parsed.tokenBudget !== undefined
+      ? { tokenBudget: parsed.tokenBudget }
+      : {}),
+  });
+  if (result.ok) rearmGoalEventBridge(deps.ensureBridge);
+  return writeResult(res, result);
 }
 
 /**
@@ -211,5 +255,7 @@ export async function handleGoalPatch(req, res, ctx, deps = {}) {
 export async function handleGoalClear(req, res, ctx, deps = {}) {
   const sessionId = requireEngineSessionId(res, ctx);
   if (!sessionId) return 400;
-  return writeResult(res, await clearEngineGoal({ ...deps, sessionId }));
+  const result = await clearEngineGoal({ ...deps, sessionId });
+  if (result.ok) rearmGoalEventBridge(deps.ensureBridge);
+  return writeResult(res, result);
 }

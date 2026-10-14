@@ -68,6 +68,9 @@ import {
   routeSlashInput,
   shouldCompleteSlashWord,
 } from "@/lib/slash-routing";
+import { peekGoalEnabled } from "@/lib/goal-enabled";
+import { parseGoalCommand, type GoalCommandIntent } from "@/lib/goal-command";
+import { createGoal, patchGoal, clearGoal } from "@/lib/api";
 import { decodeTranscript } from "@/lib/transcript";
 import { isConversationBusy, isSendUnconfirmed } from "@/lib/api";
 import {
@@ -484,9 +487,122 @@ export function Composer({
     return typeof limit === "number" && limit > 0 ? limit : null;
   }, [models, state?.model?.name, state?.model?.contextWindow]);
 
+  /**
+   * PB-14 batch C — run one `/goal` intent against the engine's five
+   * endpoints, and report it in the composer's own vocabulary.
+   *
+   * WHY A COMMAND GETS ITS OWN DISPATCH rather than falling into the send
+   * path. A `/goal` line is not a message and must not become one: it goes
+   * to `POST /api/goal`, the engine records a goal, and NOTHING is added to
+   * the transcript and nothing is handed to the turn. Routing it through the
+   * send path is what the retired `bodyGoal` handler did — it rewrote the
+   * chat line and passed the objective to the engine as an ordinary message,
+   * so the engine believed it was a request and the user believed they had
+   * set a goal. Those are the two halves of the illusion this branch
+   * removes.
+   *
+   * So this branch deliberately does NOT touch the outbox: there is no
+   * optimistic user bubble, and no `probeSend` on failure — the send probe
+   * asks whether a MESSAGE became a turn, which is a question about a
+   * different endpoint entirely.
+   *
+   * WHAT THE USER LOSES IF IT FAILS, AND WHY IT IS RESTORED. Exactly what
+   * the send path guarantees: the objective text comes back into the box.
+   * The restore uses `mergeRestoredDraft` rather than an overwrite so text
+   * typed while the request was in flight is kept above it, which is the
+   * same "nothing may vanish" rule the send path follows.
+   */
+  const dispatchGoalCommand = useCallback(
+    async (intent: GoalCommandIntent, content: string) => {
+      const draftKey = state?.sessionId ?? "";
+      // A parse error is not a send attempt: the command never left the
+      // browser, so nothing to clear and nothing to restore — the text is
+      // already in the box and the user edits it and presses Enter again.
+      if (intent.kind === "error") {
+        setComposerDraft(draftKey, { error: t(intent.key), errorKind: "rejected" });
+        return;
+      }
+      setSending(true);
+      setComposerDraft(draftKey, { error: null, errorKind: null, unconfirmed: null });
+      setComposerDraft(draftKey, { value: "", attachments: [] });
+      try {
+        if (intent.kind === "create") {
+          await createGoal({
+            objective: intent.objective,
+            // The key is OMITTED when no directive was written, because the
+            // engine distinguishes "no budget" (`null`) from "leave the
+            // budget alone" (absent) — see `api.ts#createGoal`.
+            ...(intent.tokenBudget === undefined ? {} : { tokenBudget: intent.tokenBudget }),
+          });
+        } else if (intent.kind === "budget") {
+          await patchGoal({ tokenBudget: intent.tokenBudget });
+        } else if (intent.kind === "pause") {
+          // A BARE `{status:"paused"}`, with no `statusReason` beside it:
+          // the engine reads exactly that shape as the atomic user-pause
+          // transition and derives the reason itself. Adding a reason field
+          // would turn a lifecycle transition into a field patch, which is
+          // a different thing the engine does not promise to treat the same.
+          await patchGoal({ status: "paused" });
+        } else if (intent.kind === "resume") {
+          await patchGoal({ status: "active" });
+        } else if (intent.kind === "clear") {
+          await clearGoal();
+        } else if (intent.kind === "done") {
+          // `/goal-done` — the user's own verdict on the goal, which the
+          // engine records as `complete(user_requested)`. `statusReason` is
+          // NOT sent: batch A established that the patch contract drops it
+          // and the engine derives the reason, so a client that could set
+          // it would be claiming a control it does not have.
+          await patchGoal({ status: "complete" });
+        }
+        // `edit` and `view` reach the engine as nothing at all: editing is
+        // the banner's inline editor, and viewing is the banner. They exist
+        // as intents so the parser can answer them instead of treating the
+        // word as an objective to create.
+        setComposerDraft(draftKey, { error: null, errorKind: null });
+      } catch (cause) {
+        setComposerDraft(draftKey, {
+          error: cause instanceof Error ? cause.message : String(cause),
+          errorKind: "rejected",
+        });
+        setComposerDraft(draftKey, (current) =>
+          mergeRestoredDraft(current, { content, attachments: [] }),
+        );
+      } finally {
+        setSending(false);
+      }
+    },
+    [state?.sessionId, t],
+  );
+
   const submit = useCallback(async () => {
     const content = value.trim();
     if ((!content && attachments.length === 0) || readOnly || sending) return;
+    // PB-14 batch C — `/goal` and `/goal-done` leave the composer before the
+    // message machinery is entered, for two reasons that are both load-
+    // bearing:
+    //
+    //   1. `peekGoalEnabled() === true` — a DISABLED engine offers no goal
+    //      entry. `/goal …` then falls through to the normal routing below,
+    //      lands on `/api/send` and reaches the engine's own `/goal` — which
+    //      is the honest outcome. The retired webui-local handler used to
+    //      swallow the line here and produce a goal the engine had never
+    //      heard of; refusing to claim the word is strictly better than
+    //      claiming it and lying.
+    //
+    //   2. `attachments.length === 0` — a `/goal` line with an `@file` chip
+    //      is a MESSAGE that happens to start with the word. The engine's
+    //      `createGoal` takes `kickoffAttachments`, which this build's
+    //      endpoint does not expose (`server/engine/goal.js` KNOWN DEBT),
+    //      so treating it as a goal would drop the attachment on the floor.
+    //      One line that always means "send this", is better than a goal
+    //      that quietly loses what the user attached to it.
+    const goalIntent =
+      peekGoalEnabled() === true && attachments.length === 0 ? parseGoalCommand(content) : null;
+    if (goalIntent) {
+      await dispatchGoalCommand(goalIntent, content);
+      return;
+    }
     // SB-4 — freeze the action at dispatch. The switch can be flipped
     // while the request is in flight, and a message that was QUEUED must
     // not be reported (or retried) as one that was steered: the two reach
@@ -696,7 +812,7 @@ export function Composer({
     } finally {
       setSending(false);
     }
-  }, [value, attachments, readOnly, sending, state?.sessionId, followUpAction, t]);
+  }, [value, attachments, readOnly, sending, state?.sessionId, followUpAction, t, dispatchGoalCommand]);
 
   const onPickFiles = useCallback(async (files: FileList | null) => {
     if (!files?.length) return;

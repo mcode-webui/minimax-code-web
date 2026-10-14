@@ -706,3 +706,141 @@ describe("engine facade — the action table is the contract", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// PB-14 batch C — the write paths re-arm the engine→SSE bridge.
+// ---------------------------------------------------------------------------
+//
+// The bridge is armed from the SSE connect (`routes/state.js`) and from the
+// three write handlers. The second arming point is the one that makes the
+// first correct: on the local-runtime transport the host is up but the pump
+// may have stopped (it ends on any non-abort engine error, by
+// `pumpGoalEvents`' contract), and a goal written through `POST /api/goal` is
+// the one moment webui KNOWS a goal changed and cannot prove anything is
+// listening. On the default `acp` transport there is no host, the arm is a
+// no-op, and the tab correctly keeps `threadGoal: null`.
+//
+// The seam is `deps.ensureBridge`, in the same spirit as `deps.getHost`:
+// production leaves it unset and the real `ensureGoalEventBridge` runs.
+
+describe("the write paths re-arm the engine goal event bridge", () => {
+  /** A bridge seam that records its calls and never resolves. */
+  function bridgeSpy(behaviour = "resolve") {
+    const calls = [];
+    return {
+      calls,
+      ensureBridge: (...args) => {
+        calls.push(args);
+        if (behaviour === "throw") return Promise.reject(new Error("bridge exploded"));
+        if (behaviour === "hang") return new Promise(() => {});
+        return Promise.resolve(true);
+      },
+    };
+  }
+
+  test("each of the three writes arms it exactly once, with no arguments", async () => {
+    const writes = [
+      ["create", goalRoute.handleGoalCreate, { objective: "ship it" }, 200],
+      ["patch", goalRoute.handleGoalPatch, { status: "paused" }, 200],
+      ["clear", goalRoute.handleGoalClear, undefined, 200],
+    ];
+    for (const [name, handler, payload, expected] of writes) {
+      const { getHost } = fakeAdapter();
+      const spy = bridgeSpy();
+      const res = fakeRes();
+      const status = await handler(bodyReq(payload), res, ctx(), {
+        getHost,
+        ensureBridge: spy.ensureBridge,
+      });
+      await res.done;
+      assert.equal(status, expected, `${name} must still answer ${expected}`);
+      assert.equal(spy.calls.length, 1, `${name} must arm the bridge once`);
+      assert.deepEqual(
+        spy.calls[0],
+        [],
+        "the arming call takes no arguments — a session-scoped arming call " +
+          "would be a second code path nothing tests",
+      );
+    }
+  });
+
+  test("a write that FAILED does not arm it", async () => {
+    // Each case's expected status is named rather than asserted as one
+    // number: the three refusals are DIFFERENT facts (a body the route
+    // refused, a patch with nothing in it, and the engine reporting there
+    // was no goal to delete), and pinning them to a shared 400 would hide a
+    // route that started answering the wrong refusal.
+    const cases = [
+      ["create with a bad objective", goalRoute.handleGoalCreate, { objective: "   " }, 400],
+      ["patch with an empty body", goalRoute.handleGoalPatch, {}, 400],
+      // `clearGoal` answering false is the engine's "there was nothing to
+      // delete", which batch A maps to 404 GOAL_NOT_FOUND.
+      ["clear with nothing to clear", goalRoute.handleGoalClear, undefined, 404],
+    ];
+    for (const [name, handler, payload, expected] of cases) {
+      const { getHost } = fakeAdapter({ clearGoal: false });
+      const spy = bridgeSpy();
+      const res = fakeRes();
+      const status = await handler(bodyReq(payload), res, ctx(), {
+        getHost,
+        ensureBridge: spy.ensureBridge,
+      });
+      await res.done;
+      assert.equal(status, expected, name);
+      assert.equal(parsed(res).ok, false, name);
+      assert.equal(spy.calls.length, 0, `${name} must not arm the bridge`);
+    }
+  });
+
+  test("arming is fire-and-forget: a bridge that never answers still yields 200", async () => {
+    const { getHost } = fakeAdapter();
+    const spy = bridgeSpy("hang");
+    const res = fakeRes();
+    const status = await goalRoute.handleGoalPatch(
+      bodyReq({ status: "active" }),
+      res,
+      ctx(),
+      { getHost, ensureBridge: spy.ensureBridge },
+    );
+    await res.done;
+    assert.equal(status, 200, "the write's answer is the engine snapshot, not the subscription");
+    assert.equal(parsed(res).ok, true);
+    assert.equal(spy.calls.length, 1);
+  });
+
+  test("a bridge that REJECTS is swallowed — the write still succeeded", async () => {
+    const { getHost } = fakeAdapter();
+    const spy = bridgeSpy("throw");
+    const res = fakeRes();
+    const status = await goalRoute.handleGoalPatch(
+      bodyReq({ status: "complete" }),
+      res,
+      ctx(),
+      { getHost, ensureBridge: spy.ensureBridge },
+    );
+    await res.done;
+    assert.equal(status, 200, "an unreachable subscription is not a failed write");
+    assert.equal(parsed(res).goal.status, "active");
+    // Give the rejected promise a turn to become an unhandled rejection,
+    // which is what a missing `.catch` would produce.
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  });
+
+  test("the two READS never arm it — a read changes nothing in the engine", async () => {
+    const { getHost } = fakeAdapter();
+    const spy = bridgeSpy();
+    const res = fakeRes();
+    await goalRoute.handleGoalRead(bodyReq(undefined), res, ctx(), {
+      getHost,
+      ensureBridge: spy.ensureBridge,
+    });
+    await res.done;
+    const res2 = fakeRes();
+    await goalRoute.handleGoalEnabled(bodyReq(undefined), res2, ctx(), {
+      getHost,
+      ensureBridge: spy.ensureBridge,
+    });
+    await res2.done;
+    assert.equal(spy.calls.length, 0, "reads must not arm anything");
+  });
+});

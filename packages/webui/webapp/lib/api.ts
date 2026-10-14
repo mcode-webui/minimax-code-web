@@ -2668,3 +2668,112 @@ export const removeWorktrees = (
       ...(activeWorktreeDir === undefined ? {} : { activeWorktreeDir }),
     },
   });
+
+// --- the thread goal (PB-14) -----------------------------------------------
+
+/**
+ * The five windows over the engine's goal surface (batch A's routes, which
+ * reach `TuiRuntimeAdapter.isGoalEnabled / getGoal / createGoal / patchGoal
+ * / clearGoal`).
+ *
+ * NONE OF THEM TAKES A SESSION ID, and that is the whole contract of this
+ * family. A goal belongs to a conversation, the composer knows only the
+ * webui session the user is looking at, and the server holds the engine-id
+ * mapping in its per-cid state. A body-supplied id would be one more
+ * unvalidated engine identifier on the wire and one a user could aim at a
+ * conversation this tab is not showing. The desktop client sends
+ * `sessionId` on all five and the server ignores it; this client does not
+ * send it at all, which is the same wire with less to get wrong.
+ *
+ * The goal shape itself is NOT redeclared here. `lib/goal-state.ts` owns
+ * `ThreadGoal` and the reader that decides whether an answer is one, so
+ * these signatures return the wire answer and let the reader narrow it —
+ * a second structural copy of `GlobalThreadGoal` would be a second place to
+ * forget a field.
+ */
+
+/** `GET /api/goal/enabled` — is the engine's goal feature turned on at all? */
+export interface GoalEnabledResult {
+  ok?: boolean;
+  enabled?: boolean;
+}
+
+/**
+ * The composer's permission to offer a goal entry point.
+ *
+ * Asked ONCE per page and cached by the caller (`lib/goal-enabled.ts`), not
+ * per keystroke: it is a property of the engine, not of this conversation,
+ * and the honest answer when it cannot be read is `false` — see
+ * `readGoalEnabled` for why uncertainty hides the control here rather than
+ * offering one that answers 501 on every press.
+ */
+export const getGoalEnabled = () => request<GoalEnabledResult>("/api/goal/enabled");
+
+/** `GET /api/goal` — 200 `{ok, goal}`, or 404 `GOAL_NOT_FOUND`. */
+export interface GoalReadResult {
+  ok?: boolean;
+  goal?: unknown;
+}
+
+/**
+ * This conversation's goal.
+ *
+ * A 404 is a real answer here, not a failure to swallow: it is the server
+ * saying "this conversation has no goal", which is the same fact the SSE
+ * frame spells as `threadGoal: null`. Callers normalise the two through
+ * `readThreadGoal`, so a tab that has not yet seen an event and a tab whose
+ * goal was cleared converge on one state.
+ */
+export const getGoal = () => request<GoalReadResult>("/api/goal");
+
+/** `POST /api/goal` — the create body. */
+export interface GoalCreatePayload {
+  objective: string;
+  /** Positive integer, or `null` for "no cap". Omit to leave it unset. */
+  tokenBudget?: number | null;
+}
+
+export interface GoalWriteResult {
+  ok?: boolean;
+  goal?: unknown;
+}
+
+/**
+ * Create this conversation's goal.
+ *
+ * `tokenBudget` is forwarded only when the caller supplies the key, because
+ * the engine distinguishes "no budget" (`null`) from "do not touch the
+ * budget" (absent), and an always-present `undefined` would make the second
+ * one unreachable.
+ */
+export const createGoal = (payload: GoalCreatePayload) =>
+  request<GoalWriteResult>("/api/goal", { method: "POST", json: payload });
+
+/** `PATCH /api/goal` — at least one of the three fields is required. */
+export interface GoalPatchPayload {
+  status?: string;
+  objective?: string;
+  tokenBudget?: number | null;
+}
+
+/**
+ * Change the goal.
+ *
+ * `statusReason` is deliberately NOT in this signature even though the route
+ * accepts it: batch A established that the engine derives the reason itself
+ * and drops the field, so a client that could set it would be claiming a
+ * control it does not have. `/goal-done` sends `{status:"complete"}` and
+ * lets the engine record why.
+ */
+export const patchGoal = (payload: GoalPatchPayload) =>
+  request<GoalWriteResult>("/api/goal", { method: "PATCH", json: payload });
+
+/**
+ * Drop this conversation's goal.
+ *
+ * 404 `GOAL_NOT_FOUND` is a real answer too — pressing clear twice must be
+ * able to tell the user the second press did nothing — and the banner's
+ * optimistic clear treats it as success, because the state it rolled back
+ * to ("no goal") is the state the server is reporting.
+ */
+export const clearGoal = () => request<{ ok?: boolean }>("/api/goal", { method: "DELETE" });

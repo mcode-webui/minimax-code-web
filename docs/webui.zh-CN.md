@@ -1306,6 +1306,38 @@ Token Plan 视图是桌面的五区块（页签 + 四卡）：
 
 **本批没有做的事。** 不创建、不修改、不清除目标——那是批次 A 的五个端点；`ensureGoalEventBridge()` 由 SSE 接入点调用，与批 A 并行落地时无需改动。webapp 侧本批不加消费代码，横幅与 `/goal` 命令是批次 C，本地 `goal` 槽的退役是批次 D。
 
+**目标横幅，以及一个真能到引擎的 `/goal`（PB-14 批 C）**
+
+**用户能看到什么。** 会话顶部、转录流上方的一张卡片：目标状态、目标内容、已用的 token 与轮数、已运行时长，以及至多三个按钮——暂停、恢复、清除。目标内容本身就是编辑控件：点它展开目标文本框与 token 预算输入框。清除会先问一句，并说清清除的代价——目标模式关闭，本会话转为普通模式继续。编写器里的 `/goal <文本>` 现在设的是真目标；`/goal-done` 收口。
+
+**横幅是桌面版的移植。** `webapp/components/goal-banner.tsx` 照 `other-minimax-code/packages/webui/src/client/components/GoalBanner.tsx` 移植，保留它的 `role="status" aria-live="polite"` 容器、"目标内容即按钮"的手势、用量行、三条指引行与两步清除确认。两处不同，都是被迫的：桌面版调用 props 传下来的 transport；本客户端直接调 `lib/api.ts` 并在失败时回滚，因为引擎对一次状态切换的回答可能比一次点击更慢，而一个两秒钟什么都不显示的暂停按钮读起来就是坏的。桌面版的文案表里是中文串，因为桌面外壳只有一种语言；这里放的是消息键，每一条都必须双语存在。
+
+**某个状态能提供哪些动作是一张表，不是四个条件表达式。** `webapp/lib/goal-state.ts#goalActions` 把每个状态恰好点名一次。桌面版在 JSX 里写了四条 `&&` 链，每一条都是状态机长大时会被忘掉的一个状态。不显然的决策如下：
+
+| 状态 | 提供 | 为什么 |
+| --- | --- | --- |
+| `active` | 暂停 | 引擎自己的转换 |
+| `active` + `executionWait` | *什么都没有* | 一个正卡在"等你确认权限"上的目标，此时暂停会把那个待答问题悬在半空，而它没有目标可以恢复到 |
+| `paused`、`blocked` | 恢复、清除 | 引擎对两者都用 `{status:"active"}` 恢复，而横幅无法告诉用户恢复之后是哪一个，所以不假装知道 |
+| `complete` | 关闭 | 不是清除。清除一个活着的目标是"别再追这个了"，关闭一个已完成的目标只是把卡片收走 |
+| `budget_limited`、`usage_limited` | *什么都没有*，加一条指引 | 能解决这两者的都不是按钮：一个新目标，或者服务商的额度 |
+
+**乐观更新，而回滚要说出原因。** 一次状态切换在请求发出之前就重绘徽标。请求失败时旧快照回来，**并且**把服务端的错误显示出来。把失败画出来才是要点：静默回滚与一个坏掉的按钮无法区分。
+
+**两道门，顺序如此，少任何一道都是缺陷。** 只有当 `GET /api/goal/enabled` 回答了 `true`，**并且** SSE 的 `threadGoal` 帧是 `readThreadGoal` 认得的目标时，横幅才绘制。只有开关会画出一张永远空着的卡；只有帧会在没启用目标的引擎上画卡。第二道门是诚实的缺省："还没问"是一个片刻的 `null`，"引擎说不行"则是永久的。
+
+**启用开关**失败即关闭**，这与能力开关门正好相反。** `webapp/lib/engine-capabilities.ts` 失败即开启：一次慢探测不该藏掉一个可用的模型选择器。这里反方向的失败更糟——在没这个功能的引擎上提供 `/goal`，意味着一条先收下目标、然后回答 501 的命令，而用户输入的内容就此丢失。拒绝提供可以恢复，收下再丢弃不行。因此 `readGoalEnabled` 把除显式 `{ok:true, enabled:true}` 之外的一切都当作 `false`，并且开关每个页面只读一次、由编写器与会话列通过 `webapp/lib/goal-enabled.ts` 共享（一个问题、一个答案、两个订阅者）。
+
+**命令语言是 TUI 的移植。** `webapp/lib/goal-command.ts` 是 `parseTuiThreadGoalCommand`（`packages/tui/src/application/thread-goal-command.ts`）的移植：head word、`budget=50K` / `budget=clear` 语法、前导/尾随/双重三种指令形式，以及 CJK 边界白名单，全部原样。TUI 那个解析器就是"`/goal` 是什么意思"的规范；第二套语法会让本客户端的 `/goal` 变成同名的另一个命令。两处刻意的分歧：错误信息改为消息键，因为在一个双语编写器里硬编码英文句子本身就是缺陷；以及新增了 `/goal-done`——在 TUI 里 `done` 只能通过它自己的收口路径到达，而 webui 编写器是唯一需要说"我要的东西拿到了"的界面。`budget=-5` 是目标内容而不是写坏的指令，TUI 的回答相同，这条已在测试里钉死，将来若有"更聪明"的版本需要为此论证。
+
+**目标行永远不会变成一条消息。** `dispatchGoalCommand` 在 `routeSlashInput` 之前运行，所以 `/goal` 行走 `POST /api/goal`，转录流里什么都不加、回合里什么都不传。这正是那个假象：被退役的处理函数在内存里记一笔目标并返回 `continueMcode: true`，于是目标文本以普通消息的身份到了引擎，而聊天行却声称已经设了目标。带 `@file` 附件的目标行**刻意不认领**——引擎的 `createGoal` 收 `kickoffAttachments`，而本批的端点没有开放它，当成目标处理就会静默丢掉附件。`/goal pause` 发的是**裸**的 `{status:"paused"}`，那正是引擎读作原子用户暂停转换的形状；补一个 `statusReason` 会把一次生命周期转换变成字段补丁。
+
+**失败会把目标文本放回输入框。** 被拒的命令经 `mergeRestoredDraft` 把文本放回，与发送路径同一条规矩，因此期间输入的中间文本保持在上面。这条路径上**没有** `probeSend`：那个探针问的是"一条消息有没有变成一个回合"，那是另一个端点的问题。
+
+**写路径会重挂事件桥。** `handleGoalCreate`、`handleGoalPatch`、`handleGoalClear` 在成功写之后 fire-and-forget 地调 `ensureGoalEventBridge()`。连接时的挂载与它并不重复：桥只 peek 宿主，没有宿主时什么都不启动，而它的泵在任何非 abort 的引擎错误后都会结束——所以经 API 写入的目标，正是 webui 知道"目标变了"却无法证明"有人在听"的那一刻。两个读不挂任何东西，读不会改变引擎里的任何事实。
+
+**本批没有做的事。** `cs.goal` 槽本身仍留在 `state-bus.js` 里，`routes/debug.js` 也仍能注入它；两者一起在批次 D 移除。切换会话时的重拉、blocked 重试的联动、以及转录流里的完成回执同样属于批次 D。
+
 **线程目标：五个窗口对着一个早就存在的引擎面（PB-14 批 A）**
 
 **这是什么。** 引擎早就拥有完整的线程目标面：`isGoalEnabled`、`getGoal`、`createGoal`、`patchGoal`、`clearGoal` 五个方法在 TUI 运行时适配器上（`tui/runtime/adapter.ts:283-295`），落在 `local_runtime_thread_goals` 表里，并由 TUI 的 `/goal` 命令驱动。webui 这一侧一个端点都没有。它拥有的是一个"目标形式的假象"：`/goal <text>` 只在按 cid 的内存槽里记一笔 `{active, text, status, duration}`，重写聊天行，然后把那段文字**当普通消息**送给引擎——引擎根本不知道有目标这件事。本批开这五个端点，并给能力矩阵补上 `goal` 键；横幅与真的 `/goal` 命令属于批 B 与批 C。
@@ -1328,7 +1360,7 @@ Token Plan 视图是桌面的五区块（页签 + 四卡）：
 
 **代价。** 每个请求一次开关读，加一次目标读或写。不轮询，两个读都不启动运行时。
 
-**本批没有做的事。** 没有 `kickoffAttachments`（编写器还没有附件选择器可以产出它们）。没有事件桥——`thread_goal.updated`、`thread_goal.cleared`、`thread_goal.objective_updated_steering` 仍未进入 webui 的 SSE，那是批 B，因此客户端只能轮询这些端点。没有横幅、没有 `/goal` 命令，那是批 C；假目标所在的那个 `cs.goal` 内存槽仍然在，与 `state-bus.js`、`debug.js` 一起在批 D 退役。
+**本批没有做的事。** 没有 `kickoffAttachments`（编写器还没有附件选择器可以产出它们）。没有事件桥——`thread_goal.updated`、`thread_goal.cleared`、`thread_goal.objective_updated_steering` 仍未进入 webui 的 SSE，那是批 B，因此客户端只能轮询这些端点。横幅与真的 `/goal` 命令在批 C；**假目标已在批 C 提前退役**：`server/lib/interaction/commands.js` 里的 `bodyGoal` / `bodyGoalClose` 两个处理函数连同 `handleLocalSlash` 的三个 `case` 一并删除，`SEND_SLASH_COMMANDS` 里的三个名字同步移除（`webapp/test/slash-routing.test.ts` 会在两侧不一致时失败）。`cs.goal` 这个槽本身与 `state-bus.js`、`routes/debug.js` 的注入口一起留到批 D 退役。
 
 **消息级编辑与回退：发出去的那条消息是错的（PB-15）**
 

@@ -124,6 +124,14 @@ export interface UsageState {
   hidden?: boolean;
 }
 
+/**
+ * The retired webui-local goal slot — what `/goal <text>` recorded in memory
+ * before PB-14 batch C made the command reach the engine. Nothing writes it
+ * any more (`server/lib/interaction/commands.js` has no `cs.goal` writer)
+ * and nothing reads it; the field is kept for one release so a snapshot
+ * written by an older server does not fail to typecheck. The ENGINE's goal
+ * is `threadGoal` below.
+ */
 export interface GoalState {
   active: boolean;
   text: string | null;
@@ -207,6 +215,19 @@ export interface WebuiState {
   chat: TranscriptLine[];
   sessions: SessionSummary[];
   goal: GoalState;
+  /**
+   * The ENGINE's thread goal (batch B wrote the frame, batch C reads it).
+   *
+   * Typed as `unknown` on purpose: this field arrived over the SSE wire, and
+   * `readThreadGoal` (`lib/goal-state.ts`) is the one reader that decides
+   * whether a frame is a goal at all. Narrowing it here would restate that
+   * decision in a file with no reason to own it.
+   *
+   * Distinct from `goal` above, which is the retired webui-local slot — two
+   * owners, two sets of facts, and one of them is about to be deleted (batch
+   * D). `server/lib/state-bus.js` records why they were never merged.
+   */
+  threadGoal?: unknown;
   todo: unknown[];
   ask: AskState;
   plan: PlanState;

@@ -63,11 +63,15 @@ export const CMD_BUTTON_COMMAND_NAMES = Object.freeze(
  * for the 400 message only: routing never consults it (everything
  * outside CMD_BUTTON_COMMAND_NAMES goes to /api/send, which is what
  * makes engine commands like `/compact` reach mcode).
+ *
+ * PB-14 batch C — `goal`, `goal-done` and `goal-blocked` were removed from
+ * this list, and the removal is the declaration, not a gap: the three cases
+ * left `handleLocalSlash` in the same commit (see that file), and
+ * `webapp/test/slash-routing.test.ts` fails if this array and the switch's
+ * case labels ever disagree in either direction. Keeping the names here
+ * would have kept the 400 branch advertising a command nothing implements.
  */
 export const SEND_SLASH_COMMANDS = Object.freeze([
-  "goal",
-  "goal-done",
-  "goal-blocked",
   "clear",
   "new",
   "status",

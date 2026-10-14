@@ -1,6 +1,9 @@
 "use client";
 
 import { ConversationUsageBanner, type ConversationUsageNotice } from "./conversation-usage-banner";
+import { GoalBanner } from "./goal-banner";
+import { useGoalEnabled } from "@/lib/goal-enabled";
+import { readThreadGoal } from "@/lib/goal-state";
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState, Fragment } from "react";
 
 import { renderMarkdown } from "@/lib/markdown";
@@ -116,6 +119,24 @@ export function Chat({
   onOpenFile = () => {},
 }: ChatProps) {
   const { state, quota } = useSessionContext();
+
+  // PB-14 batch C — the goal banner's two gates, resolved once per snapshot.
+  //
+  // `goalEnabled` is `null` until `GET /api/goal/enabled` answers, and the
+  // banner is gated on `=== true` rather than on "not false": the composer
+  // offers `/goal` under the same rule, so the two cannot disagree about
+  // whether this engine has goals. A tab whose answer is still pending
+  // therefore shows no banner for a frame — a moment, not a wrong state.
+  //
+  // `threadGoal` is the ENGINE's snapshot as batch B's SSE bridge wrote it,
+  // narrowed by the one reader that decides whether a frame is a goal. A
+  // frame it cannot read is treated as no goal: a banner that hid an
+  // unreadable frame is safer than one that painted `undefined` into a chip.
+  const goalEnabled = useGoalEnabled();
+  const threadGoal = useMemo(
+    () => (goalEnabled === true ? readThreadGoal(state?.threadGoal) : null),
+    [goalEnabled, state?.threadGoal],
+  );
 
   // 工单 60：会话用量横幅（照 other-minimax-code 的 ConversationUsageBanner
   // 形态）。数据源是 store 轮询的真实配额快照（/api/usage）：任一窗口剩余
@@ -431,6 +452,20 @@ export function Chat({
               splits evenly left and right (no dead band dumping
               on one side). */}
           <div className="message-container-chat-content mx-auto w-full max-w-[960px] px-4">
+            {/* PB-14 batch C — the ENGINE's thread goal. Three gates, and the
+                order is the design: the engine must have the feature turned
+                on (otherwise there is nothing honest to draw), the SSE frame
+                must be a goal `readThreadGoal` recognises, and only then is a
+                card painted. A disabled engine gets NO banner rather than a
+                permanently empty one, which is the honest absence. */}
+            {threadGoal ? (
+              <GoalBanner
+                goal={threadGoal}
+                frame={threadGoal}
+                locale={locale}
+                busy={state?.running?.active}
+              />
+            ) : null}
             {visibleUsageNotice ? (
               <ConversationUsageBanner
                 notice={visibleUsageNotice}

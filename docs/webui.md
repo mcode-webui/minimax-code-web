@@ -1574,6 +1574,116 @@ the SSE entry points and needs no coordination with batch A beyond that. The
 webapp side gains no consumer here: the banner and the `/goal` command are
 batch C, and the local `goal` slot's retirement is batch D.
 
+### The goal banner, and a `/goal` that reaches the engine (PB-14 batch C)
+
+**What the user sees.** A card at the top of the conversation, above the
+transcript: the goal's status, its objective, how many tokens and turns it
+has spent and how long it has been running, and up to three buttons — pause,
+resume, clear. The objective is itself the edit control: clicking it opens a
+textarea for the objective and a field for the token budget. Clearing asks
+first, and the question says what clearing costs — goal mode closes and the
+conversation carries on as an ordinary one. `/goal <text>` in the composer
+now sets a real goal; `/goal-done` closes it.
+
+**The banner is the desktop's, ported.** `webapp/components/goal-banner.tsx`
+follows `other-minimax-code/packages/webui/src/client/components/GoalBanner.tsx`
+with its `role="status" aria-live="polite"` container, its
+objective-as-a-button gesture, its usage line, its three guidance lines and
+its two-step clear confirmation intact. Two things differ and both are
+forced. The desktop calls a transport handed down as props; this client
+calls `lib/api.ts` and rolls back optimistically on failure, because the
+engine's answer to a status change can take longer than a click and a pause
+button that shows nothing for two seconds reads as broken. And the desktop's
+copy tables hold Chinese strings because the desktop shell has one locale;
+here they hold message keys, and every one of them exists in both languages.
+
+**Which actions a status may offer is a table, not four conditionals.**
+`webapp/lib/goal-state.ts#goalActions` names each status exactly once. The
+desktop spells out four `&&` chains in its JSX, and every chain is a status
+somebody forgets when the state machine grows. The decisions that are not
+obvious:
+
+| Status | Offered | Why |
+| --- | --- | --- |
+| `active` | pause | The engine's own transition |
+| `active` + `executionWait` | *nothing* | Pausing a goal that is blocked on a permission the user is about to answer would strand the pending question with no goal to resume into |
+| `paused`, `blocked` | resume, clear | The engine resumes either with `{status:"active"}`, and the banner cannot tell the user which it will be, so it does not pretend |
+| `complete` | close | Not clear. Clearing a live goal says "stop pursuing this"; closing a finished one only takes the card away |
+| `budget_limited`, `usage_limited` | *nothing*, plus a guidance line | The only thing that resolves either is not a button: a new goal, or the provider's quota |
+
+**Optimistic, and the rollback shows the reason.** A status toggle repaints
+the chip before the request goes out. If the request fails, the previous
+snapshot comes back *and* the server's error is displayed. Painting the
+failure is the point: a silent rollback is indistinguishable from a broken
+button.
+
+**Two gates, in this order, and either one alone is a defect.** The banner
+paints only when `GET /api/goal/enabled` answered `true` **and** the SSE
+`threadGoal` frame is a goal `readThreadGoal` recognises. The flag alone
+would paint a permanently empty card on a conversation with no goal; the
+frame alone would paint a card on an engine that has goals switched off. The
+second gate is the honest default: "we have not asked yet" is `null` for a
+moment, and "the engine said no" is permanent.
+
+**The enabled gate fails CLOSED, and that is the opposite of the capabilities
+gate.** `webapp/lib/engine-capabilities.ts` fails open: a slow probe must
+not hide a model picker that works. Here the failure mode is worse in the
+other direction — offering `/goal` on an engine without the feature means a
+command that accepts an objective and then answers 501, which loses what the
+user typed. Refusing to offer is recoverable; accepting and dropping is not.
+So `readGoalEnabled` treats anything other than an explicit `{ok:true,
+enabled:true}` as `false`, and the flag is read once per page load and shared
+by the composer and the chat column through `webapp/lib/goal-enabled.ts`
+(one question, one answer, two subscribers).
+
+**The command language is the TUI's, ported.**
+`webapp/lib/goal-command.ts` is `parseTuiThreadGoalCommand`
+(`packages/tui/src/application/thread-goal-command.ts`) with its head words,
+its `budget=50K` / `budget=clear` grammar, its leading/trailing/double
+directive forms and its CJK boundary allow-list unchanged. The TUI parser is
+the specification of what `/goal` means; a second grammar would make this
+`/goal` a different command wearing the same name. Two deliberate
+divergences: error messages became message keys, because a hard-coded
+English sentence inside an otherwise bilingual composer is a defect; and
+`/goal-done` was added, because in the TUI `done` is reachable only through
+its own completion path and the webui composer is the surface that would
+otherwise have no way to say "I got what I wanted". `budget=-5` is an
+objective, not a malformed directive — the TUI answers the same way, and the
+row is pinned in the suite so a future "smarter" version has to argue for it.
+
+**A goal line never becomes a message.** `dispatchGoalCommand` runs before
+`routeSlashInput`, so a `/goal` line goes to `POST /api/goal` and nothing is
+added to the transcript and nothing is handed to the turn. That was the
+illusion: the retired handler recorded a goal in memory and returned
+`continueMcode: true`, so the objective went to the engine as an ordinary
+message while the chat line claimed a goal had been set. A goal line with an
+`@file` attachment is deliberately NOT claimed — the engine's `createGoal`
+takes `kickoffAttachments`, which this build's endpoint does not expose, so
+treating it as a goal would drop the attachment silently. `/goal pause` sends
+a bare `{status:"paused"}`, which is the exact shape the engine reads as its
+atomic user-pause transition; adding a `statusReason` would turn a lifecycle
+transition into a field patch.
+
+**Failures restore the objective.** A rejected command puts the text back
+into the box through `mergeRestoredDraft`, the same rule the send path
+follows, so interim typing is kept above it. There is no `probeSend` on this
+path: the probe asks whether a message became a turn, which is a question
+about a different endpoint.
+
+**The writes re-arm the event bridge.** `handleGoalCreate`,
+`handleGoalPatch` and `handleGoalClear` call `ensureGoalEventBridge()` after
+a successful write, fire-and-forget. The connect-time arming is not
+redundant with this: the bridge peeks for a host and starts nothing when
+there is none, and its pump ends on any non-abort engine error — so a goal
+written through the API is the one moment webui knows a goal changed and
+cannot prove anything is listening. The two reads do not arm anything, since
+a read changes nothing in the engine.
+
+**What this batch did not do.** The `cs.goal` slot itself remains in
+`state-bus.js` and `routes/debug.js` can still inject it; batch D removes
+both. Session-switch refresh, the blocked-retry hand-off, and the completion
+receipt in the transcript are batch D as well.
+
 **Add-model dialog (ticket 54, 53b)**
 
 The 「+ 添加模型」 button — centered under the empty state, at the bottom of
@@ -2146,9 +2256,21 @@ polling, and no runtime boot on the two reads.
 attachment picker to produce them). No event bridge — `thread_goal.updated`,
 `thread_goal.cleared` and `thread_goal.objective_updated_steering` are
 still not in webui's SSE, which is batch B, so a client polls these
-endpoints. No banner and no `/goal` command, which is batch C; the
-`cs.goal` memory slot the fake goal lived in is still there and is
-retired with batch D.
+endpoints. No banner and no real `/goal` command, which is batch C.
+
+**The fake goal was retired early, in batch C.** `bodyGoal` and
+`bodyGoalClose` in `server/lib/interaction/commands.js` — the handlers that
+recorded `{active, text, status, duration}` in the per-cid `cs.goal` slot,
+rewrote the chat line so `/goal xxx` displayed as `xxx`, and returned
+`continueMcode: true`, handing the objective to the engine as an ordinary
+message — are deleted, along with `handleLocalSlash`'s three `case` labels
+and the three names in `SEND_SLASH_COMMANDS`.
+`webapp/test/slash-routing.test.ts` fails if that declaration and the
+dispatcher's cases ever disagree in either direction, so the removal is
+pinned from both sides, and `interaction.check.mjs` asserts that each of the
+six goal words now falls THROUGH untouched — no chat line, no `cs.goal`
+write, no content rewrite. The `cs.goal` slot itself, and the debug route
+that can still inject it, stay until batch D.
 
 ### Message-level edit and rewind: the message you sent was the wrong message (PB-15)
 

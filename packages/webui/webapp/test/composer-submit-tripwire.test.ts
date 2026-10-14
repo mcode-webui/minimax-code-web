@@ -229,20 +229,34 @@ describe("composer submit ordering — ticket 13 wiring tripwire", () => {
     // path so a later 'failSend' against the same cid + sessionId
     // would no-op (the reducer returns the record unchanged when it
     // is not 'in-flight').
-    const successIdx = indexOfOrThrow(
+    //
+    // PB-14 batch C SCOPED THIS TO submit()'s OWN BODY. `dispatchGoalCommand`
+    // is declared above `submit` and has its own `} catch (cause) {`, so
+    // searching the whole module found that one first and the assertion
+    // became a statement about a different function's ordering — it would
+    // have failed for the addition of an unrelated branch and said nothing
+    // about the send path it exists to protect. Both markers are now looked
+    // up from the start of `submit`, which is where the invariant lives.
+    const submitStart = indexOfOrThrow(
       composerSource,
+      "const submit = useCallback(",
+      "the submit callback",
+    );
+    const submitBody = composerSource.slice(submitStart);
+    const successIdx = indexOfOrThrow(
+      submitBody,
       "completeComposerSent();",
       "completeComposerSent();",
     );
     const catchIdx = indexOfOrThrow(
-      composerSource,
+      submitBody,
       "} catch (cause) {",
       "} catch (cause) {",
     );
     assert.ok(
       successIdx < catchIdx,
-      `completeComposerSent must be called BEFORE the catch branch ` +
-        `(complete=${successIdx}, catch=${catchIdx})`,
+      `completeComposerSent must be called BEFORE submit()'s own catch ` +
+        `branch (complete=${successIdx}, catch=${catchIdx})`,
     );
   });
 });

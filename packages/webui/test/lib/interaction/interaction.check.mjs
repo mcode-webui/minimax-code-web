@@ -192,38 +192,52 @@ describe("commands.handleLocalSlash — text-typed slash", () => {
     assert.equal(r, false);
   });
 
-  test("/goal with empty rest shows usage hint, no mcode call", async () => {
-    const r = await commands.handleLocalSlash("/goal", cs, "cid-1");
-    assert.equal(r.handled, true);
-    assert.equal(r.continueMcode, false);
-    assert.ok(cs.chat.some((line) => line.includes("用法")));
-  });
+  // PB-14 batch C — the goal words are NOT webui-local any more, and the
+  // assertion is that they fall THROUGH. The three tests these replaced
+  // pinned `bodyGoal` recording `{active, text, status, duration}` in
+  // `cs.goal`, rewriting the chat line so `/goal xxx` displayed as `xxx`, and
+  // returning `continueMcode: true` — which handed the objective to the
+  // engine as an ordinary message. The engine therefore never learned a goal
+  // existed, and the user got a chat line saying one had been set.
+  //
+  // The real command now runs in the COMPOSER against `POST /api/goal`
+  // (`webapp/components/composer.tsx#dispatchGoalCommand`). What reaches this
+  // dispatcher is either a `/goal` line on an engine that has goals switched
+  // off, or a line carrying an `@file` attachment — and in both cases the
+  // honest answer is the same: webui does not implement it, so let mcode
+  // have it.
+  const goalWords = [
+    "/goal",
+    "/goal ship the banner",
+    "/goal budget=50K",
+    "/goal pause",
+    "/goal-done",
+    "/goal-blocked",
+  ];
+  for (const input of goalWords) {
+    test(`${input} is not a webui-local command — it reaches mcode`, async () => {
+      const chatBefore = [...cs.chat];
+      const r = await commands.handleLocalSlash(input, cs, "cid-1");
+      assert.equal(r.handled, false, `${input} must fall through, not be claimed`);
+      assert.equal(r.continueMcode, true, `${input} must be forwarded unchanged`);
+      assert.equal(r.rewriteContent, undefined, `${input} must not be rewritten`);
+      assert.deepEqual(
+        cs.chat,
+        chatBefore,
+        `${input} must not write a chat line claiming a goal was set`,
+      );
+    });
+  }
 
-  test("/goal with text sets goal and rewrites content for mcode", async () => {
-    cs.chat = [`› /goal do the thing`];
-    const r = await commands.handleLocalSlash("/goal do the thing", cs, "cid-1");
-    assert.equal(r.handled, true);
-    assert.equal(r.continueMcode, true);
-    assert.equal(r.rewriteContent, "do the thing");
-    assert.equal(cs.goal.active, true);
-    assert.equal(cs.goal.text, "do the thing");
-    assert.equal(cs.goal.status, "in_progress");
-    assert.ok(cs.chat.includes("› do the thing"));
-  });
-
-  test("/goal-done with no active goal prints warning", async () => {
-    const r = await commands.handleLocalSlash("/goal-done", cs, "cid-1");
-    assert.equal(r.handled, true);
-    assert.ok(cs.chat.some((l) => l.includes("没有 active 目标")));
-  });
-
-  test("/goal-done with active goal marks complete + duration", async () => {
-    cs.goal = { active: true, text: "do X", startTs: Date.now() - 5000 };
-    const r = await commands.handleLocalSlash("/goal-done", cs, "cid-1");
-    assert.equal(r.handled, true);
+  test("nothing on this path writes the cs.goal slot any more", async () => {
+    // The slot itself stays in `state-bus.js` for one release (batch D
+    // removes it, along with the debug route that can still fill it). What
+    // is gone is every WRITER, and a reader that finds the slot frozen at its
+    // default is the proof that no path is quietly filling it.
+    const before = JSON.stringify(cs.goal);
+    for (const input of goalWords) await commands.handleLocalSlash(input, cs, "cid-1");
+    assert.equal(JSON.stringify(cs.goal), before, "cs.goal must be untouched");
     assert.equal(cs.goal.active, false);
-    assert.equal(cs.goal.status, "complete");
-    assert.ok(cs.goal.duration >= 5000);
   });
 
   test("/clear empties chat + resets usage", async () => {
